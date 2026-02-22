@@ -283,14 +283,17 @@ dsd_cli_usage(void) {
     printf("                 \n");
     printf("  -A <hex>      Manually Enter and Enforce Anytone 16-bit BP Key Value (DMR) (Hex Value) \n");
     printf("                 \n");
-    printf("  -S <str>      Manually Enter and Enforce Generic Static Keystream -> Length and BYTE PACKED / ALIGNED "
-           "String for AMBE (up to 882 bits)\n");
+    printf("  -S <str>      Manually Enter and Enforce Generic Static Keystream -> bits:hex[:offset[:step]] "
+           "(up to 882 bits)\n");
     printf("                  For Example, enter 16-bit Keystream 0909 as:\n");
     printf("                    -S 16:0909\n");
     printf("                  For Example, enter 49-bit Keystream as:\n");
     printf("                    -S 49:123456789ABC80\n");
     printf("                  For Example, enter 49-bit Keystream (MBP 70) as:\n");
     printf("                    -S 49:ED0AED4AED4AED4A\n");
+    printf("                  Optional frame alignment controls (decimal bits):\n");
+    printf("                    -S 168:0123456789ABCDEF0123456789ABCDEF0123456789:0:49\n");
+    printf("                  (offset only defaults step to 49 bits per AMBE frame)\n");
     printf("                 \n");
     printf("  -k <file>     Import Key List from csv file (Decimal Format) -- Lower Case 'k'.\n");
     printf("                  Only supports NXDN, DMR Basic Privacy (decimal value). \n");

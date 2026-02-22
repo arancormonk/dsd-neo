@@ -640,6 +640,9 @@ initState(dsd_state* state) {
     state->any_bp = 0;
     state->straight_ks = 0;
     state->straight_mod = 0;
+    state->straight_frame_mode = 0;
+    state->straight_frame_off = 0;
+    state->straight_frame_step = 0;
 
     //ks array storage and counters
     memset(state->ks_octetL, 0, sizeof(state->ks_octetL));

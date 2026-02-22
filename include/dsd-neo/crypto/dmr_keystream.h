@@ -26,6 +26,7 @@ int connect_systems_ee72_key_creation(dsd_state* state, const char* input);
 void ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input);
 void anytone_bp_keystream_creation(dsd_state* state, char* input);
 void straight_mod_xor_keystream_creation(dsd_state* state, char* input);
+void straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49]);
 void tyt16_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24], int fnum);
 void csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]);
 void kirisun_adv_keystream_creation(dsd_state* state);

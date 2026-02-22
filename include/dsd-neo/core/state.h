@@ -930,6 +930,9 @@ struct dsd_state {
     //generic ks
     int straight_ks;
     int straight_mod;
+    int straight_frame_mode; //0=legacy continuous bitstream, 1=frame-aligned (offset/step)
+    int straight_frame_off;  //frame-aligned start offset (bits)
+    int straight_frame_step; //frame-aligned per-frame step (bits)
 
     uint8_t static_ks_bits[2][882];
     int static_ks_counter[2];

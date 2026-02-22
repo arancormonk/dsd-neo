@@ -82,8 +82,10 @@ dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned
         }
     }
 
-    // Block if this TG is explicitly on the block list.
-    if (strcmp(mode, "B") == 0) {
+    // Block if this TG is explicitly lockout-tagged in the group list.
+    // "DE" is treated as lockout in trunking policy and should match here
+    // so audio/playback/record gates stay consistent.
+    if (strcmp(mode, "B") == 0 || strcmp(mode, "DE") == 0) {
         enc = 1;
     }
 

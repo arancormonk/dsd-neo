@@ -73,6 +73,17 @@ main(void) {
         rc |= expect_eq("case2-outR", outR, 1);
     }
 
+    // Case 2b: "DE" lockout mode should be treated as blocked by audio gate.
+    memset(&opts, 0, sizeof(opts));
+    memset(st, 0, sizeof(*st));
+    st->group_tally = 1;
+    set_group(st, 0, 310UL, "DE", "ENC-LOCKOUT");
+    {
+        int outL = -1;
+        rc |= expect_eq("case2b-ret", dsd_audio_group_gate_mono(&opts, st, 310UL, 0, &outL), 0);
+        rc |= expect_eq("case2b-outL", outL, 1);
+    }
+
     // Case 3: TG hold mutes non-matching slot and force-unmutes matching slot.
     memset(&opts, 0, sizeof(opts));
     memset(st, 0, sizeof(*st));

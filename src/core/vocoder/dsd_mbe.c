@@ -1025,12 +1025,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
                 //disable enc identifiers, if present
                 state->dmr_so = 0;
                 state->payload_algid = 0;
-                for (int i = 0; i < 49; i++) {
-                    ambe_d[i] ^= (uint8_t)(state->static_ks_bits[state->currentslot]
-                                                                [(state->static_ks_counter[state->currentslot]++)
-                                                                 % state->straight_mod]
-                                           & 1); //Yikes!
-                }
+                straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
             }
 
             mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
@@ -1462,12 +1457,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
                 //disable enc identifiers, if present
                 state->dmr_soR = 0;
                 state->payload_algidR = 0;
-                for (int i = 0; i < 49; i++) {
-                    ambe_d[i] ^= (uint8_t)(state->static_ks_bits[state->currentslot]
-                                                                [(state->static_ks_counter[state->currentslot]++)
-                                                                 % state->straight_mod]
-                                           & 1); //Yikes!
-                }
+                straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
             }
 
             mbe_processAmbe2450Dataf(state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR, ambe_d,

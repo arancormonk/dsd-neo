@@ -9,6 +9,27 @@
 
 #include "dsd-neo/core/state_fwd.h"
 
+static int
+parse_decimal_u32_strict(const char* token, uint32_t* out) {
+    if (token == NULL || out == NULL || token[0] == '\0') {
+        return 0;
+    }
+
+    uint64_t value = 0;
+    for (const unsigned char* p = (const unsigned char*)token; *p != '\0'; p++) {
+        if (*p < '0' || *p > '9') {
+            return 0;
+        }
+        value = (value * 10ULL) + (uint64_t)(*p - '0');
+        if (value > UINT32_MAX) {
+            return 0;
+        }
+    }
+
+    *out = (uint32_t)value;
+    return 1;
+}
+
 void
 ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input) {
     /*
@@ -86,28 +107,71 @@ straight_mod_xor_keystream_creation(dsd_state* state, char* input) {
     /* Reset first so malformed input always disables forced static KS. */
     state->straight_ks = 0;
     state->straight_mod = 0;
+    state->straight_frame_mode = 0;
+    state->straight_frame_off = 0;
+    state->straight_frame_step = 0;
+    memset(state->static_ks_counter, 0, sizeof(state->static_ks_counter));
 
     uint16_t len = 0;
     char* curr;
     char* saveptr = NULL;
+    int malformed = 0;
+    uint32_t frame_off = 0;
+    uint32_t frame_step = 0;
+    int frame_mode = 0;
     curr = dsd_strtok_r(input, ":", &saveptr); //should be len (mod) of key (decimal)
-    if (curr != NULL) {
-        sscanf(curr, "%hu", &len);
+    uint32_t parsed_len = 0;
+    if (curr != NULL && parse_decimal_u32_strict(curr, &parsed_len) == 1) {
+        //continue
     } else {
+        malformed = 1;
         goto END_KS;
     }
 
     //len sanity check: must be 1..882 bits
-    if (len == 0 || len > 882) {
-        fprintf(stderr, "Straight KS length must be 1..882 bits (got %u)\n", (unsigned)len);
+    if (parsed_len == 0 || parsed_len > 882) {
+        fprintf(stderr, "Straight KS length must be 1..882 bits (got %u)\n", (unsigned)parsed_len);
         goto END_KS;
     }
+    len = (uint16_t)parsed_len;
 
     curr = dsd_strtok_r(NULL, ":", &saveptr); //should be key in hex
     if (curr != NULL) {
         //continue
     } else {
+        malformed = 1;
         goto END_KS;
+    }
+
+    // Optional frame-alignment controls:
+    //   -S <len:hex:offset[:step]>
+    // offset/step are decimal bit positions. If step omitted, defaults to 49
+    // so each 49-bit AMBE frame advances by one frame cadence.
+    char* off_tok = dsd_strtok_r(NULL, ":", &saveptr);
+    if (off_tok != NULL) {
+        frame_mode = 1;
+        if (parse_decimal_u32_strict(off_tok, &frame_off) != 1) {
+            fprintf(stderr, "Straight KS offset must be decimal bits (got '%s')\n", off_tok);
+            malformed = 1;
+            goto END_KS;
+        }
+        char* step_tok = dsd_strtok_r(NULL, ":", &saveptr);
+        if (step_tok != NULL) {
+            if (parse_decimal_u32_strict(step_tok, &frame_step) != 1) {
+                fprintf(stderr, "Straight KS step must be decimal bits (got '%s')\n", step_tok);
+                malformed = 1;
+                goto END_KS;
+            }
+        } else {
+            frame_step = 49U;
+        }
+
+        // reject trailing garbage fields to avoid silent misconfiguration
+        if (dsd_strtok_r(NULL, ":", &saveptr) != NULL) {
+            fprintf(stderr, "Straight KS accepts at most 4 fields: bits:hex[:offset[:step]]\n");
+            malformed = 1;
+            goto END_KS;
+        }
     }
 
     uint8_t ks_bytes[112];
@@ -132,14 +196,58 @@ straight_mod_xor_keystream_creation(dsd_state* state, char* input) {
     for (uint16_t i = 0; i < unpack_len; i++) {
         fprintf(stderr, "%02X", ks_bytes[i]);
     }
+    if (frame_mode) {
+        frame_off %= len;
+        frame_step %= len;
+        fprintf(stderr, " with Frame Align (offset=%u, step=%u)", frame_off, frame_step);
+    }
     fprintf(stderr, " with Forced Application \n");
 
     state->straight_ks = 1;
     state->straight_mod = (int)len;
+    state->straight_frame_mode = frame_mode;
+    state->straight_frame_off = (int)frame_off;
+    state->straight_frame_step = (int)frame_step;
 
 END_KS:
 
-    if (curr == NULL) {
+    if (malformed) {
         fprintf(stderr, "Straight KS String Malformed! No KS Created!\n");
+    }
+}
+
+void
+straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49]) {
+    if (state == NULL || ambe_d == NULL) {
+        return;
+    }
+    if (state->straight_ks != 1 || state->straight_mod <= 0) {
+        return;
+    }
+
+    slot = (slot == 1) ? 1 : 0;
+    const int mod = state->straight_mod;
+    int base = 0;
+
+    if (state->straight_frame_mode == 1) {
+        uint32_t frame_ctr = (uint32_t)state->static_ks_counter[slot]++;
+        uint32_t off = (uint32_t)((state->straight_frame_off >= 0) ? state->straight_frame_off : 0);
+        uint32_t step = (uint32_t)((state->straight_frame_step >= 0) ? state->straight_frame_step : 0);
+        off %= (uint32_t)mod;
+        step %= (uint32_t)mod;
+        const uint64_t mod_u64 = (uint64_t)(uint32_t)mod;
+        const uint64_t advance = (((uint64_t)frame_ctr) * ((uint64_t)step)) % mod_u64;
+        base = (int)((((uint64_t)off) + advance) % mod_u64);
+    } else {
+        base = state->static_ks_counter[slot] % mod;
+        if (base < 0) {
+            base += mod;
+        }
+        state->static_ks_counter[slot] += 49;
+    }
+
+    for (int i = 0; i < 49; i++) {
+        int idx = (base + i) % mod;
+        ambe_d[i] ^= (char)(state->static_ks_bits[slot][idx] & 1U);
     }
 }
