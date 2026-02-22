@@ -22,6 +22,9 @@ on:
       - ".github/**/*.yaml"
       - "**/*.md"
 
+permissions:
+  contents: read
+
 jobs:
   build-linux:
     runs-on: ubuntu-latest
