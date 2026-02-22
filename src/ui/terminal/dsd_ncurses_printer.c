@@ -2427,7 +2427,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     int history_draw_footer = 1;
     attron(COLOR_PAIR(4)); //cyan for history
     {
-        /* Custom header to underline active Cycle (h) mode */
+        /* Custom header to emphasize active Cycle (h) mode */
         int rows = 0, cols = 80;
         getmaxyx(stdscr, rows, cols);
         if (cols < 4) {
@@ -2445,36 +2445,36 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw("Latest Event History ([|])  Slots 1+2 (\\)  Cycle (h): ");
         }
 
-        /* Underline the active cycle indicator based on UI history mode
+        /* Bold the active cycle indicator based on UI history mode
            0 = Off, 1 = Short, 2 = Long */
         const int hist = history_mode;
 
         if (hist == 1) {
-            attron(A_UNDERLINE);
+            attron(A_BOLD);
         }
         addstr("Short");
         if (hist == 1) {
-            attroff(A_UNDERLINE);
+            attroff(A_BOLD);
         }
 
         addch('/');
 
         if (hist == 2) {
-            attron(A_UNDERLINE);
+            attron(A_BOLD);
         }
         addstr("Long");
         if (hist == 2) {
-            attroff(A_UNDERLINE);
+            attroff(A_BOLD);
         }
 
         addch('/');
 
         if (hist == 0) {
-            attron(A_UNDERLINE);
+            attron(A_BOLD);
         }
         addstr("Off");
         if (hist == 0) {
-            attroff(A_UNDERLINE);
+            attroff(A_BOLD);
         }
 
         // If there's no room for at least one event row, surface it in-header.
