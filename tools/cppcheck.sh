@@ -4,7 +4,8 @@ set -euo pipefail
 # Run cppcheck locally for static analysis:
 # - Analyzes C/C++ sources with project-specific settings
 # - Complements clang-tidy with different analysis techniques
-# - Fails on error-level issues; warnings are informational
+# - Default mode fails only on error diagnostics.
+# - Strict mode enables all checks and fails on warning/performance/portability/error diagnostics.
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT_DIR"
@@ -69,9 +70,9 @@ cppcheck --version
 # Detect number of CPU cores for parallel analysis
 NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-# Build cppcheck arguments
+# Build cppcheck arguments.
 # Note: cppcheck supports multiple --std flags; it applies the appropriate
-# standard based on file extension (.c -> C standard, .cpp -> C++ standard)
+# standard based on file extension (.c -> C standard, .cpp -> C++ standard).
 CPPCHECK_ARGS=(
   "--enable=warning,performance,portability"
   --std=c11
@@ -80,12 +81,11 @@ CPPCHECK_ARGS=(
   --inline-suppr
   -I include
   -j "$NPROC"
-  --error-exitcode=1
 )
 
 # Strict mode: enable all checks and be more aggressive
 if [[ $STRICT -eq 1 ]]; then
-  echo "Strict mode: enabling all checks and treating warnings as errors"
+  echo "Strict mode: enabling all checks and gating warning/performance/portability/error diagnostics"
   CPPCHECK_ARGS=(
     --enable=all
     --std=c11
@@ -94,7 +94,6 @@ if [[ $STRICT -eq 1 ]]; then
     --inline-suppr
     -I include
     -j "$NPROC"
-    --error-exitcode=1
   )
 fi
 
@@ -144,24 +143,59 @@ if [[ ${#FILES[@]} -gt 0 ]]; then
   CPPCHECK_TARGETS=("${FILES[@]}")
 fi
 
-# Run cppcheck and capture output
-# Use --template for consistent output format
-if cppcheck "${CPPCHECK_ARGS[@]}" \
+# Run cppcheck and capture output.
+# Use --template for consistent output format.
+set +e
+cppcheck "${CPPCHECK_ARGS[@]}" \
   --template='{file}:{line}: {severity}: {message} [{id}]' \
-  "${CPPCHECK_TARGETS[@]}" 2>&1 | tee "$LOG_FILE"; then
-  echo ""
-  echo "cppcheck passed. Full output in $LOG_FILE"
-else
-  EXIT_CODE=$?
+  "${CPPCHECK_TARGETS[@]}" 2>&1 | tee "$LOG_FILE"
+CPPCHECK_RC=${PIPESTATUS[0]}
+set -e
+
+count_severity() {
+  local severity="$1"
+  grep -E -c ": ${severity}:" "$LOG_FILE" 2>/dev/null || true
+}
+
+error_count=$(count_severity "error")
+warning_count=$(count_severity "warning")
+performance_count=$(count_severity "performance")
+portability_count=$(count_severity "portability")
+style_count=$(count_severity "style")
+information_count=$(count_severity "information")
+tool_error_count=$(grep -E -c '^cppcheck: error:' "$LOG_FILE" 2>/dev/null || true)
+
+fatal_count=$((error_count + tool_error_count))
+if [[ $STRICT -eq 1 ]]; then
+  fatal_count=$((fatal_count + warning_count + performance_count + portability_count))
+fi
+
+if [[ $CPPCHECK_RC -ne 0 || $fatal_count -gt 0 ]]; then
   echo ""
   echo "cppcheck found issues. See $LOG_FILE for details." >&2
+  if [[ $CPPCHECK_RC -ne 0 ]]; then
+    echo "cppcheck exited with code $CPPCHECK_RC." >&2
+  fi
 
-  # Print summary by severity
-  echo ""
+  echo "" >&2
   echo "Summary by severity:" >&2
-  grep -E ': (error|warning|style|performance|portability):' "$LOG_FILE" 2>/dev/null \
-    | sed -E 's/.*: (error|warning|style|performance|portability):.*/\1/' \
-    | sort | uniq -c | sort -rn >&2 || true
+  echo "  error: $error_count" >&2
+  echo "  warning: $warning_count" >&2
+  echo "  performance: $performance_count" >&2
+  echo "  portability: $portability_count" >&2
+  echo "  style: $style_count" >&2
+  echo "  information: $information_count" >&2
+  if [[ $tool_error_count -gt 0 ]]; then
+    echo "  tool-errors: $tool_error_count" >&2
+  fi
 
-  exit $EXIT_CODE
+  if [[ $STRICT -eq 1 ]]; then
+    echo "Strict mode failed: warning/performance/portability/error diagnostics are blocking." >&2
+  else
+    echo "Non-strict mode failed: only error diagnostics are blocking." >&2
+  fi
+  exit 1
 fi
+
+echo ""
+echo "cppcheck passed. Full output in $LOG_FILE"

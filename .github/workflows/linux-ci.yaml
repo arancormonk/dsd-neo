@@ -614,7 +614,7 @@ jobs:
 
       - name: Run cppcheck
         run: |
-          tools/cppcheck.sh
+          tools/cppcheck.sh --strict
 
       - name: Upload cppcheck output
         if: always()
@@ -789,9 +789,9 @@ jobs:
       - name: Configure (dev-debug)
         run: cmake --preset dev-debug
 
-      - name: Run clang-tidy (curated)
+      - name: Run clang-tidy (strict)
         run: |
-          tools/clang_tidy.sh
+          tools/clang_tidy.sh --strict
 
       - name: Upload clang-tidy output
         if: always()
@@ -815,9 +815,9 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
-      - name: Run GCC fanalyzer
+      - name: Run GCC fanalyzer (strict)
         run: |
-          tools/gcc_fanalyzer.sh
+          tools/gcc_fanalyzer.sh --strict
 
       - name: Upload GCC fanalyzer output
         if: always()

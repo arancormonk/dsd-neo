@@ -331,7 +331,7 @@ fi
 
 if [[ ${#analysis_tus[@]} -gt 0 ]]; then
   if command -v clang-tidy >/dev/null 2>&1; then
-    run_check "clang-tidy (${#analysis_tus[@]} TU(s))" tools/clang_tidy.sh -- "${analysis_tus[@]}"
+    run_check "clang-tidy strict (${#analysis_tus[@]} TU(s))" tools/clang_tidy.sh --strict -- "${analysis_tus[@]}"
   else
     mark_missing_tool "clang-tidy" "clang-tidy analysis"
   fi
@@ -339,7 +339,7 @@ fi
 
 if [[ ${#cppcheck_sources[@]} -gt 0 ]]; then
   if command -v cppcheck >/dev/null 2>&1; then
-    run_check "cppcheck (${#cppcheck_sources[@]} TU(s))" tools/cppcheck.sh -- "${cppcheck_sources[@]}"
+    run_check "cppcheck strict (${#cppcheck_sources[@]} TU(s))" tools/cppcheck.sh --strict -- "${cppcheck_sources[@]}"
   else
     mark_missing_tool "cppcheck" "cppcheck analysis"
   fi
@@ -355,7 +355,7 @@ fi
 
 if [[ ${#analysis_tus[@]} -gt 0 ]]; then
   if command -v gcc >/dev/null 2>&1 && command -v g++ >/dev/null 2>&1; then
-    run_check "GCC fanalyzer (${#analysis_tus[@]} TU(s))" tools/gcc_fanalyzer.sh -- "${analysis_tus[@]}"
+    run_check "GCC fanalyzer strict (${#analysis_tus[@]} TU(s))" tools/gcc_fanalyzer.sh --strict -- "${analysis_tus[@]}"
   else
     mark_missing_tool "gcc/g++" "GCC fanalyzer analysis"
   fi
