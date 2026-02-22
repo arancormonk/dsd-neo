@@ -7,7 +7,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
 #include <stdio.h>
-#include <string.h>
+#include <stdlib.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -65,10 +65,14 @@ expect_counts(int ms, int ss, int fm, int fs, const char* label) {
 
 int
 main(void) {
-    dsd_opts opts;
-    dsd_state state;
-    memset(&opts, 0, sizeof opts);
-    memset(&state, 0, sizeof state);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
 
     struct {
         int floating_point;
@@ -86,21 +90,27 @@ main(void) {
 
     for (size_t i = 0; i < (sizeof cases / sizeof cases[0]); i++) {
         reset_counters();
-        opts.floating_point = cases[i].floating_point;
-        opts.pulse_digi_out_channels = cases[i].channels;
-        p25p1_play_imbe_audio(&opts, &state);
+        opts->floating_point = cases[i].floating_point;
+        opts->pulse_digi_out_channels = cases[i].channels;
+        p25p1_play_imbe_audio(opts, state);
         if (expect_counts(cases[i].ms, cases[i].ss, cases[i].fm, cases[i].fs, cases[i].label) != 0) {
+            free(opts);
+            free(state);
             return 1;
         }
     }
 
     reset_counters();
-    p25p1_play_imbe_audio(NULL, &state);
-    p25p1_play_imbe_audio(&opts, NULL);
+    p25p1_play_imbe_audio(NULL, state);
+    p25p1_play_imbe_audio(opts, NULL);
     if (expect_counts(0, 0, 0, 0, "null_guard") != 0) {
+        free(opts);
+        free(state);
         return 1;
     }
 
     fprintf(stderr, "P25 P1 audio dispatch: OK\n");
+    free(opts);
+    free(state);
     return 0;
 }

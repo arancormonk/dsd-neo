@@ -401,7 +401,7 @@ openMbeInFile(dsd_opts* opts, dsd_state* state) {
     char cookie[5];
     state->mbe_file_type = -1;
 
-    opts->mbe_in_f = fopen(opts->mbe_in_file, "ro");
+    opts->mbe_in_f = fopen(opts->mbe_in_file, "rb");
     if (opts->mbe_in_f == NULL) {
         LOG_ERROR("Error: could not open %s\n", opts->mbe_in_file);
         return;
