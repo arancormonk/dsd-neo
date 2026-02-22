@@ -79,6 +79,14 @@ anytone_bp_keystream_creation(dsd_state* state, char* input) {
 
 void
 straight_mod_xor_keystream_creation(dsd_state* state, char* input) {
+    if (state == NULL || input == NULL) {
+        return;
+    }
+
+    /* Reset first so malformed input always disables forced static KS. */
+    state->straight_ks = 0;
+    state->straight_mod = 0;
+
     uint16_t len = 0;
     char* curr;
     char* saveptr = NULL;
@@ -89,9 +97,10 @@ straight_mod_xor_keystream_creation(dsd_state* state, char* input) {
         goto END_KS;
     }
 
-    //len sanity check, can't be greater than 882
-    if (len > 882) {
-        len = 882;
+    //len sanity check: must be 1..882 bits
+    if (len == 0 || len > 882) {
+        fprintf(stderr, "Straight KS length must be 1..882 bits (got %u)\n", (unsigned)len);
+        goto END_KS;
     }
 
     curr = dsd_strtok_r(NULL, ":", &saveptr); //should be key in hex

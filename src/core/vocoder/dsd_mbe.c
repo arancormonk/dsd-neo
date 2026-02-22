@@ -1021,7 +1021,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             }
 
             //Generic Straight Static Keystream
-            if (state->straight_ks == 1) {
+            if (state->straight_ks == 1 && state->straight_mod > 0) {
                 //disable enc identifiers, if present
                 state->dmr_so = 0;
                 state->payload_algid = 0;
@@ -1458,7 +1458,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             }
 
             //Generic Straight Static Keystream
-            if (state->straight_ks == 1) {
+            if (state->straight_ks == 1 && state->straight_mod > 0) {
                 //disable enc identifiers, if present
                 state->dmr_soR = 0;
                 state->payload_algidR = 0;

@@ -411,6 +411,11 @@ target_include_directories(dsd-neo_test_core_dmr_voice_alg_gate PRIVATE ${PROJEC
 target_link_libraries(dsd-neo_test_core_dmr_voice_alg_gate PRIVATE dsd-neo_core)
 add_test(NAME CORE_DMR_VOICE_ALG_GATE COMMAND dsd-neo_test_core_dmr_voice_alg_gate)
 
+add_executable(dsd-neo_test_core_straight_keystream_validation core/test_core_straight_keystream_validation.c)
+target_include_directories(dsd-neo_test_core_straight_keystream_validation PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_core_straight_keystream_validation PRIVATE dsd-neo_crypto)
+add_test(NAME CORE_STRAIGHT_KEYSTREAM_VALIDATION COMMAND dsd-neo_test_core_straight_keystream_validation)
+
 add_executable(dsd-neo_test_runtime_cli_compact runtime/test_runtime_cli_compact.c)
 target_include_directories(dsd-neo_test_runtime_cli_compact PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_cli_compact PRIVATE dsd-neo_runtime dsd-neo_test_support)

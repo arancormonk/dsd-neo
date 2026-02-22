@@ -17,6 +17,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int
@@ -40,44 +41,48 @@ main(void) {
     int rc = 0;
 
     dsd_opts opts;
-    dsd_state st;
     memset(&opts, 0, sizeof(opts));
-    memset(&st, 0, sizeof(st));
+
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!st) {
+        fprintf(stderr, "alloc-failed: dsd_state\n");
+        return 1;
+    }
 
     // Case 1: Explicit block list on slot R while slot L remains allowed.
-    st.group_tally = 2;
-    set_group(&st, 0, 100UL, "A", "ALLOW");
-    set_group(&st, 1, 200UL, "B", "BLOCK");
+    st->group_tally = 2;
+    set_group(st, 0, 100UL, "A", "ALLOW");
+    set_group(st, 1, 200UL, "B", "BLOCK");
     {
         int outL = -1, outR = -1;
-        rc |= expect_eq("case1-ret", dsd_audio_group_gate_dual(&opts, &st, 100UL, 200UL, 0, 0, &outL, &outR), 0);
+        rc |= expect_eq("case1-ret", dsd_audio_group_gate_dual(&opts, st, 100UL, 200UL, 0, 0, &outL, &outR), 0);
         rc |= expect_eq("case1-outL", outL, 0);
         rc |= expect_eq("case1-outR", outR, 1);
     }
 
     // Case 2: Allow-list mode defaults unknown TGs to blocked.
     memset(&opts, 0, sizeof(opts));
-    memset(&st, 0, sizeof(st));
+    memset(st, 0, sizeof(*st));
     opts.trunk_use_allow_list = 1;
-    st.group_tally = 1;
-    set_group(&st, 0, 300UL, "A", "ONLY");
+    st->group_tally = 1;
+    set_group(st, 0, 300UL, "A", "ONLY");
     {
         int outL = -1, outR = -1;
-        rc |= expect_eq("case2-ret", dsd_audio_group_gate_dual(&opts, &st, 300UL, 301UL, 0, 0, &outL, &outR), 0);
+        rc |= expect_eq("case2-ret", dsd_audio_group_gate_dual(&opts, st, 300UL, 301UL, 0, 0, &outL, &outR), 0);
         rc |= expect_eq("case2-outL", outL, 0);
         rc |= expect_eq("case2-outR", outR, 1);
     }
 
     // Case 3: TG hold mutes non-matching slot and force-unmutes matching slot.
     memset(&opts, 0, sizeof(opts));
-    memset(&st, 0, sizeof(st));
-    st.group_tally = 2;
-    set_group(&st, 0, 400UL, "A", "LEFT");
-    set_group(&st, 1, 401UL, "B", "RIGHT-BLOCKED");
-    st.tg_hold = 401U;
+    memset(st, 0, sizeof(*st));
+    st->group_tally = 2;
+    set_group(st, 0, 400UL, "A", "LEFT");
+    set_group(st, 1, 401UL, "B", "RIGHT-BLOCKED");
+    st->tg_hold = 401U;
     {
         int outL = -1, outR = -1;
-        rc |= expect_eq("case3-ret", dsd_audio_group_gate_dual(&opts, &st, 400UL, 401UL, 0, 0, &outL, &outR), 0);
+        rc |= expect_eq("case3-ret", dsd_audio_group_gate_dual(&opts, st, 400UL, 401UL, 0, 0, &outL, &outR), 0);
         rc |= expect_eq("case3-outL", outL, 1);
         rc |= expect_eq("case3-outR", outR, 0);
     }
@@ -85,12 +90,13 @@ main(void) {
     // Defensive API contract checks.
     {
         int out = 0;
-        rc |= expect_eq("null-mono", dsd_audio_group_gate_mono(NULL, &st, 0UL, 0, &out), -1);
-        rc |= expect_eq("null-dual", dsd_audio_group_gate_dual(&opts, &st, 0UL, 0UL, 0, 0, NULL, &out), -1);
+        rc |= expect_eq("null-mono", dsd_audio_group_gate_mono(NULL, st, 0UL, 0, &out), -1);
+        rc |= expect_eq("null-dual", dsd_audio_group_gate_dual(&opts, st, 0UL, 0UL, 0, 0, NULL, &out), -1);
     }
 
     if (rc == 0) {
         printf("CORE_AUDIO_GROUP_GATE: OK\n");
     }
+    free(st);
     return rc;
 }
