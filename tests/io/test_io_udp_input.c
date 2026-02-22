@@ -4,18 +4,20 @@
  * synthesize samples when idle (it should block until data arrives).
  */
 
-#include <arpa/inet.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/exitflag.h>
-#include <errno.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
+#endif
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/socket.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/platform/platform.h"
@@ -23,7 +25,11 @@
 static int
 get_bound_port(dsd_socket_t sock) {
     struct sockaddr_in sa;
+#if DSD_PLATFORM_WIN_NATIVE
+    int slen = (int)sizeof(sa);
+#else
     socklen_t slen = (socklen_t)sizeof(sa);
+#endif
     memset(&sa, 0, sizeof(sa));
     if (getsockname(sock, (struct sockaddr*)&sa, &slen) != 0) {
         return -1;

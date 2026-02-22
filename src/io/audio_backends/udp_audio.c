@@ -8,11 +8,14 @@
 #include <dsd-neo/io/m17_udp.h>
 #include <dsd-neo/io/udp_audio.h>
 #include <dsd-neo/io/udp_socket_connect.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
+#include <sys/socket.h>
+#endif
 #include <stdio.h>
 #include <string.h>
-#include <sys/socket.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"

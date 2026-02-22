@@ -2,6 +2,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/log.h>
 #include <stdint.h>
@@ -57,7 +58,7 @@ csvGroupImport(dsd_opts* opts, dsd_state* state) {
 
         size_t idx = state->group_tally;
         char* saveptr = NULL;
-        char* field = strtok_r(buffer, ",", &saveptr); //seperate by comma
+        char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
             trim_eol(field);
 
@@ -77,7 +78,7 @@ csvGroupImport(dsd_opts* opts, dsd_state* state) {
                 LOG_INFO("%s ", state->group_array[idx].groupName);
             }
 
-            field = strtok_r(NULL, ",", &saveptr);
+            field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
         }
         LOG_INFO("\n");
@@ -116,7 +117,7 @@ csvLCNImport(dsd_opts* opts, dsd_state* state) {
             continue; //don't want labels
         }
         char* saveptr = NULL;
-        char* field = strtok_r(buffer, ",", &saveptr); //seperate by comma
+        char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
 
             state->trunk_lcn_freq[field_count] = atol(field);
@@ -124,7 +125,7 @@ csvLCNImport(dsd_opts* opts, dsd_state* state) {
             LOG_INFO("LCN [%d] [%ld]", field_count + 1, state->trunk_lcn_freq[field_count]);
             LOG_INFO("\n");
 
-            field = strtok_r(NULL, ",", &saveptr);
+            field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
         }
         LOG_INFO("LCN Count %d\n", state->lcn_freq_count);
@@ -158,7 +159,7 @@ csvChanImport(dsd_opts* opts, dsd_state* state) //channel map import
             continue; //don't want labels
         }
         char* saveptr = NULL;
-        char* field = strtok_r(buffer, ",", &saveptr); //seperate by comma
+        char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
 
             if (field_count == 0) {
@@ -178,7 +179,7 @@ csvChanImport(dsd_opts* opts, dsd_state* state) //channel map import
                 }
             }
 
-            field = strtok_r(NULL, ",", &saveptr);
+            field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
         }
         if (field_count >= 2 && chan_number >= 0 && chan_number < 0xFFFF) {
@@ -221,7 +222,7 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
             continue; //don't want labels
         }
         char* saveptr = NULL;
-        char* field = strtok_r(buffer, ",", &saveptr); //seperate by comma
+        char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
 
             if (field_count == 0) {
@@ -245,7 +246,7 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
                 }
             }
 
-            field = strtok_r(NULL, ",", &saveptr);
+            field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
         }
         LOG_INFO("Key [%03lld] [%05lld]", keynumber, state->rkey_array[keynumber]);
@@ -279,7 +280,7 @@ csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
             continue; //don't want labels
         }
         char* saveptr = NULL;
-        char* field = strtok_r(buffer, ",", &saveptr); //seperate by comma
+        char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
 
             if (field_count == 0) {
@@ -311,7 +312,7 @@ csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
                 }
             }
 
-            field = strtok_r(NULL, ",", &saveptr);
+            field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
         }
 

@@ -23,14 +23,6 @@ int ncurses_last_synctype = DSD_SYNC_NONE;
 
 int
 ui_unicode_supported(void) {
-#if defined(DSD_USE_PDCURSES)
-    PDC_VERSION ver;
-    memset(&ver, 0, sizeof(ver));
-    PDC_get_version(&ver);
-    if ((ver.flags & (PDC_VFLAG_WIDE | PDC_VFLAG_UTF8)) == (PDC_VFLAG_WIDE | PDC_VFLAG_UTF8)) {
-        return 1;
-    }
-#endif
     return dsd_unicode_supported();
 }
 

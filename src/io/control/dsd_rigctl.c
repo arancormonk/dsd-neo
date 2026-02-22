@@ -18,20 +18,24 @@
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
-#include <limits.h>
-#include <math.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sys/socket.h>
+#endif
+#include <limits.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -170,7 +174,7 @@ GetCurrentFreq(dsd_socket_t sockfd) {
         return freq;
     }
 
-    token = strtok_r(buf, "\n", &saveptr);
+    token = dsd_strtok_r(buf, "\n", &saveptr);
     freq = strtol(token, &ptr, 10);
     // fprintf (stderr, "\nRIGCTL VFO Freq: [%ld]\n", freq);
     return freq;

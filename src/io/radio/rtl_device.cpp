@@ -23,13 +23,15 @@
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
 #include <math.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sys/socket.h>
+#endif
 #include <rtl-sdr.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 
 #include "dsd-neo/platform/platform.h"
 
