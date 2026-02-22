@@ -20,6 +20,7 @@
 
 #include <curses.h>
 #include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/platform/posix_compat.h> // IWYU pragma: keep (MSVC stat/_stat compatibility)
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/keymap.h>

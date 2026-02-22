@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/platform/posix_compat.h> // IWYU pragma: keep (MSVC stat/_stat compatibility)
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <stdio.h>
