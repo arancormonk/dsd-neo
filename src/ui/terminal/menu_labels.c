@@ -33,6 +33,20 @@
 #define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
 #endif
 
+static int
+menu_stat_is_regular(const struct stat* sb) {
+    if (!sb) {
+        return 0;
+    }
+#if defined(_WIN32) && defined(_S_IFMT) && defined(_S_IFREG)
+    return ((sb->st_mode & _S_IFMT) == _S_IFREG);
+#elif defined(S_IFMT) && defined(S_IFREG)
+    return ((sb->st_mode & S_IFMT) == S_IFREG);
+#else
+    return 0;
+#endif
+}
+
 // ---- Visibility/predicate functions ----
 
 bool
@@ -470,7 +484,7 @@ lbl_replay_last(void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
     if (c->opts->audio_in_dev[0] != '\0') {
         struct stat sb;
-        if (stat(c->opts->audio_in_dev, &sb) == 0 && S_ISREG(sb.st_mode)) {
+        if (stat(c->opts->audio_in_dev, &sb) == 0 && menu_stat_is_regular(&sb)) {
             snprintf(b, n, "Replay Last Symbol Capture [%s]", c->opts->audio_in_dev);
             return b;
         }
