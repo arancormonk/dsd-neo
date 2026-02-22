@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Run Clang Static Analyzer via scan-build on a dedicated temporary build tree.
 # Intended for CI or explicit local runs (heavier than per-file analyzers).
-# Excludes third-party code under src/third_party.
+# Excludes third-party code under src/external.
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT_DIR"
@@ -70,6 +70,21 @@ if ! command -v cmake >/dev/null 2>&1; then
   exit 1
 fi
 
+print_scan_build_version() {
+  if scan-build --version >/dev/null 2>&1; then
+    scan-build --version
+    return 0
+  fi
+
+  if scan-build -version >/dev/null 2>&1; then
+    scan-build -version
+    return 0
+  fi
+
+  echo "scan-build path: $(command -v scan-build)"
+  return 0
+}
+
 if [[ -z "$JOBS" ]]; then
   JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 fi
@@ -78,7 +93,7 @@ LOG_FILE=".scan-build.local.out"
 SCAN_ARGS=(
   --keep-empty
   -o "$OUTPUT_DIR"
-  --exclude "$ROOT_DIR/src/third_party"
+  --exclude "$ROOT_DIR/src/external"
 )
 if [[ $STRICT -eq 1 ]]; then
   SCAN_ARGS+=(--status-bugs)
@@ -96,8 +111,8 @@ rm -rf "$BUILD_DIR" "$OUTPUT_DIR"
 set +e
 {
   echo "scan-build version:"
-  scan-build --version
-  echo "Excluding analyzer path: $ROOT_DIR/src/third_party"
+  print_scan_build_version
+  echo "Excluding analyzer path: $ROOT_DIR/src/external"
   echo ""
   echo "Configuring analysis build in $BUILD_DIR ..."
   scan-build "${SCAN_ARGS[@]}" cmake -S . -B "$BUILD_DIR" \
