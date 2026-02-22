@@ -9,12 +9,13 @@
 #define _GNU_SOURCE
 #endif
 
-/* Include sched.h early on Linux for CPU_* macros (needs _GNU_SOURCE) */
-#if defined(__linux__)
+/* Include sched.h early:
+ * - Linux: CPU_* affinity macros (requires _GNU_SOURCE)
+ * - macOS: struct sched_param/SCHED_* constants for pthread scheduling */
+#if defined(__linux__) || (defined(__APPLE__) && defined(__MACH__))
 #include <sched.h>
 #endif
 
-#include <bits/types/struct_sched_param.h>
 #include <dsd-neo/platform/threading.h>
 #include <pthread.h>
 

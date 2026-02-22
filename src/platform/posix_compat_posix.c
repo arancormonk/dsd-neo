@@ -3,6 +3,11 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+/* Ensure BSD/Darwin extensions (mkdtemp) are declared on macOS. */
+#if defined(__APPLE__) && defined(__MACH__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE
+#endif
+
 #include <dsd-neo/platform/posix_compat.h>
 #include <sys/types.h>
 
@@ -12,6 +17,7 @@
 
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 int
 dsd_setenv(const char* name, const char* value, int overwrite) {
