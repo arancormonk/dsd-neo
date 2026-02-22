@@ -2,6 +2,7 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -81,7 +82,7 @@ straight_mod_xor_keystream_creation(dsd_state* state, char* input) {
     uint16_t len = 0;
     char* curr;
     char* saveptr = NULL;
-    curr = strtok_r(input, ":", &saveptr); //should be len (mod) of key (decimal)
+    curr = dsd_strtok_r(input, ":", &saveptr); //should be len (mod) of key (decimal)
     if (curr != NULL) {
         sscanf(curr, "%hu", &len);
     } else {
@@ -93,7 +94,7 @@ straight_mod_xor_keystream_creation(dsd_state* state, char* input) {
         len = 882;
     }
 
-    curr = strtok_r(NULL, ":", &saveptr); //should be key in hex
+    curr = dsd_strtok_r(NULL, ":", &saveptr); //should be key in hex
     if (curr != NULL) {
         //continue
     } else {

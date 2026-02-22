@@ -25,6 +25,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -38,6 +40,24 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+static int
+dsd_stat_path(const char* path, dsd_stat_t* st) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return _stat(path, st);
+#else
+    return stat(path, st);
+#endif
+}
+
+static int
+dsd_stat_is_regular(const dsd_stat_t* st) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return ((st->st_mode & _S_IFMT) == _S_IFREG);
+#else
+    return S_ISREG(st->st_mode);
+#endif
+}
 
 void
 closeAudioOutput(dsd_opts* opts) {
@@ -161,7 +181,7 @@ void
 parse_audio_input_string(dsd_opts* opts, char* input) {
     char* curr;
     char* saveptr = NULL;
-    curr = strtok_r(input, ":", &saveptr);
+    curr = dsd_strtok_r(input, ":", &saveptr);
     if (curr != NULL) {
         strncpy(opts->pa_input_idx, curr, 99);
         opts->pa_input_idx[99] = '\0';
@@ -175,7 +195,7 @@ void
 parse_audio_output_string(dsd_opts* opts, char* input) {
     char* curr;
     char* saveptr = NULL;
-    curr = strtok_r(input, ":", &saveptr);
+    curr = dsd_strtok_r(input, ":", &saveptr);
     if (curr != NULL) {
         strncpy(opts->pa_output_idx, curr, 99);
         opts->pa_output_idx[99] = '\0';
@@ -771,12 +791,12 @@ openAudioInDevice(dsd_opts* opts) {
 
     //Open .raw files as a float input type
     else if (strncmp(extension, ".raw", 4) == 0) {
-        struct stat stat_buf;
-        if (stat(opts->audio_in_dev, &stat_buf) != 0) {
+        dsd_stat_t stat_buf;
+        if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
             LOG_ERROR("Error, couldn't open raw (float) file %s\n", opts->audio_in_dev);
             return -1;
         }
-        if (S_ISREG(stat_buf.st_mode)) {
+        if (dsd_stat_is_regular(&stat_buf)) {
             opts->symbolfile = fopen(opts->audio_in_dev, "r");
             if (opts->symbolfile == NULL) {
                 LOG_ERROR("Error, couldn't open raw (float) file %s\n", opts->audio_in_dev);
@@ -790,12 +810,12 @@ openAudioInDevice(dsd_opts* opts) {
 
     //Open .raw files as a float input type
     else if (strncmp(extension, ".sym", 4) == 0) {
-        struct stat stat_buf;
-        if (stat(opts->audio_in_dev, &stat_buf) != 0) {
+        dsd_stat_t stat_buf;
+        if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
             LOG_ERROR("Error, couldn't open sym (float) file %s\n", opts->audio_in_dev);
             return -1;
         }
-        if (S_ISREG(stat_buf.st_mode)) {
+        if (dsd_stat_is_regular(&stat_buf)) {
             opts->symbolfile = fopen(opts->audio_in_dev, "r");
             if (opts->symbolfile == NULL) {
                 LOG_ERROR("Error, couldn't open sym (float) file %s\n", opts->audio_in_dev);
@@ -808,12 +828,12 @@ openAudioInDevice(dsd_opts* opts) {
     }
 
     else if (strncmp(extension, ".bin", 4) == 0) {
-        struct stat stat_buf;
-        if (stat(opts->audio_in_dev, &stat_buf) != 0) {
+        dsd_stat_t stat_buf;
+        if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
             LOG_ERROR("Error, couldn't open bin file %s\n", opts->audio_in_dev);
             return -1;
         }
-        if (S_ISREG(stat_buf.st_mode)) {
+        if (dsd_stat_is_regular(&stat_buf)) {
             opts->symbolfile = fopen(opts->audio_in_dev, "r");
             if (opts->symbolfile == NULL) {
                 LOG_ERROR("Error, couldn't open bin file %s\n", opts->audio_in_dev);
@@ -826,12 +846,12 @@ openAudioInDevice(dsd_opts* opts) {
     }
     //open as wav file as last resort, wav files subseptible to sample rate issues if not 48000
     else {
-        struct stat stat_buf;
-        if (stat(opts->audio_in_dev, &stat_buf) != 0) {
+        dsd_stat_t stat_buf;
+        if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
             LOG_ERROR("Error, couldn't open wav file %s\n", opts->audio_in_dev);
             return -1;
         }
-        if (S_ISREG(stat_buf.st_mode)) {
+        if (dsd_stat_is_regular(&stat_buf)) {
             opts->audio_in_type = AUDIO_IN_WAV; //two now, seperating STDIN and wav files
             opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
             if (opts->audio_in_file_info == NULL) {
