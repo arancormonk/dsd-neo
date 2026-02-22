@@ -100,6 +100,7 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
     int i;
     char imbe_d[88];
     char ambe_d[49];
+    char file_err_str[260];
     srand(time(NULL)); //random seed for some file names using random numbers in file name
 
     for (i = state->optind; i < argc; i++) {
@@ -112,9 +113,14 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
         fprintf(stderr, "\n playing %s\n", opts->mbe_in_file);
         while (opts->mbe_in_f != NULL && feof(opts->mbe_in_f) == 0) {
             if (state->mbe_file_type == 0) {
-                readImbe4400Data(opts, state, imbe_d);
-                mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
+                if (readImbe4400Data(opts, state, imbe_d) != 0) {
+                    break;
+                }
+                file_err_str[0] = '\0';
+                mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, file_err_str, imbe_d,
                                          state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+                strncpy(state->err_str, file_err_str, sizeof(state->err_str) - 1);
+                state->err_str[sizeof(state->err_str) - 1] = '\0';
                 if (DSD_SYNC_IS_P25P1(state->synctype)) {
                     int len = state->p25_p1_voice_err_hist_len > 0 ? state->p25_p1_voice_err_hist_len : 50;
                     if (len > (int)sizeof(state->p25_p1_voice_err_hist)) {
@@ -151,7 +157,9 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
                 read_sdrtrunk_json_format(opts, state);
             } else if (state->mbe_file_type > 0) //ambe files
             {
-                readAmbe2450Data(opts, state, ambe_d);
+                if (readAmbe2450Data(opts, state, ambe_d) != 0) {
+                    break;
+                }
                 int x;
                 unsigned long long int k;
                 if (state->K != 0) //apply Pr key
@@ -167,15 +175,21 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
 
                 //ambe+2
                 if (state->mbe_file_type == 1) {
-                    mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
+                    file_err_str[0] = '\0';
+                    mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, file_err_str,
                                              ambe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced,
                                              opts->uvquality);
+                    strncpy(state->err_str, file_err_str, sizeof(state->err_str) - 1);
+                    state->err_str[sizeof(state->err_str) - 1] = '\0';
                 }
                 //dstar ambe
                 if (state->mbe_file_type == 2) {
-                    mbe_processAmbe2400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
+                    file_err_str[0] = '\0';
+                    mbe_processAmbe2400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, file_err_str,
                                              ambe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced,
                                              opts->uvquality);
+                    strncpy(state->err_str, file_err_str, sizeof(state->err_str) - 1);
+                    state->err_str[sizeof(state->err_str) - 1] = '\0';
                 }
 
                 if (opts->audio_out == 1 && opts->floating_point == 0) {

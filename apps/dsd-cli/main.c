@@ -31,6 +31,7 @@
 #include <dsd-neo/protocol/provoice/provoice_const.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #include <dsd-neo/runtime/bootstrap.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -50,6 +51,12 @@ main(int argc, char** argv) {
 
     initOpts(opts);
     initState(state);
+    if (exitflag != 0) {
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
 
     int exit_rc = 1;
     int bootstrap_rc = dsd_runtime_bootstrap(argc, argv, opts, state, NULL, &exit_rc);

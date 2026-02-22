@@ -275,8 +275,13 @@ readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
 
     int i, j, k;
     unsigned char b, x;
+    int c;
 
-    state->errs2 = fgetc(opts->mbe_in_f);
+    c = fgetc(opts->mbe_in_f);
+    if (c == EOF) {
+        return (1);
+    }
+    state->errs2 = c;
     state->errs = state->errs2;
 
     k = 0;
@@ -285,10 +290,11 @@ readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
     }
     x = 0;
     for (i = 0; i < 11; i++) {
-        b = fgetc(opts->mbe_in_f);
-        if (feof(opts->mbe_in_f)) {
+        c = fgetc(opts->mbe_in_f);
+        if (c == EOF) {
             return (1);
         }
+        b = (unsigned char)c;
         for (j = 0; j < 8; j++) {
             imbe_d[k] = (b & 128) >> 7;
 
@@ -330,8 +336,13 @@ readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
 
     int i, j, k;
     unsigned char b, x;
+    int c;
 
-    state->errs2 = fgetc(opts->mbe_in_f);
+    c = fgetc(opts->mbe_in_f);
+    if (c == EOF) {
+        return (1);
+    }
+    state->errs2 = c;
     state->errs = state->errs2;
 
     k = 0;
@@ -342,10 +353,11 @@ readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
     x = 0;
     for (i = 0; i < 6; i++) //breaks backwards compatablilty with 6 files
     {
-        b = fgetc(opts->mbe_in_f);
-        if (feof(opts->mbe_in_f)) {
+        c = fgetc(opts->mbe_in_f);
+        if (c == EOF) {
             return (1);
         }
+        b = (unsigned char)c;
         for (j = 0; j < 8; j++) {
             ambe_d[k] = (b & 128) >> 7;
 
@@ -366,7 +378,11 @@ readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
     if (opts->payload == 1) {
         fprintf(stderr, " err = [%X] [%X] ", state->errs, state->errs2);
     }
-    b = fgetc(opts->mbe_in_f);
+    c = fgetc(opts->mbe_in_f);
+    if (c == EOF) {
+        return (1);
+    }
+    b = (unsigned char)c;
     ambe_d[48] = (b & 1);
     if (dsd_frame_log_enabled(opts)) {
         unsigned long long ambe = convert_bits_into_output((uint8_t*)ambe_d, 49);

@@ -14,6 +14,7 @@
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/shutdown.h>
 #include <mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -524,6 +525,25 @@ initState(dsd_state* state) {
     state->cur_mp2 = malloc(sizeof(mbe_parms));
     state->prev_mp2 = malloc(sizeof(mbe_parms));
     state->prev_mp_enhanced2 = malloc(sizeof(mbe_parms));
+
+    if (state->cur_mp == NULL || state->prev_mp == NULL || state->prev_mp_enhanced == NULL || state->cur_mp2 == NULL
+        || state->prev_mp2 == NULL || state->prev_mp_enhanced2 == NULL) {
+        LOG_ERROR("memory allocation failure for mbelib vocoder state\n");
+        free(state->cur_mp);
+        state->cur_mp = NULL;
+        free(state->prev_mp);
+        state->prev_mp = NULL;
+        free(state->prev_mp_enhanced);
+        state->prev_mp_enhanced = NULL;
+        free(state->cur_mp2);
+        state->cur_mp2 = NULL;
+        free(state->prev_mp2);
+        state->prev_mp2 = NULL;
+        free(state->prev_mp_enhanced2);
+        state->prev_mp_enhanced2 = NULL;
+        dsd_request_shutdown(NULL, NULL);
+        return;
+    }
 
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     mbe_initMbeParms(state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2);

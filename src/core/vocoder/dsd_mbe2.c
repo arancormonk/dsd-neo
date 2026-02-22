@@ -32,6 +32,22 @@
 
 //using soft_demod will also allow for not compiling mbelib and also using a DVstick in the future
 
+static void
+save_ambe2450_x2(dsd_opts* opts, dsd_state* state, char ambe_d[49]) {
+    /*
+     * X2 exports both timeslots into opts->mbe_out_f, but slot-2 decode
+     * error stats are tracked in errs2R.
+     */
+    int saved_errs2 = state->errs2;
+
+    if (state->currentslot == 1) {
+        state->errs2 = state->errs2R;
+    }
+
+    saveAmbe2450Data(opts, state, ambe_d);
+    state->errs2 = saved_errs2;
+}
+
 //P25p1 IMBE 7200 or AMBE+2 EFR
 void
 soft_demod_imbe7200(dsd_state* state, char imbe_fr7200[8][23], char imbe_d[88]) {
@@ -76,13 +92,32 @@ soft_demod_ambe_dstar(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], cha
 //AMBE+2 One Shot (X2-TDMA)
 void
 soft_demod_ambe_x2(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], char ambe_d[49]) {
+    mbe_parms* cur_mp = state->cur_mp;
+    mbe_parms* prev_mp = state->prev_mp;
+    mbe_parms* prev_mp_enhanced = state->prev_mp_enhanced;
+    int* errs = &state->errs;
+    int* errs2 = &state->errs2;
+    char* err_str = state->err_str;
+
+    if (state->currentslot == 1) {
+        cur_mp = state->cur_mp2;
+        prev_mp = state->prev_mp2;
+        prev_mp_enhanced = state->prev_mp_enhanced2;
+        errs = &state->errsR;
+        errs2 = &state->errs2R;
+        err_str = state->err_strR;
+    }
+
     /*
      * Avoid mbe_processAmbe3600x2450Framef():
      * - Demodulate/ECC explicitly and then decode via mbe_processAmbe2450Dataf(), which is exported.
      */
-    soft_demod_ambe2_ehr(state, ambe_fr, ambe_d);
-    mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
-                             state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+    *errs = mbe_eccAmbe3600x2450C0(ambe_fr);
+    *errs2 = *errs;
+    mbe_demodulateAmbe3600x2450Data(ambe_fr);
+    *errs2 += mbe_eccAmbe3600x2450Data(ambe_fr, ambe_d);
+    mbe_processAmbe2450Dataf(state->audio_out_temp_buf, errs, errs2, err_str, ambe_d, cur_mp, prev_mp, prev_mp_enhanced,
+                             opts->uvquality);
     if (opts->floating_point == 1) {
         memcpy(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
     } else {
@@ -195,7 +230,7 @@ soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][
         }
 
         if (opts->mbe_out_f != NULL) {
-            saveAmbe2450Data(opts, state, ambe_d);
+            save_ambe2450_x2(opts, state, ambe_d);
         }
     }
 
