@@ -774,6 +774,14 @@ target_include_directories(dsd-neo_test_p25_p1_heuristics_ring PRIVATE ${PROJECT
 target_link_libraries(dsd-neo_test_p25_p1_heuristics_ring PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P1_HEURISTICS_RING COMMAND dsd-neo_test_p25_p1_heuristics_ring)
 
+# P25 P1 IMBE audio playback dispatch matrix
+add_executable(dsd-neo_test_p25_p1_audio_dispatch
+  protocol/p25/test_p25_p1_audio_dispatch.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_audio_dispatch.c
+)
+target_include_directories(dsd-neo_test_p25_p1_audio_dispatch PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME P25_P1_AUDIO_DISPATCH COMMAND dsd-neo_test_p25_p1_audio_dispatch)
+
 # (Optional) DMR Tier III MBC smoke test is disabled by default.
 # Enable locally if needed.
 # add_executable(dsd-neo_test_dmr_mbc protocol/dmr/test_mbc.c)

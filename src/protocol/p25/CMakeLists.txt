@@ -16,6 +16,7 @@ target_sources(dsd-neo_proto_p25 PRIVATE
   p25_test_shim.c
   p25_test_lcw_shim.c
   phase1/p25p1_hdu.c
+  phase1/p25p1_audio_dispatch.c
   phase1/p25p1_ldu.c
   phase1/p25p1_ldu1.c
   phase1/p25p1_ldu2.c

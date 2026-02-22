@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
 /**
  * @file
  * @brief P25 Phase 1 Logical Data Unit helpers.
@@ -22,6 +26,17 @@
  * stream.
  */
 void process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count);
+
+/**
+ * Dispatch one decoded P25p1 IMBE voice frame to the active audio output path.
+ *
+ * Selects the matching playback function from:
+ * - short mono/stereo
+ * - float mono/stereo
+ *
+ * based on `opts->floating_point` and `opts->pulse_digi_out_channels`.
+ */
+void p25p1_play_imbe_audio(dsd_opts* opts, dsd_state* state);
 
 /**
  * Reads an hex word, its parity bits and attempts to error correct it using the Hamming FEC.
