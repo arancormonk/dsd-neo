@@ -29,6 +29,10 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
+#if defined(_WIN32) && !defined(S_ISREG)
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+
 // ---- Visibility/predicate functions ----
 
 bool

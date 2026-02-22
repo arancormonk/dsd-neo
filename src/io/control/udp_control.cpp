@@ -71,7 +71,7 @@ static DSD_THREAD_RETURN_TYPE
 #endif
     udp_thread_fn(void* arg) {
     udp_control* ctrl = (udp_control*)arg;
-    int n;
+    int n = 0;
     unsigned char buffer[5];
     struct sockaddr_in serv_addr;
 
