@@ -24,6 +24,8 @@
 
 #include <dsd-neo/dsp/p25p1_heuristics.h>
 
+enum { DSD_P25_P2_AUDIO_RING_DEPTH = 4 };
+
 /* Forward declaration for mbelib decoder state (opaque in public API). */
 struct mbe_parameters;
 typedef struct mbe_parameters mbe_parms;
@@ -568,8 +570,8 @@ struct dsd_state {
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
     int p25_p2_audio_allowed[2];
     // P25p2 small output jitter buffers (per-slot ring of decoded 20 ms frames)
-    // Depth 3 per checklist to bound latency (~60 ms max)
-    float p25_p2_audio_ring[2][3][160];
+    // Depth DSD_P25_P2_AUDIO_RING_DEPTH to match drain behavior (~80 ms max at depth=4)
+    float p25_p2_audio_ring[2][DSD_P25_P2_AUDIO_RING_DEPTH][160];
     int p25_p2_audio_ring_head[2]; // pop index
     int p25_p2_audio_ring_tail[2]; // push index
     int p25_p2_audio_ring_count[2];

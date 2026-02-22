@@ -6,7 +6,7 @@
 /*
  * P25p2 audio jitter ring helpers:
  * - reset clears head/tail/count and zeroes frames
- * - push/pop maintain FIFO order for up to 3 frames
+ * - push/pop maintain FIFO order for up to 4 frames
  * - overflow drops the oldest frame (bounded latency)
  * - pop from empty returns zeros and 0 status.
  */
@@ -54,11 +54,13 @@ main(void) {
     float f1[160];
     float f2[160];
     float f3[160];
+    float f4[160];
     for (int i = 0; i < 160; i++) {
         f0[i] = 10.0f + (float)i;
         f1[i] = 20.0f + (float)i;
         f2[i] = 30.0f + (float)i;
         f3[i] = 40.0f + (float)i;
+        f4[i] = 50.0f + (float)i;
     }
 
     p25_p2_audio_ring_reset(&st, 0);
@@ -67,23 +69,29 @@ main(void) {
     rc |= expect_int("push f0", p25_p2_audio_ring_push(&st, 0, f0), 1);
     rc |= expect_int("push f1", p25_p2_audio_ring_push(&st, 0, f1), 1);
     rc |= expect_int("push f2", p25_p2_audio_ring_push(&st, 0, f2), 1);
-    rc |= expect_int("count after 3 pushes", st.p25_p2_audio_ring_count[0], 3);
+    rc |= expect_int("push f3", p25_p2_audio_ring_push(&st, 0, f3), 1);
+    rc |= expect_int("count after 4 pushes", st.p25_p2_audio_ring_count[0], 4);
 
     float out[160];
     memset(out, 0, sizeof out);
     rc |= expect_int("pop f0 ok", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f0 frame", out, f0);
-    rc |= expect_int("count after pop1", st.p25_p2_audio_ring_count[0], 2);
+    rc |= expect_int("count after pop1", st.p25_p2_audio_ring_count[0], 3);
 
     memset(out, 0, sizeof out);
     rc |= expect_int("pop f1 ok", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f1 frame", out, f1);
-    rc |= expect_int("count after pop2", st.p25_p2_audio_ring_count[0], 1);
+    rc |= expect_int("count after pop2", st.p25_p2_audio_ring_count[0], 2);
 
     memset(out, 0, sizeof out);
     rc |= expect_int("pop f2 ok", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f2 frame", out, f2);
-    rc |= expect_int("count after pop3", st.p25_p2_audio_ring_count[0], 0);
+    rc |= expect_int("count after pop3", st.p25_p2_audio_ring_count[0], 1);
+
+    memset(out, 0, sizeof out);
+    rc |= expect_int("pop f3 ok", p25_p2_audio_ring_pop(&st, 0, out), 1);
+    rc |= expect_frame("pop f3 frame", out, f3);
+    rc |= expect_int("count after pop4", st.p25_p2_audio_ring_count[0], 0);
 
     /* Pop from empty should return 0 and zero-fill out buffer. */
     for (int i = 0; i < 160; i++) {
@@ -98,15 +106,16 @@ main(void) {
         }
     }
 
-    /* Overflow: push 4 frames; ring keeps last 3 (f1,f2,f3). */
+    /* Overflow: push 5 frames; ring keeps last 4 (f1,f2,f3,f4). */
     p25_p2_audio_ring_reset(&st, 0);
     rc |= expect_int("reset slot0 count (2)", st.p25_p2_audio_ring_count[0], 0);
 
     p25_p2_audio_ring_push(&st, 0, f0);
     p25_p2_audio_ring_push(&st, 0, f1);
     p25_p2_audio_ring_push(&st, 0, f2);
-    p25_p2_audio_ring_push(&st, 0, f3); /* should evict f0 */
-    rc |= expect_int("count after overflow pushes", st.p25_p2_audio_ring_count[0], 3);
+    p25_p2_audio_ring_push(&st, 0, f3);
+    p25_p2_audio_ring_push(&st, 0, f4); /* should evict f0 */
+    rc |= expect_int("count after overflow pushes", st.p25_p2_audio_ring_count[0], 4);
 
     memset(out, 0, sizeof out);
     rc |= expect_int("pop f1 ok (overflow)", p25_p2_audio_ring_pop(&st, 0, out), 1);
@@ -119,6 +128,10 @@ main(void) {
     memset(out, 0, sizeof out);
     rc |= expect_int("pop f3 ok (overflow)", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f3 frame (overflow)", out, f3);
+
+    memset(out, 0, sizeof out);
+    rc |= expect_int("pop f4 ok (overflow)", p25_p2_audio_ring_pop(&st, 0, out), 1);
+    rc |= expect_frame("pop f4 frame (overflow)", out, f4);
     rc |= expect_int("count after draining overflow", st.p25_p2_audio_ring_count[0], 0);
 
     return rc;

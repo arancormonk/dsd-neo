@@ -295,6 +295,11 @@ target_include_directories(dsd-neo_test_runtime_control_pump PRIVATE ${PROJECT_S
 target_link_libraries(dsd-neo_test_runtime_control_pump PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_CONTROL_PUMP COMMAND dsd-neo_test_runtime_control_pump)
 
+add_executable(dsd-neo_test_runtime_p25_p2_audio_ring runtime/test_runtime_p25_p2_audio_ring.c)
+target_include_directories(dsd-neo_test_runtime_p25_p2_audio_ring PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_p25_p2_audio_ring PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_P25_P2_AUDIO_RING COMMAND dsd-neo_test_runtime_p25_p2_audio_ring)
+
 add_executable(dsd-neo_test_ui_hotkeys_regression
   ui/test_ui_hotkeys_regression.c
   ${PROJECT_SOURCE_DIR}/src/ui/terminal/dsd_ncurses_handler.c)

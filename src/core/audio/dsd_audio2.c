@@ -781,7 +781,7 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     }
 
     if (opts->use_hpf_d == 1) {
-        hpf_dL(state, state->s_l, len);
+        hpf_dL(state, mono_samp, (int)len);
     }
 
     if (opts->audio_out == 1) {
@@ -1759,38 +1759,27 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
         if (opts->audio_out_type == 0) //Pulse Audio
         {
             for (j = 0; j < 18; j++) {
-                if (memcmp(empty, stereo_sf[j], sizeof(empty))
-                    != 0) { //may not work as intended because its stereo and one will have something in it most likely
-                    write_s16_audio(opts, stereo_sf[j], 160);
-                }
+                write_s16_audio(opts, stereo_sf[j], 160);
             }
         }
 
         if (opts->audio_out_type == 8) //UDP Audio
         {
             for (j = 0; j < 18; j++) {
-                if (memcmp(empty, stereo_sf[j], sizeof(empty))
-                    != 0) { //may not work as intended because its stereo and one will have something in it most likely
-                    dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), stereo_sf[j]);
-                }
+                dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), stereo_sf[j]);
             }
         }
 
         if (opts->audio_out_type == 1) {
             for (j = 0; j < 18; j++) {
-                if (memcmp(empty, stereo_sf[j], sizeof(empty))
-                    != 0) { //may not work as intended because its stereo and one will have something in it most likely
-                    write_audio_out(opts->audio_out_fd, stereo_sf[j], (size_t)320u * sizeof(short));
-                }
+                write_audio_out(opts->audio_out_fd, stereo_sf[j], (size_t)320u * sizeof(short));
             }
         }
     }
 
     if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
         for (j = 0; j < 18; j++) {
-            if (memcmp(empty, stereo_sf[j], sizeof(empty)) != 0) {
-                sf_write_short(opts->wav_out_f, stereo_sf[j], 320);
-            }
+            sf_write_short(opts->wav_out_f, stereo_sf[j], 320);
         }
     }
 
