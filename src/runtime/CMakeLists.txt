@@ -5,6 +5,7 @@ target_sources(dsd-neo_runtime PRIVATE
   state_ext.c
   config.cpp
   config_user.cpp
+  config_user_validation.cpp
   config_schema.c
   decode_mode.c
   config_expand.c
