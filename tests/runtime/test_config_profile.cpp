@@ -484,6 +484,45 @@ test_profile_rtl_settings(void) {
 }
 
 static int
+test_profile_invalid_int_uses_legacy_zero_fallback(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"rtl\"\n"
+                             "rtl_gain = 30\n"
+                             "\n"
+                             "[profile.invalid_gain]\n"
+                             "input.rtl_gain = \"invalid\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    int rc = dsd_user_config_load_profile(path, "invalid_gain", &cfg);
+
+    int result = 0;
+    if (rc != 0) {
+        fprintf(stderr, "FAIL: load with invalid_gain profile failed (rc=%d)\n", rc);
+        result = 1;
+    }
+    if (cfg.input_source != DSDCFG_INPUT_RTL) {
+        fprintf(stderr, "FAIL: expected rtl source, got %d\n", cfg.input_source);
+        result = 1;
+    }
+    if (cfg.rtl_gain != 0) {
+        fprintf(stderr, "FAIL: expected invalid profile rtl_gain to fall back to 0, got %d\n", cfg.rtl_gain);
+        result = 1;
+    }
+
+    (void)remove(path);
+    return result;
+}
+
+static int
 test_include_directive(void) {
     /* Create included file first */
     static const char* included_ini = "version = 1\n"
@@ -640,6 +679,7 @@ main(void) {
     rc |= test_list_profiles();
     rc |= test_list_profiles_empty();
     rc |= test_profile_rtl_settings();
+    rc |= test_profile_invalid_int_uses_legacy_zero_fallback();
     rc |= test_include_directive();
     rc |= test_include_override();
 
