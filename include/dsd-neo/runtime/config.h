@@ -528,9 +528,9 @@ void dsd_neo_config_init(const dsd_opts* opts);
  * @brief Get immutable pointer to the current runtime configuration, or NULL if
  * initialization has not been performed.
  *
- * Thread-safety: returns a thread-local snapshot copy of the last published
- * config. The returned pointer remains valid until the next call to
- * `dsd_neo_get_config()` on the same thread.
+ * Thread-safety: returns a process-wide immutable snapshot pointer. The
+ * returned pointer remains valid for the process lifetime and may be shared
+ * across threads. Call again to observe newer published snapshots.
  *
  * @return Pointer to config or NULL.
  */

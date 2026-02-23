@@ -10,9 +10,11 @@
  * config with expected defaults and range checks.
  */
 
+#include <cmath>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -42,7 +44,7 @@ expect_long_eq(long actual, long expected, int rc, const char* name) {
 
 static int
 expect_double_close(double actual, double expected, double tol, int rc, const char* name) {
-    if (fabs(actual - expected) > tol) {
+    if (std::fabs(actual - expected) > tol) {
         fprintf(stderr, "FAIL(%d): %s expected %.9g got %.9g (tol=%.9g)\n", rc, name, expected, actual, tol);
         return rc;
     }
@@ -2105,6 +2107,164 @@ test_dsp_misc_env(void) {
     return 0;
 }
 
+struct cfg_ptr_thread_ctx {
+    const dsdneoRuntimeConfig* cfg;
+};
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    cfg_ptr_thread_fn(void* arg) {
+    struct cfg_ptr_thread_ctx* ctx = (struct cfg_ptr_thread_ctx*)arg;
+    if (ctx) {
+        ctx->cfg = dsd_neo_get_config();
+    }
+    DSD_THREAD_RETURN;
+}
+
+static int
+test_config_pointer_process_stable(void) {
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int rc = expect(cfg != NULL, 1660, "cfg NULL");
+    if (rc != 0) {
+        return rc;
+    }
+
+    struct cfg_ptr_thread_ctx ctx;
+    ctx.cfg = NULL;
+    dsd_thread_t thread;
+    rc = expect_int_eq(dsd_thread_create(&thread, cfg_ptr_thread_fn, &ctx), 0, 1661, "thread create");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(dsd_thread_join(thread), 0, 1662, "thread join");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect(ctx.cfg != NULL, 1663, "thread cfg NULL");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect(ctx.cfg == cfg, 1664, "config pointer should be process-stable");
+    if (rc != 0) {
+        return rc;
+    }
+
+    return 0;
+}
+
+static int
+test_config_snapshot_republish_reuse(void) {
+    unset_all_runtime_env();
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* base = dsd_neo_get_config();
+    int rc = expect(base != NULL, 1670, "base cfg NULL");
+    if (rc != 0) {
+        return rc;
+    }
+
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* base_repeat = dsd_neo_get_config();
+    rc = expect(base_repeat == base, 1671, "identical reparse should reuse snapshot");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_C4FM_CLK", "1", 1);
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* clk1 = dsd_neo_get_config();
+    rc = expect(clk1 != NULL, 1672, "clk1 cfg NULL");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect(clk1 != base, 1673, "changed env should publish new snapshot");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(clk1->c4fm_clk_is_set, 1, 1674, "c4fm_clk_is_set (1)");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(clk1->c4fm_clk_mode, 1, 1675, "c4fm_clk_mode (1)");
+    if (rc != 0) {
+        return rc;
+    }
+
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* clk1_repeat = dsd_neo_get_config();
+    rc = expect(clk1_repeat == clk1, 1676, "repeat parse should reuse c4fm=1 snapshot");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_C4FM_CLK", "2", 1);
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* clk2 = dsd_neo_get_config();
+    rc = expect(clk2 != clk1, 1677, "c4fm=2 should publish distinct snapshot");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(clk2->c4fm_clk_mode, 2, 1678, "c4fm_clk_mode (2)");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_C4FM_CLK", "1", 1);
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* clk1_again = dsd_neo_get_config();
+    rc = expect(clk1_again == clk1, 1679, "reused prior c4fm=1 snapshot");
+    if (rc != 0) {
+        return rc;
+    }
+
+    unsetenv("DSD_NEO_C4FM_CLK");
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* base_again = dsd_neo_get_config();
+    rc = expect(base_again == base, 1680, "reused prior default snapshot");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(base_again->c4fm_clk_is_set, 0, 1681, "c4fm_clk_is_set (unset)");
+    if (rc != 0) {
+        return rc;
+    }
+
+    return 0;
+}
+
+static int
+test_config_snapshot_republish_reuse_with_nan(void) {
+    unset_all_runtime_env();
+
+    setenv("DSD_NEO_DMR_HANGTIME", "nan", 1);
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* nan_cfg = dsd_neo_get_config();
+    int rc = expect(nan_cfg != NULL, 1682, "nan cfg NULL");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(nan_cfg->dmr_hangtime_is_set, 1, 1683, "dmr_hangtime_is_set (nan)");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect(std::isnan(nan_cfg->dmr_hangtime_s), 1684, "dmr_hangtime_s should be NaN");
+    if (rc != 0) {
+        return rc;
+    }
+
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* nan_repeat = dsd_neo_get_config();
+    rc = expect(nan_repeat == nan_cfg, 1685, "nan-valued config should reuse snapshot");
+    if (rc != 0) {
+        return rc;
+    }
+
+    unsetenv("DSD_NEO_DMR_HANGTIME");
+    return 0;
+}
+
 int
 main(void) {
     unset_all_runtime_env();
@@ -2249,6 +2409,18 @@ main(void) {
         return rc;
     }
     rc = test_dsp_misc_env();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_config_pointer_process_stable();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_config_snapshot_republish_reuse();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_config_snapshot_republish_reuse_with_nan();
     if (rc != 0) {
         return rc;
     }

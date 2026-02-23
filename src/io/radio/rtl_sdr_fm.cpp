@@ -233,7 +233,6 @@ struct RtlSdrInternals {
     struct input_ring_state* input_ring;
     struct udp_control** udp_ctrl_ptr;
     const dsd_opts* opts; /* snapshot for mode hints (P25p1/2, etc.) */
-    const dsdneoRuntimeConfig* cfg;
     /* Cooperative shutdown flag for threads launched by this stream */
     std::atomic<int> should_exit;
 };
@@ -823,7 +822,7 @@ static DSD_THREAD_RETURN_TYPE
             continue;
         }
         if (!ag_initialized) {
-            const dsdneoRuntimeConfig* cfg = (g_stream && g_stream->cfg) ? g_stream->cfg : dsd_neo_get_config();
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
             if (cfg) {
                 g_tuner_autogain_on.store(cfg->tuner_autogain_enable ? 1 : 0, std::memory_order_relaxed);
                 s_probe_ms = cfg->tuner_autogain_probe_ms;
@@ -1601,7 +1600,7 @@ static DSD_THREAD_RETURN_TYPE
             /* rtl_tcp: keep fs/4 + combine-rotate path consistent with USB defaults */
             want = 0;
         }
-        const dsdneoRuntimeConfig* cfg = (g_stream && g_stream->cfg) ? g_stream->cfg : dsd_neo_get_config();
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         if (cfg && cfg->rtl_offset_tuning_is_set) {
             want = cfg->rtl_offset_tuning_enable ? 1 : 0;
         }
@@ -2702,7 +2701,6 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         g_stream->input_ring = &input_ring;
         g_stream->udp_ctrl_ptr = &g_udp_ctrl;
         g_stream->opts = opts;
-        g_stream->cfg = dsd_neo_get_config();
         g_stream->should_exit.store(0);
     }
 

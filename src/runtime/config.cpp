@@ -12,14 +12,13 @@
  */
 
 #include <atomic>
+#include <cmath>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <limits.h>
-#include <math.h>
 #include <mutex>
-#include <shared_mutex>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,18 +27,315 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-static dsdneoRuntimeConfig g_config;
-// Guard config writes/reads; readers copy into a thread-local snapshot.
-static std::shared_timed_mutex g_config_mu;
-// Bumps on each publish to let readers skip lock/copy when unchanged.
-static std::atomic<uint64_t> g_config_generation{0};
-static std::atomic<int> g_config_inited{0};
+struct config_snapshot_node {
+    dsdneoRuntimeConfig cfg;
+    struct config_snapshot_node* next;
+};
+
+/* Publish-side lock and append-only snapshot list.
+ * Snapshots are intentionally retained for process lifetime because the API
+ * returns raw pointers that callers may cache and share across threads.
+ * To avoid growth on repeated republishes of identical values, publishing
+ * reuses any matching existing snapshot. */
+static std::mutex g_config_mu;
+static struct config_snapshot_node* g_config_head = NULL;
+static struct config_snapshot_node* g_config_tail = NULL;
+static std::atomic<const dsdneoRuntimeConfig*> g_config_active{NULL};
+
+template <typename T>
+static inline bool
+config_scalar_equals(const T& lhs, const T& rhs) {
+    return lhs == rhs;
+}
+
+static inline bool
+config_scalar_equals(float lhs, float rhs) {
+    return lhs == rhs || (std::isnan(lhs) && std::isnan(rhs));
+}
+
+static inline bool
+config_scalar_equals(double lhs, double rhs) {
+    return lhs == rhs || (std::isnan(lhs) && std::isnan(rhs));
+}
+
+/* Keep this in sync with dsdneoRuntimeConfig in config.h.
+ * Explicit field comparison avoids struct-wide memcmp on padded objects. */
+static inline bool
+config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig& rhs) {
+#define CONFIG_EQ_FIELD(name)                                                                                          \
+    do {                                                                                                               \
+        if (!config_scalar_equals(lhs.name, rhs.name)) {                                                               \
+            return false;                                                                                              \
+        }                                                                                                              \
+    } while (0)
+#define CONFIG_EQ_ARRAY(name)                                                                                          \
+    do {                                                                                                               \
+        if (memcmp(lhs.name, rhs.name, sizeof(lhs.name)) != 0) {                                                       \
+            return false;                                                                                              \
+        }                                                                                                              \
+    } while (0)
+    CONFIG_EQ_FIELD(dmr_hangtime_s);
+    CONFIG_EQ_FIELD(dmr_grant_timeout_s);
+    CONFIG_EQ_FIELD(p25_hangtime_s);
+    CONFIG_EQ_FIELD(p25_grant_timeout_s);
+    CONFIG_EQ_FIELD(p25_cc_grace_s);
+    CONFIG_EQ_FIELD(p25_vc_grace_s);
+    CONFIG_EQ_FIELD(p25_ring_hold_s);
+    CONFIG_EQ_FIELD(p25_mac_hold_s);
+    CONFIG_EQ_FIELD(p25_voice_hold_s);
+    CONFIG_EQ_FIELD(p25_min_follow_dwell_s);
+    CONFIG_EQ_FIELD(p25_grant_voice_to_s);
+    CONFIG_EQ_FIELD(p25_retune_backoff_s);
+    CONFIG_EQ_FIELD(p25_force_release_extra_s);
+    CONFIG_EQ_FIELD(p25_force_release_margin_s);
+    CONFIG_EQ_FIELD(p25p1_err_hold_pct);
+    CONFIG_EQ_FIELD(p25p1_err_hold_s);
+    CONFIG_EQ_FIELD(input_warn_db);
+    CONFIG_EQ_FIELD(tuner_autogain_seed_db);
+    CONFIG_EQ_FIELD(tuner_autogain_spec_snr_db);
+    CONFIG_EQ_FIELD(tuner_autogain_inband_ratio);
+    CONFIG_EQ_FIELD(tuner_autogain_up_step_db);
+    CONFIG_EQ_FIELD(auto_ppm_snr_db);
+    CONFIG_EQ_FIELD(auto_ppm_pwr_db);
+    CONFIG_EQ_FIELD(auto_ppm_zerolock_ppm);
+    CONFIG_EQ_FIELD(costas_loop_bw);
+    CONFIG_EQ_FIELD(costas_damping);
+    CONFIG_EQ_FIELD(dmr_t3_step_hz);
+    CONFIG_EQ_FIELD(dmr_t3_cc_freq_hz);
+    CONFIG_EQ_FIELD(dmr_t3_cc_lcn);
+    CONFIG_EQ_FIELD(dmr_t3_start_lcn);
+    CONFIG_EQ_FIELD(rt_sched_is_set);
+    CONFIG_EQ_FIELD(rt_sched_enable);
+    CONFIG_EQ_FIELD(rt_prio_usb_is_set);
+    CONFIG_EQ_FIELD(rt_prio_usb);
+    CONFIG_EQ_FIELD(rt_prio_dongle_is_set);
+    CONFIG_EQ_FIELD(rt_prio_dongle);
+    CONFIG_EQ_FIELD(rt_prio_demod_is_set);
+    CONFIG_EQ_FIELD(rt_prio_demod);
+    CONFIG_EQ_FIELD(cpu_usb_is_set);
+    CONFIG_EQ_FIELD(cpu_usb);
+    CONFIG_EQ_FIELD(cpu_dongle_is_set);
+    CONFIG_EQ_FIELD(cpu_dongle);
+    CONFIG_EQ_FIELD(cpu_demod_is_set);
+    CONFIG_EQ_FIELD(cpu_demod);
+    CONFIG_EQ_FIELD(ftz_daz_is_set);
+    CONFIG_EQ_FIELD(ftz_daz_enable);
+    CONFIG_EQ_FIELD(no_bootstrap_is_set);
+    CONFIG_EQ_FIELD(no_bootstrap_enable);
+    CONFIG_EQ_FIELD(debug_sync_is_set);
+    CONFIG_EQ_FIELD(debug_sync_enable);
+    CONFIG_EQ_FIELD(debug_cqpsk_is_set);
+    CONFIG_EQ_FIELD(debug_cqpsk_enable);
+    CONFIG_EQ_FIELD(cqpsk_is_set);
+    CONFIG_EQ_FIELD(cqpsk_enable);
+    CONFIG_EQ_FIELD(cqpsk_sync_inv_is_set);
+    CONFIG_EQ_FIELD(cqpsk_sync_inv);
+    CONFIG_EQ_FIELD(cqpsk_sync_neg_is_set);
+    CONFIG_EQ_FIELD(cqpsk_sync_neg);
+    CONFIG_EQ_FIELD(sync_warmstart_is_set);
+    CONFIG_EQ_FIELD(sync_warmstart_enable);
+    CONFIG_EQ_FIELD(dmr_hangtime_is_set);
+    CONFIG_EQ_FIELD(dmr_grant_timeout_is_set);
+    CONFIG_EQ_FIELD(p25_hangtime_is_set);
+    CONFIG_EQ_FIELD(p25_grant_timeout_is_set);
+    CONFIG_EQ_FIELD(p25_cc_grace_is_set);
+    CONFIG_EQ_FIELD(p25_vc_grace_is_set);
+    CONFIG_EQ_FIELD(p25_ring_hold_is_set);
+    CONFIG_EQ_FIELD(p25_mac_hold_is_set);
+    CONFIG_EQ_FIELD(p25_voice_hold_is_set);
+    CONFIG_EQ_FIELD(p25_wd_ms_is_set);
+    CONFIG_EQ_FIELD(p25_wd_ms);
+    CONFIG_EQ_FIELD(p25_min_follow_dwell_is_set);
+    CONFIG_EQ_FIELD(p25_grant_voice_to_is_set);
+    CONFIG_EQ_FIELD(p25_retune_backoff_is_set);
+    CONFIG_EQ_FIELD(p25_force_release_extra_is_set);
+    CONFIG_EQ_FIELD(p25_force_release_margin_is_set);
+    CONFIG_EQ_FIELD(p25p1_err_hold_pct_is_set);
+    CONFIG_EQ_FIELD(p25p1_err_hold_s_is_set);
+    CONFIG_EQ_FIELD(p25p1_soft_erasure_thresh_is_set);
+    CONFIG_EQ_FIELD(p25p1_soft_erasure_thresh);
+    CONFIG_EQ_FIELD(p25p2_soft_erasure_thresh_is_set);
+    CONFIG_EQ_FIELD(p25p2_soft_erasure_thresh);
+    CONFIG_EQ_FIELD(input_volume_is_set);
+    CONFIG_EQ_FIELD(input_volume_multiplier);
+    CONFIG_EQ_FIELD(input_warn_db_is_set);
+    CONFIG_EQ_FIELD(dmr_t3_calc_csv_is_set);
+    CONFIG_EQ_FIELD(dmr_t3_step_hz_is_set);
+    CONFIG_EQ_FIELD(dmr_t3_cc_freq_is_set);
+    CONFIG_EQ_FIELD(dmr_t3_cc_lcn_is_set);
+    CONFIG_EQ_FIELD(dmr_t3_start_lcn_is_set);
+    CONFIG_EQ_FIELD(dmr_t3_heur_is_set);
+    CONFIG_EQ_FIELD(dmr_t3_heur_enable);
+    CONFIG_EQ_FIELD(config_path_is_set);
+    CONFIG_EQ_FIELD(cache_dir_is_set);
+    CONFIG_EQ_FIELD(cc_cache_is_set);
+    CONFIG_EQ_FIELD(cc_cache_enable);
+    CONFIG_EQ_FIELD(tcp_bufsz_is_set);
+    CONFIG_EQ_FIELD(tcp_bufsz_bytes);
+    CONFIG_EQ_FIELD(tcp_waitall_is_set);
+    CONFIG_EQ_FIELD(tcp_waitall_enable);
+    CONFIG_EQ_FIELD(tcp_autotune_is_set);
+    CONFIG_EQ_FIELD(tcp_autotune_enable);
+    CONFIG_EQ_FIELD(tcp_stats_is_set);
+    CONFIG_EQ_FIELD(tcp_stats_enable);
+    CONFIG_EQ_FIELD(tcp_max_timeouts_is_set);
+    CONFIG_EQ_FIELD(tcp_max_timeouts);
+    CONFIG_EQ_FIELD(tcp_rcvbuf_is_set);
+    CONFIG_EQ_FIELD(tcp_rcvbuf_bytes);
+    CONFIG_EQ_FIELD(tcp_rcvtimeo_is_set);
+    CONFIG_EQ_FIELD(tcp_rcvtimeo_ms);
+    CONFIG_EQ_FIELD(rigctl_rcvtimeo_is_set);
+    CONFIG_EQ_FIELD(rigctl_rcvtimeo_ms);
+    CONFIG_EQ_FIELD(tcp_prebuf_ms_is_set);
+    CONFIG_EQ_FIELD(tcp_prebuf_ms);
+    CONFIG_EQ_FIELD(rtl_agc_is_set);
+    CONFIG_EQ_FIELD(rtl_agc_enable);
+    CONFIG_EQ_FIELD(rtl_direct_is_set);
+    CONFIG_EQ_FIELD(rtl_direct_mode);
+    CONFIG_EQ_FIELD(rtl_offset_tuning_is_set);
+    CONFIG_EQ_FIELD(rtl_offset_tuning_enable);
+    CONFIG_EQ_FIELD(rtl_xtal_hz_is_set);
+    CONFIG_EQ_FIELD(rtl_xtal_hz);
+    CONFIG_EQ_FIELD(tuner_xtal_hz_is_set);
+    CONFIG_EQ_FIELD(tuner_xtal_hz);
+    CONFIG_EQ_FIELD(rtl_testmode_is_set);
+    CONFIG_EQ_FIELD(rtl_testmode_enable);
+    CONFIG_EQ_FIELD(rtl_if_gains_is_set);
+    CONFIG_EQ_FIELD(tuner_bw_hz_is_set);
+    CONFIG_EQ_FIELD(tuner_bw_hz);
+    CONFIG_EQ_FIELD(tuner_autogain_is_set);
+    CONFIG_EQ_FIELD(tuner_autogain_enable);
+    CONFIG_EQ_FIELD(tuner_autogain_probe_ms_is_set);
+    CONFIG_EQ_FIELD(tuner_autogain_probe_ms);
+    CONFIG_EQ_FIELD(tuner_autogain_seed_db_is_set);
+    CONFIG_EQ_FIELD(tuner_autogain_spec_snr_db_is_set);
+    CONFIG_EQ_FIELD(tuner_autogain_inband_ratio_is_set);
+    CONFIG_EQ_FIELD(tuner_autogain_up_step_db_is_set);
+    CONFIG_EQ_FIELD(tuner_autogain_up_persist_is_set);
+    CONFIG_EQ_FIELD(tuner_autogain_up_persist);
+    CONFIG_EQ_FIELD(auto_ppm_is_set);
+    CONFIG_EQ_FIELD(auto_ppm_enable);
+    CONFIG_EQ_FIELD(auto_ppm_snr_db_is_set);
+    CONFIG_EQ_FIELD(auto_ppm_pwr_db_is_set);
+    CONFIG_EQ_FIELD(auto_ppm_zerolock_ppm_is_set);
+    CONFIG_EQ_FIELD(auto_ppm_zerolock_hz_is_set);
+    CONFIG_EQ_FIELD(auto_ppm_zerolock_hz);
+    CONFIG_EQ_FIELD(auto_ppm_freeze_is_set);
+    CONFIG_EQ_FIELD(auto_ppm_freeze_enable);
+    CONFIG_EQ_FIELD(combine_rot_is_set);
+    CONFIG_EQ_FIELD(combine_rot);
+    CONFIG_EQ_FIELD(upsample_fp_is_set);
+    CONFIG_EQ_FIELD(upsample_fp);
+    CONFIG_EQ_FIELD(resamp_is_set);
+    CONFIG_EQ_FIELD(resamp_disable);
+    CONFIG_EQ_FIELD(resamp_target_hz);
+    CONFIG_EQ_FIELD(fll_is_set);
+    CONFIG_EQ_FIELD(fll_enable);
+    CONFIG_EQ_FIELD(fll_alpha_is_set);
+    CONFIG_EQ_FIELD(fll_alpha);
+    CONFIG_EQ_FIELD(fll_beta_is_set);
+    CONFIG_EQ_FIELD(fll_beta);
+    CONFIG_EQ_FIELD(fll_deadband_is_set);
+    CONFIG_EQ_FIELD(fll_deadband);
+    CONFIG_EQ_FIELD(fll_slew_is_set);
+    CONFIG_EQ_FIELD(fll_slew_max);
+    CONFIG_EQ_FIELD(costas_bw_is_set);
+    CONFIG_EQ_FIELD(costas_damping_is_set);
+    CONFIG_EQ_FIELD(ted_is_set);
+    CONFIG_EQ_FIELD(ted_enable);
+    CONFIG_EQ_FIELD(ted_gain_is_set);
+    CONFIG_EQ_FIELD(ted_gain);
+    CONFIG_EQ_FIELD(ted_force_is_set);
+    CONFIG_EQ_FIELD(ted_force);
+    CONFIG_EQ_FIELD(c4fm_clk_is_set);
+    CONFIG_EQ_FIELD(c4fm_clk_mode);
+    CONFIG_EQ_FIELD(c4fm_clk_sync_is_set);
+    CONFIG_EQ_FIELD(c4fm_clk_sync);
+    CONFIG_EQ_FIELD(deemph_is_set);
+    CONFIG_EQ_FIELD(deemph_mode);
+    CONFIG_EQ_FIELD(audio_lpf_is_set);
+    CONFIG_EQ_FIELD(audio_lpf_disable);
+    CONFIG_EQ_FIELD(audio_lpf_cutoff_hz);
+    CONFIG_EQ_FIELD(mt_is_set);
+    CONFIG_EQ_FIELD(mt_enable);
+    CONFIG_EQ_FIELD(fs4_shift_disable_is_set);
+    CONFIG_EQ_FIELD(fs4_shift_disable);
+    CONFIG_EQ_FIELD(output_clear_on_retune_is_set);
+    CONFIG_EQ_FIELD(output_clear_on_retune);
+    CONFIG_EQ_FIELD(retune_drain_ms_is_set);
+    CONFIG_EQ_FIELD(retune_drain_ms);
+    CONFIG_EQ_FIELD(tcpin_backoff_ms_is_set);
+    CONFIG_EQ_FIELD(tcpin_backoff_ms);
+    CONFIG_EQ_FIELD(window_freeze_is_set);
+    CONFIG_EQ_FIELD(window_freeze);
+    CONFIG_EQ_FIELD(pdu_json_is_set);
+    CONFIG_EQ_FIELD(pdu_json_enable);
+    CONFIG_EQ_FIELD(snr_sql_is_set);
+    CONFIG_EQ_FIELD(snr_sql_db);
+    CONFIG_EQ_FIELD(fm_agc_is_set);
+    CONFIG_EQ_FIELD(fm_agc_enable);
+    CONFIG_EQ_FIELD(fm_agc_target_is_set);
+    CONFIG_EQ_FIELD(fm_agc_target_rms);
+    CONFIG_EQ_FIELD(fm_agc_min_is_set);
+    CONFIG_EQ_FIELD(fm_agc_min_rms);
+    CONFIG_EQ_FIELD(fm_agc_alpha_up_is_set);
+    CONFIG_EQ_FIELD(fm_agc_alpha_up);
+    CONFIG_EQ_FIELD(fm_agc_alpha_down_is_set);
+    CONFIG_EQ_FIELD(fm_agc_alpha_down);
+    CONFIG_EQ_FIELD(fm_limiter_is_set);
+    CONFIG_EQ_FIELD(fm_limiter_enable);
+    CONFIG_EQ_FIELD(iq_dc_block_is_set);
+    CONFIG_EQ_FIELD(iq_dc_block_enable);
+    CONFIG_EQ_FIELD(iq_dc_shift_is_set);
+    CONFIG_EQ_FIELD(iq_dc_shift);
+    CONFIG_EQ_FIELD(channel_lpf_is_set);
+    CONFIG_EQ_FIELD(channel_lpf_enable);
+    CONFIG_EQ_ARRAY(dmr_t3_calc_csv);
+    CONFIG_EQ_ARRAY(config_path);
+    CONFIG_EQ_ARRAY(cache_dir);
+    CONFIG_EQ_ARRAY(rtl_if_gains);
+#undef CONFIG_EQ_FIELD
+#undef CONFIG_EQ_ARRAY
+    return true;
+}
+
+static inline struct config_snapshot_node*
+find_matching_snapshot_locked(const dsdneoRuntimeConfig& cfg) {
+    for (struct config_snapshot_node* node = g_config_head; node; node = node->next) {
+        if (config_snapshot_equals(node->cfg, cfg)) {
+            return node;
+        }
+    }
+    return NULL;
+}
 
 static inline void
 publish_config_locked(const dsdneoRuntimeConfig& cfg) {
-    g_config = cfg;
-    g_config_generation.fetch_add(1, std::memory_order_release);
-    g_config_inited.store(1, std::memory_order_release);
+    const dsdneoRuntimeConfig* active = g_config_active.load(std::memory_order_acquire);
+    if (active && config_snapshot_equals(*active, cfg)) {
+        return;
+    }
+
+    struct config_snapshot_node* matched = find_matching_snapshot_locked(cfg);
+    if (matched) {
+        g_config_active.store(&matched->cfg, std::memory_order_release);
+        return;
+    }
+
+    struct config_snapshot_node* node = static_cast<struct config_snapshot_node*>(malloc(sizeof(*node)));
+    if (!node) {
+        return;
+    }
+    node->cfg = cfg;
+    node->next = NULL;
+
+    if (g_config_tail) {
+        g_config_tail->next = node;
+    } else {
+        g_config_head = node;
+    }
+    g_config_tail = node;
+    g_config_active.store(&node->cfg, std::memory_order_release);
 }
 
 /**
@@ -398,7 +694,7 @@ dsd_neo_config_init(const dsd_opts* opts) {
         char* end = NULL;
         double v = strtod(t3ccf, &end);
         if (end != t3ccf) {
-            long hz = (v < 1e5) ? (long)llround(v * 1000000.0) : (long)llround(v);
+            long hz = (v < 1e5) ? (long)std::llround(v * 1000000.0) : (long)std::llround(v);
             if (hz > 0) {
                 c.dmr_t3_cc_freq_hz = hz;
                 c.dmr_t3_cc_freq_is_set = 1;
@@ -785,7 +1081,7 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.channel_lpf_enable = c.channel_lpf_is_set ? atoi(clpf) : 0;
 
     {
-        std::unique_lock<std::shared_timed_mutex> lk(g_config_mu);
+        std::lock_guard<std::mutex> lk(g_config_mu);
         publish_config_locked(c);
     }
 }
@@ -798,20 +1094,7 @@ dsd_neo_config_init(const dsd_opts* opts) {
  */
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
-    if (!g_config_inited.load(std::memory_order_acquire)) {
-        return NULL;
-    }
-
-    static thread_local dsdneoRuntimeConfig tls_cfg;
-    static thread_local uint64_t tls_generation = UINT64_MAX;
-
-    const uint64_t generation = g_config_generation.load(std::memory_order_acquire);
-    if (tls_generation != generation) {
-        std::shared_lock<std::shared_timed_mutex> lk(g_config_mu);
-        tls_cfg = g_config;
-        tls_generation = g_config_generation.load(std::memory_order_relaxed);
-    }
-    return &tls_cfg;
+    return g_config_active.load(std::memory_order_acquire);
 }
 
 extern "C" void
@@ -834,48 +1117,51 @@ dsd_neo_env_get(const char* name) {
 /* Runtime control for C4FM clock assist (0=off, 1=EL, 2=MM). */
 extern "C" void
 dsd_neo_set_c4fm_clk(int mode) {
-    std::unique_lock<std::shared_timed_mutex> lk(g_config_mu);
-    if (!g_config_inited.load(std::memory_order_relaxed)) {
-        g_config = dsdneoRuntimeConfig{};
-    }
+    std::lock_guard<std::mutex> lk(g_config_mu);
     if (mode < 0) {
         return;
     }
     if (mode > 2) {
         mode = 0;
     }
-    g_config.c4fm_clk_is_set = 1;
-    g_config.c4fm_clk_mode = mode;
-    g_config_generation.fetch_add(1, std::memory_order_release);
-    g_config_inited.store(1, std::memory_order_release);
+
+    dsdneoRuntimeConfig next{};
+    const dsdneoRuntimeConfig* cur = g_config_active.load(std::memory_order_acquire);
+    if (cur) {
+        next = *cur;
+    }
+    next.c4fm_clk_is_set = 1;
+    next.c4fm_clk_mode = mode;
+    publish_config_locked(next);
 }
 
 extern "C" int
 dsd_neo_get_c4fm_clk(void) {
-    if (!g_config_inited.load(std::memory_order_acquire)) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
         return 0;
     }
-    std::shared_lock<std::shared_timed_mutex> lk(g_config_mu);
-    return g_config.c4fm_clk_is_set ? g_config.c4fm_clk_mode : 0;
+    return cfg->c4fm_clk_is_set ? cfg->c4fm_clk_mode : 0;
 }
 
 extern "C" void
 dsd_neo_set_c4fm_clk_sync(int enable) {
-    std::unique_lock<std::shared_timed_mutex> lk(g_config_mu);
-    if (!g_config_inited.load(std::memory_order_relaxed)) {
-        g_config = dsdneoRuntimeConfig{};
+    std::lock_guard<std::mutex> lk(g_config_mu);
+    dsdneoRuntimeConfig next{};
+    const dsdneoRuntimeConfig* cur = g_config_active.load(std::memory_order_acquire);
+    if (cur) {
+        next = *cur;
     }
-    g_config.c4fm_clk_sync_is_set = 1;
-    g_config.c4fm_clk_sync = enable ? 1 : 0;
-    g_config_generation.fetch_add(1, std::memory_order_release);
-    g_config_inited.store(1, std::memory_order_release);
+    next.c4fm_clk_sync_is_set = 1;
+    next.c4fm_clk_sync = enable ? 1 : 0;
+    publish_config_locked(next);
 }
 
 extern "C" int
 dsd_neo_get_c4fm_clk_sync(void) {
-    if (!g_config_inited.load(std::memory_order_acquire)) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
         return 0;
     }
-    std::shared_lock<std::shared_timed_mutex> lk(g_config_mu);
-    return g_config.c4fm_clk_sync_is_set ? (g_config.c4fm_clk_sync ? 1 : 0) : 0;
+    return cfg->c4fm_clk_sync_is_set ? (cfg->c4fm_clk_sync ? 1 : 0) : 0;
 }
