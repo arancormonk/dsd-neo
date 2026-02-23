@@ -11,12 +11,15 @@
  * an immutable accessor. Intended to be called early during application init.
  */
 
+#include <atomic>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <limits.h>
 #include <math.h>
+#include <mutex>
+#include <shared_mutex>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,7 +29,18 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static dsdneoRuntimeConfig g_config;
-static int g_config_inited = 0;
+// Guard config writes/reads; readers copy into a thread-local snapshot.
+static std::shared_timed_mutex g_config_mu;
+// Bumps on each publish to let readers skip lock/copy when unchanged.
+static std::atomic<uint64_t> g_config_generation{0};
+static std::atomic<int> g_config_inited{0};
+
+static inline void
+publish_config_locked(const dsdneoRuntimeConfig& cfg) {
+    g_config = cfg;
+    g_config_generation.fetch_add(1, std::memory_order_release);
+    g_config_inited.store(1, std::memory_order_release);
+}
 
 /**
  * @brief Check whether an environment string is set and non-empty.
@@ -770,8 +784,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.channel_lpf_is_set = env_is_set(clpf);
     c.channel_lpf_enable = c.channel_lpf_is_set ? atoi(clpf) : 0;
 
-    g_config = c;
-    g_config_inited = 1;
+    {
+        std::unique_lock<std::shared_timed_mutex> lk(g_config_mu);
+        publish_config_locked(c);
+    }
 }
 
 /**
@@ -782,7 +798,20 @@ dsd_neo_config_init(const dsd_opts* opts) {
  */
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
-    return g_config_inited ? &g_config : NULL;
+    if (!g_config_inited.load(std::memory_order_acquire)) {
+        return NULL;
+    }
+
+    static thread_local dsdneoRuntimeConfig tls_cfg;
+    static thread_local uint64_t tls_generation = UINT64_MAX;
+
+    const uint64_t generation = g_config_generation.load(std::memory_order_acquire);
+    if (tls_generation != generation) {
+        std::shared_lock<std::shared_timed_mutex> lk(g_config_mu);
+        tls_cfg = g_config;
+        tls_generation = g_config_generation.load(std::memory_order_relaxed);
+    }
+    return &tls_cfg;
 }
 
 extern "C" void
@@ -805,41 +834,48 @@ dsd_neo_env_get(const char* name) {
 /* Runtime control for C4FM clock assist (0=off, 1=EL, 2=MM). */
 extern "C" void
 dsd_neo_set_c4fm_clk(int mode) {
-    if (!g_config_inited) {
+    std::unique_lock<std::shared_timed_mutex> lk(g_config_mu);
+    if (!g_config_inited.load(std::memory_order_relaxed)) {
         g_config = dsdneoRuntimeConfig{};
-        g_config_inited = 1;
     }
-    if (mode >= 0) {
-        if (mode > 2) {
-            mode = 0;
-        }
-        g_config.c4fm_clk_is_set = 1;
-        g_config.c4fm_clk_mode = mode;
+    if (mode < 0) {
+        return;
     }
+    if (mode > 2) {
+        mode = 0;
+    }
+    g_config.c4fm_clk_is_set = 1;
+    g_config.c4fm_clk_mode = mode;
+    g_config_generation.fetch_add(1, std::memory_order_release);
+    g_config_inited.store(1, std::memory_order_release);
 }
 
 extern "C" int
 dsd_neo_get_c4fm_clk(void) {
-    if (!g_config_inited) {
+    if (!g_config_inited.load(std::memory_order_acquire)) {
         return 0;
     }
+    std::shared_lock<std::shared_timed_mutex> lk(g_config_mu);
     return g_config.c4fm_clk_is_set ? g_config.c4fm_clk_mode : 0;
 }
 
 extern "C" void
 dsd_neo_set_c4fm_clk_sync(int enable) {
-    if (!g_config_inited) {
+    std::unique_lock<std::shared_timed_mutex> lk(g_config_mu);
+    if (!g_config_inited.load(std::memory_order_relaxed)) {
         g_config = dsdneoRuntimeConfig{};
-        g_config_inited = 1;
     }
     g_config.c4fm_clk_sync_is_set = 1;
     g_config.c4fm_clk_sync = enable ? 1 : 0;
+    g_config_generation.fetch_add(1, std::memory_order_release);
+    g_config_inited.store(1, std::memory_order_release);
 }
 
 extern "C" int
 dsd_neo_get_c4fm_clk_sync(void) {
-    if (!g_config_inited) {
+    if (!g_config_inited.load(std::memory_order_acquire)) {
         return 0;
     }
+    std::shared_lock<std::shared_timed_mutex> lk(g_config_mu);
     return g_config.c4fm_clk_sync_is_set ? (g_config.c4fm_clk_sync ? 1 : 0) : 0;
 }

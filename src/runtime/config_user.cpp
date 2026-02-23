@@ -92,6 +92,39 @@ close_frame_log_handle(dsd_opts* opts) {
     opts->frame_log_f = NULL;
 }
 
+typedef struct {
+    dsdneoUserDecodeMode mode;
+    const char* value;
+} decode_mode_name_map_t;
+
+typedef struct {
+    const char* alias;
+    dsdneoUserDecodeMode mode;
+} decode_mode_alias_map_t;
+
+static const decode_mode_name_map_t k_decode_mode_names[] = {
+    {DSDCFG_MODE_AUTO, "auto"},         {DSDCFG_MODE_P25P1, "p25p1"},   {DSDCFG_MODE_P25P2, "p25p2"},
+    {DSDCFG_MODE_DMR, "dmr"},           {DSDCFG_MODE_NXDN48, "nxdn48"}, {DSDCFG_MODE_NXDN96, "nxdn96"},
+    {DSDCFG_MODE_X2TDMA, "x2tdma"},     {DSDCFG_MODE_YSF, "ysf"},       {DSDCFG_MODE_DSTAR, "dstar"},
+    {DSDCFG_MODE_EDACS_PV, "edacs_pv"}, {DSDCFG_MODE_DPMR, "dpmr"},     {DSDCFG_MODE_M17, "m17"},
+    {DSDCFG_MODE_TDMA, "tdma"},         {DSDCFG_MODE_ANALOG, "analog"},
+};
+
+static const decode_mode_alias_map_t k_decode_mode_aliases[] = {
+    {"p25p1_only", DSDCFG_MODE_P25P1},  {"p25p2_only", DSDCFG_MODE_P25P2},      {"edacs", DSDCFG_MODE_EDACS_PV},
+    {"provoice", DSDCFG_MODE_EDACS_PV}, {"analog_monitor", DSDCFG_MODE_ANALOG},
+};
+
+static const char*
+decode_mode_to_ini_name(dsdneoUserDecodeMode mode) {
+    for (size_t i = 0; i < sizeof(k_decode_mode_names) / sizeof(k_decode_mode_names[0]); i++) {
+        if (k_decode_mode_names[i].mode == mode) {
+            return k_decode_mode_names[i].value;
+        }
+    }
+    return NULL;
+}
+
 int
 user_config_parse_decode_mode_value(const char* val, dsdneoUserDecodeMode* out_mode, int* used_compat_alias) {
     if (!val || !*val || !out_mode) {
@@ -101,90 +134,22 @@ user_config_parse_decode_mode_value(const char* val, dsdneoUserDecodeMode* out_m
         *used_compat_alias = 0;
     }
 
-    if (dsd_strcasecmp(val, "auto") == 0) {
-        *out_mode = DSDCFG_MODE_AUTO;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "p25p1") == 0) {
-        *out_mode = DSDCFG_MODE_P25P1;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "p25p1_only") == 0) {
-        *out_mode = DSDCFG_MODE_P25P1;
-        if (used_compat_alias) {
-            *used_compat_alias = 1;
+    for (size_t i = 0; i < sizeof(k_decode_mode_names) / sizeof(k_decode_mode_names[0]); i++) {
+        if (dsd_strcasecmp(val, k_decode_mode_names[i].value) == 0) {
+            *out_mode = k_decode_mode_names[i].mode;
+            return 0;
         }
-        return 0;
     }
-    if (dsd_strcasecmp(val, "p25p2") == 0) {
-        *out_mode = DSDCFG_MODE_P25P2;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "p25p2_only") == 0) {
-        *out_mode = DSDCFG_MODE_P25P2;
-        if (used_compat_alias) {
-            *used_compat_alias = 1;
+    for (size_t i = 0; i < sizeof(k_decode_mode_aliases) / sizeof(k_decode_mode_aliases[0]); i++) {
+        if (dsd_strcasecmp(val, k_decode_mode_aliases[i].alias) == 0) {
+            *out_mode = k_decode_mode_aliases[i].mode;
+            if (used_compat_alias) {
+                *used_compat_alias = 1;
+            }
+            return 0;
         }
-        return 0;
     }
-    if (dsd_strcasecmp(val, "dmr") == 0) {
-        *out_mode = DSDCFG_MODE_DMR;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "nxdn48") == 0) {
-        *out_mode = DSDCFG_MODE_NXDN48;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "nxdn96") == 0) {
-        *out_mode = DSDCFG_MODE_NXDN96;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "x2tdma") == 0) {
-        *out_mode = DSDCFG_MODE_X2TDMA;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "ysf") == 0) {
-        *out_mode = DSDCFG_MODE_YSF;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "dstar") == 0) {
-        *out_mode = DSDCFG_MODE_DSTAR;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "edacs_pv") == 0) {
-        *out_mode = DSDCFG_MODE_EDACS_PV;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "edacs") == 0 || dsd_strcasecmp(val, "provoice") == 0) {
-        *out_mode = DSDCFG_MODE_EDACS_PV;
-        if (used_compat_alias) {
-            *used_compat_alias = 1;
-        }
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "dpmr") == 0) {
-        *out_mode = DSDCFG_MODE_DPMR;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "m17") == 0) {
-        *out_mode = DSDCFG_MODE_M17;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "tdma") == 0) {
-        *out_mode = DSDCFG_MODE_TDMA;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "analog") == 0) {
-        *out_mode = DSDCFG_MODE_ANALOG;
-        return 0;
-    }
-    if (dsd_strcasecmp(val, "analog_monitor") == 0) {
-        *out_mode = DSDCFG_MODE_ANALOG;
-        if (used_compat_alias) {
-            *used_compat_alias = 1;
-        }
-        return 0;
-    }
+
     return -1;
 }
 
@@ -194,6 +159,138 @@ user_config_is_mode_decode_key(const char* section, const char* key) {
         return 0;
     }
     return dsd_strcasecmp(section, "mode") == 0 && dsd_strcasecmp(key, "decode") == 0;
+}
+
+static void
+copy_token_string(char* dst, size_t dst_size, const char* src) {
+    if (!dst || dst_size == 0) {
+        return;
+    }
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    snprintf(dst, dst_size, "%s", src);
+    dst[dst_size - 1] = '\0';
+}
+
+static size_t
+split_colon_tokens(char* scratch, size_t scratch_size, const char* in, char** out_tokens, size_t max_tokens) {
+    if (!scratch || scratch_size == 0 || !in || !out_tokens || max_tokens == 0) {
+        return 0;
+    }
+
+    snprintf(scratch, scratch_size, "%.*s", (int)(scratch_size - 1), in);
+    scratch[scratch_size - 1] = '\0';
+
+    size_t count = 0;
+    char* save = NULL;
+    for (char* tok = dsd_strtok_r(scratch, ":", &save); tok && count < max_tokens;
+         tok = dsd_strtok_r(NULL, ":", &save)) {
+        out_tokens[count++] = tok;
+    }
+    return count;
+}
+
+static void
+snapshot_apply_live_rtl_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    if (!opts || !cfg) {
+        return;
+    }
+
+    cfg->rtl_gain = opts->rtl_gain_value;
+    cfg->rtl_ppm = opts->rtlsdr_ppm_error;
+    cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;
+    cfg->rtl_sql = (int)local_pwr_to_dB(opts->rtl_squelch_level);
+    cfg->rtl_volume = opts->rtl_volume_multiplier;
+    if (opts->rtlsdr_center_freq > 0) {
+        snprintf(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);
+        cfg->rtl_freq[sizeof cfg->rtl_freq - 1] = '\0';
+    }
+}
+
+static void
+snapshot_parse_rtl_device_spec(const char* audio_in_dev, dsdneoUserConfig* cfg) {
+    if (!audio_in_dev || !cfg) {
+        return;
+    }
+
+    char buf[1024];
+    char* tok[9] = {0};
+    size_t n = split_colon_tokens(buf, sizeof buf, audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
+    if (n > 1) {
+        cfg->rtl_device = atoi(tok[1]);
+    }
+    if (n > 2) {
+        copy_token_string(cfg->rtl_freq, sizeof cfg->rtl_freq, tok[2]);
+    }
+    if (n > 3) {
+        cfg->rtl_gain = atoi(tok[3]);
+    }
+    if (n > 4) {
+        cfg->rtl_ppm = atoi(tok[4]);
+    }
+    if (n > 5) {
+        cfg->rtl_bw_khz = atoi(tok[5]);
+    }
+    if (n > 6) {
+        cfg->rtl_sql = atoi(tok[6]);
+    }
+    if (n > 7) {
+        cfg->rtl_volume = atoi(tok[7]);
+    }
+}
+
+static void
+snapshot_parse_rtltcp_device_spec(const char* audio_in_dev, dsdneoUserConfig* cfg) {
+    if (!audio_in_dev || !cfg) {
+        return;
+    }
+
+    char buf[1024];
+    char* tok[10] = {0};
+    size_t n = split_colon_tokens(buf, sizeof buf, audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
+    if (n > 1) {
+        copy_token_string(cfg->rtltcp_host, sizeof cfg->rtltcp_host, tok[1]);
+    }
+    if (n > 2) {
+        cfg->rtltcp_port = atoi(tok[2]);
+    }
+    if (n > 3) {
+        copy_token_string(cfg->rtl_freq, sizeof cfg->rtl_freq, tok[3]);
+    }
+    if (n > 4) {
+        cfg->rtl_gain = atoi(tok[4]);
+    }
+    if (n > 5) {
+        cfg->rtl_ppm = atoi(tok[5]);
+    }
+    if (n > 6) {
+        cfg->rtl_bw_khz = atoi(tok[6]);
+    }
+    if (n > 7) {
+        cfg->rtl_sql = atoi(tok[7]);
+    }
+    if (n > 8) {
+        cfg->rtl_volume = atoi(tok[8]);
+    }
+}
+
+static void
+snapshot_parse_host_port_spec(const char* audio_in_dev, char* host, size_t host_size, int* port) {
+    if (!audio_in_dev || !host || host_size == 0 || !port) {
+        return;
+    }
+
+    char buf[512];
+    char* tok[4] = {0};
+    size_t n = split_colon_tokens(buf, sizeof buf, audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
+    if (n > 1) {
+        copy_token_string(host, host_size, tok[1]);
+    }
+    if (n > 2) {
+        *port = atoi(tok[2]);
+    }
 }
 
 static void
@@ -438,22 +535,9 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
 
     if (cfg->has_mode) {
         fprintf(out, "[mode]\n");
-        switch (cfg->decode_mode) {
-            case DSDCFG_MODE_AUTO: fprintf(out, "decode = \"auto\"\n"); break;
-            case DSDCFG_MODE_P25P1: fprintf(out, "decode = \"p25p1\"\n"); break;
-            case DSDCFG_MODE_P25P2: fprintf(out, "decode = \"p25p2\"\n"); break;
-            case DSDCFG_MODE_DMR: fprintf(out, "decode = \"dmr\"\n"); break;
-            case DSDCFG_MODE_NXDN48: fprintf(out, "decode = \"nxdn48\"\n"); break;
-            case DSDCFG_MODE_NXDN96: fprintf(out, "decode = \"nxdn96\"\n"); break;
-            case DSDCFG_MODE_X2TDMA: fprintf(out, "decode = \"x2tdma\"\n"); break;
-            case DSDCFG_MODE_YSF: fprintf(out, "decode = \"ysf\"\n"); break;
-            case DSDCFG_MODE_DSTAR: fprintf(out, "decode = \"dstar\"\n"); break;
-            case DSDCFG_MODE_EDACS_PV: fprintf(out, "decode = \"edacs_pv\"\n"); break;
-            case DSDCFG_MODE_DPMR: fprintf(out, "decode = \"dpmr\"\n"); break;
-            case DSDCFG_MODE_M17: fprintf(out, "decode = \"m17\"\n"); break;
-            case DSDCFG_MODE_TDMA: fprintf(out, "decode = \"tdma\"\n"); break;
-            case DSDCFG_MODE_ANALOG: fprintf(out, "decode = \"analog\"\n"); break;
-            default: break;
+        const char* decode_name = decode_mode_to_ini_name(cfg->decode_mode);
+        if (decode_name) {
+            fprintf(out, "decode = \"%s\"\n", decode_name);
         }
         if (cfg->has_demod) {
             switch (cfg->demod_path) {
@@ -777,121 +861,18 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     cfg->has_input = 1;
     if (strncmp(opts->audio_in_dev, "rtl:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_RTL;
-        char buf[1024];
-        snprintf(buf, sizeof buf, "%.*s", (int)(sizeof buf - 1), opts->audio_in_dev);
-        buf[sizeof buf - 1] = '\0';
-        char* save = NULL;
-        char* tok = dsd_strtok_r(buf, ":", &save); // "rtl"
-        int idx = 0;
-        while (tok) {
-            if (idx == 1) {
-                cfg->rtl_device = atoi(tok);
-            } else if (idx == 2) {
-                snprintf(cfg->rtl_freq, sizeof cfg->rtl_freq, "%s", tok);
-                cfg->rtl_freq[sizeof cfg->rtl_freq - 1] = '\0';
-            } else if (idx == 3) {
-                cfg->rtl_gain = atoi(tok);
-            } else if (idx == 4) {
-                cfg->rtl_ppm = atoi(tok);
-            } else if (idx == 5) {
-                cfg->rtl_bw_khz = atoi(tok);
-            } else if (idx == 6) {
-                cfg->rtl_sql = atoi(tok);
-            } else if (idx == 7) {
-                cfg->rtl_volume = atoi(tok);
-            }
-            tok = dsd_strtok_r(NULL, ":", &save);
-            idx++;
-        }
-        // Override with live opts values for settings that can change at runtime
-        cfg->rtl_gain = opts->rtl_gain_value;
-        cfg->rtl_ppm = opts->rtlsdr_ppm_error;
-        cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;
-        cfg->rtl_sql = (int)local_pwr_to_dB(opts->rtl_squelch_level);
-        cfg->rtl_volume = opts->rtl_volume_multiplier;
-        // Update frequency from live value (stored as Hz in opts)
-        if (opts->rtlsdr_center_freq > 0) {
-            snprintf(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);
-            cfg->rtl_freq[sizeof cfg->rtl_freq - 1] = '\0';
-        }
+        snapshot_parse_rtl_device_spec(opts->audio_in_dev, cfg);
+        snapshot_apply_live_rtl_values(opts, cfg);
     } else if (strncmp(opts->audio_in_dev, "rtltcp:", 7) == 0) {
         cfg->input_source = DSDCFG_INPUT_RTLTCP;
-        char buf[1024];
-        snprintf(buf, sizeof buf, "%.*s", (int)(sizeof buf - 1), opts->audio_in_dev);
-        buf[sizeof buf - 1] = '\0';
-        char* save = NULL;
-        char* tok = dsd_strtok_r(buf, ":", &save); // "rtltcp"
-        int idx = 0;
-        while (tok) {
-            if (idx == 1) {
-                snprintf(cfg->rtltcp_host, sizeof cfg->rtltcp_host, "%s", tok);
-                cfg->rtltcp_host[sizeof cfg->rtltcp_host - 1] = '\0';
-            } else if (idx == 2) {
-                cfg->rtltcp_port = atoi(tok);
-            } else if (idx == 3) {
-                snprintf(cfg->rtl_freq, sizeof cfg->rtl_freq, "%s", tok);
-                cfg->rtl_freq[sizeof cfg->rtl_freq - 1] = '\0';
-            } else if (idx == 4) {
-                cfg->rtl_gain = atoi(tok);
-            } else if (idx == 5) {
-                cfg->rtl_ppm = atoi(tok);
-            } else if (idx == 6) {
-                cfg->rtl_bw_khz = atoi(tok);
-            } else if (idx == 7) {
-                cfg->rtl_sql = atoi(tok);
-            } else if (idx == 8) {
-                cfg->rtl_volume = atoi(tok);
-            }
-            tok = dsd_strtok_r(NULL, ":", &save);
-            idx++;
-        }
-        // Override with live opts values for settings that can change at runtime
-        cfg->rtl_gain = opts->rtl_gain_value;
-        cfg->rtl_ppm = opts->rtlsdr_ppm_error;
-        cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;
-        cfg->rtl_sql = (int)local_pwr_to_dB(opts->rtl_squelch_level);
-        cfg->rtl_volume = opts->rtl_volume_multiplier;
-        // Update frequency from live value (stored as Hz in opts)
-        if (opts->rtlsdr_center_freq > 0) {
-            snprintf(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);
-            cfg->rtl_freq[sizeof cfg->rtl_freq - 1] = '\0';
-        }
+        snapshot_parse_rtltcp_device_spec(opts->audio_in_dev, cfg);
+        snapshot_apply_live_rtl_values(opts, cfg);
     } else if (strncmp(opts->audio_in_dev, "tcp:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_TCP;
-        char buf[512];
-        snprintf(buf, sizeof buf, "%.*s", (int)(sizeof buf - 1), opts->audio_in_dev);
-        buf[sizeof buf - 1] = '\0';
-        char* save = NULL;
-        char* tok = dsd_strtok_r(buf, ":", &save); // "tcp"
-        int idx = 0;
-        while (tok) {
-            if (idx == 1) {
-                snprintf(cfg->tcp_host, sizeof cfg->tcp_host, "%s", tok);
-                cfg->tcp_host[sizeof cfg->tcp_host - 1] = '\0';
-            } else if (idx == 2) {
-                cfg->tcp_port = atoi(tok);
-            }
-            tok = dsd_strtok_r(NULL, ":", &save);
-            idx++;
-        }
+        snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->tcp_host, sizeof cfg->tcp_host, &cfg->tcp_port);
     } else if (strncmp(opts->audio_in_dev, "udp:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_UDP;
-        char buf[512];
-        snprintf(buf, sizeof buf, "%.*s", (int)(sizeof buf - 1), opts->audio_in_dev);
-        buf[sizeof buf - 1] = '\0';
-        char* save = NULL;
-        char* tok = dsd_strtok_r(buf, ":", &save); // "udp"
-        int idx = 0;
-        while (tok) {
-            if (idx == 1) {
-                snprintf(cfg->udp_addr, sizeof cfg->udp_addr, "%s", tok);
-                cfg->udp_addr[sizeof cfg->udp_addr - 1] = '\0';
-            } else if (idx == 2) {
-                cfg->udp_port = atoi(tok);
-            }
-            tok = dsd_strtok_r(NULL, ":", &save);
-            idx++;
-        }
+        snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->udp_addr, sizeof cfg->udp_addr, &cfg->udp_port);
     } else if (strncmp(opts->audio_in_dev, "pulse", 5) == 0) {
         cfg->input_source = DSDCFG_INPUT_PULSE;
         const char* dev = NULL;
