@@ -11,5 +11,6 @@
 
 #include <dsd-neo/runtime/config.h>
 
+void user_cfg_reset(dsdneoUserConfig* cfg);
 int user_config_parse_decode_mode_value(const char* val, dsdneoUserDecodeMode* out_mode, int* used_compat_alias);
 int user_config_is_mode_decode_key(const char* section, const char* key);
