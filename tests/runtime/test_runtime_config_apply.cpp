@@ -54,7 +54,7 @@ main(void) {
     snprintf(opts.audio_out_dev, sizeof opts.audio_out_dev, "%s", "pulse");
     opts.audio_out_type = 0;
 
-    dsdneoUserConfig cfg;
+    dsdneoUserConfig cfg = {0};
     cfg.version = 1;
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_PULSE;
