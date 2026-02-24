@@ -17,6 +17,7 @@
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
 #ifdef USE_RADIO
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #include <dsd-neo/platform/platform.h>

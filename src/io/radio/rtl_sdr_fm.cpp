@@ -239,6 +239,56 @@ struct RtlSdrInternals {
 
 static struct RtlSdrInternals* g_stream = NULL;
 
+enum RadioSourceKind {
+    RADIO_SOURCE_RTL_USB = 0,
+    RADIO_SOURCE_RTL_TCP = 1,
+    RADIO_SOURCE_SOAPY = 2,
+};
+
+static RadioSourceKind
+detect_radio_source(const dsd_opts* opts) {
+    const char* dev = (opts) ? opts->audio_in_dev : NULL;
+    if (!dev) {
+        return RADIO_SOURCE_RTL_USB;
+    }
+    if ((strcmp(dev, "rtltcp") == 0) || (strncmp(dev, "rtltcp:", 7) == 0)) {
+        return RADIO_SOURCE_RTL_TCP;
+    }
+    if ((strcmp(dev, "soapy") == 0) || (strncmp(dev, "soapy:", 6) == 0)) {
+        return RADIO_SOURCE_SOAPY;
+    }
+    return RADIO_SOURCE_RTL_USB;
+}
+
+static int
+radio_source_is_rtltcp(const dsd_opts* opts) {
+    return detect_radio_source(opts) == RADIO_SOURCE_RTL_TCP;
+}
+
+static int
+radio_source_is_soapy(const dsd_opts* opts) {
+    return detect_radio_source(opts) == RADIO_SOURCE_SOAPY;
+}
+
+static const char*
+radio_source_soapy_args(const dsd_opts* opts) {
+    if (!radio_source_is_soapy(opts) || !opts) {
+        return "";
+    }
+    const char* colon = strchr(opts->audio_in_dev, ':');
+    if (!colon || colon[1] == '\0') {
+        return "";
+    }
+    return colon + 1;
+}
+
+static void
+log_unsupported_control_if_needed(const char* control_name, int rc) {
+    if (rc == DSD_ERR_NOT_SUPPORTED) {
+        LOG_NOTICE("%s unsupported by active radio backend.\n", control_name);
+    }
+}
+
 static inline int
 debug_cqpsk_enabled(void) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
@@ -804,7 +854,7 @@ static DSD_THREAD_RETURN_TYPE
     static int s_ag_up_step_db10 = 30;      /* up-step size in tenth-dB (default +3.0 dB) */
     static int s_ag_up_persist = 2;         /* require consecutive passes before stepping up */
     static int ag_spec_pass = 0;            /* persistence counter for spectral gate */
-    const int is_rtltcp_input = (g_stream && g_stream->opts && g_stream->opts->rtltcp_enabled) ? 1 : 0;
+    const int is_rtltcp_input = (g_stream && radio_source_is_rtltcp(g_stream->opts)) ? 1 : 0;
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Preserve rtltcp prebuffer: hold the consumer until cold start finishes. */
         if (is_rtltcp_input && !controller.cold_start_ready.load(std::memory_order_acquire)) {
@@ -1596,7 +1646,7 @@ static DSD_THREAD_RETURN_TYPE
        Respect explicit env override when provided. */
     {
         int want = 1;
-        if (g_stream && g_stream->opts && g_stream->opts->rtltcp_enabled) {
+        if (g_stream && radio_source_is_rtltcp(g_stream->opts)) {
             /* rtl_tcp: keep fs/4 + combine-rotate path consistent with USB defaults */
             want = 0;
         }
@@ -2456,7 +2506,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     /* Ensure async read uses a valid, explicit buffer length */
     dongle.buf_len = (uint32_t)ACTUAL_BUF_LENGTH;
 
-    if (opts && opts->rtltcp_enabled) {
+    RadioSourceKind source_kind = detect_radio_source(opts);
+    if (source_kind == RADIO_SOURCE_RTL_TCP) {
         int autotune = opts->rtltcp_autotune;
         if (!autotune) {
             const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
@@ -2473,6 +2524,24 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             LOG_INFO("Using rtl_tcp source %s:%d.\n", opts->rtltcp_hostname, opts->rtltcp_portno);
             rtl_device_print_offset_capability(rtl_device_handle);
         }
+    } else if (source_kind == RADIO_SOURCE_SOAPY) {
+        const char* soapy_args = radio_source_soapy_args(opts);
+        rtl_device_handle = rtl_device_create_soapy(soapy_args, &input_ring, combine_rotate_enabled);
+        if (!rtl_device_handle) {
+            if (soapy_args[0] != '\0') {
+                LOG_ERROR("Failed to open SoapySDR device with args: %s.\n", soapy_args);
+            } else {
+                LOG_ERROR("Failed to open SoapySDR device.\n");
+            }
+            return -1;
+        } else {
+            if (soapy_args[0] != '\0') {
+                LOG_INFO("Using SoapySDR source: %s.\n", soapy_args);
+            } else {
+                LOG_INFO("Using SoapySDR default source.\n");
+            }
+            rtl_device_print_offset_capability(rtl_device_handle);
+        }
     } else {
         rtl_device_handle = rtl_device_create(dongle.dev_index, &input_ring, combine_rotate_enabled);
         if (!rtl_device_handle) {
@@ -2487,7 +2556,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 
     /* Apply bias tee setting before other tuner config (USB via librtlsdr; rtl_tcp via protocol cmd 0x0E) */
     if (opts && opts->rtl_bias_tee) {
-        rtl_device_set_bias_tee(rtl_device_handle, 1);
+        int rc = rtl_device_set_bias_tee(rtl_device_handle, 1);
+        log_unsupported_control_if_needed("Bias tee control", rc);
     }
 
     /* Advanced RTL-SDR driver options via environment */
@@ -2496,25 +2566,37 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 
         if (cfg && cfg->rtl_direct_is_set) {
             int mode = cfg->rtl_direct_mode;
-            rtl_device_set_direct_sampling(rtl_device_handle, mode);
-            dongle.direct_sampling = mode;
+            int rc = rtl_device_set_direct_sampling(rtl_device_handle, mode);
+            if (rc == 0) {
+                dongle.direct_sampling = mode;
+            } else {
+                dongle.direct_sampling = 0;
+                log_unsupported_control_if_needed("Direct sampling control", rc);
+            }
         }
 
         if (cfg && cfg->rtl_offset_tuning_is_set) {
             int on = cfg->rtl_offset_tuning_enable ? 1 : 0;
-            rtl_device_set_offset_tuning_enabled(rtl_device_handle, on);
-            dongle.offset_tuning = on ? 1 : 0;
+            int rc = rtl_device_set_offset_tuning_enabled(rtl_device_handle, on);
+            if (rc == 0) {
+                dongle.offset_tuning = on ? 1 : 0;
+            } else {
+                dongle.offset_tuning = 0;
+                log_unsupported_control_if_needed("Offset tuning control", rc);
+            }
         }
 
         if (cfg && (cfg->rtl_xtal_hz_is_set || cfg->tuner_xtal_hz_is_set)) {
             uint32_t rtl_xtal_hz = cfg->rtl_xtal_hz_is_set ? (uint32_t)cfg->rtl_xtal_hz : 0U;
             uint32_t tuner_xtal_hz = cfg->tuner_xtal_hz_is_set ? (uint32_t)cfg->tuner_xtal_hz : 0U;
-            rtl_device_set_xtal_freq(rtl_device_handle, rtl_xtal_hz, tuner_xtal_hz);
+            int rc = rtl_device_set_xtal_freq(rtl_device_handle, rtl_xtal_hz, tuner_xtal_hz);
+            log_unsupported_control_if_needed("Xtal frequency control", rc);
         }
 
         if (cfg && cfg->rtl_testmode_is_set) {
             int on = cfg->rtl_testmode_enable ? 1 : 0;
-            rtl_device_set_testmode(rtl_device_handle, on);
+            int rc = rtl_device_set_testmode(rtl_device_handle, on);
+            log_unsupported_control_if_needed("Test mode control", rc);
         }
 
         if (cfg && cfg->rtl_if_gains_is_set && cfg->rtl_if_gains[0] != '\0') {
@@ -2553,7 +2635,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
                     gain_tenth = (abs(gi) > 90) ? gi : (gi * 10);
                 }
                 if (stage >= 0) {
-                    rtl_device_set_if_gain(rtl_device_handle, stage, gain_tenth);
+                    int rc = rtl_device_set_if_gain(rtl_device_handle, stage, gain_tenth);
+                    log_unsupported_control_if_needed("IF gain control", rc);
                 }
             }
         }
@@ -2625,12 +2708,18 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     }
 
     /* Set the tuner gain */
-    rtl_device_set_gain(rtl_device_handle, dongle.gain);
+    {
+        int rc = rtl_device_set_gain(rtl_device_handle, dongle.gain);
+        log_unsupported_control_if_needed("Gain control", rc);
+    }
     if (dongle.gain == AUTO_GAIN) {
         LOG_INFO("Setting RTL Autogain. \n");
     }
 
-    rtl_device_set_ppm(rtl_device_handle, dongle.ppm_error);
+    {
+        int rc = rtl_device_set_ppm(rtl_device_handle, dongle.ppm_error);
+        log_unsupported_control_if_needed("PPM correction control", rc);
+    }
 
     /* Prepare initial settings; controller thread will program the device. */
     if (controller.freq_len == 0) {
@@ -2639,7 +2728,11 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     }
     optimal_settings(controller.freqs[0], demod.rate_in);
     if (dongle.direct_sampling) {
-        rtl_device_set_direct_sampling(rtl_device_handle, 1);
+        int rc = rtl_device_set_direct_sampling(rtl_device_handle, 1);
+        if (rc != 0) {
+            dongle.direct_sampling = 0;
+            log_unsupported_control_if_needed("Direct sampling control", rc);
+        }
     }
     LOG_INFO("Oversampling input by: %ix.\n", (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1);
     LOG_INFO("Oversampling output by: %ix.\n", demod.post_downsample);
@@ -2706,7 +2799,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 
     /* For rtl_tcp sources, optionally prebuffer before starting demod/controller
        to reduce initial under-runs and jitter on the consumer side. */
-    if (opts && opts->rtltcp_enabled) {
+    if (radio_source_is_rtltcp(opts)) {
         int pre_ms = 1000; /* default deeper prebuffer for rtltcp */
         {
             const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
