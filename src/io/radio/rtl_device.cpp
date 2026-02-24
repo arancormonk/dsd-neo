@@ -478,7 +478,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
 }
 
 static size_t
-soapy_write_cs16_to_ring(struct rtl_device* s, const std::complex<int16_t>* src, size_t num_elems, int apply_rot) {
+soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_elems, int apply_rot) {
     if (!s || !s->input_ring || !src || num_elems == 0) {
         return 0;
     }
@@ -511,8 +511,9 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const std::complex<int16_t>* src,
         size_t src_idx = done / 2;
         if (w1_elems > 0) {
             for (size_t i = 0; i < w1_elems; i++) {
-                float i_in = (float)src[src_idx + i].real() * scale;
-                float q_in = (float)src[src_idx + i].imag() * scale;
+                size_t sample_idx = (src_idx + i) * 2;
+                float i_in = (float)src[sample_idx + 0] * scale;
+                float q_in = (float)src[sample_idx + 1] * scale;
                 if (apply_rot) {
                     apply_j4_rotation(i_in, q_in, phase, &p1[(i * 2) + 0], &p1[(i * 2) + 1]);
                     phase = (phase + 1) & 3;
@@ -525,8 +526,9 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const std::complex<int16_t>* src,
         src_idx += w1_elems;
         if (w2_elems > 0) {
             for (size_t i = 0; i < w2_elems; i++) {
-                float i_in = (float)src[src_idx + i].real() * scale;
-                float q_in = (float)src[src_idx + i].imag() * scale;
+                size_t sample_idx = (src_idx + i) * 2;
+                float i_in = (float)src[sample_idx + 0] * scale;
+                float q_in = (float)src[sample_idx + 1] * scale;
                 if (apply_rot) {
                     apply_j4_rotation(i_in, q_in, phase, &p2[(i * 2) + 0], &p2[(i * 2) + 1]);
                     phase = (phase + 1) & 3;
@@ -835,12 +837,12 @@ static DSD_THREAD_RETURN_TYPE
     }
 
     std::vector<std::complex<float>> cf32_buf;
-    std::vector<std::complex<int16_t>> cs16_buf;
+    std::vector<int16_t> cs16_buf;
     try {
         if (s->soapy_format == SOAPY_FMT_CF32) {
             cf32_buf.resize(mtu_elems);
         } else if (s->soapy_format == SOAPY_FMT_CS16) {
-            cs16_buf.resize(mtu_elems);
+            cs16_buf.resize(mtu_elems * 2);
         } else {
             fatal = 1;
         }

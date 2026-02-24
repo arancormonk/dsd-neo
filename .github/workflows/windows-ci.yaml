@@ -22,8 +22,6 @@ jobs:
       VCPKG_DEFAULT_TRIPLET: x64-windows-dynamic-release
       VCPKG_TARGET_TRIPLET: x64-windows-dynamic-release
       VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\vcpkg-triplets
-      # Enable vcpkg binary caching on GitHub Actions cache.
-      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
       # Enable sccache GitHub Actions backend.
       SCCACHE_GHA_ENABLED: "true"
     steps:
@@ -189,8 +187,6 @@ jobs:
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
       VCPKG_DEFAULT_TRIPLET: x64-mingw-dynamic-release
       VCPKG_TARGET_TRIPLET: x64-mingw-dynamic-release
-      # Enable vcpkg binary caching on GitHub Actions cache.
-      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
       # Enable sccache GitHub Actions backend.
       SCCACHE_GHA_ENABLED: "true"
       VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\vcpkg-triplets
