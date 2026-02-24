@@ -64,11 +64,6 @@ target_include_directories(dsd-neo_io_udp_control
 target_link_libraries(dsd-neo_io_udp_control PUBLIC dsd-neo_runtime)
 target_link_libraries(dsd-neo_io_udp_control PRIVATE dsd-neo_warnings)
 
-install(TARGETS dsd-neo_io_udp_control
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-
 # Control interfaces (rigctl, serial)
 add_library(dsd-neo_io_control)
 target_sources(dsd-neo_io_control PRIVATE
@@ -88,6 +83,11 @@ target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_core dsd-neo_dsp)
 
 # rtl_sdr_fm.cpp uses udp_control_*; ensure correct link propagation and ordering.
 if(RTLSDR_FOUND)
+  install(TARGETS dsd-neo_io_udp_control
+      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
   target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_io_udp_control)
   target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_io_radio)
 endif()
