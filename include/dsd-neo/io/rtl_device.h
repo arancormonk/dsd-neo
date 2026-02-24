@@ -54,6 +54,17 @@ struct rtl_device* rtl_device_create_tcp(const char* host, int port, struct inpu
                                          int combine_rotate_enabled, int autotune_enabled);
 
 /**
+ * @brief Create and initialize an RX source through SoapySDR.
+ *
+ * @param soapy_args Opaque Soapy device arguments string (may be empty).
+ * @param input_ring Pointer to input ring for incoming I/Q data.
+ * @param combine_rotate_enabled Whether to use combined rotate+widen where applicable.
+ * @return Pointer to rtl_device handle, or NULL on failure.
+ */
+struct rtl_device* rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring,
+                                           int combine_rotate_enabled);
+
+/**
  * @brief Destroy an RTL-SDR device and free resources.
  *
  * @param dev Pointer to rtl_device handle.

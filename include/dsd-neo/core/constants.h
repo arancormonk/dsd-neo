@@ -14,8 +14,11 @@
 #pragma once
 
 // Base I/O sample rates
-#define SAMPLE_RATE_IN  48000 // 48 kHz input
-#define SAMPLE_RATE_OUT 8000  // 8 kHz output
+#define SAMPLE_RATE_IN        48000 // 48 kHz input
+#define SAMPLE_RATE_OUT       8000  // 8 kHz output
+
+// Shared return code for "operation unsupported by backend/capability"
+#define DSD_ERR_NOT_SUPPORTED (-2)
 
 // Provide portable boolean-style macros for legacy code paths that used
 // ncurses-provided TRUE/FALSE. Keep these independent from ncurses to avoid
