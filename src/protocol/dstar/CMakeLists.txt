@@ -14,3 +14,7 @@ target_include_directories(dsd-neo_proto_dstar
 target_link_libraries(dsd-neo_proto_dstar PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_core dsd-neo_dsp)
 
 target_link_libraries(dsd-neo_proto_dstar PRIVATE dsd-neo_warnings)
+
+install(TARGETS dsd-neo_proto_dstar
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

@@ -45,3 +45,7 @@ endif()
 target_include_directories(dsd-neo_platform
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
+
+install(TARGETS dsd-neo_platform
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

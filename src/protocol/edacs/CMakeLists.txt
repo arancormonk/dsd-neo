@@ -13,3 +13,7 @@ target_include_directories(dsd-neo_proto_edacs
 target_link_libraries(dsd-neo_proto_edacs PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_crypto dsd-neo_core dsd-neo_feature_rtlsdr)
 
 target_link_libraries(dsd-neo_proto_edacs PRIVATE dsd-neo_warnings dsd-neo_feature_colors)
+
+install(TARGETS dsd-neo_proto_edacs
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

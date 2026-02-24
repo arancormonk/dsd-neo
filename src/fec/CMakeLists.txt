@@ -18,3 +18,7 @@ target_include_directories(dsd-neo_fec
 target_link_libraries(dsd-neo_fec PRIVATE dsd-neo_ezpwd)
 
 target_link_libraries(dsd-neo_fec PRIVATE dsd-neo_warnings)
+
+install(TARGETS dsd-neo_fec
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

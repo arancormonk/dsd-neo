@@ -37,6 +37,10 @@ target_link_libraries(dsd-neo_dispatch PUBLIC
 
 target_link_libraries(dsd-neo_dispatch PRIVATE dsd-neo_warnings)
 
+install(TARGETS dsd-neo_dispatch
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
 add_library(dsd-neo_engine)
 
 target_sources(dsd-neo_engine PRIVATE
@@ -71,3 +75,7 @@ target_link_libraries(dsd-neo_engine PUBLIC
 )
 
 target_link_libraries(dsd-neo_engine PRIVATE dsd-neo_warnings dsd-neo_feature_lz)
+
+install(TARGETS dsd-neo_engine
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
