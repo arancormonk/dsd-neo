@@ -28,7 +28,6 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #endif
-#include <rtl-sdr.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +43,179 @@
 #endif
 
 #include <stdint.h>
+
+#ifdef USE_RTLSDR
+#include <rtl-sdr.h>
+#else
+struct rtlsdr_dev;
+typedef struct rtlsdr_dev rtlsdr_dev_t;
+
+#ifndef RTLSDR_TUNER_E4000
+#define RTLSDR_TUNER_UNKNOWN 0
+#define RTLSDR_TUNER_E4000   1
+#define RTLSDR_TUNER_FC0012  2
+#define RTLSDR_TUNER_FC0013  3
+#define RTLSDR_TUNER_FC2580  4
+#define RTLSDR_TUNER_R820T   5
+#define RTLSDR_TUNER_R828D   6
+#endif
+
+static int
+rtlsdr_open(rtlsdr_dev_t** dev, uint32_t index) {
+    (void)dev;
+    (void)index;
+    return -1;
+}
+
+static int
+rtlsdr_close(rtlsdr_dev_t* dev) {
+    (void)dev;
+    return -1;
+}
+
+static int
+rtlsdr_read_async(rtlsdr_dev_t* dev, void (*cb)(unsigned char*, uint32_t, void*), void* ctx, uint32_t buf_num,
+                  uint32_t buf_len) {
+    (void)dev;
+    (void)cb;
+    (void)ctx;
+    (void)buf_num;
+    (void)buf_len;
+    return -1;
+}
+
+static int
+rtlsdr_cancel_async(rtlsdr_dev_t* dev) {
+    (void)dev;
+    return -1;
+}
+
+static int
+rtlsdr_set_tuner_gain_mode(rtlsdr_dev_t* dev, int manual) {
+    (void)dev;
+    (void)manual;
+    return -1;
+}
+
+static int
+rtlsdr_get_tuner_gains(rtlsdr_dev_t* dev, int* gains) {
+    (void)dev;
+    (void)gains;
+    return -1;
+}
+
+static int
+rtlsdr_set_center_freq(rtlsdr_dev_t* dev, uint32_t freq) {
+    (void)dev;
+    (void)freq;
+    return -1;
+}
+
+static int
+rtlsdr_set_sample_rate(rtlsdr_dev_t* dev, uint32_t rate) {
+    (void)dev;
+    (void)rate;
+    return -1;
+}
+
+static int
+rtlsdr_set_direct_sampling(rtlsdr_dev_t* dev, int on) {
+    (void)dev;
+    (void)on;
+    return -1;
+}
+
+static int
+rtlsdr_get_tuner_type(rtlsdr_dev_t* dev) {
+    (void)dev;
+    return RTLSDR_TUNER_UNKNOWN;
+}
+
+static int
+rtlsdr_set_tuner_bandwidth(rtlsdr_dev_t* dev, int bw_hz) {
+    (void)dev;
+    (void)bw_hz;
+    return -1;
+}
+
+static int
+rtlsdr_set_agc_mode(rtlsdr_dev_t* dev, int on) {
+    (void)dev;
+    (void)on;
+    return -1;
+}
+
+static int
+rtlsdr_set_tuner_gain(rtlsdr_dev_t* dev, int gain) {
+    (void)dev;
+    (void)gain;
+    return -1;
+}
+
+static int
+rtlsdr_set_freq_correction(rtlsdr_dev_t* dev, int ppm) {
+    (void)dev;
+    (void)ppm;
+    return -1;
+}
+
+static int
+rtlsdr_reset_buffer(rtlsdr_dev_t* dev) {
+    (void)dev;
+    return -1;
+}
+
+static uint32_t
+rtlsdr_get_sample_rate(rtlsdr_dev_t* dev) {
+    (void)dev;
+    return 0;
+}
+
+static int
+rtlsdr_get_tuner_gain(rtlsdr_dev_t* dev) {
+    (void)dev;
+    return -1;
+}
+
+static int
+rtlsdr_set_offset_tuning(rtlsdr_dev_t* dev, int on) {
+    (void)dev;
+    (void)on;
+    return -1;
+}
+
+static int
+rtlsdr_set_xtal_freq(rtlsdr_dev_t* dev, uint32_t rtl, uint32_t tuner) {
+    (void)dev;
+    (void)rtl;
+    (void)tuner;
+    return -1;
+}
+
+static int
+rtlsdr_set_testmode(rtlsdr_dev_t* dev, int on) {
+    (void)dev;
+    (void)on;
+    return -1;
+}
+
+static int
+rtlsdr_set_tuner_if_gain(rtlsdr_dev_t* dev, int stage, int gain) {
+    (void)dev;
+    (void)stage;
+    (void)gain;
+    return -1;
+}
+
+#ifdef USE_RTLSDR_BIAS_TEE
+static int
+rtlsdr_set_bias_tee(rtlsdr_dev_t* dev, int on) {
+    (void)dev;
+    (void)on;
+    return -1;
+}
+#endif
+#endif
 
 // Shutdown signaling (defined in src/runtime/exitflag.c)
 extern "C" volatile uint8_t exitflag;

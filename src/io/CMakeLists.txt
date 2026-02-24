@@ -1,7 +1,7 @@
 # IO module libraries
 
 # Radio (RTL-SDR front-end and streaming)
-if(RTLSDR_FOUND)
+if(DSD_HAS_RADIO)
   add_library(dsd-neo_io_radio)
   target_sources(dsd-neo_io_radio PRIVATE
     radio/rtl_device.cpp
@@ -13,9 +13,10 @@ if(RTLSDR_FOUND)
   )
   target_include_directories(dsd-neo_io_radio
     PUBLIC ${PROJECT_SOURCE_DIR}/include
-    PRIVATE ${_PUBLIC_INCLUDES} ${RTLSDR_INCLUDE_DIRS}
+    PRIVATE ${_PUBLIC_INCLUDES}
   )
-  target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_dsp dsd-neo_pffft dsd-neo_feature_rtlsdr)
+  target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_dsp dsd-neo_pffft dsd-neo_feature_radio dsd-neo_feature_rtlsdr
+                                                 dsd-neo_feature_soapy)
 
   target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_warnings)
 
@@ -74,7 +75,7 @@ target_include_directories(dsd-neo_io_control
   PUBLIC ${PROJECT_SOURCE_DIR}/include
   PRIVATE ${_PUBLIC_INCLUDES}
 )
-target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_runtime dsd-neo_feature_rtlsdr)
+target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_runtime dsd-neo_feature_radio dsd-neo_feature_rtlsdr)
 
 target_link_libraries(dsd-neo_io_control PRIVATE dsd-neo_warnings)
 
@@ -82,7 +83,7 @@ target_link_libraries(dsd-neo_io_control PRIVATE dsd-neo_warnings)
 target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_core dsd-neo_dsp)
 
 # rtl_sdr_fm.cpp uses udp_control_*; ensure correct link propagation and ordering.
-if(RTLSDR_FOUND)
+if(DSD_HAS_RADIO)
   install(TARGETS dsd-neo_io_udp_control
       RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
       LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

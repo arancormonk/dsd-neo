@@ -62,6 +62,8 @@ option(DSD_ENABLE_LTO "Enable Link Time Optimization (IPO/LTO) for Release build
 option(DSD_ENABLE_NATIVE "Enable native CPU tuning (-march/-mtune=native)" OFF)
 option(DSD_ENABLE_ASAN "Enable AddressSanitizer in Debug builds" OFF)
 option(DSD_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer in Debug builds" OFF)
+option(DSD_ENABLE_RTLSDR "Enable RTL-SDR backend support" ON)
+option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
 
 # -----------------------------------------------------------------------------
 # Common warning flags (target-scoped)
@@ -196,7 +198,36 @@ endif()
 # Ensure includes for legacy-style #include <mbelib.h>
 # by adding the directory that directly contains mbelib.h
 find_path(MBE_INCLUDE_DIR NAMES mbelib.h PATH_SUFFIXES mbelib-neo)
-find_package(RTLSDR)
+if(DSD_ENABLE_RTLSDR)
+    find_package(RTLSDR)
+endif()
+
+if(DSD_ENABLE_SOAPYSDR)
+    find_package(SoapySDR CONFIG QUIET)
+endif()
+
+set(DSD_HAS_RTLSDR OFF)
+if(DSD_ENABLE_RTLSDR AND RTLSDR_FOUND)
+    set(DSD_HAS_RTLSDR ON)
+endif()
+
+set(DSD_HAS_SOAPYSDR OFF)
+if(DSD_ENABLE_SOAPYSDR)
+    if(TARGET SoapySDR OR TARGET SoapySDR::SoapySDR)
+        set(DSD_HAS_SOAPYSDR ON)
+    elseif(SoapySDR_INCLUDE_DIRS AND SoapySDR_LIBRARIES)
+        set(DSD_HAS_SOAPYSDR ON)
+    endif()
+endif()
+
+set(DSD_HAS_RADIO OFF)
+if(DSD_HAS_RTLSDR OR DSD_HAS_SOAPYSDR)
+    set(DSD_HAS_RADIO ON)
+endif()
+
+message(STATUS "RTL-SDR backend enabled: ${DSD_ENABLE_RTLSDR} (available: ${DSD_HAS_RTLSDR})")
+message(STATUS "SoapySDR backend enabled: ${DSD_ENABLE_SOAPYSDR} (available: ${DSD_HAS_SOAPYSDR})")
+message(STATUS "Radio pipeline available: ${DSD_HAS_RADIO}")
 
 # Curses library selection:
 # - MSVC/native Windows: PDCurses
@@ -289,7 +320,23 @@ target_compile_definitions(dsd-neo_feature_lz INTERFACE $<$<BOOL:${LZ}>:LIMAZULU
 add_library(dsd-neo_feature_sid INTERFACE)
 target_compile_definitions(dsd-neo_feature_sid INTERFACE $<$<BOOL:${SID}>:SOFTID>)
 
-if(RTLSDR_FOUND)
+add_library(dsd-neo_feature_radio INTERFACE)
+target_compile_definitions(dsd-neo_feature_radio INTERFACE $<$<BOOL:${DSD_HAS_RADIO}>:USE_RADIO>)
+
+add_library(dsd-neo_feature_soapy INTERFACE)
+if(DSD_HAS_SOAPYSDR)
+    target_compile_definitions(dsd-neo_feature_soapy INTERFACE USE_SOAPYSDR)
+    if(TARGET SoapySDR)
+        target_link_libraries(dsd-neo_feature_soapy INTERFACE SoapySDR)
+    elseif(TARGET SoapySDR::SoapySDR)
+        target_link_libraries(dsd-neo_feature_soapy INTERFACE SoapySDR::SoapySDR)
+    elseif(SoapySDR_INCLUDE_DIRS AND SoapySDR_LIBRARIES)
+        target_include_directories(dsd-neo_feature_soapy SYSTEM INTERFACE ${SoapySDR_INCLUDE_DIRS})
+        target_link_libraries(dsd-neo_feature_soapy INTERFACE ${SoapySDR_LIBRARIES})
+    endif()
+endif()
+
+if(DSD_HAS_RTLSDR)
     find_package(Threads)
     list(APPEND LIBS ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
     list(APPEND _PUBLIC_INCLUDES ${RTLSDR_INCLUDE_DIRS})

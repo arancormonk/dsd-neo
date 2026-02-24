@@ -46,7 +46,8 @@ target_include_directories(dsd-neo_proto_p25
   PRIVATE ${_PUBLIC_INCLUDES}
 )
 
-target_link_libraries(dsd-neo_proto_p25 PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_crypto dsd-neo_dsp dsd-neo_feature_rtlsdr)
+target_link_libraries(dsd-neo_proto_p25 PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_crypto dsd-neo_dsp dsd-neo_feature_radio
+                                               dsd-neo_feature_rtlsdr)
 
 target_link_libraries(dsd-neo_proto_p25 PRIVATE dsd-neo_warnings dsd-neo_feature_sid)
 
