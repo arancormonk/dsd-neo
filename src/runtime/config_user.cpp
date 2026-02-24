@@ -19,6 +19,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,6 +49,26 @@ local_pwr_to_dB(double mean_power) {
         dB = -120.0;
     }
     return dB;
+}
+
+// Local helper to convert dB to linear power (avoids dependency on dsd_misc.c)
+static double
+local_dB_to_pwr(double dB) {
+    if (dB >= 0.0) {
+        return 1.0;
+    }
+    if (dB < -200.0) {
+        dB = -200.0;
+    }
+    const double k_ln10_over_10 = 2.302585092994046 / 10.0;
+    double pwr = std::exp(dB * k_ln10_over_10);
+    if (pwr < 0.0) {
+        pwr = 0.0;
+    }
+    if (pwr > 1.0) {
+        pwr = 1.0;
+    }
+    return pwr;
 }
 
 void
@@ -192,6 +213,42 @@ split_colon_tokens(char* scratch, size_t scratch_size, const char* in, char** ou
     return count;
 }
 
+static int
+is_valid_rtl_bw_khz(int bw) {
+    return (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48);
+}
+
+static void
+apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    if (!cfg || !opts) {
+        return;
+    }
+
+    if (cfg->rtl_freq[0]) {
+        opts->rtlsdr_center_freq = dsd_parse_freq_hz(cfg->rtl_freq);
+    }
+
+    int gain = cfg->rtl_gain ? cfg->rtl_gain : opts->rtl_gain_value;
+    int ppm = cfg->rtl_ppm;
+    int bw = cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
+    int sql = cfg->rtl_sql;
+    int vol = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
+
+    if (!is_valid_rtl_bw_khz(bw)) {
+        bw = 48;
+    }
+
+    opts->rtl_gain_value = gain;
+    opts->rtlsdr_ppm_error = ppm;
+    opts->rtl_dsp_bw_khz = bw;
+    if (sql < 0) {
+        opts->rtl_squelch_level = local_dB_to_pwr((double)sql);
+    } else {
+        opts->rtl_squelch_level = (double)sql;
+    }
+    opts->rtl_volume_multiplier = vol;
+}
+
 static void
 snapshot_apply_live_rtl_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (!opts || !cfg) {
@@ -273,6 +330,18 @@ snapshot_parse_rtltcp_device_spec(const char* audio_in_dev, dsdneoUserConfig* cf
     }
     if (n > 8) {
         cfg->rtl_volume = atoi(tok[8]);
+    }
+}
+
+static void
+snapshot_parse_soapy_device_spec(const char* audio_in_dev, dsdneoUserConfig* cfg) {
+    if (!audio_in_dev || !cfg) {
+        return;
+    }
+
+    const char* colon = strchr(audio_in_dev, ':');
+    if (colon && *(colon + 1) != '\0') {
+        copy_token_string(cfg->soapy_args, sizeof cfg->soapy_args, colon + 1);
     }
 }
 
@@ -442,6 +511,7 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
             case DSDCFG_INPUT_PULSE: fprintf(out, "source = \"pulse\"\n"); break;
             case DSDCFG_INPUT_RTL: fprintf(out, "source = \"rtl\"\n"); break;
             case DSDCFG_INPUT_RTLTCP: fprintf(out, "source = \"rtltcp\"\n"); break;
+            case DSDCFG_INPUT_SOAPY: fprintf(out, "source = \"soapy\"\n"); break;
             case DSDCFG_INPUT_FILE: fprintf(out, "source = \"file\"\n"); break;
             case DSDCFG_INPUT_TCP: fprintf(out, "source = \"tcp\"\n"); break;
             case DSDCFG_INPUT_UDP: fprintf(out, "source = \"udp\"\n"); break;
@@ -494,6 +564,26 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
                 fprintf(out, "rtl_volume = %d\n", cfg->rtl_volume);
             }
             fprintf(out, "auto_ppm = %s\n", cfg->rtl_auto_ppm ? "true" : "false");
+        } else if (cfg->input_source == DSDCFG_INPUT_SOAPY) {
+            if (cfg->soapy_args[0]) {
+                fprintf(out, "soapy_args = \"%s\"\n", cfg->soapy_args);
+            }
+            if (cfg->rtl_freq[0]) {
+                fprintf(out, "rtl_freq = \"%s\"\n", cfg->rtl_freq);
+            }
+            if (cfg->rtl_gain) {
+                fprintf(out, "rtl_gain = %d\n", cfg->rtl_gain);
+            }
+            if (cfg->rtl_ppm) {
+                fprintf(out, "rtl_ppm = %d\n", cfg->rtl_ppm);
+            }
+            if (cfg->rtl_bw_khz) {
+                fprintf(out, "rtl_bw_khz = %d\n", cfg->rtl_bw_khz);
+            }
+            fprintf(out, "rtl_sql = %d\n", cfg->rtl_sql);
+            if (cfg->rtl_volume) {
+                fprintf(out, "rtl_volume = %d\n", cfg->rtl_volume);
+            }
         } else if (cfg->input_source == DSDCFG_INPUT_FILE) {
             if (cfg->file_path[0]) {
                 fprintf(out, "file_path = \"%s\"\n", cfg->file_path);
@@ -666,6 +756,14 @@ dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_s
                                  cfg->rtltcp_port ? cfg->rtltcp_port : 1234);
                     }
                 }
+                break;
+            case DSDCFG_INPUT_SOAPY:
+                if (cfg->soapy_args[0]) {
+                    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "soapy:%s", cfg->soapy_args);
+                } else {
+                    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy");
+                }
+                apply_shared_radio_tuning_from_config(cfg, opts);
                 break;
             case DSDCFG_INPUT_FILE:
                 if (cfg->file_path[0]) {
@@ -866,6 +964,10 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     } else if (strncmp(opts->audio_in_dev, "rtltcp:", 7) == 0) {
         cfg->input_source = DSDCFG_INPUT_RTLTCP;
         snapshot_parse_rtltcp_device_spec(opts->audio_in_dev, cfg);
+        snapshot_apply_live_rtl_values(opts, cfg);
+    } else if ((strcmp(opts->audio_in_dev, "soapy") == 0) || (strncmp(opts->audio_in_dev, "soapy:", 6) == 0)) {
+        cfg->input_source = DSDCFG_INPUT_SOAPY;
+        snapshot_parse_soapy_device_spec(opts->audio_in_dev, cfg);
         snapshot_apply_live_rtl_values(opts, cfg);
     } else if (strncmp(opts->audio_in_dev, "tcp:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_TCP;

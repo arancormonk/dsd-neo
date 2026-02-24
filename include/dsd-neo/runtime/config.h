@@ -591,6 +591,7 @@ typedef enum {
     DSDCFG_INPUT_PULSE,
     DSDCFG_INPUT_RTL,
     DSDCFG_INPUT_RTLTCP,
+    DSDCFG_INPUT_SOAPY,
     DSDCFG_INPUT_FILE,
     DSDCFG_INPUT_TCP,
     DSDCFG_INPUT_UDP
@@ -641,6 +642,7 @@ typedef struct dsdneoUserConfig {
     int rtl_auto_ppm; /* bool */
     char rtltcp_host[128];
     int rtltcp_port;
+    char soapy_args[256];
     char file_path[1024];
     int file_sample_rate;
     char tcp_host[128];

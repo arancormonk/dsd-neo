@@ -62,6 +62,8 @@ dsd_cli_usage(void) {
     printf("                rtl:dev:freq:gain:ppm:bw:sql:vol for rtl dongle (see below)\n");
     printf("                rtltcp for rtl_tcp (default 127.0.0.1:1234)\n");
     printf("                rtltcp:host:port for rtl_tcp server address\n");
+    printf("                soapy for SoapySDR input (default device args)\n");
+    printf("                soapy:driver=airspy[,serial=...] for SoapySDR input selection args\n");
     printf("                tcp for TCP raw PCM16LE mono audio input (Port 7355)\n");
     printf("                tcp:192.168.7.5:7355 for custom address and port \n");
     printf("                udp for UDP direct audio input (default host 127.0.0.1; default port 7355)\n");
@@ -147,6 +149,12 @@ dsd_cli_usage(void) {
     printf("  host: default 127.0.0.1; port: default 1234\n");
     printf("  Remaining fields mirror rtl: string semantics.\n");
     printf(" Example: dsd-neo -i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2 -N\n");
+    printf("\n");
+    printf("SoapySDR options:\n");
+    printf(" Usage: soapy[:args]\n");
+    printf("  args: opaque SoapySDR device selection string passed through unchanged.\n");
+    printf("  Tune/gain/ppm/bw/sql/vol for Soapy reuse existing RTL controls and config keys (rtl_*),\n");
+    printf("  and are not encoded as soapy_* tuning keys.\n");
     printf("\n");
     printf("UDP examples:\n");
     printf(" Example: dsd-neo -i udp -o pulse -N\n");

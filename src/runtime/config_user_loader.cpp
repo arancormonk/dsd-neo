@@ -146,6 +146,10 @@ parse_input_source_value(const char* val, dsdneoUserInputSource* out_source) {
         *out_source = DSDCFG_INPUT_RTLTCP;
         return 0;
     }
+    if (dsd_strcasecmp(val, "soapy") == 0) {
+        *out_source = DSDCFG_INPUT_SOAPY;
+        return 0;
+    }
     if (dsd_strcasecmp(val, "file") == 0) {
         *out_source = DSDCFG_INPUT_FILE;
         return 0;
@@ -233,6 +237,8 @@ apply_input_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* v
         copy_text_value(cfg->rtltcp_host, sizeof cfg->rtltcp_host, val);
     } else if (strcmp(key_lc, "rtltcp_port") == 0) {
         cfg->rtltcp_port = (int)parse_int_for_mode(val, 1234, mode);
+    } else if (strcmp(key_lc, "soapy_args") == 0) {
+        copy_text_value(cfg->soapy_args, sizeof cfg->soapy_args, val);
     } else if (strcmp(key_lc, "file_path") == 0) {
         copy_path_expanded(cfg->file_path, sizeof cfg->file_path, val);
     } else if (strcmp(key_lc, "file_sample_rate") == 0) {

@@ -18,7 +18,7 @@
 /* Schema data for all configuration keys */
 static const dsdcfg_schema_entry_t s_schema[] = {
     /* [input] section */
-    {"input", "source", "Input source type", "pulse", "pulse|rtl|rtltcp|file|tcp|udp", DSDCFG_TYPE_ENUM, 0, 0, 0},
+    {"input", "source", "Input source type", "pulse", "pulse|rtl|rtltcp|soapy|file|tcp|udp", DSDCFG_TYPE_ENUM, 0, 0, 0},
     {"input", "pulse_source", "PulseAudio source device name", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
     {"input", "pulse_input", "PulseAudio input device (alias for pulse_source)", "", NULL, DSDCFG_TYPE_STRING, 0, 0,
      1}, /* deprecated alias */
@@ -34,6 +34,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
      DSDCFG_TYPE_BOOL, 0, 0, 1}, /* deprecated alias */
     {"input", "rtltcp_host", "RTL-TCP server hostname or IP", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
     {"input", "rtltcp_port", "RTL-TCP server port", "1234", NULL, DSDCFG_TYPE_INT, 1, 65535, 0},
+    {"input", "soapy_args", "SoapySDR device selection args string", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
     {"input", "file_path", "Input audio file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
     {"input", "file_sample_rate", "Input file sample rate in Hz", "48000", NULL, DSDCFG_TYPE_INT, 8000, 192000, 0},
     {"input", "tcp_host", "TCP direct input hostname", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
