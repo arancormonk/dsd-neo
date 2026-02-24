@@ -46,8 +46,8 @@ extern const size_t CONFIG_MENU_ITEMS_LEN;
 extern const NcMenuItem ADV_MENU_ITEMS[];
 extern const size_t ADV_MENU_ITEMS_LEN;
 
-// ---- DSP Menu (USE_RTLSDR only) ----
-#ifdef USE_RTLSDR
+// ---- DSP Menu (USE_RADIO only) ----
+#ifdef USE_RADIO
 extern const NcMenuItem DSP_MENU_ITEMS[];
 extern const size_t DSP_MENU_ITEMS_LEN;
 

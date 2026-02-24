@@ -20,9 +20,9 @@
 #include "menu_labels.h"
 
 // ============================================================================
-// RTL-SDR Menu Items (USE_RTLSDR only)
+// RTL-SDR Menu Items (USE_RADIO only)
 // ============================================================================
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 static const NcMenuItem RTL_CTL_ITEMS[] = {
     {.id = "enable", .label = "Enable RTL-SDR Input", .help = "Switch input to RTL-SDR.", .on_select = rtl_enable},
     {.id = "restart",
@@ -92,7 +92,7 @@ static const NcMenuItem IO_SWITCH_INPUT_ITEMS[] = {
      .label = "Pulse Audio (mic/line)",
      .help = "Use Pulse Audio input.",
      .on_select = switch_to_pulse},
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     {.id = "switch.rtl", .label = "RTL-SDR", .help = "Switch to RTL-SDR input.", .on_select = switch_to_rtl},
 #endif
     {.id = "switch.tcp",
@@ -136,7 +136,7 @@ static const NcMenuItem IO_INPUT_ITEMS[] = {
      .help = "Change active input source.",
      .submenu = IO_SWITCH_INPUT_ITEMS,
      .submenu_len = sizeof IO_SWITCH_INPUT_ITEMS / sizeof IO_SWITCH_INPUT_ITEMS[0]},
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     {.id = "io.rtl",
      .label = "RTL-SDR...",
      .help = "Configure RTL device, gain, PPM, BW, SQL.",
@@ -696,9 +696,9 @@ const NcMenuItem LRRP_MENU_ITEMS[] = {
 const size_t LRRP_MENU_ITEMS_LEN = sizeof LRRP_MENU_ITEMS / sizeof LRRP_MENU_ITEMS[0];
 
 // ============================================================================
-// DSP Menu Items (USE_RTLSDR only)
+// DSP Menu Items (USE_RADIO only)
 // ============================================================================
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 static const NcMenuItem DSP_OVERVIEW_ITEMS[] = {
     {.id = "dsp.status",
      .label = "Show DSP Panel",

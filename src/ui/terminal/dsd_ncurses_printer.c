@@ -26,20 +26,16 @@
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/telemetry.h>
-#include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_p25_display.h>
-#include <dsd-neo/ui/ncurses_snr.h>
 #include <dsd-neo/ui/ncurses_trunk_display.h>
-#include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_history.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -48,7 +44,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
@@ -93,6 +89,15 @@ ui_eh_item_has_content(const Event_History* item) {
     }
     return item->event_string[0] != '\0' || item->text_message[0] != '\0' || item->alias[0] != '\0'
            || item->gps_s[0] != '\0' || item->internal_str[0] != '\0';
+}
+
+static int
+ui_audio_in_is_soapy(const dsd_opts* opts) {
+    const char* dev = opts ? opts->audio_in_dev : NULL;
+    if (!dev) {
+        return 0;
+    }
+    return (strcmp(dev, "soapy") == 0) || (strncmp(dev, "soapy:", 6) == 0);
 }
 
 char* DMRBusrtTypes[32] = {
@@ -245,13 +250,22 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        printw("| RTL: %d;", opts->rtl_dev_index);
+        int soapy_input = ui_audio_in_is_soapy(opts);
+        if (soapy_input) {
+            if (strncmp(opts->audio_in_dev, "soapy:", 6) == 0 && opts->audio_in_dev[6] != '\0') {
+                printw("| SoapySDR: %s;", opts->audio_in_dev + 6);
+            } else {
+                printw("| SoapySDR;");
+            }
+        } else {
+            printw("| RTL: %d;", opts->rtl_dev_index);
+        }
         /* Show applied tuner gain when available (actual driver value),
            otherwise fall back to requested value. */
         {
             int g10 = 0, is_auto = 1;
             int have = 0;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
             /* Header is already included indirectly via other UI modules. */
             extern int rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
             if (rtl_stream_get_gain(&g10, &is_auto) == 0) {
@@ -281,18 +295,18 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         /* Show spectrum-based auto PPM status snapshot */
         {
-            int ap_en = 0, ap_dir = 0, ap_cd = 0, ap_locked = 0;
-            double ap_snr = -100.0, ap_df = 0.0, ap_estppm = 0.0;
-#ifdef USE_RTLSDR
+            int ap_en = 0, ap_dir = 0, ap_locked = 0;
+            double ap_snr = -100.0, ap_df = 0.0;
+#ifdef USE_RADIO
             extern int rtl_stream_auto_ppm_get_status(int*, double*, double*, double*, int*, int*, int*);
-            (void)rtl_stream_auto_ppm_get_status(&ap_en, &ap_snr, &ap_df, &ap_estppm, &ap_dir, &ap_cd, &ap_locked);
+            (void)rtl_stream_auto_ppm_get_status(&ap_en, &ap_snr, &ap_df, NULL, &ap_dir, NULL, &ap_locked);
 #endif
             if (!ap_en) {
                 printw("\n| Auto PPM: Off");
             } else if (ap_locked) {
                 int lppm = 0;
                 double lsnr = -100.0, ldf = 0.0;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
                 extern int rtl_stream_auto_ppm_get_lock(int*, double*, double*);
                 (void)rtl_stream_auto_ppm_get_lock(&lppm, &lsnr, &ldf);
 #endif
@@ -306,7 +320,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                                       : "hold");
             }
         }
-        if (opts->rtl_udp_port != 0) {
+        if (!soapy_input && opts->rtl_udp_port != 0) {
             printw("\n| External RTL Tuning on UDP Port: %i", opts->rtl_udp_port);
         }
         printw("\n");
@@ -688,10 +702,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     // if (opts->call_alert == 1)   printw ("| Call Alert Tone Enabled\n");
 
     ui_print_hr();
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     /* Only show RTL-SDR section and render visualizers when RTL input is active */
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        ui_print_header("RTL-SDR Visual Aids");
+        ui_print_header(ui_audio_in_is_soapy(opts) ? "SoapySDR Visual Aids" : "RTL-SDR Visual Aids");
         int nfft = rtl_stream_spectrum_get_size();
         /* Controls/status line: only show controls relevant to active views */
         printw("| Const View:  %s (%c)", opts->constellation ? "On" : "Off", DSD_KEY_CONST_VIEW_UPPER);
@@ -782,7 +796,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("CRC/(RAS) ");
     }
     /* Demod SNR (per modulation) */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     {
         double snr = -100.0;
         const char* m = "";
@@ -890,7 +904,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
     }
 #endif
-#ifndef USE_RTLSDR
+#ifndef USE_RADIO
     /* If built without RTL support, still show a placeholder */
     printw(" SNR: n/a []");
 #endif

@@ -18,7 +18,7 @@
 bool io_always_on(void* ctx);
 bool io_rtl_active(void* ctx);
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 bool dsp_cq_on(void* v);
 bool is_mod_qpsk(void* v);
 bool is_mod_c4fm(void* v);
@@ -121,8 +121,8 @@ const char* lbl_key_force_bp(void* v, char* b, size_t n);
 const char* lbl_key_hytera(void* v, char* b, size_t n);
 const char* lbl_m17_user_data(void* v, char* b, size_t n);
 
-// DSP labels (USE_RTLSDR only)
-#ifdef USE_RTLSDR
+// DSP labels (USE_RADIO only)
+#ifdef USE_RADIO
 const char* lbl_onoff_cq(void* v, char* b, size_t n);
 const char* lbl_onoff_fll(void* v, char* b, size_t n);
 const char* lbl_onoff_ted(void* v, char* b, size_t n);

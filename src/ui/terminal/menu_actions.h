@@ -163,8 +163,8 @@ void act_toggle_ui_p25_ccc(void* v);
 void act_toggle_ui_channels(void* v);
 void act_toggle_ui_p25_callsign(void* v);
 
-// ---- RTL-SDR actions (USE_RTLSDR only) ----
-#ifdef USE_RTLSDR
+// ---- RTL-SDR actions (USE_RADIO only) ----
+#ifdef USE_RADIO
 void rtl_enable(void* v);
 void rtl_restart(void* v);
 void rtl_set_dev(void* v);
@@ -181,8 +181,8 @@ void rtl_toggle_tuner_autogain(void* v);
 void switch_to_rtl(void* vctx);
 #endif
 
-// ---- DSP actions (USE_RTLSDR only) ----
-#ifdef USE_RTLSDR
+// ---- DSP actions (USE_RADIO only) ----
+#ifdef USE_RADIO
 void act_toggle_cq(void* v);
 void act_toggle_fll(void* v);
 void act_toggle_ted(void* v);

@@ -25,7 +25,6 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
-#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/menu_services.h>
@@ -40,7 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/ui_dsp_cmd.h>
 #endif
@@ -111,6 +110,13 @@ ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
     va_end(ap);
     state->ui_msg_expire = time(NULL) + ttl_s;
 }
+
+#ifdef USE_RADIO
+static inline int
+ui_rc_is_not_supported(int rc) {
+    return rc == DSD_ERR_NOT_SUPPORTED;
+}
+#endif
 
 static int
 apply_cmd_ui_visibility(dsd_opts* opts, const struct UiCmd* c) {
@@ -288,7 +294,7 @@ apply_cmd_key_management(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
     }
 }
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 static void
 apply_dsp_op(const UiDspPayload* p) {
     if (!p) {
@@ -613,12 +619,14 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
             }
             return 1;
         }
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         case UI_CMD_RTL_ENABLE_INPUT: {
             if (state) {
                 int rc = svc_rtl_enable_input(opts, state);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: RTL input enabled");
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: active radio backend cannot enable RTL input");
                 } else {
                     ui_set_toast(state, 4, "Failed: RTL input enable");
                 }
@@ -630,6 +638,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 int rc = svc_rtl_restart(opts, state);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: RTL stream restarted");
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: active radio backend cannot restart stream");
                 } else {
                     ui_set_toast(state, 4, "Failed: RTL stream restart");
                 }
@@ -643,6 +653,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 int rc = svc_rtl_set_dev_index(opts, state, v);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: RTL device index -> %d", (int)v);
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: device index is not available for current radio source");
                 } else {
                     ui_set_toast(state, 4, "Failed: RTL device index -> %d", (int)v);
                 }
@@ -656,6 +668,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 int rc = svc_rtl_set_freq(opts, state, (uint32_t)v);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: RTL frequency -> %d Hz", (int)v);
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
                 } else {
                     ui_set_toast(state, 4, "Failed: RTL frequency -> %d Hz", (int)v);
                 }
@@ -669,6 +683,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 int rc = svc_rtl_set_gain(opts, state, v);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: RTL gain -> %d", (int)v);
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
                 } else {
                     ui_set_toast(state, 4, "Failed: RTL gain -> %d", (int)v);
                 }
@@ -682,6 +698,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 int rc = svc_rtl_set_ppm(opts, v);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: RTL PPM -> %d", (int)opts->rtlsdr_ppm_error);
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: PPM correction not available on active backend");
                 } else {
                     ui_set_toast(state, 4, "Failed: RTL PPM update");
                 }
@@ -695,6 +713,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 int rc = svc_rtl_set_bandwidth(opts, state, v);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: RTL DSP BW -> %d kHz", (int)opts->rtl_dsp_bw_khz);
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: bandwidth control not available on active backend");
                 } else {
                     ui_set_toast(state, 4, "Failed: RTL DSP BW update");
                 }
@@ -708,6 +728,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 int rc = svc_rtl_set_sql_db(opts, d);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: RTL squelch -> %.1f dB", d);
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: squelch control not available on active backend");
                 } else {
                     ui_set_toast(state, 4, "Failed: RTL squelch update");
                 }
@@ -721,6 +743,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 int rc = svc_rtl_set_volume_mult(opts, v);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: RTL volume -> %dX", (int)opts->rtl_volume_multiplier);
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: volume multiplier not available on active backend");
                 } else {
                     ui_set_toast(state, 4, "Failed: RTL volume update");
                 }
@@ -734,6 +758,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 int rc = svc_rtl_set_bias_tee(opts, state, on);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: RTL bias tee -> %s", on ? "On" : "Off");
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: bias tee control not available on active backend");
                 } else {
                     ui_set_toast(state, 4, "Failed: RTL bias tee update");
                 }
@@ -747,6 +773,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 int rc = svc_rtltcp_set_autotune(opts, state, on);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: RTL-TCP adaptive networking -> %s", on ? "On" : "Off");
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: RTL-TCP autotune not available on active backend");
                 } else {
                     ui_set_toast(state, 4, "Failed: RTL-TCP adaptive networking update");
                 }
@@ -760,13 +788,15 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 int rc = svc_rtl_set_auto_ppm(opts, state, on);
                 if (rc == 0) {
                     ui_set_toast(state, 3, "Applied: Auto PPM -> %s", on ? "On" : "Off");
+                } else if (ui_rc_is_not_supported(rc)) {
+                    ui_set_toast(state, 3, "Unsupported: Auto PPM not available on active backend");
                 } else {
                     ui_set_toast(state, 4, "Failed: Auto PPM update");
                 }
             }
             return 1;
         }
-#endif /* USE_RTLSDR */
+#endif /* USE_RADIO */
         case UI_CMD_RIGCTL_SET_MOD_BW: {
             if (state && c->n >= (int)sizeof(int32_t)) {
                 int32_t hz = 0;
@@ -965,7 +995,7 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
     }
 }
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 static int
 apply_cmd_dsp(const struct UiCmd* c) {
     if (!c || c->id != UI_CMD_DSP_OP) {
@@ -1007,7 +1037,7 @@ reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc) {
 static int
 current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
     int demod_rate = 0;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
         demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
     }
@@ -1042,7 +1072,7 @@ mark_cc_sync(dsd_state* state, int include_monotonic) {
     }
 }
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 static void
 apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
     if (cfg->rtl_freq[0]) {
@@ -1076,7 +1106,9 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
 static void
 apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
                           int old_audio_in_type) {
-    if (!cfg->has_input || (cfg->input_source != DSDCFG_INPUT_RTL && cfg->input_source != DSDCFG_INPUT_RTLTCP)
+    if (!cfg->has_input
+        || (cfg->input_source != DSDCFG_INPUT_RTL && cfg->input_source != DSDCFG_INPUT_RTLTCP
+            && cfg->input_source != DSDCFG_INPUT_SOAPY)
         || old_audio_in_type != AUDIO_IN_RTL || opts->audio_in_type != AUDIO_IN_RTL
         || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
         return;
@@ -1097,6 +1129,10 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
         }
         apply_cfg_rtl_common(opts, cfg);
         opts->rtltcp_enabled = 1;
+    }
+    else { // DSDCFG_INPUT_SOAPY
+        apply_cfg_rtl_common(opts, cfg);
+        opts->rtltcp_enabled = 0;
     }
     (void)svc_rtl_restart(opts, state);
 }
@@ -1247,7 +1283,7 @@ apply_cfg_runtime_hot_switches(dsd_opts* opts, dsd_state* state, const dsdneoUse
     /* Tighten runtime behavior when applying configs mid-run by restarting
      * active backends whose configuration changed, while avoiding cross-backend
      * hot-switches. */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     apply_cfg_rtl_hot_restart(opts, state, cfg, old_audio_in_dev, old_audio_in_type);
 #else
     (void)state;
@@ -1312,7 +1348,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     if (apply_cmd_io_and_import(opts, state, c)) {
         return;
     }
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     if (apply_cmd_dsp(c)) {
         return;
     }
@@ -1475,7 +1511,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 memcpy(&d, c->data, sizeof(int32_t));
             }
             if (opts->audio_in_type == AUDIO_IN_RTL && opts->spectrum_view == 1) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
                 int n = rtl_stream_spectrum_get_size();
                 int want = n + d;
                 if (want < 64) {

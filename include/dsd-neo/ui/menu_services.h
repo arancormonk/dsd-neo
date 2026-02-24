@@ -170,7 +170,7 @@ void svc_toggle_inv_dpmr(dsd_opts* opts);
 /** @brief Toggle M17 symbol inversion. */
 void svc_toggle_inv_m17(dsd_opts* opts);
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 // RTL-SDR configuration and lifecycle helpers
 /** @brief Switch active input to RTL-SDR and restart the stream. */
 int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);

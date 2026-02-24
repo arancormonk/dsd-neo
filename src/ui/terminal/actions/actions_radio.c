@@ -14,7 +14,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/ui/ui_cmd.h"
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
@@ -51,7 +51,7 @@ ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         opts->mod_gfsk = 0;
         state->rf_mod = 1;
         // P25P1 QPSK: 4800 sym/s - compute SPS from actual demod rate
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         int demod_rate = 0;
         if (state->rtl_ctx) {
             demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
@@ -75,7 +75,7 @@ static int
 ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     (void)c;
     // P25P2 TDMA: 6000 sym/s - compute SPS from actual demod rate
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     int demod_rate = 0;
     if (state->rtl_ctx) {
         demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);

@@ -12,7 +12,6 @@
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -31,7 +30,7 @@
 #include "menu_internal.h"
 #include "menu_prompts.h"
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/ui_dsp_cmd.h>
 #endif
@@ -1049,7 +1048,7 @@ act_toggle_ui_p25_callsign(void* v) {
 
 // ---- RTL-SDR actions ----
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 
 void
 rtl_enable(void* v) {
@@ -1337,4 +1336,4 @@ act_toggle_dsp_panel(void* v) {
     ui_post_cmd(UI_CMD_UI_SHOW_DSP_PANEL_TOGGLE, NULL, 0);
 }
 
-#endif /* USE_RTLSDR */
+#endif /* USE_RADIO */

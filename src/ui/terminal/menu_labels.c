@@ -10,23 +10,21 @@
 
 #include "menu_labels.h"
 
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/posix_compat.h> // IWYU pragma: keep (MSVC stat/_stat compatibility)
 #include <dsd-neo/runtime/config.h>
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "menu_env.h"
 #include "menu_internal.h"
-#include "menu_items.h"
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
@@ -56,6 +54,15 @@ io_always_on(void* ctx) {
     return true;
 }
 
+static int
+menu_audio_in_is_soapy(const dsd_opts* opts) {
+    const char* dev = opts ? opts->audio_in_dev : NULL;
+    if (!dev) {
+        return 0;
+    }
+    return (strcmp(dev, "soapy") == 0) || (strncmp(dev, "soapy:", 6) == 0);
+}
+
 bool
 io_rtl_active(void* ctx) {
     UiCtx* c = (UiCtx*)ctx;
@@ -65,7 +72,7 @@ io_rtl_active(void* ctx) {
     return (c->opts->audio_in_type == AUDIO_IN_RTL);
 }
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 bool
 dsp_cq_on(void* v) {
     UNUSED(v);
@@ -353,7 +360,17 @@ lbl_current_input(void* vctx, char* b, size_t n) {
         int m = (n > 18) ? (int)(n - 18) : 0;
         snprintf(b, n, "Current Input: %.*s", m, c->opts->audio_in_dev);
     } else if (c->opts->audio_in_type == AUDIO_IN_RTL) {
-        snprintf(b, n, "Current Input: RTL-SDR dev %d", c->opts->rtl_dev_index);
+        if (menu_audio_in_is_soapy(c->opts)) {
+            if (strncmp(c->opts->audio_in_dev, "soapy:", 6) == 0 && c->opts->audio_in_dev[6] != '\0') {
+                size_t prefix = strlen("Current Input: SoapySDR []") - 2; /* exclude %s */
+                int m = (n > prefix) ? (int)(n - prefix) : 0;
+                snprintf(b, n, "Current Input: SoapySDR [%.*s]", m, c->opts->audio_in_dev + 6);
+            } else {
+                snprintf(b, n, "Current Input: SoapySDR");
+            }
+        } else {
+            snprintf(b, n, "Current Input: RTL-SDR dev %d", c->opts->rtl_dev_index);
+        }
     } else {
         snprintf(b, n, "Current Input: %s", name);
     }
@@ -861,9 +878,9 @@ lbl_m17_user_data(void* v, char* b, size_t n) {
     return b;
 }
 
-// ---- DSP labels (USE_RTLSDR only) ----
+// ---- DSP labels (USE_RADIO only) ----
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 
 const char*
 lbl_onoff_cq(void* v, char* b, size_t n) {
@@ -1062,4 +1079,4 @@ lbl_rtl_tuner_autogain(void* v, char* b, size_t n) {
     return b;
 }
 
-#endif /* USE_RTLSDR */
+#endif /* USE_RADIO */
