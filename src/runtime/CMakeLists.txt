@@ -65,5 +65,6 @@ target_link_libraries(dsd-neo_runtime PUBLIC dsd-neo_platform dsd-neo_feature_rt
 target_link_libraries(dsd-neo_runtime PRIVATE dsd-neo_warnings)
 
 install(TARGETS dsd-neo_runtime
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

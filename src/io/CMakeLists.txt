@@ -20,6 +20,7 @@ if(RTLSDR_FOUND)
   target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_warnings)
 
   install(TARGETS dsd-neo_io_radio
+      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
       LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
       ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 else()
@@ -47,6 +48,7 @@ target_link_libraries(dsd-neo_io_audio PUBLIC dsd-neo_runtime dsd-neo_platform $
 target_link_libraries(dsd-neo_io_audio PRIVATE dsd-neo_warnings)
 
 install(TARGETS dsd-neo_io_audio
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
@@ -63,6 +65,7 @@ target_link_libraries(dsd-neo_io_udp_control PUBLIC dsd-neo_runtime)
 target_link_libraries(dsd-neo_io_udp_control PRIVATE dsd-neo_warnings)
 
 install(TARGETS dsd-neo_io_udp_control
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
@@ -90,5 +93,6 @@ if(RTLSDR_FOUND)
 endif()
 
 install(TARGETS dsd-neo_io_control
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

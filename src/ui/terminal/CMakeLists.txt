@@ -47,6 +47,7 @@ target_link_libraries(dsd-neo_ui_terminal PUBLIC dsd-neo_core dsd-neo_runtime ds
 target_link_libraries(dsd-neo_ui_terminal PRIVATE dsd-neo_warnings dsd-neo_feature_colors)
 
 install(TARGETS dsd-neo_ui_terminal
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 

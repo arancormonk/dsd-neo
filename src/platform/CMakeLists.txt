@@ -47,5 +47,6 @@ target_include_directories(dsd-neo_platform
 )
 
 install(TARGETS dsd-neo_platform
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

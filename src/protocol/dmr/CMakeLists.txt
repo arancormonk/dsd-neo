@@ -29,5 +29,6 @@ target_link_libraries(dsd-neo_proto_dmr PUBLIC dsd-neo_runtime dsd-neo_fec dsd-n
 target_link_libraries(dsd-neo_proto_dmr PRIVATE dsd-neo_warnings)
 
 install(TARGETS dsd-neo_proto_dmr
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
