@@ -6,6 +6,7 @@
 /* UI → Demod command queue (SPSC, bounded) */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -25,6 +26,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/menu_services.h>
@@ -1120,7 +1122,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
         }
         apply_cfg_rtl_common(opts, cfg);
         opts->rtltcp_enabled = 0;
-    } else { // DSDCFG_INPUT_RTLTCP
+    } else if (cfg->input_source == DSDCFG_INPUT_RTLTCP) {
         if (cfg->rtltcp_host[0]) {
             snprintf(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", cfg->rtltcp_host);
         }
@@ -1129,8 +1131,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
         }
         apply_cfg_rtl_common(opts, cfg);
         opts->rtltcp_enabled = 1;
-    }
-    else { // DSDCFG_INPUT_SOAPY
+    } else { // DSDCFG_INPUT_SOAPY
         apply_cfg_rtl_common(opts, cfg);
         opts->rtltcp_enabled = 0;
     }

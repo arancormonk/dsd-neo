@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <stddef.h>
 
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>

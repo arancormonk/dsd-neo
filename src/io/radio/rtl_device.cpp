@@ -50,10 +50,16 @@
 #include <stdint.h>
 
 #ifdef USE_SOAPYSDR
+#include <SoapySDR/Constants.h>
 #include <SoapySDR/Device.hpp>
+#include <SoapySDR/Errors.h>
 #include <SoapySDR/Errors.hpp>
-#include <SoapySDR/Formats.hpp>
+#include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
+
+namespace SoapySDR {
+class Stream;
+} // namespace SoapySDR
 #else
 namespace SoapySDR {
 class Device;

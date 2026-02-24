@@ -4,11 +4,14 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_socket_connect.h>
@@ -29,6 +32,8 @@
 #include "dsd-neo/platform/sockets.h"
 
 #ifdef USE_RADIO
+#include <dsd-neo/io/rtl_stream_c.h>
+
 static int
 svc_radio_source_is_soapy(const dsd_opts* opts) {
     const char* dev = opts ? opts->audio_in_dev : NULL;
@@ -792,7 +797,7 @@ svc_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, int on) {
     dsd_setenv("DSD_NEO_TCP_AUTOTUNE", on ? "1" : "0", 1);
     if (state && state->rtl_ctx) {
         /* Apply live when RTL stream is active */
-        return rtl_stream_set_rtltcp_autotune(opts->rtltcp_autotune);
+        rtl_stream_set_rtltcp_autotune(opts->rtltcp_autotune);
     }
     return 0;
 }
