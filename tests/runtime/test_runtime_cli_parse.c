@@ -782,6 +782,70 @@ test_frame_log_long_option_parse(void) {
 }
 
 static int
+test_input_source_arg_roundtrip(const char* input_spec) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-i";
+    char arg2[2048];
+    snprintf(arg2, sizeof arg2, "%s", input_spec ? input_spec : "");
+    arg2[sizeof arg2 - 1] = '\0';
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d for -i %s, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, arg2, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (strcmp(opts->audio_in_dev, arg2) != 0) {
+        fprintf(stderr, "expected audio_in_dev=%s, got %s\n", arg2, opts->audio_in_dev);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_input_source_soapy_roundtrip(void) {
+    return test_input_source_arg_roundtrip("soapy");
+}
+
+static int
+test_input_source_soapy_args_roundtrip(void) {
+    return test_input_source_arg_roundtrip("soapy:driver=airspy,serial=ABC123");
+}
+
+static int
+test_input_source_rtl_roundtrip(void) {
+    return test_input_source_arg_roundtrip("rtl:0:851.375M:30:5:16:-50:2");
+}
+
+static int
+test_input_source_rtltcp_roundtrip(void) {
+    return test_input_source_arg_roundtrip("rtltcp:127.0.0.1:1234:851.375M:30:5:16:-50:2");
+}
+
+static int
 test_rtl_udp_control_long_option_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -1262,6 +1326,10 @@ main(void) {
     rc |= test_open_mbe_missing_file_leaves_stream_null();
     rc |= test_rdio_long_options_parse();
     rc |= test_frame_log_long_option_parse();
+    rc |= test_input_source_soapy_roundtrip();
+    rc |= test_input_source_soapy_args_roundtrip();
+    rc |= test_input_source_rtl_roundtrip();
+    rc |= test_input_source_rtltcp_roundtrip();
     rc |= test_rtl_udp_control_long_option_parse();
     rc |= test_rtl_udp_control_missing_port_returns_error();
     rc |= test_dmr_baofeng_pc5_long_option_parse();

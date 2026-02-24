@@ -523,6 +523,55 @@ test_profile_invalid_int_uses_legacy_zero_fallback(void) {
 }
 
 static int
+test_profile_soapy_settings(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"pulse\"\n"
+                             "\n"
+                             "[profile.soapy_scan]\n"
+                             "input.source = \"soapy\"\n"
+                             "input.soapy_args = \"driver=airspy,serial=ABC123\"\n"
+                             "input.rtl_freq = \"162.550M\"\n"
+                             "input.rtl_gain = 27\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    int rc = dsd_user_config_load_profile(path, "soapy_scan", &cfg);
+
+    int result = 0;
+    if (rc != 0) {
+        fprintf(stderr, "FAIL: load with soapy_scan profile failed (rc=%d)\n", rc);
+        result = 1;
+    }
+    if (cfg.input_source != DSDCFG_INPUT_SOAPY) {
+        fprintf(stderr, "FAIL: expected soapy source, got %d\n", cfg.input_source);
+        result = 1;
+    }
+    if (strcmp(cfg.soapy_args, "driver=airspy,serial=ABC123") != 0) {
+        fprintf(stderr, "FAIL: expected soapy_args driver=airspy,serial=ABC123, got %s\n", cfg.soapy_args);
+        result = 1;
+    }
+    if (strcmp(cfg.rtl_freq, "162.550M") != 0) {
+        fprintf(stderr, "FAIL: expected rtl_freq 162.550M, got %s\n", cfg.rtl_freq);
+        result = 1;
+    }
+    if (cfg.rtl_gain != 27) {
+        fprintf(stderr, "FAIL: expected rtl_gain 27, got %d\n", cfg.rtl_gain);
+        result = 1;
+    }
+
+    (void)remove(path);
+    return result;
+}
+
+static int
 test_include_directive(void) {
     /* Create included file first */
     static const char* included_ini = "version = 1\n"
@@ -680,6 +729,7 @@ main(void) {
     rc |= test_list_profiles_empty();
     rc |= test_profile_rtl_settings();
     rc |= test_profile_invalid_int_uses_legacy_zero_fallback();
+    rc |= test_profile_soapy_settings();
     rc |= test_include_directive();
     rc |= test_include_override();
 

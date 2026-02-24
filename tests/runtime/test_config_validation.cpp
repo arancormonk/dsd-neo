@@ -240,6 +240,72 @@ test_decode_mode_aliases_valid(void) {
 }
 
 static int
+test_soapy_source_valid(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"soapy\"\n"
+                             "soapy_args = \"driver=airspy\"\n"
+                             "rtl_freq = \"162.550M\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    memset(&diags, 0, sizeof(diags));
+
+    int rc = dsd_user_config_validate(path, &diags);
+
+    int result = 0;
+    if (rc != 0) {
+        fprintf(stderr, "FAIL: soapy source config returned error %d\n", rc);
+        result = 1;
+    }
+    if (diags.error_count > 0) {
+        fprintf(stderr, "FAIL: soapy source config has %d errors\n", diags.error_count);
+        result = 1;
+    }
+
+    dsd_user_config_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
+test_invalid_source_rejected_after_soapy_added(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"soapyy\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    memset(&diags, 0, sizeof(diags));
+
+    int rc = dsd_user_config_validate(path, &diags);
+
+    int result = 0;
+    if (rc == 0) {
+        fprintf(stderr, "FAIL: invalid source soapyy should cause error\n");
+        result = 1;
+    }
+    if (diags.error_count == 0) {
+        fprintf(stderr, "FAIL: no error for invalid source soapyy\n");
+        result = 1;
+    }
+
+    dsd_user_config_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
 test_int_out_of_range(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -581,6 +647,8 @@ main(void) {
     rc |= test_unknown_section_warning();
     rc |= test_invalid_enum_error();
     rc |= test_decode_mode_aliases_valid();
+    rc |= test_soapy_source_valid();
+    rc |= test_invalid_source_rejected_after_soapy_added();
     rc |= test_int_out_of_range();
     rc |= test_int_out_of_range_negative_max();
     rc |= test_diags_have_line_numbers();

@@ -56,6 +56,33 @@ reset_opts_and_state(dsd_opts& opts, dsd_state& state) {
 }
 
 static int
+render_config_to_buffer(const dsdneoUserConfig* cfg, char* out, size_t out_sz) {
+    if (!cfg || !out || out_sz == 0) {
+        return 1;
+    }
+    FILE* tmp = tmpfile();
+    if (!tmp) {
+        fprintf(stderr, "tmpfile failed: %s\n", strerror(errno));
+        return 1;
+    }
+    dsd_user_config_render_ini(cfg, tmp);
+    if (fseek(tmp, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "fseek failed\n");
+        fclose(tmp);
+        return 1;
+    }
+    size_t n = fread(out, 1, out_sz - 1, tmp);
+    if (n == 0 && ferror(tmp)) {
+        fprintf(stderr, "fread failed\n");
+        fclose(tmp);
+        return 1;
+    }
+    out[n] = '\0';
+    fclose(tmp);
+    return 0;
+}
+
+static int
 test_load_and_apply_basic(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -180,6 +207,256 @@ test_load_and_apply_basic(void) {
     if (opts.rdio_upload_timeout_ms != 2500 || opts.rdio_upload_retries != 3) {
         fprintf(stderr, "rdio upload timeout/retries not applied (%d/%d)\n", opts.rdio_upload_timeout_ms,
                 opts.rdio_upload_retries);
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
+test_load_and_apply_soapy_input_no_args(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"soapy\"\n"
+                             "rtl_freq = \"155.340M\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        fprintf(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    int rc = 0;
+    if (!cfg.has_input || cfg.input_source != DSDCFG_INPUT_SOAPY) {
+        fprintf(stderr, "input section not parsed as Soapy source\n");
+        rc |= 1;
+    }
+    if (cfg.soapy_args[0] != '\0') {
+        fprintf(stderr, "soapy_args expected empty for plain soapy source, got \"%s\"\n", cfg.soapy_args);
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    opts.rtl_gain_value = 77;
+    opts.rtl_dsp_bw_khz = 16;
+    opts.rtl_volume_multiplier = 9;
+
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    if (strcmp(opts.audio_in_dev, "soapy") != 0) {
+        fprintf(stderr, "audio_in_dev mismatch for plain soapy: \"%s\"\n", opts.audio_in_dev);
+        rc |= 1;
+    }
+    if (opts.rtlsdr_center_freq != 155340000U) {
+        fprintf(stderr, "rtlsdr_center_freq mismatch for soapy source: %u\n", opts.rtlsdr_center_freq);
+        rc |= 1;
+    }
+    if (opts.rtl_gain_value != 77 || opts.rtl_dsp_bw_khz != 16 || opts.rtl_volume_multiplier != 9) {
+        fprintf(stderr, "soapy defaults should preserve existing rtl tuning values gain=%d bw=%d vol=%d\n",
+                opts.rtl_gain_value, opts.rtl_dsp_bw_khz, opts.rtl_volume_multiplier);
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
+test_load_and_apply_soapy_input_with_args(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"soapy\"\n"
+                             "soapy_args = \"driver=airspy,serial=ABC123\"\n"
+                             "rtl_freq = \"851.375M\"\n"
+                             "rtl_gain = 30\n"
+                             "rtl_ppm = 5\n"
+                             "rtl_bw_khz = 16\n"
+                             "rtl_sql = -50\n"
+                             "rtl_volume = 2\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        fprintf(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    int rc = 0;
+    if (!cfg.has_input || cfg.input_source != DSDCFG_INPUT_SOAPY) {
+        fprintf(stderr, "input section not parsed as Soapy source\n");
+        rc |= 1;
+    }
+    if (strcmp(cfg.soapy_args, "driver=airspy,serial=ABC123") != 0) {
+        fprintf(stderr, "soapy_args parse mismatch: \"%s\"\n", cfg.soapy_args);
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    if (strcmp(opts.audio_in_dev, "soapy:driver=airspy,serial=ABC123") != 0) {
+        fprintf(stderr, "audio_in_dev mismatch for soapy args: \"%s\"\n", opts.audio_in_dev);
+        rc |= 1;
+    }
+    if (opts.rtlsdr_center_freq != 851375000U) {
+        fprintf(stderr, "rtlsdr_center_freq mismatch for soapy args: %u\n", opts.rtlsdr_center_freq);
+        rc |= 1;
+    }
+    if (opts.rtl_gain_value != 30 || opts.rtlsdr_ppm_error != 5 || opts.rtl_dsp_bw_khz != 16
+        || opts.rtl_volume_multiplier != 2) {
+        fprintf(stderr, "shared rtl tuning values not applied for soapy gain=%d ppm=%d bw=%d vol=%d\n",
+                opts.rtl_gain_value, opts.rtlsdr_ppm_error, opts.rtl_dsp_bw_khz, opts.rtl_volume_multiplier);
+        rc |= 1;
+    }
+    if (!(opts.rtl_squelch_level > 0.0 && opts.rtl_squelch_level < 1.0)) {
+        fprintf(stderr, "rtl_squelch_level should be mapped from dB for soapy input, got %.9f\n",
+                opts.rtl_squelch_level);
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
+test_snapshot_roundtrip_soapy_args(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+
+    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=sdrplay,serial=RSP1A");
+    opts.audio_in_dev[sizeof opts.audio_in_dev - 1] = '\0';
+    opts.rtlsdr_center_freq = 935012500U;
+    opts.rtl_gain_value = 44;
+    opts.rtlsdr_ppm_error = -3;
+    opts.rtl_dsp_bw_khz = 24;
+    opts.rtl_squelch_level = 1.0;
+    opts.rtl_volume_multiplier = 5;
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+
+    int rc = 0;
+    if (!snap.has_input || snap.input_source != DSDCFG_INPUT_SOAPY) {
+        fprintf(stderr, "snapshot input_source mismatch for soapy\n");
+        rc |= 1;
+    }
+    if (strcmp(snap.soapy_args, "driver=sdrplay,serial=RSP1A") != 0) {
+        fprintf(stderr, "snapshot soapy_args mismatch: \"%s\"\n", snap.soapy_args);
+        rc |= 1;
+    }
+    if (strcmp(snap.rtl_freq, "935012500") != 0 || snap.rtl_gain != 44 || snap.rtl_ppm != -3 || snap.rtl_bw_khz != 24
+        || snap.rtl_volume != 5) {
+        fprintf(stderr, "snapshot shared tuning mismatch freq=%s gain=%d ppm=%d bw=%d vol=%d\n", snap.rtl_freq,
+                snap.rtl_gain, snap.rtl_ppm, snap.rtl_bw_khz, snap.rtl_volume);
+        rc |= 1;
+    }
+    if (snap.rtl_sql != 0) {
+        fprintf(stderr, "snapshot rtl_sql expected 0 from unit squelch power, got %d\n", snap.rtl_sql);
+        rc |= 1;
+    }
+
+    char rendered[4096];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (!strstr(rendered, "source = \"soapy\"") || !strstr(rendered, "soapy_args = \"driver=sdrplay,serial=RSP1A\"")) {
+        fprintf(stderr, "rendered Soapy config missing source/args:\n%s\n", rendered);
+        rc |= 1;
+    }
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(rendered, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg_reload;
+    if (dsd_user_config_load(path, &cfg_reload) != 0) {
+        fprintf(stderr, "dsd_user_config_load failed for rendered soapy config %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    if (cfg_reload.input_source != DSDCFG_INPUT_SOAPY
+        || strcmp(cfg_reload.soapy_args, "driver=sdrplay,serial=RSP1A") != 0) {
+        fprintf(stderr, "reloaded soapy config mismatch source=%d args=%s\n", cfg_reload.input_source,
+                cfg_reload.soapy_args);
+        rc |= 1;
+    }
+
+    static dsd_opts opts_reload;
+    static dsd_state state_reload;
+    reset_opts_and_state(opts_reload, state_reload);
+    dsd_apply_user_config_to_opts(&cfg_reload, &opts_reload, &state_reload);
+    if (strcmp(opts_reload.audio_in_dev, "soapy:driver=sdrplay,serial=RSP1A") != 0) {
+        fprintf(stderr, "reloaded audio_in_dev mismatch: \"%s\"\n", opts_reload.audio_in_dev);
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
+test_load_and_apply_rtltcp_regression(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"rtltcp\"\n"
+                             "rtltcp_host = \"127.0.0.1\"\n"
+                             "rtltcp_port = 1234\n"
+                             "rtl_freq = \"851.375M\"\n"
+                             "rtl_gain = 30\n"
+                             "rtl_ppm = 5\n"
+                             "rtl_bw_khz = 16\n"
+                             "rtl_sql = -50\n"
+                             "rtl_volume = 2\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        fprintf(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    int rc = 0;
+    if (!cfg.has_input || cfg.input_source != DSDCFG_INPUT_RTLTCP) {
+        fprintf(stderr, "input section not parsed as RTLTCP source\n");
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    if (strcmp(opts.audio_in_dev, "rtltcp:127.0.0.1:1234:851.375M:30:5:16:-50:2") != 0) {
+        fprintf(stderr, "rtltcp audio_in_dev regression: \"%s\"\n", opts.audio_in_dev);
         rc |= 1;
     }
 
@@ -504,6 +781,10 @@ int
 main(void) {
     int rc = 0;
     rc |= test_load_and_apply_basic();
+    rc |= test_load_and_apply_soapy_input_no_args();
+    rc |= test_load_and_apply_soapy_input_with_args();
+    rc |= test_snapshot_roundtrip_soapy_args();
+    rc |= test_load_and_apply_rtltcp_regression();
     rc |= test_snapshot_roundtrip();
     rc |= test_apply_demod_lock();
     rc |= test_snapshot_persists_demod_lock();
