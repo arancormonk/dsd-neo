@@ -63,3 +63,8 @@ target_include_directories(dsd-neo_dsp
 target_link_libraries(dsd-neo_dsp PUBLIC dsd-neo_runtime dsd-neo_feature_rtlsdr)
 
 target_link_libraries(dsd-neo_dsp PRIVATE dsd-neo_warnings dsd-neo_feature_pvc)
+
+install(TARGETS dsd-neo_dsp
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

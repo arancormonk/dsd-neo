@@ -613,6 +613,7 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
             }
             return 1;
         }
+#ifdef USE_RTLSDR
         case UI_CMD_RTL_ENABLE_INPUT: {
             if (state) {
                 int rc = svc_rtl_enable_input(opts, state);
@@ -765,6 +766,7 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
             }
             return 1;
         }
+#endif /* USE_RTLSDR */
         case UI_CMD_RIGCTL_SET_MOD_BW: {
             if (state && c->n >= (int)sizeof(int32_t)) {
                 int32_t hz = 0;

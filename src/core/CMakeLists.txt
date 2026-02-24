@@ -35,3 +35,8 @@ target_link_libraries(dsd-neo_core PUBLIC dsd-neo_runtime dsd-neo_dsp dsd-neo_fe
                                            dsd-neo_feature_codec2 dsd-neo_feature_pvc ${LIBSNDFILE_LIBRARIES})
 
 target_link_libraries(dsd-neo_core PRIVATE dsd-neo_warnings dsd-neo_feature_lz)
+
+install(TARGETS dsd-neo_core
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

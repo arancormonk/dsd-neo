@@ -13,3 +13,8 @@ target_include_directories(dsd-neo_proto_x2tdma
 target_link_libraries(dsd-neo_proto_x2tdma PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_crypto dsd-neo_core)
 
 target_link_libraries(dsd-neo_proto_x2tdma PRIVATE dsd-neo_warnings)
+
+install(TARGETS dsd-neo_proto_x2tdma
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
