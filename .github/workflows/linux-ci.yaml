@@ -718,9 +718,25 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
-  clang-tidy:
-    name: clang-tidy
+  static-analysis:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: clang-tidy
+            run_cmd: tools/clang_tidy.sh --strict
+            artifact_name: clang-tidy-report
+            artifact_path: .clang-tidy.local.out
+          - name: iwyu
+            run_cmd: tools/iwyu.sh --strict
+            artifact_name: iwyu-report
+            artifact_path: .iwyu.local.out
+          - name: gcc-fanalyzer
+            run_cmd: tools/gcc_fanalyzer.sh --strict
+            artifact_name: gcc-fanalyzer-report
+            artifact_path: .gcc-fanalyzer.local.out
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -777,9 +793,10 @@ jobs:
         uses: actions/cache@v5.0.3
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ github.job }}-${{ steps.toolver-tidy.outputs.gcc_ver }}-${{ steps.toolver-tidy.outputs.cmake_ver }}-${{ github.sha }}
+          key: ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-${{ steps.toolver-tidy.outputs.gcc_ver }}-${{ steps.toolver-tidy.outputs.cmake_ver }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ github.job }}-${{ steps.toolver-tidy.outputs.gcc_ver }}-${{ steps.toolver-tidy.outputs.cmake_ver }}-
+            ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-${{ steps.toolver-tidy.outputs.gcc_ver }}-${{ steps.toolver-tidy.outputs.cmake_ver }}-
+            ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-
             ccache-${{ runner.os }}-${{ github.job }}-
             ccache-${{ runner.os }}-
 
@@ -882,42 +899,15 @@ jobs:
       - name: Configure (dev-debug)
         run: cmake --preset dev-debug
 
-      - name: Run clang-tidy (strict)
-        run: |
-          tools/clang_tidy.sh --strict
+      - name: Run ${{ matrix.name }} (strict)
+        run: ${{ matrix.run_cmd }}
 
-      - name: Upload clang-tidy output
+      - name: Upload ${{ matrix.name }} output
         if: always()
         uses: actions/upload-artifact@v6.0.0
         with:
-          name: clang-tidy-report
-          path: .clang-tidy.local.out
-          include-hidden-files: true
-          retention-days: 7
-
-      - name: Run IWYU
-        run: |
-          tools/iwyu.sh --strict
-
-      - name: Upload IWYU output
-        if: always()
-        uses: actions/upload-artifact@v6.0.0
-        with:
-          name: iwyu-report
-          path: .iwyu.local.out
-          include-hidden-files: true
-          retention-days: 7
-
-      - name: Run GCC fanalyzer (strict)
-        run: |
-          tools/gcc_fanalyzer.sh --strict
-
-      - name: Upload GCC fanalyzer output
-        if: always()
-        uses: actions/upload-artifact@v6.0.0
-        with:
-          name: gcc-fanalyzer-report
-          path: .gcc-fanalyzer.local.out
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
           include-hidden-files: true
           retention-days: 7
 

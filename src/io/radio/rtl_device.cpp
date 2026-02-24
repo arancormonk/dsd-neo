@@ -13,7 +13,6 @@
  */
 
 #include <atomic>
-#include <complex>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/rtl_device.h>
@@ -24,7 +23,6 @@
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
-#include <exception>
 #include <math.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
@@ -34,8 +32,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <string>
-#include <vector>
 
 #include "dsd-neo/platform/platform.h"
 
@@ -56,6 +52,10 @@
 #include <SoapySDR/Errors.hpp>
 #include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
+#include <complex>
+#include <exception>
+#include <string>
+#include <vector>
 
 namespace SoapySDR {
 class Stream;
