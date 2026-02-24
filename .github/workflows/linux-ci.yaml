@@ -26,6 +26,83 @@ permissions:
   contents: read
 
 jobs:
+  backend-matrix:
+    name: backend-matrix (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: both
+            cmake_flags: -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON
+            rtl_enabled: ON
+            rtl_available: ON
+            soapy_enabled: ON
+            soapy_available: ON
+            radio_available: ON
+          - variant: soapy_only
+            cmake_flags: -DDSD_ENABLE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON
+            rtl_enabled: OFF
+            rtl_available: OFF
+            soapy_enabled: ON
+            soapy_available: ON
+            radio_available: ON
+          - variant: rtl_only
+            cmake_flags: -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=OFF
+            rtl_enabled: ON
+            rtl_available: ON
+            soapy_enabled: OFF
+            soapy_available: OFF
+            radio_available: ON
+          - variant: neither
+            cmake_flags: -DDSD_ENABLE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=OFF
+            rtl_enabled: OFF
+            rtl_available: OFF
+            soapy_enabled: OFF
+            soapy_available: OFF
+            radio_available: OFF
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config git \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+
+      - name: Prepare local dependency environment
+        run: |
+          echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Configure (${{ matrix.variant }})
+        run: |
+          set -euxo pipefail
+          log="$RUNNER_TEMP/configure-${{ matrix.variant }}.log"
+          cmake --preset dev-debug ${{ matrix.cmake_flags }} 2>&1 | tee "$log"
+          grep -F "RTL-SDR backend enabled: ${{ matrix.rtl_enabled }} (available: ${{ matrix.rtl_available }})" "$log"
+          grep -F "SoapySDR backend enabled: ${{ matrix.soapy_enabled }} (available: ${{ matrix.soapy_available }})" "$log"
+          grep -F "Radio pipeline available: ${{ matrix.radio_available }}" "$log"
+
+      - name: Build (${{ matrix.variant }})
+        run: |
+          cmake --build --preset dev-debug -j
+
   build-linux:
     runs-on: ubuntu-latest
     # Do not run this full Release build on pull_request; keep it for push/dispatch
@@ -104,10 +181,10 @@ jobs:
           ccache --set-config=max_size=500M
           ccache --set-config=compression=true
 
-      - name: Install dependencies via APT when available (codec2, rtl-sdr)
+      - name: Install dependencies via APT when available (codec2, rtl-sdr, soapy)
         run: |
           sudo apt-get install -y --no-install-recommends \
-            libcodec2-dev librtlsdr-dev || true
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev || true
 
       - name: Build and install mbelib-neo (required, cached)
         run: |
@@ -197,11 +274,14 @@ jobs:
         run: |
           pkg-config --modversion codec2 || true
           pkg-config --modversion librtlsdr || true
+          pkg-config --modversion SoapySDR || true
           ldconfig -p | grep -E 'libsndfile|libpulse|ncursesw' || true
 
       - name: Configure (Release preset)
         run: |
-          cmake --preset dev-release
+          cmake --preset dev-release \
+            -DDSD_REQUIRE_RTLSDR=ON \
+            -DDSD_REQUIRE_SOAPYSDR=ON
 
       - name: Build
         run: |
@@ -228,7 +308,7 @@ jobs:
             clang-tools cmake ninja-build pkg-config git \
             build-essential libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev
 
       - name: Build and install mbelib-neo
         run: |
@@ -246,7 +326,9 @@ jobs:
 
       - name: Run scan-build
         run: |
-          tools/scan_build.sh --strict
+          tools/scan_build.sh --strict \
+            --cmake-arg -DDSD_REQUIRE_RTLSDR=ON \
+            --cmake-arg -DDSD_REQUIRE_SOAPYSDR=ON
 
       - name: Upload scan-build output
         if: always()
@@ -583,6 +665,14 @@ jobs:
       - name: Show ccache stats
         if: always()
         run: ccache -s
+
+  cmake-install-rules:
+    name: cmake install rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - name: Check install(TARGETS) runtime destinations
+        run: tools/check_install_runtime_destinations.sh
 
   format-check:
     name: clang-format

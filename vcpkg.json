@@ -17,6 +17,10 @@
       ]
     },
     {
+      "name": "soapysdr",
+      "platform": "windows"
+    },
+    {
       "name": "codec2",
       "platform": "windows"
     },

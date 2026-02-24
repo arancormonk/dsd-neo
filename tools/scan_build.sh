@@ -10,13 +10,14 @@ cd "$ROOT_DIR"
 
 usage() {
   cat <<'USAGE'
-Usage: tools/scan_build.sh [--strict] [--jobs N] [--build-dir DIR] [--output-dir DIR]
+Usage: tools/scan_build.sh [--strict] [--jobs N] [--build-dir DIR] [--output-dir DIR] [--cmake-arg ARG]...
 
 Options:
   --strict          Fail if scan-build reports bugs (--status-bugs).
   --jobs N          Parallel build jobs (default: detected CPU count).
   --build-dir DIR   Build directory (default: build/scan-build-debug).
   --output-dir DIR  scan-build report output dir (default: .scan-build.local).
+  --cmake-arg ARG   Extra CMake configure argument (repeatable).
 USAGE
 }
 
@@ -24,6 +25,7 @@ STRICT=0
 JOBS=""
 BUILD_DIR="build/scan-build-debug"
 OUTPUT_DIR=".scan-build.local"
+CMAKE_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -50,6 +52,14 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --cmake-arg)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --cmake-arg" >&2
+        exit 2
+      fi
+      CMAKE_ARGS+=("$2")
       shift 2
       ;;
     -h|--help) usage; exit 0 ;;
@@ -117,7 +127,8 @@ set +e
   echo "Configuring analysis build in $BUILD_DIR ..."
   scan-build "${SCAN_ARGS[@]}" cmake -S . -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    "${CMAKE_ARGS[@]}"
   echo ""
   echo "Building under scan-build ..."
   scan-build "${SCAN_ARGS[@]}" cmake --build "$BUILD_DIR" -j "$JOBS"

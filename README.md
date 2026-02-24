@@ -97,15 +97,15 @@ Requirements
 - CMake ≥ 3.20.
 - Dependencies:
   - Required: libsndfile; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
-  - Optional: librtlsdr (RTL‑SDR support), Codec2 (additional vocoder paths), help2man (man page generation).
+  - Optional: librtlsdr (RTL‑SDR support), SoapySDR (non‑RTL SDR backends), Codec2 (additional vocoder paths), help2man (man page generation).
   - Vocoder: mbelib-neo (`mbe-neo` CMake package) is required.
 
 OS package hints
 
 - Ubuntu/Debian (apt):
-  - `sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev`
+  - `sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev`
 - macOS (Homebrew):
-  - `brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr codec2`
+  - `brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr soapysdr codec2`
 - Windows:
   - Preferred binary: the native MSVC ZIP. The MinGW ZIP is an alternative native build.
   - Source builds use CMake presets with vcpkg; set `VCPKG_ROOT` and use `win-msvc-*` or `win-mingw-*` presets in `CMakePresets.json`.
@@ -135,8 +135,8 @@ Build recipes (copy/paste)
 # From the repository root.
 #
 # OS deps (examples):
-# - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev
-# - macOS:         brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr codec2
+# - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev
+# - macOS:         brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr soapysdr codec2
 #
 # Install is optional; you can run directly from the build tree.
 
@@ -155,8 +155,8 @@ cmake --install build/dev-release --prefix "$HOME/.local"
 
 ```bash
 # OS deps (examples):
-# - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev
-# - macOS:         brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr codec2
+# - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev
+# - macOS:         brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr soapysdr codec2
 
 cmake --preset dev-debug
 cmake --build --preset dev-debug -j
@@ -229,6 +229,11 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_ENABLE_UBSAN=ON` — UndefinedBehaviorSanitizer in Debug builds.
 - Audio backend selection:
   - `-DDSD_USE_PORTAUDIO=ON` — Use PortAudio instead of PulseAudio (default on Windows).
+- Radio backend selection:
+  - `-DDSD_ENABLE_RTLSDR=ON|OFF` — Enable/disable RTL-SDR backend discovery.
+  - `-DDSD_ENABLE_SOAPYSDR=ON|OFF` — Enable/disable SoapySDR backend discovery.
+  - `-DDSD_REQUIRE_RTLSDR=ON|OFF` — Fail configure when RTL-SDR is enabled but unavailable.
+  - `-DDSD_REQUIRE_SOAPYSDR=ON|OFF` — Fail configure when SoapySDR is enabled but unavailable.
 - UI and behavior toggles:
   - `-DCOLORS=OFF` — Disable ncurses color output.
   - `-DCOLORSLOGS=OFF` — Disable colored terminal/log output.
@@ -238,7 +243,55 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DSID=ON` — Enable experimental P25p1 Soft ID decoding.
 - Optional features (auto‑detected):
   - RTL‑SDR support is enabled when `librtlsdr` is found.
+  - SoapySDR support is enabled when SoapySDR is found.
   - Codec2 support is enabled when `codec2` is found.
+
+## CI Backend Policy
+
+- CI treats backend availability as a build contract, not a best-effort option.
+- Linux CI runs a backend matrix for `both`, `soapy_only`, `rtl_only`, and `neither`.
+- Release/packaging/static-analysis jobs that are expected to exercise radio backends configure with:
+  - `-DDSD_REQUIRE_RTLSDR=ON`
+  - `-DDSD_REQUIRE_SOAPYSDR=ON`
+- If either required backend is missing, configure fails fast.
+
+## Backend Matrix Reproduction (Local)
+
+Run from repo root after installing deps (`librtlsdr` and SoapySDR when required):
+
+```bash
+# both backends required
+cmake --preset dev-debug \
+  -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON \
+  -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON
+cmake --build --preset dev-debug -j
+
+# soapy_only
+cmake --preset dev-debug \
+  -DDSD_ENABLE_RTLSDR=OFF \
+  -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON
+cmake --build --preset dev-debug -j
+
+# rtl_only
+cmake --preset dev-debug \
+  -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON \
+  -DDSD_ENABLE_SOAPYSDR=OFF
+cmake --build --preset dev-debug -j
+
+# neither
+cmake --preset dev-debug \
+  -DDSD_ENABLE_RTLSDR=OFF \
+  -DDSD_ENABLE_SOAPYSDR=OFF
+cmake --build --preset dev-debug -j
+```
+
+CI-like strict scan-build run:
+
+```bash
+tools/scan_build.sh --strict \
+  --cmake-arg -DDSD_REQUIRE_RTLSDR=ON \
+  --cmake-arg -DDSD_REQUIRE_SOAPYSDR=ON
+```
 
 ## Runtime Tuning
 
@@ -296,7 +349,7 @@ Quick examples
 - Platform: `src/platform`, headers `<dsd-neo/platform/...>` — cross-platform primitives (audio backend, sockets, threading, timing, curses).
 - Runtime: `src/runtime`, headers `<dsd-neo/runtime/...>` — config, logging, aligned memory, rings, worker pool, RT scheduling, git version.
 - DSP: `src/dsp`, headers `<dsd-neo/dsp/...>` — demod pipeline, resampler, filters, FLL/TED, SIMD helpers.
-- IO: `src/io`, headers `<dsd-neo/io/...>` — radio (RTL‑SDR), audio (PulseAudio/PortAudio + UDP PCM input/output), control (UDP/rigctl/serial).
+- IO: `src/io`, headers `<dsd-neo/io/...>` — radio (RTL‑SDR, RTL‑TCP, SoapySDR), audio (PulseAudio/PortAudio + UDP PCM input/output), control (UDP/rigctl/serial).
 - FEC: `src/fec`, headers `<dsd-neo/fec/...>` — BCH, Golay, Hamming, RS, BPTC, CRC/FCS.
 - Crypto: `src/crypto`, headers `<dsd-neo/crypto/...>` — RC2/RC4/DES/AES and helpers.
 - Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF.
@@ -310,7 +363,7 @@ Quick examples
   - `tools/cppcheck.sh` (use `--strict` for broader checks).
   - `tools/iwyu.sh` (include hygiene via include-what-you-use; excludes `src/third_party`).
   - `tools/gcc_fanalyzer.sh` (GCC `-fanalyzer` path-sensitive diagnostics; excludes `src/third_party`).
-  - `tools/scan_build.sh` (Clang Static Analyzer via `scan-build`, heavier full-build pass; excludes `src/third_party`).
+  - `tools/scan_build.sh` (Clang Static Analyzer via `scan-build`, heavier full-build pass; excludes `src/third_party`; supports repeatable `--cmake-arg` passthrough).
   - `tools/semgrep.sh` (additional SAST rules; use `--strict` to fail on findings; excludes `src/third_party`).
 - Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass (clang-format, clang-tidy, cppcheck, IWYU, GCC fanalyzer, Semgrep) on changed paths.
 - Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`.

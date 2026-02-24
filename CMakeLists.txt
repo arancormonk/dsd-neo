@@ -64,6 +64,8 @@ option(DSD_ENABLE_ASAN "Enable AddressSanitizer in Debug builds" OFF)
 option(DSD_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer in Debug builds" OFF)
 option(DSD_ENABLE_RTLSDR "Enable RTL-SDR backend support" ON)
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
+option(DSD_REQUIRE_RTLSDR "Fail configure when RTL-SDR is enabled but not found" OFF)
+option(DSD_REQUIRE_SOAPYSDR "Fail configure when SoapySDR is enabled but not found" OFF)
 
 # -----------------------------------------------------------------------------
 # Common warning flags (target-scoped)
@@ -218,6 +220,30 @@ if(DSD_ENABLE_SOAPYSDR)
     elseif(SoapySDR_INCLUDE_DIRS AND SoapySDR_LIBRARIES)
         set(DSD_HAS_SOAPYSDR ON)
     endif()
+endif()
+
+if(DSD_REQUIRE_RTLSDR AND NOT DSD_ENABLE_RTLSDR)
+    message(FATAL_ERROR "DSD_REQUIRE_RTLSDR=ON requires DSD_ENABLE_RTLSDR=ON.")
+endif()
+
+if(DSD_REQUIRE_SOAPYSDR AND NOT DSD_ENABLE_SOAPYSDR)
+    message(FATAL_ERROR "DSD_REQUIRE_SOAPYSDR=ON requires DSD_ENABLE_SOAPYSDR=ON.")
+endif()
+
+if(DSD_REQUIRE_RTLSDR AND NOT DSD_HAS_RTLSDR)
+    message(FATAL_ERROR "RTL-SDR backend was required but not found. Install librtlsdr or disable DSD_REQUIRE_RTLSDR.")
+endif()
+
+if(DSD_REQUIRE_SOAPYSDR AND NOT DSD_HAS_SOAPYSDR)
+    message(FATAL_ERROR "SoapySDR backend was required but not found. Install SoapySDR or disable DSD_REQUIRE_SOAPYSDR.")
+endif()
+
+if(DSD_ENABLE_RTLSDR AND NOT DSD_HAS_RTLSDR AND NOT DSD_REQUIRE_RTLSDR)
+    message(STATUS "RTL-SDR not found; building without RTL-SDR backend (set DSD_REQUIRE_RTLSDR=ON to fail).")
+endif()
+
+if(DSD_ENABLE_SOAPYSDR AND NOT DSD_HAS_SOAPYSDR AND NOT DSD_REQUIRE_SOAPYSDR)
+    message(STATUS "SoapySDR not found; building without SoapySDR backend (set DSD_REQUIRE_SOAPYSDR=ON to fail).")
 endif()
 
 set(DSD_HAS_RADIO OFF)

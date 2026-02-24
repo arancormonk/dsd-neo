@@ -148,6 +148,7 @@ jobs:
               apt-get install -y --no-install-recommends \
                 ca-certificates wget git build-essential cmake ninja-build pkg-config ccache \
                 libsndfile1-dev libpulse-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+                libsoapysdr-dev \
                 libncurses-dev patchelf file squashfs-tools desktop-file-utils doxygen graphviz imagemagick \
                 libboost-all-dev libarchive-dev libcurl4-openssl-dev zsync libglib2.0-dev \
                 libzstd-dev liblzma-dev libgpgme-dev libgcrypt20-dev gnupg \
@@ -221,7 +222,11 @@ jobs:
               echo "rtlsdr_sha=$rtlsdr_sha" >> "$mf"
               echo "updated=$(date -u +%FT%TZ)" >> "$mf"
 
-              cmake -S . -B build/appimage -G Ninja -DCMAKE_BUILD_TYPE=Release -DDSD_ENABLE_LTO=OFF -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
+              pkg-config --modversion SoapySDR || true
+
+              cmake -S . -B build/appimage -G Ninja -DCMAKE_BUILD_TYPE=Release -DDSD_ENABLE_LTO=OFF \
+                -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON \
+                -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
               cmake --build build/appimage -j
               ./build/appimage/apps/dsd-cli/dsd-neo -h || true
 

@@ -56,7 +56,12 @@ jobs:
       - name: Configure (MSVC Release)
         shell: pwsh
         # Use Ninja generator (override preset) so CMAKE_*_COMPILER_LAUNCHER works with sccache
-        run: cmake --preset win-msvc-release -G Ninja -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        run: |
+          cmake --preset win-msvc-release -G Ninja `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+            -DDSD_REQUIRE_RTLSDR=ON `
+            -DDSD_REQUIRE_SOAPYSDR=ON
 
       - name: Build (MSVC Release)
         shell: pwsh
@@ -243,7 +248,9 @@ jobs:
           SCCACHE_EXE="$(cygpath -u "$SCCACHE_PATH")"
           cmake --preset win-mingw-release -G Ninja \
             -DCMAKE_C_COMPILER_LAUNCHER="$SCCACHE_EXE" \
-            -DCMAKE_CXX_COMPILER_LAUNCHER="$SCCACHE_EXE"
+            -DCMAKE_CXX_COMPILER_LAUNCHER="$SCCACHE_EXE" \
+            -DDSD_REQUIRE_RTLSDR=ON \
+            -DDSD_REQUIRE_SOAPYSDR=ON
 
       - name: Build (MinGW Release)
         shell: msys2 {0}

@@ -60,7 +60,7 @@ jobs:
           set -euxo pipefail
           # Many deps we build from source (cached) to align with Linux/Windows flows
           brew install cmake ninja pkg-config ccache \
-            libsndfile pulseaudio fftw libusb ncurses
+            libsndfile pulseaudio fftw libusb ncurses soapysdr
           # Prefer Homebrew packages when available
           brew install codec2 rtl-sdr || true
           brew --version
@@ -198,6 +198,7 @@ jobs:
           set -euxo pipefail
           pkg-config --modversion codec2 || true
           pkg-config --modversion librtlsdr || true
+          pkg-config --modversion SoapySDR || true
           pkg-config --modversion libpulse || true
           pkg-config --modversion sndfile || true
 
@@ -206,6 +207,7 @@ jobs:
         run: |
           cmake --preset dev-release -G Ninja \
             -DDSD_ENABLE_LTO=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON \
             -DBUILD_TESTING=OFF \
             -DCURSES_LIBRARY="$HB_PREFIX/opt/ncurses/lib/libncursesw.dylib" \
             -DCURSES_INCLUDE_PATH="$HB_PREFIX/opt/ncurses/include"

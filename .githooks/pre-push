@@ -304,6 +304,8 @@ run_check() {
   fi
 }
 
+run_check "CMake install(TARGETS) runtime destinations" tools/check_install_runtime_destinations.sh
+
 # shellcheck disable=SC2329 # Invoked indirectly via run_check callback dispatch.
 run_clang_format_check() {
   local rc=0
