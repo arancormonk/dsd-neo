@@ -205,7 +205,21 @@ if(DSD_ENABLE_RTLSDR)
 endif()
 
 if(DSD_ENABLE_SOAPYSDR)
+    # Ubuntu 20.04's SoapySDRConfig.cmake (0.7.x) sets CMAKE_CXX_STANDARD=11
+    # as a side effect. Preserve this project's configured language standard.
+    set(_dsd_saved_cxx_standard "${CMAKE_CXX_STANDARD}")
+    set(_dsd_saved_cxx_standard_required "${CMAKE_CXX_STANDARD_REQUIRED}")
+    set(_dsd_saved_cxx_extensions "${CMAKE_CXX_EXTENSIONS}")
+
     find_package(SoapySDR CONFIG QUIET)
+
+    set(CMAKE_CXX_STANDARD "${_dsd_saved_cxx_standard}")
+    set(CMAKE_CXX_STANDARD_REQUIRED "${_dsd_saved_cxx_standard_required}")
+    set(CMAKE_CXX_EXTENSIONS "${_dsd_saved_cxx_extensions}")
+
+    unset(_dsd_saved_cxx_standard)
+    unset(_dsd_saved_cxx_standard_required)
+    unset(_dsd_saved_cxx_extensions)
 endif()
 
 set(DSD_HAS_RTLSDR OFF)
