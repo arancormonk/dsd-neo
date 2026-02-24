@@ -13,7 +13,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-u 3`, `-q`
 - Trunking/scan: `-T`, `-Y`, `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--no-p25p2-soft`, `--no-p25p1-soft-voice`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
-- Soapy selection: `-i soapy` or `-i soapy:driver=airspy[,serial=...]`
+- Soapy selection: `-i soapy` or `-i soapy:driver=airspy[,serial=...]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` (see `docs/udp-control.md`)
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
 - Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `-4`, `-0`, `-3`
@@ -220,18 +220,31 @@ Advanced (env)
 
 ## SoapySDR details (`-i soapy`)
 
-- Use `-i soapy` for default Soapy device args.
-- Use `-i soapy:driver=airspy[,serial=...]` (or any Soapy args string) to select a specific device.
+- Use this path for non-RTL radios exposed through Soapy modules.
+- Typical workflow:
+  1. Install SoapySDR runtime and the module for your radio.
+  2. Verify Soapy is installed and check plugin search paths: `SoapySDRUtil --info`
+  3. Enumerate radios: `SoapySDRUtil --find`
+  4. Probe one candidate and capture its args: `SoapySDRUtil --probe="driver=sdrplay"`
+  5. Start with `-i soapy` (default args) or `-i soapy:<args>`
 - `soapy[:args]` sets backend/device selection only.
 - Unlike `rtl:` and `rtltcp:`, Soapy does not parse `freq:gain:ppm:bw:sql:vol` from the `-i` string.
 - Soapy tuning still uses existing radio controls and keys: `rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`.
-- Soapy still needs at least one frequency from config/trunking/UI/retune flow; otherwise radio startup fails with `Please specify a frequency.`
+- `rtl_device` index selection is for `rtl` input and is ignored in Soapy mode.
+- Set an explicit `rtl_freq` for predictable startup frequency (otherwise defaults may not match your target system).
+- Some controls are RTL/RTL-TCP specific and not supported in the Soapy backend path (`bias tee`, direct sampling, offset tuning, xtal/IF-gain/testmode controls, RTL-TCP autotune).
+- The Soapy backend requires an RX stream format of `CF32` or `CS16` from the driver.
 
 Troubleshooting:
 
+- If you see `SoapySDR backend unavailable in this build.`, rebuild with Soapy enabled and installed.
 - If Soapy device discovery fails, verify Soapy modules are installed and `SOAPY_SDR_PLUGIN_PATH` includes the module directory for your driver.
+- If logs report `invalid args string` or `failed to create device`, re-check your `soapy:` args from `SoapySDRUtil --find` / `--probe`.
+- If logs report `RX stream formats do not include CF32 or CS16`, that driver/device stream format is not currently usable in this backend.
+- If logs report `SoapySDR: RX overflow count=...`, try lowering `rtl_bw_khz` (config key; for example 48 -> 16) and reduce system load.
 - Capability support varies by driver/device. Some radios do not support one or more of: frequency correction (PPM), manual gain range, or bandwidth control.
 - Sample rate and gain requests may be clamped or adjusted by the driver; if decode quality is poor, verify the applied values in your SDR driver tooling and tune within supported ranges.
+- Full non-RTL setup guide: `docs/soapysdr.md`.
 
 ## M17 Encoding
 
@@ -350,7 +363,7 @@ RTL‑SDR driver options
 - `DSD_NEO_RTL_IF_GAINS="stage:gain[,...]"` — IF stage gains (dB or 0.1 dB)
 - `DSD_NEO_RTL_TESTMODE=0|1` — test mode (ramp source)
 - `DSD_NEO_RTL_AGC=0|1` — RTL2832U AGC enable/disable (default on)
-- `DSD_NEO_TUNER_BW_HZ=<Hz>` — override automatic tuner bandwidth
+- `DSD_NEO_TUNER_BW_HZ=<Hz|auto>` — override tuner bandwidth (`auto` or `0` = driver automatic)
 
 Tuner autogain (experimental)
 

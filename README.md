@@ -44,7 +44,8 @@ This project is an active work in progress as we decouple from the upstream fork
 
 - More input and streaming options
 
-  - Direct RTL‑SDR USB, plus RTL‑TCP (`-i rtltcp[:host:port]`) and generic TCP PCM16LE input (`-i tcp[:host:port]`, SDR++/GRC 7355 audio streams).
+  - Direct RTL‑SDR USB, plus RTL‑TCP (`-i rtltcp[:host:port]`) and SoapySDR (`-i soapy[:args]`) for non-RTL radios (for example Airspy/SDRplay/HackRF/LimeSDR).
+  - Generic TCP PCM16LE input (`-i tcp[:host:port]`, SDR++/GRC 7355 audio streams).
   - UDP audio in/out: receive PCM16LE over UDP as an input, and send decoded audio to UDP sinks for easy piping to other apps or hosts (decoded voice is typically 8 kHz; see `docs/network-audio.md`).
   - M17 UDP/IP in/out: dedicated M17 frame input/output over UDP (`-i m17udp[:bind:17000]`, `-o m17udp[:host:17000]`).
 
@@ -303,6 +304,16 @@ Common options:
 - RTL‑TCP adaptive buffering: `--rtltcp-autotune`
 - Rig control (SDR++): `-U 4532` (default port), `-B <Hz>` (bandwidth)
 
+## SoapySDR Quickstart
+
+- Use SoapySDR when your hardware is not accessed through `librtlsdr` directly.
+- Build with Soapy enabled (`-DDSD_ENABLE_SOAPYSDR=ON`) and optionally require it (`-DDSD_REQUIRE_SOAPYSDR=ON`).
+- Install SoapySDR tools and the Soapy module for your radio; verify with `SoapySDRUtil --info` and discover args with
+  `SoapySDRUtil --find`.
+- Run with `-i soapy[:args]`. The `soapy:` string selects backend/device only; set tuning via `rtl_*` keys (at minimum
+  `rtl_freq`; easiest via config). See the guide for a minimal config snippet.
+- Full guide: `docs/soapysdr.md`.
+
 ## Using The CLI
 
 - See the friendly CLI guide: [docs/cli.md](docs/cli.md)
@@ -334,6 +345,7 @@ Quick examples
 ## Documentation
 
 - CLI usage and options: `docs/cli.md`
+- SoapySDR non-RTL setup and usage: `docs/soapysdr.md`
 - User config system (INI): `docs/config-system.md`
 - Trunking CSV formats: `docs/csv-formats.md` (examples in `examples/`)
 - Network audio I/O details (TCP/UDP/stdin/stdout): `docs/network-audio.md`

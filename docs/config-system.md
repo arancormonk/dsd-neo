@@ -265,7 +265,7 @@ small subset is exposed as config keys for convenience (for example
 | `rtl_auto_ppm` | BOOL | Enable spectrum-based RTL auto-PPM correction (alias for `auto_ppm`) | `false` |
 | `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
 | `rtltcp_port` | INT (1-65535) | RTL-TCP port | `1234` |
-| `soapy_args` | STRING | SoapySDR device selection args (opaque pass-through) | (empty) |
+| `soapy_args` | STRING | SoapySDR device selection args (from SoapySDRUtil `--find`/`--probe`) | (empty) |
 | `file_path` | PATH | Input file path (WAV/BIN/RAW/SYM) | (empty) |
 | `file_sample_rate` | INT (8000-192000) | File sample rate (WAV/RAW) | `48000` |
 | `tcp_host` | STRING | TCP PCM input host | `127.0.0.1` |
@@ -413,8 +413,11 @@ version = 1
   - Uses `soapy_args` for device selection only (same semantics as CLI `-i soapy[:args]`).
   - Reuses existing `rtl_*` tuning keys (`rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`)
     so trunking and retune behavior remains unchanged.
-  - At least one frequency is still required from the usual mechanisms (config/trunking/UI); if none is provided,
-    radio startup fails with `Please specify a frequency.`
+  - `rtl_device` and `rtltcp_*` endpoint keys are not used in Soapy mode.
+  - Set `rtl_freq` explicitly for predictable startup frequency with non-RTL radios.
+  - If frequency resolves to `0`, radio startup fails with `Please specify a frequency.`
+  - Verify Soapy install and plugin discovery with `SoapySDRUtil --info`.
+  - Use `SoapySDRUtil --find` / `SoapySDRUtil --probe="<args>"` to discover valid `soapy_args`.
 
 - **PulseAudio (`source = "pulse"`)**: Use `pulse_source` to specify
   a particular input device. The older `pulse_input` key is accepted
@@ -454,7 +457,7 @@ as the example frequency.
 ```ini
 [input]
 source = "soapy"
-soapy_args = "driver=sdrplay"
+soapy_args = "driver=sdrplay,serial=123456"
 
 # Soapy tuning reuses rtl_* keys
 rtl_freq = "851.375M"
@@ -466,14 +469,17 @@ rtl_volume = 2
 ```
 
 If you omit `soapy_args`, DSD-neo uses the default Soapy device args (equivalent to `-i soapy`).
+For multiple identical devices, prefer including a stable selector like `serial=...`.
 
 ### Soapy Troubleshooting
 
+- If device discovery is empty, run `SoapySDRUtil --find` first and verify your hardware module is installed.
 - If Soapy devices/modules are not discovered, confirm plugin discovery path via `SOAPY_SDR_PLUGIN_PATH`.
 - Driver capabilities differ by hardware: some devices may not support PPM correction, bandwidth selection, or manual
   gain range controls.
 - Expected sample-rate and gain behavior can vary by driver; requested values may be quantized/clamped to supported
   ranges.
+- See `docs/soapysdr.md` for a full non-RTL setup flow.
 
 ### Trunking
 
