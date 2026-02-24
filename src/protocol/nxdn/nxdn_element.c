@@ -184,7 +184,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 if (opts->use_rigctl == 1) {
                     ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                 } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
                     ccfreq = (long int)opts->rtlsdr_center_freq;
 #endif
                 }
@@ -205,7 +205,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 if (opts->use_rigctl == 1) {
                     ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                 } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
                     ccfreq = (long int)opts->rtlsdr_center_freq;
 #endif
                 }
@@ -226,7 +226,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 if (opts->use_rigctl == 1) {
                     ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                 } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
                     ccfreq = (long int)opts->rtlsdr_center_freq;
 #endif
                 }
@@ -248,7 +248,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 if (opts->use_rigctl == 1) {
                     ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                 } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
                     ccfreq = (long int)opts->rtlsdr_center_freq;
 #endif
                 }

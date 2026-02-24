@@ -43,7 +43,9 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#endif
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -243,7 +245,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     short analog2[960];
     short analog3[960];
     short sample = 0;
-    float rtl_sample = 0.0f; // For RTL-SDR input (float samples)
 
     // #define DEBUG_ANALOG //enable to digitize analog if 'data' bursts heard
 
@@ -442,10 +443,10 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         }
 
 //RTL Input
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         if (opts->audio_in_type == AUDIO_IN_RTL) {
             for (i = 0; i < 960; i++) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
                 if (!state->rtl_ctx) {
                     cleanupAndExit(opts, state);
                     return;
@@ -466,7 +467,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             }
 
             for (i = 0; i < 960; i++) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
                 if (!state->rtl_ctx) {
                     cleanupAndExit(opts, state);
                     return;
@@ -487,7 +488,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             }
 
             for (i = 0; i < 960; i++) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
                 if (!state->rtl_ctx) {
                     cleanupAndExit(opts, state);
                     return;

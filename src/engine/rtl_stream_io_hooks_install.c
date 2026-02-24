@@ -4,9 +4,8 @@
  */
 
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
-#include <stddef.h>
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 
 static int
@@ -23,7 +22,7 @@ rtl_stream_io_return_pwr(const void* rtl_ctx) {
 void
 dsd_engine_rtl_stream_io_hooks_install(void) {
     dsd_rtl_stream_io_hooks hooks = {0};
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     hooks.read = rtl_stream_io_read;
     hooks.return_pwr = rtl_stream_io_return_pwr;
 #endif

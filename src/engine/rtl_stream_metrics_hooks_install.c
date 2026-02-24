@@ -4,9 +4,8 @@
  */
 
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#include <stddef.h>
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 
 unsigned int dsd_rtl_stream_output_rate(void);
@@ -20,7 +19,7 @@ rtl_stream_metrics_ted_bias(void) {
 void
 dsd_engine_rtl_stream_metrics_hooks_install(void) {
     dsd_rtl_stream_metrics_hooks hooks = {0};
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     hooks.output_rate_hz = dsd_rtl_stream_output_rate;
     hooks.dsp_get = rtl_stream_dsp_get;
     hooks.ted_bias = rtl_stream_metrics_ted_bias;

@@ -14,7 +14,6 @@
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
-#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
@@ -35,9 +34,12 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/m17_udp_hooks.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
-#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#ifdef USE_RADIO
+#include <dsd-neo/core/cleanup.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#endif
 #include <stdbool.h>
 #include <sys/types.h>
 #include <time.h>
@@ -2045,7 +2047,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
         else if (opts->audio_in_type == AUDIO_IN_RTL) //RTL
         {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     if (!state->rtl_ctx) {

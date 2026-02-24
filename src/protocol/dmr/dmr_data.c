@@ -26,7 +26,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
@@ -304,7 +304,7 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
             if (rel > 255) {
                 rel = 255;
             }
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
             double snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
             if (snr_db < -50.0) {
                 snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
@@ -421,7 +421,7 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
             if (rel > 255) {
                 rel = 255;
             }
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
             double snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
             if (snr_db < -50.0) {
                 snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();

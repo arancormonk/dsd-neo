@@ -731,8 +731,9 @@ openAudioInDevice(dsd_opts* opts) {
     //   }
     // }
 
-    else if (strncmp(opts->audio_in_dev, "rtl", 3) == 0) {
-#ifdef USE_RTLSDR
+    else if (strncmp(opts->audio_in_dev, "rtl", 3) == 0 || strcmp(opts->audio_in_dev, "soapy") == 0
+             || strncmp(opts->audio_in_dev, "soapy:", 6) == 0) {
+#ifdef USE_RADIO
         opts->audio_in_type = AUDIO_IN_RTL;
 #else
         opts->audio_in_type = AUDIO_IN_PULSE;

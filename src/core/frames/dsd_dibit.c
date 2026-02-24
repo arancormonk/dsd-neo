@@ -27,7 +27,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/comp.h>
 #include <dsd-neo/runtime/config.h>
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
@@ -335,7 +335,7 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
         }
 
         /* SNR-weighted scaling (CQPSK path) */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         {
             double snr_db = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
             if (snr_db > -50.0) {
@@ -403,7 +403,7 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
             rel = 255;
         }
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         double snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
         if (snr_db < -50.0) {
             snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
@@ -465,7 +465,7 @@ dsd_test_compute_cqpsk_reliability(float sym) {
  */
 static inline int
 is_cqpsk_active(dsd_opts* opts) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
         int cqpsk = 0, fll = 0, ted = 0;
         dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
@@ -479,7 +479,7 @@ is_cqpsk_active(dsd_opts* opts) {
     return 0;
 }
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 /* Optional histogram of CQPSK slicer output during decoding. */
 static void
 debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {

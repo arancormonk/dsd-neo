@@ -24,7 +24,7 @@
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/ez.h>
 #include <stdint.h>
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
@@ -339,7 +339,7 @@ process_FACCHc(dsd_opts* opts, dsd_state* state) {
         state->p25_p2_rs_facch_ok++;
         state->p25_p2_rs_facch_corr += (unsigned int)ec;
         /* Feedback: RS OK */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 1, 0, 0, 0, 0);
 #endif
         process_FACCH_MAC_PDU(opts, state, facch[state->currentslot]);
@@ -347,7 +347,7 @@ process_FACCHc(dsd_opts* opts, dsd_state* state) {
         state->p25_p2_rs_facch_err++;
         fprintf(stderr, " R-S ERR Fc");
         /* Feedback: RS ERR */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 0, 1, 0, 0, 0);
 #endif
     }
@@ -405,7 +405,7 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
         state->p25_p2_rs_facch_ok++;
         state->p25_p2_rs_facch_corr += (unsigned int)ec;
         /* Feedback: RS OK */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 1, 0, 0, 0, 0);
 #endif
         process_FACCH_MAC_PDU(opts, state, facch[state->currentslot]);
@@ -413,7 +413,7 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
         state->p25_p2_rs_facch_err++;
         fprintf(stderr, " R-S ERR Fs");
         /* Feedback: RS ERR */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 0, 1, 0, 0, 0);
 #endif
     }
@@ -468,7 +468,7 @@ process_SACCHc(dsd_opts* opts, dsd_state* state) {
         state->p25_p2_rs_sacch_ok++;
         state->p25_p2_rs_sacch_corr += (unsigned int)ec;
         /* Feedback: RS OK */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 0, 0, 1, 0, 0);
 #endif
         process_SACCH_MAC_PDU(opts, state, sacch[state->currentslot]);
@@ -476,7 +476,7 @@ process_SACCHc(dsd_opts* opts, dsd_state* state) {
         state->p25_p2_rs_sacch_err++;
         fprintf(stderr, " R-S ERR Sc");
         /* Feedback: RS ERR */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 0, 0, 0, 1, 0);
 #endif
     }
@@ -531,7 +531,7 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
         state->p25_p2_rs_sacch_ok++;
         state->p25_p2_rs_sacch_corr += (unsigned int)ec;
         /* Feedback: RS OK */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 0, 0, 1, 0, 0);
 #endif
         process_SACCH_MAC_PDU(opts, state, sacch[state->currentslot]);
@@ -539,7 +539,7 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
         state->p25_p2_rs_sacch_err++;
         fprintf(stderr, " R-S ERR Ss");
         /* Feedback: RS ERR */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 0, 0, 0, 1, 0);
 #endif
     }

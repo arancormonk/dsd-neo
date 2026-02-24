@@ -17,7 +17,7 @@
 #include <cstring>
 
 extern "C" volatile uint8_t exitflag; // defined in src/runtime/exitflag.c
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 extern "C" int dsd_rtl_stream_should_exit(void);
 #endif
 
@@ -167,7 +167,7 @@ input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count) 
         return 0;
     }
     while (input_ring_is_empty(r)) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         if (dsd_rtl_stream_should_exit()) {
             return -1;
         }
@@ -179,7 +179,7 @@ input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count) 
             if (exitflag) {
                 return -1;
             }
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
             if (dsd_rtl_stream_should_exit()) {
                 return -1;
             }

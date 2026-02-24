@@ -33,7 +33,7 @@
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/dsp/sync_hamming.h>
 #include <dsd-neo/platform/atomic_compat.h>
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <dsd-neo/core/dsd_time.h>
@@ -61,7 +61,7 @@ dmr_set_symbol_timing(dsd_opts* opts, dsd_state* state) {
     }
 
     int demod_rate = 0;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
         demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
     }
@@ -351,7 +351,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                    Prefer QPSK when its normalized SNR clearly exceeds C4FM; conversely prefer
                    C4FM only when it exceeds QPSK by a larger margin. Also apply a small
                    stickiness when already in QPSK and SNRs are similar. */
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
                 do {
                     /* Pull smoothed SNR; fall back to lightweight estimators if needed */
                     double snr_c = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
@@ -509,7 +509,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         }
 
         //determine dibit state
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         /* Debug: print symbol values when DSD_NEO_DEBUG_SYNC=1 */
         {
             static int sym_count = 0;
@@ -550,7 +550,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
          * The CQPSK demod outputs phase values scaled by 4/π, giving symbol levels at ±1, ±3.
          * Using fixed ±2.0 thresholds produces all 4 dibit values needed for P25 sync detection. */
         int cqpsk_4level = 0;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         if (state->rf_mod == 1 && opts->audio_in_type == AUDIO_IN_RTL
             && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
             int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
@@ -741,7 +741,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
             // Optional SNR-based pre-decode squelch: skip expensive sync search when SNR is low.
             // Falls back to legacy power squelch gating for certain modes.
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
             {
                 const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
                 int snr_gate = 0;
@@ -777,7 +777,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             /* OP25 compatibility: no dibit remapping based on sync pattern.
              * The Costas loop handles phase ambiguity; tuning errors need RF correction. */
             const char* p25_sync_window = synctest;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
             /* Debug: print sync pattern when DSD_NEO_DEBUG_SYNC=1 */
             {
                 static int debug_count = 0;
@@ -2057,7 +2057,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             /* Compute SPS from actual demodulator output rate when available (RTL path),
                              * otherwise fall back to WAV interpolator scaling relative to 48 kHz. */
                             int demod_rate = 0;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
                             if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
                                 demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
                             }

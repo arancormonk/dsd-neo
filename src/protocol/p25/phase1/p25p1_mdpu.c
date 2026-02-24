@@ -22,7 +22,7 @@
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
@@ -294,12 +294,12 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         err[0] = crc16_lb_bridge(hdr_bits_int, 80);
         if (err[0] == 0) {
             state->p25_p1_fec_ok++;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
             dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
 #endif
         } else {
             state->p25_p1_fec_err++;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
             dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
 #endif
         }

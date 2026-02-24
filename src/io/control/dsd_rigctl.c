@@ -14,10 +14,11 @@
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
+#ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
+#endif
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
@@ -423,6 +424,9 @@ io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || freq <= 0) {
         return -1;
     }
+#ifndef USE_RADIO
+    (void)state;
+#endif
 
     LOG_INFO("io_control: tune to %ld Hz\n", freq);
 
@@ -435,7 +439,7 @@ io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
         }
         SetFreq(opts->rigctl_sockfd, freq);
     } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         if (state && state->rtl_ctx) {
             rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
         }
