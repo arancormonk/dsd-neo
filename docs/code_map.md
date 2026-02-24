@@ -120,9 +120,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 
 - Path: `src/io`, `include/dsd-neo/io`
 - Targets:
-  - `dsd-neo_io_radio` — RTL-SDR front-end and orchestrator for USB and rtl_tcp; provides constellation/eye/spectrum
-    snapshots, optional bias-tee, and auto-PPM hooks
-    - Built only when `RTLSDR_FOUND`; otherwise provided as an INTERFACE stub target
+  - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, and SoapySDR backends; provides
+    constellation/eye/spectrum snapshots, optional bias-tee (RTL path), and auto-PPM hooks
+    - Built when `DSD_HAS_RADIO` is true (RTL and/or Soapy available); otherwise provided as an INTERFACE stub target
   - `dsd-neo_io_audio` — network audio/input backends: UDP PCM16LE input, TCP PCM16LE input, UDP audio output helpers,
     and M17 UDP helpers
   - `dsd-neo_io_udp_control` — UDP retune control server (used by the RTL-SDR/FM helpers)
@@ -202,8 +202,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Responsibilities:
   - ncurses terminal UI (panels, logging, protocol displays, visualizers)
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
-  - Live visualizers (constellation, eye diagram, spectrum, FSK histogram) driven by the RTL shim API when available
-    (`USE_RTLSDR`)
+  - Live visualizers (constellation, eye diagram, spectrum, FSK histogram) driven by the radio shim API when available
+    (`USE_RADIO`)
 
 Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`
 
@@ -271,11 +271,13 @@ Common interface targets:
 
 Optional feature interface targets (compile definitions + include paths; stubbed out when deps are missing):
 
+- `dsd-neo_feature_radio` — `USE_RADIO` when any radio backend is available (`DSD_HAS_RADIO`)
 - `dsd-neo_feature_rtlsdr` — `USE_RTLSDR` (+ `USE_RTLSDR_BIAS_TEE` when supported by librtlsdr)
+- `dsd-neo_feature_soapy` — `USE_SOAPYSDR` + SoapySDR link/includes when available
 - `dsd-neo_feature_codec2` — `USE_CODEC2`
 
 External dependencies (resolved via CMake):
 
 - Required: LibSndFile; curses (ncursesw/PDCurses); an audio backend (PulseAudio by default, PortAudio on Windows);
   MBE vocoder (`mbe-neo`).
-- Optional: RTL‑SDR, CODEC2.
+- Optional: RTL‑SDR, SoapySDR, CODEC2.

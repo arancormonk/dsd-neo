@@ -5,7 +5,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 ## Cheatsheet
 
 - Help: `dsd-neo -h` | UI/logs: `-N`, `-Z` | List devices: `-O`
-- Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | tcp[:host:7355] | udp[:bind:7355] | m17udp[:bind:17000] | -`
+- Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args] | tcp[:host:7355] | udp[:bind:7355] | m17udp[:bind:17000] | -`
 - Outputs: `-o pulse | null | udp[:host:23456] | m17udp[:host:17000] | -`
 - Record/Logs: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`, `-nm`
@@ -13,6 +13,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-u 3`, `-q`
 - Trunking/scan: `-T`, `-Y`, `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--no-p25p2-soft`, `--no-p25p1-soft-voice`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
+- Soapy selection: `-i soapy` or `-i soapy:driver=airspy[,serial=...]`
 - RTL retune control: `--rtl-udp-control <port>` (see `docs/udp-control.md`)
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
 - Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `-4`, `-0`, `-3`
@@ -25,6 +26,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - UDP audio in to PulseAudio out: `dsd-neo -i udp:0.0.0.0:7355 -o pulse -N`
 - Follow DMR trunking (TCP PCM input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
 - Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N`
+- Follow DMR trunking (SoapySDR): `dsd-neo -fs -i soapy:driver=airspy -T -C connect_plus_chan.csv -G group.csv -N`
 - Play saved MBE files: `dsd-neo -r *.mbe`
 - Decode MBE to a WAV (no speaker output): `dsd-neo -o null -w decoded.wav -r call.mbe`
 
@@ -53,6 +55,7 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
   - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
+- SoapySDR: `-i soapy[:args]`
 - TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (default port 7355; sample rate uses `-s`, default 48000)
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355)
 - M17 UDP/IP input: `-i m17udp[:bind_addr:port]` (defaults 127.0.0.1:17000)
@@ -214,6 +217,21 @@ Advanced (env)
 - `DSD_NEO_RTL_IF_GAINS="stage:gain[,stage:gain]..."` — Set IF gain(s); gain in dB (e.g., `10`) or 0.1 dB (`125`).
 - `DSD_NEO_RTL_TESTMODE=0|1` — Enable librtlsdr test mode (ramp) instead of I/Q (for diagnostics).
 - On rtl_tcp reconnects, these settings are automatically reapplied.
+
+## SoapySDR details (`-i soapy`)
+
+- Use `-i soapy` for default Soapy device args.
+- Use `-i soapy:driver=airspy[,serial=...]` (or any Soapy args string) to select a specific device.
+- `soapy[:args]` sets backend/device selection only.
+- Unlike `rtl:` and `rtltcp:`, Soapy does not parse `freq:gain:ppm:bw:sql:vol` from the `-i` string.
+- Soapy tuning still uses existing radio controls and keys: `rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`.
+- Soapy still needs at least one frequency from config/trunking/UI/retune flow; otherwise radio startup fails with `Please specify a frequency.`
+
+Troubleshooting:
+
+- If Soapy device discovery fails, verify Soapy modules are installed and `SOAPY_SDR_PLUGIN_PATH` includes the module directory for your driver.
+- Capability support varies by driver/device. Some radios do not support one or more of: frequency correction (PPM), manual gain range, or bandwidth control.
+- Sample rate and gain requests may be clamped or adjusted by the driver; if decode quality is poor, verify the applied values in your SDR driver tooling and tune within supported ranges.
 
 ## M17 Encoding
 
@@ -412,7 +430,14 @@ Debug (verbose/developer)
 
 - UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
 - RTL‑TCP in with ncurses UI: `dsd-neo -i rtltcp:127.0.0.1:1234 -N`
+- SoapySDR in with explicit driver args: `dsd-neo -i soapy:driver=sdrplay -N`
 - Save per‑call WAVs to a folder: `dsd-neo -7 ./calls -P -N`
 - Strictly P25 Phase 1 from TCP audio: `dsd-neo -f1 -i tcp -N`
+
+## Manual Validation Checklist
+
+- [ ] `rtl` decode still works.
+- [ ] `rtltcp` decode still works.
+- [ ] `soapy` decode works with at least one SDRPlay path and one Airspy path (if hardware is available).
 
 Tip: Many options can be mixed; start simple, add only what you need.

@@ -57,7 +57,7 @@ Example:
 version = 1
 
 [input]
-source = "rtl"              # pulse / rtl / rtltcp / file / tcp / udp
+source = "rtl"              # pulse / rtl / rtltcp / soapy / file / tcp / udp
 rtl_device = 0
 rtl_freq = "851.375M"       # supports K/M/G suffix or raw Hz
 
@@ -252,7 +252,7 @@ small subset is exposed as config keys for convenience (for example
 **[input] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `source` | ENUM | Input source type | `pulse` |
+| `source` | ENUM | Input source type (`pulse|rtl|rtltcp|soapy|file|tcp|udp`) | `pulse` |
 | `pulse_source` | STRING | PulseAudio source device | (empty) |
 | `rtl_device` | INT (0-255) | RTL-SDR device index | `0` |
 | `rtl_freq` | FREQ | RTL-SDR frequency | `851.375M` |
@@ -265,6 +265,7 @@ small subset is exposed as config keys for convenience (for example
 | `rtl_auto_ppm` | BOOL | Enable spectrum-based RTL auto-PPM correction (alias for `auto_ppm`) | `false` |
 | `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
 | `rtltcp_port` | INT (1-65535) | RTL-TCP port | `1234` |
+| `soapy_args` | STRING | SoapySDR device selection args (opaque pass-through) | (empty) |
 | `file_path` | PATH | Input file path (WAV/BIN/RAW/SYM) | (empty) |
 | `file_sample_rate` | INT (8000-192000) | File sample rate (WAV/RAW) | `48000` |
 | `tcp_host` | STRING | TCP PCM input host | `127.0.0.1` |
@@ -382,7 +383,7 @@ version = 1
 
 [input]
 # Input source type
-# Allowed: pulse|rtl|rtltcp|file|tcp|udp
+# Allowed: pulse|rtl|rtltcp|soapy|file|tcp|udp
 # source = "pulse"
 
 # RTL-SDR device index (0-based)
@@ -407,6 +408,13 @@ version = 1
 - **RTL-TCP (`source = "rtltcp"`)**: Uses `rtltcp_host`/`rtltcp_port`
   for the network endpoint, plus the same `rtl_*` tuning keys. To switch
   the input to RTL-TCP at startup, set at least `rtltcp_host`.
+
+- **SoapySDR (`source = "soapy"`)**:
+  - Uses `soapy_args` for device selection only (same semantics as CLI `-i soapy[:args]`).
+  - Reuses existing `rtl_*` tuning keys (`rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`)
+    so trunking and retune behavior remains unchanged.
+  - At least one frequency is still required from the usual mechanisms (config/trunking/UI); if none is provided,
+    radio startup fails with `Please specify a frequency.`
 
 - **PulseAudio (`source = "pulse"`)**: Use `pulse_source` to specify
   a particular input device. The older `pulse_input` key is accepted
@@ -436,10 +444,36 @@ The optional `demod` key selects a demodulator path (`auto`, `c4fm`, `gfsk`,
 `qpsk`). When set, it locks demodulator selection similarly to the `-m*`
 CLI modulation options.
 
-If you choose RTL/RTLTCP input and omit specific tuning fields, DSD-neo falls
-back to its built-in RTL defaults: center frequency 850 MHz, DSP bandwidth
-48 kHz, and volume multiplier 2. The template still shows 851.375M as the
-example frequency.
+If you choose RTL/RTLTCP/Soapy input and omit specific tuning fields, DSD-neo
+falls back to its built-in radio defaults: center frequency 850 MHz, DSP
+bandwidth 48 kHz, and volume multiplier 2. The template still shows 851.375M
+as the example frequency.
+
+### Soapy Config Usage
+
+```ini
+[input]
+source = "soapy"
+soapy_args = "driver=sdrplay"
+
+# Soapy tuning reuses rtl_* keys
+rtl_freq = "851.375M"
+rtl_gain = 22
+rtl_ppm = -2
+rtl_bw_khz = 24
+rtl_sql = 0
+rtl_volume = 2
+```
+
+If you omit `soapy_args`, DSD-neo uses the default Soapy device args (equivalent to `-i soapy`).
+
+### Soapy Troubleshooting
+
+- If Soapy devices/modules are not discovered, confirm plugin discovery path via `SOAPY_SDR_PLUGIN_PATH`.
+- Driver capabilities differ by hardware: some devices may not support PPM correction, bandwidth selection, or manual
+  gain range controls.
+- Expected sample-rate and gain behavior can vary by driver; requested values may be quantized/clamped to supported
+  ranges.
 
 ### Trunking
 
@@ -558,7 +592,7 @@ When running with the ncurses UI (`ncurses_ui = true` or `-N`), the
 The following can be changed without restarting:
 
 - PulseAudio input/output device
-- RTL-SDR and RTLTCP tuning parameters (frequency, gain, PPM, etc.)
+- RTL-SDR, RTL-TCP, and Soapy tuning parameters (frequency, gain, PPM, etc.)
 - TCP/UDP connection parameters
 - File input path
 
