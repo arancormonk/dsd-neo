@@ -16,8 +16,9 @@
 #include <atomic>
 #include <cstring>
 
-/* Platform-specific CPU feature detection */
+/* Platform-specific CPU feature detection for optional AVX2 dispatch */
 #if defined(__x86_64__) || defined(_M_X64)
+#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
 #if defined(_MSC_VER)
 #include <intrin.h>
 #else
@@ -32,6 +33,7 @@ dsd_xgetbv(unsigned int xcr) {
 }
 #endif
 #endif
+#endif
 
 /* Forward declarations for SIMD specializations (defined in arch-specific TUs) */
 #if defined(__x86_64__) || defined(_M_X64)
@@ -41,12 +43,14 @@ extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* o
                                            const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_real_sse2(const float* in, int in_len, float* out, float* hist, const float* taps,
                                         int taps_len);
+#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
 extern "C" void simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                             const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                            const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, const float* taps,
                                         int taps_len);
+#endif
 #endif
 
 #if defined(__aarch64__)
@@ -307,7 +311,7 @@ simd_hb_decim2_real_scalar(const float* in, int in_len, float* out, float* hist,
 /* CPU Feature Detection                                                      */
 /* -------------------------------------------------------------------------- */
 
-#if defined(__x86_64__) || defined(_M_X64)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
 
 static bool
 cpu_has_avx2_with_os_support() {
@@ -356,7 +360,7 @@ cpu_has_avx2_with_os_support() {
 #endif
 }
 
-#endif /* x86_64 */
+#endif /* x86_64 && DSD_NEO_DSP_HAVE_AVX2_IMPL */
 
 /* -------------------------------------------------------------------------- */
 /* Function Pointer Dispatch                                                  */
@@ -387,12 +391,15 @@ simd_fir_init_dispatch() {
 
     /* Perform one-time initialization */
 #if defined(__x86_64__) || defined(_M_X64)
+#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
     if (cpu_has_avx2_with_os_support()) {
         g_fir_complex_impl = simd_fir_complex_apply_avx2;
         g_hb_decim2_complex_impl = simd_hb_decim2_complex_avx2;
         g_hb_decim2_real_impl = simd_hb_decim2_real_avx2;
         g_impl_name = "avx2";
-    } else {
+    } else
+#endif
+    {
         g_fir_complex_impl = simd_fir_complex_apply_sse2;
         g_hb_decim2_complex_impl = simd_hb_decim2_complex_sse2;
         g_hb_decim2_real_impl = simd_hb_decim2_real_sse2;

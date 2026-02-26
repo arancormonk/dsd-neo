@@ -5,12 +5,11 @@
 
 /**
  * @file
- * @brief SIMD widening and optional 90° IQ rotation API with runtime dispatch.
+ * @brief u8 IQ widening and optional 90° IQ rotation API.
  *
  * Exposes wrappers that convert RTL-SDR unsigned 8-bit I/Q samples to
  * normalized float baseband in [-1.0, 1.0] with optional 90° rotation.
- * Runtime feature detection selects scalar or SIMD specializations
- * (AVX2, SSSE3/SSE2, NEON).
+ * The current implementation is scalar.
  */
 #ifndef DSD_NEO_SIMD_WIDEN_H
 #define DSD_NEO_SIMD_WIDEN_H
@@ -21,7 +20,7 @@
 extern "C" {
 #endif
 
-/* Function pointer types for runtime dispatch */
+/* Function pointer typedefs retained for API stability and future specialization. */
 /**
  * @brief Function pointer for widening u8 to float centered at 127.5.
  *
@@ -40,10 +39,9 @@ typedef void (*dsd_neo_widen_fn)(const unsigned char*, float*, uint32_t);
 typedef void (*dsd_neo_widen_rot_fn)(const unsigned char*, float*, uint32_t);
 
 /**
- * @brief Widen u8 to float centered at 127.5 via runtime-dispatched implementation.
+ * @brief Widen u8 to float centered at 127.5.
  *
- * Public wrapper that lazy-initializes runtime dispatch and widens u8 to
- * normalized float centered at 127.5.
+ * Widens u8 to normalized float centered at 127.5.
  *
  * @param src Source buffer of unsigned bytes (I/Q interleaved).
  * @param dst Destination float buffer.
@@ -52,10 +50,9 @@ typedef void (*dsd_neo_widen_rot_fn)(const unsigned char*, float*, uint32_t);
 void widen_u8_to_f32_bias127(const unsigned char* src, float* dst, uint32_t len);
 
 /**
- * @brief Rotate 90° (IQ) and widen u8→float centered at 127.5 via runtime dispatch.
+ * @brief Rotate 90° (IQ) and widen u8→float centered at 127.5.
  *
- * Public wrapper that lazy-initializes runtime dispatch and performs 90° IQ
- * rotation combined with widen u8→float centered at 127.5.
+ * Performs 90° IQ rotation combined with widen u8→float centered at 127.5.
  *
  * @param src Source buffer of unsigned bytes (I/Q interleaved).
  * @param dst Destination float buffer.

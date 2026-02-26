@@ -47,6 +47,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
   if(_avx2_flags)
     target_sources(dsd-neo_dsp PRIVATE simd_fir_avx2.cpp)
     set_source_files_properties(simd_fir_avx2.cpp PROPERTIES COMPILE_FLAGS "${_avx2_flags}")
+    target_compile_definitions(dsd-neo_dsp PRIVATE $<$<COMPILE_LANGUAGE:CXX>:DSD_NEO_DSP_HAVE_AVX2_IMPL=1>)
   endif()
 endif()
 
