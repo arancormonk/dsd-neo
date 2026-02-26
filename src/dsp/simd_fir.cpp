@@ -53,7 +53,7 @@ extern "C" int simd_hb_decim2_real_avx2(const float* in, int in_len, float* out,
 #endif
 #endif
 
-#if defined(__aarch64__)
+#if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
 extern "C" void simd_fir_complex_apply_neon(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                             const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_complex_neon(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
@@ -163,16 +163,16 @@ simd_hb_decim2_complex_scalar(const float* in, int in_len, float* out, float* hi
         return 0;
     }
 
-    int ch_len = in_len >> 1;     /* per-channel samples */
-    int out_ch_len = ch_len >> 1; /* decimated per-channel */
-    if (out_ch_len <= 0) {
+    int ch_len = in_len >> 1; /* per-channel samples */
+    if (ch_len <= 0) {
         return 0;
     }
+    int out_ch_len = ch_len >> 1; /* decimated per-channel */
 
     const int center = (taps_len - 1) >> 1;
     const int left_len = taps_len - 1;
-    float lastI = (ch_len > 0) ? in[in_len - 2] : 0.0f;
-    float lastQ = (ch_len > 0) ? in[in_len - 1] : 0.0f;
+    float lastI = in[in_len - 2];
+    float lastQ = in[in_len - 1];
 
     auto get_iq = [&](int src_idx, float& xi, float& xq) {
         if (src_idx < left_len) {
@@ -229,14 +229,12 @@ simd_hb_decim2_complex_scalar(const float* in, int in_len, float* out, float* hi
             hist_q[k] = in[(rel << 1) + 1];
         }
     } else {
-        for (int k = 0; k < left_len; k++) {
-            if (k < ch_len) {
-                hist_i[k] = in[k << 1];
-                hist_q[k] = in[(k << 1) + 1];
-            } else {
-                hist_i[k] = 0.0f;
-                hist_q[k] = 0.0f;
-            }
+        int keep = left_len - ch_len;
+        std::memmove(hist_i, hist_i + ch_len, (size_t)keep * sizeof(float));
+        std::memmove(hist_q, hist_q + ch_len, (size_t)keep * sizeof(float));
+        for (int k = 0; k < ch_len; k++) {
+            hist_i[keep + k] = in[k << 1];
+            hist_q[keep + k] = in[(k << 1) + 1];
         }
     }
 
@@ -252,15 +250,15 @@ simd_hb_decim2_real_scalar(const float* in, int in_len, float* out, float* hist,
     if (taps_len < 3 || (taps_len & 1) == 0) {
         return 0;
     }
+    if (in_len <= 0) {
+        return 0;
+    }
 
     const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
     int out_len = in_len >> 1;
-    if (out_len <= 0) {
-        return 0;
-    }
 
-    float last = (in_len > 0) ? in[in_len - 1] : 0.0f;
+    float last = in[in_len - 1];
 
     auto get_sample = [&](int src_idx) -> float {
         if (src_idx < hist_len) {
@@ -405,7 +403,7 @@ simd_fir_init_dispatch() {
         g_hb_decim2_real_impl = simd_hb_decim2_real_sse2;
         g_impl_name = "sse2";
     }
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
     g_fir_complex_impl = simd_fir_complex_apply_neon;
     g_hb_decim2_complex_impl = simd_hb_decim2_complex_neon;
     g_hb_decim2_real_impl = simd_hb_decim2_real_neon;

@@ -124,15 +124,15 @@ hb_decim2_complex_scalar_ref(const float* in, int in_len, float* out, float* his
     }
 
     int ch_len = in_len >> 1;
-    int out_ch_len = ch_len >> 1;
-    if (out_ch_len <= 0) {
+    if (ch_len <= 0) {
         return 0;
     }
+    int out_ch_len = ch_len >> 1;
 
     const int center = (taps_len - 1) >> 1;
     const int left_len = taps_len - 1;
-    float lastI = (ch_len > 0) ? in[in_len - 2] : 0.0f;
-    float lastQ = (ch_len > 0) ? in[in_len - 1] : 0.0f;
+    float lastI = in[in_len - 2];
+    float lastQ = in[in_len - 1];
 
     auto get_iq = [&](int src_idx, float& xi, float& xq) {
         if (src_idx < left_len) {
@@ -186,14 +186,12 @@ hb_decim2_complex_scalar_ref(const float* in, int in_len, float* out, float* his
             hist_q[k] = in[(rel << 1) + 1];
         }
     } else {
-        for (int k = 0; k < left_len; k++) {
-            if (k < ch_len) {
-                hist_i[k] = in[k << 1];
-                hist_q[k] = in[(k << 1) + 1];
-            } else {
-                hist_i[k] = 0.0f;
-                hist_q[k] = 0.0f;
-            }
+        int keep = left_len - ch_len;
+        std::memmove(hist_i, hist_i + ch_len, (size_t)keep * sizeof(float));
+        std::memmove(hist_q, hist_q + ch_len, (size_t)keep * sizeof(float));
+        for (int k = 0; k < ch_len; k++) {
+            hist_i[keep + k] = in[k << 1];
+            hist_q[keep + k] = in[(k << 1) + 1];
         }
     }
 
@@ -206,15 +204,15 @@ hb_decim2_real_scalar_ref(const float* in, int in_len, float* out, float* hist, 
     if (taps_len < 3 || (taps_len & 1) == 0) {
         return 0;
     }
+    if (in_len <= 0) {
+        return 0;
+    }
 
     const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
     int out_len = in_len >> 1;
-    if (out_len <= 0) {
-        return 0;
-    }
 
-    float last = (in_len > 0) ? in[in_len - 1] : 0.0f;
+    float last = in[in_len - 1];
 
     auto get_sample = [&](int src_idx) -> float {
         if (src_idx < hist_len) {
@@ -525,6 +523,124 @@ test_small_blocks() {
     return 0;
 }
 
+/* Regression: complex short blocks must preserve prior history samples */
+static int
+test_complex_short_block_history() {
+    std::printf("Testing complex short-block history update...\n");
+
+    const int taps_len = 15;
+    const int hist_len = taps_len - 1;
+    const int ch_len = 8; /* smaller than history length */
+
+    alignas(64) float in[ch_len * 2];
+    alignas(64) float out_simd[ch_len];
+    alignas(64) float out_ref[ch_len];
+    alignas(64) float hist_i_simd[hist_len];
+    alignas(64) float hist_q_simd[hist_len];
+    alignas(64) float hist_i_ref[hist_len];
+    alignas(64) float hist_q_ref[hist_len];
+
+    for (int i = 0; i < hist_len; i++) {
+        hist_i_simd[i] = hist_i_ref[i] = -3.0f + (float)i * 0.25f;
+        hist_q_simd[i] = hist_q_ref[i] = 2.0f - (float)i * 0.5f;
+    }
+    for (int i = 0; i < ch_len; i++) {
+        in[i << 1] = (float)(10 + i);
+        in[(i << 1) + 1] = (float)(-20 - i);
+    }
+
+    int len_simd = simd_hb_decim2_complex(in, ch_len * 2, out_simd, hist_i_simd, hist_q_simd, hb_q15_taps, taps_len);
+    int len_ref = hb_decim2_complex_scalar_ref(in, ch_len * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
+
+    if (len_simd != len_ref) {
+        std::fprintf(stderr, "  FAIL: Output length mismatch (%d vs %d)\n", len_simd, len_ref);
+        return 1;
+    }
+    if (!arrays_close(out_simd, out_ref, len_simd, kTolerance)) {
+        std::fprintf(stderr, "  FAIL: Output mismatch\n");
+        return 1;
+    }
+    if (!arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)) {
+        std::fprintf(stderr, "  FAIL: History I mismatch\n");
+        return 1;
+    }
+    if (!arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
+        std::fprintf(stderr, "  FAIL: History Q mismatch\n");
+        return 1;
+    }
+
+    std::printf("  PASS\n");
+    return 0;
+}
+
+/* Regression: input blocks that produce no output must still update history */
+static int
+test_zero_output_history_updates() {
+    std::printf("Testing zero-output history updates...\n");
+
+    const int taps_len = 15;
+    const int hist_len = taps_len - 1;
+
+    {
+        alignas(64) float in_complex[2] = {3.25f, -7.5f}; /* 1 complex sample => 0 output */
+        alignas(64) float out_simd[2] = {0.0f, 0.0f};
+        alignas(64) float out_ref[2] = {0.0f, 0.0f};
+        alignas(64) float hist_i_simd[hist_len];
+        alignas(64) float hist_q_simd[hist_len];
+        alignas(64) float hist_i_ref[hist_len];
+        alignas(64) float hist_q_ref[hist_len];
+
+        for (int i = 0; i < hist_len; i++) {
+            hist_i_simd[i] = hist_i_ref[i] = (float)(100 + i);
+            hist_q_simd[i] = hist_q_ref[i] = (float)(-100 - i);
+        }
+
+        int len_simd = simd_hb_decim2_complex(in_complex, 2, out_simd, hist_i_simd, hist_q_simd, hb_q15_taps, taps_len);
+        int len_ref =
+            hb_decim2_complex_scalar_ref(in_complex, 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
+
+        if (len_simd != len_ref) {
+            std::fprintf(stderr, "  FAIL: Complex zero-output length mismatch (%d vs %d)\n", len_simd, len_ref);
+            return 1;
+        }
+        if (!arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)) {
+            std::fprintf(stderr, "  FAIL: Complex History I mismatch\n");
+            return 1;
+        }
+        if (!arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
+            std::fprintf(stderr, "  FAIL: Complex History Q mismatch\n");
+            return 1;
+        }
+    }
+
+    {
+        alignas(64) float in_real[1] = {1.5f}; /* 1 real sample => 0 output */
+        alignas(64) float out_simd[1] = {0.0f};
+        alignas(64) float out_ref[1] = {0.0f};
+        alignas(64) float hist_simd[hist_len];
+        alignas(64) float hist_ref[hist_len];
+
+        for (int i = 0; i < hist_len; i++) {
+            hist_simd[i] = hist_ref[i] = (float)(50 - i);
+        }
+
+        int len_simd = simd_hb_decim2_real(in_real, 1, out_simd, hist_simd, hb_q15_taps, taps_len);
+        int len_ref = hb_decim2_real_scalar_ref(in_real, 1, out_ref, hist_ref, hb_q15_taps, taps_len);
+
+        if (len_simd != len_ref) {
+            std::fprintf(stderr, "  FAIL: Real zero-output length mismatch (%d vs %d)\n", len_simd, len_ref);
+            return 1;
+        }
+        if (!arrays_close(hist_simd, hist_ref, hist_len, kTolerance)) {
+            std::fprintf(stderr, "  FAIL: Real History mismatch\n");
+            return 1;
+        }
+    }
+
+    std::printf("  PASS\n");
+    return 0;
+}
+
 int
 main(void) {
     std::srand(12345);
@@ -551,6 +667,10 @@ main(void) {
 
     /* Test small blocks */
     failures += test_small_blocks();
+
+    /* Regressions for history handling on short/zero-output blocks */
+    failures += test_complex_short_block_history();
+    failures += test_zero_output_history_updates();
 
     if (failures > 0) {
         std::printf("\n%d test(s) FAILED\n", failures);

@@ -184,10 +184,10 @@ simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist
     }
 
     int ch_len = in_len >> 1;
-    int out_ch_len = ch_len >> 1;
-    if (out_ch_len <= 0) {
+    if (ch_len <= 0) {
         return 0;
     }
+    int out_ch_len = ch_len >> 1;
 
     const int center = (taps_len - 1) >> 1;
     const int left_len = taps_len - 1;
@@ -212,8 +212,8 @@ simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist
     std::memcpy(scratch + (size_t)left_len * 2, in, (size_t)ch_len * 2 * sizeof(float));
 
     /* Tail padding to preserve lastI/lastQ behavior */
-    float lastI = (ch_len > 0) ? in[in_len - 2] : 0.0f;
-    float lastQ = (ch_len > 0) ? in[in_len - 1] : 0.0f;
+    float lastI = in[in_len - 2];
+    float lastQ = in[in_len - 1];
     for (int k = 0; k < pad; k++) {
         const size_t kk = (size_t)left_len + (size_t)ch_len + (size_t)k;
         scratch[2 * kk] = lastI;
@@ -318,14 +318,12 @@ simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist
             hist_q[k] = in[(rel << 1) + 1];
         }
     } else {
-        for (int k = 0; k < left_len; k++) {
-            if (k < ch_len) {
-                hist_i[k] = in[k << 1];
-                hist_q[k] = in[(k << 1) + 1];
-            } else {
-                hist_i[k] = 0.0f;
-                hist_q[k] = 0.0f;
-            }
+        int keep = left_len - ch_len;
+        std::memmove(hist_i, hist_i + ch_len, (size_t)keep * sizeof(float));
+        std::memmove(hist_q, hist_q + ch_len, (size_t)keep * sizeof(float));
+        for (int k = 0; k < ch_len; k++) {
+            hist_i[keep + k] = in[k << 1];
+            hist_q[keep + k] = in[(k << 1) + 1];
         }
     }
 
@@ -343,13 +341,13 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
     if (taps_len < 3 || (taps_len & 1) == 0) {
         return 0;
     }
+    if (in_len <= 0) {
+        return 0;
+    }
 
     const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
     int out_len = in_len >> 1;
-    if (out_len <= 0) {
-        return 0;
-    }
 
     const int total_len = hist_len + in_len;
     const int pad = center + 1; /* stride-2 centers, 8-output vectorization */
@@ -368,7 +366,7 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
     std::memcpy(scratch + hist_len, in, (size_t)in_len * sizeof(float));
 
     /* Tail padding to preserve last sample behavior */
-    float last = (in_len > 0) ? in[in_len - 1] : 0.0f;
+    float last = in[in_len - 1];
     for (int k = 0; k < pad; k++) {
         scratch[hist_len + in_len + k] = last;
     }
