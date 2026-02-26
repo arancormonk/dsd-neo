@@ -43,6 +43,8 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - Precedence detail: `--config /path/to/config.ini` > `--config` default path (ignores `DSD_NEO_CONFIG`) > `DSD_NEO_CONFIG`.
 - `--interactive-setup` runs the wizard even when a config exists.
 - `--print-config` prints the effective config as INI after all env/CLI overrides.
+- In Soapy mode, shorthand `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` is normalized first, so output shows
+  `soapy_args` plus shared `rtl_*` tuning keys.
 - When config is enabled, the final settings are autosaved on exit. See `docs/config-system.md` for details.
 
 ## Inputs (`-i`)
@@ -232,6 +234,8 @@ Advanced (env)
   `soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`.
 - Those trailing fields map to existing shared controls and keys:
   `rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`.
+- `--print-config` reflects shorthand as normalized config fields (`soapy_args` + `rtl_*`) rather than the raw input
+  string.
 - If your Soapy args string itself contains `:`, prefer config keys (`soapy_args` + `rtl_*`) to avoid ambiguity.
 - `rtl_device` index selection is for `rtl` input and is ignored in Soapy mode.
 - Set an explicit `rtl_freq` for predictable startup frequency (otherwise defaults may not match your target system).

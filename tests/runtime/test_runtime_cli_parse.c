@@ -510,6 +510,61 @@ test_bootstrap_treats_lone_ini_as_config(void) {
 }
 
 static int
+test_bootstrap_print_config_normalizes_soapy_shorthand(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    // Keep bootstrap deterministic and isolate from host configuration.
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-i";
+    char arg2[] = "soapy:driver=airspy,serial=ABC123:851.375M:22:-2:24:0:2";
+    char arg3[] = "--print-config";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    test_redirect_stdout_to_null();
+    int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
+        fprintf(stderr, "expected rc=%d and exit_rc=0, got rc=%d exit_rc=%d\n", DSD_BOOTSTRAP_EXIT, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (strcmp(opts->audio_in_dev, "soapy:driver=airspy,serial=ABC123") != 0) {
+        fprintf(stderr, "expected normalized soapy args, got audio_in_dev=%s\n", opts->audio_in_dev);
+        test_rc = 1;
+    }
+    if (opts->rtlsdr_center_freq != 851375000U || opts->rtl_gain_value != 22 || opts->rtlsdr_ppm_error != -2
+        || opts->rtl_dsp_bw_khz != 24 || opts->rtl_squelch_level != 0.0 || opts->rtl_volume_multiplier != 2) {
+        fprintf(stderr, "unexpected normalized tuning values freq=%u gain=%d ppm=%d bw=%d sql=%.6f vol=%d\n",
+                opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz,
+                opts->rtl_squelch_level, opts->rtl_volume_multiplier);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_r_playback_optind_is_first_file_regardless_of_option_order(void) {
     int test_rc = 0;
     char wav_path_a[1024];
@@ -1322,6 +1377,7 @@ main(void) {
     rc |= test_1_loads_rc4_key_for_both_slots_and_allows_spaces();
     rc |= test_1_loads_rc4_key_allows_0x_prefix();
     rc |= test_bootstrap_treats_lone_ini_as_config();
+    rc |= test_bootstrap_print_config_normalizes_soapy_shorthand();
     rc |= test_r_playback_optind_is_first_file_regardless_of_option_order();
     rc |= test_open_mbe_missing_file_leaves_stream_null();
     rc |= test_rdio_long_options_parse();

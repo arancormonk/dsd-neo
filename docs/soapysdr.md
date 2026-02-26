@@ -64,6 +64,7 @@ In Soapy mode, you can either:
 
 Trailing Soapy tuning fields map to the same shared controls used by RTL/RTL-TCP (`rtl_*` keys).
 If your Soapy args string itself contains `:`, prefer config (`soapy_args` + `rtl_*`) to avoid ambiguity.
+`--print-config` normalizes this shorthand before rendering, so effective output shows `soapy_args` plus `rtl_*` fields.
 
 Minimal config (recommended):
 

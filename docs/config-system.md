@@ -504,6 +504,8 @@ When `[trunking] enabled = true`:
 2. Config values are applied, then CLI arguments override them.
 3. One-shot commands (`--dump-config-template`, `--validate-config`,
    `--list-profiles`, `--print-config`) execute and exit immediately.
+   Before `--print-config` renders, Soapy shorthand input specs are normalized
+   into `soapy_args` plus shared `rtl_*` tuning keys.
 4. If no CLI args and no config is loaded, the interactive bootstrap wizard runs.
 5. When a config is loaded: interactive bootstrap is skipped unless
    `--interactive-setup` is specified.

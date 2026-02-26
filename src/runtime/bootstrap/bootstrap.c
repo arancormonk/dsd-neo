@@ -11,6 +11,7 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <mbelib.h>
 #include <stdio.h>
@@ -227,6 +228,9 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     }
 
     if (print_config_cli) {
+        /* Ensure shorthand Soapy tuning is reflected in the exported effective config. */
+        int soapy_tuning_applied = 0;
+        (void)dsd_normalize_soapy_input_spec(opts, &soapy_tuning_applied);
         dsdneoUserConfig eff;
         dsd_snapshot_opts_to_user_config(opts, state, &eff);
         dsd_user_config_render_ini(&eff, stdout);
