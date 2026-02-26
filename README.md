@@ -98,7 +98,7 @@ Requirements
 - CMake ≥ 3.20.
 - Dependencies:
   - Required: libsndfile; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
-  - Optional: librtlsdr (RTL‑SDR support), SoapySDR (non‑RTL SDR backends), Codec2 (additional vocoder paths), help2man (man page generation).
+  - Optional: librtlsdr (RTL‑SDR support), SoapySDR (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl (rdio API uploads), help2man (man page generation).
   - Vocoder: mbelib-neo (`mbe-neo` CMake package) is required.
 
 OS package hints
@@ -393,4 +393,4 @@ Quick examples
 - Project license: GPL‑3.0‑or‑later (see `LICENSE`).
 - Portions remain under ISC per the original DSD author (see `COPYRIGHT`).
 - Third-party notices live in `THIRD_PARTY.md` (installed license texts: `share/doc/dsd-neo/licenses/`).
-- Source files carry SPDX identifiers reflecting their license.
+- Project-authored source files carry SPDX identifiers reflecting their license; vendored third-party files retain upstream license headers.

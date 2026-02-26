@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Run Clang Static Analyzer via scan-build on a dedicated temporary build tree.
 # Intended for CI or explicit local runs (heavier than per-file analyzers).
-# Excludes third-party code under src/external.
+# Excludes vendored third-party code under src/third_party.
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT_DIR"
@@ -103,7 +103,7 @@ LOG_FILE=".scan-build.local.out"
 SCAN_ARGS=(
   --keep-empty
   -o "$OUTPUT_DIR"
-  --exclude "$ROOT_DIR/src/external"
+  --exclude "$ROOT_DIR/src/third_party"
 )
 if [[ $STRICT -eq 1 ]]; then
   SCAN_ARGS+=(--status-bugs)
@@ -122,7 +122,7 @@ set +e
 {
   echo "scan-build version:"
   print_scan_build_version
-  echo "Excluding analyzer path: $ROOT_DIR/src/external"
+  echo "Excluding analyzer path: $ROOT_DIR/src/third_party"
   echo ""
   echo "Configuring analysis build in $BUILD_DIR ..."
   scan-build "${SCAN_ARGS[@]}" cmake -S . -B "$BUILD_DIR" \
