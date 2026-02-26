@@ -5,7 +5,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 ## Cheatsheet
 
 - Help: `dsd-neo -h` | UI/logs: `-N`, `-Z` | List devices: `-O`
-- Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args] | tcp[:host:7355] | udp[:bind:7355] | m17udp[:bind:17000] | -`
+- Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]] | tcp[:host:7355] | udp[:bind:7355] | m17udp[:bind:17000] | -`
 - Outputs: `-o pulse | null | udp[:host:23456] | m17udp[:host:17000] | -`
 - Record/Logs: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`, `-nm`
@@ -13,7 +13,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-u 3`, `-q`
 - Trunking/scan: `-T`, `-Y`, `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--no-p25p2-soft`, `--no-p25p1-soft-voice`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
-- Soapy selection: `-i soapy` or `-i soapy:driver=airspy[,serial=...]` (discover args with `SoapySDRUtil --find`)
+- Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` (see `docs/udp-control.md`)
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
 - Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `-4`, `-0`, `-3`
@@ -55,7 +55,7 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
   - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
-- SoapySDR: `-i soapy[:args]`
+- SoapySDR: `-i soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]]`
 - TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (default port 7355; sample rate uses `-s`, default 48000)
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355)
 - M17 UDP/IP input: `-i m17udp[:bind_addr:port]` (defaults 127.0.0.1:17000)
@@ -228,8 +228,11 @@ Advanced (env)
   4. Probe one candidate and capture its args: `SoapySDRUtil --probe="driver=sdrplay"`
   5. Start with `-i soapy` (default args) or `-i soapy:<args>`
 - `soapy[:args]` sets backend/device selection only.
-- Unlike `rtl:` and `rtltcp:`, Soapy does not parse `freq:gain:ppm:bw:sql:vol` from the `-i` string.
-- Soapy tuning still uses existing radio controls and keys: `rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`.
+- Optional shorthand supports RTL-style startup tuning in the same `-i` string:
+  `soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`.
+- Those trailing fields map to existing shared controls and keys:
+  `rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`.
+- If your Soapy args string itself contains `:`, prefer config keys (`soapy_args` + `rtl_*`) to avoid ambiguity.
 - `rtl_device` index selection is for `rtl` input and is ignored in Soapy mode.
 - Set an explicit `rtl_freq` for predictable startup frequency (otherwise defaults may not match your target system).
 - Some controls are RTL/RTL-TCP specific and not supported in the Soapy backend path (`bias tee`, direct sampling, offset tuning, xtal/IF-gain/testmode controls, RTL-TCP autotune).
@@ -444,6 +447,7 @@ Debug (verbose/developer)
 - UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
 - RTL‑TCP in with ncurses UI: `dsd-neo -i rtltcp:127.0.0.1:1234 -N`
 - SoapySDR in with explicit driver args: `dsd-neo -i soapy:driver=sdrplay -N`
+- SoapySDR args + RTL-style tuning in one input spec: `dsd-neo -i soapy:driver=sdrplay:851.375M:22:-2:24:0:2 -N`
 - Save per‑call WAVs to a folder: `dsd-neo -7 ./calls -P -N`
 - Strictly P25 Phase 1 from TCP audio: `dsd-neo -f1 -i tcp -N`
 

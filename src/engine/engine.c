@@ -38,6 +38,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -538,6 +539,8 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     }
 
     if ((strcmp(opts->audio_in_dev, "soapy") == 0) || (strncmp(opts->audio_in_dev, "soapy:", 6) == 0)) {
+        int tuning_applied = 0;
+        (void)dsd_normalize_soapy_input_spec(opts, &tuning_applied);
         const char* soapy_args = "";
         if (strncmp(opts->audio_in_dev, "soapy:", 6) == 0) {
             soapy_args = opts->audio_in_dev + 6;
@@ -547,6 +550,11 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
             LOG_NOTICE(": %s\n", soapy_args);
         } else {
             LOG_NOTICE(": default device args\n");
+        }
+        if (tuning_applied) {
+            LOG_NOTICE("SoapySDR tuning: Freq=%u Gain=%d PPM=%d DSP-BW=%dkHz SQ=%.1fdB VOL=%d\n",
+                       opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz,
+                       pwr_to_dB(opts->rtl_squelch_level), opts->rtl_volume_multiplier);
         }
         opts->rtltcp_enabled = 0;
         opts->audio_in_type = AUDIO_IN_RTL; // reuse radio pipeline

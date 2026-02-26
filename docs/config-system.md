@@ -411,6 +411,8 @@ version = 1
 
 - **SoapySDR (`source = "soapy"`)**:
   - Uses `soapy_args` for device selection only (same semantics as CLI `-i soapy[:args]`).
+  - CLI also supports optional shorthand tuning:
+    `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`.
   - Reuses existing `rtl_*` tuning keys (`rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`)
     so trunking and retune behavior remains unchanged.
   - `rtl_device` and `rtltcp_*` endpoint keys are not used in Soapy mode.

@@ -95,6 +95,11 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/runtime/freq_parse.h
   C)
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_input_spec
+  HEADERS_PUBLIC_RUNTIME_INPUT_SPEC
+  dsd-neo/runtime/input_spec.h
+  C)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_p25_optional_hooks
   HEADERS_PUBLIC_RUNTIME_P25_OPTIONAL_HOOKS
   dsd-neo/runtime/p25_optional_hooks.h
@@ -331,6 +336,11 @@ add_executable(dsd-neo_test_runtime_freq_parse runtime/test_runtime_freq_parse.c
 target_include_directories(dsd-neo_test_runtime_freq_parse PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_freq_parse PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_FREQ_PARSE COMMAND dsd-neo_test_runtime_freq_parse)
+
+add_executable(dsd-neo_test_runtime_input_spec runtime/test_runtime_input_spec.c)
+target_include_directories(dsd-neo_test_runtime_input_spec PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_input_spec PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_INPUT_SPEC COMMAND dsd-neo_test_runtime_input_spec)
 
 add_executable(dsd-neo_test_runtime_rdio_export runtime/test_runtime_rdio_export.c)
 target_include_directories(dsd-neo_test_runtime_rdio_export PRIVATE ${PROJECT_SOURCE_DIR}/include)

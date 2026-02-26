@@ -11,6 +11,7 @@ Input syntax:
 
 - `-i soapy`
 - `-i soapy:<args>` (example: `-i soapy:driver=sdrplay,serial=123456`)
+- `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`
 
 ## 0) Install SoapySDR runtime + tools + your radio module
 
@@ -56,8 +57,13 @@ Take the key/value pairs you want (for example `driver=...`, `serial=...`) and u
 
 ## 3) Configure tuning (important)
 
-In Soapy mode, the `-i soapy[:args]` string only selects the backend/device. It does **not** parse
-`freq:gain:ppm:bw:sql:vol` like `rtl:` and `rtltcp:`.
+In Soapy mode, you can either:
+
+- Use `-i soapy[:args]` for backend/device selection only, then tune through config keys.
+- Use `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` for one-shot CLI startup tuning.
+
+Trailing Soapy tuning fields map to the same shared controls used by RTL/RTL-TCP (`rtl_*` keys).
+If your Soapy args string itself contains `:`, prefer config (`soapy_args` + `rtl_*`) to avoid ambiguity.
 
 Minimal config (recommended):
 
@@ -103,6 +109,9 @@ dsd-neo --config ~/.config/dsd-neo/config.ini -N
 
 # One-shot trunking with explicit Soapy args
 dsd-neo -fs -i soapy:driver=airspy -T -C connect_plus_chan.csv -G group.csv -N
+
+# One-shot Soapy args + startup tuning
+dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan.csv -G group.csv -N
 ```
 
 ## Behavior and limits vs RTL/RTL-TCP
