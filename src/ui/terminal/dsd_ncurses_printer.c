@@ -2604,10 +2604,28 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     attron(COLOR_PAIR(4));
 
                     if (item->event_string[0] != '\0') {
+                        char compact_string[2000];
                         char text_string[2000];
-                        memcpy(text_string, item->event_string, (size_t)string_size * sizeof(char));
-                        text_string[string_size] = 0; //terminate string
-                        printw("| ");
+                        ui_history_compact_event_text(compact_string, sizeof compact_string, item->event_string,
+                                                      history_mode);
+
+                        const int show_enc_tag = (history_mode == 1 && item->enc != 0);
+                        const char* line_prefix = show_enc_tag ? "| [ENC] " : "| ";
+                        const int line_prefix_len = show_enc_tag ? 8 : 2;
+                        uint16_t line_size = string_size;
+                        if (history_mode != 2 && cols > 0) {
+                            int max_text = cols - (line_prefix_len + 2);
+                            if (max_text < 0) {
+                                max_text = 0;
+                            }
+                            if (max_text < (int)line_size) {
+                                line_size = (uint16_t)max_text;
+                            }
+                        }
+
+                        memcpy(text_string, compact_string, (size_t)line_size * sizeof(char));
+                        text_string[line_size] = 0; //terminate string
+                        printw("%s", line_prefix);
                         attron(COLOR_PAIR(color_pair)); //this is where the custom color switch occurs for the
                                                         //event_string
                         printw("%s\n", text_string);
@@ -2661,13 +2679,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     }
                 }
             } else {
-                const int prefix_len = 5; // "| S# " (5)
+                const int base_prefix_len = 5; // "|[1] " (5)
                 uint16_t idx0 = 1;
                 uint16_t idx1 = 1;
                 uint16_t skip = state->eh_index;
 
                 if (history_mode != 2 && cols > 0) {
-                    int max_text = cols - (prefix_len + 2);
+                    int max_text = cols - (base_prefix_len + 2);
                     if (max_text < 0) {
                         max_text = 0;
                     }
@@ -2737,10 +2755,33 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     uint8_t color_pair = item->color_pair;
                     attron(COLOR_PAIR(4));
 
+                    char compact_string[2000];
                     char text_string[2000];
-                    memcpy(text_string, item->event_string, (size_t)string_size * sizeof(char));
-                    text_string[string_size] = 0; //terminate string
-                    printw("| S%d ", slot + 1);
+                    char line_prefix[16];
+                    const int show_enc_tag = (history_mode == 1 && item->enc != 0);
+                    if (show_enc_tag) {
+                        snprintf(line_prefix, sizeof line_prefix, "|[%d] [ENC] ", slot + 1);
+                    } else {
+                        snprintf(line_prefix, sizeof line_prefix, "|[%d] ", slot + 1);
+                    }
+
+                    ui_history_compact_event_text(compact_string, sizeof compact_string, item->event_string,
+                                                  history_mode);
+
+                    uint16_t line_size = string_size;
+                    if (history_mode != 2 && cols > 0) {
+                        int max_text = cols - ((int)strlen(line_prefix) + 2);
+                        if (max_text < 0) {
+                            max_text = 0;
+                        }
+                        if (max_text < (int)line_size) {
+                            line_size = (uint16_t)max_text;
+                        }
+                    }
+
+                    memcpy(text_string, compact_string, (size_t)line_size * sizeof(char));
+                    text_string[line_size] = 0; //terminate string
+                    printw("%s", line_prefix);
                     attron(COLOR_PAIR(color_pair)); //this is where the custom color switch occurs for the event_string
                     printw("%s\n", text_string);
                     attron(COLOR_PAIR(4));
@@ -2751,7 +2792,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                             break;
                         }
                         attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                        printw("| S%d \\-- %s\n", slot + 1, item->text_message);
+                        printw("|[%d] \\-- %s\n", slot + 1, item->text_message);
                         attron(COLOR_PAIR(4));
                     }
 
@@ -2761,7 +2802,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                             break;
                         }
                         attron(COLOR_PAIR(4));
-                        printw("| S%d \\-- Alias: %s \n", slot + 1, item->alias);
+                        printw("|[%d] \\-- Alias: %s \n", slot + 1, item->alias);
                         attron(COLOR_PAIR(4));
                     }
 
@@ -2771,7 +2812,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                             break;
                         }
                         attron(COLOR_PAIR(4));
-                        printw("| S%d \\-- GPS: %s \n", slot + 1, item->gps_s);
+                        printw("|[%d] \\-- GPS: %s \n", slot + 1, item->gps_s);
                         attron(COLOR_PAIR(4));
                     }
 
@@ -2781,7 +2822,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                             break;
                         }
                         attron(COLOR_PAIR(4));
-                        printw("| S%d \\-- DSD-neo: %s \n", slot + 1, item->internal_str);
+                        printw("|[%d] \\-- DSD-neo: %s \n", slot + 1, item->internal_str);
                         attron(COLOR_PAIR(4));
                     }
                 }

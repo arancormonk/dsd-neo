@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,6 +27,21 @@ void ui_history_set_mode(int mode);
 
 /** @brief Cycle mode Short->Long->Off (mod 3), returning the new mode. */
 int ui_history_cycle_mode(void);
+
+/**
+ * @brief Build display text for event-history lines.
+ *
+ * In Short mode, this compacts canonical timestamps from
+ * `YYYY-MM-DD HH:MM:SS ...` to `HH:MM:SS ...` to reclaim horizontal space.
+ * Other modes preserve the original string.
+ *
+ * @param out Destination buffer.
+ * @param out_size Destination buffer size in bytes.
+ * @param event_text Source event string (may be NULL).
+ * @param mode Event-history mode (normalized internally).
+ * @return Number of characters written to @p out (excluding NUL).
+ */
+size_t ui_history_compact_event_text(char* out, size_t out_size, const char* event_text, int mode);
 
 #ifdef __cplusplus
 }
