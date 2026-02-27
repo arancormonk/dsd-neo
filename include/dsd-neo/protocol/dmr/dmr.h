@@ -56,6 +56,7 @@ uint32_t dmr_34(uint8_t* input, uint8_t treturn[18]);
 
 void dmr_alg_reset(dsd_opts* opts, dsd_state* state);
 void dmr_alg_refresh(dsd_opts* opts, dsd_state* state);
+void dmr_refresh_algids_on_error(dsd_opts* opts, dsd_state* state);
 void dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t ambe_fr[4][24],
                                 uint8_t ambe_fr2[4][24], uint8_t ambe_fr3[4][24]);
 void dmr_late_entry_mi(dsd_opts* opts, dsd_state* state);

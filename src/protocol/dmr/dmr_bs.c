@@ -762,22 +762,7 @@ END:
         fprintf(stderr, "%s", KNRM);
         fprintf(stderr, "\n");
         //run refresh if either slot had an active MI in it.
-        if (state->payload_algid >= 0x21) {
-            state->currentslot = 0;
-            dmr_alg_refresh(opts, state);
-        } else if (state->payload_algid == 0x02) {
-            hytera_enhanced_alg_refresh(state);
-            state->currentslot = 0;
-            dmr_alg_refresh(opts, state);
-        }
-        if (state->payload_algidR >= 0x21) {
-            state->currentslot = 1;
-            dmr_alg_refresh(opts, state);
-        } else if (state->payload_algidR == 0x02) {
-            hytera_enhanced_alg_refresh(state);
-            state->currentslot = 1;
-            dmr_alg_refresh(opts, state);
-        }
+        dmr_refresh_algids_on_error(opts, state);
 
         //failsafe to reset all data header and blocks when bad tact or emb
         dmr_reset_blocks(opts, state);
@@ -1114,22 +1099,7 @@ END:
         fprintf(stderr, "%s", KNRM);
         fprintf(stderr, "\n");
         //run refresh if either slot had an active MI in it.
-        if (state->payload_algid >= 0x21) {
-            state->currentslot = 0;
-            dmr_alg_refresh(opts, state);
-        } else if (state->payload_algid == 0x02) {
-            state->currentslot = 0;
-            hytera_enhanced_alg_refresh(state);
-            dmr_alg_refresh(opts, state);
-        }
-        if (state->payload_algidR >= 0x21) {
-            state->currentslot = 1;
-            dmr_alg_refresh(opts, state);
-        } else if (state->payload_algid == 0x02) {
-            hytera_enhanced_alg_refresh(state);
-            state->currentslot = 1;
-            dmr_alg_refresh(opts, state);
-        }
+        dmr_refresh_algids_on_error(opts, state);
 
         //failsafe to reset all data header and blocks when bad tact or emb
         dmr_reset_blocks(opts, state);

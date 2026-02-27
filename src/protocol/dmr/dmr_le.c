@@ -251,6 +251,22 @@ dmr_late_entry_mi(dsd_opts* opts, dsd_state* state) {
 }
 
 void
+dmr_refresh_algids_on_error(dsd_opts* opts, dsd_state* state) {
+    for (uint8_t slot = 0; slot < 2; slot++) {
+        int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
+        if (algid >= 0x21) {
+            state->currentslot = slot;
+            dmr_alg_refresh(opts, state);
+        } else if (algid == 0x02) {
+            // hytera_enhanced_alg_refresh reads state->currentslot to pick the slot MI.
+            state->currentslot = slot;
+            hytera_enhanced_alg_refresh(state);
+            dmr_alg_refresh(opts, state);
+        }
+    }
+}
+
+void
 dmr_alg_refresh(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
 
