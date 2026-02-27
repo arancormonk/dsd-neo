@@ -24,7 +24,10 @@
 
 #include <dsd-neo/dsp/p25p1_heuristics.h>
 
-enum { DSD_P25_P2_AUDIO_RING_DEPTH = 4 };
+enum {
+    DSD_P25_P2_AUDIO_RING_DEPTH = 4,
+    DSD_VERTEX_KS_MAP_MAX = 64,
+};
 
 /* Forward declaration for mbelib decoder state (opaque in public API). */
 struct mbe_parameters;
@@ -936,6 +939,18 @@ struct dsd_state {
 
     uint8_t static_ks_bits[2][882];
     int static_ks_counter[2];
+
+    // Vertex ALG 0x07 interim key->keystream mapping table.
+    unsigned long long vertex_ks_key[DSD_VERTEX_KS_MAP_MAX];
+    uint8_t vertex_ks_bits[DSD_VERTEX_KS_MAP_MAX][882];
+    int vertex_ks_mod[DSD_VERTEX_KS_MAP_MAX];
+    int vertex_ks_frame_mode[DSD_VERTEX_KS_MAP_MAX];
+    int vertex_ks_frame_off[DSD_VERTEX_KS_MAP_MAX];
+    int vertex_ks_frame_step[DSD_VERTEX_KS_MAP_MAX];
+    int vertex_ks_count;
+    int vertex_ks_active_idx[2];
+    int vertex_ks_counter[2];
+    uint8_t vertex_ks_warned[2];
 
     // DMR: consecutive EMB decode failures per slot (hysteresis for robustness)
     uint8_t dmr_emb_err[2];

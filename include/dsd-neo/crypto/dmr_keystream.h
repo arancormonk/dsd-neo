@@ -12,6 +12,9 @@
 
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <dsd-neo/core/state_fwd.h>
 
 #ifdef __cplusplus
@@ -25,8 +28,11 @@ int baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input);
 int connect_systems_ee72_key_creation(dsd_state* state, const char* input);
 void ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input);
 void anytone_bp_keystream_creation(dsd_state* state, char* input);
+int dmr_parse_static_keystream_spec(const char* input, uint8_t out_bits[882], int* out_mod, int* out_frame_mode,
+                                    int* out_frame_off, int* out_frame_step, char* err, size_t err_cap);
 void straight_mod_xor_keystream_creation(dsd_state* state, char* input);
 void straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49]);
+int vertex_key_map_apply_frame49(dsd_state* state, int slot, unsigned long long key, char ambe_d[49]);
 void tyt16_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24], int fnum);
 void csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]);
 void kirisun_adv_keystream_creation(dsd_state* state);

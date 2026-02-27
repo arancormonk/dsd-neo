@@ -108,6 +108,15 @@ dsd_cli_compact_args(int argc, char** argv) {
         if (strncmp(arg, "--dmr-csi-ee72=", 15) == 0) {
             continue;
         }
+        if (strcmp(arg, "--dmr-vertex-ks-csv") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--dmr-vertex-ks-csv=", 20) == 0) {
+            continue;
+        }
         if (strcmp(arg, "--auto-ppm-snr") == 0) {
             if (i + 1 < argc) {
                 i++;

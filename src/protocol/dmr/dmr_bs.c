@@ -643,9 +643,15 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
 
             if (internalslot == 0 && vc1 == 6) {
                 state->static_ks_counter[0] = 0;
+                state->vertex_ks_counter[0] = 0;
+                state->vertex_ks_active_idx[0] = -1;
+                state->vertex_ks_warned[0] = 0;
             }
             if (internalslot == 1 && vc2 == 6) {
                 state->static_ks_counter[1] = 0;
+                state->vertex_ks_counter[1] = 0;
+                state->vertex_ks_active_idx[1] = -1;
+                state->vertex_ks_warned[1] = 0;
             }
 
             if (opts->dmr_le != 2) { //if not Hytera Enhanced
@@ -780,6 +786,12 @@ END:
     //reset static ks counter
     state->static_ks_counter[0] = 0;
     state->static_ks_counter[1] = 0;
+    state->vertex_ks_counter[0] = 0;
+    state->vertex_ks_counter[1] = 0;
+    state->vertex_ks_active_idx[0] = -1;
+    state->vertex_ks_active_idx[1] = -1;
+    state->vertex_ks_warned[0] = 0;
+    state->vertex_ks_warned[1] = 0;
     // reset EMB miss counters on exit
     state->dmr_emb_err[0] = 0;
     state->dmr_emb_err[1] = 0;
@@ -855,6 +867,9 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
 
     //reset static ks counter
     state->static_ks_counter[internalslot] = 0;
+    state->vertex_ks_counter[internalslot] = 0;
+    state->vertex_ks_active_idx[internalslot] = -1;
+    state->vertex_ks_warned[internalslot] = 0;
 
     //Setup for first AMBE Frame
 

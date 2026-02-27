@@ -237,6 +237,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
     char ambe_d[49];
     unsigned long long int k;
     int x;
+    int vertex_ks_applied_l = 0;
+    int vertex_ks_applied_r = 0;
 
     //these conditions should ensure no clashing with the BP/HBP/Scrambler key loading machanisms already coded in
     if (state->currentslot == 0 && state->payload_algid != 0 && state->payload_algid != 0x80 && state->keyloader == 1) {
@@ -730,11 +732,17 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
                 state->DMRvcL++;
             }
 
-            if (state->currentslot == 0 && state->payload_algid == 0x07 && state->DMRvcL == 0
-                && state->straight_ks != 1) {
-                fprintf(stderr,
-                        "\n DMR Vertex Std voice decrypt is not auto-implemented; use -S bits:hex[:offset[:step]] "
-                        "with a valid keystream.");
+            if (state->currentslot == 0 && state->payload_algid == 0x07 && state->straight_ks != 1) {
+                vertex_ks_applied_l = vertex_key_map_apply_frame49(state, 0, state->R, ambe_d);
+                if (vertex_ks_applied_l == 1) {
+                    // Mark this frame as decryptable for short-mix gating paths.
+                    state->dmr_so &= ~0x40U;
+                }
+                if (vertex_ks_applied_l == 0 && state->vertex_ks_warned[0] == 0) {
+                    fprintf(stderr, "\n DMR Vertex Std voice decrypt needs a mapped keystream (--dmr-vertex-ks-csv) or "
+                                    "manual -S bits:hex[:offset[:step]].");
+                    state->vertex_ks_warned[0] = 1;
+                }
             }
 
             //DMR and P25p2 DES-OFB 56 Handling, Slot 1, VCH 0 -- consider moving into the AES handler
@@ -1168,11 +1176,17 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
                 state->DMRvcR++;
             }
 
-            if (state->currentslot == 1 && state->payload_algidR == 0x07 && state->DMRvcR == 0
-                && state->straight_ks != 1) {
-                fprintf(stderr,
-                        "\n DMR Vertex Std voice decrypt is not auto-implemented; use -S bits:hex[:offset[:step]] "
-                        "with a valid keystream.");
+            if (state->currentslot == 1 && state->payload_algidR == 0x07 && state->straight_ks != 1) {
+                vertex_ks_applied_r = vertex_key_map_apply_frame49(state, 1, state->RR, ambe_d);
+                if (vertex_ks_applied_r == 1) {
+                    // Mark this frame as decryptable for short-mix gating paths.
+                    state->dmr_soR &= ~0x40U;
+                }
+                if (vertex_ks_applied_r == 0 && state->vertex_ks_warned[1] == 0) {
+                    fprintf(stderr, "\n DMR Vertex Std voice decrypt needs a mapped keystream (--dmr-vertex-ks-csv) or "
+                                    "manual -S bits:hex[:offset[:step]].");
+                    state->vertex_ks_warned[1] = 1;
+                }
             }
 
             //DMR and P25p2 DES-OFB 56 Handling, Slot 2, VCH 1 -- Consider moving into AES handler
@@ -1528,7 +1542,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             if (state->R != 0 || state->K != 0 || state->K1 != 0) {
                 state->dmr_encL = 0;
             }
-        } else if (dsd_dmr_voice_alg_can_decrypt(state->payload_algid, state->R, state->aes_key_loaded[0])) {
+        } else if (dsd_dmr_voice_alg_can_decrypt(state->payload_algid, state->R, state->aes_key_loaded[0])
+                   || (state->payload_algid == 0x07 && vertex_ks_applied_l == 1)) {
             state->dmr_encL = 0;
         }
 
@@ -1587,7 +1602,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             if (state->RR != 0 || state->K != 0 || state->K1 != 0) {
                 state->dmr_encR = 0;
             }
-        } else if (dsd_dmr_voice_alg_can_decrypt(state->payload_algidR, state->RR, state->aes_key_loaded[1])) {
+        } else if (dsd_dmr_voice_alg_can_decrypt(state->payload_algidR, state->RR, state->aes_key_loaded[1])
+                   || (state->payload_algidR == 0x07 && vertex_ks_applied_r == 1)) {
             state->dmr_encR = 0;
         }
 

@@ -114,6 +114,33 @@ keyid(hex),value0,value1,value2,value3
 C197,A753BC945DE5E0F1,EC1970F8565154E6,D9DF2FAC6278FA93,B531D2CC046E93A2
 ```
 
+## Vertex Key->Keystream Map CSV (`--dmr-vertex-ks-csv <file>`)
+
+Purpose: Interim decrypt support for Vertex DMR ALG `0x07` by mapping an entered key value to a known AMBE keystream.
+
+Required columns:
+
+1. `key_hex` (hex key value; same representation as `-1`, optional `0x` prefix)
+2. `keystream_spec` in `bits:hex[:offset[:step]]` format
+
+Notes:
+
+- Header row is ignored (required by importer convention).
+- `keystream_spec` format matches the `-S` option exactly:
+  - `bits` is decimal and must be `1..882`
+  - `hex` is packed keystream bytes
+  - Optional `offset` and `step` are decimal bit positions for frame-aligned application
+- Duplicate keys are allowed; the last occurrence replaces earlier rows.
+- Maximum rows: `64`.
+
+Example:
+
+```csv
+key_hex,keystream_spec,notes
+1234567891,49:ED0AED4AED4AED4A,Vertex sample key
+0xA1B2C3D4E5,168:0123456789ABCDEF0123456789ABCDEF0123456789:0:49,frame aligned
+```
+
 ## DMR Tier III LCN Calculator Input (`--calc-lcn <file>`)
 
 The `--calc-lcn` one-shot tool is more flexible than the CSV imports above:
@@ -121,4 +148,3 @@ The `--calc-lcn` one-shot tool is more flexible than the CSV imports above:
 - It scans each line for the first numeric field and treats it as a frequency.
 - Frequencies may be in **Hz** (e.g., `451237500`) or **MHz** (e.g., `451.2375`).
 - The output is printed to stdout as `lcn,freq` CSV.
-

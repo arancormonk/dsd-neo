@@ -421,6 +421,59 @@ test_create_temp_ini(char* out_path, size_t out_path_size) {
 }
 
 static int
+test_create_temp_vertex_ks_csv(char* out_path, size_t out_path_size, int malformed) {
+    if (!out_path || out_path_size == 0) {
+        return -1;
+    }
+
+    const char sep = test_path_sep();
+    const char* tdir = test_tmp_dir();
+
+    char tmpl[1024];
+    size_t tdir_len = strlen(tdir);
+    if (tdir_len > 0 && (tdir[tdir_len - 1] == '/' || tdir[tdir_len - 1] == '\\')) {
+        snprintf(tmpl, sizeof tmpl, "%sdsdneo_vertex_ks_XXXXXX", tdir);
+    } else {
+        snprintf(tmpl, sizeof tmpl, "%s%c%s", tdir, sep, "dsdneo_vertex_ks_XXXXXX");
+    }
+
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        return -1;
+    }
+    (void)dsd_close(fd);
+
+    if (snprintf(out_path, out_path_size, "%s.csv", tmpl) >= (int)out_path_size) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    if (rename(tmpl, out_path) != 0) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    FILE* fp = fopen(out_path, "w");
+    if (!fp) {
+        (void)remove(out_path);
+        return -1;
+    }
+
+    if (malformed) {
+        fputs("key_hex,keystream_spec\n"
+              "1234567891,broken\n",
+              fp);
+    } else {
+        fputs("key_hex,keystream_spec\n"
+              "1234567891,8:F0:2:3\n",
+              fp);
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+static int
 test_bootstrap_treats_lone_ini_as_config(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -1139,6 +1192,124 @@ test_dmr_csi_ee72_long_option_parse(void) {
 }
 
 static int
+test_dmr_vertex_ks_csv_long_option_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char csv_path[1024];
+    if (test_create_temp_vertex_ks_csv(csv_path, sizeof csv_path, 0) != 0) {
+        freeState(state);
+        free(opts);
+        free(state);
+        fprintf(stderr, "failed to create temp vertex csv\n");
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--dmr-vertex-ks-csv";
+    char* argv[] = {arg0, arg1, csv_path, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (state->vertex_ks_count != 1) {
+        fprintf(stderr, "expected vertex_ks_count=1, got %d\n", state->vertex_ks_count);
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (state->vertex_ks_key[0] != 0x1234567891ULL || state->vertex_ks_mod[0] != 8
+        || state->vertex_ks_frame_mode[0] != 1 || state->vertex_ks_frame_off[0] != 2
+        || state->vertex_ks_frame_step[0] != 3) {
+        fprintf(stderr, "unexpected parsed vertex mapping fields\n");
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    (void)remove(csv_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char csv_path[1024];
+    if (test_create_temp_vertex_ks_csv(csv_path, sizeof csv_path, 1) != 0) {
+        freeState(state);
+        free(opts);
+        free(state);
+        fprintf(stderr, "failed to create malformed temp vertex csv\n");
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--dmr-vertex-ks-csv";
+    char* argv[] = {arg0, arg1, csv_path, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        fprintf(stderr, "expected parse error for malformed Vertex KS CSV, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (state->vertex_ks_count != 0) {
+        fprintf(stderr, "expected vertex_ks_count=0 on malformed CSV, got %d\n", state->vertex_ks_count);
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    (void)remove(csv_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
 test_dmr_baofeng_pc5_long_option_rejects_invalid_key(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -1391,6 +1562,8 @@ main(void) {
     rc |= test_dmr_baofeng_pc5_long_option_parse();
     rc |= test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes();
     rc |= test_dmr_csi_ee72_long_option_parse();
+    rc |= test_dmr_vertex_ks_csv_long_option_parse();
+    rc |= test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv();
     rc |= test_dmr_baofeng_pc5_long_option_rejects_invalid_key();
     rc |= test_f_auto_preset_applies_cli_profile();
     rc |= test_f_ysf_preset_applies_cli_profile();

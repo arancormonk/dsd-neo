@@ -92,10 +92,12 @@ test_vendor_privacy_long_opts_are_removed(void) {
     char arg1[] = "--dmr-baofeng-pc5";
     char arg2[] = "0123456789ABCDEFFEDCBA9876543210";
     char arg3[] = "--dmr-csi-ee72=112233445566778899";
-    char arg4[] = "-fi";
-    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+    char arg4[] = "--dmr-vertex-ks-csv";
+    char arg5[] = "vertex_map.csv";
+    char arg6[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, NULL};
 
-    int new_argc = dsd_cli_compact_args(5, argv);
+    int new_argc = dsd_cli_compact_args(7, argv);
     if (new_argc != 2) {
         fprintf(stderr, "expected new_argc=2, got %d\n", new_argc);
         return 1;

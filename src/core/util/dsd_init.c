@@ -655,6 +655,19 @@ initState(dsd_state* state) {
 
     memset(state->static_ks_bits, 0, sizeof(state->static_ks_bits));
     memset(state->static_ks_counter, 0, sizeof(state->static_ks_counter));
+    memset(state->vertex_ks_key, 0, sizeof(state->vertex_ks_key));
+    memset(state->vertex_ks_bits, 0, sizeof(state->vertex_ks_bits));
+    memset(state->vertex_ks_mod, 0, sizeof(state->vertex_ks_mod));
+    memset(state->vertex_ks_frame_mode, 0, sizeof(state->vertex_ks_frame_mode));
+    memset(state->vertex_ks_frame_off, 0, sizeof(state->vertex_ks_frame_off));
+    memset(state->vertex_ks_frame_step, 0, sizeof(state->vertex_ks_frame_step));
+    state->vertex_ks_count = 0;
+    state->vertex_ks_active_idx[0] = -1;
+    state->vertex_ks_active_idx[1] = -1;
+    state->vertex_ks_counter[0] = 0;
+    state->vertex_ks_counter[1] = 0;
+    state->vertex_ks_warned[0] = 0;
+    state->vertex_ks_warned[1] = 0;
 
     //AES Specific Variables
     memset(state->aes_key, 0, sizeof(state->aes_key));

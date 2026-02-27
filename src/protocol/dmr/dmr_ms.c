@@ -392,6 +392,9 @@ END:
 
     //reset static ks counter
     state->static_ks_counter[0] = 0;
+    state->vertex_ks_counter[0] = 0;
+    state->vertex_ks_active_idx[0] = -1;
+    state->vertex_ks_warned[0] = 0;
 }
 
 //collect buffered 1st half and get 2nd half voice payload and then jump to full MS Voice decoding.
@@ -403,6 +406,9 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
 
     //reset static ks counter
     state->static_ks_counter[0] = 0;
+    state->vertex_ks_counter[0] = 0;
+    state->vertex_ks_active_idx[0] = -1;
+    state->vertex_ks_warned[0] = 0;
 
     int i, dibit;
     int* dibit_p;

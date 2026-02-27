@@ -287,6 +287,8 @@ dsd_cli_usage(void) {
     printf("                 \n");
     printf("      --dmr-baofeng-pc5 <hex>  Force Baofeng AP (PC5) key (32 or 64 hex chars).\n");
     printf("      --dmr-csi-ee72 <hex>     Force Connect Systems EE72 key (18 hex chars).\n");
+    printf("      --dmr-vertex-ks-csv <file>  Vertex ALG 0x07 key->keystream map CSV (key_hex, "
+           "bits:hex[:offset[:step]]).\n");
     printf("                 \n");
     printf("  -9 <dec>      Manually Enter and Enforce Kenwood 15-bit Scrambler Key Value (DMR) (Dec Value) \n");
     printf("                 \n");

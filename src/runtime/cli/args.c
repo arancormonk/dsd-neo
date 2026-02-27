@@ -140,6 +140,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* rdio_upload_retries_cli = NULL;
     const char* dmr_baofeng_pc5_cli = NULL;
     const char* dmr_csi_ee72_cli = NULL;
+    const char* dmr_vertex_ks_csv_cli = NULL;
     int rtl_udp_control_cli_seen = 0;
     unsigned long rtl_udp_control_cli_port = 0;
 
@@ -360,6 +361,19 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             dmr_csi_ee72_cli = argv[i] + 15;
             continue;
         }
+        if (strcmp(argv[i], "--dmr-vertex-ks-csv") == 0) {
+            if (i + 1 >= argc) {
+                LOG_ERROR("--dmr-vertex-ks-csv requires a CSV path\n");
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            dmr_vertex_ks_csv_cli = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "--dmr-vertex-ks-csv=", 20) == 0) {
+            dmr_vertex_ks_csv_cli = argv[i] + 20;
+            continue;
+        }
         if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {
             const char* sv = argv[++i];
             if (sv && *sv) {
@@ -539,6 +553,13 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     if (dmr_csi_ee72_cli) {
         if (connect_systems_ee72_key_creation(state, dmr_csi_ee72_cli) != 0) {
             LOG_ERROR("Invalid --dmr-csi-ee72 value\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+    }
+    if (dmr_vertex_ks_csv_cli) {
+        if (csvVertexKsImport(state, dmr_vertex_ks_csv_cli) != 0) {
+            LOG_ERROR("Invalid --dmr-vertex-ks-csv value\n");
             cli_set_exit_rc(out_exit_rc, 1);
             return DSD_PARSE_ERROR;
         }
