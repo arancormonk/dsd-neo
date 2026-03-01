@@ -156,7 +156,7 @@ jobs:
           & $exe -h
 
       - name: Upload native MSVC artifact
-        uses: actions/upload-artifact@v6.0.0
+        uses: actions/upload-artifact@v7.0.0
         with:
           name: ${{ steps.zip.outputs.ART_NAME }}
           path: ${{ steps.zip.outputs.ZIP_PATH }}
@@ -353,7 +353,7 @@ jobs:
           & $exe -h
 
       - name: Upload native MinGW artifact
-        uses: actions/upload-artifact@v6.0.0
+        uses: actions/upload-artifact@v7.0.0
         with:
           name: ${{ steps.zip.outputs.ART_NAME }}
           path: ${{ steps.zip.outputs.ZIP_PATH }}

@@ -390,7 +390,7 @@ jobs:
               ccache -s || true
             '
       - name: Upload artifact
-        uses: actions/upload-artifact@v6.0.0
+        uses: actions/upload-artifact@v7.0.0
         with:
           name: ${{ steps.names.outputs.ART }}
           path: ${{ steps.names.outputs.OUT }}
