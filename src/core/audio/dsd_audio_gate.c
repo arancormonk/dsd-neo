@@ -14,6 +14,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -112,4 +113,31 @@ dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned
     rc |= dsd_audio_group_gate_mono(opts, state, tgL, encL_in, encL_out);
     rc |= dsd_audio_group_gate_mono(opts, state, tgR, encR_in, encR_out);
     return rc;
+}
+
+int
+dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out) {
+    if (!opts || !state || !allow_out) {
+        return -1;
+    }
+
+    const int slot = (state->currentslot == 1) ? 1 : 0;
+    int allow = 0;
+    if (DSD_SYNC_IS_P25P2(state->synctype)) {
+        allow = (state->p25_p2_audio_allowed[slot] != 0) ? 1 : 0;
+    } else {
+        const int enc = (slot == 1) ? state->dmr_encR : state->dmr_encL;
+        allow = (opts->unmute_encrypted_p25 == 1 || enc == 0) ? 1 : 0;
+    }
+
+    if (allow) {
+        const unsigned long tg = (slot == 1) ? (unsigned long)state->lasttgR : (unsigned long)state->lasttg;
+        int rec_gate = 0;
+        if (dsd_audio_group_gate_mono(opts, state, tg, 0, &rec_gate) == 0 && rec_gate != 0) {
+            allow = 0;
+        }
+    }
+
+    *allow_out = allow;
+    return 0;
 }

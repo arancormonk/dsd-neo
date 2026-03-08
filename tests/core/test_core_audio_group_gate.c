@@ -13,6 +13,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -103,6 +104,50 @@ main(void) {
         int out = 0;
         rc |= expect_eq("null-mono", dsd_audio_group_gate_mono(NULL, st, 0UL, 0, &out), -1);
         rc |= expect_eq("null-dual", dsd_audio_group_gate_dual(&opts, st, 0UL, 0UL, 0, 0, NULL, &out), -1);
+        rc |= expect_eq("null-record-mono", dsd_audio_record_gate_mono(&opts, NULL, &out), -1);
+    }
+
+    // Case 4: Mono per-call recording gate respects block mode.
+    memset(&opts, 0, sizeof(opts));
+    memset(st, 0, sizeof(*st));
+    st->group_tally = 1;
+    st->lasttg = 500UL;
+    st->dmr_encL = 0;
+    set_group(st, 0, 500UL, "B", "REC-BLOCK");
+    {
+        int allow = -1;
+        rc |= expect_eq("case4-rec-ret", dsd_audio_record_gate_mono(&opts, st, &allow), 0);
+        rc |= expect_eq("case4-rec-allow", allow, 0);
+    }
+
+    // Case 5: Mono per-call recording gate uses slot-specific TG/encryption state.
+    memset(&opts, 0, sizeof(opts));
+    memset(st, 0, sizeof(*st));
+    opts.trunk_use_allow_list = 1;
+    st->currentslot = 1;
+    st->group_tally = 1;
+    st->lasttg = 600UL;
+    st->lasttgR = 601UL;
+    st->dmr_encL = 1;
+    st->dmr_encR = 0;
+    set_group(st, 0, 601UL, "A", "RIGHT-ONLY");
+    {
+        int allow = -1;
+        rc |= expect_eq("case5-rec-ret", dsd_audio_record_gate_mono(&opts, st, &allow), 0);
+        rc |= expect_eq("case5-rec-allow", allow, 1);
+    }
+
+    // Case 6: P25 Phase 2 recording gate follows the per-slot audio-allowed flag.
+    memset(&opts, 0, sizeof(opts));
+    memset(st, 0, sizeof(*st));
+    st->synctype = DSD_SYNC_P25P2_POS;
+    st->currentslot = 1;
+    st->p25_p2_audio_allowed[0] = 0;
+    st->p25_p2_audio_allowed[1] = 1;
+    {
+        int allow = -1;
+        rc |= expect_eq("case6-rec-ret", dsd_audio_record_gate_mono(&opts, st, &allow), 0);
+        rc |= expect_eq("case6-rec-allow", allow, 1);
     }
 
     if (rc == 0) {

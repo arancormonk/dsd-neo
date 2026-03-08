@@ -1586,16 +1586,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
     //still need this for any switch that opens a 1 channel output config
     if (opts->static_wav_file == 0) {
-        //if using anything but DMR Stereo, borrowing state->dmr_encL to signal enc or clear for other types
         if (opts->wav_out_f != NULL && opts->dmr_stereo == 0) {
             int allow_wav = 0;
-            int is_p25p2 = DSD_SYNC_IS_P25P2(state->synctype);
-            if (is_p25p2) {
-                allow_wav = (state->p25_p2_audio_allowed[state->currentslot] != 0);
-            } else {
-                allow_wav = (opts->unmute_encrypted_p25 == 1 || state->dmr_encL == 0);
-            }
-            if (allow_wav) {
+            if (dsd_audio_record_gate_mono(opts, state, &allow_wav) == 0 && allow_wav) {
                 writeSynthesizedVoice(opts, state);
             }
         }

@@ -128,6 +128,8 @@ int dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsi
 /** @brief Talkgroup/whitelist/TG-hold gating for dual/slot mix (enc flags 0=unmuted,1=muted). */
 int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned long tgL, unsigned long tgR,
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
+/** @brief Mono per-call WAV gate combining decrypt state with TG/allow-list/TG-hold policy. */
+int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out);
 
 /**
  * @brief Return 1 when a DMR/P25-style voice ALGID has sufficient key material to decrypt.
