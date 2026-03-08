@@ -367,8 +367,8 @@ test_path_sep(void) {
 }
 
 static int
-test_create_temp_ini(char* out_path, size_t out_path_size) {
-    if (!out_path || out_path_size == 0) {
+test_create_temp_ini_with_contents(const char* contents, char* out_path, size_t out_path_size) {
+    if (!contents || !out_path || out_path_size == 0) {
         return -1;
     }
 
@@ -405,19 +405,26 @@ test_create_temp_ini(char* out_path, size_t out_path_size) {
         return -1;
     }
 
-    fputs("version = 1\n"
-          "\n"
-          "[input]\n"
-          "source = \"rtl\"\n"
-          "rtl_device = 0\n"
-          "rtl_freq = \"100000000\"\n"
-          "\n"
-          "[trunking]\n"
-          "enabled = true\n",
-          fp);
-
+    fputs(contents, fp);
     fclose(fp);
     return 0;
+}
+
+static int
+test_create_temp_ini(char* out_path, size_t out_path_size) {
+    if (!out_path || out_path_size == 0) {
+        return -1;
+    }
+    return test_create_temp_ini_with_contents("version = 1\n"
+                                              "\n"
+                                              "[input]\n"
+                                              "source = \"rtl\"\n"
+                                              "rtl_device = 0\n"
+                                              "rtl_freq = \"100000000\"\n"
+                                              "\n"
+                                              "[trunking]\n"
+                                              "enabled = true\n",
+                                              out_path, out_path_size);
 }
 
 static int
@@ -611,6 +618,159 @@ test_bootstrap_print_config_normalizes_soapy_shorthand(void) {
         test_rc = 1;
     }
 
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_profile_preserves_trunking_with_ncurses_cli(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"pulse\"\n"
+                             "\n"
+                             "[profile.p25_trunk]\n"
+                             "input.source = \"rtl\"\n"
+                             "input.rtl_device = 0\n"
+                             "input.rtl_freq = \"100000000\"\n"
+                             "trunking.enabled = true\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        fprintf(stderr, "failed to create temp profile ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "--profile";
+    char arg4[] = "p25_trunk";
+    char arg5[] = "-N";
+    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(6, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (opts->trunk_enable != 1 || opts->p25_trunk != 1) {
+        fprintf(stderr, "expected profiled trunking to stay enabled, got trunk_enable=%d p25_trunk=%d\n",
+                opts->trunk_enable, opts->p25_trunk);
+        test_rc = 1;
+    }
+    if (opts->use_ncurses_terminal != 1) {
+        fprintf(stderr, "expected -N to remain applied, got use_ncurses_terminal=%d\n", opts->use_ncurses_terminal);
+        test_rc = 1;
+    }
+    if (strncmp(opts->audio_in_dev, "rtl:", 4) != 0) {
+        fprintf(stderr, "expected profile RTL input, got audio_in_dev=%s\n", opts->audio_in_dev);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_profile_disables_autosave(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[profile.p25_trunk]\n"
+                             "input.source = \"rtl\"\n"
+                             "input.rtl_device = 0\n"
+                             "input.rtl_freq = \"100000000\"\n"
+                             "trunking.enabled = true\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        fprintf(stderr, "failed to create temp profile ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "--profile";
+    char arg4[] = "p25_trunk";
+    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (state->config_autosave_enabled != 0) {
+        fprintf(stderr, "expected autosave disabled for profiled config, got enabled=%d\n",
+                state->config_autosave_enabled);
+        test_rc = 1;
+    }
+    if (strcmp(state->config_autosave_path, cfg_path) != 0) {
+        fprintf(stderr, "expected profiled config path retained as %s, got %s\n", cfg_path,
+                state->config_autosave_path);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
     freeState(state);
     free(opts);
     free(state);
@@ -1549,6 +1709,8 @@ main(void) {
     rc |= test_1_loads_rc4_key_allows_0x_prefix();
     rc |= test_bootstrap_treats_lone_ini_as_config();
     rc |= test_bootstrap_print_config_normalizes_soapy_shorthand();
+    rc |= test_bootstrap_profile_preserves_trunking_with_ncurses_cli();
+    rc |= test_bootstrap_profile_disables_autosave();
     rc |= test_r_playback_optind_is_first_file_regardless_of_option_order();
     rc |= test_open_mbe_missing_file_leaves_stream_null();
     rc |= test_rdio_long_options_parse();
