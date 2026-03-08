@@ -31,7 +31,7 @@ jobs:
         # Only run on trusted contexts (not forked PRs), otherwise the
         # `secrets` context is unavailable and would error.
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
