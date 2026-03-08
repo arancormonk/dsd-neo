@@ -437,6 +437,83 @@ straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49]) {
                                ambe_d);
 }
 
+int
+dmr_ambe49_is_default_silence(const char ambe_d[49]) {
+    static const uint64_t k_ambe_default_silence = 0xF801A99F8CE080ULL;
+
+    if (ambe_d == NULL) {
+        return 0;
+    }
+
+    for (int i = 0; i < 49; i++) {
+        const uint8_t want = (uint8_t)((k_ambe_default_silence >> (55 - i)) & 1U);
+        const uint8_t got = (uint8_t)(((unsigned char)ambe_d[i]) & 1U);
+        if (got != want) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+int
+hytera_bp_apply_frame49(unsigned long long k1, unsigned long long k2, unsigned long long k3, unsigned long long k4,
+                        int* frame_counter, char ambe_d[49]) {
+    if (frame_counter == NULL || ambe_d == NULL) {
+        return 0;
+    }
+
+    int frame = *frame_counter;
+    if (frame < 0) {
+        frame = 0;
+    } else if (frame > 17) {
+        frame = 17;
+    }
+
+    if (dmr_ambe49_is_default_silence(ambe_d) == 1) {
+        *frame_counter = frame + 1;
+        return 0;
+    }
+
+    int len = 0;
+    if (k2 == 0ULL) {
+        len = 39;
+        k1 <<= 24;
+    } else {
+        len = 127;
+    }
+    if (k4 != 0ULL) {
+        len = 255;
+    }
+
+    uint8_t t_key[256] = {0};
+    uint8_t p_n[882] = {0};
+
+    for (int i = 0; i < 64; i++) {
+        t_key[i] = (uint8_t)((k1 >> (63 - i)) & 1ULL);
+        t_key[i + 64] = (uint8_t)((k2 >> (63 - i)) & 1ULL);
+        t_key[i + 128] = (uint8_t)((k3 >> (63 - i)) & 1ULL);
+        t_key[i + 192] = (uint8_t)((k4 >> (63 - i)) & 1ULL);
+    }
+
+    int pos = 0;
+    for (int i = 0; i < 882; i++) {
+        p_n[i] = t_key[pos];
+        pos++;
+        if (pos > len) {
+            pos = 0;
+        }
+    }
+
+    pos = frame * 49;
+    for (int i = 0; i < 49; i++) {
+        ambe_d[i] ^= (char)(p_n[pos++] & 1U);
+    }
+
+    *frame_counter = frame + 1;
+    return 1;
+}
+
 static int
 vertex_key_map_find_index(const dsd_state* state, unsigned long long key) {
     if (state == NULL || state->vertex_ks_count <= 0) {

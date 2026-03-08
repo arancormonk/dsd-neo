@@ -32,6 +32,9 @@ int dmr_parse_static_keystream_spec(const char* input, uint8_t out_bits[882], in
                                     int* out_frame_off, int* out_frame_step, char* err, size_t err_cap);
 void straight_mod_xor_keystream_creation(dsd_state* state, char* input);
 void straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49]);
+int dmr_ambe49_is_default_silence(const char ambe_d[49]);
+int hytera_bp_apply_frame49(unsigned long long k1, unsigned long long k2, unsigned long long k3, unsigned long long k4,
+                            int* frame_counter, char ambe_d[49]);
 int vertex_key_map_apply_frame49(dsd_state* state, int slot, unsigned long long key, char ambe_d[49]);
 void tyt16_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24], int fnum);
 void csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]);

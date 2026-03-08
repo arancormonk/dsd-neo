@@ -439,6 +439,11 @@ target_include_directories(dsd-neo_test_core_straight_keystream_validation PRIVA
 target_link_libraries(dsd-neo_test_core_straight_keystream_validation PRIVATE dsd-neo_crypto)
 add_test(NAME CORE_STRAIGHT_KEYSTREAM_VALIDATION COMMAND dsd-neo_test_core_straight_keystream_validation)
 
+add_executable(dsd-neo_test_core_hytera_bp_silence core/test_core_hytera_bp_silence.c)
+target_include_directories(dsd-neo_test_core_hytera_bp_silence PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_core_hytera_bp_silence PRIVATE dsd-neo_crypto)
+add_test(NAME CORE_HYTERA_BP_SILENCE COMMAND dsd-neo_test_core_hytera_bp_silence)
+
 add_executable(dsd-neo_test_runtime_cli_compact runtime/test_runtime_cli_compact.c)
 target_include_directories(dsd-neo_test_runtime_cli_compact PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_cli_compact PRIVATE dsd-neo_runtime dsd-neo_test_support)
