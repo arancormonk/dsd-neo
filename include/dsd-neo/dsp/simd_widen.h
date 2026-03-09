@@ -61,11 +61,48 @@ void widen_u8_to_f32_bias127(const unsigned char* src, float* dst, uint32_t len)
 void widen_rotate90_u8_to_f32_bias127(const unsigned char* src, float* dst, uint32_t len);
 
 /**
+ * @brief Rotate 90° (IQ) and widen u8→float centered at 127.5 with explicit phase.
+ *
+ * Applies the `j^n` sequence starting at `phase & 3`, where phase 0 leaves the
+ * first I/Q pair unchanged. Processes `floor(len/2)` pairs and returns the phase
+ * to use for the next pair-aligned chunk.
+ *
+ * Callers must preserve I/Q byte alignment themselves. If a transport split can
+ * leave one dangling byte, buffer that byte externally and resume with a
+ * pair-aligned span on the next call.
+ *
+ * @param src Source buffer of unsigned bytes (I/Q interleaved).
+ * @param dst Destination float buffer.
+ * @param len Number of bytes in src to process.
+ * @param phase Starting rotation phase in [0, 3]; other bits are ignored.
+ * @return Next rotation phase after processing the available I/Q pairs.
+ */
+uint32_t widen_rotate90_u8_to_f32_bias127_phase(const unsigned char* src, float* dst, uint32_t len, uint32_t phase);
+
+/**
+ * @brief Legacy in-place byte-domain 90° IQ rotation with explicit phase.
+ *
+ * Rotates interleaved u8 I/Q samples using byte-domain negation (`255 - x`).
+ * Intended to pair with `widen_u8_to_f32_bias128_scalar()` for the legacy
+ * two-pass RTL path. Processes `floor(len/2)` pairs and returns the phase to
+ * use for the next pair-aligned chunk.
+ *
+ * Callers must preserve I/Q byte alignment themselves. If a transport split can
+ * leave one dangling byte, buffer that byte externally and resume with a
+ * pair-aligned span on the next call.
+ *
+ * @param buf Buffer of interleaved I/Q bytes to rotate in place.
+ * @param len Number of bytes in buf to process.
+ * @param phase Starting rotation phase in [0, 3]; other bits are ignored.
+ * @return Next rotation phase after processing the available I/Q pairs.
+ */
+uint32_t rotate90_u8_inplace_phase(unsigned char* buf, uint32_t len, uint32_t phase);
+
+/**
  * @brief Widen u8 to float centered at 128 (for legacy pre-rotation negation).
  *
  * Scalar widening that subtracts 128 instead of 127. Intended to pair with
- * legacy byte-wise rotate_90(u8) which performs 255-x negation so that overall
- * effect equals correct centered negation (127-x).
+ * legacy byte-wise `rotate90_u8_inplace_phase()` which performs 255-x negation.
  *
  * @param src Source buffer of unsigned bytes.
  * @param dst Destination float buffer.

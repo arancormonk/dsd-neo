@@ -201,11 +201,15 @@ int rtl_device_stop_async(struct rtl_device* dev);
  * @brief Mute the incoming raw USB/TCP byte stream for a short duration.
  *
  * Note: The argument is in raw input BYTES (u8 I/Q interleaved), not int16
- * samples. This matches how the underlying callback consumes the value
- * (clamping and subtracting from the remaining byte count per callback).
+ * samples. The requested mute span is rounded up to whole I/Q pairs, but the
+ * internal remaining byte count may still go odd between rtl_tcp callbacks
+ * because TCP read boundaries are arbitrary. If a prior chunk ended on an odd
+ * byte boundary, the implementation may discard one additional future byte
+ * internally so unmuted processing resumes on an I/Q boundary.
  *
  * @param dev RTL-SDR device handle.
- * @param bytes Number of input bytes to overwrite with 0x7F (mute).
+ * @param bytes Number of input bytes to discard while muted. Odd values are
+ *              rounded up so the muted span always covers whole I/Q pairs.
  */
 void rtl_device_mute(struct rtl_device* dev, int bytes);
 

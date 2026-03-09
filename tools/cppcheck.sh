@@ -81,6 +81,7 @@ CPPCHECK_ARGS=(
   "--enable=warning,performance,portability"
   --std=c11
   --std=c++14
+  "-D__has_include(x)=0"
   --suppress=missingIncludeSystem
   --inline-suppr
   -I include
@@ -97,6 +98,7 @@ if [[ $STRICT -eq 1 ]]; then
     --force
     --std=c11
     --std=c++14
+    "-D__has_include(x)=0"
     --suppress=missingIncludeSystem
     --inline-suppr
     -I include

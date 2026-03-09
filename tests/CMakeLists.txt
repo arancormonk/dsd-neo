@@ -227,6 +227,16 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/core/frame.h
   C)
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_file_io
+  HEADERS_PUBLIC_CORE_FILE_IO
+  dsd-neo/core/file_io.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_opts
+  HEADERS_PUBLIC_CORE_OPTS
+  dsd-neo/core/opts.h
+  C)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_state_ext
   HEADERS_PUBLIC_CORE_STATE_EXT
   dsd-neo/core/state_ext.h
@@ -1176,7 +1186,7 @@ target_link_libraries(dsd-neo_test_dsp_ted PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_TED COMMAND dsd-neo_test_dsp_ted)
 
 add_executable(dsd-neo_test_dsp_simd_widen dsp/test_dsp_simd_widen.cpp)
-target_include_directories(dsd-neo_test_dsp_simd_widen PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_dsp_simd_widen PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(dsd-neo_test_dsp_simd_widen PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_SIMD_WIDEN COMMAND dsd-neo_test_dsp_simd_widen)
 
@@ -1620,3 +1630,41 @@ add_executable(dsd-neo_test_io_udp_input io/test_io_udp_input.c)
 target_include_directories(dsd-neo_test_io_udp_input PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_io_udp_input PRIVATE dsd-neo_io_audio)
 add_test(NAME IO_UDP_INPUT COMMAND dsd-neo_test_io_udp_input)
+
+set(_sndfile_fwd_contract_src "${_DSD_PUBLIC_HEADER_TEST_DIR}/CORE_SNDFILE_FWD_CONTRACT.c")
+file(WRITE "${_sndfile_fwd_contract_src}"
+  "// SPDX-License-Identifier: GPL-3.0-or-later\n"
+  "/*\n"
+  " * Regression test: when libsndfile headers are available, sndfile_fwd.h must\n"
+  " * surface the real SF_INFO definition. This protects the conditional-include\n"
+  " * behavior that previously regressed across CI environments.\n"
+  " */\n"
+  "\n"
+  "#include <dsd-neo/platform/sndfile_fwd.h>\n"
+  "\n"
+  "static int\n"
+  "sf_info_is_complete(void) {\n"
+  "    SF_INFO info;\n"
+  "    info.frames = 0;\n"
+  "    info.samplerate = 48000;\n"
+  "    info.channels = 1;\n"
+  "    info.format = 0;\n"
+  "    info.sections = 0;\n"
+  "    info.seekable = 0;\n"
+  "    return info.channels;\n"
+  "}\n"
+  "\n"
+  "int\n"
+  "main(void) {\n"
+  "    return sf_info_is_complete() != 1;\n"
+  "}\n")
+add_executable(dsd-neo_test_core_sndfile_fwd_contract "${_sndfile_fwd_contract_src}")
+target_include_directories(dsd-neo_test_core_sndfile_fwd_contract PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${LIBSNDFILE_INCLUDE_DIR}
+)
+add_test(NAME CORE_SNDFILE_FWD_CONTRACT COMMAND dsd-neo_test_core_sndfile_fwd_contract)
+
+add_executable(dsd-neo_test_io_rtl_capture_phase io/test_io_rtl_capture_phase.c)
+target_include_directories(dsd-neo_test_io_rtl_capture_phase PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio)
+add_test(NAME IO_RTL_CAPTURE_PHASE COMMAND dsd-neo_test_io_rtl_capture_phase)

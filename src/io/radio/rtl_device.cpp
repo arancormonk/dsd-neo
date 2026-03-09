@@ -23,6 +23,7 @@
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
@@ -34,6 +35,7 @@
 #include <string.h>
 
 #include "dsd-neo/platform/platform.h"
+#include "rtl_capture_phase.h"
 
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
 #include <excpt.h>
@@ -282,7 +284,9 @@ struct rtl_device {
     int soapy_lock_inited;
     int soapy_format; /* SOAPY_FMT_* */
     uint32_t soapy_mtu_elems;
-    int soapy_rot_phase; /* persistent j^n phase in [0..3] */
+    int rot_phase;                                  /* persistent j^n phase in [0..3] for capture-side FS/4 rotation */
+    struct rtl_capture_u8_byte_carry iq_byte_carry; /* one buffered raw byte when a chunk ends mid-I/Q sample */
+    std::atomic<int> mute_byte_phase;               /* byte carry while an active mute span is discarded in fragments */
     uint64_t soapy_overflow_count;
     uint64_t soapy_timeout_count;
     uint64_t soapy_read_errors;
@@ -349,41 +353,191 @@ struct rtl_device {
  *             per-role environment variables.
  */
 
-/**
- * @brief Rotate IQ data by 90 degrees in-place.
- *
- * @param buf Interleaved IQ byte buffer.
- * @param len Buffer length in bytes (processed in blocks of 8).
- */
-static void
-rotate_90(unsigned char* buf, uint32_t len) {
-    uint32_t i;
-    unsigned char tmp;
-    /* Process only full 8-byte blocks (4 IQ pairs) to avoid overrun */
-    uint32_t full = len - (len % 8);
-    for (i = 0; i < full; i += 8) {
-        /* uint8_t negation = 255 - x */
-        tmp = 255 - buf[i + 3];
-        buf[i + 3] = buf[i + 2];
-        buf[i + 2] = tmp;
-
-        tmp = 255 - buf[i + 2];
-        buf[i + 2] = buf[i + 3];
-        buf[i + 3] = tmp;
-
-        tmp = 255 - buf[i + 6];
-        buf[i + 6] = buf[i + 7];
-        buf[i + 7] = tmp;
-
-        tmp = 255 - buf[i + 7];
-        buf[i + 7] = buf[i + 6];
-        buf[i + 6] = tmp;
-    }
-}
-
 static inline int
 fs4_shift_capture_active(const struct rtl_device* s) {
     return (s && !s->offset_tuning && !disable_fs4_shift) ? 1 : 0;
+}
+
+static inline int
+rtl_process_u8_chunk(struct rtl_device* s, unsigned char* src, float* dst, size_t len, int fs4_shift_active,
+                     int use_two_pass, int* phase) {
+    if (!s || !src || !dst || len == 0) {
+        return phase ? *phase : 0;
+    }
+    int cur_phase = phase ? (*phase & 3) : 0;
+    if (fs4_shift_active && s->combine_rotate_enabled) {
+        cur_phase = (int)widen_rotate90_u8_to_f32_bias127_phase(src, dst, (uint32_t)len, (uint32_t)cur_phase);
+    } else if (use_two_pass) {
+        cur_phase = (int)rotate90_u8_inplace_phase(src, (uint32_t)len, (uint32_t)cur_phase);
+        widen_u8_to_f32_bias128_scalar(src, dst, (uint32_t)len);
+    } else {
+        widen_u8_to_f32_bias127(src, dst, (uint32_t)len);
+    }
+    if (phase) {
+        *phase = cur_phase;
+    }
+    return cur_phase;
+}
+
+static inline size_t
+rtl_drop_u8_bytes_preserve_alignment(const unsigned char* src, size_t byte_count,
+                                     struct rtl_capture_u8_byte_carry* carry, int* phase, int fs4_shift_active) {
+    size_t dropped = rtl_capture_u8_byte_carry_drop_aligned(src, byte_count, carry);
+    if (fs4_shift_active && phase && dropped != 0) {
+        *phase = rtl_capture_phase_advance_pairs(*phase, dropped >> 1);
+    }
+    return dropped;
+}
+
+static inline void
+rtl_prepare_fragmented_u8_mute(struct rtl_device* s) {
+    if (!s || s->mute.load(std::memory_order_relaxed) <= 0 || !s->iq_byte_carry.valid) {
+        return;
+    }
+
+    unsigned int carry = (unsigned int)(s->mute_byte_phase.load(std::memory_order_relaxed) & 1U);
+    int remaining = s->mute.load(std::memory_order_relaxed);
+    rtl_capture_u8_byte_carry_clear(&s->iq_byte_carry);
+    if (carry == 0U) {
+        carry = 1U;
+        if ((remaining & 1) == 0 && remaining < INT_MAX) {
+            s->mute.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    s->mute_byte_phase.store((int)carry, std::memory_order_relaxed);
+}
+
+static inline int
+rtl_account_fragmented_muted_u8_bytes(struct rtl_device* s, size_t discarded_bytes, int fs4_shift_active) {
+    if (!s || discarded_bytes == 0) {
+        return 0;
+    }
+    unsigned int carry = (unsigned int)(s->mute_byte_phase.load(std::memory_order_relaxed) & 1U);
+    if (fs4_shift_active) {
+        s->rot_phase = rtl_capture_phase_advance_u8_bytes_fragmented(s->rot_phase & 3, discarded_bytes, &carry);
+    } else {
+        (void)rtl_capture_phase_advance_u8_bytes_fragmented(0, discarded_bytes, &carry);
+    }
+    s->mute_byte_phase.store((int)carry, std::memory_order_relaxed);
+    return fs4_shift_active ? s->rot_phase : 0;
+}
+
+static inline void
+rtl_reset_capture_state_on_stream_boundary(struct rtl_device* s) {
+    if (!s) {
+        return;
+    }
+
+    unsigned int carry = (unsigned int)(s->mute_byte_phase.load(std::memory_order_relaxed) & 1U);
+    int remaining = s->mute.load(std::memory_order_relaxed);
+    for (;;) {
+        int realigned =
+            rtl_capture_restart_u8_stream_with_pending(&s->rot_phase, remaining, &carry, &s->tcp_pending_len);
+        if (realigned == remaining) {
+            break;
+        }
+        if (s->mute.compare_exchange_weak(remaining, realigned, std::memory_order_relaxed)) {
+            break;
+        }
+    }
+    rtl_capture_u8_byte_carry_clear(&s->iq_byte_carry);
+    s->mute_byte_phase.store((int)carry, std::memory_order_relaxed);
+}
+
+static int
+rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int fs4_shift_active, int use_two_pass,
+                     int count_full_reserve) {
+    if (!s || !s->input_ring || !src || len == 0) {
+        return 0;
+    }
+
+    size_t done = 0;
+    size_t need = len;
+    int phase = s->rot_phase & 3;
+    struct rtl_capture_u8_byte_carry carry = s->iq_byte_carry;
+    int ring_exhausted = 0;
+
+    while (rtl_capture_u8_byte_carry_ready_bytes(need, &carry) >= 2U) {
+        float *p1 = NULL, *p2 = NULL;
+        size_t n1 = 0, n2 = 0;
+        size_t ready = rtl_capture_u8_byte_carry_ready_bytes(need, &carry);
+        input_ring_reserve(s->input_ring, ready, &p1, &n1, &p2, &n2);
+        if (n1 == 0 && n2 == 0) {
+            ring_exhausted = 1;
+            break;
+        }
+
+        if (n1 & 1U) {
+            n1--;
+        }
+        size_t w1 = (n1 < ready) ? n1 : ready;
+        size_t rem_after_w1 = ready - w1;
+        if (n2 & 1U) {
+            n2--;
+        }
+        size_t w2 = (n2 < rem_after_w1) ? n2 : rem_after_w1;
+        size_t produced = w1 + w2;
+
+        if (produced == 0) {
+            ring_exhausted = 1;
+            break;
+        }
+
+        size_t consumed = 0;
+        if (w1) {
+            unsigned char pair[2];
+            size_t prefix = rtl_capture_u8_byte_carry_consume_prefix(src + done, need, &carry, pair);
+            if (prefix != 0U) {
+                rtl_process_u8_chunk(s, pair, p1, 2U, fs4_shift_active, use_two_pass, &phase);
+                done += prefix;
+                need -= prefix;
+                consumed += 2U;
+            }
+            if (w1 > consumed) {
+                size_t body = w1 - consumed;
+                rtl_process_u8_chunk(s, src + done, p1 + consumed, body, fs4_shift_active, use_two_pass, &phase);
+                done += body;
+                need -= body;
+            }
+        }
+        if (w2) {
+            unsigned char pair[2];
+            size_t prefix = rtl_capture_u8_byte_carry_consume_prefix(src + done, need, &carry, pair);
+            size_t produced_w2 = 0;
+            if (prefix != 0U) {
+                rtl_process_u8_chunk(s, pair, p2, 2U, fs4_shift_active, use_two_pass, &phase);
+                done += prefix;
+                need -= prefix;
+                produced_w2 += 2U;
+            }
+            if (w2 > produced_w2) {
+                size_t body = w2 - produced_w2;
+                rtl_process_u8_chunk(s, src + done, p2 + produced_w2, body, fs4_shift_active, use_two_pass, &phase);
+                done += body;
+                need -= body;
+            }
+        }
+
+        input_ring_commit(s->input_ring, produced);
+    }
+
+    if (ring_exhausted) {
+        size_t dropped = rtl_drop_u8_bytes_preserve_alignment(src + done, need, &carry, &phase, fs4_shift_active);
+        if (dropped != 0U) {
+            s->input_ring->producer_drops.fetch_add((uint64_t)dropped);
+        }
+        if (count_full_reserve) {
+            s->reserve_full_events++;
+        }
+    } else if (need == 1U && !carry.valid) {
+        rtl_capture_u8_byte_carry_save(&carry, src[done]);
+    }
+
+    s->iq_byte_carry = carry;
+    if (fs4_shift_active) {
+        s->rot_phase = phase;
+    }
+    return ring_exhausted;
 }
 
 #ifdef USE_SOAPYSDR
@@ -416,7 +570,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
     }
     size_t need = num_elems * 2;
     size_t done = 0;
-    int phase = s->soapy_rot_phase & 3;
+    int phase = s->rot_phase & 3;
     while (need > 0) {
         float *p1 = NULL, *p2 = NULL;
         size_t n1 = 0, n2 = 0;
@@ -424,7 +578,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
         if (n1 == 0 && n2 == 0) {
             s->input_ring->producer_drops.fetch_add((uint64_t)need);
             if (apply_rot) {
-                phase = (phase + (int)((need / 2) & 3U)) & 3;
+                phase = rtl_capture_phase_advance_pairs(phase, need / 2);
             }
             break;
         }
@@ -472,7 +626,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
         need -= w1 + w2;
     }
     if (apply_rot) {
-        s->soapy_rot_phase = phase;
+        s->rot_phase = phase;
     }
     return done / 2;
 }
@@ -485,7 +639,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
     const float scale = 1.0f / 32768.0f;
     size_t need = num_elems * 2;
     size_t done = 0;
-    int phase = s->soapy_rot_phase & 3;
+    int phase = s->rot_phase & 3;
     while (need > 0) {
         float *p1 = NULL, *p2 = NULL;
         size_t n1 = 0, n2 = 0;
@@ -493,7 +647,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
         if (n1 == 0 && n2 == 0) {
             s->input_ring->producer_drops.fetch_add((uint64_t)need);
             if (apply_rot) {
-                phase = (phase + (int)((need / 2) & 3U)) & 3;
+                phase = rtl_capture_phase_advance_pairs(phase, need / 2);
             }
             break;
         }
@@ -543,7 +697,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
         need -= w1 + w2;
     }
     if (apply_rot) {
-        s->soapy_rot_phase = phase;
+        s->rot_phase = phase;
     }
     return done / 2;
 }
@@ -554,8 +708,8 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
  * Converts incoming u8 I/Q to normalized float and enqueues into the input ring. If
  * `offset_tuning` is off and `DSD_NEO_COMBINE_ROT` is enabled (default), a
  * combined rotate+widen implementation is used. Otherwise it falls back to
- * legacy two-pass (rotate_90 u8, then widen subtracting 128) or a simple
- * widen subtracting 127. On overflow, drops oldest ring data to avoid stalls.
+ * a legacy two-pass byte-rotation + bias128 widen path or a simple widen
+ * subtracting 127. On overflow, drops oldest ring data to avoid stalls.
  *
  * @param buf USB I/Q byte buffer.
  * @param len Buffer length in bytes (I/Q interleaved).
@@ -580,6 +734,8 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
     if (!ctx) {
         return;
     }
+    int fs4_shift_active = fs4_shift_capture_active(s);
+    int use_two_pass = (fs4_shift_active && !s->combine_rotate_enabled);
     /* Handle muting: skip (discard) muted samples entirely instead of zero-filling.
      *
      * Previously we set muted samples to 127 (midpoint), which after bias subtraction
@@ -587,80 +743,35 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
      * they're processed after the retune gate opens. By discarding them entirely,
      * the demod thread never sees transient samples.
      *
-     * Advance buf pointer and reduce len to skip the muted portion. */
+     * Advance buf pointer and reduce len to skip the muted portion.
+     *
+     * Note: the stored mute value counts raw stream bytes still to discard. On the
+     * rtl_tcp backend that remainder may legitimately be odd between callbacks because
+     * recv() can split an aligned mute span across arbitrary byte boundaries. */
     if (s->mute.load(std::memory_order_relaxed) > 0) {
+        rtl_prepare_fragmented_u8_mute(s);
         int old = s->mute.load(std::memory_order_relaxed);
         if (old > 0) {
             uint32_t m = (uint32_t)old;
             if (m >= len) {
                 /* Entire buffer is muted - discard all and update counter */
+                rtl_account_fragmented_muted_u8_bytes(s, len, fs4_shift_active);
                 s->mute.fetch_sub((int)len, std::memory_order_relaxed);
+                if (m == len) {
+                    s->mute_byte_phase.store(0, std::memory_order_relaxed);
+                }
                 return; /* Nothing to process */
             }
             /* Partial mute: skip first m bytes, process remainder */
+            rtl_account_fragmented_muted_u8_bytes(s, m, fs4_shift_active);
             buf += m;
             len -= m;
             s->mute.fetch_sub((int)m, std::memory_order_relaxed);
+            s->mute_byte_phase.store(0, std::memory_order_relaxed);
         }
     }
-    /* Convert incoming u8 I/Q and write directly into input ring without extra copy */
-    size_t need = len;
-    size_t done = 0;
-    /* For legacy two-pass path, rotate the incoming byte buffer once up front */
-    int fs4_shift_active = fs4_shift_capture_active(s);
-    int use_two_pass = (fs4_shift_active && !s->combine_rotate_enabled);
-    if (use_two_pass) {
-        rotate_90(buf, len);
-    }
-    while (need > 0) {
-        float *p1 = NULL, *p2 = NULL;
-        size_t n1 = 0, n2 = 0;
-        input_ring_reserve(s->input_ring, need, &p1, &n1, &p2, &n2);
-        if (n1 == 0 && n2 == 0) {
-            /* Ring full: record drop and give up remaining bytes from this callback */
-            if (s->input_ring) {
-                s->input_ring->producer_drops.fetch_add((uint64_t)need);
-            }
-            break;
-        }
-        /* Ensure even counts to keep I/Q pairs aligned */
-        if (n1 & 1) {
-            n1--;
-        }
-        size_t w1 = (n1 < need) ? n1 : need;
-        size_t rem_after_w1 = need - w1;
-        if (n2 & 1) {
-            n2--;
-        }
-        size_t w2 = (n2 < rem_after_w1) ? n2 : rem_after_w1;
-
-        if (fs4_shift_active && s->combine_rotate_enabled) {
-            if (w1) {
-                widen_rotate90_u8_to_f32_bias127(buf + done, p1, (uint32_t)w1);
-            }
-            if (w2) {
-                widen_rotate90_u8_to_f32_bias127(buf + done + w1, p2, (uint32_t)w2);
-            }
-        } else if (use_two_pass) {
-            /* bytes already rotated in-place; widen with 128 subtraction to avoid bias */
-            if (w1) {
-                widen_u8_to_f32_bias128_scalar(buf + done, p1, (uint32_t)w1);
-            }
-            if (w2) {
-                widen_u8_to_f32_bias128_scalar(buf + done + w1, p2, (uint32_t)w2);
-            }
-        } else {
-            if (w1) {
-                widen_u8_to_f32_bias127(buf + done, p1, (uint32_t)w1);
-            }
-            if (w2) {
-                widen_u8_to_f32_bias127(buf + done + w1, p2, (uint32_t)w2);
-            }
-        }
-        input_ring_commit(s->input_ring, w1 + w2);
-        done += w1 + w2;
-        need -= w1 + w2;
-    }
+    /* Convert incoming u8 I/Q and write directly into input ring without extra copy. */
+    rtl_write_u8_to_ring(s, buf, len, fs4_shift_active, use_two_pass, 0);
 }
 
 /**
@@ -1140,9 +1251,12 @@ static DSD_THREAD_RETURN_TYPE
                 if (newsfd != DSD_INVALID_SOCKET) {
                     s->sockfd = newsfd;
                     fprintf(stderr, "rtl_tcp: reconnected on attempt %d.\n", attempt);
-                    /* Reinitialize stream framing and pending state */
+                    /* Reinitialize stream framing. A reconnect starts a fresh IQ
+                     * stream after a new RTL0 header, so buffered bytes and
+                     * capture-side phase/carry state from the old socket must
+                     * not carry into the resumed stream. */
                     rtl_tcp_skip_header(s->sockfd);
-                    s->tcp_pending_len = 0;
+                    rtl_reset_capture_state_on_stream_boundary(s);
                     /* Reapply socket options: RCVBUF/NODELAY/RCVTIMEO */
                     {
                         const dsdneoRuntimeConfig* cfg2 = dsd_neo_get_config();
@@ -1217,21 +1331,34 @@ static DSD_THREAD_RETURN_TYPE
         /* Successful read: reset timeout counter */
         consec_timeouts = 0;
         uint32_t len = (uint32_t)r;
+        int fs4_shift_active = fs4_shift_capture_active(s);
+        int use_two_pass = (fs4_shift_active && !s->combine_rotate_enabled);
         /* Handle muting: discard muted samples for rtl_tcp backend.
-         * Same logic as USB callback - skip samples entirely instead of processing. */
+         * Same logic as USB callback - skip samples entirely instead of processing.
+         *
+         * The remaining mute count tracks raw stream bytes, so it may be odd here
+         * after an odd-length recv() that was fully discarded. That is still aligned
+         * in the continuous transport stream and must not be rounded independently. */
         if (s->mute.load(std::memory_order_relaxed) > 0) {
+            rtl_prepare_fragmented_u8_mute(s);
             int old = s->mute.load(std::memory_order_relaxed);
             if (old > 0) {
                 uint32_t m = (uint32_t)old;
                 if (m >= len) {
                     /* Entire buffer is muted - discard all */
+                    rtl_account_fragmented_muted_u8_bytes(s, len, fs4_shift_active);
                     s->mute.fetch_sub((int)len, std::memory_order_relaxed);
+                    if (m == len) {
+                        s->mute_byte_phase.store(0, std::memory_order_relaxed);
+                    }
                     continue; /* Skip processing, get next recv */
                 }
                 /* Partial mute: skip first m bytes, process remainder */
+                rtl_account_fragmented_muted_u8_bytes(s, m, fs4_shift_active);
                 memmove(u8, u8 + m, len - m);
                 len -= m;
                 s->mute.fetch_sub((int)m, std::memory_order_relaxed);
+                s->mute_byte_phase.store(0, std::memory_order_relaxed);
             }
         }
         /* Stats: bytes in */
@@ -1240,8 +1367,6 @@ static DSD_THREAD_RETURN_TYPE
             s->tcp_bytes_window += (uint64_t)len;
         }
         /* Reassemble into uniform slices matching device buf_len to stabilize cadence */
-        int fs4_shift_active = fs4_shift_capture_active(s);
-        int use_two_pass = (fs4_shift_active && !s->combine_rotate_enabled);
         const size_t SLICE = (s->buf_len > 0 ? (size_t)s->buf_len : 16384);
 
         /* Fill pending if it exists to complete one slice */
@@ -1266,51 +1391,7 @@ static DSD_THREAD_RETURN_TYPE
             }
             if (s->tcp_pending_len == SLICE) {
                 unsigned char* src = s->tcp_pending;
-                if (use_two_pass) {
-                    rotate_90(src, (uint32_t)SLICE);
-                }
-                float *p1 = NULL, *p2 = NULL;
-                size_t n1 = 0, n2 = 0;
-                input_ring_reserve(s->input_ring, SLICE, &p1, &n1, &p2, &n2);
-                if (n1 == 0 && n2 == 0) {
-                    if (s->input_ring) {
-                        s->input_ring->producer_drops.fetch_add((uint64_t)SLICE);
-                    }
-                    s->reserve_full_events++;
-                } else {
-                    if (n1 & 1) {
-                        n1--;
-                    }
-                    size_t w1 = (n1 < SLICE) ? n1 : SLICE;
-                    size_t rem_after_w1 = SLICE - w1;
-                    if (n2 & 1) {
-                        n2--;
-                    }
-                    size_t w2 = (n2 < rem_after_w1) ? n2 : rem_after_w1;
-                    if (fs4_shift_active && s->combine_rotate_enabled) {
-                        if (w1) {
-                            widen_rotate90_u8_to_f32_bias127(src, p1, (uint32_t)w1);
-                        }
-                        if (w2) {
-                            widen_rotate90_u8_to_f32_bias127(src + w1, p2, (uint32_t)w2);
-                        }
-                    } else if (use_two_pass) {
-                        if (w1) {
-                            widen_u8_to_f32_bias128_scalar(src, p1, (uint32_t)w1);
-                        }
-                        if (w2) {
-                            widen_u8_to_f32_bias128_scalar(src + w1, p2, (uint32_t)w2);
-                        }
-                    } else {
-                        if (w1) {
-                            widen_u8_to_f32_bias127(src, p1, (uint32_t)w1);
-                        }
-                        if (w2) {
-                            widen_u8_to_f32_bias127(src + w1, p2, (uint32_t)w2);
-                        }
-                    }
-                    input_ring_commit(s->input_ring, w1 + w2);
-                }
+                rtl_write_u8_to_ring(s, src, SLICE, fs4_shift_active, use_two_pass, 1);
                 s->tcp_pending_len = 0;
             }
         }
@@ -1318,52 +1399,11 @@ static DSD_THREAD_RETURN_TYPE
         /* Process full slices directly from current buffer */
         while ((len - consumed) >= SLICE) {
             unsigned char* src = u8 + consumed;
-            if (use_two_pass) {
-                rotate_90(src, (uint32_t)SLICE);
-            }
-            float *p1 = NULL, *p2 = NULL;
-            size_t n1 = 0, n2 = 0;
-            input_ring_reserve(s->input_ring, SLICE, &p1, &n1, &p2, &n2);
-            if (n1 == 0 && n2 == 0) {
-                if (s->input_ring) {
-                    s->input_ring->producer_drops.fetch_add((uint64_t)SLICE);
-                }
-                s->reserve_full_events++;
+            int ring_exhausted = rtl_write_u8_to_ring(s, src, SLICE, fs4_shift_active, use_two_pass, 1);
+            consumed += SLICE;
+            if (ring_exhausted) {
                 break;
             }
-            if (n1 & 1) {
-                n1--;
-            }
-            size_t w1 = (n1 < SLICE) ? n1 : SLICE;
-            size_t rem_after_w1 = SLICE - w1;
-            if (n2 & 1) {
-                n2--;
-            }
-            size_t w2 = (n2 < rem_after_w1) ? n2 : rem_after_w1;
-            if (fs4_shift_active && s->combine_rotate_enabled) {
-                if (w1) {
-                    widen_rotate90_u8_to_f32_bias127(src, p1, (uint32_t)w1);
-                }
-                if (w2) {
-                    widen_rotate90_u8_to_f32_bias127(src + w1, p2, (uint32_t)w2);
-                }
-            } else if (use_two_pass) {
-                if (w1) {
-                    widen_u8_to_f32_bias128_scalar(src, p1, (uint32_t)w1);
-                }
-                if (w2) {
-                    widen_u8_to_f32_bias128_scalar(src + w1, p2, (uint32_t)w2);
-                }
-            } else {
-                if (w1) {
-                    widen_u8_to_f32_bias127(src, p1, (uint32_t)w1);
-                }
-                if (w2) {
-                    widen_u8_to_f32_bias127(src + w1, p2, (uint32_t)w2);
-                }
-            }
-            input_ring_commit(s->input_ring, w1 + w2);
-            consumed += SLICE;
         }
 
         /* Save remainder (<SLICE) into pending */
@@ -1376,6 +1416,9 @@ static DSD_THREAD_RETURN_TYPE
                     s->tcp_pending = nb;
                     s->tcp_pending_cap = cap;
                 } else {
+                    /* Retain one tail byte if needed so a dropped reassembly tail does not break I/Q alignment. */
+                    (void)rtl_drop_u8_bytes_preserve_alignment(u8 + consumed, rem, &s->iq_byte_carry, &s->rot_phase,
+                                                               fs4_shift_active);
                     rem = 0;
                 }
             }
@@ -1738,6 +1781,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combin
     dev->input_ring = input_ring;
     dev->thread_started = 0;
     dev->mute = 0;
+    dev->mute_byte_phase = 0;
     dev->combine_rotate_enabled = combine_rotate_enabled_param;
     dev->backend = RTL_BACKEND_USB;
     dev->soapy_dev = NULL;
@@ -1745,7 +1789,8 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combin
     dev->soapy_lock_inited = 0;
     dev->soapy_format = SOAPY_FMT_NONE;
     dev->soapy_mtu_elems = 0;
-    dev->soapy_rot_phase = 0;
+    dev->rot_phase = 0;
+    rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
     dev->sockfd = DSD_INVALID_SOCKET;
     dev->host[0] = '\0';
     dev->port = 0;
@@ -1793,6 +1838,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->input_ring = input_ring;
     dev->thread_started = 0;
     dev->mute = 0;
+    dev->mute_byte_phase = 0;
     dev->combine_rotate_enabled = combine_rotate_enabled_param;
     dev->backend = RTL_BACKEND_TCP;
     dev->soapy_dev = NULL;
@@ -1800,7 +1846,8 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->soapy_lock_inited = 0;
     dev->soapy_format = SOAPY_FMT_NONE;
     dev->soapy_mtu_elems = 0;
-    dev->soapy_rot_phase = 0;
+    dev->rot_phase = 0;
+    rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
     dev->sockfd = DSD_INVALID_SOCKET;
     snprintf(dev->host, sizeof(dev->host), "%s", host);
     dev->port = port;
@@ -1868,13 +1915,15 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
     dev->input_ring = input_ring;
     dev->thread_started = 0;
     dev->mute = 0;
+    dev->mute_byte_phase = 0;
     dev->combine_rotate_enabled = combine_rotate_enabled_param;
     dev->backend = RTL_BACKEND_SOAPY;
     dev->soapy_dev = NULL;
     dev->soapy_stream = NULL;
     dev->soapy_format = SOAPY_FMT_NONE;
     dev->soapy_mtu_elems = 0;
-    dev->soapy_rot_phase = 0;
+    dev->rot_phase = 0;
+    rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
     dev->sockfd = DSD_INVALID_SOCKET;
     dev->host[0] = '\0';
     dev->port = 0;
@@ -2479,6 +2528,7 @@ rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
         return -1;
     }
     dev->buf_len = buf_len;
+    rtl_reset_capture_state_on_stream_boundary(dev);
     dev->thread_started = 1;
     int r = 0;
     if (dev->backend == RTL_BACKEND_USB) {
@@ -2536,6 +2586,7 @@ rtl_device_stop_async(struct rtl_device* dev) {
     }
     dsd_thread_join(dev->thread);
     dev->thread_started = 0;
+    rtl_reset_capture_state_on_stream_boundary(dev);
     return 0;
 }
 
@@ -2543,14 +2594,16 @@ rtl_device_stop_async(struct rtl_device* dev) {
  * @brief Mute the incoming raw input stream for a specified number of bytes.
  *
  * @param dev RTL-SDR device handle.
- * @param bytes Number of input bytes to replace with 0x7F.
+ * @param bytes Number of input bytes to discard while muting. Odd values are
+ *              rounded up so the muted span always covers whole I/Q pairs.
  */
 void
 rtl_device_mute(struct rtl_device* dev, int bytes) {
     if (!dev) {
         return;
     }
-    dev->mute.store(bytes);
+    dev->mute_byte_phase.store(0, std::memory_order_relaxed);
+    dev->mute.store(rtl_capture_align_u8_iq_bytes(bytes), std::memory_order_relaxed);
 }
 
 int
