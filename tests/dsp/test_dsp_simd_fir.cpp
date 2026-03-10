@@ -23,6 +23,24 @@
 #include <cstdlib>
 #include <cstring>
 
+#if defined(__x86_64__) || defined(_M_X64)
+extern "C" void simd_fir_complex_apply_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
+                                            const float* taps, int taps_len);
+extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
+                                           const float* taps, int taps_len);
+extern "C" int simd_hb_decim2_real_sse2(const float* in, int in_len, float* out, float* hist, const float* taps,
+                                        int taps_len);
+#endif
+
+#if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
+extern "C" void simd_fir_complex_apply_neon(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
+                                            const float* taps, int taps_len);
+extern "C" int simd_hb_decim2_complex_neon(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
+                                           const float* taps, int taps_len);
+extern "C" int simd_hb_decim2_real_neon(const float* in, int in_len, float* out, float* hist, const float* taps,
+                                        int taps_len);
+#endif
+
 static const float kTolerance = 1e-5f;
 
 static bool
@@ -259,6 +277,147 @@ hb_decim2_real_scalar_ref(const float* in, int in_len, float* out, float* hist, 
 static float
 randf() {
     return ((float)std::rand() / (float)RAND_MAX) * 2.0f - 1.0f;
+}
+
+using complex_fir_backend_fn = void (*)(const float*, int, float*, float*, float*, const float*, int);
+using complex_hb_backend_fn = int (*)(const float*, int, float*, float*, float*, const float*, int);
+using real_hb_backend_fn = int (*)(const float*, int, float*, float*, const float*, int);
+
+static int
+test_direct_complex_fir_backend(const char* name, complex_fir_backend_fn fn) {
+    std::printf("Testing direct complex FIR backend (%s)...\n", name);
+
+    const int taps_len = 15;
+    const int hist_len = taps_len - 1;
+    const int N = 7;
+    const float taps[taps_len] = {0.010f, -0.025f, 0.040f,  0.060f, -0.015f, 0.080f,  0.120f, 0.450f,
+                                  0.120f, 0.080f,  -0.015f, 0.060f, 0.040f,  -0.025f, 0.010f};
+
+    alignas(64) float in[N * 2];
+    alignas(64) float out_simd[N * 2];
+    alignas(64) float out_ref[N * 2];
+    alignas(64) float hist_i_simd[hist_len];
+    alignas(64) float hist_q_simd[hist_len];
+    alignas(64) float hist_i_ref[hist_len];
+    alignas(64) float hist_q_ref[hist_len];
+
+    for (int i = 0; i < N; i++) {
+        in[i << 1] = -0.75f + 0.125f * (float)i;
+        in[(i << 1) + 1] = 0.60f - 0.09f * (float)i;
+    }
+    for (int i = 0; i < hist_len; i++) {
+        hist_i_simd[i] = hist_i_ref[i] = -0.50f + 0.03f * (float)i;
+        hist_q_simd[i] = hist_q_ref[i] = 0.40f - 0.02f * (float)i;
+    }
+
+    fn(in, N * 2, out_simd, hist_i_simd, hist_q_simd, taps, taps_len);
+    fir_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
+
+    if (!arrays_close(out_simd, out_ref, N * 2, kTolerance)) {
+        std::fprintf(stderr, "  FAIL: Output mismatch\n");
+        return 1;
+    }
+    if (!arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)) {
+        std::fprintf(stderr, "  FAIL: History I mismatch\n");
+        return 1;
+    }
+    if (!arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
+        std::fprintf(stderr, "  FAIL: History Q mismatch\n");
+        return 1;
+    }
+
+    std::printf("  PASS\n");
+    return 0;
+}
+
+static int
+test_direct_complex_hb_backend(const char* name, complex_hb_backend_fn fn) {
+    std::printf("Testing direct complex HB backend (%s)...\n", name);
+
+    const int taps_len = 15;
+    const int hist_len = taps_len - 1;
+    const int N = 7;
+
+    alignas(64) float in[N * 2];
+    alignas(64) float out_simd[N * 2];
+    alignas(64) float out_ref[N * 2];
+    alignas(64) float hist_i_simd[hist_len];
+    alignas(64) float hist_q_simd[hist_len];
+    alignas(64) float hist_i_ref[hist_len];
+    alignas(64) float hist_q_ref[hist_len];
+
+    for (int i = 0; i < N; i++) {
+        in[i << 1] = 0.20f * (float)(i - 3);
+        in[(i << 1) + 1] = -0.15f * (float)i;
+    }
+    for (int i = 0; i < hist_len; i++) {
+        hist_i_simd[i] = hist_i_ref[i] = 0.05f * (float)(i - 4);
+        hist_q_simd[i] = hist_q_ref[i] = -0.04f * (float)(i + 1);
+    }
+
+    int len_simd = fn(in, N * 2, out_simd, hist_i_simd, hist_q_simd, hb_q15_taps, taps_len);
+    int len_ref = hb_decim2_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
+
+    if (len_simd != len_ref) {
+        std::fprintf(stderr, "  FAIL: Output length mismatch (%d vs %d)\n", len_simd, len_ref);
+        return 1;
+    }
+    if (!arrays_close(out_simd, out_ref, len_simd, kTolerance)) {
+        std::fprintf(stderr, "  FAIL: Output mismatch\n");
+        return 1;
+    }
+    if (!arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)) {
+        std::fprintf(stderr, "  FAIL: History I mismatch\n");
+        return 1;
+    }
+    if (!arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
+        std::fprintf(stderr, "  FAIL: History Q mismatch\n");
+        return 1;
+    }
+
+    std::printf("  PASS\n");
+    return 0;
+}
+
+static int
+test_direct_real_hb_backend(const char* name, real_hb_backend_fn fn) {
+    std::printf("Testing direct real HB backend (%s)...\n", name);
+
+    const int taps_len = 15;
+    const int hist_len = taps_len - 1;
+    const int N = 11;
+
+    alignas(64) float in[N];
+    alignas(64) float out_simd[N];
+    alignas(64) float out_ref[N];
+    alignas(64) float hist_simd[hist_len];
+    alignas(64) float hist_ref[hist_len];
+
+    for (int i = 0; i < N; i++) {
+        in[i] = -0.80f + 0.17f * (float)i;
+    }
+    for (int i = 0; i < hist_len; i++) {
+        hist_simd[i] = hist_ref[i] = 0.30f - 0.025f * (float)i;
+    }
+
+    int len_simd = fn(in, N, out_simd, hist_simd, hb_q15_taps, taps_len);
+    int len_ref = hb_decim2_real_scalar_ref(in, N, out_ref, hist_ref, hb_q15_taps, taps_len);
+
+    if (len_simd != len_ref) {
+        std::fprintf(stderr, "  FAIL: Output length mismatch (%d vs %d)\n", len_simd, len_ref);
+        return 1;
+    }
+    if (!arrays_close(out_simd, out_ref, len_simd, kTolerance)) {
+        std::fprintf(stderr, "  FAIL: Output mismatch\n");
+        return 1;
+    }
+    if (!arrays_close(hist_simd, hist_ref, hist_len, kTolerance)) {
+        std::fprintf(stderr, "  FAIL: History mismatch\n");
+        return 1;
+    }
+
+    std::printf("  PASS\n");
+    return 0;
 }
 
 /* Test 63-tap symmetric FIR (channel LPF style) */
@@ -671,6 +830,18 @@ main(void) {
     /* Regressions for history handling on short/zero-output blocks */
     failures += test_complex_short_block_history();
     failures += test_zero_output_history_updates();
+
+#if defined(__x86_64__) || defined(_M_X64)
+    failures += test_direct_complex_fir_backend("sse2", simd_fir_complex_apply_sse2);
+    failures += test_direct_complex_hb_backend("sse2", simd_hb_decim2_complex_sse2);
+    failures += test_direct_real_hb_backend("sse2", simd_hb_decim2_real_sse2);
+#endif
+
+#if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
+    failures += test_direct_complex_fir_backend("neon", simd_fir_complex_apply_neon);
+    failures += test_direct_complex_hb_backend("neon", simd_hb_decim2_complex_neon);
+    failures += test_direct_real_hb_backend("neon", simd_hb_decim2_real_neon);
+#endif
 
     if (failures > 0) {
         std::printf("\n%d test(s) FAILED\n", failures);

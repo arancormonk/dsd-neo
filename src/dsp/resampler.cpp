@@ -35,6 +35,7 @@
 #endif
 
 static const double kPi = 3.14159265358979323846;
+static const int kDefaultTapsPerPhase = 16;
 
 template <typename T>
 static inline T*
@@ -64,9 +65,37 @@ dsd_neo_sinc(double x) {
     return sin(kPi * x) / (kPi * x);
 }
 
+static inline float
+resamp_dot_contiguous(const float* DSD_NEO_RESTRICT samples, const float* DSD_NEO_RESTRICT taps, int len) {
+    float acc = 0.0f;
+    DSD_NEO_IVDEP
+    for (int k = 0; k < len; k++) {
+        acc += samples[k] * taps[k];
+    }
+    return acc;
+}
+
+static inline float
+resamp_dot16_contiguous(const float* DSD_NEO_RESTRICT samples, const float* DSD_NEO_RESTRICT taps) {
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    float acc2 = 0.0f;
+    float acc3 = 0.0f;
+
+    DSD_NEO_IVDEP
+    for (int k = 0; k < 16; k += 4) {
+        acc0 += samples[k + 0] * taps[k + 0];
+        acc1 += samples[k + 1] * taps[k + 1];
+        acc2 += samples[k + 2] * taps[k + 2];
+        acc3 += samples[k + 3] * taps[k + 3];
+    }
+
+    return (acc0 + acc1) + (acc2 + acc3);
+}
+
 void
 resamp_design(struct demod_state* s, int L, int M) {
-    int taps_per_phase = 16; /* K */
+    int taps_per_phase = kDefaultTapsPerPhase; /* K */
     if (taps_per_phase < 8) {
         taps_per_phase = 8;
     }
@@ -92,22 +121,22 @@ resamp_design(struct demod_state* s, int L, int M) {
         s->resamp_taps = (float*)mem_ptr;
     }
     {
-        void* mem_ptr = dsd_neo_aligned_malloc((size_t)taps_per_phase * sizeof(float));
+        void* mem_ptr = dsd_neo_aligned_malloc((size_t)taps_per_phase * 2U * sizeof(float));
         s->resamp_hist = (float*)mem_ptr;
     }
     if (!s->resamp_taps || !s->resamp_hist) {
         if (s->resamp_taps) {
-            free(s->resamp_taps);
+            dsd_neo_aligned_free(s->resamp_taps);
             s->resamp_taps = NULL;
         }
         if (s->resamp_hist) {
-            free(s->resamp_hist);
+            dsd_neo_aligned_free(s->resamp_hist);
             s->resamp_hist = NULL;
         }
         s->resamp_enabled = 0;
         return;
     }
-    memset(s->resamp_hist, 0, (size_t)taps_per_phase * sizeof(float));
+    memset(s->resamp_hist, 0, (size_t)taps_per_phase * 2U * sizeof(float));
     s->resamp_hist_head = 0;
 
     double gain = 0.0;
@@ -122,12 +151,16 @@ resamp_design(struct demod_state* s, int L, int M) {
     }
 
     const double phase_gain_comp = (double)L;
-    for (int n = 0; n < N; n++) {
-        int m = n - mid;
-        double w = 0.54 - 0.46 * cos(2.0 * kPi * (double)n / (double)(N - 1));
-        double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
-        double t = (h * w / gain) * phase_gain_comp;
-        s->resamp_taps[n] = (float)t;
+    for (int phase = 0; phase < L; phase++) {
+        float* phase_taps = s->resamp_taps + (size_t)phase * (size_t)taps_per_phase;
+        for (int k = 0; k < taps_per_phase; k++) {
+            int src_index = phase + ((taps_per_phase - 1 - k) * L);
+            int m = src_index - mid;
+            double w = 0.54 - 0.46 * cos(2.0 * kPi * (double)src_index / (double)(N - 1));
+            double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
+            double t = (h * w / gain) * phase_gain_comp;
+            phase_taps[k] = (float)t;
+        }
     }
 
     s->resamp_L = L;
@@ -159,26 +192,17 @@ resamp_process_block(struct demod_state* s, const float* DSD_NEO_RESTRICT in, in
 
     for (int n = 0; n < in_len; n++) {
         hist[head] = in_al[n];
+        hist[head + K] = in_al[n];
         head++;
         if (head == K) {
             head = 0;
         }
         int local_phase = phase;
+        const float* DSD_NEO_RESTRICT hist_window = hist + head;
         while (local_phase < L) {
-            float acc = 0.0f;
-            const float* DSD_NEO_RESTRICT tk = taps_al + local_phase;
-            int idx = head - 1;
-            if (idx < 0) {
-                idx += K;
-            }
-            for (int k = 0; k < K; k++) {
-                acc += hist[idx] * tk[0];
-                tk += L;
-                idx--;
-                if (idx < 0) {
-                    idx += K;
-                }
-            }
+            const float* DSD_NEO_RESTRICT phase_taps = taps_al + (size_t)local_phase * (size_t)K;
+            float acc = (K == kDefaultTapsPerPhase) ? resamp_dot16_contiguous(hist_window, phase_taps)
+                                                    : resamp_dot_contiguous(hist_window, phase_taps, K);
             out_al[out_len++] = acc;
             local_phase += M;
         }

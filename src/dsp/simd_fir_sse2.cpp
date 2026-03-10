@@ -12,7 +12,102 @@
  */
 
 #include <cstring>
+#include <vector>
 #include <xmmintrin.h>
+
+namespace {
+
+static thread_local std::vector<float> tls_scratch_iq;
+static thread_local std::vector<float> tls_scratch_real;
+
+static float*
+prepare_complex_scratch(const float* in, int in_len, const float* hist_i, const float* hist_q, int hist_len, int pad) {
+    const int samples = in_len >> 1;
+    const int total_len = hist_len + samples;
+    const int scratch_len = (total_len + pad) * 2;
+
+    if (tls_scratch_iq.size() < (size_t)scratch_len) {
+        tls_scratch_iq.resize((size_t)scratch_len);
+    }
+
+    float* scratch = tls_scratch_iq.data();
+    for (int k = 0; k < hist_len; k++) {
+        const size_t kk = (size_t)k;
+        scratch[2 * kk] = hist_i[k];
+        scratch[2 * kk + 1] = hist_q[k];
+    }
+
+    std::memcpy(scratch + (size_t)hist_len * 2, in, (size_t)samples * 2 * sizeof(float));
+
+    const float last_i = (samples > 0) ? in[(samples - 1) << 1] : 0.0f;
+    const float last_q = (samples > 0) ? in[((samples - 1) << 1) + 1] : 0.0f;
+    for (int k = 0; k < pad; k++) {
+        const size_t kk = (size_t)total_len + (size_t)k;
+        scratch[2 * kk] = last_i;
+        scratch[2 * kk + 1] = last_q;
+    }
+
+    return scratch;
+}
+
+static void
+update_complex_history(const float* in, int samples, float* hist_i, float* hist_q, int hist_len) {
+    if (samples >= hist_len) {
+        for (int k = 0; k < hist_len; k++) {
+            const int rel = samples - hist_len + k;
+            hist_i[k] = in[rel << 1];
+            hist_q[k] = in[(rel << 1) + 1];
+        }
+        return;
+    }
+
+    const int need = hist_len - samples;
+    if (need > 0) {
+        std::memmove(hist_i, hist_i + (hist_len - need), (size_t)need * sizeof(float));
+        std::memmove(hist_q, hist_q + (hist_len - need), (size_t)need * sizeof(float));
+    }
+    for (int k = 0; k < samples; k++) {
+        hist_i[need + k] = in[k << 1];
+        hist_q[need + k] = in[(k << 1) + 1];
+    }
+}
+
+static float*
+prepare_real_scratch(const float* in, int in_len, const float* hist, int hist_len, int pad) {
+    const int total_len = hist_len + in_len;
+    const int scratch_len = total_len + pad;
+
+    if (tls_scratch_real.size() < (size_t)scratch_len) {
+        tls_scratch_real.resize((size_t)scratch_len);
+    }
+
+    float* scratch = tls_scratch_real.data();
+    std::memcpy(scratch, hist, (size_t)hist_len * sizeof(float));
+    std::memcpy(scratch + hist_len, in, (size_t)in_len * sizeof(float));
+
+    const float last = in[in_len - 1];
+    for (int k = 0; k < pad; k++) {
+        scratch[total_len + k] = last;
+    }
+
+    return scratch;
+}
+
+static void
+update_real_history(const float* in, int in_len, float* hist, int hist_len) {
+    if (in_len >= hist_len) {
+        std::memcpy(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
+        return;
+    }
+
+    const int need = hist_len - in_len;
+    if (need > 0) {
+        std::memmove(hist, hist + in_len, (size_t)need * sizeof(float));
+    }
+    std::memcpy(hist + need, in, (size_t)in_len * sizeof(float));
+}
+
+} /* namespace */
 
 /**
  * SSE2 complex symmetric FIR filter (no decimation).
@@ -28,25 +123,13 @@ simd_fir_complex_apply_sse2(const float* in, int in_len, float* out, float* hist
     const int N = in_len >> 1; /* complex samples */
     const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
+    const int pad = center + 2;
+    float* scratch = prepare_complex_scratch(in, in_len, hist_i, hist_q, hist_len, pad);
 
-    float lastI = (N > 0) ? in[(N - 1) << 1] : 0.0f;
-    float lastQ = (N > 0) ? in[((N - 1) << 1) + 1] : 0.0f;
-
-    /* Lambda to fetch sample from history or input */
-    auto get_iq = [&](int src_idx, float& xi, float& xq) {
-        if (src_idx < hist_len) {
-            xi = hist_i[src_idx];
-            xq = hist_q[src_idx];
-        } else {
-            int rel = src_idx - hist_len;
-            if (rel < N) {
-                xi = in[rel << 1];
-                xq = in[(rel << 1) + 1];
-            } else {
-                xi = lastI;
-                xq = lastQ;
-            }
-        }
+    auto get_iq = [&](int idx, float& xi, float& xq) {
+        const size_t ii = (size_t)idx;
+        xi = scratch[2 * ii];
+        xq = scratch[2 * ii + 1];
     };
 
     /* Process 2 complex samples at a time (4 floats) */
@@ -58,10 +141,8 @@ simd_fir_complex_apply_sse2(const float* in, int in_len, float* out, float* hist
         float cc = taps[center];
         __m128 tap_c = _mm_set1_ps(cc);
 
-        float ci0, cq0, ci1, cq1;
-        get_iq(hist_len + n, ci0, cq0);
-        get_iq(hist_len + n + 1, ci1, cq1);
-        __m128 center_val = _mm_set_ps(cq1, ci1, cq0, ci0);
+        const size_t center_offset = ((size_t)hist_len + (size_t)n) << 1;
+        __m128 center_val = _mm_loadu_ps(scratch + center_offset);
         acc = _mm_add_ps(acc, _mm_mul_ps(tap_c, center_val));
 
         /* Symmetric pairs */
@@ -73,18 +154,10 @@ simd_fir_complex_apply_sse2(const float* in, int in_len, float* out, float* hist
             int d = center - k;
             __m128 tap_e = _mm_set1_ps(ce);
 
-            /* Sample n: center_idx = hist_len + n */
-            float xmI0, xmQ0, xpI0, xpQ0;
-            get_iq(hist_len + n - d, xmI0, xmQ0);
-            get_iq(hist_len + n + d, xpI0, xpQ0);
-
-            /* Sample n+1: center_idx = hist_len + n + 1 */
-            float xmI1, xmQ1, xpI1, xpQ1;
-            get_iq(hist_len + n + 1 - d, xmI1, xmQ1);
-            get_iq(hist_len + n + 1 + d, xpI1, xpQ1);
-
-            __m128 sum_m = _mm_set_ps(xmQ1, xmI1, xmQ0, xmI0);
-            __m128 sum_p = _mm_set_ps(xpQ1, xpI1, xpQ0, xpI0);
+            const size_t minus_offset = ((size_t)(hist_len + n - d)) << 1;
+            const size_t plus_offset = ((size_t)(hist_len + n + d)) << 1;
+            __m128 sum_m = _mm_loadu_ps(scratch + minus_offset);
+            __m128 sum_p = _mm_loadu_ps(scratch + plus_offset);
             __m128 sum = _mm_add_ps(sum_m, sum_p);
             acc = _mm_add_ps(acc, _mm_mul_ps(tap_e, sum));
         }
@@ -121,24 +194,7 @@ simd_fir_complex_apply_sse2(const float* in, int in_len, float* out, float* hist
         out[(n << 1) + 1] = accQ;
     }
 
-    /* Update history */
-    if (N >= hist_len) {
-        for (int k = 0; k < hist_len; k++) {
-            int rel = N - hist_len + k;
-            hist_i[k] = in[rel << 1];
-            hist_q[k] = in[(rel << 1) + 1];
-        }
-    } else {
-        int need = hist_len - N;
-        if (need > 0) {
-            std::memmove(hist_i, hist_i + (hist_len - need), (size_t)need * sizeof(float));
-            std::memmove(hist_q, hist_q + (hist_len - need), (size_t)need * sizeof(float));
-        }
-        for (int k = 0; k < N; k++) {
-            hist_i[need + k] = in[k << 1];
-            hist_q[need + k] = in[(k << 1) + 1];
-        }
-    }
+    update_complex_history(in, N, hist_i, hist_q, hist_len);
 }
 
 /**
@@ -160,23 +216,13 @@ simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist
 
     const int center = (taps_len - 1) >> 1;
     const int left_len = taps_len - 1;
-    float lastI = in[in_len - 2];
-    float lastQ = in[in_len - 1];
+    const int pad = center + 2;
+    float* scratch = prepare_complex_scratch(in, in_len, hist_i, hist_q, left_len, pad);
 
-    auto get_iq = [&](int src_idx, float& xi, float& xq) {
-        if (src_idx < left_len) {
-            xi = hist_i[src_idx];
-            xq = hist_q[src_idx];
-        } else {
-            int rel = src_idx - left_len;
-            if (rel < ch_len) {
-                xi = in[rel << 1];
-                xq = in[(rel << 1) + 1];
-            } else {
-                xi = lastI;
-                xq = lastQ;
-            }
-        }
+    auto get_iq = [&](int idx, float& xi, float& xq) {
+        const size_t ii = (size_t)idx;
+        xi = scratch[2 * ii];
+        xq = scratch[2 * ii + 1];
     };
 
     /* Process 2 output samples at a time */
@@ -253,23 +299,7 @@ simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist
         out[(n << 1) + 1] = accQ;
     }
 
-    /* Update history */
-    if (ch_len >= left_len) {
-        int start = ch_len - left_len;
-        for (int k = 0; k < left_len; k++) {
-            int rel = start + k;
-            hist_i[k] = in[rel << 1];
-            hist_q[k] = in[(rel << 1) + 1];
-        }
-    } else {
-        int keep = left_len - ch_len;
-        std::memmove(hist_i, hist_i + ch_len, (size_t)keep * sizeof(float));
-        std::memmove(hist_q, hist_q + ch_len, (size_t)keep * sizeof(float));
-        for (int k = 0; k < ch_len; k++) {
-            hist_i[keep + k] = in[k << 1];
-            hist_q[keep + k] = in[(k << 1) + 1];
-        }
-    }
+    update_complex_history(in, ch_len, hist_i, hist_q, left_len);
 
     return out_ch_len << 1;
 }
@@ -290,17 +320,10 @@ simd_hb_decim2_real_sse2(const float* in, int in_len, float* out, float* hist, c
     const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
     int out_len = in_len >> 1;
+    const int pad = center + 2;
+    float* scratch = prepare_real_scratch(in, in_len, hist, hist_len, pad);
 
-    float last = in[in_len - 1];
-
-    auto get_sample = [&](int src_idx) -> float {
-        if (src_idx < hist_len) {
-            return hist[src_idx];
-        } else {
-            int rel = src_idx - hist_len;
-            return (rel < in_len) ? in[rel] : last;
-        }
-    };
+    auto get_sample = [&](int idx) -> float { return scratch[idx]; };
 
     /* Process 4 output samples at a time */
     int n = 0;
@@ -359,16 +382,7 @@ simd_hb_decim2_real_sse2(const float* in, int in_len, float* out, float* hist, c
         out[n] = acc;
     }
 
-    /* Update history */
-    if (in_len >= hist_len) {
-        std::memcpy(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
-    } else {
-        int need = hist_len - in_len;
-        if (need > 0) {
-            std::memmove(hist, hist + in_len, (size_t)need * sizeof(float));
-        }
-        std::memcpy(hist + need, in, (size_t)in_len * sizeof(float));
-    }
+    update_real_history(in, in_len, hist, hist_len);
 
     return out_len;
 }

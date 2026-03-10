@@ -14,7 +14,10 @@
 
 #include <dsd-neo/dsp/simd_widen.h>
 
+#include <atomic>
 #include <stdint.h>
+
+#include "simd_x86_cpu.h"
 
 static inline void
 apply_j4_rotation_f32(float in_i, float in_q, uint32_t phase, float* out_i, float* out_q) {
@@ -61,6 +64,54 @@ apply_j4_rotation_u8(unsigned char in_i, unsigned char in_q, uint32_t phase, uns
     }
 }
 
+using widen_rot_phase_fn = uint32_t (*)(const unsigned char*, float*, uint32_t, uint32_t);
+
+#if defined(__x86_64__) || defined(_M_X64)
+extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_sse2(const unsigned char* src, float* dst, uint32_t len,
+                                                                uint32_t phase);
+#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
+extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_avx2(const unsigned char* src, float* dst, uint32_t len,
+                                                                uint32_t phase);
+#endif
+#endif
+
+#if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
+extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_neon(const unsigned char* src, float* dst, uint32_t len,
+                                                                uint32_t phase);
+#endif
+
+static uint32_t widen_rotate90_u8_to_f32_bias127_phase_scalar(const unsigned char* src, float* dst, uint32_t len,
+                                                              uint32_t phase);
+
+static widen_rot_phase_fn g_widen_rot_phase_impl = widen_rotate90_u8_to_f32_bias127_phase_scalar;
+static std::atomic<int> g_widen_init_done{0};
+
+static void
+simd_widen_init_dispatch(void) {
+    int expected = 0;
+    if (!g_widen_init_done.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
+        while (g_widen_init_done.load(std::memory_order_acquire) != 2) {
+            /* spin */
+        }
+        return;
+    }
+
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
+    if (dsd_neo_cpu_has_avx2_with_os_support()) {
+        g_widen_rot_phase_impl = widen_rotate90_u8_to_f32_bias127_phase_avx2;
+    } else
+#endif
+    {
+        g_widen_rot_phase_impl = widen_rotate90_u8_to_f32_bias127_phase_sse2;
+    }
+#elif defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
+    g_widen_rot_phase_impl = widen_rotate90_u8_to_f32_bias127_phase_neon;
+#endif
+
+    g_widen_init_done.store(2, std::memory_order_release);
+}
+
 void
 widen_u8_to_f32_bias127(const unsigned char* src, float* dst, uint32_t len) {
     if (!src || !dst || len == 0) {
@@ -85,8 +136,8 @@ widen_u8_to_f32_bias128_scalar(const unsigned char* src, float* dst, uint32_t le
     }
 }
 
-uint32_t
-widen_rotate90_u8_to_f32_bias127_phase(const unsigned char* src, float* dst, uint32_t len, uint32_t phase) {
+static uint32_t
+widen_rotate90_u8_to_f32_bias127_phase_scalar(const unsigned char* src, float* dst, uint32_t len, uint32_t phase) {
     uint32_t cur_phase = phase & 3U;
     if (!src || !dst || len < 2) {
         return cur_phase;
@@ -103,6 +154,14 @@ widen_rotate90_u8_to_f32_bias127_phase(const unsigned char* src, float* dst, uin
     }
 
     return cur_phase;
+}
+
+uint32_t
+widen_rotate90_u8_to_f32_bias127_phase(const unsigned char* src, float* dst, uint32_t len, uint32_t phase) {
+    if (g_widen_init_done.load(std::memory_order_acquire) != 2) {
+        simd_widen_init_dispatch();
+    }
+    return g_widen_rot_phase_impl(src, dst, len, phase);
 }
 
 void

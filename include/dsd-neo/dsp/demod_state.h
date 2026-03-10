@@ -83,8 +83,8 @@ struct demod_state {
     dsd_thread_t thread;
     float* lowpassed;
     double squelch_running_power;
-    float* resamp_taps; /* normalized taps, length = K*L */
-    float* resamp_hist; /* circular history, length = K */
+    float* resamp_taps; /* normalized taps as L contiguous phase blocks, length = K*L */
+    float* resamp_hist; /* mirrored history window, length = 2*K */
     int (*discriminator)(int, int, int, int);
     void (*mode_demod)(struct demod_state*);
     struct output_state* output_target;
@@ -167,7 +167,7 @@ struct demod_state {
     int resamp_phase;          /* 0..L-1 accumulator */
     int resamp_taps_len;       /* prototype taps length (padded to K*L) */
     int resamp_taps_per_phase; /* K = ceil(taps_len/L) */
-    int resamp_hist_head;      /* head index into circular history [0..K-1] */
+    int resamp_hist_head;      /* next write index into base history window [0..K-1] */
 
     /* Legacy FM FLL state (for non-CQPSK FM/C4FM paths).
      * Used by fll_update_error() and fll_mix_and_update() in demod_pipeline.cpp.

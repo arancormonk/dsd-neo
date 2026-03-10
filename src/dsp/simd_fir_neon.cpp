@@ -13,6 +13,101 @@
 
 #include <arm_neon.h>
 #include <cstring>
+#include <vector>
+
+namespace {
+
+static thread_local std::vector<float> tls_scratch_iq;
+static thread_local std::vector<float> tls_scratch_real;
+
+static float*
+prepare_complex_scratch(const float* in, int in_len, const float* hist_i, const float* hist_q, int hist_len, int pad) {
+    const int samples = in_len >> 1;
+    const int total_len = hist_len + samples;
+    const int scratch_len = (total_len + pad) * 2;
+
+    if (tls_scratch_iq.size() < (size_t)scratch_len) {
+        tls_scratch_iq.resize((size_t)scratch_len);
+    }
+
+    float* scratch = tls_scratch_iq.data();
+    for (int k = 0; k < hist_len; k++) {
+        const size_t kk = (size_t)k;
+        scratch[2 * kk] = hist_i[k];
+        scratch[2 * kk + 1] = hist_q[k];
+    }
+
+    std::memcpy(scratch + (size_t)hist_len * 2, in, (size_t)samples * 2 * sizeof(float));
+
+    const float last_i = (samples > 0) ? in[(samples - 1) << 1] : 0.0f;
+    const float last_q = (samples > 0) ? in[((samples - 1) << 1) + 1] : 0.0f;
+    for (int k = 0; k < pad; k++) {
+        const size_t kk = (size_t)total_len + (size_t)k;
+        scratch[2 * kk] = last_i;
+        scratch[2 * kk + 1] = last_q;
+    }
+
+    return scratch;
+}
+
+static void
+update_complex_history(const float* in, int samples, float* hist_i, float* hist_q, int hist_len) {
+    if (samples >= hist_len) {
+        for (int k = 0; k < hist_len; k++) {
+            const int rel = samples - hist_len + k;
+            hist_i[k] = in[rel << 1];
+            hist_q[k] = in[(rel << 1) + 1];
+        }
+        return;
+    }
+
+    const int need = hist_len - samples;
+    if (need > 0) {
+        std::memmove(hist_i, hist_i + (hist_len - need), (size_t)need * sizeof(float));
+        std::memmove(hist_q, hist_q + (hist_len - need), (size_t)need * sizeof(float));
+    }
+    for (int k = 0; k < samples; k++) {
+        hist_i[need + k] = in[k << 1];
+        hist_q[need + k] = in[(k << 1) + 1];
+    }
+}
+
+static float*
+prepare_real_scratch(const float* in, int in_len, const float* hist, int hist_len, int pad) {
+    const int total_len = hist_len + in_len;
+    const int scratch_len = total_len + pad;
+
+    if (tls_scratch_real.size() < (size_t)scratch_len) {
+        tls_scratch_real.resize((size_t)scratch_len);
+    }
+
+    float* scratch = tls_scratch_real.data();
+    std::memcpy(scratch, hist, (size_t)hist_len * sizeof(float));
+    std::memcpy(scratch + hist_len, in, (size_t)in_len * sizeof(float));
+
+    const float last = in[in_len - 1];
+    for (int k = 0; k < pad; k++) {
+        scratch[total_len + k] = last;
+    }
+
+    return scratch;
+}
+
+static void
+update_real_history(const float* in, int in_len, float* hist, int hist_len) {
+    if (in_len >= hist_len) {
+        std::memcpy(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
+        return;
+    }
+
+    const int need = hist_len - in_len;
+    if (need > 0) {
+        std::memmove(hist, hist + in_len, (size_t)need * sizeof(float));
+    }
+    std::memcpy(hist + need, in, (size_t)in_len * sizeof(float));
+}
+
+} /* namespace */
 
 /**
  * NEON complex symmetric FIR filter (no decimation).
@@ -28,24 +123,13 @@ simd_fir_complex_apply_neon(const float* in, int in_len, float* out, float* hist
     const int N = in_len >> 1; /* complex samples */
     const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
+    const int pad = center + 2;
+    float* scratch = prepare_complex_scratch(in, in_len, hist_i, hist_q, hist_len, pad);
 
-    float lastI = (N > 0) ? in[(N - 1) << 1] : 0.0f;
-    float lastQ = (N > 0) ? in[((N - 1) << 1) + 1] : 0.0f;
-
-    auto get_iq = [&](int src_idx, float& xi, float& xq) {
-        if (src_idx < hist_len) {
-            xi = hist_i[src_idx];
-            xq = hist_q[src_idx];
-        } else {
-            int rel = src_idx - hist_len;
-            if (rel < N) {
-                xi = in[rel << 1];
-                xq = in[(rel << 1) + 1];
-            } else {
-                xi = lastI;
-                xq = lastQ;
-            }
-        }
+    auto get_iq = [&](int idx, float& xi, float& xq) {
+        const size_t ii = (size_t)idx;
+        xi = scratch[2 * ii];
+        xq = scratch[2 * ii + 1];
     };
 
     /* Process 2 complex samples at a time (4 floats) */
@@ -57,11 +141,8 @@ simd_fir_complex_apply_neon(const float* in, int in_len, float* out, float* hist
         float cc = taps[center];
         float32x4_t tap_c = vdupq_n_f32(cc);
 
-        float ci0, cq0, ci1, cq1;
-        get_iq(hist_len + n, ci0, cq0);
-        get_iq(hist_len + n + 1, ci1, cq1);
-        float center_arr[4] = {ci0, cq0, ci1, cq1};
-        float32x4_t center_val = vld1q_f32(center_arr);
+        const size_t center_offset = ((size_t)hist_len + (size_t)n) << 1;
+        float32x4_t center_val = vld1q_f32(scratch + center_offset);
         acc = vfmaq_f32(acc, tap_c, center_val);
 
         /* Symmetric pairs */
@@ -73,18 +154,10 @@ simd_fir_complex_apply_neon(const float* in, int in_len, float* out, float* hist
             int d = center - k;
             float32x4_t tap_e = vdupq_n_f32(ce);
 
-            float xmI0, xmQ0, xpI0, xpQ0;
-            get_iq(hist_len + n - d, xmI0, xmQ0);
-            get_iq(hist_len + n + d, xpI0, xpQ0);
-
-            float xmI1, xmQ1, xpI1, xpQ1;
-            get_iq(hist_len + n + 1 - d, xmI1, xmQ1);
-            get_iq(hist_len + n + 1 + d, xpI1, xpQ1);
-
-            float sum_m_arr[4] = {xmI0, xmQ0, xmI1, xmQ1};
-            float sum_p_arr[4] = {xpI0, xpQ0, xpI1, xpQ1};
-            float32x4_t sum_m = vld1q_f32(sum_m_arr);
-            float32x4_t sum_p = vld1q_f32(sum_p_arr);
+            const size_t minus_offset = ((size_t)(hist_len + n - d)) << 1;
+            const size_t plus_offset = ((size_t)(hist_len + n + d)) << 1;
+            float32x4_t sum_m = vld1q_f32(scratch + minus_offset);
+            float32x4_t sum_p = vld1q_f32(scratch + plus_offset);
             float32x4_t sum = vaddq_f32(sum_m, sum_p);
             acc = vfmaq_f32(acc, tap_e, sum);
         }
@@ -121,24 +194,7 @@ simd_fir_complex_apply_neon(const float* in, int in_len, float* out, float* hist
         out[(n << 1) + 1] = accQ;
     }
 
-    /* Update history */
-    if (N >= hist_len) {
-        for (int k = 0; k < hist_len; k++) {
-            int rel = N - hist_len + k;
-            hist_i[k] = in[rel << 1];
-            hist_q[k] = in[(rel << 1) + 1];
-        }
-    } else {
-        int need = hist_len - N;
-        if (need > 0) {
-            std::memmove(hist_i, hist_i + (hist_len - need), (size_t)need * sizeof(float));
-            std::memmove(hist_q, hist_q + (hist_len - need), (size_t)need * sizeof(float));
-        }
-        for (int k = 0; k < N; k++) {
-            hist_i[need + k] = in[k << 1];
-            hist_q[need + k] = in[(k << 1) + 1];
-        }
-    }
+    update_complex_history(in, N, hist_i, hist_q, hist_len);
 }
 
 /**
@@ -160,23 +216,13 @@ simd_hb_decim2_complex_neon(const float* in, int in_len, float* out, float* hist
 
     const int center = (taps_len - 1) >> 1;
     const int left_len = taps_len - 1;
-    float lastI = in[in_len - 2];
-    float lastQ = in[in_len - 1];
+    const int pad = center + 2;
+    float* scratch = prepare_complex_scratch(in, in_len, hist_i, hist_q, left_len, pad);
 
-    auto get_iq = [&](int src_idx, float& xi, float& xq) {
-        if (src_idx < left_len) {
-            xi = hist_i[src_idx];
-            xq = hist_q[src_idx];
-        } else {
-            int rel = src_idx - left_len;
-            if (rel < ch_len) {
-                xi = in[rel << 1];
-                xq = in[(rel << 1) + 1];
-            } else {
-                xi = lastI;
-                xq = lastQ;
-            }
-        }
+    auto get_iq = [&](int idx, float& xi, float& xq) {
+        const size_t ii = (size_t)idx;
+        xi = scratch[2 * ii];
+        xq = scratch[2 * ii + 1];
     };
 
     /* Process 2 output samples at a time */
@@ -253,23 +299,7 @@ simd_hb_decim2_complex_neon(const float* in, int in_len, float* out, float* hist
         out[(n << 1) + 1] = accQ;
     }
 
-    /* Update history */
-    if (ch_len >= left_len) {
-        int start = ch_len - left_len;
-        for (int k = 0; k < left_len; k++) {
-            int rel = start + k;
-            hist_i[k] = in[rel << 1];
-            hist_q[k] = in[(rel << 1) + 1];
-        }
-    } else {
-        int keep = left_len - ch_len;
-        std::memmove(hist_i, hist_i + ch_len, (size_t)keep * sizeof(float));
-        std::memmove(hist_q, hist_q + ch_len, (size_t)keep * sizeof(float));
-        for (int k = 0; k < ch_len; k++) {
-            hist_i[keep + k] = in[k << 1];
-            hist_q[keep + k] = in[(k << 1) + 1];
-        }
-    }
+    update_complex_history(in, ch_len, hist_i, hist_q, left_len);
 
     return out_ch_len << 1;
 }
@@ -290,17 +320,10 @@ simd_hb_decim2_real_neon(const float* in, int in_len, float* out, float* hist, c
     const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
     int out_len = in_len >> 1;
+    const int pad = center + 2;
+    float* scratch = prepare_real_scratch(in, in_len, hist, hist_len, pad);
 
-    float last = in[in_len - 1];
-
-    auto get_sample = [&](int src_idx) -> float {
-        if (src_idx < hist_len) {
-            return hist[src_idx];
-        } else {
-            int rel = src_idx - hist_len;
-            return (rel < in_len) ? in[rel] : last;
-        }
-    };
+    auto get_sample = [&](int idx) -> float { return scratch[idx]; };
 
     /* Process 4 output samples at a time */
     int n = 0;
@@ -358,16 +381,7 @@ simd_hb_decim2_real_neon(const float* in, int in_len, float* out, float* hist, c
         out[n] = acc;
     }
 
-    /* Update history */
-    if (in_len >= hist_len) {
-        std::memcpy(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
-    } else {
-        int need = hist_len - in_len;
-        if (need > 0) {
-            std::memmove(hist, hist + in_len, (size_t)need * sizeof(float));
-        }
-        std::memcpy(hist + need, in, (size_t)in_len * sizeof(float));
-    }
+    update_real_history(in, in_len, hist, hist_len);
 
     return out_len;
 }

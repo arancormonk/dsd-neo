@@ -528,7 +528,7 @@ demod_reset_on_retune(struct demod_state* s) {
             s->resamp_phase = 0;
             s->resamp_hist_head = 0;
             if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
-                memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * sizeof(float));
+                memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * 2U * sizeof(float));
             }
             /* Reset timing/carrier loops for the new symbol rate. */
             ted_init_state(&s->ted_state);
@@ -707,7 +707,7 @@ demod_reset_on_retune(struct demod_state* s) {
         s->resamp_phase = 0;
         s->resamp_hist_head = 0;
         if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
-            memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * sizeof(float));
+            memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * 2U * sizeof(float));
         }
     }
 

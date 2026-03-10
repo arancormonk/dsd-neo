@@ -13,6 +13,16 @@
 
 #include "io/radio/rtl_capture_phase.h"
 
+#if defined(__x86_64__) || defined(_M_X64)
+extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_sse2(const unsigned char* src, float* dst, uint32_t len,
+                                                                uint32_t phase);
+#endif
+
+#if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
+extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_neon(const unsigned char* src, float* dst, uint32_t len,
+                                                                uint32_t phase);
+#endif
+
 static int
 arrays_close(const float* a, const float* b, int n, float tol) {
     for (int i = 0; i < n; i++) {
@@ -149,6 +159,42 @@ process_legacy_rotate_chunk_with_carry(const unsigned char* src, size_t len, uns
         *written = out;
     }
     return phase;
+}
+
+using widen_backend_fn = unsigned int (*)(const unsigned char*, float*, unsigned int, unsigned int);
+
+static int
+test_rotate_widen_backend(const char* name, widen_backend_fn fn) {
+    const unsigned char src[10] = {127, 127, 130, 130, 255, 0, 0, 255, 64, 192};
+    const float inv = 1.0f / 127.5f;
+    float dst_full[10] = {0};
+    float dst_split[10] = {0};
+    float ref[10] = {0};
+
+    unsigned int phase_ref = 3U;
+    for (int pair = 0; pair < 5; pair++) {
+        int idx = pair << 1;
+        float in_i = ((float)src[idx + 0] - 127.5f) * inv;
+        float in_q = ((float)src[idx + 1] - 127.5f) * inv;
+        apply_j4_rotation_ref(in_i, in_q, phase_ref, &ref[idx + 0], &ref[idx + 1]);
+        phase_ref = (phase_ref + 1U) & 3U;
+    }
+
+    unsigned int phase_full = fn(src, dst_full, 10U, 3U);
+    unsigned int phase_split = 3U;
+    phase_split = fn(src, dst_split, 4U, phase_split);
+    phase_split = fn(src + 4, dst_split + 4, 6U, phase_split);
+
+    if (phase_full != phase_ref || phase_split != phase_ref) {
+        fprintf(stderr, "%s phase carry: mismatch\n", name);
+        return 1;
+    }
+    if (!arrays_close(dst_full, ref, 10, 1e-6f) || !arrays_close(dst_split, ref, 10, 1e-6f)) {
+        fprintf(stderr, "%s output: mismatch\n", name);
+        return 1;
+    }
+
+    return 0;
 }
 
 int
@@ -394,6 +440,18 @@ main(void) {
             return 1;
         }
     }
+
+#if defined(__x86_64__) || defined(_M_X64)
+    if (test_rotate_widen_backend("SIMD rotate+widen SSE2", widen_rotate90_u8_to_f32_bias127_phase_sse2) != 0) {
+        return 1;
+    }
+#endif
+
+#if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
+    if (test_rotate_widen_backend("SIMD rotate+widen NEON", widen_rotate90_u8_to_f32_bias127_phase_neon) != 0) {
+        return 1;
+    }
+#endif
 
     return 0;
 }

@@ -23,9 +23,10 @@ struct demod_state;
 /**
  * @brief Design windowed-sinc low-pass prototype for polyphase upfirdn (runs at L*Fs_in).
  *
- * Taps are stored phase-major with stride L (k*L + phase). The function allocates
- * aligned storage for taps and history inside the provided demod_state and
- * initializes the resampler bookkeeping fields.
+ * Taps are stored as contiguous per-phase blocks with oldest-to-newest sample
+ * order inside each block. The function allocates aligned storage for taps and
+ * mirrored history inside the provided demod_state and initializes the
+ * resampler bookkeeping fields.
  *
  * @param s Demodulator state to receive resampler taps/history.
  * @param L Upsampling factor.

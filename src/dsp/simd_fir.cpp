@@ -16,24 +16,7 @@
 #include <atomic>
 #include <cstring>
 
-/* Platform-specific CPU feature detection for optional AVX2 dispatch */
-#if defined(__x86_64__) || defined(_M_X64)
-#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
-#if defined(_MSC_VER)
-#include <intrin.h>
-#else
-#include <cpuid.h>
-
-/* Use inline assembly for _xgetbv to avoid target-specific option issues */
-static inline unsigned long long
-dsd_xgetbv(unsigned int xcr) {
-    unsigned int eax, edx;
-    __asm__ __volatile__("xgetbv" : "=a"(eax), "=d"(edx) : "c"(xcr));
-    return ((unsigned long long)edx << 32) | eax;
-}
-#endif
-#endif
-#endif
+#include "simd_x86_cpu.h"
 
 /* Forward declarations for SIMD specializations (defined in arch-specific TUs) */
 #if defined(__x86_64__) || defined(_M_X64)
@@ -306,61 +289,6 @@ simd_hb_decim2_real_scalar(const float* in, int in_len, float* out, float* hist,
 }
 
 /* -------------------------------------------------------------------------- */
-/* CPU Feature Detection                                                      */
-/* -------------------------------------------------------------------------- */
-
-#if (defined(__x86_64__) || defined(_M_X64)) && defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
-
-static bool
-cpu_has_avx2_with_os_support() {
-#if defined(__GNUC__) || defined(__clang__)
-    unsigned int eax, ebx, ecx, edx;
-    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
-        return false;
-    }
-    bool osxsave = (ecx & (1u << 27)) != 0;
-    bool avx = (ecx & (1u << 28)) != 0;
-    bool fma = (ecx & (1u << 12)) != 0;
-    if (!osxsave || !avx) {
-        return false;
-    }
-    /* Check OS has enabled YMM state saving via XGETBV */
-    unsigned long long xcr0 = dsd_xgetbv(0);
-    bool ymm_enabled = (xcr0 & 0x6) == 0x6; /* XMM + YMM state enabled */
-    if (!ymm_enabled) {
-        return false;
-    }
-    /* Check AVX2 support in extended features */
-    if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
-        return false;
-    }
-    bool has_avx2 = (ebx & (1u << 5)) != 0;
-    return has_avx2 && fma;
-#elif defined(_MSC_VER)
-    int cpuInfo[4];
-    __cpuid(cpuInfo, 1);
-    bool osxsave = (cpuInfo[2] & (1 << 27)) != 0;
-    bool avx = (cpuInfo[2] & (1 << 28)) != 0;
-    bool fma = (cpuInfo[2] & (1 << 12)) != 0;
-    if (!osxsave || !avx) {
-        return false;
-    }
-    unsigned long long xcr0 = _xgetbv(0);
-    bool ymm_enabled = (xcr0 & 0x6) == 0x6;
-    if (!ymm_enabled) {
-        return false;
-    }
-    __cpuidex(cpuInfo, 7, 0);
-    bool has_avx2 = (cpuInfo[1] & (1 << 5)) != 0;
-    return has_avx2 && fma;
-#else
-    return false;
-#endif
-}
-
-#endif /* x86_64 && DSD_NEO_DSP_HAVE_AVX2_IMPL */
-
-/* -------------------------------------------------------------------------- */
 /* Function Pointer Dispatch                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -390,7 +318,7 @@ simd_fir_init_dispatch() {
     /* Perform one-time initialization */
 #if defined(__x86_64__) || defined(_M_X64)
 #if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
-    if (cpu_has_avx2_with_os_support()) {
+    if (dsd_neo_cpu_has_avx2_with_os_support()) {
         g_fir_complex_impl = simd_fir_complex_apply_avx2;
         g_hb_decim2_complex_impl = simd_hb_decim2_complex_avx2;
         g_hb_decim2_real_impl = simd_hb_decim2_real_avx2;

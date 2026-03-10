@@ -25,9 +25,11 @@ target_sources(dsd-neo_dsp PRIVATE
 # x86-64 SIMD sources with arch-specific flags
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
   target_sources(dsd-neo_dsp PRIVATE simd_fir_sse2.cpp)
+  target_sources(dsd-neo_dsp PRIVATE simd_widen_sse2.cpp)
   # Explicit SSE2 flag for clarity and cross-compilation safety
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(simd_fir_sse2.cpp PROPERTIES COMPILE_FLAGS "-msse2")
+    set_source_files_properties(simd_widen_sse2.cpp PROPERTIES COMPILE_FLAGS "-msse2")
   endif()
 
   # AVX2+FMA needs explicit flag; add source only if the compiler accepts it
@@ -46,7 +48,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
   endif()
   if(_avx2_flags)
     target_sources(dsd-neo_dsp PRIVATE simd_fir_avx2.cpp)
+    target_sources(dsd-neo_dsp PRIVATE simd_widen_avx2.cpp)
     set_source_files_properties(simd_fir_avx2.cpp PROPERTIES COMPILE_FLAGS "${_avx2_flags}")
+    set_source_files_properties(simd_widen_avx2.cpp PROPERTIES COMPILE_FLAGS "${_avx2_flags}")
     target_compile_definitions(dsd-neo_dsp PRIVATE $<$<COMPILE_LANGUAGE:CXX>:DSD_NEO_DSP_HAVE_AVX2_IMPL=1>)
   endif()
 endif()
@@ -54,6 +58,7 @@ endif()
 # ARM64 NEON (always available on AArch64)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
   target_sources(dsd-neo_dsp PRIVATE simd_fir_neon.cpp)
+  target_sources(dsd-neo_dsp PRIVATE simd_widen_neon.cpp)
 endif()
 
 target_include_directories(dsd-neo_dsp
