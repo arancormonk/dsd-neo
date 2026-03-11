@@ -20,6 +20,7 @@ enum class RtlAutoPpmSource : int {
 
 struct RtlAutoPpmSignalMetrics {
     int cqpsk_enable = 0;
+    int tracking_enable = 0;
     int carrier_lock = 0;
     int spectrum_valid = 0;
     double nco_cfo_hz = 0.0;
@@ -108,6 +109,7 @@ class RtlAutoPpmController {
     int lock_ppm_ = 0;
     double lock_snr_db_ = -100.0;
     double lock_df_hz_ = 0.0;
+    uint32_t lock_tuned_freq_hz_ = 0;
 };
 
 } // namespace radio

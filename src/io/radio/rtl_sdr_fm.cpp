@@ -3107,6 +3107,15 @@ auto_ppm_make_config(const dsd_opts* opts) {
     return config;
 }
 
+static int
+auto_ppm_should_freeze_retunes(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        return 1;
+    }
+    return cfg->auto_ppm_freeze_enable ? 1 : 0;
+}
+
 static void
 auto_ppm_publish_status(int enabled, const dsd::io::radio::RtlAutoPpmUpdate& update) {
     g_auto_ppm_enabled.store(enabled, std::memory_order_relaxed);
@@ -3132,9 +3141,11 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
     uint64_t now_ms = auto_ppm_now_ms();
     uint32_t applied_freq_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     double spec_snr_db = g_spec_snr_db.load(std::memory_order_relaxed);
+    dsd::io::radio::RtlAutoPpmConfig config = auto_ppm_make_config(opts);
 
     dsd::io::radio::RtlAutoPpmSignalMetrics metrics = {};
     metrics.cqpsk_enable = demod.cqpsk_enable ? 1 : 0;
+    metrics.tracking_enable = (demod.cqpsk_enable || demod.fll_enabled) ? 1 : 0;
     metrics.carrier_lock = dsd_rtl_stream_get_carrier_lock();
     metrics.spectrum_valid = (spec_snr_db > -99.0) ? 1 : 0;
     metrics.nco_cfo_hz = dsd_rtl_stream_get_cfo_hz();
@@ -3151,7 +3162,7 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
     inputs.spec_snr_db = spec_snr_db;
     inputs.estimate = dsd::io::radio::rtl_auto_ppm_select_estimate(metrics);
 
-    dsd::io::radio::RtlAutoPpmUpdate update = g_auto_ppm_controller.update(auto_ppm_make_config(opts), inputs);
+    dsd::io::radio::RtlAutoPpmUpdate update = g_auto_ppm_controller.update(config, inputs);
     auto_ppm_publish_status(enabled, update);
     if (update.apply_ppm) {
         LOG_INFO("AUTO-PPM: src=%d pwr=%.1f dB snr=%.1f dB df=%.1f Hz ppm %d->%d\n",
@@ -3623,20 +3634,9 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
  */
 extern "C" int
 dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
-    /* Freeze retunes during auto-PPM training (to allow lock) unless disabled */
-    static int freeze_checked = 0;
-    static int freeze_on_train = 1; /* default on */
-    if (!freeze_checked) {
-        freeze_checked = 1;
-        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-        if (cfg) {
-            freeze_on_train = cfg->auto_ppm_freeze_enable ? 1 : 0;
-        }
-    }
-    extern int dsd_rtl_stream_auto_ppm_training_active(void);
-    if (freeze_on_train && dsd_rtl_stream_auto_ppm_training_active()) {
+    if (auto_ppm_should_freeze_retunes() && dsd_rtl_stream_auto_ppm_training_active()) {
         LOG_NOTICE("Retune deferred: auto-PPM training active.\n");
-        return 0; /* no retune while training */
+        return 0;
     }
     if (opts->payload == 1) {
         LOG_INFO("\nTuning to %ld Hz.", frequency);

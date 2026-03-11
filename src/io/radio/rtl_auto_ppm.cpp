@@ -48,26 +48,22 @@ estimate_snr_db(RtlAutoPpmSource source, const RtlAutoPpmInputs& inputs) {
     return std::max(inputs.gate_snr_db, inputs.spec_snr_db);
 }
 
+static bool
+tracking_estimate_ready(const RtlAutoPpmSignalMetrics& metrics) {
+    return metrics.cqpsk_enable && metrics.tracking_enable && metrics.carrier_lock && finite_hz(metrics.nco_cfo_hz);
+}
+
 } // namespace
 
 RtlAutoPpmEstimate
 rtl_auto_ppm_select_estimate(const RtlAutoPpmSignalMetrics& metrics) {
-    if (metrics.cqpsk_enable) {
-        /* On CQPSK, bootstrap with the spectrum residual until the carrier loop
-         * declares lock, then switch to the recovered NCO total CFO. Once lock
-         * is present the inner loop owns fine carrier tracking, so the exported
-         * spectrum residual is no longer the best long-window hardware estimate. */
-        if (metrics.carrier_lock && finite_hz(metrics.nco_cfo_hz)) {
-            return {RtlAutoPpmSource::CarrierTotal, metrics.nco_cfo_hz};
-        }
-        if (metrics.spectrum_valid && finite_hz(metrics.spectrum_cfo_hz)) {
-            return {RtlAutoPpmSource::SpectrumResidual, metrics.spectrum_cfo_hz};
-        }
-        return {};
+    /* Tuner PPM is a device-wide calibration. Only CQPSK carrier recovery can
+     * export a stable total CFO; non-CQPSK FLL totals can include transmitter
+     * or channel offset and must not be folded into the dongle calibration. */
+    if (tracking_estimate_ready(metrics)) {
+        return {RtlAutoPpmSource::CarrierTotal, metrics.nco_cfo_hz};
     }
 
-    /* Raw sample-to-sample phase advance follows FM/FSK modulation content as
-     * well as carrier error, so it is not stable enough for hardware PPM control. */
     if (metrics.spectrum_valid && finite_hz(metrics.spectrum_cfo_hz)) {
         return {RtlAutoPpmSource::SpectrumResidual, metrics.spectrum_cfo_hz};
     }
@@ -94,6 +90,7 @@ RtlAutoPpmController::clear_runtime_state() {
     lock_ppm_ = 0;
     lock_snr_db_ = -100.0;
     lock_df_hz_ = 0.0;
+    lock_tuned_freq_hz_ = 0;
 }
 
 void
@@ -159,10 +156,12 @@ RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInp
     }
 
     if (inputs.tuned_freq_hz != 0 && inputs.tuned_freq_hz != last_tuned_freq_hz_) {
-        /* Keep an existing device-wide lock across channel hops. Only clear
-         * transient observation state when we are still training/unlocked. */
-        if (!locked_) {
-            clear_observation_state();
+        /* Tuning changes invalidate per-channel drift history. Keep the last
+         * lock snapshot across channel hops, but re-base lock validation to the
+         * new channel so later residuals can re-enter training if needed. */
+        clear_observation_state();
+        if (locked_) {
+            lock_tuned_freq_hz_ = inputs.tuned_freq_hz;
         }
         last_tuned_freq_hz_ = inputs.tuned_freq_hz;
     } else if (last_tuned_freq_hz_ == 0) {
@@ -172,7 +171,12 @@ RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInp
     sync_status();
 
     if (!inputs.estimate.valid() || inputs.tuned_freq_hz == 0) {
-        out.locked = locked_;
+        if (locked_) {
+            out.training = 0;
+            out.locked = 1;
+        } else {
+            out.locked = locked_;
+        }
         return out;
     }
 
@@ -184,6 +188,45 @@ RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInp
     bool power_ok = (inputs.signal_power_db >= config.min_power_db);
     bool ppm_ok = std::isfinite(out.est_ppm) && (std::fabs(out.est_ppm) <= config.max_abs_ppm);
     bool signal_ok = snr_ok && power_ok && ppm_ok;
+
+    if (locked_) {
+        bool keep_lock = true;
+        if (signal_ok && inputs.tuned_freq_hz == lock_tuned_freq_hz_) {
+            double filtered_ppm = out.est_ppm;
+            if (!ema_valid_ || inputs.estimate.source != last_source_) {
+                ema_ppm_ = filtered_ppm;
+                ema_valid_ = 1;
+            } else {
+                ema_ppm_ = (0.85 * ema_ppm_) + (0.15 * filtered_ppm);
+            }
+            last_source_ = inputs.estimate.source;
+            filtered_ppm = ema_ppm_;
+            double filtered_df_hz = (filtered_ppm * static_cast<double>(inputs.tuned_freq_hz)) / 1.0e6;
+            int filtered_dir = sign_with_deadband(filtered_ppm, config.min_correction_ppm);
+            /* Residuals inside the correction deadband cannot generate a tuner
+             * step, so dropping lock here would strand the controller in an
+             * unrecoverable training state. Keep the existing lock until the
+             * drift grows large enough to produce a real correction. */
+            keep_lock = (filtered_dir == 0)
+                        || ((std::fabs(filtered_ppm) <= config.zero_lock_ppm)
+                            && (std::fabs(filtered_df_hz) <= config.zero_lock_hz));
+            if (keep_lock) {
+                out.est_ppm = filtered_ppm;
+                out.df_hz = filtered_df_hz;
+            }
+        }
+        if (keep_lock) {
+            out.training = 0;
+            out.locked = 1;
+            return out;
+        }
+
+        /* Preserve the last lock snapshot for UI/status, but restart the
+         * observation window from the current estimate so drift can retrain. */
+        locked_ = 0;
+        clear_observation_state();
+        sync_status();
+    }
 
     if (settle_until_ms_ > inputs.now_ms) {
         out.training = 1;
@@ -235,6 +278,13 @@ RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInp
                 lock_ppm_ = inputs.current_ppm;
                 lock_snr_db_ = out.snr_db;
                 lock_df_hz_ = out.df_hz;
+                lock_tuned_freq_hz_ = inputs.tuned_freq_hz;
+                /* Re-seed post-lock drift validation from the first new sample
+                 * after lock instead of blending against the near-zero EMA that
+                 * satisfied the lock window. */
+                ema_ppm_ = 0.0;
+                ema_valid_ = 0;
+                last_source_ = RtlAutoPpmSource::None;
                 out.locked = 1;
                 out.training = 0;
                 out.lock_ppm = lock_ppm_;
@@ -289,11 +339,21 @@ RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInp
     out.last_dir = (step_ppm > 0) ? 1 : -1;
     last_dir_ = out.last_dir;
     last_input_ppm_ = new_ppm;
+    /* A single hardware step does not imply convergence. Large residuals may
+     * need multiple bounded corrections, and even a full correction needs time
+     * for the tuner/DSP path to settle before we can trust a zero-residual
+     * lock. Keep training active and restart the observation window. */
+    locked_ = 0;
     settle_until_ms_ = inputs.now_ms + static_cast<uint64_t>(config.settle_ms);
-    observation_since_ms_ = inputs.now_ms;
+    stable_since_ms_ = 0;
+    observation_since_ms_ = 0;
     observation_sign_ = 0;
+    ema_ppm_ = 0.0;
     ema_valid_ = 0;
+    last_source_ = RtlAutoPpmSource::None;
     out.cooldown_ticks = static_cast<int>((static_cast<uint64_t>(config.settle_ms) + 9U) / 10U);
+    out.locked = 0;
+    out.training = 1;
     return out;
 }
 
