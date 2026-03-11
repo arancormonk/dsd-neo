@@ -56,6 +56,7 @@ make_inputs(uint64_t now_ms, int current_ppm, uint32_t tuned_freq_hz, double est
     inputs.now_ms = now_ms;
     inputs.enabled = 1;
     inputs.current_ppm = current_ppm;
+    inputs.requested_ppm = current_ppm;
     inputs.tuned_freq_hz = tuned_freq_hz;
     inputs.signal_power_db = -40.0;
     inputs.gate_snr_db = 12.0;
@@ -325,6 +326,76 @@ test_external_ppm_change_resets_observation_window(void) {
 }
 
 static int
+test_async_ppm_waits_for_applied_snapshot_before_retraining(void) {
+    int rc = 0;
+    RtlAutoPpmController controller;
+    RtlAutoPpmConfig config = {};
+    const uint32_t freq_hz = 851000000U;
+
+    controller.reset(0, freq_hz);
+    (void)controller.update(config, make_inputs(0, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+
+    RtlAutoPpmUpdate update =
+        controller.update(config, make_inputs(4000, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("async wait queues correction", update.apply_ppm, 1);
+    rc |= expect_int_eq("async wait targets current applied ppm", update.new_ppm, -8);
+
+    update = controller.update(config, make_inputs(9000, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("async wait does not reapply before hardware ack", update.apply_ppm, 0);
+    rc |= expect_int_eq("async wait stays in training", update.training, 1);
+    rc |= expect_int_eq("async wait stays unlocked", update.locked, 0);
+
+    update = controller.update(config, make_inputs(9500, -8, freq_hz, 0.02, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("async wait resumes from applied ppm", update.apply_ppm, 0);
+    rc |= expect_int_eq("async wait starts fresh post-apply observation", update.training, 1);
+    rc |= expect_int_eq("async wait remains unlocked until hold time", update.locked, 0);
+
+    update = controller.update(config, make_inputs(12501, -8, freq_hz, 0.02, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("async wait can lock after applied ppm settles", update.locked, 1);
+    rc |= expect_int_eq("async wait lock stores applied ppm", update.lock_ppm, -8);
+    return rc;
+}
+
+static int
+test_requested_ppm_change_blocks_retraining_until_applied(void) {
+    int rc = 0;
+    RtlAutoPpmController controller;
+    RtlAutoPpmConfig config = {};
+    const uint32_t freq_hz = 851000000U;
+
+    controller.reset(0, freq_hz);
+    (void)controller.update(config, make_inputs(0, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+
+    RtlAutoPpmUpdate update =
+        controller.update(config, make_inputs(4000, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("auto step queues before manual override", update.apply_ppm, 1);
+    rc |= expect_int_eq("auto step baseline before manual override", update.new_ppm, -8);
+
+    RtlAutoPpmInputs manual_pending = make_inputs(4100, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal);
+    manual_pending.requested_ppm = 5;
+    update = controller.update(config, manual_pending);
+    rc |= expect_int_eq("manual pending suppresses auto reapply", update.apply_ppm, 0);
+    rc |= expect_int_eq("manual pending keeps training active", update.training, 1);
+    rc |= expect_int_eq("manual pending keeps controller unlocked", update.locked, 0);
+
+    manual_pending.now_ms = 8000;
+    update = controller.update(config, manual_pending);
+    rc |= expect_int_eq("manual pending continues blocking retrain", update.apply_ppm, 0);
+
+    update = controller.update(config, make_inputs(9000, 5, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("manual apply ack restarts observation", update.apply_ppm, 0);
+    rc |= expect_int_eq("manual apply ack stays in training", update.training, 1);
+
+    update = controller.update(config, make_inputs(12999, 5, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("manual apply requires fresh observation window", update.apply_ppm, 0);
+
+    update = controller.update(config, make_inputs(13000, 5, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("manual apply can retrain after new window", update.apply_ppm, 1);
+    rc |= expect_int_eq("manual apply builds on manual baseline", update.new_ppm, -3);
+    return rc;
+}
+
+static int
 test_positive_residual_increases_applied_ppm(void) {
     int rc = 0;
     RtlAutoPpmController controller;
@@ -477,6 +548,7 @@ test_frequency_change_rearms_drift_check_after_lock_carry(void) {
     invalid_inputs.now_ms = 9560;
     invalid_inputs.enabled = 1;
     invalid_inputs.current_ppm = -8;
+    invalid_inputs.requested_ppm = -8;
     invalid_inputs.tuned_freq_hz = freq_b_hz;
     invalid_inputs.signal_power_db = -40.0;
     invalid_inputs.gate_snr_db = 12.0;
@@ -553,6 +625,8 @@ main(void) {
     rc |= test_spectrum_fallback_clamps_large_steps();
     rc |= test_large_spectrum_residual_stays_bounded_across_windows();
     rc |= test_external_ppm_change_resets_observation_window();
+    rc |= test_async_ppm_waits_for_applied_snapshot_before_retraining();
+    rc |= test_requested_ppm_change_blocks_retraining_until_applied();
     rc |= test_positive_residual_increases_applied_ppm();
     rc |= test_deadband_reentry_restarts_observation_window();
     rc |= test_locked_session_reenters_training_on_same_channel_drift();

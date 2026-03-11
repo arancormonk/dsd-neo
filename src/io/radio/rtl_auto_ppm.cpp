@@ -87,6 +87,8 @@ void
 RtlAutoPpmController::clear_runtime_state() {
     locked_ = 0;
     clear_observation_state();
+    pending_apply_ = 0;
+    pending_ppm_ = 0;
     lock_ppm_ = 0;
     lock_snr_db_ = -100.0;
     lock_df_hz_ = 0.0;
@@ -126,6 +128,14 @@ RtlAutoPpmController::observation_ms(RtlAutoPpmSource source, const RtlAutoPpmCo
 RtlAutoPpmUpdate
 RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInputs& inputs) {
     RtlAutoPpmUpdate out = {};
+    auto fill_estimate_status = [&]() {
+        if (!inputs.estimate.valid() || inputs.tuned_freq_hz == 0) {
+            return;
+        }
+        out.df_hz = inputs.estimate.error_hz;
+        out.est_ppm = (inputs.estimate.error_hz * 1.0e6) / static_cast<double>(inputs.tuned_freq_hz);
+        out.snr_db = estimate_snr_db(inputs.estimate.source, inputs);
+    };
     auto sync_status = [&]() {
         out.new_ppm = inputs.current_ppm;
         out.locked = locked_;
@@ -148,6 +158,49 @@ RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInp
         reset(inputs.current_ppm, inputs.tuned_freq_hz);
     }
     last_enabled_ = 1;
+
+    if (inputs.requested_ppm != inputs.current_ppm) {
+        if (!pending_apply_ || pending_ppm_ != inputs.requested_ppm) {
+            /* A queued manual or async controller request supersedes any prior
+             * training window. Freeze retraining until the applied snapshot
+             * catches up with the requested hardware correction. */
+            locked_ = 0;
+            clear_observation_state();
+            pending_apply_ = 1;
+            pending_ppm_ = inputs.requested_ppm;
+            settle_until_ms_ = inputs.now_ms + static_cast<uint64_t>(config.settle_ms);
+        }
+        sync_status();
+        fill_estimate_status();
+        out.training = 1;
+        out.locked = 0;
+        if (settle_until_ms_ > inputs.now_ms) {
+            uint64_t remain_ms = settle_until_ms_ - inputs.now_ms;
+            out.cooldown_ticks = static_cast<int>((remain_ms + 9U) / 10U);
+        }
+        return out;
+    }
+
+    if (pending_apply_) {
+        if (inputs.current_ppm == pending_ppm_) {
+            pending_apply_ = 0;
+            last_input_ppm_ = inputs.current_ppm;
+        } else if (inputs.current_ppm == last_input_ppm_) {
+            /* An async PPM step is still in flight. Hold training/cooldown state
+             * until the hardware reports the new applied correction. */
+            sync_status();
+            fill_estimate_status();
+            out.training = 1;
+            out.locked = 0;
+            if (settle_until_ms_ > inputs.now_ms) {
+                uint64_t remain_ms = settle_until_ms_ - inputs.now_ms;
+                out.cooldown_ticks = static_cast<int>((remain_ms + 9U) / 10U);
+            }
+            return out;
+        } else {
+            pending_apply_ = 0;
+        }
+    }
 
     if (inputs.current_ppm != last_input_ppm_) {
         locked_ = 0;
@@ -338,7 +391,8 @@ RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInp
     out.new_ppm = new_ppm;
     out.last_dir = (step_ppm > 0) ? 1 : -1;
     last_dir_ = out.last_dir;
-    last_input_ppm_ = new_ppm;
+    pending_apply_ = 1;
+    pending_ppm_ = new_ppm;
     /* A single hardware step does not imply convergence. Large residuals may
      * need multiple bounded corrections, and even a full correction needs time
      * for the tuner/DSP path to settle before we can trust a zero-residual

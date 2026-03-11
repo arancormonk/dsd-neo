@@ -2361,34 +2361,34 @@ rtl_device_set_ppm(struct rtl_device* dev, int ppm_error) {
     if (!dev) {
         return -1;
     }
-    /* Avoid redundant writes: if requested PPM equals current cached value,
-       skip making a driver call. This prevents a spurious warning on startup
-       when no PPM is provided (defaults to 0) or when re-applying zero. */
+    /* Cache only the last correction that the backend accepted. Retries for a
+     * previously failed value must still reach the driver/backend. */
     if (ppm_error == dev->ppm_error) {
         return 0;
     }
-    dev->ppm_error = ppm_error;
+    int rc = -1;
     if (dev->backend == RTL_BACKEND_USB) {
         if (!dev->dev) {
             return -1;
         }
-        return verbose_ppm_set(dev->dev, ppm_error);
-    }
-    if (dev->backend == RTL_BACKEND_TCP) {
-        return rtl_tcp_send_cmd(dev->sockfd, 0x05, (uint32_t)ppm_error);
-    }
+        rc = verbose_ppm_set(dev->dev, ppm_error);
+    } else if (dev->backend == RTL_BACKEND_TCP) {
+        rc = rtl_tcp_send_cmd(dev->sockfd, 0x05, (uint32_t)ppm_error);
 #ifdef USE_SOAPYSDR
-    if (dev->backend == RTL_BACKEND_SOAPY) {
-        return soapy_call_locked(dev, "setFrequencyCorrection", [&]() -> int {
+    } else if (dev->backend == RTL_BACKEND_SOAPY) {
+        rc = soapy_call_locked(dev, "setFrequencyCorrection", [&]() -> int {
             if (!dev->soapy_dev->hasFrequencyCorrection(SOAPY_SDR_RX, 0)) {
                 return DSD_ERR_NOT_SUPPORTED;
             }
             dev->soapy_dev->setFrequencyCorrection(SOAPY_SDR_RX, 0, (double)ppm_error);
             return 0;
         });
-    }
 #endif
-    return -1;
+    }
+    if (rc == 0) {
+        dev->ppm_error = ppm_error;
+    }
+    return rc;
 }
 
 /**

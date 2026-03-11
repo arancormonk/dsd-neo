@@ -59,6 +59,7 @@ struct RtlAutoPpmInputs {
     uint64_t now_ms = 0;
     int enabled = 0;
     int current_ppm = 0;
+    int requested_ppm = 0;
     uint32_t tuned_freq_hz = 0;
     double signal_power_db = -100.0;
     double gate_snr_db = -100.0;
@@ -98,6 +99,8 @@ class RtlAutoPpmController {
     int locked_ = 0;
     int last_dir_ = 0;
     int last_input_ppm_ = 0;
+    int pending_apply_ = 0;
+    int pending_ppm_ = 0;
     uint32_t last_tuned_freq_hz_ = 0;
     uint64_t settle_until_ms_ = 0;
     uint64_t stable_since_ms_ = 0;

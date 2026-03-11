@@ -168,7 +168,8 @@ struct dongle_state {
     uint32_t rate;
     int gain;
     uint32_t buf_len;
-    int ppm_error;
+    /* Last PPM value successfully applied to hardware. */
+    std::atomic<int> ppm_error;
     int offset_tuning;
     int direct_sampling;
     std::atomic<int> mute;
@@ -193,6 +194,10 @@ struct controller_state {
     /* Marshalled retune request from external threads (UDP/API). */
     std::atomic<int> manual_retune_pending;
     uint32_t manual_retune_freq;
+    /* Marshalled PPM correction updates stay on the controller thread so
+     * device controls remain serialized with retunes/hops. */
+    std::atomic<int> ppm_change_pending;
+    std::atomic<int> pending_ppm_error;
     /* Cold start gate: demod thread skips CQPSK until controller signals ready.
      * This prevents the race where demod processes samples with uninitialized
      * TED/Costas state before the controller finishes cold start configuration. */
@@ -289,6 +294,23 @@ log_unsupported_control_if_needed(const char* control_name, int rc) {
     if (rc == DSD_ERR_NOT_SUPPORTED) {
         LOG_NOTICE("%s unsupported by active radio backend.\n", control_name);
     }
+}
+
+static int
+apply_ppm_setting(int ppm_error) {
+    int rc = rtl_device_set_ppm(rtl_device_handle, ppm_error);
+    log_unsupported_control_if_needed("PPM correction control", rc);
+    return rc;
+}
+
+static inline int
+load_dongle_ppm_error(void) {
+    return dongle.ppm_error.load(std::memory_order_acquire);
+}
+
+static inline void
+store_dongle_ppm_error(int ppm_error) {
+    dongle.ppm_error.store(ppm_error, std::memory_order_release);
 }
 
 static inline int
@@ -1584,10 +1606,13 @@ optimal_settings(int freq, int rate) {
  * single, consistent path. Applies fs/4 shift when offset_tuning is off.
  *
  * @param center_freq_hz Desired RF center frequency in Hz.
+ * @param ppm_error PPM correction to apply alongside the reconfigure.
+ * @return Result from the PPM control apply attempt.
  */
-static void
-apply_capture_settings(uint32_t center_freq_hz) {
+static int
+apply_capture_settings(uint32_t center_freq_hz, int ppm_error) {
     optimal_settings((int)center_freq_hz, demod.rate_in);
+    int ppm_rc = apply_ppm_setting(ppm_error);
     rtl_device_set_frequency(rtl_device_handle, dongle.freq);
     rtl_device_set_sample_rate(rtl_device_handle, dongle.rate);
     /* Use driver auto hardware bandwidth by default, or override via env */
@@ -1614,6 +1639,26 @@ apply_capture_settings(uint32_t center_freq_hz) {
     }
     /* Ensure TED SPS reflects the current effective sampling rate unless explicitly overridden. */
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
+    return ppm_rc;
+}
+
+static int
+controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz, int ppm_error) {
+    if (!s || center_freq_hz == 0) {
+        return -1;
+    }
+    s->retune_in_progress.store(1, std::memory_order_release);
+    g_ring_purge_pending.store(1, std::memory_order_release);
+    int ppm_rc = apply_capture_settings(center_freq_hz, ppm_error);
+    if (ppm_rc == 0) {
+        store_dongle_ppm_error(ppm_error);
+    }
+    s->last_applied_freq_hz.store(center_freq_hz, std::memory_order_release);
+    rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
+    demod_reset_on_retune(&demod);
+    s->retune_in_progress.store(0, std::memory_order_release);
+    return ppm_rc;
 }
 
 /* Resampler and TED SPS helpers are implemented in rtl_demod_config.cpp. */
@@ -1726,28 +1771,25 @@ static DSD_THREAD_RETURN_TYPE
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Wait for a hop signal or a pending retune, with proper predicate guard */
         dsd_mutex_lock(&s->hop_m);
-        while (!s->manual_retune_pending.load() && !exitflag && !(g_stream && g_stream->should_exit.load())) {
+        while (!s->manual_retune_pending.load(std::memory_order_acquire)
+               && !s->ppm_change_pending.load(std::memory_order_acquire) && !exitflag
+               && !(g_stream && g_stream->should_exit.load())) {
             dsd_cond_wait(&s->hop, &s->hop_m);
         }
         dsd_mutex_unlock(&s->hop_m);
         if (exitflag || (g_stream && g_stream->should_exit.load())) {
             break;
         }
+        int ppm_pending = s->ppm_change_pending.exchange(0, std::memory_order_acq_rel);
+        int requested_ppm = s->pending_ppm_error.load(std::memory_order_acquire);
+        int current_ppm = load_dongle_ppm_error();
+        int ppm_changed = ppm_pending && (requested_ppm != current_ppm);
         /* Process marshalled manual retunes first */
-        if (s->manual_retune_pending.load()) {
+        if (s->manual_retune_pending.load(std::memory_order_acquire)) {
             uint32_t tgt = s->manual_retune_freq;
-            s->manual_retune_pending.store(0);
-            /* Gate demod thread: prevent processing transient samples during retune */
-            s->retune_in_progress.store(1, std::memory_order_release);
-            /* Ask consumer to purge ring safely (keeps SPSC producer/consumer contract). */
-            g_ring_purge_pending.store(1, std::memory_order_release);
-            apply_capture_settings((uint32_t)tgt);
-            s->last_applied_freq_hz.store((uint32_t)tgt, std::memory_order_release);
-            rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
-            rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
-            demod_reset_on_retune(&demod);
-            /* Retune complete: allow demod thread to resume processing */
-            s->retune_in_progress.store(0, std::memory_order_release);
+            s->manual_retune_pending.store(0, std::memory_order_release);
+            int target_ppm = ppm_changed ? requested_ppm : current_ppm;
+            int ppm_rc = controller_apply_reconfigure(s, (uint32_t)tgt, target_ppm);
             /* Signal completion to any waiting callers (e.g., dsd_rtl_stream_tune).
              * Increment the complete_id to match the request_id that was generated
              * when the tune was requested. This ensures waiters wake up only for
@@ -1757,24 +1799,28 @@ static DSD_THREAD_RETURN_TYPE
             dsd_cond_broadcast(&s->retune_done_cond);
             dsd_mutex_unlock(&s->retune_done_m);
             drain_output_on_retune();
-            LOG_INFO("Retune applied: %u Hz.\n", tgt);
+            if (ppm_changed && ppm_rc == 0) {
+                LOG_INFO("Retune applied: %u Hz (PPM=%d).\n", tgt, requested_ppm);
+            } else {
+                LOG_INFO("Retune applied: %u Hz.\n", tgt);
+            }
+            continue;
+        }
+        if (ppm_pending) {
+            if (ppm_changed) {
+                int ppm_rc = apply_ppm_setting(requested_ppm);
+                if (ppm_rc == 0) {
+                    store_dongle_ppm_error(requested_ppm);
+                    LOG_INFO("PPM correction applied: %d.\n", requested_ppm);
+                }
+            }
             continue;
         }
         if (s->freq_len <= 1) {
             continue;
         }
         s->freq_now = (s->freq_now + 1) % s->freq_len;
-        /* Gate demod thread: prevent processing transient samples during hop */
-        s->retune_in_progress.store(1, std::memory_order_release);
-        /* Flush any leftover IQ from the previous frequency before applying the new center. */
-        g_ring_purge_pending.store(1, std::memory_order_release);
-        apply_capture_settings((uint32_t)s->freqs[s->freq_now]);
-        s->last_applied_freq_hz.store((uint32_t)s->freqs[s->freq_now], std::memory_order_release);
-        rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
-        rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
-        demod_reset_on_retune(&demod);
-        /* Hop complete: allow demod thread to resume processing */
-        s->retune_in_progress.store(0, std::memory_order_release);
+        controller_apply_reconfigure(s, (uint32_t)s->freqs[s->freq_now], load_dongle_ppm_error());
         drain_output_on_retune();
     }
     DSD_THREAD_RETURN;
@@ -2174,6 +2220,7 @@ void
 dongle_init(struct dongle_state* s) {
     s->rate = rtl_dsp_bw_hz;
     s->gain = AUTO_GAIN; // tenths of a dB
+    s->ppm_error.store(0, std::memory_order_relaxed);
     s->mute = 0;
     s->direct_sampling = 0;
     s->offset_tuning = 0; //E4000 tuners only
@@ -2241,6 +2288,8 @@ controller_init(struct controller_state* s) {
     dsd_mutex_init(&s->hop_m);
     s->manual_retune_pending.store(0);
     s->manual_retune_freq = 0;
+    s->ppm_change_pending.store(0);
+    s->pending_ppm_error.store(0);
     s->cold_start_ready.store(0); /* Demod will wait for controller to signal ready */
     s->retune_in_progress.store(0);
     /* Initialize retune completion synchronization */
@@ -2298,8 +2347,7 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
         controller.freq_len++;
     }
     if (opts->rtlsdr_ppm_error != 0) {
-        dongle.ppm_error = opts->rtlsdr_ppm_error;
-        LOG_INFO("Setting RTL PPM Error Set to %d\n", opts->rtlsdr_ppm_error);
+        LOG_INFO("Requested RTL PPM Error Set to %d\n", opts->rtlsdr_ppm_error);
     }
     dongle.dev_index = opts->rtl_dev_index;
     LOG_INFO("Setting DSP baseband to %d Hz\n", rtl_dsp_bw_hz);
@@ -2345,6 +2393,19 @@ schedule_manual_retune(uint32_t target_freq_hz) {
     dsd_cond_signal(&controller.hop);
     dsd_mutex_unlock(&controller.hop_m);
     return request_id;
+}
+
+static void
+schedule_ppm_update(int ppm_error) {
+    dsd_mutex_lock(&controller.hop_m);
+    int pending = controller.ppm_change_pending.load(std::memory_order_acquire);
+    int pending_ppm = controller.pending_ppm_error.load(std::memory_order_acquire);
+    if (!pending || pending_ppm != ppm_error) {
+        controller.pending_ppm_error.store(ppm_error, std::memory_order_release);
+        controller.ppm_change_pending.store(1, std::memory_order_release);
+        dsd_cond_signal(&controller.hop);
+    }
+    dsd_mutex_unlock(&controller.hop_m);
 }
 
 /**
@@ -2399,7 +2460,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         return -1;
     }
 
-    g_auto_ppm_controller.reset(opts->rtlsdr_ppm_error, opts->rtlsdr_center_freq);
+    g_auto_ppm_controller.reset(load_dongle_ppm_error(), opts->rtlsdr_center_freq);
     g_auto_ppm_enabled.store(0, std::memory_order_relaxed);
     g_auto_ppm_locked.store(0, std::memory_order_relaxed);
     g_auto_ppm_training.store(0, std::memory_order_relaxed);
@@ -2738,8 +2799,12 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     }
 
     {
-        int rc = rtl_device_set_ppm(rtl_device_handle, dongle.ppm_error);
-        log_unsupported_control_if_needed("PPM correction control", rc);
+        int initial_ppm = opts->rtlsdr_ppm_error;
+        int ppm_rc = apply_ppm_setting(initial_ppm);
+        if (ppm_rc == 0) {
+            store_dongle_ppm_error(initial_ppm);
+        }
+        g_auto_ppm_controller.reset(load_dongle_ppm_error(), opts->rtlsdr_center_freq);
     }
 
     /* Prepare initial settings; controller thread will program the device. */
@@ -3138,6 +3203,7 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
     }
 
     int enabled = auto_ppm_effective_enabled(opts);
+    int applied_ppm = load_dongle_ppm_error();
     uint64_t now_ms = auto_ppm_now_ms();
     uint32_t applied_freq_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     double spec_snr_db = g_spec_snr_db.load(std::memory_order_relaxed);
@@ -3155,7 +3221,11 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
     dsd::io::radio::RtlAutoPpmInputs inputs = {};
     inputs.now_ms = now_ms;
     inputs.enabled = enabled;
-    inputs.current_ppm = opts->rtlsdr_ppm_error;
+    /* Auto-PPM must train against the correction the tuner has actually
+     * applied, not a queued request that may still be waiting on the
+     * controller thread. */
+    inputs.current_ppm = applied_ppm;
+    inputs.requested_ppm = opts->rtlsdr_ppm_error;
     inputs.tuned_freq_hz = applied_freq_hz;
     inputs.signal_power_db = g_spec_peak_db.load(std::memory_order_relaxed);
     inputs.gate_snr_db = auto_ppm_pick_demod_snr_db(now_ms);
@@ -3167,7 +3237,7 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
     if (update.apply_ppm) {
         LOG_INFO("AUTO-PPM: src=%d pwr=%.1f dB snr=%.1f dB df=%.1f Hz ppm %d->%d\n",
                  static_cast<int>(inputs.estimate.source), inputs.signal_power_db, update.snr_db, update.df_hz,
-                 opts->rtlsdr_ppm_error, update.new_ppm);
+                 applied_ppm, update.new_ppm);
         opts->rtlsdr_ppm_error = update.new_ppm;
     }
 }
@@ -3199,9 +3269,8 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
     auto_ppm_maybe_adjust(opts);
 
     /* If PPM Error is Manually Changed, change it here once per batch */
-    if (opts->rtlsdr_ppm_error != dongle.ppm_error) {
-        dongle.ppm_error = opts->rtlsdr_ppm_error;
-        rtl_device_set_ppm(rtl_device_handle, dongle.ppm_error);
+    if (opts->rtlsdr_ppm_error != load_dongle_ppm_error()) {
+        schedule_ppm_update(opts->rtlsdr_ppm_error);
     }
 
     int got = ring_read_batch(&output, out, count);
