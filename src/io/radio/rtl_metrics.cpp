@@ -12,6 +12,7 @@
  * the UI and protocol code.
  */
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <dsd-neo/dsp/demod_state.h>
@@ -25,9 +26,12 @@ float g_spec_db[kSpecMaxN];
 std::atomic<int> g_spec_rate_hz{0};
 std::atomic<int> g_spec_ready{0};
 std::atomic<int> g_spec_N{256}; /* default N */
+std::atomic<double> g_spec_peak_db{-100.0};
+std::atomic<double> g_spec_snr_db{-100.0};
 /* Carrier diagnostics (updated alongside spectrum) */
 static std::atomic<double> g_cfo_nco_hz{0.0};
 static std::atomic<double> g_resid_cfo_spec_hz{0.0};
+std::atomic<double> g_resid_cfo_phase_hz{0.0};
 static std::atomic<int> g_carrier_lock{0};
 static std::atomic<int> g_nco_q15{0};
 static std::atomic<int> g_demod_rate_hz{0};
@@ -45,7 +49,7 @@ extern std::atomic<double> g_snr_gfsk_db;
 /* Supervisory tuner autogain gate (0/1), controlled via env/UI. */
 std::atomic<int> g_tuner_autogain_on{0};
 
-/* Auto-PPM status (spectrum-based). */
+/* Auto-PPM status. */
 std::atomic<int> g_auto_ppm_enabled{0};
 /* User override for auto-PPM: -1 = follow env/opts; 0 = force off; 1 = force on. */
 std::atomic<int> g_auto_ppm_user_en{-1};
@@ -128,6 +132,28 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
         z[(n << 1) + 0] = w * (static_cast<float>(I) - meanI);
         z[(n << 1) + 1] = w * (static_cast<float>(Q) - meanQ);
     }
+    double phase_cfo_hz = 0.0;
+    if (take >= 2 && out_rate_hz > 0) {
+        double acc_re = 0.0;
+        double acc_im = 0.0;
+        float prevI = iq_interleaved[(start << 1) + 0] - meanI;
+        float prevQ = iq_interleaved[(start << 1) + 1] - meanQ;
+        for (int n = 1; n < take; n++) {
+            int idx = start + n;
+            float I = iq_interleaved[(size_t)(idx << 1) + 0] - meanI;
+            float Q = iq_interleaved[(size_t)(idx << 1) + 1] - meanQ;
+            acc_re += static_cast<double>(prevI) * static_cast<double>(I)
+                      + static_cast<double>(prevQ) * static_cast<double>(Q);
+            acc_im += static_cast<double>(prevI) * static_cast<double>(Q)
+                      - static_cast<double>(prevQ) * static_cast<double>(I);
+            prevI = I;
+            prevQ = Q;
+        }
+        if (fabs(acc_re) > 1e-9 || fabs(acc_im) > 1e-9) {
+            phase_cfo_hz = atan2(acc_im, acc_re) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
+        }
+    }
+    g_resid_cfo_phase_hz.store(phase_cfo_hz, std::memory_order_relaxed);
     auto update_spectrum = [&](auto&& re_at, auto&& im_at) {
         const float eps = 1e-12f;
         const bool first = (g_spec_ready.load(std::memory_order_relaxed) == 0);
@@ -156,16 +182,53 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
         pffft_transform_ordered(setup, z, z, nullptr, PFFFT_FORWARD);
         update_spectrum([&](int idx) { return z[(idx << 1) + 0]; }, [&](int idx) { return z[(idx << 1) + 1]; });
     }
-    /* Compute residual CFO from spectrum peak around DC using quadratic interp. */
-    int i_max = 0;
-    float p_max = -1e30f;
-    for (int k = 0; k < N; k++) {
+    /* Compute peak/noise metrics and residual CFO from the strongest bin near DC. */
+    int k_center_i = N >> 1;
+    int W = N >> 2;
+    if (W < 8) {
+        W = 8;
+    }
+    int i_lo = k_center_i - W;
+    int i_hi = k_center_i + W;
+    if (i_lo < 2) {
+        i_lo = 2;
+    }
+    if (i_hi > N - 3) {
+        i_hi = N - 3;
+    }
+    int i_max = i_lo;
+    float p_max = g_spec_db[i_lo];
+    for (int k = i_lo + 1; k <= i_hi; k++) {
         float v = g_spec_db[k];
         if (v > p_max) {
             p_max = v;
             i_max = k;
         }
     }
+    alignas(16) float noise_bins[kSpecMaxN];
+    int noise_count = 0;
+    for (int k = i_lo; k <= i_hi; k++) {
+        if (k >= i_max - 2 && k <= i_max + 2) {
+            continue;
+        }
+        noise_bins[noise_count++] = g_spec_db[k];
+    }
+    float spec_snr_db = -100.0f;
+    if (noise_count >= 16) {
+        int mid = noise_count / 2;
+        std::nth_element(noise_bins, noise_bins + mid, noise_bins + noise_count);
+        spec_snr_db = p_max - noise_bins[mid];
+    }
+    if (i_max == k_center_i) {
+        float l = g_spec_db[i_max - 1];
+        float r = g_spec_db[i_max + 1];
+        float side_max = (l > r) ? l : r;
+        if ((p_max - side_max) > 12.0f) {
+            spec_snr_db = -100.0f;
+        }
+    }
+    g_spec_peak_db.store(p_max, std::memory_order_relaxed);
+    g_spec_snr_db.store(spec_snr_db, std::memory_order_relaxed);
     double df_spec_hz = 0.0;
     if (N >= 3 && i_max > 0 && i_max + 1 < N) {
         double p1 = g_spec_db[i_max - 1];
@@ -550,7 +613,7 @@ dsd_rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, 
     return 0;
 }
 
-/** @brief Return 1 if the spectrum-based auto-PPM training window is active. */
+/** @brief Return 1 if auto-PPM training is active. */
 int
 dsd_rtl_stream_auto_ppm_training_active(void) {
     return g_auto_ppm_training.load(std::memory_order_relaxed) ? 1 : 0;

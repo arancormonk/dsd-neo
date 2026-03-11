@@ -53,6 +53,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "rtl_auto_ppm.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -223,6 +224,7 @@ struct controller_state controller;
 static struct input_ring_state input_ring;
 /* Controller can request a ring purge; consumer/demod performs the discard safely. */
 static std::atomic<int> g_ring_purge_pending{0};
+static dsd::io::radio::RtlAutoPpmController g_auto_ppm_controller;
 
 struct RtlSdrInternals {
     struct rtl_device* device;
@@ -809,6 +811,9 @@ dsd_rtl_stream_get_snr_bias_evm(void) {
 
 /* Fwd decl: spectrum snapshot getter used for spectral SNR gating */
 extern "C" int dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
+extern "C" double dsd_rtl_stream_get_cfo_hz(void);
+extern "C" double dsd_rtl_stream_get_residual_cfo_hz(void);
+extern "C" int dsd_rtl_stream_get_carrier_lock(void);
 /* Tuner autogain runtime get/set (implemented in rtl_sdr_fm.cpp) */
 extern "C" int dsd_rtl_stream_get_tuner_autogain(void);
 extern "C" void dsd_rtl_stream_set_tuner_autogain(int onoff);
@@ -2140,7 +2145,7 @@ dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
     return 10.0 * log10(sig_var / noise_var) - bias;
 }
 
-/* Auto-PPM status (spectrum-based) is implemented in rtl_metrics.cpp. */
+/* Auto-PPM status is implemented in rtl_metrics.cpp. */
 extern std::atomic<int> g_auto_ppm_enabled;
 extern std::atomic<int> g_auto_ppm_user_en;
 extern std::atomic<int> g_auto_ppm_locked;
@@ -2153,6 +2158,9 @@ extern std::atomic<double> g_auto_ppm_df_hz;
 extern std::atomic<double> g_auto_ppm_est_ppm;
 extern std::atomic<int> g_auto_ppm_last_dir;
 extern std::atomic<int> g_auto_ppm_cooldown;
+extern std::atomic<double> g_spec_peak_db;
+extern std::atomic<double> g_spec_snr_db;
+extern std::atomic<double> g_resid_cfo_phase_hz;
 
 /* Spectrum, carrier diagnostics, tuner autogain, and auto-PPM metrics
  * exports are implemented in rtl_metrics.cpp. */
@@ -2390,6 +2398,19 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         LOG_ERROR("RTL stream open: missing opts\n");
         return -1;
     }
+
+    g_auto_ppm_controller.reset(opts->rtlsdr_ppm_error, opts->rtlsdr_center_freq);
+    g_auto_ppm_enabled.store(0, std::memory_order_relaxed);
+    g_auto_ppm_locked.store(0, std::memory_order_relaxed);
+    g_auto_ppm_training.store(0, std::memory_order_relaxed);
+    g_auto_ppm_lock_ppm.store(0, std::memory_order_relaxed);
+    g_auto_ppm_lock_snr_db.store(-100.0, std::memory_order_relaxed);
+    g_auto_ppm_lock_df_hz.store(0.0, std::memory_order_relaxed);
+    g_auto_ppm_snr_db.store(-100.0, std::memory_order_relaxed);
+    g_auto_ppm_df_hz.store(0.0, std::memory_order_relaxed);
+    g_auto_ppm_est_ppm.store(0.0, std::memory_order_relaxed);
+    g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
+    g_auto_ppm_cooldown.store(0, std::memory_order_relaxed);
 
     struct {
         int use;
@@ -3015,6 +3036,131 @@ dsd_rtl_stream_soft_stop(void) {
     return 0;
 }
 
+static uint64_t
+auto_ppm_now_ms(void) {
+    auto now = std::chrono::steady_clock::now();
+    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+}
+
+static double
+auto_ppm_pick_demod_snr_db(uint64_t now_ms) {
+    const long long fresh_ms = 800;
+    double gate_snr_db = -100.0;
+
+    long long c4_ms = g_snr_c4fm_last_ms.load(std::memory_order_relaxed);
+    int c4_src = g_snr_c4fm_src.load(std::memory_order_relaxed);
+    if (c4_src == 1 && (long long)now_ms - c4_ms <= fresh_ms) {
+        gate_snr_db = g_snr_c4fm_db.load(std::memory_order_relaxed);
+    }
+
+    long long qp_ms = g_snr_qpsk_last_ms.load(std::memory_order_relaxed);
+    int qp_src = g_snr_qpsk_src.load(std::memory_order_relaxed);
+    if (qp_src == 1 && (long long)now_ms - qp_ms <= fresh_ms) {
+        double snr = g_snr_qpsk_db.load(std::memory_order_relaxed);
+        if (snr > gate_snr_db) {
+            gate_snr_db = snr;
+        }
+    }
+
+    long long gf_ms = g_snr_gfsk_last_ms.load(std::memory_order_relaxed);
+    int gf_src = g_snr_gfsk_src.load(std::memory_order_relaxed);
+    if (gf_src == 1 && (long long)now_ms - gf_ms <= fresh_ms) {
+        double snr = g_snr_gfsk_db.load(std::memory_order_relaxed);
+        if (snr > gate_snr_db) {
+            gate_snr_db = snr;
+        }
+    }
+
+    return gate_snr_db;
+}
+
+static int
+auto_ppm_effective_enabled(const dsd_opts* opts) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int enabled = (cfg && cfg->auto_ppm_enable) ? 1 : 0;
+    int user = g_auto_ppm_user_en.load(std::memory_order_relaxed);
+    if (user == 0) {
+        return 0;
+    }
+    if (user == 1) {
+        return 1;
+    }
+    if (opts && opts->rtl_auto_ppm) {
+        return 1;
+    }
+    return enabled;
+}
+
+static dsd::io::radio::RtlAutoPpmConfig
+auto_ppm_make_config(const dsd_opts* opts) {
+    dsd::io::radio::RtlAutoPpmConfig config = {};
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (cfg) {
+        config.min_snr_db = cfg->auto_ppm_snr_db;
+        config.min_power_db = cfg->auto_ppm_pwr_db;
+        config.zero_lock_ppm = cfg->auto_ppm_zerolock_ppm;
+        config.zero_lock_hz = static_cast<double>(cfg->auto_ppm_zerolock_hz);
+    }
+    if (opts && opts->rtl_auto_ppm_snr_db > 0.0f && opts->rtl_auto_ppm_snr_db <= 60.0f) {
+        config.min_snr_db = static_cast<double>(opts->rtl_auto_ppm_snr_db);
+    }
+    return config;
+}
+
+static void
+auto_ppm_publish_status(int enabled, const dsd::io::radio::RtlAutoPpmUpdate& update) {
+    g_auto_ppm_enabled.store(enabled, std::memory_order_relaxed);
+    g_auto_ppm_snr_db.store(update.snr_db, std::memory_order_relaxed);
+    g_auto_ppm_df_hz.store(update.df_hz, std::memory_order_relaxed);
+    g_auto_ppm_est_ppm.store(update.est_ppm, std::memory_order_relaxed);
+    g_auto_ppm_last_dir.store(update.last_dir, std::memory_order_relaxed);
+    g_auto_ppm_cooldown.store(update.cooldown_ticks, std::memory_order_relaxed);
+    g_auto_ppm_training.store(update.training, std::memory_order_relaxed);
+    g_auto_ppm_locked.store(update.locked, std::memory_order_relaxed);
+    g_auto_ppm_lock_ppm.store(update.lock_ppm, std::memory_order_relaxed);
+    g_auto_ppm_lock_snr_db.store(update.lock_snr_db, std::memory_order_relaxed);
+    g_auto_ppm_lock_df_hz.store(update.lock_df_hz, std::memory_order_relaxed);
+}
+
+static void
+auto_ppm_maybe_adjust(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+
+    int enabled = auto_ppm_effective_enabled(opts);
+    uint64_t now_ms = auto_ppm_now_ms();
+    uint32_t applied_freq_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    double spec_snr_db = g_spec_snr_db.load(std::memory_order_relaxed);
+
+    dsd::io::radio::RtlAutoPpmSignalMetrics metrics = {};
+    metrics.cqpsk_enable = demod.cqpsk_enable ? 1 : 0;
+    metrics.carrier_lock = dsd_rtl_stream_get_carrier_lock();
+    metrics.spectrum_valid = (spec_snr_db > -99.0) ? 1 : 0;
+    metrics.nco_cfo_hz = dsd_rtl_stream_get_cfo_hz();
+    metrics.phase_cfo_hz = g_resid_cfo_phase_hz.load(std::memory_order_relaxed);
+    metrics.spectrum_cfo_hz = dsd_rtl_stream_get_residual_cfo_hz();
+
+    dsd::io::radio::RtlAutoPpmInputs inputs = {};
+    inputs.now_ms = now_ms;
+    inputs.enabled = enabled;
+    inputs.current_ppm = opts->rtlsdr_ppm_error;
+    inputs.tuned_freq_hz = applied_freq_hz;
+    inputs.signal_power_db = g_spec_peak_db.load(std::memory_order_relaxed);
+    inputs.gate_snr_db = auto_ppm_pick_demod_snr_db(now_ms);
+    inputs.spec_snr_db = spec_snr_db;
+    inputs.estimate = dsd::io::radio::rtl_auto_ppm_select_estimate(metrics);
+
+    dsd::io::radio::RtlAutoPpmUpdate update = g_auto_ppm_controller.update(auto_ppm_make_config(opts), inputs);
+    auto_ppm_publish_status(enabled, update);
+    if (update.apply_ppm) {
+        LOG_INFO("AUTO-PPM: src=%d pwr=%.1f dB snr=%.1f dB df=%.1f Hz ppm %d->%d\n",
+                 static_cast<int>(inputs.estimate.source), inputs.signal_power_db, update.snr_db, update.df_hz,
+                 opts->rtlsdr_ppm_error, update.new_ppm);
+        opts->rtlsdr_ppm_error = update.new_ppm;
+    }
+}
+
 /**
  * @brief Batched consumer API: read up to count samples with fewer wakeups/locks.
  * Applies volume scaling.
@@ -3039,415 +3185,7 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
         return -1;
     }
 
-    /* Optional: spectrum-based auto PPM correction (opt-in via DSD_NEO_AUTO_PPM).
-       Uses quadratic interpolation of the spectrum peak (industry practice)
-        and a simple SNR gate. When SNR >= 6 dB, nudge PPM by +/-1 toward center. */
-    do {
-        static int init = 0;
-        static int enabled = 0;
-        /* minimum SNR to trigger (kept for env/opt parsing below) */
-        static double snr_thr_db = 6.0;
-        static int cooldown = 0; /* simple rate limiter (loops) */
-        if (!init) {
-            init = 1;
-            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-            enabled = (cfg && cfg->auto_ppm_enable) ? 1 : 0;
-            if (cfg) {
-                snr_thr_db = cfg->auto_ppm_snr_db;
-            }
-            if (opts && opts->rtl_auto_ppm_snr_db > 0.0f && opts->rtl_auto_ppm_snr_db <= 60.0f) {
-                snr_thr_db = (double)opts->rtl_auto_ppm_snr_db;
-            }
-        }
-        /* Allow CLI/opts to enable even if env unset */
-        /* Runtime user override takes precedence; otherwise follow opts */
-        {
-            int u = g_auto_ppm_user_en.load(std::memory_order_relaxed);
-            if (u == 0) {
-                enabled = 0;
-            } else if (u == 1) {
-                enabled = 1;
-            } else {
-                if (opts) {
-                    enabled = (opts->rtl_auto_ppm != 0) ? 1 : 0;
-                }
-            }
-        }
-        g_auto_ppm_enabled.store(enabled, std::memory_order_relaxed);
-        if (!g_auto_ppm_locked.load(std::memory_order_relaxed) && enabled) {
-            /* Initialize training window once on first entry */
-            static int train_init = 0;
-            static std::chrono::steady_clock::time_point t0;
-            if (!train_init) {
-                t0 = std::chrono::steady_clock::now();
-                train_init = 1;
-            }
-        }
-        if (!enabled) {
-            g_auto_ppm_training.store(0, std::memory_order_relaxed);
-            break;
-        }
-        if (g_auto_ppm_locked.load(std::memory_order_relaxed)) {
-            g_auto_ppm_training.store(0, std::memory_order_relaxed);
-            /* Locked: do not adjust further */
-            break;
-        }
-        if (cooldown > 0) {
-            cooldown--;
-            g_auto_ppm_cooldown.store(cooldown, std::memory_order_relaxed);
-            break;
-        }
-        /* Snapshot current spectrum via helper */
-        static float spec_copy[1024];
-        int rate = 0;
-        int N = dsd_rtl_stream_spectrum_get(spec_copy, (int)(sizeof(spec_copy) / sizeof(spec_copy[0])), &rate);
-        if (N <= 0 || rate <= 0) {
-            g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
-            break;
-        }
-        /* Find strongest bin near DC primarily: widen search to +/- N/4 of center
-           to tolerate larger initial frequency errors. */
-        int k_center_i = N >> 1;
-        int W = N >> 2; /* N/4 */
-        if (W < 8) {
-            W = 8;
-        }
-        int i_lo = k_center_i - W;
-        int i_hi = k_center_i + W;
-        if (i_lo < 2) {
-            i_lo = 2;
-        }
-        if (i_hi > N - 3) {
-            i_hi = N - 3;
-        }
-        int i_max = i_lo;
-        float p_max = spec_copy[i_lo];
-        for (int i = i_lo + 1; i <= i_hi; i++) {
-            if (spec_copy[i] > p_max) {
-                p_max = spec_copy[i];
-                i_max = i;
-            }
-        }
-        /* Estimate noise floor via median of bins excluding +-2 around peak */
-        static float tmp[1024];
-        int m = 0;
-        for (int i = i_lo; i < i_hi; i++) {
-            if (i >= i_max - 2 && i <= i_max + 2) {
-                continue;
-            }
-            tmp[m++] = spec_copy[i];
-        }
-        if (m < 16) {
-            g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
-            break;
-        }
-        /* Require recent direct demod SNR for gating; also compute spectral SNR */
-        int mid = m / 2; /* still compute median to keep spectrum path consistent */
-        std::nth_element(tmp, tmp + mid, tmp + m);
-        float noise_med_db = tmp[mid];
-        float spec_snr_db = p_max - noise_med_db;
-        auto nowtp = std::chrono::steady_clock::now();
-        long long nowms = std::chrono::duration_cast<std::chrono::milliseconds>(nowtp.time_since_epoch()).count();
-        const long long fresh_ms = 800; /* direct SNR must be updated within 0.8 s */
-        long long c4_ms = g_snr_c4fm_last_ms.load(std::memory_order_relaxed);
-        int c4_src = g_snr_c4fm_src.load(std::memory_order_relaxed);
-        long long qp_ms = g_snr_qpsk_last_ms.load(std::memory_order_relaxed);
-        int qp_src = g_snr_qpsk_src.load(std::memory_order_relaxed);
-        long long gf_ms = g_snr_gfsk_last_ms.load(std::memory_order_relaxed);
-        int gf_src = g_snr_gfsk_src.load(std::memory_order_relaxed);
-        double d_c4 = g_snr_c4fm_db.load(std::memory_order_relaxed);
-        double d_qp = g_snr_qpsk_db.load(std::memory_order_relaxed);
-        double d_gf = g_snr_gfsk_db.load(std::memory_order_relaxed);
-        bool c4_ok = (c4_src == 1) && (nowms - c4_ms <= fresh_ms);
-        bool qp_ok = (qp_src == 1) && (nowms - qp_ms <= fresh_ms);
-        bool gf_ok = (gf_src == 1) && (nowms - gf_ms <= fresh_ms);
-        bool have_demod = c4_ok || qp_ok || gf_ok; /* currently unused for gating */
-        (void)have_demod;
-        double gate_snr_db = -100.0;
-        if (c4_ok) {
-            gate_snr_db = d_c4;
-        }
-        if (qp_ok && d_qp > gate_snr_db) {
-            gate_snr_db = d_qp;
-        }
-        if (gf_ok && d_gf > gate_snr_db) {
-            gate_snr_db = d_gf;
-        }
-        /* Store spectral SNR for UI */
-        g_auto_ppm_snr_db.store(spec_snr_db, std::memory_order_relaxed);
-        /* Debounce absolute power (peak dB) to avoid brief spikes */
-        static double pwr_thr_db = -80.0;
-        static int pwr_thr_inited = 0;
-        if (!pwr_thr_inited) {
-            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-            if (cfg) {
-                pwr_thr_db = cfg->auto_ppm_pwr_db;
-            }
-            pwr_thr_inited = 1;
-        }
-        static int pwr_gate_active = 0;
-        static auto pwr_gate_since = std::chrono::steady_clock::now();
-        const int pwr_gate_debounce_ms = 2000; /* require 2s continuously above threshold */
-        auto now_gate = std::chrono::steady_clock::now();
-        bool pwr_over = (p_max >= (float)pwr_thr_db);
-        if (pwr_over) {
-            if (!pwr_gate_active) {
-                pwr_gate_active = 1;
-                pwr_gate_since = now_gate;
-            }
-        } else {
-            pwr_gate_active = 0;
-        }
-        bool pwr_debounced =
-            pwr_gate_active
-            && (std::chrono::duration_cast<std::chrono::milliseconds>(now_gate - pwr_gate_since).count()
-                >= pwr_gate_debounce_ms);
-        /* Also require spectral SNR above threshold; reuse parsed env/opt value */
-        double spec_thr_db = snr_thr_db;
-        if (!pwr_debounced || spec_snr_db < spec_thr_db) {
-            g_auto_ppm_training.store(0, std::memory_order_relaxed);
-            g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
-            break; /* below thresholds */
-        }
-        /* DC spur guard: if max is exactly the center bin and looks spur-like, ignore */
-        if (i_max == k_center_i) {
-            float l = spec_copy[i_max - 1];
-            float r = spec_copy[i_max + 1];
-            float side_max = (l > r) ? l : r;
-            if ((p_max - side_max) > 12.0f) {
-                /* sharp isolated spike at DC: likely residual DC spur */
-                g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
-                break;
-            }
-        }
-        /* Parabolic interpolation around peak using log-power (dB) */
-        int k = i_max;
-        if (k <= 1 || k >= N - 2) {
-            g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
-            break;
-        }
-        double p1 = spec_copy[k - 1];
-        double p2 = spec_copy[k + 0];
-        double p3 = spec_copy[k + 1];
-        double denom = (p1 - 2.0 * p2 + p3);
-        double delta = 0.0; /* fractional bin offset in [-1,1] */
-        if (fabs(denom) > 1e-6) {
-            delta = 0.5 * (p1 - p3) / denom;
-            if (delta > 1.0) {
-                delta = 1.0;
-            }
-            if (delta < -1.0) {
-                delta = -1.0;
-            }
-        }
-        double k_hat = (double)k + delta;
-        double k_center = 0.5 * (double)N; /* DC after shift */
-        double k_err = k_hat - k_center;
-        double bin_hz = (double)rate / (double)N;
-        double df_hz = k_err * bin_hz; /* positive: signal to + side */
-        g_auto_ppm_df_hz.store(df_hz, std::memory_order_relaxed);
-        /* Convert to ppm relative to current tuned hardware center */
-        double f0 = (double)dongle.freq;
-        if (f0 <= 0.0) {
-            g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
-            break;
-        }
-        double est_ppm = (df_hz * 1e6) / f0;
-        g_auto_ppm_est_ppm.store(est_ppm, std::memory_order_relaxed);
-        /* Nudge by 1 ppm toward center with persistence, throttle, and direction self-calibration */
-        static int dir_run = 0; /* -1,0,+1 (consensus of successive decisions) */
-        static int run_len = 0; /* consecutive consistent decisions */
-        static auto next_allowed = std::chrono::steady_clock::now();
-        static int dir_calibrated = 0;          /* 0=unknown; +/-1 = mapping sign */
-        static int awaiting_eval = 0;           /* 1 if last step pending evaluation */
-        static int last_dir_applied = 0;        /* +/-1 for last applied change */
-        static int last_ppm_after = 0;          /* ppm value after last applied change */
-        static int last_step_size = 1;          /* ppm step size used for last change */
-        static double prev_abs_df = 1e12;       /* |df| before last applied change */
-        static double prev_demod_snr_db = -1e9; /* demod SNR at last step */
-        /* Training + lock policy */
-        static auto train_start = std::chrono::steady_clock::now();
-        static int train_started = 0;
-        static int train_steps = 0;
-        const int train_max_ms = 15000;             /* train for up to 15 seconds */
-        const int train_max_steps = 8;              /* or up to 8 steps */
-        const int lock_hold_ms = 3000;              /* lock if stable for 3 seconds */
-        static double lock_deadband_hz = 120.0;     /* and within 120 Hz window */
-        static double zero_lock_deadband_hz = 60.0; /* tighter window for zero-step lock */
-        /* Only allow zero-step lock when estimated offset is very small. This
-           prevents premature lock at 0 when a meaningful offset remains. */
-        static double zero_lock_max_est_ppm = 0.6; /* require |est_ppm| <= 0.6 */
-        /* One-time config overrides for lock thresholds */
-        static int zero_thr_inited = 0;
-        if (!zero_thr_inited) {
-            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-            if (cfg) {
-                zero_lock_max_est_ppm = cfg->auto_ppm_zerolock_ppm;
-                zero_lock_deadband_hz = (double)cfg->auto_ppm_zerolock_hz;
-            }
-            zero_thr_inited = 1;
-        }
-
-        const int hold_needed = 4;             /* require 4 consistent decisions */
-        const int throttle_ms = 1000;          /* at most 1 adjustment per 1s */
-        const double deadband_ppm = 0.8;       /* ignore tiny offsets */
-        const int ppm_limit = 200;             /* clamp absolute ppm range */
-        const double eval_margin_hz = 120;     /* require ~>1/4-bin improvement to accept direction */
-        const double eval_snr_margin_db = 0.5; /* prefer direction that improves demod SNR by >=0.5 dB */
-
-        /* If evaluating last step, prefer demod SNR change; fallback to |df| change */
-        if (awaiting_eval) {
-            double cur_abs_df = fabs(df_hz);
-            auto now = std::chrono::steady_clock::now();
-            bool time_ok = (now >= next_allowed); /* wait full throttle interval for stable measurement */
-            if (time_ok) {
-                bool snr_improved = (gate_snr_db > (prev_demod_snr_db + eval_snr_margin_db));
-                bool snr_worsened = (gate_snr_db + eval_snr_margin_db < prev_demod_snr_db);
-                bool accept = snr_improved || (!snr_worsened && (cur_abs_df + eval_margin_hz < prev_abs_df));
-                bool flip = snr_worsened || (cur_abs_df > prev_abs_df + eval_margin_hz);
-                if (accept) {
-                    dir_calibrated = last_dir_applied;
-                    awaiting_eval = 0;
-                } else if (flip) {
-                    int target_ppm = last_ppm_after - 2 * last_dir_applied * last_step_size;
-                    if (target_ppm > ppm_limit) {
-                        target_ppm = ppm_limit;
-                    }
-                    if (target_ppm < -ppm_limit) {
-                        target_ppm = -ppm_limit;
-                    }
-                    if (target_ppm != opts->rtlsdr_ppm_error) {
-                        opts->rtlsdr_ppm_error = target_ppm;
-                        if (snr_worsened) {
-                            LOG_INFO("AUTO-PPM(spectrum): flip dir (SNR %.1f->%.1f dB). ppm->%d\n", prev_demod_snr_db,
-                                     gate_snr_db, target_ppm);
-                        } else {
-                            LOG_INFO("AUTO-PPM(spectrum): flip dir (|df| %.1f->%.1f Hz). ppm->%d\n", prev_abs_df,
-                                     cur_abs_df, target_ppm);
-                        }
-                    }
-                    dir_calibrated = -last_dir_applied;
-                    awaiting_eval = 0;
-                    next_allowed = now + std::chrono::milliseconds(throttle_ms);
-                    g_auto_ppm_cooldown.store(throttle_ms / 10, std::memory_order_relaxed);
-                } else {
-                    /* Inconclusive: extend wait window a bit */
-                    next_allowed = now + std::chrono::milliseconds(250);
-                }
-            }
-        }
-
-        int dir_base = 0;
-        if (est_ppm > deadband_ppm) {
-            dir_base = +1;
-        } else if (est_ppm < -deadband_ppm) {
-            dir_base = -1;
-        }
-        /* Apply mapping sign when calibrated */
-        int dir = (dir_calibrated == 0) ? dir_base : (dir_base * dir_calibrated);
-        /* Fast catch-up: choose step size based on estimated absolute ppm */
-        int step_size = 1;
-        double abs_est_ppm = fabs(est_ppm);
-        if (abs_est_ppm >= 50.0) {
-            step_size = 8;
-        } else if (abs_est_ppm >= 25.0) {
-            step_size = 4;
-        } else if (abs_est_ppm >= 12.0) {
-            step_size = 2;
-        }
-        if (dir == 0) {
-            dir_run = 0;
-            run_len = 0;
-        } else {
-            if (dir == dir_run) {
-                run_len++;
-            } else {
-                dir_run = dir;
-                run_len = 1;
-            }
-        }
-
-        g_auto_ppm_last_dir.store(dir, std::memory_order_relaxed);
-
-        auto now = std::chrono::steady_clock::now();
-        bool time_ok = (now >= next_allowed);
-        int effective_hold = (step_size > 1) ? (hold_needed / 2) : hold_needed;
-        if (effective_hold < 1) {
-            effective_hold = 1;
-        }
-        if (!awaiting_eval && dir != 0 && run_len >= effective_hold && time_ok) {
-            int new_ppm = opts->rtlsdr_ppm_error + dir * step_size; /* variable step size */
-            if (new_ppm > ppm_limit) {
-                new_ppm = ppm_limit;
-            }
-            if (new_ppm < -ppm_limit) {
-                new_ppm = -ppm_limit;
-            }
-            if (new_ppm != opts->rtlsdr_ppm_error) {
-                prev_abs_df = fabs(df_hz);
-                prev_demod_snr_db = gate_snr_db;
-                opts->rtlsdr_ppm_error = new_ppm;
-                last_dir_applied = dir;
-                last_ppm_after = new_ppm;
-                last_step_size = step_size;
-                awaiting_eval = 1; /* evaluate on next allowed window */
-                next_allowed = now + std::chrono::milliseconds(throttle_ms);
-                g_auto_ppm_cooldown.store(throttle_ms / 10, std::memory_order_relaxed);
-                LOG_INFO("AUTO-PPM(spectrum): PWR=%.1f dB, SNR=%.1f dB, df=%.1f Hz, dir=%+d, step=%d, ppm->%d\n", p_max,
-                         gate_snr_db, df_hz, dir, step_size, new_ppm);
-                if (!train_started) {
-                    train_started = 1;
-                    train_start = now;
-                }
-                train_steps++;
-            }
-            run_len = 0; /* require persistence again */
-        }
-
-        /* Evaluate lock conditions: duration, step count, or stability window */
-        auto now2 = std::chrono::steady_clock::now();
-        if (!train_started) {
-            /* Start the training window only after gate debounce is satisfied */
-            if (pwr_debounced) {
-                train_started = 1;
-                train_start = now2;
-            }
-        } else {
-            int elapsed_ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now2 - train_start).count();
-            bool time_over = (elapsed_ms >= train_max_ms);
-            bool steps_over = (train_steps >= train_max_steps);
-            static auto last_change = std::chrono::steady_clock::now();
-            if (awaiting_eval == 0 && run_len == 0 && dir == 0) {
-                /* if not changing, update stability timer */
-                /* we keep last_change unless a step occurs (handled above) */
-            } else if (awaiting_eval == 0 && last_dir_applied != 0) {
-                last_change = now2;
-            }
-            int since_change_ms =
-                (int)std::chrono::duration_cast<std::chrono::milliseconds>(now2 - last_change).count();
-            bool stable_ok = (since_change_ms >= lock_hold_ms && fabs(df_hz) <= lock_deadband_hz);
-            /* Allow lock without steps only when df is stably near zero and
-               the estimated offset is tiny (avoid false zero locks). */
-            bool significant_offset = (fabs(est_ppm) > deadband_ppm);
-            bool stable_zero_ok = (train_steps == 0) && stable_ok && (fabs(df_hz) <= zero_lock_deadband_hz)
-                                  && (!significant_offset) && (fabs(est_ppm) <= zero_lock_max_est_ppm);
-            /* Lock if: lots of steps, or (>=1 step and time/stability satisfied), or (permissible zero-step lock) */
-            bool can_lock = steps_over || ((train_steps >= 1) && (time_over || stable_ok)) || stable_zero_ok;
-            if (can_lock) {
-                g_auto_ppm_locked.store(1, std::memory_order_relaxed);
-                g_auto_ppm_training.store(0, std::memory_order_relaxed);
-                g_auto_ppm_lock_ppm.store(opts->rtlsdr_ppm_error, std::memory_order_relaxed);
-                /* Store peak power at lock for UI */
-                g_auto_ppm_lock_snr_db.store(p_max, std::memory_order_relaxed);
-                g_auto_ppm_lock_df_hz.store(df_hz, std::memory_order_relaxed);
-                LOG_INFO("AUTO-PPM(spectrum): training complete, locked (elapsed=%d ms, steps=%d, |df|=%.1f Hz)\n",
-                         elapsed_ms, train_steps, fabs(df_hz));
-            }
-        }
-        if (!g_auto_ppm_locked.load(std::memory_order_relaxed)) {
-            g_auto_ppm_training.store(1, std::memory_order_relaxed);
-        }
-    } while (0);
+    auto_ppm_maybe_adjust(opts);
 
     /* If PPM Error is Manually Changed, change it here once per batch */
     if (opts->rtlsdr_ppm_error != dongle.ppm_error) {

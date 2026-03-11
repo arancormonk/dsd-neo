@@ -170,7 +170,7 @@ extern "C" {
  * - DSD_NEO_TCP_* (autotune, waitall, stats, buffers, timeouts, prebuffer)
  * - DSD_NEO_RIGCTL_RCVTIMEO
  * - DSD_NEO_RTL_* and DSD_NEO_TUNER_* (direct/offset, xtal, testmode, autogain)
- * - DSD_NEO_AUTO_PPM* (spectrum-based PPM correction)
+ * - DSD_NEO_AUTO_PPM* (carrier/error-based PPM correction)
  *
  * Protocol timers/holds
  * - DSD_NEO_P25_* and DSD_NEO_DMR_* (hangtimes, grace windows, holds, watchdog)

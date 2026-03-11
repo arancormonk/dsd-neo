@@ -297,7 +297,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw(" PWR: %.1f dB;", pwr_to_dB(opts->rtl_pwr));
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
-        /* Show spectrum-based auto PPM status snapshot */
+        /* Show carrier/error-based auto PPM status snapshot */
         {
             int ap_en = 0, ap_dir = 0, ap_locked = 0;
             double ap_snr = -100.0, ap_df = 0.0;

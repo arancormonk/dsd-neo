@@ -194,7 +194,7 @@ int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
 int svc_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, int on);
 /** @brief Toggle RTL-TCP adaptive networking and propagate to env/stream. */
 int svc_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, int on);
-/** @brief Toggle spectrum-based auto PPM and propagate to env/stream. */
+/** @brief Toggle carrier/error-based auto PPM and propagate to env/stream. */
 int svc_rtl_set_auto_ppm(dsd_opts* opts, dsd_state* state, int on);
 #endif
 

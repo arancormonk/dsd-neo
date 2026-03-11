@@ -4,6 +4,7 @@
 if(DSD_HAS_RADIO)
   add_library(dsd-neo_io_radio)
   target_sources(dsd-neo_io_radio PRIVATE
+    radio/rtl_auto_ppm.cpp
     radio/rtl_device.cpp
     radio/rtl_demod_config.cpp
     radio/rtl_metrics.cpp

@@ -348,7 +348,7 @@ void rtl_stream_set_c4fm_clk_sync(int enable);
 int rtl_stream_get_c4fm_clk_sync(void);
 
 /**
- * @brief Get spectrum-based auto PPM status and last measurements.
+ * @brief Get auto PPM status and last measurements.
  *
  * @param enabled [out] Current enable flag (0/1); may be NULL.
  * @param snr_db [out] Latest SNR estimate in dB; may be NULL.
@@ -363,7 +363,7 @@ int rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, 
                                    int* cooldown, int* locked);
 
 /**
- * @brief Return 1 when spectrum-based auto-PPM training window is active.
+ * @brief Return 1 when auto-PPM training is active.
  *
  * @return 1 when enabled, not locked, and currently training; 0 otherwise.
  */

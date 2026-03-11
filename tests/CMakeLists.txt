@@ -1687,3 +1687,13 @@ add_test(NAME CORE_SNDFILE_FWD_CONTRACT COMMAND dsd-neo_test_core_sndfile_fwd_co
 add_executable(dsd-neo_test_io_rtl_capture_phase io/test_io_rtl_capture_phase.c)
 target_include_directories(dsd-neo_test_io_rtl_capture_phase PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio)
 add_test(NAME IO_RTL_CAPTURE_PHASE COMMAND dsd-neo_test_io_rtl_capture_phase)
+
+if(DSD_HAS_RADIO)
+  add_executable(dsd-neo_test_io_rtl_auto_ppm io/test_io_rtl_auto_ppm.cpp)
+  target_include_directories(dsd-neo_test_io_rtl_auto_ppm PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src/io/radio
+  )
+  target_link_libraries(dsd-neo_test_io_rtl_auto_ppm PRIVATE dsd-neo_io_radio)
+  add_test(NAME IO_RTL_AUTO_PPM COMMAND dsd-neo_test_io_rtl_auto_ppm)
+endif()

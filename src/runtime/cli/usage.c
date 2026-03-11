@@ -168,7 +168,7 @@ dsd_cli_usage(void) {
     printf("\n");
     printf("Other options:\n");
 
-    printf("  --auto-ppm    Enable spectrum-based RTL auto PPM (6 dB gate; 1 ppm step)\n");
+    printf("  --auto-ppm    Enable carrier-assisted RTL auto PPM correction\n");
     printf("  --auto-ppm-snr <dB>  Set SNR gate for auto PPM (default 6)\n");
     printf("  --rtltcp-autotune    Enable RTL-TCP adaptive networking (buffer/recv tuning)\n");
     printf("  --rtl-udp-control <port>  Enable external RTL retune control on UDP/<port>\n");

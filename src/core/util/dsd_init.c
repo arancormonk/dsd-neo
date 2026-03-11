@@ -179,7 +179,7 @@ initOpts(dsd_opts* opts) {
     opts->rtl_needs_restart = 0;
     opts->rtl_pwr = 0;                // mean power approximation level on rtl input signal
     opts->rtl_bias_tee = 0;           // bias tee disabled by default
-    opts->rtl_auto_ppm = 0;           // spectrum-based auto PPM disabled by default
+    opts->rtl_auto_ppm = 0;           // auto PPM disabled by default
     opts->rtl_auto_ppm_snr_db = 0.0f; // use default SNR threshold unless overridden
     //end RTL user options
     opts->pulse_raw_rate_in = 48000;

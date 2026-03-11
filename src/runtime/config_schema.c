@@ -29,8 +29,9 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"input", "rtl_bw_khz", "RTL-SDR DSP bandwidth in kHz", "48", NULL, DSDCFG_TYPE_INT, 4, 48, 0},
     {"input", "rtl_sql", "RTL-SDR squelch level in dB (0 to disable)", "0", NULL, DSDCFG_TYPE_INT, -100, 0, 0},
     {"input", "rtl_volume", "RTL-SDR volume multiplier", "2", NULL, DSDCFG_TYPE_INT, 1, 3, 0},
-    {"input", "auto_ppm", "Enable spectrum-based RTL auto-PPM correction", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"input", "rtl_auto_ppm", "Enable spectrum-based RTL auto-PPM correction (alias for auto_ppm)", "false", NULL,
+    {"input", "auto_ppm", "Enable carrier/error-based RTL auto-PPM correction", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0,
+     0},
+    {"input", "rtl_auto_ppm", "Enable carrier/error-based RTL auto-PPM correction (alias for auto_ppm)", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0, 1}, /* deprecated alias */
     {"input", "rtltcp_host", "RTL-TCP server hostname or IP", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
     {"input", "rtltcp_port", "RTL-TCP server port", "1234", NULL, DSDCFG_TYPE_INT, 1, 65535, 0},
