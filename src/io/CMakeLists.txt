@@ -16,8 +16,9 @@ if(DSD_HAS_RADIO)
     PUBLIC ${PROJECT_SOURCE_DIR}/include
     PRIVATE ${_PUBLIC_INCLUDES}
   )
-  target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_dsp dsd-neo_pffft dsd-neo_feature_radio dsd-neo_feature_rtlsdr
-                                                 dsd-neo_feature_soapy)
+  target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_dsp dsd-neo_pffft dsd-neo_feature_radio dsd-neo_feature_rtlsdr)
+  # SoapySDR exports C++-only warning flags; keep it private so they do not leak into C dependents.
+  target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_feature_soapy)
 
   target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_warnings)
 
