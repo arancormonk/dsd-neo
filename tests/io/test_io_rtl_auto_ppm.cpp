@@ -584,6 +584,93 @@ test_locked_session_keeps_sub_deadband_same_channel_drift_locked(void) {
 }
 
 static int
+test_sub_deadband_residual_locks_without_dither_with_default_config(void) {
+    int rc = 0;
+    RtlAutoPpmController controller;
+    RtlAutoPpmConfig config = {};
+    const uint32_t freq_hz = 769768750U;
+    const double residual_hz = 100.5;
+    const double residual_ppm = (residual_hz * 1.0e6) / static_cast<double>(freq_hz);
+
+    controller.reset(0, freq_hz);
+
+    RtlAutoPpmUpdate update =
+        controller.update(config, make_inputs(1000, 0, freq_hz, residual_ppm, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("sub-deadband residual does not apply immediately", update.apply_ppm, 0);
+    rc |= expect_int_eq("sub-deadband residual starts in training", update.training, 1);
+    rc |= expect_int_eq("sub-deadband residual starts unlocked", update.locked, 0);
+
+    update = controller.update(config, make_inputs(4000, 0, freq_hz, residual_ppm, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("sub-deadband residual can lock", update.locked, 1);
+    rc |= expect_int_eq("sub-deadband residual exits training", update.training, 0);
+    rc |= expect_int_eq("sub-deadband residual keeps ppm at zero", update.lock_ppm, 0);
+
+    update = controller.update(config, make_inputs(7000, 0, freq_hz, residual_ppm, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("locked sub-deadband residual does not dither", update.apply_ppm, 0);
+    rc |= expect_int_eq("locked sub-deadband residual stays locked", update.locked, 1);
+    rc |= expect_int_eq("locked sub-deadband residual stays out of training", update.training, 0);
+    return rc;
+}
+
+static int
+test_sub_deadband_residual_locks_with_zero_lock_hz_below_deadband_floor(void) {
+    int rc = 0;
+    RtlAutoPpmController controller;
+    RtlAutoPpmConfig config = {};
+    const uint32_t freq_hz = 769768750U;
+    const double residual_hz = 100.5;
+    const double residual_ppm = (residual_hz * 1.0e6) / static_cast<double>(freq_hz);
+
+    config.zero_lock_hz = residual_hz - 5.0;
+
+    controller.reset(0, freq_hz);
+
+    RtlAutoPpmUpdate update =
+        controller.update(config, make_inputs(1000, 0, freq_hz, residual_ppm, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("tight zero-lock hz starts in training", update.training, 1);
+    rc |= expect_int_eq("tight zero-lock hz starts unlocked", update.locked, 0);
+
+    update = controller.update(config, make_inputs(4000, 0, freq_hz, residual_ppm, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("tight zero-lock hz still locks below deadband floor", update.locked, 1);
+    rc |= expect_int_eq("tight zero-lock hz exits training after lock hold", update.training, 0);
+    rc |= expect_int_eq("tight zero-lock hz keeps ppm at zero", update.lock_ppm, 0);
+
+    update = controller.update(config, make_inputs(7000, 0, freq_hz, residual_ppm, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("tight zero-lock hz still avoids dithering", update.apply_ppm, 0);
+    rc |= expect_int_eq("tight zero-lock hz remains locked", update.locked, 1);
+    return rc;
+}
+
+static int
+test_sub_deadband_residual_locks_with_zero_lock_ppm_below_deadband_floor(void) {
+    int rc = 0;
+    RtlAutoPpmController controller;
+    RtlAutoPpmConfig config = {};
+    const uint32_t freq_hz = 769768750U;
+    const double residual_hz = 100.5;
+    const double residual_ppm = (residual_hz * 1.0e6) / static_cast<double>(freq_hz);
+
+    config.zero_lock_ppm = residual_ppm - 0.01;
+
+    controller.reset(0, freq_hz);
+
+    RtlAutoPpmUpdate update =
+        controller.update(config, make_inputs(1000, 0, freq_hz, residual_ppm, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("tight zero-lock ppm starts in training", update.training, 1);
+    rc |= expect_int_eq("tight zero-lock ppm starts unlocked", update.locked, 0);
+
+    update = controller.update(config, make_inputs(4000, 0, freq_hz, residual_ppm, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("tight zero-lock ppm still locks below deadband floor", update.locked, 1);
+    rc |= expect_int_eq("tight zero-lock ppm exits training after lock hold", update.training, 0);
+    rc |= expect_int_eq("tight zero-lock ppm keeps ppm at zero", update.lock_ppm, 0);
+
+    update = controller.update(config, make_inputs(7000, 0, freq_hz, residual_ppm, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("tight zero-lock ppm still avoids dithering", update.apply_ppm, 0);
+    rc |= expect_int_eq("tight zero-lock ppm remains locked", update.locked, 1);
+    return rc;
+}
+
+static int
 test_frequency_change_during_training_restarts_observation(void) {
     int rc = 0;
     RtlAutoPpmController controller;
@@ -714,6 +801,9 @@ main(void) {
     rc |= test_deadband_reentry_restarts_observation_window();
     rc |= test_locked_session_reenters_training_on_same_channel_drift();
     rc |= test_locked_session_keeps_sub_deadband_same_channel_drift_locked();
+    rc |= test_sub_deadband_residual_locks_without_dither_with_default_config();
+    rc |= test_sub_deadband_residual_locks_with_zero_lock_hz_below_deadband_floor();
+    rc |= test_sub_deadband_residual_locks_with_zero_lock_ppm_below_deadband_floor();
     rc |= test_frequency_change_during_training_restarts_observation();
     rc |= test_frequency_change_rearms_drift_check_after_lock_carry();
     rc |= test_locked_session_resets_after_external_ppm_change();

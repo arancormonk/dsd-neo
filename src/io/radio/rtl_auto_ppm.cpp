@@ -48,6 +48,26 @@ estimate_snr_db(RtlAutoPpmSource source, const RtlAutoPpmInputs& inputs) {
     return std::max(inputs.gate_snr_db, inputs.spec_snr_db);
 }
 
+static inline bool
+within_zero_lock_window(double ppm, double df_hz, const RtlAutoPpmConfig& config) {
+    return (std::fabs(ppm) <= config.zero_lock_ppm) && (std::fabs(df_hz) <= config.zero_lock_hz);
+}
+
+static inline double
+min_correctable_df_hz(uint32_t tuned_freq_hz, const RtlAutoPpmConfig& config) {
+    return (config.min_correction_ppm * static_cast<double>(tuned_freq_hz)) / 1.0e6;
+}
+
+static inline bool
+within_acquisition_lock_window(double ppm, double df_hz, uint32_t tuned_freq_hz, const RtlAutoPpmConfig& config) {
+    /* Lock acquisition must never be stricter than the smallest residual the
+     * controller can actually correct. Otherwise a sub-deadband residual can
+     * neither step nor lock, leaving training stuck forever. */
+    double effective_zero_lock_ppm = std::max(config.zero_lock_ppm, config.min_correction_ppm);
+    double effective_zero_lock_hz = std::max(config.zero_lock_hz, min_correctable_df_hz(tuned_freq_hz, config));
+    return (std::fabs(ppm) <= effective_zero_lock_ppm) && (std::fabs(df_hz) <= effective_zero_lock_hz);
+}
+
 static bool
 tracking_estimate_ready(const RtlAutoPpmSignalMetrics& metrics) {
     return metrics.cqpsk_enable && metrics.tracking_enable && metrics.carrier_lock && finite_hz(metrics.nco_cfo_hz);
@@ -266,12 +286,12 @@ RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInp
             double filtered_df_hz = (filtered_ppm * static_cast<double>(inputs.tuned_freq_hz)) / 1.0e6;
             int filtered_dir = sign_with_deadband(filtered_ppm, config.min_correction_ppm);
             /* Residuals inside the correction deadband cannot generate a tuner
-             * step, so dropping lock here would strand the controller in an
-             * unrecoverable training state. Keep the existing lock until the
-             * drift grows large enough to produce a real correction. */
-            keep_lock = (filtered_dir == 0)
-                        || ((std::fabs(filtered_ppm) <= config.zero_lock_ppm)
-                            && (std::fabs(filtered_df_hz) <= config.zero_lock_hz));
+             * step, so dropping an already-earned lock here would strand the
+             * controller in training with no corrective action available.
+             * Initial lock acquisition still uses the configured zero-lock
+             * thresholds; this only preserves an existing lock until the drift
+             * grows large enough to produce a real correction. */
+            keep_lock = (filtered_dir == 0) || within_zero_lock_window(filtered_ppm, filtered_df_hz, config);
             if (keep_lock) {
                 out.est_ppm = filtered_ppm;
                 out.df_hz = filtered_df_hz;
@@ -331,7 +351,11 @@ RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInp
          * observation window if the error later grows again. */
         observation_since_ms_ = 0;
         observation_sign_ = 0;
-        if (std::fabs(ema_ppm_) <= config.zero_lock_ppm && std::fabs(out.df_hz) <= config.zero_lock_hz) {
+        /* Lock acquisition still respects the operator-configured zero-lock
+         * window, but the effective window cannot be tighter than the minimum
+         * correction deadband or training could get stranded with no legal
+         * tuner step left to apply. */
+        if (within_acquisition_lock_window(ema_ppm_, out.df_hz, inputs.tuned_freq_hz, config)) {
             if (stable_since_ms_ == 0) {
                 stable_since_ms_ = inputs.now_ms;
             }
