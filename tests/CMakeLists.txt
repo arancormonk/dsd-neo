@@ -1696,4 +1696,20 @@ if(DSD_HAS_RADIO)
   )
   target_link_libraries(dsd-neo_test_io_rtl_auto_ppm PRIVATE dsd-neo_io_radio)
   add_test(NAME IO_RTL_AUTO_PPM COMMAND dsd-neo_test_io_rtl_auto_ppm)
+
+  add_executable(dsd-neo_test_io_rtl_ppm_request io/test_io_rtl_ppm_request.cpp)
+  target_include_directories(dsd-neo_test_io_rtl_ppm_request PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/io/radio
+  )
+  add_test(NAME IO_RTL_PPM_REQUEST COMMAND dsd-neo_test_io_rtl_ppm_request)
+
+  add_executable(dsd-neo_test_io_rtl_stream_ppm_sync io/test_io_rtl_stream_ppm_sync.cpp)
+  target_include_directories(dsd-neo_test_io_rtl_stream_ppm_sync PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+  )
+  target_link_libraries(dsd-neo_test_io_rtl_stream_ppm_sync PRIVATE dsd-neo_io_radio dsd-neo_core)
+  if(DSD_HAS_RTLSDR)
+    target_link_libraries(dsd-neo_test_io_rtl_stream_ppm_sync PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+  endif()
+  add_test(NAME IO_RTL_STREAM_PPM_SYNC COMMAND dsd-neo_test_io_rtl_stream_ppm_sync)
 endif()

@@ -7,6 +7,8 @@
 
 #include <stdint.h>
 
+#include "rtl_ppm_request.h"
+
 namespace dsd {
 namespace io {
 namespace radio {
@@ -60,6 +62,8 @@ struct RtlAutoPpmInputs {
     int enabled = 0;
     int current_ppm = 0;
     int requested_ppm = 0;
+    RtlPpmControllerRequestState controller_queued_request = {};
+    RtlPpmControllerRequestState controller_active_request = {};
     uint32_t tuned_freq_hz = 0;
     double signal_power_db = -100.0;
     double gate_snr_db = -100.0;

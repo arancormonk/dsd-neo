@@ -1084,7 +1084,7 @@ rtl_set_gain(void* v) {
 void
 rtl_set_ppm(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("PPM error (-200..200)", c->opts->rtlsdr_ppm_error, cb_rtl_ppm, c);
+    ui_prompt_open_int_async("PPM error (-200..200)", rtl_stream_get_requested_ppm(c->opts), cb_rtl_ppm, c);
 }
 
 void

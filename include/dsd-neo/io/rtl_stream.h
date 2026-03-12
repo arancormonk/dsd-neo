@@ -34,6 +34,15 @@ class RtlSdrOrchestrator {
     explicit RtlSdrOrchestrator(const dsd_opts& opts);
 
     /**
+     * @brief Construct a stream with an internal snapshot mirrored to caller-owned opts.
+     *
+     * @param opts        @ref dsd_opts used to configure the stream. Copied internally.
+     * @param caller_opts Mutable caller-owned opts snapshot to keep synchronized with
+     *                    the internal copy for live PPM updates. May be NULL.
+     */
+    RtlSdrOrchestrator(const dsd_opts& opts, dsd_opts* caller_opts);
+
+    /**
      * @brief Destructor. Ensures stop() is called.
      */
     ~RtlSdrOrchestrator();
@@ -67,6 +76,20 @@ class RtlSdrOrchestrator {
     int tune(uint32_t center_freq_hz);
 
     /**
+     * @brief Publish an absolute live PPM request against the stream snapshot.
+     * @param ppm Requested correction in PPM; clamped by the runtime helper.
+     * @return 0 on success, <0 on error.
+     */
+    int request_ppm(int ppm);
+
+    /**
+     * @brief Publish a relative live PPM request against the stream snapshot.
+     * @param delta Signed delta in PPM; clamped by the runtime helper.
+     * @return 0 on success, <0 on error.
+     */
+    int adjust_ppm(int delta);
+
+    /**
      * @brief Read up to count audio samples.
      * @param out Destination buffer.
      * @param count Max samples to read.
@@ -80,6 +103,12 @@ class RtlSdrOrchestrator {
      * @return Output sample rate in Hz.
      */
     unsigned int output_rate() const;
+
+    /**
+     * @brief Return the live requested PPM value observed by this stream snapshot.
+     * @return Requested PPM value, or 0 when the internal opts snapshot is unavailable.
+     */
+    int requested_ppm() const;
 
     /**
      * @brief Whether the last operation succeeded.
@@ -106,6 +135,7 @@ class RtlSdrOrchestrator {
 
     // Mutable snapshot of options passed into C API
     dsd_opts* opts_;
+    dsd_opts* caller_opts_;
     bool started_;
     int last_error_code_;
 };

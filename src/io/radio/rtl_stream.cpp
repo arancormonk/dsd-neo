@@ -28,6 +28,11 @@ int dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* sta
 int dsd_rtl_stream_tune(dsd_opts* opts, long int frequency);
 unsigned int dsd_rtl_stream_output_rate(void);
 int dsd_rtl_stream_soft_stop(void);
+int rtl_stream_request_ppm(dsd_opts* opts, int ppm);
+int rtl_stream_adjust_ppm(dsd_opts* opts, int delta);
+int rtl_stream_get_requested_ppm(const dsd_opts* opts);
+void dsd_rtl_stream_register_requested_ppm_opts(dsd_opts* active_opts, dsd_opts* caller_opts);
+void dsd_rtl_stream_unregister_requested_ppm_opts(dsd_opts* active_opts, dsd_opts* caller_opts);
 }
 
 namespace {
@@ -51,8 +56,14 @@ copy_opts(const dsd_opts* src) {
 }
 } // namespace
 
-RtlSdrOrchestrator::RtlSdrOrchestrator(const dsd_opts& opts)
-    : opts_(copy_opts(&opts)), started_(false), last_error_code_(0) {}
+RtlSdrOrchestrator::RtlSdrOrchestrator(const dsd_opts& opts) : RtlSdrOrchestrator(opts, nullptr) {}
+
+RtlSdrOrchestrator::RtlSdrOrchestrator(const dsd_opts& opts, dsd_opts* caller_opts)
+    : opts_(copy_opts(&opts)), caller_opts_(caller_opts), started_(false), last_error_code_(0) {
+    if (opts_) {
+        dsd_rtl_stream_register_requested_ppm_opts(opts_, caller_opts_);
+    }
+}
 
 /**
  * @brief Destructor. Ensures stop() is called and frees internal options.
@@ -60,6 +71,7 @@ RtlSdrOrchestrator::RtlSdrOrchestrator(const dsd_opts& opts)
 RtlSdrOrchestrator::~RtlSdrOrchestrator() {
     stop();
     if (opts_) {
+        dsd_rtl_stream_unregister_requested_ppm_opts(opts_, caller_opts_);
         free(opts_);
         opts_ = nullptr;
     }
@@ -146,6 +158,28 @@ RtlSdrOrchestrator::tune(uint32_t center_freq_hz) {
     return 0;
 }
 
+int
+RtlSdrOrchestrator::request_ppm(int ppm) {
+    if (!opts_) {
+        last_error_code_ = -2;
+        return last_error_code_;
+    }
+    int rc = rtl_stream_request_ppm(opts_, ppm);
+    last_error_code_ = rc;
+    return rc;
+}
+
+int
+RtlSdrOrchestrator::adjust_ppm(int delta) {
+    if (!opts_) {
+        last_error_code_ = -2;
+        return last_error_code_;
+    }
+    int rc = rtl_stream_adjust_ppm(opts_, delta);
+    last_error_code_ = rc;
+    return rc;
+}
+
 /**
  * @brief Read up to count audio samples.
  * @param out Destination buffer.
@@ -180,4 +214,12 @@ RtlSdrOrchestrator::read(float* out, size_t count, int& out_got) {
 unsigned int
 RtlSdrOrchestrator::output_rate() const {
     return dsd_rtl_stream_output_rate();
+}
+
+int
+RtlSdrOrchestrator::requested_ppm() const {
+    if (!opts_) {
+        return 0;
+    }
+    return rtl_stream_get_requested_ppm(opts_);
 }

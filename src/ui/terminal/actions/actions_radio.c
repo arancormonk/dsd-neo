@@ -25,7 +25,11 @@ ui_handle_ppm_delta(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     if (c->n >= (int)sizeof(int32_t)) {
         memcpy(&d, c->data, sizeof(int32_t));
     }
+#ifdef USE_RADIO
+    rtl_stream_adjust_ppm(opts, d);
+#else
     opts->rtlsdr_ppm_error += d;
+#endif
     return 1;
 }
 

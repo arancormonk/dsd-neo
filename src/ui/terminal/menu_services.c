@@ -721,17 +721,7 @@ svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
 
 int
 svc_rtl_set_ppm(dsd_opts* opts, int ppm) {
-    if (!opts) {
-        return -1;
-    }
-    if (ppm < -200) {
-        ppm = -200;
-    }
-    if (ppm > 200) {
-        ppm = 200;
-    }
-    opts->rtlsdr_ppm_error = ppm;
-    return 0;
+    return rtl_stream_request_ppm(opts, ppm);
 }
 
 int

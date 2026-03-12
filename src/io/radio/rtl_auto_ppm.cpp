@@ -185,9 +185,12 @@ RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInp
         if (inputs.current_ppm == pending_ppm_) {
             pending_apply_ = 0;
             last_input_ppm_ = inputs.current_ppm;
-        } else if (inputs.current_ppm == last_input_ppm_) {
-            /* An async PPM step is still in flight. Hold training/cooldown state
-             * until the hardware reports the new applied correction. */
+        } else if (inputs.current_ppm == last_input_ppm_
+                   && (rtl_ppm_controller_request_has_ppm(inputs.controller_queued_request, pending_ppm_)
+                       || rtl_ppm_controller_request_has_ppm(inputs.controller_active_request, pending_ppm_))) {
+            /* Keep the training hold until the controller no longer owns the
+             * pending request. The desired PPM can snap back to the applied
+             * value while an older queued/active correction is still live. */
             sync_status();
             fill_estimate_status();
             out.training = 1;
@@ -197,6 +200,12 @@ RtlAutoPpmController::update(const RtlAutoPpmConfig& config, const RtlAutoPpmInp
                 out.cooldown_ticks = static_cast<int>((remain_ms + 9U) / 10U);
             }
             return out;
+        } else if (inputs.current_ppm == last_input_ppm_) {
+            /* The queued correction disappeared before hardware changed. It was
+             * canceled, rejected, or superseded before taking effect. */
+            pending_apply_ = 0;
+            pending_ppm_ = inputs.current_ppm;
+            settle_until_ms_ = 0;
         } else {
             pending_apply_ = 0;
         }

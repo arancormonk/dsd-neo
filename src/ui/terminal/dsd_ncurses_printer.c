@@ -26,15 +26,12 @@
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/telemetry.h>
-#include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_p25_display.h>
-#include <dsd-neo/ui/ncurses_snr.h>
 #include <dsd-neo/ui/ncurses_trunk_display.h>
-#include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_history.h>
@@ -50,6 +47,9 @@
 #include "dsd-neo/core/state_fwd.h"
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/ui/keymap.h>
+#include <dsd-neo/ui/ncurses_snr.h>
+#include <dsd-neo/ui/ncurses_visualizers.h>
 #endif
 
 extern unsigned long long int edacs_channel_tree[33][6];
@@ -292,7 +292,15 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
         }
         printw(" V: %iX;", opts->rtl_volume_multiplier);
-        printw(" PPM: %i;", opts->rtlsdr_ppm_error); //Adjust manually now with { and }
+        {
+            int requested_ppm = 0;
+#ifdef USE_RADIO
+            requested_ppm = rtl_stream_get_requested_ppm(opts);
+#else
+            requested_ppm = opts->rtlsdr_ppm_error;
+#endif
+            printw(" PPM: %i;", requested_ppm); //Adjust manually now with { and }
+        }
         printw(" SQL: %.1f dB;", pwr_to_dB(opts->rtl_squelch_level));
         printw(" PWR: %.1f dB;", pwr_to_dB(opts->rtl_pwr));
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);

@@ -87,7 +87,7 @@ rtl_stream_create(const dsd_opts* opts, RtlSdrContext** out_ctx) {
     if (!*out_ctx) {
         return -1;
     }
-    (*out_ctx)->stream = new (std::nothrow) RtlSdrOrchestrator(*opts);
+    (*out_ctx)->stream = new (std::nothrow) RtlSdrOrchestrator(*opts, const_cast<dsd_opts*>(opts));
     if (!(*out_ctx)->stream) {
         free(*out_ctx);
         *out_ctx = NULL;

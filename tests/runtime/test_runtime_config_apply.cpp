@@ -40,12 +40,26 @@ extern "C" {
 }
 #endif
 
-int
-main(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    initOpts(&opts);
-    initState(&state);
+static int
+expect_true(const char* label, int cond) {
+    if (!cond) {
+        fprintf(stderr, "FAIL: %s\n", label);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+init_test_runtime(dsd_opts* opts, dsd_state* state) {
+    initOpts(opts);
+    initState(state);
+}
+
+static int
+test_basic_pulse_config_apply(void) {
+    dsd_opts opts;
+    dsd_state state;
+    init_test_runtime(&opts, &state);
 
     // Start from a known input/output so that config apply has something to
     // mutate. Use Pulse I/O to avoid depending on RTL or network resources.
@@ -70,16 +84,86 @@ main(void) {
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     ui_drain_cmds(&opts, &state);
 
-    // Basic invariants: ncurses flag set, audio devs still pulse-based.
-    if (!opts.use_ncurses_terminal) {
-        return 2;
-    }
-    if (strncmp(opts.audio_in_dev, "pulse", 5) != 0) {
-        return 3;
-    }
-    if (strncmp(opts.audio_out_dev, "pulse", 5) != 0) {
-        return 4;
-    }
+    int rc = 0;
+    rc |= expect_true("ncurses flag enabled", opts.use_ncurses_terminal);
+    rc |= expect_true("pulse input preserved", strncmp(opts.audio_in_dev, "pulse", 5) == 0);
+    rc |= expect_true("pulse output preserved", strncmp(opts.audio_out_dev, "pulse", 5) == 0);
+    return rc;
+}
 
-    return 0;
+#ifdef USE_RADIO
+static int
+test_same_value_rtl_ppm_retry_is_republished(void) {
+    dsd_opts opts;
+    dsd_state state;
+    init_test_runtime(&opts, &state);
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_gain_value = 10;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.rtl_volume_multiplier = 2;
+    opts.rtlsdr_ppm_error = 0;
+    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:1000000:10:5:48:0:2");
+
+    dsdneoUserConfig cfg = {0};
+    cfg.version = 1;
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    snprintf(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "1000000");
+    cfg.rtl_gain = 10;
+    cfg.rtl_ppm = 5;
+    cfg.rtl_bw_khz = 48;
+    cfg.rtl_volume = 2;
+
+    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    ui_drain_cmds(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_true("same-value config apply restores live requested ppm", opts.rtlsdr_ppm_error == 5);
+    rc |= expect_true("same-value config apply keeps device string stable",
+                      strncmp(opts.audio_in_dev, "rtl:0:1000000:10:5:48:0:2", sizeof opts.audio_in_dev) == 0);
+    return rc;
+}
+
+static int
+test_zero_rtl_ppm_apply_updates_live_request(void) {
+    dsd_opts opts;
+    dsd_state state;
+    init_test_runtime(&opts, &state);
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_gain_value = 10;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.rtl_volume_multiplier = 2;
+    opts.rtlsdr_ppm_error = 9;
+    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:1000000:10:0:48:0:2");
+
+    dsdneoUserConfig cfg = {0};
+    cfg.version = 1;
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    snprintf(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "1000000");
+    cfg.rtl_gain = 10;
+    cfg.rtl_ppm = 0;
+    cfg.rtl_bw_khz = 48;
+    cfg.rtl_volume = 2;
+
+    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    ui_drain_cmds(&opts, &state);
+
+    return expect_true("zero ppm config apply updates live requested ppm", opts.rtlsdr_ppm_error == 0);
+}
+#endif
+
+int
+main(void) {
+    int rc = 0;
+    rc |= test_basic_pulse_config_apply();
+#ifdef USE_RADIO
+    rc |= test_same_value_rtl_ppm_retry_is_republished();
+    rc |= test_zero_rtl_ppm_apply_updates_live_request();
+#endif
+    return rc ? 1 : 0;
 }

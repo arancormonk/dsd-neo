@@ -45,6 +45,7 @@
 #include <dsd-neo/runtime/unicode.h>
 #include <limits.h>
 #include <math.h>
+#include <mutex>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,6 +55,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 #include "rtl_auto_ppm.h"
+#include "rtl_ppm_request.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -198,6 +200,16 @@ struct controller_state {
      * device controls remain serialized with retunes/hops. */
     std::atomic<int> ppm_change_pending;
     std::atomic<int> pending_ppm_error;
+    std::atomic<uint32_t> ppm_request_publish_seq;
+    std::atomic<uint32_t> pending_ppm_request_seq;
+    std::atomic<int> ppm_apply_in_progress;
+    std::atomic<int> active_ppm_error;
+    std::atomic<uint32_t> active_ppm_request_seq;
+    /* Reconcile rejected PPM requests back on the read thread without
+     * overwriting a newer request that arrived after the failure. */
+    std::atomic<int> ppm_apply_failure_pending;
+    std::atomic<int> failed_ppm_error;
+    std::atomic<uint32_t> failed_ppm_request_seq;
     /* Cold start gate: demod thread skips CQPSK until controller signals ready.
      * This prevents the race where demod processes samples with uninitialized
      * TED/Costas state before the controller finishes cold start configuration. */
@@ -245,6 +257,16 @@ struct RtlSdrInternals {
 };
 
 static struct RtlSdrInternals* g_stream = NULL;
+/* Keep the requested PPM value and its logical request generation paired so
+ * UI and read-thread activity cannot observe mixed snapshots. */
+static std::mutex g_requested_ppm_state_mutex;
+
+struct RtlRequestedPpmMirrors {
+    dsd_opts* active_opts = NULL;
+    dsd_opts* caller_opts = NULL;
+};
+
+static RtlRequestedPpmMirrors g_requested_ppm_mirrors = {};
 
 enum RadioSourceKind {
     RADIO_SOURCE_RTL_USB = 0,
@@ -311,6 +333,171 @@ load_dongle_ppm_error(void) {
 static inline void
 store_dongle_ppm_error(int ppm_error) {
     dongle.ppm_error.store(ppm_error, std::memory_order_release);
+}
+
+static inline int
+clamp_requested_ppm(int ppm_error) {
+    if (ppm_error < -200) {
+        return -200;
+    }
+    if (ppm_error > 200) {
+        return 200;
+    }
+    return ppm_error;
+}
+
+static const dsd_opts*
+requested_ppm_source_opts_locked(const dsd_opts* fallback_opts) {
+    if (g_requested_ppm_mirrors.active_opts) {
+        return g_requested_ppm_mirrors.active_opts;
+    }
+    if (g_requested_ppm_mirrors.caller_opts) {
+        return g_requested_ppm_mirrors.caller_opts;
+    }
+    return fallback_opts;
+}
+
+static void
+sync_requested_ppm_snapshots_locked(dsd_opts* touched_opts, int ppm_error) {
+    int clamped_ppm = clamp_requested_ppm(ppm_error);
+    if (g_requested_ppm_mirrors.active_opts) {
+        g_requested_ppm_mirrors.active_opts->rtlsdr_ppm_error = clamped_ppm;
+    }
+    if (g_requested_ppm_mirrors.caller_opts
+        && g_requested_ppm_mirrors.caller_opts != g_requested_ppm_mirrors.active_opts) {
+        g_requested_ppm_mirrors.caller_opts->rtlsdr_ppm_error = clamped_ppm;
+    }
+    if (touched_opts && touched_opts != g_requested_ppm_mirrors.active_opts
+        && touched_opts != g_requested_ppm_mirrors.caller_opts) {
+        touched_opts->rtlsdr_ppm_error = clamped_ppm;
+    }
+}
+
+extern "C" void
+dsd_rtl_stream_register_requested_ppm_opts(dsd_opts* active_opts, dsd_opts* caller_opts) {
+    if (!active_opts) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_requested_ppm_state_mutex);
+    g_requested_ppm_mirrors.active_opts = active_opts;
+    g_requested_ppm_mirrors.caller_opts = caller_opts ? caller_opts : active_opts;
+    int initial_ppm = caller_opts ? caller_opts->rtlsdr_ppm_error : active_opts->rtlsdr_ppm_error;
+    sync_requested_ppm_snapshots_locked(active_opts, initial_ppm);
+}
+
+extern "C" void
+dsd_rtl_stream_unregister_requested_ppm_opts(dsd_opts* active_opts, dsd_opts* caller_opts) {
+    if (!active_opts) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_requested_ppm_state_mutex);
+    dsd_opts* expected_caller_opts = caller_opts ? caller_opts : active_opts;
+    if (g_requested_ppm_mirrors.active_opts == active_opts
+        && g_requested_ppm_mirrors.caller_opts == expected_caller_opts) {
+        g_requested_ppm_mirrors.active_opts = NULL;
+        g_requested_ppm_mirrors.caller_opts = NULL;
+    }
+}
+
+struct RtlRequestedPpmState {
+    int ppm = 0;
+    uint32_t request_id = 0;
+};
+
+static RtlRequestedPpmState
+snapshot_requested_ppm_state(const dsd_opts* opts) {
+    RtlRequestedPpmState snapshot = {};
+    std::lock_guard<std::mutex> lock(g_requested_ppm_state_mutex);
+    const dsd_opts* source_opts = requested_ppm_source_opts_locked(opts);
+    if (!source_opts) {
+        return snapshot;
+    }
+    snapshot.ppm = source_opts->rtlsdr_ppm_error;
+    snapshot.request_id = controller.ppm_request_publish_seq.load(std::memory_order_relaxed);
+    return snapshot;
+}
+
+static uint32_t
+publish_requested_ppm(dsd_opts* opts, int ppm_error) {
+    if (!opts) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(g_requested_ppm_state_mutex);
+    sync_requested_ppm_snapshots_locked(opts, ppm_error);
+    uint32_t request_id = controller.ppm_request_publish_seq.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    return request_id;
+}
+
+static uint32_t
+publish_requested_ppm_delta(dsd_opts* opts, int delta) {
+    if (!opts) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(g_requested_ppm_state_mutex);
+    const dsd_opts* source_opts = requested_ppm_source_opts_locked(opts);
+    int requested_ppm = source_opts ? source_opts->rtlsdr_ppm_error : 0;
+    sync_requested_ppm_snapshots_locked(opts, requested_ppm + delta);
+    uint32_t request_id = controller.ppm_request_publish_seq.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    return request_id;
+}
+
+static int
+rollback_requested_ppm_if_latest(dsd_opts* opts, int applied_ppm, uint32_t failed_request_id) {
+    if (!opts) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(g_requested_ppm_state_mutex);
+    if (controller.ppm_request_publish_seq.load(std::memory_order_relaxed) != failed_request_id) {
+        return 0;
+    }
+    sync_requested_ppm_snapshots_locked(opts, applied_ppm);
+    controller.ppm_request_publish_seq.store(failed_request_id + 1U, std::memory_order_relaxed);
+    return 1;
+}
+
+static void
+note_failed_ppm_request(int requested_ppm, uint32_t request_id, int applied_ppm, int rc) {
+    controller.failed_ppm_error.store(requested_ppm, std::memory_order_release);
+    controller.failed_ppm_request_seq.store(request_id, std::memory_order_release);
+    controller.ppm_apply_failure_pending.store(1, std::memory_order_release);
+    LOG_NOTICE("PPM correction request %d failed (rc=%d); keeping applied value %d.\n", requested_ppm, rc, applied_ppm);
+}
+
+static void
+sync_requested_ppm_after_failed_apply(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    if (!controller.ppm_apply_failure_pending.exchange(0, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    int applied_ppm = load_dongle_ppm_error();
+    RtlRequestedPpmState requested = snapshot_requested_ppm_state(opts);
+    uint32_t failed_request_id = controller.failed_ppm_request_seq.load(std::memory_order_acquire);
+    dsd::io::radio::RtlPpmRejectedRequestResolution resolution = dsd::io::radio::rtl_ppm_resolve_rejected_request(
+        applied_ppm, requested.ppm, requested.request_id, failed_request_id);
+    if (resolution.rolled_back) {
+        (void)rollback_requested_ppm_if_latest(opts, resolution.requested_ppm, failed_request_id);
+    }
+}
+
+static dsd::io::radio::RtlPpmControllerRequestsSnapshot
+snapshot_controller_ppm_request_state(void) {
+    dsd::io::radio::RtlPpmControllerRequestsSnapshot snapshot = {};
+    dsd_mutex_lock(&controller.hop_m);
+    snapshot.active_request.pending = controller.ppm_apply_in_progress.load(std::memory_order_acquire);
+    if (snapshot.active_request.pending) {
+        snapshot.active_request.ppm = controller.active_ppm_error.load(std::memory_order_acquire);
+        snapshot.active_request.request_id = controller.active_ppm_request_seq.load(std::memory_order_acquire);
+    }
+    snapshot.queued_request.pending = controller.ppm_change_pending.load(std::memory_order_acquire);
+    if (snapshot.queued_request.pending) {
+        snapshot.queued_request.ppm = controller.pending_ppm_error.load(std::memory_order_acquire);
+        snapshot.queued_request.request_id = controller.pending_ppm_request_seq.load(std::memory_order_acquire);
+    }
+    dsd_mutex_unlock(&controller.hop_m);
+    return snapshot;
 }
 
 static inline int
@@ -1776,20 +1963,38 @@ static DSD_THREAD_RETURN_TYPE
                && !(g_stream && g_stream->should_exit.load())) {
             dsd_cond_wait(&s->hop, &s->hop_m);
         }
-        dsd_mutex_unlock(&s->hop_m);
         if (exitflag || (g_stream && g_stream->should_exit.load())) {
+            dsd_mutex_unlock(&s->hop_m);
             break;
         }
-        int ppm_pending = s->ppm_change_pending.exchange(0, std::memory_order_acq_rel);
         int requested_ppm = s->pending_ppm_error.load(std::memory_order_acquire);
+        uint32_t requested_ppm_request_id = s->pending_ppm_request_seq.load(std::memory_order_acquire);
+        int ppm_pending = s->ppm_change_pending.exchange(0, std::memory_order_acq_rel);
+        if (ppm_pending) {
+            s->active_ppm_error.store(requested_ppm, std::memory_order_release);
+            s->active_ppm_request_seq.store(requested_ppm_request_id, std::memory_order_release);
+            s->ppm_apply_in_progress.store(1, std::memory_order_release);
+        }
+        dsd_mutex_unlock(&s->hop_m);
         int current_ppm = load_dongle_ppm_error();
         int ppm_changed = ppm_pending && (requested_ppm != current_ppm);
+        auto clear_active_ppm_request = [&]() {
+            if (!ppm_pending) {
+                return;
+            }
+            s->active_ppm_error.store(0, std::memory_order_release);
+            s->active_ppm_request_seq.store(0, std::memory_order_release);
+            s->ppm_apply_in_progress.store(0, std::memory_order_release);
+        };
         /* Process marshalled manual retunes first */
         if (s->manual_retune_pending.load(std::memory_order_acquire)) {
             uint32_t tgt = s->manual_retune_freq;
             s->manual_retune_pending.store(0, std::memory_order_release);
             int target_ppm = ppm_changed ? requested_ppm : current_ppm;
             int ppm_rc = controller_apply_reconfigure(s, (uint32_t)tgt, target_ppm);
+            if (ppm_changed && ppm_rc != 0) {
+                note_failed_ppm_request(requested_ppm, requested_ppm_request_id, current_ppm, ppm_rc);
+            }
             /* Signal completion to any waiting callers (e.g., dsd_rtl_stream_tune).
              * Increment the complete_id to match the request_id that was generated
              * when the tune was requested. This ensures waiters wake up only for
@@ -1799,6 +2004,7 @@ static DSD_THREAD_RETURN_TYPE
             dsd_cond_broadcast(&s->retune_done_cond);
             dsd_mutex_unlock(&s->retune_done_m);
             drain_output_on_retune();
+            clear_active_ppm_request();
             if (ppm_changed && ppm_rc == 0) {
                 LOG_INFO("Retune applied: %u Hz (PPM=%d).\n", tgt, requested_ppm);
             } else {
@@ -1812,8 +2018,11 @@ static DSD_THREAD_RETURN_TYPE
                 if (ppm_rc == 0) {
                     store_dongle_ppm_error(requested_ppm);
                     LOG_INFO("PPM correction applied: %d.\n", requested_ppm);
+                } else {
+                    note_failed_ppm_request(requested_ppm, requested_ppm_request_id, current_ppm, ppm_rc);
                 }
             }
+            clear_active_ppm_request();
             continue;
         }
         if (s->freq_len <= 1) {
@@ -2290,6 +2499,14 @@ controller_init(struct controller_state* s) {
     s->manual_retune_freq = 0;
     s->ppm_change_pending.store(0);
     s->pending_ppm_error.store(0);
+    s->ppm_request_publish_seq.store(0);
+    s->pending_ppm_request_seq.store(0);
+    s->ppm_apply_in_progress.store(0);
+    s->active_ppm_error.store(0);
+    s->active_ppm_request_seq.store(0);
+    s->ppm_apply_failure_pending.store(0);
+    s->failed_ppm_error.store(0);
+    s->failed_ppm_request_seq.store(0);
     s->cold_start_ready.store(0); /* Demod will wait for controller to signal ready */
     s->retune_in_progress.store(0);
     /* Initialize retune completion synchronization */
@@ -2396,12 +2613,32 @@ schedule_manual_retune(uint32_t target_freq_hz) {
 }
 
 static void
-schedule_ppm_update(int ppm_error) {
+sync_requested_ppm_to_controller(const dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    int applied_ppm = load_dongle_ppm_error();
     dsd_mutex_lock(&controller.hop_m);
-    int pending = controller.ppm_change_pending.load(std::memory_order_acquire);
-    int pending_ppm = controller.pending_ppm_error.load(std::memory_order_acquire);
-    if (!pending || pending_ppm != ppm_error) {
-        controller.pending_ppm_error.store(ppm_error, std::memory_order_release);
+    std::lock_guard<std::mutex> request_lock(g_requested_ppm_state_mutex);
+    int requested_ppm = opts->rtlsdr_ppm_error;
+    uint32_t requested_ppm_request_id = controller.ppm_request_publish_seq.load(std::memory_order_relaxed);
+    dsd::io::radio::RtlPpmControllerRequestState queued_request = {};
+    queued_request.pending = controller.ppm_change_pending.load(std::memory_order_acquire);
+    if (queued_request.pending) {
+        queued_request.ppm = controller.pending_ppm_error.load(std::memory_order_acquire);
+        queued_request.request_id = controller.pending_ppm_request_seq.load(std::memory_order_acquire);
+    }
+    dsd::io::radio::RtlPpmControllerRequestState active_request = {};
+    active_request.pending = controller.ppm_apply_in_progress.load(std::memory_order_acquire);
+    if (active_request.pending) {
+        active_request.ppm = controller.active_ppm_error.load(std::memory_order_acquire);
+        active_request.request_id = controller.active_ppm_request_seq.load(std::memory_order_acquire);
+    }
+    bool needs_schedule = dsd::io::radio::rtl_ppm_should_schedule_request(
+        applied_ppm, requested_ppm, requested_ppm_request_id, queued_request, active_request);
+    if (needs_schedule) {
+        controller.pending_ppm_error.store(requested_ppm, std::memory_order_release);
+        controller.pending_ppm_request_seq.store(requested_ppm_request_id, std::memory_order_release);
         controller.ppm_change_pending.store(1, std::memory_order_release);
         dsd_cond_signal(&controller.hop);
     }
@@ -2799,10 +3036,15 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     }
 
     {
-        int initial_ppm = opts->rtlsdr_ppm_error;
-        int ppm_rc = apply_ppm_setting(initial_ppm);
+        /* Keep the requested PPM and request generation paired so a startup
+         * failure cannot roll back a newer live request that arrived later. */
+        RtlRequestedPpmState initial_ppm_request = snapshot_requested_ppm_state(opts);
+        int ppm_rc = apply_ppm_setting(initial_ppm_request.ppm);
         if (ppm_rc == 0) {
-            store_dongle_ppm_error(initial_ppm);
+            store_dongle_ppm_error(initial_ppm_request.ppm);
+        } else {
+            note_failed_ppm_request(initial_ppm_request.ppm, initial_ppm_request.request_id, load_dongle_ppm_error(),
+                                    ppm_rc);
         }
         g_auto_ppm_controller.reset(load_dongle_ppm_error(), opts->rtlsdr_center_freq);
     }
@@ -3225,7 +3467,10 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
      * applied, not a queued request that may still be waiting on the
      * controller thread. */
     inputs.current_ppm = applied_ppm;
-    inputs.requested_ppm = opts->rtlsdr_ppm_error;
+    inputs.requested_ppm = snapshot_requested_ppm_state(opts).ppm;
+    dsd::io::radio::RtlPpmControllerRequestsSnapshot controller_requests = snapshot_controller_ppm_request_state();
+    inputs.controller_queued_request = controller_requests.queued_request;
+    inputs.controller_active_request = controller_requests.active_request;
     inputs.tuned_freq_hz = applied_freq_hz;
     inputs.signal_power_db = g_spec_peak_db.load(std::memory_order_relaxed);
     inputs.gate_snr_db = auto_ppm_pick_demod_snr_db(now_ms);
@@ -3238,7 +3483,7 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
         LOG_INFO("AUTO-PPM: src=%d pwr=%.1f dB snr=%.1f dB df=%.1f Hz ppm %d->%d\n",
                  static_cast<int>(inputs.estimate.source), inputs.signal_power_db, update.snr_db, update.df_hz,
                  applied_ppm, update.new_ppm);
-        opts->rtlsdr_ppm_error = update.new_ppm;
+        (void)publish_requested_ppm(opts, update.new_ppm);
     }
 }
 
@@ -3266,12 +3511,11 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
         return -1;
     }
 
+    sync_requested_ppm_after_failed_apply(opts);
     auto_ppm_maybe_adjust(opts);
 
     /* If PPM Error is Manually Changed, change it here once per batch */
-    if (opts->rtlsdr_ppm_error != load_dongle_ppm_error()) {
-        schedule_ppm_update(opts->rtlsdr_ppm_error);
-    }
+    sync_requested_ppm_to_controller(opts);
 
     int got = ring_read_batch(&output, out, count);
     if (got <= 0) {
@@ -3279,6 +3523,32 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
     }
     /* No internal scaling here; callers may apply their own multiplier. */
     return got;
+}
+
+extern "C" int
+rtl_stream_request_ppm(dsd_opts* opts, int ppm) {
+    if (!opts) {
+        return -1;
+    }
+    (void)publish_requested_ppm(opts, ppm);
+    return 0;
+}
+
+extern "C" int
+rtl_stream_adjust_ppm(dsd_opts* opts, int delta) {
+    if (!opts) {
+        return -1;
+    }
+    (void)publish_requested_ppm_delta(opts, delta);
+    return 0;
+}
+
+extern "C" int
+rtl_stream_get_requested_ppm(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return snapshot_requested_ppm_state(opts).ppm;
 }
 
 /**

@@ -7,19 +7,18 @@
  * DSP status panel (RTL-SDR pipeline state)
  */
 
-#include <curses.h>
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
-#include <dsd-neo/ui/ui_prims.h>
-#include <stdarg.h>
-#include <string.h>
 
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RTLSDR
+#include <curses.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#endif
+#include <dsd-neo/ui/ui_prims.h>
+#include <stdarg.h>
+#include <string.h>
 
 /* Small helpers to align key/value fields to a consistent value column. */
 static inline void
@@ -52,12 +51,14 @@ ui_print_kv_line(const char* label, const char* fmt, ...) {
     va_end(ap);
     addch('\n');
 }
+#endif
 
 /* Print a compact DSP status summary (which blocks are active). */
 void
 print_dsp_status(dsd_opts* opts, dsd_state* state) {
-#ifdef USE_RTLSDR
     (void)opts;
+    (void)state;
+#ifdef USE_RTLSDR
     /* Preserve current color pair so our colored header/HR won't force default */
 #ifdef PRETTY_COLORS
     attr_t saved_attrs = 0;

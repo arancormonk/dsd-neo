@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "rtl_auto_ppm.h"
+#include "rtl_ppm_request.h"
 
 using dsd::io::radio::rtl_auto_ppm_select_estimate;
 using dsd::io::radio::RtlAutoPpmConfig;
@@ -64,6 +65,15 @@ make_inputs(uint64_t now_ms, int current_ppm, uint32_t tuned_freq_hz, double est
     inputs.estimate.source = source;
     inputs.estimate.error_hz = est_ppm * static_cast<double>(tuned_freq_hz) / 1.0e6;
     return inputs;
+}
+
+static dsd::io::radio::RtlPpmControllerRequestState
+make_request_state(int pending, int ppm, uint32_t request_id) {
+    dsd::io::radio::RtlPpmControllerRequestState state = {};
+    state.pending = pending;
+    state.ppm = ppm;
+    state.request_id = request_id;
+    return state;
 }
 
 static int
@@ -396,6 +406,77 @@ test_requested_ppm_change_blocks_retraining_until_applied(void) {
 }
 
 static int
+test_canceled_requested_ppm_waits_for_controller_request_to_clear(void) {
+    int rc = 0;
+    RtlAutoPpmController controller;
+    RtlAutoPpmConfig config = {};
+    const uint32_t freq_hz = 851000000U;
+
+    controller.reset(0, freq_hz);
+    (void)controller.update(config, make_inputs(0, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+
+    RtlAutoPpmUpdate update =
+        controller.update(config, make_inputs(4000, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("cancel setup queues correction", update.apply_ppm, 1);
+    rc |= expect_int_eq("cancel setup targets requested correction", update.new_ppm, -8);
+
+    RtlAutoPpmInputs canceled = make_inputs(4500, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal);
+    canceled.requested_ppm = 0;
+    canceled.controller_queued_request = make_request_state(1, -8, 1);
+    update = controller.update(config, canceled);
+    rc |= expect_int_eq("cancel does not clear while request still live", update.apply_ppm, 0);
+    rc |= expect_int_eq("cancel keeps controller training while live", update.training, 1);
+    rc |= expect_true("cancel keeps cooldown while live request exists", update.cooldown_ticks > 0);
+
+    canceled.now_ms = 7000;
+    canceled.controller_queued_request = make_request_state(0, 0, 0);
+    update = controller.update(config, canceled);
+    rc |= expect_int_eq("cancel clears once request is gone", update.apply_ppm, 0);
+    rc |= expect_int_eq("cancel restarts training after request clears", update.training, 1);
+    rc |= expect_int_eq("cancel clears cooldown after request clears", update.cooldown_ticks, 0);
+
+    update = controller.update(config, make_inputs(10999, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("cancel needs full fresh observation", update.apply_ppm, 0);
+
+    update = controller.update(config, make_inputs(11000, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("cancel allows retraining after fresh window", update.apply_ppm, 1);
+    rc |= expect_int_eq("cancel reuses current applied ppm baseline", update.new_ppm, -8);
+    return rc;
+}
+
+static int
+test_overlapped_active_and_queued_requests_keep_training_hold(void) {
+    int rc = 0;
+    RtlAutoPpmController controller;
+    RtlAutoPpmConfig config = {};
+    const uint32_t freq_hz = 851000000U;
+
+    controller.reset(0, freq_hz);
+    (void)controller.update(config, make_inputs(0, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+
+    RtlAutoPpmUpdate update =
+        controller.update(config, make_inputs(4000, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("overlap setup queues correction", update.apply_ppm, 1);
+    rc |= expect_int_eq("overlap setup targets requested correction", update.new_ppm, -8);
+
+    RtlAutoPpmInputs overlapped = make_inputs(4500, 0, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal);
+    overlapped.requested_ppm = 0;
+    overlapped.controller_active_request = make_request_state(1, 5, 10);
+    overlapped.controller_queued_request = make_request_state(1, -8, 11);
+    update = controller.update(config, overlapped);
+    rc |= expect_int_eq("overlap keeps queued correction from disappearing", update.apply_ppm, 0);
+    rc |= expect_int_eq("overlap keeps training active while queued request exists", update.training, 1);
+    rc |= expect_int_eq("overlap keeps controller unlocked", update.locked, 0);
+    rc |= expect_true("overlap keeps cooldown while queued request exists", update.cooldown_ticks > 0);
+
+    update = controller.update(config, make_inputs(7000, -8, freq_hz, 0.02, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("overlap apply ack restarts observation", update.apply_ppm, 0);
+    rc |= expect_int_eq("overlap apply ack stays in training", update.training, 1);
+    rc |= expect_int_eq("overlap apply ack remains unlocked", update.locked, 0);
+    return rc;
+}
+
+static int
 test_positive_residual_increases_applied_ppm(void) {
     int rc = 0;
     RtlAutoPpmController controller;
@@ -627,6 +708,8 @@ main(void) {
     rc |= test_external_ppm_change_resets_observation_window();
     rc |= test_async_ppm_waits_for_applied_snapshot_before_retraining();
     rc |= test_requested_ppm_change_blocks_retraining_until_applied();
+    rc |= test_canceled_requested_ppm_waits_for_controller_request_to_clear();
+    rc |= test_overlapped_active_and_queued_requests_keep_training_hold();
     rc |= test_positive_residual_increases_applied_ppm();
     rc |= test_deadband_reentry_restarts_observation_window();
     rc |= test_locked_session_reenters_training_on_same_channel_drift();

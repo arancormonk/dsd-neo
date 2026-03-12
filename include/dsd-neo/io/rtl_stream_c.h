@@ -72,6 +72,39 @@ int rtl_stream_destroy(RtlSdrContext* ctx);
  * @return 0 on success; otherwise <0 on error.
  */
 int rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz);
+/**
+ * @brief Publish a live RTL PPM request and assign it a fresh request generation.
+ *
+ * Runtime writers should use this helper instead of mutating
+ * `opts->rtlsdr_ppm_error` directly so failed applies and same-value retries
+ * remain distinguishable.
+ *
+ * @param opts Decoder options to update. Must not be NULL.
+ * @param ppm Requested correction in PPM; clamped to [-200, 200].
+ * @return 0 on success; otherwise <0 on invalid input.
+ */
+int rtl_stream_request_ppm(dsd_opts* opts, int ppm);
+/**
+ * @brief Adjust the live RTL PPM request relative to its current published value.
+ *
+ * Uses the same synchronized publication path as rtl_stream_request_ppm() so
+ * UI increment/decrement commands do not race a concurrent rollback or retry.
+ *
+ * @param opts Decoder options to update. Must not be NULL.
+ * @param delta Signed delta in PPM; result is clamped to [-200, 200].
+ * @return 0 on success; otherwise <0 on invalid input.
+ */
+int rtl_stream_adjust_ppm(dsd_opts* opts, int delta);
+/**
+ * @brief Read the live requested RTL PPM value using the synchronized runtime snapshot.
+ *
+ * Runtime UI code should prefer this helper over reading
+ * `opts->rtlsdr_ppm_error` directly while the RTL stream is active.
+ *
+ * @param opts Decoder options to query. May be NULL.
+ * @return The currently requested RTL PPM value, or 0 when `opts` is NULL.
+ */
+int rtl_stream_get_requested_ppm(const dsd_opts* opts);
 
 /* I/O */
 /**

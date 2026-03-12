@@ -6,7 +6,6 @@
 /* UI → Demod command queue (SPSC, bounded) */
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -26,7 +25,6 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
-#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/menu_services.h>
@@ -42,7 +40,9 @@
 #include <string.h>
 
 #ifdef USE_RADIO
+#include <dsd-neo/core/constants.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/ui/ui_dsp_cmd.h>
 #endif
 
@@ -699,7 +699,7 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 memcpy(&v, c->data, sizeof v);
                 int rc = svc_rtl_set_ppm(opts, v);
                 if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL PPM -> %d", (int)opts->rtlsdr_ppm_error);
+                    ui_set_toast(state, 3, "Applied: RTL PPM -> %d", rtl_stream_get_requested_ppm(opts));
                 } else if (ui_rc_is_not_supported(rc)) {
                     ui_set_toast(state, 3, "Unsupported: PPM correction not available on active backend");
                 } else {
@@ -1075,6 +1075,27 @@ mark_cc_sync(dsd_state* state, int include_monotonic) {
 }
 
 #ifdef USE_RADIO
+static int
+cfg_uses_rtl_runtime(const dsdneoUserConfig* cfg) {
+    if (!cfg || !cfg->has_input) {
+        return 0;
+    }
+    return cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP
+           || cfg->input_source == DSDCFG_INPUT_SOAPY;
+}
+
+static void
+apply_cfg_live_rtl_ppm_request(dsd_opts* opts, const dsdneoUserConfig* cfg, int old_audio_in_type) {
+    if (!opts || old_audio_in_type != AUDIO_IN_RTL || opts->audio_in_type != AUDIO_IN_RTL
+        || !cfg_uses_rtl_runtime(cfg)) {
+        return;
+    }
+    /* Config apply must mint a fresh request generation even when the input
+     * device string is unchanged, otherwise same-value retries after a failed
+     * apply are mistaken for stale state and never reach the controller. */
+    (void)rtl_stream_request_ppm(opts, cfg->rtl_ppm);
+}
+
 static void
 apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
     if (cfg->rtl_freq[0]) {
@@ -1082,9 +1103,6 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
         if (hz > 0) {
             opts->rtlsdr_center_freq = hz;
         }
-    }
-    if (cfg->rtl_ppm) {
-        opts->rtlsdr_ppm_error = cfg->rtl_ppm;
     }
     if (cfg->rtl_bw_khz) {
         opts->rtl_dsp_bw_khz = cfg->rtl_bw_khz;
@@ -1872,6 +1890,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 
                 memcpy(&cfg, c->data, sizeof cfg);
                 dsd_apply_user_config_to_opts(&cfg, opts, state);
+#ifdef USE_RADIO
+                apply_cfg_live_rtl_ppm_request(opts, &cfg, old_audio_in_type);
+#endif
                 apply_cfg_runtime_hot_switches(opts, state, &cfg, old_audio_in_dev, old_audio_in_type,
                                                old_audio_out_dev, old_audio_out_type);
             }

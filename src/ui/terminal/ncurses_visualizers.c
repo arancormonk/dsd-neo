@@ -9,25 +9,26 @@
 
 #include <curses.h>
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <math.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RTLSDR
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/ui/ncurses_internal.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #endif
 
 void
 print_constellation_view(dsd_opts* opts, dsd_state* state) {
+    UNUSED(opts);
     UNUSED(state);
 #ifdef USE_RTLSDR
     /* Fetch a snapshot of recent I/Q points */
@@ -496,6 +497,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
 
 void
 print_eye_view(dsd_opts* opts, dsd_state* state) {
+    UNUSED2(opts, state);
 #ifdef USE_RTLSDR
     /* Fetch a snapshot of recent I-channel samples and SPS */
     enum { MAXS = 16384 };
@@ -1172,6 +1174,7 @@ print_fsk_hist_view(void) {
 
 void
 print_spectrum_view(dsd_opts* opts) {
+    UNUSED(opts);
 #ifdef USE_RTLSDR
     int nfft = rtl_stream_spectrum_get_size();
     if (nfft < 64) {
