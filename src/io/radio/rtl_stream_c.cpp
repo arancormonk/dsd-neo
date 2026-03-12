@@ -71,15 +71,8 @@ struct RtlSdrContext {
     RtlSdrOrchestrator* stream;
 };
 
-/**
- * @brief Create a new RTL-SDR stream context from options.
- *
- * @param opts Decoder options snapshot used to configure the stream. Must not be NULL.
- * @param out_ctx [out] On success, receives an opaque context pointer.
- * @return 0 on success; otherwise <0 on error.
- */
-extern "C" int
-rtl_stream_create(const dsd_opts* opts, RtlSdrContext** out_ctx) {
+static int
+rtl_stream_create_impl(const dsd_opts* opts, dsd_opts* mirrored_opts, RtlSdrContext** out_ctx) {
     if (!out_ctx || !opts) {
         return -1;
     }
@@ -87,7 +80,7 @@ rtl_stream_create(const dsd_opts* opts, RtlSdrContext** out_ctx) {
     if (!*out_ctx) {
         return -1;
     }
-    (*out_ctx)->stream = new (std::nothrow) RtlSdrOrchestrator(*opts, const_cast<dsd_opts*>(opts));
+    (*out_ctx)->stream = new (std::nothrow) RtlSdrOrchestrator(*opts, mirrored_opts);
     if (!(*out_ctx)->stream) {
         free(*out_ctx);
         *out_ctx = NULL;
@@ -97,9 +90,33 @@ rtl_stream_create(const dsd_opts* opts, RtlSdrContext** out_ctx) {
 }
 
 /**
+ * @brief Create a new RTL-SDR stream context from an immutable options snapshot.
+ *
+ * @param opts Decoder options snapshot used to configure the stream. Must not be NULL.
+ * @param out_ctx [out] On success, receives an opaque context pointer.
+ * @return 0 on success; otherwise <0 on error.
+ */
+extern "C" int
+rtl_stream_create(const dsd_opts* opts, RtlSdrContext** out_ctx) {
+    return rtl_stream_create_impl(opts, NULL, out_ctx);
+}
+
+/**
+ * @brief Create a new RTL-SDR stream context mirrored to caller-owned options.
+ *
+ * @param opts Mutable caller-owned decoder options to mirror. Must not be NULL.
+ * @param out_ctx [out] On success, receives an opaque context pointer.
+ * @return 0 on success; otherwise <0 on error.
+ */
+extern "C" int
+rtl_stream_create_mirrored(dsd_opts* opts, RtlSdrContext** out_ctx) {
+    return rtl_stream_create_impl(opts, opts, out_ctx);
+}
+
+/**
  * @brief Start the stream threads and device I/O.
  *
- * @param ctx Stream context created by rtl_stream_create().
+ * @param ctx Stream context created by rtl_stream_create() or rtl_stream_create_mirrored().
  * @return 0 on success; otherwise <0 on error.
  */
 extern "C" int
@@ -115,7 +132,7 @@ rtl_stream_start(RtlSdrContext* ctx) {
  *
  * Safe to call multiple times; subsequent calls are no-ops.
  *
- * @param ctx Stream context created by rtl_stream_create().
+ * @param ctx Stream context created by rtl_stream_create() or rtl_stream_create_mirrored().
  * @return 0 on success; otherwise <0 on error.
  */
 extern "C" int

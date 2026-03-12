@@ -1086,13 +1086,15 @@ cfg_uses_rtl_runtime(const dsdneoUserConfig* cfg) {
 
 static void
 apply_cfg_live_rtl_ppm_request(dsd_opts* opts, const dsdneoUserConfig* cfg, int old_audio_in_type) {
-    if (!opts || old_audio_in_type != AUDIO_IN_RTL || opts->audio_in_type != AUDIO_IN_RTL
-        || !cfg_uses_rtl_runtime(cfg)) {
+    if (!opts || old_audio_in_type != AUDIO_IN_RTL || opts->audio_in_type != AUDIO_IN_RTL || !cfg_uses_rtl_runtime(cfg)
+        || !cfg->rtl_ppm_is_set) {
         return;
     }
     /* Config apply must mint a fresh request generation even when the input
      * device string is unchanged, otherwise same-value retries after a failed
-     * apply are mistaken for stale state and never reach the controller. */
+     * apply are mistaken for stale state and never reach the controller.
+     * Omitted rtl_ppm must preserve the live correction instead of clearing it
+     * back to the config struct's zero-initialized default. */
     (void)rtl_stream_request_ppm(opts, cfg->rtl_ppm);
 }
 

@@ -27,22 +27,39 @@ typedef struct RtlSdrContext RtlSdrContext;
 
 /* Lifecycle */
 /**
- * @brief Create a new RTL-SDR stream context from options.
+ * @brief Create a new RTL-SDR stream context from an immutable options snapshot.
+ *
+ * The supplied options are copied internally and never mutated. Use
+ * rtl_stream_create_mirrored() when the caller needs live RTL PPM updates to
+ * propagate back into its owning @ref dsd_opts.
+ *
  * @param opts Decoder options snapshot used to configure the stream. Must not be NULL.
  * @param out_ctx [out] On success, receives an opaque context pointer.
  * @return 0 on success; otherwise <0 on error.
  */
 int rtl_stream_create(const dsd_opts* opts, RtlSdrContext** out_ctx);
 /**
+ * @brief Create a new RTL-SDR stream context mirrored to caller-owned options.
+ *
+ * The stream still owns an internal copy of @p opts, but live requested PPM
+ * updates also write back into the caller-owned structure so restarts and
+ * config snapshots retain the current correction.
+ *
+ * @param opts Mutable caller-owned decoder options to mirror. Must not be NULL.
+ * @param out_ctx [out] On success, receives an opaque context pointer.
+ * @return 0 on success; otherwise <0 on error.
+ */
+int rtl_stream_create_mirrored(dsd_opts* opts, RtlSdrContext** out_ctx);
+/**
  * @brief Start the stream threads and device I/O.
- * @param ctx Stream context created by rtl_stream_create().
+ * @param ctx Stream context created by rtl_stream_create() or rtl_stream_create_mirrored().
  * @return 0 on success; otherwise <0 on error.
  */
 int rtl_stream_start(RtlSdrContext* ctx);
 /**
  * @brief Stop the stream and cleanup resources associated with the run.
  * Safe to call multiple times; subsequent calls are no-ops.
- * @param ctx Stream context created by rtl_stream_create().
+ * @param ctx Stream context created by rtl_stream_create() or rtl_stream_create_mirrored().
  * @return 0 on success; otherwise <0 on error.
  */
 int rtl_stream_stop(RtlSdrContext* ctx);
@@ -52,7 +69,7 @@ int rtl_stream_stop(RtlSdrContext* ctx);
  * Mirrors rtl_stream_stop() but avoids toggling global shutdown state so the
  * UI can reconfigure and restart streaming without terminating the process.
  *
- * @param ctx Stream context created by rtl_stream_create().
+ * @param ctx Stream context created by rtl_stream_create() or rtl_stream_create_mirrored().
  * @return 0 on success; otherwise <0 on error.
  */
 int rtl_stream_soft_stop(RtlSdrContext* ctx);

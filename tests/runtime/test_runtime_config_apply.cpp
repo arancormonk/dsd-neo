@@ -113,6 +113,7 @@ test_same_value_rtl_ppm_retry_is_republished(void) {
     snprintf(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "1000000");
     cfg.rtl_gain = 10;
     cfg.rtl_ppm = 5;
+    cfg.rtl_ppm_is_set = 1;
     cfg.rtl_bw_khz = 48;
     cfg.rtl_volume = 2;
 
@@ -147,6 +148,7 @@ test_zero_rtl_ppm_apply_updates_live_request(void) {
     snprintf(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "1000000");
     cfg.rtl_gain = 10;
     cfg.rtl_ppm = 0;
+    cfg.rtl_ppm_is_set = 1;
     cfg.rtl_bw_khz = 48;
     cfg.rtl_volume = 2;
 
@@ -154,6 +156,39 @@ test_zero_rtl_ppm_apply_updates_live_request(void) {
     ui_drain_cmds(&opts, &state);
 
     return expect_true("zero ppm config apply updates live requested ppm", opts.rtlsdr_ppm_error == 0);
+}
+
+static int
+test_omitted_rtl_ppm_apply_preserves_live_request(void) {
+    dsd_opts opts;
+    dsd_state state;
+    init_test_runtime(&opts, &state);
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_gain_value = 10;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.rtl_volume_multiplier = 2;
+    opts.rtlsdr_ppm_error = 9;
+    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:1000000:10:9:48:0:2");
+
+    dsdneoUserConfig cfg = {0};
+    cfg.version = 1;
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    snprintf(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "1000000");
+    cfg.rtl_gain = 10;
+    cfg.rtl_bw_khz = 48;
+    cfg.rtl_volume = 2;
+
+    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    ui_drain_cmds(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_true("omitted ppm preserves live requested ppm", opts.rtlsdr_ppm_error == 9);
+    rc |= expect_true("omitted ppm keeps existing device string ppm",
+                      strncmp(opts.audio_in_dev, "rtl:0:1000000:10:9:48:0:2", sizeof opts.audio_in_dev) == 0);
+    return rc;
 }
 #endif
 
@@ -164,6 +199,7 @@ main(void) {
 #ifdef USE_RADIO
     rc |= test_same_value_rtl_ppm_retry_is_republished();
     rc |= test_zero_rtl_ppm_apply_updates_live_request();
+    rc |= test_omitted_rtl_ppm_apply_preserves_live_request();
 #endif
     return rc ? 1 : 0;
 }

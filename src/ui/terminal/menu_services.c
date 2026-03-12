@@ -656,7 +656,7 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
     /* If the radio pipeline is the active input, immediately recreate and start the stream
        so changes take effect as soon as the user confirms the setting. */
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
+        if (rtl_stream_create_mirrored(opts, &state->rtl_ctx) < 0) {
             return -1;
         }
         if (rtl_stream_start(state->rtl_ctx) < 0) {

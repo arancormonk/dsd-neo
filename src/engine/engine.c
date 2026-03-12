@@ -1518,7 +1518,7 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         if (state->rtl_ctx == NULL) {
-            if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
+            if (rtl_stream_create_mirrored(opts, &state->rtl_ctx) < 0) {
                 LOG_ERROR("Failed to create radio stream.\n");
             }
         }
@@ -1875,7 +1875,7 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
         else if (opts->audio_in_type == AUDIO_IN_RTL) {
             if (state->rtl_ctx == NULL) {
-                if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
+                if (rtl_stream_create_mirrored(opts, &state->rtl_ctx) < 0) {
                     LOG_ERROR("Failed to create radio stream.\n");
                 }
             }

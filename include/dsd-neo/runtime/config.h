@@ -636,6 +636,7 @@ typedef struct dsdneoUserConfig {
     char rtl_freq[64];
     int rtl_gain;
     int rtl_ppm;
+    int rtl_ppm_is_set; /* distinguish explicit 0 from omitted */
     int rtl_bw_khz;
     int rtl_sql;
     int rtl_volume;

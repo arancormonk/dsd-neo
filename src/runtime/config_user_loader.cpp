@@ -222,6 +222,7 @@ apply_input_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* v
         cfg->rtl_gain = (int)parse_int_for_mode(val, 22, mode);
     } else if (strcmp(key_lc, "rtl_ppm") == 0) {
         cfg->rtl_ppm = (int)parse_int_for_mode(val, 0, mode);
+        cfg->rtl_ppm_is_set = 1;
     } else if (strcmp(key_lc, "rtl_bw_khz") == 0) {
         cfg->rtl_bw_khz = (int)parse_int_for_mode(val, 12, mode);
     } else if (strcmp(key_lc, "rtl_sql") == 0) {

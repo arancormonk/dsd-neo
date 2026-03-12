@@ -218,6 +218,17 @@ is_valid_rtl_bw_khz(int bw) {
     return (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48);
 }
 
+static int
+resolve_configured_rtl_ppm(const dsdneoUserConfig* cfg, const dsd_opts* opts) {
+    if (!cfg) {
+        return opts ? opts->rtlsdr_ppm_error : 0;
+    }
+    if (cfg->rtl_ppm_is_set) {
+        return cfg->rtl_ppm;
+    }
+    return opts ? opts->rtlsdr_ppm_error : 0;
+}
+
 static void
 apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (!cfg || !opts) {
@@ -229,7 +240,7 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
     }
 
     int gain = cfg->rtl_gain ? cfg->rtl_gain : opts->rtl_gain_value;
-    int ppm = cfg->rtl_ppm;
+    int ppm = resolve_configured_rtl_ppm(cfg, opts);
     int bw = cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
     int sql = cfg->rtl_sql;
     int vol = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
@@ -257,6 +268,7 @@ snapshot_apply_live_rtl_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 
     cfg->rtl_gain = opts->rtl_gain_value;
     cfg->rtl_ppm = opts->rtlsdr_ppm_error;
+    cfg->rtl_ppm_is_set = 1;
     cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;
     cfg->rtl_sql = (int)local_pwr_to_dB(opts->rtl_squelch_level);
     cfg->rtl_volume = opts->rtl_volume_multiplier;
@@ -286,6 +298,7 @@ snapshot_parse_rtl_device_spec(const char* audio_in_dev, dsdneoUserConfig* cfg) 
     }
     if (n > 4) {
         cfg->rtl_ppm = atoi(tok[4]);
+        cfg->rtl_ppm_is_set = 1;
     }
     if (n > 5) {
         cfg->rtl_bw_khz = atoi(tok[5]);
@@ -321,6 +334,7 @@ snapshot_parse_rtltcp_device_spec(const char* audio_in_dev, dsdneoUserConfig* cf
     }
     if (n > 5) {
         cfg->rtl_ppm = atoi(tok[5]);
+        cfg->rtl_ppm_is_set = 1;
     }
     if (n > 6) {
         cfg->rtl_bw_khz = atoi(tok[6]);
@@ -529,7 +543,7 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
             if (cfg->rtl_gain) {
                 fprintf(out, "rtl_gain = %d\n", cfg->rtl_gain);
             }
-            if (cfg->rtl_ppm) {
+            if (cfg->rtl_ppm_is_set) {
                 fprintf(out, "rtl_ppm = %d\n", cfg->rtl_ppm);
             }
             if (cfg->rtl_bw_khz) {
@@ -553,7 +567,7 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
             if (cfg->rtl_gain) {
                 fprintf(out, "rtl_gain = %d\n", cfg->rtl_gain);
             }
-            if (cfg->rtl_ppm) {
+            if (cfg->rtl_ppm_is_set) {
                 fprintf(out, "rtl_ppm = %d\n", cfg->rtl_ppm);
             }
             if (cfg->rtl_bw_khz) {
@@ -574,7 +588,7 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
             if (cfg->rtl_gain) {
                 fprintf(out, "rtl_gain = %d\n", cfg->rtl_gain);
             }
-            if (cfg->rtl_ppm) {
+            if (cfg->rtl_ppm_is_set) {
                 fprintf(out, "rtl_ppm = %d\n", cfg->rtl_ppm);
             }
             if (cfg->rtl_bw_khz) {
@@ -732,7 +746,7 @@ dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_s
                      * defaults initOpts()/CLI already established (AGC and
                      * multiplier 2) instead of forcing hardcoded values. */
                     int gain = cfg->rtl_gain ? cfg->rtl_gain : opts->rtl_gain_value;
-                    int ppm = cfg->rtl_ppm;
+                    int ppm = resolve_configured_rtl_ppm(cfg, opts);
                     int bw = cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
                     int sql = cfg->rtl_sql;
                     int vol = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
@@ -744,7 +758,7 @@ dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_s
                 if (cfg->rtltcp_host[0]) {
                     if (cfg->rtl_freq[0]) {
                         int gain = cfg->rtl_gain ? cfg->rtl_gain : opts->rtl_gain_value;
-                        int ppm = cfg->rtl_ppm;
+                        int ppm = resolve_configured_rtl_ppm(cfg, opts);
                         int bw = cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
                         int sql = cfg->rtl_sql;
                         int vol = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;

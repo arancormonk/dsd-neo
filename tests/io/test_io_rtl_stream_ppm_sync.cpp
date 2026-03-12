@@ -77,11 +77,70 @@ test_adjust_and_getter_use_active_snapshot_when_caller_is_stale(void) {
     return rc;
 }
 
+static int
+test_c_api_create_mirrored_updates_live_caller_opts(void) {
+    dsd_opts caller_opts;
+    init_test_opts(&caller_opts);
+    caller_opts.rtlsdr_ppm_error = 11;
+
+    RtlSdrContext* ctx = nullptr;
+
+    int rc = 0;
+    rc |= expect_int_eq("c api mirrored create rc", rtl_stream_create_mirrored(&caller_opts, &ctx), 0);
+    if (!ctx) {
+        std::fprintf(stderr, "FAIL: c api mirrored create returned null ctx\n");
+        return 1;
+    }
+
+    dsd_opts request_opts;
+    init_test_opts(&request_opts);
+    request_opts.rtlsdr_ppm_error = 0;
+
+    rc |= expect_int_eq("request through live helper rc", rtl_stream_request_ppm(&request_opts, -12), 0);
+    rc |= expect_int_eq("mirrored caller updated", caller_opts.rtlsdr_ppm_error, -12);
+    rc |= expect_int_eq("request opts updated", request_opts.rtlsdr_ppm_error, -12);
+    rc |= expect_int_eq("getter observes mirrored caller", rtl_stream_get_requested_ppm(&caller_opts), -12);
+
+    rc |= expect_int_eq("c api mirrored destroy rc", rtl_stream_destroy(ctx), 0);
+    return rc;
+}
+
+static int
+test_c_api_create_preserves_const_source_snapshot(void) {
+    dsd_opts seed_opts;
+    init_test_opts(&seed_opts);
+    seed_opts.rtlsdr_ppm_error = 11;
+
+    const dsd_opts const_source_opts = seed_opts;
+    RtlSdrContext* ctx = nullptr;
+
+    int rc = 0;
+    rc |= expect_int_eq("c api create rc", rtl_stream_create(&const_source_opts, &ctx), 0);
+    if (!ctx) {
+        std::fprintf(stderr, "FAIL: c api create returned null ctx\n");
+        return 1;
+    }
+
+    dsd_opts request_opts;
+    init_test_opts(&request_opts);
+    request_opts.rtlsdr_ppm_error = 0;
+
+    rc |= expect_int_eq("request through live helper rc", rtl_stream_request_ppm(&request_opts, -12), 0);
+    rc |= expect_int_eq("const source opts remain unchanged", const_source_opts.rtlsdr_ppm_error, 11);
+    rc |= expect_int_eq("request opts updated", request_opts.rtlsdr_ppm_error, -12);
+    rc |= expect_int_eq("getter still observes active snapshot", rtl_stream_get_requested_ppm(&const_source_opts), -12);
+
+    rc |= expect_int_eq("c api destroy rc", rtl_stream_destroy(ctx), 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_caller_request_updates_active_snapshot();
     rc |= test_active_request_updates_caller_snapshot();
     rc |= test_adjust_and_getter_use_active_snapshot_when_caller_is_stale();
+    rc |= test_c_api_create_mirrored_updates_live_caller_opts();
+    rc |= test_c_api_create_preserves_const_source_snapshot();
     return rc ? 1 : 0;
 }

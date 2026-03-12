@@ -417,6 +417,72 @@ test_snapshot_roundtrip_soapy_args(void) {
 }
 
 static int
+test_snapshot_roundtrip_zero_rtl_ppm(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+
+    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=airspy");
+    opts.audio_in_dev[sizeof opts.audio_in_dev - 1] = '\0';
+    opts.rtlsdr_center_freq = 155340000U;
+    opts.rtl_gain_value = 22;
+    opts.rtlsdr_ppm_error = 0;
+    opts.rtl_dsp_bw_khz = 12;
+    opts.rtl_squelch_level = 1.0;
+    opts.rtl_volume_multiplier = 3;
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+
+    int rc = 0;
+    if (!snap.rtl_ppm_is_set || snap.rtl_ppm != 0) {
+        fprintf(stderr, "snapshot zero rtl_ppm should be explicit, got is_set=%d ppm=%d\n", snap.rtl_ppm_is_set,
+                snap.rtl_ppm);
+        rc |= 1;
+    }
+
+    char rendered[4096];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (!strstr(rendered, "rtl_ppm = 0\n")) {
+        fprintf(stderr, "rendered config should keep explicit zero rtl_ppm:\n%s\n", rendered);
+        rc |= 1;
+    }
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(rendered, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg_reload;
+    if (dsd_user_config_load(path, &cfg_reload) != 0) {
+        fprintf(stderr, "dsd_user_config_load failed for rendered zero-ppm config %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    if (!cfg_reload.rtl_ppm_is_set || cfg_reload.rtl_ppm != 0) {
+        fprintf(stderr, "reloaded zero rtl_ppm should stay explicit, got is_set=%d ppm=%d\n", cfg_reload.rtl_ppm_is_set,
+                cfg_reload.rtl_ppm);
+        rc |= 1;
+    }
+
+    static dsd_opts opts_reload;
+    static dsd_state state_reload;
+    reset_opts_and_state(opts_reload, state_reload);
+    opts_reload.rtlsdr_ppm_error = 17;
+    dsd_apply_user_config_to_opts(&cfg_reload, &opts_reload, &state_reload);
+    if (opts_reload.rtlsdr_ppm_error != 0) {
+        fprintf(stderr, "reloaded zero rtl_ppm should override existing ppm, got %d\n", opts_reload.rtlsdr_ppm_error);
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
 test_load_and_apply_rtltcp_regression(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -784,6 +850,7 @@ main(void) {
     rc |= test_load_and_apply_soapy_input_no_args();
     rc |= test_load_and_apply_soapy_input_with_args();
     rc |= test_snapshot_roundtrip_soapy_args();
+    rc |= test_snapshot_roundtrip_zero_rtl_ppm();
     rc |= test_load_and_apply_rtltcp_regression();
     rc |= test_snapshot_roundtrip();
     rc |= test_apply_demod_lock();
