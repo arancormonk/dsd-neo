@@ -28,6 +28,19 @@ struct RtlPpmRejectedRequestResolution {
     int rolled_back = 0;
 };
 
+struct RtlPpmApplyPlan {
+    int reconfigure = 0;
+    uint32_t freq_hz = 0;
+};
+
+/* Reconfigure/reset the active stream only after the backend has accepted the
+ * new PPM value. Rejected live PPM requests must leave the current demod
+ * chain running undisturbed. */
+static inline bool
+rtl_ppm_should_reconfigure_after_apply(const RtlPpmApplyPlan& plan, int ppm_apply_rc) {
+    return ppm_apply_rc == 0 && plan.reconfigure;
+}
+
 static inline bool
 rtl_ppm_controller_request_matches(const RtlPpmControllerRequestState& state, int requested_ppm,
                                    uint32_t requested_request_id) {
@@ -68,6 +81,23 @@ rtl_ppm_resolve_rejected_request(int applied_ppm, int requested_ppm, uint32_t re
         return {applied_ppm, requested_request_id, 1};
     }
     return {requested_ppm, requested_request_id, 0};
+}
+
+/* A live PPM correction shifts the RF center without stopping sample flow. If
+ * the controller knows the active tuned frequency, force the update through
+ * the full reconfigure/reset path so CQPSK/FLL/TED state is realigned before
+ * the demod thread consumes post-correction samples. */
+static inline RtlPpmApplyPlan
+rtl_ppm_plan_apply_to_active_stream(uint32_t last_applied_freq_hz, uint32_t fallback_freq_hz, int applied_ppm,
+                                    int requested_ppm) {
+    if (requested_ppm == applied_ppm) {
+        return {};
+    }
+    uint32_t active_freq_hz = last_applied_freq_hz ? last_applied_freq_hz : fallback_freq_hz;
+    if (active_freq_hz != 0) {
+        return {1, active_freq_hz};
+    }
+    return {};
 }
 
 } // namespace radio

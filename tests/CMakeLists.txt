@@ -1699,6 +1699,7 @@ if(DSD_HAS_RADIO)
 
   add_executable(dsd-neo_test_io_rtl_ppm_request io/test_io_rtl_ppm_request.cpp)
   target_include_directories(dsd-neo_test_io_rtl_ppm_request PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src/io/radio
   )
   add_test(NAME IO_RTL_PPM_REQUEST COMMAND dsd-neo_test_io_rtl_ppm_request)

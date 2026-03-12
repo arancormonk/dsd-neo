@@ -231,6 +231,10 @@ struct controller_state {
     std::atomic<uint32_t> retune_complete_id;
     /* Last center frequency successfully applied by the controller thread. */
     std::atomic<uint32_t> last_applied_freq_hz;
+    /* Completed capture reconfigure generation. This lets consumer-side
+     * holdoffs reset even when the tuned center frequency remains unchanged
+     * (for example, live PPM correction on the active stream). */
+    std::atomic<uint32_t> reconfigure_seq;
 };
 
 struct rtl_device* rtl_device_handle = NULL;
@@ -1055,6 +1059,7 @@ static DSD_THREAD_RETURN_TYPE
     static auto ag_hold_until = std::chrono::steady_clock::time_point{};
     static auto ag_probe_until = std::chrono::steady_clock::time_point{};
     static uint32_t ag_last_freq = 0;
+    static uint32_t ag_last_reconfigure_seq = 0;
     const int ag_throttle_ms = 1500; /* min interval between changes */
     const int ag_hold_ms = 1200;     /* pause after retune/scanning before adjusting */
     /* Up-step gating: now uses spectral SNR + in-band power ratio (see below). */
@@ -1069,6 +1074,18 @@ static DSD_THREAD_RETURN_TYPE
     static int s_ag_up_persist = 2;         /* require consecutive passes before stepping up */
     static int ag_spec_pass = 0;            /* persistence counter for spectral gate */
     const int is_rtltcp_input = (g_stream && radio_source_is_rtltcp(g_stream->opts)) ? 1 : 0;
+    auto reset_autogain_window = [&](uint32_t current_freq_hz, uint32_t current_reconfigure_seq) {
+        ag_last_freq = current_freq_hz;
+        ag_last_reconfigure_seq = current_reconfigure_seq;
+        ag_blocks = ag_high = ag_low = 0;
+        ag_hold_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ag_hold_ms);
+        if (s_probe_ms > 0) {
+            ag_probe_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(s_probe_ms);
+        } else {
+            ag_probe_until = std::chrono::steady_clock::time_point{};
+        }
+        ag_spec_pass = 0;
+    };
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Preserve rtltcp prebuffer: hold the consumer until cold start finishes. */
         if (is_rtltcp_input && !controller.cold_start_ready.load(std::memory_order_acquire)) {
@@ -1080,9 +1097,22 @@ static DSD_THREAD_RETURN_TYPE
             input_ring_discard_all_consumer(&input_ring);
             continue;
         }
+        /* Freeze the consumer while the controller is reconfiguring the
+         * capture path. Successful reconfigures request a purge before this
+         * gate is released; rejected live PPM updates simply resume. */
+        if (controller.retune_in_progress.load(std::memory_order_acquire)) {
+            dsd_sleep_ms(1);
+            continue;
+        }
         /* Read a block from input ring */
         int got = input_ring_read_block(&input_ring, d->input_cb_buf, static_cast<size_t>(MAXIMUM_BUF_LENGTH));
         if (got <= 0) {
+            continue;
+        }
+        /* Recheck after the blocking read in case the controller armed a
+         * reconfigure or queued a purge while we were waiting for input. */
+        if (controller.retune_in_progress.load(std::memory_order_acquire)
+            || g_ring_purge_pending.load(std::memory_order_acquire)) {
             continue;
         }
         if (!ag_initialized) {
@@ -1100,18 +1130,12 @@ static DSD_THREAD_RETURN_TYPE
         }
         /* Update simple occupancy metrics on pre-DSP input for autogain */
         if (g_tuner_autogain_on.load(std::memory_order_relaxed)) {
-            /* Detect retune and apply short holdoff to avoid reacting on noise */
-            if (ag_last_freq != dongle.freq) {
-                ag_last_freq = dongle.freq;
-                ag_blocks = ag_high = ag_low = 0;
-                ag_hold_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ag_hold_ms);
-                /* On retune, defer any takeover to allow device auto to settle */
-                if (s_probe_ms > 0) {
-                    ag_probe_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(s_probe_ms);
-                } else {
-                    ag_probe_until = std::chrono::steady_clock::time_point{};
-                }
-                ag_spec_pass = 0; /* reset spectral gate persistence on retune */
+            uint32_t current_freq_hz = dongle.freq;
+            uint32_t current_reconfigure_seq = controller.reconfigure_seq.load(std::memory_order_acquire);
+            /* Detect retunes, including same-frequency reconfigures such as a
+             * live PPM correction, and apply the normal post-retune holdoff. */
+            if (ag_last_freq != current_freq_hz || ag_last_reconfigure_seq != current_reconfigure_seq) {
+                reset_autogain_window(current_freq_hz, current_reconfigure_seq);
             }
             float max_abs = 0.0f;
             double sum_abs = 0.0;
@@ -1328,10 +1352,9 @@ static DSD_THREAD_RETURN_TYPE
         if (!controller.cold_start_ready.load(std::memory_order_acquire)) {
             continue;
         }
-        /* Gate: skip demod processing while a retune is in progress.
-         * This prevents the race where we process transient/stale samples during
-         * hardware retune before TED/AGC/filters are reset for the new frequency.
-         * Applies to all modulations (C4FM, GFSK, QPSK, etc). */
+        /* Recheck at the last possible point before demodulation so a
+         * controller-side retune or same-frequency live PPM reconfigure
+         * cannot race with demod_reset_on_retune() mutating shared state. */
         if (controller.retune_in_progress.load(std::memory_order_acquire)) {
             continue;
         }
@@ -1793,13 +1816,10 @@ optimal_settings(int freq, int rate) {
  * single, consistent path. Applies fs/4 shift when offset_tuning is off.
  *
  * @param center_freq_hz Desired RF center frequency in Hz.
- * @param ppm_error PPM correction to apply alongside the reconfigure.
- * @return Result from the PPM control apply attempt.
  */
-static int
-apply_capture_settings(uint32_t center_freq_hz, int ppm_error) {
+static void
+program_capture_frequency_and_rate(uint32_t center_freq_hz) {
     optimal_settings((int)center_freq_hz, demod.rate_in);
-    int ppm_rc = apply_ppm_setting(ppm_error);
     rtl_device_set_frequency(rtl_device_handle, dongle.freq);
     rtl_device_set_sample_rate(rtl_device_handle, dongle.rate);
     /* Use driver auto hardware bandwidth by default, or override via env */
@@ -1824,9 +1844,57 @@ apply_capture_settings(uint32_t center_freq_hz, int ppm_error) {
         LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev, dongle.rate,
                  demod.rate_out);
     }
-    /* Ensure TED SPS reflects the current effective sampling rate unless explicitly overridden. */
-    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
+}
+
+/**
+ * @brief Program capture settings and apply hardware PPM correction when requested.
+ *
+ * @param ppm_error PPM correction to apply alongside the reconfigure.
+ * @return Result from the PPM control apply attempt.
+ */
+static int
+apply_capture_settings(uint32_t center_freq_hz, int ppm_error) {
+    int ppm_rc = apply_ppm_setting(ppm_error);
+    program_capture_frequency_and_rate(center_freq_hz);
     return ppm_rc;
+}
+
+static void
+controller_finalize_reconfigure(struct controller_state* s, uint32_t center_freq_hz) {
+    if (!s || center_freq_hz == 0) {
+        return;
+    }
+    s->last_applied_freq_hz.store(center_freq_hz, std::memory_order_release);
+    rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
+    demod_reset_on_retune(&demod);
+    s->reconfigure_seq.fetch_add(1, std::memory_order_acq_rel);
+    g_ring_purge_pending.store(1, std::memory_order_release);
+}
+
+static inline void
+controller_begin_reconfigure(struct controller_state* s) {
+    if (!s) {
+        return;
+    }
+    s->retune_in_progress.store(1, std::memory_order_release);
+}
+
+static inline void
+controller_end_reconfigure(struct controller_state* s) {
+    if (!s) {
+        return;
+    }
+    s->retune_in_progress.store(0, std::memory_order_release);
+}
+
+static void
+controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t center_freq_hz) {
+    if (!s || center_freq_hz == 0) {
+        return;
+    }
+    program_capture_frequency_and_rate(center_freq_hz);
+    controller_finalize_reconfigure(s, center_freq_hz);
 }
 
 static int
@@ -1834,17 +1902,13 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
     if (!s || center_freq_hz == 0) {
         return -1;
     }
-    s->retune_in_progress.store(1, std::memory_order_release);
-    g_ring_purge_pending.store(1, std::memory_order_release);
+    controller_begin_reconfigure(s);
     int ppm_rc = apply_capture_settings(center_freq_hz, ppm_error);
     if (ppm_rc == 0) {
         store_dongle_ppm_error(ppm_error);
     }
-    s->last_applied_freq_hz.store(center_freq_hz, std::memory_order_release);
-    rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
-    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
-    demod_reset_on_retune(&demod);
-    s->retune_in_progress.store(0, std::memory_order_release);
+    controller_finalize_reconfigure(s, center_freq_hz);
+    controller_end_reconfigure(s);
     return ppm_rc;
 }
 
@@ -2014,11 +2078,36 @@ static DSD_THREAD_RETURN_TYPE
         }
         if (ppm_pending) {
             if (ppm_changed) {
+                uint32_t fallback_freq_hz = 0;
+                if (s->freq_len > 0) {
+                    fallback_freq_hz = (uint32_t)s->freqs[s->freq_now];
+                }
+                dsd::io::radio::RtlPpmApplyPlan ppm_plan = dsd::io::radio::rtl_ppm_plan_apply_to_active_stream(
+                    s->last_applied_freq_hz.load(std::memory_order_acquire), fallback_freq_hz, current_ppm,
+                    requested_ppm);
+                if (ppm_plan.reconfigure) {
+                    controller_begin_reconfigure(s);
+                }
+                /* Only disrupt the live stream after the backend accepts the new
+                 * PPM value. Rejected requests must not reset the current demod
+                 * chain. */
                 int ppm_rc = apply_ppm_setting(requested_ppm);
-                if (ppm_rc == 0) {
+                if (dsd::io::radio::rtl_ppm_should_reconfigure_after_apply(ppm_plan, ppm_rc)) {
+                    store_dongle_ppm_error(requested_ppm);
+                    controller_reconfigure_active_stream_locked(s, ppm_plan.freq_hz);
+                    controller_end_reconfigure(s);
+                    drain_output_on_retune();
+                    LOG_INFO("PPM correction applied: %d (reconfigured %u Hz).\n", requested_ppm, ppm_plan.freq_hz);
+                } else if (ppm_rc == 0) {
+                    if (ppm_plan.reconfigure) {
+                        controller_end_reconfigure(s);
+                    }
                     store_dongle_ppm_error(requested_ppm);
                     LOG_INFO("PPM correction applied: %d.\n", requested_ppm);
                 } else {
+                    if (ppm_plan.reconfigure) {
+                        controller_end_reconfigure(s);
+                    }
                     note_failed_ppm_request(requested_ppm, requested_ppm_request_id, current_ppm, ppm_rc);
                 }
             }
@@ -2516,6 +2605,7 @@ controller_init(struct controller_state* s) {
     s->retune_request_id.store(0);
     s->retune_complete_id.store(0);
     s->last_applied_freq_hz.store(0, std::memory_order_release);
+    s->reconfigure_seq.store(0, std::memory_order_release);
 }
 
 /**
