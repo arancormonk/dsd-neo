@@ -20,10 +20,10 @@ processed).
 
 Common controls:
 
-- Navigate: arrow keys (`Up`/`Down`)
-- Select: `Enter`
-- Back/close: `Esc`, `q`
-- Scroll long lists: `PageUp`/`PageDown`, `Home`/`End` (where supported by that prompt)
+- Move selection: arrow keys (`Up`/`Down`), `PageUp`/`PageDown`, `Home`/`End`
+- Select / open submenu: `Enter`, `Right`
+- Back / close: `Esc`, `q`, `Left`
+- Item help: `h`
 
 ## Hotkeys (Main Screen)
 

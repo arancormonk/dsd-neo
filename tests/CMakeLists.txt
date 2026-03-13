@@ -328,6 +328,34 @@ target_include_directories(dsd-neo_test_ui_hotkeys_regression PRIVATE ${PROJECT_
 target_link_libraries(dsd-neo_test_ui_hotkeys_regression PRIVATE dsd-neo_platform)
 add_test(NAME UI_HOTKEYS_REGRESSION COMMAND dsd-neo_test_ui_hotkeys_regression)
 
+add_executable(dsd-neo_test_ui_menu_navigation
+  ui/test_ui_menu_navigation.c
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c)
+target_include_directories(dsd-neo_test_ui_menu_navigation PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal
+  ${CURSES_INCLUDE_DIRS})
+add_test(NAME UI_MENU_NAVIGATION COMMAND dsd-neo_test_ui_menu_navigation)
+
+add_executable(dsd-neo_test_ui_menu_paging_viewport
+  ui/test_ui_menu_paging_viewport.c
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c)
+target_include_directories(dsd-neo_test_ui_menu_paging_viewport PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal
+  ${CURSES_INCLUDE_DIRS})
+add_test(NAME UI_MENU_PAGING_VIEWPORT COMMAND dsd-neo_test_ui_menu_paging_viewport)
+
+add_executable(dsd-neo_test_ui_chooser_navigation
+  ui/test_ui_chooser_navigation.c
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c)
+target_include_directories(dsd-neo_test_ui_chooser_navigation PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal
+  ${CURSES_INCLUDE_DIRS})
+target_link_libraries(dsd-neo_test_ui_chooser_navigation PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES})
+add_test(NAME UI_CHOOSER_NAVIGATION COMMAND dsd-neo_test_ui_chooser_navigation)
+
 add_executable(dsd-neo_test_ui_history_state
   ui/test_ui_history_state.c
   ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_history.c)

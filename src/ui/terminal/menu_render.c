@@ -17,7 +17,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "dsd-neo/ui/menu_core.h"
+#include "dsd-neo/ui/menu_core.h" // IWYU pragma: keep
 #include "menu_internal.h"
 
 // ---- Visibility helpers ----
@@ -65,10 +65,28 @@ ui_next_enabled(const NcMenuItem* items, size_t n, void* ctx, int from, int dir)
     return from;
 }
 
+int
+ui_visible_index_for_item(const NcMenuItem* items, size_t n, void* ctx, int idx) {
+    if (!items || n == 0 || idx < 0 || idx >= (int)n) {
+        return 0;
+    }
+    int vis_pos = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!ui_is_enabled(&items[i], ctx)) {
+            continue;
+        }
+        if ((int)i == idx) {
+            return vis_pos;
+        }
+        vis_pos++;
+    }
+    return 0;
+}
+
 // ---- Render helpers ----
 
 void
-ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, const char* title, void* ctx) {
+ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title, void* ctx) {
     int x = 2;
     werase(menu_win);
     box(menu_win, 0, 0);
@@ -102,15 +120,10 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, const 
         vis_total++;
     }
 
-    int top = 0;
-    if (vis_total > items_rows) {
-        top = hi_pos - (items_rows / 2);
-        if (top < 0) {
-            top = 0;
-        }
-        if (top > vis_total - items_rows) {
-            top = vis_total - items_rows;
-        }
+    int top = top_io ? *top_io : 0;
+    top = ui_scroll_follow_selection(vis_total, items_rows, top, hi_pos);
+    if (top_io) {
+        *top_io = top;
     }
 
     int vis_pos = 0;
@@ -131,9 +144,9 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, const 
         if ((int)i == hi) {
             wattron(menu_win, A_REVERSE);
         }
-        char dyn[128];
         const char* lab = items[i].label ? items[i].label : items[i].id;
         if (items[i].label_fn) {
+            char dyn[128];
             const char* got = items[i].label_fn(ctx, dyn, sizeof dyn);
             if (got && *got) {
                 lab = got;
@@ -158,9 +171,9 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, const 
     // Footer includes a position indicator so long menus remain navigable.
     char navline[96];
     if (vis_total > 0) {
-        snprintf(navline, sizeof navline, "Arrows: move  Enter: select  (%d/%d)", hi_pos + 1, vis_total);
+        snprintf(navline, sizeof navline, "Arrows/PgUp/PgDn/Home/End  (%d/%d)", hi_pos + 1, vis_total);
     } else {
-        snprintf(navline, sizeof navline, "Arrows: move  Enter: select");
+        snprintf(navline, sizeof navline, "Arrows/PgUp/PgDn/Home/End");
     }
     int nav_y = mh - 4;
     if (nav_y >= footer_min_y && nav_y <= mh - 2) {
@@ -170,7 +183,7 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, const 
     int help_y = mh - 3;
     if (help_y >= footer_min_y && help_y <= mh - 2) {
         mvwhline(menu_win, help_y, 1, ' ', mw - 2);
-        mvwaddnstr(menu_win, help_y, x, "h: help  Esc/q: back", (mw > 4) ? (mw - 4) : 1);
+        mvwaddnstr(menu_win, help_y, x, "Enter/Right: select  h: help  Esc/q/Left: back", (mw > 4) ? (mw - 4) : 1);
     }
 
     // transient status
@@ -202,8 +215,8 @@ ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, void* ctx, int* o
             continue;
         }
         const char* lab = items[i].label ? items[i].label : items[i].id;
-        char dyn[128];
         if (items[i].label_fn) {
+            char dyn[128];
             const char* got = items[i].label_fn(ctx, dyn, sizeof dyn);
             if (got && *got) {
                 lab = got;
@@ -226,8 +239,8 @@ ui_overlay_layout(UiMenuFrame* f, void* ctx) {
     if (!f || !f->items || f->n == 0) {
         return;
     }
-    const char* f1 = "Arrows: move  Enter: select";
-    const char* f2 = "h: help  Esc/q: back";
+    const char* f1 = "Arrows/PgUp/PgDn/Home/End  (000/000)";
+    const char* f2 = "Enter/Right: select  h: help  Esc/q/Left: back";
     int pad_x = 2;
     int maxlab = 0;
     int vis = ui_visible_count_and_maxlab(f->items, f->n, ctx, &maxlab);

@@ -22,6 +22,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "menu_internal.h"
+
 // ---- Prompt overlay state ----
 typedef struct {
     int active;
@@ -55,6 +57,8 @@ typedef struct {
     const char* const* items;
     int count;
     int sel;
+    int top;
+    int page_rows;
     WINDOW* win;
     void (*on_done)(void* user, int sel);
     void* user;
@@ -185,6 +189,11 @@ ui_help_wrap_text(const char* text, int width, char lines[][UI_HELP_MAX_LINE_CHA
         out_count = 1;
     }
     return out_count;
+}
+
+static void
+ui_chooser_keep_selection_visible(void) {
+    g_chooser.top = ui_scroll_follow_selection(g_chooser.count, g_chooser.page_rows, g_chooser.top, g_chooser.sel);
 }
 
 // ---- Prompt implementations ----
@@ -595,7 +604,7 @@ ui_help_handle_key(int ch) {
     if (g_help.line_count > g_help.page_rows && g_help.page_rows > 0) {
         max_scroll = g_help.line_count - g_help.page_rows;
     }
-    int page_step = (g_help.page_rows > 1) ? (g_help.page_rows - 1) : 1;
+    int page_step = ui_scroll_page_step_from_rows(g_help.page_rows);
     if (ch != ERR) {
         if (ch == KEY_UP) {
             if (g_help.scroll > 0) {
@@ -774,6 +783,8 @@ ui_chooser_start(const char* title, const char* const* items, int count, void (*
     g_chooser.items = items;
     g_chooser.count = count;
     g_chooser.sel = 0;
+    g_chooser.top = 0;
+    g_chooser.page_rows = 0;
     g_chooser.on_done = on_done;
     g_chooser.user = user;
     if (g_chooser.win) {
@@ -821,10 +832,42 @@ ui_chooser_handle_key(int ch) {
     }
     if (ch == KEY_UP) {
         g_chooser.sel = (g_chooser.sel - 1 + g_chooser.count) % g_chooser.count;
+        ui_chooser_keep_selection_visible();
         return 1;
     }
     if (ch == KEY_DOWN) {
         g_chooser.sel = (g_chooser.sel + 1) % g_chooser.count;
+        ui_chooser_keep_selection_visible();
+        return 1;
+    }
+    if (ch == KEY_HOME) {
+        g_chooser.sel = 0;
+        g_chooser.top = 0;
+        return 1;
+    }
+    if (ch == KEY_END) {
+        g_chooser.sel = g_chooser.count - 1;
+        g_chooser.top = ui_scroll_last_page_top(g_chooser.count, g_chooser.page_rows);
+        return 1;
+    }
+    if (ch == KEY_PPAGE) {
+        int page_step = ui_scroll_page_step_from_rows(g_chooser.page_rows);
+        g_chooser.sel -= page_step;
+        if (g_chooser.sel < 0) {
+            g_chooser.sel = 0;
+        }
+        g_chooser.top -= page_step;
+        ui_chooser_keep_selection_visible();
+        return 1;
+    }
+    if (ch == KEY_NPAGE) {
+        int page_step = ui_scroll_page_step_from_rows(g_chooser.page_rows);
+        g_chooser.sel += page_step;
+        if (g_chooser.sel >= g_chooser.count) {
+            g_chooser.sel = g_chooser.count - 1;
+        }
+        g_chooser.top += page_step;
+        ui_chooser_keep_selection_visible();
         return 1;
     }
     if (ch == 'q' || ch == 'Q' || ch == DSD_KEY_ESC) {
@@ -856,7 +899,7 @@ ui_chooser_render(void) {
             max_item = L;
         }
     }
-    const char* footer = "Arrows = Move   Enter = Select   Esc/q = Cancel";
+    const char* footer = "Arrows/PgUp/PgDn/Home/End  Enter  Esc/q";
     int w = 4 + (int)strlen(title);
     int need = 4 + max_item;
     if (need > w) {
@@ -916,17 +959,49 @@ ui_chooser_render(void) {
     WINDOW* win = g_chooser.win;
     werase(win);
     box(win, 0, 0);
-    mvwprintw(win, 1, 2, "%s", title);
+    int body_w = (w > 4) ? (w - 4) : 1;
+    int page_rows = h - 5;
+    if (page_rows < 1) {
+        page_rows = 1;
+    }
+    g_chooser.page_rows = page_rows;
+    if (g_chooser.sel < 0) {
+        g_chooser.sel = 0;
+    }
+    if (g_chooser.sel >= g_chooser.count) {
+        g_chooser.sel = g_chooser.count - 1;
+    }
+    ui_chooser_keep_selection_visible();
+
+    if (g_chooser.count > page_rows) {
+        int first = g_chooser.top + 1;
+        int last = g_chooser.top + page_rows;
+        char title_line[256];
+        if (last > g_chooser.count) {
+            last = g_chooser.count;
+        }
+        snprintf(title_line, sizeof title_line, "%s (%d-%d/%d)", title, first, last, g_chooser.count);
+        mvwaddnstr(win, 1, 2, title_line, body_w);
+    } else {
+        mvwaddnstr(win, 1, 2, title, body_w);
+    }
+
     int y = 3;
-    for (int i = 0; i < g_chooser.count; i++) {
+    int drawn = 0;
+    for (int i = g_chooser.top; i < g_chooser.count && drawn < page_rows; i++, drawn++) {
+        mvwhline(win, y, 1, ' ', w - 2);
         if (i == g_chooser.sel) {
             wattron(win, A_REVERSE);
         }
-        mvwprintw(win, y++, 2, "%s", g_chooser.items[i]);
+        mvwaddnstr(win, y++, 2, g_chooser.items[i], body_w);
         if (i == g_chooser.sel) {
             wattroff(win, A_REVERSE);
         }
     }
-    mvwprintw(win, h - 2, 2, "%s", footer);
+    while (drawn < page_rows) {
+        mvwhline(win, y++, 1, ' ', w - 2);
+        drawn++;
+    }
+    mvwaddnstr(win, h - 2, 2, footer, body_w);
     wnoutrefresh(win);
 }

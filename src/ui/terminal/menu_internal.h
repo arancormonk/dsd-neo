@@ -11,8 +11,13 @@
  */
 #pragma once
 
+#include <stddef.h>
+
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/curses_compat.h>
-#include <dsd-neo/ui/menu_core.h>
+
+typedef struct NcMenuItem NcMenuItem;
 
 // Shared UI context passed to callbacks (full definition; forward-declared in menu_defs.h)
 typedef struct UiCtx {
@@ -25,6 +30,7 @@ typedef struct {
     const NcMenuItem* items;
     size_t n;
     int hi;
+    int top;
     const char* title;
     WINDOW* win;
     int w, h;
@@ -103,13 +109,61 @@ typedef struct {
     int n;
 } PulseSelCtx;
 
+static inline int
+ui_scroll_page_step_from_rows(int page_rows) {
+    if (page_rows <= 1) {
+        return 1;
+    }
+    return page_rows - 1;
+}
+
+static inline int
+ui_scroll_clamp_top(int total, int page_rows, int top) {
+    if (total <= 0 || page_rows <= 0 || total <= page_rows) {
+        return 0;
+    }
+    if (top < 0) {
+        top = 0;
+    }
+    if (top > total - page_rows) {
+        top = total - page_rows;
+    }
+    return top;
+}
+
+static inline int
+ui_scroll_last_page_top(int total, int page_rows) {
+    return ui_scroll_clamp_top(total, page_rows, total - page_rows);
+}
+
+static inline int
+ui_scroll_follow_selection(int total, int page_rows, int top, int sel_pos) {
+    if (total <= 0 || page_rows <= 0) {
+        return 0;
+    }
+    if (sel_pos < 0) {
+        sel_pos = 0;
+    }
+    if (sel_pos >= total) {
+        sel_pos = total - 1;
+    }
+    top = ui_scroll_clamp_top(total, page_rows, top);
+    if (sel_pos < top) {
+        top = sel_pos;
+    } else if (sel_pos >= top + page_rows) {
+        top = sel_pos - page_rows + 1;
+    }
+    return ui_scroll_clamp_top(total, page_rows, top);
+}
+
 // ---- Visibility helpers (from menu_render.c) ----
 int ui_is_enabled(const NcMenuItem* it, void* ctx);
 int ui_submenu_has_visible(const NcMenuItem* items, size_t n, void* ctx);
 int ui_next_enabled(const NcMenuItem* items, size_t n, void* ctx, int from, int dir);
+int ui_visible_index_for_item(const NcMenuItem* items, size_t n, void* ctx, int idx);
 
 // ---- Render helpers (from menu_render.c) ----
-void ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, const char* title, void* ctx);
+void ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title, void* ctx);
 void ui_overlay_layout(UiMenuFrame* f, void* ctx);
 void ui_overlay_ensure_window(UiMenuFrame* f);
 void ui_overlay_recreate_if_needed(UiMenuFrame* f);
