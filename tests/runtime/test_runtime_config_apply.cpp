@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef __cplusplus
@@ -55,18 +56,57 @@ init_test_runtime(dsd_opts* opts, dsd_state* state) {
     initState(state);
 }
 
+typedef struct test_runtime {
+    dsd_opts* opts;
+    dsd_state* state;
+} test_runtime;
+
+static int
+alloc_test_runtime(test_runtime* runtime) {
+    memset(runtime, 0, sizeof(*runtime));
+
+    // dsd_state is multi-megabyte; keep it off the function stack.
+    runtime->opts = (dsd_opts*)calloc(1, sizeof(*runtime->opts));
+    runtime->state = (dsd_state*)calloc(1, sizeof(*runtime->state));
+    if (runtime->opts == NULL || runtime->state == NULL) {
+        fprintf(stderr, "FAIL: alloc test runtime\n");
+        free(runtime->opts);
+        free(runtime->state);
+        runtime->opts = NULL;
+        runtime->state = NULL;
+        return 1;
+    }
+
+    init_test_runtime(runtime->opts, runtime->state);
+    return 0;
+}
+
+static void
+free_test_runtime(test_runtime* runtime) {
+    if (runtime->state != NULL) {
+        freeState(runtime->state);
+    }
+    free(runtime->state);
+    free(runtime->opts);
+    runtime->state = NULL;
+    runtime->opts = NULL;
+}
+
 static int
 test_basic_pulse_config_apply(void) {
-    dsd_opts opts;
-    dsd_state state;
-    init_test_runtime(&opts, &state);
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
 
     // Start from a known input/output so that config apply has something to
     // mutate. Use Pulse I/O to avoid depending on RTL or network resources.
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
-    opts.audio_in_type = AUDIO_IN_PULSE;
-    snprintf(opts.audio_out_dev, sizeof opts.audio_out_dev, "%s", "pulse");
-    opts.audio_out_type = 0;
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
+    opts->audio_out_type = 0;
 
     dsdneoUserConfig cfg = {0};
     cfg.version = 1;
@@ -82,28 +122,32 @@ test_basic_pulse_config_apply(void) {
     // demod loop to apply pending commands. For the purposes of this test we
     // call both directly.
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(&opts, &state);
+    ui_drain_cmds(opts, state);
 
     int rc = 0;
-    rc |= expect_true("ncurses flag enabled", opts.use_ncurses_terminal);
-    rc |= expect_true("pulse input preserved", strncmp(opts.audio_in_dev, "pulse", 5) == 0);
-    rc |= expect_true("pulse output preserved", strncmp(opts.audio_out_dev, "pulse", 5) == 0);
+    rc |= expect_true("ncurses flag enabled", opts->use_ncurses_terminal);
+    rc |= expect_true("pulse input preserved", strncmp(opts->audio_in_dev, "pulse", 5) == 0);
+    rc |= expect_true("pulse output preserved", strncmp(opts->audio_out_dev, "pulse", 5) == 0);
+    free_test_runtime(&runtime);
     return rc;
 }
 
 #ifdef USE_RADIO
 static int
 test_same_value_rtl_ppm_retry_is_republished(void) {
-    dsd_opts opts;
-    dsd_state state;
-    init_test_runtime(&opts, &state);
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
 
-    opts.audio_in_type = AUDIO_IN_RTL;
-    opts.rtl_gain_value = 10;
-    opts.rtl_dsp_bw_khz = 48;
-    opts.rtl_volume_multiplier = 2;
-    opts.rtlsdr_ppm_error = 0;
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:1000000:10:5:48:0:2");
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_gain_value = 10;
+    opts->rtl_dsp_bw_khz = 48;
+    opts->rtl_volume_multiplier = 2;
+    opts->rtlsdr_ppm_error = 0;
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:1000000:10:5:48:0:2");
 
     dsdneoUserConfig cfg = {0};
     cfg.version = 1;
@@ -118,27 +162,31 @@ test_same_value_rtl_ppm_retry_is_republished(void) {
     cfg.rtl_volume = 2;
 
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(&opts, &state);
+    ui_drain_cmds(opts, state);
 
     int rc = 0;
-    rc |= expect_true("same-value config apply restores live requested ppm", opts.rtlsdr_ppm_error == 5);
+    rc |= expect_true("same-value config apply restores live requested ppm", opts->rtlsdr_ppm_error == 5);
     rc |= expect_true("same-value config apply keeps device string stable",
-                      strncmp(opts.audio_in_dev, "rtl:0:1000000:10:5:48:0:2", sizeof opts.audio_in_dev) == 0);
+                      strncmp(opts->audio_in_dev, "rtl:0:1000000:10:5:48:0:2", sizeof opts->audio_in_dev) == 0);
+    free_test_runtime(&runtime);
     return rc;
 }
 
 static int
 test_zero_rtl_ppm_apply_updates_live_request(void) {
-    dsd_opts opts;
-    dsd_state state;
-    init_test_runtime(&opts, &state);
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
 
-    opts.audio_in_type = AUDIO_IN_RTL;
-    opts.rtl_gain_value = 10;
-    opts.rtl_dsp_bw_khz = 48;
-    opts.rtl_volume_multiplier = 2;
-    opts.rtlsdr_ppm_error = 9;
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:1000000:10:0:48:0:2");
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_gain_value = 10;
+    opts->rtl_dsp_bw_khz = 48;
+    opts->rtl_volume_multiplier = 2;
+    opts->rtlsdr_ppm_error = 9;
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:1000000:10:0:48:0:2");
 
     dsdneoUserConfig cfg = {0};
     cfg.version = 1;
@@ -153,23 +201,28 @@ test_zero_rtl_ppm_apply_updates_live_request(void) {
     cfg.rtl_volume = 2;
 
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(&opts, &state);
+    ui_drain_cmds(opts, state);
 
-    return expect_true("zero ppm config apply updates live requested ppm", opts.rtlsdr_ppm_error == 0);
+    int rc = expect_true("zero ppm config apply updates live requested ppm", opts->rtlsdr_ppm_error == 0);
+    free_test_runtime(&runtime);
+    return rc;
 }
 
 static int
 test_omitted_rtl_ppm_apply_preserves_live_request(void) {
-    dsd_opts opts;
-    dsd_state state;
-    init_test_runtime(&opts, &state);
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
 
-    opts.audio_in_type = AUDIO_IN_RTL;
-    opts.rtl_gain_value = 10;
-    opts.rtl_dsp_bw_khz = 48;
-    opts.rtl_volume_multiplier = 2;
-    opts.rtlsdr_ppm_error = 9;
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:1000000:10:9:48:0:2");
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_gain_value = 10;
+    opts->rtl_dsp_bw_khz = 48;
+    opts->rtl_volume_multiplier = 2;
+    opts->rtlsdr_ppm_error = 9;
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:1000000:10:9:48:0:2");
 
     dsdneoUserConfig cfg = {0};
     cfg.version = 1;
@@ -182,12 +235,13 @@ test_omitted_rtl_ppm_apply_preserves_live_request(void) {
     cfg.rtl_volume = 2;
 
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(&opts, &state);
+    ui_drain_cmds(opts, state);
 
     int rc = 0;
-    rc |= expect_true("omitted ppm preserves live requested ppm", opts.rtlsdr_ppm_error == 9);
+    rc |= expect_true("omitted ppm preserves live requested ppm", opts->rtlsdr_ppm_error == 9);
     rc |= expect_true("omitted ppm keeps existing device string ppm",
-                      strncmp(opts.audio_in_dev, "rtl:0:1000000:10:9:48:0:2", sizeof opts.audio_in_dev) == 0);
+                      strncmp(opts->audio_in_dev, "rtl:0:1000000:10:9:48:0:2", sizeof opts->audio_in_dev) == 0);
+    free_test_runtime(&runtime);
     return rc;
 }
 #endif

@@ -19,7 +19,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #include <stdio.h>
-#include <string.h>
+#include <stdlib.h>
 
 static int
 expect_true(const char* tag, int cond) {
@@ -40,56 +40,83 @@ ui_start(dsd_opts* opts, dsd_state* state) {
 void
 ui_stop(void) {}
 
+static int
+init_test_runtime(dsd_opts** opts_out, dsd_state** state_out) {
+    // dsd_state is multi-megabyte; keep it off the function stack.
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (opts == NULL || state == NULL) {
+        fprintf(stderr, "alloc-failed: runtime\n");
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    *opts_out = opts;
+    *state_out = state;
+    return 0;
+}
+
+static void
+free_test_runtime(dsd_opts* opts, dsd_state* state) {
+    if (state != NULL) {
+        freeState(state);
+    }
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     int rc = 0;
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
 
-    dsd_opts opts;
-    dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
-
-    initOpts(&opts);
-    initState(&state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
 
     for (int i = 0; i < 200; i++) {
-        state.dmr_payload_buf[i] = 0x7F7F7F7F;
-        if (state.dmr_reliab_buf != NULL) {
-            state.dmr_reliab_buf[i] = 0xA5U;
+        state->dmr_payload_buf[i] = 0x7F7F7F7F;
+        if (state->dmr_reliab_buf != NULL) {
+            state->dmr_reliab_buf[i] = 0xA5U;
         }
     }
 
-    state.dmr_payload_p = state.dibit_buf + 321;
-    if (state.dmr_reliab_buf != NULL) {
-        state.dmr_reliab_p = state.dmr_reliab_buf + 321;
+    state->dmr_payload_p = state->dibit_buf + 321;
+    if (state->dmr_reliab_buf != NULL) {
+        state->dmr_reliab_p = state->dmr_reliab_buf + 321;
     }
 
-    noCarrier(&opts, &state);
+    noCarrier(opts, state);
 
-    rc |= expect_true("dmr-payload-pointer-buffer", state.dmr_payload_p == state.dmr_payload_buf + 200);
-    rc |= expect_true("dmr-payload-pointer-not-dibit", state.dmr_payload_p != state.dibit_buf + 200);
-    rc |= expect_true("dibit-pointer-reset", state.dibit_buf_p == state.dibit_buf + 200);
+    rc |= expect_true("dmr-payload-pointer-buffer", state->dmr_payload_p == state->dmr_payload_buf + 200);
+    rc |= expect_true("dmr-payload-pointer-not-dibit", state->dmr_payload_p != state->dibit_buf + 200);
+    rc |= expect_true("dibit-pointer-reset", state->dibit_buf_p == state->dibit_buf + 200);
 
     for (int i = 0; i < 200; i++) {
-        if (state.dmr_payload_buf[i] != 0) {
-            fprintf(stderr, "dmr payload buf[%d] not reset: %d\n", i, state.dmr_payload_buf[i]);
+        if (state->dmr_payload_buf[i] != 0) {
+            fprintf(stderr, "dmr payload buf[%d] not reset: %d\n", i, state->dmr_payload_buf[i]);
             rc = 1;
             break;
         }
     }
 
-    if (state.dmr_reliab_buf != NULL) {
-        rc |= expect_true("dmr-reliab-pointer-buffer", state.dmr_reliab_p == state.dmr_reliab_buf + 200);
+    if (state->dmr_reliab_buf != NULL) {
+        rc |= expect_true("dmr-reliab-pointer-buffer", state->dmr_reliab_p == state->dmr_reliab_buf + 200);
         for (int i = 0; i < 200; i++) {
-            if (state.dmr_reliab_buf[i] != 0U) {
-                fprintf(stderr, "dmr reliab buf[%d] not reset: %u\n", i, (unsigned)state.dmr_reliab_buf[i]);
+            if (state->dmr_reliab_buf[i] != 0U) {
+                fprintf(stderr, "dmr reliab buf[%d] not reset: %u\n", i, (unsigned)state->dmr_reliab_buf[i]);
                 rc = 1;
                 break;
             }
         }
     }
 
-    freeState(&state);
+    free_test_runtime(opts, state);
 
     if (rc == 0) {
         printf("ENGINE_NO_CARRIER_RESET: OK\n");
