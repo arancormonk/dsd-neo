@@ -356,6 +356,16 @@ target_include_directories(dsd-neo_test_ui_chooser_navigation PRIVATE
 target_link_libraries(dsd-neo_test_ui_chooser_navigation PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES})
 add_test(NAME UI_CHOOSER_NAVIGATION COMMAND dsd-neo_test_ui_chooser_navigation)
 
+add_executable(dsd-neo_test_ui_prompt_cursor
+  ui/test_ui_prompt_cursor.c
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c)
+target_include_directories(dsd-neo_test_ui_prompt_cursor PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal
+  ${CURSES_INCLUDE_DIRS})
+target_link_libraries(dsd-neo_test_ui_prompt_cursor PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES})
+add_test(NAME UI_PROMPT_CURSOR COMMAND dsd-neo_test_ui_prompt_cursor)
+
 add_executable(dsd-neo_test_ui_history_state
   ui/test_ui_history_state.c
   ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_history.c)

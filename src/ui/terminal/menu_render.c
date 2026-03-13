@@ -145,12 +145,17 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, int* t
             wattron(menu_win, A_REVERSE);
         }
         const char* lab = items[i].label ? items[i].label : items[i].id;
+        char labfmt[140];
         if (items[i].label_fn) {
             char dyn[128];
             const char* got = items[i].label_fn(ctx, dyn, sizeof dyn);
             if (got && *got) {
                 lab = got;
             }
+        }
+        if (items[i].submenu && items[i].submenu_len > 0) {
+            snprintf(labfmt, sizeof labfmt, "%s >", lab);
+            lab = labfmt;
         }
         mvwaddnstr(menu_win, y, x, lab, (mw > 4) ? (mw - 4) : 1);
         wattroff(menu_win, A_REVERSE);
@@ -223,6 +228,9 @@ ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, void* ctx, int* o
             }
         }
         int L = (int)strlen(lab);
+        if (items[i].submenu && items[i].submenu_len > 0) {
+            L += 2; // " >" suffix
+        }
         if (L > maxlab) {
             maxlab = L;
         }

@@ -33,6 +33,7 @@ typedef struct {
     char* buf;
     size_t cap;
     size_t len;
+    size_t cursor;                                     // cursor position within buf [0..len]
     void (*on_done_str)(void* user, const char* text); // NULL text indicates cancel
     void* user;
 } UiPrompt;
@@ -247,6 +248,7 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap,
         strncpy(g_prompt.buf, prefill, cap - 1);
         g_prompt.buf[cap - 1] = '\0';
         g_prompt.len = strlen(g_prompt.buf);
+        g_prompt.cursor = g_prompt.len;
     }
 }
 
@@ -379,9 +381,39 @@ ui_prompt_handle_key(int ch) {
         }
         return 1;
     }
+    if (ch == KEY_LEFT) {
+        if (g_prompt.cursor > 0) {
+            g_prompt.cursor--;
+        }
+        return 1;
+    }
+    if (ch == KEY_RIGHT) {
+        if (g_prompt.cursor < g_prompt.len) {
+            g_prompt.cursor++;
+        }
+        return 1;
+    }
+    if (ch == KEY_HOME) {
+        g_prompt.cursor = 0;
+        return 1;
+    }
+    if (ch == KEY_END) {
+        g_prompt.cursor = g_prompt.len;
+        return 1;
+    }
     if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
-        if (g_prompt.len > 0) {
-            g_prompt.buf[--g_prompt.len] = '\0';
+        if (g_prompt.cursor > 0) {
+            memmove(g_prompt.buf + g_prompt.cursor - 1, g_prompt.buf + g_prompt.cursor,
+                    g_prompt.len - g_prompt.cursor + 1);
+            g_prompt.cursor--;
+            g_prompt.len--;
+        }
+        return 1;
+    }
+    if (ch == KEY_DC) {
+        if (g_prompt.cursor < g_prompt.len) {
+            memmove(g_prompt.buf + g_prompt.cursor, g_prompt.buf + g_prompt.cursor + 1, g_prompt.len - g_prompt.cursor);
+            g_prompt.len--;
         }
         return 1;
     }
@@ -407,8 +439,10 @@ ui_prompt_handle_key(int ch) {
     }
     if (isprint(ch)) {
         if (g_prompt.len + 1 < g_prompt.cap) {
-            g_prompt.buf[g_prompt.len++] = (char)ch;
-            g_prompt.buf[g_prompt.len] = '\0';
+            memmove(g_prompt.buf + g_prompt.cursor + 1, g_prompt.buf + g_prompt.cursor,
+                    g_prompt.len - g_prompt.cursor + 1);
+            g_prompt.buf[g_prompt.cursor++] = (char)ch;
+            g_prompt.len++;
         }
         return 1;
     }
@@ -520,25 +554,41 @@ ui_prompt_render(void) {
         field_width = 1;
     }
     size_t text_len = strlen(text);
+    size_t cpos = g_prompt.cursor;
+    if (cpos > text_len) {
+        cpos = text_len;
+    }
     size_t start = 0;
     int show_left_ellipsis = 0;
-    int visible_chars = field_width;
-    if ((int)text_len > field_width && field_width >= 4) {
-        show_left_ellipsis = 1;
-        visible_chars = field_width - 3;
-    }
-    if ((int)text_len > visible_chars) {
-        start = text_len - (size_t)visible_chars;
+    if ((int)text_len > field_width) {
+        // Scroll viewport to keep cursor visible
+        int usable = field_width;
+        if (cpos > (size_t)usable) {
+            start = cpos - (size_t)(usable - 1);
+        }
+        if (start > 0 && field_width >= 4) {
+            show_left_ellipsis = 1;
+            usable = field_width - 3;
+            if (cpos > start + (size_t)usable) {
+                start = cpos - (size_t)(usable - 1);
+            }
+            if (cpos < start) {
+                start = cpos;
+            }
+            if (start == 0) {
+                show_left_ellipsis = 0;
+            }
+        }
     }
     mvwaddnstr(win, input_y, 2, "> ", (w > 5) ? 2 : 1);
     if (show_left_ellipsis) {
         mvwaddnstr(win, input_y, field_col, "...", 3);
-        mvwaddnstr(win, input_y, field_col + 3, text + start, visible_chars);
+        mvwaddnstr(win, input_y, field_col + 3, text + start, field_width - 3);
     } else {
         mvwaddnstr(win, input_y, field_col, text + start, field_width);
     }
     int cursor_prefix = show_left_ellipsis ? 3 : 0;
-    int cursor_x = field_col + cursor_prefix + (int)(text_len - start);
+    int cursor_x = field_col + cursor_prefix + (int)(cpos - start);
     if (cursor_x > field_right) {
         cursor_x = field_right;
     }
@@ -641,12 +691,10 @@ ui_help_handle_key(int ch) {
             return 1;
         }
         if (ch == DSD_KEY_ESC || ch == 'q' || ch == 'Q' || ch == 'h' || ch == 'H' || ch == 10 || ch == KEY_ENTER
-            || ch == '\r') {
+            || ch == '\r' || ch == KEY_LEFT) {
             ui_help_close();
             return 1;
         }
-        // Keep previous ergonomics: any non-navigation key closes help.
-        ui_help_close();
     }
     return 1;
 }
@@ -870,11 +918,11 @@ ui_chooser_handle_key(int ch) {
         ui_chooser_keep_selection_visible();
         return 1;
     }
-    if (ch == 'q' || ch == 'Q' || ch == DSD_KEY_ESC) {
+    if (ch == 'q' || ch == 'Q' || ch == DSD_KEY_ESC || ch == KEY_LEFT) {
         ui_chooser_finish(-1);
         return 1;
     }
-    if (ch == 10 || ch == KEY_ENTER || ch == '\r') {
+    if (ch == 10 || ch == KEY_ENTER || ch == '\r' || ch == KEY_RIGHT) {
         int sel = g_chooser.sel;
         ui_chooser_finish(sel);
         return 1;
@@ -899,7 +947,7 @@ ui_chooser_render(void) {
             max_item = L;
         }
     }
-    const char* footer = "Arrows/PgUp/PgDn/Home/End  Enter  Esc/q";
+    const char* footer = "Arrows/PgUp/PgDn  Right/Enter: select  Esc/q/Left";
     int w = 4 + (int)strlen(title);
     int need = 4 + max_item;
     if (need > w) {
