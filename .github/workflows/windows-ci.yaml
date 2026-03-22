@@ -45,7 +45,7 @@ jobs:
         with:
           # run-vcpkg v11.5 requires a full 40-char SHA1.
           # Keep this in sync with vcpkg.json's builtin-baseline.
-          vcpkgGitCommitId: "62159a45e18f3a9ac0548628dcaf74fcb60c6ff9"
+          vcpkgGitCommitId: "c3867e714dd3a51c272826eea77267876517ed99"
 
       - name: Install vcpkg dependencies (MSVC)
         shell: pwsh
@@ -224,7 +224,7 @@ jobs:
         with:
           # run-vcpkg v11.5 requires a full 40-char SHA1.
           # Keep this in sync with vcpkg.json's builtin-baseline.
-          vcpkgGitCommitId: "62159a45e18f3a9ac0548628dcaf74fcb60c6ff9"
+          vcpkgGitCommitId: "c3867e714dd3a51c272826eea77267876517ed99"
 
       - name: Install vcpkg dependencies (MinGW)
         shell: msys2 {0}
