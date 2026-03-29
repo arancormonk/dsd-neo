@@ -204,7 +204,7 @@ jobs:
           & $env:SCCACHE_PATH --zero-stats
 
       - name: Setup MSYS2 (MinGW-w64)
-        uses: msys2/setup-msys2@v2.30.0
+        uses: msys2/setup-msys2@v2.31.0
         with:
           msystem: MINGW64
           # Avoid full MSYS2 system upgrades in CI.
