@@ -2054,17 +2054,16 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
                         if (next_idx != state->sps_hunt_idx) {
                             state->sps_hunt_idx = next_idx;
-                            /* Compute SPS from actual demodulator output rate when available (RTL path),
-                             * otherwise fall back to WAV interpolator scaling relative to 48 kHz. */
+                            /* Compute SPS from the active backend timing source so cross-backend
+                             * config applies cannot override a live stream with a stale requested rate. */
                             int demod_rate = 0;
 #ifdef USE_RADIO
                             if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
                                 demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
                             }
 #endif
-                            int interp = opts->wav_interpolator > 0 ? opts->wav_interpolator : 1;
-                            if (demod_rate <= 0 && opts->wav_decimator > 0) {
-                                demod_rate = opts->wav_decimator * interp;
+                            if (demod_rate <= 0) {
+                                demod_rate = dsd_opts_current_input_timing_rate(opts);
                             }
                             int sym_rate = sym_rate_cycle[next_idx];
                             state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);

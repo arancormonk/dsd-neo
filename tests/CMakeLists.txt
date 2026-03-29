@@ -477,6 +477,14 @@ target_include_directories(dsd-neo_test_core_audio_group_gate PRIVATE ${PROJECT_
 target_link_libraries(dsd-neo_test_core_audio_group_gate PRIVATE dsd-neo_core)
 add_test(NAME CORE_AUDIO_GROUP_GATE COMMAND dsd-neo_test_core_audio_group_gate)
 
+add_executable(dsd-neo_test_core_audio_input_rate core/test_core_audio_input_rate.c)
+target_include_directories(dsd-neo_test_core_audio_input_rate PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+target_link_libraries(dsd-neo_test_core_audio_input_rate PRIVATE dsd-neo_core)
+add_test(NAME CORE_AUDIO_INPUT_RATE COMMAND dsd-neo_test_core_audio_input_rate)
+
 add_executable(dsd-neo_test_core_dmr_voice_alg_gate core/test_core_dmr_voice_alg_gate.c)
 target_include_directories(dsd-neo_test_core_dmr_voice_alg_gate PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_core_dmr_voice_alg_gate PRIVATE dsd-neo_core)

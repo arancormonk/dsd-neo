@@ -978,3 +978,62 @@ struct dsd_state {
 };
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)
+
+/**
+ * @brief Rescale symbol timing state between two effective PCM rates.
+ *
+ * This helper updates only timing-related state. Callers that also need analog
+ * filter coefficients rebuilt should do that separately.
+ *
+ * @param state Decoder state to update.
+ * @param old_rate_hz Previous effective PCM rate.
+ * @param new_rate_hz New effective PCM rate.
+ */
+static inline void
+dsd_state_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_hz) {
+    if (!state) {
+        return;
+    }
+
+    if (old_rate_hz <= 0) {
+        old_rate_hz = 48000;
+    }
+    if (new_rate_hz <= 0) {
+        new_rate_hz = old_rate_hz;
+    }
+    if (old_rate_hz == new_rate_hz) {
+        return;
+    }
+
+    int old_sps = state->samplesPerSymbol > 0 ? state->samplesPerSymbol : 10;
+    long long scaled = (long long)old_sps * (long long)new_rate_hz;
+    int new_sps = (int)((scaled + (old_rate_hz / 2)) / old_rate_hz);
+    if (new_sps < 2) {
+        new_sps = 2;
+    } else if (new_sps > 64) {
+        new_sps = 64;
+    }
+
+    double ratio = (old_sps > 0) ? ((double)state->symbolCenter / (double)old_sps) : 0.4;
+    if (ratio < 0.05) {
+        ratio = 0.05;
+    } else if (ratio > 0.95) {
+        ratio = 0.95;
+    }
+
+    int new_center = (new_sps - 1) / 2;
+    if (new_sps > 2) {
+        int min_c = 1;
+        int max_c = new_sps - 2;
+        new_center = (int)(ratio * (double)new_sps + 0.5);
+        if (new_center < min_c) {
+            new_center = min_c;
+        } else if (new_center > max_c) {
+            new_center = max_c;
+        }
+    }
+
+    state->samplesPerSymbol = new_sps;
+    state->symbolCenter = new_center;
+    state->jitter = -1;
+}

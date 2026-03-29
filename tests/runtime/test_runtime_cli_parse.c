@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -425,6 +426,56 @@ test_create_temp_ini(char* out_path, size_t out_path_size) {
                                               "[trunking]\n"
                                               "enabled = true\n",
                                               out_path, out_path_size);
+}
+
+static int
+test_create_temp_raw_pcm_file(const char* prefix, const short* samples, size_t sample_count, const char* suffix,
+                              char* out_path, size_t out_path_size) {
+    if (!prefix || !samples || sample_count == 0 || !suffix || !out_path || out_path_size == 0) {
+        return -1;
+    }
+
+    const char sep = test_path_sep();
+    const char* tdir = test_tmp_dir();
+
+    char tmpl[1024];
+    size_t tdir_len = strlen(tdir);
+    if (tdir_len > 0 && (tdir[tdir_len - 1] == '/' || tdir[tdir_len - 1] == '\\')) {
+        snprintf(tmpl, sizeof tmpl, "%s%s_XXXXXX", tdir, prefix);
+    } else {
+        snprintf(tmpl, sizeof tmpl, "%s%c%s_XXXXXX", tdir, sep, prefix);
+    }
+
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        return -1;
+    }
+    (void)dsd_close(fd);
+
+    if (snprintf(out_path, out_path_size, "%s%s", tmpl, suffix) >= (int)out_path_size) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    if (rename(tmpl, out_path) != 0) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    FILE* fp = fopen(out_path, "wb");
+    if (!fp) {
+        (void)remove(out_path);
+        return -1;
+    }
+
+    size_t nwritten = fwrite(samples, sizeof(samples[0]), sample_count, fp);
+    fclose(fp);
+    if (nwritten != sample_count) {
+        (void)remove(out_path);
+        return -1;
+    }
+
+    return 0;
 }
 
 static int
@@ -1698,6 +1749,656 @@ test_f_nxdn48_clears_dmr_mono_after_fr(void) {
     return test_rc;
 }
 
+static int
+test_bootstrap_config_file_rate_survives_cli_provoice_preset(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"file\"\n"
+                             "file_path = \"/tmp/input.wav\"\n"
+                             "file_sample_rate = 96000\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        fprintf(stderr, "failed to create temp file-input ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "-fp";
+    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (strcmp(opts->audio_in_dev, "/tmp/input.wav") != 0) {
+        fprintf(stderr, "expected config file input to survive bootstrap, got %s\n", opts->audio_in_dev);
+        test_rc = 1;
+    }
+    if (opts->wav_sample_rate != 96000 || dsd_opts_effective_input_rate(opts) != 96000) {
+        fprintf(stderr, "expected effective file rate to stay 96000, got raw=%d effective=%d\n", opts->wav_sample_rate,
+                dsd_opts_effective_input_rate(opts));
+        test_rc = 1;
+    }
+    if (state->samplesPerSymbol != 10 || state->symbolCenter != 4) {
+        fprintf(stderr, "expected ProVoice timing to rescale to 10/4 at 96 kHz, got sps=%d center=%d\n",
+                state->samplesPerSymbol, state->symbolCenter);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_s_8000_keeps_valid_symbol_timing_for_provoice(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-fp";
+    char arg2[] = "-s";
+    char arg3[] = "8000";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(4, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (opts->wav_sample_rate != 8000) {
+        fprintf(stderr, "expected wav_sample_rate=8000, got %d\n", opts->wav_sample_rate);
+        test_rc = 1;
+    }
+    if (opts->wav_interpolator != 1) {
+        fprintf(stderr, "expected wav_interpolator=1 for 8 kHz input, got %d\n", opts->wav_interpolator);
+        test_rc = 1;
+    }
+    if (state->samplesPerSymbol != 5 || state->symbolCenter != 2) {
+        fprintf(stderr, "expected ProVoice timing to remain 5/2, got sps=%d center=%d\n", state->samplesPerSymbol,
+                state->symbolCenter);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_m3_override_survives_file_rate_rescale_after_f2(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-f2";
+    char arg2[] = "-m3";
+    char arg3[] = "-s";
+    char arg4[] = "96000";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (opts->wav_sample_rate != 96000 || dsd_opts_effective_input_rate(opts) != 96000) {
+        fprintf(stderr, "expected 96 kHz file rate after -s, got raw=%d effective=%d\n", opts->wav_sample_rate,
+                dsd_opts_effective_input_rate(opts));
+        test_rc = 1;
+    }
+    if (state->samplesPerSymbol != 20 || state->symbolCenter != 8) {
+        fprintf(stderr, "expected -m3 timing override to rescale to 20/8 at 96 kHz, got sps=%d center=%d\n",
+                state->samplesPerSymbol, state->symbolCenter);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_config_file_rate_rescales_manual_m3_override(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"file\"\n"
+                             "file_path = \"/tmp/input.wav\"\n"
+                             "file_sample_rate = 96000\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        fprintf(stderr, "failed to create temp file-input ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "-m3";
+    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (strcmp(opts->audio_in_dev, "/tmp/input.wav") != 0) {
+        fprintf(stderr, "expected config file input to survive bootstrap, got %s\n", opts->audio_in_dev);
+        test_rc = 1;
+    }
+    if (opts->wav_sample_rate != 96000 || dsd_opts_effective_input_rate(opts) != 96000) {
+        fprintf(stderr, "expected effective file rate to stay 96000, got raw=%d effective=%d\n", opts->wav_sample_rate,
+                dsd_opts_effective_input_rate(opts));
+        test_rc = 1;
+    }
+    if (state->samplesPerSymbol != 20 || state->symbolCenter != 8) {
+        fprintf(stderr, "expected -m3 timing override to rescale to 20/8 at 96 kHz, got sps=%d center=%d\n",
+                state->samplesPerSymbol, state->symbolCenter);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_cli_pulse_override_ignores_config_file_rate_timing(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"file\"\n"
+                             "file_path = \"/tmp/input.wav\"\n"
+                             "file_sample_rate = 96000\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        fprintf(stderr, "failed to create temp file-input ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "-i";
+    char arg4[] = "pulse";
+    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (strcmp(opts->audio_in_dev, "pulse") != 0) {
+        fprintf(stderr, "expected CLI pulse override to survive bootstrap, got %s\n", opts->audio_in_dev);
+        test_rc = 1;
+    }
+    if (opts->wav_sample_rate != 48000 || dsd_opts_effective_input_rate(opts) != 48000) {
+        fprintf(stderr, "expected pulse override to keep default file rate, got raw=%d effective=%d\n",
+                opts->wav_sample_rate, dsd_opts_effective_input_rate(opts));
+        test_rc = 1;
+    }
+    if (state->samplesPerSymbol != 10 || state->symbolCenter != 4) {
+        fprintf(stderr, "expected pulse override to keep 48 kHz timing, got sps=%d center=%d\n",
+                state->samplesPerSymbol, state->symbolCenter);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_cli_file_override_ignores_config_file_rate_timing(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"file\"\n"
+                             "file_path = \"/tmp/input.wav\"\n"
+                             "file_sample_rate = 96000\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        fprintf(stderr, "failed to create temp file-input ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "-i";
+    char arg4[] = "/tmp/other.raw";
+    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (strcmp(opts->audio_in_dev, "/tmp/other.raw") != 0) {
+        fprintf(stderr, "expected CLI file override to survive bootstrap, got %s\n", opts->audio_in_dev);
+        test_rc = 1;
+    }
+    if (opts->wav_sample_rate != 48000 || dsd_opts_effective_input_rate(opts) != 48000) {
+        fprintf(stderr, "expected CLI file override to keep default file rate, got raw=%d effective=%d\n",
+                opts->wav_sample_rate, dsd_opts_effective_input_rate(opts));
+        test_rc = 1;
+    }
+    if (opts->staged_file_sample_rate != 0) {
+        fprintf(stderr, "expected CLI file override to clear staged file rate, got %d\n",
+                opts->staged_file_sample_rate);
+        test_rc = 1;
+    }
+    if (state->samplesPerSymbol != 10 || state->symbolCenter != 4) {
+        fprintf(stderr, "expected CLI file override to keep 48 kHz timing, got sps=%d center=%d\n",
+                state->samplesPerSymbol, state->symbolCenter);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    const short samples[] = {1234, -2345, 3456, -4567};
+    char raw_path[1024];
+    if (test_create_temp_raw_pcm_file("dsdneo_cli_override_input", samples, sizeof samples / sizeof samples[0], ".pcm",
+                                      raw_path, sizeof raw_path)
+        != 0) {
+        fprintf(stderr, "failed to create temp raw pcm file\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"file\"\n"
+                             "file_path = \"/tmp/input.wav\"\n"
+                             "file_sample_rate = 96000\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        fprintf(stderr, "failed to create temp file-input ini\n");
+        (void)remove(raw_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "-i";
+    char arg4[1024];
+    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    snprintf(arg4, sizeof arg4, "%s", raw_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        (void)remove(cfg_path);
+        (void)remove(raw_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (opts->staged_file_sample_rate != 0) {
+        fprintf(stderr, "expected CLI file override to clear staged file rate, got %d\n",
+                opts->staged_file_sample_rate);
+        test_rc = 1;
+    }
+    if (openAudioInDevice(opts, state) != 0) {
+        fprintf(stderr, "expected headerless CLI file override to open successfully\n");
+        test_rc = 1;
+    } else {
+        if (opts->audio_in_type != AUDIO_IN_WAV) {
+            fprintf(stderr, "expected headerless CLI file override to open as AUDIO_IN_WAV, got %d\n",
+                    opts->audio_in_type);
+            test_rc = 1;
+        }
+        if (!opts->audio_in_file_info) {
+            fprintf(stderr, "expected audio_in_file_info after headerless open\n");
+            test_rc = 1;
+        } else {
+            if (opts->audio_in_file_info->samplerate != 48000) {
+                fprintf(stderr, "expected headerless CLI file override to open at 48000 Hz, got %d\n",
+                        opts->audio_in_file_info->samplerate);
+                test_rc = 1;
+            }
+            if ((opts->audio_in_file_info->format & SF_FORMAT_TYPEMASK) != SF_FORMAT_RAW) {
+                fprintf(stderr, "expected headerless CLI file override to open as raw PCM, got format=0x%x\n",
+                        opts->audio_in_file_info->format);
+                test_rc = 1;
+            }
+        }
+    }
+
+    if (opts->audio_in_file) {
+        sf_close(opts->audio_in_file);
+        opts->audio_in_file = NULL;
+    }
+    if (opts->audio_in_file_info) {
+        free(opts->audio_in_file_info);
+        opts->audio_in_file_info = NULL;
+    }
+
+    (void)remove(cfg_path);
+    (void)remove(raw_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    const short samples[] = {4321, -3210, 2109, -1098};
+    char raw_path[1024];
+    if (test_create_temp_raw_pcm_file("dsdneo_cli_rate_override", samples, sizeof samples / sizeof samples[0], ".pcm",
+                                      raw_path, sizeof raw_path)
+        != 0) {
+        fprintf(stderr, "failed to create temp raw pcm file\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    char ini[1536];
+    snprintf(ini, sizeof ini,
+             "version = 1\n"
+             "\n"
+             "[input]\n"
+             "source = \"file\"\n"
+             "file_path = \"%s\"\n"
+             "file_sample_rate = 96000\n",
+             raw_path);
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        fprintf(stderr, "failed to create temp file-input ini\n");
+        (void)remove(raw_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "-s";
+    char arg4[] = "44100";
+    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        (void)remove(cfg_path);
+        (void)remove(raw_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (opts->wav_sample_rate != 44100 || dsd_opts_effective_input_rate(opts) != 44100) {
+        fprintf(stderr, "expected CLI rate override to keep 44100 Hz, got raw=%d effective=%d\n", opts->wav_sample_rate,
+                dsd_opts_effective_input_rate(opts));
+        test_rc = 1;
+    }
+    if (opts->staged_file_sample_rate != 0) {
+        fprintf(stderr, "expected CLI rate override to clear staged file rate, got %d\n",
+                opts->staged_file_sample_rate);
+        test_rc = 1;
+    }
+    if (openAudioInDevice(opts, state) != 0) {
+        fprintf(stderr, "expected headerless CLI rate override to open successfully\n");
+        test_rc = 1;
+    } else {
+        if (opts->audio_in_type != AUDIO_IN_WAV) {
+            fprintf(stderr, "expected headerless CLI rate override to open as AUDIO_IN_WAV, got %d\n",
+                    opts->audio_in_type);
+            test_rc = 1;
+        }
+        if (!opts->audio_in_file_info) {
+            fprintf(stderr, "expected audio_in_file_info after headerless open\n");
+            test_rc = 1;
+        } else {
+            if (opts->audio_in_file_info->samplerate != 44100) {
+                fprintf(stderr, "expected headerless CLI rate override to open at 44100 Hz, got %d\n",
+                        opts->audio_in_file_info->samplerate);
+                test_rc = 1;
+            }
+            if ((opts->audio_in_file_info->format & SF_FORMAT_TYPEMASK) != SF_FORMAT_RAW) {
+                fprintf(stderr, "expected headerless CLI rate override to open as raw PCM, got format=0x%x\n",
+                        opts->audio_in_file_info->format);
+                test_rc = 1;
+            }
+        }
+    }
+
+    if (opts->audio_in_file) {
+        sf_close(opts->audio_in_file);
+        opts->audio_in_file = NULL;
+    }
+    if (opts->audio_in_file_info) {
+        free(opts->audio_in_file_info);
+        opts->audio_in_file_info = NULL;
+    }
+
+    (void)remove(cfg_path);
+    (void)remove(raw_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1731,5 +2432,13 @@ main(void) {
     rc |= test_f_ysf_preset_applies_cli_profile();
     rc |= test_f_legacy_fr_mono_still_supported();
     rc |= test_f_nxdn48_clears_dmr_mono_after_fr();
+    rc |= test_bootstrap_config_file_rate_survives_cli_provoice_preset();
+    rc |= test_s_8000_keeps_valid_symbol_timing_for_provoice();
+    rc |= test_m3_override_survives_file_rate_rescale_after_f2();
+    rc |= test_bootstrap_config_file_rate_rescales_manual_m3_override();
+    rc |= test_bootstrap_cli_pulse_override_ignores_config_file_rate_timing();
+    rc |= test_bootstrap_cli_file_override_ignores_config_file_rate_timing();
+    rc |= test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open();
+    rc |= test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open();
     return rc;
 }

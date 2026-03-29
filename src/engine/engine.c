@@ -222,7 +222,7 @@ analog_filter_rate_hz(const dsd_opts* opts, const dsd_state* state) {
         case AUDIO_IN_UDP:
         case AUDIO_IN_TCP:
             if (opts->wav_sample_rate > 0) {
-                return opts->wav_sample_rate;
+                return dsd_opts_effective_input_rate(opts);
             }
             break;
         default: break;
@@ -275,7 +275,7 @@ dsd_engine_start_ui(dsd_opts* opts, dsd_state* state) {
 
 static int
 dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
-    if ((strncmp(opts->audio_in_dev, "m17udp", 6) == 0)) //M17 UDP Socket Input
+    if (dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) //M17 UDP Socket Input
     {
         LOG_NOTICE("M17 UDP IP Frame Input: ");
         char* curr;
@@ -304,7 +304,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         LOG_NOTICE("%d \n", opts->m17_portno);
     }
 
-    if ((strncmp(opts->audio_in_dev, "udp", 3) == 0)) // UDP Direct Audio Input
+    if (dsd_opts_audio_in_dev_is_udp_spec(opts->audio_in_dev)) // UDP Direct Audio Input
     {
         LOG_NOTICE("UDP Direct Input: ");
         char* curr;
@@ -370,7 +370,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         opts->audio_out_type = 9; //set to null device
     }
 
-    if ((strncmp(opts->audio_in_dev, "tcp", 3) == 0)) //tcp socket input from SDR++ and others
+    if (dsd_opts_audio_in_dev_is_tcp_spec(opts->audio_in_dev)) //tcp socket input from SDR++ and others
     {
         LOG_NOTICE("TCP Direct Link: ");
         char* curr;
@@ -431,7 +431,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    if ((strncmp(opts->audio_in_dev, "rtltcp", 6) == 0)) // rtl_tcp networked RTL-SDR
+    if (dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)) // rtl_tcp networked RTL-SDR
     {
         LOG_NOTICE("RTL_TCP Input: ");
         char* curr;
@@ -538,7 +538,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         opts->audio_in_type = AUDIO_IN_RTL; // use RTL pipeline
     }
 
-    if ((strcmp(opts->audio_in_dev, "soapy") == 0) || (strncmp(opts->audio_in_dev, "soapy:", 6) == 0)) {
+    if (dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)) {
         int tuning_applied = 0;
         (void)dsd_normalize_soapy_input_spec(opts, &tuning_applied);
         const char* soapy_args = "";
@@ -564,8 +564,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     // and opts->audio_in_dev has been tokenized by strtok above. Without this
     // guard, selecting rtltcp would also fall through to the local RTL path
     // and erroneously require a USB device, causing an early exit.
-    if ((strncmp(opts->audio_in_dev, "rtl", 3) == 0)
-        && (strncmp(opts->audio_in_dev, "rtltcp", 6) != 0)) //rtl dongle input
+    if (dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)) //rtl dongle input
     {
         uint8_t rtl_ok = 0;
         //use to list out all detected RTL dongles
@@ -748,7 +747,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         UNUSED(device_count);
     }
 
-    if ((strncmp(opts->audio_in_dev, "pulse", 5) == 0)) {
+    if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_PULSE;
 
         //string yeet
@@ -852,7 +851,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         opts->playoffsetR = 0;
         opts->delay = 0;
 
-        if (openAudioInDevice(opts) != 0) {
+        if (openAudioInDevice(opts, state) != 0) {
             return -1;
         }
     }
@@ -862,7 +861,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         opts->playoffset = 0;
         opts->playoffsetR = 0;
         opts->delay = 0;
-        if (openAudioInDevice(opts) != 0) {
+        if (openAudioInDevice(opts, state) != 0) {
             return -1;
         }
     }

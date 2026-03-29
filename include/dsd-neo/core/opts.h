@@ -21,6 +21,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 typedef struct tcp_input_ctx tcp_input_ctx;
@@ -240,8 +241,14 @@ struct dsd_opts {
     int rtltcp_portno;   // default 1234
     int rtltcp_autotune; // 1 to enable rtl_tcp network auto-tuning (adaptive buffering)
     int wav_sample_rate;
+    int staged_file_sample_rate;
     int wav_interpolator;
     int wav_decimator;
+    float input_upsample_buf[6];
+    float input_upsample_prev;
+    int input_upsample_len;
+    int input_upsample_pos;
+    int input_upsample_prev_valid;
     int p25_trunk;        // legacy flag name used across protocols
     int trunk_enable;     // protocol-agnostic alias for trunking enable (kept in sync with p25_trunk)
     int p25_is_tuned;     //set to 1 if currently on VC, set back to 0 if on CC
@@ -315,6 +322,141 @@ struct dsd_opts {
     char dsp_out_file[2048];
 };
 
+enum {
+    DSD_OPTS_INPUT_UPSAMPLE_STAGING_CAP =
+        (int)(sizeof(((dsd_opts*)0)->input_upsample_buf) / sizeof(((dsd_opts*)0)->input_upsample_buf[0])),
+};
+
+/**
+ * @brief Clear any staged linear-upsample history for PCM inputs.
+ *
+ * @param opts Decoder options containing the staging buffer state.
+ */
+static inline void
+dsd_opts_reset_input_upsample_state(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    for (int i = 0; i < DSD_OPTS_INPUT_UPSAMPLE_STAGING_CAP; i++) {
+        opts->input_upsample_buf[i] = 0.0f;
+    }
+    opts->input_upsample_prev = 0.0f;
+    opts->input_upsample_len = 0;
+    opts->input_upsample_pos = 0;
+    opts->input_upsample_prev_valid = 0;
+}
+
+/**
+ * @brief Apply a new raw PCM input sample rate to decoder options.
+ *
+ * Updates the stored raw rate, preserves the legacy integer interpolator
+ * semantics for integer >=48 kHz ratios, and clears any staged upsample state
+ * so the next sample block starts on the new rate.
+ *
+ * @param opts Decoder options to update.
+ * @param sample_rate_hz New raw PCM sample rate in Hz.
+ */
+static inline void
+dsd_opts_apply_input_sample_rate(dsd_opts* opts, int sample_rate_hz) {
+    if (!opts) {
+        return;
+    }
+    if (sample_rate_hz <= 0) {
+        sample_rate_hz = 48000;
+    }
+
+    opts->wav_sample_rate = sample_rate_hz;
+    opts->wav_interpolator = (opts->wav_decimator > 0 && opts->wav_sample_rate >= opts->wav_decimator)
+                                 ? (opts->wav_sample_rate / opts->wav_decimator)
+                                 : 1;
+    dsd_opts_reset_input_upsample_state(opts);
+}
+
+/**
+ * @brief Discard any staged config-file sample rate override.
+ *
+ * Explicit CLI input-path or sample-rate selection should invalidate a
+ * previously staged config-file rate so later raw/headerless file opens follow
+ * the CLI-selected path and rate.
+ *
+ * @param opts Decoder options to update.
+ */
+static inline void
+dsd_opts_clear_staged_file_sample_rate(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->staged_file_sample_rate = 0;
+}
+
+/**
+ * @brief Return the requested raw sample rate for file input staging/open.
+ *
+ * Runtime config applies may stage a file path/rate while a different backend
+ * keeps running. In that case `wav_sample_rate` continues to track the live
+ * backend, while `staged_file_sample_rate` preserves the requested file rate
+ * for snapshot/save flows and future file opens.
+ *
+ * @param opts Decoder options (may be NULL).
+ * @return Requested raw file sample rate in Hz, defaulting to 48000.
+ */
+static inline int
+dsd_opts_requested_file_sample_rate(const dsd_opts* opts) {
+    if (!opts) {
+        return 48000;
+    }
+    if (opts->staged_file_sample_rate > 0) {
+        return opts->staged_file_sample_rate;
+    }
+    if (opts->wav_sample_rate > 0) {
+        return opts->wav_sample_rate;
+    }
+    return 48000;
+}
+
+static inline int
+dsd_opts_audio_dev_is_exact_or_prefixed(const char* dev, const char* exact, const char* prefixed) {
+    if (!dev || !exact || !prefixed) {
+        return 0;
+    }
+    return strcmp(dev, exact) == 0 || strncmp(dev, prefixed, strlen(prefixed)) == 0;
+}
+
+static inline int
+dsd_opts_audio_in_dev_is_pulse_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "pulse", "pulse:");
+}
+
+static inline int
+dsd_opts_audio_in_dev_is_rtl_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "rtl", "rtl:");
+}
+
+static inline int
+dsd_opts_audio_in_dev_is_rtltcp_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "rtltcp", "rtltcp:");
+}
+
+static inline int
+dsd_opts_audio_in_dev_is_soapy_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "soapy", "soapy:");
+}
+
+static inline int
+dsd_opts_audio_in_dev_is_tcp_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "tcp", "tcp:");
+}
+
+static inline int
+dsd_opts_audio_in_dev_is_udp_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "udp", "udp:");
+}
+
+static inline int
+dsd_opts_audio_in_dev_is_m17udp_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "m17udp", "m17udp:");
+}
+
 /**
  * @brief Compute samples-per-symbol for a given symbol rate and sample rate.
  *
@@ -342,6 +484,127 @@ dsd_opts_compute_sps_rate(const dsd_opts* opts, int sym_rate_hz, int demod_rate_
         sps = 64;
     }
     return sps;
+}
+
+/**
+ * @brief Return the integer upsample factor used for common sub-48 kHz PCM inputs.
+ *
+ * Legacy file/socket decode paths expect approximately 48 kHz discriminator
+ * audio. When a non-RTL PCM source is an integer divisor of 48 kHz, the sample
+ * reader linearly upsamples it to 48 kHz before symbol timing consumes it. The
+ * factor must fit within the fixed staging buffer used by the linear
+ * interpolator; unsupported factors fall back to 1 so timing remains aligned
+ * with the raw input rate.
+ *
+ * @param opts Decoder options containing the configured PCM input sample rate.
+ * @return Integer factor to reach 48 kHz, or 1 when no simple upsampling applies.
+ */
+static inline int
+dsd_opts_input_upsample_factor(const dsd_opts* opts) {
+    if (!opts || opts->wav_sample_rate <= 0 || opts->wav_sample_rate >= 48000) {
+        return 1;
+    }
+    if ((48000 % opts->wav_sample_rate) != 0) {
+        return 1;
+    }
+    int factor = 48000 / opts->wav_sample_rate;
+    if (factor > DSD_OPTS_INPUT_UPSAMPLE_STAGING_CAP) {
+        return 1;
+    }
+    return factor;
+}
+
+/**
+ * @brief Return the effective PCM rate seen by non-RTL legacy decode paths.
+ *
+ * @param opts Decoder options containing the configured PCM input sample rate.
+ * @return Effective sample rate in Hz after any simple input upsampling.
+ */
+static inline int
+dsd_opts_effective_input_rate(const dsd_opts* opts) {
+    int sr = (opts && opts->wav_sample_rate > 0) ? opts->wav_sample_rate : 48000;
+    return sr * dsd_opts_input_upsample_factor(opts);
+}
+
+/**
+ * @brief Return 1 when decoder timing should follow the configured PCM input rate.
+ *
+ * File, stdin, and socket PCM inputs derive timing from `wav_sample_rate`
+ * (plus any simple staged upsample). Live Pulse input and radio backends do
+ * not: Pulse follows the live 48 kHz stream, while radio paths use the actual
+ * demodulator output rate instead.
+ *
+ * @param opts Decoder options containing the configured input source.
+ * @return 1 when `dsd_opts_effective_input_rate()` is meaningful for timing.
+ */
+static inline int
+dsd_opts_source_uses_effective_input_rate(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+
+    if (opts->audio_in_dev[0] != '\0') {
+        if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
+            return 0;
+        }
+        if (dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
+            || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
+            || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
+            || dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) {
+            return 0;
+        }
+        return 1;
+    }
+
+    if (opts->audio_in_type == AUDIO_IN_PULSE || opts->audio_in_type == AUDIO_IN_RTL
+        || opts->audio_in_type == AUDIO_IN_NULL) {
+        return 0;
+    }
+    return 1;
+}
+
+/**
+ * @brief Return the active decoder timing rate for the current non-radio input.
+ *
+ * Runtime config applies may temporarily leave `audio_in_dev` pointing at a
+ * newly requested backend while `audio_in_type` still reflects the live input
+ * that is actually feeding samples. Prefer the active input type first so live
+ * Pulse/TCP/UDP/file timing stays stable during cross-backend applies; only
+ * fall back to `audio_in_dev` when no active backend-specific rate is known.
+ *
+ * Radio backends return 0 here because callers should prefer the actual
+ * demodulator output rate when it is available.
+ *
+ * @param opts Decoder options containing the active input backend state.
+ * @return Timing rate in Hz for the active non-radio input, or 0 when the
+ *         caller should provide a backend-specific rate instead.
+ */
+static inline int
+dsd_opts_current_input_timing_rate(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_PULSE:
+            if (opts->pulse_digi_rate_in > 0) {
+                return opts->pulse_digi_rate_in;
+            }
+            return 48000;
+        case AUDIO_IN_STDIN:
+        case AUDIO_IN_WAV:
+        case AUDIO_IN_UDP:
+        case AUDIO_IN_TCP: return dsd_opts_effective_input_rate(opts);
+        default: break;
+    }
+
+    if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
+        return (opts->pulse_digi_rate_in > 0) ? opts->pulse_digi_rate_in : 48000;
+    }
+    if (dsd_opts_source_uses_effective_input_rate(opts)) {
+        return dsd_opts_effective_input_rate(opts);
+    }
+    return 0;
 }
 
 /**

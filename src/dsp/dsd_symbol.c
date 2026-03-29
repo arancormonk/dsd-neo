@@ -65,6 +65,40 @@ float_to_int16_clip(float v) {
     return (short)lrintf(v);
 }
 
+static inline int
+pcm_input_uses_linear_upsample(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_STDIN:
+        case AUDIO_IN_WAV:
+        case AUDIO_IN_UDP:
+        case AUDIO_IN_TCP: return dsd_opts_input_upsample_factor(opts) > 1;
+        default: return 0;
+    }
+}
+
+static inline void
+pcm_input_stage_upsample(dsd_opts* opts, float invalue) {
+    int factor = dsd_opts_input_upsample_factor(opts);
+    size_t cap = sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]);
+    if (!opts || factor <= 1) {
+        return;
+    }
+    if (factor > (int)cap) {
+        opts->input_upsample_len = 0;
+        opts->input_upsample_pos = 0;
+        return;
+    }
+    float prev = opts->input_upsample_prev_valid ? opts->input_upsample_prev : invalue;
+    opts->input_upsample_len =
+        (int)dsd_audio_linear_upsample_block_f32(prev, invalue, (size_t)factor, opts->input_upsample_buf, cap);
+    opts->input_upsample_pos = 0;
+    opts->input_upsample_prev = invalue;
+    opts->input_upsample_prev_valid = 1;
+}
+
 /*
  * Centralized window selection helpers per modulation. These encapsulate
  * left/right offsets used during symbol decision and allow a single point for
@@ -314,45 +348,8 @@ maybe_adjust_sps_for_output_rate(dsd_opts* opts, dsd_state* state) {
     if (Fs == 0 || Fs == last_rate) {
         return;
     }
+    dsd_audio_rescale_symbol_timing(state, last_rate != 0 ? (int)last_rate : 48000, (int)Fs);
     last_rate = Fs;
-    /* Refresh audio filters to match the new output rate. */
-    init_audio_filters(state, (int)Fs);
-    if (Fs == 48000) {
-        return; /* canonical, keep existing SPS */
-    }
-    /* Scale SPS w.r.t. 48 kHz and preserve center ratio */
-    int old_sps = state->samplesPerSymbol;
-    if (old_sps <= 0) {
-        old_sps = 10; /* safe default */
-    }
-    /* new_sps = round(old_sps * Fs / 48000) */
-    long long num = (long long)old_sps * (long long)Fs;
-    int new_sps = (int)((num + 24000) / 48000);
-    if (new_sps < 2) {
-        new_sps = 2;
-    }
-    if (new_sps == old_sps) {
-        return;
-    }
-    /* Preserve existing center fraction within [1 .. new_sps-2] */
-    double ratio = (double)state->symbolCenter / (double)old_sps;
-    if (ratio < 0.05) {
-        ratio = 0.05; /* avoid extreme left */
-    }
-    if (ratio > 0.95) {
-        ratio = 0.95; /* avoid extreme right */
-    }
-    int new_center = (int)(ratio * (double)new_sps + 0.5);
-    int min_c = 1;
-    int max_c = new_sps - 2;
-    if (new_center < min_c) {
-        new_center = min_c;
-    }
-    if (new_center > max_c) {
-        new_center = max_c;
-    }
-    state->samplesPerSymbol = new_sps;
-    state->symbolCenter = new_center;
 }
 #endif
 
@@ -430,6 +427,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     }
 
     for (i = 0; i < symbol_span; i++) {
+        int used_staged_input = 0;
 
         // timing control
         if (symbol_span > 1 && (i == 0) && (have_sync == 0)) {
@@ -462,7 +460,12 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
 
         // Read the new sample from the input
-        if (opts->audio_in_type == AUDIO_IN_PULSE) //audio stream input
+        if (pcm_input_uses_linear_upsample(opts) && opts->input_upsample_pos < opts->input_upsample_len) {
+            sample = opts->input_upsample_buf[opts->input_upsample_pos++];
+            used_staged_input = 1;
+        }
+
+        if (!used_staged_input && opts->audio_in_type == AUDIO_IN_PULSE) //audio stream input
         {
             short s = 0;
             if (opts->audio_in_stream) {
@@ -481,7 +484,8 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
 
         //stdin only, wav files moving to new number
-        else if (opts->audio_in_type == AUDIO_IN_STDIN) //won't work in windows, needs posix pipe (mintty)
+        else if (!used_staged_input
+                 && opts->audio_in_type == AUDIO_IN_STDIN) //won't work in windows, needs posix pipe (mintty)
         {
             short s = 0;
             result = sf_read_short(opts->audio_in_file, &s, 1);
@@ -500,10 +504,14 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 cleanupAndExit(opts, state);
                 return 0.0f;
             }
+            if (pcm_input_uses_linear_upsample(opts)) {
+                pcm_input_stage_upsample(opts, sample);
+                sample = opts->input_upsample_buf[opts->input_upsample_pos++];
+            }
         }
         //wav files, same but using seperate value so we can still manipulate ncurses menu
         //since we can not worry about getch/stdin conflict
-        else if (opts->audio_in_type == AUDIO_IN_WAV) {
+        else if (!used_staged_input && opts->audio_in_type == AUDIO_IN_WAV) {
             short s = 0;
             result = sf_read_short(opts->audio_in_file, &s, 1);
             if (opts->input_volume_multiplier > 1) {
@@ -534,7 +542,11 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     return 0.0f;
                 }
             }
-        } else if (opts->audio_in_type == AUDIO_IN_RTL) {
+            if (pcm_input_uses_linear_upsample(opts)) {
+                pcm_input_stage_upsample(opts, sample);
+                sample = opts->input_upsample_buf[opts->input_upsample_pos++];
+            }
+        } else if (!used_staged_input && opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
             // Read demodulated stream here
             if (!state->rtl_ctx) {
@@ -558,7 +570,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
 
         //tcp socket input from SDR++ -- now with 1 retry if connection is broken
-        else if (opts->audio_in_type == AUDIO_IN_TCP) {
+        else if (!used_staged_input && opts->audio_in_type == AUDIO_IN_TCP) {
             short s = 0;
             int tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s);
             if (opts->input_volume_multiplier > 1) {
@@ -603,6 +615,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     if (opts->tcp_in_ctx == NULL) {
                         fprintf(stderr, "Error, couldn't Reconnect to TCP audio input\n");
                     } else {
+                        dsd_opts_reset_input_upsample_state(opts);
                         LOG_INFO("TCP Socket Reconnected Successfully.\n");
                     }
                 } else {
@@ -632,10 +645,14 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     fprintf(stderr, "Connection to TCP Server Disconnected.\n");
                 }
             }
+            if (opts->audio_in_type == AUDIO_IN_TCP && pcm_input_uses_linear_upsample(opts)) {
+                pcm_input_stage_upsample(opts, sample);
+                sample = opts->input_upsample_buf[opts->input_upsample_pos++];
+            }
         }
 
         // UDP direct audio input (PCM16LE over UDP)
-        else if (opts->audio_in_type == AUDIO_IN_UDP) {
+        else if (!used_staged_input && opts->audio_in_type == AUDIO_IN_UDP) {
             short s = 0;
             if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
                 cleanupAndExit(opts, state);
@@ -650,6 +667,10 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     v = -32768;
                 }
                 sample = (float)v;
+            }
+            if (pcm_input_uses_linear_upsample(opts)) {
+                pcm_input_stage_upsample(opts, sample);
+                sample = opts->input_upsample_buf[opts->input_upsample_pos++];
             }
         }
 

@@ -209,11 +209,10 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
             // Optional sample rate tweak for WAV/RAW
             int sr = prompt_int("Sample rate for WAV/RAW (48000 or 96000)", 48000, 8000, 192000);
             snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", path);
-            if (sr != 48000) {
-                opts->wav_sample_rate = sr;
-                opts->wav_interpolator = opts->wav_sample_rate / opts->wav_decimator;
-                state->samplesPerSymbol = state->samplesPerSymbol * opts->wav_interpolator;
-                state->symbolCenter = state->symbolCenter * opts->wav_interpolator;
+            {
+                int old_effective_rate = dsd_opts_effective_input_rate(opts);
+                dsd_opts_apply_input_sample_rate(opts, sr);
+                dsd_state_rescale_symbol_timing(state, old_effective_rate, dsd_opts_effective_input_rate(opts));
             }
             break;
         }

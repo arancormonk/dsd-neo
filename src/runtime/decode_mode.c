@@ -35,6 +35,46 @@ dsd_decode_mode_from_cli_preset(char preset, dsdneoUserDecodeMode* out_mode) {
     }
 }
 
+static void
+decode_mode_base_symbol_timing(dsdneoUserDecodeMode mode, int* out_sps, int* out_center) {
+    int sps = 10;
+
+    switch (mode) {
+        case DSDCFG_MODE_P25P2: sps = 8; break;
+        case DSDCFG_MODE_NXDN48:
+        case DSDCFG_MODE_NXDN96:
+        case DSDCFG_MODE_DPMR: sps = 20; break;
+        case DSDCFG_MODE_EDACS_PV: sps = 5; break;
+        default: sps = 10; break;
+    }
+
+    if (out_sps) {
+        *out_sps = sps;
+    }
+    if (out_center) {
+        *out_center = dsd_opts_symbol_center(sps);
+    }
+}
+
+void
+dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_input_rate_hz, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+
+    int base_sps = 10;
+    int base_center = 4;
+    decode_mode_base_symbol_timing(mode, &base_sps, &base_center);
+    state->samplesPerSymbol = base_sps;
+    state->symbolCenter = base_center;
+
+    if (effective_input_rate_hz <= 0 || effective_input_rate_hz == 48000) {
+        return;
+    }
+
+    dsd_state_rescale_symbol_timing(state, 48000, effective_input_rate_hz);
+}
+
 int
 dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
                              dsd_state* state) {

@@ -738,6 +738,31 @@ int dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg);
 void dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief Apply config defaults before CLI parsing without activating file-rate timing yet.
+ *
+ * Bootstrap uses this to stage config-backed input/output defaults first, then
+ * let CLI overrides settle before any file-input sample-rate side effects are
+ * committed into decoder timing.
+ *
+ * @param cfg User config to apply.
+ * @param opts Decoder options to mutate.
+ * @param state Decoder state to mutate.
+ */
+void dsd_apply_user_config_to_opts_pre_cli(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Finalize config-file input sample-rate defaults after CLI parsing.
+ *
+ * Applies the configured file sample rate only when the config-file input
+ * still survived CLI parsing for this run.
+ *
+ * @param cfg User config to finalize.
+ * @param opts Decoder options to mutate.
+ * @param state Decoder state to mutate.
+ */
+void dsd_finalize_user_config_file_input_after_cli(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
+
+/**
  * @brief Snapshot current opts/state into a user config (for save/print).
  *
  * @param opts Decoder options to read.

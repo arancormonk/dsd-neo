@@ -24,6 +24,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -1047,7 +1048,10 @@ current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
 #endif
-    return demod_rate;
+    if (demod_rate > 0) {
+        return demod_rate;
+    }
+    return dsd_opts_current_input_timing_rate(opts);
 }
 
 static void
@@ -1213,37 +1217,149 @@ apply_cfg_udp_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const cha
 }
 
 static void
-apply_cfg_file_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
-                           int old_audio_in_type) {
+rollback_cfg_file_hot_restart(dsd_opts* opts, dsd_state* state, const char* old_audio_in_dev, int old_audio_in_type,
+                              int old_wav_sample_rate, int old_effective_input_rate, int failed_effective_input_rate) {
+    if (!opts) {
+        return;
+    }
+
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", old_audio_in_dev);
+    opts->audio_in_type = old_audio_in_type;
+    dsd_opts_apply_input_sample_rate(opts, old_wav_sample_rate);
+
+    if (state && failed_effective_input_rate != old_effective_input_rate) {
+        dsd_state_rescale_symbol_timing(state, failed_effective_input_rate, old_effective_input_rate);
+    }
+}
+
+static void
+restore_symbol_timing_snapshot(dsd_state* state, int old_samples_per_symbol, int old_symbol_center, int old_jitter) {
+    if (!state) {
+        return;
+    }
+
+    int restored_sps = old_samples_per_symbol > 0 ? old_samples_per_symbol : 10;
+    int restored_center = old_symbol_center;
+    if (restored_center < 0 || restored_center >= restored_sps) {
+        restored_center = dsd_opts_symbol_center(restored_sps);
+    }
+
+    state->samplesPerSymbol = restored_sps;
+    state->symbolCenter = restored_center;
+    state->jitter = old_jitter;
+}
+
+static void
+restore_live_pcm_rate_after_staged_file_apply(dsd_opts* opts, const dsdneoUserConfig* cfg, int old_wav_sample_rate) {
+    if (!opts || !cfg || !cfg->has_input || cfg->input_source != DSDCFG_INPUT_FILE || !cfg->file_path[0]) {
+        return;
+    }
+    if (opts->audio_in_type == AUDIO_IN_WAV) {
+        return;
+    }
+
+    opts->staged_file_sample_rate = (cfg->file_sample_rate > 0) ? cfg->file_sample_rate : 48000;
+    if (opts->wav_sample_rate != old_wav_sample_rate) {
+        dsd_opts_apply_input_sample_rate(opts, old_wav_sample_rate);
+    }
+}
+
+static int
+audio_file_info_uses_container_metadata(const SF_INFO* info) {
+    if (!info) {
+        return 0;
+    }
+
+    int major_format = info->format & SF_FORMAT_TYPEMASK;
+    return major_format != 0 && major_format != SF_FORMAT_RAW;
+}
+
+static void
+apply_cfg_file_runtime_rate(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int old_runtime_input_rate,
+                            int old_samples_per_symbol, int old_symbol_center, int old_jitter) {
+    if (!opts || !state || !cfg || !cfg->has_input || cfg->input_source != DSDCFG_INPUT_FILE || !cfg->file_path[0]) {
+        return;
+    }
+
+    int configured_effective_input_rate = dsd_opts_effective_input_rate(opts);
+    if (configured_effective_input_rate <= 0) {
+        configured_effective_input_rate = 48000;
+    }
+
+    if (opts->audio_in_type == AUDIO_IN_WAV) {
+        if (strncmp(opts->audio_in_dev, cfg->file_path, sizeof opts->audio_in_dev) != 0) {
+            restore_symbol_timing_snapshot(state, old_samples_per_symbol, old_symbol_center, old_jitter);
+            return;
+        }
+
+        int active_sample_rate = opts->wav_sample_rate;
+        if (audio_file_info_uses_container_metadata(opts->audio_in_file_info)
+            && opts->audio_in_file_info->samplerate > 0) {
+            active_sample_rate = opts->audio_in_file_info->samplerate;
+        }
+        if (active_sample_rate <= 0) {
+            active_sample_rate = 48000;
+        }
+        if (opts->wav_sample_rate != active_sample_rate) {
+            dsd_opts_apply_input_sample_rate(opts, active_sample_rate);
+        }
+
+        int active_effective_input_rate = dsd_opts_effective_input_rate(opts);
+        if (cfg->has_mode) {
+            dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, active_effective_input_rate, state);
+            dsd_audio_rescale_symbol_timing(state, active_effective_input_rate, active_effective_input_rate);
+        } else {
+            dsd_audio_rescale_symbol_timing(state, configured_effective_input_rate, active_effective_input_rate);
+        }
+        return;
+    }
+
+    if (old_runtime_input_rate <= 0) {
+        old_runtime_input_rate = current_demod_rate(opts, state);
+    }
+    if (old_runtime_input_rate <= 0) {
+        old_runtime_input_rate = 48000;
+    }
+
+    if (cfg->has_mode) {
+        dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, old_runtime_input_rate, state);
+    } else {
+        restore_symbol_timing_snapshot(state, old_samples_per_symbol, old_symbol_center, old_jitter);
+    }
+}
+
+static void
+apply_cfg_file_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
+                           int old_audio_in_type, int old_wav_sample_rate, int old_effective_input_rate) {
     if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_FILE || old_audio_in_type != AUDIO_IN_WAV
         || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
         return;
     }
 
-    if (opts->audio_in_file) {
-        sf_close(opts->audio_in_file);
-        opts->audio_in_file = NULL;
-    }
-    if (opts->audio_in_file_info) {
-        free(opts->audio_in_file_info);
-        opts->audio_in_file_info = NULL;
-    }
-    opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
-    if (!opts->audio_in_file_info) {
-        LOG_ERROR("Config: failed to allocate SF_INFO for file input\n");
+    SNDFILE* new_audio_in_file = NULL;
+    SF_INFO* new_audio_in_file_info = NULL;
+    int configured_effective_input_rate = dsd_opts_effective_input_rate(opts);
+
+    if (dsd_audio_open_mono_file_input(opts->audio_in_dev, opts->wav_sample_rate, &new_audio_in_file,
+                                       &new_audio_in_file_info, NULL, NULL)
+        != 0) {
+        LOG_ERROR("Config: failed to open file input %s: %s\n", opts->audio_in_dev, sf_strerror(NULL));
+        rollback_cfg_file_hot_restart(opts, state, old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
+                                      old_effective_input_rate, configured_effective_input_rate);
         return;
     }
 
-    opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
-    opts->audio_in_file_info->channels = 1;
-    opts->audio_in_file_info->seekable = 0;
-    opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-    opts->audio_in_file = sf_open(opts->audio_in_dev, SFM_READ, opts->audio_in_file_info);
-    if (!opts->audio_in_file) {
-        LOG_ERROR("Config: failed to open file input %s: %s\n", opts->audio_in_dev, sf_strerror(NULL));
-    } else {
-        opts->audio_in_type = AUDIO_IN_WAV;
+    if (opts->audio_in_file) {
+        sf_close(opts->audio_in_file);
     }
+    if (opts->audio_in_file_info) {
+        free(opts->audio_in_file_info);
+    }
+
+    opts->audio_in_file = new_audio_in_file;
+    opts->audio_in_file_info = new_audio_in_file_info;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    dsd_opts_reset_input_upsample_state(opts);
 }
 
 static void
@@ -1299,8 +1415,8 @@ apply_cfg_pulse_out_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, con
 
 static void
 apply_cfg_runtime_hot_switches(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
-                               const char* old_audio_in_dev, int old_audio_in_type, const char* old_audio_out_dev,
-                               int old_audio_out_type) {
+                               const char* old_audio_in_dev, int old_audio_in_type, int old_wav_sample_rate,
+                               int old_effective_input_rate, const char* old_audio_out_dev, int old_audio_out_type) {
     /* Tighten runtime behavior when applying configs mid-run by restarting
      * active backends whose configuration changed, while avoiding cross-backend
      * hot-switches. */
@@ -1311,7 +1427,8 @@ apply_cfg_runtime_hot_switches(dsd_opts* opts, dsd_state* state, const dsdneoUse
 #endif
     apply_cfg_tcp_hot_restart(opts, cfg, old_audio_in_dev, old_audio_in_type);
     apply_cfg_udp_hot_restart(opts, cfg, old_audio_in_dev, old_audio_in_type);
-    apply_cfg_file_hot_restart(opts, cfg, old_audio_in_dev, old_audio_in_type);
+    apply_cfg_file_hot_restart(opts, state, cfg, old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
+                               old_effective_input_rate);
     apply_cfg_pulse_in_hot_restart(opts, cfg, old_audio_in_dev, old_audio_in_type);
     apply_cfg_pulse_out_hot_restart(opts, cfg, old_audio_out_dev, old_audio_out_type);
 }
@@ -1886,6 +2003,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 char old_audio_out_dev[sizeof opts->audio_out_dev];
                 int old_audio_in_type = opts->audio_in_type;
                 int old_audio_out_type = opts->audio_out_type;
+                int old_wav_sample_rate = opts->wav_sample_rate;
+                int old_effective_input_rate = dsd_opts_effective_input_rate(opts);
+                int old_runtime_input_rate = current_demod_rate(opts, state);
+                int old_samples_per_symbol = state->samplesPerSymbol;
+                int old_symbol_center = state->symbolCenter;
+                int old_jitter = state->jitter;
 
                 snprintf(old_audio_in_dev, sizeof old_audio_in_dev, "%s", opts->audio_in_dev);
                 snprintf(old_audio_out_dev, sizeof old_audio_out_dev, "%s", opts->audio_out_dev);
@@ -1896,7 +2019,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 apply_cfg_live_rtl_ppm_request(opts, &cfg, old_audio_in_type);
 #endif
                 apply_cfg_runtime_hot_switches(opts, state, &cfg, old_audio_in_dev, old_audio_in_type,
-                                               old_audio_out_dev, old_audio_out_type);
+                                               old_wav_sample_rate, old_effective_input_rate, old_audio_out_dev,
+                                               old_audio_out_type);
+                restore_live_pcm_rate_after_staged_file_apply(opts, &cfg, old_wav_sample_rate);
+                apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol,
+                                            old_symbol_center, old_jitter);
             }
             break;
         }

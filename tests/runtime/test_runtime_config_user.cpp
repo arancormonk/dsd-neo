@@ -83,6 +83,53 @@ render_config_to_buffer(const dsdneoUserConfig* cfg, char* out, size_t out_sz) {
 }
 
 static int
+test_apply_file_input_rescales_symbol_timing(void) {
+    dsdneoUserConfig cfg = {};
+    cfg.version = 1;
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_FILE;
+    cfg.file_sample_rate = 44100;
+    snprintf(cfg.file_path, sizeof cfg.file_path, "%s", "/tmp/input.wav");
+    cfg.file_path[sizeof cfg.file_path - 1] = '\0';
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    opts.wav_decimator = 48000;
+    opts.wav_sample_rate = 48000;
+    state.samplesPerSymbol = 10;
+    state.symbolCenter = 4;
+    state.jitter = 3;
+
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    int rc = 0;
+    if (strcmp(opts.audio_in_dev, "/tmp/input.wav") != 0) {
+        fprintf(stderr, "file input path not applied correctly: \"%s\"\n", opts.audio_in_dev);
+        rc |= 1;
+    }
+    if (opts.wav_sample_rate != 44100) {
+        fprintf(stderr, "file input sample rate not applied correctly: %d\n", opts.wav_sample_rate);
+        rc |= 1;
+    }
+    if (opts.staged_file_sample_rate != 44100) {
+        fprintf(stderr, "staged file sample rate not applied correctly: %d\n", opts.staged_file_sample_rate);
+        rc |= 1;
+    }
+    if (dsd_opts_effective_input_rate(&opts) != 44100) {
+        fprintf(stderr, "effective input rate mismatch after file config: %d\n", dsd_opts_effective_input_rate(&opts));
+        rc |= 1;
+    }
+    if (state.samplesPerSymbol != 9 || state.symbolCenter != 4 || state.jitter != -1) {
+        fprintf(stderr, "file input timing rescale mismatch: sps=%d center=%d jitter=%d\n", state.samplesPerSymbol,
+                state.symbolCenter, state.jitter);
+        rc |= 1;
+    }
+
+    return rc;
+}
+
+static int
 test_load_and_apply_basic(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -809,6 +856,32 @@ test_apply_mode_ysf_uses_config_profile_behavior(void) {
 }
 
 static int
+test_snapshot_staged_file_rate_uses_requested_rate(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+
+    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "/tmp/staged-input.wav");
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.wav_sample_rate = 48000;
+    opts.staged_file_sample_rate = 96000;
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+
+    int rc = 0;
+    if (!snap.has_input || snap.input_source != DSDCFG_INPUT_FILE) {
+        fprintf(stderr, "staged file snapshot input_source mismatch\n");
+        rc |= 1;
+    }
+    if (snap.file_sample_rate != 96000) {
+        fprintf(stderr, "staged file snapshot sample rate mismatch: %d\n", snap.file_sample_rate);
+        rc |= 1;
+    }
+    return rc;
+}
+
+static int
 test_snapshot_mode_inference_tdma_and_auto(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -846,6 +919,7 @@ test_snapshot_mode_inference_tdma_and_auto(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_load_and_apply_basic();
     rc |= test_load_and_apply_soapy_input_no_args();
     rc |= test_load_and_apply_soapy_input_with_args();
@@ -857,6 +931,7 @@ main(void) {
     rc |= test_snapshot_persists_demod_lock();
     rc |= test_apply_logging_retargets_frame_log_file();
     rc |= test_apply_mode_ysf_uses_config_profile_behavior();
+    rc |= test_snapshot_staged_file_rate_uses_requested_rate();
     rc |= test_snapshot_mode_inference_tdma_and_auto();
     return rc;
 }

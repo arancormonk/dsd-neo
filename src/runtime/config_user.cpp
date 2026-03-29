@@ -724,14 +724,18 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
 
 // Mapping helpers -------------------------------------------------------------
 
-void
-dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
+static void
+dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state,
+                                   int apply_file_input_rate_now) {
     if (!cfg || !opts || !state) {
         return;
     }
 
+    const int old_effective_input_rate = dsd_opts_effective_input_rate(opts);
+
     // Input source
     if (cfg->has_input) {
+        opts->staged_file_sample_rate = 0;
         switch (cfg->input_source) {
             case DSDCFG_INPUT_PULSE:
                 if (cfg->pulse_input[0]) {
@@ -781,12 +785,11 @@ dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_s
                 break;
             case DSDCFG_INPUT_FILE:
                 if (cfg->file_path[0]) {
+                    int configured_rate = (cfg->file_sample_rate > 0) ? cfg->file_sample_rate : 48000;
                     snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cfg->file_path);
-                    if (cfg->file_sample_rate > 0 && cfg->file_sample_rate != 48000) {
-                        opts->wav_sample_rate = cfg->file_sample_rate;
-                        if (opts->wav_decimator != 0) {
-                            opts->wav_interpolator = opts->wav_sample_rate / opts->wav_decimator;
-                        }
+                    opts->staged_file_sample_rate = configured_rate;
+                    if (apply_file_input_rate_now) {
+                        dsd_opts_apply_input_sample_rate(opts, configured_rate);
                     }
                 }
                 break;
@@ -958,6 +961,50 @@ dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_s
             dsd_setenv("DSD_NEO_IQ_DC_BLOCK", cfg->iq_dc_block ? "1" : "0", 0);
         }
     }
+
+    if (apply_file_input_rate_now && cfg->has_input && cfg->input_source == DSDCFG_INPUT_FILE && cfg->file_path[0]) {
+        int effective_input_rate = dsd_opts_effective_input_rate(opts);
+        if (cfg->has_mode) {
+            dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, effective_input_rate, state);
+        } else {
+            dsd_state_rescale_symbol_timing(state, old_effective_input_rate, effective_input_rate);
+        }
+    }
+}
+
+void
+dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
+    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 1);
+}
+
+void
+dsd_apply_user_config_to_opts_pre_cli(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
+    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 0);
+}
+
+void
+dsd_finalize_user_config_file_input_after_cli(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
+    if (!cfg || !opts || !state) {
+        return;
+    }
+    if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_FILE || cfg->file_path[0] == '\0') {
+        return;
+    }
+    if (strcmp(opts->audio_in_dev, cfg->file_path) != 0) {
+        return;
+    }
+
+    int configured_rate = (cfg->file_sample_rate > 0) ? cfg->file_sample_rate : 48000;
+    opts->staged_file_sample_rate = configured_rate;
+    int old_effective_input_rate = dsd_opts_effective_input_rate(opts);
+    if (opts->wav_sample_rate != configured_rate) {
+        dsd_opts_apply_input_sample_rate(opts, configured_rate);
+    }
+
+    int effective_input_rate = dsd_opts_effective_input_rate(opts);
+    if (effective_input_rate != old_effective_input_rate) {
+        dsd_state_rescale_symbol_timing(state, old_effective_input_rate, effective_input_rate);
+    }
 }
 
 void
@@ -1003,7 +1050,8 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
         cfg->input_source = DSDCFG_INPUT_FILE;
         snprintf(cfg->file_path, sizeof cfg->file_path, "%.*s", (int)(sizeof cfg->file_path - 1), opts->audio_in_dev);
         cfg->file_path[sizeof cfg->file_path - 1] = '\0';
-        cfg->file_sample_rate = opts->wav_sample_rate;
+        cfg->file_sample_rate =
+            (opts->audio_in_type == AUDIO_IN_WAV) ? opts->wav_sample_rate : dsd_opts_requested_file_sample_rate(opts);
     }
 
     if (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP) {

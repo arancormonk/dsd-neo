@@ -71,6 +71,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     int validate_config_cli = 0;
     int strict_config_cli = 0;
     int list_profiles_cli = 0;
+    int cli_file_rate_override = 0;
     const char* config_path_cli = NULL;
     const char* profile_cli = NULL;
     const char* validate_path_cli = NULL;
@@ -100,6 +101,13 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
             profile_cli = argv[++i];
         } else if (strcmp(argv[i], "--list-profiles") == 0) {
             list_profiles_cli = 1;
+        } else if (strcmp(argv[i], "-s") == 0) {
+            cli_file_rate_override = 1;
+            if (i + 1 < argc) {
+                ++i;
+            }
+        } else if (strncmp(argv[i], "-s", 2) == 0 && argv[i][2] != '\0') {
+            cli_file_rate_override = 1;
         }
     }
 
@@ -152,7 +160,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
             }
 
             if (load_rc == 0) {
-                dsd_apply_user_config_to_opts(&user_cfg, opts, state);
+                dsd_apply_user_config_to_opts_pre_cli(&user_cfg, opts, state);
                 user_cfg_loaded = 1;
                 if (explicit_profile_selected) {
                     /* Saving the effective config would flatten the profiled
@@ -197,6 +205,10 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
             bootstrap_set_exit_rc(out_exit_rc, 1);
             return DSD_BOOTSTRAP_ERROR;
         }
+
+        if (user_cfg_loaded && !cli_file_rate_override) {
+            dsd_finalize_user_config_file_input_after_cli(&user_cfg, opts, state);
+        }
         // Keep original argc for UI bootstrap heuristics; use argc_effective
         // only when iterating argv for file playback (-r).
     }
@@ -220,20 +232,6 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     if (argc_effective > 1 && user_cfg_loaded && !opts->trunk_cli_seen && !explicit_profile_selected) {
         opts->p25_trunk = 0;
         opts->trunk_enable = 0;
-    }
-
-    // If a user config specified a non-48kHz file/RAW input and the CLI did
-    // not override its sample rate, apply the corresponding symbol timing
-    // scaling after all CLI/env parsing so that mode presets are adjusted
-    // correctly. This mirrors legacy "-s" behavior without requiring users
-    // to manage option ordering manually when using the config file.
-    if (user_cfg_loaded && user_cfg.has_input && user_cfg.input_source == DSDCFG_INPUT_FILE
-        && user_cfg.file_sample_rate > 0 && user_cfg.file_sample_rate != 48000 && opts->wav_decimator != 0
-        && user_cfg.file_path[0] != '\0' && strcmp(opts->audio_in_dev, user_cfg.file_path) == 0
-        && opts->wav_sample_rate == user_cfg.file_sample_rate) {
-        opts->wav_interpolator = opts->wav_sample_rate / opts->wav_decimator;
-        state->samplesPerSymbol = state->samplesPerSymbol * opts->wav_interpolator;
-        state->symbolCenter = state->symbolCenter * opts->wav_interpolator;
     }
 
     if (print_config_cli) {

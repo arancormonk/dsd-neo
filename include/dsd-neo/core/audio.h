@@ -17,6 +17,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/sndfile_fwd.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -98,6 +99,66 @@ void upsampleF(float invalue, float prev, float outbuf[6]);
 /** @brief Legacy analog monitor 6x upsampler (sample repetition). */
 void upsample(dsd_state* state, float invalue);
 
+/**
+ * @brief Generate one linear interpolation block that ends on the current sample.
+ *
+ * This is used by low-rate PCM input paths that stage an integer number of
+ * interpolated samples before symbol timing consumes them.
+ *
+ * @param previous Previous input sample.
+ * @param current Current input sample.
+ * @param factor Number of output samples to generate.
+ * @param out Destination buffer.
+ * @param out_cap Destination capacity in samples.
+ * @return Number of samples written, or 0 on invalid arguments.
+ */
+size_t dsd_audio_linear_upsample_block_f32(float previous, float current, size_t factor, float* out, size_t out_cap);
+
+/**
+ * @brief Rescale decoder timing/filter state between two effective PCM rates.
+ *
+ * The helper preserves the existing symbol-center fraction when possible and
+ * rebuilds analog filter coefficients for the new rate.
+ *
+ * @param state Decoder state to update.
+ * @param old_rate_hz Previous effective PCM rate.
+ * @param new_rate_hz New effective PCM rate.
+ */
+void dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_hz);
+
+/**
+ * @brief Apply a new PCM input sample rate and propagate it into decoder state.
+ *
+ * Updates wav/interpolator options, clears staged upsample history, and
+ * rescales timing/filter state against the provided previous effective rate.
+ *
+ * @param opts Decoder options to update.
+ * @param state Decoder state to update.
+ * @param old_effective_rate_hz Previous effective PCM rate.
+ * @param sample_rate_hz New raw PCM sample rate.
+ */
+void dsd_audio_apply_input_sample_rate(dsd_opts* opts, dsd_state* state, int old_effective_rate_hz, int sample_rate_hz);
+
+/**
+ * @brief Open a mono PCM input file as either a WAV-family container or legacy raw PCM.
+ *
+ * `.wav` paths are treated as true WAV containers only when the file starts
+ * with a supported WAV-family header such as `RIFF`, `RIFX`, or `RF64`
+ * followed by `WAVE`. Headerless captures, including legacy discriminator
+ * dumps that merely use a `.wav` suffix, fall back to mono 16-bit
+ * little-endian raw PCM at the configured sample rate.
+ *
+ * @param path Input path to open.
+ * @param configured_sample_rate_hz Configured raw PCM sample rate.
+ * @param out_file [out] Opened libsndfile handle on success.
+ * @param out_info [out] Allocated file metadata on success.
+ * @param out_sample_rate_hz [out] Active sample rate selected for the input.
+ * @param out_opened_as_container [out] Non-zero when opened via WAV container metadata.
+ * @return 0 on success; non-zero on failure.
+ */
+int dsd_audio_open_mono_file_input(const char* path, int configured_sample_rate_hz, SNDFILE** out_file,
+                                   SF_INFO** out_info, int* out_sample_rate_hz, int* out_opened_as_container);
+
 /** @brief Convert float samples to int16 with scaling. */
 void audio_float_to_s16(const float* in, short* out, size_t n, float scale);
 /** @brief Convert int16 samples to float with scaling. */
@@ -145,7 +206,7 @@ void beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);
 /** @brief Open output audio device at requested speed. */
 void openAudioOutDevice(dsd_opts* opts, int speed);
 /** @brief Open input audio device based on opts. Returns 0 on success. */
-int openAudioInDevice(dsd_opts* opts);
+int openAudioInDevice(dsd_opts* opts, dsd_state* state);
 
 /** @brief Parse audio input device string and update opts. */
 void parse_audio_input_string(dsd_opts* opts, char* input);

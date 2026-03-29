@@ -4,12 +4,12 @@
  */
 
 #include <ctype.h>
-#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
@@ -595,6 +595,18 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     struct stat st = {0};
     char wav_file_directory[1024] = {0};
     char dsp_filename[1024] = {0};
+
+    enum {
+        CLI_TIMING_SOURCE_NONE = 0,
+        CLI_TIMING_SOURCE_PRESET = 1,
+        CLI_TIMING_SOURCE_MANUAL = 2,
+    };
+
+    int cli_decode_timing_seen = 0;
+    int cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;
+    dsdneoUserDecodeMode cli_decode_timing_mode = DSDCFG_MODE_AUTO;
+    int cli_manual_timing_sps = 0;
+    int cli_manual_timing_center = 0;
     while ((c = getopt(argc, argv,
                        "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:u:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:"
                        "89:Ek:I:J:Oj^"))
@@ -610,7 +622,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 LOG_NOTICE("Debug Mode Enabled; \n");
                 break;
             case 'O':
-                audio_list_devices();
+                dsd_audio_list_devices();
                 cli_set_exit_rc(out_exit_rc, 0);
                 return DSD_PARSE_ONE_SHOT;
             case 'M':
@@ -903,6 +915,9 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 LOG_NOTICE("%s", KNRM);
                 break;
             case 'i':
+                if (strcmp(opts->audio_in_dev, optarg) != 0) {
+                    dsd_opts_clear_staged_file_sample_rate(opts);
+                }
                 strncpy(opts->audio_in_dev, optarg, 2047);
                 opts->audio_in_dev[2047] = '\0';
                 break;
@@ -1062,6 +1077,9 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 dsdneoUserDecodeMode core_mode = DSDCFG_MODE_UNSET;
                 if (dsd_decode_mode_from_cli_preset(optarg[0], &core_mode) == 0
                     && dsd_apply_decode_mode_preset(core_mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0) {
+                    cli_decode_timing_mode = core_mode;
+                    cli_decode_timing_seen = 1;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
                     switch (optarg[0]) {
                         case 'a': LOG_NOTICE("Decoding AUTO: all digital modes with multi-rate SPS hunting\n"); break;
                         case 'A': LOG_NOTICE("Only Monitoring Passive Analog Signal\n"); break;
@@ -1106,6 +1124,9 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                     LOG_NOTICE("Decoding only ProVoice frames.\n");
                     LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");
                     opts->rtl_dsp_bw_khz = 24;
+                    cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;
+                    cli_decode_timing_seen = 1;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
                 } else if (optarg[0] == 'h') {
                     if (optarg[1] != 0) {
                         char abits[2] = {optarg[1], 0};
@@ -1154,6 +1175,9 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                                    state->edacs_s_bits);
                     }
                     opts->rtl_dsp_bw_khz = 24;
+                    cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;
+                    cli_decode_timing_seen = 1;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
                 } else if (optarg[0] == 'H') {
                     if (optarg[1] != 0) {
                         char abits[2] = {optarg[1], 0};
@@ -1192,6 +1216,9 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                     LOG_NOTICE("Decoding EDACS Extended Addressing w/ ESK and ProVoice frames.\n");
                     LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");
                     opts->rtl_dsp_bw_khz = 24;
+                    cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;
+                    cli_decode_timing_seen = 1;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
                 } else if (optarg[0] == 'e') {
                     if (optarg[1] != 0) {
                         char abits[2] = {optarg[1], 0};
@@ -1240,6 +1267,9 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                                    state->edacs_s_bits);
                     }
                     opts->rtl_dsp_bw_khz = 24;
+                    cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;
+                    cli_decode_timing_seen = 1;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
                 } else if (optarg[0] == 'E') {
                     if (optarg[1] != 0) {
                         char abits[2] = {optarg[1], 0};
@@ -1288,6 +1318,9 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                                    state->edacs_s_bits);
                     }
                     opts->rtl_dsp_bw_khz = 24;
+                    cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;
+                    cli_decode_timing_seen = 1;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
                 } else if (optarg[0] == 'r') {
                     /* Legacy -fr alias: DMR BS/MS simplex with mono audio.
                        Mirrors -fs but prefers mono content while keeping a
@@ -1318,6 +1351,9 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                     opts->pulse_digi_out_channels = 2;
                     snprintf(opts->output_name, sizeof opts->output_name, "%s", "DMR-Mono");
                     LOG_NOTICE("Decoding DMR (legacy -fr mono mode).\n");
+                    cli_decode_timing_mode = DSDCFG_MODE_DMR;
+                    cli_decode_timing_seen = 1;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
                 } else if (optarg[0] == 'Z') {
                     opts->m17encoder = 1;
                     opts->pulse_digi_rate_out = 48000;
@@ -1327,22 +1363,30 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                     opts->use_pbf = 0;
                     opts->dmr_stereo = 0;
                     snprintf(opts->output_name, sizeof opts->output_name, "%s", "M17 Encoder");
+                    cli_decode_timing_seen = 0;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;
                 } else if (optarg[0] == 'B') {
                     opts->m17encoderbrt = 1;
                     opts->pulse_digi_rate_out = 48000;
                     opts->pulse_digi_out_channels = 1;
                     snprintf(opts->output_name, sizeof opts->output_name, "%s", "M17 BERT");
+                    cli_decode_timing_seen = 0;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;
                 } else if (optarg[0] == 'P') {
                     opts->m17encoderpkt = 1;
                     opts->pulse_digi_rate_out = 48000;
                     opts->pulse_digi_out_channels = 1;
                     snprintf(opts->output_name, sizeof opts->output_name, "%s", "M17 Packet");
+                    cli_decode_timing_seen = 0;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;
                 } else if (optarg[0] == 'U') {
                     opts->m17decoderip = 1;
                     opts->pulse_digi_rate_out = 8000;
                     opts->pulse_digi_out_channels = 1;
                     snprintf(opts->output_name, sizeof opts->output_name, "%s", "M17 IP Frame");
                     LOG_NOTICE("Decoding M17 UDP/IP Frames.\n");
+                    cli_decode_timing_seen = 0;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;
                 }
                 break;
             }
@@ -1383,6 +1427,10 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                     state->samplesPerSymbol = 8;
                     state->symbolCenter = 3;
                     opts->mod_cli_lock = 1;
+                    cli_decode_timing_seen = 1;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;
+                    cli_manual_timing_sps = 8;
+                    cli_manual_timing_center = 3;
                     LOG_NOTICE("Enabling 6000 sps P25p2 QPSK.\n");
                 } else if (optarg[0] == '3') {
                     opts->mod_c4fm = 1;
@@ -1392,6 +1440,10 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                     state->samplesPerSymbol = 10;
                     state->symbolCenter = 4;
                     opts->mod_cli_lock = 1;
+                    cli_decode_timing_seen = 1;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;
+                    cli_manual_timing_sps = 10;
+                    cli_manual_timing_center = 4;
                     LOG_NOTICE("Enabling 6000 sps P25p2 C4FM.\n");
                 } else if (optarg[0] == '4') {
                     opts->mod_c4fm = 1;
@@ -1401,6 +1453,10 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                     state->samplesPerSymbol = 8;
                     state->symbolCenter = 3;
                     opts->mod_cli_lock = 0;
+                    cli_decode_timing_seen = 1;
+                    cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;
+                    cli_manual_timing_sps = 8;
+                    cli_manual_timing_center = 3;
                     LOG_NOTICE("Enabling 6000 sps P25p2 all optimizations.\n");
                 }
                 break;
@@ -1416,16 +1472,16 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
             case 's': {
                 // Sample rate for WAV/RAW input files
                 int sr = atoi(optarg);
+                int old_effective_rate = dsd_opts_effective_input_rate(opts);
                 if (sr < 8000) {
                     sr = 8000;
                 }
                 if (sr > 192000) {
                     sr = 192000;
                 }
-                opts->wav_sample_rate = sr;
-                opts->wav_interpolator = opts->wav_sample_rate / opts->wav_decimator;
-                state->samplesPerSymbol = state->samplesPerSymbol * opts->wav_interpolator;
-                state->symbolCenter = state->symbolCenter * opts->wav_interpolator;
+                dsd_opts_clear_staged_file_sample_rate(opts);
+                dsd_opts_apply_input_sample_rate(opts, sr);
+                dsd_state_rescale_symbol_timing(state, old_effective_rate, dsd_opts_effective_input_rate(opts));
                 LOG_NOTICE("WAV input sample rate: %d Hz (interp=%d)\n", opts->wav_sample_rate, opts->wav_interpolator);
                 break;
             }
@@ -1538,6 +1594,19 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 dsd_cli_usage();
                 cli_set_exit_rc(out_exit_rc, 1);
                 return DSD_PARSE_ERROR;
+        }
+    }
+    if (cli_decode_timing_seen && dsd_opts_source_uses_effective_input_rate(opts)) {
+        int timing_rate_hz = dsd_opts_effective_input_rate(opts);
+        if (cli_decode_timing_source == CLI_TIMING_SOURCE_PRESET && timing_rate_hz != 48000) {
+            dsd_apply_decode_mode_symbol_timing(cli_decode_timing_mode, timing_rate_hz, state);
+        } else if (cli_decode_timing_source == CLI_TIMING_SOURCE_MANUAL && cli_manual_timing_sps > 0) {
+            state->samplesPerSymbol = cli_manual_timing_sps;
+            state->symbolCenter = cli_manual_timing_center;
+            state->jitter = -1;
+            if (timing_rate_hz != 48000) {
+                dsd_state_rescale_symbol_timing(state, 48000, timing_rate_hz);
+            }
         }
     }
     // Set after getopt completes so -r file ordering is independent of later options.

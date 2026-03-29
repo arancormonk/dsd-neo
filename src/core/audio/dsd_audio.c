@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -57,6 +58,159 @@ dsd_stat_is_regular(const dsd_stat_t* st) {
 #else
     return S_ISREG(st->st_mode);
 #endif
+}
+
+static int
+dsd_audio_path_is_wav_container(const char* path) {
+    const char* dot = path ? strrchr(path, '.') : NULL;
+    return (dot != NULL && dsd_strcasecmp(dot, ".wav") == 0);
+}
+
+static int
+dsd_audio_file_has_wav_family_header(const char* path) {
+    if (!path || path[0] == '\0') {
+        return 0;
+    }
+
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        return 0;
+    }
+
+    unsigned char header[12] = {0};
+    size_t nread = fread(header, 1, sizeof header, fp);
+    fclose(fp);
+
+    if (nread != sizeof header || memcmp(header + 8, "WAVE", 4) != 0) {
+        return 0;
+    }
+
+    return memcmp(header, "RIFF", 4) == 0 || memcmp(header, "RIFX", 4) == 0 || memcmp(header, "RF64", 4) == 0;
+}
+
+static void
+dsd_audio_init_raw_pcm16_info(SF_INFO* info, int sample_rate_hz) {
+    if (!info) {
+        return;
+    }
+
+    if (sample_rate_hz <= 0) {
+        sample_rate_hz = 48000;
+    }
+
+    memset(info, 0, sizeof(*info));
+    info->samplerate = sample_rate_hz;
+    info->channels = 1;
+    info->seekable = 0;
+    info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
+}
+
+int
+dsd_audio_open_mono_file_input(const char* path, int configured_sample_rate_hz, SNDFILE** out_file, SF_INFO** out_info,
+                               int* out_sample_rate_hz, int* out_opened_as_container) {
+    if (!path || path[0] == '\0' || !out_file || !out_info) {
+        return -1;
+    }
+
+    *out_file = NULL;
+    *out_info = NULL;
+    if (out_sample_rate_hz) {
+        *out_sample_rate_hz = (configured_sample_rate_hz > 0) ? configured_sample_rate_hz : 48000;
+    }
+    if (out_opened_as_container) {
+        *out_opened_as_container = 0;
+    }
+
+    SF_INFO* info = (SF_INFO*)calloc(1, sizeof(*info));
+    if (!info) {
+        return -1;
+    }
+
+    SNDFILE* file = NULL;
+    int opened_as_container = 0;
+    int active_sample_rate_hz = (configured_sample_rate_hz > 0) ? configured_sample_rate_hz : 48000;
+
+    if (dsd_audio_path_is_wav_container(path) && dsd_audio_file_has_wav_family_header(path)) {
+        file = sf_open(path, SFM_READ, info);
+        if (!file) {
+            free(info);
+            return -1;
+        }
+        if (info->channels != 1) {
+            sf_close(file);
+            free(info);
+            return -1;
+        }
+        opened_as_container = 1;
+        if (info->samplerate > 0) {
+            active_sample_rate_hz = info->samplerate;
+        }
+    } else {
+        dsd_audio_init_raw_pcm16_info(info, configured_sample_rate_hz);
+        file = sf_open(path, SFM_READ, info);
+        if (!file) {
+            free(info);
+            return -1;
+        }
+    }
+
+    *out_file = file;
+    *out_info = info;
+    if (out_sample_rate_hz) {
+        *out_sample_rate_hz = active_sample_rate_hz;
+    }
+    if (out_opened_as_container) {
+        *out_opened_as_container = opened_as_container;
+    }
+    return 0;
+}
+
+size_t
+dsd_audio_linear_upsample_block_f32(float previous, float current, size_t factor, float* out, size_t out_cap) {
+    if (!out || factor == 0 || out_cap < factor) {
+        return 0;
+    }
+
+    float diff = current - previous;
+    for (size_t n = 0; n < factor; n++) {
+        out[n] = previous + (diff * ((float)(n + 1) / (float)factor));
+    }
+    return factor;
+}
+
+void
+dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_hz) {
+    if (!state) {
+        return;
+    }
+
+    if (old_rate_hz <= 0) {
+        old_rate_hz = 48000;
+    }
+    if (new_rate_hz <= 0) {
+        new_rate_hz = old_rate_hz;
+    }
+
+    init_audio_filters(state, new_rate_hz);
+    dsd_state_rescale_symbol_timing(state, old_rate_hz, new_rate_hz);
+}
+
+void
+dsd_audio_apply_input_sample_rate(dsd_opts* opts, dsd_state* state, int old_effective_rate_hz, int sample_rate_hz) {
+    if (!opts) {
+        return;
+    }
+
+    if (old_effective_rate_hz <= 0) {
+        old_effective_rate_hz = dsd_opts_effective_input_rate(opts);
+    }
+    if (sample_rate_hz <= 0) {
+        sample_rate_hz = 48000;
+    }
+
+    dsd_opts_apply_input_sample_rate(opts, sample_rate_hz);
+
+    dsd_audio_rescale_symbol_timing(state, old_effective_rate_hz, dsd_opts_effective_input_rate(opts));
 }
 
 void
@@ -624,14 +778,16 @@ openAudioOutDevice(dsd_opts* opts, int speed) {
     if (strncmp(opts->audio_out_dev, "pulse", 5) == 0 || strncmp(opts->audio_out_dev, "pa:", 3) == 0) {
         opts->audio_out_type = 0; /* Audio stream output */
     }
-    if (strncmp(opts->audio_in_dev, "pulse", 5) == 0) {
+    if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_PULSE;
     }
     fprintf(stderr, "Audio Out Device: %s\n", opts->audio_out_dev);
 }
 
 int
-openAudioInDevice(dsd_opts* opts) {
+openAudioInDevice(dsd_opts* opts, dsd_state* state) {
+    int old_effective_input_rate = dsd_opts_current_input_timing_rate(opts);
+
     if (opts->audio_in_file) {
         sf_close(opts->audio_in_file);
         opts->audio_in_file = NULL;
@@ -651,6 +807,7 @@ openAudioInDevice(dsd_opts* opts) {
     if (opts->udp_in_ctx) {
         dsd_net_audio_input_hook_udp_stop(opts);
     }
+    dsd_opts_reset_input_upsample_state(opts);
 
     char* extension;
     const char ch = '.';
@@ -681,11 +838,11 @@ openAudioInDevice(dsd_opts* opts) {
         }
     }
 
-    else if (strncmp(opts->audio_in_dev, "m17udp", 6) == 0) {
+    else if (dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_NULL; //NULL audio device
     }
 
-    else if (strncmp(opts->audio_in_dev, "udp", 3) == 0) {
+    else if (dsd_opts_audio_in_dev_is_udp_spec(opts->audio_in_dev)) {
         // UDP direct audio input (PCM16LE)
         opts->audio_in_type = AUDIO_IN_UDP;
         // parse optional udp:addr:port string
@@ -705,7 +862,7 @@ openAudioInDevice(dsd_opts* opts) {
         fprintf(stderr, "Waiting for UDP audio on %s:%d ...\n", opts->udp_in_bindaddr, opts->udp_in_portno);
     }
 
-    else if (strncmp(opts->audio_in_dev, "tcp", 3) == 0) {
+    else if (dsd_opts_audio_in_dev_is_tcp_spec(opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_TCP;
         opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
         if (opts->tcp_in_ctx == NULL) {
@@ -731,15 +888,16 @@ openAudioInDevice(dsd_opts* opts) {
     //   }
     // }
 
-    else if (strncmp(opts->audio_in_dev, "rtl", 3) == 0 || strcmp(opts->audio_in_dev, "soapy") == 0
-             || strncmp(opts->audio_in_dev, "soapy:", 6) == 0) {
+    else if (dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
+             || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
+             || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)) {
 #ifdef USE_RADIO
         opts->audio_in_type = AUDIO_IN_RTL;
 #else
         opts->audio_in_type = AUDIO_IN_PULSE;
         sprintf(opts->audio_in_dev, "pulse");
 #endif
-    } else if (strncmp(opts->audio_in_dev, "pulse", 5) == 0) {
+    } else if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_PULSE;
     }
 
@@ -849,28 +1007,27 @@ openAudioInDevice(dsd_opts* opts) {
     else {
         dsd_stat_t stat_buf;
         if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
-            LOG_ERROR("Error, couldn't open wav file %s\n", opts->audio_in_dev);
+            LOG_ERROR("Error, couldn't open input file %s\n", opts->audio_in_dev);
             return -1;
         }
         if (dsd_stat_is_regular(&stat_buf)) {
             opts->audio_in_type = AUDIO_IN_WAV; //two now, seperating STDIN and wav files
-            opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
-            if (opts->audio_in_file_info == NULL) {
-                LOG_ERROR("Error, couldn't allocate memory for audio input\n");
+            int configured_file_sample_rate = dsd_opts_requested_file_sample_rate(opts);
+            int active_sample_rate = configured_file_sample_rate;
+            int opened_as_container = 0;
+            if (dsd_audio_open_mono_file_input(opts->audio_in_dev, configured_file_sample_rate, &opts->audio_in_file,
+                                               &opts->audio_in_file_info, &active_sample_rate, &opened_as_container)
+                != 0) {
+                LOG_ERROR("Error, couldn't open input file %s\n", opts->audio_in_dev);
                 return -1;
             }
-            opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
-            opts->audio_in_file_info->channels = 1;
-            opts->audio_in_file_info->channels = 1;
-            opts->audio_in_file_info->seekable = 0;
-            opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-            opts->audio_in_file = sf_open(opts->audio_in_dev, SFM_READ, opts->audio_in_file_info);
 
-            if (opts->audio_in_file == NULL) {
-                LOG_ERROR("Error, couldn't open wav file %s\n", opts->audio_in_dev);
-                free(opts->audio_in_file_info);
-                opts->audio_in_file_info = NULL;
-                return -1;
+            if (active_sample_rate != opts->wav_sample_rate) {
+                if (opened_as_container) {
+                    LOG_NOTICE("WAV header sample rate %d Hz overrides configured %d Hz for %s\n", active_sample_rate,
+                               configured_file_sample_rate, opts->audio_in_dev);
+                }
+                dsd_audio_apply_input_sample_rate(opts, state, old_effective_input_rate, active_sample_rate);
             }
 
         }
