@@ -73,6 +73,26 @@ clip_float_to_short(float v) {
     return (short)lrintf(v);
 }
 
+static int
+hamming_weight_u64(uint64_t v) {
+    int n = 0;
+    while (v != 0ULL) {
+        n += (int)(v & 1ULL);
+        v >>= 1;
+    }
+    return n;
+}
+
+static int
+is_dotting_sequence_candidate(uint64_t sr) {
+    const uint64_t a = 0xAAAAAAAAAAAAAAAAULL;
+    const uint64_t b = 0x5555555555555555ULL;
+    const int max_bit_errors = 6; // tolerate modest slicer noise on dotting
+    int da = hamming_weight_u64(sr ^ a);
+    int db = hamming_weight_u64(sr ^ b);
+    return (da <= max_bit_errors || db <= max_bit_errors) ? 1 : 0;
+}
+
 int
 isCustomAfsString(dsd_state* state) {
     return state->edacs_a_bits != 4 || state->edacs_f_bits != 4 || state->edacs_s_bits != 3;
@@ -268,8 +288,18 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
     double pwr = opts->rtl_squelch_level + 1e-3; // small offset for initial loop phase
     double sql = opts->rtl_squelch_level;
+    const int sql_disabled = (sql <= 0.0);
+    double no_sql_watchdog_s = opts->trunk_hangtime * 10.0;
+    if (no_sql_watchdog_s < 20.0) {
+        no_sql_watchdog_s = 20.0;
+    } else if (no_sql_watchdog_s > 60.0) {
+        no_sql_watchdog_s = 60.0;
+    }
 
     fprintf(stderr, "\n");
+    if (sql_disabled) {
+        LOG_WARN("edacs_analog: SQL disabled (<=0). Enabling %.0fs fallback release watchdog.\n", no_sql_watchdog_s);
+    }
 
     while (!exitflag && count > 0) {
         //this will only work on 48k/1 short output
@@ -690,8 +720,16 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         //debug
         // fprintf (stderr, " SR: %016llX", sr);
 
-        if (sr == 0xAAAAAAAAAAAAAAAA || sr == 0x5555555555555555) {
+        if (is_dotting_sequence_candidate(sr)) {
             count = 0; //break while loop, sr will not equal these if just random noise
+        }
+
+        // With SQL disabled, EDACS analog can otherwise stay pinned on VC indefinitely
+        // when no clean dotting sequence is observed.
+        if (sql_disabled && difftime(time(NULL), now) >= no_sql_watchdog_s) {
+            LOG_WARN("edacs_analog: forcing VC release after %.0fs (SQL disabled, no release marker).\n",
+                     no_sql_watchdog_s);
+            count = 0;
         }
 
         fprintf(stderr, "%s", KNRM);
