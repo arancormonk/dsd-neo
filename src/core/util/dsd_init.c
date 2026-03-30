@@ -197,10 +197,12 @@ initOpts(dsd_opts* opts) {
     opts->staged_file_sample_rate = 0;
     opts->wav_interpolator = 1;  //default factor of 1 on 48000; 2 on 96000; sample rate / decimator
     opts->wav_decimator = 48000; //maybe for future use?
+    memset(&opts->input_resampler, 0, sizeof(opts->input_resampler));
     memset(opts->input_upsample_buf, 0, sizeof(opts->input_upsample_buf));
     opts->input_upsample_prev = 0.0f;
     opts->input_upsample_len = 0;
     opts->input_upsample_pos = 0;
+    opts->input_upsample_tail_blocks = 0;
     opts->input_upsample_prev_valid = 0;
 
     snprintf(opts->output_name, sizeof opts->output_name, "%s", "AUTO");

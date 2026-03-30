@@ -12,7 +12,8 @@ target_sources(dsd-neo_dsp PRIVATE
   firdes.cpp
   simd_widen.cpp
 	  simd_fir.cpp
-	  dsd_filters.c
+  dsd_filters.c
+  pcm_input_staging.c
 	  symbol_levels.c
 	  dsd_symbol.c
 	  p25p1_heuristics.c

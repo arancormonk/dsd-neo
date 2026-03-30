@@ -284,6 +284,7 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
         opts->udp_in_sockfd = DSD_INVALID_SOCKET;
         return -1;
     }
+    dsd_opts_reset_pcm_input_state(opts);
     return 0;
 }
 

@@ -101,6 +101,42 @@ wait_done(reader_state* rs, unsigned int timeout_ms) {
     return done;
 }
 
+static int
+stage_dirty_input_state(dsd_opts* opts) {
+    if (!opts || !dsd_resampler_design(&opts->input_resampler, 6, 1)) {
+        return 0;
+    }
+    opts->input_upsample_prev = 123.0f;
+    opts->input_upsample_len = 4;
+    opts->input_upsample_pos = 2;
+    opts->input_upsample_prev_valid = 1;
+    for (size_t i = 0; i < sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]); i++) {
+        opts->input_upsample_buf[i] = (float)(i + 1);
+    }
+    return 1;
+}
+
+static int
+input_stage_was_reset(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    if (opts->input_resampler.enabled != 0 || opts->input_resampler.L != 1 || opts->input_resampler.M != 1
+        || opts->input_resampler.taps != NULL || opts->input_resampler.hist != NULL) {
+        return 0;
+    }
+    if (opts->input_upsample_prev != 0.0f || opts->input_upsample_len != 0 || opts->input_upsample_pos != 0
+        || opts->input_upsample_prev_valid != 0) {
+        return 0;
+    }
+    for (size_t i = 0; i < sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]); i++) {
+        if (opts->input_upsample_buf[i] != 0.0f) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -119,12 +155,20 @@ main(void) {
     static dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.wav_sample_rate = 48000;
+    if (!stage_dirty_input_state(&opts)) {
+        fprintf(stderr, "failed to dirty staged input state\n");
+        goto cleanup;
+    }
 
     if (udp_input_start(&opts, "127.0.0.1", 0, opts.wav_sample_rate) != 0) {
         fprintf(stderr, "udp_input_start failed\n");
         goto cleanup;
     }
     started = 1;
+    if (!input_stage_was_reset(&opts)) {
+        fprintf(stderr, "udp_input_start did not reset staged PCM input state\n");
+        goto cleanup;
+    }
 
     int port = get_bound_port(opts.udp_in_sockfd);
     if (port <= 0) {
@@ -208,6 +252,7 @@ cleanup:
     if (started) {
         udp_input_stop(&opts);
     }
+    dsd_resampler_reset(&opts.input_resampler);
     dsd_socket_cleanup();
     return rc;
 }

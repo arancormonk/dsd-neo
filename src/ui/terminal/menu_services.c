@@ -183,35 +183,6 @@ svc_stop_symbol_saving(dsd_opts* opts, dsd_state* state) {
 }
 
 int
-svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
-    if (!opts || !host || port <= 0) {
-        return -1;
-    }
-    snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", host);
-    opts->tcp_portno = port;
-    opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
-    if (opts->tcp_sockfd == 0) {
-        return -1;
-    }
-    // Setup TCP audio input (cross-platform)
-    opts->audio_in_type = AUDIO_IN_TCP;
-    opts->tcp_in_ctx = tcp_input_open(opts->tcp_sockfd, opts->wav_sample_rate);
-    if (opts->tcp_in_ctx == NULL) {
-        LOG_ERROR("Error, couldn't open TCP audio input\n");
-        dsd_socket_close(opts->tcp_sockfd);
-        opts->tcp_sockfd = 0;
-        if (opts->audio_out_type == 0) {
-            snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
-            opts->audio_in_type = AUDIO_IN_PULSE;
-        } else {
-            opts->audio_in_type = AUDIO_IN_STDIN;
-        }
-        return -1;
-    }
-    return 0;
-}
-
-int
 svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
     if (!opts || !host || port <= 0) {
         return -1;

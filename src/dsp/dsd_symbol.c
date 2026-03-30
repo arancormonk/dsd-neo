@@ -50,6 +50,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
+#include "pcm_input_staging.h"
 
 extern dsd_socket_t Connect(char* hostname, int portno);
 extern void cleanupAndExit(dsd_opts* opts, dsd_state* state);
@@ -65,38 +66,20 @@ float_to_int16_clip(float v) {
     return (short)lrintf(v);
 }
 
-static inline int
-pcm_input_uses_linear_upsample(const dsd_opts* opts) {
-    if (!opts) {
+static int
+dsd_pcm_input_take_staged_tail_sample(dsd_opts* opts, float* sample_out, int begin_tail) {
+    if (!opts || !sample_out) {
         return 0;
     }
-    switch (opts->audio_in_type) {
-        case AUDIO_IN_STDIN:
-        case AUDIO_IN_WAV:
-        case AUDIO_IN_UDP:
-        case AUDIO_IN_TCP: return dsd_opts_input_upsample_factor(opts) > 1;
-        default: return 0;
+    if (begin_tail && !dsd_pcm_input_begin_resampler_tail(opts)) {
+        return 0;
     }
-}
+    if (!dsd_pcm_input_stage_resampler_tail(opts) || opts->input_upsample_pos >= opts->input_upsample_len) {
+        return 0;
+    }
 
-static inline void
-pcm_input_stage_upsample(dsd_opts* opts, float invalue) {
-    int factor = dsd_opts_input_upsample_factor(opts);
-    size_t cap = sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]);
-    if (!opts || factor <= 1) {
-        return;
-    }
-    if (factor > (int)cap) {
-        opts->input_upsample_len = 0;
-        opts->input_upsample_pos = 0;
-        return;
-    }
-    float prev = opts->input_upsample_prev_valid ? opts->input_upsample_prev : invalue;
-    opts->input_upsample_len =
-        (int)dsd_audio_linear_upsample_block_f32(prev, invalue, (size_t)factor, opts->input_upsample_buf, cap);
-    opts->input_upsample_pos = 0;
-    opts->input_upsample_prev = invalue;
-    opts->input_upsample_prev_valid = 1;
+    *sample_out = opts->input_upsample_buf[opts->input_upsample_pos++];
+    return 1;
 }
 
 /*
@@ -460,8 +443,11 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
 
         // Read the new sample from the input
-        if (pcm_input_uses_linear_upsample(opts) && opts->input_upsample_pos < opts->input_upsample_len) {
+        if (dsd_pcm_input_uses_staged_resampler(opts) && opts->input_upsample_pos < opts->input_upsample_len) {
             sample = opts->input_upsample_buf[opts->input_upsample_pos++];
+            used_staged_input = 1;
+        }
+        if (!used_staged_input && dsd_pcm_input_take_staged_tail_sample(opts, &sample, 0)) {
             used_staged_input = 1;
         }
 
@@ -500,12 +486,16 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             }
             sample = (float)s;
             if (result == 0) {
-                sf_close(opts->audio_in_file);
-                cleanupAndExit(opts, state);
-                return 0.0f;
+                if (dsd_pcm_input_take_staged_tail_sample(opts, &sample, 1)) {
+                    used_staged_input = 1;
+                } else {
+                    sf_close(opts->audio_in_file);
+                    cleanupAndExit(opts, state);
+                    return 0.0f;
+                }
             }
-            if (pcm_input_uses_linear_upsample(opts)) {
-                pcm_input_stage_upsample(opts, sample);
+            if (!used_staged_input && dsd_pcm_input_uses_staged_resampler(opts)) {
+                dsd_pcm_input_stage_resample(opts, sample);
                 sample = opts->input_upsample_buf[opts->input_upsample_pos++];
             }
         }
@@ -525,25 +515,28 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             }
             sample = (float)s;
             if (result == 0) {
-
-                sf_close(opts->audio_in_file);
-                fprintf(stderr, "\nEnd of %s\n", opts->audio_in_dev);
-                //open pulse input if we are pulse output AND using ncurses terminal
-                if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
-                    opts->audio_in_type = AUDIO_IN_PULSE; //set input type
-                    if (openAudioInput(opts) != 0) {
+                if (dsd_pcm_input_take_staged_tail_sample(opts, &sample, 1)) {
+                    used_staged_input = 1;
+                } else {
+                    sf_close(opts->audio_in_file);
+                    fprintf(stderr, "\nEnd of %s\n", opts->audio_in_dev);
+                    //open pulse input if we are pulse output AND using ncurses terminal
+                    if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
+                        opts->audio_in_type = AUDIO_IN_PULSE; //set input type
+                        if (openAudioInput(opts) != 0) {
+                            cleanupAndExit(opts, state);
+                            return 0.0f;
+                        }
+                    }
+                    //else cleanup and exit
+                    else {
                         cleanupAndExit(opts, state);
                         return 0.0f;
                     }
                 }
-                //else cleanup and exit
-                else {
-                    cleanupAndExit(opts, state);
-                    return 0.0f;
-                }
             }
-            if (pcm_input_uses_linear_upsample(opts)) {
-                pcm_input_stage_upsample(opts, sample);
+            if (!used_staged_input && dsd_pcm_input_uses_staged_resampler(opts)) {
+                dsd_pcm_input_stage_resample(opts, sample);
                 sample = opts->input_upsample_buf[opts->input_upsample_pos++];
             }
         } else if (!used_staged_input && opts->audio_in_type == AUDIO_IN_RTL) {
@@ -584,6 +577,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             }
             sample = (float)s;
             if (tcp_result == 0) {
+                int reconnected = 0;
             TCP_RETRY:
                 if (exitflag == 1) {
                     cleanupAndExit(opts, state); //needed to break the loop on ctrl+c
@@ -615,7 +609,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     if (opts->tcp_in_ctx == NULL) {
                         fprintf(stderr, "Error, couldn't Reconnect to TCP audio input\n");
                     } else {
-                        dsd_opts_reset_input_upsample_state(opts);
+                        reconnected = 1;
                         LOG_INFO("TCP Socket Reconnected Successfully.\n");
                     }
                 } else {
@@ -626,27 +620,35 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     }
                 }
 
-                //now retry reading sample
-                short s_retry = 0;
-                tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s_retry);
-                sample = (float)s_retry;
-                if (tcp_result == 0) {
-                    dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
-                    opts->tcp_in_ctx = NULL;
-                    dsd_socket_close(opts->tcp_sockfd);
-                    opts->audio_in_type = AUDIO_IN_PULSE; //set input type
-                    opts->tcp_sockfd =
-                        0; //added this line so we will know if it connected when using ncurses terminal keyboard shortcut
-                    if (openAudioInput(opts) != 0) {
-                        cleanupAndExit(opts, state);
-                        return 0.0f;
+                if (dsd_pcm_input_take_staged_tail_sample(opts, &sample, 1)) {
+                    used_staged_input = 1;
+                } else {
+                    if (reconnected) {
+                        dsd_opts_reset_pcm_input_state(opts);
                     }
-                    sample = 0; //zero sample on bad result, keep the ball rolling
-                    fprintf(stderr, "Connection to TCP Server Disconnected.\n");
+
+                    //now retry reading sample
+                    short s_retry = 0;
+                    tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s_retry);
+                    sample = (float)s_retry;
+                    if (tcp_result == 0) {
+                        dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
+                        opts->tcp_in_ctx = NULL;
+                        dsd_socket_close(opts->tcp_sockfd);
+                        opts->audio_in_type = AUDIO_IN_PULSE; //set input type
+                        opts->tcp_sockfd = 0;                 // track failed reconnect state for ncurses shortcut flows
+                        if (openAudioInput(opts) != 0) {
+                            cleanupAndExit(opts, state);
+                            return 0.0f;
+                        }
+                        sample = 0; //zero sample on bad result, keep the ball rolling
+                        fprintf(stderr, "Connection to TCP Server Disconnected.\n");
+                    }
                 }
             }
-            if (opts->audio_in_type == AUDIO_IN_TCP && pcm_input_uses_linear_upsample(opts)) {
-                pcm_input_stage_upsample(opts, sample);
+            if (!used_staged_input && opts->audio_in_type == AUDIO_IN_TCP
+                && dsd_pcm_input_uses_staged_resampler(opts)) {
+                dsd_pcm_input_stage_resample(opts, sample);
                 sample = opts->input_upsample_buf[opts->input_upsample_pos++];
             }
         }
@@ -655,21 +657,27 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         else if (!used_staged_input && opts->audio_in_type == AUDIO_IN_UDP) {
             short s = 0;
             if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
-                cleanupAndExit(opts, state);
-                return 0.0f;
-            }
-            sample = (float)s;
-            if (opts->input_volume_multiplier > 1) {
-                int v = (int)s * opts->input_volume_multiplier;
-                if (v > 32767) {
-                    v = 32767;
-                } else if (v < -32768) {
-                    v = -32768;
+                if (dsd_pcm_input_take_staged_tail_sample(opts, &sample, 1)) {
+                    used_staged_input = 1;
+                } else {
+                    cleanupAndExit(opts, state);
+                    return 0.0f;
                 }
-                sample = (float)v;
             }
-            if (pcm_input_uses_linear_upsample(opts)) {
-                pcm_input_stage_upsample(opts, sample);
+            if (!used_staged_input) {
+                sample = (float)s;
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)s * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (float)v;
+                }
+            }
+            if (!used_staged_input && dsd_pcm_input_uses_staged_resampler(opts)) {
+                dsd_pcm_input_stage_resample(opts, sample);
                 sample = opts->input_upsample_buf[opts->input_upsample_pos++];
             }
         }

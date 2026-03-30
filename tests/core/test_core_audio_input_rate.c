@@ -163,6 +163,7 @@ test_input_rate_rescale_for_72000(void) {
     dsd_state* state = alloc_state();
     if (!state) {
         fprintf(stderr, "FAIL: alloc state\n");
+        dsd_resampler_reset(&opts.input_resampler);
         return 1;
     }
 
@@ -197,6 +198,7 @@ test_input_rate_rescale_for_44100(void) {
     dsd_state* state = alloc_state();
     if (!state) {
         fprintf(stderr, "FAIL: alloc state\n");
+        dsd_resampler_reset(&opts.input_resampler);
         return 1;
     }
 
@@ -268,6 +270,10 @@ test_input_rate_preserves_48k_effective_timing_for_24000(void) {
     memset(&opts, 0, sizeof(opts));
     opts.wav_decimator = 48000;
     opts.wav_sample_rate = 48000;
+    if (!dsd_resampler_design(&opts.input_resampler, 6, 1)) {
+        fprintf(stderr, "FAIL: input resampler design\n");
+        return 1;
+    }
     opts.input_upsample_prev = 123.0f;
     opts.input_upsample_len = 3;
     opts.input_upsample_pos = 1;
@@ -298,6 +304,11 @@ test_input_rate_preserves_48k_effective_timing_for_24000(void) {
     rc |= expect_int_eq("24000 clears staged upsample position", opts.input_upsample_pos, 0);
     rc |= expect_int_eq("24000 clears staged upsample validity", opts.input_upsample_prev_valid, 0);
     rc |= expect_float_eq("24000 clears staged upsample previous sample", opts.input_upsample_prev, 0.0f);
+    rc |= expect_int_eq("24000 resets compiled input resampler", opts.input_resampler.enabled, 0);
+    rc |= expect_int_eq("24000 clears compiled input resampler L", opts.input_resampler.L, 1);
+    rc |= expect_int_eq("24000 clears compiled input resampler M", opts.input_resampler.M, 1);
+    rc |= expect_true("24000 frees compiled input resampler taps", opts.input_resampler.taps == NULL);
+    rc |= expect_true("24000 frees compiled input resampler hist", opts.input_resampler.hist == NULL);
 
     free(state);
     return rc;
@@ -500,9 +511,22 @@ test_rf64_wav_suffix_uses_container_metadata(void) {
 }
 
 static int
-test_reset_input_upsample_state_clears_history(void) {
+test_reset_input_upsample_state_clears_staging_only(void) {
     dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
+    if (!dsd_resampler_design(&opts.input_resampler, 6, 1)) {
+        fprintf(stderr, "FAIL: input resampler design\n");
+        return 1;
+    }
+    int enabled = opts.input_resampler.enabled;
+    int L = opts.input_resampler.L;
+    int M = opts.input_resampler.M;
+    int taps_len = opts.input_resampler.taps_len;
+    int taps_per_phase = opts.input_resampler.taps_per_phase;
+    int phase = opts.input_resampler.phase;
+    int hist_head = opts.input_resampler.hist_head;
+    float* taps = opts.input_resampler.taps;
+    float* hist = opts.input_resampler.hist;
     opts.input_upsample_prev = 123.0f;
     opts.input_upsample_len = 4;
     opts.input_upsample_pos = 2;
@@ -514,6 +538,16 @@ test_reset_input_upsample_state_clears_history(void) {
     dsd_opts_reset_input_upsample_state(&opts);
 
     int rc = 0;
+    rc |= expect_int_eq("reset preserves input resampler enabled", opts.input_resampler.enabled, enabled);
+    rc |= expect_int_eq("reset preserves input resampler L", opts.input_resampler.L, L);
+    rc |= expect_int_eq("reset preserves input resampler M", opts.input_resampler.M, M);
+    rc |= expect_int_eq("reset preserves input resampler taps len", opts.input_resampler.taps_len, taps_len);
+    rc |= expect_int_eq("reset preserves input resampler taps/phase", opts.input_resampler.taps_per_phase,
+                        taps_per_phase);
+    rc |= expect_int_eq("reset preserves input resampler phase", opts.input_resampler.phase, phase);
+    rc |= expect_int_eq("reset preserves input resampler hist head", opts.input_resampler.hist_head, hist_head);
+    rc |= expect_true("reset preserves input resampler taps", opts.input_resampler.taps == taps);
+    rc |= expect_true("reset preserves input resampler hist", opts.input_resampler.hist == hist);
     rc |= expect_float_eq("reset clears previous upsample sample", opts.input_upsample_prev, 0.0f);
     rc |= expect_int_eq("reset clears staged upsample length", opts.input_upsample_len, 0);
     rc |= expect_int_eq("reset clears staged upsample position", opts.input_upsample_pos, 0);
@@ -521,6 +555,43 @@ test_reset_input_upsample_state_clears_history(void) {
     for (size_t i = 0; i < sizeof(opts.input_upsample_buf) / sizeof(opts.input_upsample_buf[0]); i++) {
         char label[64];
         snprintf(label, sizeof label, "reset clears staged sample %zu", i);
+        rc |= expect_float_eq(label, opts.input_upsample_buf[i], 0.0f);
+    }
+    dsd_resampler_reset(&opts.input_resampler);
+    return rc;
+}
+
+static int
+test_reset_pcm_input_state_clears_resampler_and_staging(void) {
+    dsd_opts opts;
+    memset(&opts, 0, sizeof(opts));
+    if (!dsd_resampler_design(&opts.input_resampler, 6, 1)) {
+        fprintf(stderr, "FAIL: input resampler design\n");
+        return 1;
+    }
+    opts.input_upsample_prev = 123.0f;
+    opts.input_upsample_len = 4;
+    opts.input_upsample_pos = 2;
+    opts.input_upsample_prev_valid = 1;
+    for (size_t i = 0; i < sizeof(opts.input_upsample_buf) / sizeof(opts.input_upsample_buf[0]); i++) {
+        opts.input_upsample_buf[i] = (float)(i + 1);
+    }
+
+    dsd_opts_reset_pcm_input_state(&opts);
+
+    int rc = 0;
+    rc |= expect_int_eq("reset pcm input clears input resampler enabled", opts.input_resampler.enabled, 0);
+    rc |= expect_int_eq("reset pcm input clears input resampler L", opts.input_resampler.L, 1);
+    rc |= expect_int_eq("reset pcm input clears input resampler M", opts.input_resampler.M, 1);
+    rc |= expect_true("reset pcm input frees input resampler taps", opts.input_resampler.taps == NULL);
+    rc |= expect_true("reset pcm input frees input resampler hist", opts.input_resampler.hist == NULL);
+    rc |= expect_float_eq("reset pcm input clears previous upsample sample", opts.input_upsample_prev, 0.0f);
+    rc |= expect_int_eq("reset pcm input clears staged upsample length", opts.input_upsample_len, 0);
+    rc |= expect_int_eq("reset pcm input clears staged upsample position", opts.input_upsample_pos, 0);
+    rc |= expect_int_eq("reset pcm input clears staged upsample validity", opts.input_upsample_prev_valid, 0);
+    for (size_t i = 0; i < sizeof(opts.input_upsample_buf) / sizeof(opts.input_upsample_buf[0]); i++) {
+        char label[64];
+        snprintf(label, sizeof label, "reset pcm input clears staged sample %zu", i);
         rc |= expect_float_eq(label, opts.input_upsample_buf[i], 0.0f);
     }
     return rc;
@@ -539,6 +610,7 @@ main(void) {
     rc |= test_headerless_wav_suffix_falls_back_to_raw_pcm();
     rc |= test_rifx_wav_suffix_uses_container_metadata();
     rc |= test_rf64_wav_suffix_uses_container_metadata();
-    rc |= test_reset_input_upsample_state_clears_history();
+    rc |= test_reset_input_upsample_state_clears_staging_only();
+    rc |= test_reset_pcm_input_state_clears_resampler_and_staging();
     return rc;
 }

@@ -102,8 +102,8 @@ void upsample(dsd_state* state, float invalue);
 /**
  * @brief Generate one linear interpolation block that ends on the current sample.
  *
- * This is used by low-rate PCM input paths that stage an integer number of
- * interpolated samples before symbol timing consumes them.
+ * This legacy helper is retained for compatibility/tests. Low-rate PCM input
+ * staging now uses the FIR/polyphase resampler in `dsd-neo/dsp/resampler.h`.
  *
  * @param previous Previous input sample.
  * @param current Current input sample.

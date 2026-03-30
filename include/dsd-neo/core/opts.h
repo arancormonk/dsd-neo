@@ -14,6 +14,7 @@
 #pragma once
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
@@ -244,10 +245,12 @@ struct dsd_opts {
     int staged_file_sample_rate;
     int wav_interpolator;
     int wav_decimator;
+    dsd_resampler_state input_resampler;
     float input_upsample_buf[6];
     float input_upsample_prev;
     int input_upsample_len;
     int input_upsample_pos;
+    int input_upsample_tail_blocks;
     int input_upsample_prev_valid;
     int p25_trunk;        // legacy flag name used across protocols
     int trunk_enable;     // protocol-agnostic alias for trunking enable (kept in sync with p25_trunk)
@@ -328,9 +331,14 @@ enum {
 };
 
 /**
- * @brief Clear any staged linear-upsample history for PCM inputs.
+ * @brief Clear staged low-rate PCM input bookkeeping.
  *
- * @param opts Decoder options containing the staging buffer state.
+ * Zeros the staged output buffer and clears the legacy bookkeeping fields
+ * retained for compatibility. The reusable FIR state is intentionally not
+ * touched here so runtime-only targets can use this inline helper without
+ * taking a link-time dependency on `dsd-neo_dsp`.
+ *
+ * @param opts Decoder options containing the staged input bookkeeping.
  */
 static inline void
 dsd_opts_reset_input_upsample_state(dsd_opts* opts) {
@@ -343,15 +351,35 @@ dsd_opts_reset_input_upsample_state(dsd_opts* opts) {
     opts->input_upsample_prev = 0.0f;
     opts->input_upsample_len = 0;
     opts->input_upsample_pos = 0;
+    opts->input_upsample_tail_blocks = 0;
     opts->input_upsample_prev_valid = 0;
+}
+
+/**
+ * @brief Reset low-rate PCM input processing state at a stream boundary.
+ *
+ * Clears both the legacy staged upsample bookkeeping and the reusable FIR
+ * state so the next socket/file block cannot blend samples from a previous
+ * stream. Callers that use this helper must link against `dsd-neo_dsp`.
+ *
+ * @param opts Decoder options containing the staged/FIR input state.
+ */
+static inline void
+dsd_opts_reset_pcm_input_state(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    dsd_resampler_reset(&opts->input_resampler);
+    dsd_opts_reset_input_upsample_state(opts);
 }
 
 /**
  * @brief Apply a new raw PCM input sample rate to decoder options.
  *
  * Updates the stored raw rate, preserves the legacy integer interpolator
- * semantics for integer >=48 kHz ratios, and clears any staged upsample state
- * so the next sample block starts on the new rate.
+ * semantics for integer >=48 kHz ratios, and clears staged bookkeeping so the
+ * next sample block starts on the new rate. Callers that own a live
+ * FIR/polyphase state must reset `input_resampler` from compiled code.
  *
  * @param opts Decoder options to update.
  * @param sample_rate_hz New raw PCM sample rate in Hz.
@@ -491,10 +519,10 @@ dsd_opts_compute_sps_rate(const dsd_opts* opts, int sym_rate_hz, int demod_rate_
  *
  * Legacy file/socket decode paths expect approximately 48 kHz discriminator
  * audio. When a non-RTL PCM source is an integer divisor of 48 kHz, the sample
- * reader linearly upsamples it to 48 kHz before symbol timing consumes it. The
- * factor must fit within the fixed staging buffer used by the linear
- * interpolator; unsupported factors fall back to 1 so timing remains aligned
- * with the raw input rate.
+ * reader stages FIR/polyphase-resampled output up to 48 kHz before symbol
+ * timing consumes it. The factor must fit within the fixed staging buffer used
+ * by the low-rate PCM ingest path; unsupported factors fall back to 1 so
+ * timing remains aligned with the raw input rate.
  *
  * @param opts Decoder options containing the configured PCM input sample rate.
  * @return Integer factor to reach 48 kHz, or 1 when no simple upsampling applies.
@@ -518,7 +546,7 @@ dsd_opts_input_upsample_factor(const dsd_opts* opts) {
  * @brief Return the effective PCM rate seen by non-RTL legacy decode paths.
  *
  * @param opts Decoder options containing the configured PCM input sample rate.
- * @return Effective sample rate in Hz after any simple input upsampling.
+ * @return Effective sample rate in Hz after any staged PCM input resampling.
  */
 static inline int
 dsd_opts_effective_input_rate(const dsd_opts* opts) {
@@ -530,7 +558,7 @@ dsd_opts_effective_input_rate(const dsd_opts* opts) {
  * @brief Return 1 when decoder timing should follow the configured PCM input rate.
  *
  * File, stdin, and socket PCM inputs derive timing from `wav_sample_rate`
- * (plus any simple staged upsample). Live Pulse input and radio backends do
+ * (plus any staged low-rate resampling). Live Pulse input and radio backends do
  * not: Pulse follows the live 48 kHz stream, while radio paths use the actual
  * demodulator output rate instead.
  *

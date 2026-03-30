@@ -209,6 +209,8 @@ dsd_audio_apply_input_sample_rate(dsd_opts* opts, dsd_state* state, int old_effe
     }
 
     dsd_opts_apply_input_sample_rate(opts, sample_rate_hz);
+    /* Keep dsd_opts_* inline helpers link-safe for runtime-only targets. */
+    dsd_resampler_reset(&opts->input_resampler);
 
     dsd_audio_rescale_symbol_timing(state, old_effective_rate_hz, dsd_opts_effective_input_rate(opts));
 }
@@ -807,7 +809,7 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
     if (opts->udp_in_ctx) {
         dsd_net_audio_input_hook_udp_stop(opts);
     }
-    dsd_opts_reset_input_upsample_state(opts);
+    dsd_opts_reset_pcm_input_state(opts);
 
     char* extension;
     const char ch = '.';

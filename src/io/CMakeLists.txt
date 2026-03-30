@@ -47,6 +47,7 @@ target_include_directories(dsd-neo_io_audio
 )
 # tcp_input.c uses libsndfile on POSIX systems (not Windows native)
 target_link_libraries(dsd-neo_io_audio PUBLIC dsd-neo_runtime dsd-neo_platform ${LIBSNDFILE_LIBRARIES})
+target_link_libraries(dsd-neo_io_audio PUBLIC dsd-neo_dsp)
 
 target_link_libraries(dsd-neo_io_audio PRIVATE dsd-neo_warnings)
 

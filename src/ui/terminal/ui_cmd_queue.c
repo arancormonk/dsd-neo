@@ -1166,28 +1166,20 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
 static void
 apply_cfg_tcp_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
                           int old_audio_in_type) {
+    const char* host = NULL;
+    int port = 0;
+
     if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_TCP || old_audio_in_type != AUDIO_IN_TCP
         || strncmp(old_audio_in_dev, "tcp", 3) != 0 || strncmp(opts->audio_in_dev, "tcp", 3) != 0
         || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
         return;
     }
 
-    if (cfg->tcp_host[0]) {
-        snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", cfg->tcp_host);
-    }
-    if (cfg->tcp_port) {
-        opts->tcp_portno = cfg->tcp_port;
-    }
-    if (opts->tcp_in_ctx) {
-        tcp_input_close(opts->tcp_in_ctx);
-        opts->tcp_in_ctx = NULL;
-    }
-    if (opts->tcp_sockfd != 0) {
-        dsd_socket_close(opts->tcp_sockfd);
-        opts->tcp_sockfd = 0;
-    }
-    if (svc_tcp_connect_audio(opts, opts->tcp_hostname, opts->tcp_portno) != 0) {
-        LOG_ERROR("Config: failed to reconnect TCP audio %s:%d\n", opts->tcp_hostname, opts->tcp_portno);
+    host = cfg->tcp_host[0] ? cfg->tcp_host : opts->tcp_hostname;
+    port = cfg->tcp_port ? cfg->tcp_port : opts->tcp_portno;
+    if (svc_tcp_connect_audio(opts, host, port) != 0) {
+        snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", old_audio_in_dev);
+        LOG_ERROR("Config: failed to reconnect TCP audio %s:%d\n", host, port);
     }
 }
 
@@ -1359,7 +1351,7 @@ apply_cfg_file_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserCon
     opts->audio_in_file = new_audio_in_file;
     opts->audio_in_file_info = new_audio_in_file_info;
     opts->audio_in_type = AUDIO_IN_WAV;
-    dsd_opts_reset_input_upsample_state(opts);
+    dsd_opts_reset_pcm_input_state(opts);
 }
 
 static void
@@ -1689,32 +1681,13 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             break;
         }
         case UI_CMD_TCP_CONNECT_AUDIO: {
-            // Attempt TCP audio connect (cross-platform)
-            opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
-            if (opts->tcp_sockfd != 0) {
-                // reset audio input stream
-                if (opts->audio_in_type == AUDIO_IN_PULSE) {
-                    closeAudioInput(opts);
-                }
-                // Close existing TCP context if any
-                if (opts->tcp_in_ctx) {
-                    tcp_input_close(opts->tcp_in_ctx);
-                    opts->tcp_in_ctx = NULL;
-                }
-                opts->tcp_in_ctx = tcp_input_open(opts->tcp_sockfd, opts->wav_sample_rate);
-                if (opts->tcp_in_ctx != NULL) {
-                    LOG_INFO("TCP Socket Connected Successfully.\n");
-                    opts->audio_in_type = AUDIO_IN_TCP; // TCP PCM16LE
-                    ui_set_toast(state, 3, "TCP audio connected: %s:%d", opts->tcp_hostname, opts->tcp_portno);
-                } else {
-                    LOG_ERROR("Error, couldn't open TCP audio input\n");
-                    dsd_socket_close(opts->tcp_sockfd);
-                    opts->tcp_sockfd = 0;
-                    ui_set_toast(state, 4, "TCP audio connect failed: %s:%d", opts->tcp_hostname, opts->tcp_portno);
-                }
+            int rc = svc_tcp_connect_audio(opts, opts->tcp_hostname, opts->tcp_portno);
+            if (rc == 0) {
+                LOG_INFO("TCP Socket Connected Successfully.\n");
+                ui_set_toast(state, 3, "TCP audio connected: %s:%d", opts->tcp_hostname, opts->tcp_portno);
             } else {
                 LOG_ERROR("TCP Socket Connection Error.\n");
-                ui_set_toast(state, 4, "TCP connect failed: %s:%d", opts->tcp_hostname, opts->tcp_portno);
+                ui_set_toast(state, 4, "TCP audio connect failed: %s:%d", opts->tcp_hostname, opts->tcp_portno);
             }
             break;
         }

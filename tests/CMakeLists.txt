@@ -328,6 +328,12 @@ target_include_directories(dsd-neo_test_ui_hotkeys_regression PRIVATE ${PROJECT_
 target_link_libraries(dsd-neo_test_ui_hotkeys_regression PRIVATE dsd-neo_platform)
 add_test(NAME UI_HOTKEYS_REGRESSION COMMAND dsd-neo_test_ui_hotkeys_regression)
 
+add_executable(dsd-neo_test_ui_tcp_audio_connect
+  ui/test_ui_tcp_audio_connect.c
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal/tcp_audio_connect.c)
+target_include_directories(dsd-neo_test_ui_tcp_audio_connect PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME UI_TCP_AUDIO_CONNECT COMMAND dsd-neo_test_ui_tcp_audio_connect)
+
 add_executable(dsd-neo_test_ui_menu_navigation
   ui/test_ui_menu_navigation.c
   ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c)
@@ -484,6 +490,14 @@ target_include_directories(dsd-neo_test_core_audio_input_rate PRIVATE
 )
 target_link_libraries(dsd-neo_test_core_audio_input_rate PRIVATE dsd-neo_core)
 add_test(NAME CORE_AUDIO_INPUT_RATE COMMAND dsd-neo_test_core_audio_input_rate)
+
+add_executable(dsd-neo_test_dsp_pcm_input_staging dsp/test_dsp_pcm_input_staging.c)
+target_include_directories(dsd-neo_test_dsp_pcm_input_staging PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(dsd-neo_test_dsp_pcm_input_staging PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_PCM_INPUT_STAGING COMMAND dsd-neo_test_dsp_pcm_input_staging)
 
 add_executable(dsd-neo_test_core_dmr_voice_alg_gate core/test_core_dmr_voice_alg_gate.c)
 target_include_directories(dsd-neo_test_core_dmr_voice_alg_gate PRIVATE ${PROJECT_SOURCE_DIR}/include)

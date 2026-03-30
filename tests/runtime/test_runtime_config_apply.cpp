@@ -9,9 +9,9 @@
  * This does not spawn the full ncurses UI; it exercises the config apply
  * command handler with a fake dsd_opts/dsd_state to ensure that applying a
  * config that changes basic fields does not crash and updates core fields as
- * expected. Backend-specific restarts (RTL/RTLTCP/TCP/UDP/Pulse) are covered
- * indirectly by existing integration paths and are intentionally not mocked
- * here to keep this test simple and portable.
+ * expected. Most backend-specific restarts remain covered indirectly by other
+ * integration paths; TCP reconnect is stubbed here because config-apply
+ * rollback semantics depend on the helper's success/failure result.
  */
 
 #include <dsd-neo/runtime/config.h>
@@ -71,6 +71,33 @@ expect_float_ne(const char* label, float lhs, float rhs) {
         return 1;
     }
     return 0;
+}
+
+static int g_tcp_connect_audio_calls = 0;
+static int g_tcp_connect_audio_result = 0;
+static char g_last_tcp_connect_audio_host[256];
+static int g_last_tcp_connect_audio_port = 0;
+
+static void
+reset_tcp_connect_audio_fake(void) {
+    g_tcp_connect_audio_calls = 0;
+    g_tcp_connect_audio_result = 0;
+    g_last_tcp_connect_audio_host[0] = '\0';
+    g_last_tcp_connect_audio_port = 0;
+}
+
+int
+svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
+    g_tcp_connect_audio_calls++;
+    snprintf(g_last_tcp_connect_audio_host, sizeof g_last_tcp_connect_audio_host, "%s", host ? host : "");
+    g_last_tcp_connect_audio_port = port;
+
+    if (g_tcp_connect_audio_result == 0 && opts && host && port > 0) {
+        snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", host);
+        opts->tcp_portno = port;
+        opts->audio_in_type = AUDIO_IN_TCP;
+    }
+    return g_tcp_connect_audio_result;
 }
 
 static void
@@ -478,6 +505,66 @@ test_file_config_apply_keeps_live_socket_timing(void) {
 }
 
 static int
+test_tcp_hot_restart_failure_rolls_back_requested_spec_and_retries(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    reset_tcp_connect_audio_fake();
+    g_tcp_connect_audio_result = -1;
+
+    opts->audio_in_type = AUDIO_IN_TCP;
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "tcp:old.example:1200");
+    snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", "old.example");
+    opts->tcp_portno = 1200;
+
+    dsdneoUserConfig cfg = {0};
+    cfg.version = 1;
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_TCP;
+    snprintf(cfg.tcp_host, sizeof cfg.tcp_host, "%s", "new.example");
+    cfg.tcp_port = 1300;
+
+    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    ui_drain_cmds(opts, state);
+
+    dsdneoUserConfig snap = {0};
+    dsd_snapshot_opts_to_user_config(opts, state, &snap);
+
+    int rc = 0;
+    rc |= expect_int_eq("tcp hot restart failure attempts reconnect", g_tcp_connect_audio_calls, 1);
+    rc |= expect_true("tcp hot restart failure targets requested host",
+                      strcmp(g_last_tcp_connect_audio_host, "new.example") == 0);
+    rc |= expect_int_eq("tcp hot restart failure targets requested port", g_last_tcp_connect_audio_port, 1300);
+    rc |= expect_true("tcp hot restart failure keeps live device spec",
+                      strcmp(opts->audio_in_dev, "tcp:old.example:1200") == 0);
+    rc |= expect_true("tcp hot restart failure keeps live host", strcmp(opts->tcp_hostname, "old.example") == 0);
+    rc |= expect_int_eq("tcp hot restart failure keeps live port", opts->tcp_portno, 1200);
+    rc |= expect_true("tcp hot restart failure snapshot reports live endpoint",
+                      snap.has_input && snap.input_source == DSDCFG_INPUT_TCP
+                          && strcmp(snap.tcp_host, "old.example") == 0);
+    rc |= expect_int_eq("tcp hot restart failure snapshot reports live port", snap.tcp_port, 1200);
+
+    g_tcp_connect_audio_calls = 0;
+    g_last_tcp_connect_audio_host[0] = '\0';
+    g_last_tcp_connect_audio_port = 0;
+
+    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    ui_drain_cmds(opts, state);
+
+    rc |= expect_int_eq("tcp hot restart retries after previous failure", g_tcp_connect_audio_calls, 1);
+    rc |= expect_true("tcp hot restart retry keeps targeting requested host",
+                      strcmp(g_last_tcp_connect_audio_host, "new.example") == 0);
+    rc |= expect_int_eq("tcp hot restart retry keeps targeting requested port", g_last_tcp_connect_audio_port, 1300);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+static int
 test_file_hot_swap_rebuilds_filters_when_header_matches_configured_rate(void) {
     char old_path[DSD_TEST_PATH_MAX] = {0};
     char new_path[DSD_TEST_PATH_MAX] = {0};
@@ -727,6 +814,7 @@ main(void) {
     rc |= test_return_cc_uses_pulse_rate_not_stale_file_rate();
     rc |= test_file_config_apply_keeps_live_pulse_timing();
     rc |= test_file_config_apply_keeps_live_socket_timing();
+    rc |= test_tcp_hot_restart_failure_rolls_back_requested_spec_and_retries();
     rc |= test_file_hot_swap_rebuilds_filters_when_header_matches_configured_rate();
     rc |= test_same_path_headerless_wav_reconfig_keeps_requested_raw_rate();
 #ifdef USE_RADIO

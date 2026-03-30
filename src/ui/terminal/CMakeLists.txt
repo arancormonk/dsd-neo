@@ -31,6 +31,7 @@ target_sources(dsd-neo_ui_terminal PRIVATE
   menu_prompts.c
   menu_render.c
   menu_services.c
+  tcp_audio_connect.c
   panels/header.c
   panels/footer.c
   menus/menu_defs.c
