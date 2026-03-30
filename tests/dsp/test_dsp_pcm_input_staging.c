@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/dsp/resampler.h"
 #include "pcm_input_staging.h"
 
 static void

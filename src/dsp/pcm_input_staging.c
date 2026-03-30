@@ -8,6 +8,9 @@
 #include <dsd-neo/core/opts.h>
 #include <string.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/dsp/resampler.h"
+
 static void
 dsd_pcm_input_fill_staging(dsd_opts* opts, int factor, float invalue) {
     if (!opts || factor <= 0) {

@@ -4,7 +4,6 @@
  */
 
 #include <assert.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,6 +15,8 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/menu_services.h>
+
+#include "dsd-neo/core/opts_fwd.h"
 
 static dsd_socket_t g_connect_result = DSD_INVALID_SOCKET;
 static int g_connect_calls = 0;

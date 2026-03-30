@@ -16,7 +16,6 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
-#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -52,7 +51,6 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/sockets.h"
 
 #define UI_CMD_Q_CAP 128
 

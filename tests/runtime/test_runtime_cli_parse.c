@@ -14,6 +14,7 @@
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <sndfile.h>
 #include <stdint.h>
 
 #define DSD_NEO_MAIN

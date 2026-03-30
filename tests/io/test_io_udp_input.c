@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/dsp/resampler.h"
 #include "dsd-neo/platform/platform.h"
 
 static int

@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "dsd-neo/platform/file_compat.h"
 #include "test_support.h"
 
 #ifdef __cplusplus
@@ -185,7 +186,7 @@ create_temp_wav_file(const char* prefix, int sample_rate, int channels, char* ou
     }
 
     short samples[16] = {0};
-    sf_count_t sample_count = (sf_count_t)(channels * 8);
+    sf_count_t sample_count = ((sf_count_t)channels) * 8;
     if (sf_write_short(sf, samples, sample_count) != sample_count) {
         fprintf(stderr, "FAIL: sf_write_short failed for %s\n", out_path);
         sf_close(sf);

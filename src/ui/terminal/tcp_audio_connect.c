@@ -12,6 +12,8 @@
 #include <dsd-neo/ui/menu_services.h>
 #include <stdio.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+
 int
 svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
     if (!opts || !host || port <= 0) {

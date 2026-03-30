@@ -275,6 +275,10 @@ dsd_engine_start_ui(dsd_opts* opts, dsd_state* state) {
 
 static int
 dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+
     if (dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) //M17 UDP Socket Input
     {
         LOG_NOTICE("M17 UDP IP Frame Input: ");

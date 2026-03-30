@@ -41,6 +41,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/dsp/resampler.h"
 
 static int
 dsd_stat_path(const char* path, dsd_stat_t* st) {
