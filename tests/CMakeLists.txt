@@ -311,6 +311,11 @@ target_include_directories(dsd-neo_test_nxdn_message_crc32 PRIVATE ${PROJECT_SOU
 target_link_libraries(dsd-neo_test_nxdn_message_crc32 PRIVATE dsd-neo_proto_nxdn)
 add_test(NAME NXDN_MESSAGE_CRC32 COMMAND dsd-neo_test_nxdn_message_crc32)
 
+add_executable(dsd-neo_test_nxdn_element_bounds protocol/nxdn/test_nxdn_element_bounds.c)
+target_include_directories(dsd-neo_test_nxdn_element_bounds PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_nxdn_element_bounds PRIVATE dsd-neo_proto_nxdn)
+add_test(NAME NXDN_ELEMENT_BOUNDS COMMAND dsd-neo_test_nxdn_element_bounds)
+
 add_executable(dsd-neo_test_runtime_rings runtime/test_runtime_rings.cpp)
 target_include_directories(dsd-neo_test_runtime_rings PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_rings PRIVATE dsd-neo_runtime)

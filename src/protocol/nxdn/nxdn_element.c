@@ -53,7 +53,7 @@ static int nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_
 static void nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, uint8_t* Message);
 static void nxdn_dcall_header(dsd_opts* opts, dsd_state* state, uint8_t* Message, size_t message_bits);
 static void nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-static int nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, uint8_t* Message);
+static int nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, uint8_t* Message, size_t message_bits);
 
 void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent,
                                   size_t elements_bits);
@@ -120,6 +120,21 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
 void
 NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent,
                              size_t elements_bits) {
+    enum {
+        NXDN_ELEMENTS_MIN_MESSAGE_TYPE_BITS = 8U,
+        NXDN_SDCALL_HEADER_MIN_BITS = 79U,
+        NXDN_SDCALL_IV_TYPE_C_MIN_BITS = 72U,
+        NXDN_SDCALL_IV_TYPE_D_MIN_BITS = 30U,
+    };
+
+    if (opts == NULL || state == NULL || ElementsContent == NULL) {
+        return;
+    }
+
+    if (elements_bits < NXDN_ELEMENTS_MIN_MESSAGE_TYPE_BITS) {
+        return;
+    }
+
     uint8_t MessageType;
     uint8_t MessageTypeExt;
     uint8_t MessageTypeDispatch;
@@ -172,19 +187,36 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
         //Debug: Disable DUP messages if they cause random issues with Type-C trunking (i.e. changing SRC ang TGT IDs, hopping in the middle of calls, etc)
 
         //SDCALL Header
-        case 0x38: nxdn_sdcall_header(opts, state, ElementsContent); break;
+        case 0x38:
+            if (elements_bits < NXDN_SDCALL_HEADER_MIN_BITS) {
+                fprintf(stderr, " SDCALL Header Too Short (%zu bits); ", elements_bits);
+                break;
+            }
+            nxdn_sdcall_header(opts, state, ElementsContent);
+            break;
 
         //SDCALL Data
-        case 0x39: nxdn_dcall_data(opts, state, state->data_header_format[0], ElementsContent); break;
+        case 0x39: nxdn_dcall_data(opts, state, state->data_header_format[0], ElementsContent, elements_bits); break;
 
         //SDCALL IV
-        case 0x3A: nxdn_sdcall_iv(opts, state, ElementsContent); break;
+        case 0x3A: {
+            size_t sdcall_iv_min_bits = NXDN_SDCALL_IV_TYPE_C_MIN_BITS;
+            if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
+                sdcall_iv_min_bits = NXDN_SDCALL_IV_TYPE_D_MIN_BITS;
+            }
+            if (elements_bits < sdcall_iv_min_bits) {
+                fprintf(stderr, " SDCALL IV Too Short (%zu bits); ", elements_bits);
+                break;
+            }
+            nxdn_sdcall_iv(opts, state, ElementsContent);
+            break;
+        }
 
         //DCALL Header
         case 0x09: nxdn_dcall_header(opts, state, ElementsContent, elements_bits); break;
 
         //DCALL Data
-        case 0x0B: nxdn_dcall_data(opts, state, state->data_header_format[0], ElementsContent); break;
+        case 0x0B: nxdn_dcall_data(opts, state, state->data_header_format[0], ElementsContent, elements_bits); break;
 
         //VCALL_ASSGN_DUP
         case 0x05:
@@ -711,12 +743,18 @@ nxdn_dcall_header(dsd_opts* opts, dsd_state* state, uint8_t* Message, size_t mes
 }
 
 static int
-nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, uint8_t* Message) {
+nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, uint8_t* Message, size_t message_bits) {
     if (opts == NULL || state == NULL || Message == NULL) {
         return -1;
     }
 
     enum { NXDN_DCALL_MAX_BITS = 24 * 128, NXDN_DCALL_MAX_BYTES = NXDN_DCALL_MAX_BITS / 8 };
+
+    if (message_bits < 16U) {
+        fprintf(stderr, "Data Call Frame Too Short (%zu bits); ", message_bits);
+        state->data_header_valid[0] = 0U;
+        return -1;
+    }
 
     const int have_events = (state->event_history_s != NULL);
 
@@ -777,6 +815,13 @@ nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, uint8_t* Message) {
     int block_bits = byte_len * 8;
     if (ptr_bits < 0 || (ptr_bits + block_bits) > NXDN_DCALL_MAX_BITS) {
         fprintf(stderr, "PDU Assembly Pointer Out of Range (ptr=%d bits=%d); ", ptr_bits, block_bits);
+        state->data_header_valid[0] = 0U;
+        return -1;
+    }
+
+    size_t required_bits = 16U + (size_t)block_bits;
+    if (message_bits < required_bits) {
+        fprintf(stderr, "Data Call Frame Too Short (%zu < %zu bits); ", message_bits, required_bits);
         state->data_header_valid[0] = 0U;
         return -1;
     }
