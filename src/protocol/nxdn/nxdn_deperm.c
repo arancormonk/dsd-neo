@@ -46,7 +46,8 @@
 #include "dsd-neo/core/state_fwd.h"
 
 void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);
-void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent);
+void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent,
+                                  size_t elements_bits);
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t direction);
 int load_i(const uint8_t val[], int len);
 uint8_t crc6(const uint8_t buf[], int len);
@@ -54,6 +55,7 @@ uint16_t crc12f(const uint8_t buf[], int len);
 uint16_t crc15(const uint8_t buf[], int len);
 uint16_t crc16cac(const uint8_t buf[], int len);
 uint8_t crc7_scch(uint8_t bits[], int len);
+uint32_t nxdn_message_crc32(uint8_t* input, int len);
 
 static const uint8_t scramble_t[182] = { //values are the position values we need to invert in the descramble
     2,   5,   6,   7,   10,  12,  14,  16,  17,  22,  23,  25,  26,  27,  28,  30,  33,  34,  36,  37,  38,  41,  45,
@@ -165,9 +167,11 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
     }
 
     if (crc == check) {
-        NXDN_Elements_Content_decode(opts, state, 1, trellis_buf);
+        state->data_header_format[0] = 3;
+        NXDN_Elements_Content_decode(opts, state, 1, trellis_buf, sizeof(trellis_buf));
     }
-    // else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, trellis_buf);
+    // else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, trellis_buf,
+    // sizeof(trellis_buf));
 
     if (opts->payload == 1) {
         fprintf(stderr, "\n");
@@ -280,7 +284,8 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     }
 
     if (crc == check) {
-        NXDN_Elements_Content_decode(opts, state, 1, trellis_buf);
+        state->data_header_format[0] = 3;
+        NXDN_Elements_Content_decode(opts, state, 1, trellis_buf, sizeof(trellis_buf));
     }
 
     if (opts->payload == 1) {
@@ -432,9 +437,10 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
         }
 
         if (crc == check) {
-            NXDN_Elements_Content_decode(opts, state, 1, nsf_sacch);
+            NXDN_Elements_Content_decode(opts, state, 1, nsf_sacch, sizeof(nsf_sacch));
         }
-        // else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, nsf_sacch);
+        // else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, nsf_sacch,
+        // sizeof(nsf_sacch));
 
         //I'm placing this here, my observation is that SACCH NSF
         //is almost always, if not always, just IDLE
@@ -713,7 +719,7 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
         }
 
         if (crc == check) {
-            NXDN_Elements_Content_decode(opts, state, 1, nsf_sacch);
+            NXDN_Elements_Content_decode(opts, state, 1, nsf_sacch, sizeof(nsf_sacch));
         } else {
             fprintf(stderr, " IDLE");
         }
@@ -1345,10 +1351,8 @@ nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uin
     }
 
     if (crc == check) {
-        if (type == 1) {
-            NXDN_Elements_Content_decode(opts, state, 1, f2u_message_buffer);
-        }
-        if (type == 0) {} //need handling for user data (text messages and AVL)
+        state->data_header_format[0] = 1;
+        NXDN_Elements_Content_decode(opts, state, 1, f2u_message_buffer, (size_t)(199 - 8 - 15));
     }
     // else if (opts->aggressive_framesync == 0)
     // {
@@ -1521,6 +1525,7 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
     }
 
     if (crc == 0) {
+        state->data_header_format[0] = 2;
         ran = (trellis_buf[2] << 5) | (trellis_buf[3] << 4) | (trellis_buf[4] << 3) | (trellis_buf[5] << 2)
               | (trellis_buf[6] << 1) | trellis_buf[7];
         state->nxdn_last_ran = ran;
@@ -1582,14 +1587,25 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
         memset(state->dibit_buf, 0, sizeof(int) * 200);
         state->offset = 0;
 
+        memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+        state->data_header_blocks[0] = 1;
+        state->data_header_padding[0] = 0;
+        state->data_header_format[0] = 0;
+        state->data_header_valid[0] = 0;
+        state->payload_algid = 0;
+        state->payload_keyid = 0;
+        state->payload_mi = 0;
+        memset(state->aes_ivR, 0, sizeof(state->aes_ivR));
+
         //debug notification
         // fprintf (stderr, " RESET CARRIER; ");
     }
 
     if (crc == 0) {
-        NXDN_Elements_Content_decode(opts, state, 1, cac_message_buffer);
+        NXDN_Elements_Content_decode(opts, state, 1, cac_message_buffer, sizeof(cac_message_buffer));
     }
-    // else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, cac_message_buffer);
+    // else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, cac_message_buffer,
+    // sizeof(cac_message_buffer));
 
     if (opts->payload == 1) {
         fprintf(stderr, "\n");
@@ -1879,10 +1895,8 @@ nxdn_deperm_facch3_udch2(dsd_opts* opts, dsd_state* state, uint8_t bits[288], ui
     fprintf(stderr, "%s", KNRM);
 
     if (crc[0] == check[0] && crc[1] == check[1]) {
-        if (type == 1) {
-            NXDN_Elements_Content_decode(opts, state, 1, trellis_buf);
-        }
-        if (type == 0) {} //need handling for user data (text messages and AVL)
+        state->data_header_format[0] = 1;
+        NXDN_Elements_Content_decode(opts, state, 1, f3_udch2, (size_t)(80 * 2));
     }
     // else if (opts->aggressive_framesync == 0)
     // {
@@ -1995,7 +2009,7 @@ nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     } else if (MessageType == 0x0A) {
         fprintf(stderr, " DCALL_REC_REQ");
     } else if (MessageType == 0x0B) {
-        fprintf(stderr, " DCALL_UDATA");
+        fprintf(stderr, " DCALL_DATA");
     } else if (MessageType == 0x0C) {
         fprintf(stderr, " DCALL_ACK");
     } else if (MessageType == 0x0D) {
@@ -2029,7 +2043,9 @@ nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     } else if (MessageType == 0x38) {
         fprintf(stderr, " SDCALL_REQ_HEADER");
     } else if (MessageType == 0x39) {
-        fprintf(stderr, " SDCALL_REQ_USERDATA");
+        fprintf(stderr, " SDCALL_REQ_DATA");
+    } else if (MessageType == 0x3A) {
+        fprintf(stderr, " SDCALL_IV");
     } else if (MessageType == 0x3B) {
         fprintf(stderr, " SDCALL_RESP");
     } else if (MessageType == 0x3F) {
@@ -2180,6 +2196,28 @@ crc16cac(const uint8_t buf[], int len) {
     }
     crc = crc ^ 0xffff;
     return crc & 0xffff;
+}
+
+uint32_t
+nxdn_message_crc32(uint8_t* input, int len) {
+    uint32_t crc = 0xFFFFFFFFU;
+    const uint32_t poly = 0x04C11DB7U;
+
+    if (input == NULL || len <= 0) {
+        return crc;
+    }
+
+    for (int i = 0; i < len; i++) {
+        uint32_t in = (uint32_t)(input[i] & 1U);
+        uint32_t msb = (crc >> 31U) & 1U;
+        if ((msb ^ in) != 0U) {
+            crc = (crc << 1U) ^ poly;
+        } else {
+            crc <<= 1U;
+        }
+    }
+
+    return crc;
 }
 
 uint8_t
@@ -2355,6 +2393,7 @@ nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const 
     }
 
     if (crc == 0) {
+        state->data_header_format[0] = 2;
         ran = (trellis_buf[2] << 5) | (trellis_buf[3] << 4) | (trellis_buf[4] << 3) | (trellis_buf[5] << 2)
               | (trellis_buf[6] << 1) | trellis_buf[7];
         state->nxdn_last_ran = ran;
@@ -2407,10 +2446,20 @@ nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const 
         state->dibit_buf_p = state->dibit_buf + 200;
         memset(state->dibit_buf, 0, sizeof(int) * 200);
         state->offset = 0;
+
+        memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+        state->data_header_blocks[0] = 1;
+        state->data_header_padding[0] = 0;
+        state->data_header_format[0] = 0;
+        state->data_header_valid[0] = 0;
+        state->payload_algid = 0;
+        state->payload_keyid = 0;
+        state->payload_mi = 0;
+        memset(state->aes_ivR, 0, sizeof(state->aes_ivR));
     }
 
     if (crc == 0) {
-        NXDN_Elements_Content_decode(opts, state, 1, cac_message_buffer);
+        NXDN_Elements_Content_decode(opts, state, 1, cac_message_buffer, sizeof(cac_message_buffer));
     }
 
     if (opts->payload == 1) {
@@ -2553,9 +2602,8 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
     }
 
     if (crc == check) {
-        if (type == 1) {
-            NXDN_Elements_Content_decode(opts, state, 1, f2u_message_buffer);
-        }
+        state->data_header_format[0] = 1;
+        NXDN_Elements_Content_decode(opts, state, 1, f2u_message_buffer, (size_t)(199 - 8 - 15));
     }
 
     if (type == 0 && crc == check) {
@@ -3182,10 +3230,8 @@ nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288
     fprintf(stderr, "%s", KNRM);
 
     if (crc[0] == check[0] && crc[1] == check[1]) {
-        if (type == 1) {
-            NXDN_Elements_Content_decode(opts, state, 1, trellis_buf);
-        }
-        if (type == 0) {} // need handling for user data (text messages and AVL)
+        state->data_header_format[0] = 1;
+        NXDN_Elements_Content_decode(opts, state, 1, f3_udch2, (size_t)(80 * 2));
     }
 
     if (type == 0) {

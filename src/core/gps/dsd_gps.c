@@ -11,7 +11,9 @@
  * 2023-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
@@ -23,6 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -907,4 +910,205 @@ decode_ars(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     UNUSED(state);
     UNUSED(input);
     UNUSED(len);
+}
+
+static int
+nmea_hex_nibble(uint8_t c) {
+    if (c >= (uint8_t)'0' && c <= (uint8_t)'9') {
+        return (int)(c - (uint8_t)'0');
+    }
+    if (c >= (uint8_t)'A' && c <= (uint8_t)'F') {
+        return 10 + (int)(c - (uint8_t)'A');
+    }
+    if (c >= (uint8_t)'a' && c <= (uint8_t)'f') {
+        return 10 + (int)(c - (uint8_t)'a');
+    }
+    return -1;
+}
+
+uint8_t
+nmea_sentence_checker(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t slot, int len_bytes) {
+    if (opts == NULL || state == NULL || input == NULL || len_bytes <= 0) {
+        return 0U;
+    }
+
+    uint8_t slot_idx = (slot >= 2U) ? 1U : slot;
+    int have_events = (state->event_history_s != NULL);
+    uint8_t start_value = (uint8_t)ConvertBitIntoBytes(input, 8);
+    uint8_t end_value = 0U;
+    uint8_t checksum_calc = 0U;
+    uint8_t checksum_ext = 0U;
+    uint8_t valid = 0U;
+    int star_pos = -1;
+
+    if (start_value == (uint8_t)'$' || start_value == (uint8_t)'!') {
+        for (int i = 1; i < len_bytes; i++) {
+            uint8_t value = (uint8_t)ConvertBitIntoBytes(input + ((size_t)i * 8U), 8);
+            if (value == (uint8_t)'*') {
+                end_value = value;
+                star_pos = i;
+                break;
+            }
+            if (value >= 0x20U && value < 0x7FU) {
+                checksum_calc ^= value;
+            } else {
+                break;
+            }
+        }
+
+        if (star_pos >= 0 && (star_pos + 2) < len_bytes) {
+            uint8_t h0 = (uint8_t)ConvertBitIntoBytes(input + ((size_t)(star_pos + 1) * 8U), 8);
+            uint8_t h1 = (uint8_t)ConvertBitIntoBytes(input + ((size_t)(star_pos + 2) * 8U), 8);
+            int n0 = nmea_hex_nibble(h0);
+            int n1 = nmea_hex_nibble(h1);
+            if (n0 >= 0 && n1 >= 0) {
+                checksum_ext = (uint8_t)((n0 << 4) | n1);
+                if (checksum_ext == checksum_calc) {
+                    valid = 1U;
+                }
+            }
+        }
+    }
+
+    char local_out[256];
+    memset(local_out, 0, sizeof(local_out));
+    char* out = local_out;
+    size_t out_cap = sizeof(local_out);
+    if (have_events) {
+        memset(state->event_history_s[slot_idx].Event_History_Items[0].text_message, 0,
+               sizeof(state->event_history_s[slot_idx].Event_History_Items[0].text_message));
+        out = state->event_history_s[slot_idx].Event_History_Items[0].text_message;
+        out_cap = sizeof(state->event_history_s[slot_idx].Event_History_Items[0].text_message);
+    }
+
+    if (valid) {
+        size_t w = 0U;
+
+        for (int i = 0; i < len_bytes && w + 1U < out_cap; i++) {
+            uint8_t ascii = (uint8_t)ConvertBitIntoBytes(input + ((size_t)i * 8U), 8);
+            uint16_t crlf = 0xFFFFU;
+            if ((i + 1) < len_bytes) {
+                crlf = (uint16_t)ConvertBitIntoBytes(input + ((size_t)i * 8U), 16);
+            }
+
+            if (ascii >= 0x20U && ascii < 0x7FU) {
+                out[w++] = (char)ascii;
+            } else if (crlf == 0x0D0AU) {
+                out[w++] = ' ';
+                i++; // consume LF
+            } else {
+                break;
+            }
+        }
+        out[w] = '\0';
+
+        if (out[0] != '\0') {
+            fprintf(stderr, "%s", out);
+        }
+
+        if (have_events) {
+            uint32_t source = (uint32_t)state->dmr_lrrp_source[slot_idx];
+            uint32_t target = (uint32_t)state->dmr_lrrp_target[slot_idx];
+            char comp_string[128];
+            snprintf(comp_string, sizeof(comp_string), "NMEA SRC: %u; TGT: %u;", source, target);
+            watchdog_event_datacall(opts, state, source, target, comp_string, slot_idx);
+        }
+    } else {
+        if (start_value != (uint8_t)'$' && start_value != (uint8_t)'!') {
+            fprintf(stderr, " Not an NMEA Sentence Structure;");
+        } else if (end_value != (uint8_t)'*') {
+            fprintf(stderr, " Possible NMEA Sentence, Missing Ending *;");
+        } else {
+            fprintf(stderr, " NMEA Checksum Error (%02X / %02X);", checksum_calc, checksum_ext);
+        }
+    }
+
+    state->dmr_lrrp_source[slot_idx] = 0U;
+    state->dmr_lrrp_target[slot_idx] = 0U;
+    return valid;
+}
+
+void
+nxdn_gps_report(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src) {
+    if (opts == NULL || state == NULL || input == NULL) {
+        return;
+    }
+    int have_events = (state->event_history_s != NULL);
+
+    const char* deg_glyph = dsd_degrees_glyph();
+
+    int16_t elevation = (int16_t)convert_bits_into_output(input + 56, 16);
+    uint16_t speed_raw = (uint16_t)convert_bits_into_output(input + 74, 14);
+    uint16_t heading_raw = (uint16_t)convert_bits_into_output(input + 92, 12);
+    double speed_kph = (double)speed_raw / 10.0;
+    double heading = (double)heading_raw / 10.0;
+
+    uint16_t year = (uint16_t)(convert_bits_into_output(input + 136, 7) + 2000U);
+    uint8_t month = (uint8_t)convert_bits_into_output(input + 143, 4);
+    uint8_t day = (uint8_t)(convert_bits_into_output(input + 147, 5) + 1U);
+    uint8_t hour = (uint8_t)convert_bits_into_output(input + 247, 5);
+    uint8_t minute = (uint8_t)convert_bits_into_output(input + 252, 6);
+
+    uint16_t lon_degmin = (uint16_t)convert_bits_into_output(input + 152, 16);
+    uint16_t lon_frac = (uint16_t)convert_bits_into_output(input + 16, 15);
+    uint8_t lon_hem = (uint8_t)convert_bits_into_output(input + 183, 1);
+    double lon_minutes = (double)(lon_degmin % 100U) + ((double)lon_frac / 10000.0);
+    double lon_decimal = (double)(lon_degmin / 100U) + (lon_minutes / 60.0);
+    double longitude = (lon_hem == 0U) ? lon_decimal : -lon_decimal;
+
+    uint16_t lat_degmin = (uint16_t)convert_bits_into_output(input + 184, 16);
+    uint16_t lat_frac = (uint16_t)convert_bits_into_output(input + 200, 15);
+    uint8_t lat_hem = (uint8_t)convert_bits_into_output(input + 215, 1);
+    double lat_minutes = (double)(lat_degmin % 100U) + ((double)lat_frac / 10000.0);
+    double lat_decimal = (double)(lat_degmin / 100U) + (lat_minutes / 60.0);
+    double latitude = (lat_hem == 0U) ? lat_decimal : -lat_decimal;
+
+    if (fabs(latitude) > 90.0 || fabs(longitude) > 180.0) {
+        fprintf(stderr, " GPS: Invalid NXDN position report;");
+        state->dmr_lrrp_source[0] = 0U;
+        state->dmr_lrrp_target[0] = 0U;
+        return;
+    }
+
+    fprintf(stderr, "\n GPS: (%.6f%s, %.6f%s) ", latitude, deg_glyph, longitude, deg_glyph);
+    fprintf(stderr, "Speed: %.1f k/h; ", speed_kph);
+    fprintf(stderr, "COG: %.1f; ", heading);
+    fprintf(stderr, "Elevation: %d; ", (int)elevation);
+    fprintf(stderr, "Date: %04u/%02u/%02u; ", (unsigned)year, (unsigned)month, (unsigned)day);
+    fprintf(stderr, "Time: %02u:%02u;", (unsigned)hour, (unsigned)minute);
+
+    if (have_events) {
+        snprintf(state->event_history_s[0].Event_History_Items[0].gps_s,
+                 sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "(%.6f%s, %.6f%s)", latitude,
+                 deg_glyph, longitude, deg_glyph);
+
+        uint32_t source = (uint32_t)state->dmr_lrrp_source[0];
+        uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
+        char comp_string[128];
+        snprintf(comp_string, sizeof(comp_string), "GPS SRC: %u; TGT: %u;", source, target);
+        watchdog_event_datacall(opts, state, source, target, comp_string, 0);
+    }
+
+    if (opts->lrrp_file_output == 1 && src != 0U) {
+        char datestr[11];
+        char timestr[9];
+        getDateS_buf(datestr);
+        getTimeC_buf(timestr);
+
+        FILE* pFile = fopen(opts->lrrp_out_file, "a");
+        if (pFile != NULL) {
+            fprintf(pFile, "%s\t", datestr);
+            fprintf(pFile, "%s\t", timestr);
+            fprintf(pFile, "%08u\t", src);
+            fprintf(pFile, "%.6lf\t", latitude);
+            fprintf(pFile, "%.6lf\t", longitude);
+            fprintf(pFile, "%d\t ", (int)speed_kph);
+            fprintf(pFile, "%d\t ", (int)heading);
+            fprintf(pFile, "\n");
+            fclose(pFile);
+        }
+    }
+
+    state->dmr_lrrp_source[0] = 0U;
+    state->dmr_lrrp_target[0] = 0U;
 }

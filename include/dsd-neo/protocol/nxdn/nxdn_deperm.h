@@ -60,6 +60,7 @@ uint16_t crc12f(const uint8_t buf[], int len);
 uint16_t crc15(const uint8_t buf[], int len);
 uint16_t crc16cac(const uint8_t buf[], int len);
 uint8_t crc7_scch(uint8_t bits[], int len);
+uint32_t nxdn_message_crc32(uint8_t* input, int len);
 
 /**
  * Read the 7-bit SCCH CRC check field from decoded trellis bits.

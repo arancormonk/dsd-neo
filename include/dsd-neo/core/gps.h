@@ -25,6 +25,8 @@ void dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]);
 void apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]);
 void lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input);
 void nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int type);
+uint8_t nmea_sentence_checker(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t slot, int len_bytes);
+void nxdn_gps_report(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src);
 void nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot);
 void harris_gps(dsd_opts* opts, dsd_state* state, int slot, uint8_t* input);
 

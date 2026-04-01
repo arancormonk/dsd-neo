@@ -47,8 +47,12 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-// #define NXDN_DEBUG_LICH   //print LICH debug info on err on payload == 1
-#define NXDN_LICH_OFFBITS //use the offbits to help determine sync status (disable if bad signal / bad sample)
+// #define NXDN_DEBUG_LICH         //print LICH debug info on err on payload == 1
+// #define NXDN_LICH_OFFBITS_CHECK //optional strict filter for encoded LICH "off bits"
+// NOTE:
+// The offbits check was observed to reject otherwise-decodable NXDN frames on
+// marginal signals (notably NXDN96 trunking). Keep it disabled by default and
+// rely on parity/LICH-type validation below for robust sync handling.
 
 void
 nxdn_frame(dsd_opts* opts, dsd_state* state) {
@@ -150,13 +154,13 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     uint16_t lich_bits_hex = (uint16_t)ConvertBitIntoBytes(lich_bits, 16);
     UNUSED(lich_bits_hex);
 
-    //debug look at the "off bits" of the encoded lich, should be all 1's (8)
-    //disble this code if sync issues arise, this may not be ideal of marginal signal
+    //Optional strict "off bits" filter. Disabled by default; it can produce
+    //false sync rejects on weak/marginal RX paths.
+#ifdef NXDN_LICH_OFFBITS_CHECK
     uint8_t lich_off_hex = 0;
     for (int i = 0; i < 8; i++) {
         lich_off_hex += lich_bits[(i * 2) + 1];
     }
-#ifdef NXDN_LICH_OFFBITS
     if (lich_off_hex < 7) //allow up to 1 bit error
     {
 #ifdef NXDN_DEBUG_LICH
