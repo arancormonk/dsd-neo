@@ -1053,14 +1053,14 @@ nxdn_gps_report(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src) 
     uint16_t lon_frac = (uint16_t)convert_bits_into_output(input + 16, 15);
     uint8_t lon_hem = (uint8_t)convert_bits_into_output(input + 183, 1);
     double lon_minutes = (double)(lon_degmin % 100U) + ((double)lon_frac / 10000.0);
-    double lon_decimal = (double)(lon_degmin / 100U) + (lon_minutes / 60.0);
+    double lon_decimal = ((double)lon_degmin / 100.0) + (lon_minutes / 60.0);
     double longitude = (lon_hem == 0U) ? lon_decimal : -lon_decimal;
 
     uint16_t lat_degmin = (uint16_t)convert_bits_into_output(input + 184, 16);
     uint16_t lat_frac = (uint16_t)convert_bits_into_output(input + 200, 15);
     uint8_t lat_hem = (uint8_t)convert_bits_into_output(input + 215, 1);
     double lat_minutes = (double)(lat_degmin % 100U) + ((double)lat_frac / 10000.0);
-    double lat_decimal = (double)(lat_degmin / 100U) + (lat_minutes / 60.0);
+    double lat_decimal = ((double)lat_degmin / 100.0) + (lat_minutes / 60.0);
     double latitude = (lat_hem == 0U) ? lat_decimal : -lat_decimal;
 
     if (fabs(latitude) > 90.0 || fabs(longitude) > 180.0) {

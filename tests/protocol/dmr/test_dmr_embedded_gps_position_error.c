@@ -218,12 +218,19 @@ main(void) {
         nmea_ascii_to_bits(bits, (int)sizeof(bits), nmea_ok);
         st.dmr_lrrp_source[0] = 111U;
         st.dmr_lrrp_target[0] = 222U;
-        memset(st.event_history_s[0].Event_History_Items[0].text_message, 0,
-               sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
+        if (st.event_history_s != NULL) {
+            memset(st.event_history_s[0].Event_History_Items[0].text_message, 0,
+                   sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
+        }
         uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
         rc |= expect_u8("nmea-valid", ok, 1U);
-        rc |= expect_has_substr(st.event_history_s[0].Event_History_Items[0].text_message, "$GPRMC,TEST*71",
-                                "nmea-valid-text");
+        if (st.event_history_s != NULL) {
+            rc |= expect_has_substr(st.event_history_s[0].Event_History_Items[0].text_message, "$GPRMC,TEST*71",
+                                    "nmea-valid-text");
+        } else {
+            fprintf(stderr, "%s\n", "nmea-valid-text: event_history_s is NULL");
+            rc |= 1;
+        }
         rc |= expect_u32("nmea-valid-src-reset", st.dmr_lrrp_source[0], 0U);
         rc |= expect_u32("nmea-valid-tgt-reset", st.dmr_lrrp_target[0], 0U);
     }
@@ -236,11 +243,18 @@ main(void) {
         nmea_ascii_to_bits(bits, (int)sizeof(bits), nmea_bad);
         st.dmr_lrrp_source[0] = 333U;
         st.dmr_lrrp_target[0] = 444U;
-        memset(st.event_history_s[0].Event_History_Items[0].text_message, 0,
-               sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
+        if (st.event_history_s != NULL) {
+            memset(st.event_history_s[0].Event_History_Items[0].text_message, 0,
+                   sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
+        }
         uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
         rc |= expect_u8("nmea-invalid", ok, 0U);
-        rc |= expect_i("nmea-invalid-text-empty", st.event_history_s[0].Event_History_Items[0].text_message[0], 0);
+        if (st.event_history_s != NULL) {
+            rc |= expect_i("nmea-invalid-text-empty", st.event_history_s[0].Event_History_Items[0].text_message[0], 0);
+        } else {
+            fprintf(stderr, "%s\n", "nmea-invalid-text-empty: event_history_s is NULL");
+            rc |= 1;
+        }
         rc |= expect_u32("nmea-invalid-src-reset", st.dmr_lrrp_source[0], 0U);
         rc |= expect_u32("nmea-invalid-tgt-reset", st.dmr_lrrp_target[0], 0U);
     }
