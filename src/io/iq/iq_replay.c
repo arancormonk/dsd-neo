@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/platform/posix_compat.h> // IWYU pragma: keep (MSVC stat/_stat compatibility)
 
 #include <errno.h>
 #include <inttypes.h>
@@ -29,7 +30,8 @@ set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) {
     }
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(err_buf, err_buf_size, fmt, ap);
+    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
+    (void)vsnprintf(err_buf, err_buf_size, fmt, ap);
     va_end(ap);
     err_buf[err_buf_size - 1] = '\0';
 }

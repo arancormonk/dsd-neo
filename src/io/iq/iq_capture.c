@@ -75,7 +75,8 @@ set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) {
     }
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(err_buf, err_buf_size, fmt, ap);
+    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
+    (void)vsnprintf(err_buf, err_buf_size, fmt, ap);
     va_end(ap);
     err_buf[err_buf_size - 1] = '\0';
 }

@@ -20,6 +20,7 @@
 #endif
 
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h> // IWYU pragma: keep (macOS monotonic/realtime time declarations)
 #include <pthread.h>
 
 #include "dsd-neo/platform/platform.h"

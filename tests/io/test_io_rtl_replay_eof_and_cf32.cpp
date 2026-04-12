@@ -399,9 +399,9 @@ test_cf32_replay_fs4_policy_changes_output(void) {
     char meta_fs4_off[DSD_TEST_PATH_MAX];
     char meta_fs4_on[DSD_TEST_PATH_MAX];
     rc |= make_replay_fixture(meta_fs4_off, sizeof(meta_fs4_off), DSD_IQ_FORMAT_CF32, "post_driver_cf32_pre_ring", 0,
-                              262144U);
+                              1048576U);
     rc |= make_replay_fixture(meta_fs4_on, sizeof(meta_fs4_on), DSD_IQ_FORMAT_CF32, "post_driver_cf32_pre_ring", 1,
-                              262144U);
+                              1048576U);
     if (rc != 0) {
         return 1;
     }
