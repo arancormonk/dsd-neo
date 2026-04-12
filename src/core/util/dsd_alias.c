@@ -12,8 +12,8 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/runtime/unicode.h>
@@ -36,6 +36,9 @@ static int g_group_capacity_warned = 0;
 
 static int
 group_array_try_append(dsd_state* state, uint32_t id, const char* mode, const char* name) {
+    dsd_tg_policy_entry entry;
+    size_t before = 0;
+    int rc = 0;
     if (!state || id == 0 || !mode || !name) {
         return 0;
     }
@@ -50,12 +53,21 @@ group_array_try_append(dsd_state* state, uint32_t id, const char* mode, const ch
         return 0;
     }
 
-    const size_t idx = state->group_tally;
-    state->group_array[idx].groupNumber = id;
-    snprintf(state->group_array[idx].groupMode, sizeof(state->group_array[idx].groupMode), "%s", mode);
-    snprintf(state->group_array[idx].groupName, sizeof(state->group_array[idx].groupName), "%s", name);
-    state->group_tally++;
-    return 1;
+    if (dsd_tg_policy_make_legacy_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &entry) != 0) {
+        return 0;
+    }
+
+    before = state->group_tally;
+    rc = dsd_tg_policy_upsert_legacy_exact(state, &entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
+    if (rc == 1 && !g_group_capacity_warned && state->group_tally >= group_cap) {
+        g_group_capacity_warned = 1;
+        fprintf(stderr, " WARNING: group_array capacity (%zu) reached; skipping additional alias/group inserts.\n",
+                group_cap);
+    }
+    if (rc != 0) {
+        return 0;
+    }
+    return (state->group_tally > before) ? 1 : 0;
 }
 
 //Motorola P25 OTA Alias Decoding ripped/demystified from Ilya Smirnov's SDRTrunk Voodoo Code
@@ -513,18 +525,11 @@ apx_embedded_alias_dump(dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t
 
     if (wr == 0 && group_array_try_append(state, rid, "D", str)) //not already in there, so save it there now
     {
-        //if we have an opened group file, let's write what info we found into it
-        if (opts->group_in_file[0] != 0) //file is available
-        {
-            FILE* pFile; //file pointer
-            //open file by name that is supplied in the ncurses terminal, or cli
-            pFile = fopen(opts->group_in_file, "a");
-            if (pFile != NULL) {
-                fprintf(pFile, "%d,D,", rid); //may want to not use this one
-                fprintf(pFile, "%s", str);
-                fprintf(pFile, ",FQS:%05X.%03X.%06X(%d),Moto\n", wacn, sys, rid, rid);
-                fclose(pFile);
-            }
+        dsd_tg_policy_entry row;
+        char metadata[128];
+        if (dsd_tg_policy_make_legacy_exact_entry(rid, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row) == 0) {
+            snprintf(metadata, sizeof(metadata), "FQS:%05X.%03X.%06X(%d),Moto", wacn, sys, rid, rid);
+            (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
         }
     }
 }
@@ -616,19 +621,12 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 
         if (wr == 0 && group_array_try_append(state, tsrc, "D", str)) //not already in there, so save it there now
         {
-            //if we have an opened group file, let's write what info we found into it
-            if (opts->group_in_file[0] != 0) //file is available
-            {
-                FILE* pFile; //file pointer
-                //open file by name that is supplied in the ncurses terminal, or cli
-                pFile = fopen(opts->group_in_file, "a");
-                if (pFile != NULL) {
-                    fprintf(pFile, "%d,D,", tsrc);
-                    fprintf(pFile, "%s", str);
-                    fprintf(pFile, ",TG:%d,SYS:%03llX,RFSS:%lld,SITE:%lld,Harris\n", ttg, state->p2_sysid,
-                            state->p2_rfssid, state->p2_siteid);
-                    fclose(pFile);
-                }
+            dsd_tg_policy_entry row;
+            char metadata[160];
+            if (dsd_tg_policy_make_legacy_exact_entry(tsrc, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row) == 0) {
+                snprintf(metadata, sizeof(metadata), "TG:%d,SYS:%03llX,RFSS:%lld,SITE:%lld,Harris", ttg,
+                         state->p2_sysid, state->p2_rfssid, state->p2_siteid);
+                (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
             }
         }
     }
@@ -679,20 +677,13 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
         if (wr == 0
             && group_array_try_append(state, rid, "D", (const char*)alias)) //not already in there, so save it there now
         {
-            //if we have an opened group file, let's write what info we found into it
-            if (opts->group_in_file[0] != 0) //file is available
-            {
-                FILE* pFile; //file pointer
-                //open file by name that is supplied in the ncurses terminal, or cli
-                pFile = fopen(opts->group_in_file, "a");
-                if (pFile != NULL) {
-                    fprintf(pFile, "%d,D,", rid); //may want to not use this one
-                    fprintf(pFile, "%s,", alias);
-                    fprintf(pFile, "%03X,",
-                            nac); // if we find this on a trunking system, may want to add the site and rfss id
-                    fprintf(pFile, "%s", ",Tait\n");
-                    fclose(pFile);
-                }
+            dsd_tg_policy_entry row;
+            char metadata[64];
+            if (dsd_tg_policy_make_legacy_exact_entry(rid, "D", (const char*)alias, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS,
+                                                      &row)
+                == 0) {
+                snprintf(metadata, sizeof(metadata), "%03X,Tait", nac);
+                (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
             }
         }
     }

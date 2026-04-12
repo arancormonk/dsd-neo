@@ -11,6 +11,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/udp_socket_connect.h>
@@ -432,7 +433,7 @@ svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
     }
     strncpy(opts->group_in_file, path, sizeof opts->group_in_file - 1);
     opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
-    return csvGroupImport(opts, state);
+    return dsd_tg_policy_reload_group_file(opts, state);
 }
 
 int

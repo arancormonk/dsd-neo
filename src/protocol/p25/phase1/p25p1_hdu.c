@@ -25,6 +25,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
@@ -641,34 +642,31 @@ processHDU(dsd_opts* opts, dsd_state* state) {
                 // Optional: mark TG as ENC LO for visibility when known
                 int ttg = state->lasttg;
                 if (ttg != 0) {
-                    int idx = -1;
+                    const char* lockout_name = "ENC LO";
+                    dsd_tg_policy_entry lockout_entry;
                     for (unsigned int xx = 0; xx < state->group_tally; xx++) {
                         if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                            idx = (int)xx;
+                            lockout_name = state->group_array[xx].groupName;
                             break;
                         }
                     }
-                    if (idx >= 0) {
-                        snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s",
-                                 "DE");
-                    } else if (state->group_tally
-                               < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
-                        state->group_array[state->group_tally].groupNumber = ttg;
-                        sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
-                        sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
-                        state->group_tally++;
+                    if (dsd_tg_policy_make_legacy_exact_entry((uint32_t)ttg, "DE", lockout_name,
+                                                              DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &lockout_entry)
+                            == 0
+                        && dsd_tg_policy_upsert_legacy_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST)
+                               == 0) {
+                        sprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
+                                "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                        dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
+                        // Immediately log and push this lockout event so it is not delayed
+                        if (opts->event_out_file[0] != 0) {
+                            dsd_p25_optional_hook_write_event_to_log_file(
+                                opts, state, 0, /*swrite*/ 0,
+                                state->event_history_s[0].Event_History_Items[0].event_string);
+                        }
+                        dsd_p25_optional_hook_push_event_history(&state->event_history_s[0]);
+                        dsd_p25_optional_hook_init_event_history(&state->event_history_s[0], 0, 1);
                     }
-                    sprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
-                            "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
-                    dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
-                    // Immediately log and push this lockout event so it is not delayed
-                    if (opts->event_out_file[0] != 0) {
-                        dsd_p25_optional_hook_write_event_to_log_file(
-                            opts, state, 0, /*swrite*/ 0,
-                            state->event_history_s[0].Event_History_Items[0].event_string);
-                    }
-                    dsd_p25_optional_hook_push_event_history(&state->event_history_s[0]);
-                    dsd_p25_optional_hook_init_event_history(&state->event_history_s[0], 0, 1);
                 }
                 // Also clear banner to avoid stale "Group Encrypted" on UI
                 snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");

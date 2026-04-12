@@ -24,6 +24,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_tables.h>
@@ -69,6 +70,75 @@ dmr_format_chan_suffix(int slot_index, char* out, size_t outsz) {
     }
     // Display slots as 1-based (S1/S2) to match UI conventions
     snprintf(out, outsz, " (TDMA S%d)", (slot_index % 2) + 1);
+}
+
+static int
+dmr_policy_tune_allowed(dsd_opts* opts, dsd_state* state, uint32_t target, uint32_t source, int is_group_call,
+                        int data_call, dsd_tg_policy_decision* out_decision) {
+    dsd_tg_policy_decision decision;
+    int rc = 0;
+    memset(&decision, 0, sizeof(decision));
+
+    if (is_group_call) {
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, 0, data_call,
+                                               DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+    } else {
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, data_call,
+                                                 DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+                                                 DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+    }
+    if (out_decision) {
+        *out_decision = decision;
+    }
+    return rc == 0 && decision.tune_allowed;
+}
+
+static const char*
+dmr_policy_block_reason_label(uint32_t block_reasons) {
+    if (block_reasons & DSD_TG_POLICY_BLOCK_HOLD) {
+        return "hold";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED) {
+        return "private-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_GROUP_DISABLED) {
+        return "group-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_DATA_DISABLED) {
+        return "data-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
+        return "enc-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) {
+        return "allowlist";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_MODE) {
+        return "mode";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_AUDIO) {
+        return "audio";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_RECORD) {
+        return "record";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_STREAM) {
+        return "stream";
+    }
+    return "policy";
+}
+
+static void
+dmr_policy_log_block(const dsd_opts* opts, int is_group_call, uint32_t target, uint32_t source,
+                     const dsd_tg_policy_decision* decision) {
+    if (!opts || !decision || opts->verbose < 1) {
+        return;
+    }
+    if (decision->block_reasons == DSD_TG_POLICY_BLOCK_NONE) {
+        return;
+    }
+    fprintf(stderr, "\n DMR %s grant blocked (%s): target=%u source=%u;", is_group_call ? "group" : "private",
+            dmr_policy_block_reason_label(decision->block_reasons), target, source);
 }
 
 void dmr_gateway_identifier(uint32_t source, uint32_t target);
@@ -487,36 +557,21 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         state->trunk_vc_freq[1] = freq;
                     }
 
-                    // Evaluate allow/whitelist and tune decision unconditionally; SM will debounce
-                    if (1) {
-                        char mode[8]; //allow, block, digital, enc, etc
-                        sprintf(mode, "%s", "");
-
-                        //if we are using allow/whitelist mode, then write 'B' to mode for block
-                        //comparison below will look for an 'A' to write to mode if it is allowed
-                        if (opts->trunk_use_allow_list == 1) {
-                            sprintf(mode, "%s", "B");
-                        }
+                    {
+                        const int is_group_call = (csbk_o == 49 || csbk_o == 50) ? 1 : 0;
+                        dsd_tg_policy_decision policy_decision;
+                        int policy_allowed = 0;
 
                         for (unsigned int i = 0; i < state->group_tally; i++) {
                             if (state->group_array[i].groupNumber == (unsigned long)target) {
                                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                                strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                                mode[sizeof(mode) - 1] = '\0';
                                 break;
                             }
                         }
 
-                        //TG hold on DMR T3 Systems -- block non-matching target, allow matching target
-                        if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
-                            sprintf(mode, "%s", "B");
-                        }
-                        if (state->tg_hold != 0 && state->tg_hold == (uint32_t)target) {
-                            sprintf(mode, "%s", "A");
-                        }
-
-                        if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && (strcmp(mode, "B") != 0)
-                            && (strcmp(mode, "DE") != 0)) {
+                        policy_allowed = dmr_policy_tune_allowed(opts, state, (uint32_t)target, (uint32_t)source,
+                                                                 is_group_call, data_call, &policy_decision);
+                        if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && policy_allowed) {
                             if (freq != 0) //if we have a valid frequency
                             {
                                 //RIGCTL
@@ -571,6 +626,9 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                     dmr_csbk_handle(&res, opts, state);
                                 }
                             }
+                        } else if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && !policy_allowed) {
+                            dmr_policy_log_block(opts, is_group_call, (uint32_t)target, (uint32_t)source,
+                                                 &policy_decision);
                         }
                     }
                 }
@@ -2079,35 +2137,22 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         for (j = start; j < end;
                              j++) //go through the channels stored looking for active ones to tune to
                         {
-                            char mode[8]; //allow, block, digital, enc, etc
-                            sprintf(mode, "%s", "");
-
-                            //if we are using allow/whitelist mode, then write 'B' to mode for block
-                            //comparison below will look for an 'A' to write to mode if it is allowed
-                            if (opts->trunk_use_allow_list == 1) {
-                                sprintf(mode, "%s", "B");
-                            }
+                            const int is_group_call = (pch[j] == 1) ? 0 : 1;
+                            dsd_tg_policy_decision policy_decision;
+                            int policy_allowed = 0;
 
                             for (unsigned int i = 0; i < state->group_tally; i++) {
                                 if (state->group_array[i].groupNumber == (unsigned long)t_tg[j]) {
                                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                                    mode[sizeof(mode) - 1] = '\0';
                                     break;
                                 }
                             }
-
-                            //TG hold on DMR Cap+ -- block non-matching target, allow matching target
-                            if (state->tg_hold != 0 && state->tg_hold != t_tg[j]) {
-                                sprintf(mode, "%s", "B");
-                            }
-                            if (state->tg_hold != 0 && state->tg_hold == t_tg[j]) {
-                                sprintf(mode, "%s", "A");
-                            }
+                            policy_allowed =
+                                dmr_policy_tune_allowed(opts, state, t_tg[j], 0, is_group_call, 0, &policy_decision);
 
                             //without priority, this will tune the first one it finds (if group isn't blocked)
                             if (t_tg[j] != 0 && state->trunk_cc_freq != 0 && opts->trunk_enable == 1
-                                && (strcmp(mode, "B") != 0) && (strcmp(mode, "DE") != 0)) {
+                                && policy_allowed) {
                                 //debug print for tuning verification
                                 // fprintf (stderr, "\n LSN/TG to tune to: %d - %d", j+1, t_tg[j]);
 
@@ -2133,6 +2178,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                     dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[j + 1], 0);
                                     j = 11; //break loop
                                 }
+                            } else if (t_tg[j] != 0 && state->trunk_cc_freq != 0 && opts->trunk_enable == 1) {
+                                dmr_policy_log_block(opts, is_group_call, t_tg[j], 0, &policy_decision);
                             }
                         }
                     } //end tuning
@@ -2301,30 +2348,11 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     state->last_vc_sync_time_m = 0.0;
                 }
 
-                char mode[8]; //allow, block, digital, enc, etc
-                sprintf(mode, "%s", "");
-
-                //if we are using allow/whitelist mode, then write 'B' to mode for block
-                //comparison below will look for an 'A' to write to mode if it is allowed
-                if (opts->trunk_use_allow_list == 1) {
-                    sprintf(mode, "%s", "B");
-                }
-
                 for (unsigned int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == (unsigned long)grpAddr) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
-                }
-
-                //TG hold on DMR Con+ -- block non-matching target, allow matching target
-                if (state->tg_hold != 0 && state->tg_hold != grpAddr) {
-                    sprintf(mode, "%s", "B");
-                }
-                if (state->tg_hold != 0 && state->tg_hold == grpAddr) {
-                    sprintf(mode, "%s", "A");
                 }
 
                 //TG Hop if the target here matches the target currently listening to (may be better to just rely on TG hold for this)
@@ -2338,9 +2366,11 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                 //don't tune if currently a vc on the control channel, but allow hopping form one VC to another VC if the former is in long TLC/Idle mode
                 if ((opts->trunk_tune_group_calls == 1) && (time(NULL) - state->last_vc_sync_time > waitsec)) {
+                    dsd_tg_policy_decision policy_decision;
+                    int policy_allowed =
+                        dmr_policy_tune_allowed(opts, state, grpAddr, srcAddr, (opt == 3) ? 0 : 1, 0, &policy_decision);
 
-                    if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && (strcmp(mode, "B") != 0)
-                        && (strcmp(mode, "DE") != 0)) {
+                    if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && policy_allowed) {
                         long f = state->trunk_chan_map[lcn];
                         if (f != 0) {
                             // Mark as Con+ context for data block reset heuristics
@@ -2354,6 +2384,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                                         /*src*/ srcAddr);
                             }
                         }
+                    } else if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1) {
+                        dmr_policy_log_block(opts, (opt == 3) ? 0 : 1, grpAddr, srcAddr, &policy_decision);
                     }
                 }
 
@@ -2404,33 +2436,19 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 // if (state->tg_hold != 0 && state->tg_hold == dtarget)
                 //   state->last_vc_sync_time = 0;
 
-                char mode[8]; //allow, block, digital, enc, etc
-                sprintf(mode, "%s", "");
-
-                //if we are using allow/whitelist mode, then write 'B' to mode for block
-                //comparison below will look for an 'A' to write to mode if it is allowed
-                if (opts->trunk_use_allow_list == 1) {
-                    sprintf(mode, "%s", "B");
-                }
-
                 for (unsigned int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == (unsigned long)dtarget) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
 
-                //TG hold on DMR Con+ -- block non-matching target, allow matching target
-                // if (state->tg_hold != 0 && state->tg_hold != dtarget) sprintf (mode, "%s", "B");
-                // if (state->tg_hold != 0 && state->tg_hold == dtarget) sprintf (mode, "%s", "A");
-
                 //don't tune if currently a vc on the control channel
                 if ((opts->trunk_tune_data_calls == 1) && (time(NULL) - state->last_vc_sync_time > 2)) {
+                    dsd_tg_policy_decision policy_decision;
+                    int policy_allowed = dmr_policy_tune_allowed(opts, state, dtarget, 0, 0, 1, &policy_decision);
 
-                    if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && (strcmp(mode, "B") != 0)
-                        && (strcmp(mode, "DE") != 0)) {
+                    if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && policy_allowed) {
                         if (state->trunk_chan_map[lcn] != 0) //if we have a valid frequency
                         {
                             // Use centralized io/control tuning API
@@ -2438,6 +2456,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             state->is_con_plus = 1;        //flag on
                             dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
                         }
+                    } else if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1) {
+                        dmr_policy_log_block(opts, 0, dtarget, 0, &policy_decision);
                     }
                 }
 
@@ -2648,38 +2668,23 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 {
                     for (j = 0; j < 6; j++) //go through the channels stored looking for active ones to tune to
                     {
-                        char mode[8]; //allow, block, digital, enc, etc
-                        sprintf(mode, "%s", "");
-
-                        //if we are using allow/whitelist mode, then write 'B' to mode for block
-                        //comparison below will look for an 'A' to write to mode if it is allowed
-                        if (opts->trunk_use_allow_list == 1) {
-                            sprintf(mode, "%s", "B");
-                        }
-
+                        dsd_tg_policy_decision policy_decision;
+                        int policy_allowed = 0;
                         //this won't work properly on hashed TGT values
                         //unless users load a TGT hash in a csv file
                         //and hope it doesn't clash with other normal TG values
                         for (unsigned int i = 0; i < state->group_tally; i++) {
                             if (state->group_array[i].groupNumber == (unsigned long)t_tg[j + xpt_bank]) {
                                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                                strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                                mode[sizeof(mode) - 1] = '\0';
                                 break;
                             }
                         }
-
-                        //TG hold on DMR XPT -- block non-matching target, allow matching target
-                        if (state->tg_hold != 0 && state->tg_hold != t_tg[j + xpt_bank]) {
-                            sprintf(mode, "%s", "B");
-                        }
-                        if (state->tg_hold != 0 && state->tg_hold == t_tg[j + xpt_bank]) {
-                            sprintf(mode, "%s", "A");
-                        }
+                        policy_allowed =
+                            dmr_policy_tune_allowed(opts, state, t_tg[j + xpt_bank], 0, 1, 0, &policy_decision);
 
                         //without priority, this will tune the first one it finds (if group isn't blocked)
                         if (t_tg[j + xpt_bank] != 0 && state->trunk_cc_freq != 0 && opts->trunk_enable == 1
-                            && (strcmp(mode, "B") != 0) && (strcmp(mode, "DE") != 0)) {
+                            && policy_allowed) {
                             //debug print for tuning verification
                             fprintf(stderr, "\n LSN/TG to tune to: %d - %d", j + xpt_bank + 1, t_tg[j + xpt_bank]);
 
@@ -2702,6 +2707,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                     j = 11; // break loop
                                 }
                             }
+                        } else if (t_tg[j + xpt_bank] != 0 && state->trunk_cc_freq != 0 && opts->trunk_enable == 1) {
+                            dmr_policy_log_block(opts, 1, t_tg[j + xpt_bank], 0, &policy_decision);
                         }
                     }
                 } //end tuning

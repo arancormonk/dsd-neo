@@ -314,6 +314,10 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     state->p25_base_freq[state->p25_chan_iden] = base;
     state->p25_iden_trust[state->p25_chan_iden] = 2; // trust for tests
 
+    // Ensure singleton SM context from prior helper calls does not leak tuned
+    // state into this isolated invocation.
+    p25_sm_on_release(opts, state);
+
     unsigned long long int MAC[24] = {0};
     int n = mac_len < 24 ? mac_len : 24;
     for (int i = 0; i < n; i++) {

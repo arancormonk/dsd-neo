@@ -263,37 +263,6 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         ambe_d[i] = 0;
     }
 
-    //set playback mode for this frame
-    char mode[8];
-    sprintf(mode, "%s", "");
-
-    //if we are using allow/whitelist mode, then write 'B' to mode for block
-    //comparison below will look for an 'A' to write to mode if it is allowed
-    if (opts->trunk_use_allow_list == 1) {
-        sprintf(mode, "%s", "B");
-    }
-
-    int groupNumber = 0;
-
-    if (state->currentslot == 0) {
-        groupNumber = state->lasttg;
-    } else {
-        groupNumber = state->lasttgR;
-    }
-
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == (unsigned long)groupNumber) {
-            strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
-            mode[sizeof(mode) - 1] = '\0';
-            break;
-        }
-    }
-
-    //set flag to not play audio this time, but won't prevent writing to wav files -- disabled for now
-    // if (strcmp(mode, "B") == 0) opts->audio_out = 0; //causes a buzzing now (probably due to not running processAudio before the SS3 or SS4)
-
-    //end set playback mode for this frame
-
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         //  0 +P25p1
         //  1 -P25p1
@@ -1594,29 +1563,22 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         }
     }
 
-    // Per-call WAV writing for trunked dual-slot modes. Reuse group/TG-hold
-    // gate logic so blocked or non-held TGs are not persisted to disk.
+    // Per-call WAV writing for trunked dual-slot modes.
+    // Route both slots through the shared record gate so record policy is
+    // enforced consistently in mono and dual-slot paths.
     if (opts->dmr_stereo_wav == 1 && opts->dmr_stereo == 1 && state->currentslot == 0) {
-        int allow_rec = (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) ? 1 : 0;
-        if (allow_rec) {
-            int rec_gate = 0;
-            unsigned long tg = (unsigned long)state->lasttg;
-            if (dsd_audio_group_gate_mono(opts, state, tg, 0, &rec_gate) == 0 && rec_gate == 0) {
-                //write wav to per call on left channel Slot 1
-                writeSynthesizedVoice(opts, state);
-            }
+        int allow_wav = 0;
+        if (dsd_audio_record_gate_mono(opts, state, &allow_wav) == 0 && allow_wav) {
+            //write wav to per call on left channel Slot 1
+            writeSynthesizedVoice(opts, state);
         }
     }
 
     if (opts->dmr_stereo_wav == 1 && opts->dmr_stereo == 1 && state->currentslot == 1) {
-        int allow_rec = (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) ? 1 : 0;
-        if (allow_rec) {
-            int rec_gate = 0;
-            unsigned long tg = (unsigned long)state->lasttgR;
-            if (dsd_audio_group_gate_mono(opts, state, tg, 0, &rec_gate) == 0 && rec_gate == 0) {
-                //write wav to per call on right channel Slot 2
-                writeSynthesizedVoiceR(opts, state);
-            }
+        int allow_wav = 0;
+        if (dsd_audio_record_gate_mono(opts, state, &allow_wav) == 0 && allow_wav) {
+            //write wav to per call on right channel Slot 2
+            writeSynthesizedVoiceR(opts, state);
         }
     }
 

@@ -50,11 +50,33 @@ Required columns:
 
 Notes:
 
-- Only the first 3 columns are used; extra columns are ignored.
+- The first line is treated as header text and is required.
+- Legacy/default behavior uses only the first 3 columns; extra columns are ignored.
 - `mode` is matched literally by features that consult it:
   - `A` usually means allow/normal.
-  - `B` and `DE` are treated as locked out in the UI helpers.
-- Names are not CSV-escaped; avoid commas in `name`.
+  - `B` and `DE` are treated as locked out.
+- Names are not CSV-escaped; avoid commas and line breaks in fields.
+
+Extended policy columns are supported only when the header opts into this exact ordered prefix starting at column 4:
+
+1. `priority` (0..100, default `0`)
+2. `preempt` (`true`/`false`, default `false`)
+3. `audio` (`on`/`off`, default from `mode`)
+4. `record` (`on`/`off`, default from `mode`)
+5. `stream` (`on`/`off`, default from `mode`)
+6. `tags` (free text metadata)
+
+Important behavior:
+
+- The header must contain `priority` in column 4 and continue in that order for the available policy columns.
+- If the header is legacy/unknown (for example `id,mode,name,metadata`), optional policy parsing is disabled and extra
+  columns remain legacy metadata.
+- `id` supports exact IDs (`1201`) and ranges (`1200-1299`).
+  - Exact rows populate both runtime alias display state and policy.
+  - Range rows are policy-only and are not inserted as exact aliases.
+- Exact duplicates preserve first-match behavior.
+- `audio=off` forces `record=off` and `stream=off`.
+- `mode=B`/`DE` forces media fields off regardless of optional values.
 
 Example:
 
@@ -62,6 +84,15 @@ Example:
 DEC,Mode(A=Allow; B=Block; DE=Enc),Name,Tag
 1449,A,Fire Dispatch,Fire
 22033,DE,Law Dispatch,Law
+```
+
+Extended policy example:
+
+```csv
+id,mode,name,priority,preempt,audio,record,stream,tags
+1201,A,Dispatch 1,80,true,on,on,on,primary
+1202,A,Dispatch 2,40,false,on,off,on,secondary
+1300-1399,A,Ops Range,10,false,on,on,on,wide
 ```
 
 ## Decimal Key List CSV (`-k <file>`)

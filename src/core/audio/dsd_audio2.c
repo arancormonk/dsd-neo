@@ -25,7 +25,6 @@
 #include <mbelib.h>
 #include <sndfile.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
 
@@ -1327,57 +1326,9 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
         encR = 1;
     }
 
-    //WIP: Mute if on B list (or not W list)
-    char modeL[8];
-    sprintf(modeL, "%s", "");
-    char modeR[8];
-    sprintf(modeR, "%s", "");
-
     unsigned long TGL = (unsigned long)state->lasttg;
     unsigned long TGR = (unsigned long)state->lasttgR;
-
-    //if we are using allow/whitelist mode, then write 'B' to mode for block
-    //comparison below will look for an 'A' to write to mode if it is allowed
-    if (opts->trunk_use_allow_list == 1) {
-        sprintf(modeL, "%s", "B");
-        sprintf(modeR, "%s", "B");
-    }
-
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
-            modeL[sizeof(modeL) - 1] = '\0';
-            // break; //need to keep going to check other potential slot group
-        }
-        if (state->group_array[gi].groupNumber == TGR) {
-            strncpy(modeR, state->group_array[gi].groupMode, sizeof(modeR) - 1);
-            modeR[sizeof(modeR) - 1] = '\0';
-            // break; //need to keep going to check other potential slot group
-        }
-    }
-
-    //flag either left or right as 'enc' to mute if B
-    if (strcmp(modeL, "B") == 0) {
-        encL = 1;
-    }
-    if (strcmp(modeR, "B") == 0) {
-        encR = 1;
-    }
-
-    //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGL) {
-        encL = 1;
-    }
-    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGR) {
-        encR = 1;
-    }
-    //likewise, override and unmute if TG hold matches TG
-    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGL) {
-        encL = 0;
-    }
-    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGR) {
-        encR = 0;
-    }
+    (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
 
     //test hpf
     if (opts->use_hpf_d == 1) {

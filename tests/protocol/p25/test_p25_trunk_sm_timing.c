@@ -85,6 +85,8 @@ main(void) {
     rc |= expect_eq_int("tdma sps", st.samplesPerSymbol, 8);
     rc |= expect_eq_int("tdma center", st.symbolCenter, 3);
     rc |= expect_eq_int("tdma slot", st.p25_p2_active_slot, 1);
+    p25_sm_on_release(&opts, &st);
+    opts.p25_is_tuned = 0;
 
     // FDMA IDEN: id=1, type=1 => denom=1
     int id_f = 1;
@@ -95,7 +97,6 @@ main(void) {
     st.p25_chan_spac[id_f] = 100;
     st.p25_iden_trust[id_f] = 2;
     int ch_fdma = (id_f << 12) | 0x000A;
-    opts.p25_is_tuned = 0; // allow second tune
     p25_sm_on_group_grant(&opts, &st, ch_fdma, 0, 555, 666);
     rc |= expect_eq_int("fdma sps", st.samplesPerSymbol, 10);
     rc |= expect_eq_int("fdma center", st.symbolCenter, 4);

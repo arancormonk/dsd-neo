@@ -65,6 +65,11 @@ main(void) {
         free(state);
         return 7;
     }
+    if (dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_START_MS) != p2) {
+        dsd_state_ext_free_all(state);
+        free(state);
+        return 71;
+    }
     if (s_cleanup_calls != 1) {
         dsd_state_ext_free_all(state);
         free(state);
@@ -79,6 +84,10 @@ main(void) {
     if (dsd_state_ext_get(state, DSD_STATE_EXT_ENGINE_START_MS) != NULL) {
         free(state);
         return 10;
+    }
+    if (dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_START_MS) != NULL) {
+        free(state);
+        return 101;
     }
 
     void* p3 = malloc(1);

@@ -25,6 +25,11 @@ Common controls:
 - Back / close: `Esc`, `q`, `Left`
 - Item help: `h`
 
+Group policy reload:
+
+- In the Trunking/Import menu path, importing a group list (`-G` CSV) performs a full policy reload. On parse failure,
+  the currently loaded list remains active.
+
 ## Hotkeys (Main Screen)
 
 Keys are case-sensitive. Some commands only make sense in specific modes (for example, trunking controls require

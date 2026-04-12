@@ -15,12 +15,26 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+static uint32_t
+dsd_audio_group_source_id(const dsd_state* state, unsigned long tg) {
+    uint32_t id = (uint32_t)tg;
+    if (!state) {
+        return 0;
+    }
+    if (state->lasttg >= 0 && (uint32_t)state->lasttg == id) {
+        return state->lastsrc;
+    }
+    if (state->lasttgR >= 0 && (uint32_t)state->lasttgR == id) {
+        return state->lastsrcR;
+    }
+    return 0;
+}
 
 int
 dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loaded) {
@@ -60,43 +74,24 @@ dsd_p25p2_mixer_gate(const dsd_state* state, int* encL, int* encR) {
 
 int
 dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int enc_in, int* enc_out) {
+    dsd_tg_policy_decision decision;
+    uint32_t source_id = 0;
+
     if (!opts || !state || !enc_out) {
         return -1;
     }
 
-    int enc = enc_in;
+    int enc = (enc_in != 0) ? 1 : 0;
+    source_id = dsd_audio_group_source_id(state, tg);
 
-    char mode[8];
-    snprintf(mode, sizeof mode, "%s", "");
-
-    // If using allow/whitelist mode, default to block until a matching
-    // group explicitly marks this TG as allowed.
-    if (opts->trunk_use_allow_list == 1) {
-        snprintf(mode, sizeof mode, "%s", "B");
-    }
-
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == tg) {
-            strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
-            mode[sizeof(mode) - 1] = '\0';
-            break;
+    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)tg, source_id, 0, 0,
+                                          DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY, &decision)
+        == 0) {
+        if (decision.tg_hold_active && decision.tg_hold_match) {
+            enc = 0;
+        } else if (!decision.audio_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
+            enc = 1;
         }
-    }
-
-    // Block if this TG is explicitly lockout-tagged in the group list.
-    // "DE" is treated as lockout in trunking policy and should match here
-    // so audio/playback/record gates stay consistent.
-    if (strcmp(mode, "B") == 0 || strcmp(mode, "DE") == 0) {
-        enc = 1;
-    }
-
-    // TG Hold: when in effect, mute everything except the held TG. If the
-    // held TG matches, force unmute to match existing behavior.
-    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)tg) {
-        enc = 1;
-    }
-    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)tg) {
-        enc = 0;
     }
 
     *enc_out = enc;
@@ -117,6 +112,8 @@ dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned
 
 int
 dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out) {
+    dsd_tg_policy_decision decision;
+
     if (!opts || !state || !allow_out) {
         return -1;
     }
@@ -127,14 +124,23 @@ dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* al
         allow = (state->p25_p2_audio_allowed[slot] != 0) ? 1 : 0;
     } else {
         const int enc = (slot == 1) ? state->dmr_encR : state->dmr_encL;
-        allow = (opts->unmute_encrypted_p25 == 1 || enc == 0) ? 1 : 0;
+        const int dmr_unmute_slot = (slot == 1) ? (opts->dmr_mute_encR == 0) : (opts->dmr_mute_encL == 0);
+        allow = (opts->unmute_encrypted_p25 == 1 || enc == 0 || dmr_unmute_slot) ? 1 : 0;
     }
 
     if (allow) {
         const unsigned long tg = (slot == 1) ? (unsigned long)state->lasttgR : (unsigned long)state->lasttg;
-        int rec_gate = 0;
-        if (dsd_audio_group_gate_mono(opts, state, tg, 0, &rec_gate) == 0 && rec_gate != 0) {
-            allow = 0;
+        const uint32_t source_id = (slot == 1) ? state->lastsrcR : state->lastsrc;
+        if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)tg, source_id, 0, 0,
+                                              DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY, &decision)
+            == 0) {
+            int blocked = (!decision.record_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u);
+            if (decision.tg_hold_active && decision.tg_hold_match) {
+                blocked = 0;
+            }
+            if (blocked) {
+                allow = 0;
+            }
         }
     }
 

@@ -19,6 +19,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -79,68 +80,64 @@ p25p2_emit_mac_json_if_enabled(dsd_state* state, int xch_type, uint8_t mfid, uin
  * route per-opcode behavior through a single surface. */
 static void
 p25p2_mac_handle(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_state* state, int channel, int svc_bits,
-                 int group, int source) {
+                 int group, int source, int policy_encrypted_override, int policy_data_override, int emit_enc_lockout) {
+    dsd_tg_policy_decision decision;
+    int enc_for_policy = 0;
+    int data_for_policy = 0;
     (void)res;
     if (!opts || !state) {
         return;
     }
+    if (opts->p25_trunk != 1) {
+        return;
+    }
+
+    enc_for_policy =
+        (policy_encrypted_override >= 0) ? (policy_encrypted_override ? 1 : 0) : ((svc_bits & 0x40) ? 1 : 0);
+    data_for_policy = (policy_data_override >= 0) ? (policy_data_override ? 1 : 0) : ((svc_bits & 0x10) ? 1 : 0);
+
+    if (enc_for_policy && policy_encrypted_override < 0 && opts->trunk_tune_enc_calls == 0
+        && (p25_patch_tg_key_is_clear(state, group) || p25_patch_sg_key_is_clear(state, group))) {
+        enc_for_policy = 0;
+    }
+
+    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, enc_for_policy,
+                                          data_for_policy, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+            != 0
+        || !decision.tune_allowed) {
+        if (emit_enc_lockout && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
+            p25_emit_enc_lockout_once(opts, state, 0, group, svc_bits);
+        }
+        return;
+    }
+
     p25_sm_on_group_grant(opts, state, channel, svc_bits, group, source);
 }
 
-/* Group-mode policy helpers used by grant handlers:
- * mode ""/A allows tuning, "B" and "DE" block tuning. */
-static inline void
-p25_mode_set(char* mode, size_t mode_size, const char* value) {
-    if (!mode || mode_size == 0) {
+static void
+p25p2_mac_handle_indiv(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_state* state, int channel, int svc_bits,
+                       int target, int source, int policy_encrypted_override, int policy_data_override) {
+    dsd_tg_policy_decision decision;
+    int enc_for_policy = 0;
+    int data_for_policy = 0;
+    (void)res;
+    if (!opts || !state) {
         return;
     }
-    if (!value) {
-        value = "";
-    }
-    snprintf(mode, mode_size, "%s", value);
-}
-
-static inline void
-p25_mode_init(char* mode, size_t mode_size, const dsd_opts* opts) {
-    p25_mode_set(mode, mode_size, "");
-    if (opts && opts->trunk_use_allow_list == 1) {
-        p25_mode_set(mode, mode_size, "B");
-    }
-}
-
-static inline void
-p25_mode_apply_tg_hold(const dsd_state* state, int group, char* mode, size_t mode_size) {
-    if (!state) {
+    if (opts->p25_trunk != 1) {
         return;
     }
-    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)group) {
-        p25_mode_set(mode, mode_size, "B");
-    } else if (state->tg_hold != 0 && state->tg_hold == (uint32_t)group) {
-        p25_mode_set(mode, mode_size, "A");
-    }
-}
-
-static inline int
-p25_mode_allows_tune(const dsd_opts* opts, const char* mode) {
-    return opts && opts->p25_trunk == 1 && strcmp(mode, "DE") != 0 && strcmp(mode, "B") != 0;
-}
-
-static inline void
-p25_mode_apply_group_policy(const dsd_state* state, int group, char* mode, size_t mode_size) {
-    if (!state || !mode || mode_size == 0) {
+    enc_for_policy =
+        (policy_encrypted_override >= 0) ? (policy_encrypted_override ? 1 : 0) : ((svc_bits & 0x40) ? 1 : 0);
+    data_for_policy = (policy_data_override >= 0) ? (policy_data_override ? 1 : 0) : ((svc_bits & 0x10) ? 1 : 0);
+    if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, enc_for_policy,
+                                            data_for_policy, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+                                            DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+            != 0
+        || !decision.tune_allowed) {
         return;
     }
-
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == (unsigned long)group) {
-            fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-            strncpy(mode, state->group_array[gi].groupMode, mode_size - 1);
-            mode[mode_size - 1] = '\0';
-            break;
-        }
-    }
-
-    p25_mode_apply_tg_hold(state, group, mode, mode_size);
+    p25_sm_on_indiv_grant(opts, state, channel, svc_bits, target, source);
 }
 
 static inline int
@@ -298,10 +295,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         goto END_PDU;
     }
 
-    //group list mode so we can look and see if we need to block tuning any groups, etc
-    char mode[8]; //allow, block, digital, enc, etc
-    p25_mode_init(mode, sizeof(mode), opts);
-
     for (int i = 0; i < 2; i++) {
 
         //MFID90 Voice Grants, A3, A4, and A5 <--I bet A4 here was triggering a phantom call when TSBK sent PDUs here
@@ -319,25 +312,18 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             //add active channel to string for ncurses display
             p25_set_mfid90_active_channel_single(state, channel, sgroup);
 
-            p25_mode_apply_group_policy(state, sgroup, mode, sizeof(mode));
-
-            //Skip tuning group calls if group calls are disabled
-            if (opts->trunk_tune_group_calls == 0) {
-                goto SKIPCALL;
+            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                if (state->group_array[gi].groupNumber == (unsigned long)sgroup) {
+                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                    break;
+                }
             }
 
-            //tune if tuning available (centralized)
-            if (p25_mode_allows_tune(opts, mode)) {
-                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
-                    // ENC lockout: these MFID90 GRG grants do not carry SVC bits. When
-                    // ENC lockout is enabled, be conservative and avoid tuning unless a
-                    // Harris regroup/patch policy explicitly indicates KEY=0000 (clear)
-                    // for this TG/SG.
-                    if (p25_mfid90_enc_lockout_blocks(opts, state, sgroup)) {
-                        goto SKIPCALL;
-                    }
-                    p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0);
-                }
+            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                /* No SVC bits are carried here; use conservative ENC gating policy facts. */
+                const int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, sgroup) ? 1 : 0;
+                p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0, policy_encrypted,
+                                 /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
             }
             //if playing back files, and we still want to see what freqs are in use in the ncurses terminal
             //might only want to do these on a grant update, and not a grant by itself?
@@ -359,22 +345,18 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             //add active channel to string for ncurses display
             p25_set_mfid90_active_channel_single(state, channel, sgroup);
 
-            p25_mode_apply_group_policy(state, sgroup, mode, sizeof(mode));
-
-            //Skip tuning group calls if group calls are disabled
-            if (opts->trunk_tune_group_calls == 0) {
-                goto SKIPCALL;
+            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                if (state->group_array[gi].groupNumber == (unsigned long)sgroup) {
+                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                    break;
+                }
             }
 
-            //tune if tuning available (centralized)
-            if (p25_mode_allows_tune(opts, mode)) {
-                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
-                    // ENC lockout conservative gating for MFID90 GRG without SVC bits
-                    if (p25_mfid90_enc_lockout_blocks(opts, state, sgroup)) {
-                        goto SKIPCALL;
-                    }
-                    p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0);
-                }
+            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                /* No SVC bits are carried here; use conservative ENC gating policy facts. */
+                const int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, sgroup) ? 1 : 0;
+                p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0, policy_encrypted,
+                                 /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
             }
             //if playing back files, and we still want to see what freqs are in use in the ncurses terminal
             //might only want to do these on a grant update, and not a grant by itself?
@@ -435,17 +417,19 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     tunable_group = group2;
                 }
 
-                p25_mode_apply_group_policy(state, tunable_group, mode, sizeof(mode));
+                for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                    if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
+                        fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                        break;
+                    }
+                }
 
-                //check to see if the group candidate is blocked first
-                if (p25_mode_allows_tune(opts, mode)) {
-                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
-                        // ENC lockout conservative gating for MFID90 GRG Update without SVC bits
-                        if (p25_mfid90_enc_lockout_blocks(opts, state, tunable_group)) {
-                            goto SKIPCALL;
-                        }
-                        p25p2_mac_handle(&mac_res, opts, state, tunable_chan, /*svc_bits*/ 0, tunable_group, /*src*/ 0);
-                        j = 8; //break loop
+                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
+                    const int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, tunable_group) ? 1 : 0;
+                    p25p2_mac_handle(&mac_res, opts, state, tunable_chan, /*svc_bits*/ 0, tunable_group, /*src*/ 0,
+                                     policy_encrypted, /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
+                    if (opts->p25_is_tuned != 0) {
+                        j = 8; //break loop after a successful tune
                     }
                 }
                 //if playing back files, and we still want to see what freqs are in use in the ncurses terminal
@@ -519,33 +503,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (unsigned int gi = 0; gi < state->group_tally; gi++) {
                 if (state->group_array[gi].groupNumber == (unsigned long)group) {
                     fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
-                    mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
 
-            //TG hold on GRP_V -- block non-matching group, allow matching group
-            p25_mode_apply_tg_hold(state, group, mode, sizeof(mode));
-
-            //Skip tuning group calls if group calls are disabled
-            if (opts->trunk_tune_group_calls == 0) {
-                goto SKIPCALL;
-            }
-
-            //Skip tuning encrypted calls if enc calls are disabled – emit event immediately (once)
-            //Override when Harris GRG policy indicates KEY=0000 for this TG/SG
-            if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group)
-                && !p25_patch_sg_key_is_clear(state, group)) {
-                p25_emit_enc_lockout_once(opts, state, 0, group, svc);
-                goto SKIPCALL;
-            }
-
-            //tune if tuning available (centralized)
-            if (p25_mode_allows_tune(opts, mode)) {
-                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
-                    p25p2_mac_handle(&mac_res, opts, state, channel, svc, group, source);
-                }
+            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                p25p2_mac_handle(&mac_res, opts, state, channel, svc, group, source, /*policy_encrypted*/ -1,
+                                 /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
             }
             //if playing back files, and we still want to see what freqs are in use in the ncurses terminal
             //might only want to do these on a grant update, and not a grant by itself?
@@ -641,41 +605,17 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
             state->last_active_time = time(NULL);
 
-            //Skip tuning private calls if private calls is disabled (are telephone int calls private, or talkgroup?)
-            if (opts->trunk_tune_private_calls == 0) {
-                goto SKIPCALL;
-            }
-
-            //Skip tuning encrypted calls if enc calls are disabled (no event for telephone)
-            if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
-                goto SKIPCALL;
-            }
-
             //telephone only has a target address (manual shows combined source/target of 24-bits)
             for (unsigned int gi = 0; gi < state->group_tally; gi++) {
                 if (state->group_array[gi].groupNumber == (unsigned long)target) {
                     fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
-                    mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
 
-            //TG hold on UU_V -- will want to disable UU_V grants while TG Hold enabled -- same for Telephone?
-            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
-                p25_mode_set(mode, sizeof(mode), "B");
-            }
-            // if (state->tg_hold != 0 && state->tg_hold == target)
-            // {
-            // 	sprintf (mode, "%s", "A");
-            // 	opts->p25_is_tuned = 0; //unlock tuner
-            // }
-
-            //tune if tuning available (centralized)
-            if (p25_mode_allows_tune(opts, mode)) {
-                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
-                    p25_sm_on_indiv_grant(opts, state, channel, svc, (int)target, /*src*/ 0);
-                }
+            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                p25p2_mac_handle_indiv(&mac_res, opts, state, channel, svc, (int)target, /*src*/ 0,
+                                       /*policy_encrypted*/ -1, /*policy_data*/ -1);
             }
             if (opts->p25_trunk == 0) {
                 if ((uint32_t)target == (uint32_t)state->lasttg || (uint32_t)target == (uint32_t)state->lasttgR) {
@@ -732,32 +672,14 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 if (state->group_array[gi].groupNumber == (unsigned long)source
                     || state->group_array[gi].groupNumber == (unsigned long)target) {
                     fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
-                    mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
 
-            //TG hold on UU_V -- will want to disable UU_V grants while TG Hold enabled
-            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
-                p25_mode_set(mode, sizeof(mode), "B");
-            }
-            // if (state->tg_hold != 0 && state->tg_hold == target)
-            // {
-            // 	sprintf (mode, "%s", "A");
-            // 	opts->p25_is_tuned = 0; //unlock tuner
-            // }
-
-            //tune if tuning available (centralized)
-            if (p25_mode_allows_tune(opts, mode)) {
-                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
-                    // ENC lockout: these UU grants do not carry SVC bits; when enabled,
-                    // skip tuning rather than risking an ENC follow.
-                    if (opts->trunk_tune_enc_calls == 0) {
-                        goto SKIPCALL;
-                    }
-                    p25_sm_on_indiv_grant(opts, state, channel, /*svc_bits*/ 0, target, source);
-                }
+            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                const int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
+                p25p2_mac_handle_indiv(&mac_res, opts, state, channel, /*svc_bits*/ 0, target, source, policy_encrypted,
+                                       /*policy_data*/ 0);
             }
             if (opts->p25_trunk == 0) {
                 if (target == state->lasttg || target == state->lasttgR) {
@@ -892,20 +814,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int tunable_group = 0;
 
             for (int j = 0; j < loop; j++) {
-                //test svc opts for enc to tune or skip
-                if (j == 0) {
-                    if ((svc1 & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group1)
-                        && !p25_patch_sg_key_is_clear(state, group1)) {
-                        j++; //skip to next
-                    }
-                }
-                if (j == 1) {
-                    if ((svc2 & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group2)
-                        && !p25_patch_sg_key_is_clear(state, group2)) {
-                        goto SKIPCALL; //skip to end
-                    }
-                }
-
                 //assign our internal variables for check down on if to tune one freq/group or not
                 if (j == 0) {
                     tunable_freq = freq1t;
@@ -919,21 +827,14 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 for (unsigned int gi = 0; gi < state->group_tally; gi++) {
                     if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
                         fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                        strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
-                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
 
-                //TG hold on GRP_V Multi -- block non-matching group, allow matching group
-                p25_mode_apply_tg_hold(state, tunable_group, mode, sizeof(mode));
-
-                //tune if tuning available (centralized)
-                if (p25_mode_allows_tune(opts, mode)) {
-                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
-                        int svc_bits = (j == 0) ? svc1 : svc2;
-                        p25p2_mac_handle(&mac_res, opts, state, tunable_chan, svc_bits, tunable_group, /*src*/ 0);
-                    }
+                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
+                    int svc_bits = (j == 0) ? svc1 : svc2;
+                    p25p2_mac_handle(&mac_res, opts, state, tunable_chan, svc_bits, tunable_group, /*src*/ 0,
+                                     /*policy_encrypted*/ -1, /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
                 }
                 if (opts->p25_trunk == 0) {
                     if (tunable_group == state->lasttg || tunable_group == state->lasttgR) {
@@ -1079,26 +980,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int tunable_group = 0;
 
             for (int j = 0; j < loop; j++) {
-                //test svc opts for enc to tune or skip
-                if (j == 0) {
-                    if ((so1 & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group1)
-                        && !p25_patch_sg_key_is_clear(state, group1)) {
-                        j++; //skip to next
-                    }
-                }
-                if (j == 1) {
-                    if ((so2 & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group2)
-                        && !p25_patch_sg_key_is_clear(state, group2)) {
-                        j++; //skip to next
-                    }
-                }
-                if (j == 2) {
-                    if ((so3 & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group3)
-                        && !p25_patch_sg_key_is_clear(state, group3)) {
-                        goto SKIPCALL; //skip to end
-                    }
-                }
-
                 //assign our internal variables for check down on if to tune one freq/group or not
                 if (j == 0) {
                     tunable_freq = freq1;
@@ -1117,20 +998,15 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 for (unsigned int gi = 0; gi < state->group_tally; gi++) {
                     if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
                         fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                        strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
-                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
 
-                //TG hold on GRP_V Multi -- block non-matching group, allow matching group
-                p25_mode_apply_tg_hold(state, tunable_group, mode, sizeof(mode));
-
-                //tune if tuning available (centralized)
-                if (p25_mode_allows_tune(opts, mode)) {
-                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
-                        int svc_bits = (j == 0) ? so1 : ((j == 1) ? so2 : so3);
-                        p25p2_mac_handle(&mac_res, opts, state, tunable_chan, svc_bits, tunable_group, /*src*/ 0);
+                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
+                    int svc_bits = (j == 0) ? so1 : ((j == 1) ? so2 : so3);
+                    p25p2_mac_handle(&mac_res, opts, state, tunable_chan, svc_bits, tunable_group, /*src*/ 0,
+                                     /*policy_encrypted*/ -1, /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
+                    if (opts->p25_is_tuned != 0) {
                         j = 8; //break loop after tuning one candidate
                     }
                 }
@@ -1215,20 +1091,15 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 for (unsigned int gi = 0; gi < state->group_tally; gi++) {
                     if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
                         fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                        strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
-                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
 
-                //TG hold on GRP_V Multi -- block non-matching group, allow matching group
-                p25_mode_apply_tg_hold(state, tunable_group, mode, sizeof(mode));
-
-                //tune if tuning available (centralized)
-                if (p25_mode_allows_tune(opts, mode)) {
-                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
-                        p25p2_mac_handle(&mac_res, opts, state, tunable_chan, /*svc_bits*/ 0, tunable_group, /*src*/ 0);
-                        j = 8; //break loop after first tune
+                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
+                    p25p2_mac_handle(&mac_res, opts, state, tunable_chan, /*svc_bits*/ 0, tunable_group, /*src*/ 0,
+                                     /*policy_encrypted*/ 0, /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
+                    if (opts->p25_is_tuned != 0) {
+                        j = 8; //break loop after first successful tune
                     }
                 }
                 if (opts->p25_trunk == 0) {
@@ -1306,32 +1177,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (unsigned int gi = 0; gi < state->group_tally; gi++) {
                 if (state->group_array[gi].groupNumber == (unsigned long)group) {
                     fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    snprintf(mode, sizeof mode, "%s", state->group_array[gi].groupMode);
                     break;
                 }
             }
 
-            //TG hold on GRP_V Exp -- block non-matching group, allow matching group
-            p25_mode_apply_tg_hold(state, group, mode, sizeof(mode));
-
-            //Skip tuning group calls if group calls are disabled
-            if (opts->trunk_tune_group_calls == 0) {
-                goto SKIPCALL;
-            }
-
-            //Skip tuning encrypted calls if enc calls are disabled – emit event immediately (once)
-            //Override when Harris GRG policy indicates KEY=0000 for this TG/SG
-            if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group)
-                && !p25_patch_sg_key_is_clear(state, group)) {
-                p25_emit_enc_lockout_once(opts, state, 0, group, svc);
-                goto SKIPCALL;
-            }
-
-            //tune if tuning available (centralized)
-            if (p25_mode_allows_tune(opts, mode)) {
-                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
-                    p25p2_mac_handle(&mac_res, opts, state, channelt, svc, group, /*src*/ 0);
-                }
+            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
+                p25p2_mac_handle(&mac_res, opts, state, channelt, svc, group, /*src*/ 0, /*policy_encrypted*/ -1,
+                                 /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
             }
             if (opts->p25_trunk == 0) {
                 if (group == state->lasttg || group == state->lasttgR) {
@@ -1386,7 +1238,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (unsigned int gi = 0; gi < state->group_tally; gi++) {
                 if (state->group_array[gi].groupNumber == (unsigned long)target) {
                     fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    snprintf(mode, sizeof mode, "%s", state->group_array[gi].groupMode);
                     break;
                 }
             }
@@ -1401,25 +1252,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
             state->last_active_time = time(NULL);
 
-            //Skip tuning data calls if data calls is disabled
-            if (opts->trunk_tune_data_calls == 0) {
-                goto SKIPCALL;
-            }
-
-            //TG hold on UU_V -- will want to disable UU_V grants while TG Hold enabled
-            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
-                p25_mode_set(mode, sizeof(mode), "B");
-            }
-
-            //tune if tuning available (centralized)
-            if (p25_mode_allows_tune(opts, mode)) {
-                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
-                    // ENC lockout: no SVC bits in this UU data form; be conservative
-                    if (opts->trunk_tune_enc_calls == 0) {
-                        goto SKIPCALL;
-                    }
-                    p25_sm_on_indiv_grant(opts, state, channelt, /*svc_bits*/ 0, (int)target, /*src*/ 0);
-                }
+            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                const int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
+                p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, /*svc_bits*/ 0, (int)target, /*src*/ 0,
+                                       policy_encrypted, /*policy_data*/ 1);
             }
             if (opts->p25_trunk == 0) {
                 if (target == state->lasttg || target == state->lasttgR) {
@@ -1532,7 +1368,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n");
             // Route through SM for tuning consideration
             if (opts->p25_trunk == 1 && channel != 0 && freq != 0) {
-                p25_sm_on_group_grant(opts, state, channel, /*svc*/ 0, sg, /*src*/ 0);
+                const int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, sg) ? 1 : 0;
+                p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sg, /*src*/ 0, policy_encrypted,
+                                 /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
             }
         }
 

@@ -22,6 +22,14 @@ dsd_state_ext_get(dsd_state* state, dsd_state_ext_id id) {
     return state->state_ext[(int)id];
 }
 
+const void*
+dsd_state_ext_get_const(const dsd_state* state, dsd_state_ext_id id) {
+    if (!state || !dsd_state_ext_id_is_valid(id)) {
+        return NULL;
+    }
+    return state->state_ext[(int)id];
+}
+
 int
 dsd_state_ext_set(dsd_state* state, dsd_state_ext_id id, void* ptr, dsd_state_ext_cleanup_fn cleanup) {
     if (!state || !dsd_state_ext_id_is_valid(id)) {

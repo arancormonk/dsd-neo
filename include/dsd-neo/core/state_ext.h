@@ -45,6 +45,13 @@ enum { DSD_STATE_EXT_MAX = 32 };
 typedef enum dsd_state_ext_id {
     DSD_STATE_EXT_ENGINE_START_MS = 0,
     DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES = 1,
+    /*
+     * DSD_STATE_EXT_CORE_TG_POLICY lives in the engine range (0-7) because it
+     * is a cross-cutting core facility, not module-private state. Engine owns
+     * 0-1; this slot is a documented exception, not a precedent for arbitrary
+     * core use.
+     */
+    DSD_STATE_EXT_CORE_TG_POLICY = 2,
     DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG = 24,
 } dsd_state_ext_id;
 
@@ -53,6 +60,8 @@ typedef void (*dsd_state_ext_cleanup_fn)(void*);
 #define DSD_STATE_EXT_GET_AS(type, state, id) ((type*)dsd_state_ext_get((state), (id)))
 
 void* dsd_state_ext_get(dsd_state* state, dsd_state_ext_id id);
+
+const void* dsd_state_ext_get_const(const dsd_state* state, dsd_state_ext_id id);
 
 int dsd_state_ext_set(dsd_state* state, dsd_state_ext_id id, void* ptr, dsd_state_ext_cleanup_fn cleanup);
 

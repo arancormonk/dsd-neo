@@ -25,6 +25,9 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#ifdef SOFTID
+#include <dsd-neo/core/talkgroup_policy.h>
+#endif
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
@@ -539,9 +542,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     if ((k >= state->dmr_alias_block_len[0]) && (state->dmr_alias_format[0] == 0x02)) {
         //storage for completed string
         char str[16];
-        int wr = 0;
         int tsrc = state->lastsrc;
-        int z = 0;
         k = 0;
         for (i = 0; i < 16; i++) {
             str[i] = 0;
@@ -566,44 +567,18 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
         if (tsrc
             != 0) //&& opts->p25_trunk == 0 //should never get here if enc, should be zeroed out, but could potentially slip if HDU is missed and offchance of 02 opcode
         {
-            for (int x = 0; x < state->group_tally; x++) {
-                if (state->group_array[x].groupNumber == tsrc) {
-                    wr = 1; //already in there, so no need to assign it
-                    z = x;
-                    break;
-                }
+            const char* mode = "D";
+            dsd_tg_policy_entry alias_entry;
+            // Only mark as encrypted if ALG is known non-clear (not 0x80 and not 0)
+            if (state->payload_algid != 0x80 && state->payload_algid != 0 && opts->trunk_tune_enc_calls == 0
+                && state->R == 0) {
+                mode = "DE";
             }
-
-            //if not already in there, so save it there now
-            if (wr == 0) {
-                state->group_array[state->group_tally].groupNumber = tsrc;
-                // Only mark as encrypted if ALG is known non-clear (not 0x80 and not 0)
-                if (state->payload_algid != 0x80 && state->payload_algid != 0 && opts->trunk_tune_enc_calls == 0
-                    && state->R == 0) {
-                    snprintf(state->group_array[state->group_tally].groupMode,
-                             sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
-                } else {
-                    snprintf(state->group_array[state->group_tally].groupMode,
-                             sizeof state->group_array[state->group_tally].groupMode, "%s", "D");
-                }
-                snprintf(state->group_array[state->group_tally].groupName,
-                         sizeof state->group_array[state->group_tally].groupName, "%s", str);
-                state->group_tally++;
-            }
-
-            //if its in there, but doesn't match (bad/partial decode)
-            else if (strcmp(str, state->group_array[z].groupName) != 0) {
-                state->group_array[z].groupNumber = tsrc;
-                // Only mark as encrypted if ALG is known non-clear (not 0x80 and not 0)
-                if (state->payload_algid != 0x80 && state->payload_algid != 0 && opts->trunk_tune_enc_calls == 0
-                    && state->R == 0) {
-                    snprintf(state->group_array[state->group_tally].groupMode,
-                             sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
-                } else {
-                    snprintf(state->group_array[state->group_tally].groupMode,
-                             sizeof state->group_array[state->group_tally].groupMode, "%s", "D");
-                }
-                snprintf(state->group_array[z].groupName, sizeof state->group_array[z].groupName, "%s", str);
+            if (dsd_tg_policy_make_legacy_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS,
+                                                      &alias_entry)
+                == 0) {
+                (void)dsd_tg_policy_upsert_legacy_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY);
+                (void)dsd_tg_policy_upsert_legacy_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
             }
         }
 

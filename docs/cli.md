@@ -187,7 +187,7 @@ Notes
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`
 - Conventional scan mode: `-Y` (not trunking; scans for sync on enabled decoders)
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`)
-- Group list CSV (allow/block + labels): `-G <file>`
+- Group list CSV (allow/block + labels, optional `priority/preempt/audio/record/stream` policy columns): `-G <file>`
 - CSV formats and examples: `docs/csv-formats.md` and `examples/`
 - Use group list as allow/whitelist: `-W`
 - Tune controls: `-E` disable group calls, `-p` disable private calls, `-e` enable data calls, `--enc-lockout` do not tune encrypted P25 calls, `--enc-follow` allow encrypted (default)
@@ -202,6 +202,9 @@ Notes
   - Env (DMR): Hangtime and grant timeout overrides:
     - `DSD_NEO_DMR_HANGTIME=<seconds>` — post‑voice hangtime before returning to CC
     - `DSD_NEO_DMR_GRANT_TIMEOUT=<seconds>` — max seconds waiting for voice after grant
+  - Env (priority preemption):
+    - `DSD_NEO_TG_PREEMPT_MIN_DWELL_MS=<ms>` — minimum active call dwell before displacement (default `750`)
+    - `DSD_NEO_TG_PREEMPT_COOLDOWN_MS=<ms>` — cooldown between displacement attempts (default `1000`)
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 

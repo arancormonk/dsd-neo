@@ -241,6 +241,11 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_CORE_STATE_EXT
   dsd-neo/core/state_ext.h
   C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_talkgroup_policy
+  HEADERS_PUBLIC_CORE_TALKGROUP_POLICY
+  dsd-neo/core/talkgroup_policy.h
+  C)
 
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_sync_hamming
@@ -487,6 +492,21 @@ add_executable(dsd-neo_test_core_csv_import core/test_core_csv_import.c)
 target_include_directories(dsd-neo_test_core_csv_import PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_core_csv_import PRIVATE dsd-neo_core dsd-neo_proto_dmr)
 add_test(NAME CORE_CSV_IMPORT COMMAND dsd-neo_test_core_csv_import)
+
+add_executable(dsd-neo_test_core_talkgroup_policy core/test_core_talkgroup_policy.c)
+target_include_directories(dsd-neo_test_core_talkgroup_policy PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_core_talkgroup_policy PRIVATE dsd-neo_core)
+add_test(NAME CORE_TALKGROUP_POLICY COMMAND dsd-neo_test_core_talkgroup_policy)
+
+add_executable(dsd-neo_test_core_tg_policy_alloc_fail
+  core/test_core_tg_policy_alloc_fail.c
+  ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+  ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+)
+target_compile_definitions(dsd-neo_test_core_tg_policy_alloc_fail PRIVATE DSD_NEO_TEST_HOOKS)
+target_include_directories(dsd-neo_test_core_tg_policy_alloc_fail PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_core_tg_policy_alloc_fail PRIVATE dsd-neo_runtime)
+add_test(NAME CORE_TG_POLICY_ALLOC_FAIL COMMAND dsd-neo_test_core_tg_policy_alloc_fail)
 
 add_executable(dsd-neo_test_core_audio_group_gate core/test_core_audio_group_gate.c)
 target_include_directories(dsd-neo_test_core_audio_group_gate PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -1209,6 +1229,8 @@ add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 add_executable(dsd-neo_test_dmr_t3_cmove
   protocol/dmr/test_dmr_t3_cmove.c
   ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
+  ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+  ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -1221,6 +1243,8 @@ add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)
 add_executable(dsd-neo_test_dmr_t3_force_release
   protocol/dmr/test_dmr_t3_force_release.c
   ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
+  ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+  ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -1233,6 +1257,8 @@ add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
 add_executable(dsd-neo_test_dmr_t3_move_release
   protocol/dmr/test_dmr_t3_move_release.c
   ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
+  ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+  ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -1547,8 +1573,11 @@ add_test(NAME DMR_EMBEDDED_GPS_POSITION_ERROR COMMAND dsd-neo_test_dmr_embedded_
 add_executable(dsd-neo_test_dmr_talker_alias_header_len
   protocol/dmr/test_dmr_talker_alias_header_len.c
   ${PROJECT_SOURCE_DIR}/src/core/util/dsd_alias.c
+  ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+  ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
 target_include_directories(dsd-neo_test_dmr_talker_alias_header_len PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_talker_alias_header_len PRIVATE dsd-neo_runtime)
 add_test(NAME DMR_TALKER_ALIAS_HEADER_LEN COMMAND dsd-neo_test_dmr_talker_alias_header_len)
 
 # FEC core (Hamming/Golay/QR) block code tests
@@ -1609,6 +1638,42 @@ add_executable(dsd-neo_test_p25_indiv_gating protocol/p25/test_p25_indiv_gating.
 target_include_directories(dsd-neo_test_p25_indiv_gating PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_indiv_gating PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_INDIV_GATING COMMAND dsd-neo_test_p25_indiv_gating)
+
+# P25 Phase 1 MBT private-grant allow-list compatibility
+add_executable(dsd-neo_test_p25_p1_pdu_private_allowlist
+  protocol/p25/test_p25_p1_pdu_private_allowlist.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_pdu_trunking.c
+  ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+  ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+  ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
+)
+target_include_directories(dsd-neo_test_p25_p1_pdu_private_allowlist PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME P25_P1_PDU_PRIVATE_ALLOWLIST COMMAND dsd-neo_test_p25_p1_pdu_private_allowlist)
+
+# P25 grant policy behavior (allow-list, mode blocks, TG hold, TG 0, private allow-list compatibility)
+add_executable(dsd-neo_test_p25_grant_policy protocol/p25/test_p25_grant_policy.c)
+target_include_directories(dsd-neo_test_p25_grant_policy PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_grant_policy PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_GRANT_POLICY COMMAND dsd-neo_test_p25_grant_policy)
+
+# DMR grant policy behavior (allow-list, explicit block modes, private source allow-list)
+add_executable(dsd-neo_test_dmr_grant_policy protocol/dmr/test_dmr_grant_policy.c)
+target_include_directories(dsd-neo_test_dmr_grant_policy PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_grant_policy PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_GRANT_POLICY COMMAND dsd-neo_test_dmr_grant_policy)
+
+# NXDN grant policy behavior (allow-list, private source allow-list, group source fallback)
+add_executable(dsd-neo_test_nxdn_grant_policy protocol/nxdn/test_nxdn_grant_policy.c)
+target_include_directories(dsd-neo_test_nxdn_grant_policy PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_nxdn_grant_policy PRIVATE dsd-neo_proto_nxdn)
+add_test(NAME NXDN_GRANT_POLICY COMMAND dsd-neo_test_nxdn_grant_policy)
+
+# EDACS grant policy behavior (hold-compatible grant profile and private unknown-block mode).
+# Protocol-specific EDACS grant-parser harness is deferred; this locks the shared evaluator contract.
+add_executable(dsd-neo_test_edacs_grant_policy protocol/edacs/test_edacs_grant_policy.c)
+target_include_directories(dsd-neo_test_edacs_grant_policy PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_edacs_grant_policy PRIVATE dsd-neo_core)
+add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 
 # CQPSK reliability metric unit test
 # Note: compiles its own test stub rather than linking dsd-neo_core to avoid

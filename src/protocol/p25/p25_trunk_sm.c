@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -72,6 +73,46 @@ is_tdma_channel(const dsd_state* state, int channel) {
         return is_tdma;
     }
     return 0;
+}
+
+static int
+p25_upsert_de_lockout(dsd_state* state, int tg, int* out_was_de) {
+    int idx = -1;
+    int was_de = 0;
+    const char* name = "ENC LO";
+    dsd_tg_policy_entry entry;
+
+    if (!state || tg <= 0) {
+        if (out_was_de) {
+            *out_was_de = 0;
+        }
+        return 1;
+    }
+
+    for (unsigned int i = 0; i < state->group_tally; i++) {
+        if (state->group_array[i].groupNumber == (unsigned long)tg) {
+            idx = (int)i;
+            break;
+        }
+    }
+    if (idx >= 0) {
+        was_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
+        if (state->group_array[idx].groupName[0] != '\0') {
+            name = state->group_array[idx].groupName;
+        }
+    }
+    if (out_was_de) {
+        *out_was_de = was_de;
+    }
+    if (was_de) {
+        return 0;
+    }
+
+    if (dsd_tg_policy_make_legacy_exact_entry((uint32_t)tg, "DE", name, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &entry)
+        != 0) {
+        return 1;
+    }
+    return dsd_tg_policy_upsert_legacy_exact(state, &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
 }
 
 static inline int
@@ -151,85 +192,126 @@ set_state(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, p25_sm_state_e ne
 #define SVC_IS_DATA(svc) (((svc) & 0x10) != 0)
 #define SVC_IS_ENC(svc)  (((svc) & 0x40) != 0)
 
-// Check if TG is blocked in group array (mode "DE" or "B")
-static int
-tg_is_blocked(const dsd_state* state, int tg) {
-    if (!state || tg <= 0) {
-        return 0;
+static const char*
+grant_block_log_tag(int is_indiv, uint32_t block_reasons) {
+    if (block_reasons & DSD_TG_POLICY_BLOCK_HOLD) {
+        return is_indiv ? "indiv-blocked-hold" : "grant-blocked-hold";
     }
-    for (unsigned int i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == (unsigned long)tg) {
-            const char* m = state->group_array[i].groupMode;
-            return (m[0] == 'D' && m[1] == 'E') || (m[0] == 'B' && m[1] == '\0');
-        }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED) {
+        return "indiv-blocked-private";
     }
-    return 0;
+    if (block_reasons & DSD_TG_POLICY_BLOCK_GROUP_DISABLED) {
+        return "grant-blocked-group";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_DATA_DISABLED) {
+        return is_indiv ? "indiv-blocked-data" : "grant-blocked-data";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
+        return is_indiv ? "indiv-blocked-enc" : "grant-blocked-enc";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) {
+        return is_indiv ? "indiv-blocked-allowlist" : "grant-blocked-allowlist";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_MODE) {
+        return is_indiv ? "indiv-blocked-mode" : "grant-blocked-mode";
+    }
+    return is_indiv ? "indiv-blocked-policy" : "grant-blocked-policy";
 }
 
 static int
-grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+lookup_policy_priority_for_tg(const dsd_state* state, int tg) {
+    dsd_tg_policy_lookup lookup;
+    if (!state || tg < 0) {
+        return 0;
+    }
+    if (dsd_tg_policy_lookup_id(state, (uint32_t)tg, &lookup) != 0) {
+        return 0;
+    }
+    if (lookup.match == DSD_TG_POLICY_MATCH_NONE) {
+        return 0;
+    }
+    return lookup.entry.priority;
+}
+
+static void
+log_preempt_decision(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state,
+                     const dsd_tg_policy_call_route* route, const dsd_tg_policy_decision* decision, const char* reason,
+                     int allowed) {
+    int current_priority = 0;
+    if (!ctx || !opts || !state || !route || !decision || !reason || opts->verbose < 1) {
+        return;
+    }
+    current_priority = lookup_policy_priority_for_tg(state, ctx->vc_tg);
+    fprintf(stderr,
+            "\n[P25 SM] preempt-%s reason=%s current_tg=%d current_prio=%d candidate_tg=%u candidate_prio=%d "
+            "ch=0x%04X freq=%ld slot=%d\n",
+            allowed ? "allow" : "deny", reason, ctx->vc_tg, current_priority, route->target_id, decision->priority,
+            route->channel & 0xFFFF, route->freq_hz, route->slot);
+}
+
+static int
+grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, dsd_tg_policy_decision* out_decision) {
+    dsd_tg_policy_decision decision;
+    int eval_rc = 0;
+    int svc = 0;
+    int data_call = 0;
+    int encrypted_call = 0;
+    int enc_override_clear = 0;
+    int is_indiv = 0;
+    int tg = 0;
     if (!opts || !state || !ev) {
         return 0;
     }
 
-    int svc = ev->svc_bits;
-    int tg = ev->tg;
-    int is_indiv = !ev->is_group;
+    svc = ev->svc_bits;
+    data_call = SVC_IS_DATA(svc) ? 1 : 0;
+    encrypted_call = SVC_IS_ENC(svc) ? 1 : 0;
+    is_indiv = !ev->is_group;
+    tg = is_indiv ? ev->dst : ev->tg;
 
-    // Fast path: TG hold check (integer compare)
-    if (state->tg_hold != 0) {
-        if (is_indiv || (uint32_t)tg != state->tg_hold) {
-            sm_log(opts, state, is_indiv ? "indiv-blocked-hold" : "grant-blocked-hold");
-            return 0;
+    // Preserve P25 regroup clear-key override before policy evaluation.
+    if (!is_indiv && encrypted_call && opts->trunk_tune_enc_calls == 0 && tg > 0) {
+        if (p25_patch_tg_key_is_clear(state, tg) || p25_patch_sg_key_is_clear(state, tg)) {
+            encrypted_call = 0;
+            enc_override_clear = 1;
         }
     }
 
-    // Data call policy (bit check)
-    if (SVC_IS_DATA(svc) && opts->trunk_tune_data_calls == 0) {
-        sm_log(opts, state, is_indiv ? "indiv-blocked-data" : "grant-blocked-data");
-        return 0;
-    }
-
-    // Individual (private) call gating
     if (is_indiv) {
-        if (opts->trunk_tune_private_calls == 0) {
-            sm_log(opts, state, "indiv-blocked-private");
-            return 0;
-        }
-        if (SVC_IS_ENC(svc) && opts->trunk_tune_enc_calls == 0) {
-            sm_log(opts, state, "indiv-blocked-enc");
-            return 0;
-        }
-        return 1;
+        eval_rc = dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)ev->src, (uint32_t)ev->dst, encrypted_call,
+                                                      data_call, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_ALLOW,
+                                                      DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+    } else {
+        eval_rc = dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)tg, (uint32_t)ev->src, encrypted_call,
+                                                    data_call, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
     }
-
-    // Group grant gating
-    if (opts->trunk_tune_group_calls == 0) {
-        sm_log(opts, state, "grant-blocked-group");
+    if (eval_rc != 0) {
         return 0;
     }
 
-    // Encryption policy with patch override
-    if (SVC_IS_ENC(svc) && opts->trunk_tune_enc_calls == 0) {
-        if (!p25_patch_tg_key_is_clear(state, tg) && !p25_patch_sg_key_is_clear(state, tg)) {
-            sm_log(opts, state, "grant-blocked-enc");
-            p25_emit_enc_lockout_once(opts, state, 0, tg, svc);
-            return 0;
+    if (!decision.tune_allowed) {
+        if (out_decision) {
+            *out_decision = decision;
         }
+        sm_log(opts, state, grant_block_log_tag(is_indiv, decision.block_reasons));
+        if (!is_indiv && tg > 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
+            p25_emit_enc_lockout_once(opts, state, 0, tg, svc);
+        }
+        return 0;
+    }
+
+    if (!is_indiv && enc_override_clear) {
         sm_log(opts, state, "enc-override-clear");
     }
 
-    // Group list mode check (string compare - rare path)
-    if (tg_is_blocked(state, tg)) {
-        sm_log(opts, state, "grant-blocked-mode");
-        return 0;
-    }
-
-    // Track RID<->TG mapping
+    // Track RID<->TG mapping for accepted group grants only.
     if (ev->src > 0 && tg > 0) {
         p25_ga_add(state, (uint32_t)ev->src, (uint16_t)tg);
     }
 
+    if (out_decision) {
+        *out_decision = decision;
+    }
     return 1;
 }
 
@@ -239,12 +321,18 @@ grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
 
 static void
 handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    dsd_tg_policy_decision decision;
+    dsd_tg_policy_call_route route;
+    int slot = -1;
+    int needs_retune = 0;
+    int target_id = 0;
+    double now_m = 0.0;
     if (!ctx || !ev || !opts || !state) {
         return;
     }
 
     // Check grant policy
-    if (!grant_allowed(opts, state, ev)) {
+    if (!grant_allowed(opts, state, ev, &decision)) {
         return;
     }
 
@@ -254,20 +342,58 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         sm_log(opts, state, "grant-no-freq");
         return;
     }
+    now_m = now_monotonic();
+    slot = channel_slot(state, ev->channel);
+    needs_retune = (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz != 0 && ctx->vc_freq_hz != freq) ? 1 : 0;
+    target_id = (decision.target_id > 0) ? (int)decision.target_id : (ev->is_group ? ev->tg : ev->dst);
+    memset(&route, 0, sizeof(route));
+    route.target_id = (uint32_t)target_id;
+    route.source_id = (uint32_t)((ev->src > 0) ? ev->src : 0);
+    route.freq_hz = freq;
+    route.channel = ev->channel;
+    route.slot = slot;
+    route.requires_tuner_retune = needs_retune;
 
     // Skip if already tuned to same frequency AND same TG (avoid bounce on duplicate grants)
     // Different TG/call type should still trigger a new tune
-    if (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz == freq && ctx->vc_tg == ev->tg) {
+    if (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz == freq && ctx->vc_tg == target_id) {
+        (void)dsd_tg_policy_note_active_call(state, &route, &decision, now_m);
         sm_log(opts, state, "grant-same-freq");
         return;
     }
 
-    double now_m = now_monotonic();
+    if (ctx->state == P25_SM_TUNED) {
+        int candidate_displaces_active = 0;
+        if (route.slot == -1 || route.requires_tuner_retune) {
+            candidate_displaces_active = 1;
+        } else if (route.slot >= 0 && route.slot <= 1) {
+            const p25_sm_slot_ctx_t* active_slot = &ctx->slots[route.slot];
+            if (active_slot->voice_active || active_slot->last_active_m > 0.0
+                || state->p25_p2_audio_allowed[route.slot]) {
+                candidate_displaces_active = 1;
+            }
+        }
+        if (candidate_displaces_active) {
+            if (!decision.preempt_requested) {
+                log_preempt_decision(ctx, opts, state, &route, &decision, "preempt-flag-off", 0);
+                sm_log(opts, state, "grant-preempt-flag-off");
+                return;
+            }
+            if (!dsd_tg_policy_should_preempt(opts, state, &route, &decision, now_m)) {
+                log_preempt_decision(ctx, opts, state, &route, &decision, "policy-reject", 0);
+                sm_log(opts, state, "grant-preempt-reject");
+                return;
+            }
+            log_preempt_decision(ctx, opts, state, &route, &decision, "policy-allow", 1);
+            sm_log(opts, state, "grant-preempt-accept");
+            do_release(ctx, opts, state, "grant-preempt");
+        }
+    }
 
     // Store VC context
     ctx->vc_freq_hz = freq;
     ctx->vc_channel = ev->channel;
-    ctx->vc_tg = ev->tg;
+    ctx->vc_tg = target_id;
     ctx->vc_src = ev->src;
     ctx->vc_is_tdma = is_tdma_channel(state, ev->channel);
     ctx->t_tune_m = now_m;
@@ -294,7 +420,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         ted_sps = p25_ted_sps_for_bw(opts, 6000);
         state->samplesPerSymbol = ted_sps;
         state->symbolCenter = dsd_opts_symbol_center(ted_sps);
-        state->p25_p2_active_slot = channel_slot(state, ev->channel);
+        state->p25_p2_active_slot = slot;
         // P25P2 TDMA always uses CQPSK modulation - force QPSK mode
         // to prevent modulation auto-detect from flapping to C4FM
         state->rf_mod = 1;
@@ -326,6 +452,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     if (state) {
         state->p25_sm_tune_count++;
     }
+    (void)dsd_tg_policy_note_active_call(state, &route, &decision, now_m);
 
     set_state(ctx, opts, state, P25_SM_TUNED, "grant");
 }
@@ -378,6 +505,9 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
 
     // Mark voice inactive but keep last_active_m for hangtime tracking
     ctx->slots[s].voice_active = 0;
+    if (state) {
+        (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? s : -1);
+    }
 
     // NOTE: Audio gating is managed by MAC_END/MAC_IDLE handlers in xcch.c
     // which set p25_p2_audio_allowed[slot] = 0.
@@ -467,34 +597,8 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     // Single-indication lockout: trigger immediately on encrypted stream
     sm_log(opts, state, "enc-lockout");
 
-    // Mark TG as encrypted in group array
     if (tg > 0) {
-        int idx = -1;
-        int was_de = 0;
-        for (unsigned int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == (unsigned long)tg) {
-                idx = (int)i;
-                break;
-            }
-        }
-        if (idx >= 0) {
-            was_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
-            if (!was_de) {
-                snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s", "DE");
-            }
-        } else if (state->group_tally < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
-            state->group_array[state->group_tally].groupNumber = (uint32_t)tg;
-            snprintf(state->group_array[state->group_tally].groupMode,
-                     sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
-            snprintf(state->group_array[state->group_tally].groupName,
-                     sizeof state->group_array[state->group_tally].groupName, "%s", "ENC LO");
-            state->group_tally++;
-        }
-
-        // Emit lockout event (once per TG)
-        if (idx < 0 || !was_de) {
-            p25_emit_enc_lockout_once(opts, state, (uint8_t)slot, tg, 0x40);
-        }
+        p25_emit_enc_lockout_once(opts, state, (uint8_t)slot, tg, 0x40);
     }
 
     // Gate audio for this slot
@@ -585,6 +689,9 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 
     ctx->release_count++;
     ctx->cc_return_count++;
+    if (state) {
+        (void)dsd_tg_policy_clear_active_call(state, -1);
+    }
 
     // P25p2 short-call robustness: flush any partially buffered audio before
     // clearing slot gates and retuning, so short transmissions that end before
@@ -1115,40 +1222,16 @@ p25_sm_update_audio_gate(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int algi
 
 void
 p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits) {
+    int already_de = 0;
     if (!opts || !state || tg <= 0) {
         return;
     }
 
-    // Locate existing entry
-    int idx = -1;
-    for (unsigned int i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == (unsigned long)tg) {
-            idx = (int)i;
-            break;
-        }
-    }
-
-    int already_de = 0;
-    if (idx >= 0) {
-        already_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
+    if (p25_upsert_de_lockout(state, tg, &already_de) != 0) {
+        return;
     }
     if (already_de) {
         return; // already marked; event previously emitted
-    }
-
-    // Create or update entry to mark encrypted
-    if (idx < 0 && state->group_tally < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
-        state->group_array[state->group_tally].groupNumber = (uint32_t)tg;
-        snprintf(state->group_array[state->group_tally].groupMode,
-                 sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
-        snprintf(state->group_array[state->group_tally].groupName,
-                 sizeof state->group_array[state->group_tally].groupName, "%s", "ENC LO");
-        state->group_tally++;
-    } else if (idx >= 0) {
-        snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s", "DE");
-        if (strcmp(state->group_array[idx].groupName, "") == 0) {
-            snprintf(state->group_array[idx].groupName, sizeof state->group_array[idx].groupName, "%s", "ENC LO");
-        }
     }
 
     // Prepare per-slot context and clear encryption display variables for this slot

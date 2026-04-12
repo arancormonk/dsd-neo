@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -237,86 +238,112 @@ expect_u64(const char* tag, uint64_t got, uint64_t want) {
 
 static int
 test_sdcall_header_short_is_ignored(void) {
-    dsd_opts opts;
-    dsd_state state;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     uint8_t bits[26];
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    if (!opts || !state) {
+        fprintf(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
     memset(bits, 0, sizeof(bits));
 
     set_message_type(bits, 0x38U);
-    state.data_header_valid[0] = 0U;
-    state.payload_algid = 77;
+    state->data_header_valid[0] = 0U;
+    state->payload_algid = 77;
 
-    NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
 
     int rc = 0;
-    rc |= expect_int("sdcall-header-short-valid", state.data_header_valid[0], 0);
-    rc |= expect_int("sdcall-header-short-algid", state.payload_algid, 77);
+    rc |= expect_int("sdcall-header-short-valid", state->data_header_valid[0], 0);
+    rc |= expect_int("sdcall-header-short-algid", state->payload_algid, 77);
+    free(state);
+    free(opts);
     return rc;
 }
 
 static int
 test_sdcall_iv_short_type_c_is_ignored(void) {
-    dsd_opts opts;
-    dsd_state state;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     uint8_t bits[26];
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    if (!opts || !state) {
+        fprintf(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
     memset(bits, 0, sizeof(bits));
 
     set_message_type(bits, 0x3AU);
-    state.payload_mi = 0x1122334455667788ULL;
+    state->payload_mi = 0x1122334455667788ULL;
 
-    NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
 
-    return expect_u64("sdcall-iv-short-type-c", (uint64_t)state.payload_mi, 0x1122334455667788ULL);
+    int rc = expect_u64("sdcall-iv-short-type-c", (uint64_t)state->payload_mi, 0x1122334455667788ULL);
+    free(state);
+    free(opts);
+    return rc;
 }
 
 static int
 test_sdcall_iv_type_d_min_length_is_accepted(void) {
-    dsd_opts opts;
-    dsd_state state;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     uint8_t bits[30];
     const uint64_t iv22 = 0x2A55A1ULL;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    if (!opts || !state) {
+        fprintf(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
     memset(bits, 0, sizeof(bits));
 
     set_message_type(bits, 0x3AU);
-    snprintf(state.nxdn_location_category, sizeof(state.nxdn_location_category), "%s", "Type-D");
+    snprintf(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
     write_bits_u64(bits, 8U, iv22, 22U);
 
-    NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
 
-    return expect_u64("sdcall-iv-type-d-min-len", (uint64_t)state.payload_mi, iv22);
+    int rc = expect_u64("sdcall-iv-type-d-min-len", (uint64_t)state->payload_mi, iv22);
+    free(state);
+    free(opts);
+    return rc;
 }
 
 static int
 test_short_dcall_data_is_rejected(uint8_t message_type, const char* tag_prefix) {
-    dsd_opts opts;
-    dsd_state state;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     uint8_t bits[26];
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    if (!opts || !state) {
+        fprintf(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
     memset(bits, 0, sizeof(bits));
 
     set_message_type(bits, message_type);
-    state.data_header_valid[0] = 1U;
-    state.data_header_blocks[0] = 1;
-    state.data_header_padding[0] = 0U;
-    state.data_header_format[0] = 3U; //8-byte block (still requires 80 bits total)
-    memset(state.dmr_pdu_sf[0], 0xA5, sizeof(state.dmr_pdu_sf[0]));
+    state->data_header_valid[0] = 1U;
+    state->data_header_blocks[0] = 1;
+    state->data_header_padding[0] = 0U;
+    state->data_header_format[0] = 3U; //8-byte block (still requires 80 bits total)
+    memset(state->dmr_pdu_sf[0], 0xA5, sizeof(state->dmr_pdu_sf[0]));
 
-    NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
 
     int rc = 0;
     char tag_valid[64];
     char tag_copy[64];
     snprintf(tag_valid, sizeof(tag_valid), "%s-valid-cleared", tag_prefix);
     snprintf(tag_copy, sizeof(tag_copy), "%s-no-copy", tag_prefix);
-    rc |= expect_int(tag_valid, state.data_header_valid[0], 0);
-    rc |= expect_int(tag_copy, state.dmr_pdu_sf[0][64], 0xA5);
+    rc |= expect_int(tag_valid, state->data_header_valid[0], 0);
+    rc |= expect_int(tag_copy, state->dmr_pdu_sf[0][64], 0xA5);
+    free(state);
+    free(opts);
     return rc;
 }
 

@@ -11,6 +11,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -955,9 +956,9 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 path[n] = '\0';
                 int rc = svc_import_group_list(opts, state, path);
                 if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Group list imported -> %s", path);
+                    ui_set_toast(state, 3, "Applied: Group list reloaded -> %s", path);
                 } else {
-                    ui_set_toast(state, 4, "Failed: Group list import -> %s", path);
+                    ui_set_toast(state, 4, "Failed: Group list reload -> %s", path);
                 }
             }
             return 1;
@@ -1721,6 +1722,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 
         case UI_CMD_LOCKOUT_SLOT: {
             uint8_t slot = 0;
+            dsd_tg_policy_entry lockout_entry;
+            char legacy_meta[16];
+            int upsert_rc = 0;
             if (c->n >= 1) {
                 memcpy(&slot, c->data, 1);
             }
@@ -1731,13 +1735,17 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (tg == 0) {
                 break;
             }
-            // Append to group list as LOCKOUT
-            state->group_array[state->group_tally].groupNumber = tg;
-            snprintf(state->group_array[state->group_tally].groupMode,
-                     sizeof state->group_array[state->group_tally].groupMode, "%s", "B");
-            snprintf(state->group_array[state->group_tally].groupName,
-                     sizeof state->group_array[state->group_tally].groupName, "%s", "LOCKOUT");
-            state->group_tally++;
+            if (dsd_tg_policy_make_legacy_exact_entry((uint32_t)tg, "B", "LOCKOUT", DSD_TG_POLICY_SOURCE_USER_LOCKOUT,
+                                                      &lockout_entry)
+                != 0) {
+                break;
+            }
+            upsert_rc = dsd_tg_policy_upsert_legacy_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+            if (upsert_rc != 0) {
+                LOG_WARNING("User lockout for TG %d could not be applied (rc=%d); skipping persistence.\n", tg,
+                            upsert_rc);
+                break;
+            }
 
             // Event echo
             int eh_slot = (slot == 0) ? 0 : 1;
@@ -1748,14 +1756,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             snprintf(state->call_string[eh_slot], sizeof state->call_string[eh_slot], "%s",
                      "                     "); // 21 spaces
 
-            // Persist to group file if available
-            if (opts->group_in_file[0] != 0) {
-                FILE* pFile = fopen(opts->group_in_file, "a");
-                if (pFile != NULL) {
-                    int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-                    fprintf(pFile, "%d,B,LOCKOUT,%02X\n", tg, alg);
-                    fclose(pFile);
-                }
+            snprintf(legacy_meta, sizeof(legacy_meta), "%02X",
+                     (unsigned int)((slot == 0) ? state->payload_algid : state->payload_algidR));
+            if (dsd_tg_policy_append_group_file_row(opts, &lockout_entry, legacy_meta) != 0) {
+                LOG_WARNING("User lockout for TG %d was applied in-memory but could not be persisted to '%s'.\n", tg,
+                            opts->group_in_file);
             }
 
             // Extra safeguards and resets

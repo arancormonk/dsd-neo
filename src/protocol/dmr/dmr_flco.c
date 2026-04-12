@@ -18,6 +18,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -669,8 +670,10 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
             {
                 unsigned int i, lo = 0;
                 uint32_t t = 0;
-                char gm[8];
-                char gn[50];
+                char gm[8] = {0};
+                char gn[50] = {0};
+                dsd_tg_policy_entry lockout_entry;
+                size_t before = state->group_tally;
 
                 //check to see if this group already exists, or has already been locked out, or is allowed
                 for (i = 0; i < state->group_tally; i++) {
@@ -686,12 +689,17 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
 
                 //if group doesn't exist, or isn't locked out, then do so now.
                 if (lo == 0) { //changing from DE to B to fit the rest of the lockout logic ("Buzzer Fix")
-                    state->group_array[state->group_tally].groupNumber = target;
-                    sprintf(state->group_array[state->group_tally].groupMode, "%s", "B");
-                    sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
-                    sprintf(gm, "%s", "B");
-                    sprintf(gn, "%s", "ENC LO");
-                    state->group_tally++;
+                    if (dsd_tg_policy_make_legacy_exact_entry(target, "B", "ENC LO", DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
+                                                              &lockout_entry)
+                            == 0
+                        && dsd_tg_policy_upsert_legacy_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING)
+                               == 0
+                        && state->group_tally > before) {
+                        sprintf(gm, "%s", "B");
+                        sprintf(gn, "%s", "ENC LO");
+                    } else {
+                        lo = 1;
+                    }
                 }
 
                 //run a watchdog here so we can update this with the crypto variables and ENC LO

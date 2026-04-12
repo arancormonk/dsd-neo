@@ -20,6 +20,7 @@ extern "C" {
 #endif
 
 int csvGroupImport(dsd_opts* opts, dsd_state* state);
+int csvGroupImportPath(const char* group_file_path, dsd_state* state);
 int csvLCNImport(dsd_opts* opts, dsd_state* state);
 int csvChanImport(dsd_opts* opts, dsd_state* state);
 int csvKeyImportDec(dsd_opts* opts, dsd_state* state);

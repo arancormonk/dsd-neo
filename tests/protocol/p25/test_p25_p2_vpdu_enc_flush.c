@@ -7,6 +7,8 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
@@ -109,6 +111,15 @@ expect_eq(const char* tag, int got, int want) {
     return 0;
 }
 
+static int
+seed_policy_group(dsd_state* st, uint32_t id, const char* mode, const char* name) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_legacy_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        return 1;
+    }
+    return dsd_tg_policy_append_legacy_exact(st, &row);
+}
+
 int
 main(void) {
     int rc = 0;
@@ -132,9 +143,7 @@ main(void) {
     g_return_to_cc_called = 0;
 
     // Pre-mark TG as already DE to skip event emission branches in VPDU
-    st.group_tally = 1;
-    st.group_array[0].groupNumber = 0x1234;
-    snprintf(st.group_array[0].groupMode, sizeof st.group_array[0].groupMode, "%s", "DE");
+    rc |= expect_eq("seed DE row", seed_policy_group(&st, 0x1234u, "DE", "ENC LO"), 0);
 
     unsigned long long MAC[24] = {0};
     // Group Voice Channel Message (opcode 0x01)
@@ -166,5 +175,6 @@ main(void) {
     rc |= expect_eq("slot0 ring flushed again", st.p25_p2_audio_ring_count[0], 0);
     rc |= expect_eq("released to CC", g_return_to_cc_called, 1);
 
+    dsd_state_ext_free_all(&st);
     return rc;
 }

@@ -34,6 +34,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/audio.h>
@@ -1323,39 +1324,22 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 }
                 fprintf(stderr, "%s", KNRM);
 
-                char mode[8]; //allow, block, digital enc
-                snprintf(mode, sizeof mode, "%s", "");
-
-                //if we are using allow/whitelist mode, then write 'B' to mode for block
-                //comparison below will look for an 'A' to write to mode if it is allowed
-                if (opts->trunk_use_allow_list == 1) {
-                    snprintf(mode, sizeof mode, "%s", "B");
-                }
+                dsd_tg_policy_decision decision;
+                int policy_ok = 0;
 
                 for (unsigned int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == (unsigned long)group) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
-
-                //debug for analog testing
-                // is_digital = 0;
-
-                //TG hold on EDACS EA -- block non-matching target, allow matching group
-                if (state->tg_hold != 0 && state->tg_hold != (uint32_t)group) {
-                    snprintf(mode, sizeof mode, "%s", "B");
-                }
-                if (state->tg_hold != 0 && state->tg_hold == (uint32_t)group) {
-                    snprintf(mode, sizeof mode, "%s", "A");
-                }
+                policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, 0, 0,
+                                                               DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                                 == 0
+                             && decision.tune_allowed);
 
                 //this is working now with the new import setup
-                if (opts->trunk_tune_group_calls == 1 && opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
-                    && (strcmp(mode, "B") != 0)) //DE is digital encrypted, B is block
-                {
+                if (opts->trunk_tune_group_calls == 1 && opts->p25_trunk == 1 && policy_ok) {
                     if (lcn > 0 && lcn < 26 && state->edacs_cc_lcn != 0
                         && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                     {
@@ -1452,35 +1436,15 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
                 fprintf(stderr, "%s", KNRM);
 
-                char mode[8]; //allow, block, digital enc
-                snprintf(mode, sizeof mode, "%s", "");
-
-                //if we are using allow/whitelist mode, then write 'B' to mode for block - no allow/whitelist support for i-calls
-                if (opts->trunk_use_allow_list == 1) {
-                    snprintf(mode, sizeof mode, "%s", "B");
-                }
-
-                //Get target mode for calls that are in the allow/whitelist
-                for (unsigned int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == (unsigned long)target) {
-                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                        mode[sizeof(mode) - 1] = '\0';
-                        break;
-                    }
-                }
-
-                //TG hold on EDACS EA I-CALL -- block non-matching target
-                if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
-                    snprintf(mode, sizeof mode, "%s", "B");
-                }
-                if (state->tg_hold != 0 && state->tg_hold == (uint32_t)target) {
-                    snprintf(mode, sizeof mode, "%s", "A");
-                }
+                dsd_tg_policy_decision decision;
+                int policy_ok = (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0,
+                                                                     0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+                                                                     DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                                     == 0
+                                 && decision.tune_allowed);
 
                 //this is working now with the new import setup
-                if (opts->trunk_tune_private_calls == 1 && opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
-                    && (strcmp(mode, "B") != 0)) //DE is digital encrypted, B is block
-                {
+                if (opts->trunk_tune_private_calls == 1 && opts->p25_trunk == 1 && policy_ok) {
                     if (lcn > 0 && lcn < 26 && state->edacs_cc_lcn != 0
                         && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                     {
@@ -1576,22 +1540,18 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 fprintf(stderr, " :: Source [%08d] LCN [%02d]%s", source, lcn, getLcnStatusString(lcn));
                 fprintf(stderr, "%s", KNRM);
 
-                char mode[8]; //allow, block, digital enc
-                snprintf(mode, sizeof mode, "%s", "");
-
-                //if we are using allow/whitelist mode, then write 'A' to mode for allow - always allow all-calls by default
-                if (opts->trunk_use_allow_list == 1) {
-                    snprintf(mode, sizeof mode, "%s", "A");
+                dsd_tg_policy_decision decision;
+                int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)source, 0, 0,
+                                                                   DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                                     == 0
+                                 && decision.tune_allowed);
+                // Preserve legacy EDACS all-call behavior: follow all-calls regardless of allow-list.
+                if (!policy_ok && opts->trunk_use_allow_list == 1) {
+                    policy_ok = 1;
                 }
 
-                //TG hold on EDACS ALL-CALL -- block ALL CALL in favor of hold?
-                // if (state->tg_hold != 0 && state->tg_hold != target) sprintf (mode, "%s", "B");
-                // if (state->tg_hold != 0 && state->tg_hold == target) sprintf (mode, "%s", "A");
-
                 //this is working now with the new import setup
-                if (opts->trunk_tune_group_calls == 1 && opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
-                    && (strcmp(mode, "B") != 0)) //DE is digital encrypted, B is block
-                {
+                if (opts->trunk_tune_group_calls == 1 && opts->p25_trunk == 1 && policy_ok) {
                     if (lcn > 0 && lcn < 26 && state->edacs_cc_lcn != 0
                         && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                     {
@@ -1735,39 +1695,18 @@ edacs(dsd_opts* opts, dsd_state* state) {
                     state->edacs_vc_call_type |= EDACS_IS_FLEET_CALL;
                 }
 
-                char mode[8]; //allow, block, digital enc
-                snprintf(mode, sizeof mode, "%s", "");
-
-                //if we are using allow/whitelist mode, then write 'B' to mode for block
-                //comparison below will look for an 'A' to write to mode if it is allowed
-                if (opts->trunk_use_allow_list == 1) {
-                    snprintf(mode, sizeof mode, "%s", "B");
-                }
-
-                //Get group mode for calls that are in the allow/whitelist
-                for (unsigned int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == (unsigned long)group) {
-                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                        mode[sizeof(mode) - 1] = '\0';
-                        break;
-                    }
-                }
-                //TG hold on EDACS Standard/Net -- block non-matching target, allow matching group
-                if (state->tg_hold != 0 && state->tg_hold != (uint32_t)group) {
-                    snprintf(mode, sizeof mode, "%s", "B");
-                }
-                if (state->tg_hold != 0 && state->tg_hold == (uint32_t)group) {
-                    snprintf(mode, sizeof mode, "%s", "A");
-                }
+                dsd_tg_policy_decision decision;
+                int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)lid, 0, 0,
+                                                                   DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                                     == 0
+                                 && decision.tune_allowed);
 
                 //NOTE: Restructured below so that analog and digital are handled the same, just that when
                 //its analog, it will now start edacs_analog which will while loop analog samples until
                 //signal level drops (PWR, or a dotting sequence is detected)
 
                 //this is working now with the new import setup
-                if (opts->trunk_tune_group_calls == 1 && opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
-                    && (strcmp(mode, "B") != 0)) //DE is digital encrypted, B is block
-                {
+                if (opts->trunk_tune_group_calls == 1 && opts->p25_trunk == 1 && policy_ok) {
                     if (lcn > 0 && lcn < 26 && state->edacs_cc_lcn != 0
                         && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                     {
@@ -2010,33 +1949,22 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         state->edacs_vc_call_type |= EDACS_IS_FLEET_CALL;
                     }
 
-                    char mode[8]; //allow, block, digital enc
-                    snprintf(mode, sizeof mode, "%s", "");
-
-                    //if we are using allow/whitelist mode, then write 'B' to mode for block
-                    //comparison below will look for an 'A' to write to mode if it is allowed
-                    if (opts->trunk_use_allow_list == 1) {
-                        snprintf(mode, sizeof mode, "%s", "B");
-                    }
-
-                    //Individual calls always remain blocked if in allow/whitelist mode
+                    dsd_tg_policy_decision decision;
+                    int policy_ok = 0;
                     if (is_individual == 0) {
-                        //Get group mode for calls that are in the allow/whitelist
-                        for (unsigned int i = 0; i < state->group_tally; i++) {
-                            if (state->group_array[i].groupNumber == (unsigned long)target) {
-                                strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                                mode[sizeof(mode) - 1] = '\0';
-                                break;
-                            }
+                        policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, 0, 0, 0,
+                                                                       DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                                         == 0
+                                     && decision.tune_allowed);
+                    } else {
+                        policy_ok = (dsd_tg_policy_evaluate_private_call(opts, state, 0, (uint32_t)target, 0, 0,
+                                                                         DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+                                                                         DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                                         == 0
+                                     && decision.tune_allowed);
+                        if (opts->trunk_use_allow_list == 1) {
+                            policy_ok = 0;
                         }
-                    }
-
-                    //TG hold on EDACS STD/NET -- block non-matching abstract target
-                    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
-                        snprintf(mode, sizeof mode, "%s", "B");
-                    }
-                    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)target) {
-                        snprintf(mode, sizeof mode, "%s", "A");
                     }
 
                     //NOTE: Restructured below so that analog and digital are handled the same, just that when
@@ -2046,9 +1974,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                     //this is working now with the new import setup
                     if (((is_individual == 0 && opts->trunk_tune_group_calls == 1)
                          || (is_individual == 1 && opts->trunk_tune_private_calls == 1))
-                        && opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
-                        && (strcmp(mode, "B") != 0)) //DE is digital encrypted, B is block
-                    {
+                        && opts->p25_trunk == 1 && policy_ok) {
                         if (lcn > 0 && lcn < 26 && state->edacs_cc_lcn != 0
                             && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                         {
@@ -2142,13 +2068,19 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         state->edacs_vc_call_type |= EDACS_IS_DIGITAL;
                     }
 
-                    char mode[8]; //allow, block, digital enc
-                    snprintf(mode, sizeof mode, "%s", "");
-
-                    //if we are using allow/whitelist mode, then write 'B' to mode for block
-                    //Individual calls always remain blocked if in allow/whitelist mode
+                    dsd_tg_policy_decision decision;
+                    dsd_state hold_neutral = *state;
+                    int policy_ok = 0;
+                    hold_neutral.tg_hold = 0;
+                    policy_ok =
+                        (dsd_tg_policy_evaluate_private_call(opts, &hold_neutral, (uint32_t)source, (uint32_t)target, 0,
+                                                             0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+                                                             DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                             == 0
+                         && decision.tune_allowed);
+                    // Preserve this call path's legacy behavior: individual calls remain blocked in allow-list mode.
                     if (opts->trunk_use_allow_list == 1) {
-                        sprintf(mode, "%s", "B");
+                        policy_ok = 0;
                     }
 
                     //NOTE: Restructured below so that analog and digital are handled the same, just that when
@@ -2156,9 +2088,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                     //signal level drops (PWR, or a dotting sequence is detected)
 
                     //this is working now with the new import setup
-                    if ((opts->trunk_tune_private_calls == 1) && opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
-                        && (strcmp(mode, "B") != 0)) //DE is digital encrypted, B is block
-                    {
+                    if ((opts->trunk_tune_private_calls == 1) && opts->p25_trunk == 1 && policy_ok) {
                         if (lcn > 0 && lcn < 26 && state->edacs_cc_lcn != 0
                             && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                         {
@@ -2441,12 +2371,17 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             state->edacs_vc_call_type |= EDACS_IS_DIGITAL;
                         }
 
-                        char mode[8]; //allow, block, digital enc
-                        sprintf(mode, "%s", "");
-
-                        //if we are using allow/whitelist mode, then write 'A' to mode for allow - always allow all-calls by default
+                        dsd_tg_policy_decision decision;
+                        dsd_state hold_neutral = *state;
+                        int policy_ok = 0;
+                        hold_neutral.tg_hold = 0;
+                        policy_ok = (dsd_tg_policy_evaluate_group_call(opts, &hold_neutral, 0, (uint32_t)lid, 0, 0,
+                                                                       DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                                         == 0
+                                     && decision.tune_allowed);
+                        // Preserve legacy EDACS all-call behavior: follow all-calls regardless of allow-list.
                         if (opts->trunk_use_allow_list == 1) {
-                            snprintf(mode, sizeof mode, "%s", "A");
+                            policy_ok = 1;
                         }
 
                         //NOTE: Restructured below so that analog and digital are handled the same, just that when
@@ -2454,9 +2389,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         //signal level drops (PWR, or a dotting sequence is detected)
 
                         //this is working now with the new import setup
-                        if ((opts->trunk_tune_group_calls == 1) && opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
-                            && (strcmp(mode, "B") != 0)) //DE is digital encrypted, B is block
-                        {
+                        if ((opts->trunk_tune_group_calls == 1) && opts->p25_trunk == 1 && policy_ok) {
                             if (lcn > 0 && lcn < 26 && state->edacs_cc_lcn != 0
                                 && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                             {

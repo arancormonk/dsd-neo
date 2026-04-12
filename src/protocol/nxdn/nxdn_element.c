@@ -23,6 +23,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -1155,6 +1156,86 @@ nxdn_ca_info_handler(dsd_state* state, uint32_t ca_info) {
 
 //end sub-element handlers
 
+static int
+nxdn_policy_tune_allowed(dsd_opts* opts, dsd_state* state, uint32_t target, uint32_t source, int is_private_call,
+                         int data_call, int allow_source_fallback, dsd_tg_policy_decision* out_decision) {
+    dsd_tg_policy_decision decision;
+    int rc = 0;
+    memset(&decision, 0, sizeof(decision));
+
+    if (is_private_call) {
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, data_call,
+                                                 DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+                                                 DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+    } else {
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, 0, data_call,
+                                               DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+        if (rc == 0 && allow_source_fallback && source != 0 && source != target
+            && decision.match == DSD_TG_POLICY_MATCH_NONE) {
+            dsd_tg_policy_decision source_decision;
+            if (dsd_tg_policy_evaluate_group_call(opts, state, source, source, 0, data_call,
+                                                  DSD_TG_POLICY_HOLD_COMPAT_GRANT, &source_decision)
+                    == 0
+                && source_decision.match != DSD_TG_POLICY_MATCH_NONE) {
+                decision = source_decision;
+            }
+        }
+    }
+
+    if (out_decision) {
+        *out_decision = decision;
+    }
+    return rc == 0 && decision.tune_allowed;
+}
+
+static const char*
+nxdn_policy_block_reason_label(uint32_t block_reasons) {
+    if (block_reasons & DSD_TG_POLICY_BLOCK_HOLD) {
+        return "hold";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED) {
+        return "private-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_GROUP_DISABLED) {
+        return "group-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_DATA_DISABLED) {
+        return "data-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
+        return "enc-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) {
+        return "allowlist";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_MODE) {
+        return "mode";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_AUDIO) {
+        return "audio";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_RECORD) {
+        return "record";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_STREAM) {
+        return "stream";
+    }
+    return "policy";
+}
+
+static void
+nxdn_policy_log_block(const dsd_opts* opts, int is_private_call, uint32_t target, uint32_t source,
+                      const dsd_tg_policy_decision* decision) {
+    if (!opts || !decision || opts->verbose < 1) {
+        return;
+    }
+    if (decision->block_reasons == DSD_TG_POLICY_BLOCK_NONE) {
+        return;
+    }
+    fprintf(stderr, " [NXDN %s blocked:%s tgt=%u src=%u]", is_private_call ? "private" : "group",
+            nxdn_policy_block_reason_label(decision->block_reasons), target, source);
+}
+
 void
 NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     const time_t now = time(NULL);
@@ -1391,84 +1472,73 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         }
     }
 
-    //run group/source analysis and tune if available/desired
-    //group list mode so we can look and see if we need to block tuning any groups, etc
-    char mode[8]; //allow, block, digital, enc, etc
-    sprintf(mode, "%s", "");
-
-    //if we are using allow/whitelist mode, then write 'B' to mode for block
-    //comparison below will look for an 'A' to write to mode if it is allowed
-    if (opts->trunk_use_allow_list == 1) {
-        sprintf(mode, "%s", "B");
-    }
-
+    //run target/source analysis for labeling and tune if available/desired
     for (unsigned int i = 0; i < state->group_tally; i++) {
         if ((state->group_array[i].groupNumber == (unsigned long)DestinationID && DestinationID != 0)
             || (state->group_array[i].groupNumber == (unsigned long)SourceUnitID && DestinationID == 0)) {
             fprintf(stderr, " [%s]", state->group_array[i].groupName);
-            strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-            mode[sizeof(mode) - 1] = '\0';
             break;
         }
     }
 
     //check purely by SourceUnitID as last resort -- this is a bugfix to block individual radios on selected systems
-    if ((strcmp(mode, "") == 0)) {
+    if (DestinationID != 0) {
         for (unsigned int i = 0; i < state->group_tally; i++) {
             if (state->group_array[i].groupNumber == (unsigned long)SourceUnitID) {
                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                mode[sizeof(mode) - 1] = '\0';
                 break;
             }
         }
     }
 
-    //TG hold on NXDN -- block non-matching target, allow matching DestinationID
-    if (state->tg_hold != 0 && state->tg_hold != DestinationID) {
-        sprintf(mode, "%s", "B");
-    }
+    //TG hold on NXDN -- allow matching DestinationID to break out of current VC.
     if (state->tg_hold != 0 && state->tg_hold == DestinationID) {
-        sprintf(mode, "%s", "A");
         opts->p25_is_tuned = 0; //unlock tuner at this stage and not above check
     }
 
     //check to see if the source/target candidate is blocked first
-    if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
-        && (strcmp(mode, "B") != 0)) //DE is digital encrypted, B is block
     {
-        if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-            && freq != 0) //if we aren't already on a VC and have a valid frequency
-        {
-            // Use centralized io/control tuning API
-            dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
+        const int is_private_call = (CallType == 4) ? 1 : 0;
+        const int data_call = (MessageType == 0x0D || MessageType == 0x0E) ? 1 : 0;
+        dsd_tg_policy_decision policy_decision;
+        int policy_allowed = nxdn_policy_tune_allowed(opts, state, DestinationID, SourceUnitID, is_private_call,
+                                                      data_call, 1, &policy_decision);
+        if (opts->p25_trunk == 1 && policy_allowed) {
+            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
+                && freq != 0) //if we aren't already on a VC and have a valid frequency
+            {
+                // Use centralized io/control tuning API
+                dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
 
-            // NXDN-specific state setup
-            memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-            memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-            state->lastsynctype = DSD_SYNC_NONE;
+                // NXDN-specific state setup
+                memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+                memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+                state->lastsynctype = DSD_SYNC_NONE;
 
-            // RID/TG and GI are assigned from decoded VCALL payloads.
-            // Avoid pre-assignment on grants to reduce duplicate/stale event entries.
-            snprintf(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", NXDN_Call_Type_To_Str(CallType));
+                // RID/TG and GI are assigned from decoded VCALL payloads.
+                // Avoid pre-assignment on grants to reduce duplicate/stale event entries.
+                snprintf(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", NXDN_Call_Type_To_Str(CallType));
 
-            //Call String for Per Call WAV File
-            sprintf(state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
-            if (CCOption & 0x80) {
-                dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
+                //Call String for Per Call WAV File
+                sprintf(state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
+                if (CCOption & 0x80) {
+                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
+                }
+
+                //check the rkey array for a scrambler key value
+                //TGT ID and Key ID could clash though if csv or system has both with different keys
+                if (state->rkey_array[DestinationID] != 0) {
+                    state->R = state->rkey_array[DestinationID];
+                    fprintf(stderr, " %s", KYEL);
+                    fprintf(stderr, " Key Loaded: %lld", state->rkey_array[DestinationID]);
+                    state->payload_miN = state->R; //should be okay to load here, will test
+                }
+                if (state->M == 1) {
+                    state->nxdn_cipher_type = 0x1;
+                }
             }
-
-            //check the rkey array for a scrambler key value
-            //TGT ID and Key ID could clash though if csv or system has both with different keys
-            if (state->rkey_array[DestinationID] != 0) {
-                state->R = state->rkey_array[DestinationID];
-                fprintf(stderr, " %s", KYEL);
-                fprintf(stderr, " Key Loaded: %lld", state->rkey_array[DestinationID]);
-                state->payload_miN = state->R; //should be okay to load here, will test
-            }
-            if (state->M == 1) {
-                state->nxdn_cipher_type = 0x1;
-            }
+        } else if (opts->p25_trunk == 1) {
+            nxdn_policy_log_block(opts, is_private_call, DestinationID, SourceUnitID, &policy_decision);
         }
     }
 
@@ -2112,8 +2182,10 @@ NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     if (opts->p25_trunk == 1 && opts->trunk_tune_enc_calls == 0 && MessageType == 0x1 && state->dmr_encL == 1) {
         int lo = 0;
         uint16_t t = 0;
-        char gm[8];
-        char gn[50];
+        char gm[8] = {0};
+        char gn[50] = {0};
+        dsd_tg_policy_entry lockout_entry;
+        size_t before = state->group_tally;
 
         //check to see if this group already exists, or has already been locked out, or is allowed
         for (unsigned int i = 0; i < state->group_tally; i++) {
@@ -2129,12 +2201,16 @@ NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
 
         //if group doesn't exist, or isn't locked out, then do so now.
         if (lo == 0) {
-            state->group_array[state->group_tally].groupNumber = DestinationID;
-            sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
-            sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
-            sprintf(gm, "%s", "DE");
-            sprintf(gn, "%s", "ENC LO");
-            state->group_tally++;
+            if (dsd_tg_policy_make_legacy_exact_entry(DestinationID, "DE", "ENC LO", DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
+                                                      &lockout_entry)
+                    == 0
+                && dsd_tg_policy_upsert_legacy_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0
+                && state->group_tally > before) {
+                sprintf(gm, "%s", "DE");
+                sprintf(gn, "%s", "ENC LO");
+            } else {
+                lo = 1;
+            }
         }
 
         //run a watchdog here so we can update this with the crypto variables and ENC LO
@@ -2423,32 +2499,16 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                 }
 
                 //run group/tgt analysis and tune if available/desired
-                //group list mode so we can look and see if we need to block tuning any groups, etc
-                char mode[8]; //allow, block, digital, enc, etc
-                sprintf(mode, "%s", "");
-
-                //if we are using allow/whitelist mode, then write 'B' to mode for block
-                //comparison below will look for an 'A' to write to mode if it is allowed
-                if (opts->trunk_use_allow_list == 1) {
-                    sprintf(mode, "%s", "B");
-                }
-
                 for (unsigned int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == (unsigned long)id) //tg/tgt only on info4 unit
                     {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
 
-                //TG hold on IDAS -- block non-matching target, allow matching DestinationID
-                if (state->tg_hold != 0 && state->tg_hold != id) {
-                    sprintf(mode, "%s", "B");
-                }
+                //TG hold on IDAS -- allow matching target to break out of current VC.
                 if (state->tg_hold != 0 && state->tg_hold == id) {
-                    sprintf(mode, "%s", "A");
                     opts->p25_is_tuned = 0; //unlock tuner at this stage and not above check
                 }
 
@@ -2459,9 +2519,11 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                 }
 
                 //check to see if the source/target candidate is blocked first
-                if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
-                    && (strcmp(mode, "B") != 0)) //DE is digital encrypted, B is block
-                {
+                dsd_tg_policy_decision policy_decision;
+                int is_private_call = (gu == 1) ? 1 : 0;
+                int policy_allowed =
+                    nxdn_policy_tune_allowed(opts, state, id, 0, is_private_call, 0, 0, &policy_decision);
+                if (opts->p25_trunk == 1 && policy_allowed) {
                     //will need to monitor, 1 second may be too long on idas, may need to try 0 or manipulate another way
                     if (state->p25_cc_freq != 0 && ((time(NULL) - state->last_vc_sync_time) > 1) && freq != 0) {
                         // Use centralized io/control tuning API
@@ -2481,6 +2543,8 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                             state->nxdn_cipher_type = 0x1;
                         }
                     }
+                } else if (opts->p25_trunk == 1) {
+                    nxdn_policy_log_block(opts, is_private_call, id, 0, &policy_decision);
                 }
             } //end tuning -- NOTE: since we are only going by last time voice sync detected, tuning here is always 'unlocked'
 

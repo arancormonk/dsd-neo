@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -22,7 +23,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -31,16 +31,6 @@
 //trunking data delivered via PDU format
 void
 p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
-    //group list mode so we can look and see if we need to block tuning any groups, etc
-    char mode[8]; //allow, block, digital, enc, etc
-    sprintf(mode, "%s", "");
-
-    //if we are using allow/whitelist mode, then write 'B' to mode for block
-    //comparison below will look for an 'A' to write to mode if it is allowed
-    if (opts->trunk_use_allow_list == 1) {
-        sprintf(mode, "%s", "B");
-    }
-
     uint8_t fmt = mpdu_byte[0] & 0x1F;
     uint8_t MFID = mpdu_byte[2];
     int blks = mpdu_byte[6] & 0x7F;
@@ -258,36 +248,27 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         for (unsigned int i = 0; i < state->group_tally; i++) {
             if (state->group_array[i].groupNumber == (unsigned long)group) {
                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                mode[sizeof(mode) - 1] = '\0';
                 break;
             }
         }
 
-        //TG hold on P25p1 Ext -- block non-matching target, allow matching group
-        if (state->tg_hold != 0 && state->tg_hold != (uint32_t)group) {
-            sprintf(mode, "%s", "B");
-        }
-        if (state->tg_hold != 0 && state->tg_hold == (uint32_t)group) {
-            sprintf(mode, "%s", "A");
-        }
-
-        //Skip tuning group calls if group calls are disabled
-        if (opts->trunk_tune_group_calls == 0) {
-            goto SKIPCALL;
-        }
-
-        //Skip tuning encrypted calls if enc calls are disabled – emit event immediately (once)
-        //Override when Harris GRG policy indicates KEY=0000 for this TG/SG
-        if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group)
-            && !p25_patch_sg_key_is_clear(state, group)) {
-            p25_emit_enc_lockout_once(opts, state, 0, group, svc);
-            goto SKIPCALL;
-        }
-
-        //tune if tuning available
-        if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
+        {
+            dsd_tg_policy_decision decision;
+            int enc_for_policy = (svc & 0x40) ? 1 : 0;
+            if (enc_for_policy && opts->trunk_tune_enc_calls == 0
+                && (p25_patch_tg_key_is_clear(state, group) || p25_patch_sg_key_is_clear(state, group))) {
+                enc_for_policy = 0;
+            }
+            if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, enc_for_policy,
+                                                  (svc & 0x10) ? 1 : 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                    != 0
+                || !decision.tune_allowed) {
+                if (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
+                    p25_emit_enc_lockout_once(opts, state, 0, group, svc);
+                }
+                goto SKIPCALL;
+            }
+            if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
                 p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
             }
         }
@@ -356,31 +337,20 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         for (unsigned int i = 0; i < state->group_tally; i++) {
             if (state->group_array[i].groupNumber == (unsigned long)target) {
                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                mode[sizeof(mode) - 1] = '\0';
                 break;
             }
         }
 
-        //TG hold on P25p1 Ext UU -- will want to disable UU_V grants while TG Hold enabled
-        if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
-            sprintf(mode, "%s", "B");
-        }
-        // if (state->tg_hold != 0 && state->tg_hold == (uint32_t)target) sprintf (mode, "%s", "A");
-
-        //Skip tuning private calls if group calls are disabled
-        if (opts->trunk_tune_private_calls == 0) {
-            goto SKIPCALL;
-        }
-
-        //Skip tuning encrypted calls if enc calls are disabled
-        if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
-            goto SKIPCALL;
-        }
-
-        //tune if tuning available
-        if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
+        {
+            dsd_tg_policy_decision decision;
+            if (dsd_tg_policy_evaluate_private_call(
+                    opts, state, (uint32_t)source, (uint32_t)target, (svc & 0x40) ? 1 : 0, (svc & 0x10) ? 1 : 0,
+                    DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                    != 0
+                || !decision.tune_allowed) {
+                goto SKIPCALL;
+            }
+            if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
                 p25_sm_on_indiv_grant(opts, state, channelt, svc, (int)target, (int)source);
             }
         }
@@ -441,34 +411,24 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         }
         state->last_active_time = time(NULL);
 
-        //Skip tuning private calls if private calls is disabled (are telephone int calls private, or talkgroup?)
-        if (opts->trunk_tune_private_calls == 0) {
-            goto SKIPCALL;
-        }
-
-        //Skip tuning encrypted calls if enc calls are disabled
-        if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
-            goto SKIPCALL;
-        }
-
         //telephone only has a target address (manual shows combined source/target of 24-bits)
         for (unsigned int i = 0; i < state->group_tally; i++) {
             if (state->group_array[i].groupNumber == (unsigned long)target) {
                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                mode[sizeof(mode) - 1] = '\0';
                 break;
             }
         }
 
-        //TG hold on UU_V -- will want to disable UU_V grants while TG Hold enabled
-        if (state->tg_hold != 0 && state->tg_hold != target) {
-            sprintf(mode, "%s", "B");
-        }
-
-        //tune if tuning available (centralized)
-        if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+        {
+            dsd_tg_policy_decision decision;
+            if (dsd_tg_policy_evaluate_private_call(opts, state, /*src*/ 0, target, (svc & 0x40) ? 1 : 0,
+                                                    (svc & 0x10) ? 1 : 0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+                                                    DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                    != 0
+                || !decision.tune_allowed) {
+                goto SKIPCALL;
+            }
+            if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
                 p25_sm_on_indiv_grant(opts, state, channel, svc, (int)target, /*src*/ 0);
             }
         }
@@ -533,35 +493,26 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             for (unsigned int i = 0; i < state->group_tally; i++) {
                 if (state->group_array[i].groupNumber == (unsigned long)group) {
                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                    mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
 
-            //TG hold on MFID90 GRG -- block non-matching target, allow matching group
-            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)group) {
-                sprintf(mode, "%s", "B");
-            }
-            if (state->tg_hold != 0 && state->tg_hold == (uint32_t)group) {
-                sprintf(mode, "%s", "A");
-            }
-
-            //Skip tuning group calls if group calls are disabled
-            if (opts->trunk_tune_group_calls == 0) {
-                goto SKIPCALL;
-            }
-
-            //Skip tuning encrypted calls if enc calls are disabled – emit event immediately (once)
-            //Harris GRG KEY=0000 policy override: if SG policy is clear, allow tuning
-            if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_sg_key_is_clear(state, group)) {
-                p25_emit_enc_lockout_once(opts, state, 0, group, svc);
-                goto SKIPCALL;
-            }
-
-            //tune if tuning available
-            if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
+            {
+                dsd_tg_policy_decision decision;
+                int enc_for_policy = (svc & 0x40) ? 1 : 0;
+                if (enc_for_policy && opts->trunk_tune_enc_calls == 0 && p25_patch_sg_key_is_clear(state, group)) {
+                    enc_for_policy = 0;
+                }
+                if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, enc_for_policy,
+                                                      (svc & 0x10) ? 1 : 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                        != 0
+                    || !decision.tune_allowed) {
+                    if (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
+                        p25_emit_enc_lockout_once(opts, state, 0, group, svc);
+                    }
+                    goto SKIPCALL;
+                }
+                if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
                     p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
                 }
             }
