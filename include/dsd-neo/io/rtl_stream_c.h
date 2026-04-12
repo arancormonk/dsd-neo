@@ -207,6 +207,38 @@ void rtl_stream_set_rtltcp_autotune(int onoff);
  */
 int rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz);
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/**
+ * @brief Test-only helper to request a retune on an active stream context.
+ *
+ * Returns 0 on success, -1 when the request is rejected (for example replay),
+ * and -2 on timeout.
+ */
+int rtl_stream_test_request_retune(RtlSdrContext* ctx, uint32_t freq_hz, int timeout_ms);
+
+typedef struct rtl_stream_test_replay_state {
+    int replay_input_eof;
+    int replay_input_drained;
+    int replay_demod_drained;
+    int replay_output_drained;
+    int replay_forced_stop;
+    int should_exit;
+    uint64_t replay_last_submit_gen;
+    uint64_t replay_last_submit_gen_at_eof;
+    uint64_t replay_last_consume_gen;
+    size_t input_ring_used;
+    size_t output_ring_used;
+} rtl_stream_test_replay_state;
+
+/**
+ * @brief Snapshot replay EOF state-machine fields for integration tests.
+ *
+ * Returns 0 on success and fills @p out_state, or a negative value if the
+ * stream/context is unavailable.
+ */
+int rtl_stream_test_get_replay_state(RtlSdrContext* ctx, rtl_stream_test_replay_state* out_state);
+#endif
+
 /**
  * @brief Get smoothed TED residual (EMA of Gardner error) from demod pipeline.
  * Positive: persistent early (nudge center right). Negative: late (nudge left).

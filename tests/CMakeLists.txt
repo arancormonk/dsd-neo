@@ -278,6 +278,35 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_IO_UDP_SOCKET_CONNECT
   dsd-neo/io/udp_socket_connect.h
   C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_iq_types
+  HEADERS_PUBLIC_IO_IQ_TYPES
+  dsd-neo/io/iq_types.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_iq_capture
+  HEADERS_PUBLIC_IO_IQ_CAPTURE
+  dsd-neo/io/iq_capture.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_iq_replay
+  HEADERS_PUBLIC_IO_IQ_REPLAY
+  dsd-neo/io/iq_replay.h
+  C)
+
+set(_iq_capture_replay_combo_src "${_DSD_PUBLIC_HEADER_TEST_DIR}/HEADERS_PUBLIC_IO_IQ_CAPTURE_REPLAY_COMBO.c")
+file(WRITE "${_iq_capture_replay_combo_src}"
+  "// SPDX-License-Identifier: GPL-3.0-or-later\n"
+  "/*\n"
+  " * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>\n"
+  " */\n"
+  "\n"
+  "#include <dsd-neo/io/iq_capture.h>\n"
+  "#include <dsd-neo/io/iq_replay.h>\n"
+  "int main(void){return 0;}\n")
+add_executable(dsd-neo_test_headers_public_io_iq_capture_replay_combo "${_iq_capture_replay_combo_src}")
+target_include_directories(dsd-neo_test_headers_public_io_iq_capture_replay_combo PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME HEADERS_PUBLIC_IO_IQ_CAPTURE_REPLAY_COMBO COMMAND dsd-neo_test_headers_public_io_iq_capture_replay_combo)
 
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_protocol_p25_trunk_sm_api
@@ -325,6 +354,11 @@ add_executable(dsd-neo_test_runtime_rings runtime/test_runtime_rings.cpp)
 target_include_directories(dsd-neo_test_runtime_rings PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_rings PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_RINGS COMMAND dsd-neo_test_runtime_rings)
+
+add_executable(dsd-neo_test_runtime_input_ring_init runtime/test_runtime_input_ring_init.cpp)
+target_include_directories(dsd-neo_test_runtime_input_ring_init PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_input_ring_init PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_INPUT_RING_INIT COMMAND dsd-neo_test_runtime_input_ring_init)
 
 add_executable(dsd-neo_test_runtime_control_pump runtime/test_runtime_control_pump.c)
 target_include_directories(dsd-neo_test_runtime_control_pump PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -1785,6 +1819,31 @@ target_include_directories(dsd-neo_test_io_udp_input PRIVATE ${PROJECT_SOURCE_DI
 target_link_libraries(dsd-neo_test_io_udp_input PRIVATE dsd-neo_io_audio)
 add_test(NAME IO_UDP_INPUT COMMAND dsd-neo_test_io_udp_input)
 
+add_executable(dsd-neo_test_io_iq_replay_effective_bytes io/test_io_iq_replay_effective_bytes.c)
+target_include_directories(dsd-neo_test_io_iq_replay_effective_bytes PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_io_iq_replay_effective_bytes PRIVATE dsd-neo_io_iq)
+add_test(NAME IO_IQ_REPLAY_EFFECTIVE_BYTES COMMAND dsd-neo_test_io_iq_replay_effective_bytes)
+
+add_executable(dsd-neo_test_io_iq_metadata io/test_io_iq_metadata.c)
+target_include_directories(dsd-neo_test_io_iq_metadata PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_io_iq_metadata PRIVATE dsd-neo_io_iq dsd-neo_platform)
+add_test(NAME IO_IQ_METADATA COMMAND dsd-neo_test_io_iq_metadata)
+
+add_executable(dsd-neo_test_io_iq_capture_writer io/test_io_iq_capture_writer.c)
+target_include_directories(dsd-neo_test_io_iq_capture_writer PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_io_iq_capture_writer PRIVATE dsd-neo_io_iq dsd-neo_platform)
+add_test(NAME IO_IQ_CAPTURE_WRITER COMMAND dsd-neo_test_io_iq_capture_writer)
+
+add_executable(dsd-neo_test_platform_atomic_u64 platform/test_platform_atomic_u64.c)
+target_include_directories(dsd-neo_test_platform_atomic_u64 PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_platform_atomic_u64 PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_ATOMIC_U64 COMMAND dsd-neo_test_platform_atomic_u64)
+
+add_executable(dsd-neo_test_platform_monotonic_cond platform/test_platform_monotonic_cond.c)
+target_include_directories(dsd-neo_test_platform_monotonic_cond PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_platform_monotonic_cond PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_MONOTONIC_COND COMMAND dsd-neo_test_platform_monotonic_cond)
+
 set(_sndfile_fwd_contract_src "${_DSD_PUBLIC_HEADER_TEST_DIR}/CORE_SNDFILE_FWD_CONTRACT.c")
 file(WRITE "${_sndfile_fwd_contract_src}"
   "// SPDX-License-Identifier: GPL-3.0-or-later\n"
@@ -1824,6 +1883,8 @@ target_include_directories(dsd-neo_test_io_rtl_capture_phase PRIVATE ${PROJECT_S
 add_test(NAME IO_RTL_CAPTURE_PHASE COMMAND dsd-neo_test_io_rtl_capture_phase)
 
 if(DSD_HAS_RADIO)
+  target_compile_definitions(dsd-neo_io_radio PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+
   add_executable(dsd-neo_test_io_rtl_auto_ppm io/test_io_rtl_auto_ppm.cpp)
   target_include_directories(dsd-neo_test_io_rtl_auto_ppm PRIVATE
     ${PROJECT_SOURCE_DIR}/include
@@ -1848,4 +1909,38 @@ if(DSD_HAS_RADIO)
     target_link_libraries(dsd-neo_test_io_rtl_stream_ppm_sync PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
   endif()
   add_test(NAME IO_RTL_STREAM_PPM_SYNC COMMAND dsd-neo_test_io_rtl_stream_ppm_sync)
+
+  add_executable(dsd-neo_test_io_rtl_replay_retune_reject io/test_io_rtl_replay_retune_reject.cpp)
+  target_compile_definitions(dsd-neo_test_io_rtl_replay_retune_reject PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+  target_include_directories(dsd-neo_test_io_rtl_replay_retune_reject PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/tests/test_support
+  )
+  target_link_libraries(dsd-neo_test_io_rtl_replay_retune_reject PRIVATE
+    dsd-neo_io_radio
+    dsd-neo_io_iq
+    dsd-neo_core
+    dsd-neo_test_support
+  )
+  if(DSD_HAS_RTLSDR)
+    target_link_libraries(dsd-neo_test_io_rtl_replay_retune_reject PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+  endif()
+  add_test(NAME IO_RTL_REPLAY_RETUNE_REJECT COMMAND dsd-neo_test_io_rtl_replay_retune_reject)
+
+  add_executable(dsd-neo_test_io_rtl_replay_eof_and_cf32 io/test_io_rtl_replay_eof_and_cf32.cpp)
+  target_compile_definitions(dsd-neo_test_io_rtl_replay_eof_and_cf32 PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+  target_include_directories(dsd-neo_test_io_rtl_replay_eof_and_cf32 PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/tests/test_support
+  )
+  target_link_libraries(dsd-neo_test_io_rtl_replay_eof_and_cf32 PRIVATE
+    dsd-neo_io_radio
+    dsd-neo_io_iq
+    dsd-neo_core
+    dsd-neo_test_support
+  )
+  if(DSD_HAS_RTLSDR)
+    target_link_libraries(dsd-neo_test_io_rtl_replay_eof_and_cf32 PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+  endif()
+  add_test(NAME IO_RTL_REPLAY_EOF_AND_CF32 COMMAND dsd-neo_test_io_rtl_replay_eof_and_cf32)
 endif()

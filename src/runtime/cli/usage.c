@@ -172,6 +172,13 @@ dsd_cli_usage(void) {
     printf("  --auto-ppm-snr <dB>  Set SNR gate for auto PPM (default 6)\n");
     printf("  --rtltcp-autotune    Enable RTL-TCP adaptive networking (buffer/recv tuning)\n");
     printf("  --rtl-udp-control <port>  Enable external RTL retune control on UDP/<port>\n");
+    printf("  --iq-capture <path>        Write I/Q capture data + metadata sidecar\n");
+    printf("  --iq-capture-format <fmt>  Capture format (cu8|cf32)\n");
+    printf("  --iq-capture-max-mb <n>    Capture size limit in MiB (0 = unlimited)\n");
+    printf("  --iq-replay <path>         Replay I/Q capture metadata/data through RTL path\n");
+    printf("  --iq-replay-rate <mode>    Replay pacing mode (fast|realtime)\n");
+    printf("  --iq-loop                  Loop I/Q replay at EOF\n");
+    printf("  --iq-info <path>           Print metadata/alignment summary and exit\n");
     printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 -N 2> m17encoderlog.txt\n");
     printf("   Run M17 Encoding, listening to pulse audio server, with internal decode/playback and output to 48k/1 "
            "wav file\n");

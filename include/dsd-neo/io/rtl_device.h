@@ -25,6 +25,7 @@ extern "C" {
 
 /* Opaque handle for RTL-SDR device */
 struct rtl_device;
+struct dsd_iq_capture_writer;
 
 /**
  * @brief Create and initialize a local RTL-SDR device over USB (librtlsdr).
@@ -258,6 +259,43 @@ int rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff);
  * @return 1 if autotune is enabled; 0 otherwise.
  */
 int rtl_device_get_tcp_autotune(struct rtl_device* dev);
+
+/**
+ * @brief Attach or detach an optional IQ capture writer.
+ *
+ * The stream/orchestrator owns the writer lifetime. The device stores only a
+ * borrowed pointer used by ingestion callbacks.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param writer Borrowed writer pointer, or NULL to detach.
+ */
+void rtl_device_set_iq_capture_writer(struct rtl_device* dev, struct dsd_iq_capture_writer* writer);
+
+/**
+ * @brief Increment capture retune diagnostics when a capture writer is attached.
+ *
+ * @param dev RTL-SDR device handle.
+ */
+void rtl_device_note_capture_retune(struct rtl_device* dev);
+
+/**
+ * @brief Snapshot replay/capture retune count accumulated by the device.
+ *
+ * @param dev RTL-SDR device handle.
+ * @return Capture retune count.
+ */
+uint32_t rtl_device_get_capture_retune_count(struct rtl_device* dev);
+
+/**
+ * @brief Return backend-native sample format.
+ *
+ * Returns @ref dsd_iq_sample_format integral values (e.g., DSD_IQ_FORMAT_CU8).
+ * Returns 0 when unknown/not yet selected.
+ *
+ * @param dev RTL-SDR device handle.
+ * @return Sample format code or 0.
+ */
+int rtl_device_get_native_sample_format(const struct rtl_device* dev);
 
 /**
  * @brief Set (or clear) RTL and tuner crystal reference frequencies.

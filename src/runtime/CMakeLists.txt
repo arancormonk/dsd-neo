@@ -63,6 +63,7 @@ target_include_directories(dsd-neo_runtime
 target_link_libraries(dsd-neo_runtime PUBLIC dsd-neo_platform dsd-neo_feature_radio dsd-neo_feature_rtlsdr
                                               dsd-neo_feature_colors_logs
                                               dsd-neo_feature_curl)
+target_link_libraries(dsd-neo_runtime PRIVATE dsd-neo_io_iq)
 
 target_link_libraries(dsd-neo_runtime PRIVATE dsd-neo_warnings)
 

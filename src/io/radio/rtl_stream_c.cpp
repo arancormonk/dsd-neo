@@ -63,6 +63,10 @@ double dsd_rtl_stream_get_snr_bias_evm(void);
 /* Tuner autogain */
 int dsd_rtl_stream_get_tuner_autogain(void);
 void dsd_rtl_stream_set_tuner_autogain(int onoff);
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+int dsd_rtl_stream_test_request_retune(long int frequency, int timeout_ms);
+int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
+#endif
 }
 
 #include <dsd-neo/io/rtl_stream.h>
@@ -187,6 +191,24 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     }
     return ctx->stream->tune(center_freq_hz);
 }
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" int
+rtl_stream_test_request_retune(RtlSdrContext* ctx, uint32_t freq_hz, int timeout_ms) {
+    if (!ctx || !ctx->stream) {
+        return -2;
+    }
+    return dsd_rtl_stream_test_request_retune((long int)freq_hz, timeout_ms);
+}
+
+extern "C" int
+rtl_stream_test_get_replay_state(RtlSdrContext* ctx, rtl_stream_test_replay_state* out_state) {
+    if (!ctx || !ctx->stream || !out_state) {
+        return -2;
+    }
+    return dsd_rtl_stream_test_get_replay_state(out_state);
+}
+#endif
 
 /**
  * @brief Read up to `count` interleaved audio samples into `out`.

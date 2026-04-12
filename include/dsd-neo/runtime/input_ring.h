@@ -26,6 +26,8 @@ struct input_ring_state {
     std::atomic<size_t> tail;
     dsd_cond_t ready;
     dsd_mutex_t ready_m;
+    dsd_cond_t space;
+    std::atomic<int> space_notify_enabled;
     std::atomic<uint64_t> producer_drops; /* bytes dropped when full */
     std::atomic<uint64_t> read_timeouts;  /* waits for data */
 };
@@ -67,6 +69,34 @@ input_ring_clear(struct input_ring_state* r) {
     r->tail.store(0);
     r->head.store(0);
 }
+
+/**
+ * @brief Initialize input ring storage and synchronization primitives.
+ *
+ * @param r Input ring state.
+ * @param capacity Number of float elements in the ring (must be > 0).
+ * @return 0 on success, -1 on invalid args or allocation/init failure.
+ */
+int input_ring_init(struct input_ring_state* r, size_t capacity);
+
+/**
+ * @brief Destroy an initialized input ring.
+ *
+ * Safe to call multiple times; no-op on NULL.
+ *
+ * @param r Input ring state.
+ */
+void input_ring_destroy(struct input_ring_state* r);
+
+/**
+ * @brief Enable or disable consumer->producer space notifications.
+ *
+ * When enabled, input_ring_read_block() signals `space` after consuming data.
+ *
+ * @param r Input ring state.
+ * @param enabled Non-zero to enable notifications, zero to disable.
+ */
+void input_ring_enable_space_notify(struct input_ring_state* r, int enabled);
 
 /**
  * @brief Reserve writable regions in the input ring buffer.

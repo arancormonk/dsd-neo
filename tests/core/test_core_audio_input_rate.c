@@ -51,6 +51,20 @@ alloc_state(void) {
     return (dsd_state*)calloc(1, sizeof(dsd_state));
 }
 
+static dsd_opts*
+alloc_opts(void) {
+    return (dsd_opts*)calloc(1, sizeof(dsd_opts));
+}
+
+static void
+free_opts(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    dsd_resampler_reset(&opts->input_resampler);
+    free(opts);
+}
+
 static int
 create_temp_raw_pcm_wav_suffix(const char* prefix, const short* samples, size_t sample_count, char* out_path,
                                size_t out_path_sz) {
@@ -159,15 +173,18 @@ create_temp_wav_family_file(const char* prefix, int sample_rate, int format, con
 
 static int
 test_input_rate_rescale_for_72000(void) {
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    opts.wav_decimator = 48000;
-    opts.wav_sample_rate = 48000;
+    dsd_opts* opts = alloc_opts();
+    if (!opts) {
+        fprintf(stderr, "FAIL: alloc opts\n");
+        return 1;
+    }
+    opts->wav_decimator = 48000;
+    opts->wav_sample_rate = 48000;
 
     dsd_state* state = alloc_state();
     if (!state) {
         fprintf(stderr, "FAIL: alloc state\n");
-        dsd_resampler_reset(&opts.input_resampler);
+        free_opts(opts);
         return 1;
     }
 
@@ -177,32 +194,36 @@ test_input_rate_rescale_for_72000(void) {
     init_audio_filters(state, 48000);
     float old_coef = state->RCFilter.coef[0];
 
-    dsd_audio_apply_input_sample_rate(&opts, state, 48000, 72000);
+    dsd_audio_apply_input_sample_rate(opts, state, 48000, 72000);
 
     int rc = 0;
-    rc |= expect_int_eq("72000 raw rate applied", opts.wav_sample_rate, 72000);
-    rc |= expect_int_eq("72000 interpolator stays 1", opts.wav_interpolator, 1);
-    rc |= expect_int_eq("72000 effective rate", dsd_opts_effective_input_rate(&opts), 72000);
+    rc |= expect_int_eq("72000 raw rate applied", opts->wav_sample_rate, 72000);
+    rc |= expect_int_eq("72000 interpolator stays 1", opts->wav_interpolator, 1);
+    rc |= expect_int_eq("72000 effective rate", dsd_opts_effective_input_rate(opts), 72000);
     rc |= expect_int_eq("72000 sps rescales", state->samplesPerSymbol, 15);
     rc |= expect_int_eq("72000 center rescales", state->symbolCenter, 6);
     rc |= expect_int_eq("72000 jitter reset", state->jitter, -1);
     rc |= expect_true("72000 filter coefficients rebuilt", fabsf(state->RCFilter.coef[0] - old_coef) > 1e-6f);
 
     free(state);
+    free_opts(opts);
     return rc;
 }
 
 static int
 test_input_rate_rescale_for_44100(void) {
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    opts.wav_decimator = 48000;
-    opts.wav_sample_rate = 48000;
+    dsd_opts* opts = alloc_opts();
+    if (!opts) {
+        fprintf(stderr, "FAIL: alloc opts\n");
+        return 1;
+    }
+    opts->wav_decimator = 48000;
+    opts->wav_sample_rate = 48000;
 
     dsd_state* state = alloc_state();
     if (!state) {
         fprintf(stderr, "FAIL: alloc state\n");
-        dsd_resampler_reset(&opts.input_resampler);
+        free_opts(opts);
         return 1;
     }
 
@@ -212,38 +233,43 @@ test_input_rate_rescale_for_44100(void) {
     init_audio_filters(state, 48000);
     float old_coef = state->RCFilter.coef[0];
 
-    dsd_audio_apply_input_sample_rate(&opts, state, 48000, 44100);
+    dsd_audio_apply_input_sample_rate(opts, state, 48000, 44100);
 
     int rc = 0;
-    rc |= expect_int_eq("44100 raw rate applied", opts.wav_sample_rate, 44100);
-    rc |= expect_int_eq("44100 interpolator stays 1", opts.wav_interpolator, 1);
-    rc |= expect_int_eq("44100 effective rate", dsd_opts_effective_input_rate(&opts), 44100);
+    rc |= expect_int_eq("44100 raw rate applied", opts->wav_sample_rate, 44100);
+    rc |= expect_int_eq("44100 interpolator stays 1", opts->wav_interpolator, 1);
+    rc |= expect_int_eq("44100 effective rate", dsd_opts_effective_input_rate(opts), 44100);
     rc |= expect_int_eq("44100 sps rescales", state->samplesPerSymbol, 9);
     rc |= expect_int_eq("44100 center rescales", state->symbolCenter, 4);
     rc |= expect_int_eq("44100 jitter reset", state->jitter, -1);
     rc |= expect_true("44100 filter coefficients rebuilt", fabsf(state->RCFilter.coef[0] - old_coef) > 1e-6f);
 
     free(state);
+    free_opts(opts);
     return rc;
 }
 
 static int
 test_input_rate_rejects_unsupported_staged_upsample_factor(void) {
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    opts.wav_decimator = 48000;
-    opts.wav_sample_rate = 48000;
-    opts.input_upsample_prev = 123.0f;
-    opts.input_upsample_len = 3;
-    opts.input_upsample_pos = 1;
-    opts.input_upsample_prev_valid = 1;
-    for (size_t i = 0; i < sizeof(opts.input_upsample_buf) / sizeof(opts.input_upsample_buf[0]); i++) {
-        opts.input_upsample_buf[i] = (float)i;
+    dsd_opts* opts = alloc_opts();
+    if (!opts) {
+        fprintf(stderr, "FAIL: alloc opts\n");
+        return 1;
+    }
+    opts->wav_decimator = 48000;
+    opts->wav_sample_rate = 48000;
+    opts->input_upsample_prev = 123.0f;
+    opts->input_upsample_len = 3;
+    opts->input_upsample_pos = 1;
+    opts->input_upsample_prev_valid = 1;
+    for (size_t i = 0; i < sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]); i++) {
+        opts->input_upsample_buf[i] = (float)i;
     }
 
     dsd_state* state = alloc_state();
     if (!state) {
         fprintf(stderr, "FAIL: alloc state\n");
+        free_opts(opts);
         return 1;
     }
 
@@ -251,44 +277,50 @@ test_input_rate_rejects_unsupported_staged_upsample_factor(void) {
     state->symbolCenter = 4;
     init_audio_filters(state, 48000);
 
-    dsd_audio_apply_input_sample_rate(&opts, state, 48000, 6000);
+    dsd_audio_apply_input_sample_rate(opts, state, 48000, 6000);
 
     int rc = 0;
-    rc |= expect_int_eq("6000 raw rate applied", opts.wav_sample_rate, 6000);
-    rc |= expect_int_eq("6000 unsupported staged factor falls back to 1", dsd_opts_input_upsample_factor(&opts), 1);
-    rc |= expect_int_eq("6000 effective rate stays raw", dsd_opts_effective_input_rate(&opts), 6000);
+    rc |= expect_int_eq("6000 raw rate applied", opts->wav_sample_rate, 6000);
+    rc |= expect_int_eq("6000 unsupported staged factor falls back to 1", dsd_opts_input_upsample_factor(opts), 1);
+    rc |= expect_int_eq("6000 effective rate stays raw", dsd_opts_effective_input_rate(opts), 6000);
     rc |= expect_int_eq("6000 sps rescales to low-rate clamp", state->samplesPerSymbol, 2);
     rc |= expect_int_eq("6000 center rescales to low-rate clamp", state->symbolCenter, 0);
-    rc |= expect_int_eq("6000 clears staged upsample length", opts.input_upsample_len, 0);
-    rc |= expect_int_eq("6000 clears staged upsample position", opts.input_upsample_pos, 0);
-    rc |= expect_int_eq("6000 clears staged upsample validity", opts.input_upsample_prev_valid, 0);
-    rc |= expect_float_eq("6000 clears staged upsample previous sample", opts.input_upsample_prev, 0.0f);
+    rc |= expect_int_eq("6000 clears staged upsample length", opts->input_upsample_len, 0);
+    rc |= expect_int_eq("6000 clears staged upsample position", opts->input_upsample_pos, 0);
+    rc |= expect_int_eq("6000 clears staged upsample validity", opts->input_upsample_prev_valid, 0);
+    rc |= expect_float_eq("6000 clears staged upsample previous sample", opts->input_upsample_prev, 0.0f);
 
     free(state);
+    free_opts(opts);
     return rc;
 }
 
 static int
 test_input_rate_preserves_48k_effective_timing_for_24000(void) {
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    opts.wav_decimator = 48000;
-    opts.wav_sample_rate = 48000;
-    if (!dsd_resampler_design(&opts.input_resampler, 6, 1)) {
-        fprintf(stderr, "FAIL: input resampler design\n");
+    dsd_opts* opts = alloc_opts();
+    if (!opts) {
+        fprintf(stderr, "FAIL: alloc opts\n");
         return 1;
     }
-    opts.input_upsample_prev = 123.0f;
-    opts.input_upsample_len = 3;
-    opts.input_upsample_pos = 1;
-    opts.input_upsample_prev_valid = 1;
-    for (size_t i = 0; i < sizeof(opts.input_upsample_buf) / sizeof(opts.input_upsample_buf[0]); i++) {
-        opts.input_upsample_buf[i] = (float)i;
+    opts->wav_decimator = 48000;
+    opts->wav_sample_rate = 48000;
+    if (!dsd_resampler_design(&opts->input_resampler, 6, 1)) {
+        fprintf(stderr, "FAIL: input resampler design\n");
+        free_opts(opts);
+        return 1;
+    }
+    opts->input_upsample_prev = 123.0f;
+    opts->input_upsample_len = 3;
+    opts->input_upsample_pos = 1;
+    opts->input_upsample_prev_valid = 1;
+    for (size_t i = 0; i < sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]); i++) {
+        opts->input_upsample_buf[i] = (float)i;
     }
 
     dsd_state* state = alloc_state();
     if (!state) {
         fprintf(stderr, "FAIL: alloc state\n");
+        free_opts(opts);
         return 1;
     }
 
@@ -296,25 +328,26 @@ test_input_rate_preserves_48k_effective_timing_for_24000(void) {
     state->symbolCenter = 4;
     init_audio_filters(state, 48000);
 
-    dsd_audio_apply_input_sample_rate(&opts, state, 48000, 24000);
+    dsd_audio_apply_input_sample_rate(opts, state, 48000, 24000);
 
     int rc = 0;
-    rc |= expect_int_eq("24000 raw rate applied", opts.wav_sample_rate, 24000);
-    rc |= expect_int_eq("24000 effective rate stays 48000 via staged upsample", dsd_opts_effective_input_rate(&opts),
+    rc |= expect_int_eq("24000 raw rate applied", opts->wav_sample_rate, 24000);
+    rc |= expect_int_eq("24000 effective rate stays 48000 via staged upsample", dsd_opts_effective_input_rate(opts),
                         48000);
     rc |= expect_int_eq("24000 keeps 48k sps", state->samplesPerSymbol, 10);
     rc |= expect_int_eq("24000 keeps 48k center", state->symbolCenter, 4);
-    rc |= expect_int_eq("24000 clears staged upsample length", opts.input_upsample_len, 0);
-    rc |= expect_int_eq("24000 clears staged upsample position", opts.input_upsample_pos, 0);
-    rc |= expect_int_eq("24000 clears staged upsample validity", opts.input_upsample_prev_valid, 0);
-    rc |= expect_float_eq("24000 clears staged upsample previous sample", opts.input_upsample_prev, 0.0f);
-    rc |= expect_int_eq("24000 resets compiled input resampler", opts.input_resampler.enabled, 0);
-    rc |= expect_int_eq("24000 clears compiled input resampler L", opts.input_resampler.L, 1);
-    rc |= expect_int_eq("24000 clears compiled input resampler M", opts.input_resampler.M, 1);
-    rc |= expect_true("24000 frees compiled input resampler taps", opts.input_resampler.taps == NULL);
-    rc |= expect_true("24000 frees compiled input resampler hist", opts.input_resampler.hist == NULL);
+    rc |= expect_int_eq("24000 clears staged upsample length", opts->input_upsample_len, 0);
+    rc |= expect_int_eq("24000 clears staged upsample position", opts->input_upsample_pos, 0);
+    rc |= expect_int_eq("24000 clears staged upsample validity", opts->input_upsample_prev_valid, 0);
+    rc |= expect_float_eq("24000 clears staged upsample previous sample", opts->input_upsample_prev, 0.0f);
+    rc |= expect_int_eq("24000 resets compiled input resampler", opts->input_resampler.enabled, 0);
+    rc |= expect_int_eq("24000 clears compiled input resampler L", opts->input_resampler.L, 1);
+    rc |= expect_int_eq("24000 clears compiled input resampler M", opts->input_resampler.M, 1);
+    rc |= expect_true("24000 frees compiled input resampler taps", opts->input_resampler.taps == NULL);
+    rc |= expect_true("24000 frees compiled input resampler hist", opts->input_resampler.hist == NULL);
 
     free(state);
+    free_opts(opts);
     return rc;
 }
 
@@ -334,72 +367,88 @@ test_linear_upsample_block_ends_on_current_sample(void) {
 
 static int
 test_source_effective_input_rate_classifier(void) {
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    opts.wav_sample_rate = 72000;
+    dsd_opts* opts = alloc_opts();
+    if (!opts) {
+        fprintf(stderr, "FAIL: alloc opts\n");
+        return 1;
+    }
+    opts->wav_sample_rate = 72000;
 
     int rc = 0;
 
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
-    rc |= expect_int_eq("pulse ignores stale file sample rate", dsd_opts_source_uses_effective_input_rate(&opts), 0);
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    rc |= expect_int_eq("pulse ignores stale file sample rate", dsd_opts_source_uses_effective_input_rate(opts), 0);
 
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "/tmp/input.wav");
-    rc |= expect_int_eq("file input uses effective sample rate", dsd_opts_source_uses_effective_input_rate(&opts), 1);
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "/tmp/input.wav");
+    rc |= expect_int_eq("file input uses effective sample rate", dsd_opts_source_uses_effective_input_rate(opts), 1);
 
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl_capture.wav");
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl_capture.wav");
     rc |= expect_int_eq("rtl-prefixed filename still uses effective sample rate",
-                        dsd_opts_source_uses_effective_input_rate(&opts), 1);
+                        dsd_opts_source_uses_effective_input_rate(opts), 1);
 
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse_96000.wav");
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse_96000.wav");
     rc |= expect_int_eq("pulse-prefixed filename still uses effective sample rate",
-                        dsd_opts_source_uses_effective_input_rate(&opts), 1);
+                        dsd_opts_source_uses_effective_input_rate(opts), 1);
 
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy.raw");
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy.raw");
     rc |= expect_int_eq("soapy-prefixed filename still uses effective sample rate",
-                        dsd_opts_source_uses_effective_input_rate(&opts), 1);
+                        dsd_opts_source_uses_effective_input_rate(opts), 1);
 
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "udp:127.0.0.1:7355");
-    rc |= expect_int_eq("udp input uses effective sample rate", dsd_opts_source_uses_effective_input_rate(&opts), 1);
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp:127.0.0.1:7355");
+    rc |= expect_int_eq("udp input uses effective sample rate", dsd_opts_source_uses_effective_input_rate(opts), 1);
 
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:100000000");
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:100000000");
+    rc |= expect_int_eq("rtl input bypasses effective sample rate", dsd_opts_source_uses_effective_input_rate(opts), 0);
+
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    rc |= expect_int_eq("rtltcp input bypasses effective sample rate", dsd_opts_source_uses_effective_input_rate(opts),
+                        0);
+
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=airspy");
     rc |=
-        expect_int_eq("rtl input bypasses effective sample rate", dsd_opts_source_uses_effective_input_rate(&opts), 0);
+        expect_int_eq("soapy input bypasses effective sample rate", dsd_opts_source_uses_effective_input_rate(opts), 0);
 
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
-    rc |= expect_int_eq("rtltcp input bypasses effective sample rate", dsd_opts_source_uses_effective_input_rate(&opts),
-                        0);
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
+    rc |= expect_int_eq("iqreplay input bypasses effective sample rate",
+                        dsd_opts_source_uses_effective_input_rate(opts), 0);
 
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=airspy");
-    rc |= expect_int_eq("soapy input bypasses effective sample rate", dsd_opts_source_uses_effective_input_rate(&opts),
-                        0);
-
-    opts.audio_in_dev[0] = '\0';
-    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts->audio_in_dev[0] = '\0';
+    opts->audio_in_type = AUDIO_IN_PULSE;
     rc |= expect_int_eq("pulse type fallback bypasses effective sample rate",
-                        dsd_opts_source_uses_effective_input_rate(&opts), 0);
+                        dsd_opts_source_uses_effective_input_rate(opts), 0);
 
+    free_opts(opts);
     return rc;
 }
 
 static int
 test_current_input_timing_rate_prefers_active_backend(void) {
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    dsd_opts* opts = alloc_opts();
+    if (!opts) {
+        fprintf(stderr, "FAIL: alloc opts\n");
+        return 1;
+    }
 
     int rc = 0;
 
-    opts.wav_sample_rate = 72000;
-    opts.audio_in_type = AUDIO_IN_PULSE;
-    opts.pulse_digi_rate_in = 48000;
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "/tmp/requested.wav");
-    rc |= expect_int_eq("mixed pulse/file state keeps live pulse timing", dsd_opts_current_input_timing_rate(&opts),
+    opts->wav_sample_rate = 72000;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->pulse_digi_rate_in = 48000;
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "/tmp/requested.wav");
+    rc |= expect_int_eq("mixed pulse/file state keeps live pulse timing", dsd_opts_current_input_timing_rate(opts),
                         48000);
 
-    opts.wav_sample_rate = 24000;
-    opts.audio_in_type = AUDIO_IN_TCP;
-    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "tcp:127.0.0.1:7355");
-    rc |= expect_int_eq("tcp timing uses staged 48k effective rate", dsd_opts_current_input_timing_rate(&opts), 48000);
+    opts->wav_sample_rate = 24000;
+    opts->audio_in_type = AUDIO_IN_TCP;
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "tcp:127.0.0.1:7355");
+    rc |= expect_int_eq("tcp timing uses staged 48k effective rate", dsd_opts_current_input_timing_rate(opts), 48000);
 
+    opts->wav_sample_rate = 24000;
+    opts->audio_in_type = AUDIO_IN_NULL;
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
+    rc |= expect_int_eq("iqreplay timing bypasses wav sample rate", dsd_opts_current_input_timing_rate(opts), 0);
+
+    free_opts(opts);
     return rc;
 }
 
@@ -516,88 +565,97 @@ test_rf64_wav_suffix_uses_container_metadata(void) {
 
 static int
 test_reset_input_upsample_state_clears_staging_only(void) {
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    if (!dsd_resampler_design(&opts.input_resampler, 6, 1)) {
-        fprintf(stderr, "FAIL: input resampler design\n");
+    dsd_opts* opts = alloc_opts();
+    if (!opts) {
+        fprintf(stderr, "FAIL: alloc opts\n");
         return 1;
     }
-    int enabled = opts.input_resampler.enabled;
-    int L = opts.input_resampler.L;
-    int M = opts.input_resampler.M;
-    int taps_len = opts.input_resampler.taps_len;
-    int taps_per_phase = opts.input_resampler.taps_per_phase;
-    int phase = opts.input_resampler.phase;
-    int hist_head = opts.input_resampler.hist_head;
-    float* taps = opts.input_resampler.taps;
-    float* hist = opts.input_resampler.hist;
-    opts.input_upsample_prev = 123.0f;
-    opts.input_upsample_len = 4;
-    opts.input_upsample_pos = 2;
-    opts.input_upsample_prev_valid = 1;
-    for (size_t i = 0; i < sizeof(opts.input_upsample_buf) / sizeof(opts.input_upsample_buf[0]); i++) {
-        opts.input_upsample_buf[i] = (float)(i + 1);
+    if (!dsd_resampler_design(&opts->input_resampler, 6, 1)) {
+        fprintf(stderr, "FAIL: input resampler design\n");
+        free_opts(opts);
+        return 1;
+    }
+    int enabled = opts->input_resampler.enabled;
+    int L = opts->input_resampler.L;
+    int M = opts->input_resampler.M;
+    int taps_len = opts->input_resampler.taps_len;
+    int taps_per_phase = opts->input_resampler.taps_per_phase;
+    int phase = opts->input_resampler.phase;
+    int hist_head = opts->input_resampler.hist_head;
+    float* taps = opts->input_resampler.taps;
+    float* hist = opts->input_resampler.hist;
+    opts->input_upsample_prev = 123.0f;
+    opts->input_upsample_len = 4;
+    opts->input_upsample_pos = 2;
+    opts->input_upsample_prev_valid = 1;
+    for (size_t i = 0; i < sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]); i++) {
+        opts->input_upsample_buf[i] = (float)(i + 1);
     }
 
-    dsd_opts_reset_input_upsample_state(&opts);
+    dsd_opts_reset_input_upsample_state(opts);
 
     int rc = 0;
-    rc |= expect_int_eq("reset preserves input resampler enabled", opts.input_resampler.enabled, enabled);
-    rc |= expect_int_eq("reset preserves input resampler L", opts.input_resampler.L, L);
-    rc |= expect_int_eq("reset preserves input resampler M", opts.input_resampler.M, M);
-    rc |= expect_int_eq("reset preserves input resampler taps len", opts.input_resampler.taps_len, taps_len);
-    rc |= expect_int_eq("reset preserves input resampler taps/phase", opts.input_resampler.taps_per_phase,
+    rc |= expect_int_eq("reset preserves input resampler enabled", opts->input_resampler.enabled, enabled);
+    rc |= expect_int_eq("reset preserves input resampler L", opts->input_resampler.L, L);
+    rc |= expect_int_eq("reset preserves input resampler M", opts->input_resampler.M, M);
+    rc |= expect_int_eq("reset preserves input resampler taps len", opts->input_resampler.taps_len, taps_len);
+    rc |= expect_int_eq("reset preserves input resampler taps/phase", opts->input_resampler.taps_per_phase,
                         taps_per_phase);
-    rc |= expect_int_eq("reset preserves input resampler phase", opts.input_resampler.phase, phase);
-    rc |= expect_int_eq("reset preserves input resampler hist head", opts.input_resampler.hist_head, hist_head);
-    rc |= expect_true("reset preserves input resampler taps", opts.input_resampler.taps == taps);
-    rc |= expect_true("reset preserves input resampler hist", opts.input_resampler.hist == hist);
-    rc |= expect_float_eq("reset clears previous upsample sample", opts.input_upsample_prev, 0.0f);
-    rc |= expect_int_eq("reset clears staged upsample length", opts.input_upsample_len, 0);
-    rc |= expect_int_eq("reset clears staged upsample position", opts.input_upsample_pos, 0);
-    rc |= expect_int_eq("reset clears staged upsample validity", opts.input_upsample_prev_valid, 0);
-    for (size_t i = 0; i < sizeof(opts.input_upsample_buf) / sizeof(opts.input_upsample_buf[0]); i++) {
+    rc |= expect_int_eq("reset preserves input resampler phase", opts->input_resampler.phase, phase);
+    rc |= expect_int_eq("reset preserves input resampler hist head", opts->input_resampler.hist_head, hist_head);
+    rc |= expect_true("reset preserves input resampler taps", opts->input_resampler.taps == taps);
+    rc |= expect_true("reset preserves input resampler hist", opts->input_resampler.hist == hist);
+    rc |= expect_float_eq("reset clears previous upsample sample", opts->input_upsample_prev, 0.0f);
+    rc |= expect_int_eq("reset clears staged upsample length", opts->input_upsample_len, 0);
+    rc |= expect_int_eq("reset clears staged upsample position", opts->input_upsample_pos, 0);
+    rc |= expect_int_eq("reset clears staged upsample validity", opts->input_upsample_prev_valid, 0);
+    for (size_t i = 0; i < sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]); i++) {
         char label[64];
         snprintf(label, sizeof label, "reset clears staged sample %zu", i);
-        rc |= expect_float_eq(label, opts.input_upsample_buf[i], 0.0f);
+        rc |= expect_float_eq(label, opts->input_upsample_buf[i], 0.0f);
     }
-    dsd_resampler_reset(&opts.input_resampler);
+    free_opts(opts);
     return rc;
 }
 
 static int
 test_reset_pcm_input_state_clears_resampler_and_staging(void) {
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    if (!dsd_resampler_design(&opts.input_resampler, 6, 1)) {
-        fprintf(stderr, "FAIL: input resampler design\n");
+    dsd_opts* opts = alloc_opts();
+    if (!opts) {
+        fprintf(stderr, "FAIL: alloc opts\n");
         return 1;
     }
-    opts.input_upsample_prev = 123.0f;
-    opts.input_upsample_len = 4;
-    opts.input_upsample_pos = 2;
-    opts.input_upsample_prev_valid = 1;
-    for (size_t i = 0; i < sizeof(opts.input_upsample_buf) / sizeof(opts.input_upsample_buf[0]); i++) {
-        opts.input_upsample_buf[i] = (float)(i + 1);
+    if (!dsd_resampler_design(&opts->input_resampler, 6, 1)) {
+        fprintf(stderr, "FAIL: input resampler design\n");
+        free_opts(opts);
+        return 1;
+    }
+    opts->input_upsample_prev = 123.0f;
+    opts->input_upsample_len = 4;
+    opts->input_upsample_pos = 2;
+    opts->input_upsample_prev_valid = 1;
+    for (size_t i = 0; i < sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]); i++) {
+        opts->input_upsample_buf[i] = (float)(i + 1);
     }
 
-    dsd_opts_reset_pcm_input_state(&opts);
+    dsd_opts_reset_pcm_input_state(opts);
 
     int rc = 0;
-    rc |= expect_int_eq("reset pcm input clears input resampler enabled", opts.input_resampler.enabled, 0);
-    rc |= expect_int_eq("reset pcm input clears input resampler L", opts.input_resampler.L, 1);
-    rc |= expect_int_eq("reset pcm input clears input resampler M", opts.input_resampler.M, 1);
-    rc |= expect_true("reset pcm input frees input resampler taps", opts.input_resampler.taps == NULL);
-    rc |= expect_true("reset pcm input frees input resampler hist", opts.input_resampler.hist == NULL);
-    rc |= expect_float_eq("reset pcm input clears previous upsample sample", opts.input_upsample_prev, 0.0f);
-    rc |= expect_int_eq("reset pcm input clears staged upsample length", opts.input_upsample_len, 0);
-    rc |= expect_int_eq("reset pcm input clears staged upsample position", opts.input_upsample_pos, 0);
-    rc |= expect_int_eq("reset pcm input clears staged upsample validity", opts.input_upsample_prev_valid, 0);
-    for (size_t i = 0; i < sizeof(opts.input_upsample_buf) / sizeof(opts.input_upsample_buf[0]); i++) {
+    rc |= expect_int_eq("reset pcm input clears input resampler enabled", opts->input_resampler.enabled, 0);
+    rc |= expect_int_eq("reset pcm input clears input resampler L", opts->input_resampler.L, 1);
+    rc |= expect_int_eq("reset pcm input clears input resampler M", opts->input_resampler.M, 1);
+    rc |= expect_true("reset pcm input frees input resampler taps", opts->input_resampler.taps == NULL);
+    rc |= expect_true("reset pcm input frees input resampler hist", opts->input_resampler.hist == NULL);
+    rc |= expect_float_eq("reset pcm input clears previous upsample sample", opts->input_upsample_prev, 0.0f);
+    rc |= expect_int_eq("reset pcm input clears staged upsample length", opts->input_upsample_len, 0);
+    rc |= expect_int_eq("reset pcm input clears staged upsample position", opts->input_upsample_pos, 0);
+    rc |= expect_int_eq("reset pcm input clears staged upsample validity", opts->input_upsample_prev_valid, 0);
+    for (size_t i = 0; i < sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]); i++) {
         char label[64];
         snprintf(label, sizeof label, "reset pcm input clears staged sample %zu", i);
-        rc |= expect_float_eq(label, opts.input_upsample_buf[i], 0.0f);
+        rc |= expect_float_eq(label, opts->input_upsample_buf[i], 0.0f);
     }
+    free_opts(opts);
     return rc;
 }
 

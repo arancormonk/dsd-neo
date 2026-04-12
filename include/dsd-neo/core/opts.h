@@ -288,6 +288,14 @@ struct dsd_opts {
     uint8_t dmr_t3_heuristic_fill;
     uint8_t p25_p2_soft_erasure; /* Enable soft-decision RS erasure marking for P25P2 */
     uint8_t p25_p1_soft_voice;   /* Enable soft-decision FEC for P25P1 voice (HDU/LDU/TDULC) */
+    // IQ capture and replay
+    uint8_t iq_capture_requested; /* 1 if --iq-capture was provided */
+    uint8_t iq_replay_requested;  /* 1 if --iq-replay was provided */
+    uint8_t iq_replay_loop;       /* 1 if --iq-loop was provided */
+    uint8_t iq_replay_active;     /* 1 while replay stream is active */
+    uint8_t iq_replay_rate_mode;  /* DSD_IQ_REPLAY_RATE_* */
+    uint8_t iq_capture_format;    /* DSD_IQ_FORMAT_* */
+    uint64_t iq_capture_max_bytes;
 
     // Strings and paths (large trailing arrays)
     char pa_input_idx[100];
@@ -321,8 +329,15 @@ struct dsd_opts {
     char chan_in_file[1024];
     char key_in_file[1024];
     char audio_in_dev[2048]; //increase size for super long directory/file names
+    char iq_capture_path[2048];
+    char iq_replay_path[2048];
     char mbe_out_path[2048]; //1024
     char dsp_out_file[2048];
+};
+
+enum {
+    DSD_IQ_REPLAY_RATE_FAST = 0,
+    DSD_IQ_REPLAY_RATE_REALTIME = 1,
 };
 
 enum {
@@ -471,6 +486,11 @@ dsd_opts_audio_in_dev_is_soapy_spec(const char* dev) {
 }
 
 static inline int
+dsd_opts_audio_in_dev_is_iqreplay_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "iqreplay", "iqreplay:");
+}
+
+static inline int
 dsd_opts_audio_in_dev_is_tcp_spec(const char* dev) {
     return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "tcp", "tcp:");
 }
@@ -578,6 +598,7 @@ dsd_opts_source_uses_effective_input_rate(const dsd_opts* opts) {
         if (dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
+            || dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) {
             return 0;
         }

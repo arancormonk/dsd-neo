@@ -5,6 +5,7 @@
 
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/input_ring.h>
+#include <dsd-neo/runtime/mem.h>
 #include <stdint.h>
 /**
  * @file
@@ -20,6 +21,80 @@ extern "C" volatile uint8_t exitflag; // defined in src/runtime/exitflag.c
 #ifdef USE_RADIO
 extern "C" int dsd_rtl_stream_should_exit(void);
 #endif
+
+int
+input_ring_init(struct input_ring_state* r, size_t capacity) {
+    if (!r || capacity == 0) {
+        return -1;
+    }
+
+    void* mem_ptr = dsd_neo_aligned_malloc(capacity * sizeof(float));
+    if (!mem_ptr) {
+        return -1;
+    }
+
+    int rc = dsd_cond_init(&r->ready);
+    if (rc != 0) {
+        dsd_neo_aligned_free(mem_ptr);
+        return -1;
+    }
+    rc = dsd_mutex_init(&r->ready_m);
+    if (rc != 0) {
+        (void)dsd_cond_destroy(&r->ready);
+        dsd_neo_aligned_free(mem_ptr);
+        return -1;
+    }
+    /*
+     * Replay backpressure/pacing uses dsd_cond_timedwait_monotonic() on
+     * `space`, so initialize this condvar with the monotonic helper.
+     */
+    rc = dsd_cond_init_monotonic(&r->space);
+    if (rc != 0) {
+        (void)dsd_mutex_destroy(&r->ready_m);
+        (void)dsd_cond_destroy(&r->ready);
+        dsd_neo_aligned_free(mem_ptr);
+        return -1;
+    }
+
+    r->buffer = static_cast<float*>(mem_ptr);
+    r->capacity = capacity;
+    r->head.store(0, std::memory_order_relaxed);
+    r->tail.store(0, std::memory_order_relaxed);
+    r->space_notify_enabled.store(0, std::memory_order_relaxed);
+    r->producer_drops.store(0, std::memory_order_relaxed);
+    r->read_timeouts.store(0, std::memory_order_relaxed);
+    return 0;
+}
+
+void
+input_ring_destroy(struct input_ring_state* r) {
+    if (!r) {
+        return;
+    }
+    if (r->capacity > 0) {
+        (void)dsd_cond_destroy(&r->space);
+        (void)dsd_mutex_destroy(&r->ready_m);
+        (void)dsd_cond_destroy(&r->ready);
+    }
+    if (r->buffer) {
+        dsd_neo_aligned_free(r->buffer);
+        r->buffer = NULL;
+    }
+    r->capacity = 0;
+    r->head.store(0, std::memory_order_relaxed);
+    r->tail.store(0, std::memory_order_relaxed);
+    r->space_notify_enabled.store(0, std::memory_order_relaxed);
+    r->producer_drops.store(0, std::memory_order_relaxed);
+    r->read_timeouts.store(0, std::memory_order_relaxed);
+}
+
+void
+input_ring_enable_space_notify(struct input_ring_state* r, int enabled) {
+    if (!r) {
+        return;
+    }
+    r->space_notify_enabled.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
 
 /**
  * @brief Reserve writable regions in the input ring buffer.
@@ -207,6 +282,11 @@ input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count) 
         t = read_now - first;
     }
     r->tail.store(t);
+    if (r->space_notify_enabled.load(std::memory_order_relaxed)) {
+        dsd_mutex_lock(&r->ready_m);
+        dsd_cond_signal(&r->space);
+        dsd_mutex_unlock(&r->ready_m);
+    }
 
     return (int)read_now;
 }

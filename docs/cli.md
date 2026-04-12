@@ -8,6 +8,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]] | tcp[:host:7355] | udp[:bind:7355] | m17udp[:bind:17000] | -`
 - Outputs: `-o pulse | null | udp[:host:23456] | m17udp[:host:17000] | -`
 - Record/Logs: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`
+- IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`, `-nm`
 - Modes: `-fa | -fs | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-u 3`, `-q`
@@ -27,6 +28,9 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Follow DMR trunking (TCP PCM input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
 - Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N`
 - Follow DMR trunking (SoapySDR): `dsd-neo -fs -i soapy:driver=airspy -T -C connect_plus_chan.csv -G group.csv -N`
+- Capture RTL I/Q + metadata: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq -N`
+- Inspect a capture: `dsd-neo --iq-info p25-control.iq.json`
+- Replay a capture through demod: `dsd-neo --iq-replay p25-control.iq.json -f1 -N`
 - Play saved MBE files: `dsd-neo -r *.mbe`
 - Decode MBE to a WAV (no speaker output): `dsd-neo -o null -w decoded.wav -r call.mbe`
 
@@ -129,6 +133,24 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-L <file>` Append LRRP (location) data
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
 - `-q` Reverse mute: mute clear audio, unmute encrypted audio
+
+## IQ Capture And Replay
+
+- `--iq-capture <path>` Capture raw I/Q plus metadata sidecar.
+- `--iq-capture-format <cu8|cf32>` Capture format request (`cu8` default).
+- `--iq-capture-max-mb <n>` Capture byte cap in MiB (`0` unlimited).
+- `--iq-replay <path>` Replay capture metadata/data through the RTL pipeline.
+- `--iq-replay-rate <fast|realtime>` Replay pacing mode (`fast` default).
+- `--iq-loop` Loop replay when EOF is reached.
+- `--iq-info <path>` Print capture metadata summary and exit.
+
+Notes
+
+- Replay and capture are mutually exclusive in one invocation.
+- `--iq-replay` and `--iq-info` accept either the data file or the `.json` metadata path.
+- Captures marked with retunes are reported by `--iq-info` and rejected by `--iq-replay`.
+- `-i iqreplay:...` is intentionally not a supported public input form; use `--iq-replay`.
+- More details and format notes: `docs/iq-capture-replay.md`.
 
 ## Levels & Audio
 
@@ -459,6 +481,9 @@ Debug (verbose/developer)
 - SoapySDR args + RTL-style tuning in one input spec: `dsd-neo -i soapy:driver=sdrplay:851.375M:22:-2:24:0:2 -N`
 - Save per‑call WAVs to a folder: `dsd-neo -7 ./calls -P -N`
 - Strictly P25 Phase 1 from TCP audio: `dsd-neo -f1 -i tcp -N`
+- Capture I/Q while decoding RTL input: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq -N`
+- Print capture metadata and replayability summary: `dsd-neo --iq-info p25-control.iq.json`
+- Replay capture in realtime loop mode: `dsd-neo --iq-replay p25-control.iq.json --iq-replay-rate realtime --iq-loop -N`
 
 ## Manual Validation Checklist
 

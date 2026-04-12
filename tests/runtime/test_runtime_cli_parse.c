@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/pc5.h>
+#include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -529,6 +530,118 @@ test_create_temp_vertex_ks_csv(char* out_path, size_t out_path_size, int malform
     }
 
     fclose(fp);
+    return 0;
+}
+
+static int
+test_create_temp_iq_fixture(char* out_metadata_path, size_t out_metadata_path_size, char* out_data_path,
+                            size_t out_data_path_size) {
+    if (!out_metadata_path || out_metadata_path_size == 0 || !out_data_path || out_data_path_size == 0) {
+        return -1;
+    }
+
+    const char sep = test_path_sep();
+    const char* tdir = test_tmp_dir();
+
+    char tmpl[1024];
+    size_t tdir_len = strlen(tdir);
+    if (tdir_len > 0 && (tdir[tdir_len - 1] == '/' || tdir[tdir_len - 1] == '\\')) {
+        snprintf(tmpl, sizeof tmpl, "%sdsdneo_iq_cli_XXXXXX", tdir);
+    } else {
+        snprintf(tmpl, sizeof tmpl, "%s%c%s", tdir, sep, "dsdneo_iq_cli_XXXXXX");
+    }
+
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        return -1;
+    }
+    (void)dsd_close(fd);
+
+    char data_path[1024];
+    if (snprintf(data_path, sizeof data_path, "%s.iq", tmpl) >= (int)sizeof(data_path)) {
+        (void)remove(tmpl);
+        return -1;
+    }
+    if (rename(tmpl, data_path) != 0) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    FILE* data_fp = fopen(data_path, "wb");
+    if (!data_fp) {
+        (void)remove(data_path);
+        return -1;
+    }
+    static const unsigned char kData[16] = {0x7f, 0x80, 0x10, 0xf0, 0x20, 0xe0, 0x30, 0xd0,
+                                            0x40, 0xc0, 0x50, 0xb0, 0x60, 0xa0, 0x70, 0x90};
+    if (fwrite(kData, 1, sizeof(kData), data_fp) != sizeof(kData)) {
+        fclose(data_fp);
+        (void)remove(data_path);
+        return -1;
+    }
+    fclose(data_fp);
+
+    char metadata_path[1024];
+    if (snprintf(metadata_path, sizeof metadata_path, "%s.json", data_path) >= (int)sizeof(metadata_path)) {
+        (void)remove(data_path);
+        return -1;
+    }
+    FILE* meta_fp = fopen(metadata_path, "w");
+    if (!meta_fp) {
+        (void)remove(data_path);
+        return -1;
+    }
+
+    const char* data_file = strrchr(data_path, '/');
+    const char* data_file_win = strrchr(data_path, '\\');
+    if (data_file_win && (!data_file || data_file_win > data_file)) {
+        data_file = data_file_win;
+    }
+    data_file = data_file ? (data_file + 1) : data_path;
+
+    int n = fprintf(meta_fp,
+                    "{\n"
+                    "  \"format\": \"dsd-neo-iq\",\n"
+                    "  \"version\": 1,\n"
+                    "  \"sample_format\": \"cu8\",\n"
+                    "  \"iq_order\": \"IQ\",\n"
+                    "  \"endianness\": \"none\",\n"
+                    "  \"capture_stage\": \"post_mute_pre_widen\",\n"
+                    "  \"sample_rate_hz\": 1536000,\n"
+                    "  \"center_frequency_hz\": 851375000,\n"
+                    "  \"capture_center_frequency_hz\": 851759000,\n"
+                    "  \"ppm\": 0,\n"
+                    "  \"tuner_gain_tenth_db\": 220,\n"
+                    "  \"rtl_dsp_bw_khz\": 48,\n"
+                    "  \"base_decimation\": 32,\n"
+                    "  \"post_downsample\": 1,\n"
+                    "  \"demod_rate_hz\": 48000,\n"
+                    "  \"offset_tuning_enabled\": false,\n"
+                    "  \"fs4_shift_enabled\": true,\n"
+                    "  \"combine_rotate_enabled\": true,\n"
+                    "  \"muted_bytes_excluded\": true,\n"
+                    "  \"contains_retunes\": false,\n"
+                    "  \"capture_retune_count\": 0,\n"
+                    "  \"source_backend\": \"rtl\",\n"
+                    "  \"source_args\": \"dev=0\",\n"
+                    "  \"capture_started_utc\": \"2026-01-01T00:00:00Z\",\n"
+                    "  \"data_file\": \"%s\",\n"
+                    "  \"data_bytes\": 16,\n"
+                    "  \"capture_drops\": 0,\n"
+                    "  \"capture_drop_blocks\": 0,\n"
+                    "  \"input_ring_drops\": 0,\n"
+                    "  \"notes\": \"\"\n"
+                    "}\n",
+                    data_file);
+    fclose(meta_fp);
+    if (n <= 0) {
+        (void)remove(metadata_path);
+        (void)remove(data_path);
+        return -1;
+    }
+
+    snprintf(out_data_path, out_data_path_size, "%s", data_path);
+    snprintf(out_metadata_path, out_metadata_path_size, "%s", metadata_path);
     return 0;
 }
 
@@ -1163,6 +1276,315 @@ test_input_source_rtl_roundtrip(void) {
 static int
 test_input_source_rtltcp_roundtrip(void) {
     return test_input_source_arg_roundtrip("rtltcp:127.0.0.1:1234:851.375M:30:5:16:-50:2");
+}
+
+static int
+test_iq_capture_long_options_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--iq-capture";
+    char arg2[] = "capture.iq";
+    char arg3[] = "--iq-capture-format=cf32";
+    char arg4[] = "--iq-capture-max-mb";
+    char arg5[] = "8";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(6, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (!opts->iq_capture_requested) {
+        fprintf(stderr, "expected iq_capture_requested=1\n");
+        test_rc = 1;
+    }
+    if (strcmp(opts->iq_capture_path, "capture.iq") != 0) {
+        fprintf(stderr, "expected iq_capture_path=capture.iq, got %s\n", opts->iq_capture_path);
+        test_rc = 1;
+    }
+    if (opts->iq_capture_format != DSD_IQ_FORMAT_CF32) {
+        fprintf(stderr, "expected iq_capture_format=CF32, got %u\n", (unsigned)opts->iq_capture_format);
+        test_rc = 1;
+    }
+    if (opts->iq_capture_max_bytes != (8ULL * 1024ULL * 1024ULL)) {
+        fprintf(stderr, "expected iq_capture_max_bytes=%llu, got %llu\n",
+                (unsigned long long)(8ULL * 1024ULL * 1024ULL), (unsigned long long)opts->iq_capture_max_bytes);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_iq_replay_long_options_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char metadata_path[1024];
+    char data_path[1024];
+    if (test_create_temp_iq_fixture(metadata_path, sizeof metadata_path, data_path, sizeof data_path) != 0) {
+        fprintf(stderr, "failed to create temporary IQ fixture\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--iq-replay";
+    char arg2[1024];
+    char arg3[] = "--iq-replay-rate=realtime";
+    char arg4[] = "--iq-loop";
+    snprintf(arg2, sizeof arg2, "%s", metadata_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        (void)remove(metadata_path);
+        (void)remove(data_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (!opts->iq_replay_requested || !opts->iq_replay_loop) {
+        fprintf(stderr, "expected iq replay requested+loop flags to be set\n");
+        test_rc = 1;
+    }
+    if (opts->iq_replay_rate_mode != DSD_IQ_REPLAY_RATE_REALTIME) {
+        fprintf(stderr, "expected iq_replay_rate_mode realtime, got %u\n", (unsigned)opts->iq_replay_rate_mode);
+        test_rc = 1;
+    }
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        fprintf(stderr, "expected audio_in_type=AUDIO_IN_RTL, got %d\n", opts->audio_in_type);
+        test_rc = 1;
+    }
+    if (!dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
+        fprintf(stderr, "expected audio_in_dev to be iqreplay spec, got %s\n", opts->audio_in_dev);
+        test_rc = 1;
+    }
+    if (opts->rtlsdr_center_freq != 851375000U) {
+        fprintf(stderr, "expected center frequency from metadata, got %u\n", opts->rtlsdr_center_freq);
+        test_rc = 1;
+    }
+    if (!opts->iq_replay_requested || strcmp(opts->iq_replay_path, metadata_path) != 0) {
+        fprintf(stderr, "expected iq_replay_path=%s, got %s\n", metadata_path, opts->iq_replay_path);
+        test_rc = 1;
+    }
+
+    (void)remove(metadata_path);
+    (void)remove(data_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_iq_info_returns_one_shot(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char metadata_path[1024];
+    char data_path[1024];
+    if (test_create_temp_iq_fixture(metadata_path, sizeof metadata_path, data_path, sizeof data_path) != 0) {
+        fprintf(stderr, "failed to create temporary IQ fixture\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--iq-info";
+    char arg2[1024];
+    snprintf(arg2, sizeof arg2, "%s", metadata_path);
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    test_redirect_stdout_to_null();
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_ONE_SHOT || exit_rc != 0) {
+        fprintf(stderr, "expected iq-info one-shot success, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        (void)remove(metadata_path);
+        (void)remove(data_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    (void)remove(metadata_path);
+    (void)remove(data_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_iq_replay_capture_conflict_returns_error(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char metadata_path[1024];
+    char data_path[1024];
+    if (test_create_temp_iq_fixture(metadata_path, sizeof metadata_path, data_path, sizeof data_path) != 0) {
+        fprintf(stderr, "failed to create temporary IQ fixture\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--iq-capture";
+    char arg2[] = "capture.iq";
+    char arg3[] = "--iq-replay";
+    char arg4[1024];
+    snprintf(arg4, sizeof arg4, "%s", metadata_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        fprintf(stderr, "expected replay/capture conflict error, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        (void)remove(metadata_path);
+        (void)remove(data_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    (void)remove(metadata_path);
+    (void)remove(data_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_missing_required_long_option_value_returns_error(const char* option_name) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[64];
+    snprintf(arg1, sizeof arg1, "%s", option_name ? option_name : "");
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        fprintf(stderr, "expected missing %s value error, got rc=%d exit_rc=%d\n", option_name ? option_name : "(null)",
+                rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_iq_capture_missing_value_returns_error(void) {
+    return test_missing_required_long_option_value_returns_error("--iq-capture");
+}
+
+static int
+test_iq_capture_format_missing_value_returns_error(void) {
+    return test_missing_required_long_option_value_returns_error("--iq-capture-format");
+}
+
+static int
+test_iq_capture_max_mb_missing_value_returns_error(void) {
+    return test_missing_required_long_option_value_returns_error("--iq-capture-max-mb");
+}
+
+static int
+test_iq_replay_missing_value_returns_error(void) {
+    return test_missing_required_long_option_value_returns_error("--iq-replay");
+}
+
+static int
+test_iq_replay_rate_missing_value_returns_error(void) {
+    return test_missing_required_long_option_value_returns_error("--iq-replay-rate");
+}
+
+static int
+test_iq_info_missing_value_returns_error(void) {
+    return test_missing_required_long_option_value_returns_error("--iq-info");
 }
 
 static int
@@ -2421,6 +2843,16 @@ main(void) {
     rc |= test_input_source_soapy_args_roundtrip();
     rc |= test_input_source_rtl_roundtrip();
     rc |= test_input_source_rtltcp_roundtrip();
+    rc |= test_iq_capture_long_options_parse();
+    rc |= test_iq_capture_missing_value_returns_error();
+    rc |= test_iq_capture_format_missing_value_returns_error();
+    rc |= test_iq_capture_max_mb_missing_value_returns_error();
+    rc |= test_iq_replay_long_options_parse();
+    rc |= test_iq_replay_rate_missing_value_returns_error();
+    rc |= test_iq_info_returns_one_shot();
+    rc |= test_iq_info_missing_value_returns_error();
+    rc |= test_iq_replay_capture_conflict_returns_error();
+    rc |= test_iq_replay_missing_value_returns_error();
     rc |= test_rtl_udp_control_long_option_parse();
     rc |= test_rtl_udp_control_missing_port_returns_error();
     rc |= test_dmr_baofeng_pc5_long_option_parse();

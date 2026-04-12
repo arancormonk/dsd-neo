@@ -48,6 +48,7 @@ This project is an active work in progress as we decouple from the upstream fork
   - Generic TCP PCM16LE input (`-i tcp[:host:port]`, SDR++/GRC 7355 audio streams).
   - UDP audio in/out: receive PCM16LE over UDP as an input, and send decoded audio to UDP sinks for easy piping to other apps or hosts (decoded voice is typically 8 kHz; see `docs/network-audio.md`).
   - M17 UDP/IP in/out: dedicated M17 frame input/output over UDP (`-i m17udp[:bind:17000]`, `-o m17udp[:host:17000]`).
+  - RF I/Q capture/replay workflow with metadata (`--iq-capture`, `--iq-info`, `--iq-replay`) for reproducible decode debugging and regression replay.
 
 - Built‑in trunking workflow
 
@@ -328,6 +329,7 @@ Quick examples
 
 - UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
 - DMR trunking from TCP PCM input (with rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
+- IQ capture + inspect + replay: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq -N` then `dsd-neo --iq-info p25-control.iq.json` then `dsd-neo --iq-replay p25-control.iq.json -f1 -N`
 
 ## Configuration
 
@@ -345,6 +347,7 @@ Quick examples
 ## Documentation
 
 - CLI usage and options: `docs/cli.md`
+- IQ capture/replay format and workflow: `docs/iq-capture-replay.md`
 - SoapySDR non-RTL setup and usage: `docs/soapysdr.md`
 - User config system (INI): `docs/config-system.md`
 - Trunking CSV formats: `docs/csv-formats.md` (examples in `examples/`)

@@ -220,6 +220,15 @@ initOpts(dsd_opts* opts) {
     opts->aggressive_framesync = 1;
     /* DMR: strict CRC gating by default (use -F to relax, like other protocols). */
     opts->dmr_crc_relaxed_default = 0;
+    opts->iq_capture_requested = 0;
+    opts->iq_replay_requested = 0;
+    opts->iq_replay_loop = 0;
+    opts->iq_replay_active = 0;
+    opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_FAST;
+    opts->iq_capture_format = 1; /* DSD_IQ_FORMAT_CU8 */
+    opts->iq_capture_max_bytes = 0;
+    opts->iq_capture_path[0] = '\0';
+    opts->iq_replay_path[0] = '\0';
 
     opts->audio_in_type = AUDIO_IN_PULSE;
     opts->audio_out_type = 0;

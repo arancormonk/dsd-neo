@@ -42,18 +42,10 @@ test_input_ring_wrap_and_read(void) {
     struct input_ring_state r;
     memset(&r, 0, sizeof(r));
 
-    r.buffer = (float*)calloc(cap, sizeof(float));
-    if (!r.buffer) {
-        fprintf(stderr, "input_ring: allocation failed\n");
+    if (input_ring_init(&r, cap) != 0) {
+        fprintf(stderr, "input_ring: init failed\n");
         return 1;
     }
-    r.capacity = cap;
-    r.head.store(0);
-    r.tail.store(0);
-    r.producer_drops.store(0);
-    r.read_timeouts.store(0);
-    dsd_cond_init(&r.ready);
-    dsd_mutex_init(&r.ready_m);
 
     /* First write: no wrap, fills positions [0..5] */
     float src1[6] = {10, 20, 30, 40, 50, 60};
@@ -94,9 +86,7 @@ test_input_ring_wrap_and_read(void) {
         return 1;
     }
 
-    dsd_mutex_destroy(&r.ready_m);
-    dsd_cond_destroy(&r.ready);
-    free(r.buffer);
+    input_ring_destroy(&r);
     return 0;
 }
 
@@ -106,18 +96,10 @@ test_input_ring_drop_on_full(void) {
     struct input_ring_state r;
     memset(&r, 0, sizeof(r));
 
-    r.buffer = (float*)calloc(cap, sizeof(float));
-    if (!r.buffer) {
-        fprintf(stderr, "input_ring drop: allocation failed\n");
+    if (input_ring_init(&r, cap) != 0) {
+        fprintf(stderr, "input_ring drop: init failed\n");
         return 1;
     }
-    r.capacity = cap;
-    r.head.store(0);
-    r.tail.store(0);
-    r.producer_drops.store(0);
-    r.read_timeouts.store(0);
-    dsd_cond_init(&r.ready);
-    dsd_mutex_init(&r.ready_m);
 
     /* Fill ring to capacity-1 (maximum usable occupancy) */
     float initial[3] = {1, 2, 3};
@@ -154,9 +136,7 @@ test_input_ring_drop_on_full(void) {
         return 1;
     }
 
-    dsd_mutex_destroy(&r.ready_m);
-    dsd_cond_destroy(&r.ready);
-    free(r.buffer);
+    input_ring_destroy(&r);
     return 0;
 }
 

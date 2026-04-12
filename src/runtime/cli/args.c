@@ -9,6 +9,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/io/iq_capture.h>
+#include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/cli.h>
@@ -18,7 +20,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
-#include <stdint.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +29,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/platform/platform.h"
 #if defined(__MINGW32__) || defined(__MINGW64__)
 #include <getopt.h>
@@ -114,6 +117,40 @@ cli_parse_decimal_u32(const char* in, unsigned long* out) {
     return 1;
 }
 
+static int
+cli_parse_decimal_u64(const char* in, uint64_t* out) {
+    if (!in || !out || in[0] == '\0') {
+        return 0;
+    }
+    for (const char* p = in; *p; ++p) {
+        if (!isdigit((unsigned char)*p)) {
+            return 0;
+        }
+    }
+    errno = 0;
+    char* end = NULL;
+    unsigned long long v = strtoull(in, &end, 10);
+    if (errno != 0 || !end || *end != '\0') {
+        return 0;
+    }
+    *out = (uint64_t)v;
+    return 1;
+}
+
+static int
+cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
+    if (!opts || !path) {
+        return -1;
+    }
+    size_t path_len = strlen(path);
+    if (path_len + strlen("iqreplay:") + 1 > sizeof(opts->audio_in_dev)) {
+        return -1;
+    }
+    memcpy(opts->audio_in_dev, "iqreplay:", strlen("iqreplay:"));
+    memcpy(opts->audio_in_dev + strlen("iqreplay:"), path, path_len + 1);
+    return 0;
+}
+
 // Parse long-style options and environment mapping; also supports the
 // one-shot LCN calculator. Short-option parsing has been migrated here
 // to centralize all CLI handling in runtime.
@@ -141,6 +178,13 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* dmr_baofeng_pc5_cli = NULL;
     const char* dmr_csi_ee72_cli = NULL;
     const char* dmr_vertex_ks_csv_cli = NULL;
+    const char* iq_capture_cli = NULL;
+    const char* iq_capture_format_cli = NULL;
+    const char* iq_capture_max_mb_cli = NULL;
+    const char* iq_replay_cli = NULL;
+    const char* iq_replay_rate_cli = NULL;
+    const char* iq_info_cli = NULL;
+    int iq_loop_cli = 0;
     int rtl_udp_control_cli_seen = 0;
     unsigned long rtl_udp_control_cli_port = 0;
 
@@ -178,6 +222,88 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             }
             rtl_udp_control_cli_seen = 1;
             rtl_udp_control_cli_port = parsed_port;
+            continue;
+        }
+        if (strcmp(argv[i], "--iq-capture") == 0) {
+            if (i + 1 >= argc) {
+                LOG_ERROR("--iq-capture requires a path value\n");
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            iq_capture_cli = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "--iq-capture=", 13) == 0) {
+            iq_capture_cli = argv[i] + 13;
+            continue;
+        }
+        if (strcmp(argv[i], "--iq-capture-format") == 0) {
+            if (i + 1 >= argc) {
+                LOG_ERROR("--iq-capture-format requires a value (cu8|cf32)\n");
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            iq_capture_format_cli = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "--iq-capture-format=", 20) == 0) {
+            iq_capture_format_cli = argv[i] + 20;
+            continue;
+        }
+        if (strcmp(argv[i], "--iq-capture-max-mb") == 0) {
+            if (i + 1 >= argc) {
+                LOG_ERROR("--iq-capture-max-mb requires a decimal value\n");
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            iq_capture_max_mb_cli = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "--iq-capture-max-mb=", 20) == 0) {
+            iq_capture_max_mb_cli = argv[i] + 20;
+            continue;
+        }
+        if (strcmp(argv[i], "--iq-replay") == 0) {
+            if (i + 1 >= argc) {
+                LOG_ERROR("--iq-replay requires a path value\n");
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            iq_replay_cli = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "--iq-replay=", 12) == 0) {
+            iq_replay_cli = argv[i] + 12;
+            continue;
+        }
+        if (strcmp(argv[i], "--iq-replay-rate") == 0) {
+            if (i + 1 >= argc) {
+                LOG_ERROR("--iq-replay-rate requires a value (fast|realtime)\n");
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            iq_replay_rate_cli = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "--iq-replay-rate=", 17) == 0) {
+            iq_replay_rate_cli = argv[i] + 17;
+            continue;
+        }
+        if (strcmp(argv[i], "--iq-loop") == 0) {
+            iq_loop_cli = 1;
+            continue;
+        }
+        if (strcmp(argv[i], "--iq-info") == 0) {
+            if (i + 1 >= argc) {
+                LOG_ERROR("--iq-info requires a path value\n");
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            iq_info_cli = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "--iq-info=", 10) == 0) {
+            iq_info_cli = argv[i] + 10;
             continue;
         }
         if (strcmp(argv[i], "--p25-vc-grace") == 0 && i + 1 < argc) {
@@ -406,6 +532,158 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }
     }
 
+    if (iq_capture_cli) {
+        char err_buf[256];
+        char data_path[2048];
+        char meta_path[2048];
+        int rc = dsd_iq_capture_derive_paths(iq_capture_cli, data_path, sizeof(data_path), meta_path, sizeof(meta_path),
+                                             err_buf, sizeof(err_buf));
+        if (rc != DSD_IQ_OK) {
+            LOG_ERROR("Invalid --iq-capture path: %s\n", err_buf[0] ? err_buf : "failed to derive paths");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+        opts->iq_capture_requested = 1;
+        snprintf(opts->iq_capture_path, sizeof(opts->iq_capture_path), "%s", iq_capture_cli);
+    }
+
+    if (iq_capture_format_cli) {
+        if (strcmp(iq_capture_format_cli, "cu8") == 0) {
+            opts->iq_capture_format = DSD_IQ_FORMAT_CU8;
+        } else if (strcmp(iq_capture_format_cli, "cf32") == 0) {
+            opts->iq_capture_format = DSD_IQ_FORMAT_CF32;
+        } else {
+            LOG_ERROR("Invalid --iq-capture-format value \"%s\" (expected cu8 or cf32)\n", iq_capture_format_cli);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+    }
+
+    if (iq_capture_max_mb_cli) {
+        uint64_t mb = 0;
+        if (!cli_parse_decimal_u64(iq_capture_max_mb_cli, &mb)) {
+            LOG_ERROR("Invalid --iq-capture-max-mb value \"%s\" (expected decimal MB)\n", iq_capture_max_mb_cli);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+        if (mb > (UINT64_MAX / (1024ULL * 1024ULL))) {
+            LOG_ERROR("--iq-capture-max-mb value is too large\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+        opts->iq_capture_max_bytes = mb * 1024ULL * 1024ULL;
+    }
+
+    if (iq_replay_cli) {
+        opts->iq_replay_requested = 1;
+        snprintf(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", iq_replay_cli);
+    }
+    if (iq_loop_cli) {
+        opts->iq_replay_loop = 1;
+    }
+    if (iq_replay_rate_cli) {
+        if (strcmp(iq_replay_rate_cli, "fast") == 0) {
+            opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_FAST;
+        } else if (strcmp(iq_replay_rate_cli, "realtime") == 0) {
+            opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_REALTIME;
+        } else {
+            LOG_ERROR("Invalid --iq-replay-rate value \"%s\" (expected fast or realtime)\n", iq_replay_rate_cli);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+    }
+
+    if (opts->iq_capture_requested && opts->iq_replay_requested) {
+        LOG_ERROR("Cannot combine --iq-capture with --iq-replay in the same invocation\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return DSD_PARSE_ERROR;
+    }
+
+    if (iq_info_cli) {
+        dsd_iq_replay_config info_cfg;
+        memset(&info_cfg, 0, sizeof(info_cfg));
+        char err_buf[256] = {0};
+        int rc = dsd_iq_replay_read_metadata(iq_info_cli, &info_cfg, err_buf, sizeof(err_buf));
+        if (rc != DSD_IQ_OK) {
+            LOG_ERROR("--iq-info: %s\n", err_buf[0] ? err_buf : "failed to parse metadata");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ONE_SHOT;
+        }
+        struct stat st;
+        if (stat(info_cfg.data_path, &st) != 0 || st.st_size < 0) {
+            LOG_ERROR("--iq-info: failed to stat data file '%s'\n", info_cfg.data_path);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ONE_SHOT;
+        }
+        rc = dsd_iq_info_print(&info_cfg, iq_info_cli, (uint64_t)st.st_size, stdout, stderr);
+        cli_set_exit_rc(out_exit_rc, (rc == DSD_IQ_OK) ? 0 : 1);
+        return DSD_PARSE_ONE_SHOT;
+    }
+
+    if (opts->iq_replay_requested) {
+        dsd_iq_replay_config replay_cfg;
+        memset(&replay_cfg, 0, sizeof(replay_cfg));
+        char err_buf[256] = {0};
+        int rc = dsd_iq_replay_read_metadata(opts->iq_replay_path, &replay_cfg, err_buf, sizeof(err_buf));
+        if (rc != DSD_IQ_OK) {
+            LOG_ERROR("--iq-replay: %s\n", err_buf[0] ? err_buf : "failed to parse metadata");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+        if (replay_cfg.contains_retunes) {
+            LOG_ERROR("--iq-replay: capture contains retunes and is not replayable in this build\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+
+        struct stat st;
+        if (stat(replay_cfg.data_path, &st) != 0 || st.st_size < 0) {
+            LOG_ERROR("--iq-replay: failed to stat data file '%s'\n", replay_cfg.data_path);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+        uint64_t effective_bytes = 0;
+        int size_mismatch = 0;
+        rc = dsd_iq_replay_compute_effective_bytes(replay_cfg.data_bytes, (uint64_t)st.st_size, replay_cfg.format,
+                                                   &effective_bytes, &size_mismatch);
+        if (rc != DSD_IQ_OK) {
+            LOG_ERROR("--iq-replay: failed to compute effective replay bytes\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+        rc = dsd_iq_replay_validate_effective_bytes_for_replay(effective_bytes, opts->iq_replay_loop);
+        if (rc != DSD_IQ_OK) {
+            LOG_ERROR("--iq-replay: no aligned I/Q samples available for replay\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+        if (size_mismatch) {
+            LOG_WARN("IQ replay metadata/data size mismatch: metadata=%" PRIu64 " actual=%" PRIu64 "\n",
+                     replay_cfg.data_bytes, (uint64_t)st.st_size);
+        }
+
+        if (replay_cfg.center_frequency_hz > UINT32_MAX) {
+            LOG_ERROR("--iq-replay: center_frequency_hz %" PRIu64 " exceeds RTL path range\n",
+                      replay_cfg.center_frequency_hz);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+        opts->rtlsdr_center_freq = (uint32_t)replay_cfg.center_frequency_hz;
+        opts->rtlsdr_ppm_error = replay_cfg.ppm;
+        if (replay_cfg.tuner_gain_tenth_db > 0) {
+            opts->rtl_gain_value = replay_cfg.tuner_gain_tenth_db;
+        }
+        if (replay_cfg.rtl_dsp_bw_khz > 0) {
+            opts->rtl_dsp_bw_khz = replay_cfg.rtl_dsp_bw_khz;
+        }
+        opts->audio_in_type = AUDIO_IN_RTL;
+        if (cli_set_iqreplay_audio_dev(opts, opts->iq_replay_path) != 0) {
+            LOG_ERROR("--iq-replay path is too long\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+    }
+
     // If CLI present, set env vars and maybe run calculator
     if (calc_csv_cli) {
         dsd_setenv("DSD_NEO_DMR_T3_CALC_CSV", calc_csv_cli, 1);
@@ -580,6 +858,14 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
 #endif
 
     int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc);
+    if (parse_rc == DSD_PARSE_CONTINUE && opts->iq_replay_requested && opts->iq_replay_path[0] != '\0') {
+        opts->audio_in_type = AUDIO_IN_RTL;
+        if (cli_set_iqreplay_audio_dev(opts, opts->iq_replay_path) != 0) {
+            LOG_ERROR("--iq-replay path is too long\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+    }
     if (out_argc) {
         *out_argc = new_argc;
     }

@@ -1,5 +1,23 @@
 # IO module libraries
 
+# IQ capture/replay metadata and file helpers (no SDR dependency)
+add_library(dsd-neo_io_iq)
+target_sources(dsd-neo_io_iq PRIVATE
+  iq/iq_capture.c
+  iq/iq_replay.c
+)
+target_include_directories(dsd-neo_io_iq
+  PUBLIC ${PROJECT_SOURCE_DIR}/include
+  PRIVATE ${PROJECT_SOURCE_DIR}/src/io/iq
+)
+target_link_libraries(dsd-neo_io_iq PUBLIC dsd-neo_platform)
+target_link_libraries(dsd-neo_io_iq PRIVATE dsd-neo_warnings)
+
+install(TARGETS dsd-neo_io_iq
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
 # Radio (RTL-SDR front-end and streaming)
 if(DSD_HAS_RADIO)
   add_library(dsd-neo_io_radio)
@@ -17,6 +35,7 @@ if(DSD_HAS_RADIO)
     PRIVATE ${_PUBLIC_INCLUDES}
   )
   target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_dsp dsd-neo_pffft dsd-neo_feature_radio dsd-neo_feature_rtlsdr)
+  target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_io_iq)
   # SoapySDR exports C++-only warning flags; keep it private so they do not leak into C dependents.
   target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_feature_soapy)
 

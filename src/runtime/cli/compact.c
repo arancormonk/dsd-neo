@@ -36,6 +36,63 @@ dsd_cli_compact_args(int argc, char** argv) {
         if (strncmp(arg, "--rtl-udp-control=", 18) == 0) {
             continue;
         }
+        if (strcmp(arg, "--iq-capture") == 0) {
+            if (i + 1 < argc && argv[i + 1] != NULL) {
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--iq-capture=", 13) == 0) {
+            continue;
+        }
+        if (strcmp(arg, "--iq-capture-format") == 0) {
+            if (i + 1 < argc && argv[i + 1] != NULL) {
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--iq-capture-format=", 20) == 0) {
+            continue;
+        }
+        if (strcmp(arg, "--iq-capture-max-mb") == 0) {
+            if (i + 1 < argc && argv[i + 1] != NULL) {
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--iq-capture-max-mb=", 20) == 0) {
+            continue;
+        }
+        if (strcmp(arg, "--iq-replay") == 0) {
+            if (i + 1 < argc && argv[i + 1] != NULL) {
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--iq-replay=", 12) == 0) {
+            continue;
+        }
+        if (strcmp(arg, "--iq-replay-rate") == 0) {
+            if (i + 1 < argc && argv[i + 1] != NULL) {
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--iq-replay-rate=", 17) == 0) {
+            continue;
+        }
+        if (strcmp(arg, "--iq-loop") == 0) {
+            continue;
+        }
+        if (strcmp(arg, "--iq-info") == 0) {
+            if (i + 1 < argc && argv[i + 1] != NULL) {
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--iq-info=", 10) == 0) {
+            continue;
+        }
         if (strcmp(arg, "--input-volume") == 0) {
             if (i + 1 < argc) {
                 i++;

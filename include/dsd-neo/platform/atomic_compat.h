@@ -15,6 +15,7 @@
  */
 
 #include <dsd-neo/platform/platform.h>
+#include <stdint.h>
 
 #if DSD_COMPILER_MSVC && !DSD_COMPILER_CLANG && defined(__STDC_NO_ATOMICS__)
 
@@ -58,8 +59,119 @@ atomic_compare_exchange_strong(atomic_int* obj, int* expected, int desired) {
     return 0;
 }
 
+typedef struct dsd_atomic_u64 {
+    volatile LONG64 v;
+} dsd_atomic_u64;
+
+static inline void
+dsd_atomic_u64_init(dsd_atomic_u64* a, uint64_t initial) {
+    if (!a) {
+        return;
+    }
+    (void)InterlockedExchange64(&a->v, (LONG64)initial);
+}
+
+static inline uint64_t
+dsd_atomic_u64_load_relaxed(const dsd_atomic_u64* a) {
+    if (!a) {
+        return 0;
+    }
+    return (uint64_t)InterlockedCompareExchange64((volatile LONG64*)&a->v, 0, 0);
+}
+
+static inline void
+dsd_atomic_u64_store_relaxed(dsd_atomic_u64* a, uint64_t v) {
+    if (!a) {
+        return;
+    }
+    (void)InterlockedExchange64(&a->v, (LONG64)v);
+}
+
+static inline uint64_t
+dsd_atomic_u64_fetch_add_relaxed(dsd_atomic_u64* a, uint64_t delta) {
+    if (!a) {
+        return 0;
+    }
+    return (uint64_t)InterlockedExchangeAdd64(&a->v, (LONG64)delta);
+}
+
+static inline uint64_t
+dsd_atomic_u64_load_acquire(const dsd_atomic_u64* a) {
+    return dsd_atomic_u64_load_relaxed(a);
+}
+
+static inline void
+dsd_atomic_u64_store_release(dsd_atomic_u64* a, uint64_t v) {
+    dsd_atomic_u64_store_relaxed(a, v);
+}
+
+static inline uint64_t
+dsd_atomic_u64_fetch_add_release(dsd_atomic_u64* a, uint64_t delta) {
+    return dsd_atomic_u64_fetch_add_relaxed(a, delta);
+}
+
 #else
 
 #include <stdatomic.h> // IWYU pragma: export
+
+typedef struct dsd_atomic_u64 {
+    _Atomic(uint64_t) v;
+} dsd_atomic_u64;
+
+static inline void
+dsd_atomic_u64_init(dsd_atomic_u64* a, uint64_t initial) {
+    if (!a) {
+        return;
+    }
+    atomic_init(&a->v, initial);
+}
+
+static inline uint64_t
+dsd_atomic_u64_load_relaxed(const dsd_atomic_u64* a) {
+    if (!a) {
+        return 0;
+    }
+    return atomic_load_explicit(&a->v, memory_order_relaxed);
+}
+
+static inline void
+dsd_atomic_u64_store_relaxed(dsd_atomic_u64* a, uint64_t v) {
+    if (!a) {
+        return;
+    }
+    atomic_store_explicit(&a->v, v, memory_order_relaxed);
+}
+
+static inline uint64_t
+dsd_atomic_u64_fetch_add_relaxed(dsd_atomic_u64* a, uint64_t delta) {
+    if (!a) {
+        return 0;
+    }
+    return atomic_fetch_add_explicit(&a->v, delta, memory_order_relaxed);
+}
+
+static inline uint64_t
+dsd_atomic_u64_load_acquire(const dsd_atomic_u64* a) {
+    if (!a) {
+        return 0;
+    }
+    return atomic_load_explicit(&a->v, memory_order_acquire);
+}
+
+static inline void
+dsd_atomic_u64_store_release(dsd_atomic_u64* a, uint64_t v) {
+    if (!a) {
+        return;
+    }
+    atomic_store_explicit(&a->v, v, memory_order_release);
+}
+
+static inline uint64_t
+dsd_atomic_u64_fetch_add_release(dsd_atomic_u64* a, uint64_t delta) {
+    if (!a) {
+        return 0;
+    }
+    return atomic_fetch_add_explicit(&a->v, delta, memory_order_release);
+}
 
 #endif

@@ -279,6 +279,12 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
 
+    if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev) && !opts->iq_replay_requested) {
+        LOG_ERROR("Direct -i iqreplay:... is not supported. Use --iq-replay <path>.\n");
+        return -1;
+    }
+    opts->iq_replay_active = dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev) ? 1 : 0;
+
     if (dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) //M17 UDP Socket Input
     {
         LOG_NOTICE("M17 UDP IP Frame Input: ");
@@ -433,6 +439,18 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
             LOG_ERROR("RIGCTL Connection Failure - RIGCTL Features Disabled\n");
             opts->use_rigctl = 0;
         }
+    }
+
+    if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
+        const char* replay_path = opts->audio_in_dev;
+        const char* colon = strchr(opts->audio_in_dev, ':');
+        if (colon && colon[1] != '\0') {
+            replay_path = colon + 1;
+        }
+        LOG_NOTICE("IQ Replay Input: %s\n", replay_path);
+        opts->rtltcp_enabled = 0;
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->iq_replay_active = 1;
     }
 
     if (dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)) // rtl_tcp networked RTL-SDR

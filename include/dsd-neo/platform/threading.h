@@ -164,6 +164,28 @@ int dsd_cond_wait(dsd_cond_t* cond, dsd_mutex_t* mutex);
 int dsd_cond_timedwait(dsd_cond_t* cond, dsd_mutex_t* mutex, unsigned int timeout_ms);
 
 /**
+ * @brief Initialize a condition variable for monotonic-clock waits.
+ *
+ * On POSIX platforms with clock-selectable condition variables this binds
+ * timed waits to CLOCK_MONOTONIC. Platforms without that support may use a
+ * relative-time fallback that is still driven by monotonic deadlines.
+ *
+ * @param cond Pointer to condition variable (output).
+ * @return 0 on success, non-zero error code on failure.
+ */
+int dsd_cond_init_monotonic(dsd_cond_t* cond);
+
+/**
+ * @brief Timed wait using an absolute monotonic deadline.
+ *
+ * @param cond Pointer to condition variable.
+ * @param mutex Pointer to associated mutex (must be locked).
+ * @param deadline_ns Absolute monotonic deadline from dsd_time_monotonic_ns().
+ * @return 0 on signal, ETIMEDOUT on deadline expiry, other non-zero on error.
+ */
+int dsd_cond_timedwait_monotonic(dsd_cond_t* cond, dsd_mutex_t* mutex, uint64_t deadline_ns);
+
+/**
  * @brief Signal one thread waiting on a condition variable.
  *
  * @param cond      Pointer to condition variable.
