@@ -72,6 +72,76 @@ dsd_p25p2_mixer_gate(const dsd_state* state, int* encL, int* encR) {
     return 0;
 }
 
+static int
+dsd_p25p2_slot_can_decrypt(const dsd_state* state, int slot, int alg) {
+    unsigned long long key = 0;
+    if (!state || slot < 0 || slot > 1) {
+        return 0;
+    }
+    if (alg == 0 || alg == 0x80) {
+        return 1;
+    }
+    key = (slot == 0) ? state->R : state->RR;
+    if ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0ULL) {
+        return 1;
+    }
+    if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[slot] == 1) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
+dsd_p25p2_media_decision_allows_audio(const dsd_tg_policy_decision* decision) {
+    if (!decision) {
+        return 1;
+    }
+    if (decision->tg_hold_active && decision->tg_hold_match) {
+        return 1;
+    }
+    if (!decision->audio_allowed || (decision->block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
+        return 0;
+    }
+    return 1;
+}
+
+int
+dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg) {
+    dsd_tg_policy_decision decision;
+    int raw_target = 0;
+    int raw_source = 0;
+    uint32_t target = 0;
+    uint32_t source = 0;
+
+    if (!state || slot < 0 || slot > 1) {
+        return 0;
+    }
+    if (!dsd_p25p2_slot_can_decrypt(state, slot, alg)) {
+        return 0;
+    }
+
+    raw_target = (slot == 0) ? state->lasttg : state->lasttgR;
+    raw_source = (slot == 0) ? state->lastsrc : state->lastsrcR;
+    target = (raw_target > 0) ? (uint32_t)raw_target : 0u;
+    source = (raw_source > 0) ? (uint32_t)raw_source : 0u;
+    if (state->gi[slot] == 1) {
+        if (dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, 0,
+                                                DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+                                                DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY, &decision)
+            == 0) {
+            return dsd_p25p2_media_decision_allows_audio(&decision);
+        }
+    } else {
+        if (dsd_tg_policy_evaluate_group_call(opts, state, target, source, 0, 0, DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY,
+                                              &decision)
+            == 0) {
+            return dsd_p25p2_media_decision_allows_audio(&decision);
+        }
+    }
+
+    return 0;
+}
+
 int
 dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int enc_in, int* enc_out) {
     dsd_tg_policy_decision decision;

@@ -110,7 +110,13 @@ main(void) {
     static dsd_state s4;
     init_basic(&o4, &s4);
     s4.group_tally = 0;
+    s4.payload_algid = 0x84;
+    s4.payload_keyid = 0x1234;
+    s4.payload_miP = 0x1122334455667788ULL;
     p25_emit_enc_lockout_once(&o4, &s4, 0, 1234, 0x40);
+    assert(s4.payload_algid == 0x84);
+    assert(s4.payload_keyid == 0x1234);
+    assert(s4.payload_miP == 0x1122334455667788ULL);
     // re-emit should no-op
     p25_emit_enc_lockout_once(&o4, &s4, 0, 1234, 0x40);
     // We can at least assert we have a group entry and mode set to "DE"

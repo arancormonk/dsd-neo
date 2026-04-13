@@ -61,6 +61,31 @@ p25_p2_s16_frames_have_audio(short frames[18][160]) {
     return 0;
 }
 
+static int
+p25p2_frame_slot_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg) {
+#if defined(DSD_NEO_P25P2_TEST_STUB)
+    unsigned long long key = 0;
+    (void)opts;
+
+    if (!state || slot < 0 || slot > 1) {
+        return 0;
+    }
+    if (alg == 0 || alg == 0x80) {
+        return 1;
+    }
+    key = (slot == 0) ? state->R : state->RR;
+    if ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0ULL) {
+        return 1;
+    }
+    if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[slot] == 1) {
+        return 1;
+    }
+    return 0;
+#else
+    return dsd_p25p2_decode_audio_allowed(opts, state, slot, alg);
+#endif
+}
+
 // Clear per-slot audio gates, small audio rings, encryption indicators, and
 // UI call banners for both logical slots. Intended for use on call teardown
 // before returning to the control channel.
@@ -840,12 +865,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                 // protecting against stale re-enables after teardown.
                 int in_call = ((state->dmrburstL >= 20 && state->dmrburstL <= 22) || voice);
                 int alg = state->payload_algid;
-                int allow = (in_call
-                             && ((alg == 0 || alg == 0x80)
-                                 || (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0)
-                                     || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1))))
-                                ? 1
-                                : 0;
+                int allow = in_call && p25p2_frame_slot_audio_allowed(opts, state, 0, alg);
                 if (allow) {
                     state->p25_p2_audio_allowed[0] = 1;
                 }
@@ -891,12 +911,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                 // context for the right slot, mirroring left-slot handling.
                 int in_call = ((state->dmrburstR >= 20 && state->dmrburstR <= 22) || voice);
                 int alg = state->payload_algidR;
-                int allow = (in_call
-                             && ((alg == 0 || alg == 0x80)
-                                 || (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->RR != 0)
-                                     || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[1] == 1))))
-                                ? 1
-                                : 0;
+                int allow = in_call && p25p2_frame_slot_audio_allowed(opts, state, 1, alg);
                 if (allow) {
                     state->p25_p2_audio_allowed[1] = 1;
                 }

@@ -10,6 +10,7 @@
  * 2022-09 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/file_io.h>
@@ -27,6 +28,23 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+static int
+p25p2_xcch_slot_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot) {
+    int alg = 0;
+
+    if (!state || slot < 0 || slot > 1) {
+        return 0;
+    }
+
+    if (slot == 0) {
+        alg = state->payload_algid;
+    } else {
+        alg = state->payload_algidR;
+    }
+
+    return dsd_p25p2_decode_audio_allowed(opts, state, slot, alg);
+}
 
 void
 process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
@@ -216,14 +234,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             }
             // Conditionally enable audio only if clear or decryptable
             {
-                int allow_audio = 0;
-                int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-                unsigned long long key = (slot == 0) ? state->R : state->RR;
-                int aes_loaded = state->aes_key_loaded[slot];
-                if (alg == 0 || alg == 0x80 || ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
-                    || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
-                    allow_audio = 1; // clear or decryptable with key
-                }
+                int allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
                 state->p25_p2_audio_allowed[slot] = allow_audio;
                 // Only set PTT burst indicator when audio is allowed; encrypted/locked-out
                 // calls should not influence audio routing decisions
@@ -295,14 +306,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             }
             // Conditionally enable audio only if clear or decryptable
             {
-                int allow_audio = 0;
-                int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-                unsigned long long key = (slot == 0) ? state->R : state->RR;
-                int aes_loaded = state->aes_key_loaded[slot];
-                if (alg == 0 || alg == 0x80 || ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
-                    || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
-                    allow_audio = 1;
-                }
+                int allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
                 state->p25_p2_audio_allowed[slot] = allow_audio;
                 // Only set PTT burst indicator when audio is allowed; encrypted/locked-out
                 // calls should not influence audio routing decisions
@@ -502,18 +506,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, "%s", KNRM);
         // Enable audio per policy (respect encryption, key presence, and ignore stale packet bit when clear)
         {
-            int allow_audio = 0;
-            int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-            unsigned long long key = (slot == 0) ? state->R : state->RR;
-            int aes_loaded = state->aes_key_loaded[slot];
-            // If stream is clear or decryptable, enable regardless of a stale Packet/Data flag
-            if (alg == 0 || alg == 0x80 || ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
-                || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
-                allow_audio = 1;
-            } else {
-                // Otherwise, suppress audio for Packet/Data sessions
-                allow_audio = state->p25_call_is_packet[slot] ? 0 : allow_audio;
-            }
+            int allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
             state->p25_p2_audio_allowed[slot] = allow_audio;
 
             // Only set voice-active burst indicator when audio is allowed;
@@ -687,14 +680,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             }
             // Conditionally enable audio only if clear or decryptable
             {
-                int allow_audio = 0;
-                int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-                unsigned long long key = (slot == 0) ? state->R : state->RR;
-                int aes_loaded = state->aes_key_loaded[slot];
-                if (alg == 0 || alg == 0x80 || ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
-                    || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
-                    allow_audio = 1; // clear or decryptable with key
-                }
+                int allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
                 state->p25_p2_audio_allowed[slot] = allow_audio;
             }
         }
@@ -761,14 +747,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             }
             // Conditionally enable audio only if clear or decryptable
             {
-                int allow_audio = 0;
-                int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-                unsigned long long key = (slot == 0) ? state->R : state->RR;
-                int aes_loaded = state->aes_key_loaded[slot];
-                if (alg == 0 || alg == 0x80 || ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
-                    || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
-                    allow_audio = 1;
-                }
+                int allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
                 state->p25_p2_audio_allowed[slot] = allow_audio;
             }
         }
@@ -961,16 +940,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         p25_sm_emit_active(opts, state, slot);
         // Enable audio per policy (respect encryption, key presence, and ignore stale packet bit when clear)
         {
-            int allow_audio = 0;
-            int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-            unsigned long long key = (slot == 0) ? state->R : state->RR;
-            int aes_loaded = state->aes_key_loaded[slot];
-            if (alg == 0 || alg == 0x80 || ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
-                || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
-                allow_audio = 1; // clear or decryptable with key
-            } else {
-                allow_audio = state->p25_call_is_packet[slot] ? 0 : allow_audio;
-            }
+            int allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
             state->p25_p2_audio_allowed[slot] = allow_audio;
         }
 

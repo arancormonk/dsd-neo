@@ -5,6 +5,7 @@
  * Unified P25 trunking state machine.
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -570,16 +571,21 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     int slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : 0;
     int algid = ev->algid;
     int tg = ev->tg;
+    int can_decrypt = 0;
+    int allow_audio = 0;
 
     // Store encryption params in slot context
     ctx->slots[slot].algid = algid;
     ctx->slots[slot].keyid = ev->keyid;
     ctx->slots[slot].tg = tg;
+    can_decrypt = slot_can_decrypt(state, slot, algid);
+    allow_audio = dsd_p25p2_decode_audio_allowed(opts, state, slot, algid);
 
     // Skip lockout processing if encryption lockout is disabled
     if (opts->trunk_tune_enc_calls != 0) {
-        // Still update audio gating based on decryptability
-        state->p25_p2_audio_allowed[slot] = slot_can_decrypt(state, slot, algid) ? 1 : 0;
+        // Even when encrypted calls are permitted, keep the gate aligned with
+        // the current media policy so allow-list/TG-hold blocks are not reopened.
+        state->p25_p2_audio_allowed[slot] = allow_audio;
         return;
     }
 
@@ -588,9 +594,10 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
         return;
     }
 
-    // Skip if stream is clear or we have a key
-    if (slot_can_decrypt(state, slot, algid)) {
-        state->p25_p2_audio_allowed[slot] = 1;
+    // Decryptable encrypted calls still need to respect the current media
+    // policy; do not reopen slots that the caller already blocked.
+    if (can_decrypt) {
+        state->p25_p2_audio_allowed[slot] = allow_audio;
         return;
     }
 
@@ -1234,21 +1241,14 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
         return; // already marked; event previously emitted
     }
 
-    // Prepare per-slot context and clear encryption display variables for this slot
+    // Prepare per-slot context. Keep live encryption fields intact: callers may
+    // still need ALG/KID/MI after this helper returns to keep audio gates closed.
     if ((slot & 1) == 0) {
         state->lasttg = (uint32_t)tg;
         state->dmr_so = (uint16_t)svc_bits;
-        // Clear slot 0 encryption display variables to prevent stale UI
-        state->payload_algid = 0;
-        state->payload_keyid = 0;
-        state->payload_miP = 0;
     } else {
         state->lasttgR = (uint32_t)tg;
         state->dmr_soR = (uint16_t)svc_bits;
-        // Clear slot 1 encryption display variables to prevent stale UI
-        state->payload_algidR = 0;
-        state->payload_keyidR = 0;
-        state->payload_miN = 0;
     }
     state->gi[slot & 1] = 0;
 

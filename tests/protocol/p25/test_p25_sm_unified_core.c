@@ -10,11 +10,14 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 
 // Minimal stubs for testing
@@ -23,6 +26,7 @@ static dsd_state g_state;
 
 static void
 reset_test_state(void) {
+    dsd_state_ext_free_all(&g_state);
     memset(&g_opts, 0, sizeof(g_opts));
     memset(&g_state, 0, sizeof(g_state));
     g_opts.p25_trunk = 1;
@@ -31,6 +35,16 @@ reset_test_state(void) {
     g_opts.trunk_tune_group_calls = 1;
     g_opts.verbose = 0;
     g_state.p25_cc_freq = 851000000; // Fake CC freq
+}
+
+static int
+seed_exact(uint32_t id, const char* mode, const char* name) {
+    dsd_tg_policy_entry row;
+
+    if (dsd_tg_policy_make_legacy_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        return 1;
+    }
+    return dsd_tg_policy_upsert_legacy_exact(&g_state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
 }
 
 // Test: Init sets correct initial state
@@ -401,6 +415,102 @@ test_tdma_single_slot_end_releases(void) {
     return 0;
 }
 
+// Test: ENC event on P25P2 keeps allow-list and TG-hold blocks closed even
+// when the encrypted call is locally decryptable.
+static int
+test_tdma_enc_respects_media_policy(void) {
+    p25_sm_ctx_t ctx;
+    p25_sm_event_t ev;
+
+    // Case 1: Allow-list blocked decryptable call stays muted.
+    reset_test_state();
+    g_opts.trunk_use_allow_list = 1;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    if (seed_exact(1000, "A", "KNOWN") != 0) {
+        fprintf(stderr, "FAIL: seed_exact allow-list setup failed\n");
+        return 1;
+    }
+
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 1001, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    g_state.lasttg = 1001;
+    g_state.lastsrc = 123;
+    g_state.gi[0] = 0;
+    g_state.aes_key_loaded[0] = 1;
+    g_state.p25_p2_audio_allowed[0] = 0;
+
+    ev = p25_sm_ev_enc(0, 0x84, 0x1234, 1001);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    if (g_state.p25_p2_audio_allowed[0] != 0) {
+        fprintf(stderr, "FAIL: ENC reopened allow-list blocked decryptable audio\n");
+        return 1;
+    }
+
+    // Case 2: Non-matching TG hold keeps decryptable encrypted audio muted.
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    g_state.tg_hold = 2000;
+
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 2001, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    g_state.lasttg = 2001;
+    g_state.lastsrc = 123;
+    g_state.gi[0] = 0;
+    g_state.aes_key_loaded[0] = 1;
+    g_state.p25_p2_audio_allowed[0] = 0;
+
+    ev = p25_sm_ev_enc(0, 0x84, 0x1234, 2001);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    if (g_state.p25_p2_audio_allowed[0] != 0) {
+        fprintf(stderr, "FAIL: ENC reopened TG-hold blocked decryptable audio\n");
+        return 1;
+    }
+
+    // Case 3: Allowed decryptable call still opens audio.
+    reset_test_state();
+    g_opts.trunk_use_allow_list = 1;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    if (seed_exact(3000, "A", "ALLOW") != 0) {
+        fprintf(stderr, "FAIL: seed_exact allowed setup failed\n");
+        return 1;
+    }
+
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 3000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    g_state.lasttg = 3000;
+    g_state.lastsrc = 123;
+    g_state.gi[0] = 0;
+    g_state.aes_key_loaded[0] = 1;
+    g_state.p25_p2_audio_allowed[0] = 0;
+
+    ev = p25_sm_ev_enc(0, 0x84, 0x1234, 3000);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    if (g_state.p25_p2_audio_allowed[0] != 1) {
+        fprintf(stderr, "FAIL: ENC failed to reopen allowed decryptable audio\n");
+        return 1;
+    }
+
+    return 0;
+}
+
 int
 main(void) {
     int fail = 0;
@@ -419,6 +529,7 @@ main(void) {
     fail += test_sacch_slot_mapping();
     fail += test_tdma_partial_end_stays_tuned();
     fail += test_tdma_single_slot_end_releases();
+    fail += test_tdma_enc_respects_media_policy();
 
     if (fail) {
         printf("FAILED: %d test(s)\n", fail);

@@ -2486,8 +2486,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     // Mark and emit once via centralized helper
                     p25_emit_enc_lockout_once(opts, state, (uint8_t)slot, ttg, /*svc_bits*/ 0);
                 }
-                // Gate this slot only
+                // Gate this slot only and flush any queued audio to avoid residue
                 state->p25_p2_audio_allowed[slot] = 0;
+                p25_p2_audio_ring_reset(state, slot);
                 int other = slot ^ 1;
                 int other_audio = state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
                 if (!other_audio) {

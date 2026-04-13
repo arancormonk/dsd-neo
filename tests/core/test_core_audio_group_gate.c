@@ -275,6 +275,55 @@ main(void) {
         rc |= expect_eq("case6-rec-allow", allow, 1);
     }
 
+    // Case 7: P25p2 decode gate preserves matching TG-hold media override.
+    memset(opts, 0, sizeof(*opts));
+    reset_state(st);
+    rc |= expect_eq("case7-seed-b", seed_policy_group(st, 700U, "B", "HELD-BLOCKED"), 0);
+    st->lasttg = 700;
+    st->lastsrc = 701;
+    st->gi[0] = 0;
+    st->tg_hold = 700U;
+    rc |= expect_eq("case7-held-decode", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 1);
+    st->tg_hold = 702U;
+    rc |= expect_eq("case7-nonheld-decode", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
+
+    // Case 8: P25p2 private decode gate evaluates source and target RIDs.
+    memset(opts, 0, sizeof(*opts));
+    reset_state(st);
+    opts->trunk_use_allow_list = 1;
+    rc |= expect_eq("case8-seed-src", seed_policy_group(st, 9002U, "A", "SRC-ALLOW"), 0);
+    st->gi[0] = 1;
+    st->lasttg = 9001;
+    st->lastsrc = 9002;
+    rc |= expect_eq("case8-src-allow", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 1);
+    st->lastsrc = 9003;
+    rc |= expect_eq("case8-unknown-private-block", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
+    st->tg_hold = 9003U;
+    rc |= expect_eq("case8-source-hold", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 1);
+
+    // Case 9: P25p2 decode gate fails closed under media policy when call metadata is unknown.
+    memset(opts, 0, sizeof(*opts));
+    reset_state(st);
+    opts->trunk_use_allow_list = 1;
+    st->gi[0] = 0;
+    rc |= expect_eq("case9-unknown-group-allowlist", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
+    st->gi[0] = 1;
+    rc |= expect_eq("case9-unknown-private-allowlist", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
+
+    memset(opts, 0, sizeof(*opts));
+    reset_state(st);
+    st->tg_hold = 9100U;
+    rc |= expect_eq("case9-unknown-hold", dsd_p25p2_decode_audio_allowed(opts, st, 1, 0), 0);
+
+    memset(opts, 0, sizeof(*opts));
+    reset_state(st);
+    opts->trunk_use_allow_list = 1;
+    rc |= expect_eq("case9-seed-source", seed_policy_group(st, 9200U, "A", "SRC-ALLOW"), 0);
+    st->lastsrc = 9200;
+    st->lasttg = 0;
+    st->gi[0] = 0;
+    rc |= expect_eq("case9-target-zero-gi-unset", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
+
     if (rc == 0) {
         printf("CORE_AUDIO_GROUP_GATE: OK\n");
     }
