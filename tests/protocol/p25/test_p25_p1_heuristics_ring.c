@@ -38,6 +38,57 @@ int
 main(void) {
     int rc = 0;
 
+    /* First sample in a C4FM span has no valid previous dibit and must be skipped. */
+    {
+        P25Heuristics h_first;
+        initialize_p25_heuristics(&h_first);
+
+        AnalogSignal samples[2];
+        /* Sentinel element to catch accidental i-1 reads deterministically. */
+        samples[0].value = -9999;
+        samples[0].dibit = 3;
+        samples[0].corrected_dibit = 3;
+        samples[0].sequence_broken = 0;
+        /* Actual one-element span starts here. */
+        samples[1].value = 1234;
+        samples[1].dibit = 1;
+        samples[1].corrected_dibit = 1;
+        samples[1].sequence_broken = 0;
+
+        contribute_to_heuristics(/* rf_mod=C4FM */ 0, &h_first, &samples[1], 1);
+
+        int total_updates = 0;
+        for (int prev = 0; prev < 4; prev++) {
+            for (int dibit = 0; dibit < 4; dibit++) {
+                total_updates += h_first.symbols[prev][dibit].count;
+            }
+        }
+        rc |= expect_int("first sample without previous dibit is skipped", total_updates, 0);
+    }
+
+    /* Degenerate variance buckets should be safely ignored by PDF evaluation. */
+    {
+        P25Heuristics h_degenerate;
+        initialize_p25_heuristics(&h_degenerate);
+
+        const int modeled_count = HEURISTICS_SIZE;
+        for (int d = 0; d < 4; d++) {
+            SymbolHeuristics* sh = &h_degenerate.symbols[0][d];
+            float mean = (float)(d * 10);
+            sh->count = modeled_count;
+            sh->sum = mean * (float)modeled_count;
+            sh->var_sum = 0.0f; /* guard path: evaluate_pdf() returns 0 */
+        }
+
+        /* Only dibit 2 has non-degenerate variance and should win at analog_value=20. */
+        h_degenerate.symbols[0][2].var_sum = 400.0f;
+
+        int dibit = -1;
+        int valid = estimate_symbol(/* rf_mod=QPSK (ignore previous dibit) */ 1, &h_degenerate, 3, 20, &dibit);
+        rc |= expect_int("degenerate variance estimate valid", valid, 1);
+        rc |= expect_int("degenerate variance winner", dibit, 2);
+    }
+
     P25Heuristics h;
     initialize_p25_heuristics(&h);
 

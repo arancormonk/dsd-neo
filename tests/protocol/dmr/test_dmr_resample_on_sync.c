@@ -23,6 +23,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 
 /* Tolerance for floating point comparisons */
@@ -46,6 +47,24 @@ check_float(const char* name, float expected, float actual, float tol) {
     if (fabsf(expected - actual) > tol) {
         printf("FAIL: %s: expected %.4f, got %.4f\n", name, (double)expected, (double)actual);
         g_fail_count++;
+    }
+}
+
+static float
+sync_ascii_to_symbol(char dibit_char) {
+    switch (dibit_char) {
+        case '0': return +1.0f;
+        case '1': return +3.0f;
+        case '2': return -1.0f;
+        case '3': return -3.0f;
+        default: return 0.0f;
+    }
+}
+
+static void
+fill_symbols_from_sync_ascii(const char* sync, float out[DMR_SYNC_SYMBOLS]) {
+    for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
+        out[i] = sync_ascii_to_symbol(sync[i]);
     }
 }
 
@@ -144,10 +163,9 @@ test_sync_correlation(void) {
     /* Initialize history */
     dmr_sample_history_init(&state);
 
-    /* Push ideal BS_VOICE sync pattern: +3/-3 alternating pattern */
-    /* Pattern: {+3, -3, +3, +3, +3, +3, -3, -3, +3, -3, +3, +3, -3, +3, +3, -3, +3, -3, +3, +3, -3, +3, -3, +3} */
-    float bs_voice[] = {+3.0f, -3.0f, +3.0f, +3.0f, +3.0f, +3.0f, -3.0f, -3.0f, +3.0f, -3.0f, +3.0f, +3.0f,
-                        -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f};
+    /* Push canonical BS_VOICE sync pattern from sync_patterns.h. */
+    float bs_voice[DMR_SYNC_SYMBOLS];
+    fill_symbols_from_sync_ascii(DMR_BS_VOICE_SYNC, bs_voice);
 
     for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
         dmr_sample_history_push(&state, bs_voice[i]);
@@ -195,8 +213,8 @@ test_symbol_extraction(void) {
     }
 
     /* Push sync pattern (BS_VOICE) */
-    float bs_voice[] = {+3.0f, -3.0f, +3.0f, +3.0f, +3.0f, +3.0f, -3.0f, -3.0f, +3.0f, -3.0f, +3.0f, +3.0f,
-                        -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f};
+    float bs_voice[DMR_SYNC_SYMBOLS];
+    fill_symbols_from_sync_ascii(DMR_BS_VOICE_SYNC, bs_voice);
     for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
         dmr_sample_history_push(&state, bs_voice[i]);
     }
@@ -262,8 +280,8 @@ test_cach_redigitize(void) {
     }
 
     /* Fill sync region (24 symbols) with BS_VOICE pattern */
-    float bs_voice[] = {+3.0f, -3.0f, +3.0f, +3.0f, +3.0f, +3.0f, -3.0f, -3.0f, +3.0f, -3.0f, +3.0f, +3.0f,
-                        -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f};
+    float bs_voice[DMR_SYNC_SYMBOLS];
+    fill_symbols_from_sync_ascii(DMR_BS_VOICE_SYNC, bs_voice);
     for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
         test_symbols[DMR_RESAMPLE_SYMBOLS + i] = bs_voice[i];
     }
@@ -351,8 +369,8 @@ test_full_resample_on_sync(void) {
     }
 
     /* Sync pattern with same DC offset */
-    float bs_voice[] = {+3.0f, -3.0f, +3.0f, +3.0f, +3.0f, +3.0f, -3.0f, -3.0f, +3.0f, -3.0f, +3.0f, +3.0f,
-                        -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f};
+    float bs_voice[DMR_SYNC_SYMBOLS];
+    fill_symbols_from_sync_ascii(DMR_BS_VOICE_SYNC, bs_voice);
     for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
         dmr_sample_history_push(&state, bs_voice[i] + dc_offset);
     }

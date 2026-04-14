@@ -83,6 +83,7 @@
  * stability compromise for the current ring size (200 samples).
  */
 #define MIN_ELEMENTS_FOR_HEURISTICS 10
+static const float kMinVarSum = 1e-6f;
 
 //Uncomment to disable the behaviour of this module.
 //#define DISABLE_HEURISTICS
@@ -194,7 +195,7 @@ contribute_to_heuristics(int rf_mod, P25Heuristics* heuristics, AnalogSignal* an
         int prev_dibit;
 
         if (use_prev_dibit) {
-            if (analog_signal_array[i].sequence_broken) {
+            if (i == 0 || analog_signal_array[i].sequence_broken) {
                 // The sequence of dibits was broken here so we don't have reliable information on the actual
                 // value of the previous dibit. Don't use this value.
                 use = 0;
@@ -247,6 +248,13 @@ initialize_p25_heuristics(P25Heuristics* heuristics) {
  */
 static float
 evaluate_pdf(SymbolHeuristics* se, int value) {
+    if (se == NULL || se->count <= 0) {
+        return 0.0f;
+    }
+    if (se->var_sum <= kMinVarSum) {
+        return 0.0f;
+    }
+
     float x = (se->count * ((float)value) - se->sum);
     float y = -0.5F * x * x / (se->count * se->var_sum);
     float pdf = sqrtf(se->count / se->var_sum) * expf(y) / sqrtf(2.0F * ((float)M_PI));

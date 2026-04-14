@@ -893,7 +893,7 @@ void
 dc_block_filter(struct demod_state* fm) {
     /* Leaky integrator high-pass: dc += (x - dc) / 2^k; y = x - dc */
     float dc = fm->dc_avg;
-    const int k = 11; /* cutoff ~ Fs / 2^k (k in 10..12) */
+    const int k = 11; /* cutoff ~ Fs / (2π * 2^k) for small alpha=2^-k (k in 10..12) */
     float k_scale = 1.0f / (float)(1 << k);
     float* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
     DSD_NEO_IVDEP
