@@ -45,7 +45,7 @@ struct dsd_state;
  * At 4800 sym/s, 2048 symbols covers ~427ms which is sufficient for any
  * protocol's sync + pre-sync window.
  */
-#define DSD_SYMBOL_HISTORY_SIZE 2048
+#define DSD_SYMBOL_HISTORY_SIZE     2048
 
 /**
  * @brief Minimum span between positive and negative symbol means.
@@ -53,7 +53,16 @@ struct dsd_state;
  * If the span is smaller than this value, warm-start is skipped as the signal
  * is likely degenerate or the sync pattern was not detected correctly.
  */
-#define DSD_WARM_START_MIN_SPAN 1.0f
+#define DSD_WARM_START_MIN_SPAN     1.0f
+
+/**
+ * @brief Mid-threshold placement factor between center and outer rails.
+ *
+ * A pure midpoint between inner/outer rails would be 0.5, but 0.625 has shown
+ * better first-frame decode robustness on noisy captures by adding a small bias
+ * toward the outer symbols during warm-start.
+ */
+#define DSD_WARM_START_MID_FRACTION 0.625f
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Symbol History Management

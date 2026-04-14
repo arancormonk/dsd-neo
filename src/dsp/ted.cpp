@@ -23,7 +23,7 @@
 
 #include <dsd-neo/dsp/ted.h>
 #include <math.h>
-#include <stddef.h>
+#include <stdio.h>
 
 /* NaN check helper: isnan() may not be available in all C standards, so use
  * the x != x idiom which is true only for NaN (IEEE 754 property). */
@@ -38,6 +38,8 @@ static const float kDefaultGainMu = 0.025f;
 static const float kDefaultGainOmega = 0.1f * kDefaultGainMu * kDefaultGainMu; /* 0.0000625 */
 static const float kDefaultOmegaRel = 0.002f;
 static const int kLockAccumWindow = 480; /* OP25 default: 480 symbols */
+static const float kOmegaNormEps = 1e-6f;
+static int s_warned_ted_dl_oversize = 0;
 
 /*
  * GNU Radio MMSE 8-tap polyphase interpolator coefficients.
@@ -324,6 +326,11 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
         int twice_sps_required = (twice_sps_op25 > twice_sps_mmse) ? twice_sps_op25 : twice_sps_mmse;
 
         if (twice_sps_required > TED_DL_SIZE) {
+            if (!s_warned_ted_dl_oversize) {
+                fprintf(stderr, "[TED] disabled: required delay line %d exceeds TED_DL_SIZE=%d (sps=%d)\n",
+                        twice_sps_required, TED_DL_SIZE, config->sps);
+                s_warned_ted_dl_oversize = 1;
+            }
             *N = 0;
             return;
         }
@@ -379,6 +386,11 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
          *
          * Set *N = 0 to indicate no output was produced. */
         if (twice_sps_required > TED_DL_SIZE) {
+            if (!s_warned_ted_dl_oversize) {
+                fprintf(stderr, "[TED] disabled: required delay line %d exceeds TED_DL_SIZE=%d (sps=%d)\n",
+                        twice_sps_required, TED_DL_SIZE, config->sps);
+                s_warned_ted_dl_oversize = 1;
+            }
             *N = 0;
             return;
         }
@@ -510,9 +522,15 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
             symbol_error = 1.0f;
         }
 
-        /* OP25 omega update: d_omega += d_gain_omega * symbol_error * abs(interp_samp) */
-        float sym_mag = sqrtf(sym_r * sym_r + sym_j * sym_j);
-        omega = omega + gain_omega * symbol_error * sym_mag;
+        /* Normalize omega correction by instantaneous symbol power so the loop
+         * gain does not vary with envelope level. Clamp to preserve OP25-style
+         * bounded updates even during deep fades. */
+        float sym_pow = sym_r * sym_r + sym_j * sym_j;
+        if (sym_pow < kOmegaNormEps) {
+            sym_pow = kOmegaNormEps;
+        }
+        float omega_error = branchless_clip(symbol_error / sym_pow, 1.0f);
+        omega = omega + gain_omega * omega_error;
 
         /* Clip omega to valid range (OP25: d_omega_mid + branchless_clip(..., d_omega_rel))
          * OP25 passes d_omega_rel directly, but the intended range is [omega_min, omega_max]

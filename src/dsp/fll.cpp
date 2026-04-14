@@ -11,10 +11,11 @@
  * Uses high-quality sin/cos from the math library for NCO rotation.
 */
 
+#include <cmath>
 #include <dsd-neo/dsp/fll.h>
-#include <math.h>
 
 static const float kTwoPiF = 6.28318530717958647692f;
+static const float kNcoRenormEps = 1e-7f;
 
 static inline float
 clampf(float v, float lo, float hi) {
@@ -73,7 +74,14 @@ fll_mix_and_update(const fll_config_t* config, fll_state_t* state, float* x, int
     }
 
     float phase = state->phase;
-    const float freq = state->freq;
+    float freq = state->freq;
+    if (!std::isfinite(phase)) {
+        phase = 0.0f;
+    }
+    if (!std::isfinite(freq)) {
+        freq = 0.0f;
+        state->freq = 0.0f;
+    }
 
     /* Initial NCO phasor */
     float nco_r = cosf(phase);
@@ -103,16 +111,24 @@ fll_mix_and_update(const fll_config_t* config, fll_state_t* state, float* x, int
         /* Periodic renormalization to prevent drift (every 64 complex samples) */
         if (++sample_count == 64) {
             float mag = sqrtf(nco_r * nco_r + nco_i * nco_i);
-            if (mag > 0.0f) {
+            if (std::isfinite(mag) && mag > kNcoRenormEps) {
                 nco_r /= mag;
                 nco_i /= mag;
+            } else {
+                /* Defensive recovery for pathological zero/NaN phasor states. */
+                nco_r = 1.0f;
+                nco_i = 0.0f;
             }
             sample_count = 0;
         }
     }
 
     /* Recover phase from final phasor for state persistence */
-    state->phase = wrap_phase(atan2f(nco_i, nco_r));
+    float phase_out = atan2f(nco_i, nco_r);
+    if (!std::isfinite(phase_out)) {
+        phase_out = 0.0f;
+    }
+    state->phase = wrap_phase(phase_out);
 }
 
 /**

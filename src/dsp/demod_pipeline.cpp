@@ -1495,7 +1495,9 @@ full_demod(struct demod_state* d) {
     /* Mode-aware generic IQ balance (image suppression) after CFO rotation.
      * Skip when squelched - zeros don't benefit from IQ correction. */
     if (d->iqbal_enable && !d->cqpsk_enable && !d->channel_squelched && d->lowpassed && d->lp_len >= 2) {
-        /* Estimate s2 = E[z^2], p2 = E[|z|^2] over this block */
+        /* Widely-linear IQ imbalance estimator/corrector:
+         *   alpha ~= E[z^2] / E[|z|^2],  y = z - alpha * conj(z)
+         * This suppresses the image term without explicit (gain, phase) decomposition. */
         double s2r = 0.0, s2i = 0.0, p2 = 0.0;
         int N = d->lp_len >> 1; /* complex pairs */
         const float* iq = d->lowpassed;

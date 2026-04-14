@@ -1319,6 +1319,11 @@ target_include_directories(dsd-neo_test_dsp_resampler PRIVATE ${PROJECT_SOURCE_D
 target_link_libraries(dsd-neo_test_dsp_resampler PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_RESAMPLER COMMAND dsd-neo_test_dsp_resampler)
 
+add_executable(dsd-neo_test_dsp_firdes dsp/test_dsp_firdes.c)
+target_include_directories(dsd-neo_test_dsp_firdes PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_firdes PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_FIRDES COMMAND dsd-neo_test_dsp_firdes)
+
 add_executable(dsd-neo_test_dsp_fll dsp/test_dsp_fll.cpp)
 target_include_directories(dsd-neo_test_dsp_fll PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_fll PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})

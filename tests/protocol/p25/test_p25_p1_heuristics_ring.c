@@ -65,23 +65,37 @@ main(void) {
     int expected_index = updates % HEURISTICS_SIZE;
     rc |= expect_int("index", sh->index, expected_index);
 
+    int start = 1;
+    if (updates > HEURISTICS_SIZE) {
+        start = updates - HEURISTICS_SIZE + 1;
+    }
+    int end = updates;
+
     /* Verify that sum tracks a sliding window over the most recent HEURISTICS_SIZE values. */
+    float want_sum = 0.0f;
+    for (int v = start; v <= end; v++) {
+        want_sum += (float)v;
+    }
     if (updates <= HEURISTICS_SIZE) {
         /* No eviction yet: sum of values 1..updates */
-        float want_sum = 0.0f;
-        for (int v = 1; v <= updates; v++) {
-            want_sum += (float)v;
-        }
         rc |= expect_float_close("sum (no wrap)", sh->sum, want_sum, 1e-3f);
     } else {
         /* Eviction path: last HEURISTICS_SIZE values, i.e., start..updates */
-        int start = updates - HEURISTICS_SIZE + 1;
-        float want_sum = 0.0f;
-        for (int v = start; v <= updates; v++) {
-            want_sum += (float)v;
-        }
         rc |= expect_float_close("sum (sliding window)", sh->sum, want_sum, 1e-2f);
     }
+
+    /* Mean should match the active window mean (stored at the last written slot). */
+    float want_mean = want_sum / (float)expected_count;
+    int last_slot = (sh->index + HEURISTICS_SIZE - 1) % HEURISTICS_SIZE;
+    rc |= expect_float_close("mean (last slot)", sh->means[last_slot], want_mean, 1e-4f);
+
+    /* var_sum must match sum((x_i - mean)^2) over the active window. */
+    float want_var_sum = 0.0f;
+    for (int v = start; v <= end; v++) {
+        float d = (float)v - want_mean;
+        want_var_sum += d * d;
+    }
+    rc |= expect_float_close("var_sum (sliding window)", sh->var_sum, want_var_sum, 0.5f);
 
     return rc;
 }

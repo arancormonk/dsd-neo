@@ -19,6 +19,45 @@
 #define GR_M_PI 3.14159265358979323846
 #endif
 
+/* GNU Radio's default Kaiser beta (window::max_attenuation with beta=6.76). */
+static const double kDefaultKaiserBeta = 6.76;
+
+/*
+ * Modified Bessel function of the first kind, order zero.
+ * Polynomial approximation from Numerical Recipes (public-domain formula).
+ */
+static double
+dsd_bessel_i0(double x) {
+    double ax = fabs(x);
+    if (ax < 3.75) {
+        double y = x / 3.75;
+        y *= y;
+        return 1.0
+               + y
+                     * (3.5156229
+                        + y * (3.0899424 + y * (1.2067492 + y * (0.2659732 + y * (0.0360768 + y * 0.0045813)))));
+    }
+
+    double y = 3.75 / ax;
+    return (exp(ax) / sqrt(ax))
+           * (0.39894228
+              + y
+                    * (0.01328592
+                       + y
+                             * (0.00225319
+                                + y
+                                      * (-0.00157565
+                                         + y
+                                               * (0.00916281
+                                                  + y
+                                                        * (-0.02057706
+                                                           + y
+                                                                 * (0.02635537
+                                                                    + y * (-0.01647633 + y * 0.00392377))))))));
+}
+
+static void dsd_window_rectangular(int ntaps, float* taps_out);
+
 /*
  * ============================================================================
  * Window Functions - Direct port from gr-fft/lib/window.cc
@@ -41,8 +80,8 @@ dsd_window_max_attenuation(dsd_window_type_t window_type) {
         case DSD_WIN_BARTLETT: return 27;
         case DSD_WIN_FLATTOP: return 93;
         case DSD_WIN_KAISER:
-            /* Kaiser requires beta parameter, use default approximation */
-            return (6.76 / 0.1102 + 8.7);
+            /* beta=6.76 matches GNU Radio's default attenuation mapping. */
+            return (kDefaultKaiserBeta / 0.1102 + 8.7);
         default: return 53; /* default to Hamming */
     }
 }
@@ -150,6 +189,37 @@ dsd_window_flattop(int ntaps, float* taps_out) {
 }
 
 /**
+ * @brief Build a Kaiser window using GNU Radio's default beta.
+ */
+static void
+dsd_window_kaiser(int ntaps, float* taps_out) {
+    if (ntaps <= 0) {
+        return;
+    }
+    if (ntaps == 1) {
+        taps_out[0] = 1.0f;
+        return;
+    }
+
+    const double M = (double)(ntaps - 1);
+    const double denom = dsd_bessel_i0(kDefaultKaiserBeta);
+    if (denom <= 0.0) {
+        dsd_window_rectangular(ntaps, taps_out);
+        return;
+    }
+
+    for (int n = 0; n < ntaps; n++) {
+        double ratio = (2.0 * (double)n) / M - 1.0;
+        double inside = 1.0 - ratio * ratio;
+        if (inside < 0.0) {
+            inside = 0.0;
+        }
+        double num = dsd_bessel_i0(kDefaultKaiserBeta * sqrt(inside));
+        taps_out[n] = (float)(num / denom);
+    }
+}
+
+/**
  * @brief Build a rectangular window (all ones).
  */
 static void
@@ -169,6 +239,7 @@ dsd_window_build(dsd_window_type_t window_type, int ntaps, float* taps_out) {
         case DSD_WIN_HANN: dsd_window_hann(ntaps, taps_out); break;
         case DSD_WIN_BLACKMAN: dsd_window_blackman(ntaps, taps_out); break;
         case DSD_WIN_BLACKMAN_HARRIS: dsd_window_blackman_harris(ntaps, taps_out); break;
+        case DSD_WIN_KAISER: dsd_window_kaiser(ntaps, taps_out); break;
         case DSD_WIN_BARTLETT: dsd_window_bartlett(ntaps, taps_out); break;
         case DSD_WIN_FLATTOP: dsd_window_flattop(ntaps, taps_out); break;
         case DSD_WIN_RECTANGULAR:

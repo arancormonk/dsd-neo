@@ -29,6 +29,8 @@ namespace {
 
 constexpr float kTwoPi = 6.28318530717958647692f;
 constexpr float kPi = 3.14159265358979323846f;
+constexpr float kOmegaNormEps = 1e-6f;
+static bool g_warned_ted_dl_oversize = false;
 
 static inline bool
 debug_cqpsk_enabled(void) {
@@ -301,6 +303,11 @@ op25_gardner_cc(struct demod_state* d) {
         int twice_sps_required = (twice_sps_op25 > twice_sps_mmse) ? twice_sps_op25 : twice_sps_mmse;
 
         if (twice_sps_required > TED_DL_SIZE) {
+            if (!g_warned_ted_dl_oversize) {
+                fprintf(stderr, "[GARDNER] disabled: required delay line %d exceeds TED_DL_SIZE=%d (sps=%d)\n",
+                        twice_sps_required, TED_DL_SIZE, sps);
+                g_warned_ted_dl_oversize = true;
+            }
             d->lp_len = 0;
             return;
         }
@@ -458,10 +465,14 @@ op25_gardner_cc(struct demod_state* d) {
         lock_accum += yi + yq;
         lock_count++;
 
-        /* OP25 omega update: d_omega += d_gain_omega * symbol_error * abs(interp_samp)
-         * From gardner_cc_impl.cc line 187 */
-        float sym_mag = sqrtf(sym_r * sym_r + sym_j * sym_j);
-        omega = omega + gain_omega * symbol_error * sym_mag;
+        /* Normalize omega correction by symbol power so loop gain is less
+         * sensitive to envelope level variation. Keep updates bounded. */
+        float sym_pow = sym_r * sym_r + sym_j * sym_j;
+        if (sym_pow < kOmegaNormEps) {
+            sym_pow = kOmegaNormEps;
+        }
+        float omega_error = branchless_clip(symbol_error / sym_pow, 1.0f);
+        omega = omega + gain_omega * omega_error;
 
         /* Clip omega to valid range using branchless_clip
          * From gardner_cc_impl.cc line 188:

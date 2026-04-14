@@ -5,8 +5,8 @@
 
 /* Focused unit tests for FLL mix/update helpers with native float implementation. */
 
+#include <cmath>
 #include <dsd-neo/dsp/fll.h>
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -165,6 +165,31 @@ main(void) {
         if (st.freq >= 0.0f) {
             fprintf(stderr, "FLL update: expected negative freq correction, got %f\n", st.freq);
             return 1;
+        }
+    }
+
+    // Test 2c: pathological NaN phase/freq state is sanitized
+    {
+        fll_config_t cfg = {0};
+        cfg.enabled = 1;
+
+        fll_state_t st;
+        fll_init_state(&st);
+        st.phase = NAN;
+        st.freq = NAN;
+
+        float x[8] = {1000.0f, 0.0f, 0.0f, 1000.0f, -1000.0f, 0.0f, 0.0f, -1000.0f};
+        fll_mix_and_update(&cfg, &st, x, 8);
+
+        if (!std::isfinite(st.phase) || !std::isfinite(st.freq)) {
+            fprintf(stderr, "FLL sanitize: state remained non-finite (phase=%f freq=%f)\n", st.phase, st.freq);
+            return 1;
+        }
+        for (int i = 0; i < 8; i++) {
+            if (!std::isfinite(x[i])) {
+                fprintf(stderr, "FLL sanitize: output sample %d became non-finite\n", i);
+                return 1;
+            }
         }
     }
 

@@ -76,7 +76,11 @@
 #define USE_PREVIOUS_DIBIT
 
 /**
- * There is a minimum of cleared analog values we need to produce a meaningful mean and std deviation.
+ * Minimum cleared analog values required before trusting Gaussian PDF estimates.
+ *
+ * Keep this low enough to adapt quickly at call start, but high enough to avoid
+ * unstable PDFs from tiny sample sets. Empirically, 10 is the best latency vs
+ * stability compromise for the current ring size (200 samples).
  */
 #define MIN_ELEMENTS_FOR_HEURISTICS 10
 
@@ -97,6 +101,22 @@ use_previous_dibit(int rf_mod) {
     return (rf_mod == 0) ? 1 : 0;
 }
 
+/*
+ * Recompute sum((x_i - mean)^2) over the active ring-buffer elements.
+ *
+ * This avoids drift from mixed-epoch incremental updates when the circular
+ * buffer evicts one element and inserts another in the same update.
+ */
+static float
+recompute_var_sum(const SymbolHeuristics* sh, float mean) {
+    float var_sum = 0.0f;
+    for (int i = 0; i < sh->count; i++) {
+        float d = (float)sh->values[i] - mean;
+        var_sum += d * d;
+    }
+    return var_sum;
+}
+
 /**
  * Update the model of a symbol's Gaussian with new information.
  * \param heuristics Pointer to the P25Heuristics module with all the needed state information.
@@ -109,7 +129,6 @@ static void
 update_p25_heuristics(P25Heuristics* heuristics, int previous_dibit, int original_dibit, int dibit, int analog_value) {
     float mean;
     int old_value;
-    float old_mean;
 
     SymbolHeuristics* sh;
     int number_errors;
@@ -123,7 +142,6 @@ update_p25_heuristics(P25Heuristics* heuristics, int previous_dibit, int origina
 
     // Update the circular buffers of values
     old_value = sh->values[sh->index];
-    old_mean = sh->means[sh->index];
 
     // Update the BER statistics
     number_errors = 0;
@@ -139,10 +157,9 @@ update_p25_heuristics(P25Heuristics* heuristics, int previous_dibit, int origina
     }
     update_error_stats(heuristics, 2, number_errors);
 
-    // Update the running mean and variance. This is to calculate the PDF faster when required
+    // Update running sum and ring contents.
     if (sh->count >= HEURISTICS_SIZE) {
         sh->sum -= old_value;
-        sh->var_sum -= (((float)old_value) - old_mean) * (((float)old_value) - old_mean);
     }
     sh->sum += analog_value;
 
@@ -157,8 +174,8 @@ update_p25_heuristics(P25Heuristics* heuristics, int previous_dibit, int origina
     } else {
         sh->index++;
     }
-
-    sh->var_sum += (((float)analog_value) - mean) * (((float)analog_value) - mean);
+    // Recompute variance sum over the active window to avoid bias accumulation.
+    sh->var_sum = recompute_var_sum(sh, mean);
 }
 
 void

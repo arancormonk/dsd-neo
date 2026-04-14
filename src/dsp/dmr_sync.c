@@ -190,9 +190,9 @@ dmr_init_thresholds_from_sync(dsd_opts* opts, dsd_state* state, const float sync
     state->min = actual_minus3;
     state->center = (state->max + state->min) / 2.0f;
 
-    /* Calculate mid-thresholds (62.5% toward extremes from center) */
-    state->umid = state->center + (state->max - state->center) * 0.625f;
-    state->lmid = state->center + (state->min - state->center) * 0.625f;
+    /* Warm-start mid-thresholds use a slight outer bias for noisy-sync robustness. */
+    state->umid = state->center + (state->max - state->center) * DSD_WARM_START_MID_FRACTION;
+    state->lmid = state->center + (state->min - state->center) * DSD_WARM_START_MID_FRACTION;
 
     /* Reference values (80% of extremes) */
     state->maxref = state->max * 0.80f;
