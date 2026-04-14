@@ -851,6 +851,12 @@ demod_reset_on_retune(struct demod_state* s) {
     s->fll_phase = 0.0f;
     s->fll_prev_r = 0.0f;
     s->fll_prev_j = 0.0f;
+    /* Discard stale FM discriminator history from the previous signal so the
+       next block re-seeds from its own first sample. Mirrors the cqpsk_diff_prev
+       reset below. */
+    s->fm_demod_history_valid = 0;
+    s->pre_r = 0.0f;
+    s->pre_j = 0.0f;
     /* CQPSK: Initialize differential phasor state for clean acquisition on new signal.
      *
      * Unlike OP25's continuous sample flow where set_omega() only clears the delay line,

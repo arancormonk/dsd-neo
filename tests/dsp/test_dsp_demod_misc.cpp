@@ -93,17 +93,20 @@ main(void) {
         s->fll_freq = 0.003f; // small FLL offset in rad/sample (native float)
         s->pre_r = 0.0f;
         s->pre_j = 0.0f;
+        s->fm_demod_history_valid = 0; /* force seeding path */
         dsd_fm_demod(s);
         if (s->result_len != 3) {
             fprintf(stderr, "dsd_fm_demod: result_len=%d want 3\n", s->result_len);
             free(s);
             return 1;
         }
-        /* Output is differential phase in radians + 0.5*fll_freq offset.
-         * First sample seeds history (~0), then +90 deg deltas (~π/2 ≈ 1.571).
-         * With fll_freq=0.003, offset contribution is 0.0015 rad per sample. */
-        float pi_2 = 1.5707963f;
-        float fll_offset = 0.5f * 0.003f;
+        /* Output is the differential phase of the already-mixed I/Q plus the
+         * FLL's per-sample phase advance added back (see dsd_fm_demod comment):
+         * the sum represents the absolute instantaneous frequency of the
+         * unmixed signal. With the first sample seeded from history the delta
+         * is zero, and subsequent samples are +π/2 per step. */
+        const float pi_2 = 1.5707963f;
+        const float fll_offset = 0.003f; /* full fll_freq contribution */
         if (fabsf(s->result[0] - fll_offset) > 0.01f) {
             fprintf(stderr, "dsd_fm_demod: result[0]=%f want ~%f (fll offset)\n", s->result[0], fll_offset);
             free(s);

@@ -638,10 +638,14 @@ dsd_fm_demod(struct demod_state* fm) {
 
     float prev_r = fm->pre_r;
     float prev_j = fm->pre_j;
-    /* Seed history on first use to keep the first phase delta well-defined. */
-    if (prev_r == 0.0f && prev_j == 0.0f) {
+    /* Seed history on first use so the first phase delta is well-defined.
+       Uses an explicit validity flag rather than a (prev==0) heuristic, which
+       would false-seed when a legitimately-zero sample happened to arrive as
+       the first sample of a new stream. */
+    if (!fm->fm_demod_history_valid) {
         prev_r = iq[0];
         prev_j = iq[1];
+        fm->fm_demod_history_valid = 1;
     }
 
     for (int n = 0; n < pairs; n++) {
@@ -652,7 +656,21 @@ dsd_fm_demod(struct demod_state* fm) {
         float im = cj * prev_r - cr * prev_j;
         float angle = atan2f(im, re);
         if (fm->fll_enabled) {
-            angle += 0.5f * fm->fll_freq;
+            /* Restore the per-sample phase advance that the upstream FLL mixer
+               subtracted from the I/Q. fll_mix_and_update() applies
+               y_n = x_n * exp(-j*(phase_0 + n*freq)), so the atan2 above yields
+               phase(x_n*conj(x_{n-1})) - freq. Adding fll_freq back makes the
+               discriminator output equal the absolute instantaneous frequency
+               of the unmixed signal and therefore invariant to FLL state.
+
+               Note: an earlier Q-format implementation used
+               `angle_q14 += (fll_freq_q15 >> 1)` under the mistaken belief that
+               Q15 (2*pi==1<<15) and Q14 (pi==1<<14) needed a scale conversion.
+               They have identical raw counts per radian, so `>> 1` silently
+               halved the physical value. The 0.5f multiplier in the float port
+               preserved that bug; full-scale addition restores the original
+               intent documented in the scaffold commit. */
+            angle += fm->fll_freq;
         }
         out[n] = angle;
         prev_r = cr;

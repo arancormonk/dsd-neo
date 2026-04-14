@@ -65,6 +65,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->rate_out2 = -1;
     s->mode_demod = &dsd_fm_demod;
     s->pre_j = s->pre_r = 0.0f;
+    s->fm_demod_history_valid = 0;
     s->prev_lpr_index = 0;
     s->deemph_a = 0.0f;
     s->deemph_avg = 0.0f;

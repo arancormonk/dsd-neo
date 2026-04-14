@@ -117,6 +117,10 @@ struct demod_state {
     int rate_out;
     int rate_out2;
     float pre_r, pre_j;
+    /* 1 once pre_r/pre_j hold a valid sample from a prior block; 0 before the
+       first sample has been observed. Replaces an older (prev==0) heuristic
+       that false-seeded on a genuinely-zero first sample. */
+    int fm_demod_history_valid;
     int post_downsample;
     float output_scale;
     float squelch_level;
