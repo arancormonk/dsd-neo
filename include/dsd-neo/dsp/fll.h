@@ -33,6 +33,7 @@ typedef struct {
     float phase; /* NCO phase accumulator (radians, wraps at +/-2*pi) */
     float prev_r;
     float prev_j;
+    int prev_valid;   /* true once prev_r/prev_j hold a valid previous sample */
     float integrator; /* PI integrator state (native float), bounded for anti-windup */
     /* Small history of trailing complex samples for symbol-spaced updates. */
     float prev_hist_r[64];
@@ -48,9 +49,9 @@ typedef struct {
 void fll_init_state(fll_state_t* state);
 
 /**
- * @brief Mix I/Q by an NCO and advance phase by freq_q15 per sample.
+ * @brief Mix I/Q by an NCO and advance phase by freq per sample.
  *
- * Phase and frequency are Q15 where a full turn (2*pi) maps to 1<<15.
+ * Phase and frequency are native floats in radians and rad/sample.
  * Uses high-quality sin/cos from the math library for rotation.
  *
  * @param config FLL configuration.
@@ -61,13 +62,13 @@ void fll_init_state(fll_state_t* state);
 void fll_mix_and_update(const fll_config_t* config, fll_state_t* state, float* x, int N);
 
 /**
- * @brief Estimate frequency error and update FLL control (PI in Q15).
+ * @brief Estimate frequency error and update FLL control (native float PI).
  *
  * Uses a phase-difference discriminator to compute average error.
  * Applies proportional and integral actions to adjust the NCO frequency.
  *
  * @param config FLL configuration.
- * @param state  FLL state (updates freq_q15 and may advance phase_q15).
+ * @param state  FLL state (updates freq/integrator and history).
  * @param x      Input interleaved I/Q buffer.
  * @param N      Length of buffer in samples (must be even).
  */

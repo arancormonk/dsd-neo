@@ -218,6 +218,39 @@ main(void) {
         }
     }
 
+    // Test 2d: explicit prev_valid gate controls history use (no prev==0 heuristic)
+    {
+        fll_config_t cfg = {0};
+        cfg.enabled = 1;
+        cfg.alpha = 0.4f;
+        cfg.beta = 0.25f;
+        cfg.deadband = 0.0f;
+        cfg.slew_max = 1.0f;
+
+        float one[2] = {0.0f, 16000.0f}; // +90 deg from (16000, 0)
+
+        fll_state_t st;
+        fll_init_state(&st);
+        st.prev_r = 16000.0f;
+        st.prev_j = 0.0f;
+        st.prev_valid = 0; // history explicitly invalid
+        fll_update_error(&cfg, &st, one, 2);
+        if (fabsf(st.freq) > 1e-6f) {
+            fprintf(stderr, "FLL prev_valid: history-invalid sample unexpectedly affected loop\n");
+            return 1;
+        }
+
+        fll_init_state(&st);
+        st.prev_r = 16000.0f;
+        st.prev_j = 0.0f;
+        st.prev_valid = 1; // same numeric history, but now valid
+        fll_update_error(&cfg, &st, one, 2);
+        if (st.freq <= 0.0f) {
+            fprintf(stderr, "FLL prev_valid: history-valid sample failed to drive positive update\n");
+            return 1;
+        }
+    }
+
     // Test 3: deadband holds control, integrator not advanced (leak only)
     {
         // Build constant sample stream -> zero phase difference (err=0)
@@ -308,8 +341,8 @@ main(void) {
         fll_state_t st;
         fll_init_state(&st);
         fll_update_error(&cfg, &st, iq, 2 * N);
-        /* Clamp at ~0.8 rad/sample (kFreqClamp in fll.cpp) */
-        const float F_CLAMP = 0.8f;
+        /* Clamp at ±0.2 rad/sample (kFreqClamp in fll.cpp) */
+        const float F_CLAMP = 0.2f;
         if (st.freq > F_CLAMP || st.freq < -F_CLAMP) {
             fprintf(stderr, "FLL clamp: freq exceeded clamp (%f)\n", st.freq);
             return 1;

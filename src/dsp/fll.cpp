@@ -14,23 +14,11 @@
 #include <cmath>
 #include <dsd-neo/dsp/fll.h>
 
-static const float kTwoPiF = 6.28318530717958647692f;
 static const float kNcoRenormEps = 1e-7f;
 
 static inline float
 clampf(float v, float lo, float hi) {
     return (v < lo) ? lo : ((v > hi) ? hi : v);
-}
-
-static inline float
-wrap_phase(float p) {
-    while (p > kTwoPiF) {
-        p -= kTwoPiF;
-    }
-    while (p < -kTwoPiF) {
-        p += kTwoPiF;
-    }
-    return p;
 }
 
 /* Very small integrator leakage to avoid long-term windup/drift.
@@ -48,6 +36,7 @@ fll_init_state(fll_state_t* state) {
     state->phase = 0.0f;
     state->prev_r = 0.0f;
     state->prev_j = 0.0f;
+    state->prev_valid = 0;
     state->integrator = 0.0f;
     state->prev_hist_len = 0;
     for (int i = 0; i < 64; i++) {
@@ -128,7 +117,7 @@ fll_mix_and_update(const fll_config_t* config, fll_state_t* state, float* x, int
     if (!std::isfinite(phase_out)) {
         phase_out = 0.0f;
     }
-    state->phase = wrap_phase(phase_out);
+    state->phase = phase_out;
 }
 
 /**
@@ -152,13 +141,14 @@ fll_update_error(const fll_config_t* config, fll_state_t* state, const float* x,
     const float beta = config->beta;
     float prev_r = state->prev_r;
     float prev_j = state->prev_j;
+    int prev_valid = state->prev_valid;
     double err_acc = 0.0; /* accumulate in double for stability */
     int count = 0;
 
     for (int i = 0; i + 1 < N; i += 2) {
         float r = x[i];
         float j = x[i + 1];
-        if (i > 0 || (prev_r != 0.0f || prev_j != 0.0f)) {
+        if (i > 0 || prev_valid) {
             /* phase delta */
             double re = (double)r * (double)prev_r + (double)j * (double)prev_j;
             double im = (double)j * (double)prev_r - (double)r * (double)prev_j;
@@ -168,10 +158,12 @@ fll_update_error(const fll_config_t* config, fll_state_t* state, const float* x,
         }
         prev_r = r;
         prev_j = j;
+        prev_valid = 1;
     }
 
     state->prev_r = prev_r;
     state->prev_j = prev_j;
+    state->prev_valid = prev_valid;
 
     if (count == 0) {
         return;
@@ -182,8 +174,8 @@ fll_update_error(const fll_config_t* config, fll_state_t* state, const float* x,
     /* Integrator leakage: small exponential decay to avoid long-term drift.
      * Decay factor = 1 - 1/4096 ≈ 0.99976 per update. */
     const float kIntLeakFactor = 1.0f - (1.0f / 4096.0f);
-    /* Frequency clamp in rad/sample: ~±0.8 rad/sample (generous for digital modes) */
-    const float kFreqClamp = 0.8f;
+    /* Frequency clamp in rad/sample: ±0.2 rad/sample (~3.2% of Fs). */
+    const float kFreqClamp = 0.2f;
 
     float i_base = state->integrator * kIntLeakFactor;
     i_base = clampf(i_base, -kFreqClamp, kFreqClamp);

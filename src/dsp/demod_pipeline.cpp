@@ -966,7 +966,7 @@ mean_power(float* samples, int len, int step) {
 
 /**
  * @brief Estimate frequency error using the configured discriminator and update the
- * FLL loop control variables in Q15.
+ * FLL loop control variables (native float).
  *
  * Mirrors the modular FLL path used by the RTL front-end.
  *
