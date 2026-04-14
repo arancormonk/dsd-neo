@@ -772,8 +772,9 @@ struct dsd_state {
     uint8_t p25_call_is_packet[2]; // 1 if call/service marked as packet (data), else 0
 
     //experimental symbol file capture read throttle
-    int symbol_throttle; //throttle speed
-    int use_throttle;    //only use throttle if set to 1
+    int symbol_throttle;                     //throttle speed
+    int use_throttle;                        //only use throttle if set to 1
+    uint64_t symbol_replay_next_deadline_ns; //0 when uninitialized
 
     //dmr trunking stuff
     int dmr_rest_channel;

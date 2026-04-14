@@ -42,6 +42,52 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static void
+throttle_symbol_bin_replay(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || state->use_throttle != 1) {
+        return;
+    }
+
+    /* Keep legacy microsecond override support when explicitly configured. */
+    if (state->symbol_throttle > 0) {
+        dsd_sleep_us((uint64_t)state->symbol_throttle);
+        return;
+    }
+
+    int input_rate_hz = dsd_opts_current_input_timing_rate(opts);
+    if (input_rate_hz <= 0) {
+        input_rate_hz = SAMPLE_RATE_IN;
+    }
+
+    int sps = state->samplesPerSymbol;
+    if (sps <= 0) {
+        sps = 10;
+    }
+
+    uint64_t period_ns = ((uint64_t)sps * 1000000000ULL) / (uint64_t)input_rate_hz;
+    if (period_ns == 0ULL) {
+        dsd_sleep_ms(0U);
+        return;
+    }
+
+    uint64_t now_ns = dsd_time_monotonic_ns();
+    uint64_t deadline_ns = state->symbol_replay_next_deadline_ns;
+    if (deadline_ns == 0ULL) {
+        state->symbol_replay_next_deadline_ns = now_ns + period_ns;
+        return;
+    }
+
+    if (now_ns < deadline_ns) {
+        dsd_sleep_ns(deadline_ns - now_ns);
+    } else if ((now_ns - deadline_ns) > 250000000ULL) {
+        /* Rebase pacing after long scheduler stalls/debug pauses. */
+        state->symbol_replay_next_deadline_ns = now_ns + period_ns;
+        return;
+    }
+
+    state->symbol_replay_next_deadline_ns = deadline_ns + period_ns;
+}
+
+static void
 print_datascope(dsd_opts* opts, dsd_state* state, const float* sbuf2, int count) {
     int i, j, o;
     char modulation[8];
@@ -766,9 +812,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         //assign dibit from last symbol/dibit read from capture bin
         dibit = state->symbolc;
-        if (state->use_throttle == 1) {
-            dsd_sleep_ms(0); /* yield CPU */
-        }
+        throttle_symbol_bin_replay(opts, state);
     }
 
     //symbol/dibit file capture/writing
@@ -858,9 +902,7 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
 
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         dibit = state->symbolc;
-        if (state->use_throttle == 1) {
-            dsd_sleep_ms(0); /* yield CPU */
-        }
+        throttle_symbol_bin_replay(opts, state);
     }
 
     if (opts->symbol_out_f) {

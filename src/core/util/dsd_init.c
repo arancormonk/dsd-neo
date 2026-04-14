@@ -767,8 +767,9 @@ initState(dsd_state* state) {
     state->p25_vc_cqpsk_override = -1;
 
     //experimental symbol file capture read throttle
-    state->symbol_throttle = 100; //throttle speed
-    state->use_throttle = 0;      //only use throttle if set to 1
+    state->symbol_throttle = 0; //0 = auto pace from symbol timing
+    state->use_throttle = 0;    //only use throttle if set to 1
+    state->symbol_replay_next_deadline_ns = 0;
 
     state->p2_scramble_offset = 0;
     state->p2_vch_chan_num = 0;

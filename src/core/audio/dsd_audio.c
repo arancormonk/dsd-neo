@@ -811,6 +811,11 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
         dsd_net_audio_input_hook_udp_stop(opts);
     }
     dsd_opts_reset_pcm_input_state(opts);
+    if (state) {
+        /* .bin symbol replay can opt into paced playback; reset before probing input type. */
+        state->use_throttle = 0;
+        state->symbol_replay_next_deadline_ns = 0;
+    }
 
     char* extension;
     const char ch = '.';
@@ -1002,6 +1007,10 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
                 return -1;
             }
             opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; //symbol capture bin files
+            if (state) {
+                state->use_throttle = 1;
+                state->symbol_replay_next_deadline_ns = 0;
+            }
         } else {
             opts->audio_in_type = AUDIO_IN_PULSE;
         }
