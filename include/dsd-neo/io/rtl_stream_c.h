@@ -240,12 +240,14 @@ int rtl_stream_test_get_replay_state(RtlSdrContext* ctx, rtl_stream_test_replay_
 #endif
 
 /**
- * @brief Get smoothed TED residual (EMA of Gardner error) from demod pipeline.
- * Positive: persistent early (nudge center right). Negative: late (nudge left).
+ * @brief Get smoothed TED residual from demod pipeline in Q14 units.
+ *
+ * Positive values indicate persistent "sample early" bias (nudge center right),
+ * negative values indicate "sample late" bias (nudge center left).
  * Returns 0 when unavailable.
  *
  * @param ctx Stream context (unused).
- * @return Residual value (coarse units, signed integer).
+ * @return Signed Q14 residual (approximately float residual * 16384).
  */
 int rtl_stream_ted_bias(const RtlSdrContext* ctx);
 

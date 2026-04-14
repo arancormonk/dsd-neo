@@ -152,48 +152,43 @@ AGF_END:; //do nothing
 // Kept identical to the original implementation in dsd_audio2.c.
 void
 agsm(dsd_opts* opts, dsd_state* state, short* input, int len) {
-    int i;
-
     UNUSED(opts);
 
-    //NOTE: This seems to be doing better now that I got it worked out properly
-    //This may produce a mild buzz sound though on the low end
-
-    // float avg = 0.0f;    //average of 20 samples (unused)
-    float coeff = 0.0f;  //gain coeffiecient
-    float max = 0.0f;    //the highest sample value
-    float nom = 4800.0f; //nominator value for 48k
-    float samp[960];
-    memset(samp, 0.0f, 960 * sizeof(float));
-
-    //assign internal float from short input
-    for (i = 0; i < len; i++) {
-        samp[i] = (float)input[i];
+    if (!input || len <= 0 || !state) {
+        return;
     }
 
-    for (i = 0; i < len; i++) {
-        if (fabsf(samp[i]) > max) {
-            max = fabsf(samp[i]);
+    /* Legacy target level for analog monitor path (PCM16 scale). */
+    const float nom = 4800.0f;
+    float max_abs = 0.0f;
+    for (int i = 0; i < len; i++) {
+        float v = fabsf((float)input[i]);
+        if (v > max_abs) {
+            max_abs = v;
         }
     }
 
-    /* average not used; remove to avoid dead store */
+    /* Avoid divide-by-zero on silence and keep behavior stable. */
+    if (max_abs < 1e-6f) {
+        max_abs = 1e-6f;
+    }
 
-    coeff = fabsf(nom / max);
+    float coeff = fabsf(nom / max_abs);
 
-    //keep coefficient with tolerable range when silence to prevent crackle/buzz
+    /* Keep coefficient in a conservative range to limit pumping/noise lift. */
     if (coeff > 3.0f) {
         coeff = 3.0f;
     }
 
-    //apply the coefficient to bring the max value to our desired maximum value
-    for (i = 0; i < 20; i++) {
-        samp[i] *= coeff;
-    }
-
-    //return new sample values post agc
-    for (i = 0; i < len; i++) {
-        input[i] = (short)samp[i];
+    /* Apply gain over the full block with explicit int16 saturation. */
+    for (int i = 0; i < len; i++) {
+        float scaled = (float)input[i] * coeff;
+        if (scaled > 32767.0f) {
+            scaled = 32767.0f;
+        } else if (scaled < -32768.0f) {
+            scaled = -32768.0f;
+        }
+        input[i] = (short)scaled;
     }
 
     state->aout_gainA = coeff; //store for internal use

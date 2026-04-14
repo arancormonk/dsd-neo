@@ -235,7 +235,7 @@ static const float channel_lpf_digital[kChannelLpfFallbackTaps] = {
     0.0f,
 };
 
-/* ---------------- Post-demod audio polyphase decimator (M > 2) -------------- */
+/* ---------------- Post-demod audio polyphase decimator (M > 1) -------------- */
 /*
  * Lightweight 1/M polyphase decimator for audio. Designs a windowed-sinc
  * prototype (Q15) for the given M and streams with a circular history.
@@ -246,7 +246,7 @@ audio_polydecim_ensure(struct demod_state* d, int M) {
     if (!d) {
         return;
     }
-    if (M <= 2) {
+    if (M <= 1) {
         d->post_polydecim_enabled = 0;
         return;
     }
@@ -1624,16 +1624,16 @@ full_demod(struct demod_state* d) {
     // use nicer filter here too?
     if (!d->cqpsk_enable && d->post_downsample > 1) {
         int decim = d->post_downsample;
-        if (decim > 2) {
-            /* Higher-quality polyphase decimator for larger factors */
-            audio_polydecim_ensure(d, decim);
+        /* Prefer the FIR polyphase decimator for all integer factors > 1. */
+        audio_polydecim_ensure(d, decim);
+        if (d->post_polydecim_enabled) {
             int out_n = audio_polydecim_process(d, d->result, d->result_len, d->timing_buf);
             if (out_n > 0) {
                 memcpy(d->result, d->timing_buf, (size_t)out_n * sizeof(float));
                 d->result_len = out_n;
             }
         } else {
-            /* Pre-filter with one-pole and simple decimation for small factor */
+            /* Allocation/design fallback: preserve legacy one-pole + boxcar path. */
             int Fs = (d->rate_out > 0) ? d->rate_out : 48000;
             double fc = 0.2 * ((double)Fs / (double)decim);
             if (fc < 50.0) {

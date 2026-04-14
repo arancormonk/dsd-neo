@@ -121,7 +121,7 @@ static uint16_t viterbi_history[244];
 * @param out Destination array where decoded data is written.
 * @param in Input data.
 * @param len Input length in bits.
-* @return Number of bit errors corrected.
+* @return Final Viterbi path metric (lower is better; not a BER count).
 */
 uint32_t
 viterbi_decode(uint8_t* out, const uint16_t* in, const uint16_t len) {
@@ -157,7 +157,7 @@ viterbi_decode(uint8_t* out, const uint16_t* in, const uint16_t len) {
 * @param punct Puncturing matrix.
 * @param in_len Input data length.
 * @param p_len Puncturing matrix length (entries).
-* @return Number of bit errors corrected.
+* @return Path metric with neutral puncture offsets removed.
 */
 uint32_t
 viterbi_decode_punctured(uint8_t* out, const uint16_t* in, const uint8_t* punct, const uint16_t in_len,
@@ -252,6 +252,8 @@ viterbi_decode_bit(uint16_t s0, uint16_t s1, const size_t pos) {
 */
 uint32_t
 viterbi_chainback(uint8_t* out, size_t pos, uint16_t len) {
+    /* This decoder path assumes a terminated trellis (tail bits), so traceback
+     * starts from state 0 for protocol compatibility. */
     uint8_t state = 0;
     size_t bitPos = len + 4;
 
@@ -260,20 +262,11 @@ viterbi_chainback(uint8_t* out, size_t pos, uint16_t len) {
     while (pos > 0) {
         bitPos--;
         pos--;
-        uint16_t bit = viterbi_history[pos] & ((1 << (state >> 4)));
+        uint16_t bit = viterbi_history[pos] & ((1 << (state >> (9 - K))));
         state >>= 1;
         if (bit) {
             state |= 0x80;
             out[bitPos / 8] |= 1 << (7 - (bitPos % 8));
-        }
-    }
-
-    uint32_t cost = prevMetrics[0];
-
-    for (size_t i = 0; i < NUM_STATES; i++) {
-        uint32_t m = prevMetrics[i];
-        if (m < cost) {
-            cost = m;
         }
     }
 
@@ -282,7 +275,13 @@ viterbi_chainback(uint8_t* out, size_t pos, uint16_t len) {
     // for (size_t i = 0; i < len; i++)
     // 	fprintf (stderr, "%02X", out[i]);
 
-    return cost;
+    uint32_t best_cost = prevMetrics[0];
+    for (size_t i = 1; i < NUM_STATES; i++) {
+        if (prevMetrics[i] < best_cost) {
+            best_cost = prevMetrics[i];
+        }
+    }
+    return best_cost;
 }
 
 /**

@@ -4201,12 +4201,22 @@ dsd_rtl_stream_should_exit(void) {
 }
 
 /**
- * @brief Return smoothed TED residual (EMA of Gardner error). Sign indicates
- * persistent early/late bias; 0 when TED disabled or no bias.
+ * @brief Return smoothed TED residual (EMA of Gardner error) in Q14 units.
+ *
+ * `ted_state.e_ema` is a normalized float residual roughly in [-1, +1].
+ * Exporting a scaled integer keeps hook/UI APIs stable while preserving sign
+ * and sufficient dynamic range for center-nudging deadbands.
  */
 extern "C" int
 dsd_rtl_stream_ted_bias(void) {
-    return demod.ted_state.e_ema;
+    const float scaled = demod.ted_state.e_ema * 16384.0f; /* Q14 scale */
+    if (scaled > (float)INT_MAX) {
+        return INT_MAX;
+    }
+    if (scaled < (float)INT_MIN) {
+        return INT_MIN;
+    }
+    return (int)lrintf(scaled);
 }
 
 extern "C" int

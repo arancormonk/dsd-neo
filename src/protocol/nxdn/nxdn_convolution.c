@@ -187,6 +187,7 @@ CNXDNConvolution_decode_soft(uint8_t s0, uint8_t s1, uint8_t r0, uint8_t r1) {
 
     /* Scale factor: hard metric uses 0,2 range, scale reliability from 0-255 to 0-128 */
     const uint32_t scale = 128;
+    const uint32_t full_metric = (CNXDNConvolution_M * 256U) / scale; /* 8 with current constants */
 
     *m_dp = 0U;
 
@@ -198,17 +199,18 @@ CNXDNConvolution_decode_soft(uint8_t s0, uint8_t s1, uint8_t r0, uint8_t r1) {
         uint32_t diff1 = (uint32_t)abs((int)CNXDNConvolution_BRANCH_TABLE2[i] - (int)s1);
         metric = ((diff0 * r0) + (diff1 * r1)) / scale;
 
-        /* Cap metric to avoid overflow in 16-bit path metric */
-        if (metric > 1000) {
-            metric = 1000;
+        /* Keep branch metric within the decoder's expected [0..M] domain.
+         * This also prevents unsigned underflow in the complementary metric. */
+        if (metric > full_metric) {
+            metric = full_metric;
         }
 
         m0 = m_oldMetrics[i] + metric;
-        m1 = m_oldMetrics[i + CNXDNConvolution_NUM_OF_STATES_D2] + (CNXDNConvolution_M * 256 / scale - metric);
+        m1 = m_oldMetrics[i + CNXDNConvolution_NUM_OF_STATES_D2] + (full_metric - metric);
         decision0 = (m0 >= m1) ? 1U : 0U;
         m_newMetrics[j + 0U] = (uint16_t)(decision0 != 0U ? m1 : m0);
 
-        m0 = m_oldMetrics[i] + (CNXDNConvolution_M * 256 / scale - metric);
+        m0 = m_oldMetrics[i] + (full_metric - metric);
         m1 = m_oldMetrics[i + CNXDNConvolution_NUM_OF_STATES_D2] + metric;
         decision1 = (m0 >= m1) ? 1U : 0U;
         m_newMetrics[j + 1U] = (uint16_t)(decision1 != 0U ? m1 : m0);

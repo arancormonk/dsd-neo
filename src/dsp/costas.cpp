@@ -639,6 +639,8 @@ op25_costas_loop_cc(struct demod_state* d) {
     const float beta = c->beta;
     const float max_freq = c->max_freq;
     const float min_freq = c->min_freq;
+    float last_error = 0.0f;
+    double err_abs_acc = 0.0;
 
     /* OP25 max_phase = TWO_PI/4 = π/2 */
     const float max_phase = kPi / 2.0f;
@@ -667,6 +669,8 @@ op25_costas_loop_cc(struct demod_state* d) {
          * The phase detector expects axis-aligned symbols. */
         float error = phase_detector_4(out_r, out_j);
         error = branchless_clip(error, 1.0f);
+        last_error = error;
+        err_abs_acc += std::fabs((double)error);
 
         /* OP25 advance_loop (PI controller)
          * From costas_loop_cc_impl.cc lines 169-173:
@@ -699,7 +703,20 @@ op25_costas_loop_cc(struct demod_state* d) {
     /* Save state */
     c->phase = phase;
     c->freq = freq;
-    c->error = 0.0f; /* Last error not particularly useful at symbol rate */
+    c->error = last_error;
+    if (pairs > 0) {
+        double avg_abs = err_abs_acc / (double)pairs;
+        int q14 = (int)std::lrint(avg_abs * 16384.0);
+        if (q14 < 0) {
+            q14 = 0;
+        }
+        if (q14 > 32767) {
+            q14 = 32767;
+        }
+        d->costas_err_avg_q14 = q14;
+    } else {
+        d->costas_err_avg_q14 = 0;
+    }
 }
 
 /*

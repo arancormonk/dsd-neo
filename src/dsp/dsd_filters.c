@@ -6,12 +6,16 @@
 #include <math.h>
 #include <string.h>
 
-#define FIR_MAX_TAPS 1024
+#define FIR_MAX_TAPS          1024
+#define SPS_FIR_DESIGN_INTERP 0
+#define SPS_FIR_DESIGN_RRC    1
 
 typedef struct {
     const float* base; /* design taps at base_sps */
     int base_len;
     int base_sps;
+    int design_kind; /* SPS_FIR_DESIGN_* */
+    float rrc_alpha; /* used when design_kind == SPS_FIR_DESIGN_RRC */
     float taps[FIR_MAX_TAPS];
     float hist[FIR_MAX_TAPS];
     int taps_len;
@@ -47,6 +51,43 @@ interp_base(const float* base, int len, float idx) {
     return base[i0] + frac * (base[i1] - base[i0]);
 }
 
+/*
+ * Root-raised-cosine impulse response h(t), T=1 symbol.
+ * Matches the standard closed-form expression, including singularities at
+ * t = 0 and t = ±1/(4*alpha).
+ */
+static float
+rrc_impulse(float t_sym, float alpha) {
+    const float pi = 3.14159265358979323846f;
+    const float eps = 1e-6f;
+    if (alpha <= 0.0f || alpha > 1.0f) {
+        if (fabsf(t_sym) < eps) {
+            return 1.0f;
+        }
+        float x = pi * t_sym;
+        return sinf(x) / x;
+    }
+
+    if (fabsf(t_sym) < eps) {
+        return 1.0f + alpha * ((4.0f / pi) - 1.0f);
+    }
+
+    float four_a_t = 4.0f * alpha * t_sym;
+    if (fabsf(fabsf(four_a_t) - 1.0f) < 1e-4f) {
+        float a = pi / (4.0f * alpha);
+        float t1 = (1.0f + (2.0f / pi)) * sinf(a);
+        float t2 = (1.0f - (2.0f / pi)) * cosf(a);
+        return (alpha / 1.41421356237309504880f) * (t1 + t2);
+    }
+
+    float num = sinf(pi * t_sym * (1.0f - alpha)) + (four_a_t * cosf(pi * t_sym * (1.0f + alpha)));
+    float den = pi * t_sym * (1.0f - (four_a_t * four_a_t));
+    if (fabsf(den) < eps) {
+        return 0.0f;
+    }
+    return num / den;
+}
+
 static void
 design_sps_fir(sps_fir* f, int sps) {
     if (!f || !f->base || f->base_len <= 0 || f->base_sps <= 0 || sps <= 1) {
@@ -55,9 +96,15 @@ design_sps_fir(sps_fir* f, int sps) {
         }
         return;
     }
-    double span = (double)(f->base_len - 1) / (double)f->base_sps;
-    double desired = span * (double)sps;
-    int taps_len = (int)(desired + 0.5) + 1; /* preserve span + center tap */
+    int taps_len = 0;
+    if (sps == f->base_sps && f->base_len <= FIR_MAX_TAPS) {
+        /* Exact base design when no SPS change is requested. */
+        taps_len = f->base_len;
+    } else {
+        double span = (double)(f->base_len - 1) / (double)f->base_sps;
+        double desired = span * (double)sps;
+        taps_len = (int)(desired + 0.5) + 1; /* preserve span + center tap */
+    }
     if (taps_len < 3) {
         taps_len = 3;
     }
@@ -71,12 +118,20 @@ design_sps_fir(sps_fir* f, int sps) {
         }
     }
 
-    float mid_new = 0.5f * (float)(taps_len - 1);
-    float mid_base = 0.5f * (float)(f->base_len - 1);
-    for (int n = 0; n < taps_len; n++) {
-        float t_sym = ((float)n - mid_new) / (float)sps;
-        float base_idx = t_sym * (float)f->base_sps + mid_base;
-        f->taps[n] = interp_base(f->base, f->base_len, base_idx);
+    if (sps == f->base_sps && taps_len == f->base_len) {
+        memcpy(f->taps, f->base, (size_t)taps_len * sizeof(float));
+    } else {
+        float mid_new = 0.5f * (float)(taps_len - 1);
+        float mid_base = 0.5f * (float)(f->base_len - 1);
+        for (int n = 0; n < taps_len; n++) {
+            float t_sym = ((float)n - mid_new) / (float)sps;
+            if (f->design_kind == SPS_FIR_DESIGN_RRC) {
+                f->taps[n] = rrc_impulse(t_sym, f->rrc_alpha);
+            } else {
+                float base_idx = t_sym * (float)f->base_sps + mid_base;
+                f->taps[n] = interp_base(f->base, f->base_len, base_idx);
+            }
+        }
     }
 
     double sum = 0.0;
@@ -251,11 +306,27 @@ static const float p25_base_coeffs[91] = {
     6.5614198114868558e-05f,  2.0151157806489272e-04f,  2.5136032328468153e-04f};
 #define P25_BASE_TAP_LEN (int)(sizeof(p25_base_coeffs) / sizeof(p25_base_coeffs[0]))
 
-static sps_fir g_fir_p25 = {.base = p25_base_coeffs, .base_len = P25_BASE_TAP_LEN, .base_sps = P25_BASE_SPS};
-static sps_fir g_fir_dmr = {.base = dmrcoeffs, .base_len = DMR_BASE_TAP_LEN, .base_sps = DMR_BASE_SPS};
-static sps_fir g_fir_nxdn = {.base = nxcoeffs, .base_len = NXDN_BASE_TAP_LEN, .base_sps = NXDN_BASE_SPS};
-static sps_fir g_fir_dpmr = {.base = dpmrcoeffs, .base_len = DPMR_BASE_TAP_LEN, .base_sps = DPMR_BASE_SPS};
-static sps_fir g_fir_m17 = {.base = m17coeffs, .base_len = M17_BASE_TAP_LEN, .base_sps = M17_BASE_SPS};
+static sps_fir g_fir_p25 = {.base = p25_base_coeffs,
+                            .base_len = P25_BASE_TAP_LEN,
+                            .base_sps = P25_BASE_SPS,
+                            .design_kind = SPS_FIR_DESIGN_INTERP};
+static sps_fir g_fir_dmr = {.base = dmrcoeffs,
+                            .base_len = DMR_BASE_TAP_LEN,
+                            .base_sps = DMR_BASE_SPS,
+                            .design_kind = SPS_FIR_DESIGN_RRC,
+                            .rrc_alpha = 0.7f};
+static sps_fir g_fir_nxdn = {
+    .base = nxcoeffs, .base_len = NXDN_BASE_TAP_LEN, .base_sps = NXDN_BASE_SPS, .design_kind = SPS_FIR_DESIGN_INTERP};
+static sps_fir g_fir_dpmr = {.base = dpmrcoeffs,
+                             .base_len = DPMR_BASE_TAP_LEN,
+                             .base_sps = DPMR_BASE_SPS,
+                             .design_kind = SPS_FIR_DESIGN_RRC,
+                             .rrc_alpha = 0.2f};
+static sps_fir g_fir_m17 = {.base = m17coeffs,
+                            .base_len = M17_BASE_TAP_LEN,
+                            .base_sps = M17_BASE_SPS,
+                            .design_kind = SPS_FIR_DESIGN_RRC,
+                            .rrc_alpha = 0.5f};
 
 float
 dmr_filter(float sample, int sps) {

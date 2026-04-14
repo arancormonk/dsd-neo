@@ -555,6 +555,11 @@ target_include_directories(dsd-neo_test_core_audio_input_rate PRIVATE
 target_link_libraries(dsd-neo_test_core_audio_input_rate PRIVATE dsd-neo_core)
 add_test(NAME CORE_AUDIO_INPUT_RATE COMMAND dsd-neo_test_core_audio_input_rate)
 
+add_executable(dsd-neo_test_core_audio_gain core/test_core_audio_gain.c)
+target_include_directories(dsd-neo_test_core_audio_gain PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_core_audio_gain PRIVATE dsd-neo_core)
+add_test(NAME CORE_AUDIO_GAIN COMMAND dsd-neo_test_core_audio_gain)
+
 add_executable(dsd-neo_test_dsp_pcm_input_staging dsp/test_dsp_pcm_input_staging.c)
 target_include_directories(dsd-neo_test_dsp_pcm_input_staging PRIVATE
   ${PROJECT_SOURCE_DIR}/include

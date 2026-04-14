@@ -883,142 +883,145 @@ soft_symbol_frame_begin(dsd_state* state) {
 }
 
 /**
- * \brief Convert a soft symbol to Viterbi cost metric.
+ * \brief Map log-likelihood ratio proxy to 16-bit Viterbi metric.
+ *
+ * This decoder family expects costs in [0, 65535], where:
+ *   - 0      = strong bit 0
+ *   - 65535  = strong bit 1
+ *   - ~32768 = uncertain
+ */
+static inline uint16_t
+llr_to_viterbi_cost(float llr_log_p0_over_p1) {
+    /* Clamp LLR to keep expf numerically stable and preserve monotonicity. */
+    if (llr_log_p0_over_p1 >= 16.0f) {
+        return 0;
+    }
+    if (llr_log_p0_over_p1 <= -16.0f) {
+        return 65535;
+    }
+    float p1 = 1.0f / (1.0f + expf(llr_log_p0_over_p1));
+    long q = lrintf(p1 * 65535.0f);
+    if (q < 0L) {
+        q = 0L;
+    }
+    if (q > 65535L) {
+        q = 65535L;
+    }
+    return (uint16_t)q;
+}
+
+static inline float
+min_sq_dist2(float x, float a, float b) {
+    float da = x - a;
+    float db = x - b;
+    float d2a = da * da;
+    float d2b = db * db;
+    return (d2a < d2b) ? d2a : d2b;
+}
+
+/**
+ * \brief Convert a soft 4-level symbol to a Viterbi cost metric.
  *
  * For 4-level modulations (C4FM, GFSK, QPSK), each dibit encodes 2 bits.
- * The MSB (bit_position=0) determines upper/lower half (+3/+1 vs -1/-3).
- * The LSB (bit_position=1) determines inner/outer level (+3/-3 vs +1/-1).
+ * We use a max-log MAP proxy:
+ *   LLR ~= (d1^2 - d0^2) / (2*sigma^2)
+ * where d0/d1 are distances to nearest ideal levels for each bit hypothesis.
  *
- * Returns 0x0000 for confident '0', 0xFFFF for confident '1', ~0x7FFF for uncertain.
- *
- * M17 uses GFSK with dibit mapping: 01->+3, 00->+1, 10->-1, 11->-3
- * So for M17: MSB=0 means positive (>center), MSB=1 means negative (<center)
- *             LSB=0 means inner (±1), LSB=1 means outer (±3)
+ * This is more mathematically consistent than direct linear confidence maps,
+ * while preserving the decoder's expected [0..65535] metric domain.
  */
 uint16_t
 soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_position) {
+    if (!state) {
+        return 32768U;
+    }
+
+    float min_val = state->min;
+    float lmid = state->lmid;
     float center = state->center;
     float umid = state->umid;
-    float lmid = state->lmid;
     float max_val = state->max;
-    float min_val = state->min;
-    float confidence;
-    int bit_value;
 
-    // Compute span for normalization, guard against zero
-    float span = max_val - min_val;
-    if (span < 1e-6f) {
-        span = 1.0f;
+    /* Guard against degenerate/unsorted thresholds by synthesizing a symmetric set. */
+    if (!(min_val < lmid && lmid < center && center < umid && umid < max_val)) {
+        float span = max_val - min_val;
+        if (span < 1e-3f) {
+            span = 2.0f;
+        }
+        float half = span * 0.5f;
+        min_val = center - half;
+        max_val = center + half;
+        lmid = center - (span / 6.0f);
+        umid = center + (span / 6.0f);
     }
 
+    /* Estimate ideal 4-PAM levels from decision-region midpoints. */
+    float n3 = 0.5f * (min_val + lmid);
+    float n1 = 0.5f * (lmid + center);
+    float p1 = 0.5f * (center + umid);
+    float p3 = 0.5f * (umid + max_val);
+
+    /* Noise scale proxy: 4-PAM span is roughly 6*sigma in this normalized model. */
+    float sigma = (max_val - min_val) / 6.0f;
+    if (sigma < 1e-3f) {
+        sigma = 1e-3f;
+    }
+    float inv_2sigma2 = 0.5f / (sigma * sigma);
+
+    bit_position &= 1;
+    float d0 = 0.0f;
+    float d1 = 0.0f;
     if (bit_position == 0) {
-        // MSB: determines if symbol is in upper half (0) or lower half (1)
-        // For M17 GFSK: positive symbols -> bit 0, negative -> bit 1
-        if (symbol > center) {
-            bit_value = 0;
-            // Confidence based on distance from center toward max
-            confidence = (symbol - center) / (max_val - center + 1e-6f);
-        } else {
-            bit_value = 1;
-            // Confidence based on distance from center toward min
-            confidence = (center - symbol) / (center - min_val + 1e-6f);
-        }
+        /* MSB: positive cluster (0) vs negative cluster (1). */
+        d0 = min_sq_dist2(symbol, p1, p3);
+        d1 = min_sq_dist2(symbol, n1, n3);
     } else {
-        // LSB: determines inner (0) or outer (1) level
-        // For M17 GFSK: ±1 -> bit 0, ±3 -> bit 1
-        float abs_sym = fabsf(symbol - center);
-        float mid_threshold = (fabsf(umid - center) + fabsf(lmid - center)) / 2.0f;
-
-        if (abs_sym < mid_threshold) {
-            // Inner level (±1)
-            bit_value = 0;
-            confidence = (mid_threshold - abs_sym) / (mid_threshold + 1e-6f);
-        } else {
-            // Outer level (±3)
-            bit_value = 1;
-            confidence = (abs_sym - mid_threshold) / (span / 2.0f - mid_threshold + 1e-6f);
-        }
+        /* LSB: inner levels (0) vs outer levels (1). */
+        d0 = min_sq_dist2(symbol, n1, p1);
+        d1 = min_sq_dist2(symbol, n3, p3);
     }
 
-    // Clamp confidence to [0, 1]
-    if (confidence < 0.0f) {
-        confidence = 0.0f;
-    }
-    if (confidence > 1.0f) {
-        confidence = 1.0f;
-    }
-
-    // Map to Viterbi cost:
-    // bit_value=0: confident -> 0x0000, uncertain -> 0x7FFF
-    // bit_value=1: confident -> 0xFFFF, uncertain -> 0x7FFF
-    uint16_t cost;
-    if (bit_value == 0) {
-        // Strong 0 = 0x0000, weak 0 = 0x7FFF
-        cost = (uint16_t)((1.0f - confidence) * 32767.0f);
-    } else {
-        // Strong 1 = 0xFFFF, weak 1 = 0x7FFF
-        cost = (uint16_t)(32767.0f + confidence * 32768.0f);
-    }
-
-    return cost;
+    float llr = (d1 - d0) * inv_2sigma2; /* log(P(bit=0)/P(bit=1)) proxy */
+    return llr_to_viterbi_cost(llr);
 }
 
 /**
  * GMSK (binary) soft symbol to Viterbi cost.
  *
  * For GMSK modulation where each symbol represents a single bit.
- * D-STAR uses GMSK where: symbol > center -> bit 1, symbol < center -> bit 0
- * Distance from center indicates confidence in the decision.
+ * Uses the same max-log MAP proxy from distances to the two class means.
  */
 uint16_t
 gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state) {
+    if (!state) {
+        return 32768U;
+    }
+
     float center = state->center;
-    float max_val = state->max;
     float min_val = state->min;
-    float confidence;
-    int bit_value;
-
-    float upper_span = max_val - center;
-    if (upper_span < 1e-6f) {
-        upper_span = 1e-6f;
-    }
-    float lower_span = center - min_val;
-    if (lower_span < 1e-6f) {
-        lower_span = 1e-6f;
-    }
-
-    // GMSK: above center = 1, below center = 0
-    if (symbol > center) {
-        bit_value = 1;
-        // Confidence based on distance from center toward max
-        confidence = (symbol - center) / upper_span;
-    } else {
-        bit_value = 0;
-        // Confidence based on distance from center toward min
-        confidence = (center - symbol) / lower_span;
+    float max_val = state->max;
+    if (!(min_val < center && center < max_val)) {
+        float span = max_val - min_val;
+        if (span < 1e-3f) {
+            span = 2.0f;
+        }
+        float half = span * 0.5f;
+        min_val = center - half;
+        max_val = center + half;
     }
 
-    // Clamp confidence to [0, 1]
-    if (confidence < 0.0f) {
-        confidence = 0.0f;
+    float mu0 = 0.5f * (min_val + center); /* bit 0 hypothesis */
+    float mu1 = 0.5f * (center + max_val); /* bit 1 hypothesis */
+    float sigma = (max_val - min_val) / 4.0f;
+    if (sigma < 1e-3f) {
+        sigma = 1e-3f;
     }
-    if (confidence > 1.0f) {
-        confidence = 1.0f;
-    }
+    float inv_2sigma2 = 0.5f / (sigma * sigma);
 
-    // Map to Viterbi cost:
-    // bit_value=0: confident -> 0x0000, uncertain -> 0x7FFF
-    // bit_value=1: confident -> 0xFFFF, uncertain -> 0x7FFF
-    uint16_t cost;
-    if (bit_value == 0) {
-        // Strong 0 = 0x0000, weak 0 = 0x7FFF
-        cost = (uint16_t)((1.0f - confidence) * 32767.0f);
-    } else {
-        // Strong 1 = 0xFFFF, weak 1 = 0x7FFF
-        cost = (uint16_t)(32767.0f + confidence * 32768.0f);
-    }
-
-    return cost;
+    float d0 = symbol - mu0;
+    float d1 = symbol - mu1;
+    float llr = ((d1 * d1) - (d0 * d0)) * inv_2sigma2;
+    return llr_to_viterbi_cost(llr);
 }
 
 void

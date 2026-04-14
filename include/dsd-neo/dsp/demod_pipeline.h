@@ -62,10 +62,10 @@ void raw_demod(struct demod_state* fm);
 /**
  * Differential QPSK demodulator for CQPSK/LSM.
  *
- * Computes the phase difference between consecutive complex samples
- * (arg(z_n * conj(z_{n-1}))) using a fast atan2 approximation and writes
- * the resulting Q14-scaled symbols to the real result buffer. Maintains
- * history across blocks via demod_state.
+ * Converts each carrier-corrected differential phasor to a real symbol using
+ * `atan2f(Q, I) * (4/pi)`, matching OP25's `multiply_const_ff(4.0/pi)` stage.
+ * The output range maps nominal CQPSK decision points to approximately
+ * `{-3, -1, +1, +3}` for legacy slicers.
  *
  * @param fm Demodulator state (reads interleaved I/Q in lowpassed, writes phase deltas to result).
  */

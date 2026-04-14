@@ -265,15 +265,16 @@ maybe_auto_center(dsd_opts* opts, dsd_state* state, int have_sync) {
         return;
     }
 
-    /* Read smoothed TED residual (can be 0 when TED disabled). */
+    /* Read smoothed TED residual in Q14 units (can be 0 when TED disabled). */
     int e_ema = dsd_rtl_stream_metrics_hook_ted_bias();
     if (e_ema == 0) {
         return;
     }
 
-    /* Small deadband and persistence guard */
-    const int deadband = 5000; /* empirically small; residual uses coarse units */
-    static int run_dir = 0;    /* -1, 0, +1 */
+    /* Small deadband and persistence guard.
+     * Q14 scaling: 1024 ~= 0.0625 normalized residual. */
+    const int deadband = 1024;
+    static int run_dir = 0; /* -1, 0, +1 */
     static int run_len = 0;
     int dir = 0;
     if (e_ema > deadband) {
