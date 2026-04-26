@@ -41,7 +41,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1.13.0
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11.5
+        uses: lukka/run-vcpkg@v11.6
         with:
           # run-vcpkg v11.5 requires a full 40-char SHA1.
           # Keep this in sync with vcpkg.json's builtin-baseline.
@@ -220,7 +220,7 @@ jobs:
             mingw-w64-x86_64-ncurses
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11.5
+        uses: lukka/run-vcpkg@v11.6
         with:
           # run-vcpkg v11.5 requires a full 40-char SHA1.
           # Keep this in sync with vcpkg.json's builtin-baseline.
