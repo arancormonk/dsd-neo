@@ -168,7 +168,8 @@ test_load_and_apply_basic(void) {
                              "rdio_api_url = \"http://127.0.0.1:3000\"\n"
                              "rdio_api_key = \"apikey\"\n"
                              "rdio_upload_timeout_ms = 2500\n"
-                             "rdio_upload_retries = 3\n";
+                             "rdio_upload_retries = 3\n"
+                             "rdio_api_delete_after_upload = true\n";
 
     char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
@@ -254,6 +255,10 @@ test_load_and_apply_basic(void) {
     if (opts.rdio_upload_timeout_ms != 2500 || opts.rdio_upload_retries != 3) {
         fprintf(stderr, "rdio upload timeout/retries not applied (%d/%d)\n", opts.rdio_upload_timeout_ms,
                 opts.rdio_upload_retries);
+        rc |= 1;
+    }
+    if (opts.rdio_api_delete_after_upload != 1) {
+        fprintf(stderr, "rdio API delete-after-upload not applied (%d)\n", opts.rdio_api_delete_after_upload);
         rc |= 1;
     }
 

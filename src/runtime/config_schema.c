@@ -83,6 +83,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"recording", "rdio_upload_timeout_ms", "rdio API upload timeout in milliseconds", "5000", NULL, DSDCFG_TYPE_INT,
      100, 120000, 0},
     {"recording", "rdio_upload_retries", "rdio API upload attempts per call", "1", NULL, DSDCFG_TYPE_INT, 0, 10, 0},
+    {"recording", "rdio_api_delete_after_upload", "Delete per-call WAV after successful API-only upload", "false", NULL,
+     DSDCFG_TYPE_BOOL, 0, 0, 0},
 
     /* [dsp] section */
     {"dsp", "iq_balance", "Enable RTL IQ balance (image suppression)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},

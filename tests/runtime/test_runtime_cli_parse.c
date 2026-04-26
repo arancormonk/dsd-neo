@@ -1123,11 +1123,12 @@ test_rdio_long_options_parse(void) {
     char arg10[] = "2500";
     char arg11[] = "--rdio-upload-retries";
     char arg12[] = "4";
-    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, NULL};
+    char arg13[] = "--rdio-api-delete-after-upload";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
-    int rc = dsd_parse_args(13, argv, opts, state, &argc_effective, &exit_rc);
+    int rc = dsd_parse_args(14, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
         fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
@@ -1159,6 +1160,10 @@ test_rdio_long_options_parse(void) {
     }
     if (opts->rdio_upload_retries != 4) {
         fprintf(stderr, "expected retries=4, got %d\n", opts->rdio_upload_retries);
+        test_rc = 1;
+    }
+    if (opts->rdio_api_delete_after_upload != 1) {
+        fprintf(stderr, "expected rdio_api_delete_after_upload=1, got %d\n", opts->rdio_api_delete_after_upload);
         test_rc = 1;
     }
 

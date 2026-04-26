@@ -175,6 +175,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* rdio_api_key_cli = NULL;
     const char* rdio_upload_timeout_cli = NULL;
     const char* rdio_upload_retries_cli = NULL;
+    int rdio_api_delete_after_upload_cli = 0;
     const char* dmr_baofeng_pc5_cli = NULL;
     const char* dmr_csi_ee72_cli = NULL;
     const char* dmr_vertex_ks_csv_cli = NULL;
@@ -459,6 +460,10 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }
         if (strcmp(argv[i], "--rdio-upload-retries") == 0 && i + 1 < argc) {
             rdio_upload_retries_cli = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "--rdio-api-delete-after-upload") == 0) {
+            rdio_api_delete_after_upload_cli = 1;
             continue;
         }
         if (strcmp(argv[i], "--dmr-baofeng-pc5") == 0) {
@@ -819,6 +824,10 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }
         opts->rdio_upload_retries = retries;
         LOG_NOTICE("Rdio upload retries: %d\n", opts->rdio_upload_retries);
+    }
+    if (rdio_api_delete_after_upload_cli) {
+        opts->rdio_api_delete_after_upload = 1;
+        LOG_NOTICE("Rdio API delete-after-upload enabled\n");
     }
 
     if (dmr_baofeng_pc5_cli) {

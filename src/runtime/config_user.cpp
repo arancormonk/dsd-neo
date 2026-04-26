@@ -97,6 +97,7 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->rdio_api_key[0] = '\0';
     cfg->rdio_upload_timeout_ms = 5000;
     cfg->rdio_upload_retries = 1;
+    cfg->rdio_api_delete_after_upload = 0;
 
     // DSP defaults (match runtime defaults)
     cfg->iq_balance = 0;
@@ -711,6 +712,7 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
         if (cfg->rdio_upload_retries >= 0) {
             fprintf(out, "rdio_upload_retries = %d\n", cfg->rdio_upload_retries);
         }
+        fprintf(out, "rdio_api_delete_after_upload = %s\n", cfg->rdio_api_delete_after_upload ? "true" : "false");
         fprintf(out, "\n");
     }
 
@@ -943,6 +945,7 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
         opts->rdio_system_id = cfg->rdio_system_id;
         opts->rdio_upload_timeout_ms = cfg->rdio_upload_timeout_ms;
         opts->rdio_upload_retries = cfg->rdio_upload_retries;
+        opts->rdio_api_delete_after_upload = cfg->rdio_api_delete_after_upload;
         if (cfg->rdio_api_url[0]) {
             snprintf(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", cfg->rdio_api_url);
             opts->rdio_api_url[sizeof opts->rdio_api_url - 1] = '\0';
@@ -1136,6 +1139,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     cfg->rdio_api_key[sizeof cfg->rdio_api_key - 1] = '\0';
     cfg->rdio_upload_timeout_ms = opts->rdio_upload_timeout_ms;
     cfg->rdio_upload_retries = opts->rdio_upload_retries;
+    cfg->rdio_api_delete_after_upload = opts->rdio_api_delete_after_upload ? 1 : 0;
 
     // DSP snapshot (persist runtime toggles via env for the next run)
     cfg->has_dsp = 1;

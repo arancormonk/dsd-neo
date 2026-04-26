@@ -104,6 +104,7 @@ struct dsd_opts {
     int rdio_system_id;  //rdio-scanner system id used for API upload
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
+    int rdio_api_delete_after_upload; //delete per-call WAV after successful API-only upload
     int serial_baud;
     int serial_fd;
     int resume;

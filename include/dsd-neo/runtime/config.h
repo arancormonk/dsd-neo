@@ -691,6 +691,7 @@ typedef struct dsdneoUserConfig {
     char rdio_api_key[256];
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
+    int rdio_api_delete_after_upload; /* bool */
 
     /* [dsp] */
     int has_dsp;

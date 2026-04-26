@@ -385,6 +385,11 @@ apply_recording_section_key(dsdneoUserConfig* cfg, const char* key_lc, const cha
             v = 10;
         }
         cfg->rdio_upload_retries = (int)v;
+    } else if (strcmp(key_lc, "rdio_api_delete_after_upload") == 0) {
+        int b = 0;
+        if (parse_bool(val, &b) == 0) {
+            cfg->rdio_api_delete_after_upload = b;
+        }
     }
 }
 

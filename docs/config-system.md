@@ -317,8 +317,11 @@ small subset is exposed as config keys for convenience (for example
 | `rdio_api_key` | STRING | rdio API key | (empty) |
 | `rdio_upload_timeout_ms` | INT | rdio API timeout per call in ms | `5000` |
 | `rdio_upload_retries` | INT | rdio API upload attempts per call | `1` |
+| `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload | `false` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
+For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
+`rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
 
 **[dsp] section:**
 | Key | Type | Description | Default |

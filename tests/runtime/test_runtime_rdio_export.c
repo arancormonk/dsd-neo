@@ -5,8 +5,15 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -169,6 +176,146 @@ read_file(const char* path, char* out, size_t out_size) {
     fclose(fp);
     return 0;
 }
+
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+typedef struct {
+    dsd_socket_t listen_sock;
+    dsd_thread_t thread;
+    int rc;
+} rdio_test_http_server;
+
+static int
+rdio_test_content_length(const char* headers) {
+    const char* p = strstr(headers, "Content-Length:");
+    if (!p) {
+        return -1;
+    }
+    p += strlen("Content-Length:");
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    return atoi(p);
+}
+
+static DSD_THREAD_RETURN_TYPE
+rdio_test_http_server_thread(void* arg) {
+    rdio_test_http_server* server = (rdio_test_http_server*)arg;
+    server->rc = 1;
+
+    dsd_socket_t client = dsd_socket_accept(server->listen_sock, NULL, NULL);
+    if (client == DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(server->listen_sock);
+        DSD_THREAD_RETURN;
+    }
+
+    (void)dsd_socket_set_recv_timeout(client, 5000);
+
+    const size_t request_capacity = 65536U;
+    char* request = (char*)malloc(request_capacity);
+    if (!request) {
+        (void)dsd_socket_close(client);
+        (void)dsd_socket_close(server->listen_sock);
+        DSD_THREAD_RETURN;
+    }
+
+    size_t used = 0;
+    size_t header_len = 0;
+    int content_length = -1;
+    while (used < request_capacity - 1U) {
+        int n = dsd_socket_recv(client, request + used, request_capacity - 1U - used, 0);
+        if (n <= 0) {
+            break;
+        }
+        used += (size_t)n;
+        request[used] = '\0';
+
+        if (header_len == 0) {
+            char* header_end = strstr(request, "\r\n\r\n");
+            if (header_end) {
+                header_len = (size_t)(header_end - request) + 4U;
+                content_length = rdio_test_content_length(request);
+            }
+        }
+
+        if (header_len > 0 && content_length >= 0 && used >= header_len + (size_t)content_length) {
+            server->rc = 0;
+            break;
+        }
+    }
+
+    const char response[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+    (void)dsd_socket_send(client, response, sizeof(response) - 1, 0);
+    free(request);
+    (void)dsd_socket_close(client);
+    (void)dsd_socket_close(server->listen_sock);
+    DSD_THREAD_RETURN;
+}
+
+static int
+rdio_test_http_server_start(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size) {
+    if (!server || !out_api_url || out_api_url_size == 0) {
+        return 1;
+    }
+
+    memset(server, 0, sizeof(*server));
+    server->listen_sock = DSD_INVALID_SOCKET;
+    server->rc = 1;
+
+    if (dsd_socket_init() != 0) {
+        fprintf(stderr, "socket init failed\n");
+        return 1;
+    }
+
+    dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (sock == DSD_INVALID_SOCKET) {
+        fprintf(stderr, "socket create failed\n");
+        return 1;
+    }
+
+    int one = 1;
+    (void)dsd_socket_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, (int)sizeof(one));
+    (void)dsd_socket_set_recv_timeout(sock, 5000);
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (dsd_socket_bind(sock, (const struct sockaddr*)&addr, (int)sizeof(addr)) != 0) {
+        fprintf(stderr, "socket bind failed\n");
+        (void)dsd_socket_close(sock);
+        return 1;
+    }
+    if (dsd_socket_listen(sock, 1) != 0) {
+        fprintf(stderr, "socket listen failed\n");
+        (void)dsd_socket_close(sock);
+        return 1;
+    }
+
+    socklen_t addr_len = (socklen_t)sizeof(addr);
+    if (getsockname(sock, (struct sockaddr*)&addr, &addr_len) != 0) {
+        fprintf(stderr, "getsockname failed\n");
+        (void)dsd_socket_close(sock);
+        return 1;
+    }
+
+    int n = snprintf(out_api_url, out_api_url_size, "http://127.0.0.1:%u", (unsigned int)ntohs(addr.sin_port));
+    if (n < 0 || (size_t)n >= out_api_url_size) {
+        fprintf(stderr, "api url buffer too small\n");
+        (void)dsd_socket_close(sock);
+        return 1;
+    }
+
+    server->listen_sock = sock;
+    if (dsd_thread_create(&server->thread, (dsd_thread_fn)rdio_test_http_server_thread, server) != 0) {
+        fprintf(stderr, "server thread create failed\n");
+        (void)dsd_socket_close(sock);
+        return 1;
+    }
+
+    return 0;
+}
+#endif
 
 static int
 test_mode_parser(void) {
@@ -496,6 +643,100 @@ test_api_shutdown_drains_queue(void) {
 #endif
 }
 
+static int
+test_api_delete_after_successful_upload(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_api_delete")) {
+        fprintf(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "call_api_delete.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "call_api_delete.json") != 0) {
+        fprintf(stderr, "path join failed\n");
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    if (write_pcm16_mono_wav(wav_path, 8000, 1) != 0) {
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist) {
+        fprintf(stderr, "allocation failed\n");
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    if (rdio_test_http_server_start(&server, api_url, sizeof(api_url)) != 0) {
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    opts->rdio_mode = DSD_RDIO_MODE_API;
+    opts->rdio_system_id = 48;
+    opts->rdio_upload_timeout_ms = 5000;
+    opts->rdio_upload_retries = 1;
+    opts->rdio_api_delete_after_upload = 1;
+    snprintf(opts->rdio_api_url, sizeof(opts->rdio_api_url), "%s", api_url);
+    opts->rdio_api_url[sizeof(opts->rdio_api_url) - 1] = '\0';
+    snprintf(opts->rdio_api_key, sizeof(opts->rdio_api_key), "%s", "test-key");
+    opts->rdio_api_key[sizeof(opts->rdio_api_key) - 1] = '\0';
+
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
+
+    int rc = 0;
+    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
+        fprintf(stderr, "api enqueue path failed\n");
+        rc = 1;
+    }
+
+    dsd_rdio_upload_shutdown();
+
+    if (dsd_thread_join(server.thread) != 0) {
+        fprintf(stderr, "server thread join failed\n");
+        rc = 1;
+    }
+    if (server.rc != 0) {
+        fprintf(stderr, "test HTTP server did not receive a complete upload\n");
+        rc = 1;
+    }
+    if (file_exists(wav_path)) {
+        fprintf(stderr, "WAV should be deleted after successful API upload\n");
+        (void)remove(wav_path);
+        rc = 1;
+    }
+    if (file_exists(json_path)) {
+        fprintf(stderr, "metadata should be deleted after API-only upload\n");
+        (void)remove(json_path);
+        rc = 1;
+    }
+
+    remove_empty_dir(dir_template);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 int
 main(void) {
     int rc = 0;
@@ -504,5 +745,6 @@ main(void) {
     rc |= test_mode_off_no_sidecar();
     rc |= test_duration_uses_wav_samplerate();
     rc |= test_api_shutdown_drains_queue();
+    rc |= test_api_delete_after_successful_upload();
     return rc;
 }

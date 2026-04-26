@@ -42,6 +42,7 @@ typedef struct {
 typedef struct dsd_rdio_upload_job {
     dsd_rdio_api_config api;
     int remove_meta_on_success;
+    int remove_wav_on_success;
     char wav_path[DSD_RDIO_PATH_MAX];
     char meta_path[DSD_RDIO_PATH_MAX];
     struct dsd_rdio_upload_job* next;
@@ -55,8 +56,19 @@ static dsd_rdio_upload_job* g_rdio_upload_tail = NULL;
 static size_t g_rdio_upload_depth = 0;
 static int g_rdio_upload_stop_requested = 0;
 static atomic_int g_rdio_upload_state = 0; // 0=uninitialized, 1=initializing, 2=ready, 3=failed, 4=stopping
+static atomic_int g_rdio_delete_after_upload_dirwatch_warned = 0;
 
 static int dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path);
+
+static void
+dsd_rdio_remove_after_upload(const char* path, const char* kind) {
+    if (!path || path[0] == '\0') {
+        return;
+    }
+    if (remove(path) != 0 && errno != ENOENT) {
+        LOG_WARN("Rdio API upload: failed to delete %s %s: %s\n", kind ? kind : "file", path, strerror(errno));
+    }
+}
 
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
@@ -86,9 +98,13 @@ static DSD_THREAD_RETURN_TYPE
         }
         dsd_mutex_unlock(&g_rdio_upload_mutex);
 
-        if (dsd_rdio_upload_trunk_recorder(&job->api, job->wav_path, job->meta_path) == 0
-            && job->remove_meta_on_success) {
-            (void)remove(job->meta_path);
+        if (dsd_rdio_upload_trunk_recorder(&job->api, job->wav_path, job->meta_path) == 0) {
+            if (job->remove_meta_on_success) {
+                dsd_rdio_remove_after_upload(job->meta_path, "metadata");
+            }
+            if (job->remove_wav_on_success) {
+                dsd_rdio_remove_after_upload(job->wav_path, "audio");
+            }
         }
         free(job);
     }
@@ -242,7 +258,7 @@ dsd_rdio_validate_api_config(const dsd_rdio_api_config* api) {
 
 static int
 dsd_rdio_enqueue_api_upload(const dsd_opts* opts, const char* wav_path, const char* meta_path,
-                            int remove_meta_on_success) {
+                            int remove_meta_on_success, int remove_wav_on_success) {
     if (!opts || !wav_path || !meta_path) {
         return -1;
     }
@@ -266,6 +282,7 @@ dsd_rdio_enqueue_api_upload(const dsd_opts* opts, const char* wav_path, const ch
 
     job->api = api;
     job->remove_meta_on_success = remove_meta_on_success ? 1 : 0;
+    job->remove_wav_on_success = remove_wav_on_success ? 1 : 0;
 
     int wn = snprintf(job->wav_path, sizeof(job->wav_path), "%s", wav_path);
     int mn = snprintf(job->meta_path, sizeof(job->meta_path), "%s", meta_path);
@@ -778,8 +795,15 @@ dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, 
         LOG_WARN("Rdio API upload requested but this build was compiled without libcurl support\n");
         return -1;
 #else
-        int remove_meta_on_success = !dsd_rdio_mode_wants_dirwatch(mode);
-        if (dsd_rdio_enqueue_api_upload(opts, wav_path, meta_path, remove_meta_on_success) != 0) {
+        int wants_dirwatch = dsd_rdio_mode_wants_dirwatch(mode);
+        int remove_meta_on_success = !wants_dirwatch;
+        int remove_wav_on_success = opts->rdio_api_delete_after_upload && !wants_dirwatch;
+        if (opts->rdio_api_delete_after_upload && wants_dirwatch
+            && atomic_exchange(&g_rdio_delete_after_upload_dirwatch_warned, 1) == 0) {
+            LOG_WARN("Rdio API delete-after-upload ignored when DirWatch export is active\n");
+        }
+        if (dsd_rdio_enqueue_api_upload(opts, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success)
+            != 0) {
             return -1;
         }
 #endif

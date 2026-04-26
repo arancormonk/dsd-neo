@@ -147,6 +147,9 @@ dsd_cli_compact_args(int argc, char** argv) {
             }
             continue;
         }
+        if (strcmp(arg, "--rdio-api-delete-after-upload") == 0) {
+            continue;
+        }
         if (strcmp(arg, "--dmr-baofeng-pc5") == 0) {
             if (i + 1 < argc) {
                 i++;

@@ -114,6 +114,7 @@ dsd_cli_usage(void) {
     printf("      --rdio-api-key <key>  rdio-scanner API key for trunk-recorder-call-upload\n");
     printf("      --rdio-upload-timeout-ms <ms>  API upload timeout per call (default 5000)\n");
     printf("      --rdio-upload-retries <n>  API upload retry attempts per call (default 1)\n");
+    printf("      --rdio-api-delete-after-upload  Delete per-call WAV after successful API-only upload\n");
     printf("  -a            Enable Call Alert Beep\n");
     printf("                 (Warning! Might be annoying.)\n");
     printf("  -J <file>     Specify Filename for Event Log Output.\n");
