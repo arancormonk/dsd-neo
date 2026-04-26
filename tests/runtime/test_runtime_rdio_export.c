@@ -5,12 +5,13 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/platform/sockets.h>
-#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
-#if !DSD_PLATFORM_WIN_NATIVE
+#include "dsd-neo/platform/platform.h"
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
+#include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/threading.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #endif
@@ -21,7 +22,6 @@
 #include <time.h>
 
 #include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/platform/platform.h"
 #include "test_support.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
