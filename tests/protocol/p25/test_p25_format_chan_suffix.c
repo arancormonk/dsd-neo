@@ -66,5 +66,18 @@ main(void) {
     p25_format_chan_suffix(&st3, ch, -1, buf, sizeof buf);
     rc |= expect_eq_str("fallback denom=2", buf, " (FDMA 0003 S2)");
 
+    // Case 4: Explicit FDMA must not show a TDMA suffix even if the system has
+    // Phase 2 voice and the legacy TDMA bit is stale.
+    static dsd_state st4;
+    memset(&st4, 0, sizeof st4);
+    st4.p25_sys_is_tdma = 1;
+    st4.p25_chan_tdma[id] = 1;
+    st4.p25_chan_tdma_explicit[id] = 1;
+    st4.p25_chan_type[id] = 3;
+    ch = (uint16_t)((id << 12) | 0x000A);
+    memset(buf, 0, sizeof buf);
+    p25_format_chan_suffix(&st4, ch, -1, buf, sizeof buf);
+    rc |= expect_eq_str("explicit fdma suffix empty", buf, "");
+
     return rc;
 }

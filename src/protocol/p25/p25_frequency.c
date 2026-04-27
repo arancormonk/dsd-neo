@@ -66,11 +66,13 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
     int type = state->p25_chan_type[iden] & 0xF;
     // OP25-derived slots-per-carrier by channel type
     static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-    // Derive division only when TDMA iden is known. This matches OP25, which
-    // only divides the channel by tdma when an IDEN_UP_TDMA has populated the
-    // table. Without that knowledge, treat channel as FDMA (denom=1).
+    // Derive division only when TDMA iden is known. Explicit IDEN hints take
+    // precedence over the system-level TDMA fallback so mixed P1/P2 systems do
+    // not halve explicitly FDMA channel numbers.
     int denom = 1;
-    if ((state->p25_chan_tdma[iden] & 0x1) != 0) {
+    int explicit_hint = state->p25_chan_tdma_explicit[iden];
+    int use_tdma_denom = (explicit_hint == 2 || (explicit_hint == 0 && (state->p25_chan_tdma[iden] & 0x1) != 0));
+    if (use_tdma_denom) {
         if (type < 0 || type > 15) {
             fprintf(stderr, "\n  P25 FREQ: unknown iden type %d (iden %d)", type, iden);
             return 0;
@@ -80,7 +82,7 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
             fprintf(stderr, "\n  P25 FREQ: invalid slots/carrier for type %d", type);
             return 0;
         }
-    } else {
+    } else if (explicit_hint != 1) {
         // Fallback: if the system is known to carry Phase 2 (TDMA) voice but
         // we have not yet seen an IDEN_UP_TDMA for this iden, assume 2
         // slots/carrier. This avoids early mis-tunes where a TDMA grant
@@ -150,11 +152,13 @@ p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, cha
     int type = state->p25_chan_type[iden] & 0xF;
     static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
     int denom = 1;
-    if ((state->p25_chan_tdma[iden] & 0x1) != 0) {
+    int explicit_hint = state->p25_chan_tdma_explicit[iden];
+    int use_tdma_denom = (explicit_hint == 2 || (explicit_hint == 0 && (state->p25_chan_tdma[iden] & 0x1) != 0));
+    if (use_tdma_denom) {
         if (type >= 0 && type <= 15) {
             denom = slots_per_carrier[type];
         }
-    } else if (state->p25_sys_is_tdma == 1) {
+    } else if (explicit_hint != 1 && state->p25_sys_is_tdma == 1) {
         // Conservative fallback when TDMA IDEN not yet learned
         denom = 2;
     }

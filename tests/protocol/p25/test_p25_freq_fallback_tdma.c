@@ -81,5 +81,22 @@ main(void) {
     long want = 851000000 + 3 * 100 * 125; // 851.0375 MHz
     rc |= expect_eq_long("fallback denom2", f, want);
 
+    // Explicit FDMA must override both the TDMA system hint and any stale TDMA
+    // bit for this IDEN. Otherwise mixed P1/P2 systems can tune halfway between
+    // real FDMA channels.
+    static dsd_state st_fdma;
+    memset(&st_fdma, 0, sizeof st_fdma);
+    st_fdma.p25_sys_is_tdma = 1;
+    st_fdma.p25_chan_tdma[id] = 1;
+    st_fdma.p25_chan_tdma_explicit[id] = 1;
+    st_fdma.p25_chan_type[id] = 3;
+    st_fdma.p25_base_freq[id] = 851000000 / 5;
+    st_fdma.p25_chan_spac[id] = 100;
+
+    chan = (id << 12) | 0x000A;
+    f = process_channel_to_freq(&opts, &st_fdma, chan);
+    want = 851000000 + 10 * 100 * 125; // FDMA denom=1
+    rc |= expect_eq_long("explicit fdma no fallback", f, want);
+
     return rc;
 }
