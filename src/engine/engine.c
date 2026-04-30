@@ -25,6 +25,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/io/udp_socket_connect.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
@@ -1780,6 +1781,13 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     LOG_NOTICE("Total header errors: %i\n", state->debug_header_errors);
     LOG_NOTICE("Total irrecoverable header errors: %i\n", state->debug_header_critical_errors);
     LOG_NOTICE("Exiting.\n");
+
+    // Close audio streams so platform resources (OpenSL ES players, etc.) are freed.
+    // Without this, each engine run leaks player objects and eventually exhausts
+    // the OpenSL ES object pool ("Too many objects" / SL_RESULT_MEMORY_FAILURE).
+    closeAudioOutput(opts);
+    closeAudioInput(opts);
+    dsd_audio_cleanup();
 
     dsd_state_ext_free_all(state);
 
