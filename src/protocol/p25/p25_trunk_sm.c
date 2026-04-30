@@ -978,6 +978,31 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
             if (state && state->last_cc_sync_time_m > ctx->t_cc_sync_m) {
                 ctx->t_cc_sync_m = state->last_cc_sync_time_m;
             }
+            // NAC mismatch detection: if we have a known CC NAC (from a
+            // previous Network Status Broadcast) and the current decoded NAC
+            // differs, treat it as cc-lost immediately rather than waiting for
+            // the grace timer. This handles the case where the decoder lands on
+            // a wrong frequency (e.g., adjacent traffic channel) and sees a
+            // different NAC. Ignore transient NAC values 0 and 0xFFF which
+            // appear during signal drops.
+            if (state && state->p2_cc != 0 && state->nac != 0
+                && state->nac != 0xFFF && state->nac != (int)state->p2_cc) {
+                ctx->nac_mismatch_count++;
+                if (ctx->nac_mismatch_count >= 3) {
+                    // 3 consecutive mismatches — this is a real wrong-channel situation
+                    if (opts && opts->verbose > 0) {
+                        fprintf(stderr, "\n[P25 SM] NAC mismatch: expected 0x%03llX, got 0x%03X (%d consecutive)\n",
+                                state->p2_cc, state->nac, ctx->nac_mismatch_count);
+                    }
+                    ctx->nac_mismatch_count = 0;
+                    set_state(ctx, opts, state, P25_SM_HUNTING, "cc-lost-nac-mismatch");
+                    ctx->t_hunt_try_m = now_m;
+                    try_next_cc(ctx, opts, state, now_m);
+                    break;
+                }
+            } else {
+                ctx->nac_mismatch_count = 0;
+            }
             // CC candidate evaluation cooldown: if we tuned to a candidate
             // and no CC activity appeared within the eval window, penalize
             if (state && state->p25_cc_eval_freq != 0) {

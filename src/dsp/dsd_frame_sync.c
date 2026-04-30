@@ -1079,7 +1079,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
             //YSF sync
             strncpy(synctest20, (synctest_p - 19), 20);
-            if (opts->frame_ysf == 1) {
+            /* Suppress YSF sync detection when already locked to a P25 signal.
+             * On noisy P25 frames, the 20-symbol YSF sync pattern can occasionally
+             * match by chance, causing a brief false protocol switch that disrupts
+             * P25 decoding. Only check YSF when not currently tracking P25. */
+            if (opts->frame_ysf == 1 && !DSD_SYNC_IS_P25(state->lastsynctype)) {
                 if (strcmp(synctest20, FUSION_SYNC) == 0) {
                     printFrameSync(opts, state, "+YSF ", synctest_pos + 1, modulation);
                     state->carrier = 1;
@@ -1788,7 +1792,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
             }
 
-            else if (opts->frame_dstar == 1) {
+            /* Suppress D-STAR sync detection when already locked to a P25 signal.
+             * On noisy P25 frames, the 24-symbol D-STAR sync pattern can occasionally
+             * match by chance, causing a brief false protocol switch that disrupts
+             * P25 decoding. Only check D-STAR when not currently tracking P25. */
+            else if (opts->frame_dstar == 1 && !DSD_SYNC_IS_P25(state->lastsynctype)) {
                 if (strcmp(synctest, DSTAR_SYNC) == 0) {
                     state->carrier = 1;
                     state->offset = synctest_pos;
@@ -2018,11 +2026,16 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
                 /* Multi-rate SPS hunting: cycle through common symbol rates when no sync found.
                  * Tries 4800/2400/9600/6000 symbols/s (example SPS @48 kHz: 10/20/5/8).
-                 * Only cycle if in auto mode and no carrier detected. */
+                 * Only cycle if in auto mode and no carrier detected.
+                 * Uses a longer dwell (5 passes ≈ 0.8s) to give each rate more time to
+                 * acquire sync, reducing oscillation on marginal secondary CCs. */
                 if (state->carrier == 0 && !opts->mod_cli_lock) {
                     state->sps_hunt_counter++;
-                    /* Cycle every ~3 buffer passes (~0.5 seconds at 4800 baud) */
-                    if (state->sps_hunt_counter >= 3) {
+                    /* Cycle every ~5 buffer passes (~0.8 seconds at 4800 baud) to give
+                     * each symbol rate more time to acquire sync before switching. The
+                     * previous value of 3 (~0.5s) caused rapid oscillation on secondary
+                     * control channels with marginal signal. */
+                    if (state->sps_hunt_counter >= 5) {
                         state->sps_hunt_counter = 0;
                         /* Determine which protocols are enabled to decide SPS options */
                         int has_2400 = (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1);

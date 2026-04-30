@@ -140,6 +140,11 @@ typedef struct {
     uint32_t grant_count;
     uint32_t cc_return_count;
 
+    // NAC mismatch tracking: counts consecutive frames where the decoded NAC
+    // differs from the expected CC NAC. After a threshold (3), triggers cc-lost
+    // to avoid dwelling on a wrong-NAC channel for seconds.
+    int nac_mismatch_count;
+
     // Initialized flag
     int initialized;
 } p25_sm_ctx_t;
