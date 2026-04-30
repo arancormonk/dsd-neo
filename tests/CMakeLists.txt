@@ -703,6 +703,25 @@ else()
 endif()
 add_test(NAME ENGINE_NO_CARRIER_RESET COMMAND dsd-neo_test_engine_no_carrier_reset)
 
+add_executable(dsd-neo_test_engine_cleanup_audio engine/test_engine_cleanup_audio.c)
+target_include_directories(dsd-neo_test_engine_cleanup_audio PRIVATE ${PROJECT_SOURCE_DIR}/include)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+  target_link_libraries(dsd-neo_test_engine_cleanup_audio PRIVATE
+    "-Wl,--start-group"
+    dsd-neo_engine
+    "-Wl,--end-group"
+    ${LIBS}
+    dsd-neo_test_support
+  )
+else()
+  target_link_libraries(dsd-neo_test_engine_cleanup_audio PRIVATE
+    dsd-neo_engine
+    ${LIBS}
+    dsd-neo_test_support
+  )
+endif()
+add_test(NAME ENGINE_CLEANUP_AUDIO COMMAND dsd-neo_test_engine_cleanup_audio)
+
 add_executable(dsd-neo_test_runtime_config_user runtime/test_runtime_config_user.cpp)
 target_include_directories(dsd-neo_test_runtime_config_user PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_config_user PRIVATE dsd-neo_runtime dsd-neo_test_support)
