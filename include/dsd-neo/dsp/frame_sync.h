@@ -23,6 +23,16 @@ extern "C" {
 void dsd_frame_sync_reset_mod_state(void);
 
 /**
+ * @brief Return non-zero when alternate-protocol sync should be suppressed during active P25 trunking.
+ */
+int dsd_frame_sync_suppress_p25_alt_sync(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Return the number of no-sync buffer passes to dwell before SPS hunt advances.
+ */
+int dsd_frame_sync_sps_hunt_dwell_passes(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief Scan for a valid frame sync pattern and return its type.
  */
 int getFrameSync(dsd_opts* opts, dsd_state* state);

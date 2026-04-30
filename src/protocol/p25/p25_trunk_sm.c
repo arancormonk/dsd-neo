@@ -46,6 +46,61 @@ now_monotonic(void) {
     return dsd_time_now_monotonic_s();
 }
 
+static int
+p25_sm_valid_nac_int(int nac) {
+    return nac > 0 && nac != 0xFFF && nac <= 0xFFF;
+}
+
+static int
+p25_sm_valid_nac_ull(unsigned long long nac) {
+    return nac > 0 && nac != 0xFFFULL && nac <= 0xFFFULL;
+}
+
+static int
+p25_sm_current_cc_nac(const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    if (state->p2_hardset && p25_sm_valid_nac_ull(state->p2_cc)) {
+        return (int)state->p2_cc;
+    }
+    if (DSD_SYNC_IS_P25P2(state->lastsynctype) && p25_sm_valid_nac_ull(state->p2_cc)) {
+        return (int)state->p2_cc;
+    }
+    if (p25_sm_valid_nac_int(state->nac)) {
+        return state->nac;
+    }
+    if (p25_sm_valid_nac_ull(state->p2_cc)) {
+        return (int)state->p2_cc;
+    }
+    return 0;
+}
+
+static void
+p25_sm_set_expected_cc_nac(p25_sm_ctx_t* ctx, const dsd_state* state, int replace) {
+    if (!ctx || (!replace && p25_sm_valid_nac_int(ctx->expected_cc_nac))) {
+        return;
+    }
+    int nac = p25_sm_current_cc_nac(state);
+    if (p25_sm_valid_nac_int(nac)) {
+        ctx->expected_cc_nac = nac;
+        ctx->nac_mismatch_count = 0;
+    }
+}
+
+static void
+p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, const dsd_state* state, double tune_start_m) {
+    if (!ctx) {
+        return;
+    }
+    ctx->t_cc_sync_m = tune_start_m;
+    if (state && state->last_cc_sync_time_m > ctx->t_cc_sync_m) {
+        // CC retune hooks update this as tune metadata before any CC frame decodes.
+        // Absorb that timestamp now so the next watchdog tick does not relatch NAC from it.
+        ctx->t_cc_sync_m = state->last_cc_sync_time_m;
+    }
+}
+
 // Determine if channel is TDMA based on IDEN hints
 static inline int
 is_tdma_channel(const dsd_state* state, int channel) {
@@ -556,6 +611,7 @@ handle_cc_sync(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
         return;
     }
     ctx->t_cc_sync_m = now_monotonic();
+    p25_sm_set_expected_cc_nac(ctx, state, 1);
 
     if (ctx->state == P25_SM_IDLE || ctx->state == P25_SM_HUNTING) {
         set_state(ctx, opts, state, P25_SM_ON_CC, "cc-sync");
@@ -728,7 +784,9 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     }
 
     // Return to CC
+    double tune_start_m = now_monotonic();
     dsd_trunk_tuning_hook_return_to_cc(opts, state);
+    p25_sm_start_cc_grace_after_tune(ctx, state, tune_start_m);
 
     // Transition to ON_CC state
     set_state(ctx, opts, state, P25_SM_ON_CC, "release->cc");
@@ -792,7 +850,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
         state->p25_cc_eval_freq = cand;
         state->p25_cc_eval_start_m = now_m;
-        ctx->t_cc_sync_m = now_m; // Reset grace timer
+        p25_sm_start_cc_grace_after_tune(ctx, state, now_m);
         set_state(ctx, opts, state, P25_SM_ON_CC, "hunt-cand");
         sm_log(opts, state, "hunt-cand-tune");
         return;
@@ -801,7 +859,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     // Fall back to user-provided LCN list
     if (next_lcn_freq(state, &cand)) {
         dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
-        ctx->t_cc_sync_m = now_m; // Reset grace timer
+        p25_sm_start_cc_grace_after_tune(ctx, state, now_m);
         set_state(ctx, opts, state, P25_SM_ON_CC, "hunt-lcn");
         sm_log(opts, state, "hunt-lcn-tune");
         return;
@@ -871,6 +929,7 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
             ctx->t_cc_sync_m = now_monotonic();
         }
         state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
+        p25_sm_set_expected_cc_nac(ctx, state, 0);
     } else {
         ctx->state = P25_SM_IDLE;
         if (state) {
@@ -977,22 +1036,24 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
             // Sync CC timestamp from state if more recent
             if (state && state->last_cc_sync_time_m > ctx->t_cc_sync_m) {
                 ctx->t_cc_sync_m = state->last_cc_sync_time_m;
+                p25_sm_set_expected_cc_nac(ctx, state, 1);
+            } else {
+                p25_sm_set_expected_cc_nac(ctx, state, 0);
             }
-            // NAC mismatch detection: if we have a known CC NAC (from a
-            // previous Network Status Broadcast) and the current decoded NAC
-            // differs, treat it as cc-lost immediately rather than waiting for
-            // the grace timer. This handles the case where the decoder lands on
-            // a wrong frequency (e.g., adjacent traffic channel) and sees a
-            // different NAC. Ignore transient NAC values 0 and 0xFFF which
-            // appear during signal drops.
-            if (state && state->p2_cc != 0 && state->nac != 0
-                && state->nac != 0xFFF && state->nac != (int)state->p2_cc) {
+            // NAC mismatch detection: if we have a known CC NAC and the current
+            // decoded NAC differs, treat it as cc-lost immediately rather than
+            // waiting for the grace timer. This handles the case where the decoder
+            // lands on a wrong frequency (for example, an adjacent traffic channel).
+            // Ignore transient NAC values 0 and 0xFFF which appear during signal drops.
+            if (state && p25_sm_valid_nac_int(ctx->expected_cc_nac) && p25_sm_valid_nac_int(state->nac)
+                && state->nac != ctx->expected_cc_nac) {
                 ctx->nac_mismatch_count++;
                 if (ctx->nac_mismatch_count >= 3) {
-                    // 3 consecutive mismatches — this is a real wrong-channel situation
+                    // Three consecutive ticks is enough to distinguish a wrong channel
+                    // from a short transient without waiting for the full CC grace timer.
                     if (opts && opts->verbose > 0) {
                         fprintf(stderr, "\n[P25 SM] NAC mismatch: expected 0x%03llX, got 0x%03X (%d consecutive)\n",
-                                state->p2_cc, state->nac, ctx->nac_mismatch_count);
+                                (unsigned long long)ctx->expected_cc_nac, state->nac, ctx->nac_mismatch_count);
                     }
                     ctx->nac_mismatch_count = 0;
                     set_state(ctx, opts, state, P25_SM_HUNTING, "cc-lost-nac-mismatch");

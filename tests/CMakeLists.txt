@@ -1739,6 +1739,12 @@ target_include_directories(dsd-neo_test_dsp_sync_hamming PRIVATE ${PROJECT_SOURC
 target_link_libraries(dsd-neo_test_dsp_sync_hamming PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_SYNC_HAMMING COMMAND dsd-neo_test_dsp_sync_hamming)
 
+# Frame sync policy predicates for protocol suppression and SPS dwell.
+add_executable(dsd-neo_test_frame_sync_policy dsp/test_frame_sync_policy.c)
+target_include_directories(dsd-neo_test_frame_sync_policy PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_frame_sync_policy PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME FRAME_SYNC_POLICY COMMAND dsd-neo_test_frame_sync_policy)
+
 # DMR sync warm start threshold initialization test
 add_executable(dsd-neo_test_sync_warm_start dsp/test_sync_warm_start.c)
 target_include_directories(dsd-neo_test_sync_warm_start PRIVATE ${PROJECT_SOURCE_DIR}/include)

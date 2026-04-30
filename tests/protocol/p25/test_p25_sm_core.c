@@ -22,6 +22,7 @@
 static long g_last_tuned_vc = 0;
 static long g_last_tuned_cc = 0;
 static int g_return_to_cc_called = 0;
+static int g_mark_cc_sync_on_cc_tune = 0;
 
 void
 trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
@@ -41,9 +42,11 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 void
 trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)opts;
-    (void)state;
     (void)ted_sps;
     g_last_tuned_cc = freq;
+    if (g_mark_cc_sync_on_cc_tune) {
+        dsd_mark_cc_sync(state);
+    }
 }
 
 static void
@@ -128,6 +131,93 @@ main(void) {
         }
     }
     assert(found);
+
+    // 4) NAC mismatch uses the latched expected CC NAC, not mutable state->p2_cc.
+    static dsd_opts o5;
+    static dsd_state s5;
+    init_basic(&o5, &s5);
+    s5.p2_cc = 0x293;
+    s5.nac = 0x293;
+    s5.last_cc_sync_time_m = dsd_time_now_monotonic_s();
+
+    p25_sm_ctx_t ctx5;
+    p25_sm_init_ctx(&ctx5, &o5, &s5);
+    assert(ctx5.expected_cc_nac == 0x293);
+
+    (void)dsd_trunk_cc_candidates_add(&s5, 852000000, 0);
+    g_last_tuned_cc = 0;
+    s5.p2_cc = 0x123; // Simulate P1 NID refresh on the wrong channel.
+    s5.nac = 0x123;
+    p25_sm_tick_ctx(&ctx5, &o5, &s5);
+    assert(g_last_tuned_cc == 0);
+    assert(ctx5.nac_mismatch_count == 1);
+    assert(ctx5.expected_cc_nac == 0x293);
+
+    p25_sm_tick_ctx(&ctx5, &o5, &s5);
+    assert(g_last_tuned_cc == 0);
+    assert(ctx5.nac_mismatch_count == 2);
+
+    p25_sm_tick_ctx(&ctx5, &o5, &s5);
+    assert(g_last_tuned_cc == 852000000);
+    assert(ctx5.nac_mismatch_count == 0);
+    assert(ctx5.expected_cc_nac == 0x293);
+
+    // 5) A real CC activity timestamp advance may legitimately refresh the expected NAC.
+    static dsd_opts o6;
+    static dsd_state s6;
+    init_basic(&o6, &s6);
+    s6.p2_cc = 0x293;
+    s6.nac = 0x293;
+    s6.last_cc_sync_time_m = dsd_time_now_monotonic_s();
+
+    p25_sm_ctx_t ctx6;
+    p25_sm_init_ctx(&ctx6, &o6, &s6);
+    assert(ctx6.expected_cc_nac == 0x293);
+
+    s6.p2_cc = 0x321;
+    s6.nac = 0x321;
+    s6.last_cc_sync_time_m = ctx6.t_cc_sync_m + 1.0;
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(&ctx6, &o6, &s6);
+    assert(g_last_tuned_cc == 0);
+    assert(ctx6.nac_mismatch_count == 0);
+    assert(ctx6.expected_cc_nac == 0x321);
+
+    // 6) A CC retune hook timestamp must not relatch expected NAC before a decode.
+    static dsd_opts o7;
+    static dsd_state s7;
+    init_basic(&o7, &s7);
+    s7.p2_cc = 0x293;
+    s7.nac = 0x293;
+    s7.last_cc_sync_time_m = dsd_time_now_monotonic_s();
+
+    p25_sm_ctx_t ctx7;
+    p25_sm_init_ctx(&ctx7, &o7, &s7);
+    assert(ctx7.expected_cc_nac == 0x293);
+
+    (void)dsd_trunk_cc_candidates_add(&s7, 852000000, 0);
+    g_last_tuned_cc = 0;
+    g_mark_cc_sync_on_cc_tune = 1;
+    s7.p2_cc = 0x123;
+    s7.nac = 0x123;
+
+    p25_sm_tick_ctx(&ctx7, &o7, &s7);
+    assert(g_last_tuned_cc == 0);
+    assert(ctx7.nac_mismatch_count == 1);
+    p25_sm_tick_ctx(&ctx7, &o7, &s7);
+    assert(g_last_tuned_cc == 0);
+    assert(ctx7.nac_mismatch_count == 2);
+    p25_sm_tick_ctx(&ctx7, &o7, &s7);
+    assert(g_last_tuned_cc == 852000000);
+    assert(ctx7.nac_mismatch_count == 0);
+    assert(ctx7.expected_cc_nac == 0x293);
+
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(&ctx7, &o7, &s7);
+    assert(g_last_tuned_cc == 0);
+    assert(ctx7.nac_mismatch_count == 1);
+    assert(ctx7.expected_cc_nac == 0x293);
+    g_mark_cc_sync_on_cc_tune = 0;
 
     fprintf(stderr, "P25 SM core tests passed\n");
     return 0;
