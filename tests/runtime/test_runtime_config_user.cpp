@@ -23,6 +23,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/file_compat.h"
+#include "dsd-neo/runtime/call_alert.h"
 #include "test_support.h"
 
 static int
@@ -160,6 +161,12 @@ test_load_and_apply_basic(void) {
                              "event_log = \"/tmp/events.log\"\n"
                              "frame_log = \"/tmp/frames.log\"\n"
                              "\n"
+                             "[alerts]\n"
+                             "enabled = true\n"
+                             "voice_start = true\n"
+                             "voice_end = false\n"
+                             "data = true\n"
+                             "\n"
                              "[recording]\n"
                              "per_call_wav = true\n"
                              "per_call_wav_dir = \"/tmp/wav\"\n"
@@ -200,6 +207,12 @@ test_load_and_apply_basic(void) {
         fprintf(stderr, "trunking section not parsed correctly\n");
         rc |= 1;
     }
+    if (!cfg.has_alerts || !cfg.call_alert_enabled
+        || cfg.call_alert_events != (DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_DATA)) {
+        fprintf(stderr, "alerts section not parsed correctly enabled=%d events=%d\n", cfg.call_alert_enabled,
+                cfg.call_alert_events);
+        rc |= 1;
+    }
 
     static dsd_opts opts;
     static dsd_state state;
@@ -225,6 +238,12 @@ test_load_and_apply_basic(void) {
     }
     if (!(opts.p25_trunk == 1 && opts.trunk_enable == 1)) {
         fprintf(stderr, "trunking not enabled in opts\n");
+        rc |= 1;
+    }
+    if (opts.call_alert != 1 || opts.call_alert_events != (DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_DATA)
+        || dsd_call_alert_event_enabled(opts.call_alert, opts.call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_END)) {
+        fprintf(stderr, "call alert config not applied enabled=%d events=%u\n", opts.call_alert,
+                (unsigned)opts.call_alert_events);
         rc |= 1;
     }
     if (strcmp(opts.chan_in_file, "/tmp/chan.csv") != 0 || strcmp(opts.group_in_file, "/tmp/group.csv") != 0) {
@@ -259,6 +278,66 @@ test_load_and_apply_basic(void) {
     }
     if (opts.rdio_api_delete_after_upload != 1) {
         fprintf(stderr, "rdio API delete-after-upload not applied (%d)\n", opts.rdio_api_delete_after_upload);
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
+test_load_and_apply_alerts_empty_event_mask(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[alerts]\n"
+                             "enabled = true\n"
+                             "voice_start = false\n"
+                             "voice_end = false\n"
+                             "data = false\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        fprintf(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    int rc = 0;
+    if (!cfg.has_alerts || !cfg.call_alert_enabled || cfg.call_alert_events != 0) {
+        fprintf(stderr, "empty alert mask not parsed correctly enabled=%d events=%d\n", cfg.call_alert_enabled,
+                cfg.call_alert_events);
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    if (opts.call_alert != 0 || opts.call_alert_events != 0) {
+        fprintf(stderr, "empty alert mask should disable runtime alerts enabled=%d events=%u\n", opts.call_alert,
+                (unsigned)opts.call_alert_events);
+        rc |= 1;
+    }
+    if (dsd_call_alert_event_enabled(opts.call_alert, opts.call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)
+        || dsd_call_alert_event_enabled(opts.call_alert, opts.call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_END)
+        || dsd_call_alert_event_enabled(opts.call_alert, opts.call_alert_events, DSD_CALL_ALERT_EVENT_DATA)) {
+        fprintf(stderr, "empty alert mask should suppress every event\n");
+        rc |= 1;
+    }
+
+    char rendered[1024];
+    if (render_config_to_buffer(&cfg, rendered, sizeof rendered) != 0) {
+        rc |= 1;
+    } else if (!strstr(rendered, "enabled = true\n") || !strstr(rendered, "voice_start = false\n")
+               || !strstr(rendered, "voice_end = false\n") || !strstr(rendered, "data = false\n")) {
+        fprintf(stderr, "empty alert mask not preserved in rendered config:\n%s\n", rendered);
         rc |= 1;
     }
 
@@ -618,6 +697,8 @@ test_snapshot_roundtrip(void) {
     reset_opts_and_state(opts, state);
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    opts.call_alert = 1;
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
 
     dsdneoUserConfig snap;
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
@@ -645,6 +726,11 @@ test_snapshot_roundtrip(void) {
     }
     if (snap.trunk_enabled != 0) {
         fprintf(stderr, "snapshot trunk_enabled should be false for this config\n");
+        rc |= 1;
+    }
+    if (!snap.has_alerts || !snap.call_alert_enabled || snap.call_alert_events != DSD_CALL_ALERT_EVENT_VOICE_END) {
+        fprintf(stderr, "snapshot alerts mismatch enabled=%d events=%d\n", snap.call_alert_enabled,
+                snap.call_alert_events);
         rc |= 1;
     }
 
@@ -926,6 +1012,7 @@ main(void) {
     int rc = 0;
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_load_and_apply_basic();
+    rc |= test_load_and_apply_alerts_empty_event_mask();
     rc |= test_load_and_apply_soapy_input_no_args();
     rc |= test_load_and_apply_soapy_input_with_args();
     rc |= test_snapshot_roundtrip_soapy_args();

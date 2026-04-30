@@ -21,6 +21,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,7 @@
 #include "config_user_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/call_alert.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -85,6 +87,9 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_tune_enc_calls = 1;
 
     cfg->rtl_auto_ppm = 0;
+
+    cfg->call_alert_enabled = 0;
+    cfg->call_alert_events = DSD_CALL_ALERT_EVENT_ALL;
 
     // Recording defaults (match initOpts)
     cfg->per_call_wav = 0;
@@ -684,6 +689,16 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
         fprintf(out, "\n");
     }
 
+    if (cfg->has_alerts) {
+        uint8_t events = dsd_call_alert_mask_events((uint8_t)cfg->call_alert_events);
+        fprintf(out, "[alerts]\n");
+        fprintf(out, "enabled = %s\n", cfg->call_alert_enabled ? "true" : "false");
+        fprintf(out, "voice_start = %s\n", (events & DSD_CALL_ALERT_EVENT_VOICE_START) ? "true" : "false");
+        fprintf(out, "voice_end = %s\n", (events & DSD_CALL_ALERT_EVENT_VOICE_END) ? "true" : "false");
+        fprintf(out, "data = %s\n", (events & DSD_CALL_ALERT_EVENT_DATA) ? "true" : "false");
+        fprintf(out, "\n");
+    }
+
     if (cfg->has_recording) {
         fprintf(out, "[recording]\n");
         fprintf(out, "per_call_wav = %s\n", cfg->per_call_wav ? "true" : "false");
@@ -914,6 +929,12 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
         opts->frame_log_file[sizeof opts->frame_log_file - 1] = '\0';
     }
 
+    if (cfg->has_alerts) {
+        uint8_t events = dsd_call_alert_mask_events((uint8_t)cfg->call_alert_events);
+        opts->call_alert = (cfg->call_alert_enabled && events != 0) ? 1 : 0;
+        opts->call_alert_events = events;
+    }
+
     if (cfg->has_recording) {
         if (cfg->per_call_wav_dir[0]) {
             snprintf(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", cfg->per_call_wav_dir);
@@ -1117,6 +1138,12 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     cfg->event_log[sizeof cfg->event_log - 1] = '\0';
     snprintf(cfg->frame_log, sizeof cfg->frame_log, "%s", opts->frame_log_file);
     cfg->frame_log[sizeof cfg->frame_log - 1] = '\0';
+
+    // Alert snapshot
+    cfg->has_alerts = 1;
+    cfg->call_alert_enabled = opts->call_alert ? 1 : 0;
+    cfg->call_alert_events = opts->call_alert ? dsd_call_alert_normalize_events(opts->call_alert_events)
+                                              : dsd_call_alert_mask_events(opts->call_alert_events);
 
     // Recording snapshot
     cfg->has_recording = 1;

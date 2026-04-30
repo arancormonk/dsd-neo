@@ -27,6 +27,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/call_alert.h"
 
 // Safe bounded copy helper that tolerates potential overlap
 static inline void
@@ -260,7 +261,8 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     }
 
     //call alert beep when new call detected
-    if (last_source_id == 0 && source_id != 0 && opts->call_alert == 1) {
+    if (last_source_id == 0 && source_id != 0
+        && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
         beeper(opts, state, slot, 40, 86, 3);
     }
 
@@ -300,7 +302,7 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         }
 
         //end of voice call alert
-        if (opts->call_alert == 1) {
+        if (dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_END)) {
             beeper(opts, state, slot, 40, 86, 3);
         }
     }
@@ -1165,7 +1167,7 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
     /* stack buffers; no free */
 
     //call alert on data calls
-    if (opts->call_alert) {
+    if (dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_DATA)) {
         beeper(opts, state, slot, 80, 20, 3);
     }
 }

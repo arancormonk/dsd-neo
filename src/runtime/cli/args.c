@@ -31,6 +31,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/platform/platform.h"
+#include "dsd-neo/runtime/call_alert.h"
 #if defined(__MINGW32__) || defined(__MINGW64__)
 #include <getopt.h>
 #include <unistd.h>
@@ -911,7 +912,10 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 dsd_cli_usage();
                 cli_set_exit_rc(out_exit_rc, 0);
                 return DSD_PARSE_ONE_SHOT;
-            case 'a': opts->call_alert = 1; break;
+            case 'a':
+                opts->call_alert = 1;
+                opts->call_alert_events = (uint8_t)DSD_CALL_ALERT_EVENT_ALL;
+                break;
             case '~':
                 state->debug_mode = 1;
                 LOG_NOTICE("Debug Mode Enabled; \n");

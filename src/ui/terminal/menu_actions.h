@@ -100,6 +100,7 @@ void act_set_p25_p1_err_sec(void* v);
 // ---- IO actions ----
 void io_toggle_mute_enc(void* vctx);
 void io_toggle_call_alert(void* vctx);
+void io_select_call_alert_events(void* vctx);
 void io_toggle_cc_candidates(void* vctx);
 void io_enable_per_call_wav(void* vctx);
 void io_save_symbol_capture(void* vctx);

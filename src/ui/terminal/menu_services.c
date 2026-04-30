@@ -29,6 +29,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/call_alert.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -59,7 +60,9 @@ svc_toggle_call_alert(dsd_opts* opts) {
     if (!opts) {
         return -1;
     }
-    opts->call_alert = !opts->call_alert;
+    uint8_t events = dsd_call_alert_mask_events(opts->call_alert_events);
+    opts->call_alert_events = events;
+    opts->call_alert = opts->call_alert ? 0 : (events ? 1 : 0);
     return 0;
 }
 

@@ -349,9 +349,15 @@ static const NcMenuItem LOGGING_LOG_ITEMS[] = {
     {.id = "call_alert",
      .label = "Toggle Call Alert Beep",
      .label_fn = lbl_call_alert,
-     .help = "Audible beep on call start.",
+     .help = "Enable or disable audible call-alert beeps.",
      .is_enabled = io_always_on,
      .on_select = io_toggle_call_alert},
+    {.id = "call_alert_events",
+     .label = "Call Alert Events...",
+     .label_fn = lbl_call_alert_events,
+     .help = "Choose which event types produce alert beeps.",
+     .is_enabled = io_always_on,
+     .on_select = io_select_call_alert_events},
 };
 
 const NcMenuItem LOGGING_MENU_ITEMS[] = {

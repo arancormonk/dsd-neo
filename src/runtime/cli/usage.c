@@ -115,7 +115,7 @@ dsd_cli_usage(void) {
     printf("      --rdio-upload-timeout-ms <ms>  API upload timeout per call (default 5000)\n");
     printf("      --rdio-upload-retries <n>  API upload retry attempts per call (default 1)\n");
     printf("      --rdio-api-delete-after-upload  Delete per-call WAV after successful API-only upload\n");
-    printf("  -a            Enable Call Alert Beep\n");
+    printf("  -a            Enable Call Alert Beep for start, end, and data events\n");
     printf("                 (Warning! Might be annoying.)\n");
     printf("  -J <file>     Specify Filename for Event Log Output.\n");
     printf("  -L <file>     Specify Filename for LRRP Data Output.\n");

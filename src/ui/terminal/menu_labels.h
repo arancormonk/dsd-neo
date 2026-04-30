@@ -51,6 +51,7 @@ const char* lbl_slotpref(void* v, char* b, size_t n);
 const char* lbl_slots_on(void* v, char* b, size_t n);
 const char* lbl_muting(void* v, char* b, size_t n);
 const char* lbl_call_alert(void* v, char* b, size_t n);
+const char* lbl_call_alert_events(void* v, char* b, size_t n);
 const char* lbl_pref_cc(void* v, char* b, size_t n);
 
 // IO labels

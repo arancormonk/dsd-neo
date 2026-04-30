@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "config_user_internal.h"
+#include "dsd-neo/runtime/call_alert.h"
 
 static void
 trim_whitespace(char* s) {
@@ -337,6 +338,40 @@ apply_logging_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char*
 }
 
 static void
+set_alert_event(dsdneoUserConfig* cfg, int event, int enabled) {
+    if (enabled) {
+        cfg->call_alert_events |= event;
+    } else {
+        cfg->call_alert_events &= ~event;
+    }
+}
+
+static void
+apply_alerts_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (strcmp(key_lc, "enabled") == 0 || strcmp(key_lc, "call_alert") == 0) {
+        int b = 0;
+        if (parse_bool(val, &b) == 0) {
+            cfg->call_alert_enabled = b;
+        }
+    } else if (strcmp(key_lc, "voice_start") == 0 || strcmp(key_lc, "start") == 0) {
+        int b = 0;
+        if (parse_bool(val, &b) == 0) {
+            set_alert_event(cfg, DSD_CALL_ALERT_EVENT_VOICE_START, b);
+        }
+    } else if (strcmp(key_lc, "voice_end") == 0 || strcmp(key_lc, "end") == 0) {
+        int b = 0;
+        if (parse_bool(val, &b) == 0) {
+            set_alert_event(cfg, DSD_CALL_ALERT_EVENT_VOICE_END, b);
+        }
+    } else if (strcmp(key_lc, "data") == 0) {
+        int b = 0;
+        if (parse_bool(val, &b) == 0) {
+            set_alert_event(cfg, DSD_CALL_ALERT_EVENT_DATA, b);
+        }
+    }
+}
+
+static void
 apply_recording_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "per_call_wav") == 0) {
         int b = 0;
@@ -426,6 +461,9 @@ apply_section_key(dsdneoUserConfig* cfg, const char* section, const char* key_lc
     } else if (strcmp(section, "logging") == 0) {
         cfg->has_logging = 1;
         apply_logging_section_key(cfg, key_lc, val);
+    } else if (strcmp(section, "alerts") == 0) {
+        cfg->has_alerts = 1;
+        apply_alerts_section_key(cfg, key_lc, val);
     } else if (strcmp(section, "recording") == 0) {
         cfg->has_recording = 1;
         apply_recording_section_key(cfg, key_lc, val);

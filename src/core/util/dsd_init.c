@@ -26,6 +26,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/p25p1_heuristics.h"
 #include "dsd-neo/platform/sockets.h"
+#include "dsd-neo/runtime/call_alert.h"
 
 #ifdef USE_CODEC2
 #include <codec2/codec2.h>
@@ -246,6 +247,7 @@ initOpts(dsd_opts* opts) {
     opts->p2counter = 0;
 
     opts->call_alert = 0; //call alert beeper for ncurses
+    opts->call_alert_events = (uint8_t)DSD_CALL_ALERT_EVENT_ALL;
 
     //rigctl options
     opts->use_rigctl = 0;

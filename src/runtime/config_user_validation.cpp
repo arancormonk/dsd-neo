@@ -150,6 +150,23 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* schema_sect
     }
 }
 
+static int
+is_known_config_section(const char* section) {
+    if (!section || !*section) {
+        return 0;
+    }
+
+    int count = dsdcfg_schema_count();
+    for (int i = 0; i < count; i++) {
+        const dsdcfg_schema_entry_t* entry = dsdcfg_schema_get(i);
+        if (entry && dsd_strcasecmp(entry->section, section) == 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 int
 dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
     if (!diags) {
@@ -208,16 +225,7 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
 
             is_profile_section = (strncmp(current_section, "profile.", 8) == 0);
             if (!is_profile_section) {
-                const char* known_sections[] = {"input",   "output",    "mode", "trunking",
-                                                "logging", "recording", "dsp",  NULL};
-                int found = 0;
-                for (int i = 0; known_sections[i]; i++) {
-                    if (strcmp(current_section, known_sections[i]) == 0) {
-                        found = 1;
-                        break;
-                    }
-                }
-                if (!found) {
+                if (!is_known_config_section(current_section)) {
                     char msg[128];
                     snprintf(msg, sizeof msg, "Unknown section [%s]", current_section);
                     dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, line_num, current_section, "", msg);

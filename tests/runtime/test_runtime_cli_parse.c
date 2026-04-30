@@ -13,6 +13,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/bootstrap.h>
+#include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <sndfile.h>
@@ -932,6 +933,80 @@ test_bootstrap_profile_disables_autosave(void) {
     if (strcmp(state->config_autosave_path, cfg_path) != 0) {
         fprintf(stderr, "expected profiled config path retained as %s, got %s\n", cfg_path,
                 state->config_autosave_path);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_cli_call_alert_restores_all_config_filtered_events(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[alerts]\n"
+                             "enabled = false\n"
+                             "voice_end = false\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        fprintf(stderr, "failed to create temp alerts ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "-a";
+    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (opts->call_alert != 1) {
+        fprintf(stderr, "expected -a to enable call alerts, got %d\n", opts->call_alert);
+        test_rc = 1;
+    }
+    if (opts->call_alert_events != DSD_CALL_ALERT_EVENT_ALL) {
+        fprintf(stderr, "expected -a to restore all alert events, got %u\n", (unsigned)opts->call_alert_events);
+        test_rc = 1;
+    }
+    if (!dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)
+        || !dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_END)
+        || !dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_DATA)) {
+        fprintf(stderr, "expected -a to enable start, end, and data alert events\n");
         test_rc = 1;
     }
 
@@ -2840,6 +2915,7 @@ main(void) {
     rc |= test_bootstrap_print_config_normalizes_soapy_shorthand();
     rc |= test_bootstrap_profile_preserves_trunking_with_ncurses_cli();
     rc |= test_bootstrap_profile_disables_autosave();
+    rc |= test_bootstrap_cli_call_alert_restores_all_config_filtered_events();
     rc |= test_r_playback_optind_is_first_file_regardless_of_option_order();
     rc |= test_open_mbe_missing_file_leaves_stream_null();
     rc |= test_rdio_long_options_parse();

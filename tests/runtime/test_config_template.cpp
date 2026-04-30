@@ -110,6 +110,10 @@ test_template_contains_sections(void) {
         fprintf(stderr, "FAIL: template missing [trunking] section\n");
         rc = 1;
     }
+    if (!strstr(content, "[alerts]")) {
+        fprintf(stderr, "FAIL: template missing [alerts] section\n");
+        rc = 1;
+    }
 
     free(content);
     return rc;
@@ -151,6 +155,10 @@ test_template_contains_keys(void) {
     }
     if (!strstr(content, "# enabled")) {
         fprintf(stderr, "FAIL: template missing commented enabled key\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# voice_start")) {
+        fprintf(stderr, "FAIL: template missing commented voice_start key\n");
         rc = 1;
     }
 

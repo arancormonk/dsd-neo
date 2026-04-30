@@ -70,6 +70,17 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"logging", "event_log", "Event history log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
     {"logging", "frame_log", "Frame trace log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
 
+    /* [alerts] section */
+    {"alerts", "enabled", "Enable audible call-alert beeps", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"alerts", "call_alert", "Enable audible call-alert beeps (alias for enabled)", "false", NULL, DSDCFG_TYPE_BOOL, 0,
+     0, 1},
+    {"alerts", "voice_start", "Beep when a voice call starts", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"alerts", "start", "Beep when a voice call starts (alias for voice_start)", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0,
+     1},
+    {"alerts", "voice_end", "Beep when a voice call ends", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"alerts", "end", "Beep when a voice call ends (alias for voice_end)", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 1},
+    {"alerts", "data", "Beep when a data call is logged", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+
     /* [recording] section */
     {"recording", "per_call_wav", "Enable per-call WAV output", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
     {"recording", "per_call_wav_dir", "Per-call WAV output directory", "./WAV", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},

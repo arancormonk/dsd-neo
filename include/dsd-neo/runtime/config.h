@@ -15,6 +15,7 @@
 #define DSD_NEO_RUNTIME_CONFIG_H
 
 /* Include schema types first (before extern "C" for C++ compat) */
+#include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config_schema.h>
 
 #ifdef __cplusplus
@@ -678,6 +679,11 @@ typedef struct dsdneoUserConfig {
     int has_logging;
     char event_log[1024];
     char frame_log[1024];
+
+    /* [alerts] */
+    int has_alerts;
+    int call_alert_enabled; /* bool */
+    int call_alert_events;  /* bitmask of dsd_call_alert_event_t values */
 
     /* [recording] */
     int has_recording;

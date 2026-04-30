@@ -26,11 +26,13 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <math.h>
 #include <sndfile.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "dsd-neo/platform/file_compat.h"
+#include "dsd-neo/runtime/call_alert.h"
 #include "test_support.h"
 
 #ifdef __cplusplus
@@ -353,6 +355,48 @@ test_stereo_file_hot_swap_rolls_back_to_live_input(void) {
     free_test_runtime(&runtime);
     (void)remove(mono_path);
     (void)remove(stereo_path);
+    return rc;
+}
+
+static int
+test_call_alert_off_selection_survives_ui_command_path(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    opts->call_alert = 1;
+    opts->call_alert_events = DSD_CALL_ALERT_EVENT_ALL;
+
+    uint8_t events = 0;
+    ui_post_cmd(UI_CMD_CALL_ALERT_EVENTS_SET, &events, sizeof events);
+    ui_drain_cmds(opts, state);
+
+    int rc = 0;
+    rc |= expect_int_eq("call alert off selection disables master", opts->call_alert, 0);
+    rc |= expect_int_eq("call alert off selection stores empty mask", opts->call_alert_events, 0);
+    rc |= expect_int_eq(
+        "call alert off selection suppresses data event",
+        dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_DATA), 0);
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(opts, state, &snap);
+    rc |= expect_true("call alert snapshot includes alerts", snap.has_alerts);
+    rc |= expect_int_eq("call alert snapshot preserves disabled master", snap.call_alert_enabled, 0);
+    rc |= expect_int_eq("call alert snapshot preserves empty event mask", snap.call_alert_events, 0);
+
+    ui_post_cmd(UI_CMD_CALL_ALERT_TOGGLE, NULL, 0);
+    ui_drain_cmds(opts, state);
+
+    rc |= expect_int_eq("call alert toggle keeps empty selection disabled", opts->call_alert, 0);
+    rc |= expect_int_eq("call alert toggle preserves empty event mask", opts->call_alert_events, 0);
+    rc |= expect_int_eq(
+        "call alert toggle with empty selection suppresses data event",
+        dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_DATA), 0);
+
+    free_test_runtime(&runtime);
     return rc;
 }
 
@@ -812,6 +856,7 @@ main(void) {
     int rc = 0;
     rc |= test_basic_pulse_config_apply();
     rc |= test_stereo_file_hot_swap_rolls_back_to_live_input();
+    rc |= test_call_alert_off_selection_survives_ui_command_path();
     rc |= test_return_cc_uses_pulse_rate_not_stale_file_rate();
     rc |= test_file_config_apply_keeps_live_pulse_timing();
     rc |= test_file_config_apply_keeps_live_socket_timing();

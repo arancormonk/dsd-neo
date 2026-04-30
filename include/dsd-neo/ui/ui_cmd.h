@@ -40,6 +40,7 @@ enum UiCmdId {
     UI_CMD_HPF_D_TOGGLE = 55,
     UI_CMD_AGGR_SYNC_TOGGLE = 56,
     UI_CMD_CALL_ALERT_TOGGLE = 57,
+    UI_CMD_CALL_ALERT_EVENTS_SET = 58, // payload: uint8_t event mask (0 disables master switch)
 
     // Views and visualization controls
     UI_CMD_CONST_TOGGLE = 70,

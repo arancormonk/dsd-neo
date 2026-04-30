@@ -52,6 +52,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/call_alert.h"
 
 #define UI_CMD_Q_CAP 128
 
@@ -1573,7 +1574,22 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         case UI_CMD_PBF_TOGGLE: opts->use_pbf = opts->use_pbf ? 0 : 1; break;
         case UI_CMD_HPF_D_TOGGLE: opts->use_hpf_d = opts->use_hpf_d ? 0 : 1; break;
         case UI_CMD_AGGR_SYNC_TOGGLE: opts->aggressive_framesync = opts->aggressive_framesync ? 0 : 1; break;
-        case UI_CMD_CALL_ALERT_TOGGLE: opts->call_alert = opts->call_alert ? 0 : 1; break;
+        case UI_CMD_CALL_ALERT_TOGGLE: {
+            uint8_t events = dsd_call_alert_mask_events(opts->call_alert_events);
+            opts->call_alert_events = events;
+            opts->call_alert = opts->call_alert ? 0 : (events ? 1 : 0);
+            break;
+        }
+        case UI_CMD_CALL_ALERT_EVENTS_SET: {
+            uint8_t events = 0;
+            if (c->n >= sizeof events) {
+                memcpy(&events, c->data, sizeof events);
+                events = dsd_call_alert_mask_events(events);
+                opts->call_alert = events ? 1 : 0;
+                opts->call_alert_events = events;
+            }
+            break;
+        }
 
         case UI_CMD_CONST_TOGGLE: {
             if (opts->audio_in_type == AUDIO_IN_RTL) {

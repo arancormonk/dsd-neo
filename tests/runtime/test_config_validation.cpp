@@ -53,7 +53,13 @@ test_valid_config(void) {
                              "decode = \"auto\"\n"
                              "\n"
                              "[trunking]\n"
-                             "enabled = false\n";
+                             "enabled = false\n"
+                             "\n"
+                             "[alerts]\n"
+                             "enabled = true\n"
+                             "voice_start = true\n"
+                             "voice_end = false\n"
+                             "data = true\n";
 
     char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
@@ -72,6 +78,10 @@ test_valid_config(void) {
     }
     if (diags.error_count > 0) {
         fprintf(stderr, "FAIL: valid config has %d errors\n", diags.error_count);
+        result = 1;
+    }
+    if (diags.warning_count > 0) {
+        fprintf(stderr, "FAIL: valid config has %d warnings\n", diags.warning_count);
         result = 1;
     }
 

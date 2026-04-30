@@ -45,6 +45,11 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/runtime/bootstrap.h
   C)
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_call_alert
+  HEADERS_PUBLIC_RUNTIME_CALL_ALERT
+  dsd-neo/runtime/call_alert.h
+  C)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_cli
   HEADERS_PUBLIC_RUNTIME_CLI
   dsd-neo/runtime/cli.h
@@ -511,6 +516,10 @@ add_executable(dsd-neo_test_runtime_shutdown runtime/test_runtime_shutdown.c)
 target_include_directories(dsd-neo_test_runtime_shutdown PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_shutdown PRIVATE dsd-neo_core dsd-neo_test_support)
 add_test(NAME RUNTIME_SHUTDOWN COMMAND dsd-neo_test_runtime_shutdown)
+
+add_executable(dsd-neo_test_runtime_call_alert runtime/test_runtime_call_alert.c)
+target_include_directories(dsd-neo_test_runtime_call_alert PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME RUNTIME_CALL_ALERT COMMAND dsd-neo_test_runtime_call_alert)
 
 add_executable(dsd-neo_test_core_state_ext core/test_core_state_ext.c)
 target_include_directories(dsd-neo_test_core_state_ext PRIVATE ${PROJECT_SOURCE_DIR}/include)

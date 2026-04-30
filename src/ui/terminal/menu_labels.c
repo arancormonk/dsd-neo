@@ -17,12 +17,14 @@
 #include <dsd-neo/platform/posix_compat.h> // IWYU pragma: keep (MSVC stat/_stat compatibility)
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/call_alert.h"
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "menu_items.h"
@@ -298,6 +300,28 @@ const char*
 lbl_call_alert(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Toggle Call Alert Beep [%s]", c->opts->call_alert ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+call_alert_events_name(uint8_t events) {
+    switch (events & DSD_CALL_ALERT_EVENT_ALL) {
+        case DSD_CALL_ALERT_EVENT_VOICE_START: return "Start";
+        case DSD_CALL_ALERT_EVENT_VOICE_END: return "End";
+        case DSD_CALL_ALERT_EVENT_DATA: return "Data";
+        case DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END: return "Start+End";
+        case DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_DATA: return "Start+Data";
+        case DSD_CALL_ALERT_EVENT_VOICE_END | DSD_CALL_ALERT_EVENT_DATA: return "End+Data";
+        case DSD_CALL_ALERT_EVENT_ALL: return "All";
+        default: return "Off";
+    }
+}
+
+const char*
+lbl_call_alert_events(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    uint8_t events = dsd_call_alert_effective_events(c->opts->call_alert, c->opts->call_alert_events);
+    snprintf(b, n, "Call Alert Events [%s]", call_alert_events_name(events));
     return b;
 }
 

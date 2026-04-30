@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "dsd-neo/runtime/call_alert.h"
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_callbacks.h"
 #include "menu_env.h"
@@ -582,6 +583,45 @@ void
 io_toggle_call_alert(void* vctx) {
     UNUSED(vctx);
     ui_post_cmd(UI_CMD_CALL_ALERT_TOGGLE, NULL, 0);
+}
+
+typedef struct {
+    const char* label;
+    uint8_t events;
+} CallAlertChoice;
+
+static const CallAlertChoice k_call_alert_choices[] = {
+    {"Off", 0},
+    {"Start", DSD_CALL_ALERT_EVENT_VOICE_START},
+    {"End", DSD_CALL_ALERT_EVENT_VOICE_END},
+    {"Data", DSD_CALL_ALERT_EVENT_DATA},
+    {"Start + End", DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END},
+    {"Start + Data", DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_DATA},
+    {"End + Data", DSD_CALL_ALERT_EVENT_VOICE_END | DSD_CALL_ALERT_EVENT_DATA},
+    {"All", DSD_CALL_ALERT_EVENT_ALL},
+};
+
+static const char* const k_call_alert_choice_labels[] = {"Off",         "Start",        "End",        "Data",
+                                                         "Start + End", "Start + Data", "End + Data", "All"};
+
+static void
+chooser_done_call_alert_events(void* u, int sel) {
+    UNUSED(u);
+    if (sel < 0 || sel >= (int)(sizeof k_call_alert_choices / sizeof k_call_alert_choices[0])) {
+        return;
+    }
+
+    uint8_t events = k_call_alert_choices[sel].events;
+    ui_post_cmd(UI_CMD_CALL_ALERT_EVENTS_SET, &events, sizeof events);
+    ui_statusf("Call alert events: %s", k_call_alert_choices[sel].label);
+}
+
+void
+io_select_call_alert_events(void* vctx) {
+    UNUSED(vctx);
+    ui_chooser_start("Call Alert Events", k_call_alert_choice_labels,
+                     (int)(sizeof k_call_alert_choice_labels / sizeof k_call_alert_choice_labels[0]),
+                     chooser_done_call_alert_events, NULL);
 }
 
 void
