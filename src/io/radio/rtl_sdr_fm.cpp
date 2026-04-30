@@ -1970,6 +1970,30 @@ apply_capture_settings(uint32_t center_freq_hz, int ppm_error) {
     return ppm_rc;
 }
 
+static int
+retune_mute_bytes_for_rate(uint32_t sample_rate_hz) {
+    /* Drop the first post-retune callbacks so tuner-settling samples do not
+     * train the freshly reset CQPSK FLL/TED/Costas loops. */
+    const uint64_t mute_ms = 20;
+    uint64_t bytes = ((uint64_t)sample_rate_hz * 2ULL * mute_ms) / 1000ULL;
+    uint64_t min_bytes = (ACTUAL_BUF_LENGTH > 0) ? (uint64_t)ACTUAL_BUF_LENGTH : (uint64_t)DEFAULT_BUF_LENGTH;
+    if (bytes < min_bytes) {
+        bytes = min_bytes;
+    }
+    if (bytes > (uint64_t)INT_MAX) {
+        bytes = (uint64_t)INT_MAX;
+    }
+    return (int)bytes;
+}
+
+static void
+controller_arm_post_retune_mute(void) {
+    if (!rtl_device_handle || dongle.rate == 0) {
+        return;
+    }
+    rtl_device_mute(rtl_device_handle, retune_mute_bytes_for_rate(dongle.rate));
+}
+
 static void
 controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz,
                                int mark_reconfigure) {
@@ -2014,6 +2038,7 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     }
     program_capture_frequency_and_rate(center_freq_hz);
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz);
+    controller_arm_post_retune_mute();
 }
 
 static int
@@ -2027,6 +2052,7 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
         store_dongle_ppm_error(ppm_error);
     }
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz);
+    controller_arm_post_retune_mute();
     controller_end_reconfigure(s);
     rtl_device_note_capture_retune(rtl_device_handle);
     return ppm_rc;
