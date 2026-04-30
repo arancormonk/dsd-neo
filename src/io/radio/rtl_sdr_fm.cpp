@@ -694,6 +694,53 @@ static void constellation_ring_clear(void);
 static void eye_ring_clear(void);
 static void snr_ema_reset(void);
 
+enum class DemodRetuneResetReason {
+    FrequencyRetune,
+    DistantFrequencyRetune,
+    PpmCorrection,
+    FreshStream,
+};
+
+struct DemodRetuneResetPlan {
+    DemodRetuneResetReason reason;
+    float retained_fll_scale;
+};
+
+static uint64_t
+frequency_delta_hz(uint32_t lhs_hz, uint32_t rhs_hz) {
+    return (lhs_hz >= rhs_hz) ? (uint64_t)(lhs_hz - rhs_hz) : (uint64_t)(rhs_hz - lhs_hz);
+}
+
+static DemodRetuneResetPlan
+demod_retune_reset_plan(DemodRetuneResetReason requested_reason, uint32_t previous_center_freq_hz,
+                        uint32_t next_center_freq_hz, int previous_rate_out_hz, int next_rate_out_hz) {
+    DemodRetuneResetPlan plan = {requested_reason, 1.0f};
+    if (requested_reason != DemodRetuneResetReason::FrequencyRetune) {
+        return plan;
+    }
+
+    /* Retained band-edge FLL is a useful seed for quick CC/VC hops inside the
+     * same RF band. For unknown or distant retunes, the old normalized NCO can
+     * be a bad rotation seed, so force fresh acquisition instead. */
+    const uint64_t kMaxRetainedFllRetuneDeltaHz = 25000000ULL;
+    if (previous_center_freq_hz == 0 || next_center_freq_hz == 0 || previous_rate_out_hz <= 0 || next_rate_out_hz <= 0
+        || frequency_delta_hz(previous_center_freq_hz, next_center_freq_hz) > kMaxRetainedFllRetuneDeltaHz) {
+        plan.reason = DemodRetuneResetReason::DistantFrequencyRetune;
+        return plan;
+    }
+
+    double rf_scale = (double)next_center_freq_hz / (double)previous_center_freq_hz;
+    double rate_scale = (double)previous_rate_out_hz / (double)next_rate_out_hz;
+    double retained_fll_scale = rf_scale * rate_scale;
+    if (retained_fll_scale <= 0.25 || retained_fll_scale >= 4.0) {
+        plan.reason = DemodRetuneResetReason::DistantFrequencyRetune;
+        return plan;
+    }
+
+    plan.retained_fll_scale = (float)retained_fll_scale;
+    return plan;
+}
+
 /**
  * @brief On retune/hop, drain audio output ring for a short time to avoid
  * cutting off transmissions. If configured to clear, force-clear instead.
@@ -799,14 +846,21 @@ dsd_rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto) {
  */
 
 static void
-demod_reset_on_retune(struct demod_state* s) {
+demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
     if (!s) {
         return;
     }
+    DemodRetuneResetReason reason = plan.reason;
+    const bool reset_retained_fll =
+        (reason == DemodRetuneResetReason::PpmCorrection || reason == DemodRetuneResetReason::FreshStream
+         || reason == DemodRetuneResetReason::DistantFrequencyRetune);
     /* Track SPS transitions for CQPSK so we can fully reset timing/carrier/filter
      * state when jumping between different symbol rates. */
     {
         static int prev_ted_sps = 0;
+        if (reason == DemodRetuneResetReason::FreshStream) {
+            prev_ted_sps = 0;
+        }
         int next_sps = (s->ted_sps_override > 0) ? s->ted_sps_override : (s->ted_sps > 0 ? s->ted_sps : 5);
         int sps_changed = (prev_ted_sps > 0 && next_sps != prev_ted_sps);
 
@@ -825,14 +879,14 @@ demod_reset_on_retune(struct demod_state* s) {
             if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
                 memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * 2U * sizeof(float));
             }
-            /* Reset timing/carrier loops for the new symbol rate. */
+            /* Reset timing and fine carrier loops for the new symbol rate. */
             ted_init_state(&s->ted_state);
             s->ted_mu = 0.0f;
             s->costas_state.freq = 0.0f;
             s->costas_state.phase = 0.0f;
             s->costas_state.error = 0.0f;
-            /* Force fresh FLL acquisition after the SPS jump. */
-            s->fll_band_edge_state.freq = 0.0f;
+            /* Preserve the band-edge FLL frequency estimate across SPS changes only
+             * when the retune classifier decided the retained seed is still valid. */
         }
         prev_ted_sps = next_sps;
     }
@@ -874,36 +928,36 @@ demod_reset_on_retune(struct demod_state* s) {
     /* Preserve AGC state so gain does not restart from unity on each retune.
      * This mirrors OP25’s continuous-flow behavior and avoids a post-retune
      * re-settle period. */
-    /* Costas reset: clear phase and error, but PRESERVE freq estimate.
-     *
-     * The carrier frequency offset (c->freq) is primarily a property of the RTL-SDR
-     * local oscillator, not the channel. When retuning from CC to VC on the same
-     * system, the oscillator offset should be similar (~50-100 Hz typically).
-     *
-     * Preserving freq allows the Costas loop to start tracking immediately rather
-     * than needing to slew from 0 Hz to the actual offset. This is critical for
-     * P25p2 HDQPSK where the loop must acquire quickly to decode the first TDMA
-     * superframe.
-     *
-     * We DO reset phase because the phase relationship changes with RF frequency.
-     */
     /* Costas: Reset phase, error, AND frequency on every CQPSK retune.
      *
-     * Previously we preserved freq for "nearby" same-SPS tunes (P25P1 CC↔VC),
-     * but P25 channels can be several MHz apart. A preserved Costas freq from
-     * the old channel will be wrong and cause the loop to fight against the
-     * new signal. Starting from 0 Hz and acquiring fresh is more reliable. */
+     * Costas frequency is symbol-rate state after the Gardner/diff-phasor path.
+     * It is more sensitive to the new signal's phase trajectory than the sample-rate
+     * band-edge FLL estimate, so start the fine loop fresh while keeping the coarse
+     * FLL estimate below. */
     s->costas_state.phase = 0.0f;
     s->costas_state.error = 0.0f;
     if (s->cqpsk_enable) {
         s->costas_state.freq = 0.0f;
     }
 
-    /* FLL: Reset frequency and initialize band-edge filters on every CQPSK retune.
+    /* FLL: Initialize band-edge filters on every CQPSK retune.
      *
-     * Previously we only reset FLL freq for P25P2 tunes, but the same logic applies
-     * to all retunes: channels can be several MHz apart, so a preserved FLL freq
-     * from the old channel will be wrong. Starting from 0 Hz is more reliable.
+     * The FLL frequency estimate is sample-rate coarse CFO dominated by RTL LO/PPM
+     * error. For trunked P25 channels in the same band, preserving it gives the
+     * CQPSK chain a close CFO seed and avoids forcing first TDMA bursts to reacquire
+     * from 0 Hz after every VC/CC hop.
+     *
+     * Accepted hardware PPM corrections are different: the tuner has just removed
+     * the old LO error, so the retained FLL estimate is stale and must be cleared
+     * before post-correction samples train the CQPSK chain.
+     *
+     * Distant manual/API/scanner retunes are also different from nearby trunk
+     * hops. When the RF delta is too large, clear the old normalized NCO instead
+     * of applying a stale rotation to the new channel.
+     *
+     * Fresh live/replay stream setup is also different from an in-stream retune:
+     * a soft stop/open in the same process may reuse the global demod state, so
+     * no retained CFO estimate is valid until the new stream trains it.
      *
      * CRITICAL: We must design the band-edge filters HERE, not lazily on first
      * sample block. Lazy initialization causes the first few blocks after cold
@@ -911,10 +965,19 @@ demod_reset_on_retune(struct demod_state* s) {
      * the FLL error signal and preventing proper frequency acquisition. */
     {
         int sps = s->ted_sps_override > 0 ? s->ted_sps_override : (s->ted_sps > 0 ? s->ted_sps : 5);
-        if (s->cqpsk_enable) {
+        if (reset_retained_fll) {
             s->fll_band_edge_state.freq = 0.0f;
+        } else {
+            s->fll_band_edge_state.freq *= plan.retained_fll_scale;
         }
         dsd_fll_band_edge_init(&s->fll_band_edge_state, sps);
+        if (!reset_retained_fll) {
+            if (s->fll_band_edge_state.freq > s->fll_band_edge_state.max_freq) {
+                s->fll_band_edge_state.freq = s->fll_band_edge_state.max_freq;
+            } else if (s->fll_band_edge_state.freq < s->fll_band_edge_state.min_freq) {
+                s->fll_band_edge_state.freq = s->fll_band_edge_state.min_freq;
+            }
+        }
     }
     /* TED: Use soft reset to preserve mu/omega for phase continuity across retunes.
      * The Gardner TED has multiple stable lock points and a full reset can cause
@@ -1973,8 +2036,9 @@ apply_capture_settings(uint32_t center_freq_hz, int ppm_error) {
 static int
 retune_mute_bytes_for_rate(uint32_t sample_rate_hz) {
     /* Drop the first post-retune callbacks so tuner-settling samples do not
-     * train the freshly reset CQPSK FLL/TED/Costas loops. */
-    const uint64_t mute_ms = 20;
+     * train the freshly reset CQPSK TED/Costas loops or smear the retained FLL
+     * coarse CFO estimate. */
+    const uint64_t mute_ms = 50;
     uint64_t bytes = ((uint64_t)sample_rate_hz * 2ULL * mute_ms) / 1000ULL;
     uint64_t min_bytes = (ACTUAL_BUF_LENGTH > 0) ? (uint64_t)ACTUAL_BUF_LENGTH : (uint64_t)DEFAULT_BUF_LENGTH;
     if (bytes < min_bytes) {
@@ -1996,14 +2060,17 @@ controller_arm_post_retune_mute(void) {
 
 static void
 controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz,
-                               int mark_reconfigure) {
+                               int mark_reconfigure, DemodRetuneResetReason reset_reason,
+                               uint32_t previous_center_freq_hz, int previous_rate_out_hz) {
     if (!s || center_freq_hz == 0) {
         return;
     }
     s->last_applied_freq_hz.store(center_freq_hz, std::memory_order_release);
     rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output);
-    demod_reset_on_retune(&demod);
+    DemodRetuneResetPlan reset_plan = demod_retune_reset_plan(reset_reason, previous_center_freq_hz, center_freq_hz,
+                                                              previous_rate_out_hz, demod.rate_out);
+    demod_reset_on_retune(&demod, reset_plan);
     if (mark_reconfigure) {
         s->reconfigure_seq.fetch_add(1, std::memory_order_acq_rel);
         g_ring_purge_pending.store(1, std::memory_order_release);
@@ -2011,8 +2078,11 @@ controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts,
 }
 
 static void
-controller_finalize_reconfigure(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz) {
-    controller_finalize_rate_chain(s, opts, center_freq_hz, 1);
+controller_finalize_reconfigure(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz,
+                                DemodRetuneResetReason reset_reason, uint32_t previous_center_freq_hz,
+                                int previous_rate_out_hz) {
+    controller_finalize_rate_chain(s, opts, center_freq_hz, 1, reset_reason, previous_center_freq_hz,
+                                   previous_rate_out_hz);
 }
 
 static inline void
@@ -2032,12 +2102,16 @@ controller_end_reconfigure(struct controller_state* s) {
 }
 
 static void
-controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t center_freq_hz) {
+controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t center_freq_hz,
+                                            DemodRetuneResetReason reset_reason) {
     if (!s || center_freq_hz == 0) {
         return;
     }
+    uint32_t previous_center_freq_hz = s->last_applied_freq_hz.load(std::memory_order_acquire);
+    int previous_rate_out_hz = demod.rate_out;
     program_capture_frequency_and_rate(center_freq_hz);
-    controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz);
+    controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz, reset_reason,
+                                    previous_center_freq_hz, previous_rate_out_hz);
     controller_arm_post_retune_mute();
 }
 
@@ -2046,12 +2120,19 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
     if (!s || center_freq_hz == 0) {
         return -1;
     }
+    int prev_ppm = load_dongle_ppm_error();
+    uint32_t previous_center_freq_hz = s->last_applied_freq_hz.load(std::memory_order_acquire);
+    int previous_rate_out_hz = demod.rate_out;
     controller_begin_reconfigure(s);
     int ppm_rc = apply_capture_settings(center_freq_hz, ppm_error);
     if (ppm_rc == 0) {
         store_dongle_ppm_error(ppm_error);
     }
-    controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz);
+    DemodRetuneResetReason reset_reason = (ppm_rc == 0 && ppm_error != prev_ppm)
+                                              ? DemodRetuneResetReason::PpmCorrection
+                                              : DemodRetuneResetReason::FrequencyRetune;
+    controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz, reset_reason,
+                                    previous_center_freq_hz, previous_rate_out_hz);
     controller_arm_post_retune_mute();
     controller_end_reconfigure(s);
     rtl_device_note_capture_retune(rtl_device_handle);
@@ -2126,7 +2207,7 @@ controller_apply_initial_settings(struct controller_state* s, const dsd_opts* op
     (void)rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_dsp_bw_hz));
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
 
-    controller_finalize_rate_chain(s, opts, (uint32_t)s->freqs[0], 0);
+    controller_finalize_rate_chain(s, opts, (uint32_t)s->freqs[0], 0, DemodRetuneResetReason::FreshStream, 0U, 0);
     s->cold_start_ready.store(1, std::memory_order_release);
     return 0;
 }
@@ -2166,7 +2247,7 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
     if (center_hz == 0U) {
         center_hz = dongle.freq;
     }
-    controller_finalize_rate_chain(s, opts, center_hz, 0);
+    controller_finalize_rate_chain(s, opts, center_hz, 0, DemodRetuneResetReason::FreshStream, 0U, 0);
     s->cold_start_ready.store(1, std::memory_order_release);
     return 0;
 }
@@ -2259,7 +2340,8 @@ static DSD_THREAD_RETURN_TYPE
                 int ppm_rc = apply_ppm_setting(requested_ppm);
                 if (dsd::io::radio::rtl_ppm_should_reconfigure_after_apply(ppm_plan, ppm_rc)) {
                     store_dongle_ppm_error(requested_ppm);
-                    controller_reconfigure_active_stream_locked(s, ppm_plan.freq_hz);
+                    controller_reconfigure_active_stream_locked(s, ppm_plan.freq_hz,
+                                                                DemodRetuneResetReason::PpmCorrection);
                     controller_end_reconfigure(s);
                     drain_output_on_retune();
                     LOG_INFO("PPM correction applied: %d (reconfigured %u Hz).\n", requested_ppm, ppm_plan.freq_hz);

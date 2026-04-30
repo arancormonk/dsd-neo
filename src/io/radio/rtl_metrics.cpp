@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cmath>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <pffft.h>
 #include <string.h>
@@ -63,6 +64,53 @@ std::atomic<double> g_auto_ppm_df_hz{0.0};
 std::atomic<double> g_auto_ppm_est_ppm{0.0};
 std::atomic<int> g_auto_ppm_last_dir{0};
 std::atomic<int> g_auto_ppm_cooldown{0};
+
+static int
+cqpsk_loop_lock_heuristic(float total_freq_rad, int out_rate_hz) {
+    static int prev_valid = 0;
+    static float prev_total_freq_rad = 0.0f;
+    static int freq_stable_blocks = 0;
+
+    if (!demod.cqpsk_enable || out_rate_hz <= 0) {
+        prev_valid = 0;
+        freq_stable_blocks = 0;
+        return 0;
+    }
+
+    const ted_state_t* ted = &demod.ted_state;
+    if (!demod.fll_band_edge_state.initialized || !demod.costas_state.initialized || ted->lock_count < 24) {
+        prev_total_freq_rad = total_freq_rad;
+        prev_valid = 1;
+        freq_stable_blocks = 0;
+        return 0;
+    }
+
+    double delta_hz = 0.0;
+    if (prev_valid) {
+        delta_hz = fabs((double)(total_freq_rad - prev_total_freq_rad)) * (double)out_rate_hz / (2.0 * M_PI);
+    }
+    prev_total_freq_rad = total_freq_rad;
+    prev_valid = 1;
+
+    if (delta_hz < 75.0) {
+        if (freq_stable_blocks < 1000) {
+            freq_stable_blocks++;
+        }
+    } else {
+        freq_stable_blocks = 0;
+    }
+
+    float ted_lock = ted->lock_accum / (float)ted->lock_count;
+    float costas_err = (float)demod.costas_err_avg_q14 / 16384.0f;
+    float fll_abs = fabsf(demod.fll_band_edge_state.freq);
+    float fll_limit = fabsf(demod.fll_band_edge_state.max_freq);
+    if (!std::isfinite(fll_limit) || fll_limit <= 0.0f) {
+        fll_limit = 1.0f;
+    }
+    float fll_lock_limit = fll_limit * 0.95f;
+
+    return (freq_stable_blocks >= 2 && ted_lock > 0.25f && costas_err < 0.65f && fll_abs < fll_lock_limit) ? 1 : 0;
+}
 
 static inline PFFFT_Setup*
 pffft_get_cached_setup(int N) {
@@ -295,9 +343,6 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
     g_nco_q15.store(fll_freq_q15_compat, std::memory_order_relaxed);
     g_demod_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
     g_costas_err_avg_q14.store(demod.costas_err_avg_q14, std::memory_order_relaxed);
-    /* Store FLL band-edge freq for UI access (avoid data race on demod state) */
-    g_fll_band_edge_freq_rad.store(static_cast<double>(demod.fll_band_edge_state.freq), std::memory_order_relaxed);
-
     /* Spectrum-assisted CFO correction for CQPSK:
      * When CQPSK path and FLL are enabled, and we see a reasonably strong
      * QPSK signal, use the residual CFO estimate from the spectrum to gently
@@ -327,16 +372,21 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
              * Convert residual Hz to rad/sample: delta_rad = df_hz * 2π / Fs */
             double delta_rad = k_outer * df_spec_hz * 2.0 * M_PI / static_cast<double>(out_rate_hz);
             if (fabs(delta_rad) > 1e-9) {
-                const float F_CLAMP = 0.25f; /* ~±0.25 rad/sample max CFO */
+                float fll_min = demod.fll_band_edge_state.min_freq;
+                float fll_max = demod.fll_band_edge_state.max_freq;
+                if (!std::isfinite(fll_min) || !std::isfinite(fll_max) || fll_min >= fll_max) {
+                    fll_min = -1.0f;
+                    fll_max = 1.0f;
+                }
 
                 /* For OP25 flow, nudge the FLL band-edge state directly */
                 float f_old = demod.fll_band_edge_state.freq;
                 float f_new = f_old + static_cast<float>(delta_rad);
-                if (f_new > F_CLAMP) {
-                    f_new = F_CLAMP;
+                if (f_new > fll_max) {
+                    f_new = fll_max;
                 }
-                if (f_new < -F_CLAMP) {
-                    f_new = -F_CLAMP;
+                if (f_new < fll_min) {
+                    f_new = fll_min;
                 }
                 demod.fll_band_edge_state.freq = f_new;
 
@@ -351,11 +401,11 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
                 float delta_applied = f_new - f_old;
                 float i_old = demod.fll_state.integrator;
                 float i_new = i_old + delta_applied;
-                if (i_new > F_CLAMP) {
-                    i_new = F_CLAMP;
+                if (i_new > fll_max) {
+                    i_new = fll_max;
                 }
-                if (i_new < -F_CLAMP) {
-                    i_new = -F_CLAMP;
+                if (i_new < fll_min) {
+                    i_new = fll_min;
                 }
                 demod.fll_state.integrator = i_new;
 
@@ -369,17 +419,13 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
         }
     }
 
-    /* Lock heuristic for CQPSK: based on SNR (Costas loop doesn't expose a direct lock flag).
-     * The spectrum-based df_spec_hz is not meaningful for CQPSK since the Costas NCO
-     * corrects carrier offset internally. Use SNR threshold instead. */
-    int locked = 0;
-    if (demod.cqpsk_enable) {
-        double snr = g_snr_qpsk_db.load(std::memory_order_relaxed);
-        /* Lock when SNR indicates good signal quality */
-        if (snr > 6.0) {
-            locked = 1;
-        }
-    }
+    /* Store FLL band-edge freq for UI access after any outer-loop nudge. */
+    g_fll_band_edge_freq_rad.store(static_cast<double>(demod.fll_band_edge_state.freq), std::memory_order_relaxed);
+
+    /* CQPSK lock is loop-health based, not an SNR proxy: require the carrier NCO
+     * to be stable, the Gardner TED eye metric to be positive, and Costas phase
+     * error to be bounded. */
+    int locked = cqpsk_loop_lock_heuristic(total_freq_rad, out_rate_hz);
     g_carrier_lock.store(locked, std::memory_order_relaxed);
 }
 
