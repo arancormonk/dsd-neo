@@ -18,6 +18,7 @@ target_sources(dsd-neo_dsp PRIVATE
 	  dsd_symbol.c
 	  p25p1_heuristics.c
 	  dsd_frame_sync.c
+	  frame_sync_policy.c
 	  sync_hamming.c
 	  dmr_sync.c
 	  sync_calibration.c

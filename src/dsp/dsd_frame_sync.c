@@ -29,6 +29,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/dmr_sync.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/dsp/sync_hamming.h>
@@ -1079,7 +1080,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
             //YSF sync
             strncpy(synctest20, (synctest_p - 19), 20);
-            if (opts->frame_ysf == 1) {
+            /* Suppress YSF sync detection while P25 trunking is actively locked.
+             * On noisy P25 frames, the 20-symbol YSF sync pattern can occasionally
+             * match by chance, causing a brief false protocol switch that disrupts
+             * P25 decoding. */
+            if (opts->frame_ysf == 1 && !dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
                 if (strcmp(synctest20, FUSION_SYNC) == 0) {
                     printFrameSync(opts, state, "+YSF ", synctest_pos + 1, modulation);
                     state->carrier = 1;
@@ -1788,7 +1793,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
             }
 
-            else if (opts->frame_dstar == 1) {
+            /* Suppress D-STAR sync detection while P25 trunking is actively locked.
+             * On noisy P25 frames, the 24-symbol D-STAR sync pattern can occasionally
+             * match by chance, causing a brief false protocol switch that disrupts
+             * P25 decoding. */
+            else if (opts->frame_dstar == 1 && !dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
                 if (strcmp(synctest, DSTAR_SYNC) == 0) {
                     state->carrier = 1;
                     state->offset = synctest_pos;
@@ -2018,11 +2027,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
                 /* Multi-rate SPS hunting: cycle through common symbol rates when no sync found.
                  * Tries 4800/2400/9600/6000 symbols/s (example SPS @48 kHz: 10/20/5/8).
-                 * Only cycle if in auto mode and no carrier detected. */
+                 * Only cycle if in auto mode and no carrier detected.
+                 * Uses a longer P25 trunking CC dwell to reduce oscillation on marginal
+                 * secondary control channels without slowing other auto-detect modes. */
                 if (state->carrier == 0 && !opts->mod_cli_lock) {
                     state->sps_hunt_counter++;
-                    /* Cycle every ~3 buffer passes (~0.5 seconds at 4800 baud) */
-                    if (state->sps_hunt_counter >= 3) {
+                    if (state->sps_hunt_counter >= dsd_frame_sync_sps_hunt_dwell_passes(opts, state)) {
                         state->sps_hunt_counter = 0;
                         /* Determine which protocols are enabled to decide SPS options */
                         int has_2400 = (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1);
