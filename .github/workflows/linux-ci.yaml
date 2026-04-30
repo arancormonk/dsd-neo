@@ -22,6 +22,10 @@ on:
       - ".github/**/*.yaml"
       - "**/*.md"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -87,9 +91,11 @@ jobs:
 
       - name: Prepare local dependency environment
         run: |
-          echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
 
       - name: Configure (${{ matrix.variant }})
         run: |
@@ -133,9 +139,11 @@ jobs:
 
       - name: Prepare local dependency environment
         run: |
-          echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
@@ -169,18 +177,22 @@ jobs:
         id: prep-env
         run: |
           set -euxo pipefail
-          echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          {
+            echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps"
+            echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
 
       - name: Compute dependency SHAs (for cache key)
         id: dep-shas
         run: |
           set -euxo pipefail
-          echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          {
+            echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)"
+            echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)"
+            echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
         uses: actions/cache@v5.0.5
@@ -203,20 +215,24 @@ jobs:
         id: prep-ccache
         run: |
           set -euxo pipefail
-          echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
-          echo "CC=ccache gcc" >> "$GITHUB_ENV"
-          echo "CXX=ccache g++" >> "$GITHUB_ENV"
-          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "$GITHUB_ENV"
-          echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
-          echo "CCACHE_SLOPPINESS=time_macros" >> "$GITHUB_ENV"
+          {
+            echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache"
+            echo "CC=ccache gcc"
+            echo "CXX=ccache g++"
+            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "CCACHE_SLOPPINESS=time_macros"
+          } >> "$GITHUB_ENV"
           mkdir -p "${GITHUB_WORKSPACE}/.ccache"
 
       - name: Compute tool versions (for ccache key)
         id: toolver
         run: |
           set -euxo pipefail
-          echo "gcc_ver=$(gcc -dumpfullversion -dumpversion || gcc --version | head -n1)" >> "$GITHUB_OUTPUT"
-          echo "cmake_ver=$(cmake --version | head -n1 | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+          {
+            echo "gcc_ver=$(gcc -dumpfullversion -dumpversion || gcc --version | head -n1)"
+            echo "cmake_ver=$(cmake --version | head -n1 | awk '{print $3}')"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
         uses: actions/cache@v5.0.5
@@ -318,11 +334,12 @@ jobs:
           set -euxo pipefail
           mkdir -p "$DEPS_PREFIX"
           mf="$DEPS_PREFIX/.manifest"
-          : > "$mf"
-          echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" >> "$mf"
-          echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" >> "$mf"
-          echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" >> "$mf"
-          echo "updated=$(date -u +%FT%TZ)" >> "$mf"
+          {
+            echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}"
+            echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}"
+            echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}"
+            echo "updated=$(date -u +%FT%TZ)"
+          } > "$mf"
 
       - name: Show dependency versions
         run: |
@@ -377,9 +394,11 @@ jobs:
 
       - name: Prepare local dependency environment
         run: |
-          echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
 
       - name: Run scan-build
         run: |
@@ -584,18 +603,22 @@ jobs:
       - name: Prepare dependency environment
         run: |
           set -euxo pipefail
-          echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          {
+            echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps"
+            echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
 
       - name: Compute dependency SHAs (for cache key)
         id: dep-shas
         run: |
           set -euxo pipefail
-          echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          {
+            echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)"
+            echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)"
+            echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
         uses: actions/cache@v5.0.5
@@ -617,20 +640,24 @@ jobs:
       - name: Prepare ccache environment
         run: |
           set -euxo pipefail
-          echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
-          echo "CC=ccache gcc" >> "$GITHUB_ENV"
-          echo "CXX=ccache g++" >> "$GITHUB_ENV"
-          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "$GITHUB_ENV"
-          echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
-          echo "CCACHE_SLOPPINESS=time_macros" >> "$GITHUB_ENV"
+          {
+            echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache"
+            echo "CC=ccache gcc"
+            echo "CXX=ccache g++"
+            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "CCACHE_SLOPPINESS=time_macros"
+          } >> "$GITHUB_ENV"
           mkdir -p "${GITHUB_WORKSPACE}/.ccache"
 
       - name: Compute tool versions (for ccache key)
         id: toolver-sanitize
         run: |
           set -euxo pipefail
-          echo "gcc_ver=$(gcc -dumpfullversion -dumpversion || gcc --version | head -n1)" >> "$GITHUB_OUTPUT"
-          echo "cmake_ver=$(cmake --version | head -n1 | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+          {
+            echo "gcc_ver=$(gcc -dumpfullversion -dumpversion || gcc --version | head -n1)"
+            echo "cmake_ver=$(cmake --version | head -n1 | awk '{print $3}')"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
         uses: actions/cache@v5.0.5
@@ -732,11 +759,12 @@ jobs:
           set -euxo pipefail
           mkdir -p "$DEPS_PREFIX"
           mf="$DEPS_PREFIX/.manifest"
-          : > "$mf"
-          echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" >> "$mf"
-          echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" >> "$mf"
-          echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" >> "$mf"
-          echo "updated=$(date -u +%FT%TZ)" >> "$mf"
+          {
+            echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}"
+            echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}"
+            echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}"
+            echo "updated=$(date -u +%FT%TZ)"
+          } > "$mf"
 
       - name: Configure (asan-ubsan-debug)
         run: cmake --preset asan-ubsan-debug
@@ -903,19 +931,23 @@ jobs:
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
         run: |
           set -euxo pipefail
-          echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          {
+            echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps"
+            echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
 
       - name: Compute dependency SHAs (for cache key)
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
         id: dep-shas
         run: |
           set -euxo pipefail
-          echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          {
+            echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)"
+            echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)"
+            echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
@@ -938,12 +970,14 @@ jobs:
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
         run: |
           set -euxo pipefail
-          echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
-          echo "CC=ccache gcc" >> "$GITHUB_ENV"
-          echo "CXX=ccache g++" >> "$GITHUB_ENV"
-          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "$GITHUB_ENV"
-          echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
-          echo "CCACHE_SLOPPINESS=time_macros" >> "$GITHUB_ENV"
+          {
+            echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache"
+            echo "CC=ccache gcc"
+            echo "CXX=ccache g++"
+            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "CCACHE_SLOPPINESS=time_macros"
+          } >> "$GITHUB_ENV"
           mkdir -p "${GITHUB_WORKSPACE}/.ccache"
 
       - name: Compute tool versions (for ccache key)
@@ -951,8 +985,10 @@ jobs:
         id: toolver-tidy
         run: |
           set -euxo pipefail
-          echo "gcc_ver=$(gcc -dumpfullversion -dumpversion || gcc --version | head -n1)" >> "$GITHUB_OUTPUT"
-          echo "cmake_ver=$(cmake --version | head -n1 | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+          {
+            echo "gcc_ver=$(gcc -dumpfullversion -dumpversion || gcc --version | head -n1)"
+            echo "cmake_ver=$(cmake --version | head -n1 | awk '{print $3}')"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
@@ -1062,11 +1098,12 @@ jobs:
           set -euxo pipefail
           mkdir -p "$DEPS_PREFIX"
           mf="$DEPS_PREFIX/.manifest"
-          : > "$mf"
-          echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" >> "$mf"
-          echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" >> "$mf"
-          echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" >> "$mf"
-          echo "updated=$(date -u +%FT%TZ)" >> "$mf"
+          {
+            echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}"
+            echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}"
+            echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}"
+            echo "updated=$(date -u +%FT%TZ)"
+          } > "$mf"
 
       - name: Configure (dev-debug)
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'

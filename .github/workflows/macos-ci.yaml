@@ -12,6 +12,10 @@ on:
       - ".github/**/*.yaml"
       - "**/*.md"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-portable-dmg:
     runs-on: macos-latest
@@ -30,21 +34,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          {
+            echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)"
+            echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)"
+            echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Prepare dependency environment
         shell: bash
         run: |
           set -euxo pipefail
-          echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps" >> "$GITHUB_ENV"
           # Homebrew locations (arm64=/opt/homebrew, x86_64=/usr/local)
           HB_PREFIX=$(brew --prefix)
-          echo "HB_PREFIX=$HB_PREFIX" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${HB_PREFIX}/lib/pkgconfig:/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${HB_PREFIX}:/usr/local:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          {
+            echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps"
+            echo "HB_PREFIX=$HB_PREFIX"
+            echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${HB_PREFIX}/lib/pkgconfig:/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${HB_PREFIX}:/usr/local:${CMAKE_PREFIX_PATH:-}"
+            echo "DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${DYLD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
 
       - name: Restore dependency cache
         uses: actions/cache@v5.0.5
@@ -71,12 +79,14 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
-          echo "CC=ccache clang" >> "$GITHUB_ENV"
-          echo "CXX=ccache clang++" >> "$GITHUB_ENV"
-          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "$GITHUB_ENV"
-          echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
-          echo "CCACHE_SLOPPINESS=time_macros" >> "$GITHUB_ENV"
+          {
+            echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache"
+            echo "CC=ccache clang"
+            echo "CXX=ccache clang++"
+            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "CCACHE_SLOPPINESS=time_macros"
+          } >> "$GITHUB_ENV"
           mkdir -p "${GITHUB_WORKSPACE}/.ccache"
 
       - name: Restore ccache
@@ -186,11 +196,12 @@ jobs:
           set -euxo pipefail
           mkdir -p "$DEPS_PREFIX"
           mf="$DEPS_PREFIX/.manifest"
-          : > "$mf"
-          echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" >> "$mf"
-          echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" >> "$mf"
-          echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" >> "$mf"
-          echo "updated=$(date -u +%FT%TZ)" >> "$mf"
+          {
+            echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}"
+            echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}"
+            echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}"
+            echo "updated=$(date -u +%FT%TZ)"
+          } > "$mf"
 
       - name: Show dependency versions
         shell: bash
@@ -254,7 +265,7 @@ jobs:
           # Helper: collect dylib deps of a file and copy non-system libs into $STAGE/lib
           collect_deps() {
             local file="$1"
-            local libs lib base src
+            local libs lib base
             libs=$(otool -L "$file" | tail -n +2 | awk '{print $1}')
             for lib in $libs; do
               # Skip system libraries
@@ -280,9 +291,9 @@ jobs:
             changed=0
             for lib in "$STAGE"/lib/*.dylib; do
               [ -f "$lib" ] || continue
-              before=$(ls -1 "$STAGE"/lib | wc -l)
+              before=$(find "$STAGE/lib" -mindepth 1 -maxdepth 1 -type f | wc -l)
               collect_deps "$lib"
-              after=$(ls -1 "$STAGE"/lib | wc -l)
+              after=$(find "$STAGE/lib" -mindepth 1 -maxdepth 1 -type f | wc -l)
               if [ "$after" -gt "$before" ]; then changed=1; fi
             done
             [ "$changed" -eq 0 ] && break
@@ -331,7 +342,7 @@ jobs:
           done
 
           # Emit manifest for auditing
-          (cd "$STAGE/lib" && ls -1 *.dylib 2>/dev/null | sort -f) > "$STAGE/dylibs-manifest.txt" || true
+          find "$STAGE/lib" -maxdepth 1 -type f -name '*.dylib' -exec basename {} \; | sort -f > "$STAGE/dylibs-manifest.txt"
 
       - name: Smoke test staged binary
         shell: bash
@@ -367,8 +378,10 @@ jobs:
           cp -a "$stage" "$imgroot/"
           # Create a compressed read-only DMG from imgroot (contains dsd-neo-macos/)
           hdiutil create -fs HFS+ -volname "dsd-neo" -srcfolder "$imgroot" -format UDZO -imagekey zlib-level=9 "$dmg"
-          echo "DMG_PATH=$dmg" >> "$GITHUB_OUTPUT"
-          echo "ART_NAME=$artName" >> "$GITHUB_OUTPUT"
+          {
+            echo "DMG_PATH=$dmg"
+            echo "ART_NAME=$artName"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Verify DMG contents (mount and run help)
         shell: bash

@@ -12,6 +12,10 @@ on:
       - ".github/**/*.yaml"
       - "**/*.md"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-appimage:
     runs-on: ubuntu-latest
@@ -67,18 +71,22 @@ jobs:
             ver="nightly"
           fi
           mkdir -p dist
-          echo "OUT=$out" >> "$GITHUB_OUTPUT"
-          echo "ART=$art" >> "$GITHUB_OUTPUT"
-          echo "VER=$ver" >> "$GITHUB_OUTPUT"
+          {
+            echo "OUT=$out"
+            echo "ART=$art"
+            echo "VER=$ver"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Compute dependency SHAs (for cache key)
         id: dep-shas
         shell: bash
         run: |
           set -euo pipefail
-          echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          {
+            echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)"
+            echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)"
+            echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Prepare cache directories
         shell: bash
@@ -109,12 +117,8 @@ jobs:
           image='ubuntu:20.04'
           if [ "$arch" = 'x86_64' ]; then
             platform='linux/amd64'
-            ldeploy_url='https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage'
-            plugin_url='https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage'
           else
             platform='linux/arm64/v8'
-            ldeploy_url='https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage'
-            plugin_url='https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-aarch64.AppImage'
           fi
 
           # Proactively pull the base image with retries; fall back to an Ubuntu
@@ -216,11 +220,12 @@ jobs:
               build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr rtlsdr_sha "-DDETACH_KERNEL_DRIVER=ON"
 
               mf="$DEPS/.manifest"
-              : > "$mf"
-              echo "mbe_sha=$mbe_sha" >> "$mf"
-              echo "codec2_sha=$codec2_sha" >> "$mf"
-              echo "rtlsdr_sha=$rtlsdr_sha" >> "$mf"
-              echo "updated=$(date -u +%FT%TZ)" >> "$mf"
+              {
+                echo "mbe_sha=$mbe_sha"
+                echo "codec2_sha=$codec2_sha"
+                echo "rtlsdr_sha=$rtlsdr_sha"
+                echo "updated=$(date -u +%FT%TZ)"
+              } > "$mf"
 
               pkg-config --modversion SoapySDR || true
 
