@@ -30,6 +30,7 @@ struct input_ring_state {
     std::atomic<int> space_notify_enabled;
     std::atomic<uint64_t> producer_drops; /* bytes dropped when full */
     std::atomic<uint64_t> read_timeouts;  /* waits for data */
+    std::atomic<uint64_t> discard_generation;
 };
 
 /**
@@ -68,6 +69,37 @@ static inline void
 input_ring_clear(struct input_ring_state* r) {
     r->tail.store(0);
     r->head.store(0);
+}
+
+/**
+ * @brief Publish that in-flight producer reservations are stale.
+ *
+ * Consumer-side purges can only move the consumer-owned tail. This generation
+ * lets producer callbacks detect a purge that happened after they reserved
+ * ring space but before they committed it.
+ */
+static inline void
+input_ring_request_discard(struct input_ring_state* r) {
+    if (!r) {
+        return;
+    }
+    (void)r->discard_generation.fetch_add(1, std::memory_order_acq_rel);
+}
+
+/**
+ * @brief Return the current producer discard generation.
+ */
+static inline uint64_t
+input_ring_discard_generation(const struct input_ring_state* r) {
+    return r ? r->discard_generation.load(std::memory_order_acquire) : 0ULL;
+}
+
+/**
+ * @brief Check whether a producer reservation is still current.
+ */
+static inline int
+input_ring_discard_generation_matches(const struct input_ring_state* r, uint64_t generation) {
+    return input_ring_discard_generation(r) == generation;
 }
 
 /**

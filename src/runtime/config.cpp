@@ -264,6 +264,8 @@ config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig
     CONFIG_EQ_FIELD(output_clear_on_retune);
     CONFIG_EQ_FIELD(retune_drain_ms_is_set);
     CONFIG_EQ_FIELD(retune_drain_ms);
+    CONFIG_EQ_FIELD(retune_mute_ms_is_set);
+    CONFIG_EQ_FIELD(retune_mute_ms);
     CONFIG_EQ_FIELD(tcpin_backoff_ms_is_set);
     CONFIG_EQ_FIELD(tcpin_backoff_ms);
     CONFIG_EQ_FIELD(window_freeze_is_set);
@@ -1008,10 +1010,20 @@ dsd_neo_config_init(const dsd_opts* opts) {
     /* Output clear/drain on retune */
     const char* clr = getenv("DSD_NEO_OUTPUT_CLEAR_ON_RETUNE");
     const char* dms = getenv("DSD_NEO_RETUNE_DRAIN_MS");
+    const char* mms = getenv("DSD_NEO_RETUNE_MUTE_MS");
     c.output_clear_on_retune_is_set = env_is_set(clr);
     c.output_clear_on_retune = c.output_clear_on_retune_is_set ? (atoi(clr) != 0) : 0;
     c.retune_drain_ms_is_set = env_is_set(dms);
     c.retune_drain_ms = c.retune_drain_ms_is_set ? atoi(dms) : 50;
+    c.retune_mute_ms_is_set = 0;
+    c.retune_mute_ms = 120;
+    if (env_is_set(mms)) {
+        int v = atoi(mms);
+        if (v >= 10 && v <= 1000) {
+            c.retune_mute_ms_is_set = 1;
+            c.retune_mute_ms = v;
+        }
+    }
 
     /* TCP input reconnect backoff (ms) */
     const char* tb = getenv("DSD_NEO_TCPIN_BACKOFF_MS");

@@ -482,6 +482,18 @@ rtl_reset_capture_state_on_stream_boundary(struct rtl_device* s) {
     s->mute_byte_phase.store((int)carry, std::memory_order_relaxed);
 }
 
+static inline void
+rtl_clear_capture_alignment_after_discard(struct rtl_device* s, struct rtl_capture_u8_byte_carry* carry) {
+    if (!s) {
+        return;
+    }
+    if (carry) {
+        rtl_capture_u8_byte_carry_clear(carry);
+    }
+    rtl_capture_u8_byte_carry_clear(&s->iq_byte_carry);
+    s->mute_byte_phase.store(0, std::memory_order_relaxed);
+}
+
 static int
 rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int fs4_shift_active, int use_two_pass,
                      int combine_rotate_active, int count_full_reserve) {
@@ -494,8 +506,10 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
     int phase = s->rot_phase & 3;
     struct rtl_capture_u8_byte_carry carry = s->iq_byte_carry;
     int ring_exhausted = 0;
+    int generation_stale = 0;
 
     while (rtl_capture_u8_byte_carry_ready_bytes(need, &carry) >= 2U) {
+        uint64_t discard_generation = input_ring_discard_generation(s->input_ring);
         float *p1 = NULL, *p2 = NULL;
         size_t n1 = 0, n2 = 0;
         size_t ready = rtl_capture_u8_byte_carry_ready_bytes(need, &carry);
@@ -558,10 +572,21 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
             }
         }
 
+        if (!input_ring_discard_generation_matches(s->input_ring, discard_generation)) {
+            size_t dropped =
+                produced + rtl_drop_u8_bytes_preserve_alignment(src + done, need, &carry, &phase, fs4_shift_active);
+            if (dropped != 0U) {
+                s->input_ring->producer_drops.fetch_add((uint64_t)dropped);
+            }
+            generation_stale = 1;
+            break;
+        }
         input_ring_commit(s->input_ring, produced);
     }
 
-    if (ring_exhausted) {
+    if (generation_stale) {
+        rtl_clear_capture_alignment_after_discard(s, &carry);
+    } else if (ring_exhausted) {
         size_t dropped = rtl_drop_u8_bytes_preserve_alignment(src + done, need, &carry, &phase, fs4_shift_active);
         if (dropped != 0U) {
             s->input_ring->producer_drops.fetch_add((uint64_t)dropped);
@@ -573,11 +598,13 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
         rtl_capture_u8_byte_carry_save(&carry, src[done]);
     }
 
-    s->iq_byte_carry = carry;
-    if (fs4_shift_active) {
+    if (!generation_stale) {
+        s->iq_byte_carry = carry;
+    }
+    if (fs4_shift_active && !generation_stale) {
         s->rot_phase = phase;
     }
-    return ring_exhausted;
+    return generation_stale ? 2 : ring_exhausted;
 }
 
 static inline void
@@ -625,6 +652,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
     size_t done = 0;
     int phase = s->rot_phase & 3;
     while (need > 0) {
+        uint64_t discard_generation = input_ring_discard_generation(s->input_ring);
         float *p1 = NULL, *p2 = NULL;
         size_t n1 = 0, n2 = 0;
         input_ring_reserve(s->input_ring, need, &p1, &n1, &p2, &n2);
@@ -673,6 +701,10 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
                     p2[(i * 2) + 1] = q_in;
                 }
             }
+        }
+        if (!input_ring_discard_generation_matches(s->input_ring, discard_generation)) {
+            s->input_ring->producer_drops.fetch_add((uint64_t)(w1 + w2));
+            break;
         }
         input_ring_commit(s->input_ring, w1 + w2);
         done += w1 + w2;
@@ -694,6 +726,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
     size_t done = 0;
     int phase = s->rot_phase & 3;
     while (need > 0) {
+        uint64_t discard_generation = input_ring_discard_generation(s->input_ring);
         float *p1 = NULL, *p2 = NULL;
         size_t n1 = 0, n2 = 0;
         input_ring_reserve(s->input_ring, need, &p1, &n1, &p2, &n2);
@@ -744,6 +777,10 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
                     p2[(i * 2) + 1] = q_in;
                 }
             }
+        }
+        if (!input_ring_discard_generation_matches(s->input_ring, discard_generation)) {
+            s->input_ring->producer_drops.fetch_add((uint64_t)(w1 + w2));
+            break;
         }
         input_ring_commit(s->input_ring, w1 + w2);
         done += w1 + w2;
@@ -882,6 +919,7 @@ replay_enqueue_f32_no_drop(struct rtl_device* s, const float* src, size_t float_
             continue;
         }
 
+        uint64_t discard_generation = input_ring_discard_generation(ring);
         float *p1 = NULL, *p2 = NULL;
         size_t n1 = 0, n2 = 0;
         input_ring_reserve(ring, chunk, &p1, &n1, &p2, &n2);
@@ -913,6 +951,12 @@ replay_enqueue_f32_no_drop(struct rtl_device* s, const float* src, size_t float_
 
         if (s->replay_has_eof_state && s->replay_eof.replay_last_submit_gen) {
             (void)s->replay_eof.replay_last_submit_gen->fetch_add(1ULL, std::memory_order_release);
+        }
+        if (!input_ring_discard_generation_matches(ring, discard_generation)) {
+            ring->producer_drops.fetch_add((uint64_t)grant);
+            done += grant;
+            *complex_written += grant / 2U;
+            continue;
         }
         input_ring_commit(ring, grant);
         done += grant;
@@ -1468,11 +1512,33 @@ static DSD_THREAD_RETURN_TYPE
         }
 
         const int apply_rot = fs4_shift_capture_active(s);
+        size_t drop_elems = 0;
+        int mute_bytes = s->mute.load(std::memory_order_relaxed);
+        if (mute_bytes > 0) {
+            size_t mute_elems = ((size_t)mute_bytes + 1U) / 2U;
+            drop_elems = (mute_elems < (size_t)ret) ? mute_elems : (size_t)ret;
+            int consumed_mute_bytes = (drop_elems > (size_t)(INT_MAX / 2)) ? INT_MAX : (int)(drop_elems * 2U);
+            if (consumed_mute_bytes > mute_bytes) {
+                consumed_mute_bytes = mute_bytes;
+            }
+            if (apply_rot && drop_elems > 0U) {
+                s->rot_phase = rtl_capture_phase_advance_pairs(s->rot_phase & 3, drop_elems);
+            }
+            s->mute.fetch_sub(consumed_mute_bytes, std::memory_order_relaxed);
+            if (drop_elems >= (size_t)ret) {
+                continue;
+            }
+        }
+
+        size_t kept_elems = (size_t)ret - drop_elems;
         if (s->soapy_format == SOAPY_FMT_CF32) {
-            rtl_submit_capture_bytes(s, cf32_buf.data(), (size_t)ret * sizeof(std::complex<float>));
-            (void)soapy_write_cf32_to_ring(s, cf32_buf.data(), (size_t)ret, apply_rot);
+            const std::complex<float>* src = cf32_buf.data() + drop_elems;
+            rtl_submit_capture_bytes(s, src, kept_elems * sizeof(std::complex<float>));
+            (void)soapy_write_cf32_to_ring(s, src, kept_elems, apply_rot);
         } else {
-            (void)soapy_write_cs16_to_ring(s, cs16_buf.data(), (size_t)ret, apply_rot);
+            const int16_t* src = cs16_buf.data() + (drop_elems * 2U);
+            rtl_submit_capture_bytes(s, src, kept_elems * 2U * sizeof(int16_t));
+            (void)soapy_write_cs16_to_ring(s, src, kept_elems, apply_rot);
         }
     }
 
@@ -1840,18 +1906,27 @@ static DSD_THREAD_RETURN_TYPE
             }
             if (s->tcp_pending_len == SLICE) {
                 unsigned char* src = s->tcp_pending;
-                rtl_write_u8_to_ring(s, src, SLICE, fs4_shift_active, use_two_pass, combine_rotate_active, 1);
+                int ring_status =
+                    rtl_write_u8_to_ring(s, src, SLICE, fs4_shift_active, use_two_pass, combine_rotate_active, 1);
                 s->tcp_pending_len = 0;
+                if (ring_status == 2) {
+                    consumed = len;
+                }
             }
         }
 
         /* Process full slices directly from current buffer */
         while ((len - consumed) >= SLICE) {
             unsigned char* src = u8 + consumed;
-            int ring_exhausted =
+            int ring_status =
                 rtl_write_u8_to_ring(s, src, SLICE, fs4_shift_active, use_two_pass, combine_rotate_active, 1);
             consumed += SLICE;
-            if (ring_exhausted) {
+            if (ring_status == 2) {
+                consumed = len;
+                s->tcp_pending_len = 0;
+                break;
+            }
+            if (ring_status) {
                 break;
             }
         }
@@ -2648,6 +2723,9 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
         return -1;
     }
     dev->freq = frequency;
+    if (dev->backend == RTL_BACKEND_USB || dev->backend == RTL_BACKEND_TCP) {
+        rtl_reset_capture_state_on_stream_boundary(dev);
+    }
     if (dev->backend == RTL_BACKEND_USB) {
         if (!dev->dev) {
             return -1;

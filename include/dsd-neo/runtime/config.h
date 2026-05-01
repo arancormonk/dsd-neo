@@ -144,6 +144,9 @@ extern "C" {
  * - DSD_NEO_RETUNE_DRAIN_MS
  *     Maximum time in milliseconds to wait for output ring to drain on retune/hop when not clearing.
  *     Default: 50ms.
+ * - DSD_NEO_RETUNE_MUTE_MS
+ *     Input sample mute duration around RTL retunes. This drops tuner-settling samples before they can train
+ *     CQPSK/TED/FLL state. Values: integer 10..1000. Default: 120ms.
  *
  * TCP audio input
  * - DSD_NEO_TCPIN_BACKOFF_MS
@@ -458,6 +461,8 @@ typedef struct dsdneoRuntimeConfig {
     int output_clear_on_retune;
     int retune_drain_ms_is_set;
     int retune_drain_ms;
+    int retune_mute_ms_is_set;
+    int retune_mute_ms;
 
     /* TCP audio input */
     int tcpin_backoff_ms_is_set;

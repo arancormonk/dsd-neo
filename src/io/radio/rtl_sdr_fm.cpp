@@ -250,7 +250,25 @@ static struct input_ring_state input_ring;
 static dsd_iq_capture_writer* g_iq_capture_writer = NULL;
 /* Controller can request a ring purge; consumer/demod performs the discard safely. */
 static std::atomic<int> g_ring_purge_pending{0};
+static std::atomic<uint32_t> g_retune_diag_seq{0};
+static std::atomic<uint32_t> g_retune_diag_freq_hz{0};
+static std::atomic<int> g_retune_diag_reason{0};
+static std::atomic<int> g_retune_diag_blocks_remaining{0};
+static std::atomic<uint32_t> g_retune_settle_seq{0};
+static std::atomic<int> g_retune_settle_blocks_remaining{0};
+static const int kRetuneDiagBlocks = 20;
+static const int kRetuneSettleMinBlocks = 8;
+static const int kRetuneSettleStableBlocks = 3;
+static const int kRetuneSettleMaxBlocks = 48;
+static const float kRetuneSettleStableRel = 0.055f;
+static const float kRetuneSettleMinMeanAbs = 0.015f;
 static dsd::io::radio::RtlAutoPpmController g_auto_ppm_controller;
+
+static void
+controller_request_input_purge(void) {
+    input_ring_request_discard(&input_ring);
+    g_ring_purge_pending.store(1, std::memory_order_release);
+}
 
 struct RtlSdrInternals {
     struct rtl_device* device;
@@ -693,6 +711,7 @@ choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
 static void constellation_ring_clear(void);
 static void eye_ring_clear(void);
 static void snr_ema_reset(void);
+static void controller_arm_retune_mute(const char* phase);
 
 enum class DemodRetuneResetReason {
     FrequencyRetune,
@@ -705,6 +724,17 @@ struct DemodRetuneResetPlan {
     DemodRetuneResetReason reason;
     float retained_fll_scale;
 };
+
+static const char*
+retune_reset_reason_name(DemodRetuneResetReason reason) {
+    switch (reason) {
+        case DemodRetuneResetReason::FrequencyRetune: return "frequency";
+        case DemodRetuneResetReason::DistantFrequencyRetune: return "distant-frequency";
+        case DemodRetuneResetReason::PpmCorrection: return "ppm-correction";
+        case DemodRetuneResetReason::FreshStream: return "fresh-stream";
+        default: return "unknown";
+    }
+}
 
 static uint64_t
 frequency_delta_hz(uint32_t lhs_hz, uint32_t rhs_hz) {
@@ -739,6 +769,37 @@ demod_retune_reset_plan(DemodRetuneResetReason requested_reason, uint32_t previo
 
     plan.retained_fll_scale = (float)retained_fll_scale;
     return plan;
+}
+
+static void
+iq_block_abs_stats(const float* iq, int len, float* mean_abs, float* max_abs, int* pair_count) {
+    float local_max_abs = 0.0f;
+    double sum_abs = 0.0;
+    int pairs = len >> 1;
+
+    if (iq) {
+        for (int n = 0; n < pairs; n++) {
+            float i = iq[(size_t)(n << 1) + 0];
+            float q = iq[(size_t)(n << 1) + 1];
+            float ai = fabsf(i);
+            float aq = fabsf(q);
+            float peak = (ai > aq) ? ai : aq;
+            if (peak > local_max_abs) {
+                local_max_abs = peak;
+            }
+            sum_abs += (double)ai + (double)aq;
+        }
+    }
+
+    if (mean_abs) {
+        *mean_abs = (pairs > 0) ? (float)(sum_abs / (double)pairs) : 0.0f;
+    }
+    if (max_abs) {
+        *max_abs = local_max_abs;
+    }
+    if (pair_count) {
+        *pair_count = pairs;
+    }
 }
 
 /**
@@ -1129,6 +1190,78 @@ snr_ema_reset(void) {
     g_snr_qpsk_acc_reset.store(1, std::memory_order_relaxed);
 }
 
+static int
+retune_settle_should_discard(const struct demod_state* d, float mean_abs, float max_abs, int pairs) {
+    if (!d || !d->cqpsk_enable || pairs <= 0) {
+        g_retune_settle_blocks_remaining.store(0, std::memory_order_release);
+        return 0;
+    }
+
+    int remaining = g_retune_settle_blocks_remaining.load(std::memory_order_acquire);
+    if (remaining <= 0) {
+        return 0;
+    }
+
+    static uint32_t active_seq = 0;
+    static int block_index = 0;
+    static int stable_run = 0;
+    static float prev_mean_abs = 0.0f;
+    uint32_t seq = g_retune_settle_seq.load(std::memory_order_acquire);
+    if (seq != active_seq) {
+        active_seq = seq;
+        block_index = 0;
+        stable_run = 0;
+        prev_mean_abs = 0.0f;
+    }
+
+    int before = g_retune_settle_blocks_remaining.fetch_sub(1, std::memory_order_acq_rel);
+    if (before <= 0) {
+        return 0;
+    }
+
+    block_index++;
+    float rel_delta = 1.0f;
+    if (prev_mean_abs > 0.0f) {
+        float denom = std::max(prev_mean_abs, 0.01f);
+        rel_delta = fabsf(mean_abs - prev_mean_abs) / denom;
+    }
+    bool has_signal = (mean_abs >= kRetuneSettleMinMeanAbs && max_abs >= kRetuneSettleMinMeanAbs);
+    bool stable_now = (prev_mean_abs > 0.0f && rel_delta <= kRetuneSettleStableRel);
+    if (block_index >= kRetuneSettleMinBlocks && has_signal && stable_now) {
+        stable_run++;
+    } else {
+        stable_run = 0;
+    }
+    prev_mean_abs = mean_abs;
+
+    bool timed_out = (before <= 1);
+    bool settled = (stable_run >= kRetuneSettleStableBlocks);
+    if (settled || timed_out) {
+        g_retune_settle_blocks_remaining.store(0, std::memory_order_release);
+        g_snr_qpsk_acc_reset.store(1, std::memory_order_relaxed);
+        if (debug_cqpsk_enabled()) {
+            fprintf(
+                stderr,
+                "[RETUNE-SETTLE] seq=%u action=release block=%d remaining=%d reason=%s mean_abs=%.4f "
+                "max_abs=%.4f rel_delta=%.4f stable=%d timeout=%d\n",
+                seq, block_index, before - 1,
+                retune_reset_reason_name((DemodRetuneResetReason)g_retune_diag_reason.load(std::memory_order_acquire)),
+                mean_abs, max_abs, rel_delta, stable_run, timed_out ? 1 : 0);
+        }
+        return 0;
+    }
+
+    if (debug_cqpsk_enabled()) {
+        fprintf(stderr,
+                "[RETUNE-SETTLE] seq=%u action=drop block=%d remaining=%d reason=%s mean_abs=%.4f max_abs=%.4f "
+                "rel_delta=%.4f stable=%d\n",
+                seq, block_index, before - 1,
+                retune_reset_reason_name((DemodRetuneResetReason)g_retune_diag_reason.load(std::memory_order_acquire)),
+                mean_abs, max_abs, rel_delta, stable_run);
+    }
+    return 1;
+}
+
 /* Apply a single gain factor to the final demod block before handing it to consumers. */
 static inline void
 apply_output_scale(struct demod_state* d, float* buf, int len) {
@@ -1264,6 +1397,41 @@ static DSD_THREAD_RETURN_TYPE
             || g_ring_purge_pending.load(std::memory_order_acquire)) {
             continue;
         }
+        int input_pairs = 0;
+        float input_mean_abs = 0.0f;
+        float input_max_abs = 0.0f;
+        iq_block_abs_stats(d->input_cb_buf, got, &input_mean_abs, &input_max_abs, &input_pairs);
+
+        if (retune_settle_should_discard(d, input_mean_abs, input_max_abs, input_pairs)) {
+            continue;
+        }
+
+        int retune_diag_block = 0;
+        uint32_t retune_diag_seq = 0;
+        uint32_t retune_diag_freq_hz = 0;
+        uint32_t retune_diag_reconfigure_seq = 0;
+        int retune_diag_reason = 0;
+        int retune_diag_pairs = 0;
+        float retune_diag_mean_abs = 0.0f;
+        float retune_diag_max_abs = 0.0f;
+        size_t retune_diag_ring_used = 0;
+        if (debug_cqpsk_enabled()) {
+            int remaining = g_retune_diag_blocks_remaining.load(std::memory_order_acquire);
+            if (remaining > 0) {
+                int before = g_retune_diag_blocks_remaining.fetch_sub(1, std::memory_order_acq_rel);
+                if (before > 0) {
+                    retune_diag_block = kRetuneDiagBlocks - before + 1;
+                    retune_diag_seq = g_retune_diag_seq.load(std::memory_order_acquire);
+                    retune_diag_freq_hz = g_retune_diag_freq_hz.load(std::memory_order_acquire);
+                    retune_diag_reason = g_retune_diag_reason.load(std::memory_order_acquire);
+                    retune_diag_reconfigure_seq = controller.reconfigure_seq.load(std::memory_order_acquire);
+                    retune_diag_ring_used = input_ring_used(&input_ring);
+                    retune_diag_mean_abs = input_mean_abs;
+                    retune_diag_max_abs = input_max_abs;
+                    retune_diag_pairs = input_pairs;
+                }
+            }
+        }
         if (!ag_initialized) {
             const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
             if (cfg) {
@@ -1286,27 +1454,11 @@ static DSD_THREAD_RETURN_TYPE
             if (ag_last_freq != current_freq_hz || ag_last_reconfigure_seq != current_reconfigure_seq) {
                 reset_autogain_window(current_freq_hz, current_reconfigure_seq);
             }
-            float max_abs = 0.0f;
-            double sum_abs = 0.0;
-            int pairs = got >> 1;
-            const float* p = d->input_cb_buf;
-            for (int n = 0; n < pairs; n++) {
-                float I = p[(size_t)(n << 1) + 0];
-                float Q = p[(size_t)(n << 1) + 1];
-                float aI = fabsf(I);
-                float aQ = fabsf(Q);
-                float m = (aI > aQ) ? aI : aQ;
-                if (m > max_abs) {
-                    max_abs = m;
-                }
-                sum_abs += (aI + aQ);
-            }
-            float mean_abs = (pairs > 0) ? (float)(sum_abs / (double)pairs) : 0.0f;
             ag_blocks++;
-            if (max_abs > 0.9f) {
+            if (input_max_abs > 0.9f) {
                 ag_high++;
             }
-            if (mean_abs < 0.06f) {
+            if (input_mean_abs < 0.06f) {
                 ag_low++;
             }
             /* Every ~40 blocks, consider a nudge */
@@ -1514,6 +1666,22 @@ static DSD_THREAD_RETURN_TYPE
         }
 
         full_demod(d);
+
+        if (retune_diag_block > 0) {
+            float fll_freq_hz = d->fll_band_edge_state.freq * ((float)d->rate_out / 6.28318530717958647692f);
+            float symbol_rate_hz = (float)d->rate_out / (float)(d->ted_sps > 0 ? d->ted_sps : 5);
+            float costas_freq_hz = d->costas_state.freq * (symbol_rate_hz / 6.28318530717958647692f);
+            double snr_qpsk = g_snr_qpsk_db.load(std::memory_order_relaxed);
+            fprintf(stderr,
+                    "[RETUNE-BLOCK] seq=%u block=%d freq=%u reason=%s reconfig=%u ring=%zu got=%d pairs=%d "
+                    "mean_abs=%.4f max_abs=%.4f snr=%.1f fll=%.1fHz costas=%.1fHz costas_err=%.4f "
+                    "ted_lock=%d ted_err=%.4f ted_mu=%.3f ted_omega=%.3f carrier_lock=%d\n",
+                    retune_diag_seq, retune_diag_block, retune_diag_freq_hz,
+                    retune_reset_reason_name((DemodRetuneResetReason)retune_diag_reason), retune_diag_reconfigure_seq,
+                    retune_diag_ring_used, got, retune_diag_pairs, retune_diag_mean_abs, retune_diag_max_abs, snr_qpsk,
+                    fll_freq_hz, costas_freq_hz, d->costas_state.error, d->ted_state.lock_count, d->ted_state.e_ema,
+                    d->ted_state.mu, d->ted_state.omega, dsd_rtl_stream_get_carrier_lock());
+        }
 
         if (replay_active && g_stream) {
             g_stream->replay_last_consume_gen.store(consumed_gen, std::memory_order_release);
@@ -2029,6 +2197,7 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz) {
 static int
 apply_capture_settings(uint32_t center_freq_hz, int ppm_error) {
     int ppm_rc = apply_ppm_setting(ppm_error);
+    controller_arm_retune_mute("program");
     program_capture_frequency_and_rate(center_freq_hz);
     return ppm_rc;
 }
@@ -2038,7 +2207,11 @@ retune_mute_bytes_for_rate(uint32_t sample_rate_hz) {
     /* Drop the first post-retune callbacks so tuner-settling samples do not
      * train the freshly reset CQPSK TED/Costas loops or smear the retained FLL
      * coarse CFO estimate. */
-    const uint64_t mute_ms = 50;
+    uint64_t mute_ms = 120;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (cfg && cfg->retune_mute_ms > 0) {
+        mute_ms = (uint64_t)cfg->retune_mute_ms;
+    }
     uint64_t bytes = ((uint64_t)sample_rate_hz * 2ULL * mute_ms) / 1000ULL;
     uint64_t min_bytes = (ACTUAL_BUF_LENGTH > 0) ? (uint64_t)ACTUAL_BUF_LENGTH : (uint64_t)DEFAULT_BUF_LENGTH;
     if (bytes < min_bytes) {
@@ -2051,11 +2224,26 @@ retune_mute_bytes_for_rate(uint32_t sample_rate_hz) {
 }
 
 static void
-controller_arm_post_retune_mute(void) {
+controller_arm_retune_mute(const char* phase) {
     if (!rtl_device_handle || dongle.rate == 0) {
         return;
     }
-    rtl_device_mute(rtl_device_handle, retune_mute_bytes_for_rate(dongle.rate));
+    int mute_bytes = retune_mute_bytes_for_rate(dongle.rate);
+    rtl_device_mute(rtl_device_handle, mute_bytes);
+    if (debug_cqpsk_enabled()) {
+        fprintf(stderr, "[RETUNE-MUTE] phase=%s rate=%u bytes=%d\n", phase ? phase : "unknown", dongle.rate,
+                mute_bytes);
+    }
+}
+
+static void
+controller_arm_post_retune_diagnostics(uint32_t center_freq_hz, DemodRetuneResetReason reason) {
+    uint32_t seq = g_retune_diag_seq.fetch_add(1, std::memory_order_acq_rel) + 1U;
+    g_retune_diag_freq_hz.store(center_freq_hz, std::memory_order_release);
+    g_retune_diag_reason.store((int)reason, std::memory_order_release);
+    g_retune_settle_seq.store(seq, std::memory_order_release);
+    g_retune_settle_blocks_remaining.store(kRetuneSettleMaxBlocks, std::memory_order_release);
+    g_retune_diag_blocks_remaining.store(debug_cqpsk_enabled() ? kRetuneDiagBlocks : 0, std::memory_order_release);
 }
 
 static void
@@ -2073,7 +2261,8 @@ controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts,
     demod_reset_on_retune(&demod, reset_plan);
     if (mark_reconfigure) {
         s->reconfigure_seq.fetch_add(1, std::memory_order_acq_rel);
-        g_ring_purge_pending.store(1, std::memory_order_release);
+        controller_request_input_purge();
+        controller_arm_post_retune_diagnostics(center_freq_hz, reset_plan.reason);
     }
 }
 
@@ -2086,11 +2275,25 @@ controller_finalize_reconfigure(struct controller_state* s, const dsd_opts* opts
 }
 
 static inline void
-controller_begin_reconfigure(struct controller_state* s) {
+controller_enter_reconfigure_gate(struct controller_state* s) {
     if (!s) {
         return;
     }
     s->retune_in_progress.store(1, std::memory_order_release);
+    g_retune_settle_blocks_remaining.store(0, std::memory_order_release);
+    g_retune_diag_blocks_remaining.store(0, std::memory_order_release);
+}
+
+static inline void
+controller_prepare_reconfigure_input(void) {
+    controller_request_input_purge();
+    controller_arm_retune_mute("pre");
+}
+
+static inline void
+controller_begin_reconfigure(struct controller_state* s) {
+    controller_enter_reconfigure_gate(s);
+    controller_prepare_reconfigure_input();
 }
 
 static inline void
@@ -2109,10 +2312,12 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     }
     uint32_t previous_center_freq_hz = s->last_applied_freq_hz.load(std::memory_order_acquire);
     int previous_rate_out_hz = demod.rate_out;
+    controller_arm_retune_mute("program");
     program_capture_frequency_and_rate(center_freq_hz);
+    controller_arm_retune_mute("post");
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz, reset_reason,
                                     previous_center_freq_hz, previous_rate_out_hz);
-    controller_arm_post_retune_mute();
+    controller_arm_retune_mute("post-reset");
 }
 
 static int
@@ -2125,6 +2330,7 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
     int previous_rate_out_hz = demod.rate_out;
     controller_begin_reconfigure(s);
     int ppm_rc = apply_capture_settings(center_freq_hz, ppm_error);
+    controller_arm_retune_mute("post");
     if (ppm_rc == 0) {
         store_dongle_ppm_error(ppm_error);
     }
@@ -2133,7 +2339,7 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
                                               : DemodRetuneResetReason::FrequencyRetune;
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz, reset_reason,
                                     previous_center_freq_hz, previous_rate_out_hz);
-    controller_arm_post_retune_mute();
+    controller_arm_retune_mute("post-reset");
     controller_end_reconfigure(s);
     rtl_device_note_capture_retune(rtl_device_handle);
     return ppm_rc;
@@ -2328,17 +2534,19 @@ static DSD_THREAD_RETURN_TYPE
                 if (s->freq_len > 0) {
                     fallback_freq_hz = (uint32_t)s->freqs[s->freq_now];
                 }
-                dsd::io::radio::RtlPpmApplyPlan ppm_plan = dsd::io::radio::rtl_ppm_plan_apply_to_active_stream(
+                const dsd::io::radio::RtlPpmApplyPlan ppm_plan = dsd::io::radio::rtl_ppm_plan_apply_to_active_stream(
                     s->last_applied_freq_hz.load(std::memory_order_acquire), fallback_freq_hz, current_ppm,
                     requested_ppm);
-                if (ppm_plan.reconfigure) {
-                    controller_begin_reconfigure(s);
+                const bool reconfigure_gate_active = (ppm_plan.reconfigure != 0);
+                if (reconfigure_gate_active) {
+                    controller_enter_reconfigure_gate(s);
                 }
-                /* Only disrupt the live stream after the backend accepts the new
-                 * PPM value. Rejected requests must not reset the current demod
-                 * chain. */
-                int ppm_rc = apply_ppm_setting(requested_ppm);
+                /* Only purge/mute/reset the live stream after the backend accepts
+                 * the new PPM value. Rejected requests must not reset the current
+                 * demod chain. */
+                const int ppm_rc = apply_ppm_setting(requested_ppm);
                 if (dsd::io::radio::rtl_ppm_should_reconfigure_after_apply(ppm_plan, ppm_rc)) {
+                    controller_prepare_reconfigure_input();
                     store_dongle_ppm_error(requested_ppm);
                     controller_reconfigure_active_stream_locked(s, ppm_plan.freq_hz,
                                                                 DemodRetuneResetReason::PpmCorrection);
@@ -2346,13 +2554,13 @@ static DSD_THREAD_RETURN_TYPE
                     drain_output_on_retune();
                     LOG_INFO("PPM correction applied: %d (reconfigured %u Hz).\n", requested_ppm, ppm_plan.freq_hz);
                 } else if (ppm_rc == 0) {
-                    if (ppm_plan.reconfigure) {
+                    if (reconfigure_gate_active) {
                         controller_end_reconfigure(s);
                     }
                     store_dongle_ppm_error(requested_ppm);
                     LOG_INFO("PPM correction applied: %d.\n", requested_ppm);
                 } else {
-                    if (ppm_plan.reconfigure) {
+                    if (reconfigure_gate_active) {
                         controller_end_reconfigure(s);
                     }
                     note_failed_ppm_request(requested_ppm, requested_ppm_request_id, current_ppm, ppm_rc);
