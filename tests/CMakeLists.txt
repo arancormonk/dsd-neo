@@ -898,6 +898,15 @@ target_include_directories(dsd-neo_test_p25_mbt_decode PRIVATE ${PROJECT_SOURCE_
 target_link_libraries(dsd-neo_test_p25_mbt_decode PRIVATE dsd-neo_proto_p25 dsd-neo_test_support)
 add_test(NAME P25_MBT_DECODE COMMAND dsd-neo_test_p25_mbt_decode)
 
+# P25 P1 MBT CRC16 mismatch handling on mixed P1/P2 Motorola systems.
+# Verifies detection of Alternate MBT trunking PDUs that fail CRC16 but
+# contain valid trunking data (Identifier Updates, RFSS Status).
+# Uses only the CRC bridge function — no full processMPDU() dependency.
+add_executable(dsd-neo_test_p25_p1_mbt_crc16_nocrc protocol/p25/test_p25_p1_mbt_crc16_nocrc.c)
+target_include_directories(dsd-neo_test_p25_p1_mbt_crc16_nocrc PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p1_mbt_crc16_nocrc PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_MBT_CRC16_NOCRC COMMAND dsd-neo_test_p25_p1_mbt_crc16_nocrc)
+
 # P25 P1 FEC boundaries: Hamming, Golay, RS correction limits
 add_executable(dsd-neo_test_p25_p1_fec_boundaries protocol/p25/test_p25_p1_fec_boundaries.c)
 target_include_directories(dsd-neo_test_p25_p1_fec_boundaries PRIVATE ${PROJECT_SOURCE_DIR}/include)

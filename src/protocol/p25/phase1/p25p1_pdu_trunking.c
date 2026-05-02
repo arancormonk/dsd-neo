@@ -53,11 +53,22 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
     // Use the existing MAC decoder to normalize parsing and state updates.
     // Note: Standard Identifier Update MAC formats do not carry an MFID octet; payload starts
     // immediately after the opcode. Populate MAC[] accordingly so downstream parsers align.
-    if ((opcode == 0x74 || opcode == 0x7D || opcode == 0x73 || opcode == 0xF3 || opcode == 0x34 || opcode == 0x3D
-         || opcode == 0x33) // accept both MAC-coded and MBT/TSBK-coded values
+    //
+    // IMPORTANT: Do NOT bridge opcode 0x33 (Identifier Update for TDMA) here.
+    // The TSBK path already broadcasts correct FDMA and TDMA iden definitions
+    // via standard Identifier Update TSBKs (opcode 0x34). The MBT form of
+    // opcode 0x33 uses a different payload layout that spans header bytes 8–11
+    // and data block bytes 12+, and the byte-to-MAC mapping produces incorrect
+    // iden/base-freq values that overwrite the correct TSBK-sourced entries.
+    // Until the exact MBT→MAC field mapping for 0x33 is verified against the
+    // P25 spec, we skip it to avoid corrupting the frequency identifier table.
+    if ((opcode == 0x74 || opcode == 0x7D || opcode == 0x73 || opcode == 0xF3 || opcode == 0x3D)
         && MFID < 2) {
         // Build a minimal MAC buffer from MBT payload immediately after the opcode byte
-        // ALT format places opcode at index 7; UNCONF at index 12
+        // ALT format places opcode at index 7; UNCONF at index 12.
+        // The payload spans header bytes 8–11 and continues into the data block
+        // at bytes 12+. This matches the P25 ALT MBT format where the opcode
+        // is in the header and the payload straddles header and data block.
         int op_idx = (fmt == 0x17) ? 7 : 12;
         int payload_off = op_idx + 1;
         int total_len = (12 * (blks + 1));
