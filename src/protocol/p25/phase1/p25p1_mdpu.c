@@ -101,6 +101,11 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     uint8_t hdr_rep_bits[3][96];
     memset(hdr_rep_bits, 0, sizeof(hdr_rep_bits));
 
+    // Per-repetition decoded bytes and CRC results (mirrors TSBK approach)
+    uint8_t hdr_rep_bytes[3][12];
+    memset(hdr_rep_bytes, 0, sizeof(hdr_rep_bytes));
+    int hdr_rep_crc[3] = {-2, -2, -2};
+
     uint8_t mpdu_decoded_bits[18 * 129 * 8];
     memset(mpdu_decoded_bits, 0, sizeof(mpdu_decoded_bits));
 
@@ -120,7 +125,6 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     int err[2];  //error value returned from crc16 on header and crc32 on full message
     memset(ec, -2, sizeof(ec));
     memset(err, -2, sizeof(err));
-    int err0_first = -2; // CRC16 result from first header repetition (for early gating only)
 
     uint8_t mpdu_byte[18 * 129];
     memset(mpdu_byte, 0, sizeof(mpdu_byte));
@@ -214,16 +218,15 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        // Save header (first 96 bits) for repetition j (majority after loop)
+        // Save header (first 96 bits) and bytes for repetition j (majority after loop)
         if (j < 3) {
             for (i = 0; i < 96; i++) {
                 hdr_rep_bits[j][i] = (uint8_t)(tsbk_decoded_bits[i] & 1);
             }
-        }
-
-        // Compute CRC16 for first header repetition for early length decisions only
-        if (j == 0) {
-            err0_first = crc16_lb_bridge(tsbk_decoded_bits, 80);
+            memcpy(hdr_rep_bytes[j], tsbk_byte, 12);
+            // Compute per-repetition CRC16 over first 80 bits for later
+            // best-rep selection (same approach as TSBK path).
+            hdr_rep_crc[j] = crc16_lb_bridge(tsbk_decoded_bits, 80);
         }
 
         //load into bit array for storage (easier decoding for future PDUs)
@@ -248,7 +251,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         }
 
         //check header data to see if this is a 12 rate, or 34 rate packet data unit
-        if ((j == 0 && (err0_first == 0 || opts->aggressive_framesync == 0))) {
+        if ((j == 0 && (hdr_rep_crc[0] == 0 || opts->aggressive_framesync == 0))) {
             an = (mpdu_byte[0] >> 6) & 0x1;
             io = (mpdu_byte[0] >> 5) & 0x1;
             fmt = mpdu_byte[0] & 0x1F;
@@ -274,49 +277,92 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    // Compute header CRC using majority across first 3 repetitions
+    // Compute header CRC: prefer any individual rep that passes CRC16
+    // (same strategy as TSBK path). Majority-vote on CRC bits can produce
+    // an invalid checksum even when individual reps are correct, which is
+    // why MBT trunking PDUs were consistently failing CRC here.
     {
         int reps = (end < 3) ? end : 3;
-        uint8_t hdr_maj_bits[96];
-        memset(hdr_maj_bits, 0, sizeof(hdr_maj_bits));
-        for (i = 0; i < 96; i++) {
-            int sum = 0;
-            for (j = 0; j < reps; j++) {
-                sum += (int)hdr_rep_bits[j][i];
+
+        // First, check if any single repetition passes CRC16
+        int sel_idx = -1;
+        for (j = 0; j < reps; j++) {
+            if (hdr_rep_crc[j] == 0) {
+                sel_idx = j;
+                break;
             }
-            int thresh = (reps >= 2) ? ((reps + 1) / 2) : 1; // >=2 reps: majority; 1 rep: passthrough
-            hdr_maj_bits[i] = (uint8_t)((sum >= thresh) ? 1 : 0);
         }
-        int hdr_bits_int[96];
-        for (i = 0; i < 96; i++) {
-            hdr_bits_int[i] = (int)hdr_maj_bits[i];
-        }
-        err[0] = crc16_lb_bridge(hdr_bits_int, 80);
-        if (err[0] == 0) {
+
+        if (sel_idx >= 0) {
+            // Use the passing repetition's bytes for the header
+            err[0] = 0;
+            memcpy(mpdu_byte, hdr_rep_bytes[sel_idx], 12);
             state->p25_p1_fec_ok++;
 #ifdef USE_RADIO
             dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
 #endif
         } else {
-            state->p25_p1_fec_err++;
+            // No individual rep passed; fall back to majority-voted bits
+            uint8_t hdr_maj_bits[96];
+            memset(hdr_maj_bits, 0, sizeof(hdr_maj_bits));
+            for (i = 0; i < 96; i++) {
+                int sum = 0;
+                for (j = 0; j < reps; j++) {
+                    sum += (int)hdr_rep_bits[j][i];
+                }
+                int thresh = (reps >= 2) ? ((reps + 1) / 2) : 1;
+                hdr_maj_bits[i] = (uint8_t)((sum >= thresh) ? 1 : 0);
+            }
+            int hdr_bits_int[96];
+            for (i = 0; i < 96; i++) {
+                hdr_bits_int[i] = (int)hdr_maj_bits[i];
+            }
+            err[0] = crc16_lb_bridge(hdr_bits_int, 80);
+
+            // Rebuild mpdu_byte header from majority bits for downstream parsing
+            for (i = 0; i < 12; i++) {
+                int byte = 0;
+                for (x = 0; x < 8; x++) {
+                    byte = (byte << 1) | (hdr_maj_bits[(i * 8) + x] & 1);
+                }
+                mpdu_byte[i] = (uint8_t)byte;
+            }
+
+            if (err[0] == 0) {
+                state->p25_p1_fec_ok++;
 #ifdef USE_RADIO
-            dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
+                dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
 #endif
+            } else {
+                state->p25_p1_fec_err++;
+#ifdef USE_RADIO
+                dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
+#endif
+            }
         }
     }
 
     if (err[0] == 0 || opts->aggressive_framesync == 0) {
+        // Re-parse header fields from mpdu_byte[] which may have been
+        // updated by the best-rep selection above.
+        io = (mpdu_byte[0] >> 5) & 0x1;
+        fmt = mpdu_byte[0] & 0x1F;
+        sap = mpdu_byte[1] & 0x3F;
+        blks = mpdu_byte[6] & 0x7F;
+
         p25_decode_pdu_header(opts, state, mpdu_byte);
     }
 
-    if (err[0] != 0) //crc error, so we can't validate information as accurate
-    {
+    if (err[0] != 0) {
         fprintf(stderr, "%s", KRED);
         fprintf(stderr, " P25 Data Header CRC Error");
         fprintf(stderr, "%s", KNRM);
-        if (opts->aggressive_framesync != 0) {
-            // already gathered; nothing more to do here for MDPU
+        fprintf(stderr, " [HDR:");
+        for (i = 0; i < 12; i++) {
+            fprintf(stderr, "%02X", mpdu_byte[i]);
         }
+        fprintf(stderr, " AN=%d IO=%d FMT=0x%02X SAP=0x%02X BLKS=%d]", (mpdu_byte[0] >> 6) & 0x1,
+                (mpdu_byte[0] >> 5) & 0x1, mpdu_byte[0] & 0x1F, mpdu_byte[1] & 0x3F, mpdu_byte[6] & 0x7F);
     }
 
     //trunking blocks
@@ -334,8 +380,6 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         if (err[0] == 0 && err[1] == 0 && io == 1 && fmt == 0x17) { //ALT Format
             p25_decode_pdu_trunking(opts, state, mpdu_byte);
         }
-        // else if (opts->aggressive_framesync == 0 && io == 1 && fmt == 0x17)
-        //   p25_decode_pdu_trunking(opts, state, mpdu_byte);
 
         if (opts->payload == 1) {
             fprintf(stderr, "%s", KCYN);
