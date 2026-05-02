@@ -40,6 +40,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_ring.h>
+#include <dsd-neo/runtime/input_ring_watermark.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
@@ -297,6 +298,9 @@ struct RtlSdrInternals {
     dsd_mutex_t replay_eof_m;
     dsd_cond_t replay_eof_cond;
     int replay_eof_sync_inited;
+
+    /* Watermark-based flow control for TCP lag resilience */
+    struct input_ring_watermark watermark;
 };
 
 static struct RtlSdrInternals* g_stream = NULL;
@@ -1385,6 +1389,16 @@ static DSD_THREAD_RETURN_TYPE
         if (controller.retune_in_progress.load(std::memory_order_acquire)) {
             dsd_sleep_ms(1);
             continue;
+        }
+        /* Watermark-based flow control: pause consumption when the ring
+         * is draining to let it refill (TCP lag resilience). */
+        if (g_stream) {
+            while (!watermark_should_consume(&g_stream->watermark, input_ring_used(&input_ring), input_ring.capacity)) {
+                dsd_sleep_ms(5);
+                if (exitflag || (g_stream && g_stream->should_exit.load())) {
+                    break;
+                }
+            }
         }
         /* Read a block from input ring */
         int got = input_ring_read_block(&input_ring, d->input_cb_buf, static_cast<size_t>(MAXIMUM_BUF_LENGTH));
@@ -3431,6 +3445,11 @@ stream_prepare_internals(dsd_opts* opts) {
     }
     g_stream->replay_eof_sync_inited = 1;
     stream_reset_replay_eof_state(g_stream);
+
+    /* Initialize watermark-based flow control (TCP lag resilience).
+     * Enabled only for rtl_tcp connections; passthrough for USB/other. */
+    watermark_init(&g_stream->watermark, radio_source_is_rtltcp(opts) ? 1 : 0, dongle.rate);
+
     return 0;
 }
 

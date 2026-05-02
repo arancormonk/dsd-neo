@@ -20,6 +20,7 @@
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/io/tcp_quality_metrics.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -320,6 +321,8 @@ struct rtl_device {
     uint64_t reserve_full_events;
     int stats_enabled;
     uint64_t stats_last_ns;
+    /* TCP connection quality metrics (lag resilience) */
+    struct tcp_quality_metrics tcp_metrics;
     /* TCP reassembly to uniform chunk size */
     unsigned char* tcp_pending;
     size_t tcp_pending_len;
@@ -1769,6 +1772,7 @@ static DSD_THREAD_RETURN_TYPE
                      * not carry into the resumed stream. */
                     rtl_tcp_skip_header(s->sockfd);
                     rtl_reset_capture_state_on_stream_boundary(s);
+                    tcp_metrics_reset(&s->tcp_metrics, s->rate);
                     /* Reapply socket options: RCVBUF/NODELAY/RCVTIMEO */
                     {
                         const dsdneoRuntimeConfig* cfg2 = dsd_neo_get_config();
@@ -1842,6 +1846,19 @@ static DSD_THREAD_RETURN_TYPE
         }
         /* Successful read: reset timeout counter */
         consec_timeouts = 0;
+        /* Record recv for TCP quality metrics and throughput watchdog. */
+        {
+            uint64_t recv_ns = dsd_time_monotonic_ns();
+            int wd_fired = tcp_metrics_record_recv(&s->tcp_metrics, (uint32_t)r, recv_ns);
+            if (wd_fired) {
+                fprintf(stderr, "rtl_tcp: throughput watchdog triggered; reconnecting to %s:%d...\n", s->host, s->port);
+                dsd_socket_shutdown(s->sockfd, SHUT_RDWR);
+                dsd_socket_close(s->sockfd);
+                s->sockfd = DSD_INVALID_SOCKET;
+                tcp_metrics_reset(&s->tcp_metrics, s->rate);
+                continue; /* Next iteration will enter the reconnect path */
+            }
+        }
         uint32_t len = (uint32_t)r;
         int fs4_shift_active = 0;
         int combine_rotate_active = 0;
@@ -1951,6 +1968,11 @@ static DSD_THREAD_RETURN_TYPE
                 memcpy(s->tcp_pending, u8 + consumed, rem);
                 s->tcp_pending_len = rem;
             }
+        }
+
+        /* Update ring fill metric for connection quality reporting. */
+        if (s->input_ring) {
+            tcp_metrics_update_ring_fill(&s->tcp_metrics, input_ring_used(s->input_ring), s->input_ring->capacity);
         }
 
         /* Once per ~1s: optional stats print and adaptive tuning */
@@ -2438,6 +2460,8 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
             fprintf(stderr, "rtl_tcp: stats enabled.\n");
         }
     }
+    /* Initialize TCP connection quality metrics (lag resilience). */
+    tcp_metrics_init(&dev->tcp_metrics, dev->rate);
     /* Initialize autotune from env if not already enabled by caller */
     if (!dev->tcp_autotune) {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
@@ -2774,6 +2798,11 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
         return verbose_set_sample_rate(dev->dev, samp_rate);
     }
     if (dev->backend == RTL_BACKEND_TCP) {
+        /* Keep TCP quality metrics in sync — the initial tcp_metrics_init()
+           runs before the sample rate is known (dev->rate is still 0 at
+           device creation time), so we patch it here once the real rate
+           arrives.  Without this, throughput_ratio stays 0.0 forever. */
+        dev->tcp_metrics.sample_rate = samp_rate;
         return rtl_tcp_send_cmd(dev->sockfd, 0x02, samp_rate);
     }
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
@@ -3550,5 +3579,17 @@ rtl_device_get_native_sample_format(const struct rtl_device* dev) {
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         return (int)dev->replay_cfg.format;
     }
+    return 0;
+}
+
+int
+rtl_device_get_tcp_quality_snapshot(struct rtl_device* dev, struct tcp_quality_snapshot* out) {
+    if (!dev || !out) {
+        if (out) {
+            *out = tcp_quality_snapshot{};
+        }
+        return -1;
+    }
+    *out = tcp_metrics_get_snapshot(&dev->tcp_metrics);
     return 0;
 }

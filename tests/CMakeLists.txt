@@ -319,6 +319,24 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/protocol/p25/p25_trunk_sm_api.h
   C)
 
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_platform_audio_concealment
+  HEADERS_PUBLIC_PLATFORM_AUDIO_CONCEALMENT
+  dsd-neo/platform/audio_concealment.h
+  C)
+
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_tcp_quality_metrics
+  HEADERS_PUBLIC_IO_TCP_QUALITY_METRICS
+  dsd-neo/io/tcp_quality_metrics.h
+  C)
+
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_input_ring_watermark
+  HEADERS_PUBLIC_RUNTIME_INPUT_RING_WATERMARK
+  dsd-neo/runtime/input_ring_watermark.h
+  C)
+
 add_executable(dsd-neo_test_aes_ofb crypto/test_aes_ofb.c)
 target_include_directories(dsd-neo_test_aes_ofb PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_aes_ofb PRIVATE dsd-neo_crypto)
@@ -891,6 +909,8 @@ add_executable(dsd-neo_test_p25_iden_bridge protocol/p25/test_p25_iden_bridge.c)
 target_include_directories(dsd-neo_test_p25_iden_bridge PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_iden_bridge PRIVATE dsd-neo_proto_p25 dsd-neo_test_support)
 add_test(NAME P25_IDEN_BRIDGE COMMAND dsd-neo_test_p25_iden_bridge)
+
+
 
 # CRC12/16 combined smoke test
 add_executable(dsd-neo_test_p25_crc12_16 protocol/p25/test_p25_crc12_16.c)
@@ -2005,3 +2025,83 @@ if(DSD_HAS_RADIO)
   endif()
   add_test(NAME IO_RTL_REPLAY_EOF_AND_CF32 COMMAND dsd-neo_test_io_rtl_replay_eof_and_cf32)
 endif()
+
+add_executable(dsd-neo_test_audio_conceal_init platform/test_audio_conceal_init.cpp)
+target_include_directories(dsd-neo_test_audio_conceal_init PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_audio_conceal_init PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_AUDIO_CONCEAL_INIT COMMAND dsd-neo_test_audio_conceal_init)
+
+add_executable(dsd-neo_test_audio_conceal_atten_curve platform/test_audio_conceal_atten_curve.cpp)
+target_include_directories(dsd-neo_test_audio_conceal_atten_curve PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_audio_conceal_atten_curve PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_AUDIO_CONCEAL_ATTEN_CURVE COMMAND dsd-neo_test_audio_conceal_atten_curve)
+
+add_executable(dsd-neo_test_audio_conceal_reset platform/test_audio_conceal_reset.cpp)
+target_include_directories(dsd-neo_test_audio_conceal_reset PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_audio_conceal_reset PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_AUDIO_CONCEAL_RESET COMMAND dsd-neo_test_audio_conceal_reset)
+
+add_executable(dsd-neo_test_audio_conceal_counter platform/test_audio_conceal_counter.cpp)
+target_include_directories(dsd-neo_test_audio_conceal_counter PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_audio_conceal_counter PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_AUDIO_CONCEAL_COUNTER COMMAND dsd-neo_test_audio_conceal_counter)
+
+add_executable(dsd-neo_test_audio_conceal_integration platform/test_audio_conceal_integration.cpp)
+target_include_directories(dsd-neo_test_audio_conceal_integration PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_audio_conceal_integration PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_AUDIO_CONCEAL_INTEGRATION COMMAND dsd-neo_test_audio_conceal_integration)
+
+add_executable(dsd-neo_test_tcp_metrics_init io/test_tcp_metrics_init.cpp)
+target_include_directories(dsd-neo_test_tcp_metrics_init PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_tcp_metrics_init PRIVATE dsd-neo_platform)
+add_test(NAME IO_TCP_METRICS_INIT COMMAND dsd-neo_test_tcp_metrics_init)
+
+add_executable(dsd-neo_test_tcp_metrics_ring_fill io/test_tcp_metrics_ring_fill.cpp)
+target_include_directories(dsd-neo_test_tcp_metrics_ring_fill PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_tcp_metrics_ring_fill PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME IO_TCP_METRICS_RING_FILL COMMAND dsd-neo_test_tcp_metrics_ring_fill)
+
+add_executable(dsd-neo_test_tcp_metrics_snapshot io/test_tcp_metrics_snapshot.cpp)
+target_include_directories(dsd-neo_test_tcp_metrics_snapshot PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_tcp_metrics_snapshot PRIVATE dsd-neo_platform)
+add_test(NAME IO_TCP_METRICS_SNAPSHOT COMMAND dsd-neo_test_tcp_metrics_snapshot)
+
+add_executable(dsd-neo_test_tcp_metrics_throughput io/test_tcp_metrics_throughput.cpp)
+target_include_directories(dsd-neo_test_tcp_metrics_throughput PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_tcp_metrics_throughput PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME IO_TCP_METRICS_THROUGHPUT COMMAND dsd-neo_test_tcp_metrics_throughput)
+
+add_executable(dsd-neo_test_tcp_metrics_jitter io/test_tcp_metrics_jitter.cpp)
+target_include_directories(dsd-neo_test_tcp_metrics_jitter PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_tcp_metrics_jitter PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME IO_TCP_METRICS_JITTER COMMAND dsd-neo_test_tcp_metrics_jitter)
+
+add_executable(dsd-neo_test_tcp_metrics_watchdog io/test_tcp_metrics_watchdog.cpp)
+target_include_directories(dsd-neo_test_tcp_metrics_watchdog PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_tcp_metrics_watchdog PRIVATE dsd-neo_platform)
+add_test(NAME IO_TCP_METRICS_WATCHDOG COMMAND dsd-neo_test_tcp_metrics_watchdog)
+
+add_executable(dsd-neo_test_watermark_init runtime/test_watermark_init.cpp)
+target_include_directories(dsd-neo_test_watermark_init PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_watermark_init PRIVATE dsd-neo_platform)
+add_test(NAME RUNTIME_WATERMARK_INIT COMMAND dsd-neo_test_watermark_init)
+
+add_executable(dsd-neo_test_watermark_pause_resume runtime/test_watermark_pause_resume.cpp)
+target_include_directories(dsd-neo_test_watermark_pause_resume PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_watermark_pause_resume PRIVATE dsd-neo_platform)
+add_test(NAME RUNTIME_WATERMARK_PAUSE_RESUME COMMAND dsd-neo_test_watermark_pause_resume)
+
+add_executable(dsd-neo_test_watermark_adaptive runtime/test_watermark_adaptive.cpp)
+target_include_directories(dsd-neo_test_watermark_adaptive PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_watermark_adaptive PRIVATE dsd-neo_platform)
+add_test(NAME RUNTIME_WATERMARK_ADAPTIVE COMMAND dsd-neo_test_watermark_adaptive)
+
+add_executable(dsd-neo_test_prefill_adaptive platform/test_prefill_adaptive.cpp)
+target_include_directories(dsd-neo_test_prefill_adaptive PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_prefill_adaptive PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_PREFILL_ADAPTIVE COMMAND dsd-neo_test_prefill_adaptive)
+
+add_executable(dsd-neo_test_prefill_fixed platform/test_prefill_fixed.cpp)
+target_include_directories(dsd-neo_test_prefill_fixed PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_prefill_fixed PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_PREFILL_FIXED COMMAND dsd-neo_test_prefill_fixed)
