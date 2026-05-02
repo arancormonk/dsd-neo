@@ -635,8 +635,10 @@ struct dsd_state {
 
     /* P25 trunk (RTL): CQPSK DSP chain selection for TDMA voice channels.
      *
-     * - p25_vc_cqpsk_pref: learned preference (-1=unknown/auto, 0=force off (legacy FM/QPSK slicer),
-     *   1=force on (OP25-style CQPSK+TED chain))
+     * - p25_vc_cqpsk_pref: learned preference (-1=unknown/auto,
+     *   1=prefer OP25-style CQPSK+TED chain). Value 0 is treated as no learned
+     *   TDMA preference so automatic retry logic does not force P25p2 through
+     *   the legacy FM/QPSK slicer.
      * - p25_vc_cqpsk_override: one-shot retry override applied on next VC tune (-1=none).
      *
      * These are ignored when the user explicitly forces CQPSK via env/config (DSD_NEO_CQPSK).

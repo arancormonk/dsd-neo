@@ -54,6 +54,30 @@ main(void) {
     rc |= expect_int("re-init(&ring, 8)", input_ring_init(&ring, 8), 0);
     rc |= expect_size("used after re-init", input_ring_used(&ring), 0U);
     rc |= expect_size("free after re-init", input_ring_free(&ring), 7U);
+    uint64_t discard_generation = input_ring_discard_generation(&ring);
+    rc |= expect_int("initial discard generation", discard_generation == 0U, 1);
+    input_ring_request_discard(&ring);
+    rc |= expect_int("discard generation advanced", input_ring_discard_generation(&ring) == discard_generation + 1U, 1);
+    rc |=
+        expect_int("old discard generation stale", input_ring_discard_generation_matches(&ring, discard_generation), 0);
+
+    float* p1 = NULL;
+    float* p2 = NULL;
+    size_t n1 = 0;
+    size_t n2 = 0;
+    discard_generation = input_ring_discard_generation(&ring);
+    rc |= expect_int("reserve four", input_ring_reserve(&ring, 4U, &p1, &n1, &p2, &n2), 4);
+    if (p1 && n1 >= 4U) {
+        p1[0] = 1.0f;
+        p1[1] = 2.0f;
+        p1[2] = 3.0f;
+        p1[3] = 4.0f;
+    }
+    input_ring_request_discard(&ring);
+    if (input_ring_discard_generation_matches(&ring, discard_generation)) {
+        input_ring_commit(&ring, 4U);
+    }
+    rc |= expect_size("stale reservation not committed", input_ring_used(&ring), 0U);
 
     dsd_mutex_lock(&ring.ready_m);
     uint64_t wait_start_ns = dsd_time_monotonic_ns();

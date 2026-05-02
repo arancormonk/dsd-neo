@@ -382,6 +382,7 @@ Capture/retune behavior
 - `DSD_NEO_DISABLE_FS4_SHIFT=1` — disable +fs/4 capture shift
 - `DSD_NEO_OUTPUT_CLEAR_ON_RETUNE=1` — clear output on retune
 - `DSD_NEO_RETUNE_DRAIN_MS=<ms>` — drain time before retune
+- `DSD_NEO_RETUNE_MUTE_MS=<ms>` — input mute around RTL retunes, default 120ms
 
 RTL‑TCP networking
 

@@ -980,14 +980,14 @@ p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
             if (ctx->state == P25_SM_TUNED) {
                 ctx->t_voice_m = now_monotonic();
 #ifdef USE_RADIO
-                /* Learn which RTL CQPSK demod chain mode successfully acquired this TDMA VC.
-                 * Some P25p2 systems decode better with the legacy FM/QPSK slicer; others
-                 * require the OP25-style CQPSK+TED chain. */
+                /* Learn successful TDMA VC acquisition only for the OP25-style CQPSK+TED
+                 * chain. TED can remain enabled as a metric when CQPSK is off, so do not
+                 * treat a legacy FM/QPSK sync as a durable preference for P25p2 TDMA. */
                 if (opts && state && ctx->vc_is_tdma && opts->audio_in_type == AUDIO_IN_RTL) {
                     int cqpsk = 0, fll = 0, ted = 0;
                     dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
-                    if (ted) {
-                        state->p25_vc_cqpsk_pref = cqpsk ? 1 : 0;
+                    if (cqpsk && ted) {
+                        state->p25_vc_cqpsk_pref = 1;
                     }
                 }
 #endif
@@ -1149,10 +1149,12 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
                     double dt_tune = now_m - ctx->t_tune_m;
 #ifdef USE_RADIO
                     /* CQPSK fallback for P25p2 TDMA VCs (RTL input only):
-                     * If we don't see any voice activity soon after a TDMA grant,
-                     * retry once with the opposite CQPSK DSP chain setting. */
+                     * If a TDMA VC somehow started on the legacy path, retry once with
+                     * the OP25-style CQPSK+TED chain. Do not flip a TDMA VC from CQPSK
+                     * back to the legacy slicer; that creates alternating bad/good
+                     * retunes and loses the carrier/timing loops we need for P25p2. */
                     if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && ctx->vc_is_tdma
-                        && !ctx->vc_cqpsk_retry_done && dt_tune >= 0.8 && state->p25_vc_cqpsk_pref == -1) {
+                        && !ctx->vc_cqpsk_retry_done && dt_tune >= 0.8 && state->p25_vc_cqpsk_pref != 1) {
                         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
                         if (!cfg) {
                             dsd_neo_config_init(opts);
@@ -1161,21 +1163,24 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
                         if (!(cfg && cfg->cqpsk_is_set) && ctx->vc_freq_hz > 0) {
                             int cqpsk = 0, fll = 0, ted = 0;
                             dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
-                            int next = cqpsk ? 0 : 1;
-                            state->p25_vc_cqpsk_override = next;
-                            ctx->vc_cqpsk_retry_done = 1;
-                            /* Restart the tune timer for the retry to avoid immediate grant-timeout. */
-                            ctx->t_tune_m = now_m;
-                            ctx->t_voice_m = 0.0;
-                            for (int s = 0; s < 2; s++) {
-                                ctx->slots[s].voice_active = 0;
-                                ctx->slots[s].last_active_m = 0.0;
+                            if (cqpsk) {
+                                ctx->vc_cqpsk_retry_done = 1;
+                            } else {
+                                state->p25_vc_cqpsk_override = 1;
+                                ctx->vc_cqpsk_retry_done = 1;
+                                /* Restart the tune timer for the retry to avoid immediate grant-timeout. */
+                                ctx->t_tune_m = now_m;
+                                ctx->t_voice_m = 0.0;
+                                for (int s = 0; s < 2; s++) {
+                                    ctx->slots[s].voice_active = 0;
+                                    ctx->slots[s].last_active_m = 0.0;
+                                }
+                                int ted_sps = p25_ted_sps_for_bw(opts, 6000);
+                                state->samplesPerSymbol = ted_sps;
+                                state->symbolCenter = dsd_opts_symbol_center(ted_sps);
+                                dsd_trunk_tuning_hook_tune_to_freq(opts, state, ctx->vc_freq_hz, ted_sps);
+                                sm_log(opts, state, "cqpsk-retry-on");
                             }
-                            int ted_sps = p25_ted_sps_for_bw(opts, 6000);
-                            state->samplesPerSymbol = ted_sps;
-                            state->symbolCenter = dsd_opts_symbol_center(ted_sps);
-                            dsd_trunk_tuning_hook_tune_to_freq(opts, state, ctx->vc_freq_hz, ted_sps);
-                            sm_log(opts, state, next ? "cqpsk-retry-on" : "cqpsk-retry-off");
                         }
                     }
 #endif

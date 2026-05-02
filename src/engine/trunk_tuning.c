@@ -166,12 +166,12 @@ dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, i
         int want_cqpsk = (state->rf_mod == 1) ? 1 : 0;
         /* For TDMA voice channels, optionally override CQPSK DSP selection:
          * - a one-shot override can be set by the P25 trunk SM for a retry
-         * - otherwise, use the learned per-run preference when available */
+         * - otherwise, use the learned OP25-style CQPSK preference when available */
         if (state->rf_mod == 1 && state->p25_p2_active_slot != -1) {
             if (state->p25_vc_cqpsk_override == 0 || state->p25_vc_cqpsk_override == 1) {
                 want_cqpsk = state->p25_vc_cqpsk_override;
-            } else if (state->p25_vc_cqpsk_pref == 0 || state->p25_vc_cqpsk_pref == 1) {
-                want_cqpsk = state->p25_vc_cqpsk_pref;
+            } else if (state->p25_vc_cqpsk_pref == 1) {
+                want_cqpsk = 1;
             }
         }
         if (!(cfg && cfg->cqpsk_is_set)) {

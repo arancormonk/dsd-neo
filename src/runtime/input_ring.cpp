@@ -63,6 +63,7 @@ input_ring_init(struct input_ring_state* r, size_t capacity) {
     r->space_notify_enabled.store(0, std::memory_order_relaxed);
     r->producer_drops.store(0, std::memory_order_relaxed);
     r->read_timeouts.store(0, std::memory_order_relaxed);
+    r->discard_generation.store(0, std::memory_order_relaxed);
     return 0;
 }
 
@@ -86,6 +87,7 @@ input_ring_destroy(struct input_ring_state* r) {
     r->space_notify_enabled.store(0, std::memory_order_relaxed);
     r->producer_drops.store(0, std::memory_order_relaxed);
     r->read_timeouts.store(0, std::memory_order_relaxed);
+    r->discard_generation.store(0, std::memory_order_relaxed);
 }
 
 void
@@ -180,6 +182,7 @@ void
 input_ring_write(struct input_ring_state* r, const float* data, size_t count) {
     int need_signal = input_ring_is_empty(r);
     while (count > 0 && !exitflag) {
+        uint64_t discard_generation = input_ring_discard_generation(r);
         size_t free_sp = input_ring_free(r);
         if (free_sp == 0) {
             /* Ring full: to avoid racing the consumer, drop remainder */
@@ -193,6 +196,10 @@ input_ring_write(struct input_ring_state* r, const float* data, size_t count) {
         size_t to_end = r->capacity - h;
         if (to_end >= write_now) {
             memcpy(r->buffer + h, data, write_now * sizeof(float));
+            if (!input_ring_discard_generation_matches(r, discard_generation)) {
+                r->producer_drops.fetch_add(write_now);
+                break;
+            }
             h += write_now;
             if (h >= r->capacity) {
                 h = 0;
@@ -215,6 +222,10 @@ input_ring_write(struct input_ring_state* r, const float* data, size_t count) {
             data += remaining;
         } else {
             h = 0;
+        }
+        if (!input_ring_discard_generation_matches(r, discard_generation)) {
+            r->producer_drops.fetch_add(write_now);
+            break;
         }
         r->head.store(h);
         count -= write_now;

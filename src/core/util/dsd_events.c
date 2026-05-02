@@ -12,7 +12,6 @@
 *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -28,6 +27,10 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
+
+enum {
+    DSD_EVENT_SUBTYPE_DATA = 6,
+};
 
 // Safe bounded copy helper that tolerates potential overlap
 static inline void
@@ -189,6 +192,7 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
     //last values pulled from the event history
     uint32_t last_source_id = event_struct->Event_History_Items[0].source_id;
+    int last_event_is_data = event_struct->Event_History_Items[0].subtype == DSD_EVENT_SUBTYPE_DATA;
 
     if (slot == 0) {
         source_id = state->lastsrc;
@@ -302,7 +306,9 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         }
 
         //end of voice call alert
-        if (dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_END)) {
+        if (!last_event_is_data
+            && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events,
+                                            DSD_CALL_ALERT_EVENT_VOICE_END)) {
             beeper(opts, state, slot, 40, 86, 3);
         }
     }
@@ -1123,7 +1129,6 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
 void
 watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
-    UNUSED(opts);
     state->event_history_s[slot].Event_History_Items[0].write = 0;
     if (state->event_history_s[slot].Event_History_Items[0].color_pair
         == 4) { //if not set previously by specific decoder //don't touch this one
@@ -1131,7 +1136,7 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
             4; //default data color //you can change this one
     }
     state->event_history_s[slot].Event_History_Items[0].systype = state->lastsynctype;
-    state->event_history_s[slot].Event_History_Items[0].subtype = 6; //data
+    state->event_history_s[slot].Event_History_Items[0].subtype = DSD_EVENT_SUBTYPE_DATA;
     state->event_history_s[slot].Event_History_Items[0].gi = state->gi[slot];
     state->event_history_s[slot].Event_History_Items[0].enc = 0;
     state->event_history_s[slot].Event_History_Items[0].enc_alg = 0;

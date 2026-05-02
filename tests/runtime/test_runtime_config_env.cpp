@@ -146,6 +146,7 @@ unset_all_runtime_env(void) {
         "DSD_NEO_PDU_JSON",
         "DSD_NEO_RESAMP",
         "DSD_NEO_RETUNE_DRAIN_MS",
+        "DSD_NEO_RETUNE_MUTE_MS",
         "DSD_NEO_RIGCTL_RCVTIMEO",
         "DSD_NEO_RTL_AGC",
         "DSD_NEO_RTL_DIRECT",
@@ -1742,6 +1743,7 @@ test_dsp_misc_env(void) {
     setenv("DSD_NEO_DISABLE_FS4_SHIFT", "1", 1);
     setenv("DSD_NEO_OUTPUT_CLEAR_ON_RETUNE", "1", 1);
     setenv("DSD_NEO_RETUNE_DRAIN_MS", "100", 1);
+    setenv("DSD_NEO_RETUNE_MUTE_MS", "180", 1);
     setenv("DSD_NEO_WINDOW_FREEZE", "1", 1);
     setenv("DSD_NEO_PDU_JSON", "1", 1);
     setenv("DSD_NEO_SNR_SQL_DB", "15", 1);
@@ -1945,6 +1947,14 @@ test_dsp_misc_env(void) {
     if (rc != 0) {
         return rc;
     }
+    rc = expect_int_eq(cfg->retune_mute_ms_is_set, 1, 1586, "retune_mute_ms_is_set");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->retune_mute_ms, 180, 1587, "retune_mute_ms");
+    if (rc != 0) {
+        return rc;
+    }
 
     rc = expect_int_eq(cfg->window_freeze_is_set, 1, 1590, "window_freeze_is_set");
     if (rc != 0) {
@@ -2068,6 +2078,7 @@ test_dsp_misc_env(void) {
     unsetenv("DSD_NEO_DISABLE_FS4_SHIFT");
     unsetenv("DSD_NEO_OUTPUT_CLEAR_ON_RETUNE");
     unsetenv("DSD_NEO_RETUNE_DRAIN_MS");
+    unsetenv("DSD_NEO_RETUNE_MUTE_MS");
     unsetenv("DSD_NEO_WINDOW_FREEZE");
     unsetenv("DSD_NEO_PDU_JSON");
     unsetenv("DSD_NEO_SNR_SQL_DB");
