@@ -334,6 +334,20 @@ int rtl_device_set_testmode(struct rtl_device* dev, int on);
  */
 int rtl_device_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db);
 
+/**
+ * @brief Get a snapshot of TCP connection quality metrics.
+ *
+ * Returns a copy of the latest metrics collected by the TCP reader thread.
+ * Safe to call from a different thread (e.g., UI poll thread).
+ * Returns a zeroed snapshot if the device is NULL or not a TCP backend.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param out Pointer to snapshot struct to fill.
+ * @return 0 on success; -1 if dev is NULL or metrics unavailable.
+ */
+struct tcp_quality_snapshot;
+int rtl_device_get_tcp_quality_snapshot(struct rtl_device* dev, struct tcp_quality_snapshot* out);
+
 #ifdef __cplusplus
 }
 #endif
