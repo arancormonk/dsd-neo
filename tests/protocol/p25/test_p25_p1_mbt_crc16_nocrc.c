@@ -54,7 +54,7 @@ check_crc16_on_header(const uint8_t hdr[12]) {
  */
 static int
 is_mbt_trunking(const uint8_t hdr[12]) {
-    uint8_t io  = (hdr[0] >> 5) & 0x1;
+    uint8_t io = (hdr[0] >> 5) & 0x1;
     uint8_t fmt = hdr[0] & 0x1F;
     uint8_t sap = hdr[1] & 0x3F;
     return (io == 1 && fmt == 0x17 && sap == 0x3D) ? 1 : 0;

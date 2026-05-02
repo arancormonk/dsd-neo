@@ -125,7 +125,6 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     int err[2];  //error value returned from crc16 on header and crc32 on full message
     memset(ec, -2, sizeof(ec));
     memset(err, -2, sizeof(err));
-    int err0_first = -2; // CRC16 result from first header repetition (for early gating only)
 
     uint8_t mpdu_byte[18 * 129];
     memset(mpdu_byte, 0, sizeof(mpdu_byte));
@@ -230,11 +229,6 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             hdr_rep_crc[j] = crc16_lb_bridge(tsbk_decoded_bits, 80);
         }
 
-        // Alias for early header parsing below
-        if (j == 0) {
-            err0_first = hdr_rep_crc[0];
-        }
-
         //load into bit array for storage (easier decoding for future PDUs)
         for (i = 0; i < 96; i++) {
             mpdu_decoded_bits[i + (j * 96)] = (uint8_t)tsbk_decoded_bits[i];
@@ -257,7 +251,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         }
 
         //check header data to see if this is a 12 rate, or 34 rate packet data unit
-        if ((j == 0 && (err0_first == 0 || opts->aggressive_framesync == 0))) {
+        if ((j == 0 && (hdr_rep_crc[0] == 0 || opts->aggressive_framesync == 0))) {
             an = (mpdu_byte[0] >> 6) & 0x1;
             io = (mpdu_byte[0] >> 5) & 0x1;
             fmt = mpdu_byte[0] & 0x1F;
@@ -351,7 +345,6 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     if (err[0] == 0 || opts->aggressive_framesync == 0) {
         // Re-parse header fields from mpdu_byte[] which may have been
         // updated by the best-rep selection above.
-        an = (mpdu_byte[0] >> 6) & 0x1;
         io = (mpdu_byte[0] >> 5) & 0x1;
         fmt = mpdu_byte[0] & 0x1F;
         sap = mpdu_byte[1] & 0x3F;
@@ -360,8 +353,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         p25_decode_pdu_header(opts, state, mpdu_byte);
     }
 
-    if (err[0] != 0)
-    {
+    if (err[0] != 0) {
         fprintf(stderr, "%s", KRED);
         fprintf(stderr, " P25 Data Header CRC Error");
         fprintf(stderr, "%s", KNRM);
@@ -369,12 +361,8 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         for (i = 0; i < 12; i++) {
             fprintf(stderr, "%02X", mpdu_byte[i]);
         }
-        fprintf(stderr, " AN=%d IO=%d FMT=0x%02X SAP=0x%02X BLKS=%d]",
-                (mpdu_byte[0] >> 6) & 0x1,
-                (mpdu_byte[0] >> 5) & 0x1,
-                mpdu_byte[0] & 0x1F,
-                mpdu_byte[1] & 0x3F,
-                mpdu_byte[6] & 0x7F);
+        fprintf(stderr, " AN=%d IO=%d FMT=0x%02X SAP=0x%02X BLKS=%d]", (mpdu_byte[0] >> 6) & 0x1,
+                (mpdu_byte[0] >> 5) & 0x1, mpdu_byte[0] & 0x1F, mpdu_byte[1] & 0x3F, mpdu_byte[6] & 0x7F);
     }
 
     //trunking blocks
