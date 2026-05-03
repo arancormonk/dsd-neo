@@ -571,10 +571,8 @@ initState(dsd_state* state) {
 
     // Initialize P25 neighbor/candidate UI helpers
     state->p25_nb_count = 0;
-    for (int i2 = 0; i2 < 32; i2++) {
-        state->p25_nb_freq[i2] = 0;
-        state->p25_nb_last_seen[i2] = 0;
-    }
+    memset(state->p25_nb_entries, 0, sizeof(state->p25_nb_entries));
+    state->p25_src_nid = 0;
     // Clear P25 call flags
     state->p25_call_emergency[0] = state->p25_call_emergency[1] = 0;
     state->p25_call_priority[0] = state->p25_call_priority[1] = 0;

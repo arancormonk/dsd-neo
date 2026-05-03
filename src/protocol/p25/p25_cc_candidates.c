@@ -16,8 +16,10 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -141,26 +143,33 @@ p25_cc_persist_cache(dsd_opts* opts, dsd_state* state) {
 #define P25_NB_TTL_SEC ((time_t)30 * 60)
 
 void
-p25_nb_add(dsd_state* state, long freq) {
+p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
     if (!state || freq <= 0) {
         return;
     }
-    for (int i = 0; i < state->p25_nb_count && i < 32; i++) {
-        if (state->p25_nb_freq[i] == freq) {
-            state->p25_nb_last_seen[i] = time(NULL);
+    /* Check for existing entry with the same frequency — update metadata in place. */
+    for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
+        if (state->p25_nb_entries[i].freq == freq) {
+            state->p25_nb_entries[i].sysid = sysid;
+            state->p25_nb_entries[i].rfss = rfss;
+            state->p25_nb_entries[i].site = site;
+            state->p25_nb_entries[i].cfva = cfva;
+            state->p25_nb_entries[i].last_seen = time(NULL);
             return;
         }
     }
+    /* New entry — find a slot. */
     int idx = state->p25_nb_count;
     if (idx < 0) {
         idx = 0;
     }
-    if (idx >= 32) {
+    if (idx >= P25_NB_MAX) {
+        /* Table full — evict the oldest entry by last_seen (LRU). */
         int repl = 0;
-        time_t oldest = state->p25_nb_last_seen[0];
-        for (int i = 1; i < 32; i++) {
-            if (state->p25_nb_last_seen[i] < oldest) {
-                oldest = state->p25_nb_last_seen[i];
+        time_t oldest = state->p25_nb_entries[0].last_seen;
+        for (int i = 1; i < P25_NB_MAX; i++) {
+            if (state->p25_nb_entries[i].last_seen < oldest) {
+                oldest = state->p25_nb_entries[i].last_seen;
                 repl = i;
             }
         }
@@ -168,8 +177,17 @@ p25_nb_add(dsd_state* state, long freq) {
     } else {
         state->p25_nb_count = idx + 1;
     }
-    state->p25_nb_freq[idx] = freq;
-    state->p25_nb_last_seen[idx] = time(NULL);
+    state->p25_nb_entries[idx].freq = freq;
+    state->p25_nb_entries[idx].sysid = sysid;
+    state->p25_nb_entries[idx].rfss = rfss;
+    state->p25_nb_entries[idx].site = site;
+    state->p25_nb_entries[idx].cfva = cfva;
+    state->p25_nb_entries[idx].last_seen = time(NULL);
+}
+
+void
+p25_nb_add(dsd_state* state, long freq) {
+    p25_nb_add_ex(state, freq, 0, 0, 0, 0);
 }
 
 void
@@ -179,21 +197,19 @@ p25_nb_tick(dsd_state* state) {
     }
     time_t now = time(NULL);
     int w = 0;
-    for (int i = 0; i < state->p25_nb_count && i < 32; i++) {
-        long f = state->p25_nb_freq[i];
-        time_t last = state->p25_nb_last_seen[i];
+    for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
+        long f = state->p25_nb_entries[i].freq;
+        time_t last = state->p25_nb_entries[i].last_seen;
         int keep = (f != 0) && (last == 0 || (now - last) <= P25_NB_TTL_SEC);
         if (keep) {
             if (w != i) {
-                state->p25_nb_freq[w] = state->p25_nb_freq[i];
-                state->p25_nb_last_seen[w] = state->p25_nb_last_seen[i];
+                state->p25_nb_entries[w] = state->p25_nb_entries[i];
             }
             w++;
         }
     }
-    for (int i = w; i < state->p25_nb_count && i < 32; i++) {
-        state->p25_nb_freq[i] = 0;
-        state->p25_nb_last_seen[i] = 0;
+    for (int i = w; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
+        memset(&state->p25_nb_entries[i], 0, sizeof(state->p25_nb_entries[i]));
     }
     state->p25_nb_count = w;
 }
