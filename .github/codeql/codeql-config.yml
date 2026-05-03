@@ -1,0 +1,5 @@
+name: "DSD-neo CodeQL config"
+
+# Keep vendored upstream libraries out of project-owned CodeQL results.
+paths-ignore:
+  - "src/third_party/**"
