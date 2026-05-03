@@ -21,6 +21,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -40,6 +41,18 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+/**
+ * @brief Check if a CFVA status nibble indicates a healthy neighbor.
+ *
+ * A neighbor is healthy when the failure bit is clear (bit 2) AND the
+ * valid-info bit is set (bit 1). Unhealthy neighbors are still decoded
+ * and printed for diagnostics but should not be fed to the SM.
+ */
+static inline int
+p25_cfva_is_healthy(int cfva) {
+    return !(cfva & 0x4) && (cfva & 0x2);
+}
 
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void
@@ -2638,8 +2651,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 fprintf(stderr, " Valid RFSS Connection Active");
             }
             long int af1 = process_channel_to_freq(opts, state, channelt);
-            long neigh_c[1] = {af1};
-            p25_sm_on_neighbor_update(opts, state, neigh_c, 1);
+            if (p25_cfva_is_healthy(cfva)) {
+                long neigh_c[1] = {af1};
+                p25_sm_on_neighbor_update(opts, state, neigh_c, 1);
+            }
         }
 
         //Adjacent Status Broadcast, extended
@@ -2672,8 +2687,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
             long int af2 = process_channel_to_freq(opts, state, channelt);
             long int af3 = process_channel_to_freq(opts, state, channelr);
-            long neigh_d[2] = {af2, af3};
-            p25_sm_on_neighbor_update(opts, state, neigh_d, 2);
+            if (p25_cfva_is_healthy(cfva)) {
+                long neigh_d[2] = {af2, af3};
+                p25_sm_on_neighbor_update(opts, state, neigh_d, 2);
+            }
         }
 
         // Adjacent Status Broadcast - Extended Explicit (op25 parity: 0xFE)
@@ -2707,8 +2724,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
             long int af4 = process_channel_to_freq(opts, state, channelt);
             long int af5 = process_channel_to_freq(opts, state, channelr);
-            long neigh_e[2] = {af4, af5};
-            p25_sm_on_neighbor_update(opts, state, neigh_e, 2);
+            if (p25_cfva_is_healthy(cfva)) {
+                long neigh_e[2] = {af4, af5};
+                p25_sm_on_neighbor_update(opts, state, neigh_e, 2);
+            }
         }
 
         // Group Affiliation Response (op25 parity: TSBK 0x28 -> MAC 0x68)
@@ -2754,10 +2773,24 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->trunk_lcn_freq[2] = sccf;
                 state->lcn_freq_count = 3;
             }
-            // Notify state machine of neighbor CC
-            if (sccf > 0) {
-                long neigh_scc[2] = {sccf, sccfr};
-                p25_sm_on_neighbor_update(opts, state, neigh_scc, (sccfr > 0) ? 2 : 1);
+            // Site-scope filtering: only add CC candidates if current site is
+            // unknown (both zero) or the message matches the current site.
+            {
+                int site_known = (state->p2_rfssid != 0 || state->p2_siteid != 0);
+                int site_match = (rfssid == (int)state->p2_rfssid && siteid == (int)state->p2_siteid);
+                if (!site_known || site_match) {
+                    if (sccf > 0) {
+                        p25_cc_add_candidate(state, sccf, 1);
+                    }
+                    if (sccfr > 0) {
+                        p25_cc_add_candidate(state, sccfr, 1);
+                    }
+                    // Notify state machine of neighbor CC
+                    if (sccf > 0) {
+                        long neigh_scc[2] = {sccf, sccfr};
+                        p25_sm_on_neighbor_update(opts, state, neigh_scc, (sccfr > 0) ? 2 : 1);
+                    }
+                }
             }
             state->p2_siteid = siteid;
             state->p2_rfssid = rfssid;

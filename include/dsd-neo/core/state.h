@@ -23,6 +23,7 @@
 #include <dsd-neo/fec/rs_12_9.h>
 
 #include <dsd-neo/dsp/p25p1_heuristics.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 
 enum {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
@@ -764,9 +765,12 @@ struct dsd_state {
 
     // P25 neighbors seen via Adjacent Status (best-effort)
     // Track a small set of recently announced neighbor/control candidates for UI purposes.
-    int p25_nb_count;            // number of active neighbor entries
-    long int p25_nb_freq[32];    // neighbor/control frequencies in Hz
-    time_t p25_nb_last_seen[32]; // last seen timestamp per entry
+    // Uses p25_nb_entry_t struct with per-neighbor site metadata (CFVA, SysID, RFSS, Site).
+    int p25_nb_count;                          // number of active neighbor entries
+    p25_nb_entry_t p25_nb_entries[P25_NB_MAX]; // neighbor entries with metadata
+
+    // P25 Source Unit Network ID from LCW 0x49 (Source ID Extension)
+    uint32_t p25_src_nid; // 20-bit Network ID from SUID extension
 
     // P25 current-call flags (per logical slot; FDMA uses slot 0)
     uint8_t p25_call_emergency[2]; // 1 if current call is emergency

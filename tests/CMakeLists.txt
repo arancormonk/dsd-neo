@@ -915,6 +915,22 @@ target_include_directories(dsd-neo_test_p25_p1_mbt_crc16_nocrc PRIVATE ${PROJECT
 target_link_libraries(dsd-neo_test_p25_p1_mbt_crc16_nocrc PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P1_MBT_CRC16_NOCRC COMMAND dsd-neo_test_p25_p1_mbt_crc16_nocrc)
 
+# P25 P1 MBT majority-vote regression test.
+# Demonstrates that majority-voting an MBT header against data block content
+# produces CRC16 failure, while the header alone passes CRC16.
+# Uses only the CRC bridge function — no full processMPDU() dependency.
+add_executable(dsd-neo_test_p25_p1_mbt_majority_vote protocol/p25/test_p25_p1_mbt_majority_vote.c)
+target_include_directories(dsd-neo_test_p25_p1_mbt_majority_vote PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p1_mbt_majority_vote PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_MBT_MAJORITY_VOTE COMMAND dsd-neo_test_p25_p1_mbt_majority_vote)
+
+# P25 P1 MBT CRC16 tests — algorithm consistency, majority-vote correction,
+# MPDU end calculation, and field-data header vector diagnostics.
+add_executable(dsd-neo_test_p25_p1_mbt_crc16 protocol/p25/test_p25_p1_mbt_crc16.c)
+target_include_directories(dsd-neo_test_p25_p1_mbt_crc16 PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p1_mbt_crc16 PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_MBT_CRC16 COMMAND dsd-neo_test_p25_p1_mbt_crc16)
+
 # P25 P1 FEC boundaries: Hamming, Golay, RS correction limits
 add_executable(dsd-neo_test_p25_p1_fec_boundaries protocol/p25/test_p25_p1_fec_boundaries.c)
 target_include_directories(dsd-neo_test_p25_p1_fec_boundaries PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -942,6 +958,13 @@ target_include_directories(dsd-neo_test_p25_p1_nid PRIVATE ${PROJECT_SOURCE_DIR}
 target_link_libraries(dsd-neo_test_p25_p1_nid PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P1_NID COMMAND dsd-neo_test_p25_p1_nid)
 
+# P25 P1 NAC guard — corrupted NID rejection, valid updates, BCH failure paths
+# This test only uses the dsd_state struct from headers — no library calls —
+# so we skip linking dsd-neo_proto_p25 to avoid pulling in PulseAudio/PortAudio.
+add_executable(dsd-neo_test_p25_p1_nac_guard protocol/p25/test_p25_p1_nac_guard.c)
+target_include_directories(dsd-neo_test_p25_p1_nac_guard PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME P25_P1_NAC_GUARD COMMAND dsd-neo_test_p25_p1_nac_guard)
+
 # P25 P1 LCW → SM dispatch (Group Voice Ch Update – Explicit)
 add_executable(dsd-neo_test_p25_p1_lcw_sm protocol/p25/test_p25_p1_lcw_sm.c)
 target_include_directories(dsd-neo_test_p25_p1_lcw_sm PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -965,6 +988,12 @@ add_executable(dsd-neo_test_p25_lcw_call_term protocol/p25/test_p25_lcw_call_ter
 target_include_directories(dsd-neo_test_p25_lcw_call_term PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_lcw_call_term PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_LCW_CALL_TERM COMMAND dsd-neo_test_p25_lcw_call_term)
+
+# P25 LCW source-zero guard — prevent zero source ID overwrite
+add_executable(dsd-neo_test_p25_lcw_src_zero_guard protocol/p25/test_p25_lcw_src_zero_guard.c)
+target_include_directories(dsd-neo_test_p25_lcw_src_zero_guard PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_lcw_src_zero_guard PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_LCW_SRC_ZERO_GUARD COMMAND dsd-neo_test_p25_lcw_src_zero_guard)
 
 # P25 P1 LDU header gating decisions
 add_executable(dsd-neo_test_p25_p1_ldu_gating protocol/p25/test_p25_p1_ldu_gating.c)
@@ -2005,3 +2034,6 @@ if(DSD_HAS_RADIO)
   endif()
   add_test(NAME IO_RTL_REPLAY_EOF_AND_CF32 COMMAND dsd-neo_test_io_rtl_replay_eof_and_cf32)
 endif()
+
+# P25 Trunking Improvements
+# ============================================================================vectors)

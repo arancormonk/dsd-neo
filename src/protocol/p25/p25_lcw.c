@@ -119,8 +119,12 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 if (group != 0) {
                     state->lasttg = group;
                 }
-                // if (source != 0) //disable now with new event history, if same src next ptt, then it will capture all of them as individual event items
-                state->lastsrc = source;
+                // Don't overwrite a known-good source ID with zero —
+                // some LDU1 frames decode with source=0 when the field
+                // isn't present, which would destroy the ID from an earlier frame.
+                if (source != 0) {
+                    state->lastsrc = source;
+                }
                 // Clear alias at start/update of talker for this call (don’t reuse across calls)
                 state->generic_talker_alias[0][0] = '\0';
                 state->generic_talker_alias_src[0] = 0;
@@ -150,8 +154,12 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 if (target != 0) {
                     state->lasttg = target;
                 }
-                // if (source != 0) //disable now with new event history, if same src next ptt, then it will capture all of them as individual event items
-                state->lastsrc = source;
+                // Don't overwrite a known-good source ID with zero —
+                // mirrors the target != 0 guard above and the group != 0
+                // guard in format 0x00.
+                if (source != 0) {
+                    state->lastsrc = source;
+                }
                 // Clear alias at start/update of talker for this call (don’t reuse across calls)
                 state->generic_talker_alias[0][0] = '\0';
                 state->generic_talker_alias_src[0] = 0;
@@ -187,6 +195,9 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                     snprintf(state->active_channel[0], sizeof state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
                              channel1, suf, group1);
                     state->last_active_time = time(NULL);
+                    /* Inform scheduler of active call (not gated by lcw_retune —
+                     * this is for scheduler awareness, not retune decisions). */
+                    p25_sm_on_group_grant(opts, state, channel1, 0 /*svc*/, group1, (int)state->lastsrc);
                 }
 
                 if (channel2 && group2 && group1 != group2) {
@@ -196,6 +207,7 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                     snprintf(state->active_channel[1], sizeof state->active_channel[1], "Active Ch: %04X%s TG: %d; ",
                              channel2, suf, group2);
                     state->last_active_time = time(NULL);
+                    p25_sm_on_group_grant(opts, state, channel2, 0 /*svc*/, group2, (int)state->lastsrc);
                 }
 
             }
@@ -264,8 +276,12 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 fprintf(stderr, " Source ID Extension -");
                 uint32_t nid = (uint32_t)ConvertBitIntoBytes(&LCW_bits[16], 24);
                 uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 24);
-                fprintf(stderr, " Full SUID: %08X-%08d", nid, src);
-
+                fprintf(stderr, " Full SUID: NID %06X SRC %d", nid, src);
+                /* Store Network ID for downstream consumers. */
+                state->p25_src_nid = nid;
+                if (src != 0) {
+                    state->lastsrc = (int)src;
+                }
             }
 
             else if (lc_format == 0x4A) {
@@ -499,7 +515,11 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 fprintf(stderr, " EXT;"); //Full SUID next LC (external) (octet 3)
             }
             state->lasttg = sg;
-            state->lastsrc = src;
+            // Don't overwrite a known-good source ID with zero —
+            // mirrors the if (source != 0) guard in formats 0x00 and 0x03.
+            if (src != 0) {
+                state->lastsrc = src;
+            }
             state->gi[0] = 0;
 
             // Treat observed Super Group on LCW as an active two-way patch.

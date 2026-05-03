@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -589,15 +590,15 @@ ui_print_p25_neighbors(const dsd_opts* opts, const dsd_state* state) {
     // Build index list and sort by last_seen desc (selection sort; small n)
     int idxs[32];
     int n = 0;
-    for (int i = 0; i < state->p25_nb_count && i < 32; i++) {
-        if (state->p25_nb_freq[i] != 0) {
+    for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
+        if (state->p25_nb_entries[i].freq != 0) {
             idxs[n++] = i;
         }
     }
     for (int i = 0; i < n; i++) {
         int best = i;
         for (int j = i + 1; j < n; j++) {
-            if (state->p25_nb_last_seen[idxs[j]] > state->p25_nb_last_seen[idxs[best]]) {
+            if (state->p25_nb_entries[idxs[j]].last_seen > state->p25_nb_entries[idxs[best]].last_seen) {
                 best = j;
             }
         }
@@ -617,8 +618,8 @@ ui_print_p25_neighbors(const dsd_opts* opts, const dsd_state* state) {
     time_t now = time(NULL);
     for (int i = 0; i < n && shown < 20; i++) {
         int k = idxs[i];
-        long f = state->p25_nb_freq[k];
-        long age = (long)((state->p25_nb_last_seen[k] != 0) ? (now - state->p25_nb_last_seen[k]) : 0);
+        long f = state->p25_nb_entries[k].freq;
+        long age = (long)((state->p25_nb_entries[k].last_seen != 0) ? (now - state->p25_nb_entries[k].last_seen) : 0);
         if (age < 0) {
             age = 0;
         }

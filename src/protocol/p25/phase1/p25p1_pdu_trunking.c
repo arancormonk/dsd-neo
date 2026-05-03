@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -27,6 +28,17 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+/**
+ * @brief Check if a CFVA status nibble indicates a healthy neighbor.
+ *
+ * A neighbor is healthy when the failure bit is clear (bit 2) AND the
+ * valid-info bit is set (bit 1).
+ */
+static inline int
+p25_cfva_is_healthy(int cfva) {
+    return !(cfva & 0x4) && (cfva & 0x2);
+}
 
 //trunking data delivered via PDU format
 void
@@ -201,9 +213,70 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         }
         long int f3 = process_channel_to_freq(opts, state, channelt);
         long int f4 = process_channel_to_freq(opts, state, channelr);
-        long neigh3[2] = {f3, f4};
-        p25_sm_on_neighbor_update(opts, state, neigh3, 2);
+        if (p25_cfva_is_healthy(cfva)) {
+            long neigh3[2] = {f3, f4};
+            p25_sm_on_neighbor_update(opts, state, neigh3, 2);
+        }
 
+    }
+
+    //RFSS Status Broadcast - Abbreviated (0x3E) — TIA-102.AABB-D §7.2.35
+    //Carries site identity (SysID, RFSS, Site) and CC channel without WACN.
+    //Byte layout verified against sdrtrunk AMBTCRFSSStatusBroadcast.java.
+    else if (opcode == 0x3E) {
+        int lra = mpdu_byte[3];
+        int lsysid = ((mpdu_byte[4] & 0xF) << 8) | mpdu_byte[5];
+        int rfssid = mpdu_byte[12];
+        int siteid = mpdu_byte[13];
+        int channelt = (mpdu_byte[14] << 8) | mpdu_byte[15];
+        int channelr = (mpdu_byte[16] << 8) | mpdu_byte[17];
+        fprintf(stderr, "%s", KYEL);
+        fprintf(stderr, "\n RFSS Status Broadcast MBT - Abbreviated \n");
+        fprintf(stderr, "  LRA [%02X] SYSID [%03X] RFSS ID [%03d] SITE ID [%03d]\n  CHAN-T [%04X] CHAN-R [%04X]", lra,
+                lsysid, rfssid, siteid, channelt, channelr);
+        long int f1 = process_channel_to_freq(opts, state, channelt);
+
+        if (f1 > 0) {
+            p25_cc_add_candidate(state, f1, 1);
+        }
+
+        state->p2_siteid = siteid;
+        state->p2_rfssid = rfssid;
+        if (lsysid != 0) {
+            state->p2_sysid = lsysid;
+        }
+        p25_confirm_idens_for_current_site(state);
+    }
+
+    //TDMA Identifier Update (0x33) — Direct decode from AMBTC byte layout.
+    //The MBT form of 0x33 uses a different payload layout than MAC 0x73, so
+    //the MBT-to-MAC bridge is explicitly skipped for this opcode.
+    //Byte offsets verified against sdrtrunk AMBTCFrequencyBandUpdateTDMA.java.
+    else if (opcode == 0x33) {
+        int iden = (mpdu_byte[3] >> 4) & 0x0F;
+        int chan_type = mpdu_byte[3] & 0x0F;
+        long int base_freq = ((long)mpdu_byte[12] << 24) | ((long)mpdu_byte[13] << 16) | ((long)mpdu_byte[14] << 8)
+                             | (long)mpdu_byte[15];
+        int tx_off_sign = (mpdu_byte[16] >> 7) & 1;
+        int tx_off_raw = ((mpdu_byte[16] & 0x7F) << 6) | (mpdu_byte[17] >> 2);
+        int chan_spac = ((mpdu_byte[17] & 0x3) << 8) | mpdu_byte[18];
+        int trans_off = tx_off_sign ? -(tx_off_raw) : tx_off_raw;
+
+        fprintf(stderr, "%s", KYEL);
+        fprintf(stderr, "\n TDMA Identifier Update MBT - Direct Decode\n");
+        fprintf(stderr, "  IDEN [%X] Type [%X] Base Freq [%ld] (%ld Hz) TX Offset [%d] Spacing [%d]", iden, chan_type,
+                base_freq, base_freq * 5, trans_off, chan_spac);
+
+        if (iden >= 16) {
+            fprintf(stderr, " [WARN: IDEN %d out of range, skipping]", iden);
+        } else {
+            state->p25_chan_iden = iden;
+            state->p25_chan_type[iden] = chan_type;
+            state->p25_trans_off[iden] = trans_off;
+            state->p25_chan_spac[iden] = chan_spac;
+            state->p25_base_freq[iden] = base_freq;
+            state->p25_chan_tdma[iden] = 1; // TDMA identifier
+        }
     }
 
     //Group Voice Channel Grant - Extended
