@@ -1749,7 +1749,7 @@ SS18_END:
 void
 soft_tonef(float samp[160], int n, int ID, int AD) {
     int i;
-    float step1, step2, amplitude, freq1, freq2;
+    double step1, step2, amplitude, freq1, freq2;
 
     float gain = 1.0f;
 
@@ -1758,14 +1758,14 @@ soft_tonef(float samp[160], int n, int ID, int AD) {
     //   gain = state->aout_gain / 25.0f;
 
     // Synthesize tones
-    freq1 = 31.25 * ID;
+    freq1 = 31.25 * (double)ID;
     freq2 = freq1;
-    step1 = 2 * M_PI * freq1 / 8000.0f;
-    step2 = 2 * M_PI * freq2 / 8000.0f;
-    amplitude = AD * 75.0f;
+    step1 = 2.0 * M_PI * freq1 / 8000.0;
+    step2 = 2.0 * M_PI * freq2 / 8000.0;
+    amplitude = (double)AD * 75.0;
 
     for (i = 0; i < 160; i++) {
-        samp[i] = (float)(amplitude * (sin((n)*step1) / 2 + sin((n)*step2) / 2));
+        samp[i] = (float)(amplitude * (sin((double)n * step1) * 0.5 + sin((double)n * step2) * 0.5));
         samp[i] /= 8000.0f;
         samp[i] *= gain;
         n++;
