@@ -107,8 +107,13 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     check_result = check_NID(bch_code, &new_nac, new_duid, parity);
     if (check_result == 1) {
         if (new_nac != state->nac) {
-            // NAC fixed by error correction
-            state->nac = new_nac;
+            // Guard against BCH artifacts: 0x0 and 0xFFF are known-invalid NAC
+            // values produced during signal drops or HDU FEC errors. Don't
+            // overwrite a known-good NAC with these transient values — the next
+            // valid frame (typically LDU2) will carry the correct NAC.
+            if (new_nac != 0 && new_nac != 0xFFF) {
+                state->nac = new_nac;
+            }
             //apparently, both 0 and 0xFFF can the BCH code on signal drop
             if (state->p2_hardset == 0 && new_nac != 0 && new_nac != 0xFFF) {
                 state->p2_cc = new_nac;

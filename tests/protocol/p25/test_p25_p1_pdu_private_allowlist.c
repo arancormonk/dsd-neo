@@ -17,6 +17,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/protocol/p25/p25_cc_candidates.h"
 
 struct RtlSdrContext;
 
@@ -81,6 +82,14 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
 void
 p25_confirm_idens_for_current_site(dsd_state* state) {
     (void)state;
+}
+
+int
+p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {
+    (void)state;
+    (void)freq_hz;
+    (void)bump_added;
+    return 0;
 }
 
 void
