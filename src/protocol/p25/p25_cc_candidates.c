@@ -147,13 +147,19 @@ p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t
     if (!state || freq <= 0) {
         return;
     }
+    if (freq == state->p25_cc_freq) {
+        return; /* Reject current CC as neighbor. */
+    }
+
     /* Check for existing entry with the same frequency — update metadata in place. */
     for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
         if (state->p25_nb_entries[i].freq == freq) {
-            state->p25_nb_entries[i].sysid = sysid;
-            state->p25_nb_entries[i].rfss = rfss;
-            state->p25_nb_entries[i].site = site;
-            state->p25_nb_entries[i].cfva = cfva;
+            if (sysid != 0 || rfss != 0 || site != 0 || cfva != 0) {
+                state->p25_nb_entries[i].sysid = sysid;
+                state->p25_nb_entries[i].rfss = rfss;
+                state->p25_nb_entries[i].site = site;
+                state->p25_nb_entries[i].cfva = cfva;
+            }
             state->p25_nb_entries[i].last_seen = time(NULL);
             return;
         }

@@ -93,6 +93,16 @@ p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {
 }
 
 void
+p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
+    (void)state;
+    (void)freq;
+    (void)sysid;
+    (void)rfss;
+    (void)site;
+    (void)cfva;
+}
+
+void
 p25_reset_iden_tables(dsd_state* state) {
     (void)state;
 }

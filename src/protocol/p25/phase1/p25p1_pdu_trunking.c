@@ -221,7 +221,12 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         long int f4 = process_channel_to_freq(opts, state, channelr);
         if (p25_cfva_is_healthy(cfva)) {
             long neigh3[2] = {f3, f4};
-            p25_sm_on_neighbor_update(opts, state, neigh3, 2);
+            for (int i = 0; i < 2; i++) {
+                if (neigh3[i] > 0) {
+                    p25_nb_add_ex(state, neigh3[i], (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
+                    p25_cc_add_candidate(state, neigh3[i], 1);
+                }
+            }
         }
 
     }

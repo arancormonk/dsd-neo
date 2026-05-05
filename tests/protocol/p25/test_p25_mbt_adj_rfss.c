@@ -9,6 +9,7 @@
  * using pre-seeded IDEN tables.
  */
 
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -21,6 +22,11 @@
 // Shim: decode an MBT with pre-seeded iden tables
 int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
                                   int spac, long* out_cc, long* out_wacn, int* out_sysid);
+
+// Extended shim: also returns neighbor table entries after decode
+int p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
+                                     int spac, long* out_cc, long* out_wacn, int* out_sysid, int* out_nb_count,
+                                     long* out_nb_freqs);
 
 static void
 sm_noop_init(dsd_opts* opts, dsd_state* state) {
@@ -225,6 +231,8 @@ main(void) {
     }
 
     // Case B: Adjacent Status Broadcast (0x3C)
+    // After Layer 2 enrichment, 0x3C calls p25_nb_add_ex() + p25_cc_add_candidate()
+    // directly instead of p25_sm_on_neighbor_update(). Verify via neighbor table.
     {
         uint8_t mbt[48];
         memset(mbt, 0, sizeof(mbt));
@@ -244,23 +252,25 @@ main(void) {
         mbt[16] = 0x00; // SSC
         // WACN fields at [17..19] ignored here
 
-        g_neigh_count = 0;
-        g_neigh[0] = g_neigh[1] = 0;
         long cc = 0, w = 0;
         int sid = 0;
+        int nb_count = 0;
+        long nb_freqs[P25_NB_MAX];
+        memset(nb_freqs, 0, sizeof(nb_freqs));
         (void)cc;
         (void)w;
         (void)sid;
-        int sh = p25_test_decode_mbt_with_iden(mbt, (int)sizeof(mbt), iden, type, tdma, base5, spac125, &cc, &w, &sid);
+        int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), iden, type, tdma, base5, spac125, &cc, &w,
+                                                  &sid, &nb_count, nb_freqs);
         if (sh != 0) {
             return 30;
         }
 
         long want1 = 851000000 + 10 * 100 * 125; // 851.1250 MHz
         long want2 = 851000000 + 5 * 100 * 125;  // 851.0625 MHz
-        rc |= expect_eq_long("adj count", g_neigh_count, 2);
-        rc |= expect_eq_long("adj f1", g_neigh[0], want1);
-        rc |= expect_eq_long("adj f2", g_neigh[1], want2);
+        rc |= expect_eq_long("adj nb_count", (long)nb_count, 2L);
+        rc |= expect_eq_long("adj nb f1", nb_freqs[0], want1);
+        rc |= expect_eq_long("adj nb f2", nb_freqs[1], want2);
     }
 
     return rc;

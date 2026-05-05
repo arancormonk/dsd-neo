@@ -1320,6 +1320,12 @@ target_include_directories(dsd-neo_test_p25_neighbor_spam PRIVATE ${PROJECT_SOUR
 target_link_libraries(dsd-neo_test_p25_neighbor_spam PRIVATE dsd-neo_proto_p25 dsd-neo_test_support)
 add_test(NAME P25_NEIGHBOR_SPAM COMMAND dsd-neo_test_p25_neighbor_spam)
 
+# P25 neighbor table (metadata preservation, self-entry guard, LRU eviction)
+add_executable(dsd-neo_test_p25_neighbor_table protocol/p25/test_p25_neighbor_table.c)
+target_include_directories(dsd-neo_test_p25_neighbor_table PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_neighbor_table PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_NEIGHBOR_TABLE COMMAND dsd-neo_test_p25_neighbor_table)
+
 # P25 Unified SM tests
 add_executable(dsd-neo_test_p25_sm_unified_core protocol/p25/test_p25_sm_unified_core.c)
 target_include_directories(dsd-neo_test_p25_sm_unified_core PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)

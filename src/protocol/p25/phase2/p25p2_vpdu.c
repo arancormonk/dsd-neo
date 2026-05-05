@@ -2652,8 +2652,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
             long int af1 = process_channel_to_freq(opts, state, channelt);
             if (p25_cfva_is_healthy(cfva)) {
-                long neigh_c[1] = {af1};
-                p25_sm_on_neighbor_update(opts, state, neigh_c, 1);
+                if (af1 > 0) {
+                    p25_nb_add_ex(state, af1, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
+                    p25_cc_add_candidate(state, af1, 1);
+                }
             }
         }
 
@@ -2689,7 +2691,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             long int af3 = process_channel_to_freq(opts, state, channelr);
             if (p25_cfva_is_healthy(cfva)) {
                 long neigh_d[2] = {af2, af3};
-                p25_sm_on_neighbor_update(opts, state, neigh_d, 2);
+                for (int i = 0; i < 2; i++) {
+                    if (neigh_d[i] > 0) {
+                        p25_nb_add_ex(state, neigh_d[i], (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid,
+                                      (uint8_t)cfva);
+                        p25_cc_add_candidate(state, neigh_d[i], 1);
+                    }
+                }
             }
         }
 
@@ -2726,7 +2734,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             long int af5 = process_channel_to_freq(opts, state, channelr);
             if (p25_cfva_is_healthy(cfva)) {
                 long neigh_e[2] = {af4, af5};
-                p25_sm_on_neighbor_update(opts, state, neigh_e, 2);
+                for (int i = 0; i < 2; i++) {
+                    if (neigh_e[i] > 0) {
+                        p25_nb_add_ex(state, neigh_e[i], (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid,
+                                      (uint8_t)cfva);
+                        p25_cc_add_candidate(state, neigh_e[i], 1);
+                    }
+                }
             }
         }
 
