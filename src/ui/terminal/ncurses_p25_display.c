@@ -63,7 +63,7 @@ ui_is_iden_channel(const dsd_state* state, int ch16, long int freq) {
             denom = 2; // conservative fallback
         }
         int step = raw / denom;
-        long int calc = (fdma->base_freq * 5) + (step * fdma->chan_spac * 125);
+        long int calc = (fdma->base_freq * 5) + ((long)step * fdma->chan_spac * 125);
         if (calc == freq) {
             return 1;
         }
@@ -81,7 +81,7 @@ ui_is_iden_channel(const dsd_state* state, int ch16, long int freq) {
             }
         }
         int step = raw / denom;
-        long int calc = (tdma->base_freq * 5) + (step * tdma->chan_spac * 125);
+        long int calc = (tdma->base_freq * 5) + ((long)step * tdma->chan_spac * 125);
         if (calc == freq) {
             return 1;
         }
