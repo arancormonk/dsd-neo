@@ -83,10 +83,12 @@ main(void) {
     opts.p25_trunk = 1;
     opts.trunk_tune_group_calls = 1;
     st.p25_cc_freq = 851000000;
-    st.p25_chan_type[iden] = 1;
-    st.p25_chan_tdma[iden] = 0;
-    st.p25_base_freq[iden] = 851000000 / 5;
-    st.p25_chan_spac[iden] = 100;
+    // Populate new dual-array
+    st.p25_iden_fdma[iden].base_freq = 851000000 / 5;
+    st.p25_iden_fdma[iden].chan_type = 1;
+    st.p25_iden_fdma[iden].chan_spac = 100;
+    st.p25_iden_fdma[iden].populated = 1;
+    st.p25_chan_tdma_explicit[iden] = 1;
 
     // Case: trust<2 but on CC and provenance unset → allowed
     memset(&opts, 0, sizeof opts);
@@ -94,13 +96,13 @@ main(void) {
     opts.p25_trunk = 1;
     opts.trunk_tune_group_calls = 1;
     st.p25_cc_freq = 851000000;
-    st.p25_chan_type[iden] = 1;
-    st.p25_chan_tdma[iden] = 0;
-    st.p25_base_freq[iden] = 851000000 / 5;
-    st.p25_chan_spac[iden] = 100;
-    st.p25_iden_trust[iden] = 1; // untrusted
-    st.p25_iden_wacn[iden] = 0;  // provenance unset
-    st.p25_iden_sysid[iden] = 0; // provenance unset
+    // Populate new dual-array
+    st.p25_iden_fdma[iden].base_freq = 851000000 / 5;
+    st.p25_iden_fdma[iden].chan_type = 1;
+    st.p25_iden_fdma[iden].chan_spac = 100;
+    st.p25_iden_fdma[iden].trust = 1;
+    st.p25_iden_fdma[iden].populated = 1;
+    st.p25_chan_tdma_explicit[iden] = 1;
     int before = st.p25_sm_tune_count;
     p25_sm_on_group_grant(&opts, &st, channel, 0, /*tg*/ 1234, /*src*/ 5678);
     rc |= expect_true("tune allowed provisional", st.p25_sm_tune_count == before + 1);

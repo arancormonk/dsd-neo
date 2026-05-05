@@ -73,11 +73,13 @@ main(void) {
     // TDMA IDEN: id=2, type=3 => denom=2
     int id_t = 2;
     st.p25_chan_iden = id_t;
-    st.p25_chan_type[id_t] = 3;
-    st.p25_chan_tdma[id_t] = 1;
-    st.p25_base_freq[id_t] = 851000000 / 5;
-    st.p25_chan_spac[id_t] = 100;
-    st.p25_iden_trust[id_t] = 2;
+    // Populate new dual-array
+    st.p25_iden_tdma[id_t].base_freq = 851000000 / 5;
+    st.p25_iden_tdma[id_t].chan_type = 3;
+    st.p25_iden_tdma[id_t].chan_spac = 100;
+    st.p25_iden_tdma[id_t].trust = 2;
+    st.p25_iden_tdma[id_t].populated = 1;
+    st.p25_chan_tdma_explicit[id_t] = 2; // TDMA known
 
     // Odd channel low bit -> slot 1
     int ch_tdma = (id_t << 12) | 0x0001;
@@ -91,11 +93,13 @@ main(void) {
     // FDMA IDEN: id=1, type=1 => denom=1
     int id_f = 1;
     st.p25_chan_iden = id_f;
-    st.p25_chan_type[id_f] = 1;
-    st.p25_chan_tdma[id_f] = 0;
-    st.p25_base_freq[id_f] = 851000000 / 5;
-    st.p25_chan_spac[id_f] = 100;
-    st.p25_iden_trust[id_f] = 2;
+    // Populate new dual-array
+    st.p25_iden_fdma[id_f].base_freq = 851000000 / 5;
+    st.p25_iden_fdma[id_f].chan_type = 1;
+    st.p25_iden_fdma[id_f].chan_spac = 100;
+    st.p25_iden_fdma[id_f].trust = 2;
+    st.p25_iden_fdma[id_f].populated = 1;
+    st.p25_chan_tdma_explicit[id_f] = 1; // FDMA known
     int ch_fdma = (id_f << 12) | 0x000A;
     p25_sm_on_group_grant(&opts, &st, ch_fdma, 0, 555, 666);
     rc |= expect_eq_int("fdma sps", st.samplesPerSymbol, 10);

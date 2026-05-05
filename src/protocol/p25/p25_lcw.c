@@ -424,18 +424,27 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
                 fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
                 if (iden < 16 && base != 0) {
-                    uint32_t old = state->p25_base_freq[iden];
-                    if (old != base) {
-                        state->p25_base_freq[iden] = base; // store in 5 kHz units
-                        fprintf(stderr, " (updated)");
+                    // LCW partial write guard: LCW only carries base_freq (no chan_spac/chan_type).
+                    // If the slot is already fully populated by a TSBK, update base_freq in place.
+                    // If not yet populated, store base_freq provisionally but do NOT mark populated,
+                    // since we lack chan_spac/chan_type needed for frequency resolution.
+                    p25_iden_entry_t* ef = &state->p25_iden_fdma[iden];
+                    if (ef->populated && ef->chan_spac != 0) {
+                        // Slot fully populated by TSBK — safe to update base_freq
+                        if ((uint32_t)ef->base_freq != base) {
+                            ef->base_freq = (long int)base;
+                            fprintf(stderr, " (updated)");
+                        }
+                        ef->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+                    } else {
+                        // Slot not yet populated — store provisionally, do NOT set populated=1
+                        ef->base_freq = (long int)base;
                     }
-                    // Record provenance for LCW-learned IDENs so trunk SM can enforce site confirmation.
-                    // Trust as confirmed only when on current CC; otherwise mark unconfirmed.
-                    state->p25_iden_wacn[iden] = state->p2_wacn;
-                    state->p25_iden_sysid[iden] = state->p2_sysid;
-                    state->p25_iden_rfss[iden] = state->p2_rfssid;
-                    state->p25_iden_site[iden] = state->p2_siteid;
-                    state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+                    // Update provenance fields regardless of populated state
+                    ef->wacn = state->p2_wacn;
+                    ef->sysid = state->p2_sysid;
+                    ef->rfss = state->p2_rfssid;
+                    ef->site = state->p2_siteid;
                 }
             }
 
@@ -445,17 +454,26 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
                 fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
                 if (iden < 16 && base != 0) {
-                    uint32_t old = state->p25_base_freq[iden];
-                    if (old != base) {
-                        state->p25_base_freq[iden] = base; // store in 5 kHz units
-                        fprintf(stderr, " (updated)");
+                    // LCW partial write guard: same logic as format 0x58.
+                    // Only fully update base_freq on already-populated entries;
+                    // store provisionally otherwise without marking populated.
+                    p25_iden_entry_t* ef = &state->p25_iden_fdma[iden];
+                    if (ef->populated && ef->chan_spac != 0) {
+                        // Slot fully populated by TSBK — safe to update base_freq
+                        if ((uint32_t)ef->base_freq != base) {
+                            ef->base_freq = (long int)base;
+                            fprintf(stderr, " (updated)");
+                        }
+                        ef->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+                    } else {
+                        // Slot not yet populated — store provisionally, do NOT set populated=1
+                        ef->base_freq = (long int)base;
                     }
-                    // Record provenance for LCW-learned IDENs so trunk SM can enforce site confirmation.
-                    state->p25_iden_wacn[iden] = state->p2_wacn;
-                    state->p25_iden_sysid[iden] = state->p2_sysid;
-                    state->p25_iden_rfss[iden] = state->p2_rfssid;
-                    state->p25_iden_site[iden] = state->p2_siteid;
-                    state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+                    // Update provenance fields regardless of populated state
+                    ef->wacn = state->p2_wacn;
+                    ef->sysid = state->p2_sysid;
+                    ef->rfss = state->p2_rfssid;
+                    ef->site = state->p2_siteid;
                 }
             }
 

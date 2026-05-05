@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -63,15 +64,31 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
         fprintf(stderr, "\n  P25 FREQ: invalid iden %d", iden);
         return 0;
     }
-    int type = state->p25_chan_type[iden] & 0xF;
+
     // OP25-derived slots-per-carrier by channel type
     static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-    // Derive division only when TDMA iden is known. Explicit IDEN hints take
-    // precedence over the system-level TDMA fallback so mixed P1/P2 systems do
-    // not halve explicitly FDMA channel numbers.
-    int denom = 1;
+
+    // Determine whether this channel should use TDMA parameters.
+    // Explicit IDEN hints (bitmask) take precedence over the system-level TDMA
+    // fallback so mixed P1/P2 systems do not halve explicitly FDMA channel numbers.
     int explicit_hint = state->p25_chan_tdma_explicit[iden];
-    int use_tdma_denom = (explicit_hint == 2 || (explicit_hint == 0 && (state->p25_chan_tdma[iden] & 0x1) != 0));
+    int use_tdma_denom = (explicit_hint & 0x02) != 0; // bit1 = has TDMA entry
+
+    // Select the correct IDEN entry based on modulation context.
+    // use_tdma_denom determines whether this grant expects TDMA or FDMA parameters.
+    p25_iden_entry_t* entry = use_tdma_denom ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
+
+    // Fallback: if preferred array entry not populated, try the other array.
+    // This handles the case where only one modulation class has been learned so far.
+    if (!entry->populated) {
+        entry = use_tdma_denom ? &state->p25_iden_fdma[iden] : &state->p25_iden_tdma[iden];
+    }
+
+    // Read channel type from the selected entry
+    int type = entry->chan_type & 0xF;
+
+    // Compute the denominator (slots-per-carrier) for TDMA channels
+    int denom = 1;
     if (use_tdma_denom) {
         if (type < 0 || type > 15) {
             fprintf(stderr, "\n  P25 FREQ: unknown iden type %d (iden %d)", type, iden);
@@ -97,22 +114,22 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
     }
     int step = (chan16 & 0xFFF) / denom;
 
-    //first, check channel map
+    // Fast path: check channel map for previously-resolved frequency (unchanged)
     if (state->trunk_chan_map[chan16] != 0) {
         freq = state->trunk_chan_map[chan16];
         fprintf(stderr, "\n  P25 FREQ: map ch=0x%04X -> %.6lf MHz", chan16, (double)freq / 1000000.0);
         return freq;
     }
 
-    //if not found, attempt to find it via calculation
+    // Calculate frequency from the selected IDEN entry
     else {
-        long base = state->p25_base_freq[iden];
-        long spac = state->p25_chan_spac[iden];
-        if (base == 0 || spac == 0) {
-            fprintf(stderr, "\n  P25 FREQ: missing iden %d params (base=%ld, spac=%ld); refusing tune", iden, base,
-                    spac);
+        if (!entry->populated || entry->base_freq == 0 || entry->chan_spac == 0) {
+            fprintf(stderr, "\n  P25 FREQ: missing iden %d params (populated=%d, base=%ld, spac=%d); refusing tune",
+                    iden, entry->populated, entry->base_freq, entry->chan_spac);
             return 0;
         }
+        long base = entry->base_freq;
+        long spac = entry->chan_spac;
         freq = (base * 5) + (step * spac * 125);
         fprintf(stderr, "\n  P25 FREQ: iden=%d type=%d ch=0x%04X -> %.6lf MHz", iden, type, chan16,
                 (double)freq / 1000000.0);
@@ -148,12 +165,25 @@ p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, cha
     int iden = (chan >> 12) & 0xF;
     int raw = chan & 0xFFF;
 
-    // Mirror denom logic from process_channel_to_freq
-    int type = state->p25_chan_type[iden] & 0xF;
+    // Mirror array selection logic from process_channel_to_freq:
+    // Determine whether this channel should use TDMA parameters.
+    // Explicit IDEN hints (bitmask) take precedence over the system-level TDMA
+    // fallback so mixed P1/P2 systems do not halve explicitly FDMA channel numbers.
+    int explicit_hint = state->p25_chan_tdma_explicit[iden];
+    int use_tdma_denom = (explicit_hint & 0x02) != 0; // bit1 = has TDMA entry
+
+    // Select the correct IDEN entry based on modulation context.
+    const p25_iden_entry_t* entry = use_tdma_denom ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
+
+    // Fallback: if preferred array entry not populated, try the other array.
+    if (!entry->populated) {
+        entry = use_tdma_denom ? &state->p25_iden_fdma[iden] : &state->p25_iden_tdma[iden];
+    }
+
+    // Read chan_type from the selected entry instead of the old flat array
+    int type = entry->chan_type & 0xF;
     static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
     int denom = 1;
-    int explicit_hint = state->p25_chan_tdma_explicit[iden];
-    int use_tdma_denom = (explicit_hint == 2 || (explicit_hint == 0 && (state->p25_chan_tdma[iden] & 0x1) != 0));
     if (use_tdma_denom) {
         if (type >= 0 && type <= 15) {
             denom = slots_per_carrier[type];
@@ -186,18 +216,12 @@ p25_reset_iden_tables(dsd_state* state) {
         return;
     }
     for (int i = 0; i < 16; i++) {
-        state->p25_chan_tdma[i] = 0;
         state->p25_chan_tdma_explicit[i] = 0;
-        state->p25_chan_type[i] = 0;
-        state->p25_chan_spac[i] = 0;
-        state->p25_base_freq[i] = 0;
-        state->p25_trans_off[i] = 0;
-        state->p25_iden_wacn[i] = 0;
-        state->p25_iden_sysid[i] = 0;
-        state->p25_iden_rfss[i] = 0;
-        state->p25_iden_site[i] = 0;
-        state->p25_iden_trust[i] = 0; // unknown
     }
+
+    // Reset the dual-array IDEN storage
+    memset(state->p25_iden_fdma, 0, sizeof(state->p25_iden_fdma));
+    memset(state->p25_iden_tdma, 0, sizeof(state->p25_iden_tdma));
 }
 
 // Promote any IDENs whose provenance matches the current site to trusted
@@ -208,24 +232,28 @@ p25_confirm_idens_for_current_site(dsd_state* state) {
     }
     unsigned long long cur_wacn = state->p2_wacn;
     unsigned long long cur_sys = state->p2_sysid;
-    unsigned long long cur_rfss = state->p2_rfssid;
-    unsigned long long cur_site = state->p2_siteid;
     if (cur_wacn == 0 && cur_sys == 0) {
         return;
     }
+
+    // Promote trust in dual-array entries
     for (int i = 0; i < 16; i++) {
-        if (state->p25_iden_trust[i] == 2) {
-            continue; // already trusted
-        }
-        if (state->p25_iden_wacn[i] == 0 && state->p25_iden_sysid[i] == 0) {
-            continue;
-        }
-        if (state->p25_iden_wacn[i] == cur_wacn && state->p25_iden_sysid[i] == cur_sys) {
-            // If rfss/site are recorded, require match; else allow
-            int rf_ok = (state->p25_iden_rfss[i] == 0 || state->p25_iden_rfss[i] == cur_rfss);
-            int st_ok = (state->p25_iden_site[i] == 0 || state->p25_iden_site[i] == cur_site);
+        // Check FDMA entries
+        p25_iden_entry_t* ef = &state->p25_iden_fdma[i];
+        if (ef->populated && ef->trust < 2 && ef->wacn == cur_wacn && ef->sysid == cur_sys) {
+            int rf_ok = (ef->rfss == 0 || ef->rfss == state->p2_rfssid);
+            int st_ok = (ef->site == 0 || ef->site == state->p2_siteid);
             if (rf_ok && st_ok) {
-                state->p25_iden_trust[i] = 2; // confirmed
+                ef->trust = 2;
+            }
+        }
+        // Check TDMA entries
+        p25_iden_entry_t* et = &state->p25_iden_tdma[i];
+        if (et->populated && et->trust < 2 && et->wacn == cur_wacn && et->sysid == cur_sys) {
+            int rf_ok = (et->rfss == 0 || et->rfss == state->p2_rfssid);
+            int st_ok = (et->site == 0 || et->site == state->p2_siteid);
+            if (rf_ok && st_ok) {
+                et->trust = 2;
             }
         }
     }

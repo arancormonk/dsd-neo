@@ -101,7 +101,11 @@ p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, const dsd_state* state, doub
     }
 }
 
-// Determine if channel is TDMA based on IDEN hints
+// Determine if channel is TDMA based on IDEN hints.
+// Uses bitmask semantics for p25_chan_tdma_explicit[iden]:
+//   bit0 (0x01) = has FDMA entry (written by opcodes 0x74, 0x7D)
+//   bit1 (0x02) = has TDMA entry (written by opcodes 0x73, 0xF3)
+// Values: 0=unknown, 1=FDMA only, 2=TDMA only, 3=both (treated as TDMA)
 static inline int
 is_tdma_channel(const dsd_state* state, int channel) {
     if (!state) {
@@ -109,24 +113,26 @@ is_tdma_channel(const dsd_state* state, int channel) {
     }
     int iden = (channel >> 12) & 0xF;
     if (iden >= 0 && iden < 16) {
-        int explicit_hint = (iden >= 0 && iden < 16) ? state->p25_chan_tdma_explicit[iden] : 0;
-        // Honor explicit IDEN hints first: 2 = TDMA, 1 = FDMA.
-        if (explicit_hint == 2) {
+        int explicit_hint = state->p25_chan_tdma_explicit[iden];
+
+        // If bit1 is set (TDMA entry exists), this is a TDMA channel.
+        // This covers explicit_hint == 2 (TDMA only) and == 3 (both FDMA and TDMA).
+        if (explicit_hint & 0x02) {
             return 1;
         }
-        if (explicit_hint == 1) {
+        // If only bit0 is set (FDMA entry exists, no TDMA entry), this is FDMA.
+        if (explicit_hint & 0x01) {
             return 0;
         }
 
-        int is_tdma = (state->p25_chan_tdma[iden] & 0x1) ? 1 : 0;
-        // Fall back to system-level TDMA knowledge when the IDEN does not carry
-        // an explicit TDMA/FDMA declaration. This covers systems with P25p1
+        // Neither bit set (explicit_hint == 0): no explicit IDEN info available.
+        // Fall back to system-level TDMA knowledge. This covers systems with P25p1
         // CQPSK control channels that have not sent IDEN_UP_TDMA yet, preventing
         // Phase 2 grants from being treated as FDMA and avoiding SPS mismatch on VC hops.
-        if (!is_tdma && state->p25_sys_is_tdma == 1) {
-            is_tdma = 1;
+        if (state->p25_sys_is_tdma == 1) {
+            return 1;
         }
-        return is_tdma;
+        return 0;
     }
     return 0;
 }

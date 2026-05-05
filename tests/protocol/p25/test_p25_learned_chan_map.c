@@ -70,18 +70,20 @@ main(void) {
 
     int iden = 1;
     int chan = (iden << 12) | 0x000A; // 0x100A
-    st.p25_chan_type[iden] = 1;
-    st.p25_chan_tdma[iden] = 0;
-    st.p25_base_freq[iden] = 851000000 / 5;
-    st.p25_chan_spac[iden] = 100;
+    // Populate new dual-array (process_channel_to_freq reads from these)
+    st.p25_iden_fdma[iden].base_freq = 851000000 / 5;
+    st.p25_iden_fdma[iden].chan_type = 1;
+    st.p25_iden_fdma[iden].chan_spac = 100;
+    st.p25_iden_fdma[iden].populated = 1;
+    st.p25_chan_tdma_explicit[iden] = 1; // FDMA known
 
     long f1 = process_channel_to_freq(&opts, &st, chan);
     long want = 851000000 + 10 * 100 * 125; // 851.125 MHz
     rc |= expect_eq_long("first calc", f1, want);
 
     // Clear IDEN params; subsequent lookup should still return via trunk_chan_map
-    st.p25_base_freq[iden] = 0;
-    st.p25_chan_spac[iden] = 0;
+    st.p25_iden_fdma[iden].base_freq = 0;
+    st.p25_iden_fdma[iden].chan_spac = 0;
     long f2 = process_channel_to_freq(&opts, &st, chan);
     rc |= expect_eq_long("map fallback", f2, want);
 

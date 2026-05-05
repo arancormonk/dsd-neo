@@ -122,10 +122,12 @@ main(void) {
 
     // Seed a TDMA IDEN so channel->freq mapping works for TDMA grants
     int id = 2;
-    st.p25_chan_tdma[id] = 1;
-    st.p25_base_freq[id] = 851000000 / 5;
-    st.p25_chan_spac[id] = 100;
-    st.p25_iden_trust[id] = 2;
+    st.p25_iden_tdma[id].base_freq = 851000000 / 5;
+    st.p25_iden_tdma[id].chan_type = 3;
+    st.p25_iden_tdma[id].chan_spac = 100;
+    st.p25_iden_tdma[id].trust = 2;
+    st.p25_iden_tdma[id].populated = 1;
+    st.p25_chan_tdma_explicit[id] = 2; // TDMA known
 
     // Run randomized trials
     const int trials = 128;

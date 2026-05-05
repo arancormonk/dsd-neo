@@ -2101,3 +2101,24 @@ add_executable(dsd-neo_test_watermark_adaptive runtime/test_watermark_adaptive.c
 target_include_directories(dsd-neo_test_watermark_adaptive PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_watermark_adaptive PRIVATE dsd-neo_platform)
 add_test(NAME RUNTIME_WATERMARK_ADAPTIVE COMMAND dsd-neo_test_watermark_adaptive)
+
+# P25 Trunking Improvements
+# ============================================================================
+
+# P25 IDEN dual-array isolation (TDMA/FDMA split, fallback, bitmask)
+add_executable(dsd-neo_test_p25_iden_dual_array protocol/p25/test_p25_iden_dual_array.c)
+target_include_directories(dsd-neo_test_p25_iden_dual_array PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_dual_array PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_DUAL_ARRAY COMMAND dsd-neo_test_p25_iden_dual_array)
+
+# P25 IDEN LCW partial write guard (empty slot, populated slot, LCW→TSBK sequence)
+add_executable(dsd-neo_test_p25_iden_lcw_partial protocol/p25/test_p25_iden_lcw_partial.c)
+target_include_directories(dsd-neo_test_p25_iden_lcw_partial PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_lcw_partial PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_LCW_PARTIAL COMMAND dsd-neo_test_p25_iden_lcw_partial)
+
+# P25 IDEN preservation property-based test (FDMA/TDMA formula, cache, empty slots)
+add_executable(dsd-neo_test_p25_iden_preservation_pbt protocol/p25/test_p25_iden_preservation_pbt.c)
+target_include_directories(dsd-neo_test_p25_iden_preservation_pbt PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_preservation_pbt PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_PRESERVATION_PBT COMMAND dsd-neo_test_p25_iden_preservation_pbt)

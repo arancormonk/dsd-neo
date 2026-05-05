@@ -163,10 +163,13 @@ main(void) {
     opts.trunk_tune_enc_calls = 0;
     st.p25_cc_freq = 851000000;
     // Seed IDEN 1 (FDMA): base in 5 kHz units, spacing 100 (5 kHz → 500 kHz)
-    st.p25_chan_tdma[1] = 0;
-    st.p25_base_freq[1] = 851000000 / 5;
-    st.p25_chan_spac[1] = 100;
-    st.p25_iden_trust[1] = 2;
+    // Populate new dual-array
+    st.p25_iden_fdma[1].base_freq = 851000000 / 5;
+    st.p25_iden_fdma[1].chan_type = 0;
+    st.p25_iden_fdma[1].chan_spac = 100;
+    st.p25_iden_fdma[1].trust = 2;
+    st.p25_iden_fdma[1].populated = 1;
+    st.p25_chan_tdma_explicit[1] = 1; // FDMA known
 
     // Base LCW for 0x44 (Group Voice Channel Update – Explicit)
     uint8_t lcw[72];

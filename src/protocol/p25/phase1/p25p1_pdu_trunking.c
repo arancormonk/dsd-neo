@@ -206,6 +206,45 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
 
     }
 
+    //TDMA Identifier Update (0x33) — Direct decode from AMBTC byte layout.
+    //The MBT form of 0x33 uses a different payload layout than MAC 0x73, so
+    //the MBT-to-MAC bridge is explicitly skipped for this opcode.
+    //Byte offsets verified against sdrtrunk AMBTCFrequencyBandUpdateTDMA.java.
+    else if (opcode == 0x33) {
+        int iden = (mpdu_byte[3] >> 4) & 0x0F;
+        int chan_type = mpdu_byte[3] & 0x0F;
+        long int base_freq = ((long)mpdu_byte[12] << 24) | ((long)mpdu_byte[13] << 16) | ((long)mpdu_byte[14] << 8)
+                             | (long)mpdu_byte[15];
+        int tx_off_sign = (mpdu_byte[16] >> 7) & 1;
+        int tx_off_raw = ((mpdu_byte[16] & 0x7F) << 6) | (mpdu_byte[17] >> 2);
+        int chan_spac = ((mpdu_byte[17] & 0x3) << 8) | mpdu_byte[18];
+        int trans_off = tx_off_sign ? -(tx_off_raw) : tx_off_raw;
+
+        fprintf(stderr, "%s", KYEL);
+        fprintf(stderr, "\n TDMA Identifier Update MBT - Direct Decode\n");
+        fprintf(stderr, "  IDEN [%X] Type [%X] Base Freq [%ld] (%ld Hz) TX Offset [%d] Spacing [%d]", iden, chan_type,
+                base_freq, base_freq * 5, trans_off, chan_spac);
+
+        if (iden >= 16) {
+            fprintf(stderr, " [WARN: IDEN %d out of range, skipping]", iden);
+        } else {
+            state->p25_chan_iden = iden;
+            // Write to new TDMA IDEN entry
+            p25_iden_entry_t* e = &state->p25_iden_tdma[iden];
+            e->chan_type = chan_type;
+            e->trans_off = trans_off;
+            e->chan_spac = chan_spac;
+            e->base_freq = base_freq;
+            e->populated = 1;
+            e->wacn = state->p2_wacn;
+            e->sysid = state->p2_sysid;
+            e->rfss = state->p2_rfssid;
+            e->site = state->p2_siteid;
+            e->trust = (state->p25_cc_freq != 0) ? 2 : 1;
+            state->p25_chan_tdma_explicit[iden] |= 2; // bit1 = has TDMA entry
+        }
+    }
+
     //Group Voice Channel Grant - Extended
     else if (opcode == 0x0) {
         int svc = mpdu_byte[8];

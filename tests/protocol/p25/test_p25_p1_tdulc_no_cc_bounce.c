@@ -255,10 +255,13 @@ main(void) {
 
     // Minimal IDEN mapping so the synthetic grant produces a non-zero VC frequency
     int iden = 1;
-    state.p25_chan_type[iden] = 1;
-    state.p25_chan_tdma[iden] = 0;
-    state.p25_chan_spac[iden] = 100;             // 12.5 kHz (100 * 125 Hz)
-    state.p25_base_freq[iden] = 851000000L / 5L; // base in 5 Hz units
+    // Populate new dual-array
+    state.p25_iden_fdma[iden].base_freq = 851000000L / 5L;
+    state.p25_iden_fdma[iden].chan_type = 1;
+    state.p25_iden_fdma[iden].chan_spac = 100;
+    state.p25_iden_fdma[iden].populated = 1;
+    state.p25_iden_fdma[iden].trust = 2;
+    state.p25_chan_tdma_explicit[iden] = 1; // FDMA known
 
     // Initialize SM and tune to a VC via a group grant
     p25_sm_init(&opts, &state);

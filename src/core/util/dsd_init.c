@@ -779,12 +779,6 @@ initState(dsd_state* state) {
 
     //p25 iden_up values
     state->p25_chan_iden = 0;
-    for (int i = 0; i < 16; i++) {
-        state->p25_chan_type[i] = 0;
-        state->p25_trans_off[i] = 0;
-        state->p25_chan_spac[i] = 0;
-        state->p25_base_freq[i] = 0;
-    }
 
     //values displayed in ncurses terminal
     state->p25_cc_freq = 0;
