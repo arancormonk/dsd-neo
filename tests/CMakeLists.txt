@@ -2122,3 +2122,9 @@ add_executable(dsd-neo_test_p25_iden_preservation_pbt protocol/p25/test_p25_iden
 target_include_directories(dsd-neo_test_p25_iden_preservation_pbt PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_iden_preservation_pbt PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_IDEN_PRESERVATION_PBT COMMAND dsd-neo_test_p25_iden_preservation_pbt)
+
+# P25 IDEN write-once guard (bug condition exploration + preservation + integration)
+add_executable(dsd-neo_test_p25_iden_write_once protocol/p25/test_p25_iden_write_once.c)
+target_include_directories(dsd-neo_test_p25_iden_write_once PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_write_once PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_WRITE_ONCE COMMAND dsd-neo_test_p25_iden_write_once)

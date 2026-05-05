@@ -462,18 +462,18 @@ test_full_multimode_pattern(void) {
     /* Generic test parameters per slot (base_freq in 5Hz units) */
     struct {
         long tdma_base;
+        long fdma_base;
         int tdma_spac;
         int tdma_off;
         int tdma_type;
-        long fdma_base;
         int fdma_spac;
         int fdma_off;
         int fdma_type;
     } slot_params[4] = {
-        {850000000L / 5, 50, 7200, 1, 850000000L / 5, 50, 2200, 1},
-        {850000000L / 5, 50, 7200, 3, 850000000L / 5, 50, 2200, 1},
-        {850500000L / 5, 100, 3600, 3, 850000000L / 5, 50, 2200, 1},
-        {850500000L / 5, 100, 3600, 3, 850500000L / 5, 100, 2200, 1},
+        {850000000L / 5, 850000000L / 5, 50, 7200, 1, 50, 2200, 1},
+        {850000000L / 5, 850000000L / 5, 50, 7200, 3, 50, 2200, 1},
+        {850500000L / 5, 850000000L / 5, 100, 3600, 3, 50, 2200, 1},
+        {850500000L / 5, 850500000L / 5, 100, 3600, 3, 100, 2200, 1},
     };
 
     static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};

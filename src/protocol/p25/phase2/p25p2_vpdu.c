@@ -1768,6 +1768,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // Write to new TDMA IDEN entry
             {
                 p25_iden_entry_t* e = &state->p25_iden_tdma[iden];
+                // Write-once guard: if this slot already has a valid TDMA entry,
+                // do not overwrite. The first entry seen after CC lock is authoritative.
+                // This prevents multi-band systems from cycling incompatible IDEN
+                // parameters on the same slot.
+                if (e->populated) {
+                    goto skip_tdma_iden_write_73;
+                }
                 e->base_freq = base_freq;
                 e->chan_type = chan_type; // from MAC payload (4-bit)
                 e->chan_spac = chan_spac;
@@ -1780,6 +1787,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 e->site = state->p2_siteid;
                 state->p25_chan_tdma_explicit[iden] |= 2; // bit1 = has TDMA entry
             }
+        skip_tdma_iden_write_73:
 
             fprintf(stderr, "\n Identifier Update for TDMA - Abbreviated\n");
             fprintf(stderr,
@@ -1803,6 +1811,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // Write to new TDMA IDEN entry
             {
                 p25_iden_entry_t* e = &state->p25_iden_tdma[iden];
+                // Write-once guard: if this slot already has a valid TDMA entry,
+                // do not overwrite. The first entry seen after CC lock is authoritative.
+                if (e->populated) {
+                    goto skip_tdma_iden_write_f3;
+                }
                 e->base_freq = base_freq;
                 e->chan_type = chan_type; // from MAC payload (4-bit)
                 e->chan_spac = chan_spac;
@@ -1819,6 +1832,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 e->site = state->p2_siteid;
                 state->p25_chan_tdma_explicit[iden] |= 2; // bit1 = has TDMA entry
             }
+        skip_tdma_iden_write_f3:
 
             fprintf(stderr, "\n Identifier Update for TDMA - Extended\n");
             fprintf(stderr,
