@@ -19,6 +19,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -4386,7 +4387,7 @@ auto_ppm_publish_status(int enabled, const dsd::io::radio::RtlAutoPpmUpdate& upd
 }
 
 static void
-auto_ppm_maybe_adjust(dsd_opts* opts) {
+auto_ppm_maybe_adjust(dsd_opts* opts, dsd_state* state) {
     if (!opts) {
         return;
     }
@@ -4424,6 +4425,20 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
     inputs.spec_snr_db = spec_snr_db;
     inputs.estimate = dsd::io::radio::rtl_auto_ppm_select_estimate(metrics);
 
+    /* P25 AFC gating (TIA-102.BAAA-A §8.4): skip the PPM update when the
+     * P25 Phase 1 decoder has classified the current transmission as
+     * subscriber or unknown. The gate flag (p25_afc_gate_allow) is written
+     * by the decoder thread at the end of each data unit; reading a single
+     * byte here is safe (atomic on all target platforms).
+     *
+     * The gate is only consulted when P25 AFC gating has been active (at
+     * least one classify call has occurred), so non-P25 protocols are
+     * unaffected. */
+    if (state && !opts->p25_afc_gate_disable
+        && (state->p25_afc_allowed_count > 0 || state->p25_afc_suppressed_count > 0) && !state->p25_afc_gate_allow) {
+        return;
+    }
+
     dsd::io::radio::RtlAutoPpmUpdate update = g_auto_ppm_controller.update(config, inputs);
     auto_ppm_publish_status(enabled, update);
     if (update.apply_ppm) {
@@ -4446,7 +4461,6 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
  */
 extern "C" int
 dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) {
-    UNUSED(state);
     if (count == 0) {
         return 0;
     }
@@ -4471,7 +4485,7 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
 
     if (!replay_active) {
         sync_requested_ppm_after_failed_apply(opts);
-        auto_ppm_maybe_adjust(opts);
+        auto_ppm_maybe_adjust(opts, state);
         sync_requested_ppm_to_controller(opts);
 
         int got = ring_read_batch(&output, out, count);

@@ -29,6 +29,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
+#include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
@@ -82,6 +83,9 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
             state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         }
     }
+
+    // Reset status symbol accumulator for this data unit (AFC gating)
+    p25_status_accum_reset(state);
 
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu
@@ -469,13 +473,14 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, "lsd1: %s lsd2: %s\n", lsd1, lsd2);
     }
 
-    // trailing status symbol
+    // Trailing status symbol — feed to accumulator for AFC gating
     {
-        int status;
-        status = getDibit(opts, state) + '0';
-        // TODO: do something useful with the status bits...
-        UNUSED(status);
+        int ss = getDibit(opts, state);
+        p25_status_accum_add(state, ss);
     }
+
+    // Classify accumulated status symbols and set AFC gate flag
+    p25_status_accum_classify(state, opts);
 
     // Error correct the hex_data using Reed-Solomon hex_parity
     irrecoverable_errors = check_and_fix_reedsolomon_24_16_9((char*)hex_data, (char*)hex_parity);

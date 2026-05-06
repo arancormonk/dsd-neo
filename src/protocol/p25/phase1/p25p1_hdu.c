@@ -29,6 +29,7 @@
 #include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
+#include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
@@ -316,6 +317,10 @@ correct_golay_dibits_6(char* corrected_hex_data, int hex_count, AnalogSignal* an
 void
 processHDU(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_hdu++;
+
+    // Reset status symbol accumulator for this data unit (AFC gating)
+    p25_status_accum_reset(state);
+
     P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
 
     // Defer last_vc_sync_time refresh until after FEC success to avoid
@@ -560,8 +565,12 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     state->p25kid = strtol(kid, NULL, 2);
 
     skipDibit(opts, state, 5);
-    (void)getDibit(opts, state);
-    //TODO: Do something useful with the status bits...
+
+    // Trailing status symbol — record for AFC gating classification
+    {
+        int ss = getDibit(opts, state);
+        p25_status_accum_add(state, ss);
+    }
 
     algidhex = strtol(algid, NULL, 2);
     kidhex = strtol(kid, NULL, 2);
@@ -681,6 +690,9 @@ processHDU(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, " HDU FEC ERR \n");
         fprintf(stderr, "%s", KNRM);
     }
+
+    // Classify accumulated status symbols and set AFC gate flag
+    p25_status_accum_classify(state, opts);
 
     //reset gain
     if (opts->floating_point == 1) {

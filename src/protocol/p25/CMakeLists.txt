@@ -23,6 +23,7 @@ target_sources(dsd-neo_proto_p25 PRIVATE
   phase1/p25p1_mdpu.c
   phase1/p25p1_pdu_data.c
   phase1/p25p1_pdu_trunking.c
+  phase1/p25_status_symbol.c
   phase1/p25p1_tdu.c
   phase1/p25p1_tdulc.c
   phase1/p25p1_tsbk.c

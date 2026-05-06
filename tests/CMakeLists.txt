@@ -2101,3 +2101,9 @@ add_executable(dsd-neo_test_watermark_adaptive runtime/test_watermark_adaptive.c
 target_include_directories(dsd-neo_test_watermark_adaptive PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_watermark_adaptive PRIVATE dsd-neo_platform)
 add_test(NAME RUNTIME_WATERMARK_ADAPTIVE COMMAND dsd-neo_test_watermark_adaptive)
+
+# P25 Status Symbol accumulator and AFC gate logic
+add_executable(dsd-neo_test_p25_status_symbol protocol/p25/test_p25_status_symbol.c)
+target_include_directories(dsd-neo_test_p25_status_symbol PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_status_symbol PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_STATUS_SYMBOL COMMAND dsd-neo_test_p25_status_symbol)
