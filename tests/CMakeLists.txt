@@ -2128,3 +2128,9 @@ add_executable(dsd-neo_test_p25_iden_write_once protocol/p25/test_p25_iden_write
 target_include_directories(dsd-neo_test_p25_iden_write_once PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_iden_write_once PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_IDEN_WRITE_ONCE COMMAND dsd-neo_test_p25_iden_write_once)
+
+# P25 MBT 0x33 FDMA routing (bug condition exploration + preservation)
+add_executable(dsd-neo_test_p25_mbt_0x33_fdma_routing protocol/p25/test_p25_mbt_0x33_fdma_routing.c)
+target_include_directories(dsd-neo_test_p25_mbt_0x33_fdma_routing PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_mbt_0x33_fdma_routing PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_MBT_0X33_FDMA_ROUTING COMMAND dsd-neo_test_p25_mbt_0x33_fdma_routing)

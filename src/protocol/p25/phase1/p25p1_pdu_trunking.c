@@ -229,8 +229,14 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             fprintf(stderr, " [WARN: IDEN %d out of range, skipping]", iden);
         } else {
             state->p25_chan_iden = iden;
-            // Write to new TDMA IDEN entry
-            p25_iden_entry_t* e = &state->p25_iden_tdma[iden];
+
+            // Route to correct array based on chan_type slot count.
+            // Types 0-2 are single-slot (FDMA) and belong in p25_iden_fdma[];
+            // types 3+ are multi-slot (TDMA) and belong in p25_iden_tdma[].
+            static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+            int is_tdma = slots_per_carrier[chan_type & 0xF] > 1;
+            p25_iden_entry_t* e = is_tdma ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
+
             e->chan_type = chan_type;
             e->trans_off = trans_off;
             e->chan_spac = chan_spac;
@@ -241,11 +247,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             e->rfss = state->p2_rfssid;
             e->site = state->p2_siteid;
             e->trust = (state->p25_cc_freq != 0) ? 2 : 1;
-            // Only mark as TDMA when chan_type indicates multi-slot carrier.
-            // Types 0-2 are single-slot (FDMA); setting bit1 for those causes
-            // is_tdma_channel() to misclassify FDMA grants as TDMA.
-            static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-            if (slots_per_carrier[chan_type & 0xF] > 1) {
+
+            if (is_tdma) {
                 state->p25_chan_tdma_explicit[iden] |= 2; // bit1 = has TDMA entry
             } else {
                 state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA entry
