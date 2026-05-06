@@ -1701,6 +1701,12 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // Write to new FDMA IDEN entry
             {
                 p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
+                // Write-once guard: if this slot already has a valid FDMA entry,
+                // do not overwrite. The first entry seen after CC lock is authoritative.
+                // This prevents the trans_off flip-flop between 0x74 and 0x33 MBT values.
+                if (e->populated) {
+                    goto skip_fdma_iden_write_74;
+                }
                 e->base_freq = base_freq;
                 e->chan_type = 1; // FDMA default
                 e->chan_spac = chan_spac;
@@ -1713,6 +1719,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 e->site = state->p2_siteid;
                 state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA entry
             }
+        skip_fdma_iden_write_74:
 
             fprintf(stderr, "\n Identifier Update UHF/VHF\n");
             fprintf(stderr,
@@ -1735,6 +1742,12 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // Write to new FDMA IDEN entry
             {
                 p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
+                // Write-once guard: if this slot already has a valid FDMA entry,
+                // do not overwrite. The first entry seen after CC lock is authoritative.
+                // This prevents the trans_off flip-flop between 0x7D and 0x33 MBT values.
+                if (e->populated) {
+                    goto skip_fdma_iden_write_7D;
+                }
                 e->base_freq = base_freq;
                 e->chan_type = 1; // FDMA default
                 e->chan_spac = chan_spac;
@@ -1747,6 +1760,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 e->site = state->p2_siteid;
                 state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA entry
             }
+        skip_fdma_iden_write_7D:
 
             fprintf(stderr, "\n Identifier Update (8.3.1.23)\n");
             fprintf(stderr,
