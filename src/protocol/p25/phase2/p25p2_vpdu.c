@@ -41,6 +41,49 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/**
+ * @brief Resolve a Queued Response reason code to a human-readable string.
+ *
+ * Reason codes are defined in TIA-102.AABC-B Annex C.
+ *
+ * @param code The 8-bit reason code from octet 3.
+ * @return Static string describing the reason, or NULL if unrecognized.
+ */
+static const char*
+p25_que_reason_str(uint8_t code) {
+    switch (code) {
+        case 0x10: return "Requester Active";
+        case 0x20: return "Target Active";
+        case 0x2F: return "Target Queued";
+        case 0x30: return "Group Active";
+        case 0x40: return "No Channel Resources";
+        case 0x41: return "No Telephone Resources";
+        case 0x42: return "No Data Resources";
+        default: return NULL;
+    }
+}
+
+/**
+ * @brief Resolve a Deny Response reason code to a human-readable string.
+ *
+ * Reason codes are defined in TIA-102.AABC-B Annex B.
+ *
+ * @param code The 8-bit reason code from octet 3.
+ * @return Static string describing the reason, or NULL if unrecognized.
+ */
+static const char*
+p25_deny_reason_str(uint8_t code) {
+    switch (code) {
+        case 0x10: return "Requester Invalid";
+        case 0x20: return "Target Invalid";
+        case 0x2F: return "Target Refused";
+        case 0x30: return "Group Invalid";
+        case 0x60: return "Site Access Denied";
+        case 0xFF: return "Service Not Supported";
+        default: return NULL;
+    }
+}
+
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void
 p25p2_emit_mac_json_if_enabled(dsd_state* state, int xch_type, uint8_t mfid, uint8_t opcode, int slot, int len_b,
@@ -2772,6 +2815,39 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int ber = MAC[5 + len_a] & 0xF;
             fprintf(stderr, "\n Power Control Signal Quality");
             fprintf(stderr, "\n  Target Address: %d RF: 0x%X BER: 0x%X", ta, rf, ber);
+        }
+
+        // Queued Response (MAC 0x61, TSBK 0x21) or Deny Response (MAC 0x67, TSBK 0x27)
+        // TIA-102.AABC-B §6.2.14 / §6.2.5
+        if (MAC[1 + len_a] == 0x61 || MAC[1 + len_a] == 0x67) {
+            int is_deny = (MAC[1 + len_a] == 0x67);
+            int svc_type = (int)(MAC[2 + len_a] & 0x3F);
+            int reason_code = (int)MAC[3 + len_a];
+            int addl_info = (int)((MAC[4 + len_a] << 16) | (MAC[5 + len_a] << 8) | MAC[6 + len_a]);
+            int target_addr = (int)((MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a]);
+
+            const char* reason_str =
+                is_deny ? p25_deny_reason_str((uint8_t)reason_code) : p25_que_reason_str((uint8_t)reason_code);
+
+            fprintf(stderr, "\n %s Response", is_deny ? "Deny" : "Queued");
+            if (reason_str) {
+                fprintf(stderr, "\n  SVC [%02X] Reason [%s] Addl [%06X] Target [%d]", svc_type, reason_str, addl_info,
+                        target_addr);
+            } else {
+                fprintf(stderr, "\n  SVC [%02X] Reason [0x%02X] Addl [%06X] Target [%d]", svc_type, reason_code,
+                        addl_info, target_addr);
+            }
+
+            // Update active channel display
+            sprintf(state->active_channel[0], "%s Target: %d; ", is_deny ? "DENY" : "QUE", target_addr);
+            state->last_active_time = time(NULL);
+
+            // Notify the trunking state machine
+            if (is_deny) {
+                p25_sm_on_deny_response(opts, state, svc_type, reason_code, target_addr);
+            } else {
+                p25_sm_on_queued_response(opts, state, svc_type, reason_code, target_addr);
+            }
         }
 
     SKIPCALL:; //do nothing

@@ -1879,6 +1879,12 @@ target_include_directories(dsd-neo_test_p25_p2_release_partial_audio PRIVATE ${P
 target_link_libraries(dsd-neo_test_p25_p2_release_partial_audio PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_RELEASE_PARTIAL_AUDIO COMMAND dsd-neo_test_p25_p2_release_partial_audio)
 
+# P25 Queued/Deny Response decoding and SM notification
+add_executable(dsd-neo_test_p25_queued_deny_response protocol/p25/test_p25_queued_deny_response.c)
+target_include_directories(dsd-neo_test_p25_queued_deny_response PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_queued_deny_response PRIVATE dsd-neo_proto_p25 dsd-neo_test_support)
+add_test(NAME P25_QUEUED_DENY_RESPONSE COMMAND dsd-neo_test_p25_queued_deny_response)
+
 # Config system tests
 add_executable(dsd-neo_test_config_expand runtime/test_config_expand.cpp)
 target_include_directories(dsd-neo_test_config_expand PRIVATE ${PROJECT_SOURCE_DIR}/include)
