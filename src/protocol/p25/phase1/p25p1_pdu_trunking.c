@@ -241,7 +241,15 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             e->rfss = state->p2_rfssid;
             e->site = state->p2_siteid;
             e->trust = (state->p25_cc_freq != 0) ? 2 : 1;
-            state->p25_chan_tdma_explicit[iden] |= 2; // bit1 = has TDMA entry
+            // Only mark as TDMA when chan_type indicates multi-slot carrier.
+            // Types 0-2 are single-slot (FDMA); setting bit1 for those causes
+            // is_tdma_channel() to misclassify FDMA grants as TDMA.
+            static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+            if (slots_per_carrier[chan_type & 0xF] > 1) {
+                state->p25_chan_tdma_explicit[iden] |= 2; // bit1 = has TDMA entry
+            } else {
+                state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA entry
+            }
         }
     }
 
