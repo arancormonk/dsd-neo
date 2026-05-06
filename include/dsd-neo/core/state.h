@@ -205,6 +205,7 @@ typedef struct {
     int chan_type;            // 4-bit channel type (TDMA: slots-per-carrier; 1 for FDMA default)
     int chan_spac;            // 10-bit channel spacing (in 0.125 kHz units)
     int trans_off;            // transmit offset
+    uint8_t bw_vu;            // 4-bit VHF/UHF bandwidth (0=standard/not VHF-UHF, nonzero=VHF/UHF BW)
     uint8_t trust;            // 0=unknown, 1=unconfirmed, 2=confirmed on matching CC
     uint8_t populated;        // 0=empty, 1=has valid complete data from a TSBK/MAC PDU
     unsigned long long wacn;  // WACN provenance (system context when IDEN was learned)

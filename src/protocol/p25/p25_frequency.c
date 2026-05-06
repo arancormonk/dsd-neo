@@ -259,6 +259,41 @@ p25_confirm_idens_for_current_site(dsd_state* state) {
     }
 }
 
+/* VHF/UHF base frequency boundaries (in 5 Hz units, as encoded in IDEN_UP).
+ * freq_hz = base_freq * 5, so:
+ *   VHF: 136.000 MHz = 27200000 * 5 Hz → base_freq = 0x019F0A00
+ *         172.000 MHz = 34400000 * 5 Hz → base_freq = 0x020CE700
+ *   UHF: 380.000 MHz = 76000000 * 5 Hz → base_freq = 0x0487AB00 (approx)
+ *         512.000 MHz = 102400000 * 5 Hz → base_freq = 0x061A8000
+ */
+#define P25_VHF_BASE_MIN 0x019F0A00L
+#define P25_VHF_BASE_MAX 0x020CE700L
+#define P25_UHF_BASE_MIN 0x0487AB00L
+#define P25_UHF_BASE_MAX 0x061A8000L
+
+/**
+ * @brief Determine if a base frequency falls in the VHF or UHF band.
+ *
+ * Checks whether @p base_freq (encoded in 5 Hz units per IDEN_UP) falls
+ * within VHF (136–172 MHz) or UHF (380–512 MHz). Used by the 0x7D handler
+ * to discriminate between standard and VHF/UHF field layouts.
+ *
+ * @param base_freq  Raw base frequency value in 5 Hz units.
+ * @return 1 if VHF or UHF range, 0 otherwise.
+ */
+int
+p25_is_vhf_uhf_base_freq(long int base_freq) {
+    // VHF: 136–172 MHz
+    if (base_freq >= P25_VHF_BASE_MIN && base_freq <= P25_VHF_BASE_MAX) {
+        return 1;
+    }
+    // UHF: 380–512 MHz
+    if (base_freq >= P25_UHF_BASE_MIN && base_freq <= P25_UHF_BASE_MAX) {
+        return 1;
+    }
+    return 0;
+}
+
 long int
 nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
     UNUSED(opts);

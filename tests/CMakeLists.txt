@@ -2135,6 +2135,12 @@ target_include_directories(dsd-neo_test_p25_iden_fdma_write_once PRIVATE ${PROJE
 target_link_libraries(dsd-neo_test_p25_iden_fdma_write_once PRIVATE dsd-neo_core)
 add_test(NAME P25_IDEN_FDMA_WRITE_ONCE COMMAND dsd-neo_test_p25_iden_fdma_write_once)
 
+# P25 IDEN VHF/UHF fix (bug condition exploration + fix verification)
+add_executable(dsd-neo_test_p25_iden_vhf_uhf_fix protocol/p25/test_p25_iden_vhf_uhf_fix.c)
+target_include_directories(dsd-neo_test_p25_iden_vhf_uhf_fix PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_vhf_uhf_fix PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_VHF_UHF_FIX COMMAND dsd-neo_test_p25_iden_vhf_uhf_fix)
+
 # P25 MBT 0x33 FDMA routing (bug condition exploration + preservation)
 add_executable(dsd-neo_test_p25_mbt_0x33_fdma_routing protocol/p25/test_p25_mbt_0x33_fdma_routing.c)
 target_include_directories(dsd-neo_test_p25_mbt_0x33_fdma_routing PRIVATE ${PROJECT_SOURCE_DIR}/include)

@@ -29,6 +29,18 @@ long int nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel);
 
 void p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, char* out, size_t outsz);
 
+/**
+ * @brief Determine if a base frequency falls in the VHF or UHF band.
+ *
+ * Returns 1 if @p base_freq (in 5 Hz units, as encoded in IDEN_UP messages)
+ * falls within the VHF range (136–172 MHz) or UHF range (380–512 MHz).
+ * Returns 0 otherwise.
+ *
+ * @param base_freq  Raw base frequency value in 5 Hz units.
+ * @return 1 if VHF or UHF, 0 otherwise.
+ */
+int p25_is_vhf_uhf_base_freq(long int base_freq);
+
 void p25_reset_iden_tables(dsd_state* state);
 void p25_confirm_idens_for_current_site(dsd_state* state);
 

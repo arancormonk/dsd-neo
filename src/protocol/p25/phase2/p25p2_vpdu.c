@@ -1698,6 +1698,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             long int base_freq =
                 (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
 
+            // Validate that base_freq actually falls in VHF/UHF range (warning only)
+            if (!p25_is_vhf_uhf_base_freq(base_freq)) {
+                fprintf(stderr, "\n  WARNING: 0x74 IDEN_UP_VU base_freq %08lX outside VHF/UHF range", base_freq);
+            }
+
             // Write to new FDMA IDEN entry
             {
                 p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
@@ -1711,6 +1716,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 e->chan_type = 1; // FDMA default
                 e->chan_spac = chan_spac;
                 e->trans_off = trans_off;
+                e->bw_vu = (uint8_t)bw_vu;
                 e->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
                 e->populated = 1;
                 e->wacn = state->p2_wacn;
@@ -1728,16 +1734,29 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     state->p25_chan_iden, bw_vu, trans_off, chan_spac, base_freq, base_freq * 5);
         }
 
-        //identifier update (Non-TDMA 6.2.22) (Non-VHF-UHF) //with signed offset, bit trans_off >> 8; bit number 9
+        //identifier update (Non-TDMA 6.2.22) — standard or VHF/UHF depending on base_freq range
         if (MAC[1 + len_a] == 0x7D) {
             state->p25_chan_iden = MAC[2 + len_a] >> 4;
             int iden = state->p25_chan_iden;
 
-            int bw = ((MAC[2 + len_a] & 0xF) << 5) | ((MAC[3 + len_a] & 0xF8) >> 2);
-            int trans_off = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
-            int chan_spac = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
+            // Extract base_freq FIRST (bytes 6–9 are at the same position in both formats)
             long int base_freq =
                 (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
+
+            // Determine format based on base frequency range
+            int bw = 0;
+            int bw_vu = 0;
+            int trans_off = 0;
+            if (p25_is_vhf_uhf_base_freq(base_freq)) {
+                // VHF/UHF format: 4-bit bw_vu + 14-bit trans_off
+                bw_vu = MAC[2 + len_a] & 0xF;
+                trans_off = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
+            } else {
+                // Standard format: 9-bit BW + 9-bit trans_off
+                bw = ((MAC[2 + len_a] & 0xF) << 5) | ((MAC[3 + len_a] & 0xF8) >> 3);
+                trans_off = ((MAC[3 + len_a] & 0x07) << 6) | (MAC[4 + len_a] >> 2);
+            }
+            int chan_spac = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
 
             // Write to new FDMA IDEN entry
             {
@@ -1752,6 +1771,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 e->chan_type = 1; // FDMA default
                 e->chan_spac = chan_spac;
                 e->trans_off = trans_off;
+                e->bw_vu = (uint8_t)bw_vu;
                 e->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
                 e->populated = 1;
                 e->wacn = state->p2_wacn;
@@ -1766,7 +1786,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr,
                     "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
                     "Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, bw, trans_off, chan_spac, base_freq, base_freq * 5);
+                    state->p25_chan_iden, p25_is_vhf_uhf_base_freq(base_freq) ? bw_vu : bw, trans_off, chan_spac,
+                    base_freq, base_freq * 5);
         }
 
         //identifier update for TDMA, Abbreviated
