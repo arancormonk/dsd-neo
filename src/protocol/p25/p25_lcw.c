@@ -44,6 +44,29 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     snprintf(dst + len, dstsz - len, "%s", src);
 }
 
+/**
+ * @brief Resolve a P25 Algorithm ID to a human-readable name.
+ *
+ * Common ALGIDs per TIA-102.AABC-B and TIA-102.AACE-A:
+ *   0x80 = AES-256, 0x81 = DES-OFB, 0x84 = AES-256-GCM,
+ *   0x85 = AES-CBC, 0x88 = DES-XL, 0xAA = RC4
+ *
+ * @param algid The 8-bit algorithm identifier.
+ * @return Static string with algorithm name, or NULL if unrecognized.
+ */
+static const char*
+p25_algid_name(uint8_t algid) {
+    switch (algid) {
+        case 0x80: return "AES-256";
+        case 0x81: return "DES-OFB";
+        case 0x84: return "AES-256-GCM";
+        case 0x85: return "AES-CBC";
+        case 0x88: return "DES-XL";
+        case 0xAA: return "RC4";
+        default: return NULL;
+    }
+}
+
 //new p25_lcw function here -- TIA-102.AABF-D LCW Format Messages (if anybody wants to fill the rest out)
 void
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors) {
@@ -347,7 +370,22 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             }
 
             else if (lc_format == 0x65) {
-                fprintf(stderr, " Protection Parameter Broadcast - OBSOLETE");
+                // Protection Parameter Broadcast — TIA-102.AABF-D LCO 37
+                uint8_t algid = (uint8_t)ConvertBitIntoBytes(&LCW_bits[16], 8);
+                uint16_t kid = (uint16_t)ConvertBitIntoBytes(&LCW_bits[24], 16);
+                uint32_t target = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 24);
+
+                const char* alg_name = p25_algid_name(algid);
+
+                fprintf(stderr, " Protection Parameter Broadcast");
+                fprintf(stderr, "\n  ALGID [%02X]", algid);
+                if (alg_name) {
+                    fprintf(stderr, " (%s)", alg_name);
+                }
+                fprintf(stderr, " KID [%04X] Target [%d]", kid, target);
+
+                state->p25_prot_algid = algid;
+                state->p25_prot_kid = kid;
             }
 
             else if (lc_format == 0x66) {

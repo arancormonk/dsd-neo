@@ -41,6 +41,29 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/**
+ * @brief Resolve a P25 Algorithm ID to a human-readable name.
+ *
+ * Common ALGIDs per TIA-102.AABC-B and TIA-102.AACE-A:
+ *   0x80 = AES-256, 0x81 = DES-OFB, 0x84 = AES-256-GCM,
+ *   0x85 = AES-CBC, 0x88 = DES-XL, 0xAA = RC4
+ *
+ * @param algid The 8-bit algorithm identifier.
+ * @return Static string with algorithm name, or NULL if unrecognized.
+ */
+static const char*
+p25_algid_name(uint8_t algid) {
+    switch (algid) {
+        case 0x80: return "AES-256";
+        case 0x81: return "DES-OFB";
+        case 0x84: return "AES-256-GCM";
+        case 0x85: return "AES-CBC";
+        case 0x88: return "DES-XL";
+        case 0xAA: return "RC4";
+        default: return NULL;
+    }
+}
+
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void
 p25p2_emit_mac_json_if_enabled(dsd_state* state, int xch_type, uint8_t mfid, uint8_t opcode, int slot, int len_b,
@@ -2772,6 +2795,110 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int ber = MAC[5 + len_a] & 0xF;
             fprintf(stderr, "\n Power Control Signal Quality");
             fprintf(stderr, "\n  Target Address: %d RF: 0x%X BER: 0x%X", ta, rf, ber);
+        }
+
+        // Protection Parameter Broadcast (MAC 0x7E, TSBK 0x3E) or Update (MAC 0x7F, TSBK 0x3F)
+        // TIA-102.AABC-B §6.2.12 / §6.2.13
+        if (MAC[1 + len_a] == 0x7E || MAC[1 + len_a] == 0x7F) {
+            int is_broadcast = (MAC[1 + len_a] == 0x7E);
+            int algid = (int)MAC[2 + len_a];
+            int kid = (int)((MAC[3 + len_a] << 8) | MAC[4 + len_a]);
+
+            const char* alg_name = p25_algid_name((uint8_t)algid);
+
+            fprintf(stderr, "%s", KYEL);
+            fprintf(stderr, "\n Protection Parameter %s", is_broadcast ? "Broadcast" : "Update");
+            fprintf(stderr, "\n  ALGID [%02X]", algid);
+            if (alg_name) {
+                fprintf(stderr, " (%s)", alg_name);
+            }
+            fprintf(stderr, " KID [%04X]", kid);
+
+            if (is_broadcast) {
+                int target = (int)((MAC[5 + len_a] << 16) | (MAC[6 + len_a] << 8) | MAC[7 + len_a]);
+                fprintf(stderr, " Target [%d]", target);
+            }
+            fprintf(stderr, "%s", KNRM);
+
+            state->p25_prot_algid = (uint8_t)algid;
+            state->p25_prot_kid = (uint16_t)kid;
+        }
+
+        // Time and Date Announcement (MAC 0x75, TSBK 0x35)
+        // TIA-102.AABC-B §6.2.20
+        if (MAC[1 + len_a] == 0x75) {
+            int vd = (MAC[2 + len_a] >> 7) & 1;
+            int vt = (MAC[2 + len_a] >> 6) & 1;
+            int vl = (MAC[2 + len_a] >> 5) & 1;
+
+            // Pack octets 3-9 into a 56-bit value for bit-field extraction
+            uint64_t packed = 0;
+            for (int pi = 3; pi <= 9; pi++) {
+                packed = (packed << 8) | MAC[pi + len_a];
+            }
+
+            int year = 0, month = 0, day = 0;
+            int hours = 0, minutes = 0, seconds = 0;
+            int lto_sign = 0, lto_mag = 0;
+
+            if (vd) {
+                year = (int)((packed >> 43) & 0x1FFF) + 2000;
+                month = (int)((packed >> 39) & 0xF);
+                day = (int)((packed >> 34) & 0x1F);
+            }
+            if (vt) {
+                hours = (int)((packed >> 29) & 0x1F);
+                minutes = (int)((packed >> 23) & 0x3F);
+                seconds = (int)((packed >> 17) & 0x3F);
+            }
+            if (vl) {
+                lto_sign = (int)((packed >> 16) & 0x1);
+                lto_mag = (int)((packed >> 5) & 0x7FF);
+            }
+
+            fprintf(stderr, "%s", KYEL);
+            fprintf(stderr, "\n Time and Date Announcement");
+            fprintf(stderr, "\n  ");
+            if (vd) {
+                fprintf(stderr, "%04d-%02d-%02d ", year, month, day);
+            }
+            if (vt) {
+                fprintf(stderr, "%02d:%02d:%02d ", hours, minutes, seconds);
+            }
+            if (vl) {
+                // LTO magnitude is in half-hour units
+                int lto_total_minutes = lto_mag * 30;
+                int lto_hours = lto_total_minutes / 60;
+                int lto_mins = lto_total_minutes % 60;
+                fprintf(stderr, "UTC%c%02d:%02d", lto_sign ? '-' : '+', lto_hours, lto_mins);
+            }
+            fprintf(stderr, "%s", KNRM);
+
+            // Store time_t if both date and time are valid
+            if (vd && vt) {
+                struct tm tm_val;
+                memset(&tm_val, 0, sizeof(tm_val));
+                tm_val.tm_year = year - 1900;
+                tm_val.tm_mon = month - 1;
+                tm_val.tm_mday = day;
+                tm_val.tm_hour = hours;
+                tm_val.tm_min = minutes;
+                tm_val.tm_sec = seconds;
+                tm_val.tm_isdst = -1;
+                time_t t = mktime(&tm_val);
+                if (t != (time_t)-1) {
+                    state->p25_sys_time = t;
+                }
+            }
+
+            // Store local time offset if valid
+            if (vl) {
+                int offset_minutes = lto_mag * 30;
+                if (lto_sign) {
+                    offset_minutes = -offset_minutes;
+                }
+                state->p25_sys_time_offset = (int16_t)offset_minutes;
+            }
         }
 
     SKIPCALL:; //do nothing

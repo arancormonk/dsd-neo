@@ -1879,6 +1879,16 @@ target_include_directories(dsd-neo_test_p25_p2_release_partial_audio PRIVATE ${P
 target_link_libraries(dsd-neo_test_p25_p2_release_partial_audio PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_RELEASE_PARTIAL_AUDIO COMMAND dsd-neo_test_p25_p2_release_partial_audio)
 
+# P25 Tier 3 Conformance (Protection Parameter, Emergency Alarm ISP, Time/Date)
+add_executable(dsd-neo_test_protocol_p25_tier3_conformance
+    protocol/p25/test_protocol_p25_tier3_conformance.c)
+target_include_directories(dsd-neo_test_protocol_p25_tier3_conformance
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_protocol_p25_tier3_conformance
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support)
+add_test(NAME PROTOCOL_P25_TIER3_CONFORMANCE
+    COMMAND dsd-neo_test_protocol_p25_tier3_conformance)
+
 # Config system tests
 add_executable(dsd-neo_test_config_expand runtime/test_config_expand.cpp)
 target_include_directories(dsd-neo_test_config_expand PRIVATE ${PROJECT_SOURCE_DIR}/include)
