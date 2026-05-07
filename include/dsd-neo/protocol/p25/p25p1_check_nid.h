@@ -2,6 +2,11 @@
 /**
  * @file
  * @brief P25 Phase 1 NID validation helpers.
+ *
+ * Provides the check_NID() function for decoding and validating the 64-bit
+ * Network Identifier field on every P25 Phase 1 data unit. The NID carries
+ * the NAC (Network Access Code) and DUID (Data Unit Identifier) protected
+ * by a BCH(63,16,23) code plus a single parity bit.
  */
 #ifndef P25P1_CHECK_NID_H_3af071e917ea43fdb51326e2cbfbde0a
 #define P25P1_CHECK_NID_H_3af071e917ea43fdb51326e2cbfbde0a
@@ -11,17 +16,65 @@ extern "C" {
 #endif
 
 /**
- * Checks a NID value, returns the fixed NAC, DUID and also an indication if it failed to decode the NID.
- *  \param bch_code Input. An array to the 63 bytes, each containing one bit of the NID. This includes the
- *  NAC (12 bits), DUID (4 bits) and 47 bits of BCH parity.
- *  \param new_nac Output. An address where to store the calculated NAC value after error correction. Should
- *                 be large enough to accommodate for an integer.
- *  \param new_duid Output. An address where to store the calculated DUID value after error correction. Should
- *                  be able to accommodate 3 chars.
- *  \param parity Input. The parity value read.
- *  \return 0 if there were errors processing the NID.
+ * @brief NID decode result codes.
+ *
+ * Returned by check_NID() to indicate the outcome of BCH decoding,
+ * DUID validation, and parity checking. Dispatch code uses these to
+ * decide whether to accept or reject the frame.
+ *
+ * Values are chosen so that simple truth checks still work:
+ *   - Positive values (NID_OK, NID_PARITY_OVERRIDE) indicate an accepted frame.
+ *   - Zero or negative values (NID_DECODE_FAIL, NID_PARITY_MISMATCH) indicate rejection.
  */
-int check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity);
+enum NidResult {
+    NID_PARITY_MISMATCH = -1, /**< BCH decoded, valid DUID, but parity disagrees (rejected).
+                                   Returned when corrected error count > 6, meaning the
+                                   decoder is near its correction limit and the parity
+                                   disagreement likely indicates miscorrection. */
+    NID_DECODE_FAIL = 0,      /**< BCH decode failed (>11 errors) or decoded DUID is not
+                                   in the valid set from TIA-102.BAAA-A Table 8-4. */
+    NID_OK = 1,               /**< Success: BCH correction + parity + DUID all valid. */
+    NID_PARITY_OVERRIDE = 2   /**< BCH decoded, valid DUID, parity disagrees but accepted.
+                                   Returned when corrected error count <= 6, meaning the
+                                   decoder has high confidence and the parity bit itself
+                                   was likely corrupted. */
+};
+
+/**
+ * @brief Decode and validate a P25 NID codeword (full interface).
+ *
+ * Performs BCH(63,16,23) error correction on the 63-bit NID codeword,
+ * validates the decoded DUID against the set of defined frame types,
+ * checks the parity bit for consistency, and applies confidence-based
+ * parity override logic based on the number of corrected errors.
+ *
+ * @param bch_code    Input. An array of 63 bytes, each containing one bit of the NID.
+ *                    This includes the NAC (12 bits), DUID (4 bits) and 47 bits of BCH parity.
+ * @param new_nac     Output. Pointer to store the decoded 12-bit NAC value after error correction.
+ * @param new_duid    Output. Pointer to a 3-char buffer to store the decoded DUID as a
+ *                    null-terminated string (e.g., "11" for LDU1, "22" for LDU2).
+ * @param parity      Input. The 64th parity bit read from the air interface.
+ * @param error_count Output. Pointer to store the number of BCH errors corrected.
+ *                    Valid when the return value is positive (NID_OK or NID_PARITY_OVERRIDE).
+ *                    Set to 0 on decode failure.
+ * @return NidResult code indicating decode outcome. Positive values indicate acceptance,
+ *         zero or negative values indicate rejection.
+ */
+int check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count);
+
+/**
+ * @brief Backward-compatible 4-parameter NID check (legacy wrapper).
+ *
+ * Calls the full 5-parameter check_NID() with a local dummy error_count.
+ * Provided for callers that do not need the error count information.
+ *
+ * @param bch_code Input. An array of 63 bytes, each containing one bit of the NID.
+ * @param new_nac  Output. Pointer to store the decoded 12-bit NAC value.
+ * @param new_duid Output. Pointer to a 3-char buffer for the decoded DUID string.
+ * @param parity   Input. The 64th parity bit read from the air interface.
+ * @return NidResult code (same semantics as the 5-parameter version).
+ */
+int check_NID_legacy(char* bch_code, int* new_nac, char* new_duid, unsigned char parity);
 
 #ifdef __cplusplus
 }

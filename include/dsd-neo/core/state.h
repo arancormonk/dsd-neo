@@ -419,6 +419,12 @@ struct dsd_state {
     unsigned int debug_audio_errorsR;
     unsigned int debug_header_errors;
     unsigned int debug_header_critical_errors;
+
+    // NID BCH correction statistics (P25 Phase 1)
+    unsigned int nid_corrections_total; /**< Running total of NID BCH corrections applied */
+    unsigned int nid_failures_total;    /**< Running total of NID decode failures */
+    unsigned int nid_parity_overrides;  /**< Count of parity mismatches accepted (≤6 errors) */
+
     int debug_mode; //debug misc things
 
     // Last dibit read

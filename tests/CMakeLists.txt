@@ -968,6 +968,12 @@ target_include_directories(dsd-neo_test_p25_p1_nid PRIVATE ${PROJECT_SOURCE_DIR}
 target_link_libraries(dsd-neo_test_p25_p1_nid PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P1_NID COMMAND dsd-neo_test_p25_p1_nid)
 
+# P25 P1 NID full correction — DUID validation, parity override, threshold boundary
+add_executable(dsd-neo_test_p25_p1_nid_full protocol/p25/test_p25_p1_nid_full.cpp)
+target_include_directories(dsd-neo_test_p25_p1_nid_full PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p1_nid_full PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_NID_FULL COMMAND dsd-neo_test_p25_p1_nid_full)
+
 # P25 P1 LCW → SM dispatch (Group Voice Ch Update – Explicit)
 add_executable(dsd-neo_test_p25_p1_lcw_sm protocol/p25/test_p25_p1_lcw_sm.c)
 target_include_directories(dsd-neo_test_p25_p1_lcw_sm PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -1706,6 +1712,13 @@ add_executable(dsd-neo_test_fec_bptc_rs fec/test_fec_bptc_rs.c)
 target_include_directories(dsd-neo_test_fec_bptc_rs PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_fec_bptc_rs PRIVATE dsd-neo_fec)
 add_test(NAME FEC_BPTC_RS COMMAND dsd-neo_test_fec_bptc_rs)
+
+# BCH(63,16,11) encode/decode unit tests
+add_executable(dsd-neo_test_fec_bch_63_16_unit fec/test_fec_bch_63_16_unit.cpp)
+target_include_directories(dsd-neo_test_fec_bch_63_16_unit PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_fec_bch_63_16_unit PRIVATE dsd-neo_fec)
+add_test(NAME FEC_BCH_63_16_UNIT COMMAND dsd-neo_test_fec_bch_63_16_unit)
+
 # P25 SM core behaviors (monotonic/backoff/cc-hunt)
 add_executable(dsd-neo_test_p25_sm_core protocol/p25/test_p25_sm_core.c)
 target_include_directories(dsd-neo_test_p25_sm_core PRIVATE ${PROJECT_SOURCE_DIR}/include)

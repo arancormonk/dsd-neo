@@ -41,6 +41,7 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     int new_nac;
     char new_duid[3];
     int check_result;
+    int error_count = 0;
 
     nac[12] = 0;
     duid[2] = 0;
@@ -103,9 +104,28 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
     parity = (1 & dibit);                        // bit 0
 
-    // Check if the NID is correct
-    check_result = check_NID(bch_code, &new_nac, new_duid, parity);
-    if (check_result == 1) {
+    // Decode and validate the NID using full BCH(63,16,23) correction.
+    // check_NID returns NID_OK (1) or NID_PARITY_OVERRIDE (2) on success,
+    // NID_DECODE_FAIL (0) or NID_PARITY_MISMATCH (-1) on failure.
+    // error_count receives the number of BCH bit errors corrected (0–11).
+    check_result = check_NID(bch_code, &new_nac, new_duid, parity, &error_count);
+    if (check_result > 0) {
+        // NID_OK (1) or NID_PARITY_OVERRIDE (2) — frame accepted
+
+        // Track cumulative BCH corrections for diagnostics
+        if (error_count > 0) {
+            state->nid_corrections_total += (unsigned int)error_count;
+        }
+
+        // Track parity overrides — these indicate the parity bit itself was
+        // likely corrupted but the BCH correction had high confidence (≤6 errors)
+        if (check_result == NID_PARITY_OVERRIDE) {
+            state->nid_parity_overrides++;
+            if (opts->verbose > 1) {
+                fprintf(stderr, " [NID parity override, %d corrections]", error_count);
+            }
+        }
+
         if (new_nac != state->nac) {
             // NAC fixed by error correction
             state->nac = new_nac;
@@ -123,13 +143,15 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
             state->debug_header_errors++;
         }
     } else {
-        if (check_result == -1 && opts->verbose > 0) {
+        // NID_DECODE_FAIL (0) or NID_PARITY_MISMATCH (-1) — frame rejected
+        state->nid_failures_total++;
+
+        if (check_result == NID_PARITY_MISMATCH && opts->verbose > 0) {
             fprintf(stderr, "%s", KRED);
             fprintf(stderr, " NID PARITY MISMATCH ");
             fprintf(stderr, "%s", KNRM);
         }
-        // Check of NID failed and unable to recover its value
-        //fprintf (stderr,"NID error\n");
+        // Unable to recover NID — mark DUID as error
         duid[0] = 'E';
         duid[1] = 'E';
         state->debug_header_critical_errors++;

@@ -23,6 +23,19 @@
  */
 
 /**
+ * @brief Decode result structure for BCH(63,16,11).
+ *
+ * Returned by BCH_63_16_11::decode() to provide both the success/failure
+ * indication and the number of bit errors that were corrected. This enables
+ * callers (e.g., check_NID) to make confidence-based decisions using the
+ * error count as a quality metric.
+ */
+struct BCH_63_16_Result {
+    bool success;    /**< true if decoding succeeded (0–11 errors corrected) */
+    int error_count; /**< Number of bit errors corrected (valid only when success=true) */
+};
+
+/**
  * BCH(63,16,11) decoder class.
  *
  * Parameters:
@@ -70,20 +83,103 @@ class BCH_63_16_11 {
         index_of[0] = -1; // log(0) is undefined, use -1 as sentinel
     }
 
+    /**
+     * Generator polynomial g(x) = 6331 1413 6723 5453 (octal), degree 47.
+     *
+     * This is the BCH(63,16,23) generator polynomial from TIA-102.BAAA-A §8.5.2.
+     * Stored as 48 binary coefficients (MSB = x^47 coefficient, LSB = x^0 = 1).
+     * The polynomial has degree 47, so genpoly[0] is the x^47 coefficient (always 1)
+     * and genpoly[47] is the x^0 coefficient (always 1).
+     *
+     * Octal expansion:
+     *   6    3    3    1    1    4    1    3    6    7    2    3    5    4    5    3
+     *  110  011  011  001  001  100  001  011  110  111  010  011  101  100  101  011
+     */
+
   public:
     BCH_63_16_11() { generate_gf(); }
 
     /**
-     * Decode a BCH(63,16,11) codeword.
+     * @brief Encode 16 information bits into a 63-bit systematic BCH codeword.
      *
-     * @param input Array of 63 chars, each containing a bit (0 or 1).
-     *              Bit ordering matches IT++ systematic convention:
-     *              data bits in positions 0-15 (MSB first), parity in 16-62.
-     * @param output Array of 16 chars to receive corrected data bits.
-     * @return true if decoding succeeded (0-11 errors corrected),
-     *         false if too many errors to correct.
+     * Uses the generator polynomial g(x) = 6331 1413 6723 5453 (octal) from
+     * TIA-102.BAAA-A §8.5.2. The encoding is systematic: information bits
+     * occupy positions 0–15 of the output, parity bits occupy positions 16–62.
+     *
+     * Implementation uses a feedback shift register (LFSR) division approach:
+     * multiply the information polynomial by x^47, divide by g(x), and append
+     * the remainder as parity bits.
+     *
+     * @param input  Array of 16 chars, each 0 or 1 (MSB first: input[0] = bit 15).
+     * @param output Array of 63 chars to receive the complete codeword.
+     *               output[0..15] = information bits (copied from input).
+     *               output[16..62] = parity bits computed from g(x).
      */
-    bool
+    void
+    encode(const char* input, char* output) {
+        // Generator polynomial g(x) = 6331 1413 6723 5453 (octal), degree 47.
+        // 48 binary coefficients (MSB = x^47, LSB = x^0). Defined as a function-local
+        // static to avoid ODR-use linker issues with static constexpr class members in C++14.
+        static const char genpoly[48] = {1, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1,
+                                         1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1};
+
+        // Number of parity bits = n - k = 63 - 16 = 47
+        static const int PARITY_BITS = NN - KK; // 47
+
+        // Step 1: Copy 16 information bits to output positions 0–15
+        for (int i = 0; i < KK; i++) {
+            output[i] = input[i];
+        }
+
+        // Step 2: Initialize a 47-bit shift register to zero.
+        // The shift register holds the running remainder of the polynomial
+        // division of the information polynomial (shifted by x^47) by g(x).
+        char sr[47] = {0};
+
+        // Step 3: Feed each information bit through the LFSR.
+        // For systematic encoding, we compute:
+        //   remainder = (info_polynomial * x^47) mod g(x)
+        // using a feedback shift register. The feedback bit is the XOR of the
+        // incoming data bit and the MSB of the shift register (the bit about
+        // to be shifted out).
+        for (int i = 0; i < KK; i++) {
+            // Feedback = input bit XOR the MSB of the shift register
+            char feedback = input[i] ^ sr[0];
+
+            // Shift the register left by one position, applying feedback
+            // at each tap position defined by g(x). The generator polynomial
+            // coefficients genpoly[1..47] define where feedback is XORed in.
+            for (int j = 0; j < PARITY_BITS - 1; j++) {
+                sr[j] = sr[j + 1] ^ (feedback & genpoly[j + 1]);
+            }
+            // The last position receives only the feedback (genpoly[47] = 1)
+            sr[PARITY_BITS - 1] = feedback & genpoly[PARITY_BITS];
+        }
+
+        // Step 4: Copy the 47 parity bits from the shift register to output[16..62]
+        for (int i = 0; i < PARITY_BITS; i++) {
+            output[KK + i] = sr[i];
+        }
+    }
+
+    /**
+     * @brief Decode a BCH(63,16,11) codeword with error count reporting.
+     *
+     * Computes syndromes, runs Berlekamp-Massey to find the error locator
+     * polynomial, then performs Chien search to locate and correct errors.
+     * Returns both a success flag and the number of corrected bit errors,
+     * enabling callers to assess correction confidence.
+     *
+     * @param input  Array of 63 chars, each containing a bit (0 or 1).
+     *               Bit ordering matches IT++ systematic convention:
+     *               data bits in positions 0-15 (MSB first), parity in 16-62.
+     * @param output Array of 16 chars to receive corrected data bits.
+     * @return BCH_63_16_Result with success flag and error count.
+     *         - success=true, error_count=0: no errors detected (all syndromes zero)
+     *         - success=true, error_count=N: N errors corrected (1 ≤ N ≤ 11)
+     *         - success=false, error_count=0: decoding failed (>11 errors or Chien search mismatch)
+     */
+    BCH_63_16_Result
     decode(const char* input, char* output) {
         int recd[NN];      // received codeword (working copy)
         int s[2 * TT + 1]; // syndromes
@@ -116,7 +212,7 @@ class BCH_63_16_11 {
             for (int i = 0; i < KK; i++) {
                 output[i] = (char)recd[NN - 1 - i];
             }
-            return true;
+            return BCH_63_16_Result{true, 0};
         }
 
         // Berlekamp-Massey algorithm to find error locator polynomial
@@ -213,7 +309,7 @@ class BCH_63_16_11 {
         u++;
         if (l[u] > TT) {
             // Too many errors to correct
-            return false;
+            return BCH_63_16_Result{false, 0};
         }
 
         // Convert elp to index form
@@ -250,7 +346,7 @@ class BCH_63_16_11 {
 
         if (count != l[u]) {
             // Number of roots doesn't match degree - decoding failure
-            return false;
+            return BCH_63_16_Result{false, 0};
         }
 
         // Correct the errors (for binary BCH, just flip the bits)
@@ -268,7 +364,26 @@ class BCH_63_16_11 {
             output[i] = (char)recd[NN - 1 - i];
         }
 
-        return true;
+        // Return success with the number of errors corrected (from Chien search root count)
+        return BCH_63_16_Result{true, count};
+    }
+
+    /**
+     * @brief Legacy decode interface (backward compatible).
+     *
+     * Thin wrapper around decode() that discards the error count and returns
+     * only the success/failure boolean. Provided for callers that do not need
+     * the error count information.
+     *
+     * @deprecated Use the BCH_63_16_Result overload for error count access.
+     *
+     * @param input  Array of 63 chars, each containing a bit (0 or 1).
+     * @param output Array of 16 chars to receive corrected data bits.
+     * @return true if decoding succeeded, false otherwise.
+     */
+    bool
+    decode_legacy(const char* input, char* output) {
+        return decode(input, output).success;
     }
 };
 
