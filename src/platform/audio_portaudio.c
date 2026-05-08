@@ -225,8 +225,7 @@ portaudio_output_pump_thread(void* arg) {
 
         int synthesize_underrun = 0;
         while (!stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
-            if (stream->conceal_inited && stream->conceal_has_good
-                && stream->conceal.repeat_count < stream->conceal.max_repeats) {
+            if (stream->conceal_inited && stream->conceal_has_good) {
                 int ret = dsd_cond_timedwait(&stream->cv, &stream->mu, DSD_PORTAUDIO_OUTPUT_CHUNK_MS);
                 if (ret != 0 && !stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
                     synthesize_underrun = 1;

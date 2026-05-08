@@ -248,8 +248,7 @@ pulse_output_pump_thread(void* arg) {
          * starvation with a few attenuated repeats instead of waiting until the
          * Pulse server underruns abruptly. */
         while (!stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
-            if (stream->conceal_inited && stream->conceal_has_good
-                && stream->conceal.repeat_count < stream->conceal.max_repeats) {
+            if (stream->conceal_inited && stream->conceal_has_good) {
                 int ret = dsd_cond_timedwait(&stream->cv, &stream->mu, DSD_PULSE_OUTPUT_CHUNK_MS);
                 if (ret != 0 && !stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
                     synthesize_underrun = 1;
