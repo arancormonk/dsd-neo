@@ -65,6 +65,7 @@ struct dsd_audio_stream {
     size_t chunk_samples;
     struct audio_conceal_state conceal;
     int conceal_inited;
+    int conceal_has_good;
 
     uint64_t underruns;
     uint64_t drops;
@@ -240,9 +241,23 @@ pulse_output_pump_thread(void* arg) {
     while (1) {
         dsd_mutex_lock(&stream->mu);
 
-        /* Sleep until we have audio to push or a control event (drain/stop). */
+        int synthesize_underrun = 0;
+
+        /* Sleep until we have audio to push or a control event (drain/stop).
+         * Once a good chunk exists, timed waits let the pump bridge total
+         * starvation with a few attenuated repeats instead of waiting until the
+         * Pulse server underruns abruptly. */
         while (!stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
-            (void)dsd_cond_wait(&stream->cv, &stream->mu);
+            if (stream->conceal_inited && stream->conceal_has_good
+                && stream->conceal.repeat_count < stream->conceal.max_repeats) {
+                int ret = dsd_cond_timedwait(&stream->cv, &stream->mu, DSD_PULSE_OUTPUT_CHUNK_MS);
+                if (ret != 0 && !stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
+                    synthesize_underrun = 1;
+                    break;
+                }
+            } else {
+                (void)dsd_cond_wait(&stream->cv, &stream->mu);
+            }
         }
 
         if (stream->stop) {
@@ -294,7 +309,9 @@ pulse_output_pump_thread(void* arg) {
 
         /* Normal: write fixed chunks; only pad the tail of a non-empty read. */
         size_t take = stream->chunk_samples;
-        if (take > stream->ring_samples_count) {
+        if (synthesize_underrun) {
+            take = 0;
+        } else if (take > stream->ring_samples_count) {
             take = stream->ring_samples_count;
         }
         if (take > 0) {
@@ -302,7 +319,7 @@ pulse_output_pump_thread(void* arg) {
         }
         if (take < stream->chunk_samples) {
             stream->underruns++;
-            if (stream->conceal_inited) {
+            if (stream->conceal_inited && stream->conceal_has_good) {
                 size_t missing_frames = (stream->chunk_samples - take) / (size_t)stream->channels;
                 size_t written = audio_conceal_on_underrun(&stream->conceal, stream->chunk + take, missing_frames);
                 size_t written_samples = written * (size_t)stream->channels;
@@ -314,8 +331,8 @@ pulse_output_pump_thread(void* arg) {
                 memset(stream->chunk + take, 0, (stream->chunk_samples - take) * sizeof(int16_t));
             }
         } else if (stream->conceal_inited) {
-            /* Partial chunks are underruns; keep the previous full chunk as the concealment source. */
             audio_conceal_on_good_buffer(&stream->conceal, stream->chunk, stream->chunk_frames);
+            stream->conceal_has_good = 1;
         }
 
         dsd_mutex_unlock(&stream->mu);
@@ -677,6 +694,7 @@ dsd_audio_open_output(const dsd_audio_params* params) {
     stream->drain_failed = 0;
     stream->underruns = 0;
     stream->drops = 0;
+    stream->conceal_has_good = 0;
 
     int async_sync_inited = 0;
     if (dsd_mutex_init(&stream->mu) == 0) {

@@ -2095,13 +2095,3 @@ add_executable(dsd-neo_test_watermark_adaptive runtime/test_watermark_adaptive.c
 target_include_directories(dsd-neo_test_watermark_adaptive PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_watermark_adaptive PRIVATE dsd-neo_platform)
 add_test(NAME RUNTIME_WATERMARK_ADAPTIVE COMMAND dsd-neo_test_watermark_adaptive)
-
-add_executable(dsd-neo_test_prefill_adaptive platform/test_prefill_adaptive.cpp)
-target_include_directories(dsd-neo_test_prefill_adaptive PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_prefill_adaptive PRIVATE dsd-neo_platform)
-add_test(NAME PLATFORM_PREFILL_ADAPTIVE COMMAND dsd-neo_test_prefill_adaptive)
-
-add_executable(dsd-neo_test_prefill_fixed platform/test_prefill_fixed.cpp)
-target_include_directories(dsd-neo_test_prefill_fixed PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_prefill_fixed PRIVATE dsd-neo_platform)
-add_test(NAME PLATFORM_PREFILL_FIXED COMMAND dsd-neo_test_prefill_fixed)

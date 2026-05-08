@@ -1403,7 +1403,13 @@ static DSD_THREAD_RETURN_TYPE
         if (g_stream) {
             struct input_ring_watermark* wm = &g_stream->watermark;
             watermark_periodic_adjust(wm, dsd_time_monotonic_ns());
+            int control_work_pending = 0;
             while (1) {
+                if (g_ring_purge_pending.load(std::memory_order_acquire)
+                    || controller.retune_in_progress.load(std::memory_order_acquire)) {
+                    control_work_pending = 1;
+                    break;
+                }
                 int was_paused = wm->paused;
                 int can_consume = watermark_should_consume(wm, input_ring_used(&input_ring), input_ring.capacity);
                 if (can_consume) {
@@ -1416,9 +1422,17 @@ static DSD_THREAD_RETURN_TYPE
                 if (exitflag || (g_stream && g_stream->should_exit.load())) {
                     break;
                 }
+                if (g_ring_purge_pending.load(std::memory_order_acquire)
+                    || controller.retune_in_progress.load(std::memory_order_acquire)) {
+                    control_work_pending = 1;
+                    break;
+                }
                 watermark_periodic_adjust(wm, dsd_time_monotonic_ns());
             }
             if (exitflag || (g_stream && g_stream->should_exit.load())) {
+                continue;
+            }
+            if (control_work_pending) {
                 continue;
             }
         }

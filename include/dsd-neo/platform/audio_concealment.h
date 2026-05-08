@@ -7,7 +7,7 @@
 
 /**
  * @file
- * @brief Audio underrun concealment for the OpenSL ES player callback.
+ * @brief Audio underrun concealment for output backends.
  *
  * When the audio ring buffer underruns (fewer frames available than needed),
  * this module replaces the hard silence gap with a fade-repeat of the last
@@ -15,8 +15,8 @@
  * repeated buffer by a fixed factor (default −6 dB ≈ 0.5 linear per repeat).
  * After a configurable maximum number of repeats the output fades to silence.
  *
- * All operations are lock-free and bounded-time so they are safe to call
- * from the high-priority OpenSL ES callback thread.
+ * All operations are bounded-time so they are safe to call from an audio
+ * output callback or pump thread.
  */
 
 #include <stddef.h>
@@ -52,8 +52,8 @@ extern "C" {
 /**
  * @brief State for the audio underrun concealment system.
  *
- * Stored alongside the dsd_audio_stream; accessed only from the
- * OpenSL ES callback thread (no locking needed).
+ * Stored alongside the dsd_audio_stream; callers are responsible for using it
+ * from one output thread at a time or serializing access externally.
  */
 struct audio_conceal_state {
     int16_t* last_good_buffer; /**< Copy of last successfully played buffer. */

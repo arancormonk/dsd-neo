@@ -7,8 +7,8 @@
  * @file
  * @brief Audio underrun concealment implementation.
  *
- * Provides fade-repeat concealment for audio underruns on the OpenSL ES
- * callback thread.  All functions are lock-free and bounded-time.
+ * Provides fade-repeat concealment for audio underruns on output callback or
+ * pump threads.  All functions are bounded-time.
  *
  * See audio_concealment.h for the full API contract.
  */
