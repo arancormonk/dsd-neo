@@ -29,6 +29,15 @@ expect_int(const char* label, int got, int want) {
     return 0;
 }
 
+static int
+expect_true(const char* label, int cond) {
+    if (!cond) {
+        fprintf(stderr, "FAIL: %s\n", label);
+        return 1;
+    }
+    return 0;
+}
+
 /**
  * @brief Watchdog does NOT trigger during 5s grace period even with 0 bytes.
  *
@@ -177,6 +186,44 @@ test_watchdog_exact_grace_boundary(void) {
     return rc;
 }
 
+/**
+ * @brief Watchdog event remains observable across reconnect reset.
+ *
+ * The TCP reader resets metrics immediately after a watchdog-triggered
+ * reconnect. Preserve the event until a later healthy watchdog window clears
+ * it, so status polling can observe that the reconnect was watchdog-driven.
+ */
+static int
+test_watchdog_latch_survives_reset_until_healthy_window(void) {
+    int rc = 0;
+    struct tcp_quality_metrics m;
+    tcp_metrics_init(&m, 48000);
+
+    uint64_t conn_ns = m.connection_established_ns;
+
+    /* Trigger watchdog after the grace period with a low-throughput window. */
+    tcp_metrics_record_recv(&m, 1000, conn_ns + 5500000000ULL);
+    int fired = tcp_metrics_record_recv(&m, 0, conn_ns + 8500000000ULL);
+    rc |= expect_int("watchdog fires before reset", fired, 1);
+
+    struct tcp_quality_snapshot snap = tcp_metrics_get_snapshot(&m);
+    rc |= expect_int("watchdog snapshot latched", snap.watchdog_triggered, 1);
+
+    tcp_metrics_reset(&m, 48000);
+    snap = tcp_metrics_get_snapshot(&m);
+    rc |= expect_int("watchdog survives reconnect reset", snap.watchdog_triggered, 1);
+
+    uint64_t reset_ns = m.connection_established_ns;
+    fired = tcp_metrics_record_recv(&m, 600000, reset_ns + 5500000000ULL);
+    rc |= expect_int("healthy window does not fire", fired, 0);
+
+    snap = tcp_metrics_get_snapshot(&m);
+    rc |= expect_int("healthy window clears latch", snap.watchdog_triggered, 0);
+    rc |= expect_true("healthy window ratio is nonzero", snap.throughput_ratio > 0.0f);
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -185,5 +232,6 @@ main(void) {
     rc |= test_watchdog_no_trigger_good_throughput();
     rc |= test_watchdog_zero_sample_rate();
     rc |= test_watchdog_exact_grace_boundary();
+    rc |= test_watchdog_latch_survives_reset_until_healthy_window();
     return rc ? 1 : 0;
 }

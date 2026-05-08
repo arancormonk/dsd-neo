@@ -80,6 +80,7 @@ main(void) {
         rc |= expect_u32("init jitter_count", m.jitter_count, 0);
         rc |= expect_u64("init watchdog_bytes", m.watchdog_bytes, 0);
         rc |= expect_int("init watchdog_active", m.watchdog_active, 0);
+        rc |= expect_int("init watchdog_trigger_latched", m.watchdog_trigger_latched, 0);
         rc |= expect_float("init snapshot.throughput_ratio", m.snapshot.throughput_ratio, 0.0f);
         rc |= expect_float("init snapshot.jitter_us", m.snapshot.jitter_us, 0.0f);
         rc |= expect_float("init snapshot.input_ring_fill_pct", m.snapshot.input_ring_fill_pct, 0.0f);
@@ -109,6 +110,7 @@ main(void) {
         rc |= expect_u64("reset window_bytes", m.window_bytes, 0);
         rc |= expect_u32("reset jitter_count", m.jitter_count, 0);
         rc |= expect_u64("reset watchdog_bytes", m.watchdog_bytes, 0);
+        rc |= expect_int("reset watchdog_trigger_latched", m.watchdog_trigger_latched, 0);
         rc |= expect_float("reset snapshot.throughput_ratio", m.snapshot.throughput_ratio, 0.0f);
     }
 

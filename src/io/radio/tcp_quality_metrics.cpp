@@ -50,8 +50,15 @@ tcp_metrics_init(struct tcp_quality_metrics* m, uint32_t sample_rate) {
 
 void
 tcp_metrics_reset(struct tcp_quality_metrics* m, uint32_t sample_rate) {
-    /* Reset is identical to init — fresh connection state. */
+    int watchdog_latched = (m && m->watchdog_trigger_latched) ? 1 : 0;
+
+    /* Reset connection-window state, but keep a watchdog event visible long
+     * enough for UI/status polling after the reconnect it caused. */
     tcp_metrics_init(m, sample_rate);
+    if (m && watchdog_latched) {
+        m->watchdog_trigger_latched = 1;
+        m->snapshot.watchdog_triggered = 1;
+    }
 }
 
 int
@@ -125,13 +132,12 @@ tcp_metrics_record_recv(struct tcp_quality_metrics* m, uint32_t bytes_received, 
             float wd_ratio = (float)((double)m->watchdog_bytes / expected);
             if (wd_ratio < WATCHDOG_THRESHOLD) {
                 watchdog_fired = 1;
-                m->snapshot.watchdog_triggered = 1;
+                m->watchdog_trigger_latched = 1;
             } else {
-                m->snapshot.watchdog_triggered = 0;
+                m->watchdog_trigger_latched = 0;
             }
-        } else {
-            m->snapshot.watchdog_triggered = 0;
         }
+        m->snapshot.watchdog_triggered = m->watchdog_trigger_latched;
 
         /* Reset watchdog window */
         m->watchdog_bytes = 0;

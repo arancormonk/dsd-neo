@@ -42,7 +42,7 @@ struct tcp_quality_snapshot {
     float jitter_us;           /**< Variance of inter-recv times in microseconds.    */
     float input_ring_fill_pct; /**< Input ring fill level as percentage (0.0–100.0). */
     uint64_t producer_drops;   /**< Cumulative input ring producer drops.             */
-    int watchdog_triggered;    /**< 1 if throughput watchdog fired this window.       */
+    int watchdog_triggered;    /**< 1 if watchdog fired recently, cleared by healthy throughput. */
 };
 
 /**
@@ -67,6 +67,7 @@ struct tcp_quality_metrics {
     uint64_t watchdog_start_ns;         /**< Monotonic timestamp when watchdog window opened.*/
     uint64_t connection_established_ns; /**< Timestamp of connection establishment.      */
     int watchdog_active;                /**< 1 if watchdog is armed (past grace period).     */
+    int watchdog_trigger_latched;       /**< Sticky event flag survives reconnect reset.      */
 
     /* Latest snapshot for JNI consumption */
     struct tcp_quality_snapshot snapshot; /**< Most recent computed metrics.              */
@@ -91,8 +92,9 @@ void tcp_metrics_init(struct tcp_quality_metrics* m, uint32_t sample_rate);
 /**
  * @brief Reset metrics on reconnect.
  *
- * Re-initialises all fields as if a fresh connection was established.
- * Equivalent to calling tcp_metrics_init() again.
+ * Re-initialises connection-window fields as if a fresh connection was
+ * established.  If a watchdog event caused the reset, the event remains
+ * visible in snapshots until a later healthy watchdog window clears it.
  *
  * @param m           Metrics state to reset (must not be NULL).
  * @param sample_rate Configured sample rate in Hz.

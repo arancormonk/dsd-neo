@@ -18,9 +18,11 @@
 #ifdef DSD_USE_PORTAUDIO
 
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/audio_concealment.h>
 
 #include <portaudio.h>
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +36,13 @@ struct dsd_audio_stream {
     int is_input;
     int channels;
     int sample_rate;
+    struct audio_conceal_state conceal;
+    int conceal_inited;
+    int conceal_has_good;
+    int conceal_pending;
+    int16_t* conceal_scratch;
+    size_t conceal_scratch_frames;
+    size_t conceal_scratch_samples;
 };
 
 /*============================================================================
@@ -60,6 +69,108 @@ set_error(const char* msg) {
 static void
 set_error_pa(PaError err) {
     set_error(Pa_GetErrorText(err));
+}
+
+static int
+size_mul_nonzero(size_t a, size_t b, size_t* result) {
+    if (!result) {
+        return 0;
+    }
+    *result = 0;
+    if (a == 0 || b == 0 || a > SIZE_MAX / b) {
+        return 0;
+    }
+    *result = a * b;
+    return 1;
+}
+
+static void
+portaudio_destroy_concealment(dsd_audio_stream* stream) {
+    if (!stream) {
+        return;
+    }
+    if (stream->conceal_inited) {
+        audio_conceal_destroy(&stream->conceal);
+        stream->conceal_inited = 0;
+    }
+    free(stream->conceal_scratch);
+    stream->conceal_scratch = NULL;
+    stream->conceal_scratch_frames = 0;
+    stream->conceal_scratch_samples = 0;
+    stream->conceal_has_good = 0;
+    stream->conceal_pending = 0;
+}
+
+static int
+portaudio_prepare_concealment(dsd_audio_stream* stream, size_t frames) {
+    if (!stream || stream->is_input || stream->channels <= 0 || frames == 0) {
+        return 0;
+    }
+
+    size_t samples = 0;
+    if (!size_mul_nonzero(frames, (size_t)stream->channels, &samples) || samples > SIZE_MAX / sizeof(int16_t)) {
+        return 0;
+    }
+
+    if (stream->conceal_inited && stream->conceal.buffer_frames >= frames
+        && stream->conceal_scratch_samples >= samples) {
+        return 1;
+    }
+
+    struct audio_conceal_state next;
+    memset(&next, 0, sizeof(next));
+    if (audio_conceal_init(&next, frames, stream->channels) != 0) {
+        return 0;
+    }
+
+    int16_t* scratch = (int16_t*)realloc(stream->conceal_scratch, samples * sizeof(int16_t));
+    if (!scratch) {
+        audio_conceal_destroy(&next);
+        return 0;
+    }
+
+    if (stream->conceal_inited) {
+        audio_conceal_destroy(&stream->conceal);
+    }
+    stream->conceal = next;
+    stream->conceal_inited = 1;
+    stream->conceal_has_good = 0;
+    stream->conceal_pending = 0;
+    stream->conceal_scratch = scratch;
+    stream->conceal_scratch_frames = frames;
+    stream->conceal_scratch_samples = samples;
+    return 1;
+}
+
+static int
+portaudio_write_pending_concealment(dsd_audio_stream* stream, size_t frames) {
+    if (!stream || !stream->conceal_pending) {
+        return 0;
+    }
+    stream->conceal_pending = 0;
+    if (!stream->conceal_inited || !stream->conceal_has_good || !stream->conceal_scratch) {
+        return 0;
+    }
+
+    size_t conceal_frames = frames;
+    if (conceal_frames > stream->conceal_scratch_frames) {
+        conceal_frames = stream->conceal_scratch_frames;
+    }
+    size_t written = audio_conceal_on_underrun(&stream->conceal, stream->conceal_scratch, conceal_frames);
+    if (written == 0) {
+        return 0;
+    }
+
+    PaError err = Pa_WriteStream(stream->handle, stream->conceal_scratch, (unsigned long)written);
+    if (err == paOutputUnderflowed) {
+        stream->conceal_pending = 1;
+        return 0;
+    }
+    if (err != paNoError) {
+        set_error_pa(err);
+        return -1;
+    }
+    return 0;
 }
 
 /**
@@ -439,10 +550,20 @@ dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) 
         return -1;
     }
 
+    int conceal_ready = portaudio_prepare_concealment(stream, frames);
+    if (conceal_ready && portaudio_write_pending_concealment(stream, frames) != 0) {
+        return -1;
+    }
+
     PaError err = Pa_WriteStream(stream->handle, buffer, (unsigned long)frames);
     if (err != paNoError && err != paOutputUnderflowed) {
         set_error_pa(err);
         return -1;
+    }
+    if (conceal_ready) {
+        audio_conceal_on_good_buffer(&stream->conceal, buffer, frames);
+        stream->conceal_has_good = 1;
+        stream->conceal_pending = (err == paOutputUnderflowed) ? 1 : 0;
     }
 
     return (int)frames;
@@ -459,6 +580,7 @@ dsd_audio_close(dsd_audio_stream* stream) {
         Pa_CloseStream(stream->handle);
     }
 
+    portaudio_destroy_concealment(stream);
     free(stream);
 }
 
