@@ -224,6 +224,36 @@ test_watchdog_latch_survives_reset_until_healthy_window(void) {
     return rc;
 }
 
+/**
+ * @brief Reprogramming from an unknown rate restarts the watchdog grace period.
+ *
+ * rtl_tcp devices are connected before their final sample rate is programmed.
+ * Resetting the metric windows at rate-program time prevents connect/startup
+ * delay from being counted as a low-throughput watchdog window.
+ */
+static int
+test_watchdog_reset_on_late_sample_rate_programming(void) {
+    int rc = 0;
+    struct tcp_quality_metrics m;
+    tcp_metrics_init(&m, 0);
+
+    uint64_t initial_ns = m.connection_established_ns;
+
+    int fired = tcp_metrics_record_recv(&m, 0, initial_ns + 9000000000ULL);
+    rc |= expect_int("zero-rate startup cannot fire", fired, 0);
+
+    tcp_metrics_reset(&m, 48000);
+    uint64_t reset_ns = m.connection_established_ns;
+
+    fired = tcp_metrics_record_recv(&m, 0, reset_ns + 3000000000ULL);
+    rc |= expect_int("fresh rate-program grace suppresses first low window", fired, 0);
+
+    fired = tcp_metrics_record_recv(&m, 0, reset_ns + 6000000000ULL);
+    rc |= expect_int("low window after fresh grace fires", fired, 1);
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -233,5 +263,6 @@ main(void) {
     rc |= test_watchdog_zero_sample_rate();
     rc |= test_watchdog_exact_grace_boundary();
     rc |= test_watchdog_latch_survives_reset_until_healthy_window();
+    rc |= test_watchdog_reset_on_late_sample_rate_programming();
     return rc ? 1 : 0;
 }

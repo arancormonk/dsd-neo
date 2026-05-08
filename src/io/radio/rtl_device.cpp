@@ -2871,14 +2871,14 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
         return verbose_set_sample_rate(dev->dev, samp_rate);
     }
     if (dev->backend == RTL_BACKEND_TCP) {
-        /* Keep TCP quality metrics in sync — the initial tcp_metrics_init()
-           runs before the sample rate is known (dev->rate is still 0 at
-           device creation time), so we patch it here once the real rate
-           arrives.  Without this, throughput_ratio stays 0.0 forever. */
-        rtl_tcp_metrics_lock(dev);
-        dev->tcp_metrics.sample_rate = samp_rate;
-        rtl_tcp_metrics_unlock(dev);
-        return rtl_tcp_send_cmd(dev->sockfd, 0x02, samp_rate);
+        int rc = rtl_tcp_send_cmd(dev->sockfd, 0x02, samp_rate);
+        if (rc == 0) {
+            /* The TCP device is created before the final stream rate is known.
+             * Reset the metric windows when the rate is programmed so startup
+             * delay cannot count against the first watchdog interval. */
+            rtl_tcp_metrics_reset_device(dev, samp_rate);
+        }
+        return rc;
     }
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         return 0;
