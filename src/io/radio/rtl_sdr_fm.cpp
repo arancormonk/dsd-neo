@@ -389,6 +389,14 @@ radio_source_is_iq_replay(const dsd_opts* opts) {
     return detect_radio_source(opts) == RADIO_SOURCE_IQ_REPLAY;
 }
 
+static void
+stream_refresh_watermark_for_current_rate(void) {
+    if (!g_stream) {
+        return;
+    }
+    watermark_init(&g_stream->watermark, radio_source_is_rtltcp(g_stream->opts) ? 1 : 0, dongle.rate);
+}
+
 static const char*
 radio_source_soapy_args(const dsd_opts* opts) {
     if (!radio_source_is_soapy(opts) || !opts) {
@@ -1393,11 +1401,25 @@ static DSD_THREAD_RETURN_TYPE
         /* Watermark-based flow control: pause consumption when the ring
          * is draining to let it refill (TCP lag resilience). */
         if (g_stream) {
-            while (!watermark_should_consume(&g_stream->watermark, input_ring_used(&input_ring), input_ring.capacity)) {
+            struct input_ring_watermark* wm = &g_stream->watermark;
+            watermark_periodic_adjust(wm, dsd_time_monotonic_ns());
+            while (1) {
+                int was_paused = wm->paused;
+                int can_consume = watermark_should_consume(wm, input_ring_used(&input_ring), input_ring.capacity);
+                if (can_consume) {
+                    break;
+                }
+                if (!was_paused) {
+                    watermark_on_low_event(wm, dsd_time_monotonic_ns());
+                }
                 dsd_sleep_ms(5);
                 if (exitflag || (g_stream && g_stream->should_exit.load())) {
                     break;
                 }
+                watermark_periodic_adjust(wm, dsd_time_monotonic_ns());
+            }
+            if (exitflag || (g_stream && g_stream->should_exit.load())) {
+                continue;
             }
         }
         /* Read a block from input ring */
@@ -2200,6 +2222,7 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz) {
         LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev, dongle.rate,
                  demod.rate_out);
     }
+    stream_refresh_watermark_for_current_rate();
 }
 
 /**
@@ -3922,6 +3945,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             LOG_ERROR("Failed to apply initial tuner settings.\n");
             return -1;
         }
+        stream_refresh_watermark_for_current_rate();
         input_ring_enable_space_notify(&input_ring, 0);
     }
 

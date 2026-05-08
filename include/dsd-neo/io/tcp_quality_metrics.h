@@ -15,9 +15,9 @@
  * seconds (with a 5-second grace period after connection establishment).
  *
  * All functions are designed to be called from a single writer thread
- * (the TCP reader).  The snapshot struct can be read from a different
- * thread (JNI poll) without locking — fields may be slightly stale but
- * never torn on aligned 32/64-bit platforms.
+ * (the TCP reader).  If a snapshot is exposed to another thread, callers
+ * must synchronize access around both writer updates and snapshot copies.
+ * The rtl_device wrapper provides that synchronization for UI polling.
  */
 
 #include <stddef.h>
@@ -34,16 +34,15 @@ extern "C" {
 /**
  * @brief Snapshot of TCP connection quality metrics.
  *
- * Read by the JNI poll thread; written by the TCP reader thread.
- * All fields are plain types safe for single-writer / single-reader access.
+ * Read through a synchronized device-level accessor; written by the TCP
+ * reader thread.
  */
 struct tcp_quality_snapshot {
-    float throughput_ratio;        /**< bytes_received / expected_bytes over 1s window.  */
-    float jitter_us;               /**< Variance of inter-recv times in microseconds.    */
-    float input_ring_fill_pct;     /**< Input ring fill level as percentage (0.0–100.0). */
-    uint64_t audio_underrun_count; /**< Cumulative audio underruns.                      */
-    uint64_t producer_drops;       /**< Cumulative input ring producer drops.             */
-    int watchdog_triggered;        /**< 1 if throughput watchdog fired this window.       */
+    float throughput_ratio;    /**< bytes_received / expected_bytes over 1s window.  */
+    float jitter_us;           /**< Variance of inter-recv times in microseconds.    */
+    float input_ring_fill_pct; /**< Input ring fill level as percentage (0.0–100.0). */
+    uint64_t producer_drops;   /**< Cumulative input ring producer drops.             */
+    int watchdog_triggered;    /**< 1 if throughput watchdog fired this window.       */
 };
 
 /**
@@ -130,7 +129,7 @@ void tcp_metrics_update_ring_fill(struct tcp_quality_metrics* m, size_t used, si
 /**
  * @brief Get a copy of the latest metrics snapshot.
  *
- * Safe to call from a different thread (e.g. JNI poll thread).
+ * Callers that share @p m across threads must synchronize externally.
  *
  * @param m  Metrics state (must not be NULL).
  * @return Copy of the latest snapshot.

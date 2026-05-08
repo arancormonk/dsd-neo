@@ -47,7 +47,6 @@ main(void) {
         tcp_metrics_update_ring_fill(&m, 250, 1000);
 
         /* Manually set some snapshot fields to simulate metrics collection */
-        m.snapshot.audio_underrun_count = 5;
         m.snapshot.producer_drops = 2;
 
         struct tcp_quality_snapshot snap = tcp_metrics_get_snapshot(&m);
@@ -56,7 +55,6 @@ main(void) {
         rc |= expect_true("snapshot fill_pct > 0", snap.input_ring_fill_pct > 0.0f);
         rc |=
             expect_true("snapshot fill_pct ~25%", snap.input_ring_fill_pct > 24.0f && snap.input_ring_fill_pct < 26.0f);
-        rc |= expect_true("snapshot audio_underrun_count", snap.audio_underrun_count == 5);
         rc |= expect_true("snapshot producer_drops", snap.producer_drops == 2);
     }
 

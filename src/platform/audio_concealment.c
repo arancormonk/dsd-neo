@@ -66,6 +66,10 @@ audio_conceal_on_good_buffer(struct audio_conceal_state* cs, const int16_t* buf,
     size_t copy_samples = copy_frames * (size_t)cs->channels;
 
     memcpy(cs->last_good_buffer, buf, copy_samples * sizeof(int16_t));
+    if (copy_frames < cs->buffer_frames) {
+        size_t tail_samples = (cs->buffer_frames - copy_frames) * (size_t)cs->channels;
+        memset(cs->last_good_buffer + copy_samples, 0, tail_samples * sizeof(int16_t));
+    }
 
     cs->repeat_count = 0;
 }

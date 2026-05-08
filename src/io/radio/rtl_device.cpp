@@ -323,6 +323,8 @@ struct rtl_device {
     uint64_t stats_last_ns;
     /* TCP connection quality metrics (lag resilience) */
     struct tcp_quality_metrics tcp_metrics;
+    dsd_mutex_t tcp_metrics_lock;
+    int tcp_metrics_lock_inited;
     /* TCP reassembly to uniform chunk size */
     unsigned char* tcp_pending;
     size_t tcp_pending_len;
@@ -339,6 +341,56 @@ struct rtl_device {
 
     int if_gain_count;
 };
+
+static void
+rtl_tcp_metrics_lock(struct rtl_device* dev) {
+    if (dev && dev->tcp_metrics_lock_inited) {
+        (void)dsd_mutex_lock(&dev->tcp_metrics_lock);
+    }
+}
+
+static void
+rtl_tcp_metrics_unlock(struct rtl_device* dev) {
+    if (dev && dev->tcp_metrics_lock_inited) {
+        (void)dsd_mutex_unlock(&dev->tcp_metrics_lock);
+    }
+}
+
+static void
+rtl_tcp_metrics_reset_device(struct rtl_device* dev, uint32_t sample_rate) {
+    if (!dev) {
+        return;
+    }
+    rtl_tcp_metrics_lock(dev);
+    tcp_metrics_reset(&dev->tcp_metrics, sample_rate);
+    rtl_tcp_metrics_unlock(dev);
+}
+
+static int
+rtl_tcp_metrics_record_recv_device(struct rtl_device* dev, uint32_t bytes_received, uint64_t now_ns) {
+    if (!dev) {
+        return 0;
+    }
+    rtl_tcp_metrics_lock(dev);
+    int fired = tcp_metrics_record_recv(&dev->tcp_metrics, bytes_received, now_ns);
+    rtl_tcp_metrics_unlock(dev);
+    return fired;
+}
+
+static void
+rtl_tcp_metrics_update_ring_snapshot(struct rtl_device* dev) {
+    if (!dev || !dev->input_ring) {
+        return;
+    }
+    size_t used = input_ring_used(dev->input_ring);
+    size_t capacity = dev->input_ring->capacity;
+    uint64_t producer_drops = dev->input_ring->producer_drops.load(std::memory_order_acquire);
+
+    rtl_tcp_metrics_lock(dev);
+    tcp_metrics_update_ring_fill(&dev->tcp_metrics, used, capacity);
+    dev->tcp_metrics.snapshot.producer_drops = producer_drops;
+    rtl_tcp_metrics_unlock(dev);
+}
 
 /**
  * Hint that a pointer is aligned to a compile-time boundary for vectorization.
@@ -1772,7 +1824,7 @@ static DSD_THREAD_RETURN_TYPE
                      * not carry into the resumed stream. */
                     rtl_tcp_skip_header(s->sockfd);
                     rtl_reset_capture_state_on_stream_boundary(s);
-                    tcp_metrics_reset(&s->tcp_metrics, s->rate);
+                    rtl_tcp_metrics_reset_device(s, s->rate);
                     /* Reapply socket options: RCVBUF/NODELAY/RCVTIMEO */
                     {
                         const dsdneoRuntimeConfig* cfg2 = dsd_neo_get_config();
@@ -1849,13 +1901,13 @@ static DSD_THREAD_RETURN_TYPE
         /* Record recv for TCP quality metrics and throughput watchdog. */
         {
             uint64_t recv_ns = dsd_time_monotonic_ns();
-            int wd_fired = tcp_metrics_record_recv(&s->tcp_metrics, (uint32_t)r, recv_ns);
+            int wd_fired = rtl_tcp_metrics_record_recv_device(s, (uint32_t)r, recv_ns);
             if (wd_fired) {
                 fprintf(stderr, "rtl_tcp: throughput watchdog triggered; reconnecting to %s:%d...\n", s->host, s->port);
                 dsd_socket_shutdown(s->sockfd, SHUT_RDWR);
                 dsd_socket_close(s->sockfd);
                 s->sockfd = DSD_INVALID_SOCKET;
-                tcp_metrics_reset(&s->tcp_metrics, s->rate);
+                rtl_tcp_metrics_reset_device(s, s->rate);
                 continue; /* Next iteration will enter the reconnect path */
             }
         }
@@ -1971,9 +2023,7 @@ static DSD_THREAD_RETURN_TYPE
         }
 
         /* Update ring fill metric for connection quality reporting. */
-        if (s->input_ring) {
-            tcp_metrics_update_ring_fill(&s->tcp_metrics, input_ring_used(s->input_ring), s->input_ring->capacity);
-        }
+        rtl_tcp_metrics_update_ring_snapshot(s);
 
         /* Once per ~1s: optional stats print and adaptive tuning */
         {
@@ -2323,6 +2373,9 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     memset(&dev->replay_eof, 0, sizeof(dev->replay_eof));
     dev->replay_has_eof_state = 0;
     dev->replay_float_elements_written = 0;
+    if (dsd_mutex_init(&dev->tcp_metrics_lock) == 0) {
+        dev->tcp_metrics_lock_inited = 1;
+    }
 }
 
 /**
@@ -2461,7 +2514,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
         }
     }
     /* Initialize TCP connection quality metrics (lag resilience). */
-    tcp_metrics_init(&dev->tcp_metrics, dev->rate);
+    rtl_tcp_metrics_reset_device(dev, dev->rate);
     /* Initialize autotune from env if not already enabled by caller */
     if (!dev->tcp_autotune) {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
@@ -2730,6 +2783,10 @@ rtl_device_destroy(struct rtl_device* dev) {
         dev->tcp_pending_len = 0;
         dev->tcp_pending_cap = 0;
     }
+    if (dev->tcp_metrics_lock_inited) {
+        (void)dsd_mutex_destroy(&dev->tcp_metrics_lock);
+        dev->tcp_metrics_lock_inited = 0;
+    }
 
     free(dev);
 }
@@ -2802,7 +2859,9 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
            runs before the sample rate is known (dev->rate is still 0 at
            device creation time), so we patch it here once the real rate
            arrives.  Without this, throughput_ratio stays 0.0 forever. */
+        rtl_tcp_metrics_lock(dev);
         dev->tcp_metrics.sample_rate = samp_rate;
+        rtl_tcp_metrics_unlock(dev);
         return rtl_tcp_send_cmd(dev->sockfd, 0x02, samp_rate);
     }
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
@@ -3584,12 +3643,14 @@ rtl_device_get_native_sample_format(const struct rtl_device* dev) {
 
 int
 rtl_device_get_tcp_quality_snapshot(struct rtl_device* dev, struct tcp_quality_snapshot* out) {
-    if (!dev || !out) {
+    if (!dev || !out || dev->backend != RTL_BACKEND_TCP) {
         if (out) {
             *out = tcp_quality_snapshot{};
         }
         return -1;
     }
+    rtl_tcp_metrics_lock(dev);
     *out = tcp_metrics_get_snapshot(&dev->tcp_metrics);
+    rtl_tcp_metrics_unlock(dev);
     return 0;
 }

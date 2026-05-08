@@ -39,6 +39,28 @@ ms_to_elements(uint32_t ms, uint32_t sample_rate) {
     return (size_t)((uint64_t)ms * (uint64_t)sample_rate * 2ULL / 1000ULL);
 }
 
+static void
+effective_watermarks(const struct input_ring_watermark* wm, size_t ring_capacity, size_t* low, size_t* target) {
+    size_t eff_low = wm ? wm->low_watermark : 0;
+    size_t eff_target = wm ? wm->target_watermark : 0;
+
+    if (ring_capacity > 0) {
+        if (eff_target == 0 || eff_target > ring_capacity) {
+            eff_target = ring_capacity;
+        }
+        if (eff_low >= eff_target) {
+            eff_low = eff_target / 2U;
+        }
+    }
+
+    if (low) {
+        *low = eff_low;
+    }
+    if (target) {
+        *target = eff_target;
+    }
+}
+
 /*============================================================================
  * Public API
  *============================================================================*/
@@ -80,9 +102,13 @@ watermark_should_consume(struct input_ring_watermark* wm, size_t ring_used, size
         wm->fill_ema = wm->ema_alpha * fill_ratio + (1.0f - wm->ema_alpha) * wm->fill_ema;
     }
 
+    size_t low_watermark = 0;
+    size_t target_watermark = 0;
+    effective_watermarks(wm, ring_capacity, &low_watermark, &target_watermark);
+
     if (!wm->paused) {
         /* Normal mode: check if we should pause. */
-        if (ring_used < wm->low_watermark) {
+        if (ring_used < low_watermark) {
             wm->paused = 1;
             return 0; /* Pause — tell demod to wait. */
         }
@@ -90,7 +116,7 @@ watermark_should_consume(struct input_ring_watermark* wm, size_t ring_used, size
     }
 
     /* Paused mode: check if we should resume. */
-    if (ring_used >= wm->target_watermark) {
+    if (ring_used >= target_watermark) {
         wm->paused = 0;
         return 1; /* Resume — ring has refilled to target. */
     }

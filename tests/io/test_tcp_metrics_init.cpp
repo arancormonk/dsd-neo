@@ -83,7 +83,6 @@ main(void) {
         rc |= expect_float("init snapshot.throughput_ratio", m.snapshot.throughput_ratio, 0.0f);
         rc |= expect_float("init snapshot.jitter_us", m.snapshot.jitter_us, 0.0f);
         rc |= expect_float("init snapshot.input_ring_fill_pct", m.snapshot.input_ring_fill_pct, 0.0f);
-        rc |= expect_u64("init snapshot.audio_underrun_count", m.snapshot.audio_underrun_count, 0);
         rc |= expect_u64("init snapshot.producer_drops", m.snapshot.producer_drops, 0);
         rc |= expect_int("init snapshot.watchdog_triggered", m.snapshot.watchdog_triggered, 0);
 
