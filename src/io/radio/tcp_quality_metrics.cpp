@@ -29,6 +29,9 @@ static const uint64_t GRACE_PERIOD_NS = 5000000000ULL;
 /* Watchdog trigger threshold: ratio below this fires reconnect */
 static const float WATCHDOG_THRESHOLD = 0.25f;
 
+/* EWMA smoothing factor for published jitter variance */
+static const float JITTER_EWMA_ALPHA = 0.2f;
+
 /*============================================================================
  * Public API
  *============================================================================*/
@@ -39,8 +42,9 @@ tcp_metrics_init(struct tcp_quality_metrics* m, uint32_t sample_rate) {
         return;
     }
 
-    *m = (struct tcp_quality_metrics){0};
+    *m = {};
     m->sample_rate = sample_rate;
+    m->jitter_ewma_alpha = JITTER_EWMA_ALPHA;
 
     uint64_t now = dsd_time_monotonic_ns();
     m->window_start_ns = now;
@@ -107,9 +111,20 @@ tcp_metrics_record_recv(struct tcp_quality_metrics* m, uint32_t bytes_received, 
             if (variance < 0.0) {
                 variance = 0.0;
             }
-            m->snapshot.jitter_us = (float)variance;
+            if (!m->jitter_ewma_inited) {
+                m->snapshot.jitter_variance_us2 = (float)variance;
+                m->jitter_ewma_inited = 1;
+            } else {
+                m->snapshot.jitter_variance_us2 = (m->jitter_ewma_alpha * (float)variance)
+                                                  + ((1.0f - m->jitter_ewma_alpha) * m->snapshot.jitter_variance_us2);
+            }
         } else {
-            m->snapshot.jitter_us = 0.0f;
+            if (!m->jitter_ewma_inited) {
+                m->snapshot.jitter_variance_us2 = 0.0f;
+                m->jitter_ewma_inited = 1;
+            } else {
+                m->snapshot.jitter_variance_us2 = (1.0f - m->jitter_ewma_alpha) * m->snapshot.jitter_variance_us2;
+            }
         }
 
         /* Reset 1-second window */
@@ -164,7 +179,7 @@ tcp_metrics_update_ring_fill(struct tcp_quality_metrics* m, size_t used, size_t 
 struct tcp_quality_snapshot
 tcp_metrics_get_snapshot(const struct tcp_quality_metrics* m) {
     if (!m) {
-        struct tcp_quality_snapshot empty = {0};
+        struct tcp_quality_snapshot empty = {};
         return empty;
     }
     return m->snapshot;

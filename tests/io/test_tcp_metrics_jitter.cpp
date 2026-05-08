@@ -8,8 +8,8 @@
  * @brief Exhaustive example-based tests for jitter variance computation.
  *
  * Validates Property 5: For sequences of monotonically increasing recv
- * timestamps, the jitter metric equals the variance of inter-arrival
- * deltas, computed as E[Δ²] − E[Δ]².
+ * timestamps, the jitter metric publishes an EWMA-smoothed variance of
+ * inter-arrival deltas, computed from E[delta^2] - E[delta]^2.
  */
 
 /* Feature: rtl-tcp-lag-resilience, Property 5: Jitter variance computation */
@@ -76,7 +76,7 @@ test_even_spacing_zero_jitter(void) {
     struct tcp_quality_snapshot snap = tcp_metrics_get_snapshot(&m);
 
     /* With perfectly even spacing, jitter variance should be ~0 */
-    rc |= expect_float_approx("even spacing jitter ~0", snap.jitter_us, 0.0f, 1.0f);
+    rc |= expect_float_approx("even spacing jitter ~0", snap.jitter_variance_us2, 0.0f, 1.0f);
 
     return rc;
 }
@@ -119,7 +119,7 @@ test_known_uneven_timestamps(void) {
     float expected_variance = 28000000000.0f;
 
     /* Use relative tolerance since the numbers are large */
-    float rel_err = fabsf(snap.jitter_us - expected_variance) / expected_variance;
+    float rel_err = fabsf(snap.jitter_variance_us2 - expected_variance) / expected_variance;
     rc |= expect_true("uneven jitter variance within 1%", rel_err < 0.01f);
 
     return rc;
@@ -147,7 +147,7 @@ test_single_delta(void) {
     struct tcp_quality_snapshot snap = tcp_metrics_get_snapshot(&m);
 
     /* Single delta → variance = 0 */
-    rc |= expect_float_approx("single delta jitter = 0", snap.jitter_us, 0.0f, 1.0f);
+    rc |= expect_float_approx("single delta jitter = 0", snap.jitter_variance_us2, 0.0f, 1.0f);
 
     return rc;
 }
@@ -174,7 +174,45 @@ test_no_recv_events(void) {
     struct tcp_quality_snapshot snap = tcp_metrics_get_snapshot(&m);
 
     /* No deltas → jitter = 0 */
-    rc |= expect_float_approx("no deltas jitter = 0", snap.jitter_us, 0.0f, 0.01f);
+    rc |= expect_float_approx("no deltas jitter = 0", snap.jitter_variance_us2, 0.0f, 0.01f);
+
+    return rc;
+}
+
+/**
+ * @brief Subsequent windows are EWMA-smoothed instead of replacing the snapshot.
+ *
+ * First publish a high-variance window, then publish a zero-variance window.
+ * With alpha=0.2, the second snapshot should retain 80% of the first value.
+ */
+static int
+test_jitter_variance_is_ewma_smoothed(void) {
+    int rc = 0;
+    struct tcp_quality_metrics m;
+    tcp_metrics_init(&m, 48000);
+
+    uint64_t base_ns = m.window_start_ns;
+
+    tcp_metrics_record_recv(&m, 1000, base_ns + 0ULL);
+    tcp_metrics_record_recv(&m, 1000, base_ns + 50000000ULL);
+    tcp_metrics_record_recv(&m, 1000, base_ns + 200000000ULL);
+    tcp_metrics_record_recv(&m, 1000, base_ns + 250000000ULL);
+    tcp_metrics_record_recv(&m, 1000, base_ns + 500000000ULL);
+    tcp_metrics_record_recv(&m, 0, base_ns + 1000000000ULL);
+
+    struct tcp_quality_snapshot snap1 = tcp_metrics_get_snapshot(&m);
+    float expected_first = 28000000000.0f;
+    float rel_err_first = fabsf(snap1.jitter_variance_us2 - expected_first) / expected_first;
+    rc |= expect_true("first jitter variance within 1%", rel_err_first < 0.01f);
+
+    for (int i = 1; i <= 10; i++) {
+        tcp_metrics_record_recv(&m, 1000, base_ns + 1000000000ULL + (uint64_t)i * 100000000ULL);
+    }
+
+    struct tcp_quality_snapshot snap2 = tcp_metrics_get_snapshot(&m);
+    float expected_second = expected_first * 0.8f;
+    float rel_err_second = fabsf(snap2.jitter_variance_us2 - expected_second) / expected_second;
+    rc |= expect_true("second jitter variance EWMA-smoothed", rel_err_second < 0.01f);
 
     return rc;
 }
@@ -186,5 +224,6 @@ main(void) {
     rc |= test_known_uneven_timestamps();
     rc |= test_single_delta();
     rc |= test_no_recv_events();
+    rc |= test_jitter_variance_is_ewma_smoothed();
     return rc ? 1 : 0;
 }

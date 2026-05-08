@@ -72,7 +72,7 @@ watermark_init(struct input_ring_watermark* wm, int enabled, uint32_t sample_rat
         return;
     }
 
-    *wm = (struct input_ring_watermark){0};
+    *wm = {};
 
     /* If sample_rate is 0, force-disable to avoid division issues and
      * nonsensical element counts. */

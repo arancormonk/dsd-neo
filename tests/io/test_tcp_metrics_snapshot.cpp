@@ -91,7 +91,7 @@ main(void) {
         /* After window expiry, throughput_ratio should be computed and > 0 */
         rc |= expect_true("post-window snapshot ratio > 0", snap.throughput_ratio > 0.0f);
         /* Jitter should also be computed (we had 3 inter-recv deltas) */
-        rc |= expect_true("post-window snapshot jitter >= 0", snap.jitter_us >= 0.0f);
+        rc |= expect_true("post-window snapshot jitter >= 0", snap.jitter_variance_us2 >= 0.0f);
     }
 
     return rc ? 1 : 0;

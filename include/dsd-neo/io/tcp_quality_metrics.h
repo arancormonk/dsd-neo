@@ -38,10 +38,10 @@ extern "C" {
  * reader thread.
  */
 struct tcp_quality_snapshot {
-    float throughput_ratio;    /**< bytes_received / expected_bytes over 1s window.  */
-    float jitter_us;           /**< Variance of inter-recv times in microseconds.    */
-    float input_ring_fill_pct; /**< Input ring fill level as percentage (0.0–100.0). */
-    uint64_t producer_drops;   /**< Cumulative input ring producer drops.             */
+    float throughput_ratio;    /**< bytes_received / expected_bytes over 1s window.    */
+    float jitter_variance_us2; /**< EWMA-smoothed inter-recv variance in us^2.          */
+    float input_ring_fill_pct; /**< Input ring fill level as percentage (0.0-100.0).   */
+    uint64_t producer_drops;   /**< Cumulative input ring producer drops.               */
     int watchdog_triggered;    /**< 1 if watchdog fired recently, cleared by healthy throughput. */
 };
 
@@ -57,10 +57,12 @@ struct tcp_quality_metrics {
     uint32_t sample_rate;     /**< Configured sample rate for expected-bytes calc.  */
 
     /* Jitter tracking: variance of inter-recv intervals */
-    uint64_t last_recv_ns; /**< Timestamp of previous recv() call.              */
-    double jitter_sum;     /**< Sum of inter-recv deltas (for mean).            */
-    double jitter_sum_sq;  /**< Sum of squared deltas (for variance).           */
-    uint32_t jitter_count; /**< Number of inter-recv deltas recorded.           */
+    uint64_t last_recv_ns;   /**< Timestamp of previous recv() call.              */
+    double jitter_sum;       /**< Sum of inter-recv deltas (for mean).            */
+    double jitter_sum_sq;    /**< Sum of squared deltas (for variance).           */
+    uint32_t jitter_count;   /**< Number of inter-recv deltas recorded.           */
+    float jitter_ewma_alpha; /**< Smoothing factor for snapshot jitter variance. */
+    int jitter_ewma_inited;  /**< 1 after the first variance window is published. */
 
     /* Throughput watchdog: 3-second window */
     uint64_t watchdog_bytes;            /**< Bytes accumulated in current 3s watchdog window.*/
@@ -106,7 +108,7 @@ void tcp_metrics_reset(struct tcp_quality_metrics* m, uint32_t sample_rate);
  *
  * Accumulates bytes in a 1-second window.  When the window expires:
  * - Computes throughput_ratio = window_bytes / (sample_rate × 2 × duration_s)
- * - Computes jitter as variance of inter-recv deltas: E[Δ²] − E[Δ]²
+ * - Computes EWMA-smoothed jitter variance from inter-recv deltas: E[delta^2] - E[delta]^2
  * - Resets the window for the next period
  *
  * Also runs a 3-second throughput watchdog.  Returns 1 if the watchdog

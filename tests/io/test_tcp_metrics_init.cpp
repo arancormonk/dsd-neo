@@ -7,8 +7,8 @@
  * @file
  * @brief Unit tests for tcp_metrics_init() and tcp_metrics_reset().
  *
- * Verifies that init zeroes all fields and sets sample_rate correctly,
- * and that reset re-initialises while preserving sample_rate.
+ * Verifies that init zeroes counters, sets sample_rate and default smoothing
+ * correctly, and that reset re-initialises while preserving sample_rate.
  */
 
 #include <dsd-neo/io/tcp_quality_metrics.h>
@@ -66,7 +66,7 @@ int
 main(void) {
     int rc = 0;
 
-    /* --- init zeroes all fields and sets sample_rate --- */
+    /* --- init zeroes counters and sets sample_rate/default smoothing --- */
     {
         struct tcp_quality_metrics m;
         /* Fill with garbage first to ensure init clears everything */
@@ -78,11 +78,13 @@ main(void) {
         rc |= expect_u64("init window_bytes", m.window_bytes, 0);
         rc |= expect_u64("init last_recv_ns", m.last_recv_ns, 0);
         rc |= expect_u32("init jitter_count", m.jitter_count, 0);
+        rc |= expect_float("init jitter_ewma_alpha", m.jitter_ewma_alpha, 0.2f);
+        rc |= expect_int("init jitter_ewma_inited", m.jitter_ewma_inited, 0);
         rc |= expect_u64("init watchdog_bytes", m.watchdog_bytes, 0);
         rc |= expect_int("init watchdog_active", m.watchdog_active, 0);
         rc |= expect_int("init watchdog_trigger_latched", m.watchdog_trigger_latched, 0);
         rc |= expect_float("init snapshot.throughput_ratio", m.snapshot.throughput_ratio, 0.0f);
-        rc |= expect_float("init snapshot.jitter_us", m.snapshot.jitter_us, 0.0f);
+        rc |= expect_float("init snapshot.jitter_variance_us2", m.snapshot.jitter_variance_us2, 0.0f);
         rc |= expect_float("init snapshot.input_ring_fill_pct", m.snapshot.input_ring_fill_pct, 0.0f);
         rc |= expect_u64("init snapshot.producer_drops", m.snapshot.producer_drops, 0);
         rc |= expect_int("init snapshot.watchdog_triggered", m.snapshot.watchdog_triggered, 0);
