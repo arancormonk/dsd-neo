@@ -45,8 +45,9 @@ effective_watermarks(const struct input_ring_watermark* wm, size_t ring_capacity
     size_t eff_target = wm ? wm->target_watermark : 0;
 
     if (ring_capacity > 0) {
-        if (eff_target == 0 || eff_target > ring_capacity) {
-            eff_target = ring_capacity;
+        size_t max_reachable = ring_capacity - 1U;
+        if (eff_target == 0 || eff_target > max_reachable) {
+            eff_target = max_reachable;
         }
         if (eff_low >= eff_target) {
             eff_low = eff_target / 2U;

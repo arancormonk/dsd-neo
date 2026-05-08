@@ -2378,6 +2378,17 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     }
 }
 
+static void
+rtl_device_cleanup_common_state(struct rtl_device* dev) {
+    if (!dev) {
+        return;
+    }
+    if (dev->tcp_metrics_lock_inited) {
+        (void)dsd_mutex_destroy(&dev->tcp_metrics_lock);
+        dev->tcp_metrics_lock_inited = 0;
+    }
+}
+
 /**
  * @brief Create and initialize an RTL-SDR device.
  *
@@ -2437,6 +2448,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combin
 #endif
     if (r < 0) {
         fprintf(stderr, "Failed to open rtlsdr device %d.\n", dev_index);
+        rtl_device_cleanup_common_state(dev);
         free(dev);
         return NULL;
     }
@@ -2487,6 +2499,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
 
     dsd_socket_t sfd = tcp_connect_host(host, port);
     if (sfd == DSD_INVALID_SOCKET) {
+        rtl_device_cleanup_common_state(dev);
         free(dev);
         return NULL;
     }
@@ -2563,11 +2576,13 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
 #ifndef USE_SOAPYSDR
     (void)soapy_args;
     fprintf(stderr, "SoapySDR backend unavailable in this build.\n");
+    rtl_device_cleanup_common_state(dev);
     free(dev);
     return NULL;
 #else
     if (dsd_mutex_init(&dev->soapy_lock) != 0) {
         fprintf(stderr, "SoapySDR: failed to initialize mutex.\n");
+        rtl_device_cleanup_common_state(dev);
         free(dev);
         return NULL;
     }
@@ -2582,6 +2597,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
         fprintf(stderr, "SoapySDR: invalid args string '%s': %s\n", args_cstr, e.what());
         (void)dsd_mutex_destroy(&dev->soapy_lock);
         dev->soapy_lock_inited = 0;
+        rtl_device_cleanup_common_state(dev);
         free(dev);
         return NULL;
     }
@@ -2590,6 +2606,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
         fprintf(stderr, "SoapySDR: failed to lock mutex during creation.\n");
         (void)dsd_mutex_destroy(&dev->soapy_lock);
         dev->soapy_lock_inited = 0;
+        rtl_device_cleanup_common_state(dev);
         free(dev);
         return NULL;
     }
@@ -2609,6 +2626,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
         fprintf(stderr, "SoapySDR: failed to create device for args '%s'.\n", args_cstr);
         (void)dsd_mutex_destroy(&dev->soapy_lock);
         dev->soapy_lock_inited = 0;
+        rtl_device_cleanup_common_state(dev);
         free(dev);
         return NULL;
     }
@@ -2693,6 +2711,7 @@ rtl_device_create_iq_replay(const dsd_iq_replay_config* cfg, struct input_ring_s
     int rc = dsd_iq_replay_open(open_path, &opened_cfg, &replay_src, err_buf, sizeof(err_buf));
     if (rc != DSD_IQ_OK || !replay_src) {
         fprintf(stderr, "IQ replay: failed to open '%s': %s\n", open_path, err_buf[0] ? err_buf : "unknown error");
+        rtl_device_cleanup_common_state(dev);
         free(dev);
         return NULL;
     }
@@ -2783,10 +2802,7 @@ rtl_device_destroy(struct rtl_device* dev) {
         dev->tcp_pending_len = 0;
         dev->tcp_pending_cap = 0;
     }
-    if (dev->tcp_metrics_lock_inited) {
-        (void)dsd_mutex_destroy(&dev->tcp_metrics_lock);
-        dev->tcp_metrics_lock_inited = 0;
-    }
+    rtl_device_cleanup_common_state(dev);
 
     free(dev);
 }

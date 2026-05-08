@@ -299,9 +299,6 @@ pulse_output_pump_thread(void* arg) {
         }
         if (take > 0) {
             (void)ring_read_samples(stream, stream->chunk, take);
-            if (stream->conceal_inited) {
-                audio_conceal_on_good_buffer(&stream->conceal, stream->chunk, take / (size_t)stream->channels);
-            }
         }
         if (take < stream->chunk_samples) {
             stream->underruns++;
@@ -316,6 +313,9 @@ pulse_output_pump_thread(void* arg) {
             } else {
                 memset(stream->chunk + take, 0, (stream->chunk_samples - take) * sizeof(int16_t));
             }
+        } else if (stream->conceal_inited) {
+            /* Partial chunks are underruns; keep the previous full chunk as the concealment source. */
+            audio_conceal_on_good_buffer(&stream->conceal, stream->chunk, stream->chunk_frames);
         }
 
         dsd_mutex_unlock(&stream->mu);

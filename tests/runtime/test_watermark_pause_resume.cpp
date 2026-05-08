@@ -214,7 +214,7 @@ test_exactly_at_low_watermark(void) {
 }
 
 /**
- * @brief If the adaptive target exceeds ring capacity, resume at capacity.
+ * @brief If the adaptive target exceeds ring capacity, resume at max reachable fill.
  *
  * This prevents a short user-configured TCP prebuffer from creating an
  * unreachable resume threshold.
@@ -231,8 +231,13 @@ test_target_clamped_to_ring_capacity(void) {
     rc |= expect_int("small ring: pause", pause, 0);
     rc |= expect_int("small ring: paused flag", wm.paused, 1);
 
-    int resume = watermark_should_consume(&wm, capacity, capacity);
-    rc |= expect_int("small ring: full ring resumes", resume, 1);
+    size_t max_reachable = capacity - 1U;
+    int still_paused = watermark_should_consume(&wm, max_reachable - 1U, capacity);
+    rc |= expect_int("small ring: below max reachable stays paused", still_paused, 0);
+    rc |= expect_int("small ring: still paused flag", wm.paused, 1);
+
+    int resume = watermark_should_consume(&wm, max_reachable, capacity);
+    rc |= expect_int("small ring: max reachable fill resumes", resume, 1);
     rc |= expect_int("small ring: paused cleared", wm.paused, 0);
 
     return rc;
