@@ -113,6 +113,7 @@ class RtlAutoPpmController {
     int ema_valid_ = 0;
     int observation_sign_ = 0;
     RtlAutoPpmSource last_source_ = RtlAutoPpmSource::None;
+    RtlAutoPpmSource lock_source_ = RtlAutoPpmSource::None;
     int lock_ppm_ = 0;
     double lock_snr_db_ = -100.0;
     double lock_df_hz_ = 0.0;

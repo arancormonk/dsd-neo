@@ -517,7 +517,7 @@ test_deadband_reentry_restarts_observation_window(void) {
 }
 
 static int
-test_locked_session_reenters_training_on_same_channel_drift(void) {
+test_locked_session_ignores_same_channel_drift(void) {
     int rc = 0;
     RtlAutoPpmController controller;
     RtlAutoPpmConfig config = {};
@@ -534,19 +534,19 @@ test_locked_session_reenters_training_on_same_channel_drift(void) {
 
     RtlAutoPpmUpdate update =
         controller.update(config, make_inputs(10000, -8, freq_hz, -2.0, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("same-channel drift clears active lock", update.locked, 0);
-    rc |= expect_int_eq("same-channel drift resumes training", update.training, 1);
-    rc |= expect_int_eq("same-channel drift does not apply immediately", update.apply_ppm, 0);
-    rc |= expect_int_eq("same-channel drift preserves last lock ppm", update.lock_ppm, locked.lock_ppm);
+    rc |= expect_int_eq("same-channel drift keeps active lock", update.locked, 1);
+    rc |= expect_int_eq("same-channel drift stays out of training", update.training, 0);
+    rc |= expect_int_eq("same-channel drift never applies after lock", update.apply_ppm, 0);
+    rc |= expect_int_eq("same-channel drift preserves lock ppm", update.lock_ppm, locked.lock_ppm);
     rc |=
         expect_double_close("same-channel drift preserves last lock snr", update.lock_snr_db, locked.lock_snr_db, 1e-9);
     rc |= expect_double_close("same-channel drift preserves last lock df", update.lock_df_hz, locked.lock_df_hz, 1e-9);
 
     update = controller.update(config, make_inputs(14001, -8, freq_hz, -2.0, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("same-channel drift can apply again", update.apply_ppm, 1);
-    rc |= expect_int_eq("same-channel drift correction uses current ppm", update.new_ppm, -10);
-    rc |= expect_int_eq("same-channel drift correction keeps training active", update.training, 1);
-    rc |= expect_int_eq("same-channel drift correction stays unlocked", update.locked, 0);
+    rc |= expect_int_eq("same-channel drift still does not apply later", update.apply_ppm, 0);
+    rc |= expect_int_eq("same-channel drift keeps current ppm", update.new_ppm, -8);
+    rc |= expect_int_eq("same-channel drift still stays out of training", update.training, 0);
+    rc |= expect_int_eq("same-channel drift still stays locked", update.locked, 1);
     return rc;
 }
 
@@ -671,6 +671,88 @@ test_sub_deadband_residual_locks_with_zero_lock_ppm_below_deadband_floor(void) {
 }
 
 static int
+test_spectrum_lock_revalidates_same_frequency_carrier_upgrade(void) {
+    int rc = 0;
+    RtlAutoPpmController controller;
+    RtlAutoPpmConfig config = {};
+    const uint32_t freq_hz = 851000000U;
+
+    controller.reset(0, freq_hz);
+
+    (void)controller.update(config, make_inputs(1000, 0, freq_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
+    RtlAutoPpmUpdate update =
+        controller.update(config, make_inputs(4000, 0, freq_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
+    rc |= expect_int_eq("spectrum provisional lock setup reaches lock", update.locked, 1);
+    rc |= expect_int_eq("spectrum provisional lock stores current ppm", update.lock_ppm, 0);
+
+    update = controller.update(config, make_inputs(5000, 0, freq_hz, -6.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("same-frequency carrier upgrade clears provisional lock", update.locked, 0);
+    rc |= expect_int_eq("same-frequency carrier upgrade resumes training", update.training, 1);
+    rc |= expect_int_eq("same-frequency carrier upgrade does not apply immediately", update.apply_ppm, 0);
+    rc |= expect_int_eq("same-frequency carrier upgrade preserves lock snapshot", update.lock_ppm, 0);
+
+    update = controller.update(config, make_inputs(9000, 0, freq_hz, -6.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("same-frequency carrier upgrade can correct after observation", update.apply_ppm, 1);
+    rc |= expect_int_eq("same-frequency carrier upgrade applies from current ppm", update.new_ppm, -6);
+    rc |= expect_int_eq("same-frequency carrier upgrade remains in training after step", update.training, 1);
+    rc |= expect_int_eq("same-frequency carrier upgrade stays unlocked after step", update.locked, 0);
+    return rc;
+}
+
+static int
+test_spectrum_lock_ignores_carrier_upgrade_after_frequency_change(void) {
+    int rc = 0;
+    RtlAutoPpmController controller;
+    RtlAutoPpmConfig config = {};
+    const uint32_t freq_a_hz = 851000000U;
+    const uint32_t freq_b_hz = 935000000U;
+
+    controller.reset(0, freq_a_hz);
+
+    (void)controller.update(config, make_inputs(1000, 0, freq_a_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
+    RtlAutoPpmUpdate update =
+        controller.update(config, make_inputs(4000, 0, freq_a_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
+    rc |= expect_int_eq("spectrum retune setup reaches lock", update.locked, 1);
+
+    update = controller.update(config, make_inputs(5000, 0, freq_b_hz, -6.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("retuned carrier estimate keeps provisional lock", update.locked, 1);
+    rc |= expect_int_eq("retuned carrier estimate stays out of training", update.training, 0);
+    rc |= expect_int_eq("retuned carrier estimate does not apply", update.apply_ppm, 0);
+
+    update = controller.update(config, make_inputs(9000, 0, freq_b_hz, -6.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("retuned carrier estimate still does not apply later", update.apply_ppm, 0);
+    rc |= expect_int_eq("retuned carrier estimate remains locked later", update.locked, 1);
+    rc |= expect_int_eq("retuned carrier estimate remains idle later", update.training, 0);
+    return rc;
+}
+
+static int
+test_spectrum_lock_promotes_on_same_frequency_carrier_zero_lock(void) {
+    int rc = 0;
+    RtlAutoPpmController controller;
+    RtlAutoPpmConfig config = {};
+    const uint32_t freq_hz = 851000000U;
+
+    controller.reset(0, freq_hz);
+
+    (void)controller.update(config, make_inputs(1000, 0, freq_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
+    RtlAutoPpmUpdate update =
+        controller.update(config, make_inputs(4000, 0, freq_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
+    rc |= expect_int_eq("spectrum carrier-zero setup reaches lock", update.locked, 1);
+
+    update = controller.update(config, make_inputs(5000, 0, freq_hz, 0.02, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("same-frequency carrier zero keeps lock", update.locked, 1);
+    rc |= expect_int_eq("same-frequency carrier zero stays out of training", update.training, 0);
+    rc |= expect_int_eq("same-frequency carrier zero does not apply", update.apply_ppm, 0);
+
+    update = controller.update(config, make_inputs(9000, 0, freq_hz, -6.0, RtlAutoPpmSource::CarrierTotal));
+    rc |= expect_int_eq("carrier-validated lock ignores later drift", update.locked, 1);
+    rc |= expect_int_eq("carrier-validated lock stays out of training", update.training, 0);
+    rc |= expect_int_eq("carrier-validated lock does not apply later drift", update.apply_ppm, 0);
+    return rc;
+}
+
+static int
 test_frequency_change_during_training_restarts_observation(void) {
     int rc = 0;
     RtlAutoPpmController controller;
@@ -695,7 +777,7 @@ test_frequency_change_during_training_restarts_observation(void) {
 }
 
 static int
-test_frequency_change_rearms_drift_check_after_lock_carry(void) {
+test_frequency_change_keeps_session_lock_after_lock_carry(void) {
     int rc = 0;
     RtlAutoPpmController controller;
     RtlAutoPpmConfig config = {};
@@ -730,24 +812,24 @@ test_frequency_change_rearms_drift_check_after_lock_carry(void) {
     rc |= expect_double_close("retune preserves stored lock df", update.lock_df_hz, locked.lock_df_hz, 1e-9);
 
     update = controller.update(config, make_inputs(9700, -8, freq_b_hz, 3.5, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("new-channel drift clears carried lock", update.locked, 0);
-    rc |= expect_int_eq("new-channel drift restarts training", update.training, 1);
-    rc |= expect_int_eq("new-channel drift does not apply immediately", update.apply_ppm, 0);
+    rc |= expect_int_eq("new-channel drift keeps carried lock", update.locked, 1);
+    rc |= expect_int_eq("new-channel drift stays out of training", update.training, 0);
+    rc |= expect_int_eq("new-channel drift never applies after lock", update.apply_ppm, 0);
     rc |= expect_int_eq("new-channel drift preserves last lock ppm", update.lock_ppm, locked.lock_ppm);
     rc |=
         expect_double_close("new-channel drift preserves last lock snr", update.lock_snr_db, locked.lock_snr_db, 1e-9);
     rc |= expect_double_close("new-channel drift preserves last lock df", update.lock_df_hz, locked.lock_df_hz, 1e-9);
 
     update = controller.update(config, make_inputs(13701, -8, freq_b_hz, 3.5, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("new-channel drift can retrain after carry", update.apply_ppm, 1);
-    rc |= expect_int_eq("new-channel drift correction uses current ppm", update.new_ppm, -4);
-    rc |= expect_int_eq("new-channel drift correction stays unlocked", update.locked, 0);
-    rc |= expect_int_eq("new-channel drift correction keeps training active", update.training, 1);
+    rc |= expect_int_eq("new-channel drift still does not retrain later", update.apply_ppm, 0);
+    rc |= expect_int_eq("new-channel drift keeps current ppm", update.new_ppm, -8);
+    rc |= expect_int_eq("new-channel drift stays locked later", update.locked, 1);
+    rc |= expect_int_eq("new-channel drift stays out of training later", update.training, 0);
     return rc;
 }
 
 static int
-test_locked_session_resets_after_external_ppm_change(void) {
+test_locked_session_ignores_external_ppm_change(void) {
     int rc = 0;
     RtlAutoPpmController controller;
     RtlAutoPpmConfig config = {};
@@ -764,16 +846,16 @@ test_locked_session_resets_after_external_ppm_change(void) {
 
     RtlAutoPpmUpdate update =
         controller.update(config, make_inputs(10000, -4, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("external ppm change clears active lock", update.locked, 0);
-    rc |= expect_int_eq("external ppm change does not apply immediately", update.apply_ppm, 0);
-    rc |= expect_int_eq("external ppm change preserves last lock snapshot", update.lock_ppm, locked.lock_ppm);
-    rc |= expect_true("external ppm change resumes training", update.training != 0);
+    rc |= expect_int_eq("external ppm change keeps active lock", update.locked, 1);
+    rc |= expect_int_eq("external ppm change does not apply", update.apply_ppm, 0);
+    rc |= expect_int_eq("external ppm change preserves lock snapshot", update.lock_ppm, locked.lock_ppm);
+    rc |= expect_int_eq("external ppm change stays out of training", update.training, 0);
 
     update = controller.update(config, make_inputs(14001, -4, freq_hz, -8.0, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("rearmed training can apply again", update.apply_ppm, 1);
-    rc |= expect_int_eq("rearmed training applies from external ppm", update.new_ppm, -12);
-    rc |= expect_int_eq("rearmed correction stays unlocked", update.locked, 0);
-    rc |= expect_int_eq("rearmed correction keeps training active", update.training, 1);
+    rc |= expect_int_eq("external ppm change still does not rearm later", update.apply_ppm, 0);
+    rc |= expect_int_eq("external ppm change keeps current ppm", update.new_ppm, -4);
+    rc |= expect_int_eq("external ppm change stays locked later", update.locked, 1);
+    rc |= expect_int_eq("external ppm change stays out of training later", update.training, 0);
     return rc;
 }
 
@@ -799,13 +881,16 @@ main(void) {
     rc |= test_overlapped_active_and_queued_requests_keep_training_hold();
     rc |= test_positive_residual_increases_applied_ppm();
     rc |= test_deadband_reentry_restarts_observation_window();
-    rc |= test_locked_session_reenters_training_on_same_channel_drift();
+    rc |= test_locked_session_ignores_same_channel_drift();
     rc |= test_locked_session_keeps_sub_deadband_same_channel_drift_locked();
     rc |= test_sub_deadband_residual_locks_without_dither_with_default_config();
     rc |= test_sub_deadband_residual_locks_with_zero_lock_hz_below_deadband_floor();
     rc |= test_sub_deadband_residual_locks_with_zero_lock_ppm_below_deadband_floor();
+    rc |= test_spectrum_lock_revalidates_same_frequency_carrier_upgrade();
+    rc |= test_spectrum_lock_ignores_carrier_upgrade_after_frequency_change();
+    rc |= test_spectrum_lock_promotes_on_same_frequency_carrier_zero_lock();
     rc |= test_frequency_change_during_training_restarts_observation();
-    rc |= test_frequency_change_rearms_drift_check_after_lock_carry();
-    rc |= test_locked_session_resets_after_external_ppm_change();
+    rc |= test_frequency_change_keeps_session_lock_after_lock_carry();
+    rc |= test_locked_session_ignores_external_ppm_change();
     return rc ? 1 : 0;
 }
