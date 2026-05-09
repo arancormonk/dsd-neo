@@ -9,7 +9,7 @@ If you just want “what flag do I type”, start with `docs/cli.md`.
 
 DSD-neo accepts raw PCM input in three equivalent ways:
 
-- **TCP**: `-i tcp[:host:port]` (default `127.0.0.1:7355`)
+- **TCP**: `-i tcp[:host:port]` (bare `tcp` connects to `localhost:7355`)
 - **UDP**: `-i udp[:bind_addr:port]` (default `127.0.0.1:7355`)
 - **stdin**: `-i -`
 
@@ -47,7 +47,8 @@ The primary UDP output carries decoded digital voice:
 ### Analog/source monitor (UDP port + 2)
 
 If you enable source monitoring (`-8`) while using `-o udp`, DSD-neo also opens an **analog monitor** UDP socket on
-`<port + 2>` (for example, `23458` when the base port is `23456`):
+`<port + 2>` (for example, `23458` when the base port is `23456`). ProVoice paths may also open this companion
+socket for analog audio handling:
 
 - Sample rate: **48000 Hz**
 - Channels: **mono**
@@ -82,6 +83,16 @@ socat -u UDP-RECV:23458,reuseaddr STDOUT | ffplay -nodisp -f s16le -ar 48000 -ac
 above (rate/channels/type depend on mode and `-y`).
 
 This can be useful when you want to keep transport out of DSD-neo (pipe into another tool, or re-packetize yourself).
+
+## M17 UDP/IP Frames (`m17udp`)
+
+`m17udp` is a separate M17 frame transport, not raw PCM audio:
+
+- Input: `-i m17udp[:bind_addr:port]` (default port `17000`; current decoder bind listens on all interfaces)
+- Output: `-o m17udp[:host:port]` (default `127.0.0.1:17000`)
+- Decode M17 UDP/IP input with `-fU`.
+
+Do not feed `m17udp` into raw PCM tools such as `ffplay -f s16le`; use the `udp` output backend for decoded audio.
 
 ## Troubleshooting
 

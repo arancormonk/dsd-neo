@@ -62,8 +62,14 @@ rtl_device = 0
 rtl_freq = "851.375M"       # supports K/M/G suffix or raw Hz
 
 [output]
-backend = "pulse"           # pulse / null / (future output types)
+backend = "pulse"           # pulse / null
 ncurses_ui = true           # map to -N / use_ncurses_terminal
+
+[alerts]
+enabled = false             # map to -a / call alert toggle
+voice_start = true
+voice_end = true
+data = true
 
 [trunking]
 enabled = true
@@ -213,6 +219,7 @@ If the file cannot be read or parsed:
 - Proceed without applying any user config values (defaults + env + CLI).
 - If config loading was enabled (`--config` or `DSD_NEO_CONFIG`), autosave is still enabled for decode runs and the
   effective settings are written back on exit (this can create the file).
+- If `--profile NAME` is specified and that profile is missing, startup fails instead of falling back silently.
 
 ### Default Path
 
@@ -229,6 +236,9 @@ config location is used:
 
 If the default file does not exist, it will be created when settings are saved
 (DSD-neo autosaves on exit whenever config loading is enabled).
+
+Autosave is disabled when an explicit `--profile NAME` is loaded successfully, because saving the effective config would
+flatten the profile overlay back into the base file and remove profile sections.
 
 ---
 
@@ -254,6 +264,7 @@ small subset is exposed as config keys for convenience (for example
 |-----|------|-------------|---------|
 | `source` | ENUM | Input source type (`pulse|rtl|rtltcp|soapy|file|tcp|udp`) | `pulse` |
 | `pulse_source` | STRING | PulseAudio source device | (empty) |
+| `pulse_input` | STRING | Deprecated alias for `pulse_source` | (empty) |
 | `rtl_device` | INT (0-255) | RTL-SDR device index | `0` |
 | `rtl_freq` | FREQ | RTL-SDR frequency | `851.375M` |
 | `rtl_gain` | INT (0-49) | RTL-SDR gain in dB | `0` |
@@ -261,8 +272,8 @@ small subset is exposed as config keys for convenience (for example
 | `rtl_bw_khz` | INT (4-48) | DSP bandwidth | `48` |
 | `rtl_sql` | INT (-100-0) | Squelch level | `0` |
 | `rtl_volume` | INT (1-3) | Volume multiplier | `2` |
-| `auto_ppm` | BOOL | Enable spectrum-based RTL auto-PPM correction | `false` |
-| `rtl_auto_ppm` | BOOL | Enable spectrum-based RTL auto-PPM correction (alias for `auto_ppm`) | `false` |
+| `auto_ppm` | BOOL | Enable carrier/error-based RTL auto-PPM correction | `false` |
+| `rtl_auto_ppm` | BOOL | Deprecated alias for `auto_ppm` | `false` |
 | `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
 | `rtltcp_port` | INT (1-65535) | RTL-TCP port | `1234` |
 | `soapy_args` | STRING | SoapySDR device selection args (from SoapySDRUtil `--find`/`--probe`) | (empty) |
@@ -276,8 +287,9 @@ small subset is exposed as config keys for convenience (for example
 **[output] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `backend` | ENUM | Audio output backend | `pulse` |
+| `backend` | ENUM | Audio output backend (`pulse|null`) | `pulse` |
 | `pulse_sink` | STRING | PulseAudio sink device | (empty) |
+| `pulse_output` | STRING | Deprecated alias for `pulse_sink` | (empty) |
 | `ncurses_ui` | BOOL | Enable ncurses UI | `false` |
 
 **[mode] section:**
@@ -303,6 +315,17 @@ small subset is exposed as config keys for convenience (for example
 |-----|------|-------------|---------|
 | `event_log` | PATH | Event history log file path | (empty) |
 | `frame_log` | PATH | Frame trace log file path | (empty) |
+
+**[alerts] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `enabled` | BOOL | Enable audible call-alert beeps | `false` |
+| `call_alert` | BOOL | Deprecated alias for `enabled` | `false` |
+| `voice_start` | BOOL | Beep when a voice call starts | `true` |
+| `start` | BOOL | Deprecated alias for `voice_start` | `true` |
+| `voice_end` | BOOL | Beep when a voice call ends | `true` |
+| `end` | BOOL | Deprecated alias for `voice_end` | `true` |
+| `data` | BOOL | Beep when a data call is logged | `true` |
 
 **[recording] section:**
 | Key | Type | Description | Default |
@@ -531,10 +554,11 @@ through selecting input, mode, trunking, and UI options.
 
 - When the wizard completes, settings are automatically saved to the
   config path (default or explicit).
-- Auto-save only occurs when config is enabled (`--config` or `DSD_NEO_CONFIG`).
+- Auto-save only occurs when config is enabled (`--config`, `DSD_NEO_CONFIG`, or a single positional `*.ini`).
 - Outside the wizard, the app also auto-saves the effective settings at exit
   whenever a config path is in use. To avoid having your file rewritten,
-  run without `--config` and without `DSD_NEO_CONFIG`.
+  run without `--config`, without `DSD_NEO_CONFIG`, and without a single positional `*.ini`.
+- Explicit profile runs (`--profile NAME`) disable autosave for that process.
 
 ### Config and CLI Interaction
 
@@ -617,7 +641,7 @@ restart to take full effect.
 ## Summary
 
 - INI-based config with clear precedence (CLI > env > config > defaults).
-- Platform-specific default paths with automatic discovery.
+- Platform-specific default paths when config loading is explicitly enabled.
 - Validation with line-number diagnostics.
 - Template generation for discoverability.
 - Path expansion (`~`, `$VAR`, `${VAR}`) for portability.

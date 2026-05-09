@@ -16,6 +16,8 @@ dsd-neo -i rtl:0:851.375M:22:-2:24:0:2 --rtl-udp-control 9911 -N
 Notes:
 
 - The listener binds to `0.0.0.0:<port>` (all interfaces).
+- The option also accepts `--rtl-udp-control=<port>`.
+- Port `0` disables the listener.
 - There is no authentication. Use a firewall or run only on trusted networks.
 
 ## Message Format
@@ -24,6 +26,9 @@ Each UDP datagram is **exactly 5 bytes**:
 
 - Byte 0: command (`0x00` = retune)
 - Bytes 1..4: unsigned 32-bit little-endian frequency in **Hz**
+
+Shorter datagrams and datagrams with any other command byte are ignored. Keep senders to exactly 5 bytes; oversized UDP
+datagrams may be truncated by the socket layer before DSD-neo sees them.
 
 Example: tune to 851.375 MHz
 
@@ -49,4 +54,3 @@ Remote example (send to another host running DSD-neo):
 
 - Replace `127.0.0.1` with that host's IP address.
 - Ensure the UDP port is reachable (firewall/NAT).
-

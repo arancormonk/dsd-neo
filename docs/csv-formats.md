@@ -12,6 +12,8 @@ If you want known-good starting points, see `examples/` in the repository.
   - Do not include commas inside a field.
 - Avoid blank lines and comment-only lines (they may be parsed as data).
 - Extra columns after the required ones are ignored. Use them for notes/labels.
+- Imported text fields are copied into fixed-size runtime buffers. Keep short fields concise; long `mode` and `name`
+  values are truncated in runtime display/policy state.
 
 ## Channel Map CSV (`-C <file>` / `[trunking] chan_csv`)
 
@@ -27,7 +29,7 @@ Notes:
 - `frequency_hz` is parsed as an integer (no `K/M/G` suffixes).
 - Extra columns are ignored; use them for labels like "default CC".
 - For EDACS-style workflows, DSD-neo also records the `frequency_hz` values in **row order** as an LCN frequency list,
-  so keep rows in the LCN order you want.
+  so keep rows in the LCN order you want. The LCN list stores at most 26 frequencies.
 
 Example:
 
@@ -56,6 +58,8 @@ Notes:
   - `A` usually means allow/normal.
   - `B` and `DE` are treated as locked out.
 - Names are not CSV-escaped; avoid commas and line breaks in fields.
+- Exact IDs are decimal `uint32_t` values (`0..4294967295`). Runtime exact alias display stores up to 1023 imported
+  exact rows; range policy entries can still be added after that exact-row cap is reached.
 
 Extended policy columns are supported only when the header opts into this exact ordered prefix starting at column 4:
 
@@ -64,7 +68,7 @@ Extended policy columns are supported only when the header opts into this exact 
 3. `audio` (`on`/`off`, default from `mode`)
 4. `record` (`on`/`off`, default from `mode`)
 5. `stream` (`on`/`off`, default from `mode`)
-6. `tags` (free text metadata)
+6. `tags` (free text metadata; accepted for notes/round-tripping, not applied to runtime policy)
 
 Important behavior:
 
@@ -74,6 +78,7 @@ Important behavior:
 - `id` supports exact IDs (`1201`) and ranges (`1200-1299`).
   - Exact rows populate both runtime alias display state and policy.
   - Range rows are policy-only and are not inserted as exact aliases.
+- `preempt`, `audio`, `record`, and `stream` accept `true`/`false`, `yes`/`no`, `on`/`off`, or `1`/`0`.
 - Exact duplicates preserve first-match behavior.
 - `audio=off` forces `record=off` and `stream=off`.
 - `mode=B`/`DE` forces media fields off regardless of optional values.

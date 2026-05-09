@@ -123,7 +123,10 @@ dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan
 - Driver capability support varies. Frequency correction (PPM), manual gain mode/range, and bandwidth control may be
   unavailable on some hardware.
 - Requested sample rate/gain may be quantized or clamped by the driver.
-- The current backend expects Soapy RX stream format support for `CF32` or `CS16`.
+- The current backend expects Soapy RX stream format support for `CF32` or `CS16`, preferring `CF32` when both are
+  advertised.
+- IQ capture from Soapy requires an active `CF32` stream. Devices that only expose `CS16` can still be used for live
+  decode, but `--iq-capture` is rejected for that stream format.
 
 ## Troubleshooting
 

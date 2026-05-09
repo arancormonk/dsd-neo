@@ -50,8 +50,9 @@ The writer records:
 - warnings for interrupted captures (`data_bytes == 0`), metadata/data mismatch, misalignment, and retune-containing
   captures.
 
-Replay uses `min(data_bytes, actual_file_size)` rounded down to sample alignment. Zero effective bytes are rejected for
-`--iq-replay`.
+Replay uses `min(data_bytes, actual_file_size)` rounded down to sample alignment after metadata is finalized. If an
+interrupted capture never finalized metadata (`data_bytes == 0`), replay falls back to the actual file size and still
+rounds down to sample alignment. Zero effective bytes are rejected for `--iq-replay`.
 
 ## Operational Limits
 
@@ -62,6 +63,9 @@ Replay uses `min(data_bytes, actual_file_size)` rounded down to sample alignment
 
 ## Backend Notes
 
+- Capture is available on live radio inputs only: RTL USB, RTL-TCP, and SoapySDR when the active Soapy stream is `CF32`.
 - RTL USB / RTL-TCP captures are `cu8`.
 - `--iq-capture-format cf32` is only valid when the active backend stream is native `cf32` (for example Soapy CF32).
+- Soapy drivers that only provide `CS16` can be used for live decode, but are not currently accepted by the IQ capture
+  CLI.
 - If requested capture format does not match the active backend stream format, startup fails with a clear error.

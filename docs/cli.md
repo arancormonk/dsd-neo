@@ -5,8 +5,8 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 ## Cheatsheet
 
 - Help: `dsd-neo -h` | UI/logs: `-N`, `-Z` | List devices: `-O`
-- Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]] | tcp[:host:7355] | udp[:bind:7355] | m17udp[:bind:17000] | -`
-- Outputs: `-o pulse | null | udp[:host:23456] | m17udp[:host:17000] | -`
+- Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]] | tcp[:host[:port]] | udp[:bind_addr[:port]] | m17udp[:bind_addr[:port]] | -`
+- Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
 - Record/Logs: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`, `-nm`
@@ -49,7 +49,8 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - `--print-config` prints the effective config as INI after all env/CLI overrides.
 - In Soapy mode, shorthand `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` is normalized first, so output shows
   `soapy_args` plus shared `rtl_*` tuning keys.
-- When config is enabled, the final settings are autosaved on exit. See `docs/config-system.md` for details.
+- When config is enabled, the final settings are autosaved on exit. Explicit `--profile NAME` runs disable autosave for
+  that process. See `docs/config-system.md` for details.
 
 ## Inputs (`-i`)
 
@@ -62,9 +63,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
 - SoapySDR: `-i soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]]`
-- TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (default port 7355; sample rate uses `-s`, default 48000)
+- TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (bare `tcp` connects to `localhost:7355`; sample rate uses `-s`, default 48000)
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355)
-- M17 UDP/IP input: `-i m17udp[:bind_addr:port]` (defaults 127.0.0.1:17000)
+- M17 UDP/IP frame input: `-i m17udp[:bind_addr:port]` (default port 17000; current decoder bind listens on all interfaces; use with `-fU`)
 - stdin (raw PCM16LE mono): `-i -` (sample rate uses `-s`)
 
 - Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical)
@@ -86,7 +87,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - PulseAudio: `-o pulse` or a specific sink like `-o pulse:alsa_output.pci-0000_0d_00.3.analog-stereo`
 - Null (no audio): `-o null`
 - UDP audio out (raw PCM): `-o udp[:host:port]` (default 127.0.0.1:23456). See `docs/network-audio.md`.
-- M17 UDP/IP out: `-o m17udp[:host:port]` (default 127.0.0.1:17000)
+- M17 UDP/IP frame out: `-o m17udp[:host:port]` (default 127.0.0.1:17000)
 - stdout (raw decoded audio): `-o -` (see `docs/network-audio.md`)
 
 ## Display & UI
@@ -346,7 +347,7 @@ These environment variables provide fine‑grained control for power users.
 
 Auto‑PPM (RTL‑SDR)
 
-- `DSD_NEO_AUTO_PPM=1` — enable spectrum‑based drift correction
+- `DSD_NEO_AUTO_PPM=1` — enable carrier/error-based drift correction with spectrum fallback
 - `DSD_NEO_AUTO_PPM_SNR_DB=<dB>` — SNR gate (default 6)
 - `DSD_NEO_AUTO_PPM_PWR_DB=<dB>` — absolute peak gate (default −80)
 - `DSD_NEO_AUTO_PPM_ZEROLOCK_PPM=<ppm>` — zero‑step lock guard (default 0.6)

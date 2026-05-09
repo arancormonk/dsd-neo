@@ -28,9 +28,9 @@ Required license/notice files in every shipped asset:
 ### Windows (ZIP)
 
 - [ ] Download `dsd-neo-msvc-x86_64-native-*.zip`.
-  - [ ] Unzip and confirm `dsd-neo-msvc/share/doc/dsd-neo/` contains all required files.
+  - [ ] Unzip and confirm `share/doc/dsd-neo/` contains all required files.
 - [ ] Download `dsd-neo-mingw-x86_64-native-*.zip`.
-  - [ ] Unzip and confirm `dsd-neo-mingw/share/doc/dsd-neo/` contains all required files.
+  - [ ] Unzip and confirm `share/doc/dsd-neo/` contains all required files.
 
 ## CI-side sanity
 

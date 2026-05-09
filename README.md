@@ -58,7 +58,7 @@ This project is an active work in progress as we decouple from the upstream fork
 - RTL‑SDR quality‑of‑life features
 
   - Bias‑tee control (when supported by your librtlsdr), manual or auto gain, power squelch, adjustable tuner bandwidth, and per‑run PPM correction.
-  - Optional spectrum‑based auto‑PPM drift correction with SNR/power gating and short training/lock, for long unattended runs.
+  - Optional carrier/error-based auto‑PPM drift correction with SNR/power gating and short training/lock, for long unattended runs.
   - rtl_tcp niceties: configurable prebuffering to reduce dropouts and settings tuned for stable network use.
 
 - RTL‑SDR optimizations and diagnostics
@@ -99,7 +99,7 @@ Requirements
 - CMake ≥ 3.20.
 - Dependencies:
   - Required: libsndfile; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
-  - Optional: librtlsdr (RTL‑SDR support), SoapySDR (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl (rdio API uploads), help2man (man page generation).
+  - Optional: librtlsdr (RTL‑SDR support), SoapySDR (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl (rdio API uploads), PortAudio on non-Windows builds, help2man (man page generation).
   - Vocoder: mbelib-neo (`mbe-neo` CMake package) is required.
 
 OS package hints
@@ -162,7 +162,7 @@ cmake --install build/dev-release --prefix "$HOME/.local"
 
 cmake --preset dev-debug
 cmake --build --preset dev-debug -j
-ctest --preset dev-debug -V
+ctest --preset dev-debug --output-on-failure
 
 # Run (no install required)
 build/dev-debug/apps/dsd-cli/dsd-neo -h
@@ -247,6 +247,7 @@ These are CMake cache options (set at configure time via `-D...`).
   - RTL‑SDR support is enabled when `librtlsdr` is found.
   - SoapySDR support is enabled when SoapySDR is found.
   - Codec2 support is enabled when `codec2` is found.
+  - rdio API upload support is enabled when libcurl is found.
 
 ## CI Backend Policy
 
@@ -337,12 +338,12 @@ Quick examples
 - Config loading is opt-in: use `--config` to enable (optionally with a path), set `DSD_NEO_CONFIG=<path>`, or pass a single positional `*.ini` path (treated as `--config <path>`).
 - Default path (when `--config` is passed without a path): `${XDG_CONFIG_HOME:-$HOME/.config}/dsd-neo/config.ini`.
 - `--interactive-setup` forces the bootstrap wizard even when a config exists; `--print-config` dumps the effective config as INI.
-- When config is enabled, the final settings are autosaved on exit.
+- When config is enabled, the final settings are autosaved on exit; explicit `--profile NAME` runs disable autosave for that process.
 
 ## Tests
 
-- Run all tests: `ctest --preset dev-debug -V` (or `ctest --test-dir build/dev-debug -V`).
-- Scope: unit tests cover runtime config parsing/validation, DSP primitives (filters/resampler/demod helpers), and FEC/crypto helpers.
+- Run all tests: `ctest --preset dev-debug --output-on-failure` (or `ctest --test-dir build/dev-debug --output-on-failure`).
+- Scope: unit tests cover runtime/config, DSP, IO, platform, core, protocol, FEC, crypto, engine, and terminal UI helpers.
 
 ## Documentation
 
@@ -364,11 +365,11 @@ Quick examples
 - Platform: `src/platform`, headers `<dsd-neo/platform/...>` — cross-platform primitives (audio backend, sockets, threading, timing, curses).
 - Runtime: `src/runtime`, headers `<dsd-neo/runtime/...>` — config, logging, aligned memory, rings, worker pool, RT scheduling, git version.
 - DSP: `src/dsp`, headers `<dsd-neo/dsp/...>` — demod pipeline, resampler, filters, FLL/TED, SIMD helpers.
-- IO: `src/io`, headers `<dsd-neo/io/...>` — radio (RTL‑SDR, RTL‑TCP, SoapySDR), audio (PulseAudio/PortAudio + UDP PCM input/output), control (UDP/rigctl/serial).
+- IO: `src/io`, headers `<dsd-neo/io/...>` — radio (RTL‑SDR, RTL‑TCP, SoapySDR), IQ capture/replay, network audio (TCP/UDP PCM and M17 UDP), and control (UDP/rigctl/serial).
 - FEC: `src/fec`, headers `<dsd-neo/fec/...>` — BCH, Golay, Hamming, RS, BPTC, CRC/FCS.
 - Crypto: `src/crypto`, headers `<dsd-neo/crypto/...>` — RC2/RC4/DES/AES and helpers.
 - Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF.
-- Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), `src/third_party/pffft` (FFT helper).
+- Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), `src/third_party/pffft` (STATIC target `dsd-neo_pffft`).
 
 ## Tooling
 

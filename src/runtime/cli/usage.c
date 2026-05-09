@@ -66,11 +66,12 @@ dsd_cli_usage(void) {
     printf("                soapy:driver=airspy[,serial=...] for SoapySDR input selection args\n");
     printf("                soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]] for Soapy args + RTL-style tuning\n");
     printf("                tcp for TCP raw PCM16LE mono audio input (Port 7355)\n");
-    printf("                tcp:192.168.7.5:7355 for custom address and port \n");
+    printf("                tcp:192.168.7.5:7355 for custom address and port\n");
     printf("                udp for UDP direct audio input (default host 127.0.0.1; default port 7355)\n");
     printf("                udp:0.0.0.0:7355 to bind all interfaces for UDP input\n");
-    printf("                m17udp for M17 UDP/IP socket bind input (default host 127.0.0.1; default port 17000)\n");
-    printf("                m17udp:192.168.7.8:17001 for M17 UDP/IP bind input (Binding Address and Port\n");
+    printf("                m17udp for M17 UDP/IP frame input (default port 17000; binds all interfaces)\n");
+    printf("                m17udp:0.0.0.0:17001 for M17 UDP/IP frame input (port override; bind host currently "
+           "ignored)\n");
     printf("                - for stdin raw PCM16LE mono input (set sample rate with -s)\n");
     printf("                filename.bin for OP25/FME capture bin files\n");
     printf("                filename.wav for 48K/1 wav files (SDR++, GQRX)\n");
@@ -85,10 +86,9 @@ dsd_cli_usage(void) {
            "or analog output on device (see -O) \n");
     printf("                null for no audio output\n");
     printf("                udp for UDP socket blaster output (default host 127.0.0.1; default port 23456)\n");
-    printf("                udp:192.168.7.8:23470 for UDP socket blaster output (Target Address and Port\n");
-    printf(
-        "                m17udp for M17 UDP/IP socket blaster output (default host 127.0.0.1; default port 17000)\n");
-    printf("                m17udp:192.168.7.8:17001 for M17 UDP/IP blaster output (Target Address and Port\n");
+    printf("                udp:192.168.7.8:23470 for UDP socket blaster output (target address and port)\n");
+    printf("                m17udp for M17 UDP/IP frame output (default host 127.0.0.1; default port 17000)\n");
+    printf("                m17udp:192.168.7.8:17001 for M17 UDP/IP frame output (target address and port)\n");
     printf("                - for stdout raw decoded audio output\n");
     printf("  -d <dir>      Create mbe data files, use this directory (TDMA version is experimental)\n");
     printf("  -r <files>    Read/Play saved mbe data from file(s)\n");
@@ -234,7 +234,7 @@ dsd_cli_usage(void) {
     printf("\n");
     printf("  ** Phase 2 Single Frequency may require user to manually set WACN/SYSID/CC parameters if MAC_SIGNAL not "
            "present.\n");
-    printf("  *** configure UDP Input with -i m17udp:127.0.0.1:17000 \n");
+    printf("  *** configure M17 UDP/IP frame input with -i m17udp[:0.0.0.0:17000] and -fU\n");
     printf("\n");
     printf("  NOTE: All frame types are now auto-detectable with -fa using multi-rate SPS hunting.\n");
     printf("        M17 polarity is auto-detected from preamble; use -xz only to force inverted.\n");

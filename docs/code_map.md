@@ -120,6 +120,7 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 
 - Path: `src/io`, `include/dsd-neo/io`
 - Targets:
+  - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers; no SDR dependency
   - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, and SoapySDR backends; provides
     constellation/eye/spectrum snapshots, optional bias-tee (RTL path), and auto-PPM hooks
     - Built when `DSD_HAS_RADIO` is true (RTL and/or Soapy available); otherwise provided as an INTERFACE stub target
@@ -138,6 +139,8 @@ Key public headers:
 - UDP control API: `include/dsd-neo/io/udp_control.h`
 - UDP audio output: `include/dsd-neo/io/udp_audio.h` (implemented in `src/io/audio_backends/udp_audio.c`)
 - UDP/TCP PCM input: `include/dsd-neo/io/udp_input.h`, `include/dsd-neo/io/tcp_input.h`
+- I/Q capture/replay: `include/dsd-neo/io/iq_capture.h`, `include/dsd-neo/io/iq_replay.h`,
+  `include/dsd-neo/io/iq_types.h`
 
 Notes:
 
@@ -202,8 +205,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Responsibilities:
   - ncurses terminal UI (panels, logging, protocol displays, visualizers)
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
-  - Live visualizers (constellation, eye diagram, spectrum, FSK histogram) driven by the radio shim API when available
-    (`USE_RADIO`)
+  - Radio-driven UI controls are gated by `USE_RADIO`; current live visualizer renderers (constellation, eye diagram,
+    spectrum, FSK histogram) are RTL-shim based and gated by `USE_RTLSDR`
 
 Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`
 
@@ -260,7 +263,7 @@ Additional includes of interest:
 
 - Libraries build under `src/...`; the CLI builds under `apps/dsd-cli` as `dsd-neo`.
 - Use CMake presets (see `CMakePresets.json`).
-- Tests live under `tests/<area>` and are wired with CTest; run with `ctest --preset dev-debug -V`.
+- Tests live under `tests/<area>` and are wired with CTest; run with `ctest --preset dev-debug --output-on-failure`.
 
 Top‑level build files: `CMakeLists.txt`, `CMakePresets.json`, `apps/CMakeLists.txt`, `tests/CMakeLists.txt`
 
@@ -271,13 +274,19 @@ Common interface targets:
 
 Optional feature interface targets (compile definitions + include paths; stubbed out when deps are missing):
 
+- `dsd-neo_feature_colors` — `PRETTY_COLORS` when ncurses UI colors are enabled (`COLORS`)
+- `dsd-neo_feature_colors_logs` — `PRETTY_COLORS_LOGS` when colored terminal/log output is enabled (`COLORSLOGS`)
+- `dsd-neo_feature_pvc` — `PVCONVENTIONAL` when ProVoice conventional frame sync is enabled (`PVC`)
+- `dsd-neo_feature_lz` — `LIMAZULUTWEAKS` when LimaZulu NXDN tweaks are enabled (`LZ`)
+- `dsd-neo_feature_sid` — `SOFTID` when P25p1 soft ID decoding is enabled (`SID`)
 - `dsd-neo_feature_radio` — `USE_RADIO` when any radio backend is available (`DSD_HAS_RADIO`)
 - `dsd-neo_feature_rtlsdr` — `USE_RTLSDR` (+ `USE_RTLSDR_BIAS_TEE` when supported by librtlsdr)
 - `dsd-neo_feature_soapy` — `USE_SOAPYSDR` + SoapySDR link/includes when available
 - `dsd-neo_feature_codec2` — `USE_CODEC2`
+- `dsd-neo_feature_curl` — `USE_CURL` + libcurl link when available
 
 External dependencies (resolved via CMake):
 
 - Required: LibSndFile; curses (ncursesw/PDCurses); an audio backend (PulseAudio by default, PortAudio on Windows);
   MBE vocoder (`mbe-neo`).
-- Optional: RTL‑SDR, SoapySDR, CODEC2.
+- Optional: RTL‑SDR, SoapySDR, CODEC2, libcurl.
