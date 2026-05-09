@@ -1132,7 +1132,7 @@ void
 Golay_24_12_encode(unsigned char* origBits, unsigned char* encodedBits) {
     int i = 0, j = 0;
 
-    // memset(encodedBits, 0, 24);
+    memset(encodedBits, 0, 24);
 
     for (i = 0; i < 12; i++) {
         for (j = 0; j < 24; j++) {
