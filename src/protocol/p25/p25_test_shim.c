@@ -10,6 +10,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -287,6 +288,9 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
+        if (state) {
+            dsd_state_ext_free_all(state);
+        }
         free(opts);
         free(state);
         if (out_vc0) {
@@ -331,6 +335,7 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     if (out_tuned) {
         *out_tuned = opts->p25_is_tuned;
     }
+    dsd_state_ext_free_all(state);
     free(opts);
     free(state);
 }

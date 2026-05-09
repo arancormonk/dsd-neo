@@ -137,6 +137,8 @@ alloc_test_runtime(test_runtime* runtime) {
 static void
 free_test_runtime(test_runtime* runtime) {
     if (runtime->opts != NULL) {
+        closeAudioInput(runtime->opts);
+        closeAudioOutput(runtime->opts);
         if (runtime->opts->audio_in_file != NULL) {
             sf_close(runtime->opts->audio_in_file);
             runtime->opts->audio_in_file = NULL;

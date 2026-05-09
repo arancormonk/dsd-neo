@@ -46,6 +46,8 @@ target_include_directories(dsd-neo_platform
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
 
+target_link_libraries(dsd-neo_platform PRIVATE dsd-neo_sanitizers)
+
 install(TARGETS dsd-neo_platform
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

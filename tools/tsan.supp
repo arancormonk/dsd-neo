@@ -1,0 +1,3 @@
+# ThreadSanitizer suppressions for third-party runtime libraries.
+# Keep dsd-neo-owned races unsuppressed.
+race:libpulsecommon

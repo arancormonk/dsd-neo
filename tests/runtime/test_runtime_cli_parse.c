@@ -43,6 +43,22 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
+close_parse_outputs(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    if (opts->wav_out_f) {
+        opts->wav_out_f = close_wav_file(opts->wav_out_f);
+    }
+    if (opts->wav_out_fR) {
+        opts->wav_out_fR = close_wav_file(opts->wav_out_fR);
+    }
+    if (opts->wav_out_raw) {
+        opts->wav_out_raw = close_wav_file(opts->wav_out_raw);
+    }
+}
+
+static void
 test_redirect_stdout_to_null(void) {
 #if defined(_WIN32)
     (void)freopen("NUL", "w", stdout);
@@ -1068,6 +1084,7 @@ test_r_playback_optind_is_first_file_regardless_of_option_order(void) {
             test_rc = 1;
         }
 
+        close_parse_outputs(opts);
         freeState(state);
         free(opts);
         free(state);
@@ -1108,6 +1125,7 @@ test_r_playback_optind_is_first_file_regardless_of_option_order(void) {
             test_rc = 1;
         }
 
+        close_parse_outputs(opts);
         freeState(state);
         free(opts);
         free(state);

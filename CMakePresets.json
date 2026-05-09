@@ -42,6 +42,17 @@
       }
     },
     {
+      "name": "tsan-debug",
+      "displayName": "Debug + TSan",
+      "description": "Debug build with ThreadSanitizer enabled",
+      "binaryDir": "${sourceDir}/build/tsan-debug",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "DSD_ENABLE_TSAN": "ON"
+      }
+    },
+    {
       "name": "coverage-debug",
       "displayName": "Debug + Coverage",
       "description": "Debug build with GCC/Clang coverage instrumentation",
@@ -175,6 +186,17 @@
       "cleanFirst": true
     },
     {
+      "name": "tsan-debug",
+      "configurePreset": "tsan-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "tsan-debug-clean",
+      "configurePreset": "tsan-debug",
+      "configuration": "Debug",
+      "cleanFirst": true
+    },
+    {
       "name": "coverage-debug",
       "configurePreset": "coverage-debug",
       "configuration": "Debug"
@@ -221,6 +243,14 @@
       "name": "asan-ubsan-debug",
       "configurePreset": "asan-ubsan-debug",
       "configuration": "Debug"
+    },
+    {
+      "name": "tsan-debug",
+      "configurePreset": "tsan-debug",
+      "configuration": "Debug",
+      "environment": {
+        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/tools/tsan.supp"
+      }
     },
     {
       "name": "coverage-debug",

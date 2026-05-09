@@ -7,6 +7,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
@@ -38,7 +39,7 @@ typedef struct udp_input_ring {
 /** @brief UDP input backend state shared across the reader thread and callers. */
 typedef struct udp_input_ctx {
     dsd_socket_t sockfd;
-    int running;
+    atomic_int running;
     udp_input_ring ring;
     dsd_thread_t th;
     int sample_rate;
@@ -141,7 +142,7 @@ static DSD_THREAD_RETURN_TYPE
         DSD_THREAD_RETURN;
     }
 
-    while (ctx->running) {
+    while (atomic_load(&ctx->running)) {
         int n = dsd_socket_recv(ctx->sockfd, buf, max_bytes, 0);
         if (n < 0) {
             int err = dsd_socket_get_error();
@@ -258,7 +259,7 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
         return -1;
     }
     ctx->sockfd = sockfd;
-    ctx->running = 1;
+    atomic_store(&ctx->running, 1);
     ctx->sample_rate = samplerate;
 
     // Ring capacity: ~500ms at samplerate
@@ -298,15 +299,15 @@ udp_input_stop(dsd_opts* opts) {
         return;
     }
     udp_input_ctx* ctx = (udp_input_ctx*)opts->udp_in_ctx;
-    ctx->running = 0;
-    if (ctx->sockfd != DSD_INVALID_SOCKET) {
-        dsd_socket_shutdown(ctx->sockfd, SHUT_RD);
-        dsd_socket_close(ctx->sockfd);
-    }
-    ctx->sockfd = DSD_INVALID_SOCKET;
+    dsd_socket_t sockfd = ctx->sockfd;
+    atomic_store(&ctx->running, 0);
     // wake any blocked reader
     ring_signal(&ctx->ring);
     dsd_thread_join(ctx->th);
+    if (sockfd != DSD_INVALID_SOCKET) {
+        dsd_socket_close(sockfd);
+        ctx->sockfd = DSD_INVALID_SOCKET;
+    }
     ring_destroy(&ctx->ring);
     free(ctx);
     opts->udp_in_ctx = NULL;
@@ -330,13 +331,13 @@ udp_input_read_sample(dsd_opts* opts, int16_t* out) {
         return 0;
     }
     udp_input_ctx* ctx = (udp_input_ctx*)opts->udp_in_ctx;
-    if (!ctx->running) {
+    if (!atomic_load(&ctx->running)) {
         return 0;
     }
     // Block until we have a real sample (do not synthesize silence; it breaks symbol timing).
     dsd_mutex_lock(&ctx->ring.m);
     while (ring_used(&ctx->ring) == 0) {
-        if (exitflag || !ctx->running) {
+        if (exitflag || !atomic_load(&ctx->running)) {
             dsd_mutex_unlock(&ctx->ring.m);
             return 0;
         }

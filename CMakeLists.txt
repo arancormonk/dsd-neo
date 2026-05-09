@@ -62,6 +62,7 @@ option(DSD_ENABLE_LTO "Enable Link Time Optimization (IPO/LTO) for Release build
 option(DSD_ENABLE_NATIVE "Enable native CPU tuning (-march/-mtune=native)" OFF)
 option(DSD_ENABLE_ASAN "Enable AddressSanitizer in Debug builds" OFF)
 option(DSD_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer in Debug builds" OFF)
+option(DSD_ENABLE_TSAN "Enable ThreadSanitizer in Debug builds" OFF)
 option(DSD_ENABLE_RTLSDR "Enable RTL-SDR backend support" ON)
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
 option(DSD_REQUIRE_RTLSDR "Fail configure when RTL-SDR is enabled but not found" OFF)
@@ -75,7 +76,52 @@ option(DSD_REQUIRE_SOAPYSDR "Fail configure when SoapySDR is enabled but not fou
 # this helper target PRIVATE.
 # -----------------------------------------------------------------------------
 
+add_library(dsd-neo_sanitizers INTERFACE)
+
+if(DSD_ENABLE_TSAN AND (DSD_ENABLE_ASAN OR DSD_ENABLE_UBSAN))
+    message(FATAL_ERROR "DSD_ENABLE_TSAN must use a separate build from ASan/UBSan.")
+endif()
+
+if((DSD_ENABLE_ASAN OR DSD_ENABLE_UBSAN OR DSD_ENABLE_TSAN)
+   AND (NOT CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" OR NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU"))
+    message(FATAL_ERROR "DSD sanitizer builds require Clang or GCC.")
+endif()
+
+if(DSD_ENABLE_TSAN AND WIN32)
+    message(FATAL_ERROR "DSD_ENABLE_TSAN is supported only on POSIX Clang/GCC builds.")
+endif()
+
+if(CMAKE_BUILD_TYPE MATCHES "Debug")
+    set(_dsd_san_cflags "")
+    set(_dsd_san_ldflags "")
+
+    if(DSD_ENABLE_ASAN)
+        list(APPEND _dsd_san_cflags -fsanitize=address -fno-omit-frame-pointer)
+        list(APPEND _dsd_san_ldflags -fsanitize=address)
+    endif()
+
+    if(DSD_ENABLE_UBSAN)
+        list(APPEND _dsd_san_cflags -fsanitize=undefined)
+        list(APPEND _dsd_san_ldflags -fsanitize=undefined)
+    endif()
+
+    if(DSD_ENABLE_TSAN)
+        list(APPEND _dsd_san_cflags -fsanitize=thread -fno-omit-frame-pointer)
+        list(APPEND _dsd_san_ldflags -fsanitize=thread)
+    endif()
+
+    if(_dsd_san_cflags)
+        target_compile_options(dsd-neo_sanitizers INTERFACE ${_dsd_san_cflags})
+    endif()
+    if(_dsd_san_ldflags)
+        target_link_options(dsd-neo_sanitizers INTERFACE ${_dsd_san_ldflags})
+    endif()
+elseif(DSD_ENABLE_ASAN OR DSD_ENABLE_UBSAN OR DSD_ENABLE_TSAN)
+    message(WARNING "DSD sanitizer options are enabled only for Debug builds.")
+endif()
+
 add_library(dsd-neo_warnings INTERFACE)
+target_link_libraries(dsd-neo_warnings INTERFACE dsd-neo_sanitizers)
 
 if(DSD_ENABLE_WARNINGS)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")

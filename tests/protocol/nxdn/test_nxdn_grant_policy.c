@@ -9,6 +9,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -31,6 +32,14 @@ expect_true(const char* tag, int cond) {
         return 1;
     }
     return 0;
+}
+
+static void
+free_test_state(dsd_state* st) {
+    if (st) {
+        dsd_state_ext_free_all(st);
+    }
+    free(st);
 }
 
 /*
@@ -288,7 +297,7 @@ main(void) {
 
     if (!opts || !st) {
         fprintf(stderr, "FAIL: alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !st ? " dsd_state" : "");
-        free(st);
+        free_test_state(st);
         free(opts);
         return 1;
     }
@@ -341,7 +350,7 @@ main(void) {
     if (rc == 0) {
         printf("NXDN_GRANT_POLICY: OK\n");
     }
-    free(st);
+    free_test_state(st);
     free(opts);
     return rc;
 }

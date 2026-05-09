@@ -1,5 +1,7 @@
 set(DSD_NEO_TEST_MATH_LIB $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
 
+link_libraries(dsd-neo_sanitizers)
+
 add_library(dsd-neo_test_support INTERFACE)
 target_include_directories(dsd-neo_test_support INTERFACE ${PROJECT_SOURCE_DIR}/tests/test_support)
 target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)

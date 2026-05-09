@@ -164,6 +164,12 @@ cmake --preset dev-debug
 cmake --build --preset dev-debug -j
 ctest --preset dev-debug --output-on-failure
 
+# Optional race-detection pass. Keep it separate from ASan/UBSan.
+cmake --preset tsan-debug
+cmake --build --preset tsan-debug -j
+ctest --preset tsan-debug --output-on-failure
+# The preset applies tools/tsan.supp for known third-party PulseAudio runtime reports.
+
 # Run (no install required)
 build/dev-debug/apps/dsd-cli/dsd-neo -h
 ```
@@ -229,6 +235,7 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_ENABLE_NATIVE=ON` — Enable `-march=native -mtune=native` (non‑portable binaries).
   - `-DDSD_ENABLE_ASAN=ON` — AddressSanitizer in Debug builds.
   - `-DDSD_ENABLE_UBSAN=ON` — UndefinedBehaviorSanitizer in Debug builds.
+  - `-DDSD_ENABLE_TSAN=ON` — ThreadSanitizer in Debug builds; use a separate build from ASan/UBSan.
 - Audio backend selection:
   - `-DDSD_USE_PORTAUDIO=ON` — Use PortAudio instead of PulseAudio (default on Windows).
 - Radio backend selection:

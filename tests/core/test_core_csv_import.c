@@ -6,6 +6,7 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -33,6 +34,14 @@ pick_missing_dir(char* out, size_t out_sz) {
     return -1;
 }
 
+static void
+free_test_state(dsd_state* state) {
+    if (state) {
+        dsd_state_ext_free_all(state);
+    }
+    free(state);
+}
+
 static int
 test_group_import_missing_file(void) {
     // dsd_state is a multi-megabyte struct; avoid Windows' default ~1MB stack.
@@ -40,14 +49,14 @@ test_group_import_missing_file(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
     char dir[128];
     if (pick_missing_dir(dir, sizeof dir) != 0) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
@@ -56,17 +65,17 @@ test_group_import_missing_file(void) {
     int rc = csvGroupImport(opts, state);
     if (rc == 0) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     if (state->group_tally != 123) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
     free(opts);
-    free(state);
+    free_test_state(state);
     return 0;
 }
 
@@ -77,14 +86,14 @@ test_channel_import_missing_file(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
     char dir[128];
     if (pick_missing_dir(dir, sizeof dir) != 0) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
@@ -93,17 +102,17 @@ test_channel_import_missing_file(void) {
     int rc = csvChanImport(opts, state);
     if (rc == 0) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     if (state->lcn_freq_count != 456) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
     free(opts);
-    free(state);
+    free_test_state(state);
     return 0;
 }
 
@@ -113,7 +122,7 @@ test_group_import_capacity_cap(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
@@ -121,7 +130,7 @@ test_group_import_capacity_cap(void) {
     int fd = dsd_mkstemp(tmpl);
     if (fd < 0) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     (void)dsd_close(fd);
@@ -130,7 +139,7 @@ test_group_import_capacity_cap(void) {
     if (!fp) {
         (void)remove(tmpl);
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
@@ -158,7 +167,7 @@ test_group_import_capacity_cap(void) {
 
     (void)remove(tmpl);
     free(opts);
-    free(state);
+    free_test_state(state);
     return failed;
 }
 
@@ -186,14 +195,14 @@ test_group_import_policy_and_legacy_headers(void) {
     int fd = -1;
     if (!opts || !state) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
     fd = dsd_mkstemp(tmpl);
     if (fd < 0) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     (void)dsd_close(fd);
@@ -201,7 +210,7 @@ test_group_import_policy_and_legacy_headers(void) {
     if (write_text_file(tmpl, "id,mode,name,tag\n100,B,LOCK,90,true,on,on,on\n101,A,ALLOW,meta\n") != 0) {
         (void)remove(tmpl);
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
@@ -220,6 +229,7 @@ test_group_import_policy_and_legacy_headers(void) {
         failed = 1;
     }
 
+    dsd_state_ext_free_all(state);
     memset(state, 0, sizeof(*state));
     if (write_text_file(tmpl, "id,mode,name,priority,preempt,audio,record,stream,tags\n"
                               "200,A,Fire,90,true,on,on,on,fire\n"
@@ -263,7 +273,7 @@ test_group_import_policy_and_legacy_headers(void) {
 
     (void)remove(tmpl);
     free(opts);
-    free(state);
+    free_test_state(state);
     return failed;
 }
 
@@ -276,13 +286,13 @@ test_group_import_invalid_ids_and_required_fields(void) {
     int fd = -1;
     if (!opts || !state) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     fd = dsd_mkstemp(tmpl);
     if (fd < 0) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     (void)dsd_close(fd);
@@ -303,7 +313,7 @@ test_group_import_invalid_ids_and_required_fields(void) {
         != 0) {
         (void)remove(tmpl);
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
@@ -316,7 +326,7 @@ test_group_import_invalid_ids_and_required_fields(void) {
 
     (void)remove(tmpl);
     free(opts);
-    free(state);
+    free_test_state(state);
     return failed;
 }
 
@@ -330,13 +340,13 @@ test_group_import_range_after_exact_capacity(void) {
     int fd = -1;
     if (!opts || !state) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     fd = dsd_mkstemp(tmpl);
     if (fd < 0) {
         free(opts);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     (void)dsd_close(fd);
@@ -347,7 +357,7 @@ test_group_import_range_after_exact_capacity(void) {
         if (!fp) {
             (void)remove(tmpl);
             free(opts);
-            free(state);
+            free_test_state(state);
             return 1;
         }
         fprintf(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n");
@@ -371,7 +381,7 @@ test_group_import_range_after_exact_capacity(void) {
 
     (void)remove(tmpl);
     free(opts);
-    free(state);
+    free_test_state(state);
     return failed;
 }
 
@@ -393,22 +403,22 @@ test_vertex_import_missing_file(void) {
 
     char dir[128];
     if (pick_missing_dir(dir, sizeof dir) != 0) {
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
     state->vertex_ks_count = 7;
     int rc = csvVertexKsImport(state, dir);
     if (rc == 0) {
-        free(state);
+        free_test_state(state);
         return 1;
     }
     if (state->vertex_ks_count != 7) {
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
-    free(state);
+    free_test_state(state);
     return 0;
 }
 
@@ -422,7 +432,7 @@ test_vertex_import_and_apply(void) {
     char tmpl[] = "dsd-neo-test-vertex-ks-XXXXXX";
     int fd = dsd_mkstemp(tmpl);
     if (fd < 0) {
-        free(state);
+        free_test_state(state);
         return 1;
     }
     (void)dsd_close(fd);
@@ -430,7 +440,7 @@ test_vertex_import_and_apply(void) {
     FILE* fp = fopen(tmpl, "w");
     if (!fp) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     fprintf(fp, "key_hex,keystream_spec\n");
@@ -442,14 +452,14 @@ test_vertex_import_and_apply(void) {
     int rc = csvVertexKsImport(state, tmpl);
     if (rc != 0 || state->vertex_ks_count != 3) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     if (state->vertex_ks_key[0] != 0x1234567891ULL || state->vertex_ks_mod[0] != 8
         || state->vertex_ks_frame_mode[0] != 1 || state->vertex_ks_frame_off[0] != 2
         || state->vertex_ks_frame_step[0] != 3) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
@@ -466,44 +476,44 @@ test_vertex_import_and_apply(void) {
 
     if (vertex_key_map_apply_frame49(state, 0, 0x1234567891ULL, frame0) != 1) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     if (vertex_key_map_apply_frame49(state, 0, 0x1234567891ULL, frame1) != 1) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     if (vertex_key_map_apply_frame49(state, 1, 0x1234567891ULL, frame_slot1) != 1) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     if (bits_to_u8(frame0, 0) != 0xC3U || bits_to_u8(frame1, 0) != 0x1EU || bits_to_u8(frame_slot1, 0) != 0xC3U) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
     if (vertex_key_map_apply_frame49(state, 0, 0xABCDEFULL, frame2) != 1) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     if (bits_to_u8(frame2, 0) != 0x0FU) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
     if (vertex_key_map_apply_frame49(state, 0, 0ULL, frame_zero_key) != 1) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     if (bits_to_u8(frame_zero_key, 0) != 0xAAU) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
@@ -511,17 +521,17 @@ test_vertex_import_and_apply(void) {
     memset(unknown, 0, sizeof(unknown));
     if (vertex_key_map_apply_frame49(state, 0, 0x999999ULL, unknown) != 0) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
     if (bits_to_u8(unknown, 0) != 0x00U) {
         (void)remove(tmpl);
-        free(state);
+        free_test_state(state);
         return 1;
     }
 
     (void)remove(tmpl);
-    free(state);
+    free_test_state(state);
     return 0;
 }
 

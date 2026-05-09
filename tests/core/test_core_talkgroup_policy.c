@@ -28,6 +28,14 @@ expect_true(const char* tag, int cond) {
 }
 
 static void
+free_test_state(dsd_state* st) {
+    if (st) {
+        dsd_state_ext_free_all(st);
+    }
+    free(st);
+}
+
+static void
 init_entry(dsd_tg_policy_entry* e, uint32_t id, const char* mode, const char* name, uint8_t source) {
     memset(e, 0, sizeof(*e));
     e->id_start = id;
@@ -107,7 +115,7 @@ test_lookup_and_precedence(void) {
     rc |= expect_true("lookup equal span", dsd_tg_policy_lookup_id(st, 1305, &lookup) == 0);
     rc |= expect_true("last inserted equal-span wins", strcmp(lookup.entry.name, "SPAN-2") == 0);
 
-    free(st);
+    free_test_state(st);
     return rc;
 }
 
@@ -141,7 +149,7 @@ test_legacy_exact_fallback(void) {
     e.is_range = 0;
     rc |= expect_true("reject exact in range helper", dsd_tg_policy_add_range_entry(st, &e) == 1);
 
-    free(st);
+    free_test_state(st);
     return rc;
 }
 
@@ -183,7 +191,7 @@ test_upsert_modes(void) {
     rc |= expect_true("protected row unchanged", dsd_tg_policy_lookup_id(st, 500, &lookup) == 0);
     rc |= expect_true("protected row still lockout", strcmp(lookup.entry.mode, "B") == 0);
 
-    free(st);
+    free_test_state(st);
     return rc;
 }
 
@@ -195,7 +203,7 @@ test_evaluator_behaviors(void) {
     dsd_tg_policy_entry e;
     dsd_tg_policy_decision decision;
     if (!st || !opts) {
-        free(st);
+        free_test_state(st);
         free(opts);
         return 1;
     }
@@ -325,7 +333,7 @@ test_evaluator_behaviors(void) {
                       decision.tune_allowed == 1 && decision.audio_allowed == 1 && decision.record_allowed == 1
                           && decision.stream_allowed == 1);
 
-    free(st);
+    free_test_state(st);
     free(opts);
     return rc;
 }
@@ -550,7 +558,7 @@ test_preemption_helpers(void) {
     dsd_tg_policy_decision active_dec;
     dsd_tg_policy_decision cand_dec;
     if (!st || !opts) {
-        free(st);
+        free_test_state(st);
         free(opts);
         return 1;
     }
@@ -675,7 +683,7 @@ test_preemption_helpers(void) {
 
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
-    free(st);
+    free_test_state(st);
     free(opts);
     return rc;
 }
@@ -692,7 +700,7 @@ test_reload_group_file(void) {
     char path_template[64];
     int fd = -1;
     if (!st || !opts) {
-        free(st);
+        free_test_state(st);
         free(opts);
         return 1;
     }
@@ -704,7 +712,7 @@ test_reload_group_file(void) {
     snprintf(path_template, sizeof(path_template), "%s", "dsd-neo-test-tg-reload-XXXXXX");
     fd = dsd_mkstemp(path_template);
     if (fd < 0) {
-        free(st);
+        free_test_state(st);
         free(opts);
         return 1;
     }
@@ -713,7 +721,7 @@ test_reload_group_file(void) {
         FILE* fp = fopen(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
-            free(st);
+            free_test_state(st);
             free(opts);
             return 1;
         }
@@ -746,7 +754,7 @@ test_reload_group_file(void) {
         FILE* fp = fopen(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
-            free(st);
+            free_test_state(st);
             free(opts);
             return 1;
         }
@@ -764,7 +772,7 @@ test_reload_group_file(void) {
     rc |= expect_true("second reload row name", strcmp(lookup.entry.name, "THREE") == 0);
 
     (void)remove(path_template);
-    free(st);
+    free_test_state(st);
     free(opts);
     return rc;
 }

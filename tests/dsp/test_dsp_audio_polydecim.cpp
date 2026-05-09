@@ -19,6 +19,7 @@
 #include <cstring>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/runtime/mem.h>
 #include <vector>
 
 static double
@@ -63,6 +64,16 @@ copy_i_to_audio_demod(struct demod_state* d) {
     d->result_len = Npairs;
 }
 
+static void
+free_demod_state(demod_state* d) {
+    if (!d) {
+        return;
+    }
+    dsd_neo_aligned_free(d->post_polydecim_taps);
+    dsd_neo_aligned_free(d->post_polydecim_hist);
+    free(d);
+}
+
 static int
 run_once(double fs, double f) {
     const int M = 4;
@@ -95,7 +106,7 @@ run_once(double fs, double f) {
 
     full_demod(d);
     int rv = d->result_len;
-    free(d);
+    free_demod_state(d);
     return rv;
 }
 
@@ -140,7 +151,7 @@ main(void) {
     gen_tone_iq(iq_stop, Fs, f_stop, 0.8);
     demod_state* d2 = (demod_state*)malloc(sizeof(demod_state));
     if (!d2) {
-        free(d1);
+        free_demod_state(d1);
         return 1;
     }
     std::memset(d2, 0, sizeof(*d2));
@@ -180,18 +191,18 @@ main(void) {
     double rs = rms(y_stop);
     if (rp <= 1e-9 || rs <= 0.0) {
         std::fprintf(stderr, "polydecim: degenerate RMS rp=%.3f rs=%.3f\n", rp, rs);
-        free(d1);
-        free(d2);
+        free_demod_state(d1);
+        free_demod_state(d2);
         return 1;
     }
     double att_db = 20.0 * std::log10(rs / rp);
     if (!(att_db <= -15.0)) { // conservative bound
         std::fprintf(stderr, "polydecim: attenuation too small %.2f dB\n", att_db);
-        free(d1);
-        free(d2);
+        free_demod_state(d1);
+        free_demod_state(d2);
         return 1;
     }
-    free(d1);
-    free(d2);
+    free_demod_state(d1);
+    free_demod_state(d2);
     return 0;
 }

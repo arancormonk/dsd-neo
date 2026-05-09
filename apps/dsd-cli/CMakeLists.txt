@@ -27,26 +27,6 @@ target_link_libraries(dsd-neo PRIVATE dsd-neo_warnings)
 
 ## Fast-math now configured globally when enabled
 
-# Sanitizers in Debug
-if(CMAKE_BUILD_TYPE MATCHES "Debug")
-    set(_dsd_san_cflags "")
-    set(_dsd_san_ldflags "")
-    if(DSD_ENABLE_ASAN AND (CMAKE_C_COMPILER_ID MATCHES "Clang|GNU"))
-        list(APPEND _dsd_san_cflags -fsanitize=address -fno-omit-frame-pointer)
-        list(APPEND _dsd_san_ldflags -fsanitize=address)
-    endif()
-    if(DSD_ENABLE_UBSAN AND (CMAKE_C_COMPILER_ID MATCHES "Clang|GNU"))
-        list(APPEND _dsd_san_cflags -fsanitize=undefined)
-        list(APPEND _dsd_san_ldflags -fsanitize=undefined)
-    endif()
-    if(_dsd_san_cflags)
-        target_compile_options(dsd-neo PRIVATE ${_dsd_san_cflags})
-    endif()
-    if(_dsd_san_ldflags)
-        target_link_options(dsd-neo BEFORE PRIVATE ${_dsd_san_ldflags})
-    endif()
-endif()
-
 ## LTO/IPO now configured globally for Release when enabled
 
 include(GNUInstallDirs)

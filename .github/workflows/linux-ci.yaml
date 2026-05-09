@@ -591,11 +591,23 @@ jobs:
           GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git push origin master
 
   sanitize-linux:
-    name: Linux • Debug • sanitizers
+    name: Linux • Debug • sanitizer (${{ matrix.name }})
     runs-on: ubuntu-latest
     # Keep sanitizer coverage on push/manual runs. Pull requests get the
     # non-sanitized debug build+ctest in backend-pr for faster feedback.
     if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: asan-ubsan
+            preset: asan-ubsan-debug
+            cc: gcc
+            cxx: g++
+          - name: tsan
+            preset: tsan-debug
+            cc: clang
+            cxx: clang++
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
@@ -632,7 +644,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config git ccache \
+            build-essential clang cmake ninja-build pkg-config git ccache \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev \
             gfortran
@@ -642,8 +654,8 @@ jobs:
           set -euxo pipefail
           {
             echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache"
-            echo "CC=ccache gcc"
-            echo "CXX=ccache g++"
+            echo "CC=ccache ${{ matrix.cc }}"
+            echo "CXX=ccache ${{ matrix.cxx }}"
             echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
             echo "CCACHE_NOHASHDIR=true"
             echo "CCACHE_SLOPPINESS=time_macros"
@@ -655,7 +667,7 @@ jobs:
         run: |
           set -euxo pipefail
           {
-            echo "gcc_ver=$(gcc -dumpfullversion -dumpversion || gcc --version | head -n1)"
+            echo "compiler_ver=$(${{ matrix.cc }} --version | head -n1 | tr ' /' '__')"
             echo "cmake_ver=$(cmake --version | head -n1 | awk '{print $3}')"
           } >> "$GITHUB_OUTPUT"
 
@@ -663,9 +675,10 @@ jobs:
         uses: actions/cache@v5.0.5
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ github.job }}-${{ steps.toolver-sanitize.outputs.gcc_ver }}-${{ steps.toolver-sanitize.outputs.cmake_ver }}-${{ github.sha }}
+          key: ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-${{ steps.toolver-sanitize.outputs.compiler_ver }}-${{ steps.toolver-sanitize.outputs.cmake_ver }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ github.job }}-${{ steps.toolver-sanitize.outputs.gcc_ver }}-${{ steps.toolver-sanitize.outputs.cmake_ver }}-
+            ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-${{ steps.toolver-sanitize.outputs.compiler_ver }}-${{ steps.toolver-sanitize.outputs.cmake_ver }}-
+            ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-
             ccache-${{ runner.os }}-${{ github.job }}-
             ccache-${{ runner.os }}-
 
@@ -766,14 +779,22 @@ jobs:
             echo "updated=$(date -u +%FT%TZ)"
           } > "$mf"
 
-      - name: Configure (asan-ubsan-debug)
-        run: cmake --preset asan-ubsan-debug
+      - name: Configure (${{ matrix.preset }})
+        run: cmake --preset ${{ matrix.preset }}
 
-      - name: Build (asan-ubsan-debug)
-        run: cmake --build --preset asan-ubsan-debug --parallel
+      - name: Build (${{ matrix.preset }})
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
 
-      - name: Test (asan-ubsan-debug)
-        run: ctest --preset asan-ubsan-debug -V
+      - name: Test (${{ matrix.preset }})
+        run: |
+          set -euxo pipefail
+          if [[ "${{ matrix.name }}" == "tsan" ]]; then
+            export TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${GITHUB_WORKSPACE}/tools/tsan.supp"
+          else
+            export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:strict_string_checks=1"
+            export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
+          fi
+          ctest --preset ${{ matrix.preset }} --output-on-failure
 
       - name: Show ccache stats
         if: always()

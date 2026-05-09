@@ -7,6 +7,7 @@
    corrupted with a small conjugate (image) component. */
 
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -41,11 +42,11 @@ main(void) {
     const int pairs = 512;
     static float buf[(size_t)pairs * 2];
     // Generate QPSK-like random symbols
-    int seed = 12345;
+    uint32_t seed = 12345U;
     for (int n = 0; n < pairs; n++) {
-        seed = (1103515245 * seed + 12345);
-        int bi = (seed >> 16) & 1;
-        int bq = (seed >> 17) & 1;
+        seed = 1103515245U * seed + 12345U;
+        int bi = (int)((seed >> 16) & 1U);
+        int bq = (int)((seed >> 17) & 1U);
         float I = bi ? 8000.0f : -8000.0f;
         float Q = bq ? 8000.0f : -8000.0f;
         // Inject small conjugate image: y = z + a*conj(z)
