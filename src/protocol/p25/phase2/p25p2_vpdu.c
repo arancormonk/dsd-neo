@@ -64,6 +64,47 @@ p25_algid_name(uint8_t algid) {
     }
 }
 
+static uint64_t
+p25_mac_get_bits(const unsigned long long int MAC[24], int len_a, int start_bit, int bit_count) {
+    uint64_t value = 0;
+    for (int i = 0; i < bit_count; i++) {
+        int bit = start_bit + i;
+        int octet = 1 + len_a + (bit / 8);
+        int shift = 7 - (bit % 8);
+        value = (value << 1) | ((uint64_t)(MAC[octet] >> shift) & 0x1ULL);
+    }
+    return value;
+}
+
+static time_t
+p25_utc_time_from_fields(int year, int month, int day, int hours, int minutes, int seconds) {
+    static const int days_in_month[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (year < 1970 || month < 1 || month > 12 || day < 1 || day > 31 || hours < 0 || hours > 23 || minutes < 0
+        || minutes > 59 || seconds < 0 || seconds > 60) {
+        return (time_t)-1;
+    }
+    int max_day = days_in_month[month - 1];
+    if (month == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) {
+        max_day = 29;
+    }
+    if (day > max_day) {
+        return (time_t)-1;
+    }
+
+    int64_t y = year;
+    unsigned m = (unsigned)month;
+    unsigned d = (unsigned)day;
+    y -= (m <= 2);
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned mp = (m > 2) ? (m - 3U) : (m + 9U);
+    unsigned doy = (153U * mp + 2U) / 5U + d - 1U;
+    unsigned doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
+    int64_t days = era * 146097 + (int64_t)doe - 719468;
+    int64_t total = days * 86400 + (int64_t)hours * 3600 + (int64_t)minutes * 60 + seconds;
+    return (time_t)total;
+}
+
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void
 p25p2_emit_mac_json_if_enabled(dsd_state* state, int xch_type, uint8_t mfid, uint8_t opcode, int slot, int len_b,
@@ -2634,8 +2675,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
         }
 
-        //Adjacent Status Broadcast, abbreviated
-        if (MAC[1 + len_a] == 0x7C) {
+        //Adjacent Status Broadcast, abbreviated. TSBK 0x3E is the uncoordinated band plan variant.
+        if (MAC[1 + len_a] == 0x7C || (MAC[1 + len_a] == 0x7E && MAC[len_a] == 0x07)) {
+            int uncoordinated = (MAC[1 + len_a] == 0x7E);
             int lra = MAC[2 + len_a];
             int cfva = MAC[3 + len_a] >> 4;
             int lsysid = ((MAC[3 + len_a] & 0xF) << 8) | MAC[4 + len_a];
@@ -2643,7 +2685,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int siteid = MAC[6 + len_a];
             int channelt = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
             int sysclass = MAC[9 + len_a];
-            fprintf(stderr, "\n Adjacent Status Broadcast - Abbreviated\n");
+            fprintf(stderr, "\n Adjacent Status Broadcast%s - Abbreviated\n",
+                    uncoordinated ? " Uncoordinated Band Plan" : "");
             fprintf(stderr, "  LRA [%02X] RFSS[%03d] SITE [%03d] SYSID [%03X] CHAN-T [%04X] SSC [%02X]\n  ", lra,
                     rfssid, siteid, lsysid, channelt, sysclass);
             if (cfva & 0x8) {
@@ -2797,27 +2840,23 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n  Target Address: %d RF: 0x%X BER: 0x%X", ta, rf, ber);
         }
 
-        // Protection Parameter Broadcast (MAC 0x7E, TSBK 0x3E) or Update (MAC 0x7F, TSBK 0x3F)
-        // TIA-102.AABC-B §6.2.12 / §6.2.13
-        if (MAC[1 + len_a] == 0x7E || MAC[1 + len_a] == 0x7F) {
-            int is_broadcast = (MAC[1 + len_a] == 0x7E);
-            int algid = (int)MAC[2 + len_a];
-            int kid = (int)((MAC[3 + len_a] << 8) | MAC[4 + len_a]);
+        // Protection Parameter Update (TSBK 0x3F, bridged as MAC-like 0x7F)
+        // Layout: reserved(16), ALGID(8), KID(16), target(24).
+        if (MAC[1 + len_a] == 0x7F && MAC[len_a] == 0x07) {
+            int algid = (int)MAC[4 + len_a];
+            int kid = (int)((MAC[5 + len_a] << 8) | MAC[6 + len_a]);
+            int target = (int)((MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a]);
 
             const char* alg_name = p25_algid_name((uint8_t)algid);
 
             fprintf(stderr, "%s", KYEL);
-            fprintf(stderr, "\n Protection Parameter %s", is_broadcast ? "Broadcast" : "Update");
+            fprintf(stderr, "\n Protection Parameter Update");
             fprintf(stderr, "\n  ALGID [%02X]", algid);
             if (alg_name) {
                 fprintf(stderr, " (%s)", alg_name);
             }
             fprintf(stderr, " KID [%04X]", kid);
-
-            if (is_broadcast) {
-                int target = (int)((MAC[5 + len_a] << 16) | (MAC[6 + len_a] << 8) | MAC[7 + len_a]);
-                fprintf(stderr, " Target [%d]", target);
-            }
+            fprintf(stderr, " Target [%d]", target);
             fprintf(stderr, "%s", KNRM);
 
             state->p25_prot_algid = (uint8_t)algid;
@@ -2827,33 +2866,27 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         // Time and Date Announcement (MAC 0x75, TSBK 0x35)
         // TIA-102.AABC-B §6.2.20
         if (MAC[1 + len_a] == 0x75) {
-            int vd = (MAC[2 + len_a] >> 7) & 1;
-            int vt = (MAC[2 + len_a] >> 6) & 1;
-            int vl = (MAC[2 + len_a] >> 5) & 1;
-
-            // Pack octets 3-9 into a 56-bit value for bit-field extraction
-            uint64_t packed = 0;
-            for (int pi = 3; pi <= 9; pi++) {
-                packed = (packed << 8) | MAC[pi + len_a];
-            }
+            int vd = (int)p25_mac_get_bits(MAC, len_a, 8, 1);
+            int vt = (int)p25_mac_get_bits(MAC, len_a, 9, 1);
+            int vl = (int)p25_mac_get_bits(MAC, len_a, 10, 1);
 
             int year = 0, month = 0, day = 0;
             int hours = 0, minutes = 0, seconds = 0;
             int lto_sign = 0, lto_mag = 0;
 
             if (vd) {
-                year = (int)((packed >> 43) & 0x1FFF) + 2000;
-                month = (int)((packed >> 39) & 0xF);
-                day = (int)((packed >> 34) & 0x1F);
+                month = (int)p25_mac_get_bits(MAC, len_a, 24, 4);
+                day = (int)p25_mac_get_bits(MAC, len_a, 28, 5);
+                year = (int)p25_mac_get_bits(MAC, len_a, 33, 13);
             }
             if (vt) {
-                hours = (int)((packed >> 29) & 0x1F);
-                minutes = (int)((packed >> 23) & 0x3F);
-                seconds = (int)((packed >> 17) & 0x3F);
+                hours = (int)p25_mac_get_bits(MAC, len_a, 48, 5);
+                minutes = (int)p25_mac_get_bits(MAC, len_a, 53, 6);
+                seconds = (int)p25_mac_get_bits(MAC, len_a, 59, 6);
             }
             if (vl) {
-                lto_sign = (int)((packed >> 16) & 0x1);
-                lto_mag = (int)((packed >> 5) & 0x7FF);
+                lto_sign = (int)p25_mac_get_bits(MAC, len_a, 11, 1);
+                lto_mag = (int)p25_mac_get_bits(MAC, len_a, 12, 12);
             }
 
             fprintf(stderr, "%s", KYEL);
@@ -2866,8 +2899,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 fprintf(stderr, "%02d:%02d:%02d ", hours, minutes, seconds);
             }
             if (vl) {
-                // LTO magnitude is in half-hour units
-                int lto_total_minutes = lto_mag * 30;
+                int lto_total_minutes = lto_mag;
                 int lto_hours = lto_total_minutes / 60;
                 int lto_mins = lto_total_minutes % 60;
                 fprintf(stderr, "UTC%c%02d:%02d", lto_sign ? '-' : '+', lto_hours, lto_mins);
@@ -2876,16 +2908,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             // Store time_t if both date and time are valid
             if (vd && vt) {
-                struct tm tm_val;
-                memset(&tm_val, 0, sizeof(tm_val));
-                tm_val.tm_year = year - 1900;
-                tm_val.tm_mon = month - 1;
-                tm_val.tm_mday = day;
-                tm_val.tm_hour = hours;
-                tm_val.tm_min = minutes;
-                tm_val.tm_sec = seconds;
-                tm_val.tm_isdst = -1;
-                time_t t = mktime(&tm_val);
+                time_t t = p25_utc_time_from_fields(year, month, day, hours, minutes, seconds);
                 if (t != (time_t)-1) {
                     state->p25_sys_time = t;
                 }
@@ -2893,7 +2916,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             // Store local time offset if valid
             if (vl) {
-                int offset_minutes = lto_mag * 30;
+                int offset_minutes = lto_mag;
                 if (lto_sign) {
                     offset_minutes = -offset_minutes;
                 }

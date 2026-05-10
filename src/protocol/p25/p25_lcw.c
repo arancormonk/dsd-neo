@@ -371,9 +371,9 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
 
             else if (lc_format == 0x65) {
                 // Protection Parameter Broadcast — TIA-102.AABF-D LCO 37
-                uint8_t algid = (uint8_t)ConvertBitIntoBytes(&LCW_bits[16], 8);
-                uint16_t kid = (uint16_t)ConvertBitIntoBytes(&LCW_bits[24], 16);
-                uint32_t target = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 24);
+                uint8_t algid = (uint8_t)ConvertBitIntoBytes(&LCW_bits[24], 8);
+                uint16_t kid = (uint16_t)ConvertBitIntoBytes(&LCW_bits[32], 16);
+                uint32_t target = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
 
                 const char* alg_name = p25_algid_name(algid);
 
