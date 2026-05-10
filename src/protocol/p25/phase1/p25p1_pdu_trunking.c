@@ -28,6 +28,11 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static inline int
+p25_signed_offset_units(int sign_bit, int raw_offset) {
+    return sign_bit ? raw_offset : -raw_offset;
+}
+
 //trunking data delivered via PDU format
 void
 p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
@@ -218,7 +223,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         int tx_off_sign = (mpdu_byte[16] >> 7) & 1;
         int tx_off_raw = ((mpdu_byte[16] & 0x7F) << 6) | (mpdu_byte[17] >> 2);
         int chan_spac = ((mpdu_byte[17] & 0x3) << 8) | mpdu_byte[18];
-        int trans_off = tx_off_sign ? -(tx_off_raw) : tx_off_raw;
+        int trans_off = p25_signed_offset_units(tx_off_sign, tx_off_raw);
 
         fprintf(stderr, "%s", KYEL);
         fprintf(stderr, "\n TDMA Identifier Update MBT - Direct Decode\n");

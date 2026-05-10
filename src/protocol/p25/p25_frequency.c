@@ -15,6 +15,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -23,17 +24,70 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-// P25 channel → frequency mapping
-// - Channel format: 4-bit iden (MSBs) + 12-bit channel number.
-// - Frequency calculation per OP25 practice:
-//     freq_hz = base[iden]*5 + (step * spacing[iden] * 125)
-//   Where:
-//     base[iden] is in units of 5 kHz (per IDEN_UP encoding),
-//     spacing[iden] is in units of 125 Hz,
-//     step = channel_number / slots_per_carrier[type]
-// - slots_per_carrier table below is sourced from OP25 and common system behavior.
-long int
-process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
+enum {
+    P25_FREQ_MODE_AUTO = -1,
+    P25_FREQ_MODE_FDMA = 0,
+    P25_FREQ_MODE_TDMA = 1,
+};
+
+static const int k_p25_slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+
+static int
+p25_auto_prefers_tdma(const dsd_state* state, int iden) {
+    int explicit_hint = state->p25_chan_tdma_explicit[iden];
+    if (explicit_hint == 0x02) {
+        return 1;
+    }
+    if (explicit_hint == 0x01) {
+        return 0;
+    }
+    if (explicit_hint == 0x03) {
+        if (DSD_SYNC_IS_P25P2(state->synctype) || state->p25_cc_is_tdma == 1) {
+            return 1;
+        }
+        return 0;
+    }
+    return 0;
+}
+
+static const p25_iden_entry_t*
+p25_select_iden_entry(const dsd_state* state, int iden, int mode, int* out_use_tdma) {
+    int prefer_tdma = (mode == P25_FREQ_MODE_TDMA) ? 1 : 0;
+    const p25_iden_entry_t* primary = NULL;
+    const p25_iden_entry_t* fallback = NULL;
+
+    if (mode == P25_FREQ_MODE_AUTO) {
+        prefer_tdma = p25_auto_prefers_tdma(state, iden);
+    }
+
+    primary = prefer_tdma ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
+    fallback = prefer_tdma ? &state->p25_iden_fdma[iden] : &state->p25_iden_tdma[iden];
+
+    if (primary->populated) {
+        if (out_use_tdma) {
+            *out_use_tdma = prefer_tdma;
+        }
+        return primary;
+    }
+    if (fallback->populated) {
+        if (out_use_tdma) {
+            *out_use_tdma = prefer_tdma;
+        }
+        return fallback;
+    }
+    if (out_use_tdma) {
+        *out_use_tdma = prefer_tdma;
+    }
+    return primary;
+}
+
+static int
+p25_iden_slot_is_ambiguous(const dsd_state* state, int iden) {
+    return state->p25_iden_fdma[iden].populated && state->p25_iden_tdma[iden].populated;
+}
+
+static long int
+p25_channel_to_freq_impl(dsd_opts* opts, dsd_state* state, int channel, int mode) {
 
     //RX and SU TX frequencies.
     //SU RX = (Base Frequency) + (Channel Number) x (Channel Spacing).
@@ -65,83 +119,84 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
         return 0;
     }
 
-    // OP25-derived slots-per-carrier by channel type
-    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-
-    // Determine whether this channel should use TDMA parameters.
-    // Explicit IDEN hints (bitmask) take precedence over the system-level TDMA
-    // fallback so mixed P1/P2 systems do not halve explicitly FDMA channel numbers.
-    int explicit_hint = state->p25_chan_tdma_explicit[iden];
-    int use_tdma_denom = (explicit_hint & 0x02) != 0; // bit1 = has TDMA entry
-
-    // Select the correct IDEN entry based on modulation context.
-    // use_tdma_denom determines whether this grant expects TDMA or FDMA parameters.
-    p25_iden_entry_t* entry = use_tdma_denom ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
-
-    // Fallback: if preferred array entry not populated, try the other array.
-    // This handles the case where only one modulation class has been learned so far.
-    if (!entry->populated) {
-        entry = use_tdma_denom ? &state->p25_iden_fdma[iden] : &state->p25_iden_tdma[iden];
-    }
-
-    // Read channel type from the selected entry
+    int use_tdma_denom = 0;
+    const p25_iden_entry_t* entry = p25_select_iden_entry(state, iden, mode, &use_tdma_denom);
     int type = entry->chan_type & 0xF;
 
-    // Compute the denominator (slots-per-carrier) for TDMA channels
+    // Compute the denominator (slots-per-carrier) for TDMA channels.
     int denom = 1;
     if (use_tdma_denom) {
         if (type < 0 || type > 15) {
             fprintf(stderr, "\n  P25 FREQ: unknown iden type %d (iden %d)", type, iden);
             return 0;
         }
-        denom = slots_per_carrier[type];
+        denom = k_p25_slots_per_carrier[type];
         if (denom <= 0) {
             fprintf(stderr, "\n  P25 FREQ: invalid slots/carrier for type %d", type);
             return 0;
         }
-    } else if (explicit_hint != 1) {
+    } else if (mode == P25_FREQ_MODE_AUTO && state->p25_chan_tdma_explicit[iden] == 0 && state->p25_sys_is_tdma == 1) {
         // Fallback: if the system is known to carry Phase 2 (TDMA) voice but
         // we have not yet seen an IDEN_UP_TDMA for this iden, assume 2
         // slots/carrier. This avoids early mis-tunes where a TDMA grant
         // arrives before the IDEN table is populated, which would otherwise be
         // treated as FDMA (denom=1).
-        if (state->p25_sys_is_tdma == 1) {
-            denom = 2;
-            if (opts && opts->verbose > 1) {
-                fprintf(stderr, "\n  P25 FREQ: iden %d tdma unknown; fallback denom=2 (P2 CC)", iden);
-            }
+        denom = 2;
+        if (opts && opts->verbose > 1) {
+            fprintf(stderr, "\n  P25 FREQ: iden %d tdma unknown; fallback denom=2 (P2 CC)", iden);
         }
     }
     int step = (chan16 & 0xFFF) / denom;
 
-    // Fast path: check channel map for previously-resolved frequency (unchanged)
-    if (state->trunk_chan_map[chan16] != 0) {
+    // A mode-ambiguous IDEN slot can map the same 16-bit channel through two
+    // different formulas. Do not let the one-dimensional learned map hide the
+    // selected FDMA/TDMA entry in that case.
+    int ambiguous = p25_iden_slot_is_ambiguous(state, iden);
+    if (!ambiguous && state->trunk_chan_map[chan16] != 0) {
         freq = state->trunk_chan_map[chan16];
         fprintf(stderr, "\n  P25 FREQ: map ch=0x%04X -> %.6lf MHz", chan16, (double)freq / 1000000.0);
         return freq;
     }
 
-    // Calculate frequency from the selected IDEN entry
-    else {
-        if (!entry->populated || entry->base_freq == 0 || entry->chan_spac == 0) {
-            fprintf(stderr, "\n  P25 FREQ: missing iden %d params (populated=%d, base=%ld, spac=%d); refusing tune",
-                    iden, entry->populated, entry->base_freq, entry->chan_spac);
-            return 0;
-        }
-        long base = entry->base_freq;
-        long spac = entry->chan_spac;
-        freq = (base * 5) + (step * spac * 125);
-        fprintf(stderr, "\n  P25 FREQ: iden=%d type=%d ch=0x%04X -> %.6lf MHz", iden, type, chan16,
-                (double)freq / 1000000.0);
-        if (opts && opts->verbose > 1) {
-            fprintf(stderr, " (base5=%ldHz spac125=%ldHz denom=%d step=%d)", base * 5L, spac * 125L, denom, step);
-        }
-        // Persist learned mapping so UI can display and future grants can use explicit map
-        if (freq != 0) {
-            state->trunk_chan_map[chan16] = freq;
-        }
-        return freq;
+    if (!entry->populated || entry->base_freq == 0 || entry->chan_spac == 0) {
+        fprintf(stderr, "\n  P25 FREQ: missing iden %d params (populated=%d, base=%ld, spac=%d); refusing tune", iden,
+                entry->populated, entry->base_freq, entry->chan_spac);
+        return 0;
     }
+
+    long base = entry->base_freq;
+    long spac = entry->chan_spac;
+    freq = (base * 5) + (step * spac * 125);
+    fprintf(stderr, "\n  P25 FREQ: iden=%d type=%d ch=0x%04X -> %.6lf MHz", iden, type, chan16,
+            (double)freq / 1000000.0);
+    if (opts && opts->verbose > 1) {
+        fprintf(stderr, " (base5=%ldHz spac125=%ldHz denom=%d step=%d)", base * 5L, spac * 125L, denom, step);
+    }
+    // Persist learned mapping only when the 16-bit channel key is not shared
+    // by two populated modulation tables.
+    if (freq != 0 && !ambiguous) {
+        state->trunk_chan_map[chan16] = freq;
+    }
+    return freq;
+}
+
+// P25 channel -> frequency mapping
+// - Channel format: 4-bit iden (MSBs) + 12-bit channel number.
+// - Frequency calculation per OP25 practice:
+//     freq_hz = base[iden]*5 + (step * spacing[iden] * 125)
+//   Where:
+//     base[iden] is in units of 5 kHz (per IDEN_UP encoding),
+//     spacing[iden] is in units of 125 Hz,
+//     step = channel_number / slots_per_carrier[type]
+// - slots_per_carrier table below is sourced from OP25 and common system behavior.
+long int
+process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
+    return p25_channel_to_freq_impl(opts, state, channel, P25_FREQ_MODE_AUTO);
+}
+
+long int
+process_channel_to_freq_with_mode(dsd_opts* opts, dsd_state* state, int channel, int prefer_tdma) {
+    return p25_channel_to_freq_impl(opts, state, channel, prefer_tdma ? P25_FREQ_MODE_TDMA : P25_FREQ_MODE_FDMA);
 }
 
 // Format a short suffix describing the FDMA-equivalent channel and slot for a
@@ -165,30 +220,17 @@ p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, cha
     int iden = (chan >> 12) & 0xF;
     int raw = chan & 0xFFF;
 
-    // Mirror array selection logic from process_channel_to_freq:
-    // Determine whether this channel should use TDMA parameters.
-    // Explicit IDEN hints (bitmask) take precedence over the system-level TDMA
-    // fallback so mixed P1/P2 systems do not halve explicitly FDMA channel numbers.
-    int explicit_hint = state->p25_chan_tdma_explicit[iden];
-    int use_tdma_denom = (explicit_hint & 0x02) != 0; // bit1 = has TDMA entry
-
-    // Select the correct IDEN entry based on modulation context.
-    const p25_iden_entry_t* entry = use_tdma_denom ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
-
-    // Fallback: if preferred array entry not populated, try the other array.
-    if (!entry->populated) {
-        entry = use_tdma_denom ? &state->p25_iden_fdma[iden] : &state->p25_iden_tdma[iden];
-    }
+    int use_tdma_denom = 0;
+    const p25_iden_entry_t* entry = p25_select_iden_entry(state, iden, P25_FREQ_MODE_AUTO, &use_tdma_denom);
 
     // Read chan_type from the selected entry instead of the old flat array
     int type = entry->chan_type & 0xF;
-    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
     int denom = 1;
     if (use_tdma_denom) {
         if (type >= 0 && type <= 15) {
-            denom = slots_per_carrier[type];
+            denom = k_p25_slots_per_carrier[type];
         }
-    } else if (explicit_hint != 1 && state->p25_sys_is_tdma == 1) {
+    } else if (state->p25_chan_tdma_explicit[iden] == 0 && state->p25_sys_is_tdma == 1) {
         // Conservative fallback when TDMA IDEN not yet learned
         denom = 2;
     }

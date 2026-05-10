@@ -388,7 +388,8 @@ test_slot_tdma_fdma_cycling(void) {
  *
  * Two different TDMA bands share the same slot. The second write overwrites
  * the first in the TDMA array (expected — same modulation class). The FDMA
- * array remains independent. The trunk_chan_map cache preserves earlier results.
+ * array remains independent. Ambiguous FDMA+TDMA slots are not cached because
+ * one channel key can resolve through either modulation table.
  */
 static int
 test_multiband_tdma_cycling(void) {
@@ -426,9 +427,11 @@ test_multiband_tdma_cycling(void) {
     /* Verify FDMA array unaffected */
     rc |= expect_eq_long("multiband_tdma: FDMA unchanged", st.p25_iden_fdma[iden].base_freq, 850000000L / 5);
 
-    /* Previously-resolved Band A channel should still be cached */
-    long f_cached = process_channel_to_freq(&opts, &st, chan_band_a);
-    rc |= expect_eq_long("multiband_tdma: Band A cached", f_cached, want_band_a);
+    /* Previously-resolved Band A channel is intentionally not cached while an
+     * FDMA entry also exists for this IDEN; the current TDMA entry is used. */
+    long f_after_update = process_channel_to_freq(&opts, &st, chan_band_a);
+    long want_after_update = 500000000L + (20L * 50 * 125);
+    rc |= expect_eq_long("multiband_tdma: Band A not cached after TDMA update", f_after_update, want_after_update);
 
     /* New TDMA grant uses Band B.
      * chan_type=1, denom=1, chan_number=10, step=10
@@ -528,13 +531,15 @@ test_full_multimode_pattern(void) {
 }
 
 /*
- * Test 8: trunk_chan_map Caching Survives Cycling
+ * Test 8: trunk_chan_map Does Not Collapse Ambiguous Dual-Mode Slots
  *
- * Once a channel is resolved and cached, subsequent IDEN cycling does NOT
- * affect the cached result.
+ * When both FDMA and TDMA entries exist for one IDEN, the same 16-bit channel
+ * key can have two valid formulas. In that case, process_channel_to_freq()
+ * must calculate from the selected IDEN entry instead of caching one result
+ * into trunk_chan_map and reusing it for the other modulation class.
  */
 static int
-test_cache_survives_cycling(void) {
+test_no_cache_collision_for_dual_mode_slot(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state st;
@@ -544,30 +549,32 @@ test_cache_survives_cycling(void) {
     int iden = 0;
     long base_5hz = 850000000L / 5;
 
-    write_tdma_iden(&st, iden, base_5hz, 50, 7200, 1);
     write_fdma_iden(&st, iden, base_5hz, 50, 2200, 1);
+    write_tdma_iden(&st, iden, base_5hz, 50, 7200, 3);
 
-    /* Resolve an FDMA channel — gets cached */
-    st.p25_chan_tdma_explicit[iden] = 1;
     int chan = (iden << 12) | 0x000C;
-    long f_initial = process_channel_to_freq(&opts, &st, chan);
-    long want = 850000000L + (12L * 50 * 125);
-    rc |= expect_eq_long("cache: initial resolve", f_initial, want);
-    rc |= expect_eq_long("cache: map populated", st.trunk_chan_map[chan], want);
+    st.p25_chan_tdma_explicit[iden] = 3;
 
-    /* Cycle with completely different parameters */
-    for (int i = 0; i < 10; i++) {
-        write_tdma_iden(&st, iden, 500000000L / 5, 200, -1000, 3);
-        write_fdma_iden(&st, iden, 400000000L / 5, 150, 5000, 1);
-    }
+    st.p25_cc_is_tdma = 0;
+    st.synctype = 0;
+    long f_fdma_auto = process_channel_to_freq(&opts, &st, chan);
+    long want_fdma = 850000000L + (12L * 50 * 125);
+    rc |= expect_eq_long("dual cache: fdma auto", f_fdma_auto, want_fdma);
+    rc |= expect_eq_long("dual cache: ambiguous map not populated", st.trunk_chan_map[chan], 0);
 
-    /* Cached channel still returns original frequency */
-    st.p25_chan_tdma_explicit[iden] = 1;
-    long f_after = process_channel_to_freq(&opts, &st, chan);
-    rc |= expect_eq_long("cache: unchanged after cycling", f_after, want);
+    st.p25_cc_is_tdma = 1;
+    long f_tdma_auto = process_channel_to_freq(&opts, &st, chan);
+    long want_tdma = 850000000L + (6L * 50 * 125);
+    rc |= expect_eq_long("dual cache: tdma auto", f_tdma_auto, want_tdma);
+    rc |= expect_eq_long("dual cache: ambiguous map still empty", st.trunk_chan_map[chan], 0);
+
+    long f_fdma_explicit = process_channel_to_freq_with_mode(&opts, &st, chan, 0);
+    long f_tdma_explicit = process_channel_to_freq_with_mode(&opts, &st, chan, 1);
+    rc |= expect_eq_long("dual cache: fdma explicit", f_fdma_explicit, want_fdma);
+    rc |= expect_eq_long("dual cache: tdma explicit", f_tdma_explicit, want_tdma);
 
     if (rc == 0) {
-        fprintf(stderr, "PASS test_cache_survives_cycling\n");
+        fprintf(stderr, "PASS test_no_cache_collision_for_dual_mode_slot\n");
     }
     return rc;
 }
@@ -632,7 +639,7 @@ main(void) {
     rc |= test_slot_tdma_fdma_cycling();
     rc |= test_multiband_tdma_cycling();
     rc |= test_full_multimode_pattern();
-    rc |= test_cache_survives_cycling();
+    rc |= test_no_cache_collision_for_dual_mode_slot();
     rc |= test_reverse_cycle_order();
 
     if (rc == 0) {

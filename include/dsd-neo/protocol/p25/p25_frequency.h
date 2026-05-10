@@ -24,6 +24,7 @@ extern "C" {
 #endif
 
 long int process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel);
+long int process_channel_to_freq_with_mode(dsd_opts* opts, dsd_state* state, int channel, int prefer_tdma);
 long int nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel);
 long int nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel);
 

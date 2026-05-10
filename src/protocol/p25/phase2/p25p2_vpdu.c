@@ -1690,13 +1690,14 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
         //identifier update VHF/UHF
         if (MAC[1 + len_a] == 0x74) {
-            state->p25_chan_iden = MAC[2 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_vuhf(MAC, 2 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
-            int bw_vu = (MAC[2 + len_a] & 0xF);
-            int trans_off = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
-            int chan_spac = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
-            long int base_freq =
-                (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
+            int bw_vu = up.bw_vu;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
+            long int base_freq = up.base_freq;
 
             // Validate that base_freq actually falls in VHF/UHF range (warning only)
             if (!p25_is_vhf_uhf_base_freq(base_freq)) {
@@ -1734,29 +1735,16 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     state->p25_chan_iden, bw_vu, trans_off, chan_spac, base_freq, base_freq * 5);
         }
 
-        //identifier update (Non-TDMA 6.2.22) — standard or VHF/UHF depending on base_freq range
+        //identifier update (Non-TDMA 6.2.22)
         if (MAC[1 + len_a] == 0x7D) {
-            state->p25_chan_iden = MAC[2 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_standard(MAC, 2 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
-
-            // Extract base_freq FIRST (bytes 6–9 are at the same position in both formats)
-            long int base_freq =
-                (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
-
-            // Determine format based on base frequency range
-            int bw = 0;
-            int bw_vu = 0;
-            int trans_off = 0;
-            if (p25_is_vhf_uhf_base_freq(base_freq)) {
-                // VHF/UHF format: 4-bit bw_vu + 14-bit trans_off
-                bw_vu = MAC[2 + len_a] & 0xF;
-                trans_off = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
-            } else {
-                // Standard format: 9-bit BW + 9-bit trans_off
-                bw = ((MAC[2 + len_a] & 0xF) << 5) | ((MAC[3 + len_a] & 0xF8) >> 3);
-                trans_off = ((MAC[3 + len_a] & 0x07) << 6) | (MAC[4 + len_a] >> 2);
-            }
-            int chan_spac = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
+            long int base_freq = up.base_freq;
+            int bw = up.bandwidth;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
 
             // Write to new FDMA IDEN entry
             {
@@ -1771,7 +1759,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 e->chan_type = 1; // FDMA default
                 e->chan_spac = chan_spac;
                 e->trans_off = trans_off;
-                e->bw_vu = (uint8_t)bw_vu;
+                e->bw_vu = 0;
                 e->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
                 e->populated = 1;
                 e->wacn = state->p2_wacn;
@@ -1786,19 +1774,19 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr,
                     "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
                     "Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, p25_is_vhf_uhf_base_freq(base_freq) ? bw_vu : bw, trans_off, chan_spac,
-                    base_freq, base_freq * 5);
+                    state->p25_chan_iden, bw, trans_off, chan_spac, base_freq, base_freq * 5);
         }
 
         //identifier update for TDMA, Abbreviated
         if (MAC[1 + len_a] == 0x73) {
-            state->p25_chan_iden = MAC[2 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_tdma(MAC, 2 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
-            int chan_type = MAC[2 + len_a] & 0xF;
-            int trans_off = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
-            int chan_spac = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
-            long int base_freq =
-                (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
+            int chan_type = up.chan_type;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
+            long int base_freq = up.base_freq;
 
             // Write to new TDMA IDEN entry
             {
@@ -1833,13 +1821,14 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
         //identifier update for TDMA, Extended
         if (MAC[1 + len_a] == 0xF3) {
-            state->p25_chan_iden = MAC[3 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_tdma(MAC, 3 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
-            int chan_type = MAC[3 + len_a] & 0xF;
-            int trans_off = (MAC[4 + len_a] << 6) | (MAC[5 + len_a] >> 2);
-            int chan_spac = ((MAC[5 + len_a] & 0x3) << 8) | MAC[6 + len_a];
-            long int base_freq =
-                (MAC[7 + len_a] << 24) | (MAC[8 + len_a] << 16) | (MAC[9 + len_a] << 8) | (MAC[10 + len_a] << 0);
+            int chan_type = up.chan_type;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
+            long int base_freq = up.base_freq;
             int lwacn = (MAC[11 + len_a] << 12) | (MAC[12 + len_a] << 4) | ((MAC[13 + len_a] & 0xF0) >> 4);
             int lsysid = ((MAC[13 + len_a] & 0xF) << 8) | MAC[14 + len_a];
 

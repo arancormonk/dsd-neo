@@ -105,7 +105,7 @@ p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, const dsd_state* state, doub
 // Uses bitmask semantics for p25_chan_tdma_explicit[iden]:
 //   bit0 (0x01) = has FDMA entry (written by opcodes 0x74, 0x7D)
 //   bit1 (0x02) = has TDMA entry (written by opcodes 0x73, 0xF3)
-// Values: 0=unknown, 1=FDMA only, 2=TDMA only, 3=both (treated as TDMA)
+// Values: 0=unknown, 1=FDMA only, 2=TDMA only, 3=both (context-selected)
 static inline int
 is_tdma_channel(const dsd_state* state, int channel) {
     if (!state) {
@@ -115,8 +115,10 @@ is_tdma_channel(const dsd_state* state, int channel) {
     if (iden >= 0 && iden < 16) {
         int explicit_hint = state->p25_chan_tdma_explicit[iden];
 
+        if (explicit_hint == 0x03) {
+            return (DSD_SYNC_IS_P25P2(state->synctype) || state->p25_cc_is_tdma == 1) ? 1 : 0;
+        }
         // If bit1 is set (TDMA entry exists), this is a TDMA channel.
-        // This covers explicit_hint == 2 (TDMA only) and == 3 (both FDMA and TDMA).
         if (explicit_hint & 0x02) {
             return 1;
         }
