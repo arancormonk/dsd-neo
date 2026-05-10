@@ -86,9 +86,7 @@ int
 read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal, int* did_read_status,
            int* reliab) {
     int dibit;
-    int status;
     int r;
-    UNUSED(status);
 
     if (*status_count == 35) {
 
@@ -97,9 +95,8 @@ read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, in
         state->debug_prefix = 's';
 #endif
 
-        // Status bits now (unused)
-        (void)getDibit(opts, state);
-        // TODO: do something useful with the status bits...
+        int status_dibit = getDibit(opts, state);
+        p25_status_accum_add(state, status_dibit);
         if (did_read_status != NULL) {
             *did_read_status = 1;
         }
@@ -318,8 +315,8 @@ void
 processHDU(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_hdu++;
 
-    // Reset status symbol accumulator for this data unit (AFC gating)
-    p25_status_accum_reset(state);
+    // Start status-symbol collection unless the dispatcher already did so for this data unit.
+    p25_status_accum_ensure_started(state);
 
     P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
 
@@ -566,7 +563,7 @@ processHDU(dsd_opts* opts, dsd_state* state) {
 
     skipDibit(opts, state, 5);
 
-    // Trailing status symbol — record for AFC gating classification
+    // Trailing status symbol: record for AFC gating classification
     {
         int ss = getDibit(opts, state);
         p25_status_accum_add(state, ss);

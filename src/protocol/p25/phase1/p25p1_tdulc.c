@@ -253,8 +253,8 @@ void
 processTDULC(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_tdulc++;
 
-    // Reset status symbol accumulator for this data unit (AFC gating)
-    p25_status_accum_reset(state);
+    // Start status-symbol collection unless the dispatcher already did so for this data unit.
+    p25_status_accum_ensure_started(state);
 
     P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
 

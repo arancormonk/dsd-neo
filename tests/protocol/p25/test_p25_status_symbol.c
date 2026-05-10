@@ -6,9 +6,6 @@
 /**
  * @file
  * @brief Unit tests for P25 status symbol accumulator and AFC gate logic.
- *
- * Validates the accumulator API (reset, add, classify) and the gate decision
- * logic including the disable-override path and counter tracking.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -22,581 +19,326 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: reset zeroes accumulator state
- * ───────────────────────────────────────────────────────────────────────────── */
+typedef struct {
+    dsd_state* state;
+    dsd_opts* opts;
+} test_ctx;
+
+static test_ctx
+make_ctx(const char* test_name) {
+    test_ctx ctx = {(dsd_state*)calloc(1, sizeof(*ctx.state)), (dsd_opts*)calloc(1, sizeof(*ctx.opts))};
+    if (!ctx.state || !ctx.opts) {
+        fprintf(stderr, "%s: alloc failed\n", test_name);
+        free(ctx.state);
+        free(ctx.opts);
+        ctx.state = NULL;
+        ctx.opts = NULL;
+    }
+    return ctx;
+}
+
+static void
+free_ctx(test_ctx* ctx) {
+    free(ctx->state);
+    free(ctx->opts);
+    ctx->state = NULL;
+    ctx->opts = NULL;
+}
+
+static int
+expect_u32(const char* test_name, const char* field_name, unsigned int actual, unsigned int expected) {
+    if (actual != expected) {
+        fprintf(stderr, "%s: expected %s=%u, got %u\n", test_name, field_name, expected, actual);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_class(const char* test_name, const dsd_state* state, p25_ss_classification_t expected) {
+    return expect_u32(test_name, "classification", state->p25_ss_classification, (unsigned int)expected);
+}
+
 static int
 test_accum_reset_zeroes_state(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    if (!state) {
-        fprintf(stderr, "test_accum_reset_zeroes_state: alloc failed\n");
+    const char* test = "test_accum_reset_zeroes_state";
+    test_ctx ctx = make_ctx(test);
+    if (!ctx.state) {
         return 1;
     }
 
-    /* Seed with non-zero values to ensure reset actually clears them. */
-    state->p25_ss_count = 5;
-    state->p25_ss_classification = (uint8_t)P25_SS_CLASS_INFRASTRUCTURE;
-    state->p25_ss_buf[0] = 0x03;
+    ctx.state->p25_ss_count = 5;
+    ctx.state->p25_ss_classification = (uint8_t)P25_SS_CLASS_INFRASTRUCTURE;
+    ctx.state->p25_ss_buf[0] = 0x03;
 
-    p25_status_accum_reset(state);
+    p25_status_accum_reset(ctx.state);
 
-    if (state->p25_ss_count != 0) {
-        fprintf(stderr, "test_accum_reset_zeroes_state: expected count=0, got %u\n", state->p25_ss_count);
-        free(state);
-        return 1;
-    }
-    if (state->p25_ss_classification != (uint8_t)P25_SS_CLASS_UNKNOWN) {
-        fprintf(stderr, "test_accum_reset_zeroes_state: expected classification=UNKNOWN(0), got %u\n",
-                state->p25_ss_classification);
-        free(state);
-        return 1;
-    }
+    int rc = 0;
+    rc |= expect_u32(test, "count", ctx.state->p25_ss_count, 0);
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_UNKNOWN);
+    rc |= expect_u32(test, "frame_active", ctx.state->p25_ss_frame_active, 1);
 
-    free(state);
-    return 0;
+    free_ctx(&ctx);
+    return rc;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: single add stores value and increments count
- * ───────────────────────────────────────────────────────────────────────────── */
+static int
+test_ensure_started_preserves_dispatch_status(void) {
+    const char* test = "test_ensure_started_preserves_dispatch_status";
+    test_ctx ctx = make_ctx(test);
+    if (!ctx.state) {
+        return 1;
+    }
+
+    p25_status_accum_reset(ctx.state);
+    p25_status_accum_add(ctx.state, 0x01);
+    p25_status_accum_ensure_started(ctx.state);
+
+    int rc = 0;
+    rc |= expect_u32(test, "count after ensure", ctx.state->p25_ss_count, 1);
+    rc |= expect_u32(test, "first status", ctx.state->p25_ss_buf[0], 0x01);
+
+    p25_status_accum_classify(ctx.state, ctx.opts);
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_INFRASTRUCTURE);
+
+    p25_status_accum_ensure_started(ctx.state);
+    rc |= expect_u32(test, "count after completed ensure", ctx.state->p25_ss_count, 0);
+    rc |= expect_u32(test, "frame_active after completed ensure", ctx.state->p25_ss_frame_active, 1);
+
+    free_ctx(&ctx);
+    return rc;
+}
+
 static int
 test_accum_add_single_value(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    if (!state) {
-        fprintf(stderr, "test_accum_add_single_value: alloc failed\n");
+    const char* test = "test_accum_add_single_value";
+    test_ctx ctx = make_ctx(test);
+    if (!ctx.state) {
         return 1;
     }
 
-    p25_status_accum_reset(state);
-    p25_status_accum_add(state, 0x02);
+    p25_status_accum_reset(ctx.state);
+    p25_status_accum_add(ctx.state, 0x02);
 
-    if (state->p25_ss_count != 1) {
-        fprintf(stderr, "test_accum_add_single_value: expected count=1, got %u\n", state->p25_ss_count);
-        free(state);
-        return 1;
-    }
-    if (state->p25_ss_buf[0] != 0x02) {
-        fprintf(stderr, "test_accum_add_single_value: expected buf[0]=0x02, got 0x%02x\n", state->p25_ss_buf[0]);
-        free(state);
-        return 1;
-    }
+    int rc = 0;
+    rc |= expect_u32(test, "count", ctx.state->p25_ss_count, 1);
+    rc |= expect_u32(test, "buf[0]", ctx.state->p25_ss_buf[0], 0x02);
 
-    free(state);
-    return 0;
+    free_ctx(&ctx);
+    return rc;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: single 0x01 classifies as INFRASTRUCTURE
- * ───────────────────────────────────────────────────────────────────────────── */
 static int
-test_classify_single_01_is_infrastructure(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_classify_single_01_is_infrastructure: alloc failed\n");
-        free(state);
-        free(opts);
+test_accum_accepts_full_ldu_status_count(void) {
+    const char* test = "test_accum_accepts_full_ldu_status_count";
+    test_ctx ctx = make_ctx(test);
+    if (!ctx.state) {
         return 1;
     }
 
-    p25_status_accum_reset(state);
-    p25_status_accum_add(state, 0x01);
-    p25_status_accum_classify(state, opts);
-
-    if (state->p25_ss_classification != (uint8_t)P25_SS_CLASS_INFRASTRUCTURE) {
-        fprintf(stderr, "test_classify_single_01_is_infrastructure: expected INFRASTRUCTURE(1), got %u\n",
-                state->p25_ss_classification);
-        free(state);
-        free(opts);
-        return 1;
+    p25_status_accum_reset(ctx.state);
+    for (int i = 0; i < 12; i++) {
+        p25_status_accum_add(ctx.state, 0x02);
     }
+    for (int i = 0; i < 12; i++) {
+        p25_status_accum_add(ctx.state, 0x01);
+    }
+    p25_status_accum_classify(ctx.state, ctx.opts);
 
-    free(state);
-    free(opts);
-    return 0;
+    int rc = 0;
+    rc |= expect_u32(test, "count", ctx.state->p25_ss_count, P25_STATUS_ACCUM_MAX);
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_INFRASTRUCTURE);
+
+    free_ctx(&ctx);
+    return rc;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: single 0x03 classifies as INFRASTRUCTURE
- * ───────────────────────────────────────────────────────────────────────────── */
 static int
-test_classify_single_11_is_infrastructure(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_classify_single_11_is_infrastructure: alloc failed\n");
-        free(state);
-        free(opts);
+test_classify_status_values(void) {
+    const char* test = "test_classify_status_values";
+    test_ctx ctx = make_ctx(test);
+    if (!ctx.state) {
         return 1;
     }
 
-    p25_status_accum_reset(state);
-    p25_status_accum_add(state, 0x03);
-    p25_status_accum_classify(state, opts);
+    int rc = 0;
 
-    if (state->p25_ss_classification != (uint8_t)P25_SS_CLASS_INFRASTRUCTURE) {
-        fprintf(stderr, "test_classify_single_11_is_infrastructure: expected INFRASTRUCTURE(1), got %u\n",
-                state->p25_ss_classification);
-        free(state);
-        free(opts);
-        return 1;
+    p25_status_accum_reset(ctx.state);
+    p25_status_accum_add(ctx.state, 0x01);
+    p25_status_accum_classify(ctx.state, ctx.opts);
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_INFRASTRUCTURE);
+
+    p25_status_accum_reset(ctx.state);
+    p25_status_accum_add(ctx.state, 0x03);
+    p25_status_accum_classify(ctx.state, ctx.opts);
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_INFRASTRUCTURE);
+
+    p25_status_accum_reset(ctx.state);
+    for (int i = 0; i < 24; i++) {
+        p25_status_accum_add(ctx.state, 0x00);
     }
+    p25_status_accum_classify(ctx.state, ctx.opts);
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_SUBSCRIBER);
 
-    free(state);
-    free(opts);
-    return 0;
+    p25_status_accum_reset(ctx.state);
+    for (int i = 0; i < 24; i++) {
+        p25_status_accum_add(ctx.state, 0x02);
+    }
+    p25_status_accum_classify(ctx.state, ctx.opts);
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_UNKNOWN);
+
+    free_ctx(&ctx);
+    return rc;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: 11 zeros classifies as SUBSCRIBER
- * ───────────────────────────────────────────────────────────────────────────── */
 static int
-test_classify_all_00_is_subscriber(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_classify_all_00_is_subscriber: alloc failed\n");
-        free(state);
-        free(opts);
+test_classify_ignores_10_and_uses_counts(void) {
+    const char* test = "test_classify_ignores_10_and_uses_counts";
+    test_ctx ctx = make_ctx(test);
+    if (!ctx.state) {
         return 1;
     }
 
-    p25_status_accum_reset(state);
-    for (int i = 0; i < 11; i++) {
-        p25_status_accum_add(state, 0x00);
-    }
-    p25_status_accum_classify(state, opts);
+    int rc = 0;
 
-    if (state->p25_ss_classification != (uint8_t)P25_SS_CLASS_SUBSCRIBER) {
-        fprintf(stderr, "test_classify_all_00_is_subscriber: expected SUBSCRIBER(2), got %u\n",
-                state->p25_ss_classification);
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    free(state);
-    free(opts);
-    return 0;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: 11 twos classifies as UNKNOWN
- * ───────────────────────────────────────────────────────────────────────────── */
-static int
-test_classify_all_10_is_unknown(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_classify_all_10_is_unknown: alloc failed\n");
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    p25_status_accum_reset(state);
-    for (int i = 0; i < 11; i++) {
-        p25_status_accum_add(state, 0x02);
-    }
-    p25_status_accum_classify(state, opts);
-
-    if (state->p25_ss_classification != (uint8_t)P25_SS_CLASS_UNKNOWN) {
-        fprintf(stderr, "test_classify_all_10_is_unknown: expected UNKNOWN(0), got %u\n", state->p25_ss_classification);
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    free(state);
-    free(opts);
-    return 0;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: zero symbols classifies as UNKNOWN
- * ───────────────────────────────────────────────────────────────────────────── */
-static int
-test_classify_empty_is_unknown(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_classify_empty_is_unknown: alloc failed\n");
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    p25_status_accum_reset(state);
-    /* Do not add any symbols — classify with empty accumulator. */
-    p25_status_accum_classify(state, opts);
-
-    if (state->p25_ss_classification != (uint8_t)P25_SS_CLASS_UNKNOWN) {
-        fprintf(stderr, "test_classify_empty_is_unknown: expected UNKNOWN(0), got %u\n", state->p25_ss_classification);
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    free(state);
-    free(opts);
-    return 0;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: one 0x01 among 10 zeros classifies as INFRASTRUCTURE
- * ───────────────────────────────────────────────────────────────────────────── */
-static int
-test_classify_mixed_with_one_01_is_infra(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_classify_mixed_with_one_01_is_infra: alloc failed\n");
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    p25_status_accum_reset(state);
-    /* 10 zeros followed by one 0x01 infrastructure indicator. */
+    p25_status_accum_reset(ctx.state);
+    p25_status_accum_add(ctx.state, 0x00);
     for (int i = 0; i < 10; i++) {
-        p25_status_accum_add(state, 0x00);
+        p25_status_accum_add(ctx.state, 0x02);
     }
-    p25_status_accum_add(state, 0x01);
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(ctx.state, ctx.opts);
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_SUBSCRIBER);
 
-    if (state->p25_ss_classification != (uint8_t)P25_SS_CLASS_INFRASTRUCTURE) {
-        fprintf(stderr, "test_classify_mixed_with_one_01_is_infra: expected INFRASTRUCTURE(1), got %u\n",
-                state->p25_ss_classification);
-        free(state);
-        free(opts);
-        return 1;
+    p25_status_accum_reset(ctx.state);
+    for (int i = 0; i < 10; i++) {
+        p25_status_accum_add(ctx.state, 0x00);
     }
+    p25_status_accum_add(ctx.state, 0x01);
+    p25_status_accum_classify(ctx.state, ctx.opts);
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_SUBSCRIBER);
 
-    free(state);
-    free(opts);
-    return 0;
+    p25_status_accum_reset(ctx.state);
+    p25_status_accum_add(ctx.state, 0x00);
+    p25_status_accum_add(ctx.state, 0x01);
+    p25_status_accum_add(ctx.state, 0x03);
+    p25_status_accum_classify(ctx.state, ctx.opts);
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_INFRASTRUCTURE);
+
+    free_ctx(&ctx);
+    return rc;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: gate_allow=1 when classification is INFRASTRUCTURE
- * ───────────────────────────────────────────────────────────────────────────── */
 static int
-test_gate_allow_when_infrastructure(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_gate_allow_when_infrastructure: alloc failed\n");
-        free(state);
-        free(opts);
+test_gate_decisions_and_counters(void) {
+    const char* test = "test_gate_decisions_and_counters";
+    test_ctx ctx = make_ctx(test);
+    if (!ctx.state) {
         return 1;
     }
 
-    p25_status_accum_reset(state);
-    p25_status_accum_add(state, 0x01);
-    p25_status_accum_classify(state, opts);
+    int rc = 0;
 
-    if (state->p25_afc_gate_allow != 1) {
-        fprintf(stderr, "test_gate_allow_when_infrastructure: expected gate_allow=1, got %u\n",
-                state->p25_afc_gate_allow);
-        free(state);
-        free(opts);
-        return 1;
-    }
+    p25_status_accum_reset(ctx.state);
+    p25_status_accum_add(ctx.state, 0x01);
+    p25_status_accum_classify(ctx.state, ctx.opts);
+    rc |= expect_u32(test, "gate_allow infra", ctx.state->p25_afc_gate_allow, 1);
+    rc |= expect_u32(test, "gate_valid infra", ctx.state->p25_afc_gate_valid, 1);
+    rc |= expect_u32(test, "allowed_count", ctx.state->p25_afc_allowed_count, 1);
+    rc |= expect_u32(test, "suppressed_count", ctx.state->p25_afc_suppressed_count, 0);
 
-    free(state);
-    free(opts);
-    return 0;
+    p25_status_accum_reset(ctx.state);
+    p25_status_accum_add(ctx.state, 0x00);
+    p25_status_accum_classify(ctx.state, ctx.opts);
+    rc |= expect_u32(test, "gate_allow subscriber", ctx.state->p25_afc_gate_allow, 0);
+    rc |= expect_u32(test, "allowed_count after subscriber", ctx.state->p25_afc_allowed_count, 1);
+    rc |= expect_u32(test, "suppressed_count after subscriber", ctx.state->p25_afc_suppressed_count, 1);
+
+    p25_status_accum_reset(ctx.state);
+    p25_status_accum_add(ctx.state, 0x02);
+    p25_status_accum_classify(ctx.state, ctx.opts);
+    rc |= expect_u32(test, "gate_allow unknown", ctx.state->p25_afc_gate_allow, 0);
+    rc |= expect_u32(test, "suppressed_count after unknown", ctx.state->p25_afc_suppressed_count, 2);
+
+    free_ctx(&ctx);
+    return rc;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: gate_allow=0 when classification is SUBSCRIBER
- * ───────────────────────────────────────────────────────────────────────────── */
-static int
-test_gate_suppress_when_subscriber(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_gate_suppress_when_subscriber: alloc failed\n");
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    p25_status_accum_reset(state);
-    p25_status_accum_add(state, 0x00);
-    p25_status_accum_classify(state, opts);
-
-    if (state->p25_afc_gate_allow != 0) {
-        fprintf(stderr, "test_gate_suppress_when_subscriber: expected gate_allow=0, got %u\n",
-                state->p25_afc_gate_allow);
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    free(state);
-    free(opts);
-    return 0;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: gate_allow=0 when classification is UNKNOWN
- * ───────────────────────────────────────────────────────────────────────────── */
-static int
-test_gate_suppress_when_unknown(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_gate_suppress_when_unknown: alloc failed\n");
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    p25_status_accum_reset(state);
-    p25_status_accum_add(state, 0x02);
-    p25_status_accum_classify(state, opts);
-
-    if (state->p25_afc_gate_allow != 0) {
-        fprintf(stderr, "test_gate_suppress_when_unknown: expected gate_allow=0, got %u\n", state->p25_afc_gate_allow);
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    free(state);
-    free(opts);
-    return 0;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: gate_allow=1 regardless of classification when gating is disabled
- * ───────────────────────────────────────────────────────────────────────────── */
 static int
 test_gate_allow_when_disabled(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_gate_allow_when_disabled: alloc failed\n");
-        free(state);
-        free(opts);
+    const char* test = "test_gate_allow_when_disabled";
+    test_ctx ctx = make_ctx(test);
+    if (!ctx.state) {
         return 1;
     }
 
-    /* Disable gating — gate should always be open. */
-    opts->p25_afc_gate_disable = 1;
+    ctx.opts->p25_afc_gate_disable = 1;
 
-    /* Feed subscriber pattern (all zeros) which would normally suppress. */
-    p25_status_accum_reset(state);
-    for (int i = 0; i < 11; i++) {
-        p25_status_accum_add(state, 0x00);
+    p25_status_accum_reset(ctx.state);
+    for (int i = 0; i < 24; i++) {
+        p25_status_accum_add(ctx.state, 0x00);
     }
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(ctx.state, ctx.opts);
 
-    if (state->p25_afc_gate_allow != 1) {
-        fprintf(stderr, "test_gate_allow_when_disabled: expected gate_allow=1 (disabled), got %u\n",
-                state->p25_afc_gate_allow);
-        free(state);
-        free(opts);
-        return 1;
-    }
+    int rc = expect_u32(test, "gate_allow", ctx.state->p25_afc_gate_allow, 1);
 
-    free(state);
-    free(opts);
-    return 0;
+    free_ctx(&ctx);
+    return rc;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: allowed/suppressed counters increment correctly
- * ───────────────────────────────────────────────────────────────────────────── */
-static int
-test_counters_increment_correctly(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_counters_increment_correctly: alloc failed\n");
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    /* First classify: infrastructure → allowed_count should increment. */
-    p25_status_accum_reset(state);
-    p25_status_accum_add(state, 0x01);
-    p25_status_accum_classify(state, opts);
-
-    if (state->p25_afc_allowed_count != 1) {
-        fprintf(stderr, "test_counters_increment_correctly: expected allowed=1, got %u\n",
-                state->p25_afc_allowed_count);
-        free(state);
-        free(opts);
-        return 1;
-    }
-    if (state->p25_afc_suppressed_count != 0) {
-        fprintf(stderr, "test_counters_increment_correctly: expected suppressed=0, got %u\n",
-                state->p25_afc_suppressed_count);
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    /* Second classify: subscriber → suppressed_count should increment. */
-    p25_status_accum_reset(state);
-    p25_status_accum_add(state, 0x00);
-    p25_status_accum_classify(state, opts);
-
-    if (state->p25_afc_allowed_count != 1) {
-        fprintf(stderr, "test_counters_increment_correctly: expected allowed=1 (unchanged), got %u\n",
-                state->p25_afc_allowed_count);
-        free(state);
-        free(opts);
-        return 1;
-    }
-    if (state->p25_afc_suppressed_count != 1) {
-        fprintf(stderr, "test_counters_increment_correctly: expected suppressed=1, got %u\n",
-                state->p25_afc_suppressed_count);
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    /* Third classify: unknown → suppressed_count should increment again. */
-    p25_status_accum_reset(state);
-    p25_status_accum_add(state, 0x02);
-    p25_status_accum_classify(state, opts);
-
-    if (state->p25_afc_allowed_count != 1) {
-        fprintf(stderr, "test_counters_increment_correctly: expected allowed=1 (still), got %u\n",
-                state->p25_afc_allowed_count);
-        free(state);
-        free(opts);
-        return 1;
-    }
-    if (state->p25_afc_suppressed_count != 2) {
-        fprintf(stderr, "test_counters_increment_correctly: expected suppressed=2, got %u\n",
-                state->p25_afc_suppressed_count);
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    free(state);
-    free(opts);
-    return 0;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: fresh calloc'd state has UNKNOWN classification and zero counters
- * ───────────────────────────────────────────────────────────────────────────── */
 static int
 test_initial_state_is_unknown_zero_counts(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    if (!state) {
-        fprintf(stderr, "test_initial_state_is_unknown_zero_counts: alloc failed\n");
+    const char* test = "test_initial_state_is_unknown_zero_counts";
+    test_ctx ctx = make_ctx(test);
+    if (!ctx.state) {
         return 1;
     }
 
-    /* calloc zero-initializes, so all fields should be zero/UNKNOWN. */
-    if (state->p25_ss_classification != (uint8_t)P25_SS_CLASS_UNKNOWN) {
-        fprintf(stderr, "test_initial_state_is_unknown_zero_counts: expected classification=UNKNOWN(0), got %u\n",
-                state->p25_ss_classification);
-        free(state);
-        return 1;
-    }
-    if (state->p25_ss_count != 0) {
-        fprintf(stderr, "test_initial_state_is_unknown_zero_counts: expected count=0, got %u\n", state->p25_ss_count);
-        free(state);
-        return 1;
-    }
-    if (state->p25_afc_gate_allow != 0) {
-        fprintf(stderr, "test_initial_state_is_unknown_zero_counts: expected gate_allow=0, got %u\n",
-                state->p25_afc_gate_allow);
-        free(state);
-        return 1;
-    }
-    if (state->p25_afc_allowed_count != 0) {
-        fprintf(stderr, "test_initial_state_is_unknown_zero_counts: expected allowed_count=0, got %u\n",
-                state->p25_afc_allowed_count);
-        free(state);
-        return 1;
-    }
-    if (state->p25_afc_suppressed_count != 0) {
-        fprintf(stderr, "test_initial_state_is_unknown_zero_counts: expected suppressed_count=0, got %u\n",
-                state->p25_afc_suppressed_count);
-        free(state);
-        return 1;
-    }
+    int rc = 0;
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_UNKNOWN);
+    rc |= expect_u32(test, "count", ctx.state->p25_ss_count, 0);
+    rc |= expect_u32(test, "gate_allow", ctx.state->p25_afc_gate_allow, 0);
+    rc |= expect_u32(test, "gate_valid", ctx.state->p25_afc_gate_valid, 0);
+    rc |= expect_u32(test, "allowed_count", ctx.state->p25_afc_allowed_count, 0);
+    rc |= expect_u32(test, "suppressed_count", ctx.state->p25_afc_suppressed_count, 0);
 
-    free(state);
-    return 0;
+    free_ctx(&ctx);
+    return rc;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Test: adding >12 symbols does not crash or corrupt state
- * ───────────────────────────────────────────────────────────────────────────── */
 static int
 test_overflow_ignored_gracefully(void) {
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    if (!state || !opts) {
-        fprintf(stderr, "test_overflow_ignored_gracefully: alloc failed\n");
-        free(state);
-        free(opts);
+    const char* test = "test_overflow_ignored_gracefully";
+    test_ctx ctx = make_ctx(test);
+    if (!ctx.state) {
         return 1;
     }
 
-    p25_status_accum_reset(state);
-
-    /* Add 15 symbols (exceeds P25_STATUS_ACCUM_MAX of 12). */
-    for (int i = 0; i < 15; i++) {
-        p25_status_accum_add(state, 0x01);
+    p25_status_accum_reset(ctx.state);
+    for (int i = 0; i < 30; i++) {
+        p25_status_accum_add(ctx.state, 0x01);
     }
+    p25_status_accum_classify(ctx.state, ctx.opts);
 
-    /* Count should be capped at P25_STATUS_ACCUM_MAX. */
-    if (state->p25_ss_count != P25_STATUS_ACCUM_MAX) {
-        fprintf(stderr, "test_overflow_ignored_gracefully: expected count=%d, got %u\n", P25_STATUS_ACCUM_MAX,
-                state->p25_ss_count);
-        free(state);
-        free(opts);
-        return 1;
-    }
+    int rc = 0;
+    rc |= expect_u32(test, "count", ctx.state->p25_ss_count, P25_STATUS_ACCUM_MAX);
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_INFRASTRUCTURE);
 
-    /* Classification should still work correctly with the stored symbols. */
-    p25_status_accum_classify(state, opts);
-
-    if (state->p25_ss_classification != (uint8_t)P25_SS_CLASS_INFRASTRUCTURE) {
-        fprintf(stderr, "test_overflow_ignored_gracefully: expected INFRASTRUCTURE(1), got %u\n",
-                state->p25_ss_classification);
-        free(state);
-        free(opts);
-        return 1;
-    }
-
-    free(state);
-    free(opts);
-    return 0;
+    free_ctx(&ctx);
+    return rc;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Main — aggregate all test results
- * ───────────────────────────────────────────────────────────────────────────── */
 int
 main(void) {
     int rc = 0;
 
     rc |= test_accum_reset_zeroes_state();
+    rc |= test_ensure_started_preserves_dispatch_status();
     rc |= test_accum_add_single_value();
-    rc |= test_classify_single_01_is_infrastructure();
-    rc |= test_classify_single_11_is_infrastructure();
-    rc |= test_classify_all_00_is_subscriber();
-    rc |= test_classify_all_10_is_unknown();
-    rc |= test_classify_empty_is_unknown();
-    rc |= test_classify_mixed_with_one_01_is_infra();
-    rc |= test_gate_allow_when_infrastructure();
-    rc |= test_gate_suppress_when_subscriber();
-    rc |= test_gate_suppress_when_unknown();
+    rc |= test_accum_accepts_full_ldu_status_count();
+    rc |= test_classify_status_values();
+    rc |= test_classify_ignores_10_and_uses_counts();
+    rc |= test_gate_decisions_and_counters();
     rc |= test_gate_allow_when_disabled();
-    rc |= test_counters_increment_correctly();
     rc |= test_initial_state_is_unknown_zero_counts();
     rc |= test_overflow_ignored_gracefully();
 

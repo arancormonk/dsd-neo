@@ -7,12 +7,12 @@
  * @file
  * @brief P25 Phase 1 status symbol accumulator and AFC gate logic.
  *
- * Implements TIA-102.BAAA-A §8.4 status symbol classification for AFC gating.
+ * Implements P25 Phase 1 status symbol classification for AFC gating.
  * Status symbols are 2-bit values transmitted every 36 dibits in P25 Phase 1
  * data units. Their values indicate whether the transmitter is infrastructure
  * (repeater) or a subscriber (portable/mobile).
  *
- * Status symbol values per TIA-102.BAAA-A §8.4 Table 8-2:
+ * Status symbol values:
  *   - 01: Inbound Channel Busy (repeater only)
  *   - 00: Unknown / talk-around (subscriber)
  *   - 10: Unknown (repeater or subscriber)
@@ -44,21 +44,35 @@ typedef enum {
 
 /**
  * Maximum status symbols in any P25 Phase 1 data unit.
- * LDU frames contain approximately 11 status symbols; 12 provides headroom.
+ * LDU1/LDU2 frames contain 24 status symbols.
  */
-#define P25_STATUS_ACCUM_MAX 12
+#define P25_STATUS_ACCUM_MAX 24
 
 /**
  * @brief Reset the status accumulator for a new data unit.
  *
- * Must be called at the start of each frame processor (LDU1, LDU2, TDU,
- * TDULC, HDU). Clears the symbol buffer and count; classification reverts
- * to UNKNOWN.
+ * Called when a new P25 Phase 1 data unit starts. The dispatcher calls this
+ * before reading the NID so the NID status symbol can be preserved. Direct
+ * frame-processor tests can also call it explicitly. Clears the symbol buffer
+ * and count; classification reverts to UNKNOWN.
  *
  * @param state Decoder state containing the accumulator fields.
  *              If NULL, the function is a no-op.
  */
 void p25_status_accum_reset(dsd_state* state);
+
+/**
+ * @brief Start a status-symbol accumulator only when one is not already active.
+ *
+ * Dispatcher code can collect the status symbol embedded in the NID before the
+ * DUID-specific processor runs. DUID processors call this helper at entry so
+ * direct unit tests still get a fresh accumulator while dispatcher-owned frames
+ * preserve the NID status symbol.
+ *
+ * @param state Decoder state containing the accumulator fields.
+ *              If NULL, the function is a no-op.
+ */
+void p25_status_accum_ensure_started(dsd_state* state);
 
 /**
  * @brief Add a status symbol value to the accumulator.
@@ -78,9 +92,12 @@ void p25_status_accum_add(dsd_state* state, int dibit_value);
  * @brief Classify the accumulated status symbols and set the AFC gate flag.
  *
  * Examines all collected symbols and determines the transmission source:
- *   - Any 0x01 or 0x03 present → INFRASTRUCTURE (gate open, AFC update allowed)
- *   - All 0x00             → SUBSCRIBER (gate closed, AFC update suppressed)
- *   - All 0x02 or empty   → UNKNOWN (gate closed, conservative suppression)
+ *   - 0x01 and 0x03 increment the infrastructure/repeater count
+ *   - 0x00 increments the subscriber count
+ *   - 0x02 is ignored because both sides may use it
+ *   - infrastructure wins only when repeater_count > subscriber_count
+ *   - subscriber wins when subscriber_count > 0 and repeater_count does not win
+ *   - empty or all-0x02 patterns remain UNKNOWN
  *
  * Sets state->p25_ss_classification and state->p25_afc_gate_allow.
  * Increments the appropriate counter (p25_afc_allowed_count or

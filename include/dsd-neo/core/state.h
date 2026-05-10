@@ -724,23 +724,27 @@ struct dsd_state {
     int p25_p1_voice_err_hist_pos;          // ring head
     unsigned int p25_p1_voice_err_hist_sum; // sum of values in window
 
-    /* ─────────────────────────────────────────────────────────────────────────
-     * P25 Status Symbol AFC Gating (TIA-102.BAAA-A §8.4)
+    /*
+     * P25 status symbol AFC gating.
      *
      * Accumulates 2-bit status symbol values during P25 Phase 1 frame
      * processing and produces a classification (infrastructure vs subscriber)
      * that gates the auto-PPM frequency correction loop. See
      * <dsd-neo/protocol/p25/p25_status_symbol.h> for the accumulator API.
-     * ───────────────────────────────────────────────────────────────────────── */
+     */
 
     /** Accumulated status symbol values for the current data unit (2-bit each). */
     uint8_t p25_ss_buf[P25_STATUS_ACCUM_MAX];
     /** Number of status symbols collected so far in current data unit. */
     uint8_t p25_ss_count;
+    /** Current data unit has an active accumulator; preserves NID status handoff from dispatcher. */
+    uint8_t p25_ss_frame_active;
     /** Classification of the most recently completed data unit (p25_ss_classification_t). */
     uint8_t p25_ss_classification;
     /** AFC gate decision: 1 = allow PPM update, 0 = suppress. */
     uint8_t p25_afc_gate_allow;
+    /** A completed data unit has populated p25_afc_gate_allow. */
+    uint8_t p25_afc_gate_valid;
     /** Count of frames where AFC update was allowed (infrastructure). */
     unsigned int p25_afc_allowed_count;
     /** Count of frames where AFC update was suppressed (subscriber/unknown). */

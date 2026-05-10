@@ -71,8 +71,8 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     // succeed to avoid extending hangtime due to false decodes when signal is
     // lost.
 
-    // Reset status symbol accumulator for this data unit (AFC gating)
-    p25_status_accum_reset(state);
+    // Start status-symbol collection unless the dispatcher already did so for this data unit.
+    p25_status_accum_ensure_started(state);
 
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu
@@ -300,7 +300,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, "lsd1: %s lsd2: %s\n", lsd1, lsd2);
     }
 
-    // Trailing status symbol — feed to accumulator for AFC gating
+    // Trailing status symbol: feed to accumulator for AFC gating
     {
         int ss = getDibit(opts, state);
         p25_status_accum_add(state, ss);

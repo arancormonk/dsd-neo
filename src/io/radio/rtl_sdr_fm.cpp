@@ -20,6 +20,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -4425,17 +4426,10 @@ auto_ppm_maybe_adjust(dsd_opts* opts, dsd_state* state) {
     inputs.spec_snr_db = spec_snr_db;
     inputs.estimate = dsd::io::radio::rtl_auto_ppm_select_estimate(metrics);
 
-    /* P25 AFC gating (TIA-102.BAAA-A §8.4): skip the PPM update when the
-     * P25 Phase 1 decoder has classified the current transmission as
-     * subscriber or unknown. The gate flag (p25_afc_gate_allow) is written
-     * by the decoder thread at the end of each data unit; reading a single
-     * byte here is safe (atomic on all target platforms).
-     *
-     * The gate is only consulted when P25 AFC gating has been active (at
-     * least one classify call has occurred), so non-P25 protocols are
-     * unaffected. */
-    if (state && !opts->p25_afc_gate_disable
-        && (state->p25_afc_allowed_count > 0 || state->p25_afc_suppressed_count > 0) && !state->p25_afc_gate_allow) {
+    /* P25 AFC gating: skip the PPM update when the current P25 Phase 1
+     * transmission was classified as subscriber-originated or unknown. */
+    if (state && !opts->p25_afc_gate_disable && DSD_SYNC_IS_P25P1(state->synctype) && state->p25_afc_gate_valid
+        && !state->p25_afc_gate_allow) {
         return;
     }
 

@@ -21,8 +21,8 @@ void
 processTDU(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_tdu++;
 
-    // Reset status symbol accumulator for this data unit (AFC gating)
-    p25_status_accum_reset(state);
+    // Start status-symbol collection unless the dispatcher already did so for this data unit.
+    p25_status_accum_ensure_started(state);
 
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu
