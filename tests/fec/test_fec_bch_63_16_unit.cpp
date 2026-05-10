@@ -344,8 +344,8 @@ test_backward_compat_legacy_decode(void) {
         bch.encode(info, codeword);
 
         // Flip 12 bits
-        for (int i = 0; i < 12; i++) {
-            codeword[i * 5] ^= 1;
+        for (std::size_t i = 0; i < 12; i++) {
+            codeword[i * 5U] ^= 1;
         }
 
         bool ok = bch.decode_legacy(codeword, decoded);
