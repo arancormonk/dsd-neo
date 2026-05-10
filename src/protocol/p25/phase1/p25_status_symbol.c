@@ -36,6 +36,8 @@ p25_status_accum_reset(dsd_state* state) {
     state->p25_ss_count = 0;
     state->p25_ss_frame_active = 1;
     state->p25_ss_classification = (uint8_t)P25_SS_CLASS_UNKNOWN;
+    state->p25_afc_gate_allow = 0;
+    state->p25_afc_gate_valid = 0;
 }
 
 void

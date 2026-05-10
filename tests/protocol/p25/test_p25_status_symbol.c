@@ -70,6 +70,8 @@ test_accum_reset_zeroes_state(void) {
     ctx.state->p25_ss_count = 5;
     ctx.state->p25_ss_classification = (uint8_t)P25_SS_CLASS_INFRASTRUCTURE;
     ctx.state->p25_ss_buf[0] = 0x03;
+    ctx.state->p25_afc_gate_allow = 1;
+    ctx.state->p25_afc_gate_valid = 1;
 
     p25_status_accum_reset(ctx.state);
 
@@ -77,6 +79,8 @@ test_accum_reset_zeroes_state(void) {
     rc |= expect_u32(test, "count", ctx.state->p25_ss_count, 0);
     rc |= expect_class(test, ctx.state, P25_SS_CLASS_UNKNOWN);
     rc |= expect_u32(test, "frame_active", ctx.state->p25_ss_frame_active, 1);
+    rc |= expect_u32(test, "gate_allow", ctx.state->p25_afc_gate_allow, 0);
+    rc |= expect_u32(test, "gate_valid", ctx.state->p25_afc_gate_valid, 0);
 
     free_ctx(&ctx);
     return rc;

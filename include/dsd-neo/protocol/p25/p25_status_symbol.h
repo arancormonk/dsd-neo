@@ -55,7 +55,8 @@ typedef enum {
  * Called when a new P25 Phase 1 data unit starts. The dispatcher calls this
  * before reading the NID so the NID status symbol can be preserved. Direct
  * frame-processor tests can also call it explicitly. Clears the symbol buffer
- * and count; classification reverts to UNKNOWN.
+ * and count, invalidates any previous advisory gate decision, and reverts
+ * classification to UNKNOWN.
  *
  * @param state Decoder state containing the accumulator fields.
  *              If NULL, the function is a no-op.
