@@ -390,6 +390,10 @@ add_executable(dsd-neo_test_ui_tcp_audio_connect
 target_include_directories(dsd-neo_test_ui_tcp_audio_connect PRIVATE ${PROJECT_SOURCE_DIR}/include)
 add_test(NAME UI_TCP_AUDIO_CONNECT COMMAND dsd-neo_test_ui_tcp_audio_connect)
 
+add_executable(dsd-neo_test_ui_burst_active_call ui/test_ui_burst_active_call.c)
+target_include_directories(dsd-neo_test_ui_burst_active_call PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME UI_BURST_ACTIVE_CALL COMMAND dsd-neo_test_ui_burst_active_call)
+
 add_executable(dsd-neo_test_ui_menu_navigation
   ui/test_ui_menu_navigation.c
   ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c)

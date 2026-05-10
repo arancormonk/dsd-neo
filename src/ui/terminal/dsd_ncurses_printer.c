@@ -1655,8 +1655,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         //  - DMR voice (16)
         //  - P25p2: PTT/VOICE/HANGTIME (20/21/22)
         //  - P25p1 voice frames (26/27)
-        int show_l_ids = (state->dmrburstL == 16) || (state->dmrburstL >= 20 && state->dmrburstL <= 22)
-                         || (state->dmrburstL == 26) || (state->dmrburstL == 27);
+        int show_l_ids = ui_burst_is_active_call(state->dmrburstL);
+        int show_l_p25_vxtra = ui_burst_has_p25_crypto_metadata(state->dmrburstL);
+        int show_l_crypto_status = state->dmrburstL == 16 || show_l_p25_vxtra;
         if (show_l_ids) {
             printw("TGT: [%8i] SRC: [%8i] ", state->lasttg, state->lastsrc);
             // P25 call flags: show [EM] and [PR:n] when active
@@ -1722,7 +1723,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
 
         //P25 FDMA/TDMA
-        if (state->dmrburstL > 19 && state->payload_algid > 0 && state->payload_algid != 0x80) {
+        if (show_l_p25_vxtra && state->payload_algid > 0 && state->payload_algid != 0x80) {
             attron(COLOR_PAIR(1));
             printw("ALG: 0x%02X KEY: 0x%04X MI: 0x%016llX ", state->payload_algid, state->payload_keyid,
                    state->payload_miP);
@@ -1731,7 +1732,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
 
         //Anytone 0x01 will never show here since its converted to 0x21 for handling
-        if (state->payload_algid == 0xAA || state->payload_algid == 0x21 || state->payload_algid == 0x01) {
+        if (show_l_crypto_status
+            && (state->payload_algid == 0xAA || state->payload_algid == 0x21 || state->payload_algid == 0x01)) {
             attron(COLOR_PAIR(1));
             printw("RC4 ");
             if (state->R != 0) {
@@ -1739,7 +1741,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
             attron(COLOR_PAIR(3));
         }
-        if (state->payload_algid == 0x81 || state->payload_algid == 0x22) {
+        if (show_l_crypto_status && (state->payload_algid == 0x81 || state->payload_algid == 0x22)) {
             attron(COLOR_PAIR(1));
             printw("DES1 ");
             if (state->R != 0) {
@@ -1747,7 +1749,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
             attron(COLOR_PAIR(3));
         }
-        if (state->payload_algid == 0x9F) {
+        if (show_l_crypto_status && state->payload_algid == 0x9F) {
             attron(COLOR_PAIR(1));
             printw("DES-XL ");
             if (state->R != 0) {
@@ -1755,17 +1757,17 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
             attron(COLOR_PAIR(3));
         }
-        if (state->payload_algid == 0x82) {
+        if (show_l_crypto_status && state->payload_algid == 0x82) {
             attron(COLOR_PAIR(1));
             printw("DES2 ");
             attron(COLOR_PAIR(3));
         }
-        if (state->payload_algid == 0x83) {
+        if (show_l_crypto_status && state->payload_algid == 0x83) {
             attron(COLOR_PAIR(1));
             printw("DES3 ");
             attron(COLOR_PAIR(3));
         }
-        if (state->payload_algid == 0x89 || state->payload_algid == 0x24) {
+        if (show_l_crypto_status && (state->payload_algid == 0x89 || state->payload_algid == 0x24)) {
             attron(COLOR_PAIR(1));
             printw("AES-128 ");
             if (state->aes_key_loaded[0] != 0) {
@@ -1773,7 +1775,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
             attron(COLOR_PAIR(3));
         }
-        if (state->payload_algid == 0x84 || state->payload_algid == 0x25 || state->payload_algid == 0x05) {
+        if (show_l_crypto_status
+            && (state->payload_algid == 0x84 || state->payload_algid == 0x25 || state->payload_algid == 0x05)) {
             attron(COLOR_PAIR(1));
             printw("AES-256 ");
             if (state->aes_key_loaded[0] != 0) {
@@ -1781,7 +1784,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
             attron(COLOR_PAIR(3));
         }
-        if (state->payload_algid == 0x02) {
+        if (show_l_crypto_status && state->payload_algid == 0x02) {
             attron(COLOR_PAIR(1));
             printw("Hytera Enhanced");
             if (state->R != 0) {
@@ -1789,12 +1792,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
             attron(COLOR_PAIR(3));
         }
-        if (state->payload_algid == 0x07) {
+        if (show_l_crypto_status && state->payload_algid == 0x07) {
             attron(COLOR_PAIR(1));
             printw("Vertex Std");
             attron(COLOR_PAIR(3));
         }
-        if (state->payload_algid == 0x36 || state->payload_algid == 0x37) {
+        if (show_l_crypto_status && (state->payload_algid == 0x36 || state->payload_algid == 0x37)) {
             attron(COLOR_PAIR(1));
             if (state->payload_algid == 0x36) {
                 printw("Kirisun Adv");
@@ -1842,7 +1845,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
 
         //Group Name Labels from CSV import
-        if (state->dmrburstL == 16 || state->dmrburstL > 19) {
+        if (show_l_ids) {
             for (unsigned int k = 0; k < state->group_tally; k++) {
                 if (state->group_array[k].groupNumber == (unsigned long)state->lasttg) {
                     attron(COLOR_PAIR(4));
@@ -1876,8 +1879,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             //  - DMR voice (16)
             //  - P25p2: PTT/VOICE/HANGTIME (20/21/22)
             //  - P25p1 voice frames (26/27) [right slot used for MS/dual displays]
-            int show_r_ids = (state->dmrburstR == 16) || (state->dmrburstR >= 20 && state->dmrburstR <= 22)
-                             || (state->dmrburstR == 26) || (state->dmrburstR == 27);
+            int show_r_ids = ui_burst_is_active_call(state->dmrburstR);
+            int show_r_p25_vxtra = ui_burst_has_p25_crypto_metadata(state->dmrburstR);
+            int show_r_crypto_status = state->dmrburstR == 16 || show_r_p25_vxtra;
             if (show_r_ids) {
                 printw("TGT: [%8i] SRC: [%8i] ", state->lasttgR, state->lastsrcR);
                 // P25 call flags for right slot
@@ -1939,7 +1943,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 attron(COLOR_PAIR(3));
             }
             //P25-P1 and P2
-            if (state->dmrburstR > 19 && state->payload_algidR > 0 && state->payload_algidR != 0x80) {
+            if (show_r_p25_vxtra && state->payload_algidR > 0 && state->payload_algidR != 0x80) {
                 attron(COLOR_PAIR(1));
                 printw("ALG: 0x%02X KEY: 0x%04X MI: 0x%016llX ", state->payload_algidR, state->payload_keyidR,
                        state->payload_miN);
@@ -1948,7 +1952,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
 
             //Anytone 0x01 will never show here since its converted to 0x21 for handling
-            if (state->payload_algidR == 0xAA || state->payload_algidR == 0x21 || state->payload_algidR == 0x01) {
+            if (show_r_crypto_status
+                && (state->payload_algidR == 0xAA || state->payload_algidR == 0x21 || state->payload_algidR == 0x01)) {
                 attron(COLOR_PAIR(1));
                 printw("RC4 ");
                 if (state->RR != 0) {
@@ -1956,7 +1961,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 }
                 attron(COLOR_PAIR(3));
             }
-            if (state->payload_algidR == 0x81 || state->payload_algidR == 0x22) {
+            if (show_r_crypto_status && (state->payload_algidR == 0x81 || state->payload_algidR == 0x22)) {
                 attron(COLOR_PAIR(1));
                 printw("DES1 ");
                 if (state->RR != 0) {
@@ -1964,7 +1969,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 }
                 attron(COLOR_PAIR(3));
             }
-            if (state->payload_algidR == 0x9F) {
+            if (show_r_crypto_status && state->payload_algidR == 0x9F) {
                 attron(COLOR_PAIR(1));
                 printw("DES-XL ");
                 if (state->RR != 0) {
@@ -1972,17 +1977,17 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 }
                 attron(COLOR_PAIR(3));
             }
-            if (state->payload_algidR == 0x82) {
+            if (show_r_crypto_status && state->payload_algidR == 0x82) {
                 attron(COLOR_PAIR(1));
                 printw("DES2 ");
                 attron(COLOR_PAIR(3));
             }
-            if (state->payload_algidR == 0x83) {
+            if (show_r_crypto_status && state->payload_algidR == 0x83) {
                 attron(COLOR_PAIR(1));
                 printw("DES3 ");
                 attron(COLOR_PAIR(3));
             }
-            if (state->payload_algidR == 0x89 || state->payload_algidR == 0x24) {
+            if (show_r_crypto_status && (state->payload_algidR == 0x89 || state->payload_algidR == 0x24)) {
                 attron(COLOR_PAIR(1));
                 printw("AES-128 ");
                 if (state->aes_key_loaded[1] != 0) {
@@ -1990,7 +1995,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 }
                 attron(COLOR_PAIR(3));
             }
-            if (state->payload_algidR == 0x84 || state->payload_algidR == 0x25 || state->payload_algidR == 0x05) {
+            if (show_r_crypto_status
+                && (state->payload_algidR == 0x84 || state->payload_algidR == 0x25 || state->payload_algidR == 0x05)) {
                 attron(COLOR_PAIR(1));
                 printw("AES-256 ");
                 if (state->aes_key_loaded[1] != 0) {
@@ -1998,7 +2004,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 }
                 attron(COLOR_PAIR(3));
             }
-            if (state->payload_algidR == 0x02) {
+            if (show_r_crypto_status && state->payload_algidR == 0x02) {
                 attron(COLOR_PAIR(1));
                 printw("Hytera Enhanced");
                 if (state->RR != 0) {
@@ -2006,12 +2012,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 }
                 attron(COLOR_PAIR(3));
             }
-            if (state->payload_algidR == 0x07) {
+            if (show_r_crypto_status && state->payload_algidR == 0x07) {
                 attron(COLOR_PAIR(1));
                 printw("Vertex Std");
                 attron(COLOR_PAIR(3));
             }
-            if (state->payload_algidR == 0x36 || state->payload_algidR == 0x37) {
+            if (show_r_crypto_status && (state->payload_algidR == 0x36 || state->payload_algidR == 0x37)) {
                 attron(COLOR_PAIR(1));
                 if (state->payload_algidR == 0x36) {
                     printw("Kirisun Adv");
@@ -2057,7 +2063,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
 
             //Group Name Labels from CSV import
-            if (state->dmrburstR == 16 || state->dmrburstR > 19) {
+            if (show_r_ids) {
                 for (unsigned int k = 0; k < state->group_tally; k++) {
                     if (state->group_array[k].groupNumber == (unsigned long)state->lasttgR) {
                         attron(COLOR_PAIR(4));
