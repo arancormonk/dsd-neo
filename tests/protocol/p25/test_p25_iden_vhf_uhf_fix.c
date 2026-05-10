@@ -480,9 +480,8 @@ test_preservation_0x74_field_extraction(void) {
         memset(MAC, 0, sizeof MAC);
         MAC[1] = 0x74; /* opcode */
 
-        /* Generate random MAC bytes for positions 2–9 */
+        /* Generate random MAC bytes for positions 2-5 */
         uint32_t r1 = xorshift32(&rng);
-        uint32_t r2 = xorshift32(&rng);
         MAC[2] = (uint8_t)(r1 & 0xFF);
         MAC[3] = (uint8_t)((r1 >> 8) & 0xFF);
         MAC[4] = (uint8_t)((r1 >> 16) & 0xFF);
