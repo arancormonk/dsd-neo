@@ -21,6 +21,8 @@
 #include "dsd-neo/core/state_fwd.h"
 
 void p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq);
+void p25_test_invoke_lcw_with_lastsrc(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq,
+                                      long lastsrc);
 
 // Stubs referenced by LCW path (alias helpers and streaming/rigctl)
 void
@@ -246,6 +248,25 @@ main(void) {
 
     // Gating cases are covered in a separate test without overriding
     // p25_sm_on_group_grant so the implementation’s gating logic runs.
+
+    // Format 0x42 has channel/TG pairs but no source field. It should not
+    // forward a stale lastsrc into the trunking scheduler.
+    {
+        uint8_t lcw42[72];
+        memset(lcw42, 0, sizeof(lcw42));
+        set_bits_msb(lcw42, 0, 8, 0x42);
+        set_bits_msb(lcw42, 8, 16, (unsigned)ch);
+        set_bits_msb(lcw42, 24, 16, (unsigned)tg);
+
+        g_called = 0;
+        g_last_channel = g_last_svc = g_last_tg = g_last_src = -1;
+        p25_test_invoke_lcw_with_lastsrc(lcw42, 72, /*enable_retune*/ 0, /*cc*/ 851000000, /*lastsrc*/ 777777);
+        rc |= expect_eq_int("0x42 dispatch called", g_called, 1);
+        rc |= expect_eq_int("0x42 channel", g_last_channel, ch);
+        rc |= expect_eq_int("0x42 svc", g_last_svc, 0);
+        rc |= expect_eq_int("0x42 tg", g_last_tg, tg);
+        rc |= expect_eq_int("0x42 source unavailable", g_last_src, 0);
+    }
 
     return rc;
 }

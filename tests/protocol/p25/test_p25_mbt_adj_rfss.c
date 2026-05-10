@@ -273,5 +273,36 @@ main(void) {
         rc |= expect_eq_long("adj nb f2", nb_freqs[1], want2);
     }
 
+    // Case C: AMBTC opcode 0x3E is Protection Parameter Broadcast in sdrtrunk,
+    // not RFSS Status. It must not update trunking identity or current CC.
+    {
+        uint8_t mbt[48];
+        memset(mbt, 0, sizeof(mbt));
+        mbt[0] = 0x17; // ALT format
+        mbt[2] = 0x00; // MFID standard
+        mbt[3] = 0x03; // LRA-like byte if misdecoded
+        mbt[4] = 0x01; // would make SYSID 0x123 if misdecoded as RFSS status
+        mbt[5] = 0x23;
+        mbt[6] = 0x02;  // blks
+        mbt[7] = 0x3E;  // Protection Parameter Broadcast
+        mbt[12] = 0x04; // data block bytes that used to be misread as RFSS/site/channel
+        mbt[13] = 0x05;
+        mbt[14] = 0x10;
+        mbt[15] = 0x0A;
+        mbt[16] = 0x10;
+        mbt[17] = 0x05;
+
+        long cc = -1, w = -1;
+        int sid = -1;
+        int sh = p25_test_decode_mbt_with_iden(mbt, (int)sizeof(mbt), iden, type, tdma, base5, spac125, &cc, &w, &sid);
+        if (sh != 0) {
+            return 40;
+        }
+
+        rc |= expect_eq_long("ambtc_0x3e_cc_unchanged", cc, 0);
+        rc |= expect_eq_long("ambtc_0x3e_wacn_unchanged", w, 0);
+        rc |= expect_eq_long("ambtc_0x3e_sysid_unchanged", sid, 0);
+    }
+
     return rc;
 }
