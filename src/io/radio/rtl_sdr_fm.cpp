@@ -4429,8 +4429,8 @@ auto_ppm_maybe_adjust(dsd_opts* opts, dsd_state* state) {
     /* P25 status-symbol classification is advisory by default; only enforce it
      * when explicitly enabled because status-derived direction is unreliable on
      * some systems. */
-    if (state && opts->p25_afc_status_gate_enable && DSD_SYNC_IS_P25P1(state->synctype) && state->p25_afc_gate_valid
-        && !state->p25_afc_gate_allow) {
+    if (enabled && state && opts->p25_afc_status_gate_enable && DSD_SYNC_IS_P25P1(state->synctype)
+        && state->p25_afc_gate_valid && !state->p25_afc_gate_allow) {
         return;
     }
 
