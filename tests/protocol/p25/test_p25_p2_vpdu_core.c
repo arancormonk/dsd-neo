@@ -120,7 +120,7 @@ expect_eq_long(const char* tag, long got, long want) {
 
 static int
 run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int current_site, long* out_freqs,
-                        int out_cap) {
+                        int out_cap, int* out_rfss, int* out_site, int* out_lcn_count) {
     dsd_opts opts;
     dsd_state state;
     memset(&opts, 0, sizeof opts);
@@ -145,6 +145,15 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
     int count = (cc != NULL) ? cc->count : 0;
     for (int i = 0; i < count && i < out_cap; i++) {
         out_freqs[i] = cc->candidates[i];
+    }
+    if (out_rfss) {
+        *out_rfss = (int)state.p2_rfssid;
+    }
+    if (out_site) {
+        *out_site = (int)state.p2_siteid;
+    }
+    if (out_lcn_count) {
+        *out_lcn_count = state.lcn_freq_count;
     }
     dsd_state_ext_free_all(&state);
     return count;
@@ -206,7 +215,7 @@ run_cases(void) {
         mac[7] = 0x05;
         mac[8] = 0x01; // service class
 
-        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4);
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL);
         rc |= expect_eq_long("p2_sccb_explicit_count", count, 1);
         rc |= expect_eq_long("p2_sccb_explicit_downlink", freqs[0], 851000000 + 10 * 100 * 125);
     }
@@ -226,7 +235,7 @@ run_cases(void) {
         mac[8] = 0x05;
         mac[9] = 0x01; // service class 2 marks channel B present
 
-        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4);
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL);
         rc |= expect_eq_long("p2_sccb_implicit_count", count, 2);
         rc |= expect_eq_long("p2_sccb_implicit_ch1", freqs[0], 851000000 + 10 * 100 * 125);
         rc |= expect_eq_long("p2_sccb_implicit_ch2", freqs[1], 851000000 + 5 * 100 * 125);
@@ -247,7 +256,7 @@ run_cases(void) {
         mac[7] = 0x05;
         mac[8] = 0x01; // service class
 
-        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4);
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL);
         rc |= expect_eq_long("p1_bridge_sccb_explicit_count", count, 1);
         rc |= expect_eq_long("p1_bridge_sccb_explicit_downlink", freqs[0], 851000000 + 10 * 100 * 125);
     }
@@ -256,6 +265,8 @@ run_cases(void) {
     {
         unsigned char mac[24];
         long freqs[4] = {0};
+        int rfss_after = 0;
+        int site_after = 0;
         memset(mac, 0, sizeof mac);
         mac[1] = 0xE9;
         mac[2] = 0x02;
@@ -266,8 +277,31 @@ run_cases(void) {
         mac[7] = 0x05;
         mac[8] = 0x01;
 
-        int count = run_sccb_candidate_case(mac, 0x63, 0x63, freqs, 4);
+        int count = run_sccb_candidate_case(mac, 0x63, 0x63, freqs, 4, &rfss_after, &site_after, NULL);
         rc |= expect_eq_long("p2_sccb_explicit_foreign_site_count", count, 0);
+        rc |= expect_eq_long("p2_sccb_explicit_foreign_rfss_preserved", rfss_after, 0x63);
+        rc |= expect_eq_long("p2_sccb_explicit_foreign_site_preserved", site_after, 0x63);
+    }
+
+    // Case 9: foreign-site bridged SCCB must not seed fallback LCN rotation.
+    {
+        unsigned char mac[24];
+        long freqs[4] = {0};
+        int lcn_count = -1;
+        memset(mac, 0, sizeof mac);
+        mac[0] = 0x07;
+        mac[1] = 0x69;
+        mac[2] = 0x02;
+        mac[3] = 0x03;
+        mac[4] = 0x10;
+        mac[5] = 0x0A;
+        mac[6] = 0x10;
+        mac[7] = 0x05;
+        mac[8] = 0x01;
+
+        int count = run_sccb_candidate_case(mac, 0x63, 0x63, freqs, 4, NULL, NULL, &lcn_count);
+        rc |= expect_eq_long("p1_bridge_sccb_foreign_site_count", count, 0);
+        rc |= expect_eq_long("p1_bridge_sccb_foreign_lcn_count", lcn_count, 0);
     }
 
     return rc;

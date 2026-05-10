@@ -54,15 +54,40 @@ p25_cfva_is_healthy(int cfva) {
     return !(cfva & 0x4) && (cfva & 0x2);
 }
 
+static int
+p25p2_sccb_matches_current_site(const dsd_state* state, int rfssid, int siteid) {
+    if (!state) {
+        return 0;
+    }
+    if (state->p2_rfssid != 0 && rfssid != (int)state->p2_rfssid) {
+        return 0;
+    }
+    if (state->p2_siteid != 0 && siteid != (int)state->p2_siteid) {
+        return 0;
+    }
+    return 1;
+}
+
+static void
+p25p2_note_sccb_site(dsd_state* state, int rfssid, int siteid) {
+    if (!p25p2_sccb_matches_current_site(state, rfssid, siteid)) {
+        return;
+    }
+    if (state->p2_rfssid == 0) {
+        state->p2_rfssid = rfssid;
+    }
+    if (state->p2_siteid == 0) {
+        state->p2_siteid = siteid;
+    }
+}
+
 static void
 p25p2_add_secondary_cc_candidates(dsd_opts* opts, dsd_state* state, int rfssid, int siteid, const long* freqs,
                                   int count) {
     if (!state || !freqs || count <= 0) {
         return;
     }
-    int site_known = (state->p2_rfssid != 0 || state->p2_siteid != 0);
-    int site_match = (rfssid == (int)state->p2_rfssid && siteid == (int)state->p2_siteid);
-    if (site_known && !site_match) {
+    if (!p25p2_sccb_matches_current_site(state, rfssid, siteid)) {
         return;
     }
 
@@ -1885,8 +1910,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             long scc_freqs[1] = {sccf};
             p25p2_add_secondary_cc_candidates(opts, state, rfssid, siteid, scc_freqs, 1);
 
-            state->p2_siteid = siteid;
-            state->p2_rfssid = rfssid;
+            p25p2_note_sccb_site(state, rfssid, siteid);
         }
 
         //Secondary Control Channel Broadcast, Implicit
@@ -1911,14 +1935,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                                               (channel2 != channel1 && sysclass2 != 0) ? 2 : 1);
 
             //place the cc freq into the list at index 0 if 0 is empty so we can hunt for rotating CCs without user LCN list
-            if (state->trunk_lcn_freq[1] == 0) {
+            if (p25p2_sccb_matches_current_site(state, rfssid, siteid) && state->trunk_lcn_freq[1] == 0) {
                 state->trunk_lcn_freq[1] = freq1;
                 state->trunk_lcn_freq[2] = freq2;
                 state->lcn_freq_count = 3; //increment to three
             }
 
-            state->p2_siteid = siteid;
-            state->p2_rfssid = rfssid;
+            p25p2_note_sccb_site(state, rfssid, siteid);
         }
 
         //MFID90 Group Regroup Voice Channel User - Abbreviated
@@ -2807,17 +2830,17 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             long int sccf = process_channel_to_freq(opts, state, channelt);
             (void)process_channel_to_freq(opts, state, channelr);
             // Add to CC candidate list for hunting
-            if (sccf > 0 && state->trunk_lcn_freq[1] == 0) {
+            if (sccf > 0 && p25p2_sccb_matches_current_site(state, rfssid, siteid) && state->trunk_lcn_freq[1] == 0) {
                 state->trunk_lcn_freq[1] = sccf;
                 state->lcn_freq_count = 2;
-            } else if (sccf > 0 && state->trunk_lcn_freq[2] == 0 && sccf != state->trunk_lcn_freq[1]) {
+            } else if (sccf > 0 && p25p2_sccb_matches_current_site(state, rfssid, siteid)
+                       && state->trunk_lcn_freq[2] == 0 && sccf != state->trunk_lcn_freq[1]) {
                 state->trunk_lcn_freq[2] = sccf;
                 state->lcn_freq_count = 3;
             }
             long scc_freqs[1] = {sccf};
             p25p2_add_secondary_cc_candidates(opts, state, rfssid, siteid, scc_freqs, 1);
-            state->p2_siteid = siteid;
-            state->p2_rfssid = rfssid;
+            p25p2_note_sccb_site(state, rfssid, siteid);
         }
 
         // Power Control Signal Quality (op25 parity: MAC 0x30)
