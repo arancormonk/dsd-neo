@@ -114,6 +114,27 @@ test_ensure_started_preserves_dispatch_status(void) {
 }
 
 static int
+test_classify_empty_frame_suppresses_unknown(void) {
+    const char* test = "test_classify_empty_frame_suppresses_unknown";
+    test_ctx ctx = make_ctx(test);
+    if (!ctx.state) {
+        return 1;
+    }
+
+    p25_status_accum_reset(ctx.state);
+    p25_status_accum_classify(ctx.state, ctx.opts);
+
+    int rc = 0;
+    rc |= expect_class(test, ctx.state, P25_SS_CLASS_UNKNOWN);
+    rc |= expect_u32(test, "gate_allow", ctx.state->p25_afc_gate_allow, 0);
+    rc |= expect_u32(test, "gate_valid", ctx.state->p25_afc_gate_valid, 1);
+    rc |= expect_u32(test, "suppressed_count", ctx.state->p25_afc_suppressed_count, 1);
+
+    free_ctx(&ctx);
+    return rc;
+}
+
+static int
 test_accum_add_single_value(void) {
     const char* test = "test_accum_add_single_value";
     test_ctx ctx = make_ctx(test);
@@ -340,6 +361,7 @@ main(void) {
 
     rc |= test_accum_reset_zeroes_state();
     rc |= test_ensure_started_preserves_dispatch_status();
+    rc |= test_classify_empty_frame_suppresses_unknown();
     rc |= test_accum_add_single_value();
     rc |= test_accum_accepts_full_ldu_status_count();
     rc |= test_classify_status_values();

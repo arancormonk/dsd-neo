@@ -305,5 +305,11 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
             // fprintf (stderr," duid:%s *Unknown DUID*\n", duid);
             fprintf(stderr, " duid:%s \n", duid); //DUID ERR
         }
+        /*
+         * The DUID was not actionable, so do not let a possibly false or
+         * unsupported P25 frame leave the opt-in AFC gate open by omission.
+         */
+        p25_status_accum_reset(state);
+        p25_status_accum_classify(state, opts);
     }
 }

@@ -39,8 +39,8 @@ extern "C" {
 /** Status symbol classification result. */
 typedef enum {
     P25_SS_CLASS_UNKNOWN = 0,        /**< No symbols collected, or all-10 pattern */
-    P25_SS_CLASS_INFRASTRUCTURE = 1, /**< At least one 01 or 11 observed (repeater) */
-    P25_SS_CLASS_SUBSCRIBER = 2      /**< All symbols are 00 (talk-around) */
+    P25_SS_CLASS_INFRASTRUCTURE = 1, /**< Repeater symbols outnumber subscriber symbols */
+    P25_SS_CLASS_SUBSCRIBER = 2      /**< Subscriber symbols present without repeater majority */
 } p25_ss_classification_t;
 
 /**
@@ -108,8 +108,7 @@ void p25_status_accum_add(dsd_state* state, int dibit_value);
  *
  * @param state Decoder state containing the accumulator fields and gate output.
  *              If NULL, the function is a no-op.
- * @param opts  Decoder options (checked for gating disable flag).
- *              If NULL, gating is treated as enabled (default behavior).
+ * @param opts  Decoder options, reserved for future classification policy.
  */
 void p25_status_accum_classify(dsd_state* state, const dsd_opts* opts);
 
