@@ -423,7 +423,7 @@ struct dsd_state {
     // NID BCH correction statistics (P25 Phase 1)
     unsigned int nid_corrections_total; /**< Running total of NID BCH corrections applied */
     unsigned int nid_failures_total;    /**< Running total of NID decode failures */
-    unsigned int nid_parity_overrides;  /**< Count of parity mismatches accepted (≤6 errors) */
+    unsigned int nid_parity_overrides;  /**< Count of accepted final parity-bit mismatches */
 
     int debug_mode; //debug misc things
 

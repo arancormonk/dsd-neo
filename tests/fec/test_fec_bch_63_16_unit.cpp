@@ -16,6 +16,18 @@
 #include <cstdio>
 #include <cstring>
 
+static unsigned long long
+pack_63_bits(const char codeword[63]) {
+    unsigned long long packed = 0;
+
+    for (int i = 0; i < 63; i++) {
+        packed <<= 1;
+        packed |= codeword[i] ? 1ULL : 0ULL;
+    }
+
+    return packed;
+}
+
 /**
  * @brief Verify that encoding the all-zero 16-bit info word produces
  *        the all-zero 63-bit codeword.
@@ -40,6 +52,44 @@ test_encode_all_zeros(void) {
             return 1;
         }
     }
+    return 0;
+}
+
+/**
+ * @brief Verify encoder output against the P25 NID generator matrix used by
+ *        sdrtrunk for fixed test vectors.
+ *
+ * sdrtrunk's 16 generator rows include the 47 BCH parity bits plus the final
+ * NID parity bit. The local encoder produces only the 63-bit BCH codeword, so
+ * the expected value drops each row's final parity bit.
+ */
+static int
+test_encode_matches_p25_generator_matrix(void) {
+    BCH_63_16_11 bch;
+    static const unsigned long long generator_rows[16] = {
+        0xCD930BDD3B2AULL, 0xAB5A8E33A6BEULL, 0x983E4CC4E874ULL, 0x4C1F2662743AULL,
+        0xEB9C98EC0136ULL, 0xB85D47AB3BB0ULL, 0x5C2EA3D59DD8ULL, 0x2E1751EACEECULL,
+        0x170BA8F56776ULL, 0xC616DFA78890ULL, 0x630B6FD3C448ULL, 0x3185B7E9E224ULL,
+        0x18C2DBF4F112ULL, 0xC1F2662743A2ULL, 0xAD6A38CE9AFBULL, 0x9B2617BA7657ULL,
+    };
+
+    for (int bit = 0; bit < 16; bit++) {
+        char info[16] = {0};
+        char codeword[63] = {0};
+
+        info[bit] = 1;
+        bch.encode(info, codeword);
+
+        unsigned long long expected = (1ULL << (62 - bit)) | (generator_rows[bit] >> 1);
+        unsigned long long actual = pack_63_bits(codeword);
+
+        if (actual != expected) {
+            std::fprintf(stderr, "test_encode_matches_p25_generator_matrix: bit %d expected 0x%016llX, got 0x%016llX\n",
+                         bit, expected, actual);
+            return 1;
+        }
+    }
+
     return 0;
 }
 
@@ -364,6 +414,7 @@ main(void) {
     int rc = 0;
 
     rc |= test_encode_all_zeros();
+    rc |= test_encode_matches_p25_generator_matrix();
     rc |= test_encode_nac_293_ldu1();
     rc |= test_decode_no_errors();
     rc |= test_decode_failure_12_errors();

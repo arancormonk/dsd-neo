@@ -65,16 +65,15 @@ class ParityTable {
 } parity_table;
 
 /**
- * @brief Decode and validate a P25 NID codeword (5-parameter version).
+ * @brief Decode and validate a P25 NID codeword with correction count reporting.
  *
  * Performs BCH(63,16,23) error correction on the 63-bit NID codeword,
  * validates the decoded DUID against the set of defined frame types
  * (TIA-102.BAAA-A Table 8-4), and checks the parity bit for consistency.
- * When parity disagrees, applies a confidence-based override: if the BCH
- * decoder corrected 6 or fewer errors (well within its t=11 budget), the
- * parity bit itself was likely corrupted and the frame is accepted with a
- * warning. Above 6 errors, the decoder is near its limit and a parity
- * disagreement more likely indicates miscorrection, so the frame is rejected.
+ * The final parity bit is not part of the BCH(63,16) codeword. Match
+ * sdrtrunk's P25 Phase 1 NID handling by accepting a parity disagreement
+ * after BCH correction succeeds and the decoded DUID is a defined primary
+ * DUID. The caller still receives NID_PARITY_OVERRIDE for diagnostics.
  *
  * @param bch_code    Input: 63 bytes, each containing one bit of the NID.
  * @param new_nac     Output: decoded 12-bit NAC value after error correction.
@@ -82,17 +81,10 @@ class ParityTable {
  * @param parity      Input: the 64th parity bit read from the air interface.
  * @param error_count Output: number of BCH errors corrected (valid when result > 0).
  * @return NidResult code: NID_OK (1), NID_PARITY_OVERRIDE (2),
- *         NID_DECODE_FAIL (0), or NID_PARITY_MISMATCH (-1).
+ *         or NID_DECODE_FAIL (0).
  */
 int
-check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count) {
-
-    // Parity override threshold: at 6 corrected errors the decoder has used
-    // ~55% of its correction budget (6/11). The remaining margin (5 symbols)
-    // provides reasonable confidence that the correction is valid and the
-    // parity bit itself was corrupted. Above 6, a parity disagreement more
-    // likely indicates miscorrection.
-    static const int PARITY_OVERRIDE_THRESHOLD = 6;
+check_NID_with_error_count(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count) {
 
     // Decode using local BCH implementation
     char decoded[16];
@@ -128,6 +120,7 @@ check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, in
     // A DUID not in the valid set indicates a BCH miscorrection artifact.
     unsigned char duid_value = (new_duid_0 << 2) | new_duid_1;
     if (!DUID_VALID[duid_value]) {
+        *error_count = 0;
         return NID_DECODE_FAIL;
     }
 
@@ -137,28 +130,20 @@ check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, in
     unsigned char expected_parity = parity_table.get_value(new_duid_0, new_duid_1);
 
     if (expected_parity == parity) {
-        // BCH decoded, valid DUID, parity matches — full success
+        // BCH decoded, valid DUID, parity matches - full success
         return NID_OK;
     }
 
-    // Parity disagrees. Apply confidence-based override logic:
-    // If the decoder corrected few errors (≤ threshold), the parity bit
-    // itself was likely one of the corrupted bits — accept with warning.
-    // If many errors were corrected (> threshold), the decoder is near its
-    // limit and the disagreement likely indicates miscorrection — reject.
-    if (bch_result.error_count <= PARITY_OVERRIDE_THRESHOLD) {
-        return NID_PARITY_OVERRIDE;
-    } else {
-        return NID_PARITY_MISMATCH;
-    }
+    // Parity disagrees. The final parity bit is outside the BCH-protected
+    // codeword, so accept the corrected NID and expose the condition to the
+    // caller for diagnostics.
+    return NID_PARITY_OVERRIDE;
 }
 
 /**
- * @brief Backward-compatible 4-parameter wrapper for check_NID().
+ * @brief Backward-compatible 4-parameter wrapper for check_NID_with_error_count().
  *
  * Calls the full 5-parameter version with a local dummy error_count variable.
- * This preserves the existing call site in dispatch_p25p1.c until it is
- * updated to use the new interface (Task 3.2).
  *
  * @param bch_code Input: 63 bytes, each containing one bit of the NID.
  * @param new_nac  Output: decoded 12-bit NAC value.
@@ -167,7 +152,7 @@ check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, in
  * @return NidResult code (same semantics as the 5-parameter version).
  */
 int
-check_NID_legacy(char* bch_code, int* new_nac, char* new_duid, unsigned char parity) {
+check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity) {
     int dummy_error_count;
-    return check_NID(bch_code, new_nac, new_duid, parity, &dummy_error_count);
+    return check_NID_with_error_count(bch_code, new_nac, new_duid, parity, &dummy_error_count);
 }

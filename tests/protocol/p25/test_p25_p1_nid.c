@@ -41,17 +41,17 @@ main(void) {
     memset(bch_code, 0, sizeof(bch_code));
     int new_nac = -1;
     char new_duid[3] = {0};
-    int r1 = check_NID_legacy(bch_code, &new_nac, new_duid, /*parity*/ 0);
+    int r1 = check_NID(bch_code, &new_nac, new_duid, /*parity*/ 0);
     rc |= expect_eq_int("decode ok", r1, 1);
     rc |= expect_eq_int("NAC=0", new_nac, 0);
     rc |= expect_eq_str("DUID=00", new_duid, "00");
 
     // Case 2: Same decoded fields but parity bit mismatched with 0 errors.
-    // With the new parity override logic, 0 errors ≤ 6 threshold means the
-    // parity bit itself is assumed corrupted → NID_PARITY_OVERRIDE (2).
+    // The final parity bit is outside the BCH codeword, so successful BCH
+    // decode accepts it as NID_PARITY_OVERRIDE (2).
     new_nac = -1;
     new_duid[0] = new_duid[1] = '\0';
-    int r2 = check_NID_legacy(bch_code, &new_nac, new_duid, /*parity*/ 1);
+    int r2 = check_NID(bch_code, &new_nac, new_duid, /*parity*/ 1);
     rc |= expect_eq_int("parity override (0 errors)", r2, 2);
     rc |= expect_eq_int("NAC still 0", new_nac, 0);
     rc |= expect_eq_str("DUID still 00", new_duid, "00");
@@ -61,7 +61,7 @@ main(void) {
     bch_code[10] = 1; // flip one bit
     new_nac = -1;
     new_duid[0] = new_duid[1] = '\0';
-    int r3 = check_NID_legacy(bch_code, &new_nac, new_duid, /*parity*/ 0);
+    int r3 = check_NID(bch_code, &new_nac, new_duid, /*parity*/ 0);
     rc |= expect_eq_int("1-bit correctable", r3, 1);
     rc |= expect_eq_int("NAC=0 after corr", new_nac, 0);
     rc |= expect_eq_str("DUID=00 after corr", new_duid, "00");
@@ -72,7 +72,7 @@ main(void) {
     }
     new_nac = -1;
     new_duid[0] = new_duid[1] = '\0';
-    int r4 = check_NID_legacy(bch_code, &new_nac, new_duid, /*parity*/ 0);
+    int r4 = check_NID(bch_code, &new_nac, new_duid, /*parity*/ 0);
     rc |= expect_eq_int("decode failure", r4, 0);
 
     return rc;
