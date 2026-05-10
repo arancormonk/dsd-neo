@@ -14,7 +14,8 @@
 
 /**
  * Reads a dibit (two bits) from the stream of data. Takes into account the periodic occurrence of status
- * bits that show up every 36 dibits. Status bits are collected for AFC gating and skipped for payload output.
+ * bits that show up every 36 dibits. Status bits are collected for advisory classification and skipped for
+ * payload output.
  * \param opts A pointer the the DSD options.
  * \param state A pointer the the DSD state structure.
  * \param output A pointer to be filled with the dibit read. Two bytes used for each dibit.

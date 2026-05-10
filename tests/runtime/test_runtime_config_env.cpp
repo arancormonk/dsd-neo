@@ -126,6 +126,7 @@ unset_all_runtime_env(void) {
         "DSD_NEO_MT",
         "DSD_NEO_NO_BOOTSTRAP",
         "DSD_NEO_OUTPUT_CLEAR_ON_RETUNE",
+        "DSD_NEO_P25_AFC_STATUS_GATE",
         "DSD_NEO_P25_CC_GRACE",
         "DSD_NEO_P25_FORCE_RELEASE_EXTRA",
         "DSD_NEO_P25_FORCE_RELEASE_MARGIN",
@@ -517,6 +518,58 @@ test_dmr_t3_heur_apply(void) {
     }
 
     unsetenv("DSD_NEO_DMR_T3_HEUR");
+    return 0;
+}
+
+static int
+test_p25_afc_status_gate_apply(void) {
+    static dsd_opts opts;
+    opts = {};
+    opts.p25_afc_status_gate_enable = 7; /* sentinel */
+
+    unsetenv("DSD_NEO_P25_AFC_STATUS_GATE");
+    dsd_neo_config_init(NULL);
+    dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), &opts, NULL);
+    int rc = expect_int_eq(opts.p25_afc_status_gate_enable, 7, 730, "p25_afc_status_gate unchanged when unset");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_P25_AFC_STATUS_GATE", "1", 1);
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->p25_afc_status_gate_is_set, 1, 731, "p25_afc_status_gate_is_set (1)");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->p25_afc_status_gate_enable, 1, 732, "p25_afc_status_gate_enable (1)");
+    if (rc != 0) {
+        return rc;
+    }
+    dsd_apply_runtime_config_to_opts(cfg, &opts, NULL);
+    rc = expect_int_eq(opts.p25_afc_status_gate_enable, 1, 733, "opts p25_afc_status_gate_enable (1)");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_P25_AFC_STATUS_GATE", "0", 1);
+    dsd_neo_config_init(NULL);
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->p25_afc_status_gate_is_set, 1, 734, "p25_afc_status_gate_is_set (0)");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->p25_afc_status_gate_enable, 0, 735, "p25_afc_status_gate_enable (0)");
+    if (rc != 0) {
+        return rc;
+    }
+    dsd_apply_runtime_config_to_opts(cfg, &opts, NULL);
+    rc = expect_int_eq(opts.p25_afc_status_gate_enable, 0, 736, "opts p25_afc_status_gate_enable (0)");
+    if (rc != 0) {
+        return rc;
+    }
+
+    unsetenv("DSD_NEO_P25_AFC_STATUS_GATE");
     return 0;
 }
 
@@ -2400,6 +2453,10 @@ main(void) {
         return rc;
     }
     rc = test_dmr_t3_tools_env();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_p25_afc_status_gate_apply();
     if (rc != 0) {
         return rc;
     }

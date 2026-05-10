@@ -85,7 +85,7 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
 
     for (j = 0; j < 72; j++) {
         if (*status_count == 35) {
-            // Record the mid-frame status symbol for AFC gating classification
+            // Record the mid-frame status symbol for advisory source classification.
 #ifdef TRACE_DSD
             state->debug_prefix = 's';
 #endif

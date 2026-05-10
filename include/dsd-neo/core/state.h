@@ -725,12 +725,14 @@ struct dsd_state {
     unsigned int p25_p1_voice_err_hist_sum; // sum of values in window
 
     /*
-     * P25 status symbol AFC gating.
+     * P25 status symbol classification.
      *
      * Accumulates 2-bit status symbol values during P25 Phase 1 frame
      * processing and produces a classification (infrastructure vs subscriber)
-     * that gates the auto-PPM frequency correction loop. See
-     * <dsd-neo/protocol/p25/p25_status_symbol.h> for the accumulator API.
+     * for diagnostics and optional auto-PPM gating. Status-derived direction is
+     * advisory by default because some systems do not emit reliable direction
+     * hints. See <dsd-neo/protocol/p25/p25_status_symbol.h> for the accumulator
+     * API.
      */
 
     /** Accumulated status symbol values for the current data unit (2-bit each). */
@@ -741,13 +743,13 @@ struct dsd_state {
     uint8_t p25_ss_frame_active;
     /** Classification of the most recently completed data unit (p25_ss_classification_t). */
     uint8_t p25_ss_classification;
-    /** AFC gate decision: 1 = allow PPM update, 0 = suppress. */
+    /** Advisory AFC gate decision: 1 = allow PPM update, 0 = suppress if opt-in gate is enabled. */
     uint8_t p25_afc_gate_allow;
-    /** A completed data unit has populated p25_afc_gate_allow. */
+    /** A completed data unit has populated the advisory AFC gate decision. */
     uint8_t p25_afc_gate_valid;
-    /** Count of frames where AFC update was allowed (infrastructure). */
+    /** Count of frames classified as AFC-allowable (infrastructure). */
     unsigned int p25_afc_allowed_count;
-    /** Count of frames where AFC update was suppressed (subscriber/unknown). */
+    /** Count of frames classified as AFC-suppressible (subscriber/unknown). */
     unsigned int p25_afc_suppressed_count;
 
     // P25 Phase 2 voice error moving average per slot (errs2 from AMBE decode)

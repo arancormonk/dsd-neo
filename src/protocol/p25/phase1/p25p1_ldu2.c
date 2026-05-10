@@ -473,13 +473,13 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, "lsd1: %s lsd2: %s\n", lsd1, lsd2);
     }
 
-    // Trailing status symbol: feed to accumulator for AFC gating
+    // Trailing status symbol: feed to accumulator for advisory source classification.
     {
         int ss = getDibit(opts, state);
         p25_status_accum_add(state, ss);
     }
 
-    // Classify accumulated status symbols and set AFC gate flag
+    // Classify accumulated status symbols and set advisory AFC gate flag.
     p25_status_accum_classify(state, opts);
 
     // Error correct the hex_data using Reed-Solomon hex_parity

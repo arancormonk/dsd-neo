@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Unit tests for P25 status symbol accumulator and AFC gate logic.
+ * @brief Unit tests for P25 status symbol accumulator and advisory AFC gate logic.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -264,14 +264,14 @@ test_gate_decisions_and_counters(void) {
 }
 
 static int
-test_gate_allow_when_disabled(void) {
-    const char* test = "test_gate_allow_when_disabled";
+test_gate_decision_remains_advisory_when_opt_out(void) {
+    const char* test = "test_gate_decision_remains_advisory_when_opt_out";
     test_ctx ctx = make_ctx(test);
     if (!ctx.state) {
         return 1;
     }
 
-    ctx.opts->p25_afc_gate_disable = 1;
+    ctx.opts->p25_afc_status_gate_enable = 0;
 
     p25_status_accum_reset(ctx.state);
     for (int i = 0; i < 24; i++) {
@@ -279,7 +279,10 @@ test_gate_allow_when_disabled(void) {
     }
     p25_status_accum_classify(ctx.state, ctx.opts);
 
-    int rc = expect_u32(test, "gate_allow", ctx.state->p25_afc_gate_allow, 1);
+    int rc = 0;
+    rc |= expect_u32(test, "gate_allow advisory", ctx.state->p25_afc_gate_allow, 0);
+    rc |= expect_u32(test, "gate_valid", ctx.state->p25_afc_gate_valid, 1);
+    rc |= expect_u32(test, "status gate opt-in default", ctx.opts->p25_afc_status_gate_enable, 0);
 
     free_ctx(&ctx);
     return rc;
@@ -338,7 +341,7 @@ main(void) {
     rc |= test_classify_status_values();
     rc |= test_classify_ignores_10_and_uses_counts();
     rc |= test_gate_decisions_and_counters();
-    rc |= test_gate_allow_when_disabled();
+    rc |= test_gate_decision_remains_advisory_when_opt_out();
     rc |= test_initial_state_is_unknown_zero_counts();
     rc |= test_overflow_ignored_gracefully();
 

@@ -563,7 +563,7 @@ processHDU(dsd_opts* opts, dsd_state* state) {
 
     skipDibit(opts, state, 5);
 
-    // Trailing status symbol: record for AFC gating classification
+    // Trailing status symbol: record for advisory source classification.
     {
         int ss = getDibit(opts, state);
         p25_status_accum_add(state, ss);
@@ -688,7 +688,7 @@ processHDU(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, "%s", KNRM);
     }
 
-    // Classify accumulated status symbols and set AFC gate flag
+    // Classify accumulated status symbols and set advisory AFC gate flag.
     p25_status_accum_classify(state, opts);
 
     //reset gain

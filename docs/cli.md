@@ -353,6 +353,7 @@ Auto‑PPM (RTL‑SDR)
 - `DSD_NEO_AUTO_PPM_ZEROLOCK_PPM=<ppm>` — zero‑step lock guard (default 0.6)
 - `DSD_NEO_AUTO_PPM_ZEROLOCK_HZ=<Hz>` — frequency lock guard (default 60)
 - `DSD_NEO_AUTO_PPM_FREEZE=0/1` — freeze retunes during training (default 1)
+- `DSD_NEO_P25_AFC_STATUS_GATE=1` — opt in to suppress P25 Phase 1 auto-PPM updates when status symbols classify a frame as subscriber-originated or unknown. Default is advisory only because this direction hint is not reliable on every system.
 
 Resampler
 

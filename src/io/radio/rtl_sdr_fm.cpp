@@ -4426,9 +4426,10 @@ auto_ppm_maybe_adjust(dsd_opts* opts, dsd_state* state) {
     inputs.spec_snr_db = spec_snr_db;
     inputs.estimate = dsd::io::radio::rtl_auto_ppm_select_estimate(metrics);
 
-    /* P25 AFC gating: skip the PPM update when the current P25 Phase 1
-     * transmission was classified as subscriber-originated or unknown. */
-    if (state && !opts->p25_afc_gate_disable && DSD_SYNC_IS_P25P1(state->synctype) && state->p25_afc_gate_valid
+    /* P25 status-symbol classification is advisory by default; only enforce it
+     * when explicitly enabled because status-derived direction is unreliable on
+     * some systems. */
+    if (state && opts->p25_afc_status_gate_enable && DSD_SYNC_IS_P25P1(state->synctype) && state->p25_afc_gate_valid
         && !state->p25_afc_gate_allow) {
         return;
     }

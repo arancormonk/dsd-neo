@@ -5,9 +5,10 @@
 
 /**
  * @file
- * @brief P25 Phase 1 status symbol accumulator and AFC gate logic.
+ * @brief P25 Phase 1 status symbol accumulator and advisory AFC gate logic.
  *
- * Implements P25 Phase 1 status symbol classification for AFC gating.
+ * Implements P25 Phase 1 status symbol classification for diagnostics and an
+ * optional AFC gate.
  * Status symbols are 2-bit values transmitted every 36 dibits in P25 Phase 1
  * data units. Their values indicate whether the transmitter is infrastructure
  * (repeater) or a subscriber (portable/mobile).
@@ -19,9 +20,9 @@
  *   - 11: Inbound Channel Idle (repeater only)
  *
  * The accumulator collects status symbol values during frame processing and
- * produces a classification at the end of each data unit. The classification
- * drives the AFC gate: only infrastructure transmissions are allowed to update
- * the auto-PPM frequency correction loop.
+ * produces a classification at the end of each data unit. The classification is
+ * advisory by default. It can drive an opt-in AFC gate, but status-derived
+ * direction is not reliable on every system.
  */
 
 #pragma once
@@ -89,7 +90,7 @@ void p25_status_accum_ensure_started(dsd_state* state);
 void p25_status_accum_add(dsd_state* state, int dibit_value);
 
 /**
- * @brief Classify the accumulated status symbols and set the AFC gate flag.
+ * @brief Classify the accumulated status symbols and set the advisory AFC gate flag.
  *
  * Examines all collected symbols and determines the transmission source:
  *   - 0x01 and 0x03 increment the infrastructure/repeater count
@@ -99,12 +100,10 @@ void p25_status_accum_add(dsd_state* state, int dibit_value);
  *   - subscriber wins when subscriber_count > 0 and repeater_count does not win
  *   - empty or all-0x02 patterns remain UNKNOWN
  *
- * Sets state->p25_ss_classification and state->p25_afc_gate_allow.
- * Increments the appropriate counter (p25_afc_allowed_count or
- * p25_afc_suppressed_count).
- *
- * If opts->p25_afc_gate_disable is set, the gate is forced open regardless
- * of classification (legacy pass-through behavior).
+ * Sets state->p25_ss_classification and state->p25_afc_gate_allow. The gate
+ * result is advisory unless opts->p25_afc_status_gate_enable is set by the
+ * caller path that consumes it. Increments the appropriate classification
+ * counter (p25_afc_allowed_count or p25_afc_suppressed_count).
  *
  * @param state Decoder state containing the accumulator fields and gate output.
  *              If NULL, the function is a no-op.

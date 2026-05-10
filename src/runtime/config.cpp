@@ -90,6 +90,8 @@ config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig
     CONFIG_EQ_FIELD(p25_force_release_margin_s);
     CONFIG_EQ_FIELD(p25p1_err_hold_pct);
     CONFIG_EQ_FIELD(p25p1_err_hold_s);
+    CONFIG_EQ_FIELD(p25_afc_status_gate_is_set);
+    CONFIG_EQ_FIELD(p25_afc_status_gate_enable);
     CONFIG_EQ_FIELD(input_warn_db);
     CONFIG_EQ_FIELD(tuner_autogain_seed_db);
     CONFIG_EQ_FIELD(tuner_autogain_spec_snr_db);
@@ -156,6 +158,8 @@ config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig
     CONFIG_EQ_FIELD(p25p1_soft_erasure_thresh);
     CONFIG_EQ_FIELD(p25p2_soft_erasure_thresh_is_set);
     CONFIG_EQ_FIELD(p25p2_soft_erasure_thresh);
+    CONFIG_EQ_FIELD(p25_afc_status_gate_is_set);
+    CONFIG_EQ_FIELD(p25_afc_status_gate_enable);
     CONFIG_EQ_FIELD(input_volume_is_set);
     CONFIG_EQ_FIELD(input_volume_multiplier);
     CONFIG_EQ_FIELD(input_warn_db_is_set);
@@ -669,6 +673,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     const char* p2e = getenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESH");
     c.p25p2_soft_erasure_thresh_is_set = env_parse_int_range(p2e, 0, 255, &c.p25p2_soft_erasure_thresh);
 
+    const char* p25_afc_status_gate = getenv("DSD_NEO_P25_AFC_STATUS_GATE");
+    c.p25_afc_status_gate_is_set = env_is_set(p25_afc_status_gate);
+    c.p25_afc_status_gate_enable = c.p25_afc_status_gate_is_set ? (env_is_truthy(p25_afc_status_gate) ? 1 : 0) : 0;
+
     /* Input processing knobs */
     const char* iv = getenv("DSD_NEO_INPUT_VOLUME");
     c.input_volume_is_set = env_parse_int_range(iv, 1, 16, &c.input_volume_multiplier);
@@ -1118,6 +1126,9 @@ dsd_apply_runtime_config_to_opts(const dsdneoRuntimeConfig* cfg, dsd_opts* opts,
 
     if (cfg->dmr_t3_heur_is_set) {
         opts->dmr_t3_heuristic_fill = (uint8_t)(cfg->dmr_t3_heur_enable ? 1 : 0);
+    }
+    if (cfg->p25_afc_status_gate_is_set) {
+        opts->p25_afc_status_gate_enable = cfg->p25_afc_status_gate_enable ? 1 : 0;
     }
 }
 

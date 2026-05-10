@@ -75,7 +75,7 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     // state->lastsrc = 0;
     // state->gi[0] = -1;
 
-    // Classify accumulated status symbols and set AFC gate flag
+    // Classify accumulated status symbols and set advisory AFC gate flag.
     p25_status_accum_classify(state, opts);
 
     // SM event: TDU (P1 terminator)

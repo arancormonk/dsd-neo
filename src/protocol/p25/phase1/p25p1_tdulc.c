@@ -508,7 +508,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
         state->aout_gain = opts->audio_gain;
     }
 
-    // Classify accumulated status symbols and set AFC gate flag
+    // Classify accumulated status symbols and set advisory AFC gate flag.
     p25_status_accum_classify(state, opts);
 
     //zero out MI, key, alg

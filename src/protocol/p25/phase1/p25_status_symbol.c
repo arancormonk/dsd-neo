@@ -5,19 +5,17 @@
 
 /**
  * @file
- * @brief P25 Phase 1 status symbol accumulator and AFC gate implementation.
+ * @brief P25 Phase 1 status symbol accumulator and advisory AFC gate implementation.
  *
  * Implements the status symbol accumulator that collects 2-bit status values
  * during P25 Phase 1 frame processing and classifies the transmission source
  * (infrastructure vs subscriber).
  *
- * The classification drives the AFC gate: only infrastructure transmissions are
- * allowed to update the auto-PPM frequency correction loop. Subscriber and
- * unknown patterns are suppressed to prevent poor subscriber oscillator
- * stability from corrupting the frequency estimate.
+ * The classification can drive an opt-in AFC gate, but remains advisory by
+ * default because some systems do not emit reliable status-derived direction
+ * hints.
  */
 
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 
@@ -83,9 +81,9 @@ p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
         /*
          * Match the sdrtrunk channel status semantics: 00 increments the
          * subscriber count, 01/11 increment the repeater count, and 10 is
-         * ignored because it can be sent by either side. For AFC gating, use a
-         * conservative majority so one noisy repeater-only symbol does not open
-         * the gate for a mostly subscriber-originated frame.
+         * ignored because it can be sent by either side. Use a conservative
+         * majority so one noisy repeater-only symbol does not classify a mostly
+         * subscriber-originated frame as infrastructure.
          */
         unsigned int subscriber_count = 0;
         unsigned int repeater_count = 0;
@@ -114,15 +112,9 @@ p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
     state->p25_ss_frame_active = 0;
     state->p25_afc_gate_valid = 1;
 
-    /*
-     * Gate decision: allow AFC update only for infrastructure transmissions,
-     * unless gating is disabled via configuration (legacy pass-through).
-     *
-     * When opts is NULL, treat as gating enabled (default/safe behavior).
-     */
-    int gating_disabled = (opts != NULL) ? opts->p25_afc_gate_disable : 0;
+    (void)opts;
 
-    if (gating_disabled || classification == P25_SS_CLASS_INFRASTRUCTURE) {
+    if (classification == P25_SS_CLASS_INFRASTRUCTURE) {
         state->p25_afc_gate_allow = 1;
         state->p25_afc_allowed_count++;
     } else {

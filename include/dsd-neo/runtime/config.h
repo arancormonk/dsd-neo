@@ -314,6 +314,10 @@ typedef struct dsdneoRuntimeConfig {
     int p25p2_soft_erasure_thresh_is_set;
     int p25p2_soft_erasure_thresh;
 
+    /* P25 status-symbol AFC gate. Off by default because status-derived direction is advisory. */
+    int p25_afc_status_gate_is_set;
+    int p25_afc_status_gate_enable;
+
     /* Input processing knobs */
     int input_volume_is_set;
     int input_volume_multiplier;
