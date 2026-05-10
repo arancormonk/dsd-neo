@@ -342,15 +342,10 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
                 dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
 #endif
             } else {
-                /* Only count header CRC16 failures for non-MBT formats.
-                 * MBT (FMT=0x17) uses payload CRC32 as the authoritative check;
-                 * counting header failures inflates BER on MBT-heavy systems. */
-                if (fmt != 0x17) {
-                    state->p25_p1_fec_err++;
+                state->p25_p1_fec_err++;
 #ifdef USE_RADIO
-                    dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
+                dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
 #endif
-                }
             }
         }
     }
@@ -390,10 +385,9 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         }
 
         //pass the PDU to p25_decode_pdu_trunking
-        // Accept MBT trunking PDU if either header CRC16 passes (err[0] == 0)
-        // OR payload CRC32 passes (err[1] == 0) — CRC32 provides secondary
-        // validation when FEC artifacts cause header CRC16 failure.
-        if ((err[0] == 0 || err[1] == 0) && io == 1 && fmt == 0x17) { //ALT Format
+        // Require both header CRC16 and payload CRC32.  The payload CRC does
+        // not cover header fields such as opcode, SAP, block count, or channel.
+        if (err[0] == 0 && err[1] == 0 && io == 1 && fmt == 0x17) { //ALT Format
             p25_decode_pdu_trunking(opts, state, mpdu_byte);
         }
 
