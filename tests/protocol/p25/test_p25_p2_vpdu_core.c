@@ -8,19 +8,25 @@
  * and unknown-length fallback handling.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
+
+struct RtlSdrContext;
 
 #define setenv dsd_test_setenv
 
-// Minimal forward types for config access
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
 
 // Runtime config
@@ -104,7 +110,50 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 }
 
 static int
+expect_eq_long(const char* tag, long got, long want) {
+    if (got != want) {
+        fprintf(stderr, "%s: got %ld want %ld\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int current_site, long* out_freqs,
+                        int out_cap) {
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof opts);
+    memset(&state, 0, sizeof state);
+
+    const int iden = 1;
+    state.p25_chan_type[iden] = 1;
+    state.p25_chan_tdma_explicit[iden] = 1;
+    state.p25_chan_spac[iden] = 100;
+    state.p25_base_freq[iden] = 851000000 / 5;
+    state.p2_rfssid = current_rfss;
+    state.p2_siteid = current_site;
+
+    unsigned long long int MAC[24] = {0};
+    for (int i = 0; i < 24; i++) {
+        MAC[i] = mac_bytes[i];
+    }
+
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&state);
+    int count = (cc != NULL) ? cc->count : 0;
+    for (int i = 0; i < count && i < out_cap; i++) {
+        out_freqs[i] = cc->candidates[i];
+    }
+    dsd_state_ext_free_all(&state);
+    return count;
+}
+
+static int
 run_cases(void) {
+    int rc = 0;
+
     // Case 1: SACCH, PTT opcode (0x01) with basic header → JSON emits summary "PTT"
     {
         unsigned char mac[24];
@@ -143,7 +192,85 @@ run_cases(void) {
         p25_test_process_mac_vpdu_ex(0 /*FACCH*/, mac, 24, /*is_lcch*/ 1, /*slot*/ 1);
     }
 
-    return 0;
+    // Case 5: native Phase 2 SCCB explicit (0xE9) exposes one downlink channel.
+    {
+        unsigned char mac[24];
+        long freqs[4] = {0};
+        memset(mac, 0, sizeof mac);
+        mac[1] = 0xE9;
+        mac[2] = 0x02; // RFSS
+        mac[3] = 0x03; // SITE
+        mac[4] = 0x10; // CHAN-T 0x100A
+        mac[5] = 0x0A;
+        mac[6] = 0x10; // CHAN-R 0x1005 (uplink)
+        mac[7] = 0x05;
+        mac[8] = 0x01; // service class
+
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4);
+        rc |= expect_eq_long("p2_sccb_explicit_count", count, 1);
+        rc |= expect_eq_long("p2_sccb_explicit_downlink", freqs[0], 851000000 + 10 * 100 * 125);
+    }
+
+    // Case 6: native Phase 2 SCCB implicit (0x79) exposes both channel slots when B is valid.
+    {
+        unsigned char mac[24];
+        long freqs[4] = {0};
+        memset(mac, 0, sizeof mac);
+        mac[1] = 0x79;
+        mac[2] = 0x02; // RFSS
+        mac[3] = 0x03; // SITE
+        mac[4] = 0x10; // CHAN1 0x100A
+        mac[5] = 0x0A;
+        mac[6] = 0x01; // service class 1
+        mac[7] = 0x10; // CHAN2 0x1005
+        mac[8] = 0x05;
+        mac[9] = 0x01; // service class 2 marks channel B present
+
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4);
+        rc |= expect_eq_long("p2_sccb_implicit_count", count, 2);
+        rc |= expect_eq_long("p2_sccb_implicit_ch1", freqs[0], 851000000 + 10 * 100 * 125);
+        rc |= expect_eq_long("p2_sccb_implicit_ch2", freqs[1], 851000000 + 5 * 100 * 125);
+    }
+
+    // Case 7: P1-bridged SCCB explicit (0x69) also exposes one downlink channel.
+    {
+        unsigned char mac[24];
+        long freqs[4] = {0};
+        memset(mac, 0, sizeof mac);
+        mac[0] = 0x07; // P1 TSBK bridge marker used by this decoder path
+        mac[1] = 0x69;
+        mac[2] = 0x02; // RFSS
+        mac[3] = 0x03; // SITE
+        mac[4] = 0x10; // CHAN-T 0x100A
+        mac[5] = 0x0A;
+        mac[6] = 0x10; // CHAN-R 0x1005 (uplink)
+        mac[7] = 0x05;
+        mac[8] = 0x01; // service class
+
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4);
+        rc |= expect_eq_long("p1_bridge_sccb_explicit_count", count, 1);
+        rc |= expect_eq_long("p1_bridge_sccb_explicit_downlink", freqs[0], 851000000 + 10 * 100 * 125);
+    }
+
+    // Case 8: SCCB candidates are site-scoped when current RFSS/SITE are known.
+    {
+        unsigned char mac[24];
+        long freqs[4] = {0};
+        memset(mac, 0, sizeof mac);
+        mac[1] = 0xE9;
+        mac[2] = 0x02;
+        mac[3] = 0x03;
+        mac[4] = 0x10;
+        mac[5] = 0x0A;
+        mac[6] = 0x10;
+        mac[7] = 0x05;
+        mac[8] = 0x01;
+
+        int count = run_sccb_candidate_case(mac, 0x63, 0x63, freqs, 4);
+        rc |= expect_eq_long("p2_sccb_explicit_foreign_site_count", count, 0);
+    }
+
+    return rc;
 }
 
 int

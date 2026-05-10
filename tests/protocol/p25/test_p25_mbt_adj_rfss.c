@@ -193,6 +193,8 @@ main(void) {
     const int spac125 = 100;          // 100*125 = 12.5 kHz
 
     // Case A: RFSS Status Broadcast (0x3A)
+    // CHAN-R is the uplink side of the explicit channel and must not become
+    // a separate downlink CC candidate.
     {
         uint8_t mbt[48];
         memset(mbt, 0, sizeof(mbt));
@@ -225,14 +227,16 @@ main(void) {
 
         long want1 = 851000000 + 1 * 100 * 125; // 851.0125 MHz
         long want2 = 851000000 + 2 * 100 * 125; // 851.0250 MHz
-        rc |= expect_eq_long("neigh count", g_neigh_count, 2);
+        rc |= expect_eq_long("neigh count", g_neigh_count, 1);
         rc |= expect_eq_long("neigh f1", g_neigh[0], want1);
-        rc |= expect_eq_long("neigh f2", g_neigh[1], want2);
+        (void)want2;
     }
 
     // Case B: Adjacent Status Broadcast (0x3C)
     // After Layer 2 enrichment, 0x3C calls p25_nb_add_ex() + p25_cc_add_candidate()
     // directly instead of p25_sm_on_neighbor_update(). Verify via neighbor table.
+    // CHAN-R is the uplink side of the explicit channel and must not become
+    // a separate downlink CC candidate.
     {
         uint8_t mbt[48];
         memset(mbt, 0, sizeof(mbt));
@@ -268,9 +272,9 @@ main(void) {
 
         long want1 = 851000000 + 10 * 100 * 125; // 851.1250 MHz
         long want2 = 851000000 + 5 * 100 * 125;  // 851.0625 MHz
-        rc |= expect_eq_long("adj nb_count", (long)nb_count, 2L);
+        rc |= expect_eq_long("adj nb_count", (long)nb_count, 1L);
         rc |= expect_eq_long("adj nb f1", nb_freqs[0], want1);
-        rc |= expect_eq_long("adj nb f2", nb_freqs[1], want2);
+        (void)want2;
     }
 
     // Case C: AMBTC opcode 0x3E is Protection Parameter Broadcast in sdrtrunk,

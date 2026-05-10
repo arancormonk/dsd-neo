@@ -288,5 +288,29 @@ main(void) {
         rc |= expect_true("EdgeCase_src0_lastsrc0_stays_zero: no non-zero value destroyed", st.lastsrc == 0);
     }
 
+    /*
+     * Source ID Extension (0x49)
+     * sdrtrunk parses this as WACN[16..35], SYSTEM[36..47], RADIO[48..71].
+     * The radio ID must not be read starting at bit 40.
+     */
+    {
+        memset(&opts, 0, sizeof opts);
+        memset(&st, 0, sizeof st);
+        st.lastsrc = 111;
+
+        uint8_t lcw[96];
+        memset(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x49);
+        set_bits_msb(lcw, 8, 8, 0x00);
+        set_bits_msb(lcw, 16, 20, 0xABCDE);
+        set_bits_msb(lcw, 36, 12, 0x123);
+        set_bits_msb(lcw, 48, 24, 0x456789);
+
+        p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
+
+        rc |= expect_true("SrcIdExtension_WACN_20bit", st.p25_src_nid == 0xABCDE);
+        rc |= expect_true("SrcIdExtension_radio_24bit_at_bit48", st.lastsrc == 0x456789);
+    }
+
     return rc;
 }

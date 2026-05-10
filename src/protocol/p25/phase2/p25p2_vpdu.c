@@ -54,6 +54,36 @@ p25_cfva_is_healthy(int cfva) {
     return !(cfva & 0x4) && (cfva & 0x2);
 }
 
+static void
+p25p2_add_secondary_cc_candidates(dsd_opts* opts, dsd_state* state, int rfssid, int siteid, const long* freqs,
+                                  int count) {
+    if (!state || !freqs || count <= 0) {
+        return;
+    }
+    int site_known = (state->p2_rfssid != 0 || state->p2_siteid != 0);
+    int site_match = (rfssid == (int)state->p2_rfssid && siteid == (int)state->p2_siteid);
+    if (site_known && !site_match) {
+        return;
+    }
+
+    long notify[2] = {0, 0};
+    int notify_count = 0;
+    for (int i = 0; i < count && i < 2; i++) {
+        long f = freqs[i];
+        if (f <= 0) {
+            continue;
+        }
+        if (notify_count > 0 && notify[0] == f) {
+            continue;
+        }
+        notify[notify_count++] = f;
+        p25_cc_add_candidate(state, f, 1);
+    }
+    if (notify_count > 0) {
+        p25_sm_on_neighbor_update(opts, state, notify, notify_count);
+    }
+}
+
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void
 p25p2_emit_mac_json_if_enabled(dsd_state* state, int xch_type, uint8_t mfid, uint8_t opcode, int slot, int len_b,
@@ -1850,8 +1880,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "  RFSS [%03d] SITE ID [%03d] CHAN-T [%04X] CHAN-R [%04X] SSC [%02X]", rfssid, siteid,
                     channelt, channelr, sysclass);
 
-            process_channel_to_freq(opts, state, channelt);
-            process_channel_to_freq(opts, state, channelr);
+            long int sccf = process_channel_to_freq(opts, state, channelt);
+            (void)process_channel_to_freq(opts, state, channelr);
+            long scc_freqs[1] = {sccf};
+            p25p2_add_secondary_cc_candidates(opts, state, rfssid, siteid, scc_freqs, 1);
 
             state->p2_siteid = siteid;
             state->p2_rfssid = rfssid;
@@ -1874,6 +1906,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             freq1 = process_channel_to_freq(opts, state, channel1);
             freq2 = process_channel_to_freq(opts, state, channel2);
+            long scc_freqs[2] = {freq1, freq2};
+            p25p2_add_secondary_cc_candidates(opts, state, rfssid, siteid, scc_freqs,
+                                              (channel2 != channel1 && sysclass2 != 0) ? 2 : 1);
 
             //place the cc freq into the list at index 0 if 0 is empty so we can hunt for rotating CCs without user LCN list
             if (state->trunk_lcn_freq[1] == 0) {
@@ -2598,11 +2633,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "  LRA [%02X] WACN [%05X] SYSID [%03X] NAC [%03X] CHAN-T [%04X] CHAN-R [%04X]", lra, lwacn,
                     lsysid, lcolorcode, channelt, channelr);
             long int nf1 = process_channel_to_freq(opts, state, channelt);
-            long int nf2 = process_channel_to_freq(opts, state, channelr);
+            (void)process_channel_to_freq(opts, state, channelr);
             if (nf1 > 0) {
                 state->p25_cc_freq = nf1;
-                long neigh_b[2] = {nf1, nf2};
-                p25_sm_on_neighbor_update(opts, state, neigh_b, 2);
+                long neigh_b[1] = {nf1};
+                p25_sm_on_neighbor_update(opts, state, neigh_b, 1);
                 state->p25_sys_is_tdma = 1;   // system carries Phase 2 voice (TDMA present)
                 state->p25_cc_is_tdma = 1;    // TDMA control channel (QPSK, 6000 sym/s)
                 if (state->p2_hardset == 0) { // prevent bogus data from wiping tables
@@ -2651,9 +2686,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 fprintf(stderr, " Valid RFSS Connection Active");
             }
             long int af1 = process_channel_to_freq(opts, state, channelt);
-            if (p25_cfva_is_healthy(cfva)) {
-                if (af1 > 0) {
-                    p25_nb_add_ex(state, af1, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
+            if (af1 > 0) {
+                p25_nb_add_ex(state, af1, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
+                if (p25_cfva_is_healthy(cfva)) {
                     p25_cc_add_candidate(state, af1, 1);
                 }
             }
@@ -2688,15 +2723,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 fprintf(stderr, " Valid RFSS Connection Active");
             }
             long int af2 = process_channel_to_freq(opts, state, channelt);
-            long int af3 = process_channel_to_freq(opts, state, channelr);
-            if (p25_cfva_is_healthy(cfva)) {
-                long neigh_d[2] = {af2, af3};
-                for (int i = 0; i < 2; i++) {
-                    if (neigh_d[i] > 0) {
-                        p25_nb_add_ex(state, neigh_d[i], (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid,
-                                      (uint8_t)cfva);
-                        p25_cc_add_candidate(state, neigh_d[i], 1);
-                    }
+            (void)process_channel_to_freq(opts, state, channelr);
+            if (af2 > 0) {
+                p25_nb_add_ex(state, af2, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
+                if (p25_cfva_is_healthy(cfva)) {
+                    p25_cc_add_candidate(state, af2, 1);
                 }
             }
         }
@@ -2731,15 +2762,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 fprintf(stderr, " Valid RFSS Connection Active");
             }
             long int af4 = process_channel_to_freq(opts, state, channelt);
-            long int af5 = process_channel_to_freq(opts, state, channelr);
-            if (p25_cfva_is_healthy(cfva)) {
-                long neigh_e[2] = {af4, af5};
-                for (int i = 0; i < 2; i++) {
-                    if (neigh_e[i] > 0) {
-                        p25_nb_add_ex(state, neigh_e[i], (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid,
-                                      (uint8_t)cfva);
-                        p25_cc_add_candidate(state, neigh_e[i], 1);
-                    }
+            (void)process_channel_to_freq(opts, state, channelr);
+            if (af4 > 0) {
+                p25_nb_add_ex(state, af4, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
+                if (p25_cfva_is_healthy(cfva)) {
+                    p25_cc_add_candidate(state, af4, 1);
                 }
             }
         }
@@ -2778,7 +2805,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "  RFSS [%03d] SITE ID [%03d] CHAN-T [%04X] CHAN-R [%04X] SSC [%02X]", rfssid, siteid,
                     channelt, channelr, sysclass);
             long int sccf = process_channel_to_freq(opts, state, channelt);
-            long int sccfr = process_channel_to_freq(opts, state, channelr);
+            (void)process_channel_to_freq(opts, state, channelr);
             // Add to CC candidate list for hunting
             if (sccf > 0 && state->trunk_lcn_freq[1] == 0) {
                 state->trunk_lcn_freq[1] = sccf;
@@ -2787,25 +2814,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->trunk_lcn_freq[2] = sccf;
                 state->lcn_freq_count = 3;
             }
-            // Site-scope filtering: only add CC candidates if current site is
-            // unknown (both zero) or the message matches the current site.
-            {
-                int site_known = (state->p2_rfssid != 0 || state->p2_siteid != 0);
-                int site_match = (rfssid == (int)state->p2_rfssid && siteid == (int)state->p2_siteid);
-                if (!site_known || site_match) {
-                    if (sccf > 0) {
-                        p25_cc_add_candidate(state, sccf, 1);
-                    }
-                    if (sccfr > 0) {
-                        p25_cc_add_candidate(state, sccfr, 1);
-                    }
-                    // Notify state machine of neighbor CC
-                    if (sccf > 0) {
-                        long neigh_scc[2] = {sccf, sccfr};
-                        p25_sm_on_neighbor_update(opts, state, neigh_scc, (sccfr > 0) ? 2 : 1);
-                    }
-                }
-            }
+            long scc_freqs[1] = {sccf};
+            p25p2_add_secondary_cc_candidates(opts, state, rfssid, siteid, scc_freqs, 1);
             state->p2_siteid = siteid;
             state->p2_rfssid = rfssid;
         }

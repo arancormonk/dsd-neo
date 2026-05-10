@@ -147,8 +147,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
                 }
             }
 
-            long neigh[2] = {ct_freq, cr_freq};
-            p25_sm_on_neighbor_update(opts, state, neigh, 2);
+            long neigh[1] = {ct_freq};
+            p25_sm_on_neighbor_update(opts, state, neigh, 1);
             // Confirm any IDENs now that CC identity is known
             p25_confirm_idens_for_current_site(state);
         } else {
@@ -170,10 +170,10 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
                 "  LRA [%02X] SYSID [%03X] RFSS ID [%03d] SITE ID [%03d]\n  CHAN-T [%04X] CHAN-R [%02X] SSC [%02X] ",
                 lra, lsysid, rfssid, siteid, channelt, channelr, sysclass);
         long int f1 = process_channel_to_freq(opts, state, channelt);
-        long int f2 = process_channel_to_freq(opts, state, channelr);
+        (void)process_channel_to_freq(opts, state, channelr);
 
-        long neigh2[2] = {f1, f2};
-        p25_sm_on_neighbor_update(opts, state, neigh2, 2);
+        long neigh2[1] = {f1};
+        p25_sm_on_neighbor_update(opts, state, neigh2, 1);
 
         // Guard: only update local site identity when SYSID matches.
         // See 0x3E handler comment for full rationale.
@@ -218,14 +218,11 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             fprintf(stderr, " Valid RFSS Connection Active");
         }
         long int f3 = process_channel_to_freq(opts, state, channelt);
-        long int f4 = process_channel_to_freq(opts, state, channelr);
-        if (p25_cfva_is_healthy(cfva)) {
-            long neigh3[2] = {f3, f4};
-            for (int i = 0; i < 2; i++) {
-                if (neigh3[i] > 0) {
-                    p25_nb_add_ex(state, neigh3[i], (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
-                    p25_cc_add_candidate(state, neigh3[i], 1);
-                }
+        (void)process_channel_to_freq(opts, state, channelr);
+        if (f3 > 0) {
+            p25_nb_add_ex(state, f3, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
+            if (p25_cfva_is_healthy(cfva)) {
+                p25_cc_add_candidate(state, f3, 1);
             }
         }
 

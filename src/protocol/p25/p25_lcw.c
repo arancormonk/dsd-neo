@@ -274,11 +274,13 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
 
             else if (lc_format == 0x49) {
                 fprintf(stderr, " Source ID Extension -");
-                uint32_t nid = (uint32_t)ConvertBitIntoBytes(&LCW_bits[16], 24);
-                uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 24);
-                fprintf(stderr, " Full SUID: NID %06X SRC %d", nid, src);
-                /* Store Network ID for downstream consumers. */
-                state->p25_src_nid = nid;
+                uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&LCW_bits[16], 20);
+                uint16_t sysid = (uint16_t)ConvertBitIntoBytes(&LCW_bits[36], 12);
+                uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
+                fprintf(stderr, " Full SUID: WACN %05X SYSID %03X SRC %d", wacn, sysid, src);
+                if (wacn != 0) {
+                    state->p25_src_nid = wacn;
+                }
                 if (src != 0) {
                     state->lastsrc = (int)src;
                 }

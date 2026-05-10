@@ -769,8 +769,8 @@ struct dsd_state {
     int p25_nb_count;                          // number of active neighbor entries
     p25_nb_entry_t p25_nb_entries[P25_NB_MAX]; // neighbor entries with metadata
 
-    // P25 Source Unit Network ID from LCW 0x49 (Source ID Extension)
-    uint32_t p25_src_nid; // 20-bit Network ID from SUID extension
+    // P25 source unit WACN from LCW 0x49 (Source ID Extension)
+    uint32_t p25_src_nid; // 20-bit WACN from SUID extension
 
     // P25 current-call flags (per logical slot; FDMA uses slot 0)
     uint8_t p25_call_emergency[2]; // 1 if current call is emergency
