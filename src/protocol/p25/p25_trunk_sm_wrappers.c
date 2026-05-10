@@ -172,10 +172,7 @@ p25_sm_on_queued_response_default(dsd_opts* opts, dsd_state* state, int svc_type
         return;
     }
     state->p25_sm_queued_count++;
-    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    if (ctx && ctx->state == P25_SM_TUNED) {
-        p25_sm_release(ctx, opts, state, "queued-rsp");
-    }
+    p25_sm_release(p25_sm_get_ctx(), opts, state, "queued-rsp");
 }
 
 void
@@ -197,10 +194,7 @@ p25_sm_on_deny_response_default(dsd_opts* opts, dsd_state* state, int svc_type, 
         return;
     }
     state->p25_sm_deny_count++;
-    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    if (ctx && ctx->state == P25_SM_TUNED) {
-        p25_sm_release(ctx, opts, state, "deny-rsp");
-    }
+    p25_sm_release(p25_sm_get_ctx(), opts, state, "deny-rsp");
 }
 
 void

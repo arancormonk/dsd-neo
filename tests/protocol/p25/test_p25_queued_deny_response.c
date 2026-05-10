@@ -155,12 +155,12 @@ reset_tracking(void) {
  * ============================================================================ */
 
 static void
-build_que_deny_mac(unsigned long long MAC[24], int is_deny, int svc_type, int reason_code, int addl_info,
-                   int target_addr) {
+build_que_deny_mac_aii(unsigned long long MAC[24], int is_deny, int svc_type, int reason_code, int addl_info,
+                       int target_addr, int has_addl_info) {
     memset(MAC, 0, 24 * sizeof(unsigned long long));
-    MAC[0] = 0x07;                                        // TSBK marker (len_b = 10)
-    MAC[1] = (unsigned long long)(is_deny ? 0x67 : 0x61); // opcode
-    MAC[2] = (unsigned long long)(svc_type & 0x3F);       // AIV=0, Service_Type
+    MAC[0] = 0x07;                                                                 // TSBK marker
+    MAC[1] = (unsigned long long)(is_deny ? 0x67 : 0x61);                          // opcode
+    MAC[2] = (unsigned long long)((svc_type & 0x3F) | (has_addl_info ? 0x80 : 0)); // AII, Service_Type
     MAC[3] = (unsigned long long)(reason_code & 0xFF);
     MAC[4] = (unsigned long long)((addl_info >> 16) & 0xFF);
     MAC[5] = (unsigned long long)((addl_info >> 8) & 0xFF);
@@ -168,6 +168,12 @@ build_que_deny_mac(unsigned long long MAC[24], int is_deny, int svc_type, int re
     MAC[7] = (unsigned long long)((target_addr >> 16) & 0xFF);
     MAC[8] = (unsigned long long)((target_addr >> 8) & 0xFF);
     MAC[9] = (unsigned long long)(target_addr & 0xFF);
+}
+
+static void
+build_que_deny_mac(unsigned long long MAC[24], int is_deny, int svc_type, int reason_code, int addl_info,
+                   int target_addr) {
+    build_que_deny_mac_aii(MAC, is_deny, svc_type, reason_code, addl_info, target_addr, addl_info != 0);
 }
 
 /* ============================================================================
@@ -257,7 +263,7 @@ test_deny_rsp_field_extraction_known_payload(void) {
 }
 
 /* ============================================================================
- * Test: Queued reason code lookup — all known codes
+ * Test: Queued reason code lookup -- known codes and ranges
  * ============================================================================ */
 
 static int
@@ -266,19 +272,24 @@ test_que_reason_code_lookup_all_known(void) {
     static dsd_state st;
     int rc = 0;
 
-    /* Test each known queued reason code by checking active_channel output */
     struct {
         int code;
         const char* expected_substr;
     } cases[] = {
-        {0x10, "Requester Active"},  {0x20, "Target Active"},        {0x2F, "Target Queued"},
-        {0x30, "Group Active"},      {0x40, "No Channel Resources"}, {0x41, "No Telephone Resources"},
-        {0x42, "No Data Resources"},
+        {0x10, "Requesting Unit Busy Other Service"},
+        {0x20, "Target Unit Busy Other Service"},
+        {0x2F, "Target Unit Queued This Call"},
+        {0x30, "Target Group Currently Active"},
+        {0x40, "Channel Resources Unavailable"},
+        {0x41, "Telephone Resources Unavailable"},
+        {0x42, "Data Resources Unavailable"},
+        {0x50, "Superseding Service Currently Active"},
+        {0x00, "Reserved"},
+        {0x7F, "Reserved"},
+        {0x80, "User/System Defined"},
+        {0xAB, "User/System Defined"},
     };
 
-    /* We verify reason codes by checking stderr output. Since we can't easily
-     * capture stderr in this test framework, we verify the SM callback receives
-     * the correct reason code value and that active_channel is set. */
     for (int i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
         memset(&opts, 0, sizeof opts);
         memset(&st, 0, sizeof st);
@@ -294,10 +305,14 @@ test_que_reason_code_lookup_all_known(void) {
                     g_last_reason_code);
             rc = 1;
         }
-        /* Verify active_channel contains "QUE" */
         if (strstr(st.active_channel[0], "QUE") == NULL) {
             fprintf(stderr, "FAIL: test_que_reason_code[0x%02X]: active_channel missing 'QUE': '%s'\n", cases[i].code,
                     st.active_channel[0]);
+            rc = 1;
+        }
+        if (strstr(st.active_channel[0], cases[i].expected_substr) == NULL) {
+            fprintf(stderr, "FAIL: test_que_reason_code[0x%02X]: active_channel missing '%s': '%s'\n", cases[i].code,
+                    cases[i].expected_substr, st.active_channel[0]);
             rc = 1;
         }
         p25_sm_reset_api();
@@ -307,7 +322,7 @@ test_que_reason_code_lookup_all_known(void) {
 }
 
 /* ============================================================================
- * Test: Deny reason code lookup — all known codes
+ * Test: Deny reason code lookup -- known codes and ranges
  * ============================================================================ */
 
 static int
@@ -320,8 +335,33 @@ test_deny_reason_code_lookup_all_known(void) {
         int code;
         const char* expected_substr;
     } cases[] = {
-        {0x10, "Requester Invalid"}, {0x20, "Target Invalid"},     {0x2F, "Target Refused"},
-        {0x30, "Group Invalid"},     {0x60, "Site Access Denied"}, {0xFF, "Service Not Supported"},
+        {0x10, "Requesting Unit Not Valid"},
+        {0x11, "Requesting Unit Not Authorized"},
+        {0x20, "Target Unit Not Valid"},
+        {0x21, "Target Unit Not Authorized"},
+        {0x2F, "Target Unit Refused Call"},
+        {0x30, "Target Group Not Valid"},
+        {0x31, "Target Group Not Authorized"},
+        {0x40, "Invalid Dialing"},
+        {0x41, "Telephone Number Not Authorized"},
+        {0x42, "PSTN Not Valid"},
+        {0x50, "Call Timeout"},
+        {0x51, "Landline Terminated Call"},
+        {0x52, "Subscriber Unit Terminated Call"},
+        {0x5F, "Call Preempted"},
+        {0x60, "Site Access Denial"},
+        {0x67, "PTT Collide"},
+        {0x77, "PTT Bonk"},
+        {0xF0, "Call Options Not Valid For Service"},
+        {0xF1, "Protection Service Option Not Valid"},
+        {0xF2, "Duplex Service Option Not Valid"},
+        {0xF3, "Circuit/Packet Mode Option Not Valid"},
+        {0xFF, "System Does Not Support Service"},
+        {0x00, "Reserved"},
+        {0x5E, "Reserved"},
+        {0x61, "User/System Defined"},
+        {0x99, "User/System Defined"},
+        {0xFE, "User/System Defined"},
     };
 
     for (int i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
@@ -339,10 +379,14 @@ test_deny_reason_code_lookup_all_known(void) {
                     g_last_reason_code);
             rc = 1;
         }
-        /* Verify active_channel contains "DENY" */
         if (strstr(st.active_channel[0], "DENY") == NULL) {
             fprintf(stderr, "FAIL: test_deny_reason_code[0x%02X]: active_channel missing 'DENY': '%s'\n", cases[i].code,
                     st.active_channel[0]);
+            rc = 1;
+        }
+        if (strstr(st.active_channel[0], cases[i].expected_substr) == NULL) {
+            fprintf(stderr, "FAIL: test_deny_reason_code[0x%02X]: active_channel missing '%s': '%s'\n", cases[i].code,
+                    cases[i].expected_substr, st.active_channel[0]);
             rc = 1;
         }
         p25_sm_reset_api();
@@ -352,11 +396,11 @@ test_deny_reason_code_lookup_all_known(void) {
 }
 
 /* ============================================================================
- * Test: Unrecognized queued reason code produces hex in active_channel
+ * Test: Queued user/system reason range is labeled
  * ============================================================================ */
 
 static int
-test_que_rsp_unrecognized_reason_hex(void) {
+test_que_rsp_user_reason_range(void) {
     static dsd_opts opts;
     static dsd_state st;
     memset(&opts, 0, sizeof opts);
@@ -365,18 +409,21 @@ test_que_rsp_unrecognized_reason_hex(void) {
     p25_sm_set_api(sm_test_api());
 
     unsigned long long MAC[24];
-    // Use reason code 0xAB which is not in the queued lookup table
     build_que_deny_mac(MAC, 0, 0x01, 0xAB, 0, 999);
     process_MAC_VPDU(&opts, &st, 0, MAC);
 
     int rc = 0;
     if (g_last_reason_code != 0xAB) {
-        fprintf(stderr, "FAIL: test_que_rsp_unrecognized_reason: expected 0xAB, got 0x%02X\n", g_last_reason_code);
+        fprintf(stderr, "FAIL: test_que_rsp_user_reason_range: expected 0xAB, got 0x%02X\n", g_last_reason_code);
         rc = 1;
     }
-    /* The handler should still set active_channel with QUE */
     if (strstr(st.active_channel[0], "QUE") == NULL) {
-        fprintf(stderr, "FAIL: test_que_rsp_unrecognized_reason: active_channel missing 'QUE': '%s'\n",
+        fprintf(stderr, "FAIL: test_que_rsp_user_reason_range: active_channel missing 'QUE': '%s'\n",
+                st.active_channel[0]);
+        rc = 1;
+    }
+    if (strstr(st.active_channel[0], "User/System Defined") == NULL) {
+        fprintf(stderr, "FAIL: test_que_rsp_user_reason_range: active_channel missing user/system label: '%s'\n",
                 st.active_channel[0]);
         rc = 1;
     }
@@ -386,11 +433,11 @@ test_que_rsp_unrecognized_reason_hex(void) {
 }
 
 /* ============================================================================
- * Test: Unrecognized deny reason code produces hex in active_channel
+ * Test: Deny user/system reason range is labeled
  * ============================================================================ */
 
 static int
-test_deny_rsp_unrecognized_reason_hex(void) {
+test_deny_rsp_user_reason_range(void) {
     static dsd_opts opts;
     static dsd_state st;
     memset(&opts, 0, sizeof opts);
@@ -399,17 +446,21 @@ test_deny_rsp_unrecognized_reason_hex(void) {
     p25_sm_set_api(sm_test_api());
 
     unsigned long long MAC[24];
-    // Use reason code 0x99 which is not in the deny lookup table
     build_que_deny_mac(MAC, 1, 0x02, 0x99, 0, 888);
     process_MAC_VPDU(&opts, &st, 0, MAC);
 
     int rc = 0;
     if (g_last_reason_code != 0x99) {
-        fprintf(stderr, "FAIL: test_deny_rsp_unrecognized_reason: expected 0x99, got 0x%02X\n", g_last_reason_code);
+        fprintf(stderr, "FAIL: test_deny_rsp_user_reason_range: expected 0x99, got 0x%02X\n", g_last_reason_code);
         rc = 1;
     }
     if (strstr(st.active_channel[0], "DENY") == NULL) {
-        fprintf(stderr, "FAIL: test_deny_rsp_unrecognized_reason: active_channel missing 'DENY': '%s'\n",
+        fprintf(stderr, "FAIL: test_deny_rsp_user_reason_range: active_channel missing 'DENY': '%s'\n",
+                st.active_channel[0]);
+        rc = 1;
+    }
+    if (strstr(st.active_channel[0], "User/System Defined") == NULL) {
+        fprintf(stderr, "FAIL: test_deny_rsp_user_reason_range: active_channel missing user/system label: '%s'\n",
                 st.active_channel[0]);
         rc = 1;
     }
@@ -678,6 +729,43 @@ test_active_channel_deny_format(void) {
 }
 
 /* ============================================================================
+ * Test: Additional information is displayed only when AII is set
+ * ============================================================================ */
+
+static int
+test_additional_info_indicator_controls_display(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    reset_tracking();
+    p25_sm_set_api(sm_test_api());
+
+    unsigned long long MAC[24];
+    memset(&opts, 0, sizeof opts);
+    memset(&st, 0, sizeof st);
+    build_que_deny_mac_aii(MAC, 0, 0x01, 0x40, 0x123456, 777, 0);
+    process_MAC_VPDU(&opts, &st, 0, MAC);
+    if (strstr(st.active_channel[0], "Info:") != NULL) {
+        fprintf(stderr, "FAIL: test_additional_info_indicator: displayed info without AII: '%s'\n",
+                st.active_channel[0]);
+        rc = 1;
+    }
+
+    memset(&opts, 0, sizeof opts);
+    memset(&st, 0, sizeof st);
+    build_que_deny_mac_aii(MAC, 0, 0x01, 0x40, 0x123456, 777, 1);
+    process_MAC_VPDU(&opts, &st, 0, MAC);
+    if (strstr(st.active_channel[0], "Info: 123456") == NULL) {
+        fprintf(stderr, "FAIL: test_additional_info_indicator: missing AII info: '%s'\n", st.active_channel[0]);
+        rc = 1;
+    }
+
+    p25_sm_reset_api();
+    return rc;
+}
+
+/* ============================================================================
  * main
  * ============================================================================ */
 
@@ -689,8 +777,8 @@ main(void) {
     rc |= test_deny_rsp_field_extraction_known_payload();
     rc |= test_que_reason_code_lookup_all_known();
     rc |= test_deny_reason_code_lookup_all_known();
-    rc |= test_que_rsp_unrecognized_reason_hex();
-    rc |= test_deny_rsp_unrecognized_reason_hex();
+    rc |= test_que_rsp_user_reason_range();
+    rc |= test_deny_rsp_user_reason_range();
     rc |= test_sm_queued_releases_when_tuned();
     rc |= test_sm_deny_releases_when_tuned();
     rc |= test_sm_queued_noop_when_on_cc();
@@ -699,6 +787,7 @@ main(void) {
     rc |= test_sm_deny_counter_increments();
     rc |= test_active_channel_que_format();
     rc |= test_active_channel_deny_format();
+    rc |= test_additional_info_indicator_controls_display();
 
     if (rc == 0) {
         fprintf(stderr, "All P25 queued/deny response tests passed.\n");

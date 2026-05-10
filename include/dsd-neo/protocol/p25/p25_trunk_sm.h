@@ -380,7 +380,8 @@ void p25_sm_on_release(dsd_opts* opts, dsd_state* state);
 /**
  * @brief Notify the SM that a Queued Response (QUE_RSP) was received.
  *
- * If the SM is in TUNED state, triggers release with reason "queued-rsp".
+ * Requests a release with reason "queued-rsp"; the release path is idempotent
+ * unless the SM or legacy tune flags indicate a voice-channel tune is active.
  * Always increments the queued response telemetry counter.
  *
  * @param opts Decoder options.
@@ -394,7 +395,8 @@ void p25_sm_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, i
 /**
  * @brief Notify the SM that a Deny Response (DENY_RSP) was received.
  *
- * If the SM is in TUNED state, triggers release with reason "deny-rsp".
+ * Requests a release with reason "deny-rsp"; the release path is idempotent
+ * unless the SM or legacy tune flags indicate a voice-channel tune is active.
  * Always increments the deny response telemetry counter.
  *
  * @param opts Decoder options.
