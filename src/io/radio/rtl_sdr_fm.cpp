@@ -40,6 +40,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_ring.h>
+#include <dsd-neo/runtime/input_ring_watermark.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
@@ -297,6 +298,9 @@ struct RtlSdrInternals {
     dsd_mutex_t replay_eof_m;
     dsd_cond_t replay_eof_cond;
     int replay_eof_sync_inited;
+
+    /* Watermark-based flow control for TCP lag resilience */
+    struct input_ring_watermark watermark;
 };
 
 static struct RtlSdrInternals* g_stream = NULL;
@@ -383,6 +387,14 @@ radio_source_is_soapy(const dsd_opts* opts) {
 static int
 radio_source_is_iq_replay(const dsd_opts* opts) {
     return detect_radio_source(opts) == RADIO_SOURCE_IQ_REPLAY;
+}
+
+static void
+stream_refresh_watermark_for_current_rate(void) {
+    if (!g_stream) {
+        return;
+    }
+    watermark_init(&g_stream->watermark, radio_source_is_rtltcp(g_stream->opts) ? 1 : 0, dongle.rate);
 }
 
 static const char*
@@ -1386,6 +1398,44 @@ static DSD_THREAD_RETURN_TYPE
             dsd_sleep_ms(1);
             continue;
         }
+        /* Watermark-based flow control: pause consumption when the ring
+         * is draining to let it refill (TCP lag resilience). */
+        if (g_stream) {
+            struct input_ring_watermark* wm = &g_stream->watermark;
+            watermark_periodic_adjust(wm, dsd_time_monotonic_ns());
+            int control_work_pending = 0;
+            while (1) {
+                if (g_ring_purge_pending.load(std::memory_order_acquire)
+                    || controller.retune_in_progress.load(std::memory_order_acquire)) {
+                    control_work_pending = 1;
+                    break;
+                }
+                int was_paused = wm->paused;
+                int can_consume = watermark_should_consume(wm, input_ring_used(&input_ring), input_ring.capacity);
+                if (can_consume) {
+                    break;
+                }
+                if (!was_paused) {
+                    watermark_on_low_event(wm, dsd_time_monotonic_ns());
+                }
+                dsd_sleep_ms(5);
+                if (exitflag || (g_stream && g_stream->should_exit.load())) {
+                    break;
+                }
+                if (g_ring_purge_pending.load(std::memory_order_acquire)
+                    || controller.retune_in_progress.load(std::memory_order_acquire)) {
+                    control_work_pending = 1;
+                    break;
+                }
+                watermark_periodic_adjust(wm, dsd_time_monotonic_ns());
+            }
+            if (exitflag || (g_stream && g_stream->should_exit.load())) {
+                continue;
+            }
+            if (control_work_pending) {
+                continue;
+            }
+        }
         /* Read a block from input ring */
         int got = input_ring_read_block(&input_ring, d->input_cb_buf, static_cast<size_t>(MAXIMUM_BUF_LENGTH));
         if (got <= 0) {
@@ -2186,6 +2236,7 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz) {
         LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev, dongle.rate,
                  demod.rate_out);
     }
+    stream_refresh_watermark_for_current_rate();
 }
 
 /**
@@ -3431,6 +3482,11 @@ stream_prepare_internals(dsd_opts* opts) {
     }
     g_stream->replay_eof_sync_inited = 1;
     stream_reset_replay_eof_state(g_stream);
+
+    /* Initialize watermark-based flow control (TCP lag resilience).
+     * Enabled only for rtl_tcp connections; passthrough for USB/other. */
+    watermark_init(&g_stream->watermark, radio_source_is_rtltcp(opts) ? 1 : 0, dongle.rate);
+
     return 0;
 }
 
@@ -3903,6 +3959,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             LOG_ERROR("Failed to apply initial tuner settings.\n");
             return -1;
         }
+        stream_refresh_watermark_for_current_rate();
         input_ring_enable_space_notify(&input_ring, 0);
     }
 

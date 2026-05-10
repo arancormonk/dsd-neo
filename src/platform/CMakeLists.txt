@@ -24,6 +24,13 @@ else()
     target_link_libraries(dsd-neo_platform PUBLIC Threads::Threads)
 endif()
 
+# Platform-independent sources (compiled on all platforms including host tests)
+target_sources(dsd-neo_platform PRIVATE
+    audio_concealment.c
+    ${PROJECT_SOURCE_DIR}/src/io/radio/tcp_quality_metrics.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/input_ring_watermark.cpp
+)
+
 # Audio backend sources
 if(DSD_USE_PORTAUDIO)
     target_sources(dsd-neo_platform PRIVATE

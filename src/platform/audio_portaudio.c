@@ -18,9 +18,12 @@
 #ifdef DSD_USE_PORTAUDIO
 
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/audio_concealment.h>
+#include <dsd-neo/platform/threading.h>
 
 #include <portaudio.h>
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +37,33 @@ struct dsd_audio_stream {
     int is_input;
     int channels;
     int sample_rate;
+
+    /* Async output pump (playback streams only) */
+    int use_async;
+    int thread_started;
+    dsd_thread_t thread;
+    dsd_mutex_t mu;
+    dsd_cond_t cv;
+    int stop;
+    int drain_requested;
+    int drain_completed;
+    int drain_failed;
+
+    int16_t* ring;
+    size_t ring_samples_capacity;
+    size_t ring_samples_head;
+    size_t ring_samples_tail;
+    size_t ring_samples_count;
+
+    int16_t* chunk;
+    size_t chunk_frames;
+    size_t chunk_samples;
+    struct audio_conceal_state conceal;
+    int conceal_inited;
+    int conceal_has_good;
+
+    uint64_t underruns;
+    uint64_t drops;
 };
 
 /*============================================================================
@@ -60,6 +90,242 @@ set_error(const char* msg) {
 static void
 set_error_pa(PaError err) {
     set_error(Pa_GetErrorText(err));
+}
+
+static int
+size_mul_nonzero(size_t a, size_t b, size_t* result) {
+    if (!result) {
+        return 0;
+    }
+    *result = 0;
+    if (a == 0 || b == 0 || a > SIZE_MAX / b) {
+        return 0;
+    }
+    *result = a * b;
+    return 1;
+}
+
+/*============================================================================
+ * Async Output Pump Helpers
+ *============================================================================*/
+
+#define DSD_PORTAUDIO_OUTPUT_RING_MS  1000
+#define DSD_PORTAUDIO_OUTPUT_CHUNK_MS 20
+
+static size_t
+ms_to_frames(int sample_rate, int ms) {
+    if (sample_rate <= 0 || ms <= 0) {
+        return 0;
+    }
+    uint64_t frames = ((uint64_t)sample_rate * (uint64_t)ms) / 1000U;
+    if (frames == 0) {
+        frames = 1;
+    }
+    if (frames > SIZE_MAX) {
+        frames = SIZE_MAX;
+    }
+    return (size_t)frames;
+}
+
+static size_t
+calc_chunk_frames(int sample_rate) {
+    size_t frames = ms_to_frames(sample_rate, DSD_PORTAUDIO_OUTPUT_CHUNK_MS);
+    if (frames < 1) {
+        frames = 1;
+    }
+    return frames;
+}
+
+static void
+portaudio_destroy_concealment(dsd_audio_stream* stream) {
+    if (!stream) {
+        return;
+    }
+    if (stream->conceal_inited) {
+        audio_conceal_destroy(&stream->conceal);
+        stream->conceal_inited = 0;
+    }
+    stream->conceal_has_good = 0;
+}
+
+static void
+ring_drop_oldest(dsd_audio_stream* stream, size_t drop_samples) {
+    if (!stream || !stream->ring || stream->ring_samples_capacity == 0 || drop_samples == 0) {
+        return;
+    }
+    if (drop_samples > stream->ring_samples_count) {
+        drop_samples = stream->ring_samples_count;
+    }
+    stream->ring_samples_head = (stream->ring_samples_head + drop_samples) % stream->ring_samples_capacity;
+    stream->ring_samples_count -= drop_samples;
+}
+
+static void
+ring_write_samples(dsd_audio_stream* stream, const int16_t* src, size_t samples) {
+    if (!stream || !stream->ring || !src || stream->ring_samples_capacity == 0 || samples == 0) {
+        return;
+    }
+    size_t cap = stream->ring_samples_capacity;
+    size_t tail = stream->ring_samples_tail;
+    size_t first = cap - tail;
+    if (samples <= first) {
+        memcpy(&stream->ring[tail], src, samples * sizeof(int16_t));
+    } else {
+        memcpy(&stream->ring[tail], src, first * sizeof(int16_t));
+        memcpy(&stream->ring[0], src + first, (samples - first) * sizeof(int16_t));
+    }
+    stream->ring_samples_tail = (tail + samples) % cap;
+    stream->ring_samples_count += samples;
+}
+
+static size_t
+ring_read_samples(dsd_audio_stream* stream, int16_t* dst, size_t samples) {
+    if (!stream || !stream->ring || !dst || stream->ring_samples_capacity == 0 || samples == 0) {
+        return 0;
+    }
+    if (samples > stream->ring_samples_count) {
+        samples = stream->ring_samples_count;
+    }
+    size_t cap = stream->ring_samples_capacity;
+    size_t head = stream->ring_samples_head;
+    size_t first = cap - head;
+    if (samples <= first) {
+        memcpy(dst, &stream->ring[head], samples * sizeof(int16_t));
+    } else {
+        memcpy(dst, &stream->ring[head], first * sizeof(int16_t));
+        memcpy(dst + first, &stream->ring[0], (samples - first) * sizeof(int16_t));
+    }
+    stream->ring_samples_head = (head + samples) % cap;
+    stream->ring_samples_count -= samples;
+    return samples;
+}
+
+static int
+portaudio_write_frames(PaStream* handle, const int16_t* samples, size_t frames) {
+    if (!handle || !samples || frames == 0) {
+        return 0;
+    }
+    PaError err = Pa_WriteStream(handle, samples, (unsigned long)frames);
+    if (err != paNoError && err != paOutputUnderflowed) {
+        set_error_pa(err);
+        return -1;
+    }
+    return 0;
+}
+
+static DSD_THREAD_RETURN_TYPE
+portaudio_output_pump_thread(void* arg) {
+    dsd_audio_stream* stream = (dsd_audio_stream*)arg;
+    if (!stream || !stream->handle) {
+        DSD_THREAD_RETURN;
+    }
+
+    while (1) {
+        dsd_mutex_lock(&stream->mu);
+
+        int synthesize_underrun = 0;
+        while (!stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
+            if (stream->conceal_inited && stream->conceal_has_good) {
+                int ret = dsd_cond_timedwait(&stream->cv, &stream->mu, DSD_PORTAUDIO_OUTPUT_CHUNK_MS);
+                if (ret != 0 && !stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
+                    synthesize_underrun = 1;
+                    break;
+                }
+            } else {
+                (void)dsd_cond_wait(&stream->cv, &stream->mu);
+            }
+        }
+
+        if (stream->stop) {
+            dsd_mutex_unlock(&stream->mu);
+            break;
+        }
+
+        if (stream->drain_requested) {
+            int drain_failed = 0;
+            while (!stream->stop && stream->ring_samples_count > 0) {
+                size_t take = stream->ring_samples_count;
+                if (take > stream->chunk_samples) {
+                    take = stream->chunk_samples;
+                }
+                (void)ring_read_samples(stream, stream->chunk, take);
+                size_t frames = take / (size_t)stream->channels;
+                dsd_mutex_unlock(&stream->mu);
+
+                if (portaudio_write_frames(stream->handle, stream->chunk, frames) != 0) {
+                    dsd_mutex_lock(&stream->mu);
+                    stream->stop = 1;
+                    dsd_cond_broadcast(&stream->cv);
+                    dsd_mutex_unlock(&stream->mu);
+                    DSD_THREAD_RETURN;
+                }
+
+                dsd_mutex_lock(&stream->mu);
+            }
+
+            if (!stream->stop) {
+                dsd_mutex_unlock(&stream->mu);
+                PaError err = Pa_StopStream(stream->handle);
+                if (err != paNoError) {
+                    set_error_pa(err);
+                    drain_failed = 1;
+                } else {
+                    err = Pa_StartStream(stream->handle);
+                    if (err != paNoError) {
+                        set_error_pa(err);
+                        drain_failed = 1;
+                    }
+                }
+                dsd_mutex_lock(&stream->mu);
+            }
+
+            stream->drain_requested = 0;
+            stream->drain_failed = drain_failed;
+            stream->drain_completed = 1;
+            dsd_cond_broadcast(&stream->cv);
+            dsd_mutex_unlock(&stream->mu);
+            continue;
+        }
+
+        size_t take = stream->chunk_samples;
+        if (synthesize_underrun) {
+            take = 0;
+        } else if (take > stream->ring_samples_count) {
+            take = stream->ring_samples_count;
+        }
+        if (take > 0) {
+            (void)ring_read_samples(stream, stream->chunk, take);
+        }
+        if (take < stream->chunk_samples) {
+            stream->underruns++;
+            if (stream->conceal_inited && stream->conceal_has_good) {
+                size_t missing_frames = (stream->chunk_samples - take) / (size_t)stream->channels;
+                size_t written = audio_conceal_on_underrun(&stream->conceal, stream->chunk + take, missing_frames);
+                size_t written_samples = written * (size_t)stream->channels;
+                if (written_samples < (stream->chunk_samples - take)) {
+                    memset(stream->chunk + take + written_samples, 0,
+                           (stream->chunk_samples - take - written_samples) * sizeof(int16_t));
+                }
+            } else {
+                memset(stream->chunk + take, 0, (stream->chunk_samples - take) * sizeof(int16_t));
+            }
+        } else if (stream->conceal_inited) {
+            audio_conceal_on_good_buffer(&stream->conceal, stream->chunk, stream->chunk_frames);
+            stream->conceal_has_good = 1;
+        }
+
+        dsd_mutex_unlock(&stream->mu);
+
+        if (portaudio_write_frames(stream->handle, stream->chunk, stream->chunk_frames) != 0) {
+            dsd_mutex_lock(&stream->mu);
+            stream->stop = 1;
+            dsd_cond_broadcast(&stream->cv);
+            dsd_mutex_unlock(&stream->mu);
+            break;
+        }
+    }
+
+    DSD_THREAD_RETURN;
 }
 
 /**
@@ -403,6 +669,91 @@ dsd_audio_open_output(const dsd_audio_params* params) {
     stream->channels = params->channels;
     stream->sample_rate = params->sample_rate;
 
+    stream->use_async = 1;
+    stream->thread_started = 0;
+    stream->stop = 0;
+    stream->drain_requested = 0;
+    stream->drain_completed = 0;
+    stream->drain_failed = 0;
+    stream->underruns = 0;
+    stream->drops = 0;
+    stream->conceal_has_good = 0;
+
+    int async_sync_inited = 0;
+    if (dsd_mutex_init(&stream->mu) == 0) {
+        if (dsd_cond_init(&stream->cv) == 0) {
+            async_sync_inited = 1;
+        } else {
+            (void)dsd_mutex_destroy(&stream->mu);
+        }
+    }
+    if (!async_sync_inited) {
+        stream->use_async = 0;
+    }
+
+    if (stream->use_async) {
+        const size_t channel_count = (size_t)stream->channels;
+        stream->chunk_frames = calc_chunk_frames(stream->sample_rate);
+        stream->use_async = size_mul_nonzero(stream->chunk_frames, channel_count, &stream->chunk_samples);
+        if (stream->use_async) {
+            stream->chunk = (int16_t*)calloc(stream->chunk_samples, sizeof(int16_t));
+            if (audio_conceal_init(&stream->conceal, stream->chunk_frames, stream->channels) == 0) {
+                stream->conceal_inited = 1;
+            }
+        }
+
+        size_t min_ring_frames = 0;
+        if (stream->use_async) {
+            stream->use_async = size_mul_nonzero(stream->chunk_frames, 8U, &min_ring_frames);
+        }
+        if (stream->use_async) {
+            size_t ring_frames = ms_to_frames(stream->sample_rate, DSD_PORTAUDIO_OUTPUT_RING_MS);
+            if (ring_frames < min_ring_frames) {
+                ring_frames = min_ring_frames;
+            }
+            stream->use_async = size_mul_nonzero(ring_frames, channel_count, &stream->ring_samples_capacity);
+        }
+        if (stream->use_async) {
+            stream->ring = (int16_t*)calloc(stream->ring_samples_capacity, sizeof(int16_t));
+            stream->ring_samples_head = 0;
+            stream->ring_samples_tail = 0;
+            stream->ring_samples_count = 0;
+        }
+
+        if (!stream->chunk || !stream->ring) {
+            stream->use_async = 0;
+        }
+    }
+
+    if (stream->use_async) {
+        if (dsd_thread_create(&stream->thread, (dsd_thread_fn)portaudio_output_pump_thread, stream) != 0) {
+            stream->use_async = 0;
+        } else {
+            stream->thread_started = 1;
+        }
+    }
+
+    if (!stream->use_async) {
+        if (stream->thread_started) {
+            (void)dsd_thread_join(stream->thread);
+            stream->thread_started = 0;
+        }
+        if (stream->chunk) {
+            free(stream->chunk);
+            stream->chunk = NULL;
+        }
+        portaudio_destroy_concealment(stream);
+        if (stream->ring) {
+            free(stream->ring);
+            stream->ring = NULL;
+        }
+        stream->ring_samples_capacity = 0;
+        if (async_sync_inited) {
+            (void)dsd_cond_destroy(&stream->cv);
+            (void)dsd_mutex_destroy(&stream->mu);
+        }
+    }
+
     return stream;
 }
 
@@ -439,11 +790,53 @@ dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) 
         return -1;
     }
 
-    PaError err = Pa_WriteStream(stream->handle, buffer, (unsigned long)frames);
-    if (err != paNoError && err != paOutputUnderflowed) {
-        set_error_pa(err);
+    if (!stream->use_async) {
+        return portaudio_write_frames(stream->handle, buffer, frames) == 0 ? (int)frames : -1;
+    }
+
+    size_t samples = 0;
+    if (!size_mul_nonzero(frames, (size_t)stream->channels, &samples)) {
+        return 0;
+    }
+
+    dsd_mutex_lock(&stream->mu);
+
+    if (stream->stop) {
+        dsd_mutex_unlock(&stream->mu);
         return -1;
     }
+
+    if (stream->drain_requested) {
+        stream->drops += samples;
+        dsd_mutex_unlock(&stream->mu);
+        return (int)frames;
+    }
+
+    if (!stream->ring || stream->ring_samples_capacity == 0) {
+        dsd_mutex_unlock(&stream->mu);
+        return -1;
+    }
+
+    if (samples >= stream->ring_samples_capacity) {
+        const int16_t* src = buffer + (samples - stream->ring_samples_capacity);
+        stream->drops += stream->ring_samples_count;
+        stream->ring_samples_head = 0;
+        stream->ring_samples_tail = 0;
+        stream->ring_samples_count = 0;
+        samples = stream->ring_samples_capacity;
+        ring_write_samples(stream, src, samples);
+    } else {
+        size_t free_samples = stream->ring_samples_capacity - stream->ring_samples_count;
+        if (free_samples < samples) {
+            size_t drop = samples - free_samples;
+            ring_drop_oldest(stream, drop);
+            stream->drops += drop;
+        }
+        ring_write_samples(stream, buffer, samples);
+    }
+
+    dsd_cond_signal(&stream->cv);
+    dsd_mutex_unlock(&stream->mu);
 
     return (int)frames;
 }
@@ -452,6 +845,37 @@ void
 dsd_audio_close(dsd_audio_stream* stream) {
     if (!stream) {
         return;
+    }
+
+    if (!stream->is_input && stream->use_async) {
+        dsd_mutex_lock(&stream->mu);
+        stream->stop = 1;
+        dsd_cond_broadcast(&stream->cv);
+        dsd_mutex_unlock(&stream->mu);
+
+        if (stream->thread_started) {
+            (void)dsd_thread_join(stream->thread);
+            stream->thread_started = 0;
+        }
+
+        const char* stats_env = getenv("DSD_NEO_AUDIO_STATS");
+        if (stats_env && stats_env[0] != '\0' && (stream->underruns || stream->drops)) {
+            fprintf(stderr, "PortAudio output stats: rate=%d ch=%d underruns=%llu drops=%llu\n", stream->sample_rate,
+                    stream->channels, (unsigned long long)stream->underruns, (unsigned long long)stream->drops);
+        }
+
+        (void)dsd_cond_destroy(&stream->cv);
+        (void)dsd_mutex_destroy(&stream->mu);
+
+        if (stream->chunk) {
+            free(stream->chunk);
+            stream->chunk = NULL;
+        }
+        portaudio_destroy_concealment(stream);
+        if (stream->ring) {
+            free(stream->ring);
+            stream->ring = NULL;
+        }
     }
 
     if (stream->handle) {
@@ -473,8 +897,25 @@ dsd_audio_drain(dsd_audio_stream* stream) {
         return 0;
     }
 
-    /* PortAudio doesn't have a direct drain equivalent.
-     * Stopping the stream will wait for buffered audio to finish. */
+    if (stream->use_async) {
+        dsd_mutex_lock(&stream->mu);
+        stream->drain_failed = 0;
+        stream->drain_completed = 0;
+        stream->drain_requested = 1;
+        dsd_cond_broadcast(&stream->cv);
+        while (!stream->drain_completed && !stream->stop) {
+            (void)dsd_cond_wait(&stream->cv, &stream->mu);
+        }
+        int stopped = stream->stop;
+        int drain_failed = stream->drain_failed;
+        dsd_mutex_unlock(&stream->mu);
+
+        if (stopped || drain_failed) {
+            return -1;
+        }
+        return 0;
+    }
+
     PaError err = Pa_StopStream(stream->handle);
     if (err != paNoError) {
         set_error_pa(err);

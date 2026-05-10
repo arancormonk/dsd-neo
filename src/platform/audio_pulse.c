@@ -26,6 +26,7 @@
 #if DSD_PLATFORM_POSIX
 
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/audio_concealment.h>
 #include <dsd-neo/platform/threading.h>
 #include <pulse/simple.h>
 #include <stdio.h>
@@ -62,6 +63,9 @@ struct dsd_audio_stream {
     int16_t* chunk;
     size_t chunk_frames;
     size_t chunk_samples;
+    struct audio_conceal_state conceal;
+    int conceal_inited;
+    int conceal_has_good;
 
     uint64_t underruns;
     uint64_t drops;
@@ -91,6 +95,36 @@ set_error(const char* msg) {
 static void
 set_error_pa(int pa_errno) {
     set_error(pa_strerror(pa_errno));
+}
+
+static int
+validate_stream_params(const dsd_audio_params* params) {
+    if (!params) {
+        set_error("NULL parameters");
+        return 0;
+    }
+    if (params->sample_rate <= 0) {
+        set_error("Invalid sample rate");
+        return 0;
+    }
+    if (params->channels <= 0 || params->channels > UINT8_MAX) {
+        set_error("Invalid channel count");
+        return 0;
+    }
+    return 1;
+}
+
+static int
+size_mul_nonzero(size_t a, size_t b, size_t* result) {
+    if (!result) {
+        return 0;
+    }
+    *result = 0;
+    if (a == 0 || b == 0 || a > SIZE_MAX / b) {
+        return 0;
+    }
+    *result = a * b;
+    return 1;
 }
 
 /*============================================================================
@@ -207,9 +241,22 @@ pulse_output_pump_thread(void* arg) {
     while (1) {
         dsd_mutex_lock(&stream->mu);
 
-        /* Sleep until we have audio to push or a control event (drain/stop). */
+        int synthesize_underrun = 0;
+
+        /* Sleep until we have audio to push or a control event (drain/stop).
+         * Once a good chunk exists, timed waits let the pump bridge total
+         * starvation with a few attenuated repeats instead of waiting until the
+         * Pulse server underruns abruptly. */
         while (!stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
-            (void)dsd_cond_wait(&stream->cv, &stream->mu);
+            if (stream->conceal_inited && stream->conceal_has_good) {
+                int ret = dsd_cond_timedwait(&stream->cv, &stream->mu, DSD_PULSE_OUTPUT_CHUNK_MS);
+                if (ret != 0 && !stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
+                    synthesize_underrun = 1;
+                    break;
+                }
+            } else {
+                (void)dsd_cond_wait(&stream->cv, &stream->mu);
+            }
         }
 
         if (stream->stop) {
@@ -261,14 +308,30 @@ pulse_output_pump_thread(void* arg) {
 
         /* Normal: write fixed chunks; only pad the tail of a non-empty read. */
         size_t take = stream->chunk_samples;
-        if (take > stream->ring_samples_count) {
+        if (synthesize_underrun) {
+            take = 0;
+        } else if (take > stream->ring_samples_count) {
             take = stream->ring_samples_count;
         }
         if (take > 0) {
             (void)ring_read_samples(stream, stream->chunk, take);
         }
         if (take < stream->chunk_samples) {
-            memset(stream->chunk + take, 0, (stream->chunk_samples - take) * sizeof(int16_t));
+            stream->underruns++;
+            if (stream->conceal_inited && stream->conceal_has_good) {
+                size_t missing_frames = (stream->chunk_samples - take) / (size_t)stream->channels;
+                size_t written = audio_conceal_on_underrun(&stream->conceal, stream->chunk + take, missing_frames);
+                size_t written_samples = written * (size_t)stream->channels;
+                if (written_samples < (stream->chunk_samples - take)) {
+                    memset(stream->chunk + take + written_samples, 0,
+                           (stream->chunk_samples - take - written_samples) * sizeof(int16_t));
+                }
+            } else {
+                memset(stream->chunk + take, 0, (stream->chunk_samples - take) * sizeof(int16_t));
+            }
+        } else if (stream->conceal_inited) {
+            audio_conceal_on_good_buffer(&stream->conceal, stream->chunk, stream->chunk_frames);
+            stream->conceal_has_good = 1;
         }
 
         dsd_mutex_unlock(&stream->mu);
@@ -529,8 +592,7 @@ dsd_audio_list_devices(void) {
 
 dsd_audio_stream*
 dsd_audio_open_input(const dsd_audio_params* params) {
-    if (!params) {
-        set_error("NULL parameters");
+    if (!validate_stream_params(params)) {
         return NULL;
     }
 
@@ -576,8 +638,7 @@ dsd_audio_open_input(const dsd_audio_params* params) {
 
 dsd_audio_stream*
 dsd_audio_open_output(const dsd_audio_params* params) {
-    if (!params) {
-        set_error("NULL parameters");
+    if (!validate_stream_params(params)) {
         return NULL;
     }
 
@@ -632,6 +693,7 @@ dsd_audio_open_output(const dsd_audio_params* params) {
     stream->drain_failed = 0;
     stream->underruns = 0;
     stream->drops = 0;
+    stream->conceal_has_good = 0;
 
     int async_sync_inited = 0;
     if (dsd_mutex_init(&stream->mu) == 0) {
@@ -646,21 +708,35 @@ dsd_audio_open_output(const dsd_audio_params* params) {
     }
 
     if (stream->use_async) {
+        const size_t channel_count = (size_t)stream->channels;
         stream->chunk_frames = calc_chunk_frames(stream->sample_rate);
-        stream->chunk_samples = stream->chunk_frames * (size_t)stream->channels;
-        stream->chunk = calloc(stream->chunk_samples, sizeof(int16_t));
-
-        size_t ring_frames = ms_to_frames(stream->sample_rate, DSD_PULSE_OUTPUT_RING_MS);
-        if (ring_frames < stream->chunk_frames * 8U) {
-            ring_frames = stream->chunk_frames * 8U;
+        stream->use_async = size_mul_nonzero(stream->chunk_frames, channel_count, &stream->chunk_samples);
+        if (stream->use_async) {
+            stream->chunk = calloc(stream->chunk_samples, sizeof(int16_t));
+            if (audio_conceal_init(&stream->conceal, stream->chunk_frames, stream->channels) == 0) {
+                stream->conceal_inited = 1;
+            }
         }
-        stream->ring_samples_capacity = ring_frames * (size_t)stream->channels;
-        stream->ring = calloc(stream->ring_samples_capacity, sizeof(int16_t));
-        stream->ring_samples_head = 0;
-        stream->ring_samples_tail = 0;
-        stream->ring_samples_count = 0;
 
-        if (!stream->chunk || !stream->ring || stream->ring_samples_capacity == 0 || stream->chunk_samples == 0) {
+        size_t min_ring_frames = 0;
+        if (stream->use_async) {
+            stream->use_async = size_mul_nonzero(stream->chunk_frames, 8U, &min_ring_frames);
+        }
+        if (stream->use_async) {
+            size_t ring_frames = ms_to_frames(stream->sample_rate, DSD_PULSE_OUTPUT_RING_MS);
+            if (ring_frames < min_ring_frames) {
+                ring_frames = min_ring_frames;
+            }
+            stream->use_async = size_mul_nonzero(ring_frames, channel_count, &stream->ring_samples_capacity);
+        }
+        if (stream->use_async) {
+            stream->ring = calloc(stream->ring_samples_capacity, sizeof(int16_t));
+            stream->ring_samples_head = 0;
+            stream->ring_samples_tail = 0;
+            stream->ring_samples_count = 0;
+        }
+
+        if (!stream->chunk || !stream->ring) {
             stream->use_async = 0;
         }
     }
@@ -681,6 +757,10 @@ dsd_audio_open_output(const dsd_audio_params* params) {
         if (stream->chunk) {
             free(stream->chunk);
             stream->chunk = NULL;
+        }
+        if (stream->conceal_inited) {
+            audio_conceal_destroy(&stream->conceal);
+            stream->conceal_inited = 0;
         }
         if (stream->ring) {
             free(stream->ring);
@@ -821,6 +901,10 @@ dsd_audio_close(dsd_audio_stream* stream) {
         if (stream->chunk) {
             free(stream->chunk);
             stream->chunk = NULL;
+        }
+        if (stream->conceal_inited) {
+            audio_conceal_destroy(&stream->conceal);
+            stream->conceal_inited = 0;
         }
         if (stream->ring) {
             free(stream->ring);
