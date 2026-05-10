@@ -199,6 +199,7 @@ main(void) {
     set_bits_msb(lcw, 32, 16, 0x1234);
     set_bits_msb(lcw, 48, 24, 0x123456);
     p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
+    rc |= expect_true("LCW_0x65_protection_valid", st.p25_prot_valid == 1);
     rc |= expect_true("LCW_0x65_protection_algid", st.p25_prot_algid == 0x80);
     rc |= expect_true("LCW_0x65_protection_kid", st.p25_prot_kid == 0x1234);
 

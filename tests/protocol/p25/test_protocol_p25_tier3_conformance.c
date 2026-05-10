@@ -187,12 +187,17 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 static const char*
 test_p25_algid_name(uint8_t algid) {
     switch (algid) {
-        case 0x80: return "AES-256";
+        case 0x80: return "UNENCRYPTED";
         case 0x81: return "DES-OFB";
-        case 0x84: return "AES-256-GCM";
-        case 0x85: return "AES-CBC";
-        case 0x88: return "DES-XL";
-        case 0xAA: return "RC4";
+        case 0x82: return "2-KEY 3DES";
+        case 0x83: return "3-KEY 3DES";
+        case 0x84: return "AES-256";
+        case 0x85: return "AES-128";
+        case 0x88: return "AES-CBC";
+        case 0x89: return "AES-128-OFB";
+        case 0x9F: return "DES-XL";
+        case 0xAA: return "ADP/RC4";
+        case 0xAF: return "AES-256-GCM";
         default: return NULL;
     }
 }
@@ -248,13 +253,14 @@ test_prot_param_lcw_known_payload(void) {
 }
 
 /**
- * test_prot_param_algid_aes256_name — verify ALGID 0x80 resolves to "AES-256"
+ * test_prot_param_algid_unencrypted_name — verify ALGID 0x80 resolves to
+ * "UNENCRYPTED"
  */
 static int
-test_prot_param_algid_aes256_name(void) {
+test_prot_param_algid_unencrypted_name(void) {
     const char* name = test_p25_algid_name(0x80);
-    if (name == NULL || strcmp(name, "AES-256") != 0) {
-        fprintf(stderr, "FAIL: test_prot_param_algid_aes256_name: expected 'AES-256', got '%s'\n",
+    if (name == NULL || strcmp(name, "UNENCRYPTED") != 0) {
+        fprintf(stderr, "FAIL: test_prot_param_algid_unencrypted_name: expected 'UNENCRYPTED', got '%s'\n",
                 name ? name : "(null)");
         return 1;
     }
@@ -269,6 +275,34 @@ test_prot_param_algid_des_ofb_name(void) {
     const char* name = test_p25_algid_name(0x81);
     if (name == NULL || strcmp(name, "DES-OFB") != 0) {
         fprintf(stderr, "FAIL: test_prot_param_algid_des_ofb_name: expected 'DES-OFB', got '%s'\n",
+                name ? name : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+/**
+ * test_prot_param_algid_aes256_name — verify ALGID 0x84 resolves to "AES-256"
+ */
+static int
+test_prot_param_algid_aes256_name(void) {
+    const char* name = test_p25_algid_name(0x84);
+    if (name == NULL || strcmp(name, "AES-256") != 0) {
+        fprintf(stderr, "FAIL: test_prot_param_algid_aes256_name: expected 'AES-256', got '%s'\n",
+                name ? name : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+/**
+ * test_prot_param_algid_des_xl_name — verify ALGID 0x9F resolves to "DES-XL"
+ */
+static int
+test_prot_param_algid_des_xl_name(void) {
+    const char* name = test_p25_algid_name(0x9F);
+    if (name == NULL || strcmp(name, "DES-XL") != 0) {
+        fprintf(stderr, "FAIL: test_prot_param_algid_des_xl_name: expected 'DES-XL', got '%s'\n",
                 name ? name : "(null)");
         return 1;
     }
@@ -373,6 +407,11 @@ test_prot_param_state_init_zero(void) {
     if (state->p25_prot_algid != 0) {
         fprintf(stderr, "FAIL: test_prot_param_state_init_zero: p25_prot_algid expected 0, got %u\n",
                 state->p25_prot_algid);
+        rc = 1;
+    }
+    if (state->p25_prot_valid != 0) {
+        fprintf(stderr, "FAIL: test_prot_param_state_init_zero: p25_prot_valid expected 0, got %u\n",
+                state->p25_prot_valid);
         rc = 1;
     }
     if (state->p25_prot_kid != 0) {
@@ -684,9 +723,19 @@ test_time_date_state_init_zero(void) {
                 (long)state->p25_sys_time);
         rc = 1;
     }
+    if (state->p25_sys_time_valid != 0) {
+        fprintf(stderr, "FAIL: test_time_date_state_init_zero: p25_sys_time_valid expected 0, got %u\n",
+                state->p25_sys_time_valid);
+        rc = 1;
+    }
     if (state->p25_sys_time_offset != 0) {
         fprintf(stderr, "FAIL: test_time_date_state_init_zero: p25_sys_time_offset expected 0, got %d\n",
                 state->p25_sys_time_offset);
+        rc = 1;
+    }
+    if (state->p25_sys_time_offset_valid != 0) {
+        fprintf(stderr, "FAIL: test_time_date_state_init_zero: p25_sys_time_offset_valid expected 0, got %u\n",
+                state->p25_sys_time_offset_valid);
         rc = 1;
     }
 
@@ -716,6 +765,10 @@ test_time_date_state_stores_time_t(void) {
     if (st.p25_sys_time != expected) {
         fprintf(stderr, "FAIL: test_time_date_state_stores_time_t: UTC time_t mismatch, expected %ld, got %ld\n",
                 (long)expected, (long)st.p25_sys_time);
+        rc = 1;
+    }
+    if (st.p25_sys_time_valid != 1) {
+        fprintf(stderr, "FAIL: test_time_date_state_stores_time_t: expected valid flag set\n");
         rc = 1;
     }
 
@@ -754,6 +807,10 @@ test_time_date_state_stores_offset(void) {
 
     if (st.p25_sys_time_offset != -330) {
         fprintf(stderr, "FAIL: test_time_date_state_stores_offset: expected -330, got %d\n", st.p25_sys_time_offset);
+        rc = 1;
+    }
+    if (st.p25_sys_time_offset_valid != 1) {
+        fprintf(stderr, "FAIL: test_time_date_state_stores_offset: expected offset valid flag set\n");
         rc = 1;
     }
 
@@ -853,6 +910,10 @@ test_vpdu_dispatch_0x7f(void) {
 
     process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
 
+    if (st.p25_prot_valid != 1) {
+        fprintf(stderr, "FAIL: test_vpdu_dispatch_0x7f: p25_prot_valid expected 1, got %u\n", st.p25_prot_valid);
+        rc = 1;
+    }
     if (st.p25_prot_algid != 0x81) {
         fprintf(stderr, "FAIL: test_vpdu_dispatch_0x7f: p25_prot_algid expected 0x81, got 0x%02X\n", st.p25_prot_algid);
         rc = 1;
@@ -875,8 +936,10 @@ main(void) {
 
     /* 6.1 Protection Parameter tests */
     rc |= test_prot_param_lcw_known_payload();
+    rc |= test_prot_param_algid_unencrypted_name();
     rc |= test_prot_param_algid_aes256_name();
     rc |= test_prot_param_algid_des_ofb_name();
+    rc |= test_prot_param_algid_des_xl_name();
     rc |= test_prot_param_tsbk_0x3f_known_payload();
     rc |= test_tsbk_0x3e_not_protection();
     rc |= test_prot_param_state_init_zero();

@@ -44,9 +44,9 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 /**
  * @brief Resolve a P25 Algorithm ID to a human-readable name.
  *
- * Common ALGIDs per TIA-102.AABC-B and TIA-102.AACE-A:
- *   0x80 = AES-256, 0x81 = DES-OFB, 0x84 = AES-256-GCM,
- *   0x85 = AES-CBC, 0x88 = DES-XL, 0xAA = RC4
+ * Common APCO P25 ALGIDs used by the voice/ESS paths:
+ *   0x80 = unencrypted, 0x81 = DES-OFB, 0x84 = AES-256,
+ *   0x89 = AES-128-OFB, 0x9F = DES-XL, 0xAA = ADP/RC4
  *
  * @param algid The 8-bit algorithm identifier.
  * @return Static string with algorithm name, or NULL if unrecognized.
@@ -54,12 +54,17 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 static const char*
 p25_algid_name(uint8_t algid) {
     switch (algid) {
-        case 0x80: return "AES-256";
+        case 0x80: return "UNENCRYPTED";
         case 0x81: return "DES-OFB";
-        case 0x84: return "AES-256-GCM";
-        case 0x85: return "AES-CBC";
-        case 0x88: return "DES-XL";
-        case 0xAA: return "RC4";
+        case 0x82: return "2-KEY 3DES";
+        case 0x83: return "3-KEY 3DES";
+        case 0x84: return "AES-256";
+        case 0x85: return "AES-128";
+        case 0x88: return "AES-CBC";
+        case 0x89: return "AES-128-OFB";
+        case 0x9F: return "DES-XL";
+        case 0xAA: return "ADP/RC4";
+        case 0xAF: return "AES-256-GCM";
         default: return NULL;
     }
 }
@@ -2861,6 +2866,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             state->p25_prot_algid = (uint8_t)algid;
             state->p25_prot_kid = (uint16_t)kid;
+            state->p25_prot_valid = 1;
         }
 
         // Time and Date Announcement (MAC 0x75, TSBK 0x35)
@@ -2911,6 +2917,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 time_t t = p25_utc_time_from_fields(year, month, day, hours, minutes, seconds);
                 if (t != (time_t)-1) {
                     state->p25_sys_time = t;
+                    state->p25_sys_time_valid = 1;
                 }
             }
 
@@ -2921,6 +2928,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     offset_minutes = -offset_minutes;
                 }
                 state->p25_sys_time_offset = (int16_t)offset_minutes;
+                state->p25_sys_time_offset_valid = 1;
             }
         }
 

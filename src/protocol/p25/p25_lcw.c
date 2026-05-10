@@ -47,9 +47,9 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
 /**
  * @brief Resolve a P25 Algorithm ID to a human-readable name.
  *
- * Common ALGIDs per TIA-102.AABC-B and TIA-102.AACE-A:
- *   0x80 = AES-256, 0x81 = DES-OFB, 0x84 = AES-256-GCM,
- *   0x85 = AES-CBC, 0x88 = DES-XL, 0xAA = RC4
+ * Common APCO P25 ALGIDs used by the voice/ESS paths:
+ *   0x80 = unencrypted, 0x81 = DES-OFB, 0x84 = AES-256,
+ *   0x89 = AES-128-OFB, 0x9F = DES-XL, 0xAA = ADP/RC4
  *
  * @param algid The 8-bit algorithm identifier.
  * @return Static string with algorithm name, or NULL if unrecognized.
@@ -57,12 +57,17 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
 static const char*
 p25_algid_name(uint8_t algid) {
     switch (algid) {
-        case 0x80: return "AES-256";
+        case 0x80: return "UNENCRYPTED";
         case 0x81: return "DES-OFB";
-        case 0x84: return "AES-256-GCM";
-        case 0x85: return "AES-CBC";
-        case 0x88: return "DES-XL";
-        case 0xAA: return "RC4";
+        case 0x82: return "2-KEY 3DES";
+        case 0x83: return "3-KEY 3DES";
+        case 0x84: return "AES-256";
+        case 0x85: return "AES-128";
+        case 0x88: return "AES-CBC";
+        case 0x89: return "AES-128-OFB";
+        case 0x9F: return "DES-XL";
+        case 0xAA: return "ADP/RC4";
+        case 0xAF: return "AES-256-GCM";
         default: return NULL;
     }
 }
@@ -386,6 +391,7 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
 
                 state->p25_prot_algid = algid;
                 state->p25_prot_kid = kid;
+                state->p25_prot_valid = 1;
             }
 
             else if (lc_format == 0x66) {

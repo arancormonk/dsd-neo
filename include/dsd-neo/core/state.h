@@ -724,23 +724,24 @@ struct dsd_state {
     unsigned int p25_p1_voice_err_hist_sum; // sum of values in window
 
     /*
-     * P25 Protection Parameter Broadcast state (from TSBK 0x3E/0x3F, LCW 0x65)
+     * P25 Protection Parameter state (from TSBK 0x3F, LCW 0x65)
      *
      * Stores the most recently announced encryption algorithm and key ID on
-     * the control channel. Zero-initialized by calloc; a value of 0 means no
-     * announcement has been received yet.
+     * the control channel.
      */
+    uint8_t p25_prot_valid; ///< 1 once an announcement has been received
     uint8_t p25_prot_algid; ///< Active encryption Algorithm ID (0 = none received)
     uint16_t p25_prot_kid;  ///< Active encryption Key ID (0 = none received)
 
     /*
-     * P25 Time and Date Announcement state (from TSBK 0x35 to MAC 0x75)
+     * P25 Time and Date Announcement state (TSBK 0x35 bridged as MAC-like 0x75)
      *
      * Stores the most recently decoded system UTC time and local time offset.
-     * Zero-initialized by calloc; a value of 0 means no announcement received.
      */
-    time_t p25_sys_time;         ///< Decoded UTC time (0 = no announcement received)
-    int16_t p25_sys_time_offset; ///< Local time offset in minutes from UTC (0 = none)
+    uint8_t p25_sys_time_valid;        ///< 1 once a valid date/time has been received
+    time_t p25_sys_time;               ///< Decoded UTC time
+    uint8_t p25_sys_time_offset_valid; ///< 1 once a local time offset has been received
+    int16_t p25_sys_time_offset;       ///< Local time offset in minutes from UTC
 
     // P25 Phase 2 voice error moving average per slot (errs2 from AMBE decode)
     uint8_t p25_p2_voice_err_hist[2][64];
