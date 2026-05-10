@@ -196,9 +196,9 @@ typedef struct {
  *
  * Each entry holds the complete set of parameters needed to resolve a 16-bit
  * channel number to a frequency. Two arrays of this type exist in dsd_state:
- * one for FDMA-sourced identifiers (LCW 0x58/0x59 and opcodes 0x74, 0x7D)
- * and one for TDMA-sourced identifiers (opcodes 0x73, 0xF3). This separation prevents
- * multi-mode systems from cycling incompatible parameters in a single slot.
+ * one for FDMA/non-TDMA identifiers and one for TDMA identifiers. This
+ * separation prevents multi-mode systems from cycling incompatible parameters
+ * in a single slot.
  */
 typedef struct {
     long int base_freq;       // base frequency in 5 Hz units (per IDEN_UP encoding)
@@ -636,8 +636,8 @@ struct dsd_state {
 
     //iden freq storage for frequency calculations
     // Bitmask per IDEN slot indicating which modulation classes have been seen:
-    //   bit0 (0x01) = has FDMA entry (written by LCW 0x58/0x59 and opcodes 0x74, 0x7D)
-    //   bit1 (0x02) = has TDMA entry (written by opcodes 0x73, 0xF3)
+    //   bit0 (0x01) = has FDMA/non-TDMA entry
+    //   bit1 (0x02) = has TDMA entry (channel types 3, 4, or 5)
     // Values: 0=unknown, 1=FDMA only, 2=TDMA only, 3=both FDMA and TDMA
     uint8_t p25_chan_tdma_explicit[16];
     uint8_t p25_lcw_retune_disabled_warned; // 1 once "LCW retune disabled" warning emitted
@@ -647,8 +647,8 @@ struct dsd_state {
     // This prevents multi-mode systems from cycling incompatible parameters
     // in a single slot when both TDMA and FDMA IDEN updates share the same
     // 4-bit identifier ID.
-    p25_iden_entry_t p25_iden_fdma[16]; // Written by LCW 0x58/0x59 and opcodes 0x74, 0x7D
-    p25_iden_entry_t p25_iden_tdma[16]; // Written by opcodes 0x73, 0xF3 (TDMA)
+    p25_iden_entry_t p25_iden_fdma[16]; // FDMA/non-TDMA frequency-band entries
+    p25_iden_entry_t p25_iden_tdma[16]; // TDMA frequency-band entries
 
     //p25 frequency storage for trunking and display in ncurses
     int p25_cc_is_tdma;  // control channel modulation: 0=FDMA (C4FM), 1=TDMA (QPSK)

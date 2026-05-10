@@ -1704,15 +1704,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 fprintf(stderr, "\n  WARNING: 0x74 IDEN_UP_VU base_freq %08lX outside VHF/UHF range", base_freq);
             }
 
-            // Write to new FDMA IDEN entry
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Write to FDMA IDEN entry
             {
                 p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
-                // Write-once guard: if this slot already has a valid FDMA entry,
-                // do not overwrite. The first entry seen after CC lock is authoritative.
-                // This prevents the trans_off flip-flop between 0x74 and 0x33 MBT values.
-                if (e->populated) {
-                    goto skip_fdma_iden_write_74;
-                }
                 e->base_freq = base_freq;
                 e->chan_type = 1; // FDMA default
                 e->chan_spac = chan_spac;
@@ -1724,9 +1720,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 e->sysid = state->p2_sysid;
                 e->rfss = state->p2_rfssid;
                 e->site = state->p2_siteid;
-                state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA entry
+                state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA/non-TDMA entry
             }
-        skip_fdma_iden_write_74:
 
             fprintf(stderr, "\n Identifier Update UHF/VHF\n");
             fprintf(stderr,
@@ -1746,15 +1741,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int trans_off = up.trans_off;
             int chan_spac = up.chan_spac;
 
-            // Write to new FDMA IDEN entry
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Write to FDMA IDEN entry
             {
                 p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
-                // Write-once guard: if this slot already has a valid FDMA entry,
-                // do not overwrite. The first entry seen after CC lock is authoritative.
-                // This prevents the trans_off flip-flop between 0x7D and 0x33 MBT values.
-                if (e->populated) {
-                    goto skip_fdma_iden_write_7D;
-                }
                 e->base_freq = base_freq;
                 e->chan_type = 1; // FDMA default
                 e->chan_spac = chan_spac;
@@ -1766,9 +1757,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 e->sysid = state->p2_sysid;
                 e->rfss = state->p2_rfssid;
                 e->site = state->p2_siteid;
-                state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA entry
+                state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA/non-TDMA entry
             }
-        skip_fdma_iden_write_7D:
 
             fprintf(stderr, "\n Identifier Update (8.3.1.23)\n");
             fprintf(stderr,
@@ -1788,16 +1778,12 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int chan_spac = up.chan_spac;
             long int base_freq = up.base_freq;
 
-            // Write to new TDMA IDEN entry
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Route by ChannelType. sdrtrunk treats only types 3, 4, and 5 as TDMA.
             {
-                p25_iden_entry_t* e = &state->p25_iden_tdma[iden];
-                // Write-once guard: if this slot already has a valid TDMA entry,
-                // do not overwrite. The first entry seen after CC lock is authoritative.
-                // This prevents multi-band systems from cycling incompatible IDEN
-                // parameters on the same slot.
-                if (e->populated) {
-                    goto skip_tdma_iden_write_73;
-                }
+                int is_tdma = p25_channel_type_is_tdma(chan_type);
+                p25_iden_entry_t* e = is_tdma ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
                 e->base_freq = base_freq;
                 e->chan_type = chan_type; // from MAC payload (4-bit)
                 e->chan_spac = chan_spac;
@@ -1808,9 +1794,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 e->sysid = state->p2_sysid;
                 e->rfss = state->p2_rfssid;
                 e->site = state->p2_siteid;
-                state->p25_chan_tdma_explicit[iden] |= 2; // bit1 = has TDMA entry
+                state->p25_chan_tdma_explicit[iden] |= is_tdma ? 2 : 1;
             }
-        skip_tdma_iden_write_73:
 
             fprintf(stderr, "\n Identifier Update for TDMA - Abbreviated\n");
             fprintf(stderr,
@@ -1832,14 +1817,12 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int lwacn = (MAC[11 + len_a] << 12) | (MAC[12 + len_a] << 4) | ((MAC[13 + len_a] & 0xF0) >> 4);
             int lsysid = ((MAC[13 + len_a] & 0xF) << 8) | MAC[14 + len_a];
 
-            // Write to new TDMA IDEN entry
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Route by ChannelType. sdrtrunk treats only types 3, 4, and 5 as TDMA.
             {
-                p25_iden_entry_t* e = &state->p25_iden_tdma[iden];
-                // Write-once guard: if this slot already has a valid TDMA entry,
-                // do not overwrite. The first entry seen after CC lock is authoritative.
-                if (e->populated) {
-                    goto skip_tdma_iden_write_f3;
-                }
+                int is_tdma = p25_channel_type_is_tdma(chan_type);
+                p25_iden_entry_t* e = is_tdma ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
                 e->base_freq = base_freq;
                 e->chan_type = chan_type; // from MAC payload (4-bit)
                 e->chan_spac = chan_spac;
@@ -1854,9 +1837,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 e->sysid = (unsigned long long)lsysid; // from extended payload
                 e->rfss = state->p2_rfssid;
                 e->site = state->p2_siteid;
-                state->p25_chan_tdma_explicit[iden] |= 2; // bit1 = has TDMA entry
+                state->p25_chan_tdma_explicit[iden] |= is_tdma ? 2 : 1;
             }
-        skip_tdma_iden_write_f3:
 
             fprintf(stderr, "\n Identifier Update for TDMA - Extended\n");
             fprintf(stderr,

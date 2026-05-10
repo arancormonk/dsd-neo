@@ -241,7 +241,7 @@ test_lcw_vuhf_populates_fdma(void) {
 }
 
 static int
-test_lcw_preserves_existing_fdma(void) {
+test_lcw_replaces_existing_fdma(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state st;
@@ -258,20 +258,42 @@ test_lcw_preserves_existing_fdma(void) {
     st.p25_iden_fdma[iden].trust = 2;
     st.p25_iden_fdma[iden].populated = 1;
     st.p25_chan_tdma_explicit[iden] = 1;
+    st.trunk_chan_map[(iden << 12) | 0x000A] = 123456789L;
 
     build_lcw_vuhf(bits, iden, 5, 1, 123, 100, 450000000UL / 5UL);
     p25_lcw(&opts, &st, bits, 0);
 
-    rc |= expect_eq_u8("preserve populated", st.p25_iden_fdma[iden].populated, 1);
-    rc |= expect_eq_long("preserve base", st.p25_iden_fdma[iden].base_freq, 11111111L);
-    rc |= expect_eq_int("preserve type", st.p25_iden_fdma[iden].chan_type, 1);
-    rc |= expect_eq_int("preserve spacing", st.p25_iden_fdma[iden].chan_spac, 50);
-    rc |= expect_eq_int("preserve offset", st.p25_iden_fdma[iden].trans_off, -2200);
-    rc |= expect_eq_u8("preserve bw", st.p25_iden_fdma[iden].bw_vu, 4);
-    rc |= expect_eq_u8("preserve bitmask", st.p25_chan_tdma_explicit[iden], 1);
+    rc |= expect_eq_u8("replace populated", st.p25_iden_fdma[iden].populated, 1);
+    rc |= expect_eq_long("replace base", st.p25_iden_fdma[iden].base_freq, 450000000L / 5L);
+    rc |= expect_eq_int("replace type", st.p25_iden_fdma[iden].chan_type, 1);
+    rc |= expect_eq_int("replace spacing", st.p25_iden_fdma[iden].chan_spac, 100);
+    rc |= expect_eq_int("replace offset", st.p25_iden_fdma[iden].trans_off, 123);
+    rc |= expect_eq_u8("replace bw", st.p25_iden_fdma[iden].bw_vu, 5);
+    rc |= expect_eq_u8("replace bitmask", st.p25_chan_tdma_explicit[iden], 1);
+    rc |= expect_eq_long("replace invalidates channel cache", st.trunk_chan_map[(iden << 12) | 0x000A], 0);
 
     if (rc == 0) {
-        fprintf(stderr, "PASS test_lcw_preserves_existing_fdma\n");
+        fprintf(stderr, "PASS test_lcw_replaces_existing_fdma\n");
+    }
+    return rc;
+}
+
+static int
+test_iden_cache_invalidation_covers_last_channel(void) {
+    int rc = 0;
+    static dsd_state st;
+    memset(&st, 0, sizeof st);
+
+    st.trunk_chan_map[0xF000] = 12345L;
+    st.trunk_chan_map[0xFFFE] = 67890L;
+
+    p25_invalidate_chan_map_for_iden(&st, 15);
+
+    rc |= expect_eq_long("invalidate iden 15 first channel", st.trunk_chan_map[0xF000], 0);
+    rc |= expect_eq_long("invalidate iden 15 last channel", st.trunk_chan_map[0xFFFE], 0);
+
+    if (rc == 0) {
+        fprintf(stderr, "PASS test_iden_cache_invalidation_covers_last_channel\n");
     }
     return rc;
 }
@@ -282,7 +304,8 @@ main(void) {
 
     rc |= test_lcw_standard_populates_fdma();
     rc |= test_lcw_vuhf_populates_fdma();
-    rc |= test_lcw_preserves_existing_fdma();
+    rc |= test_lcw_replaces_existing_fdma();
+    rc |= test_iden_cache_invalidation_covers_last_channel();
 
     if (rc == 0) {
         fprintf(stderr, "\nAll test_p25_iden_lcw_full tests PASSED\n");

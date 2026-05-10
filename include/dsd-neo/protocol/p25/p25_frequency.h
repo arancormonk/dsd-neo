@@ -29,6 +29,9 @@ long int nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t ch
 long int nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel);
 
 void p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, char* out, size_t outsz);
+int p25_channel_type_is_tdma(int chan_type);
+int p25_channel_type_slots_per_carrier(int chan_type);
+void p25_invalidate_chan_map_for_iden(dsd_state* state, int iden);
 
 /**
  * @brief Determine if a base frequency falls in the VHF or UHF band.

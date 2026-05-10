@@ -30,7 +30,36 @@ enum {
     P25_FREQ_MODE_TDMA = 1,
 };
 
-static const int k_p25_slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+static const int k_p25_slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+
+int
+p25_channel_type_is_tdma(int chan_type) {
+    int type = chan_type & 0xF;
+    return (type == 3 || type == 4 || type == 5) ? 1 : 0;
+}
+
+int
+p25_channel_type_slots_per_carrier(int chan_type) {
+    return k_p25_slots_per_carrier[chan_type & 0xF];
+}
+
+void
+p25_invalidate_chan_map_for_iden(dsd_state* state, int iden) {
+    if (!state || iden < 0 || iden >= 16) {
+        return;
+    }
+
+    int start = iden << 12;
+    int end = (iden + 1) << 12;
+    int map_count = (int)(sizeof(state->trunk_chan_map) / sizeof(state->trunk_chan_map[0]));
+    if (end > map_count) {
+        end = map_count;
+    }
+
+    for (int ch = start; ch < end; ch++) {
+        state->trunk_chan_map[ch] = 0;
+    }
+}
 
 static int
 p25_auto_prefers_tdma(const dsd_state* state, int iden) {
@@ -130,7 +159,7 @@ p25_channel_to_freq_impl(dsd_opts* opts, dsd_state* state, int channel, int mode
             fprintf(stderr, "\n  P25 FREQ: unknown iden type %d (iden %d)", type, iden);
             return 0;
         }
-        denom = k_p25_slots_per_carrier[type];
+        denom = p25_channel_type_slots_per_carrier(type);
         if (denom <= 0) {
             fprintf(stderr, "\n  P25 FREQ: invalid slots/carrier for type %d", type);
             return 0;
@@ -188,7 +217,7 @@ p25_channel_to_freq_impl(dsd_opts* opts, dsd_state* state, int channel, int mode
 //     base[iden] is in units of 5 Hz (per IDEN_UP encoding),
 //     spacing[iden] is in units of 125 Hz,
 //     step = channel_number / slots_per_carrier[type]
-// - slots_per_carrier table below is sourced from OP25 and common system behavior.
+// - channel types and slots-per-carrier follow sdrtrunk's ChannelType mapping.
 long int
 process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
     return p25_channel_to_freq_impl(opts, state, channel, P25_FREQ_MODE_AUTO);
@@ -228,7 +257,7 @@ p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, cha
     int denom = 1;
     if (use_tdma_denom) {
         if (type >= 0 && type <= 15) {
-            denom = k_p25_slots_per_carrier[type];
+            denom = p25_channel_type_slots_per_carrier(type);
         }
     } else if (state->p25_chan_tdma_explicit[iden] == 0 && state->p25_sys_is_tdma == 1) {
         // Conservative fallback when TDMA IDEN not yet learned
@@ -317,8 +346,8 @@ p25_confirm_idens_for_current_site(dsd_state* state) {
  * @brief Determine if a base frequency falls in the VHF or UHF band.
  *
  * Checks whether @p base_freq (encoded in 5 Hz units per IDEN_UP) falls
- * within VHF (136–172 MHz) or UHF (380–512 MHz). Used by the 0x7D handler
- * to discriminate between standard and VHF/UHF field layouts.
+ * within VHF (136–172 MHz) or UHF (380–512 MHz). Used as a sanity check for
+ * VHF/UHF identifier updates.
  *
  * @param base_freq  Raw base frequency value in 5 Hz units.
  * @return 1 if VHF or UHF range, 0 otherwise.

@@ -51,7 +51,7 @@ ui_is_iden_channel(const dsd_state* state, int ch16, long int freq) {
     /* Try both new dual arrays (FDMA first, then TDMA) for a matching frequency.
      * This mirrors the resolution logic: check each populated entry to see if
      * the computed frequency matches the given freq. */
-    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
     int raw = ch16 & 0xFFF;
 
     /* Check FDMA entry */

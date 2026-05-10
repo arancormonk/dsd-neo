@@ -186,6 +186,26 @@ test_vhf_uhf_base_classifier(void) {
     return rc;
 }
 
+static int
+test_channel_type_matches_sdrtrunk(void) {
+    int rc = 0;
+    const int slots[16] = {1, 1, 1, 2, 4, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+    const int tdma[16] = {0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
+    for (int type = 0; type < 16; type++) {
+        char tag[64];
+        snprintf(tag, sizeof tag, "channel type %d slots", type);
+        rc |= expect_eq_int(tag, p25_channel_type_slots_per_carrier(type), slots[type]);
+        snprintf(tag, sizeof tag, "channel type %d tdma", type);
+        rc |= expect_eq_int(tag, p25_channel_type_is_tdma(type), tdma[type]);
+    }
+
+    if (rc == 0) {
+        fprintf(stderr, "PASS test_channel_type_matches_sdrtrunk\n");
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -193,6 +213,7 @@ main(void) {
     rc |= test_vuhf_0x74_uses_vuhf_layout();
     rc |= test_tdma_0x73_uses_signed_tdma_layout();
     rc |= test_vhf_uhf_base_classifier();
+    rc |= test_channel_type_matches_sdrtrunk();
 
     if (rc == 0) {
         fprintf(stderr, "\nAll test_p25_iden_vhf_uhf_fix tests PASSED\n");

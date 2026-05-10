@@ -56,12 +56,9 @@ p25_lcw_store_fdma_iden(dsd_opts* opts, dsd_state* state, int iden, long int bas
         return;
     }
 
-    p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
-    if (e->populated) {
-        fprintf(stderr, " (existing current IDEN preserved)");
-        return;
-    }
+    p25_invalidate_chan_map_for_iden(state, iden);
 
+    p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
     e->base_freq = base_freq;
     e->chan_type = 1;
     e->chan_spac = chan_spac;

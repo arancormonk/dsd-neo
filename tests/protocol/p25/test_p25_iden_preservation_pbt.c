@@ -106,8 +106,8 @@ prng_range(uint32_t lo, uint32_t hi) {
     return lo + (prng_next() % range);
 }
 
-/* OP25-derived slots-per-carrier by channel type (must match p25_frequency.c) */
-static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+/* sdrtrunk ChannelType slots-per-carrier mapping (must match p25_frequency.c) */
+static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 
 /* Number of iterations per property */
 #define PBT_ITERATIONS 10000
