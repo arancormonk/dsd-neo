@@ -195,9 +195,6 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                     snprintf(state->active_channel[0], sizeof state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
                              channel1, suf, group1);
                     state->last_active_time = time(NULL);
-                    /* Inform scheduler of active call (not gated by lcw_retune —
-                     * this is for scheduler awareness, not retune decisions). */
-                    p25_sm_on_group_grant(opts, state, channel1, 0 /*svc*/, group1, 0 /*source unavailable*/);
                 }
 
                 if (channel2 && group2 && group1 != group2) {
@@ -207,7 +204,6 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                     snprintf(state->active_channel[1], sizeof state->active_channel[1], "Active Ch: %04X%s TG: %d; ",
                              channel2, suf, group2);
                     state->last_active_time = time(NULL);
-                    p25_sm_on_group_grant(opts, state, channel2, 0 /*svc*/, group2, 0 /*source unavailable*/);
                 }
 
             }

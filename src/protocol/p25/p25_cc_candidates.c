@@ -151,16 +151,37 @@ p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t
         return; /* Reject current CC as neighbor. */
     }
 
-    /* Check for existing entry with the same frequency — update metadata in place. */
-    for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
-        if (state->p25_nb_entries[i].freq == freq) {
-            if (sysid != 0 || rfss != 0 || site != 0 || cfva != 0) {
-                state->p25_nb_entries[i].sysid = sysid;
-                state->p25_nb_entries[i].rfss = rfss;
-                state->p25_nb_entries[i].site = site;
-                state->p25_nb_entries[i].cfva = cfva;
+    int has_site_identity = (sysid != 0 || rfss != 0 || site != 0);
+
+    /* Structured neighbor broadcasts identify sites. Keep those entries keyed
+     * by site identity so frequency reuse does not merge distinct neighbors. */
+    if (has_site_identity) {
+        for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
+            p25_nb_entry_t* entry = &state->p25_nb_entries[i];
+            if (entry->sysid == sysid && entry->rfss == rfss && entry->site == site) {
+                entry->freq = freq;
+                entry->cfva = cfva;
+                entry->last_seen = time(NULL);
+                return;
             }
-            state->p25_nb_entries[i].last_seen = time(NULL);
+        }
+    }
+
+    /* Legacy frequency-only updates refresh by frequency without clobbering
+     * any site metadata learned from structured broadcasts. */
+    for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
+        p25_nb_entry_t* entry = &state->p25_nb_entries[i];
+        if (entry->freq == freq) {
+            if (has_site_identity && (entry->sysid != 0 || entry->rfss != 0 || entry->site != 0)) {
+                continue;
+            }
+            if (has_site_identity) {
+                entry->sysid = sysid;
+                entry->rfss = rfss;
+                entry->site = site;
+                entry->cfva = cfva;
+            }
+            entry->last_seen = time(NULL);
             return;
         }
     }

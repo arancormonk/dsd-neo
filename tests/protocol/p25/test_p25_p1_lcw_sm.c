@@ -249,8 +249,8 @@ main(void) {
     // Gating cases are covered in a separate test without overriding
     // p25_sm_on_group_grant so the implementation’s gating logic runs.
 
-    // Format 0x42 has channel/TG pairs but no source field. It should not
-    // forward a stale lastsrc into the trunking scheduler.
+    // Format 0x42 reports calls in progress on other channels. It is display-only
+    // in the LCW path and must not dispatch a traffic-channel grant.
     {
         uint8_t lcw42[72];
         memset(lcw42, 0, sizeof(lcw42));
@@ -261,11 +261,7 @@ main(void) {
         g_called = 0;
         g_last_channel = g_last_svc = g_last_tg = g_last_src = -1;
         p25_test_invoke_lcw_with_lastsrc(lcw42, 72, /*enable_retune*/ 0, /*cc*/ 851000000, /*lastsrc*/ 777777);
-        rc |= expect_eq_int("0x42 dispatch called", g_called, 1);
-        rc |= expect_eq_int("0x42 channel", g_last_channel, ch);
-        rc |= expect_eq_int("0x42 svc", g_last_svc, 0);
-        rc |= expect_eq_int("0x42 tg", g_last_tg, tg);
-        rc |= expect_eq_int("0x42 source unavailable", g_last_src, 0);
+        rc |= expect_eq_int("0x42 no dispatch", g_called, 0);
     }
 
     return rc;

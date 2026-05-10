@@ -39,20 +39,41 @@ test_metadata_zero_fill_preserves(void) {
     free(st);
 }
 
-/* Non-zero metadata update overwrites existing fields. */
+/* Non-zero metadata update refreshes an existing site entry. */
 static void
-test_metadata_nonzero_overwrites(void) {
+test_same_site_refreshes_metadata(void) {
     dsd_state* st = calloc(1, sizeof(*st));
     assert(st != NULL);
 
     p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x0B);
-    p25_nb_add_ex(st, 852675000, 0x200, 2, 5, 0x03);
+    p25_nb_add_ex(st, 852700000, 0x100, 1, 4, 0x03);
 
     assert(st->p25_nb_count == 1);
-    assert(st->p25_nb_entries[0].sysid == 0x200);
-    assert(st->p25_nb_entries[0].rfss == 2);
-    assert(st->p25_nb_entries[0].site == 5);
+    assert(st->p25_nb_entries[0].freq == 852700000);
+    assert(st->p25_nb_entries[0].sysid == 0x100);
+    assert(st->p25_nb_entries[0].rfss == 1);
+    assert(st->p25_nb_entries[0].site == 4);
     assert(st->p25_nb_entries[0].cfva == 0x03);
+
+    free(st);
+}
+
+/* Same frequency can identify distinct neighbor sites. */
+static void
+test_same_frequency_distinct_sites_remain_separate(void) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(st != NULL);
+
+    p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x0B);
+    p25_nb_add_ex(st, 852675000, 0x100, 2, 5, 0x03);
+
+    assert(st->p25_nb_count == 2);
+    assert(st->p25_nb_entries[0].freq == 852675000);
+    assert(st->p25_nb_entries[1].freq == 852675000);
+    assert(st->p25_nb_entries[0].rfss == 1);
+    assert(st->p25_nb_entries[0].site == 4);
+    assert(st->p25_nb_entries[1].rfss == 2);
+    assert(st->p25_nb_entries[1].site == 5);
 
     free(st);
 }
@@ -213,7 +234,8 @@ test_keepalive_refreshes_timestamp(void) {
 int
 main(void) {
     test_metadata_zero_fill_preserves();
-    test_metadata_nonzero_overwrites();
+    test_same_site_refreshes_metadata();
+    test_same_frequency_distinct_sites_remain_separate();
     test_self_entry_rejected();
     test_cc_rotation_accepts_old();
     test_new_entry_fields();
