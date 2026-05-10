@@ -307,8 +307,8 @@ test_fallback_to_other_array(void) {
     st.p25_chan_tdma_explicit[iden] = 1;
     int chan = (iden << 12) | 0x0008;
     long f = process_channel_to_freq(&opts, &st, chan);
-    /* FDMA context: denom=1, step=8, freq = 850000000 + (8 * 50 * 125) = 850050000 */
-    long want = 850000000L + (8L * 50 * 125);
+    /* Falls back to the selected TDMA entry; chan_type=3, denom=2, step=4 */
+    long want = 850000000L + (4L * 50 * 125);
     rc |= expect_eq_long("fallback: FDMA context uses TDMA entry", f, want);
 
     /* Reverse: only FDMA populated, TDMA context */
@@ -323,6 +323,7 @@ test_fallback_to_other_array(void) {
     chan = (iden << 12) | 0x0008;
     f = process_channel_to_freq(&opts, &st, chan);
     /* Falls back to FDMA entry; chan_type=1, slots_per_carrier[1]=1, denom=1, step=8 */
+    want = 850000000L + (8L * 50 * 125);
     rc |= expect_eq_long("fallback: TDMA context uses FDMA entry", f, want);
 
     if (rc == 0) {

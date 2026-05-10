@@ -196,8 +196,8 @@ typedef struct {
  *
  * Each entry holds the complete set of parameters needed to resolve a 16-bit
  * channel number to a frequency. Two arrays of this type exist in dsd_state:
- * one for FDMA-sourced identifiers (opcodes 0x74, 0x7D) and one for
- * TDMA-sourced identifiers (opcodes 0x73, 0xF3). This separation prevents
+ * one for FDMA-sourced identifiers (LCW 0x58/0x59 and opcodes 0x74, 0x7D)
+ * and one for TDMA-sourced identifiers (opcodes 0x73, 0xF3). This separation prevents
  * multi-mode systems from cycling incompatible parameters in a single slot.
  */
 typedef struct {
@@ -207,7 +207,7 @@ typedef struct {
     int trans_off;            // transmit offset
     uint8_t bw_vu;            // 4-bit VHF/UHF bandwidth (0=standard/not VHF-UHF, nonzero=VHF/UHF BW)
     uint8_t trust;            // 0=unknown, 1=unconfirmed, 2=confirmed on matching CC
-    uint8_t populated;        // 0=empty, 1=has valid complete data from a TSBK/MAC PDU
+    uint8_t populated;        // 0=empty, 1=has valid complete data from LCW/TSBK/MAC/PDU
     unsigned long long wacn;  // WACN provenance (system context when IDEN was learned)
     unsigned long long sysid; // SysID provenance
     unsigned long long rfss;  // RFSS ID provenance
@@ -636,7 +636,7 @@ struct dsd_state {
 
     //iden freq storage for frequency calculations
     // Bitmask per IDEN slot indicating which modulation classes have been seen:
-    //   bit0 (0x01) = has FDMA entry (written by opcodes 0x74, 0x7D)
+    //   bit0 (0x01) = has FDMA entry (written by LCW 0x58/0x59 and opcodes 0x74, 0x7D)
     //   bit1 (0x02) = has TDMA entry (written by opcodes 0x73, 0xF3)
     // Values: 0=unknown, 1=FDMA only, 2=TDMA only, 3=both FDMA and TDMA
     uint8_t p25_chan_tdma_explicit[16];
@@ -647,7 +647,7 @@ struct dsd_state {
     // This prevents multi-mode systems from cycling incompatible parameters
     // in a single slot when both TDMA and FDMA IDEN updates share the same
     // 4-bit identifier ID.
-    p25_iden_entry_t p25_iden_fdma[16]; // Written by opcodes 0x74, 0x7D (non-TDMA/FDMA)
+    p25_iden_entry_t p25_iden_fdma[16]; // Written by LCW 0x58/0x59 and opcodes 0x74, 0x7D
     p25_iden_entry_t p25_iden_tdma[16]; // Written by opcodes 0x73, 0xF3 (TDMA)
 
     //p25 frequency storage for trunking and display in ncurses

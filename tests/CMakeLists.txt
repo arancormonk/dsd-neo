@@ -2111,11 +2111,11 @@ target_include_directories(dsd-neo_test_p25_iden_dual_array PRIVATE ${PROJECT_SO
 target_link_libraries(dsd-neo_test_p25_iden_dual_array PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_IDEN_DUAL_ARRAY COMMAND dsd-neo_test_p25_iden_dual_array)
 
-# P25 IDEN LCW partial write guard (empty slot, populated slot, LCW→TSBK sequence)
-add_executable(dsd-neo_test_p25_iden_lcw_partial protocol/p25/test_p25_iden_lcw_partial.c)
-target_include_directories(dsd-neo_test_p25_iden_lcw_partial PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_p25_iden_lcw_partial PRIVATE dsd-neo_proto_p25)
-add_test(NAME P25_IDEN_LCW_PARTIAL COMMAND dsd-neo_test_p25_iden_lcw_partial)
+# P25 LCW Channel Identifier Update full FDMA IDEN decode
+add_executable(dsd-neo_test_p25_iden_lcw_full protocol/p25/test_p25_iden_lcw_full.c)
+target_include_directories(dsd-neo_test_p25_iden_lcw_full PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_lcw_full PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_LCW_FULL COMMAND dsd-neo_test_p25_iden_lcw_full)
 
 # P25 IDEN preservation property-based test (FDMA/TDMA formula, cache, empty slots)
 add_executable(dsd-neo_test_p25_iden_preservation_pbt protocol/p25/test_p25_iden_preservation_pbt.c)
@@ -2141,8 +2141,8 @@ target_include_directories(dsd-neo_test_p25_iden_vhf_uhf_fix PRIVATE ${PROJECT_S
 target_link_libraries(dsd-neo_test_p25_iden_vhf_uhf_fix PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_IDEN_VHF_UHF_FIX COMMAND dsd-neo_test_p25_iden_vhf_uhf_fix)
 
-# P25 MBT 0x33 FDMA routing (bug condition exploration + preservation)
-add_executable(dsd-neo_test_p25_mbt_0x33_fdma_routing protocol/p25/test_p25_mbt_0x33_fdma_routing.c)
-target_include_directories(dsd-neo_test_p25_mbt_0x33_fdma_routing PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_p25_mbt_0x33_fdma_routing PRIVATE dsd-neo_proto_p25)
-add_test(NAME P25_MBT_0X33_FDMA_ROUTING COMMAND dsd-neo_test_p25_mbt_0x33_fdma_routing)
+# P25 MBT 0x33 foreign-system IDEN updates do not populate current IDEN tables
+add_executable(dsd-neo_test_p25_mbt_0x33_foreign_iden protocol/p25/test_p25_mbt_0x33_foreign_iden.c)
+target_include_directories(dsd-neo_test_p25_mbt_0x33_foreign_iden PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_mbt_0x33_foreign_iden PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_MBT_0X33_FOREIGN_IDEN COMMAND dsd-neo_test_p25_mbt_0x33_foreign_iden)

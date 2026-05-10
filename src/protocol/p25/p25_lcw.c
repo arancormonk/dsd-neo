@@ -44,6 +44,38 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     snprintf(dst + len, dstsz - len, "%s", src);
 }
 
+static inline int
+p25_lcw_signed_offset_units(int sign_bit, int raw_offset) {
+    return sign_bit ? raw_offset : -raw_offset;
+}
+
+static void
+p25_lcw_store_fdma_iden(dsd_opts* opts, dsd_state* state, int iden, long int base_freq, int chan_spac, int trans_off,
+                        uint8_t bw_vu) {
+    if (!state || iden < 0 || iden >= 16 || base_freq == 0 || chan_spac == 0) {
+        return;
+    }
+
+    p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
+    if (e->populated) {
+        fprintf(stderr, " (existing current IDEN preserved)");
+        return;
+    }
+
+    e->base_freq = base_freq;
+    e->chan_type = 1;
+    e->chan_spac = chan_spac;
+    e->trans_off = trans_off;
+    e->bw_vu = bw_vu;
+    e->trust = (state->p25_cc_freq != 0 && opts && opts->p25_is_tuned == 0) ? 2 : 1;
+    e->populated = 1;
+    e->wacn = state->p2_wacn;
+    e->sysid = state->p2_sysid;
+    e->rfss = state->p2_rfssid;
+    e->site = state->p2_siteid;
+    state->p25_chan_tdma_explicit[iden] |= 1;
+}
+
 //new p25_lcw function here -- TIA-102.AABF-D LCW Format Messages (if anybody wants to fill the rest out)
 void
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors) {
@@ -421,60 +453,30 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             // This lc_format doesn't use the MFID field
             else if (lc_format == 0x58) {
                 uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
+                int bw = (int)ConvertBitIntoBytes(&LCW_bits[12], 9);
+                int sign = LCW_bits[21] & 1;
+                int tx_raw = (int)ConvertBitIntoBytes(&LCW_bits[22], 8);
+                int chan_spac = (int)ConvertBitIntoBytes(&LCW_bits[30], 10);
                 uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
-                fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
-                if (iden < 16 && base != 0) {
-                    // LCW partial write guard: LCW only carries base_freq (no chan_spac/chan_type).
-                    // If the slot is already fully populated by a TSBK, update base_freq in place.
-                    // If not yet populated, store base_freq provisionally but do NOT mark populated,
-                    // since we lack chan_spac/chan_type needed for frequency resolution.
-                    p25_iden_entry_t* ef = &state->p25_iden_fdma[iden];
-                    if (ef->populated && ef->chan_spac != 0) {
-                        // Slot fully populated by TSBK — safe to update base_freq
-                        if ((uint32_t)ef->base_freq != base) {
-                            ef->base_freq = (long int)base;
-                            fprintf(stderr, " (updated)");
-                        }
-                        ef->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
-                    } else {
-                        // Slot not yet populated — store provisionally, do NOT set populated=1
-                        ef->base_freq = (long int)base;
-                    }
-                    // Update provenance fields regardless of populated state
-                    ef->wacn = state->p2_wacn;
-                    ef->sysid = state->p2_sysid;
-                    ef->rfss = state->p2_rfssid;
-                    ef->site = state->p2_siteid;
-                }
+                int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
+                fprintf(stderr, " Channel Identifier Update; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %ld;",
+                        iden, bw, trans_off, chan_spac, (long)base * 5L);
+                p25_lcw_store_fdma_iden(opts, state, iden, (long int)base, chan_spac, trans_off, 0);
             }
 
             // This lc_format doesn't use the MFID field
             else if (lc_format == 0x59) {
                 uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
+                uint8_t bw_vu = (uint8_t)ConvertBitIntoBytes(&LCW_bits[12], 4);
+                int sign = LCW_bits[16] & 1;
+                int tx_raw = (int)ConvertBitIntoBytes(&LCW_bits[17], 13);
+                int chan_spac = (int)ConvertBitIntoBytes(&LCW_bits[30], 10);
                 uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
-                fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
-                if (iden < 16 && base != 0) {
-                    // LCW partial write guard: same logic as format 0x58.
-                    // Only fully update base_freq on already-populated entries;
-                    // store provisionally otherwise without marking populated.
-                    p25_iden_entry_t* ef = &state->p25_iden_fdma[iden];
-                    if (ef->populated && ef->chan_spac != 0) {
-                        // Slot fully populated by TSBK — safe to update base_freq
-                        if ((uint32_t)ef->base_freq != base) {
-                            ef->base_freq = (long int)base;
-                            fprintf(stderr, " (updated)");
-                        }
-                        ef->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
-                    } else {
-                        // Slot not yet populated — store provisionally, do NOT set populated=1
-                        ef->base_freq = (long int)base;
-                    }
-                    // Update provenance fields regardless of populated state
-                    ef->wacn = state->p2_wacn;
-                    ef->sysid = state->p2_sysid;
-                    ef->rfss = state->p2_rfssid;
-                    ef->site = state->p2_siteid;
-                }
+                int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
+                fprintf(stderr,
+                        " Channel Identifier Update VU; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %ld;", iden,
+                        bw_vu, trans_off, chan_spac, (long)base * 5L);
+                p25_lcw_store_fdma_iden(opts, state, iden, (long int)base, chan_spac, trans_off, bw_vu);
             }
 
             else {

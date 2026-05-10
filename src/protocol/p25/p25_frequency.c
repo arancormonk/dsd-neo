@@ -71,7 +71,7 @@ p25_select_iden_entry(const dsd_state* state, int iden, int mode, int* out_use_t
     }
     if (fallback->populated) {
         if (out_use_tdma) {
-            *out_use_tdma = prefer_tdma;
+            *out_use_tdma = !prefer_tdma;
         }
         return fallback;
     }
@@ -185,7 +185,7 @@ p25_channel_to_freq_impl(dsd_opts* opts, dsd_state* state, int channel, int mode
 // - Frequency calculation per OP25 practice:
 //     freq_hz = base[iden]*5 + (step * spacing[iden] * 125)
 //   Where:
-//     base[iden] is in units of 5 kHz (per IDEN_UP encoding),
+//     base[iden] is in units of 5 Hz (per IDEN_UP encoding),
 //     spacing[iden] is in units of 125 Hz,
 //     step = channel_number / slots_per_carrier[type]
 // - slots_per_carrier table below is sourced from OP25 and common system behavior.
