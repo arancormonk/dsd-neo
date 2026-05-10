@@ -288,6 +288,5 @@ main(void) {
     int rc = run_cases();
     dsd_test_capture_stderr_end(&cap);
     (void)remove(cap.path);
-    (void)rc;
-    return 0;
+    return rc;
 }
