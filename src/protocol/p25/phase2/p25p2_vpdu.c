@@ -82,10 +82,10 @@ p25_mac_get_bits(const unsigned long long int MAC[24], int len_a, int start_bit,
 }
 
 static time_t
-p25_utc_time_from_fields(int year, int month, int day, int hours, int minutes, int seconds) {
+p25_utc_time_from_local_fields(int year, int month, int day, int hours, int minutes, int seconds, int offset_minutes) {
     static const int days_in_month[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     if (year < 1970 || month < 1 || month > 12 || day < 1 || day > 31 || hours < 0 || hours > 23 || minutes < 0
-        || minutes > 59 || seconds < 0 || seconds > 60) {
+        || minutes > 59 || seconds < 0 || seconds > 59) {
         return (time_t)-1;
     }
     int max_day = days_in_month[month - 1];
@@ -107,6 +107,7 @@ p25_utc_time_from_fields(int year, int month, int day, int hours, int minutes, i
     unsigned doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
     int64_t days = era * 146097 + (int64_t)doe - 719468;
     int64_t total = days * 86400 + (int64_t)hours * 3600 + (int64_t)minutes * 60 + seconds;
+    total -= (int64_t)offset_minutes * 60;
     return (time_t)total;
 }
 
@@ -2912,21 +2913,24 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
             fprintf(stderr, "%s", KNRM);
 
-            // Store time_t if both date and time are valid
+            int offset_minutes = 0;
+            if (vl) {
+                offset_minutes = lto_mag;
+                if (lto_sign) {
+                    offset_minutes = -offset_minutes;
+                }
+            }
+
+            // Store UTC time_t if both date and time are valid.
             if (vd && vt) {
-                time_t t = p25_utc_time_from_fields(year, month, day, hours, minutes, seconds);
+                time_t t = p25_utc_time_from_local_fields(year, month, day, hours, minutes, seconds, offset_minutes);
                 if (t != (time_t)-1) {
                     state->p25_sys_time = t;
                     state->p25_sys_time_valid = 1;
                 }
             }
 
-            // Store local time offset if valid
             if (vl) {
-                int offset_minutes = lto_mag;
-                if (lto_sign) {
-                    offset_minutes = -offset_minutes;
-                }
                 state->p25_sys_time_offset = (int16_t)offset_minutes;
                 state->p25_sys_time_offset_valid = 1;
             }

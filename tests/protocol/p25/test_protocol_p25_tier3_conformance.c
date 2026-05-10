@@ -817,6 +817,43 @@ test_time_date_state_stores_offset(void) {
     return rc;
 }
 
+/**
+ * test_time_date_state_stores_utc_from_local_offset - verify the announced
+ * local date/time plus UTC offset is stored as the corresponding UTC instant.
+ */
+static int
+test_time_date_state_stores_utc_from_local_offset(void) {
+    int rc = 0;
+
+    static dsd_opts opts;
+    static dsd_state st;
+    memset(&opts, 0, sizeof(opts));
+    memset(&st, 0, sizeof(st));
+
+    unsigned long long MAC[24];
+    build_time_date_mac(MAC, 1, 1, 1, 0, 330, 2025, 3, 15, 14, 30, 45);
+    process_MAC_VPDU(&opts, &st, 0, MAC);
+
+    time_t expected = utc_time_from_fields(2025, 3, 15, 14, 30, 45) - (time_t)(330 * 60);
+    if (st.p25_sys_time != expected) {
+        fprintf(stderr,
+                "FAIL: test_time_date_state_stores_utc_from_local_offset: UTC time_t mismatch, expected %ld, got %ld\n",
+                (long)expected, (long)st.p25_sys_time);
+        rc = 1;
+    }
+    if (st.p25_sys_time_valid != 1) {
+        fprintf(stderr, "FAIL: test_time_date_state_stores_utc_from_local_offset: expected valid flag set\n");
+        rc = 1;
+    }
+    if (st.p25_sys_time_offset != 330) {
+        fprintf(stderr, "FAIL: test_time_date_state_stores_utc_from_local_offset: expected +330, got %d\n",
+                st.p25_sys_time_offset);
+        rc = 1;
+    }
+
+    return rc;
+}
+
 /* ============================================================================
  * 6.4 VPDU Dispatch Tests
  * ============================================================================ */
@@ -956,6 +993,7 @@ main(void) {
     rc |= test_time_date_state_init_zero();
     rc |= test_time_date_state_stores_time_t();
     rc |= test_time_date_state_stores_offset();
+    rc |= test_time_date_state_stores_utc_from_local_offset();
 
     /* 6.4 VPDU dispatch tests */
     rc |= test_vpdu_dispatch_0x75();
