@@ -589,6 +589,9 @@ initState(dsd_state* state) {
     state->debug_audio_errorsR = 0;
     state->debug_header_errors = 0;
     state->debug_header_critical_errors = 0;
+    state->nid_corrections_total = 0;
+    state->nid_failures_total = 0;
+    state->nid_parity_overrides = 0;
     state->debug_mode = 0;
 
     state->nxdn_last_ran = -1;

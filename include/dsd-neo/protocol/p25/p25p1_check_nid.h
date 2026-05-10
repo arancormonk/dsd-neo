@@ -62,6 +62,26 @@ enum NidResult {
 int check_NID_with_error_count(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count);
 
 /**
+ * @brief Decode and validate a P25 NID, retrying with a known NAC after BCH failure.
+ *
+ * Mirrors sdrtrunk's P25 Phase 1 NID recovery path: first decode the received
+ * codeword normally. If BCH correction fails and @p observed_nac is a valid
+ * known channel NAC, replace the received NAC field with @p observed_nac and
+ * retry BCH correction once. The retry is not used for decoded-but-invalid
+ * DUIDs.
+ *
+ * @param bch_code     Input. An array of 63 bytes, each containing one bit of the NID.
+ * @param observed_nac Known 12-bit NAC to use for retry, or 0 when unavailable.
+ * @param new_nac      Output. Pointer to store the decoded 12-bit NAC value.
+ * @param new_duid     Output. Pointer to a 3-char buffer for the decoded DUID string.
+ * @param parity       Input. The 64th parity bit read from the air interface.
+ * @param error_count  Output. Pointer to store the number of BCH errors corrected.
+ * @return NidResult code (same semantics as check_NID_with_error_count()).
+ */
+int check_NID_with_observed_nac(char* bch_code, int observed_nac, int* new_nac, char* new_duid, unsigned char parity,
+                                int* error_count);
+
+/**
  * @brief Decode and validate a P25 NID codeword.
  *
  * Calls the full check_NID_with_error_count() interface with a local dummy

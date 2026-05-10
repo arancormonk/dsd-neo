@@ -322,7 +322,7 @@ test_decode_failure_no_error_count(void) {
     char corrupted[63];
     std::memcpy(corrupted, codeword, 63);
 
-    // Flip 12 distinct positions — exceeds correction capability
+    // Flip 12 distinct positions - exceeds correction capability
     int flip_12[12] = {0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55};
     for (int i = 0; i < 12; i++) {
         corrupted[flip_12[i]] ^= 1;
@@ -352,6 +352,69 @@ test_decode_failure_no_error_count(void) {
     return 0;
 }
 
+/**
+ * @brief Verify the sdrtrunk-style observed NAC retry after BCH failure.
+ *
+ * The first decode has all 12 NAC bits inverted, which exceeds the BCH
+ * correction limit. Supplying the known channel NAC replaces those bits and
+ * allows the second BCH decode to succeed.
+ */
+static int
+test_observed_nac_retry_after_bch_failure(void) {
+    BCH_63_16_11 bch;
+
+    int nac = 0x293;
+    int duid = 0x5; // LDU1
+    char info[16];
+    char codeword[63];
+
+    make_info_word(nac, duid, info);
+    bch.encode(info, codeword);
+
+    char corrupted[63];
+    std::memcpy(corrupted, codeword, 63);
+    for (int i = 0; i < 12; i++) {
+        corrupted[i] ^= 1;
+    }
+
+    int decoded_nac = -1;
+    char decoded_duid[3] = {0};
+    int error_count = -1;
+    int result = check_NID_with_error_count(corrupted, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
+    if (result != NID_DECODE_FAIL) {
+        std::fprintf(stderr, "test_observed_nac_retry_after_bch_failure: expected initial decode failure, got %d\n",
+                     result);
+        return 1;
+    }
+
+    decoded_nac = -1;
+    decoded_duid[0] = decoded_duid[1] = decoded_duid[2] = 0;
+    error_count = -1;
+    result =
+        check_NID_with_observed_nac(corrupted, nac, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
+    if (result != NID_OK) {
+        std::fprintf(stderr, "test_observed_nac_retry_after_bch_failure: expected observed NAC retry success, got %d\n",
+                     result);
+        return 1;
+    }
+    if (decoded_nac != nac) {
+        std::fprintf(stderr, "test_observed_nac_retry_after_bch_failure: expected NAC=0x%X, got 0x%X\n", nac,
+                     decoded_nac);
+        return 1;
+    }
+    if (std::strcmp(decoded_duid, "11") != 0) {
+        std::fprintf(stderr, "test_observed_nac_retry_after_bch_failure: expected DUID=11, got %s\n", decoded_duid);
+        return 1;
+    }
+    if (error_count != 0) {
+        std::fprintf(stderr, "test_observed_nac_retry_after_bch_failure: expected retry error_count=0, got %d\n",
+                     error_count);
+        return 1;
+    }
+
+    return 0;
+}
+
 /* --------------------------------------------------------------------------
  * Main
  * -------------------------------------------------------------------------- */
@@ -365,6 +428,7 @@ main(void) {
     rc |= test_parity_table_values();
     rc |= test_parity_override_correctable_range();
     rc |= test_decode_failure_no_error_count();
+    rc |= test_observed_nac_retry_after_bch_failure();
 
     if (rc == 0) {
         std::printf("P25 P1 NID full correction unit tests passed.\n");

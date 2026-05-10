@@ -27,6 +27,9 @@ main(void) {
 
     // Ensure initState explicitly resets this field even if caller pre-seeded it.
     state->rc2_context = state;
+    state->nid_corrections_total = 12;
+    state->nid_failures_total = 34;
+    state->nid_parity_overrides = 56;
     initState(state);
 
     if (state->rc2_context != NULL) {
@@ -36,6 +39,12 @@ main(void) {
         freeState(state);
         free(state);
         return 2;
+    }
+    if (state->nid_corrections_total != 0 || state->nid_failures_total != 0 || state->nid_parity_overrides != 0) {
+        fprintf(stderr, "expected NID counters to be reset after initState\n");
+        freeState(state);
+        free(state);
+        return 3;
     }
 
     freeState(state);

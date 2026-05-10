@@ -21,6 +21,28 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static int
+p25p1_valid_observed_nac(unsigned long long nac) {
+    return nac > 0ULL && nac <= 0xFFFULL && nac != 0xFFFULL;
+}
+
+static int
+p25p1_observed_nac(const dsd_state* state) {
+    if (state == NULL) {
+        return 0;
+    }
+    if (state->p2_hardset != 0 && p25p1_valid_observed_nac(state->p2_cc)) {
+        return (int)state->p2_cc;
+    }
+    if (p25p1_valid_observed_nac((unsigned long long)state->nac)) {
+        return state->nac;
+    }
+    if (p25p1_valid_observed_nac(state->p2_cc)) {
+        return (int)state->p2_cc;
+    }
+    return 0;
+}
+
 int
 dsd_dispatch_matches_p25p1(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype);
@@ -42,6 +64,7 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     char new_duid[3];
     int check_result;
     int error_count = 0;
+    int observed_nac;
 
     nac[12] = 0;
     duid[2] = 0;
@@ -105,10 +128,11 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     parity = (1 & dibit);                        // bit 0
 
     // Decode and validate the NID using full BCH(63,16,23) correction.
-    // check_NID_with_error_count returns NID_OK (1) or NID_PARITY_OVERRIDE (2)
+    // check_NID_with_observed_nac returns NID_OK (1) or NID_PARITY_OVERRIDE (2)
     // on success, NID_DECODE_FAIL (0) on failure.
-    // error_count receives the number of BCH bit errors corrected (0–11).
-    check_result = check_NID_with_error_count(bch_code, &new_nac, new_duid, parity, &error_count);
+    // error_count receives the number of BCH bit errors corrected (0-11).
+    observed_nac = p25p1_observed_nac(state);
+    check_result = check_NID_with_observed_nac(bch_code, observed_nac, &new_nac, new_duid, parity, &error_count);
     if (check_result > 0) {
         // NID_OK (1) or NID_PARITY_OVERRIDE (2) - frame accepted
 

@@ -25,13 +25,13 @@
 /**
  * @brief Decode result structure for BCH(63,16,11).
  *
- * Returned by BCH_63_16_11::decode() to provide both the success/failure
+ * Returned by BCH_63_16_11::decode_with_result() to provide both the success/failure
  * indication and the number of bit errors that were corrected. This enables
  * callers (e.g., check_NID) to make confidence-based decisions using the
  * error count as a quality metric.
  */
 struct BCH_63_16_Result {
-    bool success;    /**< true if decoding succeeded (0–11 errors corrected) */
+    bool success;    /**< true if decoding succeeded (0-11 errors corrected) */
     int error_count; /**< Number of bit errors corrected (valid only when success=true) */
 };
 
@@ -86,7 +86,7 @@ class BCH_63_16_11 {
     /**
      * Generator polynomial g(x) = 6331 1413 6723 5453 (octal), degree 47.
      *
-     * This is the BCH(63,16,23) generator polynomial from TIA-102.BAAA-A §8.5.2.
+     * This is the BCH(63,16,23) generator polynomial from TIA-102.BAAA-A section 8.5.2.
      * Stored as 48 binary coefficients (MSB = x^47 coefficient, LSB = x^0 = 1).
      * The polynomial has degree 47, so genpoly[0] is the x^47 coefficient (always 1)
      * and genpoly[47] is the x^0 coefficient (always 1).
@@ -103,8 +103,8 @@ class BCH_63_16_11 {
      * @brief Encode 16 information bits into a 63-bit systematic BCH codeword.
      *
      * Uses the generator polynomial g(x) = 6331 1413 6723 5453 (octal) from
-     * TIA-102.BAAA-A §8.5.2. The encoding is systematic: information bits
-     * occupy positions 0–15 of the output, parity bits occupy positions 16–62.
+     * TIA-102.BAAA-A section 8.5.2. The encoding is systematic: information bits
+     * occupy positions 0-15 of the output, parity bits occupy positions 16-62.
      *
      * Implementation uses a feedback shift register (LFSR) division approach:
      * multiply the information polynomial by x^47, divide by g(x), and append
@@ -126,7 +126,7 @@ class BCH_63_16_11 {
         // Number of parity bits = n - k = 63 - 16 = 47
         static const int PARITY_BITS = NN - KK; // 47
 
-        // Step 1: Copy 16 information bits to output positions 0–15
+        // Step 1: Copy 16 information bits to output positions 0-15
         for (int i = 0; i < KK; i++) {
             output[i] = input[i];
         }
@@ -176,11 +176,11 @@ class BCH_63_16_11 {
      * @param output Array of 16 chars to receive corrected data bits.
      * @return BCH_63_16_Result with success flag and error count.
      *         - success=true, error_count=0: no errors detected (all syndromes zero)
-     *         - success=true, error_count=N: N errors corrected (1 ≤ N ≤ 11)
+     *         - success=true, error_count=N: N errors corrected (1 <= N <= 11)
      *         - success=false, error_count=0: decoding failed (>11 errors or Chien search mismatch)
      */
     BCH_63_16_Result
-    decode(const char* input, char* output) {
+    decode_with_result(const char* input, char* output) {
         int recd[NN];      // received codeword (working copy)
         int s[2 * TT + 1]; // syndromes
 
@@ -369,21 +369,18 @@ class BCH_63_16_11 {
     }
 
     /**
-     * @brief Legacy decode interface (backward compatible).
+     * @brief Decode a BCH(63,16,11) codeword.
      *
-     * Thin wrapper around decode() that discards the error count and returns
-     * only the success/failure boolean. Provided for callers that do not need
-     * the error count information.
-     *
-     * @deprecated Use the BCH_63_16_Result overload for error count access.
+     * Thin wrapper around decode_with_result() that discards the error count
+     * and preserves the original public bool-returning API.
      *
      * @param input  Array of 63 chars, each containing a bit (0 or 1).
      * @param output Array of 16 chars to receive corrected data bits.
      * @return true if decoding succeeded, false otherwise.
      */
     bool
-    decode_legacy(const char* input, char* output) {
-        return decode(input, output).success;
+    decode(const char* input, char* output) {
+        return decode_with_result(input, output).success;
     }
 };
 

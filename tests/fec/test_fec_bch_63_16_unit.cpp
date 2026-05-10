@@ -127,9 +127,9 @@ test_encode_nac_293_ldu1(void) {
         }
     }
 
-    // Decode the clean codeword — should succeed with 0 errors
+    // Decode the clean codeword - should succeed with 0 errors
     char decoded[16];
-    BCH_63_16_Result result = bch.decode(codeword, decoded);
+    BCH_63_16_Result result = bch.decode_with_result(codeword, decoded);
 
     if (!result.success) {
         std::fprintf(stderr, "test_encode_nac_293_ldu1: decode of clean codeword failed\n");
@@ -165,7 +165,7 @@ test_decode_no_errors(void) {
     char decoded[16];
 
     bch.encode(info, codeword);
-    BCH_63_16_Result result = bch.decode(codeword, decoded);
+    BCH_63_16_Result result = bch.decode_with_result(codeword, decoded);
 
     if (!result.success) {
         std::fprintf(stderr, "test_decode_no_errors: decode failed on clean codeword\n");
@@ -209,7 +209,7 @@ test_decode_failure_12_errors(void) {
         corrupted[flip_positions[i]] ^= 1;
     }
 
-    BCH_63_16_Result result = bch.decode(corrupted, decoded);
+    BCH_63_16_Result result = bch.decode_with_result(corrupted, decoded);
 
     if (result.success) {
         std::fprintf(stderr,
@@ -250,7 +250,7 @@ test_gf_field_properties(void) {
     // they are private. Instead, we verify the field indirectly:
     //
     // 1. Encode a known word, introduce exactly 11 errors (max correctable),
-    //    decode successfully — this exercises all 63 field elements in the
+    //    decode successfully - this exercises all 63 field elements in the
     //    Chien search.
     // 2. Verify that the all-zero codeword property holds (linear code).
     // 3. Verify that distinct info words produce distinct codewords (injectivity).
@@ -273,7 +273,7 @@ test_gf_field_properties(void) {
             corrupted[positions[i]] ^= 1;
         }
 
-        BCH_63_16_Result result = bch.decode(corrupted, decoded);
+        BCH_63_16_Result result = bch.decode_with_result(corrupted, decoded);
         if (!result.success) {
             std::fprintf(stderr, "test_gf_field_properties: 11-error decode failed "
                                  "(field arithmetic error)\n");
@@ -289,7 +289,7 @@ test_gf_field_properties(void) {
         }
     }
 
-    // Test 2: Verify injectivity — two different info words produce different codewords
+    // Test 2: Verify injectivity - two different info words produce different codewords
     // This confirms the GF tables generate a proper code (no collisions)
     {
         char info_a[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
@@ -320,7 +320,7 @@ test_gf_field_properties(void) {
             std::memcpy(corrupted, codeword, 63);
             corrupted[pos] ^= 1;
 
-            BCH_63_16_Result result = bch.decode(corrupted, decoded);
+            BCH_63_16_Result result = bch.decode_with_result(corrupted, decoded);
             if (!result.success) {
                 std::fprintf(stderr,
                              "test_gf_field_properties: single-error at pos %d failed "
@@ -351,7 +351,7 @@ test_gf_field_properties(void) {
 /**
  * @brief Verify that the legacy bool decode interface still works.
  *
- * The decode_legacy() wrapper should return true on success and false
+ * The decode() wrapper should return true on success and false
  * on failure, discarding the error count.
  *
  * Validates: Requirements 5.2, 5.3
@@ -373,7 +373,7 @@ test_backward_compat_legacy_decode(void) {
         codeword[20] ^= 1;
         codeword[40] ^= 1;
 
-        bool ok = bch.decode_legacy(codeword, decoded);
+        bool ok = bch.decode(codeword, decoded);
         if (!ok) {
             std::fprintf(stderr, "test_backward_compat_legacy_decode: expected true, got false\n");
             return 1;
@@ -398,7 +398,7 @@ test_backward_compat_legacy_decode(void) {
             codeword[i * 5U] ^= 1;
         }
 
-        bool ok = bch.decode_legacy(codeword, decoded);
+        bool ok = bch.decode(codeword, decoded);
         if (ok) {
             std::fprintf(stderr, "test_backward_compat_legacy_decode: expected false on 12 errors, "
                                  "got true\n");

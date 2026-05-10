@@ -17,7 +17,7 @@ static BCH_63_16_11 bch;
  * The 4-bit DUID field encodes the frame type. Only 7 of the 16 possible
  * values are defined by the standard; all others indicate a BCH miscorrection
  * or protocol error. This table provides O(1) validation indexed directly by
- * the 4-bit DUID value (0x0–0xF).
+ * the 4-bit DUID value (0x0-0xF).
  *
  * Valid DUIDs:
  *   0x0 = HDU  (Header Data Unit)
@@ -64,6 +64,28 @@ class ParityTable {
 
 } parity_table;
 
+static int
+received_nac(const char* bch_code) {
+    int nac = 0;
+    for (int i = 0; i < 12; i++) {
+        nac <<= 1;
+        nac |= (int)(bch_code[i] ? 1 : 0);
+    }
+    return nac;
+}
+
+static bool
+valid_observed_nac(int nac) {
+    return nac > 0 && nac <= 0xFFF && nac != 0xFFF;
+}
+
+static void
+set_received_nac(char* bch_code, int nac) {
+    for (int i = 0; i < 12; i++) {
+        bch_code[i] = (char)((nac >> (11 - i)) & 1);
+    }
+}
+
 /**
  * @brief Decode and validate a P25 NID codeword with correction count reporting.
  *
@@ -83,16 +105,23 @@ class ParityTable {
  * @return NidResult code: NID_OK (1), NID_PARITY_OVERRIDE (2),
  *         or NID_DECODE_FAIL (0).
  */
-int
-check_NID_with_error_count(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count) {
+static int
+decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count,
+                    bool* bch_decode_failed) {
+    if (bch_decode_failed != 0) {
+        *bch_decode_failed = false;
+    }
 
     // Decode using local BCH implementation
     char decoded[16];
-    BCH_63_16_Result bch_result = bch.decode(bch_code, decoded);
+    BCH_63_16_Result bch_result = bch.decode_with_result(bch_code, decoded);
 
     if (!bch_result.success) {
         // BCH decode failed (>11 errors or Chien search mismatch)
         *error_count = 0;
+        if (bch_decode_failed != 0) {
+            *bch_decode_failed = true;
+        }
         return NID_DECODE_FAIL;
     }
 
@@ -108,7 +137,7 @@ check_NID_with_error_count(char* bch_code, int* new_nac, char* new_duid, unsigne
     }
     *new_nac = nac;
 
-    // Extract the DUID from positions 12–15. The DUID is represented as
+    // Extract the DUID from positions 12-15. The DUID is represented as
     // two dibit characters for compatibility with the dispatch layer.
     unsigned char new_duid_0 = (((int)decoded[12]) << 1) + ((int)decoded[13]);
     unsigned char new_duid_1 = (((int)decoded[14]) << 1) + ((int)decoded[15]);
@@ -138,6 +167,30 @@ check_NID_with_error_count(char* bch_code, int* new_nac, char* new_duid, unsigne
     // codeword, so accept the corrected NID and expose the condition to the
     // caller for diagnostics.
     return NID_PARITY_OVERRIDE;
+}
+
+int
+check_NID_with_error_count(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count) {
+    return decode_nid_codeword(bch_code, new_nac, new_duid, parity, error_count, 0);
+}
+
+int
+check_NID_with_observed_nac(char* bch_code, int observed_nac, int* new_nac, char* new_duid, unsigned char parity,
+                            int* error_count) {
+    bool bch_decode_failed = false;
+    int result = decode_nid_codeword(bch_code, new_nac, new_duid, parity, error_count, &bch_decode_failed);
+    if (result != NID_DECODE_FAIL || !bch_decode_failed || !valid_observed_nac(observed_nac)
+        || received_nac(bch_code) == observed_nac) {
+        return result;
+    }
+
+    char retry_code[63];
+    for (int i = 0; i < 63; i++) {
+        retry_code[i] = bch_code[i];
+    }
+    set_received_nac(retry_code, observed_nac);
+
+    return decode_nid_codeword(retry_code, new_nac, new_duid, parity, error_count, 0);
 }
 
 /**
