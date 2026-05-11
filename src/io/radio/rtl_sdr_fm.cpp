@@ -258,9 +258,16 @@ static std::atomic<int> g_retune_diag_blocks_remaining{0};
 static std::atomic<uint32_t> g_retune_settle_seq{0};
 static std::atomic<int> g_retune_settle_blocks_remaining{0};
 static const int kRetuneDiagBlocks = 20;
-static const int kRetuneSettleMinBlocks = 8;
-static const int kRetuneSettleStableBlocks = 3;
-static const int kRetuneSettleMaxBlocks = 48;
+/*
+ * The controller already purges stale samples and applies a time-based hardware
+ * mute after retunes. Do not additionally drop whole demod blocks here: at RTL
+ * block sizes one "block" can cover a large fraction of a P25P2 superframe, so
+ * block-based CQPSK settling can discard the early ISCH/sync bursts needed for
+ * Phase 2 acquisition.
+ */
+static const int kRetuneSettleMinBlocks = 1;
+static const int kRetuneSettleStableBlocks = 1;
+static const int kRetuneSettleMaxBlocks = 1;
 static const float kRetuneSettleStableRel = 0.055f;
 static const float kRetuneSettleMinMeanAbs = 0.015f;
 static dsd::io::radio::RtlAutoPpmController g_auto_ppm_controller;
@@ -1753,7 +1760,7 @@ static DSD_THREAD_RETURN_TYPE
 
         /* Capture decimated I/Q for constellation view after DSP. */
         extern void constellation_ring_append(const float* iq, int len, int sps_hint);
-        constellation_ring_append(d->lowpassed, d->lp_len, d->ted_sps);
+        constellation_ring_append(d->lowpassed, d->lp_len, d->cqpsk_enable ? 1 : d->ted_sps);
         /* Capture I-channel for eye diagram */
         eye_ring_append_i_chan(d->lowpassed, d->lp_len);
         /* Update spectrum snapshot from post-filter complex baseband */
@@ -1791,10 +1798,10 @@ static DSD_THREAD_RETURN_TYPE
                 qpsk_acc_n = 0;
             }
             if (sps >= 2 && sps <= 12) {
-                /* Extract symbol-center I/Q pairs and accumulate */
+                /* CQPSK rewrites lowpassed to symbol-rate Costas output; other paths remain oversampled. */
                 for (int k = 0; k < pairs && qpsk_acc_n < QPSK_ACCUM_MAX; k++) {
                     int phase = k % sps;
-                    if (phase >= mid - win && phase <= mid + win) {
+                    if (d->cqpsk_enable || (phase >= mid - win && phase <= mid + win)) {
                         qpsk_acc_i[qpsk_acc_n] = iq[2 * k + 0];
                         qpsk_acc_q[qpsk_acc_n] = iq[2 * k + 1];
                         qpsk_acc_n++;
@@ -3584,6 +3591,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         int fll_enable;
         int ted_enable;
         float ted_gain;
+        int ted_gain_is_set;
         int ted_force;
     } persist = {};
 
@@ -3644,6 +3652,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         if (persist.ted_gain > 0.0f) {
             demod.ted_gain = persist.ted_gain;
         }
+        demod.ted_gain_is_set = persist.ted_gain_is_set ? 1 : 0;
         demod.ted_force = persist.ted_force ? 1 : 0;
     }
 
@@ -4691,6 +4700,8 @@ dsd_rtl_stream_set_ted_gain(float g) {
         g = 0.5f;
     }
     demod.ted_gain = g;
+    demod.ted_gain_is_set = 1;
+    demod.ted_effective_gain = g;
 }
 
 extern "C" float
@@ -4914,7 +4925,7 @@ rtl_stream_toggle_cqpsk(int onoff) {
         demod.mode_demod = &qpsk_differential_demod;
         demod.cqpsk_diff_prev_r = 1.0f;
         demod.cqpsk_diff_prev_j = 0.0f;
-        /* Ensure channel LPF profile matches QPSK family (P25 CQPSK/TDMA). */
+        /* Ensure channel LPF profile matches the QPSK family. */
         demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     } else {
         extern void dsd_fm_demod(struct demod_state*);

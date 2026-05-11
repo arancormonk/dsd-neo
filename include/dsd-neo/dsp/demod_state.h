@@ -196,6 +196,8 @@ struct demod_state {
     int ted_enabled;
     int ted_force;            /* allow forcing TED even for FM/C4FM paths */
     float ted_gain;           /* loop gain, typically 0.01..0.1 */
+    int ted_gain_is_set;      /* env/API/UI override; disables automatic mode-specific gain changes */
+    float ted_effective_gain; /* loop gain actually used by mode-specific TED */
     int ted_sps;              /* nominal samples per symbol */
     int ted_sps_override;     /* >0 = manual override (used during P25P2 VC tunes) */
     int costas_reset_pending; /* 1 = reset Costas loop on next retune (set when SPS override changes) */

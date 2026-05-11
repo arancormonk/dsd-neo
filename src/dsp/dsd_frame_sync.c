@@ -84,6 +84,31 @@ static atomic_int g_ham_qpsk_recent = 24;
 static atomic_int g_ham_gfsk_recent = 24;
 static atomic_int g_qpsk_dwell_enter_ms = 0;
 
+static void
+p25p2_note_sync_activity(dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    const int voice_tuned =
+        (opts && opts->p25_trunk == 1 && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
+
+    /*
+     * Exact P25P2 sync means the channel is present, but while following a VC it
+     * does not necessarily mean voice is still active. TDMA VCs can keep sending
+     * LCCH/idle after a call ends; refreshing last_vc_sync_time here holds the
+     * trunk release path open and delays return to the CC. Voice/MAC handlers
+     * update last_vc_sync_time when the call is actually active.
+     */
+    if (voice_tuned) {
+        return;
+    }
+
+    const time_t now = time(NULL);
+    const double nowm = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time = now;
+    state->last_cc_sync_time_m = nowm;
+}
+
 void
 dsd_frame_sync_reset_mod_state(void) {
     atomic_store(&g_vote_qpsk, 0);
@@ -1298,7 +1323,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         fprintf(stderr, " P2 Missing Parameters            ");
                         fprintf(stderr, "%s", KNRM);
                     }
-                    state->last_cc_sync_time = time(NULL);
+                    p25p2_note_sync_activity(opts, state);
                     /* CQPSK/QPSK: warm-start only center (DC bias) */
                     if (state->rf_mod == 1) {
                         dsd_sync_warm_start_center_outer_only(opts, state, 20);
@@ -1325,7 +1350,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         fprintf(stderr, "%s", KNRM);
                     }
                     state->lastsynctype = DSD_SYNC_P25P2_NEG;
-                    state->last_cc_sync_time = time(NULL);
+                    p25p2_note_sync_activity(opts, state);
                     /* CQPSK/QPSK: warm-start only center (DC bias) */
                     if (state->rf_mod == 1) {
                         dsd_sync_warm_start_center_outer_only(opts, state, 20);

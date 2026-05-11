@@ -1443,8 +1443,12 @@ full_demod(struct demod_state* d) {
                     /* Costas freq at symbol rate (not sample rate) */
                     int sym_rate = (d->ted_sps > 0 && d->rate_out > 0) ? (d->rate_out / d->ted_sps) : 4800;
                     float costas_freq_hz = c->freq * ((float)sym_rate / kTwoPi);
-                    fprintf(stderr, "[OP25] in:%d out:%d omega:%.3f fll_freq:%.1fHz costas_freq:%.1fHz phase:%.3f\n",
-                            pre_len / 2, d->lp_len / 2, ted->omega, fll_freq_hz, costas_freq_hz, c->phase);
+                    float ted_lock = (ted->lock_count > 0) ? (ted->lock_accum / (float)ted->lock_count) : 0.0f;
+                    fprintf(stderr,
+                            "[OP25] in:%d out:%d omega:%.3f ted_gain:%.3f ted_lock:%.3f fll_freq:%.1fHz "
+                            "costas_freq:%.1fHz phase:%.3f\n",
+                            pre_len / 2, d->lp_len / 2, ted->omega, d->ted_effective_gain, ted_lock, fll_freq_hz,
+                            costas_freq_hz, c->phase);
                     /* Log IQ constellation: first few symbols to check positioning */
                     if (d->lp_len >= 8) {
                         const float* iq = d->lowpassed;

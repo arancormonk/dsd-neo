@@ -116,6 +116,8 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->fll_prev_j = 0.0f;
     s->ted_enabled = 0;
     s->ted_gain = 0.0f;
+    s->ted_gain_is_set = 0;
+    s->ted_effective_gain = 0.0f;
     s->ted_sps = 0;
     s->ted_sps_override = 0;
     s->costas_reset_pending = 0;
@@ -328,6 +330,8 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     /* Native float TED gain (controls tracking aggressiveness, bounded internally)
        OP25 default: gain_mu = 0.025 */
     demod->ted_gain = cfg->ted_gain_is_set ? cfg->ted_gain : 0.025f;
+    demod->ted_gain_is_set = cfg->ted_gain_is_set ? 1 : 0;
+    demod->ted_effective_gain = demod->ted_gain;
     demod->ted_sps = 10;
     demod->ted_mu = 0.0f;
     demod->ted_force = cfg->ted_force_is_set ? (cfg->ted_force != 0) : 0;
@@ -445,7 +449,7 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
     int env_fll_beta_set = cfg->fll_beta_is_set;
     int env_fll_deadband_set = cfg->fll_deadband_is_set;
     int env_fll_slew_set = cfg->fll_slew_is_set;
-    int env_ted_gain_set = cfg->ted_gain_is_set;
+    int ted_gain_is_set = (demod->ted_gain_is_set || cfg->ted_gain_is_set) ? 1 : 0;
     /* Treat all digital voice modes as digital for FLL/TED defaults */
     int digital_mode =
         (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1
@@ -513,9 +517,10 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
                 }
             }
         }
-        if (!env_ted_gain_set) {
+        if (!ted_gain_is_set) {
             /* OP25 TED defaults: gain_mu = 0.025, gain_omega = 0.1 * gain_mu^2 = 0.0000625 */
             demod->ted_gain = 0.025f;
+            demod->ted_effective_gain = demod->ted_gain;
         }
         /* Digital defaults: slightly stronger, lower-deadband FLL for CQPSK/FM. */
         if (!env_fll_alpha_set) {
@@ -665,17 +670,17 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
         Fs_cx = 48000;
     }
     int sps = 0;
+    int sym_rate = 4800;
     if (opts) {
-        int sym_rate = 4800;
-        /* When mod_qpsk is set (e.g., -mq for P25P1 CQPSK), use 4800 sym/s.
-         * When only P25P2/X2-TDMA is enabled (without P25P1), use 6000 sym/s.
+        /* When only P25P2/X2-TDMA is enabled (without P25P1), use 6000 sym/s.
+         * When mod_qpsk is set for P25P1 CQPSK/LSM, use 4800 sym/s.
          * When both P25P1 and P25P2 are enabled (trunking mode), default to
          * P25P1 rate (4800) since CC is typically encountered first; the trunk
          * state machine will override via ted_sps_override when tuning to P25P2 VC. */
-        if (opts->mod_qpsk == 1) {
-            sym_rate = 4800; /* P25P1 CQPSK */
-        } else if ((opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) && opts->frame_p25p1 == 0) {
+        if ((opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) && opts->frame_p25p1 == 0) {
             sym_rate = 6000; /* P25P2/X2-TDMA only */
+        } else if (opts->mod_qpsk == 1) {
+            sym_rate = 4800; /* P25P1 CQPSK */
         } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) {
             sym_rate = 2400;
         }
@@ -728,6 +733,9 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
         demod->ted_sps = demod->ted_sps_override;
     } else {
         demod->ted_sps = sps;
+    }
+    if (demod->cqpsk_enable) {
+        demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
 }
 

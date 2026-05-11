@@ -1980,6 +1980,13 @@ if(DSD_HAS_RADIO)
   target_link_libraries(dsd-neo_test_io_rtl_auto_ppm PRIVATE dsd-neo_io_radio)
   add_test(NAME IO_RTL_AUTO_PPM COMMAND dsd-neo_test_io_rtl_auto_ppm)
 
+  add_executable(dsd-neo_test_io_rtl_demod_config io/test_io_rtl_demod_config.cpp)
+  target_include_directories(dsd-neo_test_io_rtl_demod_config PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+  )
+  target_link_libraries(dsd-neo_test_io_rtl_demod_config PRIVATE dsd-neo_io_radio)
+  add_test(NAME IO_RTL_DEMOD_CONFIG COMMAND dsd-neo_test_io_rtl_demod_config)
+
   add_executable(dsd-neo_test_io_rtl_ppm_request io/test_io_rtl_ppm_request.cpp)
   target_include_directories(dsd-neo_test_io_rtl_ppm_request PRIVATE
     ${PROJECT_SOURCE_DIR}/include
