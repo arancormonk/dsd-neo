@@ -30,6 +30,18 @@ Group policy reload:
 - In the Trunking/Import menu path, importing a group list (`-G` CSV) performs a full policy reload. On parse failure,
   the currently loaded list remains active.
 
+## DSP Status
+
+The DSP status panel shows RTL DSP loop state when RTL input support is available. In CQPSK mode, the CMA equalizer
+lines report:
+
+- `CMA EQ`: equalizer state (`Off`, `Init`, `Warm`, `Run`), tap count, adaptation step, and adapted symbol count.
+- `CMA Metric`: output magnitude squared (`mag2`), target modulus (`tgt`), constant-modulus error (`err`), largest
+  non-center tap (`side`), and total tap energy (`E`).
+
+For a useful equalizer, `syms` should increase, `mag2` should settle near `tgt`, `err` should settle lower after
+acquisition, and `side` should become non-zero when the equalizer is learning multipath/ISI correction.
+
 ## Hotkeys (Main Screen)
 
 Keys are case-sensitive. Some commands only make sense in specific modes (for example, trunking controls require

@@ -63,6 +63,7 @@ double dsd_rtl_stream_get_snr_bias_evm(void);
 /* Tuner autogain */
 int dsd_rtl_stream_get_tuner_autogain(void);
 void dsd_rtl_stream_set_tuner_autogain(int onoff);
+int dsd_rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out);
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 int dsd_rtl_stream_test_request_retune(long int frequency, int timeout_ms);
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
@@ -411,6 +412,11 @@ extern "C" double dsd_rtl_stream_get_fll_band_edge_freq_hz(void);
 extern "C" double
 rtl_stream_get_fll_band_edge_freq_hz(void) {
     return dsd_rtl_stream_get_fll_band_edge_freq_hz();
+}
+
+extern "C" int
+rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out) {
+    return dsd_rtl_stream_get_cqpsk_eq_status(out);
 }
 
 /* Auto-PPM status snapshot */

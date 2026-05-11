@@ -132,6 +132,14 @@ config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig
     CONFIG_EQ_FIELD(cqpsk_sync_inv);
     CONFIG_EQ_FIELD(cqpsk_sync_neg_is_set);
     CONFIG_EQ_FIELD(cqpsk_sync_neg);
+    CONFIG_EQ_FIELD(cqpsk_eq_is_set);
+    CONFIG_EQ_FIELD(cqpsk_eq_enable);
+    CONFIG_EQ_FIELD(cqpsk_eq_taps_is_set);
+    CONFIG_EQ_FIELD(cqpsk_eq_taps);
+    CONFIG_EQ_FIELD(cqpsk_eq_mu_is_set);
+    CONFIG_EQ_FIELD(cqpsk_eq_mu);
+    CONFIG_EQ_FIELD(cqpsk_eq_modulus_is_set);
+    CONFIG_EQ_FIELD(cqpsk_eq_modulus);
     CONFIG_EQ_FIELD(sync_warmstart_is_set);
     CONFIG_EQ_FIELD(sync_warmstart_enable);
     CONFIG_EQ_FIELD(dmr_hangtime_is_set);
@@ -600,6 +608,33 @@ dsd_neo_config_init(const dsd_opts* opts) {
     const char* cqn = getenv("DSD_NEO_CQPSK_SYNC_NEG");
     c.cqpsk_sync_neg_is_set = env_is_set(cqn);
     c.cqpsk_sync_neg = c.cqpsk_sync_neg_is_set ? (env_is_falsey(cqn) ? 0 : 1) : 0;
+
+    const char* cqe = getenv("DSD_NEO_CQPSK_EQ");
+    c.cqpsk_eq_is_set = env_is_set(cqe);
+    c.cqpsk_eq_enable = c.cqpsk_eq_is_set ? (env_is_falsey(cqe) ? 0 : 1) : 0;
+
+    const char* cqet = getenv("DSD_NEO_CQPSK_EQ_TAPS");
+    c.cqpsk_eq_taps_is_set = env_parse_int_range(cqet, 3, 15, &c.cqpsk_eq_taps);
+    if (c.cqpsk_eq_taps_is_set && ((c.cqpsk_eq_taps & 1) == 0)) {
+        c.cqpsk_eq_taps += 1;
+        if (c.cqpsk_eq_taps > 15) {
+            c.cqpsk_eq_taps = 15;
+        }
+    }
+
+    const char* cqem = getenv("DSD_NEO_CQPSK_EQ_MU");
+    {
+        double v = 0.0;
+        c.cqpsk_eq_mu_is_set = env_parse_double_range(cqem, 0.000001, 0.01, &v);
+        c.cqpsk_eq_mu = c.cqpsk_eq_mu_is_set ? (float)v : 0.0008f;
+    }
+
+    const char* cqemod = getenv("DSD_NEO_CQPSK_EQ_MODULUS");
+    {
+        double v = 0.0;
+        c.cqpsk_eq_modulus_is_set = env_parse_double_range(cqemod, 0.05, 4.0, &v);
+        c.cqpsk_eq_modulus = c.cqpsk_eq_modulus_is_set ? (float)v : (0.85f * 0.85f);
+    }
 
     /* Sync warm-start (kill-switch): DSD_NEO_SYNC_WARMSTART=0 disables. */
     const char* sw = getenv("DSD_NEO_SYNC_WARMSTART");

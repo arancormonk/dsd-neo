@@ -166,6 +166,7 @@ extern "C" {
  * Debug/advanced knobs (centralized for maintainability)
  * - DSD_NEO_DEBUG_SYNC, DSD_NEO_DEBUG_CQPSK
  * - DSD_NEO_CQPSK, DSD_NEO_CQPSK_SYNC_INV, DSD_NEO_CQPSK_SYNC_NEG
+ * - DSD_NEO_CQPSK_EQ, DSD_NEO_CQPSK_EQ_TAPS, DSD_NEO_CQPSK_EQ_MU, DSD_NEO_CQPSK_EQ_MODULUS
  * - DSD_NEO_SYNC_WARMSTART
  * - DSD_NEO_FTZ_DAZ
  * - DSD_NEO_NO_BOOTSTRAP
@@ -279,6 +280,14 @@ typedef struct dsdneoRuntimeConfig {
     int cqpsk_sync_inv;
     int cqpsk_sync_neg_is_set;
     int cqpsk_sync_neg;
+    int cqpsk_eq_is_set;
+    int cqpsk_eq_enable;
+    int cqpsk_eq_taps_is_set;
+    int cqpsk_eq_taps;
+    int cqpsk_eq_mu_is_set;
+    float cqpsk_eq_mu;
+    int cqpsk_eq_modulus_is_set;
+    float cqpsk_eq_modulus;
 
     /* Sync warm-start (kill-switch) */
     int sync_warmstart_is_set;

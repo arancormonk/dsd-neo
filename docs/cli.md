@@ -428,6 +428,8 @@ Audio/DSP helpers
 - `DSD_NEO_COMBINE_ROT=0|1` — enable combined rotation (default 1)
 - `DSD_NEO_UPSAMPLE_FP=0|1` — enable upsampler fixed‑point path (default 1)
 - `DSD_NEO_CQPSK=1` — enable CQPSK demodulation
+- `DSD_NEO_CQPSK_EQ=0|1` — disable/enable CQPSK CMA equalizer for multipath/ISI mitigation (default on when CQPSK is active)
+- `DSD_NEO_CQPSK_EQ_TAPS=<odd 3..15>`, `DSD_NEO_CQPSK_EQ_MU=<float>`, `DSD_NEO_CQPSK_EQ_MODULUS=<float>` — CMA equalizer tuning
 - `DSD_NEO_CQPSK_SYNC_INV=1`, `DSD_NEO_CQPSK_SYNC_NEG=1` — CQPSK sync polarity tweaks
 
 Misc

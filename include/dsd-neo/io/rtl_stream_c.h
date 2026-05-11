@@ -493,6 +493,20 @@ int rtl_stream_get_iq_balance(void);
 void rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta);
 
 /* Coarse DSP feature toggles and snapshot */
+typedef struct rtl_stream_cqpsk_eq_status {
+    int enabled;
+    int initialized;
+    int taps;
+    unsigned int symbols;
+    float mu;
+    float modulus;
+    float err_ema;
+    float mag2_ema;
+    float tap_energy;
+    float center_tap_mag;
+    float max_side_tap_mag;
+} rtl_stream_cqpsk_eq_status;
+
 /**
  * @brief Toggle CQPSK path pre-processing on/off (0=off, nonzero=on).
  *
@@ -520,6 +534,18 @@ void rtl_stream_toggle_ted(int onoff);
  * @return 0 on success; negative on error.
  */
 int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable);
+
+/**
+ * @brief Get CQPSK CMA equalizer status and adaptation metrics.
+ *
+ * `err_ema` is the smoothed absolute constant-modulus error, `mag2_ema` is the
+ * smoothed output magnitude squared, and `max_side_tap_mag` indicates how much
+ * non-center tap correction the equalizer has learned.
+ *
+ * @param out [out] Equalizer status snapshot. Must not be NULL.
+ * @return 0 on success; negative on invalid input.
+ */
+int rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out);
 
 /**
  * @brief Set or disable the resampler target rate (applied on controller thread).

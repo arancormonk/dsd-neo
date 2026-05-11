@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/resampler.h>
@@ -180,6 +181,12 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
      * Using (1, 0) means the first sample's diff output equals raw input. */
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
+    s->cqpsk_agc_avg = 1.0f;
+    s->cqpsk_eq_enable = 0;
+    s->cqpsk_eq_taps = 7;
+    s->cqpsk_eq_mu = 0.0008f;
+    s->cqpsk_eq_modulus = 0.85f * 0.85f;
+    dsd_cqpsk_cma_equalizer_init(&s->cqpsk_eq_state, s->cqpsk_eq_taps);
 
     /* Mode-specific adjustments */
     if (mode == DEMOD_ANALOG) {
@@ -336,6 +343,11 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->ted_mu = 0.0f;
     demod->ted_force = cfg->ted_force_is_set ? (cfg->ted_force != 0) : 0;
 
+    demod->cqpsk_eq_taps = cfg->cqpsk_eq_taps_is_set ? cfg->cqpsk_eq_taps : 7;
+    demod->cqpsk_eq_mu = cfg->cqpsk_eq_mu_is_set ? cfg->cqpsk_eq_mu : 0.0008f;
+    demod->cqpsk_eq_modulus = cfg->cqpsk_eq_modulus_is_set ? cfg->cqpsk_eq_modulus : (0.85f * 0.85f);
+    dsd_cqpsk_cma_equalizer_init(&demod->cqpsk_eq_state, demod->cqpsk_eq_taps);
+
     /* CQPSK path: auto-enable for QPSK modulation (P25 LSM/TDMA, etc.).
        Env DSD_NEO_CQPSK overrides: 1/y/t to force on, 0/n/f to force off. */
     int default_cqpsk = (opts->mod_qpsk == 1) ? 1 : 0;
@@ -358,6 +370,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         demod->cqpsk_diff_prev_r = 1.0f;
         demod->cqpsk_diff_prev_j = 0.0f;
     }
+    demod->cqpsk_eq_enable = demod->cqpsk_enable ? (cfg->cqpsk_eq_is_set ? cfg->cqpsk_eq_enable : 1) : 0;
 
     if (demod->cqpsk_enable) {
         demod->fll_enabled = 0;

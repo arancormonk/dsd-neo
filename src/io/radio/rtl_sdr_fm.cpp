@@ -22,6 +22,7 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/resampler.h>
@@ -1004,6 +1005,9 @@ demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
      */
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
+    if (s->cqpsk_enable) {
+        dsd_cqpsk_cma_equalizer_reset(&s->cqpsk_eq_state, s->cqpsk_eq_taps);
+    }
     s->costas_err_avg_q14 = 0;
     /* Preserve AGC state so gain does not restart from unity on each retune.
      * This mirrors OP25’s continuous-flow behavior and avoids a post-retune
@@ -4925,11 +4929,26 @@ rtl_stream_toggle_cqpsk(int onoff) {
         demod.mode_demod = &qpsk_differential_demod;
         demod.cqpsk_diff_prev_r = 1.0f;
         demod.cqpsk_diff_prev_j = 0.0f;
+        {
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            demod.cqpsk_eq_enable = (cfg && cfg->cqpsk_eq_is_set) ? cfg->cqpsk_eq_enable : 1;
+            if (cfg && cfg->cqpsk_eq_taps_is_set) {
+                demod.cqpsk_eq_taps = cfg->cqpsk_eq_taps;
+            }
+            if (cfg && cfg->cqpsk_eq_mu_is_set) {
+                demod.cqpsk_eq_mu = cfg->cqpsk_eq_mu;
+            }
+            if (cfg && cfg->cqpsk_eq_modulus_is_set) {
+                demod.cqpsk_eq_modulus = cfg->cqpsk_eq_modulus;
+            }
+            dsd_cqpsk_cma_equalizer_reset(&demod.cqpsk_eq_state, demod.cqpsk_eq_taps);
+        }
         /* Ensure channel LPF profile matches the QPSK family. */
         demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     } else {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;
+        demod.cqpsk_eq_enable = 0;
         /* If we were using the P25 CQPSK channel LPF profile, revert to P25 C4FM.
          * This avoids carrying a wide CQPSK cutoff into clean C4FM control channels. */
         if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_P25_CQPSK) {
@@ -4984,6 +5003,31 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
     if (ted_enable) {
         *ted_enable = demod.ted_enabled ? 1 : 0;
     }
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out) {
+    if (!out) {
+        return -1;
+    }
+
+    *out = rtl_stream_cqpsk_eq_status{};
+    out->enabled = demod.cqpsk_eq_enable ? 1 : 0;
+    out->taps = demod.cqpsk_eq_taps;
+    out->mu = demod.cqpsk_eq_mu;
+    out->modulus = demod.cqpsk_eq_modulus;
+
+    dsd_cqpsk_cma_equalizer_metrics_t m;
+    dsd_cqpsk_cma_equalizer_get_metrics(&demod.cqpsk_eq_state, &m);
+    out->initialized = m.initialized;
+    out->taps = m.taps > 0 ? m.taps : out->taps;
+    out->symbols = m.symbols;
+    out->err_ema = m.err_ema;
+    out->mag2_ema = m.mag2_ema;
+    out->tap_energy = m.tap_energy;
+    out->center_tap_mag = m.center_tap_mag;
+    out->max_side_tap_mag = m.max_side_tap_mag;
     return 0;
 }
 

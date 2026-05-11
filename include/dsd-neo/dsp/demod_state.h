@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
@@ -233,6 +234,14 @@ struct demod_state {
      *   out = in * (reference / rms)
      * OP25 uses: rms_agc.rms_agc(alpha=0.45, reference=0.85) */
     float cqpsk_agc_avg; /* running average of mag^2 (d_avg in op25) */
+
+    /* Optional GNU Radio-style CMA equalizer for CQPSK/H-DQPSK multipath/ISI.
+     * Runs at symbol rate after Gardner and before differential phasor decode. */
+    dsd_cqpsk_cma_equalizer_state_t cqpsk_eq_state;
+    int cqpsk_eq_enable;
+    int cqpsk_eq_taps;
+    float cqpsk_eq_mu;
+    float cqpsk_eq_modulus;
 
     /* Generic mode-aware IQ balance (image suppression) */
     int iqbal_enable;        /* 0/1 gate */
