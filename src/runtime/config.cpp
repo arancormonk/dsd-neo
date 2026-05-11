@@ -1212,3 +1212,84 @@ dsd_neo_get_c4fm_clk_sync(void) {
     }
     return cfg->c4fm_clk_sync_is_set ? (cfg->c4fm_clk_sync ? 1 : 0) : 0;
 }
+
+static int
+clamp_cqpsk_eq_taps(int taps) {
+    if (taps < 3) {
+        taps = 3;
+    }
+    if (taps > 15) {
+        taps = 15;
+    }
+    if ((taps & 1) == 0) {
+        taps += (taps < 15) ? 1 : -1;
+    }
+    return taps;
+}
+
+static float
+clamp_cqpsk_eq_mu(float mu) {
+    if (mu < 0.000001f) {
+        mu = 0.000001f;
+    }
+    if (mu > 0.01f) {
+        mu = 0.01f;
+    }
+    return mu;
+}
+
+static float
+clamp_cqpsk_eq_modulus(float modulus) {
+    if (modulus < 0.05f) {
+        modulus = 0.05f;
+    }
+    if (modulus > 4.0f) {
+        modulus = 4.0f;
+    }
+    return modulus;
+}
+
+extern "C" void
+dsd_neo_set_cqpsk_eq(int enable, int taps, float mu, float modulus) {
+    std::lock_guard<std::mutex> lk(g_config_mu);
+    dsdneoRuntimeConfig next{};
+    const dsdneoRuntimeConfig* cur = g_config_active.load(std::memory_order_acquire);
+    if (cur) {
+        next = *cur;
+    }
+    if (enable >= 0) {
+        next.cqpsk_eq_is_set = 1;
+        next.cqpsk_eq_enable = enable ? 1 : 0;
+    }
+    if (taps > 0) {
+        next.cqpsk_eq_taps_is_set = 1;
+        next.cqpsk_eq_taps = clamp_cqpsk_eq_taps(taps);
+    }
+    if (mu >= 0.0f) {
+        next.cqpsk_eq_mu_is_set = 1;
+        next.cqpsk_eq_mu = clamp_cqpsk_eq_mu(mu);
+    }
+    if (modulus >= 0.0f) {
+        next.cqpsk_eq_modulus_is_set = 1;
+        next.cqpsk_eq_modulus = clamp_cqpsk_eq_modulus(modulus);
+    }
+    publish_config_locked(next);
+}
+
+extern "C" void
+dsd_neo_get_cqpsk_eq(int* enable, int* taps, float* mu, float* modulus) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (enable) {
+        *enable = (cfg && cfg->cqpsk_eq_is_set) ? (cfg->cqpsk_eq_enable ? 1 : 0) : 1;
+    }
+    if (taps) {
+        *taps = (cfg && cfg->cqpsk_eq_taps_is_set) ? clamp_cqpsk_eq_taps(cfg->cqpsk_eq_taps) : 7;
+    }
+    if (mu) {
+        *mu = (cfg && cfg->cqpsk_eq_mu_is_set) ? clamp_cqpsk_eq_mu(cfg->cqpsk_eq_mu) : 0.0008f;
+    }
+    if (modulus) {
+        *modulus =
+            (cfg && cfg->cqpsk_eq_modulus_is_set) ? clamp_cqpsk_eq_modulus(cfg->cqpsk_eq_modulus) : (0.85f * 0.85f);
+    }
+}

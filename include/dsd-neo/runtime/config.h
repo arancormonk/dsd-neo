@@ -593,6 +593,27 @@ void dsd_neo_set_c4fm_clk_sync(int enable);
 /** @brief Return C4FM clock-assist-while-sync flag (0/1). */
 int dsd_neo_get_c4fm_clk_sync(void);
 
+/**
+ * @brief Publish CQPSK CMA equalizer runtime controls for future CQPSK path resets.
+ *
+ * Pass negative values to keep the current value for that field. The same
+ * bounds used by the environment parser are applied here.
+ *
+ * @param enable Non-negative to set equalizer enable (0/1); negative to keep existing.
+ * @param taps Positive tap count; clamped to odd values in [3, 15]. Non-positive keeps existing.
+ * @param mu Positive CMA adaptation step in [0.000001, 0.01]; negative keeps existing.
+ * @param modulus Positive target output magnitude squared in [0.05, 4.0]; negative keeps existing.
+ */
+void dsd_neo_set_cqpsk_eq(int enable, int taps, float mu, float modulus);
+
+/**
+ * @brief Read the CQPSK CMA equalizer runtime controls from the active config snapshot.
+ *
+ * Any output pointer may be NULL. When a field has not been explicitly set,
+ * this returns the built-in default for that field.
+ */
+void dsd_neo_get_cqpsk_eq(int* enable, int* taps, float* mu, float* modulus);
+
 /*
  * User configuration (INI file)
  *

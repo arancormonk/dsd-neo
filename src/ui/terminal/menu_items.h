@@ -59,4 +59,6 @@ extern const NcMenuItem DSP_AGC_ITEMS[];
 extern const size_t DSP_AGC_ITEMS_LEN;
 extern const NcMenuItem DSP_TED_ITEMS[];
 extern const size_t DSP_TED_ITEMS_LEN;
+extern const NcMenuItem DSP_CQPSK_EQ_ITEMS[];
+extern const size_t DSP_CQPSK_EQ_ITEMS_LEN;
 #endif

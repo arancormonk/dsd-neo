@@ -548,6 +548,24 @@ int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable);
 int rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out);
 
 /**
+ * @brief Set live CQPSK CMA equalizer controls; pass negative values to keep a field unchanged.
+ *
+ * The tap count is clamped to odd values in [3, 15]. Step size (`mu`) is
+ * clamped to [0.000001, 0.01], and target modulus to [0.05, 4.0].
+ *
+ * @param enable Non-negative to set enable (0/1); negative to keep existing.
+ * @param taps Positive tap count to set; non-positive to keep existing.
+ * @param mu Positive CMA adaptation step; negative to keep existing.
+ * @param modulus Positive target output magnitude squared; negative to keep existing.
+ */
+void rtl_stream_set_cqpsk_eq(int enable, int taps, float mu, float modulus);
+
+/**
+ * @brief Reset the live CQPSK CMA equalizer taps and adaptation metrics.
+ */
+void rtl_stream_reset_cqpsk_eq(void);
+
+/**
  * @brief Set or disable the resampler target rate (applied on controller thread).
  * Pass 0 to disable the resampler; otherwise, pass desired Hz (e.g., 48000).
  *

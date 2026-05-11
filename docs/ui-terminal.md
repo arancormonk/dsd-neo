@@ -42,6 +42,9 @@ lines report:
 For a useful equalizer, `syms` should increase, `mag2` should settle near `tgt`, `err` should settle lower after
 acquisition, and `side` should become non-zero when the equalizer is learning multipath/ISI correction.
 
+The same CMA equalizer can be tuned live from `Menu -> DSP -> CQPSK Equalizer...`: enable/disable, tap count,
+adaptation step (`mu`), target modulus, and reset are available without restarting or setting environment variables.
+
 ## Hotkeys (Main Screen)
 
 Keys are case-sensitive. Some commands only make sense in specific modes (for example, trunking controls require

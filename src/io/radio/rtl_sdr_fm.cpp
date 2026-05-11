@@ -5031,6 +5031,75 @@ dsd_rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out) {
     return 0;
 }
 
+extern "C" void
+dsd_rtl_stream_set_cqpsk_eq(int enable, int taps, float mu, float modulus) {
+    int reset = 0;
+    int desired_enable = 1;
+    int desired_taps = 7;
+    float desired_mu = 0.0008f;
+    float desired_modulus = 0.85f * 0.85f;
+
+    dsd_neo_get_cqpsk_eq(&desired_enable, &desired_taps, &desired_mu, &desired_modulus);
+
+    if (enable >= 0) {
+        desired_enable = enable ? 1 : 0;
+    }
+
+    if (taps > 0) {
+        if (taps < 3) {
+            taps = 3;
+        }
+        if (taps > DSD_CQPSK_CMA_EQ_MAX_TAPS) {
+            taps = DSD_CQPSK_CMA_EQ_MAX_TAPS;
+        }
+        if ((taps & 1) == 0) {
+            taps += (taps < DSD_CQPSK_CMA_EQ_MAX_TAPS) ? 1 : -1;
+        }
+        desired_taps = taps;
+    }
+
+    if (mu >= 0.0f) {
+        if (mu < 0.000001f) {
+            mu = 0.000001f;
+        }
+        if (mu > 0.01f) {
+            mu = 0.01f;
+        }
+        desired_mu = mu;
+    }
+
+    if (modulus >= 0.0f) {
+        if (modulus < 0.05f) {
+            modulus = 0.05f;
+        }
+        if (modulus > 4.0f) {
+            modulus = 4.0f;
+        }
+        desired_modulus = modulus;
+    }
+
+    if (desired_enable && !demod.cqpsk_eq_enable) {
+        reset = 1;
+    }
+    if (desired_taps != demod.cqpsk_eq_taps) {
+        reset = 1;
+    }
+    demod.cqpsk_eq_enable = demod.cqpsk_enable ? desired_enable : 0;
+    demod.cqpsk_eq_taps = desired_taps;
+    demod.cqpsk_eq_mu = desired_mu;
+    demod.cqpsk_eq_modulus = desired_modulus;
+
+    dsd_neo_set_cqpsk_eq(desired_enable, desired_taps, desired_mu, desired_modulus);
+    if (reset) {
+        dsd_cqpsk_cma_equalizer_reset(&demod.cqpsk_eq_state, demod.cqpsk_eq_taps);
+    }
+}
+
+extern "C" void
+dsd_rtl_stream_reset_cqpsk_eq(void) {
+    dsd_cqpsk_cma_equalizer_reset(&demod.cqpsk_eq_state, demod.cqpsk_eq_taps);
+}
+
 /**
  * @brief Tune RTL-SDR to a new center frequency, updating optimal settings.
  *
