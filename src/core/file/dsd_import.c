@@ -610,7 +610,9 @@ csvChanImport(dsd_opts* opts, dsd_state* state) //channel map import
 
             if (field_count == 1) {
                 if (chan_number >= 0 && chan_number < 0xFFFF) {
-                    sscanf(field, "%ld", &state->trunk_chan_map[chan_number]);
+                    long int freq = 0;
+                    sscanf(field, "%ld", &freq);
+                    dsd_state_set_trunk_chan_freq(state, (uint32_t)chan_number, freq);
                 }
                 // adding this should be compatible with EDACS, test and obsolete the LCN Import function if desired
                 if (state->lcn_freq_count >= 0

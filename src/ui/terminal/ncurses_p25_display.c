@@ -21,7 +21,6 @@
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_p25_display.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,29 +48,47 @@ ui_is_iden_channel(const dsd_state* state, int ch16, long int freq) {
     if (iden < 0 || iden > 15) {
         return 0;
     }
-    long base = state->p25_base_freq[iden];
-    long spac = state->p25_chan_spac[iden];
-    if (base == 0 || spac == 0) {
-        return 0;
-    }
-    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-    int type = state->p25_chan_type[iden] & 0xF;
-    int denom = 1;
-    if ((state->p25_chan_tdma[iden] & 0x1) != 0) {
-        if (type < 0 || type > 15) {
-            return 0;
-        }
-        denom = slots_per_carrier[type];
-        if (denom <= 0) {
-            return 0;
-        }
-    } else if (state->p25_cc_is_tdma == 1) {
-        denom = 2; // conservative fallback (matches compute path)
-    }
+
+    /* Try both new dual arrays (FDMA first, then TDMA) for a matching frequency.
+     * This mirrors the resolution logic: check each populated entry to see if
+     * the computed frequency matches the given freq. */
+    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
     int raw = ch16 & 0xFFF;
-    int step = raw / denom;
-    long int calc = (base * 5) + (step * spac * 125);
-    return (calc == freq) ? 1 : 0;
+
+    /* Check FDMA entry */
+    const p25_iden_entry_t* fdma = &state->p25_iden_fdma[iden];
+    if (fdma->populated && fdma->base_freq != 0 && fdma->chan_spac != 0) {
+        int denom = 1;
+        /* FDMA entries typically have chan_type=1 (no TDMA slots) */
+        if (state->p25_cc_is_tdma == 1 && !(state->p25_chan_tdma_explicit[iden] & 0x01)) {
+            denom = 2; // conservative fallback
+        }
+        int step = raw / denom;
+        long int calc = (fdma->base_freq * 5) + ((long)step * fdma->chan_spac * 125);
+        if (calc == freq) {
+            return 1;
+        }
+    }
+
+    /* Check TDMA entry */
+    const p25_iden_entry_t* tdma = &state->p25_iden_tdma[iden];
+    if (tdma->populated && tdma->base_freq != 0 && tdma->chan_spac != 0) {
+        int type = tdma->chan_type & 0xF;
+        int denom = 1;
+        if (type >= 0 && type <= 15) {
+            denom = slots_per_carrier[type];
+            if (denom <= 0) {
+                denom = 1;
+            }
+        }
+        int step = raw / denom;
+        long int calc = (tdma->base_freq * 5) + ((long)step * tdma->chan_spac * 125);
+        if (calc == freq) {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 int
@@ -381,13 +398,20 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
             lines++;
         }
 
-        /* IDEN trust summary */
+        /* IDEN trust summary (reads from both new dual arrays) */
         int iden_total = 0, iden_conf = 0;
         for (int i = 0; i < 16; i++) {
-            uint8_t t = state->p25_iden_trust[i];
-            if (t > 0) {
+            /* Check new FDMA array */
+            if (state->p25_iden_fdma[i].populated) {
                 iden_total++;
-                if (t >= 2) {
+                if (state->p25_iden_fdma[i].trust >= 2) {
+                    iden_conf++;
+                }
+            }
+            /* Check new TDMA array */
+            if (state->p25_iden_tdma[i].populated) {
+                iden_total++;
+                if (state->p25_iden_tdma[i].trust >= 2) {
                     iden_conf++;
                 }
             }
@@ -670,7 +694,7 @@ ui_print_p25_iden_plan(const dsd_opts* opts, const dsd_state* state) {
     }
     int any = 0;
     for (int id = 0; id < 16; id++) {
-        if (state->p25_base_freq[id] || state->p25_chan_spac[id] || state->p25_iden_trust[id]) {
+        if (state->p25_iden_fdma[id].populated || state->p25_iden_tdma[id].populated) {
             any = 1;
             break;
         }
@@ -681,35 +705,64 @@ ui_print_p25_iden_plan(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
     for (int id = 0; id < 16; id++) {
-        long base = state->p25_base_freq[id];
-        long spac = state->p25_chan_spac[id];
-        int type = state->p25_chan_type[id] & 0xF;
-        int tdma = (state->p25_chan_tdma[id] & 0x1) ? 1 : 0;
-        int trust = state->p25_iden_trust[id];
-        if (base == 0 && spac == 0 && trust == 0) {
+        const p25_iden_entry_t* fdma = &state->p25_iden_fdma[id];
+        const p25_iden_entry_t* tdma = &state->p25_iden_tdma[id];
+        int has_fdma = fdma->populated && (fdma->base_freq != 0 || fdma->chan_spac != 0);
+        int has_tdma = tdma->populated && (tdma->base_freq != 0 || tdma->chan_spac != 0);
+
+        /* Skip empty slots */
+        if (!has_fdma && !has_tdma) {
             continue;
         }
-        double base_mhz = (double)(base * 5) / 1000000.0;   // base*5 Hz
-        double spac_mhz = (double)(spac * 125) / 1000000.0; // spac*125 Hz
-        attr_t saved_attrs = 0;
-        short saved_pair = 0;
-        attr_get(&saved_attrs, &saved_pair, NULL);
-        attron(COLOR_PAIR(ui_iden_color_pair(id)));
-        ui_print_lborder_green();
-        addch(' ');
-        printw("IDEN %d: %s type:%d base:%.6lfMHz spac:%.6lfMHz off:%d trust:%s", id, tdma ? "TDMA" : "FDMA", type,
-               base_mhz, spac_mhz, state->p25_trans_off[id],
-               (trust >= 2)   ? "ok"
-               : (trust == 1) ? "prov"
-                              : "-");
-        if (state->p25_iden_wacn[id] || state->p25_iden_sysid[id]) {
-            printw(" W:%05llX S:%03llX", state->p25_iden_wacn[id], state->p25_iden_sysid[id]);
+
+        /* Display FDMA entry if populated */
+        if (has_fdma) {
+            double base_mhz = (double)(fdma->base_freq * 5) / 1000000.0;
+            double spac_mhz = (double)(fdma->chan_spac * 125) / 1000000.0;
+            const char* trust_str = (fdma->trust >= 2) ? "ok" : (fdma->trust == 1) ? "prov" : "-";
+            /* Show "F/T" indicator when both modulation classes are present for this slot */
+            const char* mode_tag = (has_fdma && has_tdma) ? "FDMA[F/T]" : "FDMA";
+            attr_t saved_attrs = 0;
+            short saved_pair = 0;
+            attr_get(&saved_attrs, &saved_pair, NULL);
+            attron(COLOR_PAIR(ui_iden_color_pair(id)));
+            ui_print_lborder_green();
+            addch(' ');
+            printw("IDEN %d: %s type:%d base:%.6lfMHz spac:%.6lfMHz off:%d trust:%s", id, mode_tag,
+                   fdma->chan_type & 0xF, base_mhz, spac_mhz, fdma->trans_off, trust_str);
+            if (fdma->wacn || fdma->sysid) {
+                printw(" W:%05llX S:%03llX", fdma->wacn, fdma->sysid);
+            }
+            if (fdma->rfss || fdma->site) {
+                printw(" R:%llu I:%llu", fdma->rfss, fdma->site);
+            }
+            addch('\n');
+            attr_set(saved_attrs, saved_pair, NULL);
         }
-        if (state->p25_iden_rfss[id] || state->p25_iden_site[id]) {
-            printw(" R:%lld I:%lld", state->p25_iden_rfss[id], state->p25_iden_site[id]);
+
+        /* Display TDMA entry if populated */
+        if (has_tdma) {
+            double base_mhz = (double)(tdma->base_freq * 5) / 1000000.0;
+            double spac_mhz = (double)(tdma->chan_spac * 125) / 1000000.0;
+            const char* trust_str = (tdma->trust >= 2) ? "ok" : (tdma->trust == 1) ? "prov" : "-";
+            const char* mode_tag = (has_fdma && has_tdma) ? "TDMA[F/T]" : "TDMA";
+            attr_t saved_attrs = 0;
+            short saved_pair = 0;
+            attr_get(&saved_attrs, &saved_pair, NULL);
+            attron(COLOR_PAIR(ui_iden_color_pair(id)));
+            ui_print_lborder_green();
+            addch(' ');
+            printw("IDEN %d: %s type:%d base:%.6lfMHz spac:%.6lfMHz off:%d trust:%s", id, mode_tag,
+                   tdma->chan_type & 0xF, base_mhz, spac_mhz, tdma->trans_off, trust_str);
+            if (tdma->wacn || tdma->sysid) {
+                printw(" W:%05llX S:%03llX", tdma->wacn, tdma->sysid);
+            }
+            if (tdma->rfss || tdma->site) {
+                printw(" R:%llu I:%llu", tdma->rfss, tdma->site);
+            }
+            addch('\n');
+            attr_set(saved_attrs, saved_pair, NULL);
         }
-        addch('\n');
-        attr_set(saved_attrs, saved_pair, NULL);
     }
 }
 

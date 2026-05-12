@@ -120,11 +120,13 @@ main(void) {
     st.p25_cc_freq = 851000000;
     int id = 2;
     st.p25_chan_iden = id;
-    st.p25_chan_type[id] = 3;
-    st.p25_chan_tdma[id] = 1;
-    st.p25_base_freq[id] = 851000000 / 5;
-    st.p25_chan_spac[id] = 100;
-    st.p25_iden_trust[id] = 2;
+    // Populate new dual-array
+    st.p25_iden_tdma[id].base_freq = 851000000 / 5;
+    st.p25_iden_tdma[id].chan_type = 3;
+    st.p25_iden_tdma[id].chan_spac = 100;
+    st.p25_iden_tdma[id].trust = 2;
+    st.p25_iden_tdma[id].populated = 1;
+    st.p25_chan_tdma_explicit[id] = 2; // TDMA known
 
     p25_sm_init(&opts, &st);
     int ch_tdma = (id << 12) | 0x0001;

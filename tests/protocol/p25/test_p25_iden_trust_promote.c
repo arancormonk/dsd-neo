@@ -114,42 +114,46 @@ main(void) {
 
     // Case A: WACN/SYSID match; RFSS/SITE unset → promote to 2
     int idA = 1;
-    st.p25_iden_wacn[idA] = st.p2_wacn;
-    st.p25_iden_sysid[idA] = st.p2_sysid;
-    st.p25_iden_rfss[idA] = 0;
-    st.p25_iden_site[idA] = 0;
-    st.p25_iden_trust[idA] = 1; // seen but unconfirmed
+    st.p25_iden_fdma[idA].wacn = st.p2_wacn;
+    st.p25_iden_fdma[idA].sysid = st.p2_sysid;
+    st.p25_iden_fdma[idA].rfss = 0;
+    st.p25_iden_fdma[idA].site = 0;
+    st.p25_iden_fdma[idA].trust = 1; // seen but unconfirmed
+    st.p25_iden_fdma[idA].populated = 1;
 
     // Case B: all match → promote to 2
     int idB = 2;
-    st.p25_iden_wacn[idB] = st.p2_wacn;
-    st.p25_iden_sysid[idB] = st.p2_sysid;
-    st.p25_iden_rfss[idB] = st.p2_rfssid;
-    st.p25_iden_site[idB] = st.p2_siteid;
-    st.p25_iden_trust[idB] = 1;
+    st.p25_iden_fdma[idB].wacn = st.p2_wacn;
+    st.p25_iden_fdma[idB].sysid = st.p2_sysid;
+    st.p25_iden_fdma[idB].rfss = st.p2_rfssid;
+    st.p25_iden_fdma[idB].site = st.p2_siteid;
+    st.p25_iden_fdma[idB].trust = 1;
+    st.p25_iden_fdma[idB].populated = 1;
 
     // Case C: RFSS mismatch → remain <2
     int idC = 3;
-    st.p25_iden_wacn[idC] = st.p2_wacn;
-    st.p25_iden_sysid[idC] = st.p2_sysid;
-    st.p25_iden_rfss[idC] = st.p2_rfssid + 1;
-    st.p25_iden_site[idC] = st.p2_siteid;
-    st.p25_iden_trust[idC] = 1;
+    st.p25_iden_fdma[idC].wacn = st.p2_wacn;
+    st.p25_iden_fdma[idC].sysid = st.p2_sysid;
+    st.p25_iden_fdma[idC].rfss = st.p2_rfssid + 1;
+    st.p25_iden_fdma[idC].site = st.p2_siteid;
+    st.p25_iden_fdma[idC].trust = 1;
+    st.p25_iden_fdma[idC].populated = 1;
 
     // Case D: SITE mismatch → remain <2
     int idD = 4;
-    st.p25_iden_wacn[idD] = st.p2_wacn;
-    st.p25_iden_sysid[idD] = st.p2_sysid;
-    st.p25_iden_rfss[idD] = st.p2_rfssid;
-    st.p25_iden_site[idD] = st.p2_siteid + 1;
-    st.p25_iden_trust[idD] = 1;
+    st.p25_iden_fdma[idD].wacn = st.p2_wacn;
+    st.p25_iden_fdma[idD].sysid = st.p2_sysid;
+    st.p25_iden_fdma[idD].rfss = st.p2_rfssid;
+    st.p25_iden_fdma[idD].site = st.p2_siteid + 1;
+    st.p25_iden_fdma[idD].trust = 1;
+    st.p25_iden_fdma[idD].populated = 1;
 
     p25_confirm_idens_for_current_site(&st);
 
-    rc |= expect_eq_int("trust A", st.p25_iden_trust[idA], 2);
-    rc |= expect_eq_int("trust B", st.p25_iden_trust[idB], 2);
-    rc |= expect_eq_int("trust C", st.p25_iden_trust[idC] == 2, 0);
-    rc |= expect_eq_int("trust D", st.p25_iden_trust[idD] == 2, 0);
+    rc |= expect_eq_int("trust A", st.p25_iden_fdma[idA].trust, 2);
+    rc |= expect_eq_int("trust B", st.p25_iden_fdma[idB].trust, 2);
+    rc |= expect_eq_int("trust C", st.p25_iden_fdma[idC].trust == 2, 0);
+    rc |= expect_eq_int("trust D", st.p25_iden_fdma[idD].trust == 2, 0);
 
     return rc;
 }

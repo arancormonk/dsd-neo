@@ -29,7 +29,6 @@ namespace {
 
 constexpr float kTwoPi = 6.28318530717958647692f;
 constexpr float kPi = 3.14159265358979323846f;
-constexpr float kOmegaNormEps = 1e-6f;
 static bool g_warned_ted_dl_oversize = false;
 
 static inline bool
@@ -147,15 +146,42 @@ mmse_interp_cc(const float* dl, float mu, float* out_r, float* out_j) {
 /* Branchless clip (matches GNU Radio) */
 static inline float
 branchless_clip(float x, float limit) {
-    float a = x + limit;
-    float b = x - limit;
-    if (a < 0.0f) {
-        a = 0.0f;
+    return 0.5f * (fabsf(x + limit) - fabsf(x - limit));
+}
+
+static int
+cqpsk_symbol_rate_hz(const demod_state* d) {
+    if (!d || d->rate_out <= 0 || d->ted_sps <= 0) {
+        return 4800;
     }
-    if (b > 0.0f) {
-        b = 0.0f;
+    return (d->rate_out + (d->ted_sps / 2)) / d->ted_sps;
+}
+
+static float
+op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
+    const float requested = (d && d->ted_gain > 0.0f) ? d->ted_gain : 0.025f;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
     }
-    return 0.5f * (a + b);
+    if ((d && d->ted_gain_is_set) || (cfg && cfg->ted_gain_is_set)) {
+        return requested;
+    }
+
+    if (cqpsk_symbol_rate_hz(d) < 5500) {
+        return requested;
+    }
+    if (!ted || ted->lock_count < 240) {
+        return requested;
+    }
+
+    float lock_metric = ted->lock_accum / (float)ted->lock_count;
+    if (lock_metric < 0.05f) {
+        return requested;
+    }
+
+    return 0.018f;
 }
 
 /*
@@ -291,8 +317,7 @@ op25_gardner_cc(struct demod_state* d) {
         omega = (float)sps;
         ted->omega = omega;
 
-        /* OP25 uses d_omega_rel = 0.002 (±0.2%) - from gardner_cc_impl.cc line 73.
-         * Store omega_rel in state for use in clipping formula. */
+        /* OP25 uses d_omega_rel = 0.002 as an absolute samples/symbol clamp. */
         ted->omega_rel = 0.002f;
         ted->omega_mid = omega;
         ted->omega_min = omega * (1.0f - ted->omega_rel);
@@ -333,8 +358,15 @@ op25_gardner_cc(struct demod_state* d) {
     }
 
     /* OP25 gains: gain_mu=0.025, gain_omega=0.1*gain_mu^2
-     * From p25_demodulator_dev.py lines 58, 398 */
-    float gain_mu = d->ted_gain > 0.0f ? d->ted_gain : 0.025f;
+     * From p25_demodulator_dev.py lines 58, 398.
+     *
+     * P25P2 has a shorter symbol period than P25P1, so the same simulcast
+     * delay spread shows up as more symbol-domain jitter. Keep OP25's gain for
+     * acquisition, then lower the effective gain once the P25P2 timing loop has
+     * a small positive eye metric. Explicit TED gain settings from env/API/UI
+     * remain hard overrides. */
+    float gain_mu = op25_gardner_gain_mu_for_state(d, ted);
+    d->ted_effective_gain = gain_mu;
     float gain_omega = 0.1f * gain_mu * gain_mu;
 
     float* iq_in = d->lowpassed;
@@ -465,22 +497,18 @@ op25_gardner_cc(struct demod_state* d) {
         lock_accum += yi + yq;
         lock_count++;
 
-        /* Normalize omega correction by symbol power so loop gain is less
-         * sensitive to envelope level variation. Keep updates bounded. */
-        float sym_pow = sym_r * sym_r + sym_j * sym_j;
-        if (sym_pow < kOmegaNormEps) {
-            sym_pow = kOmegaNormEps;
-        }
-        float omega_error = branchless_clip(symbol_error / sym_pow, 1.0f);
-        omega = omega + gain_omega * omega_error;
+        /* OP25: d_omega += d_gain_omega * symbol_error * abs(interp_samp).
+         * Keep this exact; widening or normalizing this loop makes TDMA timing
+         * hunt and smears the P25P2 constellation. */
+        float sym_mag = sqrtf(sym_r * sym_r + sym_j * sym_j);
+        omega = omega + gain_omega * symbol_error * sym_mag;
 
         /* Clip omega to valid range using branchless_clip
          * From gardner_cc_impl.cc line 188:
          *   d_omega = d_omega_mid + gr::branchless_clip(d_omega-d_omega_mid, d_omega_rel);
-         * OP25 passes d_omega_rel directly, but the intended range is [omega_min, omega_max]
-         * which equals omega_mid ± (omega_mid * omega_rel). We must scale by omega_mid
-         * to get the correct ±0.2% tolerance (e.g., ±0.01 samples at 5 sps). */
-        omega = ted->omega_mid + branchless_clip(omega - ted->omega_mid, ted->omega_mid * ted->omega_rel);
+         * Despite the name, OP25 uses d_omega_rel as an absolute sample clamp,
+         * not omega_mid-scaled relative error. */
+        omega = ted->omega_mid + branchless_clip(omega - ted->omega_mid, ted->omega_rel);
 
         /* Save current symbol as last for next iteration */
         last_r = sym_r;

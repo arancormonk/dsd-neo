@@ -109,6 +109,148 @@ p25p2_add_secondary_cc_candidates(dsd_opts* opts, dsd_state* state, int rfssid, 
     }
 }
 
+/**
+ * @brief Resolve a P25 Algorithm ID to a human-readable name.
+ *
+ * Common APCO P25 ALGIDs used by the voice/ESS paths:
+ *   0x80 = unencrypted, 0x81 = DES-OFB, 0x84 = AES-256,
+ *   0x89 = AES-128-OFB, 0x9F = DES-XL, 0xAA = ADP/RC4
+ *
+ * @param algid The 8-bit algorithm identifier.
+ * @return Static string with algorithm name, or NULL if unrecognized.
+ */
+static const char*
+p25_algid_name(uint8_t algid) {
+    switch (algid) {
+        case 0x80: return "UNENCRYPTED";
+        case 0x81: return "DES-OFB";
+        case 0x82: return "2-KEY 3DES";
+        case 0x83: return "3-KEY 3DES";
+        case 0x84: return "AES-256";
+        case 0x85: return "AES-128";
+        case 0x88: return "AES-CBC";
+        case 0x89: return "AES-128-OFB";
+        case 0x9F: return "DES-XL";
+        case 0xAA: return "ADP/RC4";
+        case 0xAF: return "AES-256-GCM";
+        default: return NULL;
+    }
+}
+
+static uint64_t
+p25_mac_get_bits(const unsigned long long int MAC[24], int len_a, int start_bit, int bit_count) {
+    uint64_t value = 0;
+    for (int i = 0; i < bit_count; i++) {
+        int bit = start_bit + i;
+        int octet = 1 + len_a + (bit / 8);
+        int shift = 7 - (bit % 8);
+        value = (value << 1) | ((uint64_t)(MAC[octet] >> shift) & 0x1ULL);
+    }
+    return value;
+}
+
+static time_t
+p25_utc_time_from_local_fields(int year, int month, int day, int hours, int minutes, int seconds, int offset_minutes) {
+    static const int days_in_month[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (year < 1970 || month < 1 || month > 12 || day < 1 || day > 31 || hours < 0 || hours > 23 || minutes < 0
+        || minutes > 59 || seconds < 0 || seconds > 59) {
+        return (time_t)-1;
+    }
+    int max_day = days_in_month[month - 1];
+    if (month == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) {
+        max_day = 29;
+    }
+    if (day > max_day) {
+        return (time_t)-1;
+    }
+
+    int64_t y = year;
+    unsigned m = (unsigned)month;
+    unsigned d = (unsigned)day;
+    y -= (m <= 2);
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned mp = (m > 2) ? (m - 3U) : (m + 9U);
+    unsigned doy = (153U * mp + 2U) / 5U + d - 1U;
+    unsigned doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
+    int64_t days = era * 146097 + (int64_t)doe - 719468;
+    int64_t total = days * 86400 + (int64_t)hours * 3600 + (int64_t)minutes * 60 + seconds;
+    total -= (int64_t)offset_minutes * 60;
+    return (time_t)total;
+}
+
+/**
+ * @brief Resolve a Queued Response reason code to a human-readable string.
+ *
+ * Reason labels mirror sdrtrunk's QueuedResponseReason mapping.
+ *
+ * @param code The 8-bit reason code from octet 3.
+ * @return Static string describing the reason.
+ */
+static const char*
+p25_que_reason_str(uint8_t code) {
+    switch (code) {
+        case 0x10: return "Requesting Unit Busy Other Service";
+        case 0x20: return "Target Unit Busy Other Service";
+        case 0x2F: return "Target Unit Queued This Call";
+        case 0x30: return "Target Group Currently Active";
+        case 0x40: return "Channel Resources Unavailable";
+        case 0x41: return "Telephone Resources Unavailable";
+        case 0x42: return "Data Resources Unavailable";
+        case 0x50: return "Superseding Service Currently Active";
+        default: break;
+    }
+
+    if (code <= 0x7F) {
+        return "Reserved";
+    }
+
+    return "User/System Defined";
+}
+
+/**
+ * @brief Resolve a Deny Response reason code to a human-readable string.
+ *
+ * Reason labels mirror sdrtrunk's DenyReason mapping.
+ *
+ * @param code The 8-bit reason code from octet 3.
+ * @return Static string describing the reason.
+ */
+static const char*
+p25_deny_reason_str(uint8_t code) {
+    switch (code) {
+        case 0x10: return "Requesting Unit Not Valid";
+        case 0x11: return "Requesting Unit Not Authorized";
+        case 0x20: return "Target Unit Not Valid";
+        case 0x21: return "Target Unit Not Authorized";
+        case 0x2F: return "Target Unit Refused Call";
+        case 0x30: return "Target Group Not Valid";
+        case 0x31: return "Target Group Not Authorized";
+        case 0x40: return "Invalid Dialing";
+        case 0x41: return "Telephone Number Not Authorized";
+        case 0x42: return "PSTN Not Valid";
+        case 0x50: return "Call Timeout";
+        case 0x51: return "Landline Terminated Call";
+        case 0x52: return "Subscriber Unit Terminated Call";
+        case 0x5F: return "Call Preempted";
+        case 0x60: return "Site Access Denial";
+        case 0x67: return "PTT Collide";
+        case 0x77: return "PTT Bonk";
+        case 0xF0: return "Call Options Not Valid For Service";
+        case 0xF1: return "Protection Service Option Not Valid";
+        case 0xF2: return "Duplex Service Option Not Valid";
+        case 0xF3: return "Circuit/Packet Mode Option Not Valid";
+        case 0xFF: return "System Does Not Support Service";
+        default: break;
+    }
+
+    if (code <= 0x5E) {
+        return "Reserved";
+    }
+
+    return "User/System Defined";
+}
+
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void
 p25p2_emit_mac_json_if_enabled(dsd_state* state, int xch_type, uint8_t mfid, uint8_t opcode, int slot, int len_b,
@@ -1758,137 +1900,161 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
         //identifier update VHF/UHF
         if (MAC[1 + len_a] == 0x74) {
-            state->p25_chan_iden = MAC[2 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_vuhf(MAC, 2 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
-            int bw_vu = (MAC[2 + len_a] & 0xF);
-            state->p25_trans_off[iden] = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
-            state->p25_chan_spac[iden] = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
-            state->p25_base_freq[iden] =
-                (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
+            int bw_vu = up.bw_vu;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
+            long int base_freq = up.base_freq;
 
-            //this is causing more issues -- need a different way to check on this
-            // if (state->p25_chan_spac[iden] == 0x64) //tdma
-            // {
-            // 	state->p25_chan_type[iden] = 4; //
-            // 	state->p25_chan_tdma[iden] = 1; //
-            // }
-            // else //fdma
-            // {
-            // 	state->p25_chan_type[iden] = 1; //
-            // 	state->p25_chan_tdma[iden] = 0; //
-            // }
-
-            state->p25_chan_type[iden] = 1; //set as old values for now
-            // Preserve explicit hints. When unknown, prefer TDMA if the system has
-            // already shown P25p2 voice so we do not misclassify VC grants as FDMA.
-            if (state->p25_chan_tdma_explicit[iden] == 0) {
-                int tdma_hint = (state->p25_sys_is_tdma == 1) ? 1 : (state->p25_chan_tdma[iden] & 0x1);
-                state->p25_chan_tdma[iden] = tdma_hint;
-                state->p25_chan_tdma_explicit[iden] = 0; // unknown/implicit
+            // Validate that base_freq actually falls in VHF/UHF range (warning only)
+            if (!p25_is_vhf_uhf_base_freq(base_freq)) {
+                fprintf(stderr, "\n  WARNING: 0x74 IDEN_UP_VU base_freq %08lX outside VHF/UHF range", base_freq);
             }
 
-            // Record provenance (use current system/site context); trust if on CC
-            state->p25_iden_wacn[iden] = state->p2_wacn;
-            state->p25_iden_sysid[iden] = state->p2_sysid;
-            state->p25_iden_rfss[iden] = state->p2_rfssid;
-            state->p25_iden_site[iden] = state->p2_siteid;
-            state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Write to FDMA IDEN entry
+            {
+                p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
+                e->base_freq = base_freq;
+                e->chan_type = 1; // FDMA default
+                e->chan_spac = chan_spac;
+                e->trans_off = trans_off;
+                e->bw_vu = (uint8_t)bw_vu;
+                e->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+                e->populated = 1;
+                e->wacn = state->p2_wacn;
+                e->sysid = state->p2_sysid;
+                e->rfss = state->p2_rfssid;
+                e->site = state->p2_siteid;
+                state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA/non-TDMA entry
+            }
 
             fprintf(stderr, "\n Identifier Update UHF/VHF\n");
             fprintf(stderr,
                     "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
                     "Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, bw_vu, state->p25_trans_off[iden], state->p25_chan_spac[iden],
-                    state->p25_base_freq[iden], state->p25_base_freq[iden] * 5);
+                    state->p25_chan_iden, bw_vu, trans_off, chan_spac, base_freq, base_freq * 5);
         }
 
-        //identifier update (Non-TDMA 6.2.22) (Non-VHF-UHF) //with signed offset, bit trans_off >> 8; bit number 9
+        //identifier update (Non-TDMA 6.2.22)
         if (MAC[1 + len_a] == 0x7D) {
-            state->p25_chan_iden = MAC[2 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_standard(MAC, 2 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
+            long int base_freq = up.base_freq;
+            int bw = up.bandwidth;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
 
-            state->p25_chan_type[iden] = 1;
-            state->p25_chan_tdma[iden] = 0;
-            state->p25_chan_tdma_explicit[iden] = 1; // explicit Non-TDMA
-            int bw = ((MAC[2 + len_a] & 0xF) << 5) | ((MAC[3 + len_a] & 0xF8) >> 2);
-            state->p25_trans_off[iden] = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
-            state->p25_chan_spac[iden] = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
-            state->p25_base_freq[iden] =
-                (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
+            p25_invalidate_chan_map_for_iden(state, iden);
 
-            // Record provenance (use current system/site context); trust if on CC
-            state->p25_iden_wacn[iden] = state->p2_wacn;
-            state->p25_iden_sysid[iden] = state->p2_sysid;
-            state->p25_iden_rfss[iden] = state->p2_rfssid;
-            state->p25_iden_site[iden] = state->p2_siteid;
-            state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+            // Write to FDMA IDEN entry
+            {
+                p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
+                e->base_freq = base_freq;
+                e->chan_type = 1; // FDMA default
+                e->chan_spac = chan_spac;
+                e->trans_off = trans_off;
+                e->bw_vu = 0;
+                e->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+                e->populated = 1;
+                e->wacn = state->p2_wacn;
+                e->sysid = state->p2_sysid;
+                e->rfss = state->p2_rfssid;
+                e->site = state->p2_siteid;
+                state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA/non-TDMA entry
+            }
 
             fprintf(stderr, "\n Identifier Update (8.3.1.23)\n");
             fprintf(stderr,
                     "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
                     "Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, bw, state->p25_trans_off[iden], state->p25_chan_spac[iden],
-                    state->p25_base_freq[iden], state->p25_base_freq[iden] * 5);
+                    state->p25_chan_iden, bw, trans_off, chan_spac, base_freq, base_freq * 5);
         }
 
         //identifier update for TDMA, Abbreviated
         if (MAC[1 + len_a] == 0x73) {
-            state->p25_chan_iden = MAC[2 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_tdma(MAC, 2 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
-            state->p25_chan_tdma[iden] = 1;
-            state->p25_chan_tdma_explicit[iden] = 2; // explicit TDMA
-            state->p25_chan_type[iden] = MAC[2 + len_a] & 0xF;
-            state->p25_trans_off[iden] = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
-            state->p25_chan_spac[iden] = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
-            state->p25_base_freq[iden] =
-                (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
+            int chan_type = up.chan_type;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
+            long int base_freq = up.base_freq;
 
-            // Record provenance (use current system/site context); trust if on CC
-            state->p25_iden_wacn[iden] = state->p2_wacn;
-            state->p25_iden_sysid[iden] = state->p2_sysid;
-            state->p25_iden_rfss[iden] = state->p2_rfssid;
-            state->p25_iden_site[iden] = state->p2_siteid;
-            state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Route by ChannelType. sdrtrunk treats only types 3, 4, and 5 as TDMA.
+            {
+                int is_tdma = p25_channel_type_is_tdma(chan_type);
+                p25_iden_entry_t* e = is_tdma ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
+                e->base_freq = base_freq;
+                e->chan_type = chan_type; // from MAC payload (4-bit)
+                e->chan_spac = chan_spac;
+                e->trans_off = trans_off;
+                e->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+                e->populated = 1;
+                e->wacn = state->p2_wacn;
+                e->sysid = state->p2_sysid;
+                e->rfss = state->p2_rfssid;
+                e->site = state->p2_siteid;
+                state->p25_chan_tdma_explicit[iden] |= is_tdma ? 2 : 1;
+            }
 
             fprintf(stderr, "\n Identifier Update for TDMA - Abbreviated\n");
             fprintf(stderr,
                     "  Channel Identifier [%01X] Channel Type [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] "
                     "Base Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, state->p25_chan_type[iden], state->p25_trans_off[iden],
-                    state->p25_chan_spac[iden], state->p25_base_freq[iden], state->p25_base_freq[iden] * 5);
+                    state->p25_chan_iden, chan_type, trans_off, chan_spac, base_freq, base_freq * 5);
         }
 
         //identifier update for TDMA, Extended
         if (MAC[1 + len_a] == 0xF3) {
-            state->p25_chan_iden = MAC[3 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_tdma(MAC, 3 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
-            state->p25_chan_tdma[iden] = 1;
-            state->p25_chan_tdma_explicit[iden] = 2; // explicit TDMA
-            state->p25_chan_type[iden] = MAC[3 + len_a] & 0xF;
-            state->p25_trans_off[iden] = (MAC[4 + len_a] << 6) | (MAC[5 + len_a] >> 2);
-            state->p25_chan_spac[iden] = ((MAC[5 + len_a] & 0x3) << 8) | MAC[6 + len_a];
-            state->p25_base_freq[iden] =
-                (MAC[7 + len_a] << 24) | (MAC[8 + len_a] << 16) | (MAC[9 + len_a] << 8) | (MAC[10 + len_a] << 0);
+            int chan_type = up.chan_type;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
+            long int base_freq = up.base_freq;
             int lwacn = (MAC[11 + len_a] << 12) | (MAC[12 + len_a] << 4) | ((MAC[13 + len_a] & 0xF0) >> 4);
             int lsysid = ((MAC[13 + len_a] & 0xF) << 8) | MAC[14 + len_a];
 
-            // Record provenance from payload + current RFSS/SITE; trust if on matching CC
-            state->p25_iden_wacn[iden] = lwacn;
-            state->p25_iden_sysid[iden] = lsysid;
-            state->p25_iden_rfss[iden] = state->p2_rfssid;
-            state->p25_iden_site[iden] = state->p2_siteid;
-            state->p25_iden_trust[iden] =
-                (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && state->p2_wacn == (unsigned long long)lwacn
-                 && state->p2_sysid == (unsigned long long)lsysid)
-                    ? 2
-                    : 1;
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Route by ChannelType. sdrtrunk treats only types 3, 4, and 5 as TDMA.
+            {
+                int is_tdma = p25_channel_type_is_tdma(chan_type);
+                p25_iden_entry_t* e = is_tdma ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
+                e->base_freq = base_freq;
+                e->chan_type = chan_type; // from MAC payload (4-bit)
+                e->chan_spac = chan_spac;
+                e->trans_off = trans_off;
+                e->trust =
+                    (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && state->p2_wacn == (unsigned long long)lwacn
+                     && state->p2_sysid == (unsigned long long)lsysid)
+                        ? 2
+                        : 1;
+                e->populated = 1;
+                e->wacn = (unsigned long long)lwacn;   // from extended payload
+                e->sysid = (unsigned long long)lsysid; // from extended payload
+                e->rfss = state->p2_rfssid;
+                e->site = state->p2_siteid;
+                state->p25_chan_tdma_explicit[iden] |= is_tdma ? 2 : 1;
+            }
 
             fprintf(stderr, "\n Identifier Update for TDMA - Extended\n");
             fprintf(stderr,
                     "  Channel Identifier [%01X] Channel Type [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] "
                     "Base Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, state->p25_chan_type[iden], state->p25_trans_off[iden],
-                    state->p25_chan_spac[iden], state->p25_base_freq[iden], state->p25_base_freq[iden] * 5);
+                    state->p25_chan_iden, chan_type, trans_off, chan_spac, base_freq, base_freq * 5);
             fprintf(stderr, "\n  WACN [%04X] SYSID [%04X]", lwacn, lsysid);
         }
 
@@ -2682,8 +2848,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
         }
 
-        //Adjacent Status Broadcast, abbreviated
-        if (MAC[1 + len_a] == 0x7C) {
+        //Adjacent Status Broadcast, abbreviated. TSBK 0x3E is the uncoordinated band plan variant.
+        if (MAC[1 + len_a] == 0x7C || (MAC[1 + len_a] == 0x7E && MAC[len_a] == 0x07)) {
+            int uncoordinated = (MAC[1 + len_a] == 0x7E);
             int lra = MAC[2 + len_a];
             int cfva = MAC[3 + len_a] >> 4;
             int lsysid = ((MAC[3 + len_a] & 0xF) << 8) | MAC[4 + len_a];
@@ -2691,7 +2858,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int siteid = MAC[6 + len_a];
             int channelt = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
             int sysclass = MAC[9 + len_a];
-            fprintf(stderr, "\n Adjacent Status Broadcast - Abbreviated\n");
+            fprintf(stderr, "\n Adjacent Status Broadcast%s - Abbreviated\n",
+                    uncoordinated ? " Uncoordinated Band Plan" : "");
             fprintf(stderr, "  LRA [%02X] RFSS[%03d] SITE [%03d] SYSID [%03X] CHAN-T [%04X] SSC [%02X]\n  ", lra,
                     rfssid, siteid, lsysid, channelt, sysclass);
             if (cfva & 0x8) {
@@ -2852,6 +3020,134 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int ber = MAC[5 + len_a] & 0xF;
             fprintf(stderr, "\n Power Control Signal Quality");
             fprintf(stderr, "\n  Target Address: %d RF: 0x%X BER: 0x%X", ta, rf, ber);
+        }
+
+        // Protection Parameter Update (TSBK 0x3F, bridged as MAC-like 0x7F)
+        // Layout: reserved(16), ALGID(8), KID(16), target(24).
+        if (MAC[1 + len_a] == 0x7F && MAC[len_a] == 0x07) {
+            int algid = (int)MAC[4 + len_a];
+            int kid = (int)((MAC[5 + len_a] << 8) | MAC[6 + len_a]);
+            int target = (int)((MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a]);
+
+            const char* alg_name = p25_algid_name((uint8_t)algid);
+
+            fprintf(stderr, "%s", KYEL);
+            fprintf(stderr, "\n Protection Parameter Update");
+            fprintf(stderr, "\n  ALGID [%02X]", algid);
+            if (alg_name) {
+                fprintf(stderr, " (%s)", alg_name);
+            }
+            fprintf(stderr, " KID [%04X]", kid);
+            fprintf(stderr, " Target [%d]", target);
+            fprintf(stderr, "%s", KNRM);
+
+            state->p25_prot_algid = (uint8_t)algid;
+            state->p25_prot_kid = (uint16_t)kid;
+            state->p25_prot_valid = 1;
+        }
+
+        // Time and Date Announcement (MAC 0x75, TSBK 0x35)
+        // TIA-102.AABC-B §6.2.20
+        if (MAC[1 + len_a] == 0x75) {
+            int vd = (int)p25_mac_get_bits(MAC, len_a, 8, 1);
+            int vt = (int)p25_mac_get_bits(MAC, len_a, 9, 1);
+            int vl = (int)p25_mac_get_bits(MAC, len_a, 10, 1);
+
+            int year = 0, month = 0, day = 0;
+            int hours = 0, minutes = 0, seconds = 0;
+            int lto_sign = 0, lto_mag = 0;
+
+            if (vd) {
+                month = (int)p25_mac_get_bits(MAC, len_a, 24, 4);
+                day = (int)p25_mac_get_bits(MAC, len_a, 28, 5);
+                year = (int)p25_mac_get_bits(MAC, len_a, 33, 13);
+            }
+            if (vt) {
+                hours = (int)p25_mac_get_bits(MAC, len_a, 48, 5);
+                minutes = (int)p25_mac_get_bits(MAC, len_a, 53, 6);
+                seconds = (int)p25_mac_get_bits(MAC, len_a, 59, 6);
+            }
+            if (vl) {
+                lto_sign = (int)p25_mac_get_bits(MAC, len_a, 11, 1);
+                lto_mag = (int)p25_mac_get_bits(MAC, len_a, 12, 12);
+            }
+
+            fprintf(stderr, "%s", KYEL);
+            fprintf(stderr, "\n Time and Date Announcement");
+            fprintf(stderr, "\n  ");
+            if (vd) {
+                fprintf(stderr, "%04d-%02d-%02d ", year, month, day);
+            }
+            if (vt) {
+                fprintf(stderr, "%02d:%02d:%02d ", hours, minutes, seconds);
+            }
+            if (vl) {
+                int lto_total_minutes = lto_mag;
+                int lto_hours = lto_total_minutes / 60;
+                int lto_mins = lto_total_minutes % 60;
+                fprintf(stderr, "UTC%c%02d:%02d", lto_sign ? '-' : '+', lto_hours, lto_mins);
+            }
+            fprintf(stderr, "%s", KNRM);
+
+            int offset_minutes = 0;
+            if (vl) {
+                offset_minutes = lto_mag;
+                if (lto_sign) {
+                    offset_minutes = -offset_minutes;
+                }
+            }
+
+            // Store UTC time_t if both date and time are valid.
+            if (vd && vt) {
+                time_t t = p25_utc_time_from_local_fields(year, month, day, hours, minutes, seconds, offset_minutes);
+                if (t != (time_t)-1) {
+                    state->p25_sys_time = t;
+                    state->p25_sys_time_valid = 1;
+                }
+            }
+
+            if (vl) {
+                state->p25_sys_time_offset = (int16_t)offset_minutes;
+                state->p25_sys_time_offset_valid = 1;
+            }
+        }
+
+        // Queued Response (MAC 0x61, TSBK 0x21) or Deny Response (MAC 0x67, TSBK 0x27).
+        // Field layout follows sdrtrunk's QueuedResponse/DenyResponse structures.
+        if (MAC[1 + len_a] == 0x61 || MAC[1 + len_a] == 0x67) {
+            int is_deny = (MAC[1 + len_a] == 0x67);
+            int has_addl_info = ((MAC[2 + len_a] & 0x80) != 0);
+            int svc_type = (int)(MAC[2 + len_a] & 0x3F);
+            int reason_code = (int)MAC[3 + len_a];
+            int addl_info = (int)((MAC[4 + len_a] << 16) | (MAC[5 + len_a] << 8) | MAC[6 + len_a]);
+            int target_addr = (int)((MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a]);
+
+            const char* reason_str =
+                is_deny ? p25_deny_reason_str((uint8_t)reason_code) : p25_que_reason_str((uint8_t)reason_code);
+
+            fprintf(stderr, "\n %s Response", is_deny ? "Deny" : "Queued");
+            fprintf(stderr, "\n  SVC [%02X] Reason [%s]", svc_type, reason_str);
+            if (has_addl_info) {
+                fprintf(stderr, " Addl [%06X]", addl_info);
+            }
+            fprintf(stderr, " Target [%d]", target_addr);
+
+            if (has_addl_info) {
+                snprintf(state->active_channel[0], sizeof state->active_channel[0],
+                         "%s Target: %d Reason: %s Info: %06X; ", is_deny ? "DENY" : "QUEUED", target_addr, reason_str,
+                         addl_info);
+            } else {
+                snprintf(state->active_channel[0], sizeof state->active_channel[0], "%s Target: %d Reason: %s; ",
+                         is_deny ? "DENY" : "QUEUED", target_addr, reason_str);
+            }
+            state->last_active_time = time(NULL);
+
+            // Notify the trunking state machine
+            if (is_deny) {
+                p25_sm_on_deny_response(opts, state, svc_type, reason_code, target_addr);
+            } else {
+                p25_sm_on_queued_response(opts, state, svc_type, reason_code, target_addr);
+            }
         }
 
     SKIPCALL:; //do nothing

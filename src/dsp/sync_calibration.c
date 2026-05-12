@@ -231,6 +231,7 @@ dsd_sync_warm_start_thresholds_outer_only(dsd_opts* opts, dsd_state* state, int 
             state->maxbuf[i] = state->max;
             state->minbuf[i] = state->min;
         }
+        dsd_state_invalidate_minmax_sums(state);
     }
 
     return DSD_WARM_START_OK;

@@ -139,11 +139,13 @@ main(void) {
     st.p25_cc_freq = 851000000;
     int iden = 1;
     st.p25_chan_iden = iden;
-    st.p25_chan_type[iden] = 1;
-    st.p25_chan_tdma[iden] = 0;
-    st.p25_base_freq[iden] = 851000000 / 5;
-    st.p25_chan_spac[iden] = 100;
-    st.p25_iden_trust[iden] = 2; // trusted
+    // Populate new dual-array
+    st.p25_iden_fdma[iden].base_freq = 851000000 / 5;
+    st.p25_iden_fdma[iden].chan_type = 1;
+    st.p25_iden_fdma[iden].chan_spac = 100;
+    st.p25_iden_fdma[iden].trust = 2;
+    st.p25_iden_fdma[iden].populated = 1;
+    st.p25_chan_tdma_explicit[iden] = 1; // FDMA known
 
     // Case A: group calls gated off -> no tune
     opts.trunk_tune_group_calls = 0;

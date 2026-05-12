@@ -7,8 +7,9 @@
  * @file
  * @brief Demod → UI snapshot API for stable read-only state.
  *
- * Publishes deep-copied snapshots of `dsd_state` for the UI thread to read
- * without racing live decoder state.
+ * Publishes `dsd_state`-shaped snapshots of the fields rendered by the UI
+ * thread, without racing live decoder state. Decoder-private bulk buffers are
+ * intentionally omitted from these snapshots.
  */
 
 #pragma once

@@ -35,8 +35,10 @@ main(void) {
 
     // Case 1: Known TDMA (type=3 -> denom=2). Raw ch=0x2005 -> FDMA 0x0002, slot 2
     int id = 2;
-    st.p25_chan_tdma[id] = 1;
-    st.p25_chan_type[id] = 3; // slots_per_carrier[3] = 2
+    // Populate new dual-array entry so p25_format_chan_suffix reads from it
+    st.p25_iden_tdma[id].chan_type = 3;
+    st.p25_iden_tdma[id].populated = 1;
+    st.p25_chan_tdma_explicit[id] = 2; // TDMA known
     uint16_t ch = (uint16_t)((id << 12) | 0x0005);
     memset(buf, 0, sizeof buf);
     p25_format_chan_suffix(&st, ch, -1, buf, sizeof buf);
@@ -49,7 +51,7 @@ main(void) {
     // Case 2: FDMA (denom=1) → empty suffix
     static dsd_state st2;
     memset(&st2, 0, sizeof st2);
-    st2.p25_chan_tdma[id] = 0;
+    st2.p25_chan_tdma_explicit[id] = 1; // FDMA known
     st2.p25_cc_is_tdma = 0;
     ch = (uint16_t)((id << 12) | 0x000A);
     memset(buf, 0, sizeof buf);
@@ -59,7 +61,6 @@ main(void) {
     // Case 3: System has Phase 2 TDMA voice but IDEN TDMA unknown → fallback denom=2
     static dsd_state st3;
     memset(&st3, 0, sizeof st3);
-    st3.p25_chan_tdma[id] = 0; // unknown
     st3.p25_sys_is_tdma = 1;
     ch = (uint16_t)((id << 12) | 0x0007); // raw 7 -> FDMA 3, slot 2 (1-based)
     memset(buf, 0, sizeof buf);
@@ -71,9 +72,10 @@ main(void) {
     static dsd_state st4;
     memset(&st4, 0, sizeof st4);
     st4.p25_sys_is_tdma = 1;
-    st4.p25_chan_tdma[id] = 1;
-    st4.p25_chan_tdma_explicit[id] = 1;
-    st4.p25_chan_type[id] = 3;
+    st4.p25_chan_tdma_explicit[id] = 1; // explicit FDMA
+    // Populate FDMA entry (explicit=1 means FDMA-only, so FDMA entry is selected)
+    st4.p25_iden_fdma[id].chan_type = 3;
+    st4.p25_iden_fdma[id].populated = 1;
     ch = (uint16_t)((id << 12) | 0x000A);
     memset(buf, 0, sizeof buf);
     p25_format_chan_suffix(&st4, ch, -1, buf, sizeof buf);

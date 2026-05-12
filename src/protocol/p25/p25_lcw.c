@@ -44,6 +44,63 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     snprintf(dst + len, dstsz - len, "%s", src);
 }
 
+static inline int
+p25_lcw_signed_offset_units(int sign_bit, int raw_offset) {
+    return sign_bit ? raw_offset : -raw_offset;
+}
+
+static void
+p25_lcw_store_fdma_iden(dsd_opts* opts, dsd_state* state, int iden, long int base_freq, int chan_spac, int trans_off,
+                        uint8_t bw_vu) {
+    if (!state || iden < 0 || iden >= 16 || base_freq == 0 || chan_spac == 0) {
+        return;
+    }
+
+    p25_invalidate_chan_map_for_iden(state, iden);
+
+    p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
+    e->base_freq = base_freq;
+    e->chan_type = 1;
+    e->chan_spac = chan_spac;
+    e->trans_off = trans_off;
+    e->bw_vu = bw_vu;
+    e->trust = (state->p25_cc_freq != 0 && opts && opts->p25_is_tuned == 0) ? 2 : 1;
+    e->populated = 1;
+    e->wacn = state->p2_wacn;
+    e->sysid = state->p2_sysid;
+    e->rfss = state->p2_rfssid;
+    e->site = state->p2_siteid;
+    state->p25_chan_tdma_explicit[iden] |= 1;
+}
+
+/**
+ * @brief Resolve a P25 Algorithm ID to a human-readable name.
+ *
+ * Common APCO P25 ALGIDs used by the voice/ESS paths:
+ *   0x80 = unencrypted, 0x81 = DES-OFB, 0x84 = AES-256,
+ *   0x89 = AES-128-OFB, 0x9F = DES-XL, 0xAA = ADP/RC4
+ *
+ * @param algid The 8-bit algorithm identifier.
+ * @return Static string with algorithm name, or NULL if unrecognized.
+ */
+static const char*
+p25_algid_name(uint8_t algid) {
+    switch (algid) {
+        case 0x80: return "UNENCRYPTED";
+        case 0x81: return "DES-OFB";
+        case 0x82: return "2-KEY 3DES";
+        case 0x83: return "3-KEY 3DES";
+        case 0x84: return "AES-256";
+        case 0x85: return "AES-128";
+        case 0x88: return "AES-CBC";
+        case 0x89: return "AES-128-OFB";
+        case 0x9F: return "DES-XL";
+        case 0xAA: return "ADP/RC4";
+        case 0xAF: return "AES-256-GCM";
+        default: return NULL;
+    }
+}
+
 //new p25_lcw function here -- TIA-102.AABF-D LCW Format Messages (if anybody wants to fill the rest out)
 void
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors) {
@@ -361,7 +418,23 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             }
 
             else if (lc_format == 0x65) {
-                fprintf(stderr, " Protection Parameter Broadcast - OBSOLETE");
+                // Protection Parameter Broadcast — TIA-102.AABF-D LCO 37
+                uint8_t algid = (uint8_t)ConvertBitIntoBytes(&LCW_bits[24], 8);
+                uint16_t kid = (uint16_t)ConvertBitIntoBytes(&LCW_bits[32], 16);
+                uint32_t target = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
+
+                const char* alg_name = p25_algid_name(algid);
+
+                fprintf(stderr, " Protection Parameter Broadcast");
+                fprintf(stderr, "\n  ALGID [%02X]", algid);
+                if (alg_name) {
+                    fprintf(stderr, " (%s)", alg_name);
+                }
+                fprintf(stderr, " KID [%04X] Target [%d]", kid, target);
+
+                state->p25_prot_algid = algid;
+                state->p25_prot_kid = kid;
+                state->p25_prot_valid = 1;
             }
 
             else if (lc_format == 0x66) {
@@ -435,42 +508,30 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             // This lc_format doesn't use the MFID field
             else if (lc_format == 0x58) {
                 uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
+                int bw = (int)ConvertBitIntoBytes(&LCW_bits[12], 9);
+                int sign = LCW_bits[21] & 1;
+                int tx_raw = (int)ConvertBitIntoBytes(&LCW_bits[22], 8);
+                int chan_spac = (int)ConvertBitIntoBytes(&LCW_bits[30], 10);
                 uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
-                fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
-                if (iden < 16 && base != 0) {
-                    uint32_t old = state->p25_base_freq[iden];
-                    if (old != base) {
-                        state->p25_base_freq[iden] = base; // store in 5 kHz units
-                        fprintf(stderr, " (updated)");
-                    }
-                    // Record provenance for LCW-learned IDENs so trunk SM can enforce site confirmation.
-                    // Trust as confirmed only when on current CC; otherwise mark unconfirmed.
-                    state->p25_iden_wacn[iden] = state->p2_wacn;
-                    state->p25_iden_sysid[iden] = state->p2_sysid;
-                    state->p25_iden_rfss[iden] = state->p2_rfssid;
-                    state->p25_iden_site[iden] = state->p2_siteid;
-                    state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
-                }
+                int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
+                fprintf(stderr, " Channel Identifier Update; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %ld;",
+                        iden, bw, trans_off, chan_spac, (long)base * 5L);
+                p25_lcw_store_fdma_iden(opts, state, iden, (long int)base, chan_spac, trans_off, 0);
             }
 
             // This lc_format doesn't use the MFID field
             else if (lc_format == 0x59) {
                 uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
+                uint8_t bw_vu = (uint8_t)ConvertBitIntoBytes(&LCW_bits[12], 4);
+                int sign = LCW_bits[16] & 1;
+                int tx_raw = (int)ConvertBitIntoBytes(&LCW_bits[17], 13);
+                int chan_spac = (int)ConvertBitIntoBytes(&LCW_bits[30], 10);
                 uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
-                fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
-                if (iden < 16 && base != 0) {
-                    uint32_t old = state->p25_base_freq[iden];
-                    if (old != base) {
-                        state->p25_base_freq[iden] = base; // store in 5 kHz units
-                        fprintf(stderr, " (updated)");
-                    }
-                    // Record provenance for LCW-learned IDENs so trunk SM can enforce site confirmation.
-                    state->p25_iden_wacn[iden] = state->p2_wacn;
-                    state->p25_iden_sysid[iden] = state->p2_sysid;
-                    state->p25_iden_rfss[iden] = state->p2_rfssid;
-                    state->p25_iden_site[iden] = state->p2_siteid;
-                    state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
-                }
+                int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
+                fprintf(stderr,
+                        " Channel Identifier Update VU; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %ld;", iden,
+                        bw_vu, trans_off, chan_spac, (long)base * 5L);
+                p25_lcw_store_fdma_iden(opts, state, iden, (long int)base, chan_spac, trans_off, bw_vu);
             }
 
             else {

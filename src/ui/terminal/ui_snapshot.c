@@ -4,9 +4,12 @@
  */
 
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ui_snapshot.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -16,11 +19,10 @@
 static dsd_state g_pub;     // latest published by demod thread
 static dsd_state g_consume; // last copied out for UI
 // Deep-copied backing for pointer-backed members the UI dereferences.
-// Currently, only event history is pointer-backed in dsd_state for UI reads.
 static Event_History_I g_pub_eh[2];
 static Event_History_I g_consume_eh[2];
-// Full-slot fingerprints to avoid deep-copying full history when unchanged.
-static uint64_t g_pub_eh_hash[2];
+static dsd_trunk_cc_candidates g_pub_cc_candidates;
+static dsd_trunk_cc_candidates g_consume_cc_candidates;
 static int g_have = 0;
 static dsd_mutex_t g_mu;
 static atomic_int g_mu_init = 0;
@@ -29,15 +31,94 @@ static unsigned long long g_consume_seq = 0;
 static unsigned long long g_pub_eh_seq = 0;
 static unsigned long long g_consume_eh_seq = 0;
 
-static uint64_t
-fnv1a64_bytes(const void* data, size_t len) {
-    const unsigned char* p = (const unsigned char*)data;
-    uint64_t h = 1469598103934665603ULL;
-    for (size_t i = 0; i < len; i++) {
-        h ^= (uint64_t)p[i];
-        h *= 1099511628211ULL;
+#define UI_SNAPSHOT_FIELD_END(field)            (offsetof(dsd_state, field) + sizeof(((dsd_state*)0)->field))
+#define UI_SNAPSHOT_COPY_FIELD(dst, src, field) memcpy(&(dst)->field, &(src)->field, sizeof((dst)->field))
+#define UI_SNAPSHOT_COPY_RANGE(dst, src, first, last)                                                                  \
+    ui_snapshot_copy_range((dst), (src), offsetof(dsd_state, first), UI_SNAPSHOT_FIELD_END(last))
+
+static void
+ui_snapshot_copy_range(dsd_state* dst, const dsd_state* src, size_t begin, size_t end) {
+    memcpy((char*)dst + begin, (const char*)src + begin, end - begin);
+}
+
+static void
+ui_snapshot_copy_trunk_cc_candidates(dsd_state* dst, const dsd_state* src, dsd_trunk_cc_candidates* backing) {
+    const dsd_trunk_cc_candidates* cc_candidates =
+        (const dsd_trunk_cc_candidates*)src->state_ext[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES];
+    if (cc_candidates == NULL) {
+        memset(backing, 0, sizeof(*backing));
+        dst->state_ext[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = NULL;
+        dst->state_ext_cleanup[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = NULL;
+        return;
     }
-    return h;
+
+    memcpy(backing, cc_candidates, sizeof(*backing));
+    dst->state_ext[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = backing;
+    dst->state_ext_cleanup[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = NULL;
+}
+
+static void
+ui_snapshot_copy_trunk_chan_map(dsd_state* dst, const dsd_state* src) {
+    if (dst->trunk_chan_map_seq == src->trunk_chan_map_seq
+        && dst->trunk_chan_map_used_count == src->trunk_chan_map_used_count) {
+        return;
+    }
+
+    uint32_t old_count = dst->trunk_chan_map_used_count;
+    if (old_count > DSD_TRUNK_CHAN_MAP_SIZE) {
+        old_count = DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+    for (uint32_t i = 0; i < old_count; i++) {
+        const uint16_t channel = dst->trunk_chan_map_used[i];
+        if (dsd_state_trunk_chan_tracked(channel)) {
+            dst->trunk_chan_map[channel] = 0;
+        }
+        dst->trunk_chan_map_used[i] = 0;
+    }
+    dst->trunk_chan_map_used_count = 0;
+
+    uint32_t count = src->trunk_chan_map_used_count;
+    if (count > DSD_TRUNK_CHAN_MAP_SIZE) {
+        count = DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        const uint16_t channel = src->trunk_chan_map_used[i];
+        if (!dsd_state_trunk_chan_tracked(channel)) {
+            continue;
+        }
+        const long int freq = src->trunk_chan_map[channel];
+        if (freq == 0) {
+            continue;
+        }
+        dst->trunk_chan_map[channel] = freq;
+        dst->trunk_chan_map_used[dst->trunk_chan_map_used_count++] = channel;
+    }
+    dst->trunk_chan_map_seq = src->trunk_chan_map_seq;
+}
+
+static void
+ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
+    UI_SNAPSHOT_COPY_RANGE(dst, src, dibit_buf, trunk_lcn_freq);
+    ui_snapshot_copy_trunk_chan_map(dst, src);
+    UI_SNAPSHOT_COPY_FIELD(dst, src, group_array);
+
+    UI_SNAPSHOT_COPY_RANGE(dst, src, audio_out_idx, lastsample);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, err_str, aout_gainA);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, aout_max_buf_idx, last_dibit);
+
+    UI_SNAPSHOT_COPY_RANGE(dst, src, input_sample_buffer, directmode);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, dmr_alias_format, DMRvcR);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, octet_counter, p25_p2_audio_allowed);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, p25_p2_audio_ring_count, dstar_gps);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, m17_pbc_ct, straight_frame_step);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, vertex_ks_count, ui_msg);
+}
+
+static int
+ui_event_history_slot_equal(const Event_History_I* lhs, const Event_History_I* rhs) {
+    // Event history storage is calloc-initialized and copied whole when changed, so padding stays stable here.
+    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison)
+    return memcmp(lhs, rhs, sizeof(*lhs)) == 0;
 }
 
 static void
@@ -55,22 +136,18 @@ ui_terminal_telemetry_publish_snapshot(const dsd_state* state) {
     }
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
-    // Coarse copy of the entire struct first
-    memcpy(&g_pub, state, sizeof(dsd_state));
+    ui_snapshot_copy_render_state(&g_pub, state);
+    ui_snapshot_copy_trunk_cc_candidates(&g_pub, state, &g_pub_cc_candidates);
     // Deep copy pointer-backed UI data (event history for 2 slots) only when changed.
-    // Fingerprint full slots so non-head updates (for example history reset) are not missed.
+    // Event history storage is zero-initialized and copied as a whole slot.
     if (state->event_history_s != NULL) {
         int eh_changed = 0;
-        uint64_t slot0_hash = fnv1a64_bytes(&state->event_history_s[0], sizeof(Event_History_I));
-        uint64_t slot1_hash = fnv1a64_bytes(&state->event_history_s[1], sizeof(Event_History_I));
-        if (!g_have || slot0_hash != g_pub_eh_hash[0]) {
+        if (!g_have || !ui_event_history_slot_equal(&g_pub_eh[0], &state->event_history_s[0])) {
             memcpy(&g_pub_eh[0], &state->event_history_s[0], sizeof(Event_History_I));
-            g_pub_eh_hash[0] = slot0_hash;
             eh_changed = 1;
         }
-        if (!g_have || slot1_hash != g_pub_eh_hash[1]) {
+        if (!g_have || !ui_event_history_slot_equal(&g_pub_eh[1], &state->event_history_s[1])) {
             memcpy(&g_pub_eh[1], &state->event_history_s[1], sizeof(Event_History_I));
-            g_pub_eh_hash[1] = slot1_hash;
             eh_changed = 1;
         }
         if (eh_changed) {
@@ -94,8 +171,8 @@ ui_get_latest_snapshot(void) {
         return NULL;
     }
     if (g_consume_seq != g_pub_seq) {
-        // Copy the coarse snapshot only when publisher has new data.
-        memcpy(&g_consume, &g_pub, sizeof(dsd_state));
+        ui_snapshot_copy_render_state(&g_consume, &g_pub);
+        ui_snapshot_copy_trunk_cc_candidates(&g_consume, &g_pub, &g_consume_cc_candidates);
         g_consume_seq = g_pub_seq;
     }
     // Deep copy event history only when the published history changed.

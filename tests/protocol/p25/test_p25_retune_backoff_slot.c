@@ -90,11 +90,13 @@ main(void) {
     // TDMA IDEN: id=2, type=3 => denom=2; trusted
     int id = 2;
     st.p25_chan_iden = id;
-    st.p25_chan_type[id] = 3;
-    st.p25_chan_tdma[id] = 1;
-    st.p25_base_freq[id] = 851000000 / 5;
-    st.p25_chan_spac[id] = 100;
-    st.p25_iden_trust[id] = 2;
+    // Populate new dual-array
+    st.p25_iden_tdma[id].base_freq = 851000000 / 5;
+    st.p25_iden_tdma[id].chan_type = 3;
+    st.p25_iden_tdma[id].chan_spac = 100;
+    st.p25_iden_tdma[id].trust = 2;
+    st.p25_iden_tdma[id].populated = 1;
+    st.p25_chan_tdma_explicit[id] = 2; // TDMA known
 
     // Two channels mapping to the same RF: low bit selects slot
     int ch_slot0 = (id << 12) | 0x0002; // slot 0

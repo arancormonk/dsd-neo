@@ -127,10 +127,11 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
     memset(&state, 0, sizeof state);
 
     const int iden = 1;
-    state.p25_chan_type[iden] = 1;
+    state.p25_iden_fdma[iden].chan_type = 1;
+    state.p25_iden_fdma[iden].chan_spac = 100;
+    state.p25_iden_fdma[iden].base_freq = 851000000 / 5;
+    state.p25_iden_fdma[iden].populated = 1;
     state.p25_chan_tdma_explicit[iden] = 1;
-    state.p25_chan_spac[iden] = 100;
-    state.p25_base_freq[iden] = 851000000 / 5;
     state.p2_rfssid = current_rfss;
     state.p2_siteid = current_site;
 

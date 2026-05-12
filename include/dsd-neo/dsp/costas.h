@@ -173,7 +173,7 @@ void dsd_costas_reset(dsd_costas_loop_state_t* c);
  * Key OP25 parameters (from p25_demodulator_dev.py and gardner_cc_impl.cc):
  *   - gain_mu = 0.025
  *   - gain_omega = 0.1 * gain_mu^2 = 0.0000625
- *   - omega_rel = 0.002 (±0.2%)
+ *   - omega_rel = 0.002 absolute samples/symbol clamp
  *
  * @param d Demodulator state. Input: lowpassed (sample-rate IQ after AGC).
  *          Output: lowpassed (symbol-rate samples).

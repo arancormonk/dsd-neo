@@ -93,6 +93,10 @@ unset_all_runtime_env(void) {
         "DSD_NEO_CPU_DONGLE",
         "DSD_NEO_CPU_USB",
         "DSD_NEO_CQPSK",
+        "DSD_NEO_CQPSK_EQ",
+        "DSD_NEO_CQPSK_EQ_MODULUS",
+        "DSD_NEO_CQPSK_EQ_MU",
+        "DSD_NEO_CQPSK_EQ_TAPS",
         "DSD_NEO_CQPSK_SYNC_INV",
         "DSD_NEO_CQPSK_SYNC_NEG",
         "DSD_NEO_DEBUG_CQPSK",
@@ -126,6 +130,7 @@ unset_all_runtime_env(void) {
         "DSD_NEO_MT",
         "DSD_NEO_NO_BOOTSTRAP",
         "DSD_NEO_OUTPUT_CLEAR_ON_RETUNE",
+        "DSD_NEO_P25_AFC_STATUS_GATE",
         "DSD_NEO_P25_CC_GRACE",
         "DSD_NEO_P25_FORCE_RELEASE_EXTRA",
         "DSD_NEO_P25_FORCE_RELEASE_MARGIN",
@@ -517,6 +522,58 @@ test_dmr_t3_heur_apply(void) {
     }
 
     unsetenv("DSD_NEO_DMR_T3_HEUR");
+    return 0;
+}
+
+static int
+test_p25_afc_status_gate_apply(void) {
+    static dsd_opts opts;
+    opts = {};
+    opts.p25_afc_status_gate_enable = 7; /* sentinel */
+
+    unsetenv("DSD_NEO_P25_AFC_STATUS_GATE");
+    dsd_neo_config_init(NULL);
+    dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), &opts, NULL);
+    int rc = expect_int_eq(opts.p25_afc_status_gate_enable, 7, 730, "p25_afc_status_gate unchanged when unset");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_P25_AFC_STATUS_GATE", "1", 1);
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->p25_afc_status_gate_is_set, 1, 731, "p25_afc_status_gate_is_set (1)");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->p25_afc_status_gate_enable, 1, 732, "p25_afc_status_gate_enable (1)");
+    if (rc != 0) {
+        return rc;
+    }
+    dsd_apply_runtime_config_to_opts(cfg, &opts, NULL);
+    rc = expect_int_eq(opts.p25_afc_status_gate_enable, 1, 733, "opts p25_afc_status_gate_enable (1)");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_P25_AFC_STATUS_GATE", "0", 1);
+    dsd_neo_config_init(NULL);
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->p25_afc_status_gate_is_set, 1, 734, "p25_afc_status_gate_is_set (0)");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->p25_afc_status_gate_enable, 0, 735, "p25_afc_status_gate_enable (0)");
+    if (rc != 0) {
+        return rc;
+    }
+    dsd_apply_runtime_config_to_opts(cfg, &opts, NULL);
+    rc = expect_int_eq(opts.p25_afc_status_gate_enable, 0, 736, "opts p25_afc_status_gate_enable (0)");
+    if (rc != 0) {
+        return rc;
+    }
+
+    unsetenv("DSD_NEO_P25_AFC_STATUS_GATE");
     return 0;
 }
 
@@ -1735,6 +1792,10 @@ test_dsp_misc_env(void) {
     setenv("DSD_NEO_TED", "1", 1);
     setenv("DSD_NEO_TED_GAIN", "0.06", 1);
     setenv("DSD_NEO_TED_FORCE", "1", 1);
+    setenv("DSD_NEO_CQPSK_EQ", "1", 1);
+    setenv("DSD_NEO_CQPSK_EQ_TAPS", "8", 1);
+    setenv("DSD_NEO_CQPSK_EQ_MU", "0.0015", 1);
+    setenv("DSD_NEO_CQPSK_EQ_MODULUS", "0.75", 1);
     setenv("DSD_NEO_C4FM_CLK", "mm", 1);
     setenv("DSD_NEO_C4FM_CLK_SYNC", "1", 1);
     setenv("DSD_NEO_DEEMPH", "75", 1);
@@ -1875,7 +1936,40 @@ test_dsp_misc_env(void) {
         return rc;
     }
 
-    rc = expect_int_eq(cfg->c4fm_clk_is_set, 1, 1540, "c4fm_clk_is_set");
+    rc = expect_int_eq(cfg->cqpsk_eq_is_set, 1, 1536, "cqpsk_eq_is_set");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->cqpsk_eq_enable, 1, 1537, "cqpsk_eq_enable");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->cqpsk_eq_taps_is_set, 1, 1538, "cqpsk_eq_taps_is_set");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->cqpsk_eq_taps, 9, 1539, "cqpsk_eq_taps odd");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->cqpsk_eq_mu_is_set, 1, 1540, "cqpsk_eq_mu_is_set");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_double_close(cfg->cqpsk_eq_mu, 0.0015, 1e-7, 1541, "cqpsk_eq_mu");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->cqpsk_eq_modulus_is_set, 1, 1542, "cqpsk_eq_modulus_is_set");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_double_close(cfg->cqpsk_eq_modulus, 0.75, 1e-6, 1543, "cqpsk_eq_modulus");
+    if (rc != 0) {
+        return rc;
+    }
+
+    rc = expect_int_eq(cfg->c4fm_clk_is_set, 1, 1550, "c4fm_clk_is_set");
     if (rc != 0) {
         return rc;
     }
@@ -2400,6 +2494,10 @@ main(void) {
         return rc;
     }
     rc = test_dmr_t3_tools_env();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_p25_afc_status_gate_apply();
     if (rc != 0) {
         return rc;
     }
