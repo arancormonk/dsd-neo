@@ -17,8 +17,8 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-void
-p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq) {
+static void
+p25_test_invoke_lcw_impl(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq, long lastsrc) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
@@ -33,6 +33,7 @@ p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, l
     opts->trunk_tune_enc_calls = 0;
 
     state->p25_cc_freq = cc_freq;
+    state->lastsrc = lastsrc;
 
     uint8_t buf[72];
     memset(buf, 0, sizeof(buf));
@@ -46,4 +47,15 @@ p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, l
     p25_lcw(opts, state, buf, 0);
     free(opts);
     free(state);
+}
+
+void
+p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq) {
+    p25_test_invoke_lcw_impl(lcw_bits, len, enable_retune, cc_freq, 0);
+}
+
+void
+p25_test_invoke_lcw_with_lastsrc(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq,
+                                 long lastsrc) {
+    p25_test_invoke_lcw_impl(lcw_bits, len, enable_retune, cc_freq, lastsrc);
 }

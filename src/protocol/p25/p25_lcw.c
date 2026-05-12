@@ -176,8 +176,12 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 if (group != 0) {
                     state->lasttg = group;
                 }
-                // if (source != 0) //disable now with new event history, if same src next ptt, then it will capture all of them as individual event items
-                state->lastsrc = source;
+                // Don't overwrite a known-good source ID with zero —
+                // some LDU1 frames decode with source=0 when the field
+                // isn't present, which would destroy the ID from an earlier frame.
+                if (source != 0) {
+                    state->lastsrc = source;
+                }
                 // Clear alias at start/update of talker for this call (don’t reuse across calls)
                 state->generic_talker_alias[0][0] = '\0';
                 state->generic_talker_alias_src[0] = 0;
@@ -207,8 +211,12 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 if (target != 0) {
                     state->lasttg = target;
                 }
-                // if (source != 0) //disable now with new event history, if same src next ptt, then it will capture all of them as individual event items
-                state->lastsrc = source;
+                // Don't overwrite a known-good source ID with zero —
+                // mirrors the target != 0 guard above and the group != 0
+                // guard in format 0x00.
+                if (source != 0) {
+                    state->lastsrc = source;
+                }
                 // Clear alias at start/update of talker for this call (don’t reuse across calls)
                 state->generic_talker_alias[0][0] = '\0';
                 state->generic_talker_alias_src[0] = 0;
@@ -319,10 +327,16 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
 
             else if (lc_format == 0x49) {
                 fprintf(stderr, " Source ID Extension -");
-                uint32_t nid = (uint32_t)ConvertBitIntoBytes(&LCW_bits[16], 24);
-                uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 24);
-                fprintf(stderr, " Full SUID: %08X-%08d", nid, src);
-
+                uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&LCW_bits[16], 20);
+                uint16_t sysid = (uint16_t)ConvertBitIntoBytes(&LCW_bits[36], 12);
+                uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
+                fprintf(stderr, " Full SUID: WACN %05X SYSID %03X SRC %d", wacn, sysid, src);
+                if (wacn != 0) {
+                    state->p25_src_nid = wacn;
+                }
+                if (src != 0) {
+                    state->lastsrc = (int)src;
+                }
             }
 
             else if (lc_format == 0x4A) {
@@ -560,7 +574,11 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 fprintf(stderr, " EXT;"); //Full SUID next LC (external) (octet 3)
             }
             state->lasttg = sg;
-            state->lastsrc = src;
+            // Don't overwrite a known-good source ID with zero —
+            // mirrors the if (source != 0) guard in formats 0x00 and 0x03.
+            if (src != 0) {
+                state->lastsrc = src;
+            }
             state->gi[0] = 0;
 
             // Treat observed Super Group on LCW as an active two-way patch.

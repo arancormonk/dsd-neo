@@ -197,5 +197,41 @@ main(void) {
     long want_freq = 851000000 + 10 * 100 * 125; // 851.125 MHz
     rc |= expect_eq_long("freq(0x100A)", freq, want_freq);
 
+    // AMBTC opcode 0x33 is a foreign-system TDMA identifier update in sdrtrunk.
+    // It must not populate the active system IDEN table.
+    {
+        uint8_t tdma_mbt[48];
+        memset(tdma_mbt, 0, sizeof(tdma_mbt));
+
+        tdma_mbt[0] = 0x17; // ALT format
+        tdma_mbt[2] = 0x00; // MFID (standard)
+        tdma_mbt[3] = 0x34; // IDEN=3, channel type=4
+        tdma_mbt[6] = 0x02; // blks=2
+        tdma_mbt[7] = 0x33; // Identifier Update TDMA (AMBTC)
+        tdma_mbt[12] = 0x0A;
+        tdma_mbt[13] = 0x25;
+        tdma_mbt[14] = 0x0B;
+        tdma_mbt[15] = 0xC0; // base = 851000000 / 5
+        tdma_mbt[17] = 0x00;
+        tdma_mbt[18] = 0x64; // spacing = 100
+
+        base = -1;
+        spac = -1;
+        type = -1;
+        tdma = -1;
+        freq = -1;
+        int sh = p25_test_mbt_iden_bridge(tdma_mbt, (int)sizeof(tdma_mbt), &base, &spac, &type, &tdma, &freq);
+        if (sh != 0) {
+            fprintf(stderr, "tdma shim invocation failed (%d)\n", sh);
+            return 98;
+        }
+
+        rc |= expect_eq_int("ambtc_0x33_type_unchanged", type, 0);
+        rc |= expect_eq_int("ambtc_0x33_tdma_unchanged", tdma, 0);
+        rc |= expect_eq_long("ambtc_0x33_spacing_unchanged", spac, 0);
+        rc |= expect_eq_long("ambtc_0x33_base_unchanged", base, 0);
+        rc |= expect_eq_long("ambtc_0x33_freq_unresolved", freq, 0);
+    }
+
     return rc;
 }

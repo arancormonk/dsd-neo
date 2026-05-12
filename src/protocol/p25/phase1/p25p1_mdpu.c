@@ -267,11 +267,14 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             }
 
             //set end value to number of blocks + 1 header (block gathering for variable len)
-            if (sap != 61
-                && sap != 63) { //if not a trunking control block, this fixes an annoyance TSBK/TDULC blink in ncurses
-                end =
-                    blks
-                    + 1; //(TDU follows any Trunking MPDU, not sure if that's an error in handling, or actual behavior)
+            end = blks + 1;
+
+            // Trunking MBT PDUs typically have 1-3 data blocks. BLKS > 10 for
+            // trunking SAPs is almost certainly a misaligned frame (e.g., BLKS=69
+            // observed after voice channel retune). Cap to prevent reading
+            // excessive dibits from the stream.
+            if ((sap == 61 || sap == 63) && blks > 10) {
+                end = 4; // header + 3 data blocks max for trunking
             }
 
             // Bound header+blocks to allocation (1+127)
@@ -288,9 +291,14 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     {
         int reps = (end < 3) ? end : 3;
 
+        // For multi-block PDUs (BLKS >= 1), only rep 0 is the actual header.
+        // Reps 1+ are data blocks with different content — majority-voting
+        // them against the header produces corrupted bits that fail CRC16.
+        int hdr_reps = (blks >= 1) ? 1 : reps;
+
         // First, check if any single repetition passes CRC16
         int sel_idx = -1;
-        for (j = 0; j < reps; j++) {
+        for (j = 0; j < hdr_reps; j++) {
             if (hdr_rep_crc[j] == 0) {
                 sel_idx = j;
                 break;
@@ -311,10 +319,10 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             memset(hdr_maj_bits, 0, sizeof(hdr_maj_bits));
             for (i = 0; i < 96; i++) {
                 int sum = 0;
-                for (j = 0; j < reps; j++) {
+                for (j = 0; j < hdr_reps; j++) {
                     sum += (int)hdr_rep_bits[j][i];
                 }
-                int thresh = (reps >= 2) ? ((reps + 1) / 2) : 1;
+                int thresh = (hdr_reps >= 2) ? ((hdr_reps + 1) / 2) : 1;
                 hdr_maj_bits[i] = (uint8_t)((sum >= thresh) ? 1 : 0);
             }
             int hdr_bits_int[96];
@@ -381,6 +389,8 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         }
 
         //pass the PDU to p25_decode_pdu_trunking
+        // Require both header CRC16 and payload CRC32.  The payload CRC does
+        // not cover header fields such as opcode, SAP, block count, or channel.
         if (err[0] == 0 && err[1] == 0 && io == 1 && fmt == 0x17) { //ALT Format
             p25_decode_pdu_trunking(opts, state, mpdu_byte);
         }

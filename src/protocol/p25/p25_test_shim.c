@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -136,6 +137,69 @@ p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, i
     }
     if (out_sysid) {
         *out_sysid = state->p2_sysid;
+    }
+    free(opts);
+    free(state);
+    return 0;
+}
+
+// Extended variant that also returns neighbor table entries after decode.
+// out_nb_count: number of neighbor entries populated
+// out_nb_freqs: array of at least P25_NB_MAX longs to receive neighbor frequencies
+int
+p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
+                                 int spac, long* out_cc, long* out_wacn, int* out_sysid, int* out_nb_count,
+                                 long* out_nb_freqs) {
+    (void)mbt_len;
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return -1;
+    }
+
+    if (iden < 0 || iden > 15) {
+        free(opts);
+        free(state);
+        return -2;
+    }
+    state->p25_chan_iden = iden & 0xF;
+
+    // Populate new dual-array entries (process_channel_to_freq reads from these)
+    if (tdma) {
+        state->p25_iden_tdma[iden].base_freq = base;
+        state->p25_iden_tdma[iden].chan_type = type & 0xF;
+        state->p25_iden_tdma[iden].chan_spac = spac;
+        state->p25_iden_tdma[iden].populated = 1;
+        state->p25_chan_tdma_explicit[iden] |= 2;
+    } else {
+        state->p25_iden_fdma[iden].base_freq = base;
+        state->p25_iden_fdma[iden].chan_type = type & 0xF;
+        state->p25_iden_fdma[iden].chan_spac = spac;
+        state->p25_iden_fdma[iden].populated = 1;
+        state->p25_chan_tdma_explicit[iden] |= 1;
+    }
+
+    p25_decode_pdu_trunking(opts, state, (unsigned char*)mbt);
+
+    if (out_cc) {
+        *out_cc = state->p25_cc_freq;
+    }
+    if (out_wacn) {
+        *out_wacn = (long)state->p2_wacn;
+    }
+    if (out_sysid) {
+        *out_sysid = state->p2_sysid;
+    }
+    if (out_nb_count) {
+        *out_nb_count = state->p25_nb_count;
+    }
+    if (out_nb_freqs) {
+        for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
+            out_nb_freqs[i] = state->p25_nb_entries[i].freq;
+        }
     }
     free(opts);
     free(state);

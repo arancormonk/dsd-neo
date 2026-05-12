@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -27,6 +28,17 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+/**
+ * @brief Check if a CFVA status nibble indicates a healthy neighbor.
+ *
+ * A neighbor is healthy when the failure bit is clear (bit 2) AND the
+ * valid-info bit is set (bit 1).
+ */
+static inline int
+p25_cfva_is_healthy(int cfva) {
+    return !(cfva & 0x4) && (cfva & 0x2);
+}
 
 static inline int
 p25_signed_offset_units(int sign_bit, int raw_offset) {
@@ -137,8 +149,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
                 }
             }
 
-            long neigh[2] = {ct_freq, cr_freq};
-            p25_sm_on_neighbor_update(opts, state, neigh, 2);
+            long neigh[1] = {ct_freq};
+            p25_sm_on_neighbor_update(opts, state, neigh, 1);
             // Confirm any IDENs now that CC identity is known
             p25_confirm_idens_for_current_site(state);
         } else {
@@ -160,14 +172,20 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
                 "  LRA [%02X] SYSID [%03X] RFSS ID [%03d] SITE ID [%03d]\n  CHAN-T [%04X] CHAN-R [%02X] SSC [%02X] ",
                 lra, lsysid, rfssid, siteid, channelt, channelr, sysclass);
         long int f1 = process_channel_to_freq(opts, state, channelt);
-        long int f2 = process_channel_to_freq(opts, state, channelr);
+        (void)process_channel_to_freq(opts, state, channelr);
 
-        long neigh2[2] = {f1, f2};
-        p25_sm_on_neighbor_update(opts, state, neigh2, 2);
+        long neigh2[1] = {f1};
+        p25_sm_on_neighbor_update(opts, state, neigh2, 1);
 
-        state->p2_siteid = siteid;
-        state->p2_rfssid = rfssid;
-        p25_confirm_idens_for_current_site(state);
+        // Guard: only update local site identity when SYSID matches.
+        // See 0x3E handler comment for full rationale.
+        if (state->p2_sysid != 0 && (uint16_t)lsysid != state->p2_sysid) {
+            // Remote RFSS — skip site identity update.
+        } else {
+            state->p2_siteid = siteid;
+            state->p2_rfssid = rfssid;
+            p25_confirm_idens_for_current_site(state);
+        }
     }
 
     //Adjacent Status Broadcast (ADJ_STS_BCST) Extended 6.2.2.2
@@ -202,16 +220,29 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             fprintf(stderr, " Valid RFSS Connection Active");
         }
         long int f3 = process_channel_to_freq(opts, state, channelt);
-        long int f4 = process_channel_to_freq(opts, state, channelr);
-        long neigh3[2] = {f3, f4};
-        p25_sm_on_neighbor_update(opts, state, neigh3, 2);
+        (void)process_channel_to_freq(opts, state, channelr);
+        if (f3 > 0) {
+            p25_nb_add_ex(state, f3, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
+            if (p25_cfva_is_healthy(cfva)) {
+                p25_cc_add_candidate(state, f3, 1);
+            }
+        }
 
     }
 
-    // TDMA Identifier Update (0x33) — Direct decode from AMBTC byte layout.
-    // SDRTrunk treats this AMBTC form as a foreign-system frequency-band
-    // update and intentionally does not inject it into the current system's
-    // frequency-band map.
+    //Protection Parameter Broadcast (0x3E).
+    //sdrtrunk maps AMBTC opcode 0x3E to AMBTCProtectionParameterBroadcast, not
+    //RFSS status. It carries encryption parameters and must not update trunking
+    //site identity or control-channel candidates.
+    else if (opcode == 0x3E) {
+        fprintf(stderr, "%s", KYEL);
+        fprintf(stderr, "\n Protection Parameter Broadcast MBT - trunking state unchanged");
+    }
+
+    //TDMA Identifier Update (0x33) for a foreign system.
+    //sdrtrunk intentionally does not expose AMBTCFrequencyBandUpdateTDMA as an
+    //IFrequencyBand because applying it to the current system can collide with
+    //the real band plan. Keep it diagnostic-only here for the same reason.
     else if (opcode == 0x33) {
         int iden = (mpdu_byte[3] >> 4) & 0x0F;
         int chan_type = mpdu_byte[3] & 0x0F;
@@ -225,7 +256,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         int trans_off = p25_signed_offset_units(tx_off_sign, tx_off_raw);
 
         fprintf(stderr, "%s", KYEL);
-        fprintf(stderr, "\n TDMA Identifier Update MBT - Direct Decode\n");
+        fprintf(stderr, "\n TDMA Identifier Update MBT - foreign system, not applied\n");
         fprintf(stderr, "  IDEN [%X] Type [%X] Base Freq [%ld] (%ld Hz) TX Offset [%d] Spacing [%d]", iden, chan_type,
                 base_freq, base_freq * 5, trans_off, chan_spac);
         fprintf(stderr, "\n  Foreign WACN [%05lX] SYSID [%03X] - ignored for current IDEN tables", lwacn, lsysid);

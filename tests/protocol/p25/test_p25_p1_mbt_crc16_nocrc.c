@@ -9,9 +9,9 @@
  * On mixed P1/P2 Motorola systems (observed on a real live P25
  * system), ~48% of P1 CC frames are Alternate MBT trunking
  * PDUs (FMT=0x17, SAP=0x3D) that fail the header CRC16 check but
- * contain valid, structured trunking data (Identifier Updates, RFSS
- * Status Broadcasts). The payload decodes correctly when the CRC gate
- * is bypassed.
+ * contain valid, structured trunking data (Identifier Updates and other
+ * AMBTC opcodes). The payload decodes correctly when the CRC gate is
+ * bypassed.
  *
  * These tests verify:
  *   1. The MBT trunking detection logic correctly identifies these PDUs
@@ -78,7 +78,9 @@ main(void) {
      * All are FMT=0x17 (Alt MBT), SAP=0x3D (Trunking), IO=1, AN=0, BLKS=1.
      *
      * OP=0x33 headers carry Identifier Update for TDMA.
-     * OP=0x3E header carries RFSS Status Broadcast (Abbreviated MBT form).
+     * OP=0x3E maps to Protection Parameter Broadcast in sdrtrunk's
+     * AMBTC factory, even though the captured header is still useful here
+     * as a CRC-valid Alt MBT trunking vector.
      */
     static const uint8_t captured_hdrs[][12] = {
         /* OP=0x33: Identifier Update (TDMA) — 5 rotating variants
@@ -88,7 +90,7 @@ main(void) {
         {0x37, 0xFD, 0x00, 0x21, 0xAB, 0xCD, 0x81, 0x33, 0x01, 0xAE, 0xB2, 0x77},
         {0x37, 0xFD, 0x00, 0x33, 0xAB, 0xCD, 0x81, 0x33, 0x01, 0xAE, 0xE5, 0xEF},
         {0x37, 0xFD, 0x00, 0x41, 0xAB, 0xCD, 0x81, 0x33, 0x01, 0xAE, 0x01, 0x6D},
-        /* OP=0x3E: RFSS Status Broadcast (Abbreviated) */
+        /* OP=0x3E: Protection Parameter Broadcast per sdrtrunk AMBTC mapping */
         {0x37, 0xFD, 0x00, 0x01, 0x11, 0xAE, 0x81, 0x3E, 0x01, 0x03, 0x70, 0x37},
     };
     static const int num_captured = (int)(sizeof(captured_hdrs) / sizeof(captured_hdrs[0]));
