@@ -121,7 +121,7 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
         }
         // Persist learned mapping so UI can display and future grants can use explicit map
         if (freq != 0) {
-            state->trunk_chan_map[chan16] = freq;
+            dsd_state_set_trunk_chan_freq(state, chan16, freq);
         }
         return freq;
     }
@@ -280,7 +280,7 @@ nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
             fprintf(stderr, "\n  DFA Frequency [%.6lf] MHz", (double)freq / 1000000);
             // Persist learned mapping for UI visibility and later reuse
             if (freq != 0) {
-                state->trunk_chan_map[channel] = freq;
+                dsd_state_set_trunk_chan_freq(state, channel, freq);
             }
             return (freq);
         } else {
@@ -337,7 +337,7 @@ nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel) {
 
     freq = base + ((long int)channel * step);
     if (freq != 0) {
-        state->trunk_chan_map[channel] = freq;
+        dsd_state_set_trunk_chan_freq(state, channel, freq);
     }
     return freq;
 }

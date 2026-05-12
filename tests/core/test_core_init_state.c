@@ -25,8 +25,12 @@ main(void) {
         return 1;
     }
 
-    // Ensure initState explicitly resets this field even if caller pre-seeded it.
+    // Ensure initState explicitly resets fields even if caller pre-seeded them.
     state->rc2_context = state;
+    state->trunk_chan_map[0x0123] = 851000000L;
+    state->trunk_chan_map_used[0] = 0x0123U;
+    state->trunk_chan_map_used_count = 1U;
+    state->trunk_chan_map_seq = 99U;
     initState(state);
 
     if (state->rc2_context != NULL) {
@@ -36,6 +40,14 @@ main(void) {
         freeState(state);
         free(state);
         return 2;
+    }
+
+    if (state->trunk_chan_map_used_count != 0U || state->trunk_chan_map[0x0123] != 0
+        || state->trunk_chan_map_seq != 0U) {
+        fprintf(stderr, "initState did not clear trunk channel-map sparse state\n");
+        freeState(state);
+        free(state);
+        return 3;
     }
 
     for (int i = 0; i < 4; i++) {
@@ -50,7 +62,28 @@ main(void) {
                 state->minmax_sum_window, (double)state->min, (double)state->max);
         freeState(state);
         free(state);
-        return 3;
+        return 4;
+    }
+
+    dsd_state_set_trunk_chan_freq(state, 0x1234U, 851500000L);
+    dsd_state_set_trunk_chan_freq(state, 0x0123U, 851000000L);
+    dsd_state_set_trunk_chan_freq(state, 0U, 769006250L);
+    if (state->trunk_chan_map_used_count != 2U || state->trunk_chan_map_used[0] != 0x0123U
+        || state->trunk_chan_map_used[1] != 0x1234U || state->trunk_chan_map[0x1234] != 851500000L
+        || state->trunk_chan_map[0] != 769006250L) {
+        fprintf(stderr, "trunk channel-map sparse index mismatch\n");
+        freeState(state);
+        free(state);
+        return 5;
+    }
+
+    dsd_state_set_trunk_chan_freq(state, 0x1234U, 0);
+    if (state->trunk_chan_map_used_count != 1U || state->trunk_chan_map_used[0] != 0x0123U
+        || state->trunk_chan_map[0x1234] != 0) {
+        fprintf(stderr, "trunk channel-map sparse removal mismatch\n");
+        freeState(state);
+        free(state);
+        return 6;
     }
 
     freeState(state);

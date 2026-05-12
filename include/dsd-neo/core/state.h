@@ -26,6 +26,7 @@
 
 enum {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
+    DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
     DSD_VERTEX_KS_MAP_MAX = 64,
 };
 
@@ -279,7 +280,10 @@ struct dsd_state {
     long int trunk_vc_freq[2]; //protocol-agnostic alias (kept in sync with p25_vc_freq)
     // Trunking LCNs and maps
     long int trunk_lcn_freq[26];
-    long int trunk_chan_map[0xFFFF];
+    long int trunk_chan_map[DSD_TRUNK_CHAN_MAP_SIZE];
+    uint16_t trunk_chan_map_used[DSD_TRUNK_CHAN_MAP_SIZE];
+    uint32_t trunk_chan_map_used_count;
+    uint64_t trunk_chan_map_seq;
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
@@ -984,6 +988,100 @@ struct dsd_state {
 };
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)
+
+static inline int
+dsd_state_trunk_chan_valid(uint32_t channel) {
+    return channel < DSD_TRUNK_CHAN_MAP_SIZE;
+}
+
+static inline int
+dsd_state_trunk_chan_tracked(uint32_t channel) {
+    return channel > 0U && dsd_state_trunk_chan_valid(channel);
+}
+
+static inline void
+dsd_state_track_trunk_chan(dsd_state* state, uint16_t channel) {
+    if (!state || !dsd_state_trunk_chan_tracked(channel)) {
+        return;
+    }
+
+    uint32_t count = state->trunk_chan_map_used_count;
+    if (count > DSD_TRUNK_CHAN_MAP_SIZE) {
+        count = DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+
+    uint32_t insert = count;
+    for (uint32_t i = 0; i < count; i++) {
+        if (state->trunk_chan_map_used[i] == channel) {
+            state->trunk_chan_map_used_count = count;
+            return;
+        }
+        if (state->trunk_chan_map_used[i] > channel) {
+            insert = i;
+            break;
+        }
+    }
+
+    if (count >= DSD_TRUNK_CHAN_MAP_SIZE) {
+        state->trunk_chan_map_used_count = count;
+        return;
+    }
+
+    for (uint32_t i = count; i > insert; i--) {
+        state->trunk_chan_map_used[i] = state->trunk_chan_map_used[i - 1];
+    }
+    state->trunk_chan_map_used[insert] = channel;
+    state->trunk_chan_map_used_count = count + 1U;
+}
+
+static inline void
+dsd_state_untrack_trunk_chan(dsd_state* state, uint16_t channel) {
+    if (!state || !dsd_state_trunk_chan_tracked(channel)) {
+        return;
+    }
+
+    uint32_t count = state->trunk_chan_map_used_count;
+    if (count > DSD_TRUNK_CHAN_MAP_SIZE) {
+        count = DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        if (state->trunk_chan_map_used[i] != channel) {
+            continue;
+        }
+        for (uint32_t j = i + 1U; j < count; j++) {
+            state->trunk_chan_map_used[j - 1U] = state->trunk_chan_map_used[j];
+        }
+        state->trunk_chan_map_used[count - 1U] = 0;
+        state->trunk_chan_map_used_count = count - 1U;
+        return;
+    }
+    state->trunk_chan_map_used_count = count;
+}
+
+static inline void
+dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq) {
+    if (!state || !dsd_state_trunk_chan_valid(channel)) {
+        return;
+    }
+
+    const long int old_freq = state->trunk_chan_map[channel];
+    if (old_freq == freq) {
+        return;
+    }
+
+    state->trunk_chan_map[channel] = freq;
+    if (!dsd_state_trunk_chan_tracked(channel)) {
+        state->trunk_chan_map_seq++;
+        return;
+    }
+    if (old_freq == 0) {
+        dsd_state_track_trunk_chan(state, (uint16_t)channel);
+    } else if (old_freq != 0 && freq == 0) {
+        dsd_state_untrack_trunk_chan(state, (uint16_t)channel);
+    }
+    state->trunk_chan_map_seq++;
+}
 
 static inline int
 dsd_state_minmax_window_size(int requested) {

@@ -8,6 +8,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "dsd-neo/core/state_fwd.h"
@@ -38,9 +39,48 @@ ui_snapshot_copy_range(dsd_state* dst, const dsd_state* src, size_t begin, size_
 }
 
 static void
+ui_snapshot_copy_trunk_chan_map(dsd_state* dst, const dsd_state* src) {
+    if (dst->trunk_chan_map_seq == src->trunk_chan_map_seq
+        && dst->trunk_chan_map_used_count == src->trunk_chan_map_used_count) {
+        return;
+    }
+
+    uint32_t old_count = dst->trunk_chan_map_used_count;
+    if (old_count > DSD_TRUNK_CHAN_MAP_SIZE) {
+        old_count = DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+    for (uint32_t i = 0; i < old_count; i++) {
+        const uint16_t channel = dst->trunk_chan_map_used[i];
+        if (dsd_state_trunk_chan_tracked(channel)) {
+            dst->trunk_chan_map[channel] = 0;
+        }
+        dst->trunk_chan_map_used[i] = 0;
+    }
+    dst->trunk_chan_map_used_count = 0;
+
+    uint32_t count = src->trunk_chan_map_used_count;
+    if (count > DSD_TRUNK_CHAN_MAP_SIZE) {
+        count = DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        const uint16_t channel = src->trunk_chan_map_used[i];
+        if (!dsd_state_trunk_chan_tracked(channel)) {
+            continue;
+        }
+        const long int freq = src->trunk_chan_map[channel];
+        if (freq == 0) {
+            continue;
+        }
+        dst->trunk_chan_map[channel] = freq;
+        dst->trunk_chan_map_used[dst->trunk_chan_map_used_count++] = channel;
+    }
+    dst->trunk_chan_map_seq = src->trunk_chan_map_seq;
+}
+
+static void
 ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dibit_buf, trunk_lcn_freq);
-    UI_SNAPSHOT_COPY_FIELD(dst, src, trunk_chan_map);
+    ui_snapshot_copy_trunk_chan_map(dst, src);
     UI_SNAPSHOT_COPY_FIELD(dst, src, group_array);
 
     UI_SNAPSHOT_COPY_RANGE(dst, src, audio_out_idx, lastsample);

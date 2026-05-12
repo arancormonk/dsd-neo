@@ -28,6 +28,8 @@ assert_render_fields(const dsd_state* snap) {
     assert(snap != NULL);
     assert(snap->lasttg == 321);
     assert(snap->trunk_chan_map[0x1234] == 769768750L);
+    assert(snap->trunk_chan_map_used_count == 1U);
+    assert(snap->trunk_chan_map_used[0] == 0x1234U);
     assert(snap->group_tally == 1U);
     assert(snap->group_array[0].groupNumber == 321UL);
     assert(strcmp(snap->group_array[0].groupName, "DISPATCH") == 0);
@@ -47,7 +49,7 @@ main(void) {
     }
     state->event_history_s = history;
     state->lasttg = 321;
-    state->trunk_chan_map[0x1234] = 769768750L;
+    dsd_state_set_trunk_chan_freq(state, 0x1234U, 769768750L);
     state->group_tally = 1U;
     state->group_array[0].groupNumber = 321UL;
     snprintf(state->group_array[0].groupName, sizeof(state->group_array[0].groupName), "%s", "DISPATCH");
