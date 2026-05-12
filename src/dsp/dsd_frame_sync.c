@@ -83,6 +83,25 @@ static atomic_int g_ham_c4fm_recent = 24;
 static atomic_int g_ham_qpsk_recent = 24;
 static atomic_int g_ham_gfsk_recent = 24;
 static atomic_int g_qpsk_dwell_enter_ms = 0;
+static dsd_atomic_u64 g_frame_sync_ui_last_publish_ms = {0};
+
+enum { DSD_FRAME_SYNC_UI_PUBLISH_INTERVAL_MS = 50 };
+
+static void
+frame_sync_publish_ui_throttled(dsd_opts* opts, dsd_state* state) {
+    if (!opts || opts->use_ncurses_terminal != 1) {
+        return;
+    }
+
+    const uint64_t now_ms = dsd_time_monotonic_ms();
+    const uint64_t last_ms = dsd_atomic_u64_load_relaxed(&g_frame_sync_ui_last_publish_ms);
+    if (last_ms != 0 && (now_ms - last_ms) < DSD_FRAME_SYNC_UI_PUBLISH_INTERVAL_MS) {
+        return;
+    }
+
+    dsd_atomic_u64_store_relaxed(&g_frame_sync_ui_last_publish_ms, now_ms);
+    ui_publish_both_and_redraw(opts, state);
+}
 
 static void
 p25p2_note_sync_activity(dsd_opts* opts, dsd_state* state) {
@@ -308,9 +327,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     lastt = 0;
 
     //run here as well
-    if (opts->use_ncurses_terminal == 1) {
-        ui_publish_both_and_redraw(opts, state);
-    }
+    frame_sync_publish_ui_throttled(opts, state);
 
     //slot 1
     watchdog_event_history(opts, state, 0);
@@ -333,8 +350,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
         //run ncurses printer more frequently when no sync to speed up responsiveness of it during no sync period
         //NOTE: Need to monitor and test this, if responsiveness issues arise, then disable this
-        if (opts->use_ncurses_terminal == 1 && ((t % 300) == 0)) { //t maxes out at 1800 (6 times each getFrameSync)
-            ui_publish_both_and_redraw(opts, state);
+        if ((t % 300) == 0) { //t maxes out at 1800 (6 times each getFrameSync)
+            frame_sync_publish_ui_throttled(opts, state);
         }
 
         symbol = getSymbol(opts, state, 0);
