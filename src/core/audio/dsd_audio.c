@@ -898,7 +898,8 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
 
     else if (dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
              || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
-             || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)) {
+             || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
+             || dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
 #ifdef USE_RADIO
         opts->audio_in_type = AUDIO_IN_RTL;
 #else

@@ -1504,6 +1504,13 @@ test_iq_replay_long_options_parse(void) {
         fprintf(stderr, "expected iq_replay_path=%s, got %s\n", metadata_path, opts->iq_replay_path);
         test_rc = 1;
     }
+    if (openAudioInDevice(opts, state) != 0) {
+        fprintf(stderr, "expected iqreplay pseudo-input to be accepted by audio input classifier\n");
+        test_rc = 1;
+    } else if (opts->audio_in_type != AUDIO_IN_RTL) {
+        fprintf(stderr, "expected iqreplay open to keep AUDIO_IN_RTL, got %d\n", opts->audio_in_type);
+        test_rc = 1;
+    }
 
     (void)remove(metadata_path);
     (void)remove(data_path);
