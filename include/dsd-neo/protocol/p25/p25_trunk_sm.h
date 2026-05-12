@@ -378,6 +378,36 @@ void p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int sv
 void p25_sm_on_release(dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief Notify the SM that a Queued Response (QUE_RSP) was received.
+ *
+ * Requests a release with reason "queued-rsp"; the release path is idempotent
+ * unless the SM or legacy tune flags indicate a voice-channel tune is active.
+ * Always increments the queued response telemetry counter.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param svc_type Service type from the QUE_RSP message.
+ * @param reason_code Reason code from the QUE_RSP message.
+ * @param target Target address from the QUE_RSP message.
+ */
+void p25_sm_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target);
+
+/**
+ * @brief Notify the SM that a Deny Response (DENY_RSP) was received.
+ *
+ * Requests a release with reason "deny-rsp"; the release path is idempotent
+ * unless the SM or legacy tune flags indicate a voice-channel tune is active.
+ * Always increments the deny response telemetry counter.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param svc_type Service type from the DENY_RSP message.
+ * @param reason_code Reason code from the DENY_RSP message.
+ * @param target Target address from the DENY_RSP message.
+ */
+void p25_sm_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target);
+
+/**
  * @brief Optional periodic heartbeat/tick for safety fallback.
  *
  * @param opts Decoder options.

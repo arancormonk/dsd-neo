@@ -664,6 +664,8 @@ struct dsd_state {
     unsigned int p25_sm_tune_count;      // number of VC tunes via SM
     unsigned int p25_sm_release_count;   // number of release requests via SM
     unsigned int p25_sm_cc_return_count; // number of actual returns to CC via SM
+    unsigned int p25_sm_queued_count;    ///< number of Queued Response (QUE_RSP) messages received
+    unsigned int p25_sm_deny_count;      ///< number of Deny Response (DENY_RSP) messages received
     // One-shot flag to force immediate return-to-CC on explicit MAC_END/IDLE
     // or policy events; cleared by the SM after handling
     int p25_sm_force_release;
