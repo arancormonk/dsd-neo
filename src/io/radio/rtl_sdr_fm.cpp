@@ -19,6 +19,8 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -4399,7 +4401,7 @@ auto_ppm_publish_status(int enabled, const dsd::io::radio::RtlAutoPpmUpdate& upd
 }
 
 static void
-auto_ppm_maybe_adjust(dsd_opts* opts) {
+auto_ppm_maybe_adjust(dsd_opts* opts, dsd_state* state) {
     if (!opts) {
         return;
     }
@@ -4437,6 +4439,14 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
     inputs.spec_snr_db = spec_snr_db;
     inputs.estimate = dsd::io::radio::rtl_auto_ppm_select_estimate(metrics);
 
+    /* P25 status-symbol classification is advisory by default; only enforce it
+     * when explicitly enabled because status-derived direction is unreliable on
+     * some systems. */
+    if (enabled && state && opts->p25_afc_status_gate_enable && DSD_SYNC_IS_P25P1(state->synctype)
+        && state->p25_afc_gate_valid && !state->p25_afc_gate_allow) {
+        return;
+    }
+
     dsd::io::radio::RtlAutoPpmUpdate update = g_auto_ppm_controller.update(config, inputs);
     auto_ppm_publish_status(enabled, update);
     if (update.apply_ppm) {
@@ -4459,7 +4469,6 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
  */
 extern "C" int
 dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) {
-    UNUSED(state);
     if (count == 0) {
         return 0;
     }
@@ -4484,7 +4493,7 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
 
     if (!replay_active) {
         sync_requested_ppm_after_failed_apply(opts);
-        auto_ppm_maybe_adjust(opts);
+        auto_ppm_maybe_adjust(opts, state);
         sync_requested_ppm_to_controller(opts);
 
         int got = ring_read_batch(&output, out, count);

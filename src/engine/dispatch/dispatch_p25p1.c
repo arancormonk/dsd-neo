@@ -12,6 +12,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/runtime/colors.h>
 #include <mbelib.h>
@@ -44,6 +45,8 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
 
     nac[12] = 0;
     duid[2] = 0;
+
+    p25_status_accum_reset(state);
 
     // Read the NAC, 12 bits
     j = 0;
@@ -86,8 +89,9 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
         bch_code[index_bch_code] = 1 & dibit; // bit 0
         index_bch_code++;
     }
-    // Intermission: read and discard the status dibit
-    (void)getDibit(opts, state);
+    // Intermission: read and record the status dibit embedded in the NID.
+    dibit = getDibit(opts, state);
+    p25_status_accum_add(state, dibit);
     // ... continue reading the BCH error correction data
     for (i = 0; i < 20; i++) {
         dibit = getDibit(opts, state);
@@ -301,5 +305,11 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
             // fprintf (stderr," duid:%s *Unknown DUID*\n", duid);
             fprintf(stderr, " duid:%s \n", duid); //DUID ERR
         }
+        /*
+         * The DUID was not actionable, so do not let a possibly false or
+         * unsupported P25 frame leave the opt-in AFC gate open by omission.
+         */
+        p25_status_accum_reset(state);
+        p25_status_accum_classify(state, opts);
     }
 }

@@ -2,12 +2,12 @@
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/p25p1_heuristics.h>
+#include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/runtime/colors.h>
@@ -20,6 +20,9 @@
 void
 processTDU(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_tdu++;
+
+    // Start status-symbol collection unless the dispatcher already did so for this data unit.
+    p25_status_accum_ensure_started(state);
 
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu
@@ -45,10 +48,8 @@ processTDU(dsd_opts* opts, dsd_state* state) {
 
     // trailing status symbol
     {
-        int status;
-        status = getDibit(opts, state) + '0';
-        // TODO: do something useful with the status bits...
-        UNUSED(status);
+        int ss = getDibit(opts, state);
+        p25_status_accum_add(state, ss);
     }
 
     //reset some strings -- since its a tdu, blank out any call strings, only want during actual call
@@ -73,6 +74,9 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     // state->lasttg = 0;
     // state->lastsrc = 0;
     // state->gi[0] = -1;
+
+    // Classify accumulated status symbols and set advisory AFC gate flag.
+    p25_status_accum_classify(state, opts);
 
     // SM event: TDU (P1 terminator)
     p25_sm_emit_tdu(opts, state);
