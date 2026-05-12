@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
@@ -196,6 +197,8 @@ struct demod_state {
     int ted_enabled;
     int ted_force;            /* allow forcing TED even for FM/C4FM paths */
     float ted_gain;           /* loop gain, typically 0.01..0.1 */
+    int ted_gain_is_set;      /* env/API/UI override; disables automatic mode-specific gain changes */
+    float ted_effective_gain; /* loop gain actually used by mode-specific TED */
     int ted_sps;              /* nominal samples per symbol */
     int ted_sps_override;     /* >0 = manual override (used during P25P2 VC tunes) */
     int costas_reset_pending; /* 1 = reset Costas loop on next retune (set when SPS override changes) */
@@ -231,6 +234,14 @@ struct demod_state {
      *   out = in * (reference / rms)
      * OP25 uses: rms_agc.rms_agc(alpha=0.45, reference=0.85) */
     float cqpsk_agc_avg; /* running average of mag^2 (d_avg in op25) */
+
+    /* Optional GNU Radio-style CMA equalizer for CQPSK/H-DQPSK multipath/ISI.
+     * Runs at symbol rate after Gardner and before differential phasor decode. */
+    dsd_cqpsk_cma_equalizer_state_t cqpsk_eq_state;
+    int cqpsk_eq_enable;
+    int cqpsk_eq_taps;
+    float cqpsk_eq_mu;
+    float cqpsk_eq_modulus;
 
     /* Generic mode-aware IQ balance (image suppression) */
     int iqbal_enable;        /* 0/1 gate */

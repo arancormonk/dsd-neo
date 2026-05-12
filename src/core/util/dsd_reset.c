@@ -109,6 +109,7 @@ resetState(dsd_state* state) {
     }
 
     state->midx = 0;
+    dsd_state_invalidate_minmax_sums(state);
     state->symbolcnt = 0;
 
     /* Reset C4FM clock assist state to avoid stale nudges across runs */

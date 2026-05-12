@@ -25,7 +25,6 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/platform/timing.h>
-#include <dsd-neo/runtime/comp.h>
 #include <dsd-neo/runtime/config.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -36,7 +35,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -179,53 +177,74 @@ print_datascope(dsd_opts* opts, dsd_state* state, const float* sbuf2, int count)
 }
 
 static void
+symbol_window_extrema_avg2(const float* samples, int count, float* out_min, float* out_max) {
+    if (!samples || !out_min || !out_max || count < 2) {
+        if (out_min) {
+            *out_min = 0.0f;
+        }
+        if (out_max) {
+            *out_max = 0.0f;
+        }
+        return;
+    }
+
+    float min1 = samples[0];
+    float min2 = samples[1];
+    if (min2 < min1) {
+        const float tmp = min1;
+        min1 = min2;
+        min2 = tmp;
+    }
+
+    float max1 = samples[0];
+    float max2 = samples[1];
+    if (max2 > max1) {
+        const float tmp = max1;
+        max1 = max2;
+        max2 = tmp;
+    }
+
+    for (int i = 2; i < count; i++) {
+        const float v = samples[i];
+        if (v < min1) {
+            min2 = min1;
+            min1 = v;
+        } else if (v < min2) {
+            min2 = v;
+        }
+
+        if (v > max1) {
+            max2 = max1;
+            max1 = v;
+        } else if (v > max2) {
+            max2 = v;
+        }
+    }
+
+    *out_min = (min1 + min2) * 0.5f;
+    *out_max = (max1 + max2) * 0.5f;
+}
+
+static void
 use_symbol(dsd_opts* opts, dsd_state* state, float symbol) {
     UNUSED(symbol);
 
-    int i;
-    float sbuf2[128];
-    float lmin, lmax, lsum;
+    float lmin, lmax;
 
     int cap = opts->ssize;
     if (cap < 0) {
         cap = 0;
     }
-    if (cap > (int)(sizeof(sbuf2) / sizeof(sbuf2[0]))) {
-        cap = (int)(sizeof(sbuf2) / sizeof(sbuf2[0]));
+    if (cap > (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]))) {
+        cap = (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]));
     }
-    for (i = 0; i < cap; i++) {
-        sbuf2[i] = state->sbuf[i];
-    }
-
-    qsort(sbuf2, (size_t)cap, sizeof(float), comp);
 
     // Continuous update of min/max
     // - QPSK: always (as before)
     // - C4FM: enable for P25 Phase 1 (+/-) to keep slicer thresholds fresh during calls
     if (state->rf_mod == 1 || (state->rf_mod == 0 && DSD_SYNC_IS_P25P1(state->lastsynctype))) {
-        if (cap >= 2) {
-            lmin = (sbuf2[0] + sbuf2[1]) / 2.0f;
-            lmax = (sbuf2[(cap - 1)] + sbuf2[(cap - 2)]) / 2.0f;
-        } else {
-            lmin = lmax = 0.0f;
-        }
-        state->minbuf[state->midx] = lmin;
-        state->maxbuf[state->midx] = lmax;
-        if (state->midx == (opts->msize - 1)) {
-            state->midx = 0;
-        } else {
-            state->midx++;
-        }
-        lsum = 0.0f;
-        for (i = 0; i < opts->msize; i++) {
-            lsum += state->minbuf[i];
-        }
-        state->min = lsum / (float)opts->msize;
-        lsum = 0.0f;
-        for (i = 0; i < opts->msize; i++) {
-            lsum += state->maxbuf[i];
-        }
-        state->max = lsum / (float)opts->msize;
+        symbol_window_extrema_avg2(state->sbuf, cap, &lmin, &lmax);
+        dsd_state_push_minmax_window(state, opts->msize, lmin, lmax);
         state->center = ((state->max) + (state->min)) / 2.0f;
         state->umid = (((state->max) - state->center) * 5.0f / 8.0f) + state->center;
         state->lmid = (((state->min) - state->center) * 5.0f / 8.0f) + state->center;
@@ -243,7 +262,7 @@ use_symbol(dsd_opts* opts, dsd_state* state, float symbol) {
         state->sidx = 0;
 
         if (opts->datascope == 1) {
-            print_datascope(opts, state, sbuf2, cap);
+            print_datascope(opts, state, state->sbuf, cap);
         }
     } else {
         state->sidx++;

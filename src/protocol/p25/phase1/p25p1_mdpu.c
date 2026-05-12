@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_pdu.h>
+#include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_mbf34.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <dsd-neo/runtime/colors.h>
@@ -62,6 +63,8 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu
     state->currentslot = 0;
+
+    p25_status_accum_ensure_started(state);
 
     //reset some strings when returning from a call in case they didn't get zipped already
     sprintf(state->call_string[0], "%s", "                     "); //21 spaces
@@ -164,6 +167,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
                 tsbk_reliab[k] = rel;
                 k++;
             } else {
+                p25_status_accum_add(state, dibit);
                 skipdibit = 0;
                 status_count++;
             }
@@ -577,4 +581,6 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, "%s", KNRM);
         fprintf(stderr, "\n");
     }
+
+    p25_status_accum_classify(state, opts);
 }

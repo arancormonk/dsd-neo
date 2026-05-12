@@ -12,6 +12,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/runtime/colors.h>
 #include <mbelib.h>
@@ -20,6 +21,28 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+static int
+p25p1_valid_observed_nac(unsigned long long nac) {
+    return nac > 0ULL && nac <= 0xFFFULL && nac != 0xFFFULL;
+}
+
+static int
+p25p1_observed_nac(const dsd_state* state) {
+    if (state == NULL) {
+        return 0;
+    }
+    if (state->p2_hardset != 0 && p25p1_valid_observed_nac(state->p2_cc)) {
+        return (int)state->p2_cc;
+    }
+    if (p25p1_valid_observed_nac((unsigned long long)state->nac)) {
+        return state->nac;
+    }
+    if (p25p1_valid_observed_nac(state->p2_cc)) {
+        return (int)state->p2_cc;
+    }
+    return 0;
+}
 
 int
 dsd_dispatch_matches_p25p1(int synctype) {
@@ -41,9 +64,13 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     int new_nac;
     char new_duid[3];
     int check_result;
+    int error_count = 0;
+    int observed_nac;
 
     nac[12] = 0;
     duid[2] = 0;
+
+    p25_status_accum_reset(state);
 
     // Read the NAC, 12 bits
     j = 0;
@@ -86,8 +113,9 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
         bch_code[index_bch_code] = 1 & dibit; // bit 0
         index_bch_code++;
     }
-    // Intermission: read and discard the status dibit
-    (void)getDibit(opts, state);
+    // Intermission: read and record the status dibit embedded in the NID.
+    dibit = getDibit(opts, state);
+    p25_status_accum_add(state, dibit);
     // ... continue reading the BCH error correction data
     for (i = 0; i < 20; i++) {
         dibit = getDibit(opts, state);
@@ -103,9 +131,29 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
     parity = (1 & dibit);                        // bit 0
 
-    // Check if the NID is correct
-    check_result = check_NID(bch_code, &new_nac, new_duid, parity);
-    if (check_result == 1) {
+    // Decode and validate the NID using full BCH(63,16,23) correction.
+    // check_NID_with_observed_nac returns NID_OK (1) or NID_PARITY_OVERRIDE (2)
+    // on success, NID_DECODE_FAIL (0) on failure.
+    // error_count receives the number of BCH bit errors corrected (0-11).
+    observed_nac = p25p1_observed_nac(state);
+    check_result = check_NID_with_observed_nac(bch_code, observed_nac, &new_nac, new_duid, parity, &error_count);
+    if (check_result > 0) {
+        // NID_OK (1) or NID_PARITY_OVERRIDE (2) - frame accepted
+
+        // Track cumulative BCH corrections for diagnostics
+        if (error_count > 0) {
+            state->nid_corrections_total += (unsigned int)error_count;
+        }
+
+        // Track parity overrides - these indicate that the final parity bit
+        // disagreed even though the BCH-protected NID decoded cleanly.
+        if (check_result == NID_PARITY_OVERRIDE) {
+            state->nid_parity_overrides++;
+            if (opts->verbose > 1) {
+                fprintf(stderr, " [NID parity override, %d corrections]", error_count);
+            }
+        }
+
         if (new_nac != state->nac) {
             // NAC fixed by error correction
             state->nac = new_nac;
@@ -123,13 +171,15 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
             state->debug_header_errors++;
         }
     } else {
-        if (check_result == -1 && opts->verbose > 0) {
+        // NID_DECODE_FAIL (0) or NID_PARITY_MISMATCH (-1) - frame rejected
+        state->nid_failures_total++;
+
+        if (check_result == NID_PARITY_MISMATCH && opts->verbose > 0) {
             fprintf(stderr, "%s", KRED);
             fprintf(stderr, " NID PARITY MISMATCH ");
             fprintf(stderr, "%s", KNRM);
         }
-        // Check of NID failed and unable to recover its value
-        //fprintf (stderr,"NID error\n");
+        // Unable to recover NID - mark DUID as error
         duid[0] = 'E';
         duid[1] = 'E';
         state->debug_header_critical_errors++;
@@ -301,5 +351,11 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
             // fprintf (stderr," duid:%s *Unknown DUID*\n", duid);
             fprintf(stderr, " duid:%s \n", duid); //DUID ERR
         }
+        /*
+         * The DUID was not actionable, so do not let a possibly false or
+         * unsupported P25 frame leave the opt-in AFC gate open by omission.
+         */
+        p25_status_accum_reset(state);
+        p25_status_accum_classify(state, opts);
     }
 }

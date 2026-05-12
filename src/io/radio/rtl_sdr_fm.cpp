@@ -19,9 +19,12 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/resampler.h>
@@ -258,9 +261,16 @@ static std::atomic<int> g_retune_diag_blocks_remaining{0};
 static std::atomic<uint32_t> g_retune_settle_seq{0};
 static std::atomic<int> g_retune_settle_blocks_remaining{0};
 static const int kRetuneDiagBlocks = 20;
-static const int kRetuneSettleMinBlocks = 8;
-static const int kRetuneSettleStableBlocks = 3;
-static const int kRetuneSettleMaxBlocks = 48;
+/*
+ * The controller already purges stale samples and applies a time-based hardware
+ * mute after retunes. Do not additionally drop whole demod blocks here: at RTL
+ * block sizes one "block" can cover a large fraction of a P25P2 superframe, so
+ * block-based CQPSK settling can discard the early ISCH/sync bursts needed for
+ * Phase 2 acquisition.
+ */
+static const int kRetuneSettleMinBlocks = 1;
+static const int kRetuneSettleStableBlocks = 1;
+static const int kRetuneSettleMaxBlocks = 1;
 static const float kRetuneSettleStableRel = 0.055f;
 static const float kRetuneSettleMinMeanAbs = 0.015f;
 static dsd::io::radio::RtlAutoPpmController g_auto_ppm_controller;
@@ -997,6 +1007,9 @@ demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
      */
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
+    if (s->cqpsk_enable) {
+        dsd_cqpsk_cma_equalizer_reset(&s->cqpsk_eq_state, s->cqpsk_eq_taps);
+    }
     s->costas_err_avg_q14 = 0;
     /* Preserve AGC state so gain does not restart from unity on each retune.
      * This mirrors OP25’s continuous-flow behavior and avoids a post-retune
@@ -1753,7 +1766,7 @@ static DSD_THREAD_RETURN_TYPE
 
         /* Capture decimated I/Q for constellation view after DSP. */
         extern void constellation_ring_append(const float* iq, int len, int sps_hint);
-        constellation_ring_append(d->lowpassed, d->lp_len, d->ted_sps);
+        constellation_ring_append(d->lowpassed, d->lp_len, d->cqpsk_enable ? 1 : d->ted_sps);
         /* Capture I-channel for eye diagram */
         eye_ring_append_i_chan(d->lowpassed, d->lp_len);
         /* Update spectrum snapshot from post-filter complex baseband */
@@ -1791,10 +1804,10 @@ static DSD_THREAD_RETURN_TYPE
                 qpsk_acc_n = 0;
             }
             if (sps >= 2 && sps <= 12) {
-                /* Extract symbol-center I/Q pairs and accumulate */
+                /* CQPSK rewrites lowpassed to symbol-rate Costas output; other paths remain oversampled. */
                 for (int k = 0; k < pairs && qpsk_acc_n < QPSK_ACCUM_MAX; k++) {
                     int phase = k % sps;
-                    if (phase >= mid - win && phase <= mid + win) {
+                    if (d->cqpsk_enable || (phase >= mid - win && phase <= mid + win)) {
                         qpsk_acc_i[qpsk_acc_n] = iq[2 * k + 0];
                         qpsk_acc_q[qpsk_acc_n] = iq[2 * k + 1];
                         qpsk_acc_n++;
@@ -3584,6 +3597,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         int fll_enable;
         int ted_enable;
         float ted_gain;
+        int ted_gain_is_set;
         int ted_force;
     } persist = {};
 
@@ -3644,6 +3658,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         if (persist.ted_gain > 0.0f) {
             demod.ted_gain = persist.ted_gain;
         }
+        demod.ted_gain_is_set = persist.ted_gain_is_set ? 1 : 0;
         demod.ted_force = persist.ted_force ? 1 : 0;
     }
 
@@ -4386,7 +4401,7 @@ auto_ppm_publish_status(int enabled, const dsd::io::radio::RtlAutoPpmUpdate& upd
 }
 
 static void
-auto_ppm_maybe_adjust(dsd_opts* opts) {
+auto_ppm_maybe_adjust(dsd_opts* opts, dsd_state* state) {
     if (!opts) {
         return;
     }
@@ -4424,6 +4439,14 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
     inputs.spec_snr_db = spec_snr_db;
     inputs.estimate = dsd::io::radio::rtl_auto_ppm_select_estimate(metrics);
 
+    /* P25 status-symbol classification is advisory by default; only enforce it
+     * when explicitly enabled because status-derived direction is unreliable on
+     * some systems. */
+    if (enabled && state && opts->p25_afc_status_gate_enable && DSD_SYNC_IS_P25P1(state->synctype)
+        && state->p25_afc_gate_valid && !state->p25_afc_gate_allow) {
+        return;
+    }
+
     dsd::io::radio::RtlAutoPpmUpdate update = g_auto_ppm_controller.update(config, inputs);
     auto_ppm_publish_status(enabled, update);
     if (update.apply_ppm) {
@@ -4446,7 +4469,6 @@ auto_ppm_maybe_adjust(dsd_opts* opts) {
  */
 extern "C" int
 dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) {
-    UNUSED(state);
     if (count == 0) {
         return 0;
     }
@@ -4471,7 +4493,7 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
 
     if (!replay_active) {
         sync_requested_ppm_after_failed_apply(opts);
-        auto_ppm_maybe_adjust(opts);
+        auto_ppm_maybe_adjust(opts, state);
         sync_requested_ppm_to_controller(opts);
 
         int got = ring_read_batch(&output, out, count);
@@ -4691,6 +4713,8 @@ dsd_rtl_stream_set_ted_gain(float g) {
         g = 0.5f;
     }
     demod.ted_gain = g;
+    demod.ted_gain_is_set = 1;
+    demod.ted_effective_gain = g;
 }
 
 extern "C" float
@@ -4914,11 +4938,26 @@ rtl_stream_toggle_cqpsk(int onoff) {
         demod.mode_demod = &qpsk_differential_demod;
         demod.cqpsk_diff_prev_r = 1.0f;
         demod.cqpsk_diff_prev_j = 0.0f;
-        /* Ensure channel LPF profile matches QPSK family (P25 CQPSK/TDMA). */
+        {
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            demod.cqpsk_eq_enable = (cfg && cfg->cqpsk_eq_is_set) ? cfg->cqpsk_eq_enable : 1;
+            if (cfg && cfg->cqpsk_eq_taps_is_set) {
+                demod.cqpsk_eq_taps = cfg->cqpsk_eq_taps;
+            }
+            if (cfg && cfg->cqpsk_eq_mu_is_set) {
+                demod.cqpsk_eq_mu = cfg->cqpsk_eq_mu;
+            }
+            if (cfg && cfg->cqpsk_eq_modulus_is_set) {
+                demod.cqpsk_eq_modulus = cfg->cqpsk_eq_modulus;
+            }
+            dsd_cqpsk_cma_equalizer_reset(&demod.cqpsk_eq_state, demod.cqpsk_eq_taps);
+        }
+        /* Ensure channel LPF profile matches the QPSK family. */
         demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     } else {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;
+        demod.cqpsk_eq_enable = 0;
         /* If we were using the P25 CQPSK channel LPF profile, revert to P25 C4FM.
          * This avoids carrying a wide CQPSK cutoff into clean C4FM control channels. */
         if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_P25_CQPSK) {
@@ -4974,6 +5013,100 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
         *ted_enable = demod.ted_enabled ? 1 : 0;
     }
     return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out) {
+    if (!out) {
+        return -1;
+    }
+
+    *out = rtl_stream_cqpsk_eq_status{};
+    out->enabled = demod.cqpsk_eq_enable ? 1 : 0;
+    out->taps = demod.cqpsk_eq_taps;
+    out->mu = demod.cqpsk_eq_mu;
+    out->modulus = demod.cqpsk_eq_modulus;
+
+    dsd_cqpsk_cma_equalizer_metrics_t m;
+    dsd_cqpsk_cma_equalizer_get_metrics(&demod.cqpsk_eq_state, &m);
+    out->initialized = m.initialized;
+    out->taps = m.taps > 0 ? m.taps : out->taps;
+    out->symbols = m.symbols;
+    out->err_ema = m.err_ema;
+    out->mag2_ema = m.mag2_ema;
+    out->tap_energy = m.tap_energy;
+    out->center_tap_mag = m.center_tap_mag;
+    out->max_side_tap_mag = m.max_side_tap_mag;
+    return 0;
+}
+
+extern "C" void
+dsd_rtl_stream_set_cqpsk_eq(int enable, int taps, float mu, float modulus) {
+    int reset = 0;
+    int desired_enable = 1;
+    int desired_taps = 7;
+    float desired_mu = 0.0008f;
+    float desired_modulus = 0.85f * 0.85f;
+
+    dsd_neo_get_cqpsk_eq(&desired_enable, &desired_taps, &desired_mu, &desired_modulus);
+
+    if (enable >= 0) {
+        desired_enable = enable ? 1 : 0;
+    }
+
+    if (taps > 0) {
+        if (taps < 3) {
+            taps = 3;
+        }
+        if (taps > DSD_CQPSK_CMA_EQ_MAX_TAPS) {
+            taps = DSD_CQPSK_CMA_EQ_MAX_TAPS;
+        }
+        if ((taps & 1) == 0) {
+            taps += (taps < DSD_CQPSK_CMA_EQ_MAX_TAPS) ? 1 : -1;
+        }
+        desired_taps = taps;
+    }
+
+    if (mu >= 0.0f) {
+        if (mu < 0.000001f) {
+            mu = 0.000001f;
+        }
+        if (mu > 0.01f) {
+            mu = 0.01f;
+        }
+        desired_mu = mu;
+    }
+
+    if (modulus >= 0.0f) {
+        if (modulus < 0.05f) {
+            modulus = 0.05f;
+        }
+        if (modulus > 4.0f) {
+            modulus = 4.0f;
+        }
+        desired_modulus = modulus;
+    }
+
+    if (desired_enable && !demod.cqpsk_eq_enable) {
+        reset = 1;
+    }
+    if (desired_taps != demod.cqpsk_eq_taps) {
+        reset = 1;
+    }
+    demod.cqpsk_eq_enable = demod.cqpsk_enable ? desired_enable : 0;
+    demod.cqpsk_eq_taps = desired_taps;
+    demod.cqpsk_eq_mu = desired_mu;
+    demod.cqpsk_eq_modulus = desired_modulus;
+
+    dsd_neo_set_cqpsk_eq(desired_enable, desired_taps, desired_mu, desired_modulus);
+    if (reset) {
+        dsd_cqpsk_cma_equalizer_reset(&demod.cqpsk_eq_state, demod.cqpsk_eq_taps);
+    }
+}
+
+extern "C" void
+dsd_rtl_stream_reset_cqpsk_eq(void) {
+    dsd_cqpsk_cma_equalizer_reset(&demod.cqpsk_eq_state, demod.cqpsk_eq_taps);
 }
 
 /**

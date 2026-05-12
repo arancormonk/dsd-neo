@@ -208,6 +208,7 @@ dmr_init_thresholds_from_sync(dsd_opts* opts, dsd_state* state, const float sync
             state->maxbuf[i] = state->max;
             state->minbuf[i] = state->min;
         }
+        dsd_state_invalidate_minmax_sums(state);
     }
 }
 

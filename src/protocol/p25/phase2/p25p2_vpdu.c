@@ -111,6 +111,78 @@ p25_utc_time_from_local_fields(int year, int month, int day, int hours, int minu
     return (time_t)total;
 }
 
+/**
+ * @brief Resolve a Queued Response reason code to a human-readable string.
+ *
+ * Reason labels mirror sdrtrunk's QueuedResponseReason mapping.
+ *
+ * @param code The 8-bit reason code from octet 3.
+ * @return Static string describing the reason.
+ */
+static const char*
+p25_que_reason_str(uint8_t code) {
+    switch (code) {
+        case 0x10: return "Requesting Unit Busy Other Service";
+        case 0x20: return "Target Unit Busy Other Service";
+        case 0x2F: return "Target Unit Queued This Call";
+        case 0x30: return "Target Group Currently Active";
+        case 0x40: return "Channel Resources Unavailable";
+        case 0x41: return "Telephone Resources Unavailable";
+        case 0x42: return "Data Resources Unavailable";
+        case 0x50: return "Superseding Service Currently Active";
+        default: break;
+    }
+
+    if (code <= 0x7F) {
+        return "Reserved";
+    }
+
+    return "User/System Defined";
+}
+
+/**
+ * @brief Resolve a Deny Response reason code to a human-readable string.
+ *
+ * Reason labels mirror sdrtrunk's DenyReason mapping.
+ *
+ * @param code The 8-bit reason code from octet 3.
+ * @return Static string describing the reason.
+ */
+static const char*
+p25_deny_reason_str(uint8_t code) {
+    switch (code) {
+        case 0x10: return "Requesting Unit Not Valid";
+        case 0x11: return "Requesting Unit Not Authorized";
+        case 0x20: return "Target Unit Not Valid";
+        case 0x21: return "Target Unit Not Authorized";
+        case 0x2F: return "Target Unit Refused Call";
+        case 0x30: return "Target Group Not Valid";
+        case 0x31: return "Target Group Not Authorized";
+        case 0x40: return "Invalid Dialing";
+        case 0x41: return "Telephone Number Not Authorized";
+        case 0x42: return "PSTN Not Valid";
+        case 0x50: return "Call Timeout";
+        case 0x51: return "Landline Terminated Call";
+        case 0x52: return "Subscriber Unit Terminated Call";
+        case 0x5F: return "Call Preempted";
+        case 0x60: return "Site Access Denial";
+        case 0x67: return "PTT Collide";
+        case 0x77: return "PTT Bonk";
+        case 0xF0: return "Call Options Not Valid For Service";
+        case 0xF1: return "Protection Service Option Not Valid";
+        case 0xF2: return "Duplex Service Option Not Valid";
+        case 0xF3: return "Circuit/Packet Mode Option Not Valid";
+        case 0xFF: return "System Does Not Support Service";
+        default: break;
+    }
+
+    if (code <= 0x5E) {
+        return "Reserved";
+    }
+
+    return "User/System Defined";
+}
+
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void
 p25p2_emit_mac_json_if_enabled(dsd_state* state, int xch_type, uint8_t mfid, uint8_t opcode, int slot, int len_b,
@@ -2933,6 +3005,44 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (vl) {
                 state->p25_sys_time_offset = (int16_t)offset_minutes;
                 state->p25_sys_time_offset_valid = 1;
+            }
+        }
+
+        // Queued Response (MAC 0x61, TSBK 0x21) or Deny Response (MAC 0x67, TSBK 0x27).
+        // Field layout follows sdrtrunk's QueuedResponse/DenyResponse structures.
+        if (MAC[1 + len_a] == 0x61 || MAC[1 + len_a] == 0x67) {
+            int is_deny = (MAC[1 + len_a] == 0x67);
+            int has_addl_info = ((MAC[2 + len_a] & 0x80) != 0);
+            int svc_type = (int)(MAC[2 + len_a] & 0x3F);
+            int reason_code = (int)MAC[3 + len_a];
+            int addl_info = (int)((MAC[4 + len_a] << 16) | (MAC[5 + len_a] << 8) | MAC[6 + len_a]);
+            int target_addr = (int)((MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a]);
+
+            const char* reason_str =
+                is_deny ? p25_deny_reason_str((uint8_t)reason_code) : p25_que_reason_str((uint8_t)reason_code);
+
+            fprintf(stderr, "\n %s Response", is_deny ? "Deny" : "Queued");
+            fprintf(stderr, "\n  SVC [%02X] Reason [%s]", svc_type, reason_str);
+            if (has_addl_info) {
+                fprintf(stderr, " Addl [%06X]", addl_info);
+            }
+            fprintf(stderr, " Target [%d]", target_addr);
+
+            if (has_addl_info) {
+                snprintf(state->active_channel[0], sizeof state->active_channel[0],
+                         "%s Target: %d Reason: %s Info: %06X; ", is_deny ? "DENY" : "QUEUED", target_addr, reason_str,
+                         addl_info);
+            } else {
+                snprintf(state->active_channel[0], sizeof state->active_channel[0], "%s Target: %d Reason: %s; ",
+                         is_deny ? "DENY" : "QUEUED", target_addr, reason_str);
+            }
+            state->last_active_time = time(NULL);
+
+            // Notify the trunking state machine
+            if (is_deny) {
+                p25_sm_on_deny_response(opts, state, svc_type, reason_code, target_addr);
+            } else {
+                p25_sm_on_queued_response(opts, state, svc_type, reason_code, target_addr);
             }
         }
 

@@ -171,6 +171,11 @@ bool
 dsp_ted_any(void* v) {
     return ui_submenu_has_visible(DSP_TED_ITEMS, DSP_TED_ITEMS_LEN, v) ? true : false;
 }
+
+bool
+dsp_cqpsk_eq_any(void* v) {
+    return ui_submenu_has_visible(DSP_CQPSK_EQ_ITEMS, DSP_CQPSK_EQ_ITEMS_LEN, v) ? true : false;
+}
 #endif
 
 // ---- State labels ----
@@ -1062,6 +1067,42 @@ lbl_c4fm_clk_sync(void* v, char* b, size_t n) {
     UNUSED(v);
     int en = rtl_stream_get_c4fm_clk_sync();
     snprintf(b, n, "C4FM Clock While Synced [%s]", en ? "Active" : "Inactive");
+    return b;
+}
+
+const char*
+lbl_cqpsk_eq(void* v, char* b, size_t n) {
+    UNUSED(v);
+    rtl_stream_cqpsk_eq_status eq = {0};
+    (void)rtl_stream_get_cqpsk_eq_status(&eq);
+    snprintf(b, n, "CMA Equalizer [%s]", eq.enabled ? "On" : "Off");
+    return b;
+}
+
+const char*
+lbl_cqpsk_eq_taps(void* v, char* b, size_t n) {
+    UNUSED(v);
+    rtl_stream_cqpsk_eq_status eq = {0};
+    (void)rtl_stream_get_cqpsk_eq_status(&eq);
+    snprintf(b, n, "CMA Taps: %d (+/-)", eq.taps);
+    return b;
+}
+
+const char*
+lbl_cqpsk_eq_mu(void* v, char* b, size_t n) {
+    UNUSED(v);
+    rtl_stream_cqpsk_eq_status eq = {0};
+    (void)rtl_stream_get_cqpsk_eq_status(&eq);
+    snprintf(b, n, "CMA Mu: %.4g (+/-)", eq.mu);
+    return b;
+}
+
+const char*
+lbl_cqpsk_eq_modulus(void* v, char* b, size_t n) {
+    UNUSED(v);
+    rtl_stream_cqpsk_eq_status eq = {0};
+    (void)rtl_stream_get_cqpsk_eq_status(&eq);
+    snprintf(b, n, "CMA Modulus: %.3f (+/-)", eq.modulus);
     return b;
 }
 

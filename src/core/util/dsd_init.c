@@ -59,15 +59,16 @@ initOpts(dsd_opts* opts) {
     opts->const_norm_mode = 0; // default: radial percentile normalization
     opts->eye_view = 0;
     opts->fsk_hist_view = 0;
-    opts->eye_unicode = 1;              //default On for clearer rendering
-    opts->eye_color = 1;                //default On when terminal supports color
-    opts->show_dsp_panel = 0;           // hide compact DSP panel by default
-    opts->show_p25_metrics = 0;         // hide P25 metrics by default
-    opts->show_p25_neighbors = 0;       // hide P25 Neighbors by default
-    opts->show_p25_iden_plan = 0;       // hide P25 IDEN Plan by default
-    opts->show_p25_cc_candidates = 0;   // hide P25 CC Candidates by default
-    opts->show_p25_callsign_decode = 0; // hide P25 callsign decode by default (many false positives)
-    opts->show_channels = 0;            // hide Channels section by default
+    opts->eye_unicode = 1;                //default On for clearer rendering
+    opts->eye_color = 1;                  //default On when terminal supports color
+    opts->show_dsp_panel = 0;             // hide compact DSP panel by default
+    opts->show_p25_metrics = 0;           // hide P25 metrics by default
+    opts->show_p25_neighbors = 0;         // hide P25 Neighbors by default
+    opts->show_p25_iden_plan = 0;         // hide P25 IDEN Plan by default
+    opts->show_p25_cc_candidates = 0;     // hide P25 CC Candidates by default
+    opts->show_p25_callsign_decode = 0;   // hide P25 callsign decode by default (many false positives)
+    opts->p25_afc_status_gate_enable = 0; // advisory by default; status-derived direction is not always reliable
+    opts->show_channels = 0;              // hide Channels section by default
     opts->symboltiming = 0;
     opts->verbose = 2;
     opts->p25enc = 0;
@@ -487,6 +488,7 @@ initState(dsd_state* state) {
         state->minbuf[i] = -15000;
     }
     state->midx = 0;
+    dsd_state_invalidate_minmax_sums(state);
     state->err_str[0] = '\0';
     state->err_strR[0] = '\0';
     set_spaces(state->fsubtype, 14);
@@ -589,6 +591,9 @@ initState(dsd_state* state) {
     state->debug_audio_errorsR = 0;
     state->debug_header_errors = 0;
     state->debug_header_critical_errors = 0;
+    state->nid_corrections_total = 0;
+    state->nid_failures_total = 0;
+    state->nid_parity_overrides = 0;
     state->debug_mode = 0;
 
     state->nxdn_last_ran = -1;
@@ -832,6 +837,9 @@ initState(dsd_state* state) {
     //trunking
     memset(state->trunk_lcn_freq, 0, sizeof(state->trunk_lcn_freq));
     memset(state->trunk_chan_map, 0, sizeof(state->trunk_chan_map));
+    memset(state->trunk_chan_map_used, 0, sizeof(state->trunk_chan_map_used));
+    state->trunk_chan_map_used_count = 0;
+    state->trunk_chan_map_seq = 0;
     state->group_tally = 0;
     state->lcn_freq_count = 0; //number of frequncies imported as an enumerated lcn list
     state->lcn_freq_roll = 0;  //needs reset if sync is found?

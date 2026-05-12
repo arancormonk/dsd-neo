@@ -14,6 +14,7 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/halfband.h>
@@ -858,6 +859,32 @@ cqpsk_rms_agc(struct demod_state* d) {
     d->cqpsk_agc_avg = avg;
 }
 
+/*
+ * Symbol-rate blind equalizer for CQPSK/H-DQPSK simulcast multipath.
+ *
+ * Placement matters: this runs after Gardner has produced one complex sample
+ * per symbol, and before diff_phasor turns phase memory into differential
+ * symbols. Equalizing after differential decoding would leave the channel ISI
+ * folded into the phase-delta stream.
+ */
+static inline void
+cqpsk_cma_equalizer(struct demod_state* d) {
+    if (!d || !d->cqpsk_eq_enable || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+
+    dsd_cqpsk_cma_equalizer_apply(&d->cqpsk_eq_state, d->lowpassed, d->lp_len, d->cqpsk_eq_taps, d->cqpsk_eq_mu,
+                                  d->cqpsk_eq_modulus);
+
+    {
+        static int call_count = 0;
+        if (debug_cqpsk_enabled() && (++call_count % 50) == 0) {
+            fprintf(stderr, "[CMA] taps:%d mu:%.5f mag2:%.3f err:%.4f symbols:%u\n", d->cqpsk_eq_state.taps,
+                    d->cqpsk_eq_mu, d->cqpsk_eq_state.mag2_ema, d->cqpsk_eq_state.err_ema, d->cqpsk_eq_state.symbols);
+        }
+    }
+}
+
 /**
  * @brief Apply post-demod deemphasis IIR filter.
  *
@@ -1332,10 +1359,10 @@ full_demod(struct demod_state* d) {
     if (d->cqpsk_enable) {
         /*
          * OP25-aligned CQPSK signal chain:
-         *   AGC -> FLL band-edge -> Gardner (timing, decimating) -> diff_phasor -> Costas (carrier)
+         *   AGC -> FLL band-edge -> Gardner -> CMA equalizer -> diff_phasor -> Costas
          *
          * Implemented by cqpsk_rms_agc(), op25_fll_band_edge_cc(), op25_gardner_cc(),
-         * op25_diff_phasor_cc(), op25_costas_loop_cc().
+         * cqpsk_cma_equalizer(), op25_diff_phasor_cc(), op25_costas_loop_cc().
          */
 
         /* Fast path when squelched: skip expensive DSP but produce zero symbols to keep
@@ -1390,13 +1417,14 @@ full_demod(struct demod_state* d) {
         /*
          * OP25-aligned CQPSK signal chain (matches p25_demodulator_dev.py line 486):
          *
-         *   AGC -> FLL -> Gardner (timing) -> diff_phasor -> Costas (carrier)
+         *   AGC -> FLL -> Gardner (timing) -> CMA equalizer -> diff_phasor -> Costas
          *
          * This is the CORRECT OP25 flow where:
          *   0. FLL band-edge does coarse frequency acquisition (BEFORE timing recovery)
          *   1. Gardner does ONLY timing recovery (no NCO rotation)
-         *   2. diff_phasor is applied at symbol rate after Gardner
-         *   3. Costas loop operates at symbol rate on differential symbols
+         *   2. CMA equalizer mitigates multipath/ISI at symbol rate
+         *   3. diff_phasor is applied after equalization
+         *   4. Costas loop operates at symbol rate on differential symbols
          *
          * Key differences from old combined block:
          *   - FLL for coarse frequency correction before timing recovery
@@ -1422,11 +1450,15 @@ full_demod(struct demod_state* d) {
              *    Output: symbol-rate samples, NOT carrier corrected */
             op25_gardner_cc(d);
 
-            /* 2. Differential phasor (OP25's diffdec block)
+            /* 2. Blind CMA equalizer for multipath/ISI mitigation.
+             *    Output: equalized symbol-rate samples, still not differentially decoded */
+            cqpsk_cma_equalizer(d);
+
+            /* 3. Differential phasor (OP25's diffdec block)
              *    Output: differential phase symbols */
             op25_diff_phasor_cc(d);
 
-            /* 3. Costas carrier recovery at symbol rate (OP25's costas block)
+            /* 4. Costas carrier recovery at symbol rate (OP25's costas block)
              *    Output: carrier-corrected differential symbols */
             op25_costas_loop_cc(d);
 
@@ -1443,8 +1475,12 @@ full_demod(struct demod_state* d) {
                     /* Costas freq at symbol rate (not sample rate) */
                     int sym_rate = (d->ted_sps > 0 && d->rate_out > 0) ? (d->rate_out / d->ted_sps) : 4800;
                     float costas_freq_hz = c->freq * ((float)sym_rate / kTwoPi);
-                    fprintf(stderr, "[OP25] in:%d out:%d omega:%.3f fll_freq:%.1fHz costas_freq:%.1fHz phase:%.3f\n",
-                            pre_len / 2, d->lp_len / 2, ted->omega, fll_freq_hz, costas_freq_hz, c->phase);
+                    float ted_lock = (ted->lock_count > 0) ? (ted->lock_accum / (float)ted->lock_count) : 0.0f;
+                    fprintf(stderr,
+                            "[OP25] in:%d out:%d omega:%.3f ted_gain:%.3f ted_lock:%.3f fll_freq:%.1fHz "
+                            "costas_freq:%.1fHz phase:%.3f\n",
+                            pre_len / 2, d->lp_len / 2, ted->omega, d->ted_effective_gain, ted_lock, fll_freq_hz,
+                            costas_freq_hz, c->phase);
                     /* Log IQ constellation: first few symbols to check positioning */
                     if (d->lp_len >= 8) {
                         const float* iq = d->lowpassed;
