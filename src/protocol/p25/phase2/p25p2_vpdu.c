@@ -1832,137 +1832,161 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
         //identifier update VHF/UHF
         if (MAC[1 + len_a] == 0x74) {
-            state->p25_chan_iden = MAC[2 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_vuhf(MAC, 2 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
-            int bw_vu = (MAC[2 + len_a] & 0xF);
-            state->p25_trans_off[iden] = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
-            state->p25_chan_spac[iden] = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
-            state->p25_base_freq[iden] =
-                (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
+            int bw_vu = up.bw_vu;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
+            long int base_freq = up.base_freq;
 
-            //this is causing more issues -- need a different way to check on this
-            // if (state->p25_chan_spac[iden] == 0x64) //tdma
-            // {
-            // 	state->p25_chan_type[iden] = 4; //
-            // 	state->p25_chan_tdma[iden] = 1; //
-            // }
-            // else //fdma
-            // {
-            // 	state->p25_chan_type[iden] = 1; //
-            // 	state->p25_chan_tdma[iden] = 0; //
-            // }
-
-            state->p25_chan_type[iden] = 1; //set as old values for now
-            // Preserve explicit hints. When unknown, prefer TDMA if the system has
-            // already shown P25p2 voice so we do not misclassify VC grants as FDMA.
-            if (state->p25_chan_tdma_explicit[iden] == 0) {
-                int tdma_hint = (state->p25_sys_is_tdma == 1) ? 1 : (state->p25_chan_tdma[iden] & 0x1);
-                state->p25_chan_tdma[iden] = tdma_hint;
-                state->p25_chan_tdma_explicit[iden] = 0; // unknown/implicit
+            // Validate that base_freq actually falls in VHF/UHF range (warning only)
+            if (!p25_is_vhf_uhf_base_freq(base_freq)) {
+                fprintf(stderr, "\n  WARNING: 0x74 IDEN_UP_VU base_freq %08lX outside VHF/UHF range", base_freq);
             }
 
-            // Record provenance (use current system/site context); trust if on CC
-            state->p25_iden_wacn[iden] = state->p2_wacn;
-            state->p25_iden_sysid[iden] = state->p2_sysid;
-            state->p25_iden_rfss[iden] = state->p2_rfssid;
-            state->p25_iden_site[iden] = state->p2_siteid;
-            state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Write to FDMA IDEN entry
+            {
+                p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
+                e->base_freq = base_freq;
+                e->chan_type = 1; // FDMA default
+                e->chan_spac = chan_spac;
+                e->trans_off = trans_off;
+                e->bw_vu = (uint8_t)bw_vu;
+                e->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+                e->populated = 1;
+                e->wacn = state->p2_wacn;
+                e->sysid = state->p2_sysid;
+                e->rfss = state->p2_rfssid;
+                e->site = state->p2_siteid;
+                state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA/non-TDMA entry
+            }
 
             fprintf(stderr, "\n Identifier Update UHF/VHF\n");
             fprintf(stderr,
                     "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
                     "Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, bw_vu, state->p25_trans_off[iden], state->p25_chan_spac[iden],
-                    state->p25_base_freq[iden], state->p25_base_freq[iden] * 5);
+                    state->p25_chan_iden, bw_vu, trans_off, chan_spac, base_freq, base_freq * 5);
         }
 
-        //identifier update (Non-TDMA 6.2.22) (Non-VHF-UHF) //with signed offset, bit trans_off >> 8; bit number 9
+        //identifier update (Non-TDMA 6.2.22)
         if (MAC[1 + len_a] == 0x7D) {
-            state->p25_chan_iden = MAC[2 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_standard(MAC, 2 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
+            long int base_freq = up.base_freq;
+            int bw = up.bandwidth;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
 
-            state->p25_chan_type[iden] = 1;
-            state->p25_chan_tdma[iden] = 0;
-            state->p25_chan_tdma_explicit[iden] = 1; // explicit Non-TDMA
-            int bw = ((MAC[2 + len_a] & 0xF) << 5) | ((MAC[3 + len_a] & 0xF8) >> 2);
-            state->p25_trans_off[iden] = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
-            state->p25_chan_spac[iden] = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
-            state->p25_base_freq[iden] =
-                (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
+            p25_invalidate_chan_map_for_iden(state, iden);
 
-            // Record provenance (use current system/site context); trust if on CC
-            state->p25_iden_wacn[iden] = state->p2_wacn;
-            state->p25_iden_sysid[iden] = state->p2_sysid;
-            state->p25_iden_rfss[iden] = state->p2_rfssid;
-            state->p25_iden_site[iden] = state->p2_siteid;
-            state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+            // Write to FDMA IDEN entry
+            {
+                p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
+                e->base_freq = base_freq;
+                e->chan_type = 1; // FDMA default
+                e->chan_spac = chan_spac;
+                e->trans_off = trans_off;
+                e->bw_vu = 0;
+                e->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+                e->populated = 1;
+                e->wacn = state->p2_wacn;
+                e->sysid = state->p2_sysid;
+                e->rfss = state->p2_rfssid;
+                e->site = state->p2_siteid;
+                state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA/non-TDMA entry
+            }
 
             fprintf(stderr, "\n Identifier Update (8.3.1.23)\n");
             fprintf(stderr,
                     "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
                     "Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, bw, state->p25_trans_off[iden], state->p25_chan_spac[iden],
-                    state->p25_base_freq[iden], state->p25_base_freq[iden] * 5);
+                    state->p25_chan_iden, bw, trans_off, chan_spac, base_freq, base_freq * 5);
         }
 
         //identifier update for TDMA, Abbreviated
         if (MAC[1 + len_a] == 0x73) {
-            state->p25_chan_iden = MAC[2 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_tdma(MAC, 2 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
-            state->p25_chan_tdma[iden] = 1;
-            state->p25_chan_tdma_explicit[iden] = 2; // explicit TDMA
-            state->p25_chan_type[iden] = MAC[2 + len_a] & 0xF;
-            state->p25_trans_off[iden] = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
-            state->p25_chan_spac[iden] = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
-            state->p25_base_freq[iden] =
-                (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
+            int chan_type = up.chan_type;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
+            long int base_freq = up.base_freq;
 
-            // Record provenance (use current system/site context); trust if on CC
-            state->p25_iden_wacn[iden] = state->p2_wacn;
-            state->p25_iden_sysid[iden] = state->p2_sysid;
-            state->p25_iden_rfss[iden] = state->p2_rfssid;
-            state->p25_iden_site[iden] = state->p2_siteid;
-            state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Route by ChannelType. sdrtrunk treats only types 3, 4, and 5 as TDMA.
+            {
+                int is_tdma = p25_channel_type_is_tdma(chan_type);
+                p25_iden_entry_t* e = is_tdma ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
+                e->base_freq = base_freq;
+                e->chan_type = chan_type; // from MAC payload (4-bit)
+                e->chan_spac = chan_spac;
+                e->trans_off = trans_off;
+                e->trust = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+                e->populated = 1;
+                e->wacn = state->p2_wacn;
+                e->sysid = state->p2_sysid;
+                e->rfss = state->p2_rfssid;
+                e->site = state->p2_siteid;
+                state->p25_chan_tdma_explicit[iden] |= is_tdma ? 2 : 1;
+            }
 
             fprintf(stderr, "\n Identifier Update for TDMA - Abbreviated\n");
             fprintf(stderr,
                     "  Channel Identifier [%01X] Channel Type [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] "
                     "Base Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, state->p25_chan_type[iden], state->p25_trans_off[iden],
-                    state->p25_chan_spac[iden], state->p25_base_freq[iden], state->p25_base_freq[iden] * 5);
+                    state->p25_chan_iden, chan_type, trans_off, chan_spac, base_freq, base_freq * 5);
         }
 
         //identifier update for TDMA, Extended
         if (MAC[1 + len_a] == 0xF3) {
-            state->p25_chan_iden = MAC[3 + len_a] >> 4;
+            struct p25p2_iden_update up = {0};
+            (void)p25p2_mac_decode_iden_tdma(MAC, 3 + len_a, &up);
+            state->p25_chan_iden = up.iden;
             int iden = state->p25_chan_iden;
-            state->p25_chan_tdma[iden] = 1;
-            state->p25_chan_tdma_explicit[iden] = 2; // explicit TDMA
-            state->p25_chan_type[iden] = MAC[3 + len_a] & 0xF;
-            state->p25_trans_off[iden] = (MAC[4 + len_a] << 6) | (MAC[5 + len_a] >> 2);
-            state->p25_chan_spac[iden] = ((MAC[5 + len_a] & 0x3) << 8) | MAC[6 + len_a];
-            state->p25_base_freq[iden] =
-                (MAC[7 + len_a] << 24) | (MAC[8 + len_a] << 16) | (MAC[9 + len_a] << 8) | (MAC[10 + len_a] << 0);
+            int chan_type = up.chan_type;
+            int trans_off = up.trans_off;
+            int chan_spac = up.chan_spac;
+            long int base_freq = up.base_freq;
             int lwacn = (MAC[11 + len_a] << 12) | (MAC[12 + len_a] << 4) | ((MAC[13 + len_a] & 0xF0) >> 4);
             int lsysid = ((MAC[13 + len_a] & 0xF) << 8) | MAC[14 + len_a];
 
-            // Record provenance from payload + current RFSS/SITE; trust if on matching CC
-            state->p25_iden_wacn[iden] = lwacn;
-            state->p25_iden_sysid[iden] = lsysid;
-            state->p25_iden_rfss[iden] = state->p2_rfssid;
-            state->p25_iden_site[iden] = state->p2_siteid;
-            state->p25_iden_trust[iden] =
-                (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && state->p2_wacn == (unsigned long long)lwacn
-                 && state->p2_sysid == (unsigned long long)lsysid)
-                    ? 2
-                    : 1;
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Route by ChannelType. sdrtrunk treats only types 3, 4, and 5 as TDMA.
+            {
+                int is_tdma = p25_channel_type_is_tdma(chan_type);
+                p25_iden_entry_t* e = is_tdma ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
+                e->base_freq = base_freq;
+                e->chan_type = chan_type; // from MAC payload (4-bit)
+                e->chan_spac = chan_spac;
+                e->trans_off = trans_off;
+                e->trust =
+                    (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && state->p2_wacn == (unsigned long long)lwacn
+                     && state->p2_sysid == (unsigned long long)lsysid)
+                        ? 2
+                        : 1;
+                e->populated = 1;
+                e->wacn = (unsigned long long)lwacn;   // from extended payload
+                e->sysid = (unsigned long long)lsysid; // from extended payload
+                e->rfss = state->p2_rfssid;
+                e->site = state->p2_siteid;
+                state->p25_chan_tdma_explicit[iden] |= is_tdma ? 2 : 1;
+            }
 
             fprintf(stderr, "\n Identifier Update for TDMA - Extended\n");
             fprintf(stderr,
                     "  Channel Identifier [%01X] Channel Type [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] "
                     "Base Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, state->p25_chan_type[iden], state->p25_trans_off[iden],
-                    state->p25_chan_spac[iden], state->p25_base_freq[iden], state->p25_base_freq[iden] * 5);
+                    state->p25_chan_iden, chan_type, trans_off, chan_spac, base_freq, base_freq * 5);
             fprintf(stderr, "\n  WACN [%04X] SYSID [%04X]", lwacn, lsysid);
         }
 

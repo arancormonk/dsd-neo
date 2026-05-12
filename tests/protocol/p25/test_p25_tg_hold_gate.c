@@ -64,11 +64,13 @@ main(void) {
     // Simple FDMA IDEN
     int id = 1;
     st.p25_chan_iden = id;
-    st.p25_chan_type[id] = 1;
-    st.p25_chan_tdma[id] = 0;
-    st.p25_base_freq[id] = 851000000 / 5;
-    st.p25_chan_spac[id] = 100;
-    st.p25_iden_trust[id] = 2;
+    // Populate new dual-array
+    st.p25_iden_fdma[id].base_freq = 851000000 / 5;
+    st.p25_iden_fdma[id].chan_type = 1;
+    st.p25_iden_fdma[id].chan_spac = 100;
+    st.p25_iden_fdma[id].trust = 2;
+    st.p25_iden_fdma[id].populated = 1;
+    st.p25_chan_tdma_explicit[id] = 1; // FDMA known
     int ch = (id << 12) | 0x000A;
 
     // Hold TG 1234

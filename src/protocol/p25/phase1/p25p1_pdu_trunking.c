@@ -28,6 +28,11 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static inline int
+p25_signed_offset_units(int sign_bit, int raw_offset) {
+    return sign_bit ? raw_offset : -raw_offset;
+}
+
 //trunking data delivered via PDU format
 void
 p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
@@ -55,12 +60,9 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
     // immediately after the opcode. Populate MAC[] accordingly so downstream parsers align.
     //
     // IMPORTANT: Do NOT bridge opcode 0x33 (Identifier Update for TDMA) here.
-    // The MBT form of 0x33 uses a different payload layout that spans header
-    // bytes 8–11 and data block bytes 12+, and the byte-to-MAC mapping
-    // produces incorrect iden/base-freq values that overwrite the correct
-    // TSBK-sourced entries. The TSBK path already provides correct TDMA iden
-    // definitions. Until the exact MBT→MAC field mapping for 0x33 is verified
-    // against the P25 spec, we skip it to avoid corrupting the iden table.
+    // The AMBTC form is decoded below for logging, but SDRTrunk treats it as a
+    // foreign-system band update and does not inject it into the current
+    // frequency-band map.
     // Note: 0x34 (masked form of 0x74) IS bridged — it's the FDMA Identifier
     // Update which uses the standard payload layout and decodes correctly.
     if ((opcode == 0x74 || opcode == 0x7D || opcode == 0x73 || opcode == 0xF3 || opcode == 0x34 || opcode == 0x3D)
@@ -204,6 +206,29 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         long neigh3[2] = {f3, f4};
         p25_sm_on_neighbor_update(opts, state, neigh3, 2);
 
+    }
+
+    // TDMA Identifier Update (0x33) — Direct decode from AMBTC byte layout.
+    // SDRTrunk treats this AMBTC form as a foreign-system frequency-band
+    // update and intentionally does not inject it into the current system's
+    // frequency-band map.
+    else if (opcode == 0x33) {
+        int iden = (mpdu_byte[3] >> 4) & 0x0F;
+        int chan_type = mpdu_byte[3] & 0x0F;
+        long int lwacn = ((long)mpdu_byte[4] << 12) | ((long)mpdu_byte[5] << 4) | ((mpdu_byte[8] & 0xF0) >> 4);
+        int lsysid = ((mpdu_byte[8] & 0x0F) << 8) | mpdu_byte[9];
+        long int base_freq = ((long)mpdu_byte[12] << 24) | ((long)mpdu_byte[13] << 16) | ((long)mpdu_byte[14] << 8)
+                             | (long)mpdu_byte[15];
+        int tx_off_sign = (mpdu_byte[16] >> 7) & 1;
+        int tx_off_raw = ((mpdu_byte[16] & 0x7F) << 6) | (mpdu_byte[17] >> 2);
+        int chan_spac = ((mpdu_byte[17] & 0x3) << 8) | mpdu_byte[18];
+        int trans_off = p25_signed_offset_units(tx_off_sign, tx_off_raw);
+
+        fprintf(stderr, "%s", KYEL);
+        fprintf(stderr, "\n TDMA Identifier Update MBT - Direct Decode\n");
+        fprintf(stderr, "  IDEN [%X] Type [%X] Base Freq [%ld] (%ld Hz) TX Offset [%d] Spacing [%d]", iden, chan_type,
+                base_freq, base_freq * 5, trans_off, chan_spac);
+        fprintf(stderr, "\n  Foreign WACN [%05lX] SYSID [%03X] - ignored for current IDEN tables", lwacn, lsysid);
     }
 
     //Group Voice Channel Grant - Extended

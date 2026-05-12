@@ -70,10 +70,12 @@ main(void) {
     // System carries TDMA voice; IDEN TDMA unknown for id=1
     st.p25_sys_is_tdma = 1;
     int id = 1;
-    st.p25_chan_tdma[id] = 0;             // unknown
-    st.p25_chan_type[id] = 4;             // type doesn't matter without tdma flag
-    st.p25_base_freq[id] = 851000000 / 5; // 851 MHz in 5 Hz units
-    st.p25_chan_spac[id] = 100;           // 12.5 kHz (100*125)
+    // Populate new dual-array: no explicit hint, so use FDMA as the available entry
+    // (the fallback logic will find it when neither TDMA nor FDMA is explicitly set)
+    st.p25_iden_fdma[id].base_freq = 851000000 / 5;
+    st.p25_iden_fdma[id].chan_type = 4;
+    st.p25_iden_fdma[id].chan_spac = 100;
+    st.p25_iden_fdma[id].populated = 1;
 
     // Raw channel 0x1007 → denom fallback 2 → step=7/2=3
     int chan = (id << 12) | 0x0007;
@@ -87,11 +89,12 @@ main(void) {
     static dsd_state st_fdma;
     memset(&st_fdma, 0, sizeof st_fdma);
     st_fdma.p25_sys_is_tdma = 1;
-    st_fdma.p25_chan_tdma[id] = 1;
-    st_fdma.p25_chan_tdma_explicit[id] = 1;
-    st_fdma.p25_chan_type[id] = 3;
-    st_fdma.p25_base_freq[id] = 851000000 / 5;
-    st_fdma.p25_chan_spac[id] = 100;
+    st_fdma.p25_chan_tdma_explicit[id] = 1; // explicit FDMA
+    // Populate new dual-array: explicit FDMA
+    st_fdma.p25_iden_fdma[id].base_freq = 851000000 / 5;
+    st_fdma.p25_iden_fdma[id].chan_type = 3;
+    st_fdma.p25_iden_fdma[id].chan_spac = 100;
+    st_fdma.p25_iden_fdma[id].populated = 1;
 
     chan = (id << 12) | 0x000A;
     f = process_channel_to_freq(&opts, &st_fdma, chan);

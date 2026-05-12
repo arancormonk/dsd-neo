@@ -35,6 +35,16 @@ struct p25p2_mac_result {
     int len_c;
 };
 
+struct p25p2_iden_update {
+    uint8_t iden;
+    uint8_t chan_type;
+    uint8_t bw_vu;
+    int bandwidth;
+    int trans_off;
+    int chan_spac;
+    long int base_freq;
+};
+
 /**
  * Derive MAC message lengths and header fields from a VPDU/TSBK buffer.
  *
@@ -48,6 +58,9 @@ struct p25p2_mac_result {
  * @return 0 on success, negative on error.
  */
 int p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_result* out);
+int p25p2_mac_decode_iden_standard(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);
+int p25p2_mac_decode_iden_vuhf(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);
+int p25p2_mac_decode_iden_tdma(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);
 
 #ifdef __cplusplus
 }

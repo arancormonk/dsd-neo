@@ -369,10 +369,12 @@ main(void) {
     state.lastsrc = (unsigned long long)lastsrc;
     state.synctype = DSD_SYNC_P25P1_POS;
     state.p25_chan_iden = 1;
-    state.p25_chan_type[1] = 1;
-    state.p25_chan_tdma[1] = 0;
-    state.p25_chan_spac[1] = 100;
-    state.p25_base_freq[1] = 851000000 / 5;
+    state.p25_iden_fdma[1].chan_type = 1;
+    state.p25_iden_fdma[1].chan_spac = 100;
+    state.p25_iden_fdma[1].base_freq = 851000000 / 5;
+    state.p25_iden_fdma[1].trust = 2;
+    state.p25_iden_fdma[1].populated = 1;
+    state.p25_chan_tdma_explicit[1] = 1; // FDMA known
     g_called = 0;
     processTDULC(&opts, &state);
     rc |= expect_eq_int("grant called", g_called, 1);

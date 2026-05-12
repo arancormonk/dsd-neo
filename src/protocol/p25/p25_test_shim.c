@@ -51,16 +51,32 @@ p25_test_mbt_iden_bridge(const unsigned char* mbt, int mbt_len, long* out_base, 
     }
 
     if (out_type) {
-        *out_type = state->p25_chan_type[iden] & 0xF;
+        // Read from the appropriate new array entry
+        int tdma_flag = state->p25_chan_tdma_explicit[iden] & 0x02;
+        if (tdma_flag) {
+            *out_type = state->p25_iden_tdma[iden].chan_type & 0xF;
+        } else {
+            *out_type = state->p25_iden_fdma[iden].chan_type & 0xF;
+        }
     }
     if (out_tdma) {
-        *out_tdma = state->p25_chan_tdma[iden] & 0x1;
+        *out_tdma = (state->p25_chan_tdma_explicit[iden] & 0x02) ? 1 : 0;
     }
     if (out_spac) {
-        *out_spac = state->p25_chan_spac[iden];
+        int tdma_flag = state->p25_chan_tdma_explicit[iden] & 0x02;
+        if (tdma_flag) {
+            *out_spac = state->p25_iden_tdma[iden].chan_spac;
+        } else {
+            *out_spac = state->p25_iden_fdma[iden].chan_spac;
+        }
     }
     if (out_base) {
-        *out_base = state->p25_base_freq[iden];
+        int tdma_flag = state->p25_chan_tdma_explicit[iden] & 0x02;
+        if (tdma_flag) {
+            *out_base = state->p25_iden_tdma[iden].base_freq;
+        } else {
+            *out_base = state->p25_iden_fdma[iden].base_freq;
+        }
     }
     if (out_freq) {
         // Compute a simple test channel (channel number 10 on selected iden)
@@ -94,10 +110,21 @@ p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, i
         return -2;
     }
     state->p25_chan_iden = iden & 0xF;
-    state->p25_chan_type[iden] = type & 0xF;
-    state->p25_chan_tdma[iden] = tdma & 0x1;
-    state->p25_chan_spac[iden] = spac;
-    state->p25_base_freq[iden] = base;
+
+    // Populate new dual-array entries (process_channel_to_freq reads from these)
+    if (tdma) {
+        state->p25_iden_tdma[iden].base_freq = base;
+        state->p25_iden_tdma[iden].chan_type = type & 0xF;
+        state->p25_iden_tdma[iden].chan_spac = spac;
+        state->p25_iden_tdma[iden].populated = 1;
+        state->p25_chan_tdma_explicit[iden] |= 2;
+    } else {
+        state->p25_iden_fdma[iden].base_freq = base;
+        state->p25_iden_fdma[iden].chan_type = type & 0xF;
+        state->p25_iden_fdma[iden].chan_spac = spac;
+        state->p25_iden_fdma[iden].populated = 1;
+        state->p25_chan_tdma_explicit[iden] |= 1;
+    }
 
     p25_decode_pdu_trunking(opts, state, (unsigned char*)mbt);
 
@@ -201,10 +228,21 @@ p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int ch
         free(state);
         return -1;
     }
-    state->p25_chan_type[iden] = type & 0xF;
-    state->p25_chan_tdma[iden] = tdma & 0x1;
-    state->p25_chan_spac[iden] = spac;
-    state->p25_base_freq[iden] = base;
+    // Populate new dual-array entries (process_channel_to_freq reads from these)
+    if (tdma) {
+        state->p25_iden_tdma[iden].base_freq = base;
+        state->p25_iden_tdma[iden].chan_type = type & 0xF;
+        state->p25_iden_tdma[iden].chan_spac = spac;
+        state->p25_iden_tdma[iden].populated = 1;
+        state->p25_chan_tdma_explicit[iden] |= 2; // bit1 = has TDMA
+    } else {
+        state->p25_iden_fdma[iden].base_freq = base;
+        state->p25_iden_fdma[iden].chan_type = type & 0xF;
+        state->p25_iden_fdma[iden].chan_spac = spac;
+        state->p25_iden_fdma[iden].populated = 1;
+        state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA
+    }
+
     if (map_override > 0) {
         uint16_t c = (uint16_t)chan16;
         dsd_state_set_trunk_chan_freq(state, c, map_override);
@@ -264,12 +302,24 @@ p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len,
     opts->trunk_tune_group_calls = 1; // enable group call tuning in tests
     state->p25_cc_freq = p25_cc_freq;
     state->p25_chan_iden = iden & 0xF;
-    state->p25_chan_type[state->p25_chan_iden] = type & 0xF;
-    state->p25_chan_tdma[state->p25_chan_iden] = tdma & 0x1;
-    state->p25_chan_spac[state->p25_chan_iden] = spac;
-    state->p25_base_freq[state->p25_chan_iden] = base;
-    state->p25_iden_trust[state->p25_chan_iden] = 2; // trust for tests
-    state->synctype = DSD_SYNC_P25P1_POS;            // P1 FDMA context
+    state->synctype = DSD_SYNC_P25P1_POS; // P1 FDMA context
+
+    // Populate new dual-array entries (process_channel_to_freq reads from these)
+    if (tdma) {
+        state->p25_iden_tdma[state->p25_chan_iden].base_freq = base;
+        state->p25_iden_tdma[state->p25_chan_iden].chan_type = type & 0xF;
+        state->p25_iden_tdma[state->p25_chan_iden].chan_spac = spac;
+        state->p25_iden_tdma[state->p25_chan_iden].trust = 2;
+        state->p25_iden_tdma[state->p25_chan_iden].populated = 1;
+        state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 2;
+    } else {
+        state->p25_iden_fdma[state->p25_chan_iden].base_freq = base;
+        state->p25_iden_fdma[state->p25_chan_iden].chan_type = type & 0xF;
+        state->p25_iden_fdma[state->p25_chan_iden].chan_spac = spac;
+        state->p25_iden_fdma[state->p25_chan_iden].trust = 2;
+        state->p25_iden_fdma[state->p25_chan_iden].populated = 1;
+        state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 1;
+    }
 
     unsigned long long int MAC[24] = {0};
     int n = mac_len < 24 ? mac_len : 24;
@@ -312,11 +362,23 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     opts->trunk_tune_enc_calls = 1;
     state->p25_cc_freq = p25_cc_freq;
     state->p25_chan_iden = iden & 0xF;
-    state->p25_chan_type[state->p25_chan_iden] = type & 0xF;
-    state->p25_chan_tdma[state->p25_chan_iden] = tdma & 0x1;
-    state->p25_chan_spac[state->p25_chan_iden] = spac;
-    state->p25_base_freq[state->p25_chan_iden] = base;
-    state->p25_iden_trust[state->p25_chan_iden] = 2; // trust for tests
+
+    // Populate new dual-array entries (process_channel_to_freq reads from these)
+    if (tdma) {
+        state->p25_iden_tdma[state->p25_chan_iden].base_freq = base;
+        state->p25_iden_tdma[state->p25_chan_iden].chan_type = type & 0xF;
+        state->p25_iden_tdma[state->p25_chan_iden].chan_spac = spac;
+        state->p25_iden_tdma[state->p25_chan_iden].trust = 2;
+        state->p25_iden_tdma[state->p25_chan_iden].populated = 1;
+        state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 2;
+    } else {
+        state->p25_iden_fdma[state->p25_chan_iden].base_freq = base;
+        state->p25_iden_fdma[state->p25_chan_iden].chan_type = type & 0xF;
+        state->p25_iden_fdma[state->p25_chan_iden].chan_spac = spac;
+        state->p25_iden_fdma[state->p25_chan_iden].trust = 2;
+        state->p25_iden_fdma[state->p25_chan_iden].populated = 1;
+        state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 1;
+    }
 
     // Ensure singleton SM context from prior helper calls does not leak tuned
     // state into this isolated invocation.

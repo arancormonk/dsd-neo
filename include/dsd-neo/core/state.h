@@ -193,6 +193,29 @@ typedef struct {
     unsigned int ColorCode[NB_OF_DPMR_VOICE_FRAME_TO_DECODE / 2];
 } dPMRVoiceFS2Frame_t;
 
+/**
+ * @brief Consolidated per-slot IDEN entry for P25 frequency resolution.
+ *
+ * Each entry holds the complete set of parameters needed to resolve a 16-bit
+ * channel number to a frequency. Two arrays of this type exist in dsd_state:
+ * one for FDMA/non-TDMA identifiers and one for TDMA identifiers. This
+ * separation prevents multi-mode systems from cycling incompatible parameters
+ * in a single slot.
+ */
+typedef struct {
+    long int base_freq;       // base frequency in 5 Hz units (per IDEN_UP encoding)
+    int chan_type;            // 4-bit channel type (TDMA: slots-per-carrier; 1 for FDMA default)
+    int chan_spac;            // 10-bit channel spacing (in 0.125 kHz units)
+    int trans_off;            // transmit offset
+    uint8_t bw_vu;            // 4-bit VHF/UHF bandwidth (0=standard/not VHF-UHF, nonzero=VHF/UHF BW)
+    uint8_t trust;            // 0=unknown, 1=unconfirmed, 2=confirmed on matching CC
+    uint8_t populated;        // 0=empty, 1=has valid complete data from LCW/TSBK/MAC/PDU
+    unsigned long long wacn;  // WACN provenance (system context when IDEN was learned)
+    unsigned long long sysid; // SysID provenance
+    unsigned long long rfss;  // RFSS ID provenance
+    unsigned long long site;  // Site ID provenance
+} p25_iden_entry_t;
+
 struct dsd_state {
     int* dibit_buf;
     int* dibit_buf_p;
@@ -626,22 +649,20 @@ struct dsd_state {
     uint32_t p25_p2_enc_pending_ttg[2];
 
     //iden freq storage for frequency calculations
-    int p25_chan_tdma[16];                  // set from iden_up vs iden_up_tdma (bit0 = TDMA flag)
-    uint8_t p25_chan_tdma_explicit[16];     // 0=unknown, 1=explicit FDMA, 2=explicit TDMA
+    // Bitmask per IDEN slot indicating which modulation classes have been seen:
+    //   bit0 (0x01) = has FDMA/non-TDMA entry
+    //   bit1 (0x02) = has TDMA entry (channel types 3, 4, or 5)
+    // Values: 0=unknown, 1=FDMA only, 2=TDMA only, 3=both FDMA and TDMA
+    uint8_t p25_chan_tdma_explicit[16];
     uint8_t p25_lcw_retune_disabled_warned; // 1 once "LCW retune disabled" warning emitted
     int p25_chan_iden;
-    int p25_chan_type[16];
-    int p25_trans_off[16];
-    int p25_chan_spac[16];
-    long int p25_base_freq[16];
-    // Per-IDEN provenance and trust level
-    // - wacn/sysid/rfss/site capture the system/site context when the IDEN was learned
-    // - trust: 0=unknown, 1=unconfirmed (learned off-CC/adjacent), 2=confirmed on matching CC
-    unsigned long long int p25_iden_wacn[16];
-    unsigned long long int p25_iden_sysid[16];
-    unsigned long long int p25_iden_rfss[16];
-    unsigned long long int p25_iden_site[16];
-    uint8_t p25_iden_trust[16];
+
+    // Dual-array IDEN storage: separate FDMA and TDMA entries per slot.
+    // This prevents multi-mode systems from cycling incompatible parameters
+    // in a single slot when both TDMA and FDMA IDEN updates share the same
+    // 4-bit identifier ID.
+    p25_iden_entry_t p25_iden_fdma[16]; // FDMA/non-TDMA frequency-band entries
+    p25_iden_entry_t p25_iden_tdma[16]; // TDMA frequency-band entries
 
     //p25 frequency storage for trunking and display in ncurses
     int p25_cc_is_tdma;  // control channel modulation: 0=FDMA (C4FM), 1=TDMA (QPSK)

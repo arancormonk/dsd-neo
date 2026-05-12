@@ -2145,6 +2145,39 @@ target_include_directories(dsd-neo_test_watermark_adaptive PRIVATE ${PROJECT_SOU
 target_link_libraries(dsd-neo_test_watermark_adaptive PRIVATE dsd-neo_platform)
 add_test(NAME RUNTIME_WATERMARK_ADAPTIVE COMMAND dsd-neo_test_watermark_adaptive)
 
+# P25 Trunking Improvements
+# ============================================================================
+
+# P25 IDEN dual-array isolation (TDMA/FDMA split, fallback, bitmask)
+add_executable(dsd-neo_test_p25_iden_dual_array protocol/p25/test_p25_iden_dual_array.c)
+target_include_directories(dsd-neo_test_p25_iden_dual_array PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_dual_array PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_DUAL_ARRAY COMMAND dsd-neo_test_p25_iden_dual_array)
+
+# P25 LCW Channel Identifier Update full FDMA IDEN decode
+add_executable(dsd-neo_test_p25_iden_lcw_full protocol/p25/test_p25_iden_lcw_full.c)
+target_include_directories(dsd-neo_test_p25_iden_lcw_full PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_lcw_full PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_LCW_FULL COMMAND dsd-neo_test_p25_iden_lcw_full)
+
+# P25 IDEN preservation property-based test (FDMA/TDMA formula, cache, empty slots)
+add_executable(dsd-neo_test_p25_iden_preservation_pbt protocol/p25/test_p25_iden_preservation_pbt.c)
+target_include_directories(dsd-neo_test_p25_iden_preservation_pbt PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_preservation_pbt PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_PRESERVATION_PBT COMMAND dsd-neo_test_p25_iden_preservation_pbt)
+
+# P25 IDEN VHF/UHF fix (bug condition exploration + fix verification)
+add_executable(dsd-neo_test_p25_iden_vhf_uhf_fix protocol/p25/test_p25_iden_vhf_uhf_fix.c)
+target_include_directories(dsd-neo_test_p25_iden_vhf_uhf_fix PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_vhf_uhf_fix PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_VHF_UHF_FIX COMMAND dsd-neo_test_p25_iden_vhf_uhf_fix)
+
+# P25 MBT 0x33 foreign-system IDEN updates do not populate current IDEN tables
+add_executable(dsd-neo_test_p25_mbt_0x33_foreign_iden protocol/p25/test_p25_mbt_0x33_foreign_iden.c)
+target_include_directories(dsd-neo_test_p25_mbt_0x33_foreign_iden PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_mbt_0x33_foreign_iden PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_MBT_0X33_FOREIGN_IDEN COMMAND dsd-neo_test_p25_mbt_0x33_foreign_iden)
+
 # P25 Status Symbol accumulator and advisory AFC gate logic
 add_executable(dsd-neo_test_p25_status_symbol protocol/p25/test_p25_status_symbol.c)
 target_include_directories(dsd-neo_test_p25_status_symbol PRIVATE ${PROJECT_SOURCE_DIR}/include)

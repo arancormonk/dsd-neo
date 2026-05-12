@@ -119,12 +119,15 @@ main(int argc, char** argv) {
 
     // Mark IDEN 1 as TDMA to exercise slot detection; choose odd channel number => slot 1
     int iden = 1;
-    state.p25_chan_tdma[iden] = 1;
-    state.p25_chan_type[iden] = 1;         // FDMA/TDMA mapping type (not critical for this test)
-    state.p25_chan_spac[iden] = 1250;      // 12.5 kHz
-    state.p25_base_freq[iden] = 851000000; // 851.000 MHz
-    int channel = (iden << 12) | 0x0001;   // low bit = 1 → slot 1
-    int svc = 0;                           // service bits not used here
+    // Populate new dual-array
+    state.p25_iden_tdma[iden].base_freq = 851000000;
+    state.p25_iden_tdma[iden].chan_type = 1;
+    state.p25_iden_tdma[iden].chan_spac = 1250;
+    state.p25_iden_tdma[iden].trust = 2;
+    state.p25_iden_tdma[iden].populated = 1;
+    state.p25_chan_tdma_explicit[iden] = 2; // TDMA known
+    int channel = (iden << 12) | 0x0001;    // low bit = 1 → slot 1
+    int svc = 0;                            // service bits not used here
     int tg = 1234;
     int src = 5678;
     p25_sm_on_group_grant(&opts, &state, channel, svc, tg, src);
