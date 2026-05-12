@@ -487,6 +487,7 @@ initState(dsd_state* state) {
         state->minbuf[i] = -15000;
     }
     state->midx = 0;
+    dsd_state_invalidate_minmax_sums(state);
     state->err_str[0] = '\0';
     state->err_strR[0] = '\0';
     set_spaces(state->fsubtype, 14);

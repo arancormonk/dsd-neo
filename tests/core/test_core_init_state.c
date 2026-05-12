@@ -38,6 +38,21 @@ main(void) {
         return 2;
     }
 
+    for (int i = 0; i < 4; i++) {
+        state->minbuf[i] = (float)(-10 - i);
+        state->maxbuf[i] = (float)(10 + i);
+    }
+    state->midx = 1;
+    dsd_state_invalidate_minmax_sums(state);
+    dsd_state_push_minmax_window(state, 4, -20.0f, 20.0f);
+    if (state->midx != 2 || state->minmax_sum_window != 4 || state->min != -13.75f || state->max != 13.75f) {
+        fprintf(stderr, "min/max rolling window mismatch: midx=%d window=%d min=%.2f max=%.2f\n", state->midx,
+                state->minmax_sum_window, (double)state->min, (double)state->max);
+        freeState(state);
+        free(state);
+        return 3;
+    }
+
     freeState(state);
     free(state);
     return 0;

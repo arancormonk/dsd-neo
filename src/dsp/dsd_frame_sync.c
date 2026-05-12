@@ -303,7 +303,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     float lbuf[48],
         lbuf2
             [48]; //if we use t_max in these arrays, and t >=  t_max in condition below, then it can overflow those checks in there if t exceeds t_max
-    float lsum;
     //init the lbuf
     memset(lbuf, 0, sizeof(lbuf));
     memset(lbuf2, 0, sizeof(lbuf2));
@@ -756,24 +755,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             lmax = (lbuf2[t_max - 3] + lbuf2[t_max - 2] + lbuf2[t_max - 1]) / 3.0f;
 
             if (state->rf_mod == 1) {
-                state->minbuf[state->midx] = lmin;
-                state->maxbuf[state->midx] = lmax;
-                if (state->midx == (opts->msize - 1)) //-1
-                {
-                    state->midx = 0;
-                } else {
-                    state->midx++;
-                }
-                lsum = 0.0f;
-                for (i = 0; i < opts->msize; i++) {
-                    lsum += state->minbuf[i];
-                }
-                state->min = lsum / (float)opts->msize;
-                lsum = 0.0f;
-                for (i = 0; i < opts->msize; i++) {
-                    lsum += state->maxbuf[i];
-                }
-                state->max = lsum / (float)opts->msize;
+                dsd_state_push_minmax_window(state, opts->msize, lmin, lmax);
                 state->center = ((state->max) + (state->min)) / 2.0f;
                 state->maxref = (state->max) * 0.80F;
                 state->minref = (state->min) * 0.80F;

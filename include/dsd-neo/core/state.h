@@ -330,6 +330,9 @@ struct dsd_state {
     int sidx;
     float maxbuf[1024];
     float minbuf[1024];
+    double maxbuf_sum;
+    double minbuf_sum;
+    int minmax_sum_window;
     int midx;
     char err_str[64];
     char err_buf[64];
@@ -981,6 +984,74 @@ struct dsd_state {
 };
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)
+
+static inline int
+dsd_state_minmax_window_size(int requested) {
+    if (requested < 1) {
+        return 1;
+    }
+    if (requested > 1024) {
+        return 1024;
+    }
+    return requested;
+}
+
+static inline void
+dsd_state_invalidate_minmax_sums(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->minmax_sum_window = 0;
+}
+
+static inline void
+dsd_state_recompute_minmax_sums(dsd_state* state, int requested_window) {
+    if (!state) {
+        return;
+    }
+
+    const int window = dsd_state_minmax_window_size(requested_window);
+    double min_sum = 0.0;
+    double max_sum = 0.0;
+    for (int i = 0; i < window; i++) {
+        min_sum += (double)state->minbuf[i];
+        max_sum += (double)state->maxbuf[i];
+    }
+
+    state->minbuf_sum = min_sum;
+    state->maxbuf_sum = max_sum;
+    state->minmax_sum_window = window;
+    if (state->midx < 0 || state->midx >= window) {
+        state->midx = 0;
+    }
+}
+
+static inline void
+dsd_state_push_minmax_window(dsd_state* state, int requested_window, float min_value, float max_value) {
+    if (!state) {
+        return;
+    }
+
+    const int window = dsd_state_minmax_window_size(requested_window);
+    if (state->minmax_sum_window != window) {
+        dsd_state_recompute_minmax_sums(state, window);
+    }
+
+    int idx = state->midx;
+    if (idx < 0 || idx >= window) {
+        idx = 0;
+    }
+
+    state->minbuf_sum += (double)min_value - (double)state->minbuf[idx];
+    state->maxbuf_sum += (double)max_value - (double)state->maxbuf[idx];
+    state->minbuf[idx] = min_value;
+    state->maxbuf[idx] = max_value;
+
+    idx++;
+    state->midx = (idx >= window) ? 0 : idx;
+    state->min = (float)(state->minbuf_sum / (double)window);
+    state->max = (float)(state->maxbuf_sum / (double)window);
+}
 
 /**
  * @brief Rescale symbol timing state between two effective PCM rates.
