@@ -63,6 +63,32 @@ test_auto_profile_differences(void) {
 }
 
 static int
+test_p25p2_prefers_qpsk(void) {
+    static dsd_opts opts = {0};
+    static dsd_state state = {0};
+
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P2, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0) {
+        fprintf(stderr, "cli P25P2 apply failed\n");
+        return 1;
+    }
+    if (!(opts.frame_p25p2 == 1 && opts.frame_p25p1 == 0 && opts.frame_x2tdma == 0)) {
+        fprintf(stderr, "cli P25P2 frame flags mismatch\n");
+        return 1;
+    }
+    if (!(opts.mod_c4fm == 0 && opts.mod_qpsk == 1 && opts.mod_gfsk == 0 && state.rf_mod == 1)) {
+        fprintf(stderr, "cli P25P2 should select QPSK demod (mod=%d/%d/%d rf_mod=%d)\n", opts.mod_c4fm, opts.mod_qpsk,
+                opts.mod_gfsk, state.rf_mod);
+        return 1;
+    }
+    if (!(state.samplesPerSymbol == 8 && state.symbolCenter == 3)) {
+        fprintf(stderr, "cli P25P2 symbol timing mismatch sps=%d center=%d\n", state.samplesPerSymbol,
+                state.symbolCenter);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_interactive_x2_and_ysf_behavior(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
@@ -120,6 +146,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_auto_profile_differences();
+    rc |= test_p25p2_prefers_qpsk();
     rc |= test_interactive_x2_and_ysf_behavior();
     return rc;
 }

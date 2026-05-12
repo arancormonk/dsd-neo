@@ -233,7 +233,7 @@ dmr_try_heuristic_fill(dsd_opts* opts, dsd_state* state) {
         if (f <= 0) {
             continue;
         }
-        state->trunk_chan_map[l] = f;
+        dsd_state_set_trunk_chan_freq(state, (uint32_t)l, f);
         filled++;
     }
 
@@ -269,7 +269,7 @@ dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int fre
         return;
     }
 
-    state->trunk_chan_map[lpcn] = freq;
+    dsd_state_set_trunk_chan_freq(state, lpcn, freq);
     // Mark provenance: trusted if learned while on CC for current site, else unconfirmed
     if (lpcn < 0x1000) {
         uint8_t trust = 1;
@@ -1285,7 +1285,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             //experimental -- assign a_channel or mbc_lpchannum and freqr to channel map if not available
                             if (a_channel != 0 && a_channel != 0xFFF && freqr != 0) {
                                 if (state->trunk_chan_map[a_channel] == 0) {
-                                    state->trunk_chan_map[a_channel] = freqr;
+                                    dsd_state_set_trunk_chan_freq(state, (uint32_t)a_channel, freqr);
                                     //add to rotation for CC Hunting on extended noframesync
                                     state->trunk_lcn_freq[state->lcn_freq_count++ % 25] =
                                         freqr; //no not exceed 25 entries

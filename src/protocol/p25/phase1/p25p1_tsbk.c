@@ -24,6 +24,7 @@
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/colors.h>
@@ -47,6 +48,8 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
 
     // Ensure slot index is sane when swapping protocols
     state->currentslot = 0;
+
+    p25_status_accum_ensure_started(state);
 
     // Clear stale Active Channel messages after idle
     const time_t now = time(NULL);
@@ -103,6 +106,7 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
                 tsbk_reliab[k] = rel;
                 k++;
             } else {
+                p25_status_accum_add(state, dibit);
                 skipdibit = 0;
                 status_count++;
             }
@@ -401,6 +405,8 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
 
     fprintf(stderr, "%s", KNRM);
     fprintf(stderr, "\n");
+
+    p25_status_accum_classify(state, opts);
 
     // When on a CC, rotate the symbol out file every hour, if enabled
     rotate_symbol_out_file(opts, state);

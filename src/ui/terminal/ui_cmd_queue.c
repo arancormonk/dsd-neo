@@ -435,6 +435,31 @@ apply_dsp_op(const UiDspPayload* p) {
             rtl_stream_set_tuner_autogain(on ? 0 : 1);
             break;
         }
+        case UI_DSP_OP_CQPSK_EQ_TOGGLE: {
+            rtl_stream_cqpsk_eq_status eq = {0};
+            (void)rtl_stream_get_cqpsk_eq_status(&eq);
+            rtl_stream_set_cqpsk_eq(eq.enabled ? 0 : 1, -1, -1.0f, -1.0f);
+            break;
+        }
+        case UI_DSP_OP_CQPSK_EQ_TAPS_DELTA: {
+            rtl_stream_cqpsk_eq_status eq = {0};
+            (void)rtl_stream_get_cqpsk_eq_status(&eq);
+            rtl_stream_set_cqpsk_eq(-1, eq.taps + p->a, -1.0f, -1.0f);
+            break;
+        }
+        case UI_DSP_OP_CQPSK_EQ_MU_DELTA: {
+            rtl_stream_cqpsk_eq_status eq = {0};
+            (void)rtl_stream_get_cqpsk_eq_status(&eq);
+            rtl_stream_set_cqpsk_eq(-1, -1, eq.mu + ((float)p->a * 0.0001f), -1.0f);
+            break;
+        }
+        case UI_DSP_OP_CQPSK_EQ_MODULUS_DELTA: {
+            rtl_stream_cqpsk_eq_status eq = {0};
+            (void)rtl_stream_get_cqpsk_eq_status(&eq);
+            rtl_stream_set_cqpsk_eq(-1, -1, -1.0f, eq.modulus + ((float)p->a * 0.01f));
+            break;
+        }
+        case UI_DSP_OP_CQPSK_EQ_RESET: rtl_stream_reset_cqpsk_eq(); break;
         default: break;
     }
 }

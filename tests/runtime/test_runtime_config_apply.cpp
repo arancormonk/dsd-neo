@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
+#include <dsd-neo/ui/ui_dsp_cmd.h>
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/init.h>
@@ -34,6 +35,10 @@
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "test_support.h"
+
+#ifdef USE_RADIO
+#include <dsd-neo/io/rtl_stream_c.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -71,6 +76,15 @@ static int
 expect_float_ne(const char* label, float lhs, float rhs) {
     if (fabsf(lhs - rhs) <= 1e-6f) {
         fprintf(stderr, "FAIL: %s (both %.6f)\n", label, lhs);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_float_close(const char* label, float got, float want, float tol) {
+    if (fabsf(got - want) > tol) {
+        fprintf(stderr, "FAIL: %s (got %.8f want %.8f tol %.8f)\n", label, got, want, tol);
         return 1;
     }
     return 0;
@@ -851,6 +865,74 @@ test_omitted_rtl_ppm_apply_preserves_live_request(void) {
     free_test_runtime(&runtime);
     return rc;
 }
+
+static int
+test_cqpsk_eq_dsp_ops_update_live_controls(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    dsd_neo_config_init(opts);
+    rtl_stream_toggle_cqpsk(1);
+    rtl_stream_set_cqpsk_eq(1, 7, 0.0008f, 0.85f * 0.85f);
+
+    UiDspPayload p = {0};
+    rtl_stream_cqpsk_eq_status eq = {0};
+    int cfg_enable = 0;
+    int cfg_taps = 0;
+    float cfg_mu = 0.0f;
+    float cfg_modulus = 0.0f;
+    int rc = 0;
+
+    p.op = UI_DSP_OP_CQPSK_EQ_TOGGLE;
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
+    ui_drain_cmds(opts, state);
+    (void)rtl_stream_get_cqpsk_eq_status(&eq);
+    rc |= expect_int_eq("CMA UI toggle disables live equalizer", eq.enabled, 0);
+
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
+    ui_drain_cmds(opts, state);
+    (void)rtl_stream_get_cqpsk_eq_status(&eq);
+    rc |= expect_int_eq("CMA UI toggle enables live equalizer", eq.enabled, 1);
+
+    p = (UiDspPayload){.op = UI_DSP_OP_CQPSK_EQ_TAPS_DELTA, .a = +2};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
+    ui_drain_cmds(opts, state);
+    (void)rtl_stream_get_cqpsk_eq_status(&eq);
+    rc |= expect_int_eq("CMA taps delta updates live equalizer", eq.taps, 9);
+
+    p = (UiDspPayload){.op = UI_DSP_OP_CQPSK_EQ_MU_DELTA, .a = +1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
+    ui_drain_cmds(opts, state);
+    (void)rtl_stream_get_cqpsk_eq_status(&eq);
+    rc |= expect_float_close("CMA mu delta updates live equalizer", eq.mu, 0.0009f, 0.000001f);
+
+    p = (UiDspPayload){.op = UI_DSP_OP_CQPSK_EQ_MODULUS_DELTA, .a = +5};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
+    ui_drain_cmds(opts, state);
+    (void)rtl_stream_get_cqpsk_eq_status(&eq);
+    rc |=
+        expect_float_close("CMA modulus delta updates live equalizer", eq.modulus, (0.85f * 0.85f) + 0.05f, 0.000001f);
+
+    dsd_neo_get_cqpsk_eq(&cfg_enable, &cfg_taps, &cfg_mu, &cfg_modulus);
+    rc |= expect_int_eq("CMA UI writes runtime enable", cfg_enable, 1);
+    rc |= expect_int_eq("CMA UI writes runtime taps", cfg_taps, 9);
+    rc |= expect_float_close("CMA UI writes runtime mu", cfg_mu, 0.0009f, 0.000001f);
+    rc |= expect_float_close("CMA UI writes runtime modulus", cfg_modulus, (0.85f * 0.85f) + 0.05f, 0.000001f);
+
+    p = (UiDspPayload){.op = UI_DSP_OP_CQPSK_EQ_RESET};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
+    ui_drain_cmds(opts, state);
+    (void)rtl_stream_get_cqpsk_eq_status(&eq);
+    rc |= expect_int_eq("CMA reset keeps configured taps", eq.taps, 9);
+    rc |= expect_int_eq("CMA reset initializes state", eq.initialized, 1);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
 #endif
 
 int
@@ -869,6 +951,7 @@ main(void) {
     rc |= test_same_value_rtl_ppm_retry_is_republished();
     rc |= test_zero_rtl_ppm_apply_updates_live_request();
     rc |= test_omitted_rtl_ppm_apply_preserves_live_request();
+    rc |= test_cqpsk_eq_dsp_ops_update_live_controls();
 #endif
     return rc ? 1 : 0;
 }

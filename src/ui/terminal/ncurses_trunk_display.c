@@ -14,6 +14,7 @@
 #include <dsd-neo/ui/ncurses_p25_display.h>
 #include <dsd-neo/ui/ncurses_trunk_display.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -37,14 +38,8 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
         }
     }
 
-    int have_chan_map = 0;
-    // Presence check across the full range; needed because many systems use high channel indices
-    for (int i = 1; i < 65535; i++) {
-        if (state->trunk_chan_map[i] != 0) {
-            have_chan_map = 1;
-            break;
-        }
-    }
+    const uint32_t chan_map_count = state->trunk_chan_map_used_count;
+    int have_chan_map = chan_map_count > 0U;
 
     if (!have_lcn_freq && !have_chan_map) {
         return;
@@ -69,7 +64,11 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
     if (have_chan_map) {
         int printed = 0;
         int extra = 0;
-        for (int i = 1; i < 65535; i++) {
+        for (uint32_t n = 0; n < chan_map_count && n < DSD_TRUNK_CHAN_MAP_SIZE; n++) {
+            const uint16_t i = state->trunk_chan_map_used[n];
+            if (!dsd_state_trunk_chan_tracked(i)) {
+                continue;
+            }
             long int f = state->trunk_chan_map[i];
             if (f == 0) {
                 continue;
@@ -146,7 +145,11 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
             }
             // Try to find a matching channel id for this freq
             int found_ch = -1;
-            for (int j = 1; j < 65535; j++) {
+            for (uint32_t n = 0; n < chan_map_count && n < DSD_TRUNK_CHAN_MAP_SIZE; n++) {
+                const uint16_t j = state->trunk_chan_map_used[n];
+                if (!dsd_state_trunk_chan_tracked(j)) {
+                    continue;
+                }
                 if (state->trunk_chan_map[j] == f) {
                     found_ch = j;
                     break;

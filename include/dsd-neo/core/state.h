@@ -23,9 +23,11 @@
 #include <dsd-neo/fec/rs_12_9.h>
 
 #include <dsd-neo/dsp/p25p1_heuristics.h>
+#include <dsd-neo/protocol/p25/p25_status_symbol.h>
 
 enum {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
+    DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
     DSD_VERTEX_KS_MAP_MAX = 64,
 };
 
@@ -279,7 +281,10 @@ struct dsd_state {
     long int trunk_vc_freq[2]; //protocol-agnostic alias (kept in sync with p25_vc_freq)
     // Trunking LCNs and maps
     long int trunk_lcn_freq[26];
-    long int trunk_chan_map[0xFFFF];
+    long int trunk_chan_map[DSD_TRUNK_CHAN_MAP_SIZE];
+    uint16_t trunk_chan_map_used[DSD_TRUNK_CHAN_MAP_SIZE];
+    uint32_t trunk_chan_map_used_count;
+    uint64_t trunk_chan_map_seq;
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
@@ -330,6 +335,9 @@ struct dsd_state {
     int sidx;
     float maxbuf[1024];
     float minbuf[1024];
+    double maxbuf_sum;
+    double minbuf_sum;
+    int minmax_sum_window;
     int midx;
     char err_str[64];
     char err_buf[64];
@@ -662,6 +670,8 @@ struct dsd_state {
     unsigned int p25_sm_tune_count;      // number of VC tunes via SM
     unsigned int p25_sm_release_count;   // number of release requests via SM
     unsigned int p25_sm_cc_return_count; // number of actual returns to CC via SM
+    unsigned int p25_sm_queued_count;    ///< number of Queued Response (QUE_RSP) messages received
+    unsigned int p25_sm_deny_count;      ///< number of Deny Response (DENY_RSP) messages received
     // One-shot flag to force immediate return-to-CC on explicit MAC_END/IDLE
     // or policy events; cleared by the SM after handling
     int p25_sm_force_release;
@@ -728,6 +738,34 @@ struct dsd_state {
     int p25_p1_voice_err_hist_len;          // window length (<=64), default 50
     int p25_p1_voice_err_hist_pos;          // ring head
     unsigned int p25_p1_voice_err_hist_sum; // sum of values in window
+
+    /*
+     * P25 status symbol classification.
+     *
+     * Accumulates 2-bit status symbol values during P25 Phase 1 frame
+     * processing and produces a classification (infrastructure vs subscriber)
+     * for diagnostics and optional auto-PPM gating. Status-derived direction is
+     * advisory by default because some systems do not emit reliable direction
+     * hints. See <dsd-neo/protocol/p25/p25_status_symbol.h> for the accumulator
+     * API.
+     */
+
+    /** Accumulated status symbol values for the current data unit (2-bit each). */
+    uint8_t p25_ss_buf[P25_STATUS_ACCUM_MAX];
+    /** Number of status symbols collected so far in current data unit. */
+    uint8_t p25_ss_count;
+    /** Current data unit has an active accumulator; preserves NID status handoff from dispatcher. */
+    uint8_t p25_ss_frame_active;
+    /** Classification of the most recently completed data unit (p25_ss_classification_t). */
+    uint8_t p25_ss_classification;
+    /** Advisory AFC gate decision: 1 = allow PPM update, 0 = suppress if opt-in gate is enabled. */
+    uint8_t p25_afc_gate_allow;
+    /** A completed data unit has populated the advisory AFC gate decision. */
+    uint8_t p25_afc_gate_valid;
+    /** Count of frames classified as AFC-allowable (infrastructure). */
+    unsigned int p25_afc_allowed_count;
+    /** Count of frames classified as AFC-suppressible (subscriber/unknown). */
+    unsigned int p25_afc_suppressed_count;
 
     // P25 Phase 2 voice error moving average per slot (errs2 from AMBE decode)
     uint8_t p25_p2_voice_err_hist[2][64];
@@ -987,6 +1025,168 @@ struct dsd_state {
 };
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)
+
+static inline int
+dsd_state_trunk_chan_valid(uint32_t channel) {
+    return channel < DSD_TRUNK_CHAN_MAP_SIZE;
+}
+
+static inline int
+dsd_state_trunk_chan_tracked(uint32_t channel) {
+    return channel > 0U && dsd_state_trunk_chan_valid(channel);
+}
+
+static inline void
+dsd_state_track_trunk_chan(dsd_state* state, uint16_t channel) {
+    if (!state || !dsd_state_trunk_chan_tracked(channel)) {
+        return;
+    }
+
+    uint32_t count = state->trunk_chan_map_used_count;
+    if (count > DSD_TRUNK_CHAN_MAP_SIZE) {
+        count = DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+
+    uint32_t insert = count;
+    for (uint32_t i = 0; i < count; i++) {
+        if (state->trunk_chan_map_used[i] == channel) {
+            state->trunk_chan_map_used_count = count;
+            return;
+        }
+        if (state->trunk_chan_map_used[i] > channel) {
+            insert = i;
+            break;
+        }
+    }
+
+    if (count >= DSD_TRUNK_CHAN_MAP_SIZE) {
+        state->trunk_chan_map_used_count = count;
+        return;
+    }
+
+    for (uint32_t i = count; i > insert; i--) {
+        state->trunk_chan_map_used[i] = state->trunk_chan_map_used[i - 1];
+    }
+    state->trunk_chan_map_used[insert] = channel;
+    state->trunk_chan_map_used_count = count + 1U;
+}
+
+static inline void
+dsd_state_untrack_trunk_chan(dsd_state* state, uint16_t channel) {
+    if (!state || !dsd_state_trunk_chan_tracked(channel)) {
+        return;
+    }
+
+    uint32_t count = state->trunk_chan_map_used_count;
+    if (count > DSD_TRUNK_CHAN_MAP_SIZE) {
+        count = DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        if (state->trunk_chan_map_used[i] != channel) {
+            continue;
+        }
+        for (uint32_t j = i + 1U; j < count; j++) {
+            state->trunk_chan_map_used[j - 1U] = state->trunk_chan_map_used[j];
+        }
+        state->trunk_chan_map_used[count - 1U] = 0;
+        state->trunk_chan_map_used_count = count - 1U;
+        return;
+    }
+    state->trunk_chan_map_used_count = count;
+}
+
+static inline void
+dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq) {
+    if (!state || !dsd_state_trunk_chan_valid(channel)) {
+        return;
+    }
+
+    const long int old_freq = state->trunk_chan_map[channel];
+    if (old_freq == freq) {
+        return;
+    }
+
+    state->trunk_chan_map[channel] = freq;
+    if (!dsd_state_trunk_chan_tracked(channel)) {
+        state->trunk_chan_map_seq++;
+        return;
+    }
+    if (old_freq == 0) {
+        dsd_state_track_trunk_chan(state, (uint16_t)channel);
+    } else if (old_freq != 0 && freq == 0) {
+        dsd_state_untrack_trunk_chan(state, (uint16_t)channel);
+    }
+    state->trunk_chan_map_seq++;
+}
+
+static inline int
+dsd_state_minmax_window_size(int requested) {
+    if (requested < 1) {
+        return 1;
+    }
+    if (requested > 1024) {
+        return 1024;
+    }
+    return requested;
+}
+
+static inline void
+dsd_state_invalidate_minmax_sums(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->minmax_sum_window = 0;
+}
+
+static inline void
+dsd_state_recompute_minmax_sums(dsd_state* state, int requested_window) {
+    if (!state) {
+        return;
+    }
+
+    const int window = dsd_state_minmax_window_size(requested_window);
+    double min_sum = 0.0;
+    double max_sum = 0.0;
+    for (int i = 0; i < window; i++) {
+        min_sum += (double)state->minbuf[i];
+        max_sum += (double)state->maxbuf[i];
+    }
+
+    state->minbuf_sum = min_sum;
+    state->maxbuf_sum = max_sum;
+    state->minmax_sum_window = window;
+    if (state->midx < 0 || state->midx >= window) {
+        state->midx = 0;
+    }
+}
+
+static inline void
+dsd_state_push_minmax_window(dsd_state* state, int requested_window, float min_value, float max_value) {
+    if (!state) {
+        return;
+    }
+
+    const int window = dsd_state_minmax_window_size(requested_window);
+    if (state->minmax_sum_window != window) {
+        dsd_state_recompute_minmax_sums(state, window);
+    }
+
+    int idx = state->midx;
+    if (idx < 0 || idx >= window) {
+        idx = 0;
+    }
+
+    state->minbuf_sum += (double)min_value - (double)state->minbuf[idx];
+    state->maxbuf_sum += (double)max_value - (double)state->maxbuf[idx];
+    state->minbuf[idx] = min_value;
+    state->maxbuf[idx] = max_value;
+
+    idx++;
+    state->midx = (idx >= window) ? 0 : idx;
+    state->min = (float)(state->minbuf_sum / (double)window);
+    state->max = (float)(state->maxbuf_sum / (double)window);
+}
 
 /**
  * @brief Rescale symbol timing state between two effective PCM rates.

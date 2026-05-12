@@ -1416,8 +1416,11 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     set_spaces(state->call_string[0], 21);
     set_spaces(state->call_string[1], 21);
 
-    if (now - state->last_cc_sync_time > 10) //ten seconds of no carrier
-    {
+    const int p25_voice_tuned =
+        (opts->p25_trunk == 1 && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
+    const int p25_vc_recent = (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) <= 10) ? 1 : 0;
+    // Ten seconds of no carrier, unless a followed P25 voice channel is still producing sync.
+    if (now - state->last_cc_sync_time > 10 && !(p25_voice_tuned && p25_vc_recent)) {
         state->dmr_rest_channel = -1;
         state->p25_vc_freq[0] = 0;
         state->p25_vc_freq[1] = 0;

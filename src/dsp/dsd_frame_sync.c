@@ -83,6 +83,50 @@ static atomic_int g_ham_c4fm_recent = 24;
 static atomic_int g_ham_qpsk_recent = 24;
 static atomic_int g_ham_gfsk_recent = 24;
 static atomic_int g_qpsk_dwell_enter_ms = 0;
+static dsd_atomic_u64 g_frame_sync_ui_last_publish_ms = {0};
+
+enum { DSD_FRAME_SYNC_UI_PUBLISH_INTERVAL_MS = 50 };
+
+static void
+frame_sync_publish_ui_throttled(dsd_opts* opts, dsd_state* state) {
+    if (!opts || opts->use_ncurses_terminal != 1) {
+        return;
+    }
+
+    const uint64_t now_ms = dsd_time_monotonic_ms();
+    const uint64_t last_ms = dsd_atomic_u64_load_relaxed(&g_frame_sync_ui_last_publish_ms);
+    if (last_ms != 0 && (now_ms - last_ms) < DSD_FRAME_SYNC_UI_PUBLISH_INTERVAL_MS) {
+        return;
+    }
+
+    dsd_atomic_u64_store_relaxed(&g_frame_sync_ui_last_publish_ms, now_ms);
+    ui_publish_both_and_redraw(opts, state);
+}
+
+static void
+p25p2_note_sync_activity(dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    const int voice_tuned =
+        (opts && opts->p25_trunk == 1 && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
+
+    /*
+     * Exact P25P2 sync means the channel is present, but while following a VC it
+     * does not necessarily mean voice is still active. TDMA VCs can keep sending
+     * LCCH/idle after a call ends; refreshing last_vc_sync_time here holds the
+     * trunk release path open and delays return to the CC. Voice/MAC handlers
+     * update last_vc_sync_time when the call is actually active.
+     */
+    if (voice_tuned) {
+        return;
+    }
+
+    const time_t now = time(NULL);
+    const double nowm = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time = now;
+    state->last_cc_sync_time_m = nowm;
+}
 
 void
 dsd_frame_sync_reset_mod_state(void) {
@@ -259,7 +303,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     float lbuf[48],
         lbuf2
             [48]; //if we use t_max in these arrays, and t >=  t_max in condition below, then it can overflow those checks in there if t exceeds t_max
-    float lsum;
     //init the lbuf
     memset(lbuf, 0, sizeof(lbuf));
     memset(lbuf2, 0, sizeof(lbuf2));
@@ -283,9 +326,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     lastt = 0;
 
     //run here as well
-    if (opts->use_ncurses_terminal == 1) {
-        ui_publish_both_and_redraw(opts, state);
-    }
+    frame_sync_publish_ui_throttled(opts, state);
 
     //slot 1
     watchdog_event_history(opts, state, 0);
@@ -308,8 +349,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
         //run ncurses printer more frequently when no sync to speed up responsiveness of it during no sync period
         //NOTE: Need to monitor and test this, if responsiveness issues arise, then disable this
-        if (opts->use_ncurses_terminal == 1 && ((t % 300) == 0)) { //t maxes out at 1800 (6 times each getFrameSync)
-            ui_publish_both_and_redraw(opts, state);
+        if ((t % 300) == 0) { //t maxes out at 1800 (6 times each getFrameSync)
+            frame_sync_publish_ui_throttled(opts, state);
         }
 
         symbol = getSymbol(opts, state, 0);
@@ -714,24 +755,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             lmax = (lbuf2[t_max - 3] + lbuf2[t_max - 2] + lbuf2[t_max - 1]) / 3.0f;
 
             if (state->rf_mod == 1) {
-                state->minbuf[state->midx] = lmin;
-                state->maxbuf[state->midx] = lmax;
-                if (state->midx == (opts->msize - 1)) //-1
-                {
-                    state->midx = 0;
-                } else {
-                    state->midx++;
-                }
-                lsum = 0.0f;
-                for (i = 0; i < opts->msize; i++) {
-                    lsum += state->minbuf[i];
-                }
-                state->min = lsum / (float)opts->msize;
-                lsum = 0.0f;
-                for (i = 0; i < opts->msize; i++) {
-                    lsum += state->maxbuf[i];
-                }
-                state->max = lsum / (float)opts->msize;
+                dsd_state_push_minmax_window(state, opts->msize, lmin, lmax);
                 state->center = ((state->max) + (state->min)) / 2.0f;
                 state->maxref = (state->max) * 0.80F;
                 state->minref = (state->min) * 0.80F;
@@ -1298,7 +1322,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         fprintf(stderr, " P2 Missing Parameters            ");
                         fprintf(stderr, "%s", KNRM);
                     }
-                    state->last_cc_sync_time = time(NULL);
+                    p25p2_note_sync_activity(opts, state);
                     /* CQPSK/QPSK: warm-start only center (DC bias) */
                     if (state->rf_mod == 1) {
                         dsd_sync_warm_start_center_outer_only(opts, state, 20);
@@ -1325,7 +1349,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         fprintf(stderr, "%s", KNRM);
                     }
                     state->lastsynctype = DSD_SYNC_P25P2_NEG;
-                    state->last_cc_sync_time = time(NULL);
+                    p25p2_note_sync_activity(opts, state);
                     /* CQPSK/QPSK: warm-start only center (DC bias) */
                     if (state->rf_mod == 1) {
                         dsd_sync_warm_start_center_outer_only(opts, state, 20);

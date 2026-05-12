@@ -30,6 +30,26 @@
       }
     },
     {
+      "name": "perf-profile",
+      "displayName": "Perf Profile",
+      "description": "Optimized profiling build with debug symbols and frame pointers",
+      "binaryDir": "${sourceDir}/build/perf-profile",
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_TESTING": "OFF",
+        "DSD_ENABLE_LTO": "OFF",
+        "DSD_ENABLE_FAST_MATH": "ON",
+        "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O2 -g -DNDEBUG -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -DNDEBUG -fno-omit-frame-pointer"
+      }
+    },
+    {
       "name": "asan-ubsan-debug",
       "displayName": "Debug + ASan/UBSan",
       "description": "Debug build with sanitizers enabled",
@@ -172,6 +192,17 @@
       "name": "dev-release-clean",
       "configurePreset": "dev-release",
       "configuration": "Release",
+      "cleanFirst": true
+    },
+    {
+      "name": "perf-profile",
+      "configurePreset": "perf-profile",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "perf-profile-clean",
+      "configurePreset": "perf-profile",
+      "configuration": "RelWithDebInfo",
       "cleanFirst": true
     },
     {
