@@ -26,6 +26,12 @@
 
 void processTDULC(dsd_opts* opts, dsd_state* state);
 
+static void
+p25_test_free_state(dsd_state* state) {
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 // Invoke the P25p1 MBT -> MAC Identifier Update bridge and report key state.
 // Returns 0 on success.
 int
@@ -37,7 +43,7 @@ p25_test_mbt_iden_bridge(const unsigned char* mbt, int mbt_len, long* out_base, 
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         return -1;
     }
 
@@ -47,7 +53,7 @@ p25_test_mbt_iden_bridge(const unsigned char* mbt, int mbt_len, long* out_base, 
     int iden = state->p25_chan_iden & 0xF;
     if (iden < 0 || iden > 15) {
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         return -1;
     }
 
@@ -85,7 +91,7 @@ p25_test_mbt_iden_bridge(const unsigned char* mbt, int mbt_len, long* out_base, 
         *out_freq = process_channel_to_freq(opts, state, channel);
     }
     free(opts);
-    free(state);
+    p25_test_free_state(state);
     return 0;
 }
 
@@ -101,13 +107,13 @@ p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, i
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         return -1;
     }
 
     if (iden < 0 || iden > 15) {
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         return -2;
     }
     state->p25_chan_iden = iden & 0xF;
@@ -139,7 +145,7 @@ p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, i
         *out_sysid = state->p2_sysid;
     }
     free(opts);
-    free(state);
+    p25_test_free_state(state);
     return 0;
 }
 
@@ -156,13 +162,13 @@ p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, int iden
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         return -1;
     }
 
     if (iden < 0 || iden > 15) {
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         return -2;
     }
     state->p25_chan_iden = iden & 0xF;
@@ -202,7 +208,7 @@ p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, int iden
         }
     }
     free(opts);
-    free(state);
+    p25_test_free_state(state);
     return 0;
 }
 
@@ -217,7 +223,7 @@ p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len)
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         return;
     }
 
@@ -230,7 +236,7 @@ p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len)
     // Let the VPDU handler compute lengths and optionally emit JSON
     process_MAC_VPDU(opts, state, type, MAC);
     free(opts);
-    free(state);
+    p25_test_free_state(state);
 }
 
 // Simplified P25p1 LDU audio gating decision helper.
@@ -283,13 +289,13 @@ p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int ch
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         return -1;
     }
 
     if (iden < 0 || iden > 15) {
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         return -1;
     }
     // Populate new dual-array entries (process_channel_to_freq reads from these)
@@ -316,7 +322,7 @@ p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int ch
         *out_freq = f;
     }
     free(opts);
-    free(state);
+    p25_test_free_state(state);
     return 0;
 }
 
@@ -329,7 +335,7 @@ p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_l
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         return;
     }
     state->p2_is_lcch = (is_lcch != 0) ? 1 : 0;
@@ -342,7 +348,7 @@ p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_l
     }
     process_MAC_VPDU(opts, state, type, MAC);
     free(opts);
-    free(state);
+    p25_test_free_state(state);
 }
 
 // Invoke MAC VPDU with a pre-seeded trunking state for tests that need
@@ -357,7 +363,7 @@ p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len,
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         return;
     }
 
@@ -392,7 +398,7 @@ p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len,
     }
     process_MAC_VPDU(opts, state, 0, MAC);
     free(opts);
-    free(state);
+    p25_test_free_state(state);
 }
 
 // Invoke MAC VPDU and capture tuned flag and VC frequency for assertions.
@@ -402,11 +408,8 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
-        if (state) {
-            dsd_state_ext_free_all(state);
-        }
         free(opts);
-        free(state);
+        p25_test_free_state(state);
         if (out_vc0) {
             *out_vc0 = 0;
         }
@@ -461,9 +464,8 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     if (out_tuned) {
         *out_tuned = opts->p25_is_tuned;
     }
-    dsd_state_ext_free_all(state);
     free(opts);
-    free(state);
+    p25_test_free_state(state);
 }
 
 /* (xcch test wrapper provided as a separate TU in tests/) */
