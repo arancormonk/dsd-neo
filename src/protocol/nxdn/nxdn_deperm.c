@@ -1580,6 +1580,7 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
             state->minbuf[i] = -4.0f;
         }
         state->midx = 0;
+        dsd_state_invalidate_minmax_sums(state);
         state->symbolcnt = 0;
 
         //reset the dibit buffer
@@ -2442,6 +2443,7 @@ nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const 
             state->minbuf[i] = -4.0f;
         }
         state->midx = 0;
+        dsd_state_invalidate_minmax_sums(state);
         state->symbolcnt = 0;
         state->dibit_buf_p = state->dibit_buf + 200;
         memset(state->dibit_buf, 0, sizeof(int) * 200);

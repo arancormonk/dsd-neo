@@ -16,6 +16,7 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/runtime/config.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -353,6 +354,124 @@ test_ted_initialization(void) {
     return 0;
 }
 
+/*
+ * Test: OP25 Gardner omega clamp is absolute, not scaled by SPS.
+ *
+ * P25P2 at 48 kHz runs at 8 samples/symbol. OP25 clips the timing period to
+ * omega_mid +/- 0.002 samples. Scaling that window by SPS lets the loop hunt
+ * several times wider and smears marginal TDMA constellations.
+ */
+static int
+test_gardner_omega_absolute_clamp_p25p2(void) {
+    const int sps = 8;
+    const int pairs = 512 * sps;
+    float* buf = (float*)malloc((size_t)pairs * 2 * sizeof(float));
+    if (!buf) {
+        fprintf(stderr, "alloc failed\n");
+        return 1;
+    }
+
+    for (int k = 0; k < pairs; k++) {
+        int sym = k / sps;
+        float sign_i = (sym & 1) ? -1.0f : 1.0f;
+        float sign_q = (sym & 2) ? -1.0f : 1.0f;
+        float frac = (float)(k % sps) / (float)sps;
+        buf[(size_t)k * 2 + 0] = sign_i * (0.3f + 0.7f * frac);
+        buf[(size_t)k * 2 + 1] = sign_q * (0.9f - 0.5f * frac);
+    }
+
+    demod_state* s = alloc_state();
+    if (!s) {
+        fprintf(stderr, "state alloc failed\n");
+        free(buf);
+        return 1;
+    }
+    s->cqpsk_enable = 1;
+    s->lowpassed = buf;
+    s->lp_len = pairs * 2;
+    s->ted_sps = sps;
+    s->ted_gain = 1.0f; /* force the clamp to engage if the error is nonzero */
+
+    op25_gardner_cc(s);
+
+    float omega_delta = fabsf(s->ted_state.omega - (float)sps);
+    if (omega_delta > 0.0021f) {
+        fprintf(stderr, "GARDNER: omega delta %f exceeds OP25 absolute clamp\n", omega_delta);
+        free(buf);
+        free(s);
+        return 1;
+    }
+
+    free(buf);
+    free(s);
+    return 0;
+}
+
+static int
+expect_p25p2_tracking_gain_after_lock(const char* label, float ted_gain, int ted_gain_is_set, float expected_gain) {
+    unsetenv("DSD_NEO_TED_GAIN");
+    dsd_neo_config_init(NULL);
+
+    const int sps = 8;
+    const int pairs = 64 * sps;
+    float* buf = (float*)malloc((size_t)pairs * 2 * sizeof(float));
+    if (!buf) {
+        fprintf(stderr, "alloc failed\n");
+        return 1;
+    }
+
+    for (int k = 0; k < pairs; k++) {
+        buf[(size_t)k * 2 + 0] = 0.6f;
+        buf[(size_t)k * 2 + 1] = 0.2f;
+    }
+
+    demod_state* s = alloc_state();
+    if (!s) {
+        fprintf(stderr, "state alloc failed\n");
+        free(buf);
+        return 1;
+    }
+    s->cqpsk_enable = 1;
+    s->lowpassed = buf;
+    s->lp_len = pairs * 2;
+    s->rate_out = 48000;
+    s->ted_sps = sps;
+    s->ted_gain = ted_gain;
+    s->ted_gain_is_set = ted_gain_is_set;
+    s->ted_state.lock_count = 240;
+    s->ted_state.lock_accum = 24.0f;
+
+    op25_gardner_cc(s);
+
+    if (fabsf(s->ted_effective_gain - expected_gain) > 0.0001f) {
+        fprintf(stderr, "%s: got effective TED gain %.6f want %.6f\n", label, s->ted_effective_gain, expected_gain);
+        free(buf);
+        free(s);
+        return 1;
+    }
+
+    free(buf);
+    free(s);
+    return 0;
+}
+
+/*
+ * Test: P25P2 uses a lower effective Gardner gain after initial acquisition
+ * when TED gain is still the automatic default.
+ */
+static int
+test_p25p2_tracking_gain_reduces_after_lock(void) {
+    return expect_p25p2_tracking_gain_after_lock("P25P2 automatic gain", 0.025f, 0, 0.018f);
+}
+
+/*
+ * Test: Runtime/UI TED gain changes remain hard overrides after P25P2 lock.
+ */
+static int
+test_p25p2_tracking_gain_honors_runtime_override_after_lock(void) {
+    return expect_p25p2_tracking_gain_after_lock("P25P2 runtime TED gain", 0.031f, 1, 0.031f);
+}
+
 int
 main(void) {
     if (test_basic_passthrough() != 0) {
@@ -368,6 +487,15 @@ main(void) {
         return 1;
     }
     if (test_ted_initialization() != 0) {
+        return 1;
+    }
+    if (test_gardner_omega_absolute_clamp_p25p2() != 0) {
+        return 1;
+    }
+    if (test_p25p2_tracking_gain_reduces_after_lock() != 0) {
+        return 1;
+    }
+    if (test_p25p2_tracking_gain_honors_runtime_override_after_lock() != 0) {
         return 1;
     }
     return 0;

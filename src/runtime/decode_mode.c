@@ -148,10 +148,10 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
             opts->frame_m17 = 0;
             state->samplesPerSymbol = 8;
             state->symbolCenter = 3;
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
+            opts->mod_c4fm = 0;
+            opts->mod_qpsk = 1;
             opts->mod_gfsk = 0;
-            state->rf_mod = 0;
+            state->rf_mod = 1;
             opts->dmr_stereo = 1;
             state->dmr_stereo = 0;
             opts->dmr_mono = 0;

@@ -20,6 +20,8 @@ typedef struct p25_sm_api {
     void (*on_neighbor_update)(dsd_opts* opts, dsd_state* state, const long* freqs, int count);
     int (*next_cc_candidate)(dsd_state* state, long* out_freq);
     void (*tick)(dsd_opts* opts, dsd_state* state);
+    void (*on_queued_response)(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target);
+    void (*on_deny_response)(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target);
 } p25_sm_api;
 
 void p25_sm_set_api(p25_sm_api api);

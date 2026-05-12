@@ -466,7 +466,9 @@ add_test(NAME UI_HISTORY_COMPACT COMMAND dsd-neo_test_ui_history_compact)
 
 add_executable(dsd-neo_test_ui_snapshot_event_history
   ui/test_ui_snapshot_event_history.c
-  ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snapshot.c)
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snapshot.c
+  ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
+  ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c)
 target_include_directories(dsd-neo_test_ui_snapshot_event_history PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_ui_snapshot_event_history PRIVATE dsd-neo_platform)
 add_test(NAME UI_SNAPSHOT_EVENT_HISTORY COMMAND dsd-neo_test_ui_snapshot_event_history)
@@ -967,6 +969,12 @@ add_executable(dsd-neo_test_p25_p1_nid protocol/p25/test_p25_p1_nid.c)
 target_include_directories(dsd-neo_test_p25_p1_nid PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_p1_nid PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P1_NID COMMAND dsd-neo_test_p25_p1_nid)
+
+# P25 P1 NID full correction — DUID validation, parity override, threshold boundary
+add_executable(dsd-neo_test_p25_p1_nid_full protocol/p25/test_p25_p1_nid_full.cpp)
+target_include_directories(dsd-neo_test_p25_p1_nid_full PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p1_nid_full PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_NID_FULL COMMAND dsd-neo_test_p25_p1_nid_full)
 
 # P25 P1 LCW → SM dispatch (Group Voice Ch Update – Explicit)
 add_executable(dsd-neo_test_p25_p1_lcw_sm protocol/p25/test_p25_p1_lcw_sm.c)
@@ -1506,6 +1514,11 @@ target_include_directories(dsd-neo_test_dsp_costas PRIVATE ${PROJECT_SOURCE_DIR}
 target_link_libraries(dsd-neo_test_dsp_costas PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_COSTAS COMMAND dsd-neo_test_dsp_costas)
 
+add_executable(dsd-neo_test_dsp_equalizer dsp/test_dsp_equalizer.cpp)
+target_include_directories(dsd-neo_test_dsp_equalizer PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_equalizer PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_EQUALIZER COMMAND dsd-neo_test_dsp_equalizer)
+
 # DMR utility/CRC property tests
 add_executable(dsd-neo_test_dmr_crc_props protocol/dmr/test_dmr_crc_props.c)
 target_include_directories(dsd-neo_test_dmr_crc_props PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -1706,6 +1719,13 @@ add_executable(dsd-neo_test_fec_bptc_rs fec/test_fec_bptc_rs.c)
 target_include_directories(dsd-neo_test_fec_bptc_rs PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_fec_bptc_rs PRIVATE dsd-neo_fec)
 add_test(NAME FEC_BPTC_RS COMMAND dsd-neo_test_fec_bptc_rs)
+
+# BCH(63,16,11) encode/decode unit tests
+add_executable(dsd-neo_test_fec_bch_63_16_unit fec/test_fec_bch_63_16_unit.cpp)
+target_include_directories(dsd-neo_test_fec_bch_63_16_unit PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_fec_bch_63_16_unit PRIVATE dsd-neo_fec)
+add_test(NAME FEC_BCH_63_16_UNIT COMMAND dsd-neo_test_fec_bch_63_16_unit)
+
 # P25 SM core behaviors (monotonic/backoff/cc-hunt)
 add_executable(dsd-neo_test_p25_sm_core protocol/p25/test_p25_sm_core.c)
 target_include_directories(dsd-neo_test_p25_sm_core PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -1879,6 +1899,22 @@ target_include_directories(dsd-neo_test_p25_p2_release_partial_audio PRIVATE ${P
 target_link_libraries(dsd-neo_test_p25_p2_release_partial_audio PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_RELEASE_PARTIAL_AUDIO COMMAND dsd-neo_test_p25_p2_release_partial_audio)
 
+# P25 Tier 3 Conformance (Protection Parameter, Emergency Alarm ISP, Time/Date)
+add_executable(dsd-neo_test_protocol_p25_tier3_conformance
+    protocol/p25/test_protocol_p25_tier3_conformance.c)
+target_include_directories(dsd-neo_test_protocol_p25_tier3_conformance
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_protocol_p25_tier3_conformance
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support)
+add_test(NAME PROTOCOL_P25_TIER3_CONFORMANCE
+    COMMAND dsd-neo_test_protocol_p25_tier3_conformance)
+
+# P25 Queued/Deny Response decoding and SM notification
+add_executable(dsd-neo_test_p25_queued_deny_response protocol/p25/test_p25_queued_deny_response.c)
+target_include_directories(dsd-neo_test_p25_queued_deny_response PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_queued_deny_response PRIVATE dsd-neo_proto_p25 dsd-neo_test_support)
+add_test(NAME P25_QUEUED_DENY_RESPONSE COMMAND dsd-neo_test_p25_queued_deny_response)
+
 # Config system tests
 add_executable(dsd-neo_test_config_expand runtime/test_config_expand.cpp)
 target_include_directories(dsd-neo_test_config_expand PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -1979,6 +2015,13 @@ if(DSD_HAS_RADIO)
   )
   target_link_libraries(dsd-neo_test_io_rtl_auto_ppm PRIVATE dsd-neo_io_radio)
   add_test(NAME IO_RTL_AUTO_PPM COMMAND dsd-neo_test_io_rtl_auto_ppm)
+
+  add_executable(dsd-neo_test_io_rtl_demod_config io/test_io_rtl_demod_config.cpp)
+  target_include_directories(dsd-neo_test_io_rtl_demod_config PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+  )
+  target_link_libraries(dsd-neo_test_io_rtl_demod_config PRIVATE dsd-neo_io_radio)
+  add_test(NAME IO_RTL_DEMOD_CONFIG COMMAND dsd-neo_test_io_rtl_demod_config)
 
   add_executable(dsd-neo_test_io_rtl_ppm_request io/test_io_rtl_ppm_request.cpp)
   target_include_directories(dsd-neo_test_io_rtl_ppm_request PRIVATE
@@ -2134,3 +2177,9 @@ add_executable(dsd-neo_test_p25_mbt_0x33_foreign_iden protocol/p25/test_p25_mbt_
 target_include_directories(dsd-neo_test_p25_mbt_0x33_foreign_iden PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_mbt_0x33_foreign_iden PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_MBT_0X33_FOREIGN_IDEN COMMAND dsd-neo_test_p25_mbt_0x33_foreign_iden)
+
+# P25 Status Symbol accumulator and advisory AFC gate logic
+add_executable(dsd-neo_test_p25_status_symbol protocol/p25/test_p25_status_symbol.c)
+target_include_directories(dsd-neo_test_p25_status_symbol PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_status_symbol PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_STATUS_SYMBOL COMMAND dsd-neo_test_p25_status_symbol)

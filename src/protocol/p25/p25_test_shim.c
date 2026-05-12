@@ -245,7 +245,7 @@ p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int ch
 
     if (map_override > 0) {
         uint16_t c = (uint16_t)chan16;
-        state->trunk_chan_map[c] = map_override;
+        dsd_state_set_trunk_chan_freq(state, c, map_override);
     }
     long f = process_channel_to_freq(opts, state, chan16);
     if (out_freq) {

@@ -248,15 +248,7 @@ mmse_interp_cc_8tap(const float* dl, float mu, float* out_r, float* out_j) {
 /* Branchless clip helper (matches GNU Radio) */
 static inline float
 branchless_clip(float x, float limit) {
-    float a = x + limit;
-    float b = x - limit;
-    if (a < 0.0f) {
-        a = 0.0f;
-    }
-    if (b > 0.0f) {
-        b = 0.0f;
-    }
-    return 0.5f * (a + b);
+    return 0.5f * (fabsf(x + limit) - fabsf(x - limit));
 }
 
 /**

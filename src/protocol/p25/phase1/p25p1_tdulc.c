@@ -16,7 +16,6 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
@@ -25,6 +24,7 @@
 #include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
+#include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
@@ -252,6 +252,10 @@ read_zeros(dsd_opts* opts, dsd_state* state, AnalogSignal* analog_signal_array, 
 void
 processTDULC(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_tdulc++;
+
+    // Start status-symbol collection unless the dispatcher already did so for this data unit.
+    p25_status_accum_ensure_started(state);
+
     P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
 
     //push current slot to 0, just in case swapping p2 to p1
@@ -361,10 +365,8 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
 
     // trailing status symbol
     {
-        int status;
-        status = getDibit(opts, state) + '0';
-        // TODO: do something useful with the status bits...
-        UNUSED(status);
+        int ss = getDibit(opts, state);
+        p25_status_accum_add(state, ss);
     }
 
     // Put the corrected data into the DSD structures
@@ -505,6 +507,9 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     if (opts->floating_point == 1) {
         state->aout_gain = opts->audio_gain;
     }
+
+    // Classify accumulated status symbols and set advisory AFC gate flag.
+    p25_status_accum_classify(state, opts);
 
     //zero out MI, key, alg
     // state->payload_miP = 0;

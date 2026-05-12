@@ -73,6 +73,34 @@ p25_lcw_store_fdma_iden(dsd_opts* opts, dsd_state* state, int iden, long int bas
     state->p25_chan_tdma_explicit[iden] |= 1;
 }
 
+/**
+ * @brief Resolve a P25 Algorithm ID to a human-readable name.
+ *
+ * Common APCO P25 ALGIDs used by the voice/ESS paths:
+ *   0x80 = unencrypted, 0x81 = DES-OFB, 0x84 = AES-256,
+ *   0x89 = AES-128-OFB, 0x9F = DES-XL, 0xAA = ADP/RC4
+ *
+ * @param algid The 8-bit algorithm identifier.
+ * @return Static string with algorithm name, or NULL if unrecognized.
+ */
+static const char*
+p25_algid_name(uint8_t algid) {
+    switch (algid) {
+        case 0x80: return "UNENCRYPTED";
+        case 0x81: return "DES-OFB";
+        case 0x82: return "2-KEY 3DES";
+        case 0x83: return "3-KEY 3DES";
+        case 0x84: return "AES-256";
+        case 0x85: return "AES-128";
+        case 0x88: return "AES-CBC";
+        case 0x89: return "AES-128-OFB";
+        case 0x9F: return "DES-XL";
+        case 0xAA: return "ADP/RC4";
+        case 0xAF: return "AES-256-GCM";
+        default: return NULL;
+    }
+}
+
 //new p25_lcw function here -- TIA-102.AABF-D LCW Format Messages (if anybody wants to fill the rest out)
 void
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors) {
@@ -376,7 +404,23 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             }
 
             else if (lc_format == 0x65) {
-                fprintf(stderr, " Protection Parameter Broadcast - OBSOLETE");
+                // Protection Parameter Broadcast — TIA-102.AABF-D LCO 37
+                uint8_t algid = (uint8_t)ConvertBitIntoBytes(&LCW_bits[24], 8);
+                uint16_t kid = (uint16_t)ConvertBitIntoBytes(&LCW_bits[32], 16);
+                uint32_t target = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
+
+                const char* alg_name = p25_algid_name(algid);
+
+                fprintf(stderr, " Protection Parameter Broadcast");
+                fprintf(stderr, "\n  ALGID [%02X]", algid);
+                if (alg_name) {
+                    fprintf(stderr, " (%s)", alg_name);
+                }
+                fprintf(stderr, " KID [%04X] Target [%d]", kid, target);
+
+                state->p25_prot_algid = algid;
+                state->p25_prot_kid = kid;
+                state->p25_prot_valid = 1;
             }
 
             else if (lc_format == 0x66) {

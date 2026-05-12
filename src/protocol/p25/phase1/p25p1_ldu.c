@@ -5,6 +5,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/dsp/p25p1_heuristics.h>
+#include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
@@ -84,12 +85,14 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
 
     for (j = 0; j < 72; j++) {
         if (*status_count == 35) {
-            // Skip the status symbol
+            // Record the mid-frame status symbol for advisory source classification.
 #ifdef TRACE_DSD
             state->debug_prefix = 's';
 #endif
-            (void)getDibit(opts, state);
-            // TODO: do something useful with the status bits...
+            {
+                int ss = getDibit(opts, state);
+                p25_status_accum_add(state, ss);
+            }
             *status_count = 1;
 
 #ifdef TRACE_DSD

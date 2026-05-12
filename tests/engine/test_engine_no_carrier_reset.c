@@ -20,6 +20,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 static int
 expect_true(const char* tag, int cond) {
@@ -115,6 +116,32 @@ main(void) {
             }
         }
     }
+
+    opts->p25_trunk = 1;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL);
+    state->p25_vc_freq[0] = 851012500;
+    state->p25_vc_freq[1] = 851012500;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("p25-vc-sync-preserves-tuned", opts->p25_is_tuned == 1);
+    rc |= expect_true("p25-vc-sync-preserves-alias", opts->trunk_is_tuned == 1);
+    rc |= expect_true("p25-vc-sync-preserves-freq", state->p25_vc_freq[0] == 851012500);
+
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->p25_vc_freq[0] = 851012500;
+    state->p25_vc_freq[1] = 851012500;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("p25-stale-vc-clears-tuned", opts->p25_is_tuned == 0);
+    rc |= expect_true("p25-stale-vc-clears-freq", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
 
     free_test_runtime(opts, state);
 

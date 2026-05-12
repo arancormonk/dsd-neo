@@ -191,5 +191,17 @@ main(void) {
     p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
     rc |= expect_true("LCW_MFID90_TalkerEOT_release", g_return_to_cc_called >= 1 && opts.p25_is_tuned == 0);
 
+    // Protection Parameter Broadcast: ALGID starts at octet 3, then KID at octet 4.
+    memset(&st, 0, sizeof st);
+    memset(lcw, 0, sizeof lcw);
+    set_bits_msb(lcw, 0, 8, 0x65);
+    set_bits_msb(lcw, 24, 8, 0x80);
+    set_bits_msb(lcw, 32, 16, 0x1234);
+    set_bits_msb(lcw, 48, 24, 0x123456);
+    p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
+    rc |= expect_true("LCW_0x65_protection_valid", st.p25_prot_valid == 1);
+    rc |= expect_true("LCW_0x65_protection_algid", st.p25_prot_algid == 0x80);
+    rc |= expect_true("LCW_0x65_protection_kid", st.p25_prot_kid == 0x1234);
+
     return rc;
 }

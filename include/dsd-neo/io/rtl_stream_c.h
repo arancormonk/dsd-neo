@@ -493,6 +493,20 @@ int rtl_stream_get_iq_balance(void);
 void rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta);
 
 /* Coarse DSP feature toggles and snapshot */
+typedef struct rtl_stream_cqpsk_eq_status {
+    int enabled;
+    int initialized;
+    int taps;
+    unsigned int symbols;
+    float mu;
+    float modulus;
+    float err_ema;
+    float mag2_ema;
+    float tap_energy;
+    float center_tap_mag;
+    float max_side_tap_mag;
+} rtl_stream_cqpsk_eq_status;
+
 /**
  * @brief Toggle CQPSK path pre-processing on/off (0=off, nonzero=on).
  *
@@ -520,6 +534,36 @@ void rtl_stream_toggle_ted(int onoff);
  * @return 0 on success; negative on error.
  */
 int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable);
+
+/**
+ * @brief Get CQPSK CMA equalizer status and adaptation metrics.
+ *
+ * `err_ema` is the smoothed absolute constant-modulus error, `mag2_ema` is the
+ * smoothed output magnitude squared, and `max_side_tap_mag` indicates how much
+ * non-center tap correction the equalizer has learned.
+ *
+ * @param out [out] Equalizer status snapshot. Must not be NULL.
+ * @return 0 on success; negative on invalid input.
+ */
+int rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out);
+
+/**
+ * @brief Set live CQPSK CMA equalizer controls; pass negative values to keep a field unchanged.
+ *
+ * The tap count is clamped to odd values in [3, 15]. Step size (`mu`) is
+ * clamped to [0.000001, 0.01], and target modulus to [0.05, 4.0].
+ *
+ * @param enable Non-negative to set enable (0/1); negative to keep existing.
+ * @param taps Positive tap count to set; non-positive to keep existing.
+ * @param mu Positive CMA adaptation step; negative to keep existing.
+ * @param modulus Positive target output magnitude squared; negative to keep existing.
+ */
+void rtl_stream_set_cqpsk_eq(int enable, int taps, float mu, float modulus);
+
+/**
+ * @brief Reset the live CQPSK CMA equalizer taps and adaptation metrics.
+ */
+void rtl_stream_reset_cqpsk_eq(void);
 
 /**
  * @brief Set or disable the resampler target rate (applied on controller thread).

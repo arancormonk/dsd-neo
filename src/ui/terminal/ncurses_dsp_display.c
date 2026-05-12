@@ -132,6 +132,21 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
             e_deg = (e_abs * 180.0) / 16384.0; /* 1<<14 */
         }
         ui_print_kv_line("Costas/NCO", "Err=%d(Q14,~%0.1f°)  NCO(q15)=%d  Fs=%d Hz", e14, e_deg, nco_q15, Fs);
+        {
+            rtl_stream_cqpsk_eq_status eq;
+            memset(&eq, 0, sizeof(eq));
+            if (rtl_stream_get_cqpsk_eq_status(&eq) == 0) {
+                const char* eq_state = "Off";
+                if (eq.enabled) {
+                    eq_state = eq.initialized ? ((eq.symbols >= 500U) ? "Run" : "Warm") : "Init";
+                }
+                ui_print_kv_line("CMA EQ", "[%s] taps:%d mu:%.4g syms:%u", eq_state, eq.taps, eq.mu, eq.symbols);
+                if (eq.enabled) {
+                    ui_print_kv_line("CMA Metric", "mag2:%.3f tgt:%.3f err:%.4f side:%.3f E:%.2f", eq.mag2_ema,
+                                     eq.modulus, eq.err_ema, eq.max_side_tap_mag, eq.tap_energy);
+                }
+            }
+        }
 #else
         ui_print_kv_line("Carrier", "(RTL disabled)");
 #endif
