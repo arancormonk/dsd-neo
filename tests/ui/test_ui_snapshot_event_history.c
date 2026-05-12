@@ -23,6 +23,18 @@ assert_slot_tail(const dsd_state* snap, uint32_t slot0_src, uint32_t slot1_src) 
     assert(snap->event_history_s[1].Event_History_Items[1].source_id == slot1_src);
 }
 
+static void
+assert_render_fields(const dsd_state* snap) {
+    assert(snap != NULL);
+    assert(snap->lasttg == 321);
+    assert(snap->trunk_chan_map[0x1234] == 769768750L);
+    assert(snap->group_tally == 1U);
+    assert(snap->group_array[0].groupNumber == 321UL);
+    assert(strcmp(snap->group_array[0].groupName, "DISPATCH") == 0);
+    assert(strcmp(snap->ui_msg, "snapshot ready") == 0);
+    assert(snap->rkey_array[7] == 0ULL);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -34,11 +46,20 @@ main(void) {
         return 1;
     }
     state->event_history_s = history;
+    state->lasttg = 321;
+    state->trunk_chan_map[0x1234] = 769768750L;
+    state->group_tally = 1U;
+    state->group_array[0].groupNumber = 321UL;
+    snprintf(state->group_array[0].groupName, sizeof(state->group_array[0].groupName), "%s", "DISPATCH");
+    snprintf(state->ui_msg, sizeof(state->ui_msg), "%s", "snapshot ready");
+    state->rkey_array[7] = 0x12345678ULL;
 
     history[0].Event_History_Items[1].source_id = 123U;
     history[1].Event_History_Items[1].source_id = 456U;
     ui_terminal_telemetry_publish_snapshot(state);
-    assert_slot_tail(ui_get_latest_snapshot(), 123U, 456U);
+    const dsd_state* snap = ui_get_latest_snapshot();
+    assert_slot_tail(snap, 123U, 456U);
+    assert_render_fields(snap);
 
     // Update only non-head rows; this must still refresh the snapshot copy.
     history[0].Event_History_Items[1].source_id = 789U;
