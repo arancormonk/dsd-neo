@@ -42,6 +42,76 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #include "dsd-neo/core/state_fwd.h"
 
 /**
+ * @brief Resolve a P25 Algorithm ID to a human-readable name.
+ *
+ * Common APCO P25 ALGIDs used by the voice/ESS paths:
+ *   0x80 = unencrypted, 0x81 = DES-OFB, 0x84 = AES-256,
+ *   0x89 = AES-128-OFB, 0x9F = DES-XL, 0xAA = ADP/RC4
+ *
+ * @param algid The 8-bit algorithm identifier.
+ * @return Static string with algorithm name, or NULL if unrecognized.
+ */
+static const char*
+p25_algid_name(uint8_t algid) {
+    switch (algid) {
+        case 0x80: return "UNENCRYPTED";
+        case 0x81: return "DES-OFB";
+        case 0x82: return "2-KEY 3DES";
+        case 0x83: return "3-KEY 3DES";
+        case 0x84: return "AES-256";
+        case 0x85: return "AES-128";
+        case 0x88: return "AES-CBC";
+        case 0x89: return "AES-128-OFB";
+        case 0x9F: return "DES-XL";
+        case 0xAA: return "ADP/RC4";
+        case 0xAF: return "AES-256-GCM";
+        default: return NULL;
+    }
+}
+
+static uint64_t
+p25_mac_get_bits(const unsigned long long int MAC[24], int len_a, int start_bit, int bit_count) {
+    uint64_t value = 0;
+    for (int i = 0; i < bit_count; i++) {
+        int bit = start_bit + i;
+        int octet = 1 + len_a + (bit / 8);
+        int shift = 7 - (bit % 8);
+        value = (value << 1) | ((uint64_t)(MAC[octet] >> shift) & 0x1ULL);
+    }
+    return value;
+}
+
+static time_t
+p25_utc_time_from_local_fields(int year, int month, int day, int hours, int minutes, int seconds, int offset_minutes) {
+    static const int days_in_month[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (year < 1970 || month < 1 || month > 12 || day < 1 || day > 31 || hours < 0 || hours > 23 || minutes < 0
+        || minutes > 59 || seconds < 0 || seconds > 59) {
+        return (time_t)-1;
+    }
+    int max_day = days_in_month[month - 1];
+    if (month == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) {
+        max_day = 29;
+    }
+    if (day > max_day) {
+        return (time_t)-1;
+    }
+
+    int64_t y = year;
+    unsigned m = (unsigned)month;
+    unsigned d = (unsigned)day;
+    y -= (m <= 2);
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned mp = (m > 2) ? (m - 3U) : (m + 9U);
+    unsigned doy = (153U * mp + 2U) / 5U + d - 1U;
+    unsigned doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
+    int64_t days = era * 146097 + (int64_t)doe - 719468;
+    int64_t total = days * 86400 + (int64_t)hours * 3600 + (int64_t)minutes * 60 + seconds;
+    total -= (int64_t)offset_minutes * 60;
+    return (time_t)total;
+}
+
+/**
  * @brief Resolve a Queued Response reason code to a human-readable string.
  *
  * Reason labels mirror sdrtrunk's QueuedResponseReason mapping.
@@ -2683,8 +2753,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
         }
 
-        //Adjacent Status Broadcast, abbreviated
-        if (MAC[1 + len_a] == 0x7C) {
+        //Adjacent Status Broadcast, abbreviated. TSBK 0x3E is the uncoordinated band plan variant.
+        if (MAC[1 + len_a] == 0x7C || (MAC[1 + len_a] == 0x7E && MAC[len_a] == 0x07)) {
+            int uncoordinated = (MAC[1 + len_a] == 0x7E);
             int lra = MAC[2 + len_a];
             int cfva = MAC[3 + len_a] >> 4;
             int lsysid = ((MAC[3 + len_a] & 0xF) << 8) | MAC[4 + len_a];
@@ -2692,7 +2763,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int siteid = MAC[6 + len_a];
             int channelt = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
             int sysclass = MAC[9 + len_a];
-            fprintf(stderr, "\n Adjacent Status Broadcast - Abbreviated\n");
+            fprintf(stderr, "\n Adjacent Status Broadcast%s - Abbreviated\n",
+                    uncoordinated ? " Uncoordinated Band Plan" : "");
             fprintf(stderr, "  LRA [%02X] RFSS[%03d] SITE [%03d] SYSID [%03X] CHAN-T [%04X] SSC [%02X]\n  ", lra,
                     rfssid, siteid, lsysid, channelt, sysclass);
             if (cfva & 0x8) {
@@ -2844,6 +2916,96 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int ber = MAC[5 + len_a] & 0xF;
             fprintf(stderr, "\n Power Control Signal Quality");
             fprintf(stderr, "\n  Target Address: %d RF: 0x%X BER: 0x%X", ta, rf, ber);
+        }
+
+        // Protection Parameter Update (TSBK 0x3F, bridged as MAC-like 0x7F)
+        // Layout: reserved(16), ALGID(8), KID(16), target(24).
+        if (MAC[1 + len_a] == 0x7F && MAC[len_a] == 0x07) {
+            int algid = (int)MAC[4 + len_a];
+            int kid = (int)((MAC[5 + len_a] << 8) | MAC[6 + len_a]);
+            int target = (int)((MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a]);
+
+            const char* alg_name = p25_algid_name((uint8_t)algid);
+
+            fprintf(stderr, "%s", KYEL);
+            fprintf(stderr, "\n Protection Parameter Update");
+            fprintf(stderr, "\n  ALGID [%02X]", algid);
+            if (alg_name) {
+                fprintf(stderr, " (%s)", alg_name);
+            }
+            fprintf(stderr, " KID [%04X]", kid);
+            fprintf(stderr, " Target [%d]", target);
+            fprintf(stderr, "%s", KNRM);
+
+            state->p25_prot_algid = (uint8_t)algid;
+            state->p25_prot_kid = (uint16_t)kid;
+            state->p25_prot_valid = 1;
+        }
+
+        // Time and Date Announcement (MAC 0x75, TSBK 0x35)
+        // TIA-102.AABC-B §6.2.20
+        if (MAC[1 + len_a] == 0x75) {
+            int vd = (int)p25_mac_get_bits(MAC, len_a, 8, 1);
+            int vt = (int)p25_mac_get_bits(MAC, len_a, 9, 1);
+            int vl = (int)p25_mac_get_bits(MAC, len_a, 10, 1);
+
+            int year = 0, month = 0, day = 0;
+            int hours = 0, minutes = 0, seconds = 0;
+            int lto_sign = 0, lto_mag = 0;
+
+            if (vd) {
+                month = (int)p25_mac_get_bits(MAC, len_a, 24, 4);
+                day = (int)p25_mac_get_bits(MAC, len_a, 28, 5);
+                year = (int)p25_mac_get_bits(MAC, len_a, 33, 13);
+            }
+            if (vt) {
+                hours = (int)p25_mac_get_bits(MAC, len_a, 48, 5);
+                minutes = (int)p25_mac_get_bits(MAC, len_a, 53, 6);
+                seconds = (int)p25_mac_get_bits(MAC, len_a, 59, 6);
+            }
+            if (vl) {
+                lto_sign = (int)p25_mac_get_bits(MAC, len_a, 11, 1);
+                lto_mag = (int)p25_mac_get_bits(MAC, len_a, 12, 12);
+            }
+
+            fprintf(stderr, "%s", KYEL);
+            fprintf(stderr, "\n Time and Date Announcement");
+            fprintf(stderr, "\n  ");
+            if (vd) {
+                fprintf(stderr, "%04d-%02d-%02d ", year, month, day);
+            }
+            if (vt) {
+                fprintf(stderr, "%02d:%02d:%02d ", hours, minutes, seconds);
+            }
+            if (vl) {
+                int lto_total_minutes = lto_mag;
+                int lto_hours = lto_total_minutes / 60;
+                int lto_mins = lto_total_minutes % 60;
+                fprintf(stderr, "UTC%c%02d:%02d", lto_sign ? '-' : '+', lto_hours, lto_mins);
+            }
+            fprintf(stderr, "%s", KNRM);
+
+            int offset_minutes = 0;
+            if (vl) {
+                offset_minutes = lto_mag;
+                if (lto_sign) {
+                    offset_minutes = -offset_minutes;
+                }
+            }
+
+            // Store UTC time_t if both date and time are valid.
+            if (vd && vt) {
+                time_t t = p25_utc_time_from_local_fields(year, month, day, hours, minutes, seconds, offset_minutes);
+                if (t != (time_t)-1) {
+                    state->p25_sys_time = t;
+                    state->p25_sys_time_valid = 1;
+                }
+            }
+
+            if (vl) {
+                state->p25_sys_time_offset = (int16_t)offset_minutes;
+                state->p25_sys_time_offset_valid = 1;
+            }
         }
 
         // Queued Response (MAC 0x61, TSBK 0x21) or Deny Response (MAC 0x67, TSBK 0x27).

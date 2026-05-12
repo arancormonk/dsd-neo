@@ -376,6 +376,21 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
             // TSBK form carries KEY and SSN; ALG not present here.
             p25_patch_set_kas(state, sg, key, -1, ssn);
         }
+    } else if (MFID < 0x2 && protectbit == 1 && err == 0) {
+        // Standard TIA-102 ISP messages (protectbit=1, MFID 0x00/0x01)
+        // These never reach the VPDU handler because the bridge only routes protectbit=0.
+        int opcode = tsbk_byte[0] & 0x3F;
+
+        if (opcode == 0x27) {
+            // Emergency Alarm Request ISP — TIA-102.AABC-B §6.3.1
+            int group = (tsbk_byte[5] << 8) | tsbk_byte[6];
+            int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
+            fprintf(stderr, "%s", KYEL);
+            fprintf(stderr, "\n Emergency Alarm Request (ISP)\n");
+            fprintf(stderr, "  Source: %d Group: %d", source, group);
+            fprintf(stderr, " %s** EMERGENCY **%s", KRED, KYEL);
+            fprintf(stderr, "\n");
+        }
     } else if (protectbit == 0 && err == 0 && (tsbk_byte[0] & 0x3F) == 0x3B) {
         // Network Status Broadcast (Abbreviated)
         long int wacn = (tsbk_byte[3] << 12) | (tsbk_byte[4] << 4) | (tsbk_byte[5] >> 4);
