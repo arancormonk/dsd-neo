@@ -7,7 +7,6 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/ui/ui_snapshot.h>
-#include <stdint.h>
 #include <string.h>
 
 #include "dsd-neo/core/state_fwd.h"
@@ -19,8 +18,6 @@ static dsd_state g_consume; // last copied out for UI
 // Currently, only event history is pointer-backed in dsd_state for UI reads.
 static Event_History_I g_pub_eh[2];
 static Event_History_I g_consume_eh[2];
-// Full-slot fingerprints to avoid deep-copying full history when unchanged.
-static uint64_t g_pub_eh_hash[2];
 static int g_have = 0;
 static dsd_mutex_t g_mu;
 static atomic_int g_mu_init = 0;
@@ -29,15 +26,40 @@ static unsigned long long g_consume_seq = 0;
 static unsigned long long g_pub_eh_seq = 0;
 static unsigned long long g_consume_eh_seq = 0;
 
-static uint64_t
-fnv1a64_bytes(const void* data, size_t len) {
-    const unsigned char* p = (const unsigned char*)data;
-    uint64_t h = 1469598103934665603ULL;
-    for (size_t i = 0; i < len; i++) {
-        h ^= (uint64_t)p[i];
-        h *= 1099511628211ULL;
+static int
+ui_event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
+    if (lhs->write != rhs->write || lhs->color_pair != rhs->color_pair || lhs->systype != rhs->systype
+        || lhs->subtype != rhs->subtype || lhs->sys_id1 != rhs->sys_id1 || lhs->sys_id2 != rhs->sys_id2
+        || lhs->sys_id3 != rhs->sys_id3 || lhs->sys_id4 != rhs->sys_id4 || lhs->sys_id5 != rhs->sys_id5
+        || lhs->gi != rhs->gi || lhs->enc != rhs->enc || lhs->enc_alg != rhs->enc_alg || lhs->enc_key != rhs->enc_key
+        || lhs->mi != rhs->mi || lhs->svc != rhs->svc || lhs->source_id != rhs->source_id
+        || lhs->target_id != rhs->target_id || lhs->channel != rhs->channel || lhs->event_time != rhs->event_time) {
+        return 0;
     }
-    return h;
+    return memcmp(lhs->src_str, rhs->src_str, sizeof(lhs->src_str)) == 0
+           && memcmp(lhs->tgt_str, rhs->tgt_str, sizeof(lhs->tgt_str)) == 0
+           && memcmp(lhs->t_name, rhs->t_name, sizeof(lhs->t_name)) == 0
+           && memcmp(lhs->s_name, rhs->s_name, sizeof(lhs->s_name)) == 0
+           && memcmp(lhs->t_mode, rhs->t_mode, sizeof(lhs->t_mode)) == 0
+           && memcmp(lhs->s_mode, rhs->s_mode, sizeof(lhs->s_mode)) == 0
+           && memcmp(lhs->pdu, rhs->pdu, sizeof(lhs->pdu)) == 0
+           && memcmp(lhs->sysid_string, rhs->sysid_string, sizeof(lhs->sysid_string)) == 0
+           && memcmp(lhs->alias, rhs->alias, sizeof(lhs->alias)) == 0
+           && memcmp(lhs->gps_s, rhs->gps_s, sizeof(lhs->gps_s)) == 0
+           && memcmp(lhs->text_message, rhs->text_message, sizeof(lhs->text_message)) == 0
+           && memcmp(lhs->event_string, rhs->event_string, sizeof(lhs->event_string)) == 0
+           && memcmp(lhs->internal_str, rhs->internal_str, sizeof(lhs->internal_str)) == 0;
+}
+
+static int
+ui_event_history_slot_equal(const Event_History_I* lhs, const Event_History_I* rhs) {
+    const size_t item_count = sizeof(lhs->Event_History_Items) / sizeof(lhs->Event_History_Items[0]);
+    for (size_t i = 0; i < item_count; i++) {
+        if (!ui_event_history_item_equal(&lhs->Event_History_Items[i], &rhs->Event_History_Items[i])) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static void
@@ -58,19 +80,15 @@ ui_terminal_telemetry_publish_snapshot(const dsd_state* state) {
     // Coarse copy of the entire struct first
     memcpy(&g_pub, state, sizeof(dsd_state));
     // Deep copy pointer-backed UI data (event history for 2 slots) only when changed.
-    // Fingerprint full slots so non-head updates (for example history reset) are not missed.
+    // Compare fields instead of raw struct bytes so padding cannot affect detection.
     if (state->event_history_s != NULL) {
         int eh_changed = 0;
-        uint64_t slot0_hash = fnv1a64_bytes(&state->event_history_s[0], sizeof(Event_History_I));
-        uint64_t slot1_hash = fnv1a64_bytes(&state->event_history_s[1], sizeof(Event_History_I));
-        if (!g_have || slot0_hash != g_pub_eh_hash[0]) {
+        if (!g_have || !ui_event_history_slot_equal(&g_pub_eh[0], &state->event_history_s[0])) {
             memcpy(&g_pub_eh[0], &state->event_history_s[0], sizeof(Event_History_I));
-            g_pub_eh_hash[0] = slot0_hash;
             eh_changed = 1;
         }
-        if (!g_have || slot1_hash != g_pub_eh_hash[1]) {
+        if (!g_have || !ui_event_history_slot_equal(&g_pub_eh[1], &state->event_history_s[1])) {
             memcpy(&g_pub_eh[1], &state->event_history_s[1], sizeof(Event_History_I));
-            g_pub_eh_hash[1] = slot1_hash;
             eh_changed = 1;
         }
         if (eh_changed) {
