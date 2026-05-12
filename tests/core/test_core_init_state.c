@@ -27,6 +27,9 @@ main(void) {
 
     // Ensure initState explicitly resets fields even if caller pre-seeded them.
     state->rc2_context = state;
+    state->nid_corrections_total = 12;
+    state->nid_failures_total = 34;
+    state->nid_parity_overrides = 56;
     state->trunk_chan_map[0x0123] = 851000000L;
     state->trunk_chan_map_used[0] = 0x0123U;
     state->trunk_chan_map_used_count = 1U;
@@ -41,13 +44,19 @@ main(void) {
         free(state);
         return 2;
     }
+    if (state->nid_corrections_total != 0 || state->nid_failures_total != 0 || state->nid_parity_overrides != 0) {
+        fprintf(stderr, "expected NID counters to be reset after initState\n");
+        freeState(state);
+        free(state);
+        return 3;
+    }
 
     if (state->trunk_chan_map_used_count != 0U || state->trunk_chan_map[0x0123] != 0
         || state->trunk_chan_map_seq != 0U) {
         fprintf(stderr, "initState did not clear trunk channel-map sparse state\n");
         freeState(state);
         free(state);
-        return 3;
+        return 4;
     }
 
     for (int i = 0; i < 4; i++) {
@@ -62,7 +71,7 @@ main(void) {
                 state->minmax_sum_window, (double)state->min, (double)state->max);
         freeState(state);
         free(state);
-        return 4;
+        return 5;
     }
 
     dsd_state_set_trunk_chan_freq(state, 0x1234U, 851500000L);
@@ -74,7 +83,7 @@ main(void) {
         fprintf(stderr, "trunk channel-map sparse index mismatch\n");
         freeState(state);
         free(state);
-        return 5;
+        return 6;
     }
 
     dsd_state_set_trunk_chan_freq(state, 0x1234U, 0);
@@ -83,7 +92,7 @@ main(void) {
         fprintf(stderr, "trunk channel-map sparse removal mismatch\n");
         freeState(state);
         free(state);
-        return 6;
+        return 7;
     }
 
     freeState(state);

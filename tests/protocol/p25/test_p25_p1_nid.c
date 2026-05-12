@@ -46,11 +46,13 @@ main(void) {
     rc |= expect_eq_int("NAC=0", new_nac, 0);
     rc |= expect_eq_str("DUID=00", new_duid, "00");
 
-    // Case 2: Same decoded fields but parity bit mismatched → return -1
+    // Case 2: Same decoded fields but parity bit mismatched with 0 errors.
+    // The final parity bit is outside the BCH codeword, so successful BCH
+    // decode accepts it as NID_PARITY_OVERRIDE (2).
     new_nac = -1;
     new_duid[0] = new_duid[1] = '\0';
     int r2 = check_NID(bch_code, &new_nac, new_duid, /*parity*/ 1);
-    rc |= expect_eq_int("parity mismatch", r2, -1);
+    rc |= expect_eq_int("parity override (0 errors)", r2, 2);
     rc |= expect_eq_int("NAC still 0", new_nac, 0);
     rc |= expect_eq_str("DUID still 00", new_duid, "00");
 

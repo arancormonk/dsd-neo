@@ -12,6 +12,30 @@
 static BCH_63_16_11 bch;
 
 /**
+ * @brief Valid DUID values from TIA-102.BAAA-A Table 8-4.
+ *
+ * The 4-bit DUID field encodes the frame type. Only 7 of the 16 possible
+ * values are defined by the standard; all others indicate a BCH miscorrection
+ * or protocol error. This table provides O(1) validation indexed directly by
+ * the 4-bit DUID value (0x0-0xF).
+ *
+ * Valid DUIDs:
+ *   0x0 = HDU  (Header Data Unit)
+ *   0x3 = TDU  (Simple Terminator Data Unit)
+ *   0x5 = LDU1 (Logical Link Data Unit 1)
+ *   0x7 = TSDU (Trunking Signaling Data Unit)
+ *   0xA = LDU2 (Logical Link Data Unit 2)
+ *   0xC = PDU  (Packet Data Unit)
+ *   0xF = TDULC (Terminator Data Unit with Link Control)
+ */
+static const bool DUID_VALID[16] = {
+    true,  false, false, true,  /* 0=HDU, 1=inv, 2=inv, 3=TDU */
+    false, true,  false, true,  /* 4=inv, 5=LDU1, 6=inv, 7=TSDU */
+    false, false, true,  false, /* 8=inv, 9=inv, A=LDU2, B=inv */
+    true,  false, false, true   /* C=PDU, D=inv, E=inv, F=TDULC */
+};
+
+/**
  * Convenience class to calculate the parity of the DUID values. Keeps a table with the expected outcomes
  * for fast lookup.
  */
@@ -40,44 +64,148 @@ class ParityTable {
 
 } parity_table;
 
-int
-check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity) {
-    int result;
+static int
+received_nac(const char* bch_code) {
+    int nac = 0;
+    for (int i = 0; i < 12; i++) {
+        nac <<= 1;
+        nac |= (int)(bch_code[i] ? 1 : 0);
+    }
+    return nac;
+}
+
+static bool
+valid_observed_nac(int nac) {
+    return nac > 0 && nac <= 0xFFF && nac != 0xFFF;
+}
+
+static void
+set_received_nac(char* bch_code, int nac) {
+    for (int i = 0; i < 12; i++) {
+        bch_code[i] = (char)((nac >> (11 - i)) & 1);
+    }
+}
+
+/**
+ * @brief Decode and validate a P25 NID codeword with correction count reporting.
+ *
+ * Performs BCH(63,16,23) error correction on the 63-bit NID codeword,
+ * validates the decoded DUID against the set of defined frame types
+ * (TIA-102.BAAA-A Table 8-4), and checks the parity bit for consistency.
+ * The final parity bit is not part of the BCH(63,16) codeword. Match
+ * sdrtrunk's P25 Phase 1 NID handling by accepting a parity disagreement
+ * after BCH correction succeeds and the decoded DUID is a defined primary
+ * DUID. The caller still receives NID_PARITY_OVERRIDE for diagnostics.
+ *
+ * @param bch_code    Input: 63 bytes, each containing one bit of the NID.
+ * @param new_nac     Output: decoded 12-bit NAC value after error correction.
+ * @param new_duid    Output: 3-char buffer for the decoded DUID string (e.g., "11").
+ * @param parity      Input: the 64th parity bit read from the air interface.
+ * @param error_count Output: number of BCH errors corrected (valid when result > 0).
+ * @return NidResult code: NID_OK (1), NID_PARITY_OVERRIDE (2),
+ *         or NID_DECODE_FAIL (0).
+ */
+static int
+decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count,
+                    bool* bch_decode_failed) {
+    if (bch_decode_failed != 0) {
+        *bch_decode_failed = false;
+    }
 
     // Decode using local BCH implementation
     char decoded[16];
-    bool ok = bch.decode(bch_code, decoded);
+    BCH_63_16_Result bch_result = bch.decode_with_result(bch_code, decoded);
 
-    if (!ok) {
-        // Decode failed
-        result = 0;
-    } else {
-        // Take the NAC from the decoded output. It's a 12 bit number starting from position 0.
-        // Just convert the output from a binary sequence to an integer.
-        int nac = 0;
-        for (int i = 0; i < 12; i++) {
-            nac <<= 1;
-            nac |= (int)decoded[i];
+    if (!bch_result.success) {
+        // BCH decode failed (>11 errors or Chien search mismatch)
+        *error_count = 0;
+        if (bch_decode_failed != 0) {
+            *bch_decode_failed = true;
         }
-        *new_nac = nac;
-
-        // Take the fixed DUID from the encoded output. 4 bit value starting at position 12.
-        unsigned char new_duid_0 = (((int)decoded[12]) << 1) + ((int)decoded[13]);
-        unsigned char new_duid_1 = (((int)decoded[14]) << 1) + ((int)decoded[15]);
-        new_duid[0] = new_duid_0 + '0';
-        new_duid[1] = new_duid_1 + '0';
-        new_duid[2] = 0; // Null terminate
-
-        // Check the parity
-        unsigned char expected_parity = parity_table.get_value(new_duid_0, new_duid_1);
-
-        if (expected_parity != parity) {
-            // BCH decoded but parity disagrees: report explicit mismatch
-            result = -1;
-        } else {
-            result = 1;
-        }
+        return NID_DECODE_FAIL;
     }
 
-    return result;
+    // Report the number of corrected errors to the caller
+    *error_count = bch_result.error_count;
+
+    // Extract the NAC from the decoded output. It's a 12-bit number
+    // starting from position 0 (MSB first).
+    int nac = 0;
+    for (int i = 0; i < 12; i++) {
+        nac <<= 1;
+        nac |= (int)decoded[i];
+    }
+    *new_nac = nac;
+
+    // Extract the DUID from positions 12-15. The DUID is represented as
+    // two dibit characters for compatibility with the dispatch layer.
+    unsigned char new_duid_0 = (((int)decoded[12]) << 1) + ((int)decoded[13]);
+    unsigned char new_duid_1 = (((int)decoded[14]) << 1) + ((int)decoded[15]);
+    new_duid[0] = new_duid_0 + '0';
+    new_duid[1] = new_duid_1 + '0';
+    new_duid[2] = 0; // Null terminate
+
+    // Validate the decoded DUID against the set of defined frame types.
+    // A DUID not in the valid set indicates a BCH miscorrection artifact.
+    unsigned char duid_value = (new_duid_0 << 2) | new_duid_1;
+    if (!DUID_VALID[duid_value]) {
+        *error_count = 0;
+        return NID_DECODE_FAIL;
+    }
+
+    // Check the parity bit against the expected value for this DUID.
+    // Per TIA-102.BAAA-A Table 8-4: P=1 for LDU1 (0x5) and LDU2 (0xA),
+    // P=0 for all other defined DUIDs.
+    unsigned char expected_parity = parity_table.get_value(new_duid_0, new_duid_1);
+
+    if (expected_parity == parity) {
+        // BCH decoded, valid DUID, parity matches - full success
+        return NID_OK;
+    }
+
+    // Parity disagrees. The final parity bit is outside the BCH-protected
+    // codeword, so accept the corrected NID and expose the condition to the
+    // caller for diagnostics.
+    return NID_PARITY_OVERRIDE;
+}
+
+int
+check_NID_with_error_count(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count) {
+    return decode_nid_codeword(bch_code, new_nac, new_duid, parity, error_count, 0);
+}
+
+int
+check_NID_with_observed_nac(char* bch_code, int observed_nac, int* new_nac, char* new_duid, unsigned char parity,
+                            int* error_count) {
+    bool bch_decode_failed = false;
+    int result = decode_nid_codeword(bch_code, new_nac, new_duid, parity, error_count, &bch_decode_failed);
+    if (result != NID_DECODE_FAIL || !bch_decode_failed || !valid_observed_nac(observed_nac)
+        || received_nac(bch_code) == observed_nac) {
+        return result;
+    }
+
+    char retry_code[63];
+    for (int i = 0; i < 63; i++) {
+        retry_code[i] = bch_code[i];
+    }
+    set_received_nac(retry_code, observed_nac);
+
+    return decode_nid_codeword(retry_code, new_nac, new_duid, parity, error_count, 0);
+}
+
+/**
+ * @brief Backward-compatible 4-parameter wrapper for check_NID_with_error_count().
+ *
+ * Calls the full 5-parameter version with a local dummy error_count variable.
+ *
+ * @param bch_code Input: 63 bytes, each containing one bit of the NID.
+ * @param new_nac  Output: decoded 12-bit NAC value.
+ * @param new_duid Output: 3-char buffer for the decoded DUID string.
+ * @param parity   Input: the 64th parity bit.
+ * @return NidResult code (same semantics as the 5-parameter version).
+ */
+int
+check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity) {
+    int dummy_error_count;
+    return check_NID_with_error_count(bch_code, new_nac, new_duid, parity, &dummy_error_count);
 }
