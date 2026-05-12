@@ -26,7 +26,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - PulseAudio in, play out, UI on: `dsd-neo -i pulse -o pulse -N`
 - UDP audio in to PulseAudio out: `dsd-neo -i udp:0.0.0.0:7355 -o pulse -N`
 - Follow DMR trunking (TCP PCM input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
-- Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N`
+- Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:48:0:2 -T -C connect_plus_chan.csv -G group.csv -N`
 - Follow DMR trunking (SoapySDR): `dsd-neo -fs -i soapy:driver=airspy -T -C connect_plus_chan.csv -G group.csv -N`
 - Capture RTL I/Q + metadata: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq -N`
 - Inspect a capture: `dsd-neo --iq-info p25-control.iq.json`
@@ -237,6 +237,7 @@ Notes
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
 - Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (dB or linear), `vol` (0–3; typical 1–3), optional `bias[=on|off]`.
+- For DMR data/LRRP on direct RTL input, use `bw=48` when possible, or at least `bw=24`; lower basebands may still decode voice but corrupt data PDUs.
 - Note: For EDACS analog voice follow, `sql <= 0` now uses a bounded fallback watchdog to avoid indefinite VC hold when no release marker is detected.
 - Examples:
   - `-i rtl:0:851.375M:22:-2:24:0:2`
