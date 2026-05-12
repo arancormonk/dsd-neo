@@ -4,8 +4,10 @@
  */
 
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -17,9 +19,10 @@
 static dsd_state g_pub;     // latest published by demod thread
 static dsd_state g_consume; // last copied out for UI
 // Deep-copied backing for pointer-backed members the UI dereferences.
-// Currently, only event history is pointer-backed in dsd_state for UI reads.
 static Event_History_I g_pub_eh[2];
 static Event_History_I g_consume_eh[2];
+static dsd_trunk_cc_candidates g_pub_cc_candidates;
+static dsd_trunk_cc_candidates g_consume_cc_candidates;
 static int g_have = 0;
 static dsd_mutex_t g_mu;
 static atomic_int g_mu_init = 0;
@@ -36,6 +39,22 @@ static unsigned long long g_consume_eh_seq = 0;
 static void
 ui_snapshot_copy_range(dsd_state* dst, const dsd_state* src, size_t begin, size_t end) {
     memcpy((char*)dst + begin, (const char*)src + begin, end - begin);
+}
+
+static void
+ui_snapshot_copy_trunk_cc_candidates(dsd_state* dst, const dsd_state* src, dsd_trunk_cc_candidates* backing) {
+    const dsd_trunk_cc_candidates* cc_candidates =
+        (const dsd_trunk_cc_candidates*)src->state_ext[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES];
+    if (cc_candidates == NULL) {
+        memset(backing, 0, sizeof(*backing));
+        dst->state_ext[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = NULL;
+        dst->state_ext_cleanup[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = NULL;
+        return;
+    }
+
+    memcpy(backing, cc_candidates, sizeof(*backing));
+    dst->state_ext[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = backing;
+    dst->state_ext_cleanup[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = NULL;
 }
 
 static void
@@ -118,6 +137,7 @@ ui_terminal_telemetry_publish_snapshot(const dsd_state* state) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     ui_snapshot_copy_render_state(&g_pub, state);
+    ui_snapshot_copy_trunk_cc_candidates(&g_pub, state, &g_pub_cc_candidates);
     // Deep copy pointer-backed UI data (event history for 2 slots) only when changed.
     // Event history storage is zero-initialized and copied as a whole slot.
     if (state->event_history_s != NULL) {
@@ -152,6 +172,7 @@ ui_get_latest_snapshot(void) {
     }
     if (g_consume_seq != g_pub_seq) {
         ui_snapshot_copy_render_state(&g_consume, &g_pub);
+        ui_snapshot_copy_trunk_cc_candidates(&g_consume, &g_pub, &g_consume_cc_candidates);
         g_consume_seq = g_pub_seq;
     }
     // Deep copy event history only when the published history changed.

@@ -466,7 +466,9 @@ add_test(NAME UI_HISTORY_COMPACT COMMAND dsd-neo_test_ui_history_compact)
 
 add_executable(dsd-neo_test_ui_snapshot_event_history
   ui/test_ui_snapshot_event_history.c
-  ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snapshot.c)
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snapshot.c
+  ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
+  ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c)
 target_include_directories(dsd-neo_test_ui_snapshot_event_history PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_ui_snapshot_event_history PRIVATE dsd-neo_platform)
 add_test(NAME UI_SNAPSHOT_EVENT_HISTORY COMMAND dsd-neo_test_ui_snapshot_event_history)
