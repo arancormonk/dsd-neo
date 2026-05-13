@@ -399,6 +399,13 @@ test_costas_deep_fade_does_not_boost_or_train(void) {
         free(s);
         return 1;
     }
+    if (s->costas_err_avg_q14 != 0 || s->costas_err_raw_avg_q14 != 0 || s->costas_conf_avg_q14 != 0
+        || s->costas_zero_conf_pct != 100) {
+        fprintf(stderr, "COSTAS FADE: metrics smooth=%d raw=%d conf=%d zero=%d\n", s->costas_err_avg_q14,
+                s->costas_err_raw_avg_q14, s->costas_conf_avg_q14, s->costas_zero_conf_pct);
+        free(s);
+        return 1;
+    }
 
     free(s);
     return 0;
@@ -498,6 +505,16 @@ test_costas_smooths_error_step(void) {
         fprintf(stderr, "COSTAS SMOOTH: err=%f smooth=%f freq=%f phase=%f expected err=%f freq=%f phase=%f\n",
                 s->costas_state.error, s->costas_state.error_smooth, s->costas_state.freq, s->costas_state.phase,
                 expected_error, expected_freq, expected_phase);
+        free(s);
+        return 1;
+    }
+    int expected_raw_q14 = (int)lrintf(fabsf(raw_error) * 16384.0f);
+    int expected_smooth_q14 = (int)lrintf(fabsf(expected_error) * 16384.0f);
+    if (abs(s->costas_err_raw_avg_q14 - expected_raw_q14) > 1 || abs(s->costas_err_avg_q14 - expected_smooth_q14) > 1
+        || s->costas_conf_avg_q14 != 16384 || s->costas_zero_conf_pct != 0) {
+        fprintf(stderr, "COSTAS SMOOTH: metrics smooth=%d raw=%d conf=%d zero=%d expected smooth=%d raw=%d\n",
+                s->costas_err_avg_q14, s->costas_err_raw_avg_q14, s->costas_conf_avg_q14, s->costas_zero_conf_pct,
+                expected_smooth_q14, expected_raw_q14);
         free(s);
         return 1;
     }

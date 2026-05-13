@@ -19,6 +19,7 @@
 #include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_metrics.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <pffft.h>
 #include <string.h>
 
@@ -38,6 +39,9 @@ static std::atomic<int> g_carrier_lock{0};
 static std::atomic<int> g_nco_q15{0};
 static std::atomic<int> g_demod_rate_hz{0};
 static std::atomic<int> g_costas_err_avg_q14{0};
+static std::atomic<int> g_costas_err_raw_avg_q14{0};
+static std::atomic<int> g_costas_conf_avg_q14{0};
+static std::atomic<int> g_costas_zero_conf_pct{0};
 static std::atomic<double> g_fll_band_edge_freq_rad{0.0}; /* FLL band-edge NCO freq (rad/sample) */
 
 /* Demodulator state (defined in rtl_sdr_fm.cpp) used for CFO/Costas metrics. */
@@ -344,6 +348,9 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
     g_nco_q15.store(fll_freq_q15_compat, std::memory_order_relaxed);
     g_demod_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
     g_costas_err_avg_q14.store(demod.costas_err_avg_q14, std::memory_order_relaxed);
+    g_costas_err_raw_avg_q14.store(demod.costas_err_raw_avg_q14, std::memory_order_relaxed);
+    g_costas_conf_avg_q14.store(demod.costas_conf_avg_q14, std::memory_order_relaxed);
+    g_costas_zero_conf_pct.store(demod.costas_zero_conf_pct, std::memory_order_relaxed);
     /* Spectrum-assisted CFO correction for CQPSK:
      * When CQPSK path and FLL are enabled, and we see a reasonably strong
      * QPSK signal, use the residual CFO estimate from the spectrum to gently
@@ -547,6 +554,19 @@ dsd_rtl_stream_get_costas_err_q14(void) {
     return g_costas_err_avg_q14.load(std::memory_order_relaxed);
 }
 
+/** @brief Get Costas discriminator health metrics for the latest DSP block. */
+extern "C" int
+dsd_rtl_stream_get_costas_metrics(rtl_stream_costas_metrics* out) {
+    if (!out) {
+        return -1;
+    }
+    out->err_smooth_avg_q14 = g_costas_err_avg_q14.load(std::memory_order_relaxed);
+    out->err_raw_avg_q14 = g_costas_err_raw_avg_q14.load(std::memory_order_relaxed);
+    out->confidence_avg_q14 = g_costas_conf_avg_q14.load(std::memory_order_relaxed);
+    out->zero_conf_pct = g_costas_zero_conf_pct.load(std::memory_order_relaxed);
+    return 0;
+}
+
 /** @brief Return the FLL band-edge frequency estimate in Hz. */
 extern "C" double
 dsd_rtl_stream_get_fll_band_edge_freq_hz(void) {
@@ -577,6 +597,14 @@ dsd_rtl_stream_reset_costas(void) {
     demod.costas_state.phase = 0.0f;
     demod.costas_state.error = 0.0f;
     demod.costas_state.error_smooth = 0.0f;
+    demod.costas_err_avg_q14 = 0;
+    demod.costas_err_raw_avg_q14 = 0;
+    demod.costas_conf_avg_q14 = 0;
+    demod.costas_zero_conf_pct = 0;
+    g_costas_err_avg_q14.store(0, std::memory_order_relaxed);
+    g_costas_err_raw_avg_q14.store(0, std::memory_order_relaxed);
+    g_costas_conf_avg_q14.store(0, std::memory_order_relaxed);
+    g_costas_zero_conf_pct.store(0, std::memory_order_relaxed);
     /* Note: deliberately NOT zeroing costas_state.freq - preserve it! */
 
     /* Reset differential decode history to (1,0) not (0,0).

@@ -507,6 +507,13 @@ typedef struct rtl_stream_cqpsk_eq_status {
     float max_side_tap_mag;
 } rtl_stream_cqpsk_eq_status;
 
+typedef struct rtl_stream_costas_metrics {
+    int err_smooth_avg_q14;
+    int err_raw_avg_q14;
+    int confidence_avg_q14;
+    int zero_conf_pct;
+} rtl_stream_costas_metrics;
+
 /**
  * @brief Toggle CQPSK path pre-processing on/off (0=off, nonzero=on).
  *
@@ -643,8 +650,10 @@ double rtl_stream_get_cfo_hz(void);
 double rtl_stream_get_residual_cfo_hz(void);
 /** Return 1 when carrier loop appears locked (CQPSK active, CFO/residual small, SNR ok), else 0. */
 int rtl_stream_get_carrier_lock(void);
-/** Return last average absolute Costas error magnitude (Q14, pi==1<<14). */
+/** Return last average absolute smoothed Costas error magnitude (Q14, pi==1<<14). */
 int rtl_stream_get_costas_err_q14(void);
+/** Return Costas discriminator health metrics for the latest DSP block. */
+int rtl_stream_get_costas_metrics(rtl_stream_costas_metrics* out);
 /** Return raw NCO frequency control (Q15 cycles per sample). */
 int rtl_stream_get_nco_q15(void);
 /** Return current demod output sample rate (Hz). */

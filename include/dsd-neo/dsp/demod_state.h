@@ -275,5 +275,8 @@ struct demod_state {
     int post_polydecim_phase;     /* sample phase accumulator [0..M-1] */
 
     /* Costas diagnostics (updated per block) */
-    int costas_err_avg_q14; /* average |err| scaled to Q14 for UI/metrics */
+    int costas_err_avg_q14;     /* average smoothed |err| scaled to Q14 for UI/metrics */
+    int costas_err_raw_avg_q14; /* average raw |err| before smoothing, scaled to Q14 */
+    int costas_conf_avg_q14;    /* average Costas confidence, scaled to Q14 */
+    int costas_zero_conf_pct;   /* percent of symbols with zero Costas confidence */
 };

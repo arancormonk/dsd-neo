@@ -727,6 +727,9 @@ op25_costas_loop_cc(struct demod_state* d) {
     float last_error = 0.0f;
     float error_smooth = std::isfinite(c->error_smooth) ? c->error_smooth : 0.0f;
     double err_abs_acc = 0.0;
+    double err_raw_abs_acc = 0.0;
+    double confidence_acc = 0.0;
+    int zero_conf_count = 0;
 
     /* OP25 max_phase = TWO_PI/4 = π/2 */
     const float max_phase = kPi / 2.0f;
@@ -757,15 +760,19 @@ op25_costas_loop_cc(struct demod_state* d) {
          * Note: OP25 does NOT apply PT_45 rotation here (line 149 is commented out).
          * The phase detector expects the diagonal differential QPSK constellation. */
         float error = 0.0f;
+        float error_raw = 0.0f;
         if (confidence <= 0.0f || !std::isfinite(confidence)) {
             error_smooth = 0.0f;
+            zero_conf_count++;
         } else {
-            float error_raw = branchless_clip(phase_detector_4(det_r, det_j) * confidence, 1.0f);
+            error_raw = branchless_clip(phase_detector_4(det_r, det_j) * confidence, 1.0f);
             error_smooth += kCqpskCostasErrorSmoothAlpha * (error_raw - error_smooth);
             error = branchless_clip(error_smooth, 1.0f);
+            confidence_acc += confidence;
         }
         last_error = error;
         err_abs_acc += std::fabs((double)error);
+        err_raw_abs_acc += std::fabs((double)error_raw);
 
         /* OP25 advance_loop (PI controller)
          * From costas_loop_cc_impl.cc lines 169-173:
@@ -810,8 +817,40 @@ op25_costas_loop_cc(struct demod_state* d) {
             q14 = 32767;
         }
         d->costas_err_avg_q14 = q14;
+
+        double raw_avg_abs = err_raw_abs_acc / (double)pairs;
+        int raw_q14 = (int)std::lrint(raw_avg_abs * 16384.0);
+        if (raw_q14 < 0) {
+            raw_q14 = 0;
+        }
+        if (raw_q14 > 32767) {
+            raw_q14 = 32767;
+        }
+        d->costas_err_raw_avg_q14 = raw_q14;
+
+        double conf_avg = confidence_acc / (double)pairs;
+        int conf_q14 = (int)std::lrint(conf_avg * 16384.0);
+        if (conf_q14 < 0) {
+            conf_q14 = 0;
+        }
+        if (conf_q14 > 16384) {
+            conf_q14 = 16384;
+        }
+        d->costas_conf_avg_q14 = conf_q14;
+
+        int zero_pct = (int)std::lrint((100.0 * (double)zero_conf_count) / (double)pairs);
+        if (zero_pct < 0) {
+            zero_pct = 0;
+        }
+        if (zero_pct > 100) {
+            zero_pct = 100;
+        }
+        d->costas_zero_conf_pct = zero_pct;
     } else {
         d->costas_err_avg_q14 = 0;
+        d->costas_err_raw_avg_q14 = 0;
+        d->costas_conf_avg_q14 = 0;
+        d->costas_zero_conf_pct = 0;
     }
 }
 

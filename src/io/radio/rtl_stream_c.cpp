@@ -393,6 +393,7 @@ rtl_stream_get_carrier_lock(void) {
 extern "C" int dsd_rtl_stream_get_nco_q15(void);
 extern "C" int dsd_rtl_stream_get_demod_rate_hz(void);
 extern "C" int dsd_rtl_stream_get_costas_err_q14(void);
+extern "C" int dsd_rtl_stream_get_costas_metrics(rtl_stream_costas_metrics* out);
 
 extern "C" int
 rtl_stream_get_nco_q15(void) {
@@ -407,6 +408,11 @@ rtl_stream_get_demod_rate_hz(void) {
 extern "C" int
 rtl_stream_get_costas_err_q14(void) {
     return dsd_rtl_stream_get_costas_err_q14();
+}
+
+extern "C" int
+rtl_stream_get_costas_metrics(rtl_stream_costas_metrics* out) {
+    return dsd_rtl_stream_get_costas_metrics(out);
 }
 
 extern "C" double dsd_rtl_stream_get_fll_band_edge_freq_hz(void);

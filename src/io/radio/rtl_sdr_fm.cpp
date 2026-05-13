@@ -1012,6 +1012,9 @@ demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
         dsd_cqpsk_cma_equalizer_reset(&s->cqpsk_eq_state, s->cqpsk_eq_taps);
     }
     s->costas_err_avg_q14 = 0;
+    s->costas_err_raw_avg_q14 = 0;
+    s->costas_conf_avg_q14 = 0;
+    s->costas_zero_conf_pct = 0;
     /* Preserve AGC state so gain does not restart from unity on each retune.
      * This mirrors OP25’s continuous-flow behavior and avoids a post-retune
      * re-settle period. */
@@ -4698,6 +4701,10 @@ dsd_rtl_stream_set_ted_sps_no_override(int sps) {
         demod.costas_state.phase = 0.0f;
         demod.costas_state.error = 0.0f;
         demod.costas_state.error_smooth = 0.0f;
+        demod.costas_err_avg_q14 = 0;
+        demod.costas_err_raw_avg_q14 = 0;
+        demod.costas_conf_avg_q14 = 0;
+        demod.costas_zero_conf_pct = 0;
     }
     demod.ted_sps = sps;
     /* Does NOT set ted_sps_override, allowing rate-change refresh to

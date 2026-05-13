@@ -330,6 +330,9 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     cl->error_smooth = 0.0f;
     cl->initialized = 0;
     demod->costas_err_avg_q14 = 0;
+    demod->costas_err_raw_avg_q14 = 0;
+    demod->costas_conf_avg_q14 = 0;
+    demod->costas_zero_conf_pct = 0;
 
     /* Default: keep TED off unless explicitly enabled via env/CLI/UI.
        CQPSK/QPSK requires TED and is forced on when the CQPSK path is enabled. */

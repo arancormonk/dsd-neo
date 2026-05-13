@@ -111,12 +111,18 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
         extern double rtl_stream_get_residual_cfo_hz(void);
         extern int rtl_stream_get_carrier_lock(void);
         extern int rtl_stream_get_costas_err_q14(void);
+        extern int rtl_stream_get_costas_metrics(rtl_stream_costas_metrics * out);
         extern int rtl_stream_get_nco_q15(void);
         extern int rtl_stream_get_demod_rate_hz(void);
         extern double rtl_stream_get_fll_band_edge_freq_hz(void);
         double cfo = rtl_stream_get_cfo_hz();
         int clk = rtl_stream_get_carrier_lock();
+        rtl_stream_costas_metrics cm;
+        memset(&cm, 0, sizeof(cm));
         int e14 = rtl_stream_get_costas_err_q14();
+        if (rtl_stream_get_costas_metrics(&cm) == 0) {
+            e14 = cm.err_smooth_avg_q14;
+        }
         int nco_q15 = rtl_stream_get_nco_q15();
         int Fs = rtl_stream_get_demod_rate_hz();
         double fll_be_hz = rtl_stream_get_fll_band_edge_freq_hz();
@@ -124,14 +130,8 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
         ui_print_kv_line("FLL BE", "Freq=%+0.1f Hz", fll_be_hz);
         /* Residual CFO is from FM discriminator, not meaningful for CQPSK - hide it */
         ui_print_kv_line("Carrier", "NCO=%+0.1f Hz  %s", cfo, clk ? "Locked" : "Acq");
-        /* Convert average Costas error from Q14 (pi == 1<<14) into degrees
-         * for easier interpretation. */
-        double e_deg = 0.0;
-        if (e14 != 0) {
-            double e_abs = (double)((e14 >= 0) ? e14 : -e14);
-            e_deg = (e_abs * 180.0) / 16384.0; /* 1<<14 */
-        }
-        ui_print_kv_line("Costas/NCO", "Err=%d(Q14,~%0.1f°)  NCO(q15)=%d  Fs=%d Hz", e14, e_deg, nco_q15, Fs);
+        ui_print_kv_line("Costas/NCO", "ErrS=%d ErrR=%d Conf=%0.2f Fade=%d%% NCO(q15)=%d Fs=%d Hz", e14,
+                         cm.err_raw_avg_q14, (double)cm.confidence_avg_q14 / 16384.0, cm.zero_conf_pct, nco_q15, Fs);
         {
             rtl_stream_cqpsk_eq_status eq;
             memset(&eq, 0, sizeof(eq));
