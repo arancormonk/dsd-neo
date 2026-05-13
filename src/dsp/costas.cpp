@@ -191,7 +191,7 @@ op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
  *   return ((sample.real() > 0 ? 1.0 : -1.0) * sample.imag() -
  *           (sample.imag() > 0 ? 1.0 : -1.0) * sample.real());
  *
- * This expects symbols at axis-aligned positions (0°, 90°, 180°, 270°).
+ * This expects the OP25 differential QPSK constellation at diagonal positions.
  */
 static inline float
 phase_detector_4(float real, float imag) {
@@ -201,6 +201,7 @@ phase_detector_4(float real, float imag) {
 constexpr float kCqpskCostasDetectorTargetMag = 0.85f * 0.85f;
 constexpr float kCqpskCostasConfidenceFloorMag = 0.10f;
 constexpr float kCqpskCostasConfidenceFullMag = 0.35f;
+constexpr float kCqpskCostasErrorSmoothAlpha = 0.25f;
 
 static inline float
 smoothstep(float edge0, float edge1, float x) {
@@ -274,6 +275,7 @@ dsd_costas_reset(dsd_costas_loop_state_t* c) {
     c->phase = 0.0f;
     c->freq = 0.0f;
     c->error = 0.0f;
+    c->error_smooth = 0.0f;
     c->initialized = 0;
 }
 
@@ -645,10 +647,10 @@ op25_diff_phasor_cc(struct demod_state* d) {
  *   op25/gr-op25_repeater/lib/costas_loop_cc_impl.cc
  *
  * This operates on DIFFERENTIALLY DECODED symbols (after diff_phasor_cc).
- * The phase detector expects symbols at axis-aligned positions. dsd-neo
- * normalizes reliable phasor magnitudes before detection and weights loop
- * updates by raw phasor magnitude so simulcast fades do not train the loop as
- * strongly as full-confidence samples.
+ * The phase detector expects OP25 differential QPSK symbols at diagonal
+ * positions. dsd-neo normalizes reliable phasor magnitudes before detection,
+ * weights loop updates by raw phasor magnitude, and smooths discriminator
+ * error so noisy simulcast symbols do not kick the loop as hard.
  *
  * Signal flow:
  *   Input: Symbol-rate differential phasors from diff_phasor_cc
@@ -723,6 +725,7 @@ op25_costas_loop_cc(struct demod_state* d) {
     const float max_freq = c->max_freq;
     const float min_freq = c->min_freq;
     float last_error = 0.0f;
+    float error_smooth = std::isfinite(c->error_smooth) ? c->error_smooth : 0.0f;
     double err_abs_acc = 0.0;
 
     /* OP25 max_phase = TWO_PI/4 = π/2 */
@@ -752,9 +755,15 @@ op25_costas_loop_cc(struct demod_state* d) {
          *   d_error = (*this.*d_phase_detector)(optr[i]);
          *
          * Note: OP25 does NOT apply PT_45 rotation here (line 149 is commented out).
-         * The phase detector expects axis-aligned symbols. */
-        float error = phase_detector_4(det_r, det_j) * confidence;
-        error = branchless_clip(error, 1.0f);
+         * The phase detector expects the diagonal differential QPSK constellation. */
+        float error = 0.0f;
+        if (confidence <= 0.0f || !std::isfinite(confidence)) {
+            error_smooth = 0.0f;
+        } else {
+            float error_raw = branchless_clip(phase_detector_4(det_r, det_j) * confidence, 1.0f);
+            error_smooth += kCqpskCostasErrorSmoothAlpha * (error_raw - error_smooth);
+            error = branchless_clip(error_smooth, 1.0f);
+        }
         last_error = error;
         err_abs_acc += std::fabs((double)error);
 
@@ -790,6 +799,7 @@ op25_costas_loop_cc(struct demod_state* d) {
     c->phase = phase;
     c->freq = freq;
     c->error = last_error;
+    c->error_smooth = error_smooth;
     if (pairs > 0) {
         double avg_abs = err_abs_acc / (double)pairs;
         int q14 = (int)std::lrint(avg_abs * 16384.0);

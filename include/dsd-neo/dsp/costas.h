@@ -37,6 +37,7 @@ typedef struct {
     float alpha;
     float beta;
     float error;
+    float error_smooth;
     int initialized;
 } dsd_costas_loop_state_t;
 
@@ -203,9 +204,10 @@ void op25_diff_phasor_cc(struct demod_state* d);
  *   op25/gr-op25_repeater/lib/costas_loop_cc_impl.cc
  *
  * This operates on DIFFERENTIALLY DECODED symbols (after diff_phasor_cc).
- * The phase detector expects symbols at axis-aligned positions. Reliable
- * phasors are normalized before phase detection, and raw phasor magnitude is
- * used as a confidence weight so fades do not fully train the loop.
+ * The phase detector expects OP25 differential QPSK symbols at diagonal
+ * positions. Reliable phasors are normalized before phase detection, and raw
+ * phasor magnitude is used as a confidence weight so fades do not fully train
+ * the loop.
  *
  * Signal flow:
  *   Input: Symbol-rate differential phasors from diff_phasor_cc

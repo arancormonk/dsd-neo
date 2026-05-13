@@ -576,6 +576,7 @@ dsd_rtl_stream_reset_costas(void) {
     /* Reset phase and error, but preserve frequency estimate */
     demod.costas_state.phase = 0.0f;
     demod.costas_state.error = 0.0f;
+    demod.costas_state.error_smooth = 0.0f;
     /* Note: deliberately NOT zeroing costas_state.freq - preserve it! */
 
     /* Reset differential decode history to (1,0) not (0,0).

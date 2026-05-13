@@ -968,6 +968,7 @@ demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
             s->costas_state.freq = 0.0f;
             s->costas_state.phase = 0.0f;
             s->costas_state.error = 0.0f;
+            s->costas_state.error_smooth = 0.0f;
             /* Preserve the band-edge FLL frequency estimate across SPS changes only
              * when the retune classifier decided the retained seed is still valid. */
         }
@@ -1022,6 +1023,7 @@ demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
      * FLL estimate below. */
     s->costas_state.phase = 0.0f;
     s->costas_state.error = 0.0f;
+    s->costas_state.error_smooth = 0.0f;
     if (s->cqpsk_enable) {
         s->costas_state.freq = 0.0f;
     }
@@ -1119,6 +1121,7 @@ demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
         s->costas_state.freq = 0.0f;
         s->costas_state.phase = 0.0f;
         s->costas_state.error = 0.0f;
+        s->costas_state.error_smooth = 0.0f;
         s->costas_reset_pending = 0;
     }
     if (s->ted_sps_override > 0 && s->ted_sps != s->ted_sps_override) {
@@ -4694,6 +4697,7 @@ dsd_rtl_stream_set_ted_sps_no_override(int sps) {
         demod.costas_state.freq = 0.0f;
         demod.costas_state.phase = 0.0f;
         demod.costas_state.error = 0.0f;
+        demod.costas_state.error_smooth = 0.0f;
     }
     demod.ted_sps = sps;
     /* Does NOT set ted_sps_override, allowing rate-change refresh to

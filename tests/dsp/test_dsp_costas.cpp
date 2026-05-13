@@ -14,7 +14,8 @@
  *
  * The differential phasor block preserves GNU Radio diff_phasor_cc phase.
  * Costas normalizes reliable magnitudes and weights loop updates by raw phasor
- * confidence to avoid envelope-driven loop gain swings on simulcast fades.
+ * confidence, then smooths the discriminator error to reduce simulcast phase
+ * kicks.
  */
 
 #include <dsd-neo/dsp/costas.h>
@@ -376,6 +377,7 @@ test_costas_deep_fade_does_not_boost_or_train(void) {
     s->costas_state.beta = 0.0002f;
     s->costas_state.max_freq = 1.0f;
     s->costas_state.min_freq = -1.0f;
+    s->costas_state.error_smooth = 0.5f;
 
     op25_costas_loop_cc(s);
 
@@ -390,9 +392,10 @@ test_costas_deep_fade_does_not_boost_or_train(void) {
         }
     }
 
-    if (fabsf(s->costas_state.phase) > 1.0e-7f || fabsf(s->costas_state.freq) > 1.0e-7f) {
-        fprintf(stderr, "COSTAS FADE: loop trained on deep fade phase=%f freq=%f\n", s->costas_state.phase,
-                s->costas_state.freq);
+    if (fabsf(s->costas_state.phase) > 1.0e-7f || fabsf(s->costas_state.freq) > 1.0e-7f
+        || fabsf(s->costas_state.error_smooth) > 1.0e-7f) {
+        fprintf(stderr, "COSTAS FADE: loop trained on deep fade phase=%f freq=%f smooth=%f\n", s->costas_state.phase,
+                s->costas_state.freq, s->costas_state.error_smooth);
         free(s);
         return 1;
     }
@@ -453,6 +456,62 @@ test_costas_marginal_confidence_scales_loop_update(void) {
         return 1;
     }
 
+    return 0;
+}
+
+/*
+ * Test: Costas smooths a sudden discriminator step before updating phase/freq.
+ */
+static int
+test_costas_smooths_error_step(void) {
+    const float angle = 0.30f;
+    const float mag = 0.70f;
+    float buf[2] = {mag * cosf(angle), mag * sinf(angle)};
+
+    demod_state* s = alloc_state();
+    if (!s) {
+        fprintf(stderr, "alloc failed\n");
+        return 1;
+    }
+    s->lowpassed = buf;
+    s->lp_len = 2;
+    s->cqpsk_enable = 1;
+    s->costas_state.initialized = 1;
+    s->costas_state.alpha = 0.04f;
+    s->costas_state.beta = 0.0002f;
+    s->costas_state.max_freq = 1.0f;
+    s->costas_state.min_freq = -1.0f;
+    s->costas_state.error_smooth = 0.0f;
+
+    op25_costas_loop_cc(s);
+
+    const float target = 0.85f * 0.85f;
+    const float raw_error = target * (sinf(angle) - cosf(angle));
+    const float expected_error = raw_error * 0.25f;
+    const float expected_freq = s->costas_state.beta * expected_error;
+    const float expected_phase = expected_freq + s->costas_state.alpha * expected_error;
+
+    if (fabsf(s->costas_state.error_smooth - expected_error) > 1.0e-5f
+        || fabsf(s->costas_state.error - expected_error) > 1.0e-5f
+        || fabsf(s->costas_state.freq - expected_freq) > 1.0e-6f
+        || fabsf(s->costas_state.phase - expected_phase) > 1.0e-5f) {
+        fprintf(stderr, "COSTAS SMOOTH: err=%f smooth=%f freq=%f phase=%f expected err=%f freq=%f phase=%f\n",
+                s->costas_state.error, s->costas_state.error_smooth, s->costas_state.freq, s->costas_state.phase,
+                expected_error, expected_freq, expected_phase);
+        free(s);
+        return 1;
+    }
+
+    dsd_costas_loop_state_t c = s->costas_state;
+    c.error_smooth = 0.5f;
+    dsd_costas_reset(&c);
+    if (c.error_smooth != 0.0f) {
+        fprintf(stderr, "COSTAS SMOOTH: reset did not clear smoothed error\n");
+        free(s);
+        return 1;
+    }
+
+    free(s);
     return 0;
 }
 
@@ -662,6 +721,9 @@ main(void) {
         return 1;
     }
     if (test_costas_marginal_confidence_scales_loop_update() != 0) {
+        return 1;
+    }
+    if (test_costas_smooths_error_step() != 0) {
         return 1;
     }
     if (test_ted_initialization() != 0) {

@@ -327,6 +327,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     cl->alpha = 0.04f;
     cl->beta = 0.125f * cl->alpha * cl->alpha; /* 0.0002 */
     cl->error = 0.0f;
+    cl->error_smooth = 0.0f;
     cl->initialized = 0;
     demod->costas_err_avg_q14 = 0;
 
