@@ -995,6 +995,14 @@ demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
     s->fm_demod_history_valid = 0;
     s->pre_r = 0.0f;
     s->pre_j = 0.0f;
+    if (s->fm_channel_lpf_hist_i && s->fm_channel_lpf_hist_q && s->fm_channel_lpf_taps_len > 1) {
+        size_t hist_len = (size_t)(s->fm_channel_lpf_taps_len - 1);
+        memset(s->fm_channel_lpf_hist_i, 0, hist_len * sizeof(float));
+        memset(s->fm_channel_lpf_hist_q, 0, hist_len * sizeof(float));
+    }
+    if (s->fm_audio_lpf_hist && s->fm_audio_lpf_taps_len > 1) {
+        memset(s->fm_audio_lpf_hist, 0, (size_t)(s->fm_audio_lpf_taps_len - 1) * sizeof(float));
+    }
     /* CQPSK: Initialize differential phasor state for clean acquisition on new signal.
      *
      * Unlike OP25's continuous sample flow where set_omega() only clears the delay line,
@@ -1309,6 +1317,60 @@ apply_output_scale(struct demod_state* d, float* buf, int len) {
     for (int i = 0; i < len; i++) {
         buf[i] *= s;
     }
+}
+
+static int
+fm_sdrpp_bandwidth_for_profile_local(int profile, int rate_hz) {
+    int bw = 12500;
+    switch (profile) {
+        case DSD_CH_LPF_PROFILE_6K25: bw = 6250; break;
+        case DSD_CH_LPF_PROFILE_P25_CQPSK: bw = 0; break;
+        case DSD_CH_LPF_PROFILE_WIDE:
+        case DSD_CH_LPF_PROFILE_12K5:
+        case DSD_CH_LPF_PROFILE_PROVOICE:
+        case DSD_CH_LPF_PROFILE_P25_C4FM:
+        default: bw = 12500; break;
+    }
+    if (rate_hz > 0 && bw > rate_hz) {
+        bw = rate_hz;
+    }
+    return bw;
+}
+
+static int
+fm_sdrpp_processing_rate_hz_local(const struct demod_state* d) {
+    if (!d) {
+        return 0;
+    }
+    if (d->rate_out > 0) {
+        int rate_hz = d->rate_out;
+        if (d->post_downsample > 1) {
+            if (rate_hz > INT_MAX / d->post_downsample) {
+                return INT_MAX;
+            }
+            rate_hz *= d->post_downsample;
+        }
+        return rate_hz;
+    }
+    return d->rate_in;
+}
+
+static void
+refresh_fm_sdrpp_runtime_config(struct demod_state* d) {
+    if (!d) {
+        return;
+    }
+    if (d->cqpsk_enable) {
+        d->fm_demod_bw_hz = 0;
+        d->fm_audio_lpf_enable = 0;
+        d->output_scale = 1.0f;
+        return;
+    }
+    int rate_hz = fm_sdrpp_processing_rate_hz_local(d);
+    int bw_hz = fm_sdrpp_bandwidth_for_profile_local(d->channel_lpf_profile, rate_hz);
+    d->fm_demod_bw_hz = bw_hz;
+    d->fm_audio_lpf_enable = (bw_hz > 0 && d->mode_demod == &dsd_fm_demod) ? 1 : 0;
+    d->output_scale = (bw_hz > 0) ? 1.0f : (float)(1.0 / M_PI);
 }
 
 /* Fwd decl: eye-based C4FM SNR fallback */
@@ -2203,8 +2265,6 @@ optimal_settings(int freq, int rate) {
         capture_freq = freq + capture_rate / 4;
     }
     capture_freq += cs->edge * dm->rate_in / 2;
-    /* Normalize discriminator radians into roughly [-1,1] for float pipeline. */
-    dm->output_scale = (float)(1.0 / M_PI);
     /* Update the effective discriminator output sample rate based on current settings.
        HB cascade reduces by (1<<downsample_passes). Apply optional post_downsample on audio. */
     {
@@ -2218,6 +2278,7 @@ optimal_settings(int freq, int rate) {
         }
         dm->rate_out = out_rate;
     }
+    refresh_fm_sdrpp_runtime_config(dm);
     d->freq = (uint32_t)capture_freq;
     d->rate = (uint32_t)capture_rate;
 }
@@ -3666,6 +3727,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         }
         demod.ted_gain_is_set = persist.ted_gain_is_set ? 1 : 0;
         demod.ted_force = persist.ted_force ? 1 : 0;
+        refresh_fm_sdrpp_runtime_config(&demod);
     }
 
     /* Default: if user did not specify a manual tuner gain (0=AGC), enable
@@ -4975,6 +5037,7 @@ rtl_stream_toggle_cqpsk(int onoff) {
             demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
         }
     }
+    refresh_fm_sdrpp_runtime_config(&demod);
     /* If the demod family changed, request a Costas reset on the next retune.
      * This keeps loop state consistent when switching between FM and CQPSK paths. */
     if (demod.cqpsk_enable != was) {

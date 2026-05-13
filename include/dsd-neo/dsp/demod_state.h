@@ -92,6 +92,11 @@ struct demod_state {
     double fm_agc_ema_rms;      /* normalized RMS estimator (0..~1.0) */
     float* post_polydecim_taps; /* normalized taps length K */
     float* post_polydecim_hist; /* circular history length K */
+    float* fm_channel_lpf_taps; /* SDR++-style NFM IF low-pass taps */
+    float* fm_channel_lpf_hist_i;
+    float* fm_channel_lpf_hist_q;
+    float* fm_audio_lpf_taps; /* SDR++-style post-discriminator low-pass taps */
+    float* fm_audio_lpf_hist;
     dsd_thread_t mt_threads[2];
 
     struct {
@@ -122,6 +127,7 @@ struct demod_state {
        first sample has been observed. Replaces an older (prev==0) heuristic
        that false-seeded on a genuinely-zero first sample. */
     int fm_demod_history_valid;
+    int fm_demod_bw_hz; /* SDR++ NFM bandwidth; deviation is bandwidth/2 */
     int post_downsample;
     float output_scale;
     float squelch_level;
@@ -273,6 +279,15 @@ struct demod_state {
     int post_polydecim_K;         /* taps per phase (phase==1), e.g., 16 */
     int post_polydecim_hist_head; /* head index into circular history [0..K-1] */
     int post_polydecim_phase;     /* sample phase accumulator [0..M-1] */
+
+    /* SDR++-style FM/C4FM filter state (non-CQPSK only) */
+    int fm_channel_lpf_bw_hz;
+    int fm_channel_lpf_rate_hz;
+    int fm_channel_lpf_taps_len;
+    int fm_audio_lpf_enable;
+    int fm_audio_lpf_bw_hz;
+    int fm_audio_lpf_rate_hz;
+    int fm_audio_lpf_taps_len;
 
     /* Costas diagnostics (updated per block) */
     int costas_err_avg_q14;     /* average smoothed |err| scaled to Q14 for UI/metrics */

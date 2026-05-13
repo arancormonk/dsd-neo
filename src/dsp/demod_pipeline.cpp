@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -236,6 +237,330 @@ static const float channel_lpf_digital[kChannelLpfFallbackTaps] = {
     0.0f,
 };
 
+static const int kSdrppFmMaxTaps = 768;
+
+static int
+sdrpp_fm_processing_rate_hz(const struct demod_state* d) {
+    if (!d) {
+        return 0;
+    }
+    if (d->rate_out > 0) {
+        int rate_hz = d->rate_out;
+        if (d->post_downsample > 1) {
+            if (rate_hz > INT_MAX / d->post_downsample) {
+                return INT_MAX;
+            }
+            rate_hz *= d->post_downsample;
+        }
+        return rate_hz;
+    }
+    return d->rate_in;
+}
+
+static int
+sdrpp_fm_profile_bandwidth_hz(int profile, int rate_hz) {
+    int bw = 12500;
+    switch (profile) {
+        case DSD_CH_LPF_PROFILE_6K25: bw = 6250; break;
+        case DSD_CH_LPF_PROFILE_P25_CQPSK:
+            bw = 0; /* CQPSK is handled by the OP25-aligned path, not SDR++ NFM. */
+            break;
+        case DSD_CH_LPF_PROFILE_WIDE:
+        case DSD_CH_LPF_PROFILE_12K5:
+        case DSD_CH_LPF_PROFILE_PROVOICE:
+        case DSD_CH_LPF_PROFILE_P25_C4FM:
+        default: bw = 12500; break;
+    }
+    if (rate_hz > 0 && bw > rate_hz) {
+        bw = rate_hz;
+    }
+    return bw;
+}
+
+static inline double
+sdrpp_sinc(double x) {
+    return (x == 0.0) ? 1.0 : (sin(x) / x);
+}
+
+static inline double
+sdrpp_nuttall(double n, double N) {
+    const double coefs[] = {0.355768, 0.487396, 0.144232, 0.012604};
+    double win = 0.0;
+    double sign = 1.0;
+    for (int i = 0; i < 4; i++) {
+        win += sign * coefs[i] * cos((double)i * 2.0 * 3.14159265358979323846 * n / N);
+        sign = -sign;
+    }
+    return win;
+}
+
+static int
+sdrpp_fm_lpf_tap_count(int bandwidth_hz, int sample_rate_hz) {
+    if (bandwidth_hz <= 0 || sample_rate_hz <= 0) {
+        return -1;
+    }
+    double cutoff = (double)bandwidth_hz * 0.5;
+    if (cutoff >= ((double)sample_rate_hz * 0.5)) {
+        return 0; /* SDR++ treats bandwidth==IF sample rate as no channel narrowing. */
+    }
+    double trans_width = cutoff * 0.1;
+    if (trans_width <= 0.0) {
+        return -1;
+    }
+    int count = (int)(3.8 * (double)sample_rate_hz / trans_width);
+    if (count < 1) {
+        count = 1;
+    }
+    if (count > kSdrppFmMaxTaps) {
+        return -1;
+    }
+    return count;
+}
+
+static int
+sdrpp_design_fm_lpf(float* taps, int taps_cap, int bandwidth_hz, int sample_rate_hz) {
+    if (!taps || taps_cap <= 0) {
+        return -1;
+    }
+    int count = sdrpp_fm_lpf_tap_count(bandwidth_hz, sample_rate_hz);
+    if (count <= 0 || count > taps_cap) {
+        return count;
+    }
+
+    double cutoff = (double)bandwidth_hz * 0.5;
+    double omega = 2.0 * 3.14159265358979323846 * cutoff / (double)sample_rate_hz;
+    double half = (double)count / 2.0;
+    double corr = omega / 3.14159265358979323846;
+
+    for (int i = 0; i < count; i++) {
+        double t = (double)i - half + 0.5;
+        taps[i] = (float)(sdrpp_sinc(t * omega) * sdrpp_nuttall(t - half, (double)count) * corr);
+    }
+    return count;
+}
+
+static void
+sdrpp_free_fm_channel_lpf(struct demod_state* d) {
+    if (!d) {
+        return;
+    }
+    if (d->fm_channel_lpf_taps) {
+        dsd_neo_aligned_free(d->fm_channel_lpf_taps);
+        d->fm_channel_lpf_taps = NULL;
+    }
+    if (d->fm_channel_lpf_hist_i) {
+        dsd_neo_aligned_free(d->fm_channel_lpf_hist_i);
+        d->fm_channel_lpf_hist_i = NULL;
+    }
+    if (d->fm_channel_lpf_hist_q) {
+        dsd_neo_aligned_free(d->fm_channel_lpf_hist_q);
+        d->fm_channel_lpf_hist_q = NULL;
+    }
+    d->fm_channel_lpf_taps_len = 0;
+    d->fm_channel_lpf_bw_hz = 0;
+    d->fm_channel_lpf_rate_hz = 0;
+}
+
+static void
+sdrpp_free_fm_audio_lpf(struct demod_state* d) {
+    if (!d) {
+        return;
+    }
+    if (d->fm_audio_lpf_taps) {
+        dsd_neo_aligned_free(d->fm_audio_lpf_taps);
+        d->fm_audio_lpf_taps = NULL;
+    }
+    if (d->fm_audio_lpf_hist) {
+        dsd_neo_aligned_free(d->fm_audio_lpf_hist);
+        d->fm_audio_lpf_hist = NULL;
+    }
+    d->fm_audio_lpf_taps_len = 0;
+    d->fm_audio_lpf_bw_hz = 0;
+    d->fm_audio_lpf_rate_hz = 0;
+}
+
+static int
+sdrpp_ensure_fm_channel_lpf(struct demod_state* d, int bandwidth_hz, int sample_rate_hz) {
+    if (!d || bandwidth_hz <= 0 || sample_rate_hz <= 0) {
+        return 0;
+    }
+    int taps_len = sdrpp_fm_lpf_tap_count(bandwidth_hz, sample_rate_hz);
+    if (taps_len <= 1) {
+        sdrpp_free_fm_channel_lpf(d);
+        d->fm_channel_lpf_bw_hz = bandwidth_hz;
+        d->fm_channel_lpf_rate_hz = sample_rate_hz;
+        return 0;
+    }
+    if (d->fm_channel_lpf_taps && d->fm_channel_lpf_hist_i && d->fm_channel_lpf_hist_q
+        && d->fm_channel_lpf_taps_len == taps_len && d->fm_channel_lpf_bw_hz == bandwidth_hz
+        && d->fm_channel_lpf_rate_hz == sample_rate_hz) {
+        return taps_len;
+    }
+
+    sdrpp_free_fm_channel_lpf(d);
+    d->fm_channel_lpf_taps = (float*)dsd_neo_aligned_malloc((size_t)taps_len * sizeof(float));
+    d->fm_channel_lpf_hist_i = (float*)dsd_neo_aligned_malloc((size_t)(taps_len - 1) * sizeof(float));
+    d->fm_channel_lpf_hist_q = (float*)dsd_neo_aligned_malloc((size_t)(taps_len - 1) * sizeof(float));
+    if (!d->fm_channel_lpf_taps || !d->fm_channel_lpf_hist_i || !d->fm_channel_lpf_hist_q) {
+        sdrpp_free_fm_channel_lpf(d);
+        return 0;
+    }
+    if (sdrpp_design_fm_lpf(d->fm_channel_lpf_taps, taps_len, bandwidth_hz, sample_rate_hz) != taps_len) {
+        sdrpp_free_fm_channel_lpf(d);
+        return 0;
+    }
+    memset(d->fm_channel_lpf_hist_i, 0, (size_t)(taps_len - 1) * sizeof(float));
+    memset(d->fm_channel_lpf_hist_q, 0, (size_t)(taps_len - 1) * sizeof(float));
+    d->fm_channel_lpf_taps_len = taps_len;
+    d->fm_channel_lpf_bw_hz = bandwidth_hz;
+    d->fm_channel_lpf_rate_hz = sample_rate_hz;
+    return taps_len;
+}
+
+static int
+sdrpp_ensure_fm_audio_lpf(struct demod_state* d, int bandwidth_hz, int sample_rate_hz) {
+    if (!d || bandwidth_hz <= 0 || sample_rate_hz <= 0) {
+        return 0;
+    }
+    int taps_len = sdrpp_fm_lpf_tap_count(bandwidth_hz, sample_rate_hz);
+    if (taps_len <= 1) {
+        sdrpp_free_fm_audio_lpf(d);
+        d->fm_audio_lpf_bw_hz = bandwidth_hz;
+        d->fm_audio_lpf_rate_hz = sample_rate_hz;
+        return 0;
+    }
+    if (d->fm_audio_lpf_taps && d->fm_audio_lpf_hist && d->fm_audio_lpf_taps_len == taps_len
+        && d->fm_audio_lpf_bw_hz == bandwidth_hz && d->fm_audio_lpf_rate_hz == sample_rate_hz) {
+        return taps_len;
+    }
+
+    sdrpp_free_fm_audio_lpf(d);
+    d->fm_audio_lpf_taps = (float*)dsd_neo_aligned_malloc((size_t)taps_len * sizeof(float));
+    d->fm_audio_lpf_hist = (float*)dsd_neo_aligned_malloc((size_t)(taps_len - 1) * sizeof(float));
+    if (!d->fm_audio_lpf_taps || !d->fm_audio_lpf_hist) {
+        sdrpp_free_fm_audio_lpf(d);
+        return 0;
+    }
+    if (sdrpp_design_fm_lpf(d->fm_audio_lpf_taps, taps_len, bandwidth_hz, sample_rate_hz) != taps_len) {
+        sdrpp_free_fm_audio_lpf(d);
+        return 0;
+    }
+    memset(d->fm_audio_lpf_hist, 0, (size_t)(taps_len - 1) * sizeof(float));
+    d->fm_audio_lpf_taps_len = taps_len;
+    d->fm_audio_lpf_bw_hz = bandwidth_hz;
+    d->fm_audio_lpf_rate_hz = sample_rate_hz;
+    return taps_len;
+}
+
+static void
+sdrpp_real_fir_apply(const float* in, int len, float* out, float* hist, const float* taps, int taps_len) {
+    if (!in || !out || !hist || !taps || len <= 0 || taps_len <= 1) {
+        return;
+    }
+    int hist_len = taps_len - 1;
+    for (int n = 0; n < len; n++) {
+        double acc = 0.0;
+        for (int k = 0; k < taps_len; k++) {
+            int src = n + k - hist_len;
+            float x = (src < 0) ? hist[hist_len + src] : in[src];
+            acc += (double)x * (double)taps[k];
+        }
+        out[n] = (float)acc;
+    }
+    if (len >= hist_len) {
+        memcpy(hist, in + (len - hist_len), (size_t)hist_len * sizeof(float));
+    } else {
+        memmove(hist, hist + len, (size_t)(hist_len - len) * sizeof(float));
+        memcpy(hist + (hist_len - len), in, (size_t)len * sizeof(float));
+    }
+}
+
+static void
+sdrpp_complex_fir_apply(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
+                        int taps_len) {
+    if (!in || !out || !hist_i || !hist_q || !taps || in_len < 2 || taps_len <= 1) {
+        return;
+    }
+    int pairs = in_len >> 1;
+    int hist_len = taps_len - 1;
+    for (int n = 0; n < pairs; n++) {
+        double acc_i = 0.0;
+        double acc_q = 0.0;
+        for (int k = 0; k < taps_len; k++) {
+            int src = n + k - hist_len;
+            float i_s;
+            float q_s;
+            if (src < 0) {
+                i_s = hist_i[hist_len + src];
+                q_s = hist_q[hist_len + src];
+            } else {
+                i_s = in[(size_t)(src << 1) + 0];
+                q_s = in[(size_t)(src << 1) + 1];
+            }
+            acc_i += (double)i_s * (double)taps[k];
+            acc_q += (double)q_s * (double)taps[k];
+        }
+        out[(size_t)(n << 1) + 0] = (float)acc_i;
+        out[(size_t)(n << 1) + 1] = (float)acc_q;
+    }
+    if (pairs >= hist_len) {
+        const float* tail = in + (size_t)((pairs - hist_len) << 1);
+        for (int n = 0; n < hist_len; n++) {
+            hist_i[n] = tail[(size_t)(n << 1) + 0];
+            hist_q[n] = tail[(size_t)(n << 1) + 1];
+        }
+    } else {
+        memmove(hist_i, hist_i + pairs, (size_t)(hist_len - pairs) * sizeof(float));
+        memmove(hist_q, hist_q + pairs, (size_t)(hist_len - pairs) * sizeof(float));
+        for (int n = 0; n < pairs; n++) {
+            hist_i[hist_len - pairs + n] = in[(size_t)(n << 1) + 0];
+            hist_q[hist_len - pairs + n] = in[(size_t)(n << 1) + 1];
+        }
+    }
+}
+
+static void
+sdrpp_fm_channel_lpf_apply(struct demod_state* d) {
+    if (!d || d->cqpsk_enable || !d->channel_lpf_enable || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    int rate_hz = sdrpp_fm_processing_rate_hz(d);
+    int bw_hz =
+        d->fm_demod_bw_hz > 0 ? d->fm_demod_bw_hz : sdrpp_fm_profile_bandwidth_hz(d->channel_lpf_profile, rate_hz);
+    if (rate_hz <= 0 || bw_hz <= 0) {
+        return;
+    }
+    int taps_len = sdrpp_ensure_fm_channel_lpf(d, bw_hz, rate_hz);
+    if (taps_len <= 1) {
+        return;
+    }
+
+    const float* in = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
+    float* out = (d->lowpassed == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
+    sdrpp_complex_fir_apply(in, d->lp_len, out, d->fm_channel_lpf_hist_i, d->fm_channel_lpf_hist_q,
+                            d->fm_channel_lpf_taps, taps_len);
+    d->lowpassed = out;
+}
+
+static void
+sdrpp_fm_audio_lpf_apply(struct demod_state* d) {
+    if (!d || d->cqpsk_enable || !d->fm_audio_lpf_enable || d->result_len <= 0) {
+        return;
+    }
+    int rate_hz = sdrpp_fm_processing_rate_hz(d);
+    int bw_hz =
+        d->fm_demod_bw_hz > 0 ? d->fm_demod_bw_hz : sdrpp_fm_profile_bandwidth_hz(d->channel_lpf_profile, rate_hz);
+    if (rate_hz <= 0 || bw_hz <= 0) {
+        return;
+    }
+    int taps_len = sdrpp_ensure_fm_audio_lpf(d, bw_hz, rate_hz);
+    if (taps_len <= 1) {
+        return;
+    }
+    sdrpp_real_fir_apply(d->result, d->result_len, d->timing_buf, d->fm_audio_lpf_hist, d->fm_audio_lpf_taps, taps_len);
+    memcpy(d->result, d->timing_buf, (size_t)d->result_len * sizeof(float));
+}
+
 /* ---------------- Post-demod audio polyphase decimator (M > 1) -------------- */
 /*
  * Lightweight 1/M polyphase decimator for audio. Designs a windowed-sinc
@@ -444,6 +769,11 @@ channel_lpf_apply(struct demod_state* d) {
         return;
     }
 
+    if (!d->cqpsk_enable && d->fm_demod_bw_hz > 0) {
+        sdrpp_fm_channel_lpf_apply(d);
+        return;
+    }
+
     const float* taps = NULL;
     int taps_len = 0;
 
@@ -639,14 +969,34 @@ dsd_fm_demod(struct demod_state* fm) {
 
     float prev_r = fm->pre_r;
     float prev_j = fm->pre_j;
+    int fm_rate_hz = sdrpp_fm_processing_rate_hz(fm);
+    int sdrpp_norm = (fm->fm_demod_bw_hz > 0 && fm_rate_hz > 0) ? 1 : 0;
     /* Seed history on first use so the first phase delta is well-defined.
        Uses an explicit validity flag rather than a (prev==0) heuristic, which
        would false-seed when a legitimately-zero sample happened to arrive as
        the first sample of a new stream. */
     if (!fm->fm_demod_history_valid) {
-        prev_r = iq[0];
-        prev_j = iq[1];
+        if (sdrpp_norm) {
+            prev_r = 1.0f;
+            prev_j = 0.0f;
+        } else {
+            prev_r = iq[0];
+            prev_j = iq[1];
+        }
         fm->fm_demod_history_valid = 1;
+    }
+
+    float inv_deviation_rad = 1.0f;
+    if (sdrpp_norm) {
+        int bw_hz = fm->fm_demod_bw_hz;
+        if (bw_hz > fm_rate_hz) {
+            bw_hz = fm_rate_hz;
+        }
+        float deviation_hz = (float)bw_hz * 0.5f;
+        float deviation_rad = 2.0f * 3.14159265358979323846f * deviation_hz / (float)fm_rate_hz;
+        if (deviation_rad > 1e-9f) {
+            inv_deviation_rad = 1.0f / deviation_rad;
+        }
     }
 
     for (int n = 0; n < pairs; n++) {
@@ -673,7 +1023,7 @@ dsd_fm_demod(struct demod_state* fm) {
                intent documented in the scaffold commit. */
             angle += fm->fll_freq;
         }
-        out[n] = angle;
+        out[n] = angle * inv_deviation_rad;
         prev_r = cr;
         prev_j = cj;
     }
@@ -1652,6 +2002,9 @@ full_demod(struct demod_state* d) {
         }
     } else {
         d->mode_demod(d); /* lowpassed -> result */
+        if (d->mode_demod == &dsd_fm_demod) {
+            sdrpp_fm_audio_lpf_apply(d);
+        }
     }
     if (d->mode_demod == &raw_demod) {
         return;

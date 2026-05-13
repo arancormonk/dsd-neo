@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/worker_pool.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,81 @@ struct DemodInitParams {
     int deemph_default;
 };
 
+static int
+mode_channel_lpf_profile(const dsd_opts* opts, int cqpsk_enable) {
+    if (!opts) {
+        return cqpsk_enable ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_WIDE;
+    }
+    if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
+        return cqpsk_enable ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_P25_C4FM;
+    }
+    if (opts->frame_provoice == 1) {
+        return DSD_CH_LPF_PROFILE_PROVOICE;
+    }
+    if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
+        return DSD_CH_LPF_PROFILE_6K25;
+    }
+    if (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
+        || opts->frame_m17 == 1) {
+        return DSD_CH_LPF_PROFILE_12K5;
+    }
+    return DSD_CH_LPF_PROFILE_WIDE;
+}
+
+static int
+fm_sdrpp_processing_rate_hz(const struct demod_state* demod) {
+    if (!demod) {
+        return 0;
+    }
+    if (demod->rate_out > 0) {
+        int rate_hz = demod->rate_out;
+        if (demod->post_downsample > 1) {
+            if (rate_hz > INT_MAX / demod->post_downsample) {
+                return INT_MAX;
+            }
+            rate_hz *= demod->post_downsample;
+        }
+        return rate_hz;
+    }
+    return demod->rate_in;
+}
+
+static int
+fm_sdrpp_bandwidth_for_profile(int profile, int rate_hz) {
+    int bw = 12500;
+    switch (profile) {
+        case DSD_CH_LPF_PROFILE_6K25: bw = 6250; break;
+        case DSD_CH_LPF_PROFILE_P25_CQPSK: bw = 0; break;
+        case DSD_CH_LPF_PROFILE_WIDE:
+        case DSD_CH_LPF_PROFILE_12K5:
+        case DSD_CH_LPF_PROFILE_PROVOICE:
+        case DSD_CH_LPF_PROFILE_P25_C4FM:
+        default: bw = 12500; break;
+    }
+    if (rate_hz > 0 && bw > rate_hz) {
+        bw = rate_hz;
+    }
+    return bw;
+}
+
+static void
+fm_sdrpp_refresh_config(struct demod_state* demod) {
+    if (!demod) {
+        return;
+    }
+    if (demod->cqpsk_enable) {
+        demod->fm_demod_bw_hz = 0;
+        demod->fm_audio_lpf_enable = 0;
+        demod->output_scale = 1.0f;
+        return;
+    }
+    int rate_hz = fm_sdrpp_processing_rate_hz(demod);
+    int bw_hz = fm_sdrpp_bandwidth_for_profile(demod->channel_lpf_profile, rate_hz);
+    demod->fm_demod_bw_hz = bw_hz;
+    demod->fm_audio_lpf_enable = (bw_hz > 0 && demod->mode_demod == &dsd_fm_demod) ? 1 : 0;
+    demod->output_scale = (bw_hz > 0) ? 1.0f : (float)(1.0 / 3.14159265358979323846);
+}
+
 static void
 demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p, int rtl_dsp_bw_hz,
                 struct output_state* output) {
@@ -67,6 +143,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->mode_demod = &dsd_fm_demod;
     s->pre_j = s->pre_r = 0.0f;
     s->fm_demod_history_valid = 0;
+    s->fm_demod_bw_hz = 0;
     s->prev_lpr_index = 0;
     s->deemph_a = 0.0f;
     s->deemph_avg = 0.0f;
@@ -105,6 +182,18 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->post_polydecim_hist_head = 0;
     s->post_polydecim_taps = NULL;
     s->post_polydecim_hist = NULL;
+    s->fm_channel_lpf_taps = NULL;
+    s->fm_channel_lpf_hist_i = NULL;
+    s->fm_channel_lpf_hist_q = NULL;
+    s->fm_audio_lpf_taps = NULL;
+    s->fm_audio_lpf_hist = NULL;
+    s->fm_channel_lpf_bw_hz = 0;
+    s->fm_channel_lpf_rate_hz = 0;
+    s->fm_channel_lpf_taps_len = 0;
+    s->fm_audio_lpf_enable = 0;
+    s->fm_audio_lpf_bw_hz = 0;
+    s->fm_audio_lpf_rate_hz = 0;
+    s->fm_audio_lpf_taps_len = 0;
     /* FLL/TED defaults (GNU Radio-style native float) */
     s->fll_enabled = 0;
     s->fll_alpha = 0.0f;
@@ -413,29 +502,16 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
          - DSD_NEO_CHANNEL_LPF=0 forces off (all modes).
          - DSD_NEO_CHANNEL_LPF!=0 forces on (all modes). */
     int channel_lpf = 0;
-    int channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    int channel_lpf_profile = mode_channel_lpf_profile(opts, demod->cqpsk_enable);
     int high_fs = (demod->rate_in >= 20000); /* currently 24 kHz DSP baseband */
     if (cfg->channel_lpf_is_set) {
         channel_lpf = (cfg->channel_lpf_enable != 0);
     } else if (high_fs) {
         channel_lpf = 1;
     }
-    if (channel_lpf) {
-        if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
-            channel_lpf_profile = demod->cqpsk_enable ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_P25_C4FM;
-        } else if (opts->frame_provoice == 1) {
-            channel_lpf_profile = DSD_CH_LPF_PROFILE_PROVOICE;
-        } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
-            channel_lpf_profile = DSD_CH_LPF_PROFILE_6K25;
-        } else if (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
-                   || opts->frame_m17 == 1) {
-            channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
-        } else {
-            channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
-        }
-    }
     demod->channel_lpf_enable = channel_lpf ? 1 : 0;
     demod->channel_lpf_profile = channel_lpf_profile;
+    fm_sdrpp_refresh_config(demod);
 
     /* Copy RTL squelch level to demod state for channel-based squelch */
     demod->channel_squelch_level = (float)opts->rtl_squelch_level;
@@ -751,9 +827,8 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     } else {
         demod->ted_sps = sps;
     }
-    if (demod->cqpsk_enable) {
-        demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
-    }
+    demod->channel_lpf_profile = mode_channel_lpf_profile(opts, demod->cqpsk_enable);
+    fm_sdrpp_refresh_config(demod);
 }
 
 /**
@@ -788,5 +863,25 @@ rtl_demod_cleanup(struct demod_state* demod) {
     if (demod->post_polydecim_hist) {
         dsd_neo_aligned_free(demod->post_polydecim_hist);
         demod->post_polydecim_hist = NULL;
+    }
+    if (demod->fm_channel_lpf_taps) {
+        dsd_neo_aligned_free(demod->fm_channel_lpf_taps);
+        demod->fm_channel_lpf_taps = NULL;
+    }
+    if (demod->fm_channel_lpf_hist_i) {
+        dsd_neo_aligned_free(demod->fm_channel_lpf_hist_i);
+        demod->fm_channel_lpf_hist_i = NULL;
+    }
+    if (demod->fm_channel_lpf_hist_q) {
+        dsd_neo_aligned_free(demod->fm_channel_lpf_hist_q);
+        demod->fm_channel_lpf_hist_q = NULL;
+    }
+    if (demod->fm_audio_lpf_taps) {
+        dsd_neo_aligned_free(demod->fm_audio_lpf_taps);
+        demod->fm_audio_lpf_taps = NULL;
+    }
+    if (demod->fm_audio_lpf_hist) {
+        dsd_neo_aligned_free(demod->fm_audio_lpf_hist);
+        demod->fm_audio_lpf_hist = NULL;
     }
 }

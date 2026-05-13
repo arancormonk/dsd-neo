@@ -4,6 +4,7 @@
  */
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include <dsd-neo/core/opts.h>
@@ -37,6 +38,41 @@ expect_sps(const char* label, const dsd_opts& opts, int rate_hz, int override_sp
     return 0;
 }
 
+static int
+expect_narrow_fm_profile_when_channel_lpf_disabled(void) {
+    dsd_opts opts;
+    static demod_state demod;
+    output_state output;
+    std::memset(&opts, 0, sizeof(opts));
+    std::memset(&demod, 0, sizeof(demod));
+    std::memset(&output, 0, sizeof(output));
+
+    opts.frame_nxdn48 = 1;
+    setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+
+    rtl_demod_init_for_mode(&demod, &output, &opts, 48000);
+    rtl_demod_config_from_env_and_opts(&demod, &opts);
+
+    int rc = 0;
+    if (demod.channel_lpf_enable != 0) {
+        std::fprintf(stderr, "NXDN48 LPF-off: channel_lpf_enable=%d want 0\n", demod.channel_lpf_enable);
+        rc = 1;
+    }
+    if (demod.channel_lpf_profile != DSD_CH_LPF_PROFILE_6K25) {
+        std::fprintf(stderr, "NXDN48 LPF-off: channel_lpf_profile=%d want %d\n", demod.channel_lpf_profile,
+                     DSD_CH_LPF_PROFILE_6K25);
+        rc = 1;
+    }
+    if (demod.fm_demod_bw_hz != 6250) {
+        std::fprintf(stderr, "NXDN48 LPF-off: fm_demod_bw_hz=%d want 6250\n", demod.fm_demod_bw_hz);
+        rc = 1;
+    }
+
+    rtl_demod_cleanup(&demod);
+    unsetenv("DSD_NEO_CHANNEL_LPF");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -60,6 +96,8 @@ main(void) {
     p25_trunk_qpsk.mod_qpsk = 1;
     rc |= expect_sps("P25 trunk QPSK defaults to CC rate", p25_trunk_qpsk, 48000, 0, 10, DSD_CH_LPF_PROFILE_P25_CQPSK);
     rc |= expect_sps("P25 trunk TDMA override wins", p25_trunk_qpsk, 48000, 8, 8, DSD_CH_LPF_PROFILE_P25_CQPSK);
+
+    rc |= expect_narrow_fm_profile_when_channel_lpf_disabled();
 
     return rc;
 }

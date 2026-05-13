@@ -1517,6 +1517,11 @@ target_include_directories(dsd-neo_test_dsp_fm_demod_ref PRIVATE ${PROJECT_SOURC
 target_link_libraries(dsd-neo_test_dsp_fm_demod_ref PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_FM_DEMOD_REF COMMAND dsd-neo_test_dsp_fm_demod_ref)
 
+add_executable(dsd-neo_test_dsp_sdrpp_fm dsp/test_dsp_sdrpp_fm.cpp)
+target_include_directories(dsd-neo_test_dsp_sdrpp_fm PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_sdrpp_fm PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_SDRPP_FM COMMAND dsd-neo_test_dsp_sdrpp_fm)
+
 add_executable(dsd-neo_test_dsp_fm_limiter dsp/test_dsp_fm_limiter.cpp)
 target_include_directories(dsd-neo_test_dsp_fm_limiter PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_fm_limiter PRIVATE dsd-neo_dsp)
