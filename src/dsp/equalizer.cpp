@@ -82,6 +82,45 @@ tap_mag(float r, float i) {
     return std::sqrt(r * r + i * i);
 }
 
+static float
+smoothstep(float edge0, float edge1, float x) {
+    if (x <= edge0) {
+        return 0.0f;
+    }
+    if (x >= edge1) {
+        return 1.0f;
+    }
+    float t = (x - edge0) / (edge1 - edge0);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static float
+cqpsk_cma_effective_step(float step, float abs_err, unsigned int symbols) {
+    constexpr float kErrBoostLow = 0.02f;
+    constexpr float kErrBoostHigh = 0.08f;
+    constexpr float kErrBoostMax = 1.5f;
+    constexpr unsigned int kWarmupSymbols = 2400U;
+    constexpr float kWarmupBoost = 1.25f;
+
+    if (!(step > 0.0f) || !std::isfinite(step)) {
+        return DSD_CQPSK_CMA_EQ_DEFAULT_MU;
+    }
+
+    float boost = 1.0f;
+    if (std::isfinite(abs_err)) {
+        boost += (kErrBoostMax - 1.0f) * smoothstep(kErrBoostLow, kErrBoostHigh, abs_err);
+    }
+    if (symbols < kWarmupSymbols) {
+        boost *= kWarmupBoost;
+    }
+
+    float effective = step * boost;
+    if (effective > 0.01f) {
+        effective = 0.01f;
+    }
+    return effective;
+}
+
 } // namespace
 
 extern "C" void
@@ -107,13 +146,13 @@ dsd_cqpsk_cma_equalizer_apply(dsd_cqpsk_cma_equalizer_state_t* st, float* iq, in
     }
 
     if (!(step > 0.0f) || !std::isfinite(step)) {
-        step = 0.0008f;
+        step = DSD_CQPSK_CMA_EQ_DEFAULT_MU;
     }
     if (step > 0.01f) {
         step = 0.01f;
     }
     if (!(modulus > 0.0f) || !std::isfinite(modulus)) {
-        modulus = 0.85f * 0.85f;
+        modulus = DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
     }
 
     const int pairs = len >> 1;
@@ -157,13 +196,15 @@ dsd_cqpsk_cma_equalizer_apply(dsd_cqpsk_cma_equalizer_state_t* st, float* iq, in
             continue;
         }
 
+        const float abs_err = std::fabs(mag2 - modulus);
+        const float effective_step = cqpsk_cma_effective_step(step, abs_err, st->symbols);
         float err_r = out_r * (mag2 - modulus);
         float err_i = out_i * (mag2 - modulus);
         err_r = clip_unit(err_r);
         err_i = clip_unit(err_i);
 
-        const float mu_err_r = -step * err_r;
-        const float mu_err_i = -step * err_i;
+        const float mu_err_r = -effective_step * err_r;
+        const float mu_err_i = -effective_step * err_i;
         for (int k = 0; k < taps; k++) {
             const float xr = st->hist_r[k];
             const float xi = st->hist_i[k];
@@ -180,7 +221,6 @@ dsd_cqpsk_cma_equalizer_apply(dsd_cqpsk_cma_equalizer_state_t* st, float* iq, in
             continue;
         }
 
-        const float abs_err = std::fabs(mag2 - modulus);
         if (st->symbols == 0U) {
             st->err_ema = abs_err;
             st->mag2_ema = mag2;

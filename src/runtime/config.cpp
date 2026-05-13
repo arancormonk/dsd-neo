@@ -15,6 +15,7 @@
 #include <cmath>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <limits.h>
@@ -630,14 +631,14 @@ dsd_neo_config_init(const dsd_opts* opts) {
     {
         double v = 0.0;
         c.cqpsk_eq_mu_is_set = env_parse_double_range(cqem, 0.000001, 0.01, &v);
-        c.cqpsk_eq_mu = c.cqpsk_eq_mu_is_set ? (float)v : 0.0008f;
+        c.cqpsk_eq_mu = c.cqpsk_eq_mu_is_set ? (float)v : DSD_CQPSK_CMA_EQ_DEFAULT_MU;
     }
 
     const char* cqemod = getenv("DSD_NEO_CQPSK_EQ_MODULUS");
     {
         double v = 0.0;
         c.cqpsk_eq_modulus_is_set = env_parse_double_range(cqemod, 0.05, 4.0, &v);
-        c.cqpsk_eq_modulus = c.cqpsk_eq_modulus_is_set ? (float)v : (0.85f * 0.85f);
+        c.cqpsk_eq_modulus = c.cqpsk_eq_modulus_is_set ? (float)v : DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
     }
 
     /* Sync warm-start (kill-switch): DSD_NEO_SYNC_WARMSTART=0 disables. */
@@ -1294,13 +1295,14 @@ dsd_neo_get_cqpsk_eq(int* enable, int* taps, float* mu, float* modulus) {
         *enable = (cfg && cfg->cqpsk_eq_is_set) ? (cfg->cqpsk_eq_enable ? 1 : 0) : 1;
     }
     if (taps) {
-        *taps = (cfg && cfg->cqpsk_eq_taps_is_set) ? clamp_cqpsk_eq_taps(cfg->cqpsk_eq_taps) : 7;
+        *taps = (cfg && cfg->cqpsk_eq_taps_is_set) ? clamp_cqpsk_eq_taps(cfg->cqpsk_eq_taps)
+                                                   : DSD_CQPSK_CMA_EQ_DEFAULT_TAPS;
     }
     if (mu) {
-        *mu = (cfg && cfg->cqpsk_eq_mu_is_set) ? clamp_cqpsk_eq_mu(cfg->cqpsk_eq_mu) : 0.0008f;
+        *mu = (cfg && cfg->cqpsk_eq_mu_is_set) ? clamp_cqpsk_eq_mu(cfg->cqpsk_eq_mu) : DSD_CQPSK_CMA_EQ_DEFAULT_MU;
     }
     if (modulus) {
-        *modulus =
-            (cfg && cfg->cqpsk_eq_modulus_is_set) ? clamp_cqpsk_eq_modulus(cfg->cqpsk_eq_modulus) : (0.85f * 0.85f);
+        *modulus = (cfg && cfg->cqpsk_eq_modulus_is_set) ? clamp_cqpsk_eq_modulus(cfg->cqpsk_eq_modulus)
+                                                         : DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
     }
 }

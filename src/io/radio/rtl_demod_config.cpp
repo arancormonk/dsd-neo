@@ -183,9 +183,9 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->cqpsk_diff_prev_j = 0.0f;
     s->cqpsk_agc_avg = 1.0f;
     s->cqpsk_eq_enable = 0;
-    s->cqpsk_eq_taps = 7;
-    s->cqpsk_eq_mu = 0.0008f;
-    s->cqpsk_eq_modulus = 0.85f * 0.85f;
+    s->cqpsk_eq_taps = DSD_CQPSK_CMA_EQ_DEFAULT_TAPS;
+    s->cqpsk_eq_mu = DSD_CQPSK_CMA_EQ_DEFAULT_MU;
+    s->cqpsk_eq_modulus = DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
     dsd_cqpsk_cma_equalizer_init(&s->cqpsk_eq_state, s->cqpsk_eq_taps);
 
     /* Mode-specific adjustments */
@@ -347,9 +347,9 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->ted_mu = 0.0f;
     demod->ted_force = cfg->ted_force_is_set ? (cfg->ted_force != 0) : 0;
 
-    demod->cqpsk_eq_taps = cfg->cqpsk_eq_taps_is_set ? cfg->cqpsk_eq_taps : 7;
-    demod->cqpsk_eq_mu = cfg->cqpsk_eq_mu_is_set ? cfg->cqpsk_eq_mu : 0.0008f;
-    demod->cqpsk_eq_modulus = cfg->cqpsk_eq_modulus_is_set ? cfg->cqpsk_eq_modulus : (0.85f * 0.85f);
+    demod->cqpsk_eq_taps = cfg->cqpsk_eq_taps_is_set ? cfg->cqpsk_eq_taps : DSD_CQPSK_CMA_EQ_DEFAULT_TAPS;
+    demod->cqpsk_eq_mu = cfg->cqpsk_eq_mu_is_set ? cfg->cqpsk_eq_mu : DSD_CQPSK_CMA_EQ_DEFAULT_MU;
+    demod->cqpsk_eq_modulus = cfg->cqpsk_eq_modulus_is_set ? cfg->cqpsk_eq_modulus : DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
     dsd_cqpsk_cma_equalizer_init(&demod->cqpsk_eq_state, demod->cqpsk_eq_taps);
 
     /* CQPSK path: auto-enable for QPSK modulation (P25 LSM/TDMA, etc.).

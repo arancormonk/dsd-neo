@@ -19,7 +19,10 @@ extern "C" {
  * symbol, so long filters directly add per-channel CPU cost and convergence
  * time.
  */
-#define DSD_CQPSK_CMA_EQ_MAX_TAPS 15
+#define DSD_CQPSK_CMA_EQ_MAX_TAPS        15
+#define DSD_CQPSK_CMA_EQ_DEFAULT_TAPS    9
+#define DSD_CQPSK_CMA_EQ_DEFAULT_MU      0.0012f
+#define DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS (0.85f * 0.85f)
 
 typedef struct {
     float taps_r[DSD_CQPSK_CMA_EQ_MAX_TAPS];

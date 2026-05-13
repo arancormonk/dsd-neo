@@ -5055,9 +5055,9 @@ extern "C" void
 dsd_rtl_stream_set_cqpsk_eq(int enable, int taps, float mu, float modulus) {
     int reset = 0;
     int desired_enable = 1;
-    int desired_taps = 7;
-    float desired_mu = 0.0008f;
-    float desired_modulus = 0.85f * 0.85f;
+    int desired_taps = DSD_CQPSK_CMA_EQ_DEFAULT_TAPS;
+    float desired_mu = DSD_CQPSK_CMA_EQ_DEFAULT_MU;
+    float desired_modulus = DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
 
     dsd_neo_get_cqpsk_eq(&desired_enable, &desired_taps, &desired_mu, &desired_modulus);
 
