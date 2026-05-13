@@ -677,7 +677,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         opts->rtlsdr_center_freq = (uint32_t)replay_cfg.center_frequency_hz;
         opts->rtlsdr_ppm_error = replay_cfg.ppm;
         if (replay_cfg.tuner_gain_tenth_db > 0) {
-            opts->rtl_gain_value = replay_cfg.tuner_gain_tenth_db;
+            opts->rtl_gain_value = replay_cfg.tuner_gain_tenth_db / 10;
         }
         if (replay_cfg.rtl_dsp_bw_khz > 0) {
             opts->rtl_dsp_bw_khz = replay_cfg.rtl_dsp_bw_khz;

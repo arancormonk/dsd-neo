@@ -1500,6 +1500,10 @@ test_iq_replay_long_options_parse(void) {
         fprintf(stderr, "expected center frequency from metadata, got %u\n", opts->rtlsdr_center_freq);
         test_rc = 1;
     }
+    if (opts->rtl_gain_value != 22) {
+        fprintf(stderr, "expected tuner gain from metadata in dB, got %d\n", opts->rtl_gain_value);
+        test_rc = 1;
+    }
     if (!opts->iq_replay_requested || strcmp(opts->iq_replay_path, metadata_path) != 0) {
         fprintf(stderr, "expected iq_replay_path=%s, got %s\n", metadata_path, opts->iq_replay_path);
         test_rc = 1;
