@@ -719,12 +719,19 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         ui_print_header(ui_audio_in_is_soapy(opts) ? "SoapySDR Visual Aids" : "RTL-SDR Visual Aids");
         int nfft = rtl_stream_spectrum_get_size();
+        int cqpsk_enabled = 0;
+        rtl_stream_dsp_get(&cqpsk_enabled, NULL, NULL);
+        const char* plot_label = cqpsk_enabled ? "Const View" : "Rail View";
         /* Controls/status line: only show controls relevant to active views */
-        printw("| Const View:  %s (%c)", opts->constellation ? "On" : "Off", DSD_KEY_CONST_VIEW_UPPER);
+        printw("| %s:  %s (%c)", plot_label, opts->constellation ? "On" : "Off", DSD_KEY_CONST_VIEW_UPPER);
         if (opts->constellation == 1) {
-            printw("  Gate: %.02f (</>)  Norm: %s (%c)",
-                   (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
-                   opts->const_norm_mode ? "unit" : "radial", DSD_KEY_CONST_NORM);
+            double gate = cqpsk_enabled ? (double)opts->const_gate_qpsk : (double)opts->const_gate_other;
+            if (cqpsk_enabled) {
+                printw("  Gate: %.02f (</>)  Norm: %s (%c)", gate, opts->const_norm_mode ? "unit" : "radial",
+                       DSD_KEY_CONST_NORM);
+            } else {
+                printw("  Gate: %.02f (</>)  Scale: rail-p99", gate);
+            }
         }
         printw("  Eye: %s (%c)", opts->eye_view ? "On" : "Off", DSD_KEY_EYE_VIEW);
         if (opts->eye_view == 1) {

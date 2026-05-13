@@ -4,7 +4,7 @@
  */
 /*
  * ncurses_visualizers.c
- * RTL-SDR visualization panels: constellation, eye diagram, histogram, spectrum
+ * RTL-SDR visualization panels: constellation/symbol rail, eye diagram, histogram, spectrum
  */
 
 #include <curses.h>
@@ -37,7 +37,16 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     float buf[(size_t)MAXP * 2];
     int n = rtl_stream_constellation_get(buf, MAXP);
 
-    ui_print_header("Constellation");
+    int cqpsk_enabled = 0;
+    rtl_stream_dsp_get(&cqpsk_enabled, NULL, NULL);
+    int is_symbol_rail = !cqpsk_enabled;
+    const char* title = "Constellation";
+    if (is_symbol_rail) {
+        title = (state && state->rf_mod == 2)   ? "GFSK Symbol Rail"
+                : (state && state->rf_mod == 0) ? "C4FM Symbol Rail"
+                                                : "FSK Symbol Rail";
+    }
+    ui_print_header(title);
     if (n <= 0) {
         ui_print_lborder();
         printw(" (no samples yet)\n");
@@ -54,7 +63,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     if (W < 32) {
         W = 32;
     }
-    /* Make the constellation a bit taller by default for readability */
+    /* Make the plot a bit taller by default for readability. */
     int H = rows / 2;
     if (H < 12) {
         H = 12;
@@ -69,7 +78,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     /* Blocks (eye-style) */
     static const char* block_palette[] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}; /* 9 levels */
     const int block_len = (int)(sizeof(block_palette) / sizeof(block_palette[0]));
-    /* Dots of increasing weight/size (preferred for constellation) */
+    /* Dots of increasing weight/size (preferred for sparse symbol plots) */
     static const char* dot_palette[] = {" ", "·", "∙", "•", "●", "⬤"}; /* 6 levels */
     const int dot_len = (int)(sizeof(dot_palette) / sizeof(dot_palette[0]));
     int use_dots = 1; /* default to dot style for constellation */
@@ -103,7 +112,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             free(s_den);
             s_den = NULL;
             s_den_cap = 0;
-            printw("| (constellation: out of memory)\n");
+            printw("| (visualizer: out of memory)\n");
             ui_print_hr();
             return;
         }
@@ -162,7 +171,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     /* Magnitude gate to reduce near-origin clutter */
     double gate = 0.10;
     if (opts) {
-        gate = (opts->mod_qpsk == 1) ? (double)opts->const_gate_qpsk : (double)opts->const_gate_other;
+        gate = cqpsk_enabled ? (double)opts->const_gate_qpsk : (double)opts->const_gate_other;
         if (gate < 0.0) {
             gate = 0.0;
         }
@@ -208,7 +217,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             continue;
         }
         double nx, ny;
-        if (opts && opts->const_norm_mode == 1) {
+        if (!is_symbol_rail && opts && opts->const_norm_mode == 1) {
             /* Unit-circle normalization (direction only) */
             if (r <= 1e-9) {
                 continue; /* skip degenerate */
@@ -304,26 +313,9 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             char ch = ' ';
             int used_guide = 0;
 
-            if (is_haxis || is_vaxis) {
-                /* Choose overlay char */
-                if (is_haxis && is_vaxis) {
-                    ch = '+';
-                } else if (is_haxis) {
-                    ch = '-';
-                } else if (is_vaxis) {
-                    ch = '|';
-                }
-                if (opts && opts->eye_color && has_colors()) {
-                    short gp = (is_haxis && is_vaxis) ? guide_x_pair : (is_haxis ? guide_h_pair : guide_v_pair);
-                    if (last_pair >= 0) {
-                        attroff(COLOR_PAIR(last_pair));
-                        last_pair = -1;
-                    }
-                    attron(COLOR_PAIR(gp));
-                    used_guide = gp;
-                }
-            } else if (inside_sq && d > 0) {
-                /* Density glyph + color */
+            if (inside_sq && d > 0) {
+                /* Density glyph + color. Draw this before guide axes so real-axis
+                 * FM/GFSK/C4FM symbol clusters are not hidden by the horizontal guide. */
                 double f = (double)d / (double)dmax;
                 if (f < 0.0) {
                     f = 0.0;
@@ -381,6 +373,24 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
                     }
                     ch = ascii_palette[idx];
                 }
+            } else if (is_haxis || is_vaxis) {
+                /* Choose overlay char */
+                if (is_haxis && is_vaxis) {
+                    ch = '+';
+                } else if (is_haxis) {
+                    ch = '-';
+                } else if (is_vaxis) {
+                    ch = '|';
+                }
+                if (opts && opts->eye_color && has_colors()) {
+                    short gp = (is_haxis && is_vaxis) ? guide_x_pair : (is_haxis ? guide_h_pair : guide_v_pair);
+                    if (last_pair >= 0) {
+                        attroff(COLOR_PAIR(last_pair));
+                        last_pair = -1;
+                    }
+                    attron(COLOR_PAIR(gp));
+                    used_guide = gp;
+                }
             }
 
             if (ch != 0) {
@@ -424,7 +434,11 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
 
     /* Legend */
     ui_print_lborder();
-    printw(" Ref: axes '+', '-', '|'\n");
+    if (is_symbol_rail) {
+        printw(" Ref: '-' symbol rail, '|' zero, '+' origin\n");
+    } else {
+        printw(" Ref: axes '+', '-', '|'\n");
+    }
     if (use_unicode) {
         if (use_dots) {
             ui_print_lborder();
@@ -442,7 +456,11 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     }
     /* Color bar legend (consistent with Eye Diagram) */
     ui_print_lborder();
-    printw(" Norm: %s (toggle with 'n')\n", (opts && opts->const_norm_mode) ? "unit-circle" : "radial (p99)");
+    if (is_symbol_rail) {
+        printw(" Scale: rail p99; Y fixed at 0\n");
+    } else {
+        printw(" Norm: %s (toggle with 'n')\n", (opts && opts->const_norm_mode) ? "unit-circle" : "radial (p99)");
+    }
     if (opts && opts->eye_color && has_colors()) {
         ui_print_lborder();
         addch('\n');
@@ -483,13 +501,11 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         printw("100%%\n");
     }
     attron(COLOR_PAIR(4));
-    attron(COLOR_PAIR(4));
     ui_print_hr();
-    attroff(COLOR_PAIR(4));
     attroff(COLOR_PAIR(4));
     /* s_den reused; no free */
 #else
-    ui_print_header("Constellation");
+    ui_print_header("Constellation / Symbol Rail");
     printw("| (RTL disabled in this build)\n");
     ui_print_hr();
 #endif
@@ -499,7 +515,7 @@ void
 print_eye_view(dsd_opts* opts, dsd_state* state) {
     UNUSED2(opts, state);
 #ifdef USE_RTLSDR
-    /* Fetch a snapshot of recent I-channel samples and SPS */
+    /* Fetch a snapshot of recent real eye samples and SPS */
     enum { MAXS = 16384 };
 
     static float buf[(size_t)MAXS];
@@ -1049,7 +1065,7 @@ print_fsk_hist_view(void) {
     }
     double dc_norm = (double)sum / (double)n / (double)peak; /* ~[-1,1] */
 
-    /* Adaptive quartile thresholds over recent I-channel samples. */
+    /* Adaptive quartile thresholds over recent real eye samples. */
     /* Downsample set for faster sort if needed */
     int step = (n > 4096) ? (n / 4096) : 1;
     int m = (n + step - 1) / step;

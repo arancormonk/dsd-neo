@@ -1624,7 +1624,15 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         }
         case UI_CMD_CONST_NORM_TOGGLE: {
             if (opts->audio_in_type == AUDIO_IN_RTL && opts->constellation == 1) {
+#ifdef USE_RADIO
+                int cqpsk_enabled = 0;
+                rtl_stream_dsp_get(&cqpsk_enabled, NULL, NULL);
+                if (cqpsk_enabled) {
+                    opts->const_norm_mode = (opts->const_norm_mode == 0) ? 1 : 0;
+                }
+#else
                 opts->const_norm_mode = (opts->const_norm_mode == 0) ? 1 : 0;
+#endif
             }
             break;
         }
@@ -1634,7 +1642,14 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 if (c->n >= (int)sizeof(float)) {
                     memcpy(&d, c->data, sizeof(float));
                 }
-                float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
+                float* g = &opts->const_gate_other;
+#ifdef USE_RADIO
+                int cqpsk_enabled = 0;
+                rtl_stream_dsp_get(&cqpsk_enabled, NULL, NULL);
+                if (cqpsk_enabled) {
+                    g = &opts->const_gate_qpsk;
+                }
+#endif
                 *g += d;
                 if (*g < 0.0f) {
                     *g = 0.0f;

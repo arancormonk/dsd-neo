@@ -54,16 +54,37 @@ main(void) {
         }
     }
 
+    {
+        double got_c4fm = dsd_snr_bias_c4fm_bw_db(rate_out, ted_sps, 6250.0);
+        if (!nearly_equal(got_c4fm, 6.87638779968488, tol)) {
+            fprintf(stderr, "SNR bias C4FM explicit BW mismatch: got %.12f expected %.12f\n", got_c4fm,
+                    6.87638779968488);
+            return 1;
+        }
+        double got_evm = dsd_snr_bias_evm_bw_db(rate_out, ted_sps, 3125.0);
+        if (!nearly_equal(got_evm, 0.05608784304506775, tol)) {
+            fprintf(stderr, "SNR bias EVM explicit BW mismatch: got %.12f expected %.12f\n", got_evm,
+                    0.05608784304506775);
+            return 1;
+        }
+    }
+
     /* Fallback behavior for invalid inputs should be stable. */
     {
         const double fb_c4fm = dsd_snr_bias_c4fm_db(0, ted_sps, DSD_CH_LPF_PROFILE_WIDE);
         const double fb_evm = dsd_snr_bias_evm_db(rate_out, 0, DSD_CH_LPF_PROFILE_WIDE);
+        const double fb_bw = dsd_snr_bias_evm_bw_db(rate_out, ted_sps, -1.0);
         if (!nearly_equal(fb_c4fm, 7.93, tol)) {
             fprintf(stderr, "SNR bias C4FM fallback mismatch: got %.12f expected %.12f\n", fb_c4fm, 7.93);
             return 1;
         }
         if (!nearly_equal(fb_evm, 2.42, tol)) {
             fprintf(stderr, "SNR bias EVM fallback mismatch: got %.12f expected %.12f\n", fb_evm, 2.42);
+            return 1;
+        }
+        if (!nearly_equal(fb_bw, 4.245726150081294, tol)) {
+            fprintf(stderr, "SNR bias explicit BW fallback mismatch: got %.12f expected %.12f\n", fb_bw,
+                    4.245726150081294);
             return 1;
         }
     }

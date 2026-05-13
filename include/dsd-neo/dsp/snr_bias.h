@@ -20,6 +20,15 @@ extern "C" {
 double dsd_snr_bias_c4fm_db(int rate_out, int ted_sps, int lpf_profile);
 
 /**
+ * @brief Compute C4FM SNR bias using an explicit post-demod noise bandwidth.
+ *
+ * Use this for SDR++-style FM paths where the estimator sees discriminator
+ * samples after an audio low-pass rather than complex samples after the
+ * channel LPF profile.
+ */
+double dsd_snr_bias_c4fm_bw_db(int rate_out, int ted_sps, double noise_bw_hz);
+
+/**
  * @brief Compute total SNR bias for EVM/GFSK/QPSK given DSP parameters.
  *
  * @param rate_out Output sample rate in Hz.
@@ -28,6 +37,11 @@ double dsd_snr_bias_c4fm_db(int rate_out, int ted_sps, int lpf_profile);
  * @return Total bias in dB to subtract from raw SNR estimate.
  */
 double dsd_snr_bias_evm_db(int rate_out, int ted_sps, int lpf_profile);
+
+/**
+ * @brief Compute EVM/GFSK/QPSK SNR bias using an explicit post-demod noise bandwidth.
+ */
+double dsd_snr_bias_evm_bw_db(int rate_out, int ted_sps, double noise_bw_hz);
 
 #ifdef __cplusplus
 }

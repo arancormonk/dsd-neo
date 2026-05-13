@@ -18,7 +18,7 @@
 #define DSD_KEY_ENTER            10
 #define DSD_KEY_QUIT             'q'
 
-// Constellation view
+// Constellation / symbol rail view
 #define DSD_KEY_CONST_VIEW_LOWER 'o'
 #define DSD_KEY_CONST_VIEW_UPPER 'O'
 #define DSD_KEY_CONST_NORM       'n' // lowercase only (avoid clash with PBF 'N')

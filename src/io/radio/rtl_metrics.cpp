@@ -51,6 +51,9 @@ extern demod_state demod;
 extern std::atomic<double> g_snr_c4fm_db;
 extern std::atomic<double> g_snr_qpsk_db;
 extern std::atomic<double> g_snr_gfsk_db;
+extern std::atomic<int> g_snr_c4fm_src;
+extern std::atomic<int> g_snr_qpsk_src;
+extern std::atomic<int> g_snr_gfsk_src;
 
 /* Supervisory tuner autogain gate (0/1), controlled via env/UI. */
 std::atomic<int> g_tuner_autogain_on{0};
@@ -622,18 +625,27 @@ dsd_rtl_stream_reset_costas(void) {
 /** @brief Get the smoothed C4FM SNR estimate in dB (negative when unavailable). */
 extern "C" double
 rtl_stream_get_snr_c4fm(void) {
+    if (g_snr_c4fm_src.load(std::memory_order_relaxed) == 0) {
+        return -100.0;
+    }
     return g_snr_c4fm_db.load(std::memory_order_relaxed);
 }
 
 /** @brief Get the smoothed CQPSK SNR estimate in dB (negative when unavailable). */
 extern "C" double
 rtl_stream_get_snr_cqpsk(void) {
+    if (g_snr_qpsk_src.load(std::memory_order_relaxed) == 0) {
+        return -100.0;
+    }
     return g_snr_qpsk_db.load(std::memory_order_relaxed);
 }
 
 /** @brief Get the smoothed GFSK SNR estimate in dB (negative when unavailable). */
 extern "C" double
 rtl_stream_get_snr_gfsk(void) {
+    if (g_snr_gfsk_src.load(std::memory_order_relaxed) == 0) {
+        return -100.0;
+    }
     return g_snr_gfsk_db.load(std::memory_order_relaxed);
 }
 

@@ -7,7 +7,7 @@
  * @brief Visualizer panel API for ncurses UI.
  *
  * Provides functions for rendering RTL-SDR visualization panels including
- * constellation diagram, eye diagram, FSK histogram, and spectrum analyzer.
+ * constellation/symbol rail, eye diagram, FSK histogram, and spectrum analyzer.
  */
 
 #pragma once
@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-/** Render IQ constellation diagram (requires USE_RTLSDR). */
+/** Render CQPSK/QPSK IQ constellation or FM-family symbol rail (requires USE_RTLSDR). */
 void print_constellation_view(dsd_opts* opts, dsd_state* state);
 
 /** Render eye diagram for C4FM/FSK (requires USE_RTLSDR). */

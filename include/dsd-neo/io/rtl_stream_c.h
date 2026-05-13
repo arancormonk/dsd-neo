@@ -320,11 +320,12 @@ int rtl_stream_get_ted_force(void);
 /**
  * @brief Capture a snapshot of the eye diagram buffer (timing helper).
  *
- * Copies up to `max_samples` real I-channel samples from the decimated complex
- * baseband into `out` and returns the number of samples copied. Also writes
- * the current nominal SPS into out_sps when available.
+ * Copies up to `max_samples` real eye samples into `out` and returns the number
+ * copied. CQPSK/QPSK uses the existing complex-symbol I rail; FM-family modes
+ * use the normalized discriminator output that feeds symbol decoding. Also
+ * writes the current nominal SPS into out_sps when available.
  *
- * @param out Destination buffer for I-channel samples (must not be NULL).
+ * @param out Destination buffer for real eye samples (must not be NULL).
  * @param max_samples Maximum number of samples to copy.
  * @param out_sps [out] Receives nominal samples-per-symbol (may be NULL).
  * @return Number of samples written; 0 if unavailable.
@@ -334,8 +335,8 @@ int rtl_stream_eye_get(float* out, int max_samples, int* out_sps);
 /**
  * @brief Get smoothed demod SNR estimate in dB (post-filter, center-of-symbol).
  *
- * Computed on the demod thread for digital modes using I-channel samples near
- * symbol centers and a 4-level clustering heuristic for C4FM/FSK.
+ * Computed on the demod thread for digital FM modes using normalized
+ * discriminator samples near symbol centers and a 4-level clustering heuristic.
  * Returns a negative value when unavailable.
  *
  * @return SNR in dB, or negative when unavailable.
@@ -376,7 +377,7 @@ double rtl_stream_get_snr_bias_evm(void);
 /**
  * @brief Estimate C4FM SNR from the eye buffer as a lightweight fallback.
  *
- * Uses quartile clustering over eye-diagram I-channel samples near symbol
+ * Uses quartile clustering over eye-diagram discriminator samples near symbol
  * centers to approximate signal and noise variances, returning SNR in dB.
  * Returns a negative value (<= -50 dB) when insufficient data is available.
  */
@@ -393,7 +394,7 @@ double rtl_stream_estimate_snr_qpsk_const(void);
 /**
  * @brief Estimate GFSK SNR from the eye buffer as a fallback.
  *
- * Uses a two-level (median split) clustering on eye-diagram I-channel
+ * Uses a two-level (median split) clustering on eye-diagram discriminator
  * samples near symbol centers; returns SNR in dB. Returns <= -50 dB when
  * insufficient data.
  */
@@ -599,9 +600,11 @@ void rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_del
 /**
  * @brief Capture a snapshot of recent constellation points after DSP.
  *
- * Copies up to `max_points` I/Q pairs into `out_xy` as interleaved floats
+ * Copies up to `max_points` pairs into `out_xy` as interleaved floats
  * [I0,Q0,I1,Q1,...] on the normalized float amplitude scale used by the DSP.
- * Returns the number of pairs copied (0 if unavailable).
+ * CQPSK/QPSK reports complex symbol points; FM-family modes report real
+ * discriminator symbols on the horizontal axis as [symbol, 0] pairs. Returns
+ * the number of pairs copied (0 if unavailable).
  *
  * @param out_xy Destination buffer for interleaved I/Q pairs (must not be NULL).
  * @param max_points Maximum number of pairs to write.
