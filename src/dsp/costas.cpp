@@ -202,6 +202,10 @@ constexpr float kCqpskCostasDetectorTargetMag = 0.85f * 0.85f;
 constexpr float kCqpskCostasConfidenceFloorMag = 0.10f;
 constexpr float kCqpskCostasConfidenceFullMag = 0.35f;
 constexpr float kCqpskCostasErrorSmoothAlpha = 0.25f;
+constexpr float kCqpskCostasErrorSmoothAlphaMin = 0.10f;
+constexpr float kCqpskCostasErrorKickDeltaLow = 0.02f;
+constexpr float kCqpskCostasErrorKickDeltaHigh = 0.18f;
+constexpr float kCqpskCostasErrorSmoothBootstrap = 1.0e-6f;
 
 static inline float
 smoothstep(float edge0, float edge1, float x) {
@@ -221,6 +225,20 @@ cqpsk_costas_confidence_from_mag(float mag) {
         return 0.0f;
     }
     return smoothstep(kCqpskCostasConfidenceFloorMag, kCqpskCostasConfidenceFullMag, mag);
+}
+
+static inline float
+cqpsk_costas_error_smooth_alpha(float error_raw, float error_smooth) {
+    if (!std::isfinite(error_raw) || !std::isfinite(error_smooth)
+        || std::fabs(error_smooth) <= kCqpskCostasErrorSmoothBootstrap) {
+        return kCqpskCostasErrorSmoothAlpha;
+    }
+
+    /* Treat abrupt discriminator disagreement as a phase kick and lower the
+     * EMA gain; sustained error converges back through the smoothed state. */
+    float kick =
+        smoothstep(kCqpskCostasErrorKickDeltaLow, kCqpskCostasErrorKickDeltaHigh, std::fabs(error_raw - error_smooth));
+    return kCqpskCostasErrorSmoothAlpha + (kCqpskCostasErrorSmoothAlphaMin - kCqpskCostasErrorSmoothAlpha) * kick;
 }
 
 static inline float
@@ -766,7 +784,8 @@ op25_costas_loop_cc(struct demod_state* d) {
             zero_conf_count++;
         } else {
             error_raw = branchless_clip(phase_detector_4(det_r, det_j) * confidence, 1.0f);
-            error_smooth += kCqpskCostasErrorSmoothAlpha * (error_raw - error_smooth);
+            float smooth_alpha = cqpsk_costas_error_smooth_alpha(error_raw, error_smooth);
+            error_smooth += smooth_alpha * (error_raw - error_smooth);
             error = branchless_clip(error_smooth, 1.0f);
             confidence_acc += confidence;
         }

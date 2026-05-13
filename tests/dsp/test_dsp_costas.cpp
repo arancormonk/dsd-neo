@@ -15,7 +15,7 @@
  * The differential phasor block preserves GNU Radio diff_phasor_cc phase.
  * Costas normalizes reliable magnitudes and weights loop updates by raw phasor
  * confidence, then smooths the discriminator error to reduce simulcast phase
- * kicks.
+ * kicks with adaptive damping for abrupt raw-error jumps.
  */
 
 #include <dsd-neo/dsp/costas.h>
@@ -533,6 +533,56 @@ test_costas_smooths_error_step(void) {
 }
 
 /*
+ * Test: abrupt discriminator kicks reduce the Costas smoothing gain.
+ */
+static int
+test_costas_adapts_smoothing_for_phase_kick(void) {
+    const float angle = 0.30f;
+    const float mag = 0.70f;
+    const float seed_error = 0.05f;
+    float buf[2] = {mag * cosf(angle), mag * sinf(angle)};
+
+    demod_state* s = alloc_state();
+    if (!s) {
+        fprintf(stderr, "alloc failed\n");
+        return 1;
+    }
+    s->lowpassed = buf;
+    s->lp_len = 2;
+    s->cqpsk_enable = 1;
+    s->costas_state.initialized = 1;
+    s->costas_state.alpha = 0.04f;
+    s->costas_state.beta = 0.0002f;
+    s->costas_state.max_freq = 1.0f;
+    s->costas_state.min_freq = -1.0f;
+    s->costas_state.error_smooth = seed_error;
+
+    op25_costas_loop_cc(s);
+
+    const float target = 0.85f * 0.85f;
+    const float raw_error = target * (sinf(angle) - cosf(angle));
+    const float fixed_error = seed_error + 0.25f * (raw_error - seed_error);
+    const float expected_error = seed_error + 0.10f * (raw_error - seed_error);
+    const float expected_freq = s->costas_state.beta * expected_error;
+    const float expected_phase = expected_freq + s->costas_state.alpha * expected_error;
+
+    if (fabsf(s->costas_state.error_smooth - expected_error) > 1.0e-5f
+        || fabsf(s->costas_state.error - expected_error) > 1.0e-5f
+        || fabsf(s->costas_state.freq - expected_freq) > 1.0e-6f
+        || fabsf(s->costas_state.phase - expected_phase) > 1.0e-5f
+        || fabsf(s->costas_state.error_smooth - fixed_error) < 0.01f) {
+        fprintf(stderr, "COSTAS ADAPT: err=%f smooth=%f freq=%f phase=%f expected err=%f freq=%f phase=%f fixed=%f\n",
+                s->costas_state.error, s->costas_state.error_smooth, s->costas_state.freq, s->costas_state.phase,
+                expected_error, expected_freq, expected_phase, fixed_error);
+        free(s);
+        return 1;
+    }
+
+    free(s);
+    return 0;
+}
+
+/*
  * Test: TED state is properly initialized by the combined block.
  */
 static int
@@ -741,6 +791,9 @@ main(void) {
         return 1;
     }
     if (test_costas_smooths_error_step() != 0) {
+        return 1;
+    }
+    if (test_costas_adapts_smoothing_for_phase_kick() != 0) {
         return 1;
     }
     if (test_ted_initialization() != 0) {
