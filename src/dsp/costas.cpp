@@ -198,6 +198,41 @@ phase_detector_4(float real, float imag) {
     return ((real > 0.0f ? 1.0f : -1.0f) * imag - (imag > 0.0f ? 1.0f : -1.0f) * real);
 }
 
+constexpr float kCqpskDiffPhasorTargetMag = 0.85f * 0.85f;
+constexpr float kCqpskDiffPhasorNormFloorMag = 0.10f;
+
+static inline void
+normalize_diff_phasor_for_costas(float* real, float* imag) {
+    float r = real ? *real : 0.0f;
+    float i = imag ? *imag : 0.0f;
+    float mag2 = r * r + i * i;
+    if (!std::isfinite(mag2)) {
+        if (real) {
+            *real = 0.0f;
+        }
+        if (imag) {
+            *imag = 0.0f;
+        }
+        return;
+    }
+
+    const float floor2 = kCqpskDiffPhasorNormFloorMag * kCqpskDiffPhasorNormFloorMag;
+    if (mag2 <= floor2) {
+        return;
+    }
+
+    float scale = kCqpskDiffPhasorTargetMag / sqrtf(mag2);
+    if (!std::isfinite(scale)) {
+        return;
+    }
+    if (real) {
+        *real = r * scale;
+    }
+    if (imag) {
+        *imag = i * scale;
+    }
+}
+
 /* NaN check helper */
 #define IS_NAN(x) ((x) != (x))
 
@@ -544,15 +579,17 @@ op25_gardner_cc(struct demod_state* d) {
 }
 
 /*
- * External differential phasor (matches GNU Radio digital.diff_phasor_cc).
+ * External differential phasor.
  *
  * y[n] = x[n] * conj(x[n-1])
  *
  * From OP25's p25_demodulator_dev.py line 408:
  *   self.diffdec = digital.diff_phasor_cc()
  *
- * This is applied AFTER Gardner timing recovery, producing differential
- * phase symbols for the Costas loop.
+ * This is applied AFTER Gardner timing recovery. The differential phase matches
+ * GNU Radio's diff_phasor_cc, but dsd-neo normalizes reliable phasor magnitudes
+ * before Costas so simulcast envelope bounce does not modulate the Costas loop
+ * gain. Deep fades below the floor are left low instead of being boosted.
  */
 extern "C" void
 op25_diff_phasor_cc(struct demod_state* d) {
@@ -574,6 +611,7 @@ op25_diff_phasor_cc(struct demod_state* d) {
         /* y = x * conj(prev) = (cur_r + j*cur_j) * (prev_r - j*prev_j) */
         float out_r = cur_r * prev_r + cur_j * prev_j;
         float out_j = cur_j * prev_r - cur_r * prev_j;
+        normalize_diff_phasor_for_costas(&out_r, &out_j);
 
         iq[nn * 2] = out_r;
         iq[nn * 2 + 1] = out_j;

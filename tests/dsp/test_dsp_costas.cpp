@@ -11,6 +11,10 @@
  *
  * dsd-neo implements this as separate blocks:
  *   op25_gardner_cc -> op25_diff_phasor_cc -> op25_costas_loop_cc
+ *
+ * The differential phasor block preserves GNU Radio diff_phasor_cc phase and
+ * normalizes reliable magnitudes before Costas to avoid envelope-driven loop
+ * gain swings on simulcast fades.
  */
 
 #include <dsd-neo/dsp/costas.h>
@@ -228,9 +232,10 @@ test_disabled_when_not_cqpsk(void) {
 }
 
 /*
- * Test: External diff_phasor matches GNU Radio diff_phasor_cc.
+ * Test: External diff_phasor phase matches GNU Radio diff_phasor_cc.
  *
- * Verify that op25_diff_phasor_cc computes y[n] = x[n] * conj(x[n-1]).
+ * Verify that op25_diff_phasor_cc preserves the expected differential phase
+ * y[n] = x[n] * conj(x[n-1]).
  */
 static int
 test_diff_phasor_correctness(void) {
@@ -281,6 +286,100 @@ test_diff_phasor_correctness(void) {
         fprintf(stderr, "DIFF: sample 1 angle wrong (ang=%f, expected ~90°)\n", ang1);
         free(s);
         return 1;
+    }
+
+    free(s);
+    return 0;
+}
+
+/*
+ * Test: reliable differential phasor magnitudes are normalized before Costas.
+ *
+ * The Costas phase detector gain is proportional to input magnitude, so
+ * simulcast AM ripple should not directly change loop gain once the phasor has
+ * enough magnitude to be trusted.
+ */
+static int
+test_diff_phasor_normalizes_reliable_magnitude(void) {
+    float buf[8]; /* 4 complex samples */
+
+    /* Same differential phases as the phase test, but with large envelope swings. */
+    buf[0] = 0.20f;
+    buf[1] = 0.00f; /* 0 deg, mag 0.20 */
+    buf[2] = 0.00f;
+    buf[3] = 2.00f; /* 90 deg, mag 2.00 */
+    buf[4] = -0.40f;
+    buf[5] = 0.00f; /* 180 deg, mag 0.40 */
+    buf[6] = 0.00f;
+    buf[7] = -1.40f; /* -90 deg, mag 1.40 */
+
+    demod_state* s = alloc_state();
+    if (!s) {
+        fprintf(stderr, "alloc failed\n");
+        return 1;
+    }
+    s->lowpassed = buf;
+    s->lp_len = 8;
+    s->cqpsk_diff_prev_r = 1.0f;
+    s->cqpsk_diff_prev_j = 0.0f;
+
+    op25_diff_phasor_cc(s);
+
+    const float target = 0.85f * 0.85f;
+    for (int k = 0; k < 4; k++) {
+        float I = buf[(size_t)k * 2];
+        float Q = buf[(size_t)k * 2 + 1];
+        float mag = sqrtf(I * I + Q * Q);
+        if (fabsf(mag - target) > 0.0001f) {
+            fprintf(stderr, "DIFF NORM: sample %d magnitude %f expected %f\n", k, mag, target);
+            free(s);
+            return 1;
+        }
+    }
+
+    float ang1 = atan2f(buf[3], buf[2]);
+    if (fabsf(ang1 - 1.5708f) > 0.1f) {
+        fprintf(stderr, "DIFF NORM: sample 1 phase changed unexpectedly (ang=%f)\n", ang1);
+        free(s);
+        return 1;
+    }
+
+    free(s);
+    return 0;
+}
+
+/*
+ * Test: deep fades are not boosted to the Costas target magnitude.
+ */
+static int
+test_diff_phasor_does_not_boost_deep_fade(void) {
+    float buf[4]; /* 2 complex samples */
+    buf[0] = 0.03f;
+    buf[1] = 0.00f;
+    buf[2] = 0.00f;
+    buf[3] = 0.80f;
+
+    demod_state* s = alloc_state();
+    if (!s) {
+        fprintf(stderr, "alloc failed\n");
+        return 1;
+    }
+    s->lowpassed = buf;
+    s->lp_len = 4;
+    s->cqpsk_diff_prev_r = 1.0f;
+    s->cqpsk_diff_prev_j = 0.0f;
+
+    op25_diff_phasor_cc(s);
+
+    for (int k = 0; k < 2; k++) {
+        float I = buf[(size_t)k * 2];
+        float Q = buf[(size_t)k * 2 + 1];
+        float mag = sqrtf(I * I + Q * Q);
+        if (mag > 0.05f) {
+            fprintf(stderr, "DIFF FADE: sample %d magnitude %f was boosted\n", k, mag);
+            free(s);
+            return 1;
+        }
     }
 
     free(s);
@@ -484,6 +583,12 @@ main(void) {
         return 1;
     }
     if (test_diff_phasor_correctness() != 0) {
+        return 1;
+    }
+    if (test_diff_phasor_normalizes_reliable_magnitude() != 0) {
+        return 1;
+    }
+    if (test_diff_phasor_does_not_boost_deep_fade() != 0) {
         return 1;
     }
     if (test_ted_initialization() != 0) {

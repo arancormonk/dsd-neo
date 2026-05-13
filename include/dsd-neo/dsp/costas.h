@@ -181,15 +181,17 @@ void dsd_costas_reset(dsd_costas_loop_state_t* c);
 void op25_gardner_cc(struct demod_state* d);
 
 /**
- * @brief External differential phasor decoder (matches GNU Radio diff_phasor_cc).
+ * @brief External differential phasor decoder with pre-Costas magnitude stabilization.
  *
  * Computes y[n] = x[n] * conj(x[n-1]) to produce differential phase output.
  *
  * From OP25's p25_demodulator_dev.py line 408:
  *   self.diffdec = digital.diff_phasor_cc()
  *
- * This is applied AFTER Gardner timing recovery, producing differential
- * phase symbols for the Costas loop.
+ * This is applied AFTER Gardner timing recovery. The differential phase matches
+ * GNU Radio diff_phasor_cc, and reliable phasor magnitudes are normalized before
+ * the Costas loop so simulcast envelope bounce does not change effective loop
+ * gain. Deep fades remain low instead of being boosted.
  *
  * @param d Demodulator state. Modifies lowpassed in-place to differential phasors.
  */
