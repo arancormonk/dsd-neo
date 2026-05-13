@@ -198,39 +198,56 @@ phase_detector_4(float real, float imag) {
     return ((real > 0.0f ? 1.0f : -1.0f) * imag - (imag > 0.0f ? 1.0f : -1.0f) * real);
 }
 
-constexpr float kCqpskDiffPhasorTargetMag = 0.85f * 0.85f;
-constexpr float kCqpskDiffPhasorNormFloorMag = 0.10f;
+constexpr float kCqpskCostasDetectorTargetMag = 0.85f * 0.85f;
+constexpr float kCqpskCostasConfidenceFloorMag = 0.10f;
+constexpr float kCqpskCostasConfidenceFullMag = 0.35f;
 
-static inline void
-normalize_diff_phasor_for_costas(float* real, float* imag) {
-    float r = real ? *real : 0.0f;
-    float i = imag ? *imag : 0.0f;
-    float mag2 = r * r + i * i;
+static inline float
+smoothstep(float edge0, float edge1, float x) {
+    if (x <= edge0) {
+        return 0.0f;
+    }
+    if (x >= edge1) {
+        return 1.0f;
+    }
+    float t = (x - edge0) / (edge1 - edge0);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static inline float
+cqpsk_costas_confidence_from_mag(float mag) {
+    if (!std::isfinite(mag)) {
+        return 0.0f;
+    }
+    return smoothstep(kCqpskCostasConfidenceFloorMag, kCqpskCostasConfidenceFullMag, mag);
+}
+
+static inline float
+normalize_costas_detector_sample(float real, float imag, float* out_real, float* out_imag) {
+    float mag2 = real * real + imag * imag;
     if (!std::isfinite(mag2)) {
-        if (real) {
-            *real = 0.0f;
-        }
-        if (imag) {
-            *imag = 0.0f;
-        }
-        return;
+        *out_real = 0.0f;
+        *out_imag = 0.0f;
+        return 0.0f;
     }
 
-    const float floor2 = kCqpskDiffPhasorNormFloorMag * kCqpskDiffPhasorNormFloorMag;
-    if (mag2 <= floor2) {
-        return;
+    float mag = sqrtf(mag2);
+    float confidence = cqpsk_costas_confidence_from_mag(mag);
+    if (mag <= kCqpskCostasConfidenceFloorMag) {
+        *out_real = real;
+        *out_imag = imag;
+        return confidence;
     }
 
-    float scale = kCqpskDiffPhasorTargetMag / sqrtf(mag2);
+    float scale = kCqpskCostasDetectorTargetMag / mag;
     if (!std::isfinite(scale)) {
-        return;
+        *out_real = 0.0f;
+        *out_imag = 0.0f;
+        return 0.0f;
     }
-    if (real) {
-        *real = r * scale;
-    }
-    if (imag) {
-        *imag = i * scale;
-    }
+    *out_real = real * scale;
+    *out_imag = imag * scale;
+    return confidence;
 }
 
 /* NaN check helper */
@@ -586,10 +603,8 @@ op25_gardner_cc(struct demod_state* d) {
  * From OP25's p25_demodulator_dev.py line 408:
  *   self.diffdec = digital.diff_phasor_cc()
  *
- * This is applied AFTER Gardner timing recovery. The differential phase matches
- * GNU Radio's diff_phasor_cc, but dsd-neo normalizes reliable phasor magnitudes
- * before Costas so simulcast envelope bounce does not modulate the Costas loop
- * gain. Deep fades below the floor are left low instead of being boosted.
+ * This is applied AFTER Gardner timing recovery, producing raw differential
+ * phase symbols for the Costas loop.
  */
 extern "C" void
 op25_diff_phasor_cc(struct demod_state* d) {
@@ -611,7 +626,6 @@ op25_diff_phasor_cc(struct demod_state* d) {
         /* y = x * conj(prev) = (cur_r + j*cur_j) * (prev_r - j*prev_j) */
         float out_r = cur_r * prev_r + cur_j * prev_j;
         float out_j = cur_j * prev_r - cur_r * prev_j;
-        normalize_diff_phasor_for_costas(&out_r, &out_j);
 
         iq[nn * 2] = out_r;
         iq[nn * 2 + 1] = out_j;
@@ -631,7 +645,10 @@ op25_diff_phasor_cc(struct demod_state* d) {
  *   op25/gr-op25_repeater/lib/costas_loop_cc_impl.cc
  *
  * This operates on DIFFERENTIALLY DECODED symbols (after diff_phasor_cc).
- * The phase detector expects symbols at axis-aligned positions.
+ * The phase detector expects symbols at axis-aligned positions. dsd-neo
+ * normalizes reliable phasor magnitudes before detection and weights loop
+ * updates by raw phasor magnitude so simulcast fades do not train the loop as
+ * strongly as full-confidence samples.
  *
  * Signal flow:
  *   Input: Symbol-rate differential phasors from diff_phasor_cc
@@ -726,6 +743,9 @@ op25_costas_loop_cc(struct demod_state* d) {
          * Complex multiply: out = in * nco */
         float out_r = in_r * nco_r - in_j * nco_j;
         float out_j = in_r * nco_j + in_j * nco_r;
+        float det_r = 0.0f;
+        float det_j = 0.0f;
+        float confidence = normalize_costas_detector_sample(out_r, out_j, &det_r, &det_j);
 
         /* OP25 phase error detector for QPSK (order=4)
          * From costas_loop_cc_impl.cc line 150:
@@ -733,7 +753,7 @@ op25_costas_loop_cc(struct demod_state* d) {
          *
          * Note: OP25 does NOT apply PT_45 rotation here (line 149 is commented out).
          * The phase detector expects axis-aligned symbols. */
-        float error = phase_detector_4(out_r, out_j);
+        float error = phase_detector_4(det_r, det_j) * confidence;
         error = branchless_clip(error, 1.0f);
         last_error = error;
         err_abs_acc += std::fabs((double)error);
@@ -762,8 +782,8 @@ op25_costas_loop_cc(struct demod_state* d) {
         }
 
         /* Write carrier-corrected output */
-        iq[nn * 2] = out_r;
-        iq[nn * 2 + 1] = out_j;
+        iq[nn * 2] = det_r;
+        iq[nn * 2 + 1] = det_j;
     }
 
     /* Save state */

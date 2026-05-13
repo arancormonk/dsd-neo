@@ -12,9 +12,9 @@
  * dsd-neo implements this as separate blocks:
  *   op25_gardner_cc -> op25_diff_phasor_cc -> op25_costas_loop_cc
  *
- * The differential phasor block preserves GNU Radio diff_phasor_cc phase and
- * normalizes reliable magnitudes before Costas to avoid envelope-driven loop
- * gain swings on simulcast fades.
+ * The differential phasor block preserves GNU Radio diff_phasor_cc phase.
+ * Costas normalizes reliable magnitudes and weights loop updates by raw phasor
+ * confidence to avoid envelope-driven loop gain swings on simulcast fades.
  */
 
 #include <dsd-neo/dsp/costas.h>
@@ -293,17 +293,17 @@ test_diff_phasor_correctness(void) {
 }
 
 /*
- * Test: reliable differential phasor magnitudes are normalized before Costas.
+ * Test: reliable Costas detector magnitudes are normalized.
  *
  * The Costas phase detector gain is proportional to input magnitude, so
  * simulcast AM ripple should not directly change loop gain once the phasor has
  * enough magnitude to be trusted.
  */
 static int
-test_diff_phasor_normalizes_reliable_magnitude(void) {
+test_costas_normalizes_reliable_magnitude(void) {
     float buf[8]; /* 4 complex samples */
 
-    /* Same differential phases as the phase test, but with large envelope swings. */
+    /* Differential phasors with large envelope swings. */
     buf[0] = 0.20f;
     buf[1] = 0.00f; /* 0 deg, mag 0.20 */
     buf[2] = 0.00f;
@@ -320,10 +320,14 @@ test_diff_phasor_normalizes_reliable_magnitude(void) {
     }
     s->lowpassed = buf;
     s->lp_len = 8;
-    s->cqpsk_diff_prev_r = 1.0f;
-    s->cqpsk_diff_prev_j = 0.0f;
+    s->cqpsk_enable = 1;
+    s->costas_state.initialized = 1;
+    s->costas_state.alpha = 0.0f;
+    s->costas_state.beta = 0.0f;
+    s->costas_state.max_freq = 1.0f;
+    s->costas_state.min_freq = -1.0f;
 
-    op25_diff_phasor_cc(s);
+    op25_costas_loop_cc(s);
 
     const float target = 0.85f * 0.85f;
     for (int k = 0; k < 4; k++) {
@@ -331,7 +335,7 @@ test_diff_phasor_normalizes_reliable_magnitude(void) {
         float Q = buf[(size_t)k * 2 + 1];
         float mag = sqrtf(I * I + Q * Q);
         if (fabsf(mag - target) > 0.0001f) {
-            fprintf(stderr, "DIFF NORM: sample %d magnitude %f expected %f\n", k, mag, target);
+            fprintf(stderr, "COSTAS NORM: sample %d magnitude %f expected %f\n", k, mag, target);
             free(s);
             return 1;
         }
@@ -339,7 +343,7 @@ test_diff_phasor_normalizes_reliable_magnitude(void) {
 
     float ang1 = atan2f(buf[3], buf[2]);
     if (fabsf(ang1 - 1.5708f) > 0.1f) {
-        fprintf(stderr, "DIFF NORM: sample 1 phase changed unexpectedly (ang=%f)\n", ang1);
+        fprintf(stderr, "COSTAS NORM: sample 1 phase changed unexpectedly (ang=%f)\n", ang1);
         free(s);
         return 1;
     }
@@ -349,15 +353,15 @@ test_diff_phasor_normalizes_reliable_magnitude(void) {
 }
 
 /*
- * Test: deep fades are not boosted to the Costas target magnitude.
+ * Test: deep fades are not boosted or allowed to train the Costas loop.
  */
 static int
-test_diff_phasor_does_not_boost_deep_fade(void) {
+test_costas_deep_fade_does_not_boost_or_train(void) {
     float buf[4]; /* 2 complex samples */
     buf[0] = 0.03f;
-    buf[1] = 0.00f;
-    buf[2] = 0.00f;
-    buf[3] = 0.80f;
+    buf[1] = 0.01f;
+    buf[2] = 0.028f;
+    buf[3] = 0.010f;
 
     demod_state* s = alloc_state();
     if (!s) {
@@ -366,23 +370,89 @@ test_diff_phasor_does_not_boost_deep_fade(void) {
     }
     s->lowpassed = buf;
     s->lp_len = 4;
-    s->cqpsk_diff_prev_r = 1.0f;
-    s->cqpsk_diff_prev_j = 0.0f;
+    s->cqpsk_enable = 1;
+    s->costas_state.initialized = 1;
+    s->costas_state.alpha = 0.04f;
+    s->costas_state.beta = 0.0002f;
+    s->costas_state.max_freq = 1.0f;
+    s->costas_state.min_freq = -1.0f;
 
-    op25_diff_phasor_cc(s);
+    op25_costas_loop_cc(s);
 
     for (int k = 0; k < 2; k++) {
         float I = buf[(size_t)k * 2];
         float Q = buf[(size_t)k * 2 + 1];
         float mag = sqrtf(I * I + Q * Q);
         if (mag > 0.05f) {
-            fprintf(stderr, "DIFF FADE: sample %d magnitude %f was boosted\n", k, mag);
+            fprintf(stderr, "COSTAS FADE: sample %d magnitude %f was boosted\n", k, mag);
             free(s);
             return 1;
         }
     }
 
+    if (fabsf(s->costas_state.phase) > 1.0e-7f || fabsf(s->costas_state.freq) > 1.0e-7f) {
+        fprintf(stderr, "COSTAS FADE: loop trained on deep fade phase=%f freq=%f\n", s->costas_state.phase,
+                s->costas_state.freq);
+        free(s);
+        return 1;
+    }
+
     free(s);
+    return 0;
+}
+
+static float
+run_single_costas_update(float mag, float* out_freq) {
+    const float angle = 0.30f;
+    float buf[2] = {mag * cosf(angle), mag * sinf(angle)};
+
+    demod_state* s = alloc_state();
+    if (!s) {
+        return 0.0f;
+    }
+    s->lowpassed = buf;
+    s->lp_len = 2;
+    s->cqpsk_enable = 1;
+    s->costas_state.initialized = 1;
+    s->costas_state.alpha = 0.04f;
+    s->costas_state.beta = 0.0002f;
+    s->costas_state.max_freq = 1.0f;
+    s->costas_state.min_freq = -1.0f;
+
+    op25_costas_loop_cc(s);
+
+    float phase = s->costas_state.phase;
+    if (out_freq) {
+        *out_freq = s->costas_state.freq;
+    }
+    free(s);
+    return phase;
+}
+
+/*
+ * Test: marginal phasors still update Costas, but less than full-confidence samples.
+ */
+static int
+test_costas_marginal_confidence_scales_loop_update(void) {
+    float full_freq = 0.0f;
+    float marginal_freq = 0.0f;
+    float full_phase = run_single_costas_update(0.70f, &full_freq);
+    float marginal_phase = run_single_costas_update(0.20f, &marginal_freq);
+
+    if (!(fabsf(full_phase) > 0.001f && fabsf(full_freq) > 0.000001f)) {
+        fprintf(stderr, "COSTAS CONF: full-confidence sample did not train phase=%f freq=%f\n", full_phase, full_freq);
+        return 1;
+    }
+    if (!(fabsf(marginal_phase) > 0.0001f && fabsf(marginal_freq) > 0.0f)) {
+        fprintf(stderr, "COSTAS CONF: marginal sample did not train phase=%f freq=%f\n", marginal_phase, marginal_freq);
+        return 1;
+    }
+    if (!(fabsf(marginal_phase) < fabsf(full_phase) && fabsf(marginal_freq) < fabsf(full_freq))) {
+        fprintf(stderr, "COSTAS CONF: marginal update not smaller full phase=%f freq=%f marginal phase=%f freq=%f\n",
+                full_phase, full_freq, marginal_phase, marginal_freq);
+        return 1;
+    }
+
     return 0;
 }
 
@@ -585,10 +655,13 @@ main(void) {
     if (test_diff_phasor_correctness() != 0) {
         return 1;
     }
-    if (test_diff_phasor_normalizes_reliable_magnitude() != 0) {
+    if (test_costas_normalizes_reliable_magnitude() != 0) {
         return 1;
     }
-    if (test_diff_phasor_does_not_boost_deep_fade() != 0) {
+    if (test_costas_deep_fade_does_not_boost_or_train() != 0) {
+        return 1;
+    }
+    if (test_costas_marginal_confidence_scales_loop_update() != 0) {
         return 1;
     }
     if (test_ted_initialization() != 0) {
