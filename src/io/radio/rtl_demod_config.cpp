@@ -163,7 +163,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->audio_lpf_alpha = 0.0f;
     s->audio_lpf_state = 0.0f;
     s->now_lpr = 0.0f;
-    s->dc_block = 1;
+    s->dc_block = 0; /* SDR++ default path does not add post-demod DC blocking */
     s->dc_avg = 0.0f;
     /* Resampler defaults */
     s->resamp_enabled = 0;
@@ -286,7 +286,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
         s->deemph = (p && p->deemph_default) ? 1 : 0;
     }
     s->custom_atan = 0;
-    s->rate_out2 = rtl_dsp_bw_hz;
+    s->rate_out2 = -1;
 
     /* Legacy discriminator path removed; keep placeholders NULL. */
     s->discriminator = NULL;

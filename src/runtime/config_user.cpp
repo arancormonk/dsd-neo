@@ -276,7 +276,7 @@ snapshot_apply_live_rtl_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->rtl_ppm = opts->rtlsdr_ppm_error;
     cfg->rtl_ppm_is_set = 1;
     cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;
-    cfg->rtl_sql = (int)local_pwr_to_dB(opts->rtl_squelch_level);
+    cfg->rtl_sql = (opts->rtl_squelch_level <= 0.0) ? 0 : (int)local_pwr_to_dB(opts->rtl_squelch_level);
     cfg->rtl_volume = opts->rtl_volume_multiplier;
     if (opts->rtlsdr_center_freq > 0) {
         snprintf(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);

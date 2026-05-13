@@ -614,6 +614,80 @@ test_snapshot_roundtrip_zero_rtl_ppm(void) {
 }
 
 static int
+check_snapshot_roundtrip_zero_squelch(const char* label, const char* audio_in_dev) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+
+    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", audio_in_dev);
+    opts.audio_in_dev[sizeof opts.audio_in_dev - 1] = '\0';
+    opts.rtlsdr_center_freq = 851012500U;
+    opts.rtl_gain_value = 20;
+    opts.rtlsdr_ppm_error = 0;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.rtl_squelch_level = 0.0;
+    opts.rtl_volume_multiplier = 2;
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+
+    int rc = 0;
+    if (snap.rtl_sql != 0) {
+        fprintf(stderr, "%s: snapshot zero squelch should stay disabled, got rtl_sql=%d\n", label, snap.rtl_sql);
+        rc |= 1;
+    }
+
+    char rendered[4096];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (!strstr(rendered, "rtl_sql = 0\n") || strstr(rendered, "rtl_sql = -120\n")) {
+        fprintf(stderr, "%s: rendered config should keep disabled rtl_sql=0:\n%s\n", label, rendered);
+        rc |= 1;
+    }
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(rendered, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg_reload;
+    if (dsd_user_config_load(path, &cfg_reload) != 0) {
+        fprintf(stderr, "%s: dsd_user_config_load failed for rendered zero-squelch config %s\n", label, path);
+        (void)remove(path);
+        return 1;
+    }
+
+    if (cfg_reload.rtl_sql != 0) {
+        fprintf(stderr, "%s: reloaded zero squelch should stay disabled, got rtl_sql=%d\n", label, cfg_reload.rtl_sql);
+        rc |= 1;
+    }
+
+    static dsd_opts opts_reload;
+    static dsd_state state_reload;
+    reset_opts_and_state(opts_reload, state_reload);
+    opts_reload.rtl_squelch_level = 0.25;
+    dsd_apply_user_config_to_opts(&cfg_reload, &opts_reload, &state_reload);
+    if (cfg_reload.input_source == DSDCFG_INPUT_SOAPY && opts_reload.rtl_squelch_level != 0.0) {
+        fprintf(stderr, "%s: reapplied Soapy config should disable squelch, got %.9f\n", label,
+                opts_reload.rtl_squelch_level);
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
+test_snapshot_roundtrip_zero_squelch(void) {
+    int rc = 0;
+    rc |= check_snapshot_roundtrip_zero_squelch("rtl", "rtl:0:851012500:20:0:48:0:2");
+    rc |= check_snapshot_roundtrip_zero_squelch("rtltcp", "rtltcp:127.0.0.1:1234:851012500:20:0:48:0:2");
+    rc |= check_snapshot_roundtrip_zero_squelch("soapy", "soapy:driver=airspy");
+    return rc;
+}
+
+static int
 test_load_and_apply_rtltcp_regression(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -1017,6 +1091,7 @@ main(void) {
     rc |= test_load_and_apply_soapy_input_with_args();
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();
+    rc |= test_snapshot_roundtrip_zero_squelch();
     rc |= test_load_and_apply_rtltcp_regression();
     rc |= test_snapshot_roundtrip();
     rc |= test_apply_demod_lock();

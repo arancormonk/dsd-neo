@@ -130,9 +130,8 @@ extern "C" {
  * Channel complex low-pass (RTL baseband)
  * - DSD_NEO_CHANNEL_LPF
  *     Optional complex low-pass on the RTL DSP baseband after half-band/CIC
- *     decimation. Intended to narrow out-of-channel noise when running at
- *     higher baseband rates (e.g., 24 kHz). By default this is enabled only
- *     for analog-like modes at >=20 kHz and disabled for digital voice modes.
+ *     decimation. This is the SDR++-style VFO channel filter and is enabled
+ *     by default at >=20 kHz with a mode-appropriate bandwidth.
  *     Values: 0 to force off; non-zero to force on regardless of mode.
  * Frontend tuning behavior
  * - DSD_NEO_DISABLE_FS4_SHIFT

@@ -7,7 +7,6 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -165,9 +164,9 @@ initOpts(dsd_opts* opts) {
     opts->use_cosine_filter = 1;
     opts->unmute_encrypted_p25 = 0;
     //all RTL user options -- enabled AGC by default due to weak signal related issues
-    opts->rtl_dev_index = 0;  //choose which device we want by index number
-    opts->rtl_gain_value = 0; //mid value, 0 - AGC - 0 to 49 acceptable values
-    opts->rtl_squelch_level = dB_to_pwr(-110);
+    opts->rtl_dev_index = 0;       //choose which device we want by index number
+    opts->rtl_gain_value = 0;      //mid value, 0 - AGC - 0 to 49 acceptable values
+    opts->rtl_squelch_level = 0.0; /* disabled by default; 0 means no RTL power squelch */
     opts->rtl_volume_multiplier =
         2; //sample multiplier; This multiplies the sample value to produce a higher 'inlvl' for the demodulator
     // Generic input volume for non-RTL inputs (Pulse/WAV/TCP/UDP)
