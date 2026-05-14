@@ -437,7 +437,7 @@ path and non-RTL sample-window paths; they are not part of RTL-family digital FS
 - `DSD_NEO_C4FM_CLK=el|mm` — C4FM clock assist mode (Early–Late or M&M)
 - `DSD_NEO_C4FM_CLK_SYNC=1` — enable C4FM clock sync
 - `DSD_NEO_COSTAS_BW=<float>`, `DSD_NEO_COSTAS_DAMPING=<float>` — Costas loop tuning
-- `DSD_NEO_CHANNEL_LPF=0|1` — channel LPF enable/disable (mode‑dependent default)
+- `DSD_NEO_CHANNEL_LPF=0|1` — channel LPF enable/disable (auto-enabled at RTL DSP rates >=20 kHz; mode passbands protect nominal channel edges)
 - `DSD_NEO_WINDOW_FREEZE=1` — freeze symbol‑center window timing for debugging
 - `DSD_NEO_COMBINE_ROT=0|1` — enable combined rotation (default 1)
 - `DSD_NEO_UPSAMPLE_FP=0|1` — enable upsampler fixed‑point path (default 1)

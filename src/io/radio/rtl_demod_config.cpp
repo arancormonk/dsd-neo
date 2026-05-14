@@ -612,11 +612,12 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     }
 
     /* Channel complex low-pass (post-HB, complex baseband).
-       Default policy (Fs~=24 kHz RTL DSP baseband):
+       Default policy (Fs>=20 kHz RTL DSP baseband):
          - For analog-like modes, enable a wide channel LPF to narrow
            out-of-channel noise while preserving audio bandwidth.
          - For digital voice modes, use a mode-appropriate cutoff to balance
-           noise rejection vs. modulation bandwidth.
+           noise rejection vs. modulation bandwidth, with nominal channel
+           edges kept inside the flat passband rather than on the transition skirt.
        Env override:
          - DSD_NEO_CHANNEL_LPF=0 forces off (all modes).
          - DSD_NEO_CHANNEL_LPF!=0 forces on (all modes). */

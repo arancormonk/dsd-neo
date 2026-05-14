@@ -519,6 +519,75 @@ opts_is_digital_mode(const dsd_opts* opts) {
             || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
 }
 
+static int
+opts_has_4800_wide_four_level_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1);
+}
+
+static int
+opts_has_12k5_or_cqpsk_bw_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1
+            || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1
+            || opts->mod_qpsk == 1);
+}
+
+static int
+rtl_stream_fsk_channel_profile_for_current_mode(void) {
+    const dsd_opts* opts = (g_stream && g_stream->opts) ? g_stream->opts : NULL;
+    const int sym_rate = demod.symbol_rate_hz > 0 ? demod.symbol_rate_hz : 4800;
+    const int levels = demod.symbol_levels == 2 ? 2 : 4;
+
+    if (opts) {
+        if (sym_rate == 9600 && opts->frame_provoice == 1) {
+            return DSD_CH_LPF_PROFILE_PROVOICE;
+        }
+        if (sym_rate == 2400 && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1)) {
+            return DSD_CH_LPF_PROFILE_6K25;
+        }
+        if (sym_rate == 6000 && opts->frame_x2tdma == 1) {
+            return DSD_CH_LPF_PROFILE_12K5;
+        }
+        if (opts_has_4800_wide_four_level_mode(opts)) {
+            return DSD_CH_LPF_PROFILE_12K5;
+        }
+        if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
+            return DSD_CH_LPF_PROFILE_P25_C4FM;
+        }
+        if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
+            return DSD_CH_LPF_PROFILE_6K25;
+        }
+        if (opts->frame_x2tdma == 1) {
+            return DSD_CH_LPF_PROFILE_12K5;
+        }
+        if (opts->frame_provoice == 1) {
+            return DSD_CH_LPF_PROFILE_PROVOICE;
+        }
+    }
+
+    if (sym_rate == 2400) {
+        return DSD_CH_LPF_PROFILE_6K25;
+    }
+    if (sym_rate == 9600) {
+        return DSD_CH_LPF_PROFILE_PROVOICE;
+    }
+    if (sym_rate >= 6000) {
+        return DSD_CH_LPF_PROFILE_12K5;
+    }
+    if (sym_rate == 4800 && levels == 2) {
+        return DSD_CH_LPF_PROFILE_6K25;
+    }
+    if (sym_rate == 4800 && levels == 4) {
+        return DSD_CH_LPF_PROFILE_12K5;
+    }
+    return DSD_CH_LPF_PROFILE_WIDE;
+}
+
 static void
 stream_refresh_watermark_for_current_rate(void) {
     if (!g_stream) {
@@ -3655,13 +3724,25 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     } persist = {};
 
     rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000; // base DSP bandwidth in Hz
-    /* DMR (GFSK) data decoding is sensitive to overly low DSP basebands; users often (reasonably) set bw≈12 kHz,
-       but the resulting low-rate discriminator stream can degrade LRRP payload reliability even if resampled later. */
-    if (opts->frame_dmr == 1 && opts->rtl_dsp_bw_khz > 0 && opts->rtl_dsp_bw_khz < 24) {
+    /* Wide digital channels need enough DSP baseband to keep the nominal channel edge
+       inside the flat part of the channel LPF. CQPSK/P25P2 and DMR also benefit from
+       24/48 kHz rates for clean SPS and data decode margin. */
+    if (opts_has_12k5_or_cqpsk_bw_mode(opts) && opts->rtl_dsp_bw_khz > 0 && opts->rtl_dsp_bw_khz < 16) {
         static int warned = 0;
         if (!warned) {
             warned = 1;
-            LOG_WARNING("RTL DSP-BW %dkHz is low for DMR; try 48kHz (or at least 24kHz) for more reliable data/LRRP.\n",
+            LOG_WARNING(
+                "RTL DSP-BW %dkHz is too low for active 12.5kHz/CQPSK modes; use at least 16kHz, preferably 24/48kHz, "
+                "to keep the modulation off the filter skirt.\n",
+                opts->rtl_dsp_bw_khz);
+        }
+    } else if ((opts->frame_dmr == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) && opts->rtl_dsp_bw_khz > 0
+               && opts->rtl_dsp_bw_khz < 24) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            LOG_WARNING("RTL DSP-BW %dkHz is marginal for DMR/P25P2/CQPSK; try 48kHz or at least 24kHz for more "
+                        "reliable timing and data decode.\n",
                         opts->rtl_dsp_bw_khz);
         }
     }
@@ -5189,10 +5270,11 @@ rtl_stream_toggle_cqpsk(int onoff) {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;
         demod.cqpsk_eq_enable = 0;
-        /* If we were using the P25 CQPSK channel LPF profile, revert to P25 C4FM.
-         * This avoids carrying a wide CQPSK cutoff into clean C4FM control channels. */
+        /* If we were using the P25 CQPSK channel LPF profile, revert to the
+         * active FSK mode's profile instead of assuming every CQPSK-off path is
+         * P25 C4FM. DMR/NXDN96/YSF/M17 and ProVoice need wider profiles. */
         if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_P25_CQPSK) {
-            demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
+            demod.channel_lpf_profile = rtl_stream_fsk_channel_profile_for_current_mode();
         }
         if (g_stream && opts_is_digital_mode(g_stream->opts) && radio_source_is_rtl_family(g_stream->opts)) {
             demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_FSK;

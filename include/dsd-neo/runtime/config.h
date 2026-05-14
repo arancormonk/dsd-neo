@@ -137,8 +137,8 @@ extern "C" {
  * - DSD_NEO_CHANNEL_LPF
  *     Optional complex low-pass on the RTL DSP baseband after half-band/CIC
  *     decimation. Intended to narrow out-of-channel noise when running at
- *     higher baseband rates (e.g., 24 kHz). By default this is enabled only
- *     for analog-like modes at >=20 kHz and disabled for digital voice modes.
+ *     higher baseband rates (e.g., 24 kHz). By default this is enabled for
+ *     RTL baseband rates >=20 kHz and uses a mode-appropriate passband.
  *     Values: 0 to force off; non-zero to force on regardless of mode.
  * Frontend tuning behavior
  * - DSD_NEO_DISABLE_FS4_SHIFT

@@ -85,12 +85,17 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
 /* Fixed channel low-pass for high-rate mode.
  *
  * Profiles (see DSD_CH_LPF_PROFILE_*):
- *   - Wide/analog: 8000 Hz cutoff.
- *   - 6.25 kHz modes: 3500 Hz cutoff (NXDN48/dPMR/D-STAR).
- *   - 12.5 kHz 4FSK modes: 6500 Hz cutoff (DMR/NXDN96/X2TDMA/YSF/M17).
- *   - ProVoice: 6250 Hz cutoff.
- *   - P25 C4FM: 5200 Hz cutoff.
- *   - P25 CQPSK/LSM: 7250 Hz cutoff.
+ *   - Wide/analog: 8000 Hz protected passband edge.
+ *   - 6.25 kHz modes: 3125 Hz protected passband edge (NXDN48/dPMR/D-STAR).
+ *   - 12.5 kHz 4FSK modes: 6250 Hz protected passband edge (DMR/NXDN96/X2TDMA/YSF/M17).
+ *   - ProVoice: 6250 Hz protected passband edge.
+ *   - P25 C4FM: 6250 Hz protected passband edge.
+ *   - P25 CQPSK/LSM: 6250 Hz protected passband edge plus guard.
+ *
+ * GNU Radio firdes::low_pass() interprets cutoff_freq as the center of the
+ * transition band, not the last flat passband frequency. The design centers
+ * below include half of the transition width as guard so nominal channel edges
+ * do not sit on the filter skirt.
  *
  * Legacy 63-tap Blackman prototypes are kept as fallback; preferred taps are
  * generated per sample rate to preserve the intended spectral shape at any Fs.
@@ -100,6 +105,14 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
  *   - Blackman: ntaps = (74 * 48000) / (22 * 1200) = 135
  * Size 144 provides headroom for higher sample rates. */
 static const int kChannelLpfTaps = 144;
+static const double kChannelLpfTransitionHz = 1200.0;
+static const double kChannelLpfGuardHz = kChannelLpfTransitionHz * 0.5;
+static const double kChannelLpfWideCutoffHz = 8000.0 + kChannelLpfGuardHz;
+static const double kChannelLpf6k25CutoffHz = 3125.0 + kChannelLpfGuardHz;
+static const double kChannelLpf12k5CutoffHz = 6250.0 + kChannelLpfGuardHz;
+static const double kChannelLpfProvoiceCutoffHz = 6250.0 + kChannelLpfGuardHz;
+static const double kChannelLpfP25C4fmCutoffHz = 6250.0 + kChannelLpfGuardHz;
+static const double kChannelLpfP25CqpskCutoffHz = 7250.0;
 /* Legacy fallback filters are 63 taps (designed for 24 kHz). Only used when
  * dynamic filter generation fails; prefer dynamically generated taps. */
 static const int kChannelLpfFallbackTaps = 63;
@@ -399,7 +412,7 @@ channel_lpf_design_low_pass(double sample_rate, double cutoff_hz, float* taps_ou
         cutoff = max_cutoff;
     }
 
-    return dsd_firdes_low_pass(1.0, sample_rate, cutoff, 1200.0, DSD_WIN_BLACKMAN, taps_out, max_taps);
+    return dsd_firdes_low_pass(1.0, sample_rate, cutoff, kChannelLpfTransitionHz, DSD_WIN_BLACKMAN, taps_out, max_taps);
 }
 
 /**
@@ -419,35 +432,38 @@ channel_lpf_ensure_taps(double sample_rate) {
         return; /* Already generated for this sample rate */
     }
 
-    s_channel_wide_ntaps = channel_lpf_design_low_pass(sample_rate, 8000.0, s_channel_wide_taps, kChannelLpfTaps);
+    s_channel_wide_ntaps =
+        channel_lpf_design_low_pass(sample_rate, kChannelLpfWideCutoffHz, s_channel_wide_taps, kChannelLpfTaps);
     if (s_channel_wide_ntaps < 0) {
         s_channel_wide_ntaps = 0;
     }
 
-    s_channel_6k25_ntaps = channel_lpf_design_low_pass(sample_rate, 3500.0, s_channel_6k25_taps, kChannelLpfTaps);
+    s_channel_6k25_ntaps =
+        channel_lpf_design_low_pass(sample_rate, kChannelLpf6k25CutoffHz, s_channel_6k25_taps, kChannelLpfTaps);
     if (s_channel_6k25_ntaps < 0) {
         s_channel_6k25_ntaps = 0;
     }
 
-    s_channel_12k5_ntaps = channel_lpf_design_low_pass(sample_rate, 6500.0, s_channel_12k5_taps, kChannelLpfTaps);
+    s_channel_12k5_ntaps =
+        channel_lpf_design_low_pass(sample_rate, kChannelLpf12k5CutoffHz, s_channel_12k5_taps, kChannelLpfTaps);
     if (s_channel_12k5_ntaps < 0) {
         s_channel_12k5_ntaps = 0;
     }
 
     s_channel_provoice_ntaps =
-        channel_lpf_design_low_pass(sample_rate, 6250.0, s_channel_provoice_taps, kChannelLpfTaps);
+        channel_lpf_design_low_pass(sample_rate, kChannelLpfProvoiceCutoffHz, s_channel_provoice_taps, kChannelLpfTaps);
     if (s_channel_provoice_ntaps < 0) {
         s_channel_provoice_ntaps = 0;
     }
 
     s_channel_p25_c4fm_ntaps =
-        channel_lpf_design_low_pass(sample_rate, 5200.0, s_channel_p25_c4fm_taps, kChannelLpfTaps);
+        channel_lpf_design_low_pass(sample_rate, kChannelLpfP25C4fmCutoffHz, s_channel_p25_c4fm_taps, kChannelLpfTaps);
     if (s_channel_p25_c4fm_ntaps < 0) {
         s_channel_p25_c4fm_ntaps = 0;
     }
 
-    s_channel_p25_cqpsk_ntaps =
-        channel_lpf_design_low_pass(sample_rate, 7250.0, s_channel_p25_cqpsk_taps, kChannelLpfTaps);
+    s_channel_p25_cqpsk_ntaps = channel_lpf_design_low_pass(sample_rate, kChannelLpfP25CqpskCutoffHz,
+                                                            s_channel_p25_cqpsk_taps, kChannelLpfTaps);
     if (s_channel_p25_cqpsk_ntaps < 0) {
         s_channel_p25_cqpsk_ntaps = 0;
     }

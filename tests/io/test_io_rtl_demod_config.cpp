@@ -264,6 +264,50 @@ expect_live_symbol_controls_guarded(void) {
     return rc;
 }
 
+static int
+expect_cqpsk_toggle_restores_fsk_channel_profile(void) {
+    int rc = 0;
+
+    std::memset(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    demod.cqpsk_enable = 1;
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    demod.symbol_rate_hz = 4800;
+    demod.symbol_levels = 4;
+    rtl_stream_toggle_cqpsk(0);
+    if (demod.channel_lpf_profile != DSD_CH_LPF_PROFILE_12K5) {
+        std::fprintf(stderr, "CQPSK off for 4.8 ksps 4FSK restored profile=%d want 12K5\n", demod.channel_lpf_profile);
+        rc = 1;
+    }
+
+    std::memset(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    demod.cqpsk_enable = 1;
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    demod.symbol_rate_hz = 2400;
+    demod.symbol_levels = 4;
+    rtl_stream_toggle_cqpsk(0);
+    if (demod.channel_lpf_profile != DSD_CH_LPF_PROFILE_6K25) {
+        std::fprintf(stderr, "CQPSK off for 2.4 ksps 4FSK restored profile=%d want 6K25\n", demod.channel_lpf_profile);
+        rc = 1;
+    }
+
+    std::memset(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    demod.cqpsk_enable = 1;
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    demod.symbol_rate_hz = 9600;
+    demod.symbol_levels = 2;
+    rtl_stream_toggle_cqpsk(0);
+    if (demod.channel_lpf_profile != DSD_CH_LPF_PROFILE_PROVOICE) {
+        std::fprintf(stderr, "CQPSK off for 9.6 ksps binary FSK restored profile=%d want ProVoice\n",
+                     demod.channel_lpf_profile);
+        rc = 1;
+    }
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -380,6 +424,7 @@ main(void) {
     rc |= expect_output_kind("Soapy stays monitor/audio path", soapy_p25, DSD_DEMOD_OUTPUT_AUDIO_MONITOR, 4800, 4);
 
     rc |= expect_live_symbol_controls_guarded();
+    rc |= expect_cqpsk_toggle_restores_fsk_channel_profile();
 
     return rc;
 }
