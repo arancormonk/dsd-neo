@@ -55,6 +55,45 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/timing.h"
 
+#ifdef USE_RADIO
+static int
+rtl_profile_for_symbol_rate(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz) {
+    if (opts && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
+        return (state && state->rf_mod == 1) ? DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK
+                                             : DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+    }
+    if (opts && opts->frame_provoice == 1) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
+    }
+    if ((opts && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1)) || sym_rate_hz == 2400) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
+    }
+    if (opts
+        && (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
+            || opts->frame_m17 == 1)) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
+    }
+    return DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
+}
+
+static int
+rtl_levels_for_opts(const dsd_opts* opts) {
+    if (opts && (opts->frame_dstar == 1 || opts->frame_provoice == 1)) {
+        return 2;
+    }
+    return 4;
+}
+
+static void
+rtl_maybe_update_symbol_profile(dsd_opts* opts, dsd_state* state, int sym_rate_hz) {
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx || sym_rate_hz <= 0) {
+        return;
+    }
+    (void)dsd_rtl_stream_metrics_hook_set_symbol_profile(sym_rate_hz, rtl_levels_for_opts(opts),
+                                                         rtl_profile_for_symbol_rate(opts, state, sym_rate_hz));
+}
+#endif
+
 static inline void
 dmr_set_symbol_timing(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -70,6 +109,9 @@ dmr_set_symbol_timing(dsd_opts* opts, dsd_state* state) {
 
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+#ifdef USE_RADIO
+    rtl_maybe_update_symbol_profile(opts, state, 4800);
+#endif
 }
 
 /* Modulation auto-detect state (file scope for reset access).
@@ -2102,6 +2144,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             int sym_rate = sym_rate_cycle[next_idx];
                             state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
                             state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+#ifdef USE_RADIO
+                            rtl_maybe_update_symbol_profile(opts, state, sym_rate);
+#endif
                             if (opts->verbose > 1) {
                                 fprintf(stderr, "SPS hunt: trying %d sps (sym=%d, demod=%d)\n", state->samplesPerSymbol,
                                         sym_rate, demod_rate);

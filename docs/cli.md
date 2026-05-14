@@ -236,9 +236,13 @@ Notes
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (dB or linear), `vol` (0–3; typical 1–3), optional `bias[=on|off]`.
+- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (dB or linear), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`.
 - For DMR data/LRRP on direct RTL input, use `bw=48` when possible, or at least `bw=24`; lower basebands may still decode voice but corrupt data PDUs.
 - Note: For EDACS analog voice follow, `sql <= 0` now uses a bounded fallback watchdog to avoid indefinite VC hold when no release marker is detected.
+- RTL USB, RTL-TCP, and IQ replay digital decode run in the symbol domain. The digital decoder receives one normalized
+  float per FSK or CQPSK symbol decision; discriminator audio is not used for digital decode.
+- The trailing `vol` field and `rtl_volume` config key are monitor/non-symbol gain only. They do not scale RTL-family
+  digital symbols. `-8` enables the separate source monitor tap.
 - Examples:
   - `-i rtl:0:851.375M:22:-2:24:0:2`
   - `-i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2`
@@ -362,6 +366,9 @@ Resampler
 
 FLL/TED controls
 
+These are non-symbol/advanced controls outside the RTL-family digital FSK symbol modem. RTL-family FSK digital decode
+selects its own symbol timing and normalization internally. CQPSK uses its OP25-style symbol chain.
+
 - `DSD_NEO_FLL=0/1` — disable/enable residual CFO frequency‑locked loop (default 0)
 - `DSD_NEO_FLL_ALPHA=<float>`, `DSD_NEO_FLL_BETA=<float>`, `DSD_NEO_FLL_DEADBAND=<float>`, `DSD_NEO_FLL_SLEW=<float>` — loop parameters (mode defaults when unset: analog-ish ≈ 0.0015/0.00015/0.0086/0.012; digital ≈ 0.008/0.0008/0.002/0.004)
 - `DSD_NEO_TED=0/1` — disable/enable timing error detector (default 0)
@@ -369,6 +376,8 @@ FLL/TED controls
 - `DSD_NEO_TED_FORCE=1` — force TED
 
 FM/C4FM stabilization
+
+These knobs apply to monitor/non-symbol FM discriminator paths, not RTL-family digital symbol output.
 
 - `DSD_NEO_FM_AGC=1` — enable FM AGC (default off)
 - `DSD_NEO_FM_AGC_TARGET`, `DSD_NEO_FM_AGC_MIN`, `DSD_NEO_FM_AGC_ALPHA_UP`, `DSD_NEO_FM_AGC_ALPHA_DOWN`
@@ -419,6 +428,9 @@ Tuner autogain (experimental)
 - `DSD_NEO_TUNER_AUTOGAIN_UP_PERSIST=<n>` — persistence before increasing gain
 
 Audio/DSP helpers
+
+`DSD_NEO_DEEMPH`, `DSD_NEO_AUDIO_LPF`, and C4FM clock-assist controls are monitor/non-symbol audio helpers for the RTL
+path and non-RTL sample-window paths; they are not part of RTL-family digital FSK symbol decode.
 
 - `DSD_NEO_DEEMPH=off|50|75|nfm` — deemphasis curve
 - `DSD_NEO_AUDIO_LPF=<Hz>|off` — audio low‑pass filter cutoff (or disable)

@@ -972,11 +972,11 @@ cb_rtl_vol(void* u, int ok, int m) {
     }
     if (ok) {
         int adjusted = 0;
-        m = clamp_int_with_notice("RTL volume", m, 0, 3, &adjusted);
+        m = clamp_int_with_notice("RTL monitor gain", m, 0, 3, &adjusted);
         int32_t v = m;
         ui_post_cmd(UI_CMD_RTL_SET_VOL_MULT, &v, sizeof v);
         if (!adjusted) {
-            ui_statusf("Applying RTL volume: %dX", m);
+            ui_statusf("Applying RTL monitor gain: %dX", m);
         }
     }
 }

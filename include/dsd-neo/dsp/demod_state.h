@@ -19,6 +19,7 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/fll.h>
+#include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
 
@@ -52,6 +53,12 @@ enum {
     DSD_CH_LPF_PROFILE_PROVOICE = 3,  /* ProVoice: 6250 Hz cutoff */
     DSD_CH_LPF_PROFILE_P25_C4FM = 4,  /* P25 C4FM: 5200 Hz cutoff */
     DSD_CH_LPF_PROFILE_P25_CQPSK = 5, /* P25 CQPSK/LSM: 7250 Hz cutoff */
+};
+
+enum dsd_demod_output_kind {
+    DSD_DEMOD_OUTPUT_AUDIO_MONITOR = 0,
+    DSD_DEMOD_OUTPUT_SYMBOL_FSK = 1,
+    DSD_DEMOD_OUTPUT_SYMBOL_CQPSK = 2,
 };
 
 /* Forward declaration to avoid heavy dependencies here */
@@ -192,6 +199,7 @@ struct demod_state {
      * Total CFO for metrics = fll_band_edge_state.freq + costas_state.freq/sps */
     dsd_costas_loop_state_t costas_state;          /* Symbol-rate Costas loop */
     dsd_fll_band_edge_state_t fll_band_edge_state; /* Sample-rate FLL band-edge */
+    dsd_fsk_modem_state fsk_modem_state;           /* Symbol-rate FSK modem */
 
     /* Timing error detector (Gardner) - native float */
     int ted_enabled;
@@ -223,6 +231,9 @@ struct demod_state {
 
     /* CQPSK (H-DQPSK) path enable for P25 LSM/TDMA */
     int cqpsk_enable;
+    int output_kind;    /* dsd_demod_output_kind */
+    int symbol_rate_hz; /* output symbol rate for SYMBOL_* paths */
+    int symbol_levels;  /* 2 or 4 for SYMBOL_FSK; 4 for SYMBOL_CQPSK */
 
     /* CQPSK pre-Costas differential phasor history (previous raw sample) */
     float cqpsk_diff_prev_r;

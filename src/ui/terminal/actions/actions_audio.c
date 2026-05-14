@@ -171,7 +171,7 @@ ui_handle_input_vol_cycle(dsd_opts* opts, dsd_state* state, const struct UiCmd* 
             opts->rtl_volume_multiplier = 1;
         }
         if (state) {
-            snprintf(state->ui_msg, sizeof state->ui_msg, "RTL Volume: %dX", opts->rtl_volume_multiplier);
+            snprintf(state->ui_msg, sizeof state->ui_msg, "RTL Monitor Gain: %dX", opts->rtl_volume_multiplier);
             state->ui_msg_expire = time(NULL) + 2;
         }
     } else {

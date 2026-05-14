@@ -1443,6 +1443,11 @@ target_include_directories(dsd-neo_test_dsp_firdes PRIVATE ${PROJECT_SOURCE_DIR}
 target_link_libraries(dsd-neo_test_dsp_firdes PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_FIRDES COMMAND dsd-neo_test_dsp_firdes)
 
+add_executable(dsd-neo_test_dsp_fsk_modem dsp/test_fsk_modem.c)
+target_include_directories(dsd-neo_test_dsp_fsk_modem PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_fsk_modem PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_FSK_MODEM COMMAND dsd-neo_test_dsp_fsk_modem)
+
 add_executable(dsd-neo_test_dsp_fll dsp/test_dsp_fll.cpp)
 target_include_directories(dsd-neo_test_dsp_fll PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_fll PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
@@ -2055,7 +2060,10 @@ if(DSD_HAS_RADIO)
   target_include_directories(dsd-neo_test_io_rtl_demod_config PRIVATE
     ${PROJECT_SOURCE_DIR}/include
   )
-  target_link_libraries(dsd-neo_test_io_rtl_demod_config PRIVATE dsd-neo_io_radio)
+  target_link_libraries(dsd-neo_test_io_rtl_demod_config PRIVATE dsd-neo_io_radio dsd-neo_core)
+  if(DSD_HAS_RTLSDR)
+    target_link_libraries(dsd-neo_test_io_rtl_demod_config PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+  endif()
   add_test(NAME IO_RTL_DEMOD_CONFIG COMMAND dsd-neo_test_io_rtl_demod_config)
 
   add_executable(dsd-neo_test_io_rtl_ppm_request io/test_io_rtl_ppm_request.cpp)

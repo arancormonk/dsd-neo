@@ -21,6 +21,39 @@ dsd_rtl_stream_metrics_hook_output_rate_hz(void) {
 }
 
 int
+dsd_rtl_stream_metrics_hook_output_kind(void) {
+    if (g_rtl_stream_metrics_hooks.output_kind) {
+        return g_rtl_stream_metrics_hooks.output_kind();
+    }
+    return 0;
+}
+
+int
+dsd_rtl_stream_metrics_hook_symbol_profile(int* out_symbol_rate_hz, int* out_levels) {
+    if (g_rtl_stream_metrics_hooks.symbol_profile) {
+        return g_rtl_stream_metrics_hooks.symbol_profile(out_symbol_rate_hz, out_levels);
+    }
+    if (out_symbol_rate_hz) {
+        *out_symbol_rate_hz = 0;
+    }
+    if (out_levels) {
+        *out_levels = 0;
+    }
+    return 0;
+}
+
+int
+dsd_rtl_stream_metrics_hook_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
+    if (g_rtl_stream_metrics_hooks.set_symbol_profile) {
+        return g_rtl_stream_metrics_hooks.set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+    }
+    (void)symbol_rate_hz;
+    (void)levels;
+    (void)channel_profile;
+    return 0;
+}
+
+int
 dsd_rtl_stream_metrics_hook_dsp_get(int* out_cqpsk_enable, int* out_fll_enable, int* out_ted_enable) {
     if (g_rtl_stream_metrics_hooks.dsp_get) {
         return g_rtl_stream_metrics_hooks.dsp_get(out_cqpsk_enable, out_fll_enable, out_ted_enable);

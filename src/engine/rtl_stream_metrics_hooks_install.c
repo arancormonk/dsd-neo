@@ -22,6 +22,9 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     dsd_rtl_stream_metrics_hooks hooks = {0};
 #ifdef USE_RADIO
     hooks.output_rate_hz = dsd_rtl_stream_output_rate;
+    hooks.output_kind = rtl_stream_get_output_kind;
+    hooks.symbol_profile = rtl_stream_get_symbol_profile;
+    hooks.set_symbol_profile = rtl_stream_set_symbol_profile;
     hooks.dsp_get = rtl_stream_dsp_get;
     hooks.ted_bias = rtl_stream_metrics_ted_bias;
     hooks.snr_bias_evm = rtl_stream_get_snr_bias_evm;

@@ -10,6 +10,7 @@ target_sources(dsd-neo_dsp PRIVATE
   halfband.cpp
   fll.cpp
   ted.cpp
+  fsk_modem.c
   firdes.cpp
   simd_widen.cpp
 	  simd_fir.cpp

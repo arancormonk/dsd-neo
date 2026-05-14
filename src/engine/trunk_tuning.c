@@ -177,6 +177,11 @@ dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, i
         if (!(cfg && cfg->cqpsk_is_set)) {
             rtl_stream_toggle_cqpsk(want_cqpsk);
         }
+        {
+            int sym_rate = (state->p25_p2_active_slot != -1) ? 6000 : 4800;
+            int profile = want_cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+            (void)rtl_stream_set_symbol_profile(sym_rate, 4, profile);
+        }
         /* One-shot override is consumed by this tune attempt. */
         state->p25_vc_cqpsk_override = -1;
     }
@@ -323,6 +328,11 @@ dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int
             state->rf_mod = want_cqpsk ? 1 : 0;
             if (!(cfg && cfg->cqpsk_is_set)) {
                 rtl_stream_toggle_cqpsk(want_cqpsk);
+            }
+            {
+                int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
+                int profile = want_cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+                (void)rtl_stream_set_symbol_profile(sym_rate, 4, profile);
             }
         }
         // Set TED SPS for control channel BEFORE tuning so that demod_reset_on_retune()

@@ -337,6 +337,41 @@ maybe_adjust_sps_for_output_rate(dsd_opts* opts, dsd_state* state) {
 }
 #endif
 
+#ifdef USE_RADIO
+enum {
+    RTL_STREAM_OUTPUT_SYMBOL_FSK_LOCAL = 1,
+    RTL_STREAM_OUTPUT_SYMBOL_CQPSK_LOCAL = 2,
+};
+
+static inline int
+rtl_symbol_output_active(int output_kind) {
+    return output_kind == RTL_STREAM_OUTPUT_SYMBOL_FSK_LOCAL || output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK_LOCAL;
+}
+
+static inline void
+apply_rtl_symbol_thresholds(dsd_state* state, int levels) {
+    if (!state) {
+        return;
+    }
+    state->center = 0.0f;
+    if (levels == 2) {
+        state->min = -1.0f;
+        state->max = 1.0f;
+        state->lmid = -0.5f;
+        state->umid = 0.5f;
+        state->minref = -0.8f;
+        state->maxref = 0.8f;
+    } else {
+        state->min = -3.0f;
+        state->max = 3.0f;
+        state->lmid = -2.0f;
+        state->umid = 2.0f;
+        state->minref = -2.4f;
+        state->maxref = 2.4f;
+    }
+}
+#endif
+
 float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     float sample;
@@ -366,11 +401,34 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     }
 #endif
 
+#ifdef USE_RADIO
+    int rtl_output_kind = 0;
+    int rtl_symbol_rate_output = 0;
+    int rtl_symbol_levels = 4;
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        rtl_output_kind = dsd_rtl_stream_metrics_hook_output_kind();
+        rtl_symbol_rate_output = rtl_symbol_output_active(rtl_output_kind);
+        (void)dsd_rtl_stream_metrics_hook_symbol_profile(NULL, &rtl_symbol_levels);
+        if (rtl_symbol_levels != 2) {
+            rtl_symbol_levels = 4;
+        }
+    }
+#else
+    int rtl_symbol_rate_output = 0;
+#endif
+
     /* Optional auto-centering based on TED residual (RTL path only, C4FM, when not synced) */
 #ifdef USE_RADIO
-    maybe_auto_center(opts, state, have_sync);
-    /* Align SPS to current RTL output rate if not 48 kHz */
-    maybe_adjust_sps_for_output_rate(opts, state);
+    if (!rtl_symbol_rate_output) {
+        maybe_auto_center(opts, state, have_sync);
+        /* Align SPS to current RTL output rate if not 48 kHz */
+        maybe_adjust_sps_for_output_rate(opts, state);
+    } else {
+        state->samplesPerSymbol = 1;
+        state->symbolCenter = 0;
+        state->jitter = -1;
+        apply_rtl_symbol_thresholds(state, rtl_symbol_levels);
+    }
 #endif
 
     /* Resolve any window freeze override once per symbol to avoid inner-loop overhead */
@@ -394,8 +452,11 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         symbol_span = 1;
     }
 #ifdef USE_RADIO
+    if (rtl_symbol_rate_output) {
+        symbol_span = 1;
+    }
     int cqpsk_symbol_rate = 0;
-    if (opts->audio_in_type == AUDIO_IN_RTL && state->rf_mod == 1) {
+    if (!rtl_symbol_rate_output && opts->audio_in_type == AUDIO_IN_RTL && state->rf_mod == 1) {
         int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
         dsd_rtl_stream_metrics_hook_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
         if (dsp_cqpsk && dsp_ted) {
@@ -554,10 +615,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             }
             //update root means square power level
             opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
-            /* Skip volume multiplier for CQPSK symbols - they're already properly
-             * scaled by qpsk_differential_demod (phase * 4/π giving ±1, ±3 symbols).
-             * The volume multiplier is meant for FM audio amplitude, not symbol levels. */
-            if (!cqpsk_symbol_rate) {
+            if (!rtl_symbol_rate_output && !cqpsk_symbol_rate) {
                 sample *= opts->rtl_volume_multiplier;
             }
 #endif
@@ -685,7 +743,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
         //BUG REPORT: 1. DMR Simplex doesn't work with raw wav files. 2. Using the monitor w/ wav file saving may produce undecodable wav files.
         //reworked a bit to allow raw audio wav file saving without the monitoring poriton active
-        if (have_sync == 0) {
+        if (!rtl_symbol_rate_output && have_sync == 0) {
 
             //do an extra checkfor carrier signal so that random raw audio spurts don't play during decoding
             // if ( (state->carrier == 1) && ((time(NULL) - state->last_vc_sync_time) < 2)) /This probably doesn't work correctly since we update time check when playing raw audio
@@ -832,7 +890,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             }
         }
 
-        if (have_sync == 1) {
+        if (!rtl_symbol_rate_output && have_sync == 1) {
             //sanity check to prevent an overflow
             int analog_max_index = (int)analog_out_cap - 1;
             if (state->analog_sample_counter > analog_max_index) {
@@ -864,7 +922,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
        from the RTL DSP path. The CQPSK pipeline already applied channel filtering
        and timing recovery in complex baseband; additional FIRs here distort the
        {-3,-1,+1,+3} levels and break the slicer. */
-        if (opts->use_cosine_filter && !cqpsk_symbol_rate) {
+        if (opts->use_cosine_filter && !rtl_symbol_rate_output && !cqpsk_symbol_rate) {
             if (DSD_SYNC_IS_DMR_BS(state->lastsynctype) || DSD_SYNC_IS_DMR_MS(state->lastsynctype)
                 || DSD_SYNC_IS_YSF(state->lastsynctype)) {
                 sample = dmr_filter(sample, state->samplesPerSymbol);
@@ -949,7 +1007,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 count++;
             }
         }
-        if (cqpsk_symbol_rate) {
+        if (rtl_symbol_rate_output || cqpsk_symbol_rate) {
             /* TED already decimated to symbol rate: consume one sample per symbol.
              * This must be checked first to override modulation-specific sampling
              * (e.g., sps==5 for P25 CQPSK at 24kHz). */
@@ -1018,6 +1076,12 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     } else {
         symbol = 0.0f;
     }
+
+#ifdef USE_RADIO
+    if (rtl_symbol_rate_output) {
+        apply_rtl_symbol_thresholds(state, rtl_symbol_levels);
+    }
+#endif
 
     if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != DSD_SYNC_NONE)) {
         if (state->jitter >= 0) {

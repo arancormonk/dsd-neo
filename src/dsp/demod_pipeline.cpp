@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/dsp/fsk_modem.h"
 
 /* Macros and constants from the original file */
 #ifndef MAXIMUM_OVERSAMPLE
@@ -1272,6 +1273,10 @@ gardner_timing_adjust(struct demod_state* d) {
        expected sample-rate interface for downstream processing. */
     if (d->cqpsk_enable) {
         gardner_timing_adjust(&cfg, &d->ted_state, d->lowpassed, &d->lp_len, d->timing_buf);
+    } else if (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+        if (!d->channel_squelched) {
+            iq_dc_block(d);
+        }
     } else {
         gardner_timing_adjust_farrow(&cfg, &d->ted_state, d->lowpassed, &d->lp_len, d->timing_buf);
     }
@@ -1501,6 +1506,7 @@ full_demod(struct demod_state* d) {
             cqpsk_diff_phasor(d);
         }
     } else {
+        const int fsk_symbol_output = (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK);
         /* Fast path when squelched: skip expensive DSP for FM/C4FM but keep samples flowing.
          * The buffer is already zeroed, so just skip conditioning and let the demod produce zeros. */
         if (d->channel_squelched) {
@@ -1512,19 +1518,21 @@ full_demod(struct demod_state* d) {
                2) Block-based envelope AGC to normalize |z|
                3) Optional per-sample limiter to clamp fast AM ripple */
             iq_dc_block(d);
-            /* Avoid running both AGC and limiter simultaneously to reduce gain "pumping". */
-            if (d->fm_agc_enable) {
-                fm_envelope_agc(d);
-            } else if (d->fm_limiter_enable) {
-                fm_constant_envelope_limiter(d);
-            }
-            /* Residual-CFO FLL when enabled */
-            if (d->fll_enabled) {
-                /* Update control only when squelch indicates a carrier; always apply rotation. */
-                if (d->squelch_gate_open) {
-                    fll_update_error(d);
+            if (!fsk_symbol_output) {
+                /* Avoid running both AGC and limiter simultaneously to reduce gain "pumping". */
+                if (d->fm_agc_enable) {
+                    fm_envelope_agc(d);
+                } else if (d->fm_limiter_enable) {
+                    fm_constant_envelope_limiter(d);
                 }
-                fll_mix_and_update(d);
+                /* Residual-CFO FLL when enabled */
+                if (d->fll_enabled) {
+                    /* Update control only when squelch indicates a carrier; always apply rotation. */
+                    if (d->squelch_gate_open) {
+                        fll_update_error(d);
+                    }
+                    fll_mix_and_update(d);
+                }
             }
         }
     }
@@ -1579,9 +1587,19 @@ full_demod(struct demod_state* d) {
        stages continue to see sample-rate complex baseband. Requires integer
        SPS; analog FM remains excluded unless explicitly forced.
        Skip when squelched - timing recovery on zeros is pointless. */
-    if (d->ted_enabled && !d->cqpsk_enable && !d->channel_squelched && d->sps_is_integer
-        && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+    if (d->ted_enabled && d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK && !d->cqpsk_enable && !d->channel_squelched
+        && d->sps_is_integer && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);
+    }
+    if (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+        int in_pairs = d->lp_len >> 1;
+        if (d->channel_squelched) {
+            d->result_len = dsd_fsk_modem_zero_symbols(&d->fsk_modem_state, in_pairs, d->result, MAXIMUM_BUF_LENGTH);
+        } else {
+            d->result_len =
+                dsd_fsk_modem_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result, MAXIMUM_BUF_LENGTH);
+        }
+        return;
     }
     /*
      * For CQPSK, produce a single real stream of differential phase symbols

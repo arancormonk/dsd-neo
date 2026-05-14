@@ -60,6 +60,9 @@ extern "C" {
  *     Values: "off" or "0" to disable; integer Hz (e.g., 48000) to enable/override.
  *
  * Residual CFO frequency-locked loop (FLL)
+ * These are non-symbol/advanced controls outside the RTL-family digital FSK
+ * symbol modem. RTL-family digital FSK selects timing and level
+ * normalization internally; CQPSK uses its OP25-style symbol chain.
  * - DSD_NEO_FLL
  *     Enable residual carrier frequency correction (RTL demod path).
  *     Values: "1" to enable; "0"/unset/other to disable. Default: disabled.
@@ -83,7 +86,7 @@ extern "C" {
  *     Force TED to run even when the pipeline would normally gate it off (e.g., non-integer SPS).
  *     Values: 1 enable, else disabled. Default: 0.
  *
- * C4FM clock assist (symbol-domain)
+ * C4FM clock assist (sample-window path)
  * - DSD_NEO_C4FM_CLK
  *     Enable a lightweight clock loop on the C4FM (P25p1) symbol path.
  *     Values: "el" for Early-Late, "mm" for Mueller&Mueller, "0"/"off" to disable.
@@ -94,6 +97,8 @@ extern "C" {
  *     Values: 1 enable, else disabled. Default: 0 (disabled; assist runs only pre-sync).
  *
  * Audio processing
+ * These controls apply to monitor/non-symbol discriminator audio, not the
+ * RTL-family digital FSK symbol stream.
  * - DSD_NEO_DEEMPH
  *     Post-demod deemphasis time constant. Applies only when the active demod preset enables deemphasis.
  *     Values: "75" (75µs, default), "50" (50µs), "nfm" (~750µs), "off" (disable).
@@ -101,7 +106,8 @@ extern "C" {
  *     Optional one-pole low-pass filter after demod. Approximate cutoff in Hz.
  *     Values: "off" or "0" to disable; integer (e.g., 3000, 5000) to enable. Default: off.
  *
- * FM/C4FM amplitude stabilization (pre-discriminator)
+ * FM/C4FM amplitude stabilization (non-symbol pre-discriminator)
+ * These controls are bypassed for RTL-family digital FSK symbol output.
  * - DSD_NEO_FM_AGC
  *     Enable a constant-envelope limiter/AGC on complex I/Q before FM discrimination. Helps stabilize
  *     RTL-SDR amplitude bounce (e.g., +/-3 dB) that can raise P25 P1 error rates.
@@ -679,7 +685,7 @@ typedef struct dsdneoUserConfig {
     int rtl_ppm_is_set; /* distinguish explicit 0 from omitted */
     int rtl_bw_khz;
     int rtl_sql;
-    int rtl_volume;
+    int rtl_volume;   /* monitor/non-symbol gain; does not scale RTL-family digital symbols */
     int rtl_auto_ppm; /* bool */
     char rtltcp_host[128];
     int rtltcp_port;

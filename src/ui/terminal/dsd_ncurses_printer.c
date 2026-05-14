@@ -291,7 +291,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 }
             }
         }
-        printw(" V: %iX;", opts->rtl_volume_multiplier);
+        printw(" Mon: %iX;", opts->rtl_volume_multiplier);
         {
             int requested_ppm = 0;
 #ifdef USE_RADIO

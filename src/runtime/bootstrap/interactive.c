@@ -153,7 +153,7 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
     switch (src) {
         case 2: {
 #ifdef USE_RTLSDR
-            // RTL-SDR path: rtl:dev:freq:gain:ppm:bw:sql:vol
+            // RTL-SDR path: rtl:dev:freq:gain:ppm:bw:sql:monitor_gain
             char freq[64];
             prompt_string("Center frequency in Hz (K/M/G suffix ok, e.g., 851.375M or 851375000)", "", freq,
                           sizeof freq);
@@ -167,7 +167,7 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
             int ppm = prompt_int("PPM error", 0, -200, 200);
             int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24,48)", 48, 4, 48);
             int sql = prompt_int("Squelch (0=off; negative dB ok via CLI later)", 0, -1000, 100000);
-            int vol = prompt_int("Volume multiplier (1..3)", 1, 1, 3);
+            int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
             snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d:%s:%d:%d:%d:%d:%d", dev, freq, gain, ppm,
                      bw, sql, vol);
             break;
@@ -178,7 +178,7 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
 #endif
         }
         case 3: {
-            // rtl_tcp: rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol]]
+            // rtl_tcp: rtltcp[:host:port[:freq:gain:ppm:bw:sql:monitor_gain]]
             char host[128];
             prompt_string("rtl_tcp host", "127.0.0.1", host, sizeof host);
             int port = prompt_int("rtl_tcp port", 1234, 1, 65535);
@@ -191,7 +191,7 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
                 int ppm = prompt_int("PPM error", 0, -200, 200);
                 int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24,48)", 48, 4, 48);
                 int sql = prompt_int("Squelch (0=off)", 0, -1000, 100000);
-                int vol = prompt_int("Volume multiplier (1..3)", 1, 1, 3);
+                int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
                 snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:%s:%d:%s:%d:%d:%d:%d:%d", host, port,
                          freq, gain, ppm, bw, sql, vol);
             }

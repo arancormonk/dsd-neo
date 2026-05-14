@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/fsk_modem.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -81,6 +82,53 @@ main(void) {
     // Expect post-RMS to be close to target after several iterations
     if (!(post > 0.22 && post < 0.38)) {
         fprintf(stderr, "AGC: post-RMS %.4f not near target 0.30 after iterations\n", post);
+        free(s);
+        return 1;
+    }
+
+    memset(s, 0, sizeof(*s));
+    static float saved[(size_t)pairs * 2];
+    for (int n = 0; n < pairs; n++) {
+        double ang = (2.0 * 3.14159265358979323846 * n) / 37.0;
+        in[(size_t)(2 * n) + 0] = (float)(0.10 * cos(ang));
+        in[(size_t)(2 * n) + 1] = (float)(0.10 * sin(ang));
+    }
+    memcpy(saved, in, sizeof(saved));
+    s->lowpassed = in;
+    s->lp_len = pairs * 2;
+    s->rate_out = 48000;
+    s->mode_demod = &dsd_fm_demod;
+    s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_FSK;
+    s->iq_dc_block_enable = 0;
+    s->fm_agc_enable = 1;
+    s->fm_agc_target_rms = 0.30f;
+    s->fm_agc_min_rms = 0.05f;
+    s->fm_agc_gain = 1.0f;
+    s->fm_limiter_enable = 1;
+    s->fll_enabled = 1;
+    s->fll_freq = 0.05f;
+    s->ted_enabled = 1;
+    s->ted_force = 1;
+    s->sps_is_integer = 1;
+    s->squelch_gate_open = 1;
+    s->squelch_env = 1.0f;
+    dsd_fsk_modem_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.sample_rate_hz = 48000;
+    cfg.symbol_rate_hz = 4800;
+    cfg.levels = 4;
+    dsd_fsk_modem_init(&s->fsk_modem_state, &cfg);
+
+    full_demod(s);
+    for (int i = 0; i < pairs * 2; i++) {
+        if (fabs((double)in[i] - (double)saved[i]) > 1e-7) {
+            fprintf(stderr, "FSK symbol path applied non-symbol conditioning at sample %d\n", i);
+            free(s);
+            return 1;
+        }
+    }
+    if (fabs((double)s->fm_agc_gain - 1.0) > 1e-7) {
+        fprintf(stderr, "FSK symbol path updated FM AGC gain %.6f\n", (double)s->fm_agc_gain);
         free(s);
         return 1;
     }

@@ -78,6 +78,19 @@ io_rtl_active(void* ctx) {
 }
 
 #ifdef USE_RADIO
+static bool
+rtl_symbol_output_active_for_ui(void) {
+    int kind = rtl_stream_get_output_kind();
+    int cq = 0;
+    rtl_stream_dsp_get(&cq, NULL, NULL);
+    return kind == RTL_STREAM_OUTPUT_SYMBOL_FSK || kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK || cq != 0;
+}
+
+static bool
+rtl_fsk_symbol_output_active_for_ui(void) {
+    return rtl_stream_get_output_kind() == RTL_STREAM_OUTPUT_SYMBOL_FSK;
+}
+
 bool
 dsp_cq_on(void* v) {
     UNUSED(v);
@@ -146,18 +159,28 @@ is_mod_fm(void* v) {
 }
 
 bool
+is_non_symbol_mod_fm(void* v) {
+    return is_mod_fm(v) && !rtl_symbol_output_active_for_ui();
+}
+
+bool
+is_sample_window_c4fm(void* v) {
+    return is_mod_c4fm(v) && !rtl_fsk_symbol_output_active_for_ui();
+}
+
+bool
 is_not_qpsk(void* v) {
     return !is_mod_qpsk(v);
 }
 
 bool
 is_fll_allowed(void* v) {
-    return is_mod_qpsk(v) || is_mod_fm(v);
+    return !rtl_symbol_output_active_for_ui() && (is_mod_qpsk(v) || is_mod_fm(v));
 }
 
 bool
 is_ted_allowed(void* v) {
-    return is_mod_qpsk(v) || is_mod_fm(v);
+    return !rtl_fsk_symbol_output_active_for_ui() && (is_mod_qpsk(v) || is_mod_fm(v));
 }
 
 // DSP submenu arrays declared in menu_items.h
