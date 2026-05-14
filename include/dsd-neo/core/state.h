@@ -384,9 +384,10 @@ struct dsd_state {
     /* M17 polarity auto-detection: 0=unknown, 1=normal, 2=inverted.
      * Set when preamble detected; overridden if user specifies -xz. */
     int m17_polarity;
-    /* Multi-rate sync hunting: cycle through SPS values when no sync found.
+    /* Multi-rate sync hunting: cycle through symbol-rate candidates when no sync found.
      * sps_hunt_counter: symbols searched without valid sync
-     * sps_hunt_idx: current SPS index in cycle (0=10, 1=20, 2=5, 3=8) */
+     * sps_hunt_idx: current rate/profile index
+     * (0=4800/4-level, 1=2400/4-level, 2=9600/binary, 3=6000/4-level, 4=4800/binary) */
     int sps_hunt_counter;
     int sps_hunt_idx;
     int lastsynctype;

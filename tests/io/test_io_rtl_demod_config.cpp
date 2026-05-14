@@ -91,6 +91,100 @@ expect_output_kind(const char* label, const dsd_opts& opts, int want_kind, int w
 }
 
 static int
+expect_configured_channel_profile(const char* label, const dsd_opts& opts, int rtl_dsp_bw_hz, int want_profile) {
+    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    output_state output;
+    std::memset(&output, 0, sizeof(output));
+    output.rate = static_cast<unsigned int>(rtl_dsp_bw_hz);
+    if (!demod) {
+        std::fprintf(stderr, "%s: allocation failed\n", label);
+        return 1;
+    }
+
+    dsd_opts mutable_opts = opts;
+    rtl_demod_init_for_mode(demod, &output, &mutable_opts, rtl_dsp_bw_hz);
+    rtl_demod_config_from_env_and_opts(demod, &mutable_opts);
+    rtl_demod_select_defaults_for_mode(demod, &mutable_opts, &output);
+
+    int rc = 0;
+    if (demod->channel_lpf_enable != 1) {
+        std::fprintf(stderr, "%s: channel_lpf_enable=%d want=1\n", label, demod->channel_lpf_enable);
+        rc = 1;
+    }
+    if (demod->channel_lpf_profile != want_profile) {
+        std::fprintf(stderr, "%s: got channel_lpf_profile=%d want=%d\n", label, demod->channel_lpf_profile,
+                     want_profile);
+        rc = 1;
+    }
+
+    rtl_demod_cleanup(demod);
+    std::free(demod);
+    return rc;
+}
+
+static int
+expect_configured_mode(const char* label, const dsd_opts& opts, int rtl_dsp_bw_hz, int want_kind, int want_sym_rate,
+                       int want_levels, int want_profile) {
+    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    output_state output;
+    std::memset(&output, 0, sizeof(output));
+    output.rate = static_cast<unsigned int>(rtl_dsp_bw_hz);
+    if (!demod) {
+        std::fprintf(stderr, "%s: allocation failed\n", label);
+        return 1;
+    }
+
+    dsd_opts mutable_opts = opts;
+    rtl_demod_init_for_mode(demod, &output, &mutable_opts, rtl_dsp_bw_hz);
+    rtl_demod_config_from_env_and_opts(demod, &mutable_opts);
+    rtl_demod_select_defaults_for_mode(demod, &mutable_opts, &output);
+    rtl_demod_maybe_update_resampler_after_rate_change(demod, &output, rtl_dsp_bw_hz);
+
+    int rc = 0;
+    if (demod->output_kind != want_kind) {
+        std::fprintf(stderr, "%s: got output_kind=%d want=%d\n", label, demod->output_kind, want_kind);
+        rc = 1;
+    }
+    if (demod->symbol_rate_hz != want_sym_rate) {
+        std::fprintf(stderr, "%s: got symbol_rate_hz=%d want=%d\n", label, demod->symbol_rate_hz, want_sym_rate);
+        rc = 1;
+    }
+    if (demod->symbol_levels != want_levels) {
+        std::fprintf(stderr, "%s: got symbol_levels=%d want=%d\n", label, demod->symbol_levels, want_levels);
+        rc = 1;
+    }
+    if (demod->channel_lpf_enable != 1) {
+        std::fprintf(stderr, "%s: channel_lpf_enable=%d want=1\n", label, demod->channel_lpf_enable);
+        rc = 1;
+    }
+    if (demod->channel_lpf_profile != want_profile) {
+        std::fprintf(stderr, "%s: got channel_lpf_profile=%d want=%d\n", label, demod->channel_lpf_profile,
+                     want_profile);
+        rc = 1;
+    }
+    if (want_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+        if (demod->cqpsk_enable != 0 || demod->ted_enabled != 0 || demod->fll_enabled != 0 || demod->fm_agc_enable != 0
+            || demod->fm_limiter_enable != 0) {
+            std::fprintf(stderr, "%s: FSK symbol path left non-symbol controls enabled\n", label);
+            rc = 1;
+        }
+    }
+    if (want_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && demod->ted_enabled != 1) {
+        std::fprintf(stderr, "%s: CQPSK symbol path did not force TED on\n", label);
+        rc = 1;
+    }
+    if ((want_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK || want_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK)
+        && output.rate != static_cast<unsigned int>(rtl_dsp_bw_hz)) {
+        std::fprintf(stderr, "%s: symbol output changed public output rate to %u\n", label, output.rate);
+        rc = 1;
+    }
+
+    rtl_demod_cleanup(demod);
+    std::free(demod);
+    return rc;
+}
+
+static int
 expect_live_symbol_controls_guarded(void) {
     int rc = 0;
 
@@ -198,18 +292,86 @@ main(void) {
     std::memset(&p25_c4fm, 0, sizeof(p25_c4fm));
     p25_c4fm.frame_p25p1 = 1;
     rc |= expect_output_kind("P25 C4FM selects FSK symbols", p25_c4fm, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4);
+    rc |= expect_configured_mode("P25 C4FM uses P25 C4FM LPF", p25_c4fm, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4,
+                                 DSD_CH_LPF_PROFILE_P25_C4FM);
 
     rc |= expect_output_kind("P25 QPSK selects CQPSK symbols", p25p1_qpsk, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 4800, 4);
+    rc |= expect_configured_mode("P25 QPSK uses P25 CQPSK LPF", p25p1_qpsk, 48000, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 4800,
+                                 4, DSD_CH_LPF_PROFILE_P25_CQPSK);
+    rc |= expect_configured_mode("P25P2 QPSK uses 6 ksps CQPSK LPF", p25p2_qpsk, 48000, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK,
+                                 6000, 4, DSD_CH_LPF_PROFILE_P25_CQPSK);
 
     dsd_opts nxdn48;
     std::memset(&nxdn48, 0, sizeof(nxdn48));
     nxdn48.frame_nxdn48 = 1;
     rc |= expect_output_kind("NXDN48 selects 2400-symbol FSK", nxdn48, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 2400, 4);
+    rc |= expect_configured_mode("NXDN48 uses 6.25 kHz LPF", nxdn48, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 2400, 4,
+                                 DSD_CH_LPF_PROFILE_6K25);
+
+    dsd_opts nxdn96;
+    std::memset(&nxdn96, 0, sizeof(nxdn96));
+    nxdn96.frame_nxdn96 = 1;
+    rc |= expect_configured_mode("NXDN96 uses 12.5 kHz LPF", nxdn96, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4,
+                                 DSD_CH_LPF_PROFILE_12K5);
+
+    dsd_opts dmr;
+    std::memset(&dmr, 0, sizeof(dmr));
+    dmr.frame_dmr = 1;
+    rc |= expect_output_kind("DMR selects 4800-symbol FSK", dmr, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4);
+    rc |= expect_configured_channel_profile("DMR uses 12.5 kHz FSK channel LPF", dmr, 48000, DSD_CH_LPF_PROFILE_12K5);
 
     dsd_opts dstar;
     std::memset(&dstar, 0, sizeof(dstar));
     dstar.frame_dstar = 1;
     rc |= expect_output_kind("D-STAR selects binary FSK", dstar, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 2);
+    rc |= expect_configured_mode("D-STAR uses 6.25 kHz LPF", dstar, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 2,
+                                 DSD_CH_LPF_PROFILE_6K25);
+
+    dsd_opts x2tdma;
+    std::memset(&x2tdma, 0, sizeof(x2tdma));
+    x2tdma.frame_x2tdma = 1;
+    rc |= expect_configured_mode("X2-TDMA uses 6 ksps 12.5 kHz LPF", x2tdma, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 6000,
+                                 4, DSD_CH_LPF_PROFILE_12K5);
+
+    dsd_opts ysf;
+    std::memset(&ysf, 0, sizeof(ysf));
+    ysf.frame_ysf = 1;
+    rc |= expect_configured_mode("YSF uses 12.5 kHz LPF", ysf, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4,
+                                 DSD_CH_LPF_PROFILE_12K5);
+
+    dsd_opts dpmr;
+    std::memset(&dpmr, 0, sizeof(dpmr));
+    dpmr.frame_dpmr = 1;
+    rc |= expect_configured_mode("dPMR uses 6.25 kHz LPF", dpmr, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 2400, 4,
+                                 DSD_CH_LPF_PROFILE_6K25);
+
+    dsd_opts m17;
+    std::memset(&m17, 0, sizeof(m17));
+    m17.frame_m17 = 1;
+    rc |= expect_configured_mode("M17 uses 12.5 kHz LPF", m17, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4,
+                                 DSD_CH_LPF_PROFILE_12K5);
+
+    dsd_opts provoice;
+    std::memset(&provoice, 0, sizeof(provoice));
+    provoice.frame_provoice = 1;
+    rc |= expect_configured_mode("ProVoice uses 9.6 ksps binary FSK", provoice, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK,
+                                 9600, 2, DSD_CH_LPF_PROFILE_PROVOICE);
+
+    dsd_opts auto_all;
+    std::memset(&auto_all, 0, sizeof(auto_all));
+    auto_all.frame_p25p1 = 1;
+    auto_all.frame_p25p2 = 1;
+    auto_all.frame_dmr = 1;
+    auto_all.frame_nxdn48 = 1;
+    auto_all.frame_nxdn96 = 1;
+    auto_all.frame_x2tdma = 1;
+    auto_all.frame_ysf = 1;
+    auto_all.frame_dstar = 1;
+    auto_all.frame_dpmr = 1;
+    auto_all.frame_provoice = 1;
+    auto_all.frame_m17 = 1;
+    rc |= expect_configured_mode("AUTO starts on 4.8 ksps wide 4FSK profile", auto_all, 48000,
+                                 DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4, DSD_CH_LPF_PROFILE_12K5);
 
     dsd_opts soapy_p25;
     std::memset(&soapy_p25, 0, sizeof(soapy_p25));

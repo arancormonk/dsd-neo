@@ -83,28 +83,132 @@ opts_is_digital_mode(const dsd_opts* opts) {
 }
 
 static int
+opts_flag_is_set(int flag) {
+    return (flag == 1) ? 1 : 0;
+}
+
+static int
+opts_digital_mode_count(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return opts_flag_is_set(opts->frame_p25p1) + opts_flag_is_set(opts->frame_p25p2)
+           + opts_flag_is_set(opts->frame_provoice) + opts_flag_is_set(opts->frame_dmr)
+           + opts_flag_is_set(opts->frame_nxdn48) + opts_flag_is_set(opts->frame_nxdn96)
+           + opts_flag_is_set(opts->frame_x2tdma) + opts_flag_is_set(opts->frame_ysf)
+           + opts_flag_is_set(opts->frame_dstar) + opts_flag_is_set(opts->frame_dpmr)
+           + opts_flag_is_set(opts->frame_m17);
+}
+
+static int
+opts_6000_mode_count(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return opts_flag_is_set(opts->frame_p25p2) + opts_flag_is_set(opts->frame_x2tdma);
+}
+
+static int
+opts_2400_mode_count(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return opts_flag_is_set(opts->frame_nxdn48) + opts_flag_is_set(opts->frame_dpmr);
+}
+
+static int
+opts_has_any_four_level_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1
+            || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1 || opts->frame_dpmr == 1
+            || opts->frame_m17 == 1);
+}
+
+static int
+opts_has_4800_four_level_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1
+            || opts->frame_m17 == 1);
+}
+
+static int
+opts_has_4800_wide_four_level_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1);
+}
+
+static int
 opts_symbol_rate_hz(const dsd_opts* opts) {
     if (!opts) {
         return 4800;
     }
-    if ((opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) && opts->frame_p25p1 == 0) {
+    int digital_count = opts_digital_mode_count(opts);
+    if (opts->frame_provoice == 1 && digital_count == 1) {
+        return 9600;
+    }
+    if ((opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) && opts->frame_p25p1 == 0
+        && digital_count == opts_6000_mode_count(opts)) {
         return 6000;
     }
-    if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) {
+    if ((opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) && digital_count == opts_2400_mode_count(opts)) {
         return 2400;
     }
     return 4800;
 }
 
 static int
-opts_symbol_levels(const dsd_opts* opts) {
+opts_symbol_levels_for_rate(const dsd_opts* opts, int symbol_rate_hz) {
     if (!opts) {
         return 4;
     }
-    if (opts->frame_dstar == 1 || opts->frame_provoice == 1) {
+    if (symbol_rate_hz == 9600 && opts->frame_provoice == 1) {
+        return 2;
+    }
+    if (symbol_rate_hz == 4800 && opts->frame_dstar == 1 && !opts_has_4800_four_level_mode(opts)) {
+        return 2;
+    }
+    if ((opts->frame_dstar == 1 || opts->frame_provoice == 1) && !opts_has_any_four_level_mode(opts)) {
         return 2;
     }
     return 4;
+}
+
+static int
+opts_channel_profile_for_rate(const dsd_opts* opts, const demod_state* demod, int symbol_rate_hz) {
+    if (!opts) {
+        return DSD_CH_LPF_PROFILE_WIDE;
+    }
+    if (symbol_rate_hz == 9600 && opts->frame_provoice == 1) {
+        return DSD_CH_LPF_PROFILE_PROVOICE;
+    }
+    if (symbol_rate_hz == 2400 && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1)) {
+        return DSD_CH_LPF_PROFILE_6K25;
+    }
+    if (symbol_rate_hz == 6000 && (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1)) {
+        return (opts->frame_p25p2 == 1) ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_12K5;
+    }
+    if (opts_has_4800_wide_four_level_mode(opts)) {
+        return DSD_CH_LPF_PROFILE_12K5;
+    }
+    if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
+        return (demod && demod->cqpsk_enable) ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_P25_C4FM;
+    }
+    if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
+        return DSD_CH_LPF_PROFILE_6K25;
+    }
+    if (opts->frame_x2tdma == 1) {
+        return DSD_CH_LPF_PROFILE_12K5;
+    }
+    if (opts->frame_provoice == 1) {
+        return DSD_CH_LPF_PROFILE_PROVOICE;
+    }
+    return DSD_CH_LPF_PROFILE_WIDE;
 }
 
 static void
@@ -113,7 +217,7 @@ demod_apply_output_kind(struct demod_state* s, const dsd_opts* opts) {
         return;
     }
     s->symbol_rate_hz = opts_symbol_rate_hz(opts);
-    s->symbol_levels = opts_symbol_levels(opts);
+    s->symbol_levels = opts_symbol_levels_for_rate(opts, s->symbol_rate_hz);
 
     if (!opts_is_digital_mode(opts) || opts->analog_only == 1 || opts->m17encoder == 1
         || opts_radio_source_is_soapy(opts)) {
@@ -525,18 +629,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         channel_lpf = 1;
     }
     if (channel_lpf) {
-        if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
-            channel_lpf_profile = demod->cqpsk_enable ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_P25_C4FM;
-        } else if (opts->frame_provoice == 1) {
-            channel_lpf_profile = DSD_CH_LPF_PROFILE_PROVOICE;
-        } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
-            channel_lpf_profile = DSD_CH_LPF_PROFILE_6K25;
-        } else if (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
-                   || opts->frame_m17 == 1) {
-            channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
-        } else {
-            channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
-        }
+        channel_lpf_profile = opts_channel_profile_for_rate(opts, demod, demod->symbol_rate_hz);
     }
     demod->channel_lpf_enable = channel_lpf ? 1 : 0;
     demod->channel_lpf_profile = channel_lpf_profile;
@@ -603,13 +696,7 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
             if (Fs_cx <= 0) {
                 Fs_cx = 48000; /* safe default */
             }
-            /* Choose symbol rate by mode; keep explicit branches for narrow paths. */
-            int sym_rate = 4800; /* generic 4.8 ksps */
-            if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
-                sym_rate = 6000;
-            } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) {
-                sym_rate = 2400;
-            }
+            int sym_rate = opts_symbol_rate_hz(opts);
             if (Fs_cx < (sym_rate * 2)) {
                 LOG_WARNING("TED SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx,
                             sym_rate);
@@ -815,12 +902,9 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
          * When both P25P1 and P25P2 are enabled (trunking mode), default to
          * P25P1 rate (4800) since CC is typically encountered first; the trunk
          * state machine will override via ted_sps_override when tuning to P25P2 VC. */
-        if ((opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) && opts->frame_p25p1 == 0) {
-            sym_rate = 6000; /* P25P2/X2-TDMA only */
-        } else if (opts->mod_qpsk == 1) {
+        sym_rate = opts_symbol_rate_hz(opts);
+        if (opts->mod_qpsk == 1 && sym_rate != 6000) {
             sym_rate = 4800; /* P25P1 CQPSK */
-        } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) {
-            sym_rate = 2400;
         }
         if (Fs_cx < (sym_rate * 2)) {
             LOG_WARNING("TED SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx, sym_rate);
@@ -860,7 +944,7 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
         }
     }
     demod->symbol_rate_hz = sym_rate;
-    demod->symbol_levels = opts_symbol_levels(opts);
+    demod->symbol_levels = opts_symbol_levels_for_rate(opts, sym_rate);
     if (sps < 2) {
         sps = 2;
     }

@@ -55,42 +55,109 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/timing.h"
 
+static int
+frame_sync_opts_has_4800_four_level_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1
+            || opts->frame_m17 == 1);
+}
+
 #ifdef USE_RADIO
 static int
-rtl_profile_for_symbol_rate(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz) {
-    if (opts && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
-        return (state && state->rf_mod == 1) ? DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK
-                                             : DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+rtl_opts_has_any_four_level_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
     }
-    if (opts && opts->frame_provoice == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
+    return (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1
+            || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1 || opts->frame_dpmr == 1
+            || opts->frame_m17 == 1);
+}
+
+static int
+rtl_opts_has_4800_wide_four_level_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
     }
-    if ((opts && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1)) || sym_rate_hz == 2400) {
+    return (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1);
+}
+
+static int
+rtl_profile_for_symbol_rate(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz, int preferred_levels) {
+    if (opts) {
+        if (sym_rate_hz == 4800 && preferred_levels == 2 && opts->frame_dstar == 1) {
+            return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
+        }
+        if (sym_rate_hz == 9600 && opts->frame_provoice == 1) {
+            return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
+        }
+        if (sym_rate_hz == 2400 && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1)) {
+            return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
+        }
+        if (sym_rate_hz == 6000 && (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1)) {
+            return (opts->frame_p25p2 == 1) ? DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK
+                                            : DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
+        }
+        if (rtl_opts_has_4800_wide_four_level_mode(opts)) {
+            return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
+        }
+        if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
+            return (state && state->rf_mod == 1) ? DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK
+                                                 : DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+        }
+        if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
+            return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
+        }
+        if (opts->frame_x2tdma == 1) {
+            return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
+        }
+        if (opts->frame_provoice == 1) {
+            return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
+        }
+    }
+    if (sym_rate_hz == 2400) {
         return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
     }
-    if (opts
-        && (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
-            || opts->frame_m17 == 1)) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
+    if (sym_rate_hz == 9600) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
     }
     return DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
 }
 
 static int
-rtl_levels_for_opts(const dsd_opts* opts) {
-    if (opts && (opts->frame_dstar == 1 || opts->frame_provoice == 1)) {
+rtl_levels_for_symbol_rate(const dsd_opts* opts, int sym_rate_hz, int preferred_levels) {
+    if (preferred_levels == 2 || preferred_levels == 4) {
+        return preferred_levels;
+    }
+    if (!opts) {
+        return 4;
+    }
+    if (sym_rate_hz == 9600 && opts->frame_provoice == 1) {
+        return 2;
+    }
+    if (sym_rate_hz == 4800 && opts->frame_dstar == 1 && !frame_sync_opts_has_4800_four_level_mode(opts)) {
+        return 2;
+    }
+    if ((opts->frame_dstar == 1 || opts->frame_provoice == 1) && !rtl_opts_has_any_four_level_mode(opts)) {
         return 2;
     }
     return 4;
 }
 
 static void
-rtl_maybe_update_symbol_profile(dsd_opts* opts, dsd_state* state, int sym_rate_hz) {
+rtl_maybe_update_symbol_profile_with_hint(dsd_opts* opts, dsd_state* state, int sym_rate_hz, int preferred_levels) {
     if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx || sym_rate_hz <= 0) {
         return;
     }
-    (void)dsd_rtl_stream_metrics_hook_set_symbol_profile(sym_rate_hz, rtl_levels_for_opts(opts),
-                                                         rtl_profile_for_symbol_rate(opts, state, sym_rate_hz));
+    (void)dsd_rtl_stream_metrics_hook_set_symbol_profile(
+        sym_rate_hz, rtl_levels_for_symbol_rate(opts, sym_rate_hz, preferred_levels),
+        rtl_profile_for_symbol_rate(opts, state, sym_rate_hz, preferred_levels));
+}
+
+static void
+rtl_maybe_update_symbol_profile(dsd_opts* opts, dsd_state* state, int sym_rate_hz) {
+    rtl_maybe_update_symbol_profile_with_hint(opts, state, sym_rate_hz, 0);
 }
 #endif
 
@@ -2091,8 +2158,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     // fprintf (stderr,"Press CTRL + C to close.\n");
                 }
 
-                /* Multi-rate SPS hunting: cycle through common symbol rates when no sync found.
+                /* Multi-rate SPS hunting: cycle through common symbol profiles when no sync found.
                  * Tries 4800/2400/9600/6000 symbols/s (example SPS @48 kHz: 10/20/5/8).
+                 * The 4800 sym/s rate has separate 4-level and binary entries.
                  * Only cycle if in auto mode and no carrier detected.
                  * Uses a longer P25 trunking CC dwell to reduce oscillation on marginal
                  * secondary control channels without slowing other auto-detect modes. */
@@ -2101,18 +2169,30 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     if (state->sps_hunt_counter >= dsd_frame_sync_sps_hunt_dwell_passes(opts, state)) {
                         state->sps_hunt_counter = 0;
                         /* Determine which protocols are enabled to decide SPS options */
+                        int has_4800_four_level = frame_sync_opts_has_4800_four_level_mode(opts);
+                        int has_4800_binary = (opts->frame_dstar == 1);
                         int has_2400 = (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1);
                         int has_9600 = (opts->frame_provoice == 1);
                         int has_6000 = (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1);
 
-                        /* Cycle through symbol rates based on enabled protocols */
-                        static const int sym_rate_cycle[] = {4800, 2400, 9600, 6000};
-                        int next_idx = (state->sps_hunt_idx + 1) % 4;
+                        /* Cycle through symbol profiles based on enabled protocols */
+                        static const int sym_rate_cycle[] = {4800, 2400, 9600, 6000, 4800};
+                        static const int levels_cycle[] = {4, 4, 2, 4, 2};
+                        const int cycle_count = (int)(sizeof(sym_rate_cycle) / sizeof(sym_rate_cycle[0]));
+                        int next_idx = (state->sps_hunt_idx + 1) % cycle_count;
 
                         /* Skip rates for protocols not enabled */
-                        for (int tries = 0; tries < 4; tries++) {
+                        for (int tries = 0; tries < cycle_count; tries++) {
                             int sym_rate = sym_rate_cycle[next_idx];
+                            int levels = levels_cycle[next_idx];
                             int skip = 0;
+                            if (sym_rate == 4800) {
+                                if (levels == 2) {
+                                    skip = !has_4800_binary;
+                                } else {
+                                    skip = !has_4800_four_level;
+                                }
+                            }
                             if (sym_rate == 2400 && !has_2400) {
                                 skip = 1;
                             }
@@ -2125,7 +2205,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             if (!skip) {
                                 break;
                             }
-                            next_idx = (next_idx + 1) % 4;
+                            next_idx = (next_idx + 1) % cycle_count;
                         }
 
                         if (next_idx != state->sps_hunt_idx) {
@@ -2145,7 +2225,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
                             state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
 #ifdef USE_RADIO
-                            rtl_maybe_update_symbol_profile(opts, state, sym_rate);
+                            rtl_maybe_update_symbol_profile_with_hint(opts, state, sym_rate, levels_cycle[next_idx]);
 #endif
                             if (opts->verbose > 1) {
                                 fprintf(stderr, "SPS hunt: trying %d sps (sym=%d, demod=%d)\n", state->samplesPerSymbol,

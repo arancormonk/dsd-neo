@@ -28,10 +28,10 @@ static const double kEvmEstimatorBiasDb = 1.92;
 /* Noise equivalent bandwidth (Hz) for each channel LPF profile.
  * Computed as Bn = (Fs/2) * Σh² / (Σh)² for the 24 kHz reference designs and
  * used as fixed approximations because channel_lpf_* now holds the absolute
- * cutoff constant (8k/3.5k/5.1k/6.25k/5.2k/7.25k) even when Fs changes. */
+ * cutoff constant (8k/3.5k/6.5k/6.25k/5.2k/7.25k) even when Fs changes. */
 static const double kNoiseBwWideHz = 8200.0;     /* Wide/analog profile (~8 kHz cutoff) */
 static const double kNoiseBw6K25Hz = 3800.0;     /* 6.25 kHz modes (3500 Hz cutoff) */
-static const double kNoiseBw12K5Hz = 5500.0;     /* 12.5 kHz modes (5100 Hz cutoff) */
+static const double kNoiseBw12K5Hz = 6900.0;     /* 12.5 kHz modes (6500 Hz cutoff) */
 static const double kNoiseBwProvoiceHz = 6500.0; /* ProVoice (6250 Hz cutoff) */
 static const double kNoiseBwP25C4fmHz = 5600.0;  /* P25 C4FM (5200 Hz cutoff) */
 static const double kNoiseBwP25CqpskHz = 7500.0; /* P25 CQPSK/LSM (7250 Hz cutoff) */
