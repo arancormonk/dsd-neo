@@ -1548,6 +1548,11 @@ target_include_directories(dsd-neo_test_dsp_channel_filters PRIVATE ${PROJECT_SO
 target_link_libraries(dsd-neo_test_dsp_channel_filters PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_CHANNEL_FILTERS COMMAND dsd-neo_test_dsp_channel_filters)
 
+add_executable(dsd-neo_test_rtl_symbol_pipeline dsp/test_rtl_symbol_pipeline.cpp)
+target_include_directories(dsd-neo_test_rtl_symbol_pipeline PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_rtl_symbol_pipeline PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME RTL_SYMBOL_PIPELINE COMMAND dsd-neo_test_rtl_symbol_pipeline)
+
 # Costas loop (CQPSK carrier recovery)
 add_executable(dsd-neo_test_dsp_costas dsp/test_dsp_costas.cpp)
 target_include_directories(dsd-neo_test_dsp_costas PRIVATE ${PROJECT_SOURCE_DIR}/include)

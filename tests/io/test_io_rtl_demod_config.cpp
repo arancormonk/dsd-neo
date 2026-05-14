@@ -317,12 +317,14 @@ main(void) {
     p25p2_qpsk.frame_p25p2 = 1;
     p25p2_qpsk.mod_qpsk = 1;
     rc |= expect_sps("P25P2-only QPSK uses 6 ksps", p25p2_qpsk, 48000, 0, 8, DSD_CH_LPF_PROFILE_P25_CQPSK);
+    rc |= expect_sps("P25P2-only QPSK uses 6 ksps at 24 kHz", p25p2_qpsk, 24000, 0, 4, DSD_CH_LPF_PROFILE_P25_CQPSK);
 
     dsd_opts p25p1_qpsk;
     std::memset(&p25p1_qpsk, 0, sizeof(p25p1_qpsk));
     p25p1_qpsk.frame_p25p1 = 1;
     p25p1_qpsk.mod_qpsk = 1;
     rc |= expect_sps("P25P1 QPSK uses 4.8 ksps", p25p1_qpsk, 48000, 0, 10, DSD_CH_LPF_PROFILE_P25_CQPSK);
+    rc |= expect_sps("P25P1 QPSK uses 4.8 ksps at 24 kHz", p25p1_qpsk, 24000, 0, 5, DSD_CH_LPF_PROFILE_P25_CQPSK);
 
     dsd_opts p25_trunk_qpsk;
     std::memset(&p25_trunk_qpsk, 0, sizeof(p25_trunk_qpsk));
@@ -338,12 +340,18 @@ main(void) {
     rc |= expect_output_kind("P25 C4FM selects FSK symbols", p25_c4fm, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4);
     rc |= expect_configured_mode("P25 C4FM uses P25 C4FM LPF", p25_c4fm, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4,
                                  DSD_CH_LPF_PROFILE_P25_C4FM);
+    rc |= expect_configured_mode("P25 C4FM keeps profile at 24 kHz", p25_c4fm, 24000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800,
+                                 4, DSD_CH_LPF_PROFILE_P25_C4FM);
 
     rc |= expect_output_kind("P25 QPSK selects CQPSK symbols", p25p1_qpsk, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 4800, 4);
     rc |= expect_configured_mode("P25 QPSK uses P25 CQPSK LPF", p25p1_qpsk, 48000, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 4800,
                                  4, DSD_CH_LPF_PROFILE_P25_CQPSK);
+    rc |= expect_configured_mode("P25 QPSK keeps CQPSK LPF at 24 kHz", p25p1_qpsk, 24000, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK,
+                                 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK);
     rc |= expect_configured_mode("P25P2 QPSK uses 6 ksps CQPSK LPF", p25p2_qpsk, 48000, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK,
                                  6000, 4, DSD_CH_LPF_PROFILE_P25_CQPSK);
+    rc |= expect_configured_mode("P25P2 QPSK keeps 6 ksps CQPSK LPF at 24 kHz", p25p2_qpsk, 24000,
+                                 DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 6000, 4, DSD_CH_LPF_PROFILE_P25_CQPSK);
 
     dsd_opts nxdn48;
     std::memset(&nxdn48, 0, sizeof(nxdn48));
@@ -351,18 +359,24 @@ main(void) {
     rc |= expect_output_kind("NXDN48 selects 2400-symbol FSK", nxdn48, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 2400, 4);
     rc |= expect_configured_mode("NXDN48 uses 6.25 kHz LPF", nxdn48, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 2400, 4,
                                  DSD_CH_LPF_PROFILE_6K25);
+    rc |= expect_configured_mode("NXDN48 keeps 6.25 kHz LPF at 24 kHz", nxdn48, 24000, DSD_DEMOD_OUTPUT_SYMBOL_FSK,
+                                 2400, 4, DSD_CH_LPF_PROFILE_6K25);
 
     dsd_opts nxdn96;
     std::memset(&nxdn96, 0, sizeof(nxdn96));
     nxdn96.frame_nxdn96 = 1;
     rc |= expect_configured_mode("NXDN96 uses 12.5 kHz LPF", nxdn96, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4,
                                  DSD_CH_LPF_PROFILE_12K5);
+    rc |= expect_configured_mode("NXDN96 keeps 12.5 kHz LPF at 24 kHz", nxdn96, 24000, DSD_DEMOD_OUTPUT_SYMBOL_FSK,
+                                 4800, 4, DSD_CH_LPF_PROFILE_12K5);
 
     dsd_opts dmr;
     std::memset(&dmr, 0, sizeof(dmr));
     dmr.frame_dmr = 1;
     rc |= expect_output_kind("DMR selects 4800-symbol FSK", dmr, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4);
     rc |= expect_configured_channel_profile("DMR uses 12.5 kHz FSK channel LPF", dmr, 48000, DSD_CH_LPF_PROFILE_12K5);
+    rc |= expect_configured_channel_profile("DMR keeps 12.5 kHz FSK channel LPF at 24 kHz", dmr, 24000,
+                                            DSD_CH_LPF_PROFILE_12K5);
 
     dsd_opts dstar;
     std::memset(&dstar, 0, sizeof(dstar));
@@ -370,17 +384,23 @@ main(void) {
     rc |= expect_output_kind("D-STAR selects binary FSK", dstar, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 2);
     rc |= expect_configured_mode("D-STAR uses 6.25 kHz LPF", dstar, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 2,
                                  DSD_CH_LPF_PROFILE_6K25);
+    rc |= expect_configured_mode("D-STAR keeps binary 6.25 kHz LPF at 24 kHz", dstar, 24000,
+                                 DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 2, DSD_CH_LPF_PROFILE_6K25);
 
     dsd_opts x2tdma;
     std::memset(&x2tdma, 0, sizeof(x2tdma));
     x2tdma.frame_x2tdma = 1;
     rc |= expect_configured_mode("X2-TDMA uses 6 ksps 12.5 kHz LPF", x2tdma, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 6000,
                                  4, DSD_CH_LPF_PROFILE_12K5);
+    rc |= expect_configured_mode("X2-TDMA keeps 6 ksps 12.5 kHz LPF at 24 kHz", x2tdma, 24000,
+                                 DSD_DEMOD_OUTPUT_SYMBOL_FSK, 6000, 4, DSD_CH_LPF_PROFILE_12K5);
 
     dsd_opts ysf;
     std::memset(&ysf, 0, sizeof(ysf));
     ysf.frame_ysf = 1;
     rc |= expect_configured_mode("YSF uses 12.5 kHz LPF", ysf, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4,
+                                 DSD_CH_LPF_PROFILE_12K5);
+    rc |= expect_configured_mode("YSF keeps 12.5 kHz LPF at 24 kHz", ysf, 24000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4,
                                  DSD_CH_LPF_PROFILE_12K5);
 
     dsd_opts dpmr;
@@ -388,11 +408,15 @@ main(void) {
     dpmr.frame_dpmr = 1;
     rc |= expect_configured_mode("dPMR uses 6.25 kHz LPF", dpmr, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 2400, 4,
                                  DSD_CH_LPF_PROFILE_6K25);
+    rc |= expect_configured_mode("dPMR keeps 6.25 kHz LPF at 24 kHz", dpmr, 24000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 2400, 4,
+                                 DSD_CH_LPF_PROFILE_6K25);
 
     dsd_opts m17;
     std::memset(&m17, 0, sizeof(m17));
     m17.frame_m17 = 1;
     rc |= expect_configured_mode("M17 uses 12.5 kHz LPF", m17, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4,
+                                 DSD_CH_LPF_PROFILE_12K5);
+    rc |= expect_configured_mode("M17 keeps 12.5 kHz LPF at 24 kHz", m17, 24000, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4,
                                  DSD_CH_LPF_PROFILE_12K5);
 
     dsd_opts provoice;
@@ -400,6 +424,8 @@ main(void) {
     provoice.frame_provoice = 1;
     rc |= expect_configured_mode("ProVoice uses 9.6 ksps binary FSK", provoice, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK,
                                  9600, 2, DSD_CH_LPF_PROFILE_PROVOICE);
+    rc |= expect_configured_mode("ProVoice keeps 9.6 ksps binary FSK at 24 kHz", provoice, 24000,
+                                 DSD_DEMOD_OUTPUT_SYMBOL_FSK, 9600, 2, DSD_CH_LPF_PROFILE_PROVOICE);
 
     dsd_opts auto_all;
     std::memset(&auto_all, 0, sizeof(auto_all));
