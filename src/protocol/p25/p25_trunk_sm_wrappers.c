@@ -42,6 +42,12 @@ p25_sm_on_neighbor_update_default(dsd_opts* opts, dsd_state* state, const long* 
         if (f == 0) {
             continue;
         }
+        if (state->p25_cc_freq != 0 && f == state->p25_cc_freq) {
+            state->trunk_lcn_freq[0] = f;
+            if (state->lcn_freq_count < 1) {
+                state->lcn_freq_count = 1;
+            }
+        }
         // Track neighbor list for UI
         p25_nb_add(state, f);
         // Add to candidate list (dedup + FIFO rollover)

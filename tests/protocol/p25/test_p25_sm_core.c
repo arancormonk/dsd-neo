@@ -221,6 +221,24 @@ main(void) {
     assert(ctx7.expected_cc_nac == 0x293);
     g_mark_cc_sync_on_cc_tune = 0;
 
+    // 7) If bogus/foreign CC candidates are exhausted, fall back to the known
+    // primary control channel even when no user LCN list was loaded.
+    static dsd_opts o8;
+    static dsd_state s8;
+    memset(&o8, 0, sizeof(o8));
+    memset(&s8, 0, sizeof(s8));
+    o8.p25_trunk = 1;
+    o8.trunk_hangtime = 0.2;
+    o8.p25_prefer_candidates = 1;
+    s8.p25_cc_freq = 851000000;
+    s8.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
+
+    p25_sm_ctx_t ctx8;
+    p25_sm_init_ctx(&ctx8, &o8, &s8);
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(&ctx8, &o8, &s8);
+    assert(g_last_tuned_cc == 851000000);
+
     fprintf(stderr, "P25 SM core tests passed\n");
     return 0;
 }
