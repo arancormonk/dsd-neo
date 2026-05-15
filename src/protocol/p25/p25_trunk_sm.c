@@ -818,7 +818,15 @@ next_cc_candidate(dsd_state* state, long* out_freq, double now_m) {
 // Get next LCN frequency from user-provided list
 static int
 next_lcn_freq(dsd_state* state, long* out_freq) {
-    if (!state || !out_freq || state->lcn_freq_count <= 0) {
+    if (!state || !out_freq) {
+        return 0;
+    }
+    if (state->lcn_freq_count <= 0) {
+        long cc = (state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq;
+        if (cc > 0) {
+            *out_freq = cc;
+            return 1;
+        }
         return 0;
     }
     if (state->lcn_freq_roll >= state->lcn_freq_count) {
@@ -840,6 +848,13 @@ next_lcn_freq(dsd_state* state, long* out_freq) {
     if (f != 0) {
         *out_freq = f;
         return 1;
+    }
+    {
+        long cc = (state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq;
+        if (cc > 0) {
+            *out_freq = cc;
+            return 1;
+        }
     }
     return 0;
 }

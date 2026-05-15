@@ -77,5 +77,6 @@ main(void) {
     long neigh[4] = {st.p25_cc_freq, 0, 0, 0};
     p25_sm_on_neighbor_update(&opts, &st, neigh, 4);
     rc |= expect_eq_int("cc-only", p25_sm_next_cc_candidate(&st, &out), 0);
+    rc |= expect_eq_int("cc-only-lcn-count", st.lcn_freq_count, 1);
     return rc;
 }

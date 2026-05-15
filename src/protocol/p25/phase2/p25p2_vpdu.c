@@ -42,18 +42,6 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/**
- * @brief Check if a CFVA status nibble indicates a healthy neighbor.
- *
- * A neighbor is healthy when the failure bit is clear (bit 2) AND the
- * valid-info bit is set (bit 1). Unhealthy neighbors are still decoded
- * and printed for diagnostics but should not be fed to the SM.
- */
-static inline int
-p25_cfva_is_healthy(int cfva) {
-    return !(cfva & 0x4) && (cfva & 0x2);
-}
-
 static int
 p25p2_sccb_matches_current_site(const dsd_state* state, int rfssid, int siteid) {
     if (!state) {
@@ -106,6 +94,41 @@ p25p2_add_secondary_cc_candidates(dsd_opts* opts, dsd_state* state, int rfssid, 
     }
     if (notify_count > 0) {
         p25_sm_on_neighbor_update(opts, state, notify, notify_count);
+    }
+}
+
+static void
+p25p2_seed_secondary_lcn_fallback(dsd_state* state, int rfssid, int siteid, const long* freqs, int count) {
+    if (!state || !freqs || count <= 0 || !p25p2_sccb_matches_current_site(state, rfssid, siteid)) {
+        return;
+    }
+
+    for (int i = 0; i < count && i < 2; i++) {
+        long f = freqs[i];
+        if (f <= 0) {
+            continue;
+        }
+
+        int exists = 0;
+        for (int slot = 0; slot < 3; slot++) {
+            if (state->trunk_lcn_freq[slot] == f) {
+                exists = 1;
+                break;
+            }
+        }
+        if (exists) {
+            continue;
+        }
+
+        for (int slot = 1; slot < 3; slot++) {
+            if (state->trunk_lcn_freq[slot] == 0) {
+                state->trunk_lcn_freq[slot] = f;
+                if (state->lcn_freq_count < slot + 1) {
+                    state->lcn_freq_count = slot + 1;
+                }
+                break;
+            }
+        }
     }
 }
 
@@ -2101,11 +2124,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                                               (channel2 != channel1 && sysclass2 != 0) ? 2 : 1);
 
             //place the cc freq into the list at index 0 if 0 is empty so we can hunt for rotating CCs without user LCN list
-            if (p25p2_sccb_matches_current_site(state, rfssid, siteid) && state->trunk_lcn_freq[1] == 0) {
-                state->trunk_lcn_freq[1] = freq1;
-                state->trunk_lcn_freq[2] = freq2;
-                state->lcn_freq_count = 3; //increment to three
-            }
+            p25p2_seed_secondary_lcn_fallback(state, rfssid, siteid, scc_freqs,
+                                              (channel2 != channel1 && sysclass2 != 0) ? 2 : 1);
 
             p25p2_note_sccb_site(state, rfssid, siteid);
         }
@@ -2879,9 +2899,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             long int af1 = process_channel_to_freq(opts, state, channelt);
             if (af1 > 0) {
                 p25_nb_add_ex(state, af1, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
-                if (p25_cfva_is_healthy(cfva)) {
-                    p25_cc_add_candidate(state, af1, 1);
-                }
             }
         }
 
@@ -2917,9 +2934,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             (void)process_channel_to_freq(opts, state, channelr);
             if (af2 > 0) {
                 p25_nb_add_ex(state, af2, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
-                if (p25_cfva_is_healthy(cfva)) {
-                    p25_cc_add_candidate(state, af2, 1);
-                }
             }
         }
 
@@ -2956,9 +2970,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             (void)process_channel_to_freq(opts, state, channelr);
             if (af4 > 0) {
                 p25_nb_add_ex(state, af4, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
-                if (p25_cfva_is_healthy(cfva)) {
-                    p25_cc_add_candidate(state, af4, 1);
-                }
             }
         }
 

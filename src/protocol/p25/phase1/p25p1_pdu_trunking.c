@@ -29,17 +29,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/**
- * @brief Check if a CFVA status nibble indicates a healthy neighbor.
- *
- * A neighbor is healthy when the failure bit is clear (bit 2) AND the
- * valid-info bit is set (bit 1).
- */
-static inline int
-p25_cfva_is_healthy(int cfva) {
-    return !(cfva & 0x4) && (cfva & 0x2);
-}
-
 static inline int
 p25_signed_offset_units(int sign_bit, int raw_offset) {
     return sign_bit ? raw_offset : -raw_offset;
@@ -223,9 +212,6 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         (void)process_channel_to_freq(opts, state, channelr);
         if (f3 > 0) {
             p25_nb_add_ex(state, f3, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
-            if (p25_cfva_is_healthy(cfva)) {
-                p25_cc_add_candidate(state, f3, 1);
-            }
         }
 
     }

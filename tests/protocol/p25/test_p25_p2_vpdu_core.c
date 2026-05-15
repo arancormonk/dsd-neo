@@ -120,7 +120,8 @@ expect_eq_long(const char* tag, long got, long want) {
 
 static int
 run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int current_site, long* out_freqs,
-                        int out_cap, int* out_rfss, int* out_site, int* out_lcn_count) {
+                        int out_cap, int* out_rfss, int* out_site, int* out_lcn_count, long* out_lcn_freqs,
+                        int out_lcn_cap) {
     dsd_opts opts;
     dsd_state state;
     memset(&opts, 0, sizeof opts);
@@ -155,6 +156,11 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
     }
     if (out_lcn_count) {
         *out_lcn_count = state.lcn_freq_count;
+    }
+    if (out_lcn_freqs) {
+        for (int i = 0; i < out_lcn_cap && i < 3; i++) {
+            out_lcn_freqs[i] = state.trunk_lcn_freq[i];
+        }
     }
     dsd_state_ext_free_all(&state);
     return count;
@@ -216,7 +222,7 @@ run_cases(void) {
         mac[7] = 0x05;
         mac[8] = 0x01; // service class
 
-        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL);
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
         rc |= expect_eq_long("p2_sccb_explicit_count", count, 1);
         rc |= expect_eq_long("p2_sccb_explicit_downlink", freqs[0], 851000000 + 10 * 100 * 125);
     }
@@ -236,7 +242,7 @@ run_cases(void) {
         mac[8] = 0x05;
         mac[9] = 0x01; // service class 2 marks channel B present
 
-        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL);
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
         rc |= expect_eq_long("p2_sccb_implicit_count", count, 2);
         rc |= expect_eq_long("p2_sccb_implicit_ch1", freqs[0], 851000000 + 10 * 100 * 125);
         rc |= expect_eq_long("p2_sccb_implicit_ch2", freqs[1], 851000000 + 5 * 100 * 125);
@@ -257,7 +263,7 @@ run_cases(void) {
         mac[7] = 0x05;
         mac[8] = 0x01; // service class
 
-        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL);
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
         rc |= expect_eq_long("p1_bridge_sccb_explicit_count", count, 1);
         rc |= expect_eq_long("p1_bridge_sccb_explicit_downlink", freqs[0], 851000000 + 10 * 100 * 125);
     }
@@ -278,7 +284,7 @@ run_cases(void) {
         mac[7] = 0x05;
         mac[8] = 0x01;
 
-        int count = run_sccb_candidate_case(mac, 0x63, 0x63, freqs, 4, &rfss_after, &site_after, NULL);
+        int count = run_sccb_candidate_case(mac, 0x63, 0x63, freqs, 4, &rfss_after, &site_after, NULL, NULL, 0);
         rc |= expect_eq_long("p2_sccb_explicit_foreign_site_count", count, 0);
         rc |= expect_eq_long("p2_sccb_explicit_foreign_rfss_preserved", rfss_after, 0x63);
         rc |= expect_eq_long("p2_sccb_explicit_foreign_site_preserved", site_after, 0x63);
@@ -300,9 +306,54 @@ run_cases(void) {
         mac[7] = 0x05;
         mac[8] = 0x01;
 
-        int count = run_sccb_candidate_case(mac, 0x63, 0x63, freqs, 4, NULL, NULL, &lcn_count);
+        int count = run_sccb_candidate_case(mac, 0x63, 0x63, freqs, 4, NULL, NULL, &lcn_count, NULL, 0);
         rc |= expect_eq_long("p1_bridge_sccb_foreign_site_count", count, 0);
         rc |= expect_eq_long("p1_bridge_sccb_foreign_lcn_count", lcn_count, 0);
+    }
+
+    // Case 10: adjacent-site status remains neighbor/display data only. It
+    // must not become a CC hunt candidate, matching OP25's rotation behavior.
+    {
+        unsigned char mac[24];
+        long freqs[4] = {0};
+        memset(mac, 0, sizeof mac);
+        mac[1] = 0x7C; // Adjacent Status Broadcast, abbreviated
+        mac[2] = 0x01; // LRA
+        mac[3] = 0x21; // CFVA=2 (valid/current), SYSID hi nibble=1
+        mac[4] = 0x23; // SYSID low
+        mac[5] = 0x04; // RFSS
+        mac[6] = 0x05; // SITE
+        mac[7] = 0x10; // CHAN-T 0x100A
+        mac[8] = 0x0A;
+        mac[9] = 0x01; // service class
+
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
+        rc |= expect_eq_long("p2_adjacent_not_candidate", count, 0);
+    }
+
+    // Case 11: native Phase 2 SCCB implicit keeps a resolved second secondary
+    // CC in fallback rotation even when the first channel's IDEN is unknown.
+    {
+        unsigned char mac[24];
+        long freqs[4] = {0};
+        long lcn_freqs[3] = {0};
+        int lcn_count = -1;
+        memset(mac, 0, sizeof mac);
+        mac[1] = 0x79;
+        mac[2] = 0x02;
+        mac[3] = 0x03;
+        mac[4] = 0x20; // CHAN1 0x200A uses unknown IDEN 2
+        mac[5] = 0x0A;
+        mac[6] = 0x01;
+        mac[7] = 0x10; // CHAN2 0x1005 uses known IDEN 1
+        mac[8] = 0x05;
+        mac[9] = 0x01;
+
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, &lcn_count, lcn_freqs, 3);
+        rc |= expect_eq_long("p2_sccb_implicit_partial_iden_count", count, 1);
+        rc |= expect_eq_long("p2_sccb_implicit_partial_iden_ch2", freqs[0], 851000000 + 5 * 100 * 125);
+        rc |= expect_eq_long("p2_sccb_implicit_partial_iden_lcn_count", lcn_count, 2);
+        rc |= expect_eq_long("p2_sccb_implicit_partial_iden_lcn_ch2", lcn_freqs[1], 851000000 + 5 * 100 * 125);
     }
 
     return rc;
