@@ -41,6 +41,17 @@ debug_cqpsk_enabled(void) {
     return cfg && cfg->debug_cqpsk_enable;
 }
 
+static inline void
+fll_band_edge_clear_delay(dsd_fll_band_edge_state_t* f) {
+    if (!f) {
+        return;
+    }
+    for (int i = 0; i < FLL_BAND_EDGE_MAX_TAPS * 2; i++) {
+        f->delay_r[i] = 0.0f;
+        f->delay_i[i] = 0.0f;
+    }
+}
+
 /* MMSE interpolator parameters - match OP25/GNU Radio */
 #define MMSE_NTAPS  8
 #define MMSE_NSTEPS 16
@@ -894,11 +905,7 @@ dsd_fll_band_edge_reset(dsd_fll_band_edge_state_t* f) {
     }
     f->phase = 0.0f;
     f->freq = 0.0f;
-    /* Clear delay line */
-    for (int i = 0; i < FLL_BAND_EDGE_MAX_TAPS; i++) {
-        f->delay_r[i] = 0.0f;
-        f->delay_i[i] = 0.0f;
-    }
+    fll_band_edge_clear_delay(f);
     f->delay_idx = 0;
     /* Don't clear initialized or taps - they can be reused */
 }
@@ -1104,10 +1111,7 @@ dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps) {
     f->phase = 0.0f;
     /* f->freq preserved - LO offset is similar across nearby frequencies */
     f->delay_idx = 0;
-    for (int i = 0; i < FLL_BAND_EDGE_MAX_TAPS; i++) {
-        f->delay_r[i] = 0.0f;
-        f->delay_i[i] = 0.0f;
-    }
+    fll_band_edge_clear_delay(f);
 }
 
 /*
@@ -1178,19 +1182,13 @@ op25_fll_band_edge_cc(struct demod_state* d) {
             f->phase = 0.0f;
             f->freq = 0.0f;
             f->delay_idx = 0;
-            for (int i = 0; i < FLL_BAND_EDGE_MAX_TAPS; i++) {
-                f->delay_r[i] = 0.0f;
-                f->delay_i[i] = 0.0f;
-            }
+            fll_band_edge_clear_delay(f);
         } else {
             /* SPS change: preserve freq (LO offset), clear delay line (filter changed) */
             f->phase = 0.0f;
             /* f->freq preserved - LO offset is independent of symbol rate */
             f->delay_idx = 0;
-            for (int i = 0; i < FLL_BAND_EDGE_MAX_TAPS; i++) {
-                f->delay_r[i] = 0.0f;
-                f->delay_i[i] = 0.0f;
-            }
+            fll_band_edge_clear_delay(f);
         }
 
         /* Debug: log FLL init/reinit when DSD_NEO_DEBUG_CQPSK=1 */
@@ -1239,27 +1237,16 @@ op25_fll_band_edge_cc(struct demod_state* d) {
         /* Update delay line */
         delay_r[delay_idx] = out_r;
         delay_i[delay_idx] = out_i;
+        delay_r[delay_idx + n_taps] = out_r;
+        delay_i[delay_idx + n_taps] = out_i;
 
         /* Compute band-edge filter outputs */
         float lower_r = 0.0f, lower_i = 0.0f;
         float upper_r = 0.0f, upper_i = 0.0f;
 
-        int k = 0;
-        for (; k <= delay_idx && k < n_taps; k++) {
-            int idx = delay_idx - k;
-            float dr = delay_r[idx];
-            float di = delay_i[idx];
-
-            /* Lower band-edge filter: complex multiply */
-            lower_r += dr * f->taps_lower_r[k] - di * f->taps_lower_i[k];
-            lower_i += dr * f->taps_lower_i[k] + di * f->taps_lower_r[k];
-
-            /* Upper band-edge filter: complex multiply */
-            upper_r += dr * f->taps_upper_r[k] - di * f->taps_upper_i[k];
-            upper_i += dr * f->taps_upper_i[k] + di * f->taps_upper_r[k];
-        }
-        for (; k < n_taps; k++) {
-            int idx = delay_idx - k + n_taps;
+        const int delay_base = delay_idx + n_taps;
+        for (int k = 0; k < n_taps; k++) {
+            int idx = delay_base - k;
             float dr = delay_r[idx];
             float di = delay_i[idx];
 
@@ -1273,7 +1260,10 @@ op25_fll_band_edge_cc(struct demod_state* d) {
         }
 
         /* Advance delay line index */
-        delay_idx = (delay_idx + 1) % n_taps;
+        delay_idx++;
+        if (delay_idx == n_taps) {
+            delay_idx = 0;
+        }
 
         /* Compute frequency error: |upper|^2 - |lower|^2
          *

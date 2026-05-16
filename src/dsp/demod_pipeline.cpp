@@ -381,21 +381,6 @@ audio_polydecim_process(struct demod_state* d, const float* in, int in_len, floa
 
 /* ---------------- Fixed channel LPF (complex, no decimation) ----------------- */
 
-/* Dynamically generated channel LPF taps (per-rate); fall back to legacy static prototypes on error. */
-static float s_channel_wide_taps[kChannelLpfTaps];
-static float s_channel_6k25_taps[kChannelLpfTaps];
-static float s_channel_12k5_taps[kChannelLpfTaps];
-static float s_channel_provoice_taps[kChannelLpfTaps];
-static float s_channel_p25_c4fm_taps[kChannelLpfTaps];
-static float s_channel_p25_cqpsk_taps[kChannelLpfTaps];
-static int s_channel_wide_ntaps = 0;
-static int s_channel_6k25_ntaps = 0;
-static int s_channel_12k5_ntaps = 0;
-static int s_channel_provoice_ntaps = 0;
-static int s_channel_p25_c4fm_ntaps = 0;
-static int s_channel_p25_cqpsk_ntaps = 0;
-static double s_channel_taps_sample_rate = 0.0;
-
 static int
 channel_lpf_design_low_pass(double sample_rate, double cutoff_hz, float* taps_out, int max_taps) {
     if (sample_rate <= 0.0 || !taps_out || max_taps <= 0) {
@@ -415,60 +400,68 @@ channel_lpf_design_low_pass(double sample_rate, double cutoff_hz, float* taps_ou
     return dsd_firdes_low_pass(1.0, sample_rate, cutoff, kChannelLpfTransitionHz, DSD_WIN_BLACKMAN, taps_out, max_taps);
 }
 
+static const float*
+channel_lpf_fallback_taps(int profile, int* taps_len) {
+    if (!taps_len) {
+        return channel_lpf_wide;
+    }
+    switch (profile) {
+        case DSD_CH_LPF_PROFILE_6K25:
+        case DSD_CH_LPF_PROFILE_12K5: *taps_len = kChannelLpfFallbackTaps; return channel_lpf_digital;
+        case DSD_CH_LPF_PROFILE_PROVOICE:
+        case DSD_CH_LPF_PROFILE_P25_C4FM:
+        case DSD_CH_LPF_PROFILE_P25_CQPSK:
+        case DSD_CH_LPF_PROFILE_WIDE:
+        default: *taps_len = kChannelLpfFallbackTaps; return channel_lpf_wide;
+    }
+}
+
+static double
+channel_lpf_cutoff_for_profile(int profile) {
+    switch (profile) {
+        case DSD_CH_LPF_PROFILE_6K25: return kChannelLpf6k25CutoffHz;
+        case DSD_CH_LPF_PROFILE_12K5: return kChannelLpf12k5CutoffHz;
+        case DSD_CH_LPF_PROFILE_PROVOICE: return kChannelLpfProvoiceCutoffHz;
+        case DSD_CH_LPF_PROFILE_P25_C4FM: return kChannelLpfP25C4fmCutoffHz;
+        case DSD_CH_LPF_PROFILE_P25_CQPSK: return kChannelLpfP25CqpskCutoffHz;
+        case DSD_CH_LPF_PROFILE_WIDE:
+        default: return kChannelLpfWideCutoffHz;
+    }
+}
+
 /**
- * @brief Ensure channel LPF taps are generated for the given sample rate.
+ * @brief Ensure channel LPF taps are generated for this demodulator state.
  *
  * Uses dsd_firdes_low_pass() which is a direct port of GNU Radio's firdes::low_pass().
- * Keeps absolute cutoffs in Hz constant across sample rates.
+ * Keeps absolute cutoffs in Hz constant across sample rates and avoids global
+ * per-block profile dispatch.
  */
 static void
-channel_lpf_ensure_taps(double sample_rate) {
-    if (sample_rate <= 0.0) {
+channel_lpf_ensure_plan(struct demod_state* d) {
+    if (!d) {
         return;
     }
-    if (sample_rate == s_channel_taps_sample_rate && s_channel_wide_ntaps > 0 && s_channel_6k25_ntaps > 0
-        && s_channel_12k5_ntaps > 0 && s_channel_provoice_ntaps > 0 && s_channel_p25_c4fm_ntaps > 0
-        && s_channel_p25_cqpsk_ntaps > 0) {
-        return; /* Already generated for this sample rate */
+    const int profile = d->channel_lpf_profile;
+    const int rate_out = d->rate_out;
+    if (d->channel_lpf_plan_taps_len > 0 && d->channel_lpf_plan_rate_out == rate_out
+        && d->channel_lpf_plan_profile == profile) {
+        return;
     }
 
-    s_channel_wide_ntaps =
-        channel_lpf_design_low_pass(sample_rate, kChannelLpfWideCutoffHz, s_channel_wide_taps, kChannelLpfTaps);
-    if (s_channel_wide_ntaps < 0) {
-        s_channel_wide_ntaps = 0;
+    int taps_len = 0;
+    if (rate_out > 0) {
+        taps_len = channel_lpf_design_low_pass((double)rate_out, channel_lpf_cutoff_for_profile(profile),
+                                               d->channel_lpf_plan_taps, kChannelLpfTaps);
     }
-
-    s_channel_6k25_ntaps =
-        channel_lpf_design_low_pass(sample_rate, kChannelLpf6k25CutoffHz, s_channel_6k25_taps, kChannelLpfTaps);
-    if (s_channel_6k25_ntaps < 0) {
-        s_channel_6k25_ntaps = 0;
+    if (taps_len <= 0) {
+        int fallback_len = 0;
+        const float* fallback = channel_lpf_fallback_taps(profile, &fallback_len);
+        memcpy(d->channel_lpf_plan_taps, fallback, (size_t)fallback_len * sizeof(float));
+        taps_len = fallback_len;
     }
-
-    s_channel_12k5_ntaps =
-        channel_lpf_design_low_pass(sample_rate, kChannelLpf12k5CutoffHz, s_channel_12k5_taps, kChannelLpfTaps);
-    if (s_channel_12k5_ntaps < 0) {
-        s_channel_12k5_ntaps = 0;
-    }
-
-    s_channel_provoice_ntaps =
-        channel_lpf_design_low_pass(sample_rate, kChannelLpfProvoiceCutoffHz, s_channel_provoice_taps, kChannelLpfTaps);
-    if (s_channel_provoice_ntaps < 0) {
-        s_channel_provoice_ntaps = 0;
-    }
-
-    s_channel_p25_c4fm_ntaps =
-        channel_lpf_design_low_pass(sample_rate, kChannelLpfP25C4fmCutoffHz, s_channel_p25_c4fm_taps, kChannelLpfTaps);
-    if (s_channel_p25_c4fm_ntaps < 0) {
-        s_channel_p25_c4fm_ntaps = 0;
-    }
-
-    s_channel_p25_cqpsk_ntaps = channel_lpf_design_low_pass(sample_rate, kChannelLpfP25CqpskCutoffHz,
-                                                            s_channel_p25_cqpsk_taps, kChannelLpfTaps);
-    if (s_channel_p25_cqpsk_ntaps < 0) {
-        s_channel_p25_cqpsk_ntaps = 0;
-    }
-
-    s_channel_taps_sample_rate = sample_rate;
+    d->channel_lpf_plan_rate_out = rate_out;
+    d->channel_lpf_plan_profile = profile;
+    d->channel_lpf_plan_taps_len = taps_len;
 }
 
 static void
@@ -477,72 +470,11 @@ channel_lpf_apply(struct demod_state* d) {
         return;
     }
 
-    const float* taps = NULL;
-    int taps_len = 0;
-
-    /* Select filter taps based on profile */
-    switch (d->channel_lpf_profile) {
-        case DSD_CH_LPF_PROFILE_6K25:
-            channel_lpf_ensure_taps((double)d->rate_out);
-            if (s_channel_6k25_ntaps > 0) {
-                taps = s_channel_6k25_taps;
-                taps_len = s_channel_6k25_ntaps;
-            } else {
-                taps = channel_lpf_digital;
-                taps_len = kChannelLpfFallbackTaps;
-            }
-            break;
-        case DSD_CH_LPF_PROFILE_12K5:
-            channel_lpf_ensure_taps((double)d->rate_out);
-            if (s_channel_12k5_ntaps > 0) {
-                taps = s_channel_12k5_taps;
-                taps_len = s_channel_12k5_ntaps;
-            } else {
-                taps = channel_lpf_digital;
-                taps_len = kChannelLpfFallbackTaps;
-            }
-            break;
-        case DSD_CH_LPF_PROFILE_PROVOICE:
-            channel_lpf_ensure_taps((double)d->rate_out);
-            if (s_channel_provoice_ntaps > 0) {
-                taps = s_channel_provoice_taps;
-                taps_len = s_channel_provoice_ntaps;
-            } else {
-                taps = channel_lpf_wide;
-                taps_len = kChannelLpfFallbackTaps;
-            }
-            break;
-        case DSD_CH_LPF_PROFILE_P25_C4FM:
-            channel_lpf_ensure_taps((double)d->rate_out);
-            if (s_channel_p25_c4fm_ntaps > 0) {
-                taps = s_channel_p25_c4fm_taps;
-                taps_len = s_channel_p25_c4fm_ntaps;
-            } else {
-                taps = channel_lpf_wide;
-                taps_len = kChannelLpfFallbackTaps;
-            }
-            break;
-        case DSD_CH_LPF_PROFILE_P25_CQPSK:
-            channel_lpf_ensure_taps((double)d->rate_out);
-            if (s_channel_p25_cqpsk_ntaps > 0) {
-                taps = s_channel_p25_cqpsk_taps;
-                taps_len = s_channel_p25_cqpsk_ntaps;
-            } else {
-                taps = channel_lpf_wide;
-                taps_len = kChannelLpfFallbackTaps;
-            }
-            break;
-        case DSD_CH_LPF_PROFILE_WIDE:
-        default:
-            channel_lpf_ensure_taps((double)d->rate_out);
-            if (s_channel_wide_ntaps > 0) {
-                taps = s_channel_wide_taps;
-                taps_len = s_channel_wide_ntaps;
-            } else {
-                taps = channel_lpf_wide; /* fallback (63 taps, 24 kHz design) */
-                taps_len = kChannelLpfFallbackTaps;
-            }
-            break;
+    channel_lpf_ensure_plan(d);
+    const float* taps = d->channel_lpf_plan_taps;
+    int taps_len = d->channel_lpf_plan_taps_len;
+    if (!taps || taps_len < 3) {
+        return;
     }
 
     const int hist_len = taps_len - 1;

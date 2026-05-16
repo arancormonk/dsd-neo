@@ -165,8 +165,12 @@ struct demod_state {
     int channel_lpf_enable; /* gate */
     int channel_lpf_hist_len;
     int channel_lpf_profile;       /* see DSD_CH_LPF_PROFILE_* */
+    int channel_lpf_plan_rate_out; /* cached rate for channel_lpf_plan_taps */
+    int channel_lpf_plan_profile;  /* cached profile for channel_lpf_plan_taps */
+    int channel_lpf_plan_taps_len; /* cached tap count; 0 = not designed */
     float channel_lpf_hist_i[144]; /* sized for up to 144-tap symmetric FIR (tap-1) */
     float channel_lpf_hist_q[144];
+    alignas(64) float channel_lpf_plan_taps[144];
     float channel_pwr;           /* mean power (RMS^2 proxy) measured after channel LPF */
     float channel_squelch_level; /* squelch threshold (linear power); 0 = disabled */
     int channel_squelched;       /* 1 if squelched this block, 0 otherwise */

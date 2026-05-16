@@ -1990,303 +1990,311 @@ static DSD_THREAD_RETURN_TYPE
             }
         }
 
-        /* Capture decimated I/Q for constellation view after DSP. */
-        extern void constellation_ring_append(const float* iq, int len, int sps_hint);
-        constellation_ring_append(d->lowpassed, d->lp_len, d->cqpsk_enable ? 1 : d->ted_sps);
-        /* Capture I-channel for eye diagram */
-        eye_ring_append_i_chan(d->lowpassed, d->lp_len);
-        /* Update spectrum snapshot from post-filter complex baseband */
-        rtl_metrics_update_spectrum_from_iq(d->lowpassed, d->lp_len, d->rate_out);
+        static unsigned int dsp_metrics_block = 0;
+        const int rtl_symbol_output =
+            (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK);
+        const int metrics_due = (!rtl_symbol_output || ((++dsp_metrics_block & 1U) == 0U)) ? 1 : 0;
+        if (metrics_due) {
+            /* Capture decimated I/Q for constellation view after DSP. */
+            extern void constellation_ring_append(const float* iq, int len, int sps_hint);
+            constellation_ring_append(d->lowpassed, d->lp_len, d->cqpsk_enable ? 1 : d->ted_sps);
+            /* Capture I-channel for eye diagram */
+            eye_ring_append_i_chan(d->lowpassed, d->lp_len);
+            /* Update spectrum snapshot from post-filter complex baseband */
+            rtl_metrics_update_spectrum_from_iq(d->lowpassed, d->lp_len, d->rate_out);
 
-        /* Estimate SNR per modulation using post-filter samples */
-        static int c4fm_missed = 0; /* counts loops without C4FM SNR update */
-        static int qpsk_missed = 0; /* counts loops without QPSK SNR update */
-        static int gfsk_missed = 0; /* counts loops without GFSK SNR update */
-        const float* iq = d->lowpassed;
-        const int n_iq = d->lp_len;
-        const int sps = d->ted_sps;
-        if (iq && n_iq >= 4 && sps >= 2) {
-            const int pairs = n_iq / 2;
-            const int mid = sps / 2;
-            int win = sps / 10;
-            if (win < 1) {
-                win = 1;
-            }
-            if (win > mid) {
-                win = mid;
-            }
-            bool qpsk_updated = false;
-            bool c4fm_updated = false;
-            bool gfsk_updated = false;
-
-            /* QPSK/CQPSK: compute SNR directly from symbol-rate I/Q samples */
-            /* Accumulate across blocks since individual blocks may be small */
-            enum { QPSK_ACCUM_MAX = 256 };
-
-            static float qpsk_acc_i[QPSK_ACCUM_MAX], qpsk_acc_q[QPSK_ACCUM_MAX];
-            static int qpsk_acc_n = 0;
-            /* Check for reset request from retune */
-            if (g_snr_qpsk_acc_reset.exchange(0, std::memory_order_relaxed)) {
-                qpsk_acc_n = 0;
-            }
-            if (sps >= 2 && sps <= 12) {
-                /* CQPSK rewrites lowpassed to symbol-rate Costas output; other paths remain oversampled. */
-                for (int k = 0; k < pairs && qpsk_acc_n < QPSK_ACCUM_MAX; k++) {
-                    int phase = k % sps;
-                    if (d->cqpsk_enable || (phase >= mid - win && phase <= mid + win)) {
-                        qpsk_acc_i[qpsk_acc_n] = iq[2 * k + 0];
-                        qpsk_acc_q[qpsk_acc_n] = iq[2 * k + 1];
-                        qpsk_acc_n++;
-                    }
+            /* Estimate SNR per modulation using post-filter samples */
+            static int c4fm_missed = 0; /* counts loops without C4FM SNR update */
+            static int qpsk_missed = 0; /* counts loops without QPSK SNR update */
+            static int gfsk_missed = 0; /* counts loops without GFSK SNR update */
+            const float* iq = d->lowpassed;
+            const int n_iq = d->lp_len;
+            const int sps = d->ted_sps;
+            if (iq && n_iq >= 4 && sps >= 2) {
+                const int pairs = n_iq / 2;
+                const int mid = sps / 2;
+                int win = sps / 10;
+                if (win < 1) {
+                    win = 1;
                 }
-                int m = qpsk_acc_n;
-                if (m >= 64) {
-                    /* Per-axis normalization (handles I/Q gain imbalance) */
-                    double sum_abs_i = 0.0, sum_abs_q = 0.0;
-                    for (int i = 0; i < m; i++) {
-                        sum_abs_i += fabs((double)qpsk_acc_i[i]);
-                        sum_abs_q += fabs((double)qpsk_acc_q[i]);
-                    }
-                    double aI = sum_abs_i / (double)m;
-                    double aQ = sum_abs_q / (double)m;
-                    if (aI > 1e-9 && aQ > 1e-9) {
-                        /* Compute error to nearest QPSK target (axis-aligned) */
-                        double e2 = 0.0;
-                        for (int i = 0; i < m; i++) {
-                            double I = (double)qpsk_acc_i[i];
-                            double Q = (double)qpsk_acc_q[i];
-                            double ti = (I >= 0.0) ? aI : -aI;
-                            double tq = (Q >= 0.0) ? aQ : -aQ;
-                            double ei = I - ti;
-                            double eq = Q - tq;
-                            e2 += ei * ei + eq * eq;
-                        }
-                        double t2 = (double)m * (aI * aI + aQ * aQ);
-                        if (e2 > 1e-12 && t2 > 1e-9) {
-                            double ratio = t2 / e2;
-                            double snr_raw = 10.0 * log10(ratio);
-                            double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
-                            double snr = snr_raw - bias;
-                            double ema = g_snr_ema_qpsk.load(std::memory_order_relaxed);
-                            if (ema < -50.0) {
-                                ema = snr;
-                            } else {
-                                /* Faster EMA: 50% old, 50% new for quicker settling */
-                                ema = 0.5 * ema + 0.5 * snr;
-                            }
-                            g_snr_ema_qpsk.store(ema, std::memory_order_relaxed);
-                            g_snr_qpsk_db.store(ema, std::memory_order_relaxed);
-                            g_snr_qpsk_src.store(1, std::memory_order_relaxed);
-                            auto now = std::chrono::steady_clock::now();
-                            long long ms =
-                                std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-                            g_snr_qpsk_last_ms.store(ms, std::memory_order_relaxed);
-                            qpsk_updated = true;
-                        }
-                    }
-                    /* Reset accumulator after computing */
+                if (win > mid) {
+                    win = mid;
+                }
+                bool qpsk_updated = false;
+                bool c4fm_updated = false;
+                bool gfsk_updated = false;
+
+                /* QPSK/CQPSK: compute SNR directly from symbol-rate I/Q samples */
+                /* Accumulate across blocks since individual blocks may be small */
+                enum { QPSK_ACCUM_MAX = 256 };
+
+                static float qpsk_acc_i[QPSK_ACCUM_MAX], qpsk_acc_q[QPSK_ACCUM_MAX];
+                static int qpsk_acc_n = 0;
+                /* Check for reset request from retune */
+                if (g_snr_qpsk_acc_reset.exchange(0, std::memory_order_relaxed)) {
                     qpsk_acc_n = 0;
                 }
-            }
-            /* Include low-SPS FSK paths (e.g., 5 sps ProVoice/EDACS) in the SNR estimator. */
-            if (sps >= 4 && sps <= 12) {
-                /* FSK family: compute both 4-level (C4FM) and 2-level (GFSK-like) */
-                enum { MAXS = 8192 };
-
-                static float vals[(size_t)MAXS];
-                int m = 0;
-                for (int k = 0; k < pairs && m < MAXS; k++) {
-                    int phase = k % sps;
-                    if (phase >= mid - win && phase <= mid + win) {
-                        vals[m++] = iq[2 * k + 0]; /* I-channel */
+                if (sps >= 2 && sps <= 12) {
+                    /* CQPSK rewrites lowpassed to symbol-rate Costas output; other paths remain oversampled. */
+                    for (int k = 0; k < pairs && qpsk_acc_n < QPSK_ACCUM_MAX; k++) {
+                        int phase = k % sps;
+                        if (d->cqpsk_enable || (phase >= mid - win && phase <= mid + win)) {
+                            qpsk_acc_i[qpsk_acc_n] = iq[2 * k + 0];
+                            qpsk_acc_q[qpsk_acc_n] = iq[2 * k + 1];
+                            qpsk_acc_n++;
+                        }
+                    }
+                    int m = qpsk_acc_n;
+                    if (m >= 64) {
+                        /* Per-axis normalization (handles I/Q gain imbalance) */
+                        double sum_abs_i = 0.0, sum_abs_q = 0.0;
+                        for (int i = 0; i < m; i++) {
+                            sum_abs_i += fabs((double)qpsk_acc_i[i]);
+                            sum_abs_q += fabs((double)qpsk_acc_q[i]);
+                        }
+                        double aI = sum_abs_i / (double)m;
+                        double aQ = sum_abs_q / (double)m;
+                        if (aI > 1e-9 && aQ > 1e-9) {
+                            /* Compute error to nearest QPSK target (axis-aligned) */
+                            double e2 = 0.0;
+                            for (int i = 0; i < m; i++) {
+                                double I = (double)qpsk_acc_i[i];
+                                double Q = (double)qpsk_acc_q[i];
+                                double ti = (I >= 0.0) ? aI : -aI;
+                                double tq = (Q >= 0.0) ? aQ : -aQ;
+                                double ei = I - ti;
+                                double eq = Q - tq;
+                                e2 += ei * ei + eq * eq;
+                            }
+                            double t2 = (double)m * (aI * aI + aQ * aQ);
+                            if (e2 > 1e-12 && t2 > 1e-9) {
+                                double ratio = t2 / e2;
+                                double snr_raw = 10.0 * log10(ratio);
+                                double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+                                double snr = snr_raw - bias;
+                                double ema = g_snr_ema_qpsk.load(std::memory_order_relaxed);
+                                if (ema < -50.0) {
+                                    ema = snr;
+                                } else {
+                                    /* Faster EMA: 50% old, 50% new for quicker settling */
+                                    ema = 0.5 * ema + 0.5 * snr;
+                                }
+                                g_snr_ema_qpsk.store(ema, std::memory_order_relaxed);
+                                g_snr_qpsk_db.store(ema, std::memory_order_relaxed);
+                                g_snr_qpsk_src.store(1, std::memory_order_relaxed);
+                                auto now = std::chrono::steady_clock::now();
+                                long long ms =
+                                    std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch())
+                                        .count();
+                                g_snr_qpsk_last_ms.store(ms, std::memory_order_relaxed);
+                                qpsk_updated = true;
+                            }
+                        }
+                        /* Reset accumulator after computing */
+                        qpsk_acc_n = 0;
                     }
                 }
-                if (m > 32) {
-                    /* Compute quartiles in O(n) using nth_element */
-                    int idx1 = (int)((size_t)m / 4);
-                    int idx2 = (int)((size_t)m / 2);
-                    int idx3 = (int)((size_t)(3 * (size_t)m) / 4);
-                    std::nth_element(vals, vals + idx2, vals + m);
-                    float q2 = vals[idx2];
-                    std::nth_element(vals, vals + idx1, vals + idx2);
-                    float q1 = vals[idx1];
-                    std::nth_element(vals + idx2 + 1, vals + idx3, vals + m);
-                    float q3 = vals[idx3];
-                    /* 4-level (C4FM-like) */
-                    {
-                        double sum[4] = {0, 0, 0, 0};
-                        int cnt[4] = {0, 0, 0, 0};
-                        for (int i = 0; i < m; i++) {
-                            float v = vals[i];
-                            int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
-                            sum[b] += v;
-                            cnt[b]++;
+                /* Include low-SPS FSK paths (e.g., 5 sps ProVoice/EDACS) in the SNR estimator. */
+                if (sps >= 4 && sps <= 12) {
+                    /* FSK family: compute both 4-level (C4FM) and 2-level (GFSK-like) */
+                    enum { MAXS = 8192 };
+
+                    static float vals[(size_t)MAXS];
+                    int m = 0;
+                    for (int k = 0; k < pairs && m < MAXS; k++) {
+                        int phase = k % sps;
+                        if (phase >= mid - win && phase <= mid + win) {
+                            vals[m++] = iq[2 * k + 0]; /* I-channel */
                         }
-                        if (cnt[0] && cnt[1] && cnt[2] && cnt[3]) {
-                            double mu[4];
-                            int total = 0;
-                            for (int b = 0; b < 4; b++) {
-                                mu[b] = sum[b] / (double)cnt[b];
-                                total += cnt[b];
-                            }
-                            double nsum = 0.0;
+                    }
+                    if (m > 32) {
+                        /* Compute quartiles in O(n) using nth_element */
+                        int idx1 = (int)((size_t)m / 4);
+                        int idx2 = (int)((size_t)m / 2);
+                        int idx3 = (int)((size_t)(3 * (size_t)m) / 4);
+                        std::nth_element(vals, vals + idx2, vals + m);
+                        float q2 = vals[idx2];
+                        std::nth_element(vals, vals + idx1, vals + idx2);
+                        float q1 = vals[idx1];
+                        std::nth_element(vals + idx2 + 1, vals + idx3, vals + m);
+                        float q3 = vals[idx3];
+                        /* 4-level (C4FM-like) */
+                        {
+                            double sum[4] = {0, 0, 0, 0};
+                            int cnt[4] = {0, 0, 0, 0};
                             for (int i = 0; i < m; i++) {
                                 float v = vals[i];
                                 int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
-                                double e = (double)v - mu[b];
-                                nsum += e * e;
+                                sum[b] += v;
+                                cnt[b]++;
                             }
-                            double noise_var = nsum / (double)total;
-                            if (noise_var > 1e-9) {
-                                double mu_all = 0.0;
+                            if (cnt[0] && cnt[1] && cnt[2] && cnt[3]) {
+                                double mu[4];
+                                int total = 0;
                                 for (int b = 0; b < 4; b++) {
-                                    mu_all += mu[b] * (double)cnt[b] / (double)total;
+                                    mu[b] = sum[b] / (double)cnt[b];
+                                    total += cnt[b];
                                 }
-                                double ssum = 0.0;
-                                for (int b = 0; b < 4; b++) {
-                                    double d = mu[b] - mu_all;
-                                    ssum += (double)cnt[b] * d * d;
-                                }
-                                double sig_var = ssum / (double)total;
-                                if (sig_var > 1e-9) {
-                                    double bias = dsd_snr_bias_c4fm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
-                                    double snr = 10.0 * log10(sig_var / noise_var) - bias;
-                                    double ema = g_snr_ema_c4fm.load(std::memory_order_relaxed);
-                                    if (ema < -50.0) {
-                                        ema = snr;
-                                    } else {
-                                        /* Faster EMA: 50% old, 50% new for quicker settling */
-                                        ema = 0.5 * ema + 0.5 * snr;
-                                    }
-                                    g_snr_ema_c4fm.store(ema, std::memory_order_relaxed);
-                                    g_snr_c4fm_db.store(ema, std::memory_order_relaxed);
-                                    g_snr_c4fm_src.store(1, std::memory_order_relaxed);
-                                    auto now = std::chrono::steady_clock::now();
-                                    long long ms =
-                                        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch())
-                                            .count();
-                                    g_snr_c4fm_last_ms.store(ms, std::memory_order_relaxed);
-                                    c4fm_updated = true;
-                                }
-                            }
-                        }
-                        /* 2-level (GFSK-like) using median split */
-                        {
-                            double sumL = 0.0, sumH = 0.0;
-                            int cntL = 0, cntH = 0;
-                            for (int i = 0; i < m; i++) {
-                                float v = vals[i];
-                                if (v <= q2) {
-                                    sumL += v;
-                                    cntL++;
-                                } else {
-                                    sumH += v;
-                                    cntH++;
-                                }
-                            }
-                            if (cntL > 0 && cntH > 0) {
-                                double muL = sumL / (double)cntL, muH = sumH / (double)cntH;
-                                int total = cntL + cntH;
                                 double nsum = 0.0;
                                 for (int i = 0; i < m; i++) {
                                     float v = vals[i];
-                                    double mu = (v <= q2) ? muL : muH;
-                                    double e = (double)v - mu;
+                                    int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
+                                    double e = (double)v - mu[b];
                                     nsum += e * e;
                                 }
                                 double noise_var = nsum / (double)total;
                                 if (noise_var > 1e-9) {
-                                    double mu_all = (muL * (double)cntL + muH * (double)cntH) / (double)total;
-                                    double ssum = (double)cntL * (muL - mu_all) * (muL - mu_all)
-                                                  + (double)cntH * (muH - mu_all) * (muH - mu_all);
+                                    double mu_all = 0.0;
+                                    for (int b = 0; b < 4; b++) {
+                                        mu_all += mu[b] * (double)cnt[b] / (double)total;
+                                    }
+                                    double ssum = 0.0;
+                                    for (int b = 0; b < 4; b++) {
+                                        double d = mu[b] - mu_all;
+                                        ssum += (double)cnt[b] * d * d;
+                                    }
                                     double sig_var = ssum / (double)total;
                                     if (sig_var > 1e-9) {
                                         double bias =
-                                            dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+                                            dsd_snr_bias_c4fm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
                                         double snr = 10.0 * log10(sig_var / noise_var) - bias;
-                                        double ema = g_snr_ema_gfsk.load(std::memory_order_relaxed);
+                                        double ema = g_snr_ema_c4fm.load(std::memory_order_relaxed);
                                         if (ema < -50.0) {
                                             ema = snr;
                                         } else {
                                             /* Faster EMA: 50% old, 50% new for quicker settling */
                                             ema = 0.5 * ema + 0.5 * snr;
                                         }
-                                        g_snr_ema_gfsk.store(ema, std::memory_order_relaxed);
-                                        g_snr_gfsk_db.store(ema, std::memory_order_relaxed);
-                                        g_snr_gfsk_src.store(1, std::memory_order_relaxed);
+                                        g_snr_ema_c4fm.store(ema, std::memory_order_relaxed);
+                                        g_snr_c4fm_db.store(ema, std::memory_order_relaxed);
+                                        g_snr_c4fm_src.store(1, std::memory_order_relaxed);
                                         auto now = std::chrono::steady_clock::now();
                                         long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                                            now.time_since_epoch())
                                                            .count();
-                                        g_snr_gfsk_last_ms.store(ms, std::memory_order_relaxed);
-                                        gfsk_updated = true;
+                                        g_snr_c4fm_last_ms.store(ms, std::memory_order_relaxed);
+                                        c4fm_updated = true;
+                                    }
+                                }
+                            }
+                            /* 2-level (GFSK-like) using median split */
+                            {
+                                double sumL = 0.0, sumH = 0.0;
+                                int cntL = 0, cntH = 0;
+                                for (int i = 0; i < m; i++) {
+                                    float v = vals[i];
+                                    if (v <= q2) {
+                                        sumL += v;
+                                        cntL++;
+                                    } else {
+                                        sumH += v;
+                                        cntH++;
+                                    }
+                                }
+                                if (cntL > 0 && cntH > 0) {
+                                    double muL = sumL / (double)cntL, muH = sumH / (double)cntH;
+                                    int total = cntL + cntH;
+                                    double nsum = 0.0;
+                                    for (int i = 0; i < m; i++) {
+                                        float v = vals[i];
+                                        double mu = (v <= q2) ? muL : muH;
+                                        double e = (double)v - mu;
+                                        nsum += e * e;
+                                    }
+                                    double noise_var = nsum / (double)total;
+                                    if (noise_var > 1e-9) {
+                                        double mu_all = (muL * (double)cntL + muH * (double)cntH) / (double)total;
+                                        double ssum = (double)cntL * (muL - mu_all) * (muL - mu_all)
+                                                      + (double)cntH * (muH - mu_all) * (muH - mu_all);
+                                        double sig_var = ssum / (double)total;
+                                        if (sig_var > 1e-9) {
+                                            double bias =
+                                                dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+                                            double snr = 10.0 * log10(sig_var / noise_var) - bias;
+                                            double ema = g_snr_ema_gfsk.load(std::memory_order_relaxed);
+                                            if (ema < -50.0) {
+                                                ema = snr;
+                                            } else {
+                                                /* Faster EMA: 50% old, 50% new for quicker settling */
+                                                ema = 0.5 * ema + 0.5 * snr;
+                                            }
+                                            g_snr_ema_gfsk.store(ema, std::memory_order_relaxed);
+                                            g_snr_gfsk_db.store(ema, std::memory_order_relaxed);
+                                            g_snr_gfsk_src.store(1, std::memory_order_relaxed);
+                                            auto now = std::chrono::steady_clock::now();
+                                            long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                               now.time_since_epoch())
+                                                               .count();
+                                            g_snr_gfsk_last_ms.store(ms, std::memory_order_relaxed);
+                                            gfsk_updated = true;
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
-            /* If no C4FM update occurred for a while, synthesize a value from the eye buffer */
-            if (!c4fm_updated) {
-                if (++c4fm_missed >= 50) { /* ~guard against long stalls */
-                    double fb = dsd_rtl_stream_estimate_snr_c4fm_eye();
-                    if (fb > -50.0) {
-                        double prev = g_snr_c4fm_db.load(std::memory_order_relaxed);
-                        /* Slightly quicker fallback blending to avoid long stalls */
-                        double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
-                        g_snr_c4fm_db.store(blended, std::memory_order_relaxed);
-                        g_snr_c4fm_src.store(2, std::memory_order_relaxed);
-                        auto now = std::chrono::steady_clock::now();
-                        long long ms =
-                            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-                        g_snr_c4fm_last_ms.store(ms, std::memory_order_relaxed);
+                /* If no C4FM update occurred for a while, synthesize a value from the eye buffer */
+                if (!c4fm_updated) {
+                    if (++c4fm_missed >= 50) { /* ~guard against long stalls */
+                        double fb = dsd_rtl_stream_estimate_snr_c4fm_eye();
+                        if (fb > -50.0) {
+                            double prev = g_snr_c4fm_db.load(std::memory_order_relaxed);
+                            /* Slightly quicker fallback blending to avoid long stalls */
+                            double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
+                            g_snr_c4fm_db.store(blended, std::memory_order_relaxed);
+                            g_snr_c4fm_src.store(2, std::memory_order_relaxed);
+                            auto now = std::chrono::steady_clock::now();
+                            long long ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                            g_snr_c4fm_last_ms.store(ms, std::memory_order_relaxed);
+                        }
+                        c4fm_missed = 0;
                     }
+                } else {
                     c4fm_missed = 0;
                 }
-            } else {
-                c4fm_missed = 0;
-            }
-            /* If no QPSK update, synthesize from the constellation snapshot */
-            if (!qpsk_updated) {
-                if (++qpsk_missed >= 10) {
-                    double fb = dsd_rtl_stream_estimate_snr_qpsk_const();
-                    if (fb > -50.0) {
-                        double prev = g_snr_qpsk_db.load(std::memory_order_relaxed);
-                        /* Fast initial acquisition, then slower tracking for stability */
-                        double alpha = (prev < -50.0) ? 1.0 : 0.5;
-                        double blended = alpha * fb + (1.0 - alpha) * prev;
-                        g_snr_qpsk_db.store(blended, std::memory_order_relaxed);
-                        g_snr_qpsk_src.store(2, std::memory_order_relaxed);
-                        auto now = std::chrono::steady_clock::now();
-                        long long ms =
-                            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-                        g_snr_qpsk_last_ms.store(ms, std::memory_order_relaxed);
+                /* If no QPSK update, synthesize from the constellation snapshot */
+                if (!qpsk_updated) {
+                    if (++qpsk_missed >= 10) {
+                        double fb = dsd_rtl_stream_estimate_snr_qpsk_const();
+                        if (fb > -50.0) {
+                            double prev = g_snr_qpsk_db.load(std::memory_order_relaxed);
+                            /* Fast initial acquisition, then slower tracking for stability */
+                            double alpha = (prev < -50.0) ? 1.0 : 0.5;
+                            double blended = alpha * fb + (1.0 - alpha) * prev;
+                            g_snr_qpsk_db.store(blended, std::memory_order_relaxed);
+                            g_snr_qpsk_src.store(2, std::memory_order_relaxed);
+                            auto now = std::chrono::steady_clock::now();
+                            long long ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                            g_snr_qpsk_last_ms.store(ms, std::memory_order_relaxed);
+                        }
+                        qpsk_missed = 0;
                     }
+                } else {
                     qpsk_missed = 0;
                 }
-            } else {
-                qpsk_missed = 0;
-            }
-            /* If no GFSK update, synthesize from the eye buffer */
-            if (!gfsk_updated) {
-                if (++gfsk_missed >= 50) {
-                    double fb = dsd_rtl_stream_estimate_snr_gfsk_eye();
-                    if (fb > -50.0) {
-                        double prev = g_snr_gfsk_db.load(std::memory_order_relaxed);
-                        /* Slightly quicker fallback blending to avoid long stalls */
-                        double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
-                        g_snr_gfsk_db.store(blended, std::memory_order_relaxed);
-                        g_snr_gfsk_src.store(2, std::memory_order_relaxed);
-                        auto now = std::chrono::steady_clock::now();
-                        long long ms =
-                            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-                        g_snr_gfsk_last_ms.store(ms, std::memory_order_relaxed);
+                /* If no GFSK update, synthesize from the eye buffer */
+                if (!gfsk_updated) {
+                    if (++gfsk_missed >= 50) {
+                        double fb = dsd_rtl_stream_estimate_snr_gfsk_eye();
+                        if (fb > -50.0) {
+                            double prev = g_snr_gfsk_db.load(std::memory_order_relaxed);
+                            /* Slightly quicker fallback blending to avoid long stalls */
+                            double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
+                            g_snr_gfsk_db.store(blended, std::memory_order_relaxed);
+                            g_snr_gfsk_src.store(2, std::memory_order_relaxed);
+                            auto now = std::chrono::steady_clock::now();
+                            long long ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                            g_snr_gfsk_last_ms.store(ms, std::memory_order_relaxed);
+                        }
+                        gfsk_missed = 0;
                     }
+                } else {
                     gfsk_missed = 0;
                 }
-            } else {
-                gfsk_missed = 0;
             }
         }
 

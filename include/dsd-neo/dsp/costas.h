@@ -74,9 +74,9 @@ typedef struct {
     float taps_upper_i[FLL_BAND_EDGE_MAX_TAPS];
     int n_taps;
 
-    /* Filter delay line */
-    float delay_r[FLL_BAND_EDGE_MAX_TAPS];
-    float delay_i[FLL_BAND_EDGE_MAX_TAPS];
+    /* Filter delay line, mirrored once to make reverse history reads wrap-free. */
+    float delay_r[FLL_BAND_EDGE_MAX_TAPS * 2];
+    float delay_i[FLL_BAND_EDGE_MAX_TAPS * 2];
     int delay_idx;
 
     int sps; /* Samples per symbol (for reinit detection) */

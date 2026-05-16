@@ -77,6 +77,20 @@ debug_fsk_acq_enabled(void) {
     return cached;
 }
 
+static inline float
+phase_delta_small_angle_or_atan2(float im, float re) {
+    float abs_im = fabsf(im);
+    if (re > 1.0e-7f && abs_im <= (0.35f * re)) {
+        float x = im / re;
+        float x2 = x * x;
+        /* atan(x) Maclaurin through x^5. In the gated region the next term is
+         * below discriminator noise for the RTL FSK symbol path; outside it we
+         * keep atan2f's quadrant and large-angle behavior. */
+        return x * (1.0f + x2 * (-0.3333333333333333f + x2 * 0.2f));
+    }
+    return atan2f(im, re);
+}
+
 static dsd_fsk_modem_config
 normalized_config(const dsd_fsk_modem_config* cfg) {
     dsd_fsk_modem_config out;
@@ -402,7 +416,7 @@ dsd_fsk_modem_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int 
 
         float re = cur_i * prev_i + cur_q * prev_q;
         float im = cur_q * prev_i - cur_i * prev_q;
-        float freq = atan2f(im, re);
+        float freq = phase_delta_small_angle_or_atan2(im, re);
 
         /* Very slow carrier centering. The symbol stream is expected to be
          * roughly balanced over frame-sync windows; keeping this slow prevents
