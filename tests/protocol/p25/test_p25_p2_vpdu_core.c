@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -123,46 +124,50 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
                         int out_cap, int* out_rfss, int* out_site, int* out_lcn_count, long* out_lcn_freqs,
                         int out_lcn_cap) {
     dsd_opts opts;
-    dsd_state state;
+    dsd_state* state = NULL;
     memset(&opts, 0, sizeof opts);
-    memset(&state, 0, sizeof state);
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return -1;
+    }
 
     const int iden = 1;
-    state.p25_iden_fdma[iden].chan_type = 1;
-    state.p25_iden_fdma[iden].chan_spac = 100;
-    state.p25_iden_fdma[iden].base_freq = 851000000 / 5;
-    state.p25_iden_fdma[iden].populated = 1;
-    state.p25_chan_tdma_explicit[iden] = 1;
-    state.p2_rfssid = current_rfss;
-    state.p2_siteid = current_site;
+    state->p25_iden_fdma[iden].chan_type = 1;
+    state->p25_iden_fdma[iden].chan_spac = 100;
+    state->p25_iden_fdma[iden].base_freq = 851000000 / 5;
+    state->p25_iden_fdma[iden].populated = 1;
+    state->p25_chan_tdma_explicit[iden] = 1;
+    state->p2_rfssid = current_rfss;
+    state->p2_siteid = current_site;
 
     unsigned long long int MAC[24] = {0};
     for (int i = 0; i < 24; i++) {
         MAC[i] = mac_bytes[i];
     }
 
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
 
-    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&state);
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
     int count = (cc != NULL) ? cc->count : 0;
     for (int i = 0; i < count && i < out_cap; i++) {
         out_freqs[i] = cc->candidates[i];
     }
     if (out_rfss) {
-        *out_rfss = (int)state.p2_rfssid;
+        *out_rfss = (int)state->p2_rfssid;
     }
     if (out_site) {
-        *out_site = (int)state.p2_siteid;
+        *out_site = (int)state->p2_siteid;
     }
     if (out_lcn_count) {
-        *out_lcn_count = state.lcn_freq_count;
+        *out_lcn_count = state->lcn_freq_count;
     }
     if (out_lcn_freqs) {
         for (int i = 0; i < out_lcn_cap && i < 3; i++) {
-            out_lcn_freqs[i] = state.trunk_lcn_freq[i];
+            out_lcn_freqs[i] = state->trunk_lcn_freq[i];
         }
     }
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state);
+    free(state);
     return count;
 }
 

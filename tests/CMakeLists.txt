@@ -437,6 +437,7 @@ target_include_directories(dsd-neo_test_ui_chooser_navigation PRIVATE
   ${PROJECT_SOURCE_DIR}/include
   ${PROJECT_SOURCE_DIR}/src/ui/terminal
   ${CURSES_INCLUDE_DIRS})
+target_compile_definitions(dsd-neo_test_ui_chooser_navigation PRIVATE DSD_NEO_TEST_HOOKS)
 target_link_libraries(dsd-neo_test_ui_chooser_navigation PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES})
 add_test(NAME UI_CHOOSER_NAVIGATION COMMAND dsd-neo_test_ui_chooser_navigation)
 
@@ -447,6 +448,7 @@ target_include_directories(dsd-neo_test_ui_prompt_cursor PRIVATE
   ${PROJECT_SOURCE_DIR}/include
   ${PROJECT_SOURCE_DIR}/src/ui/terminal
   ${CURSES_INCLUDE_DIRS})
+target_compile_definitions(dsd-neo_test_ui_prompt_cursor PRIVATE DSD_NEO_TEST_HOOKS)
 target_link_libraries(dsd-neo_test_ui_prompt_cursor PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES})
 add_test(NAME UI_PROMPT_CURSOR COMMAND dsd-neo_test_ui_prompt_cursor)
 
@@ -1984,12 +1986,12 @@ add_test(NAME IO_IQ_REPLAY_EFFECTIVE_BYTES COMMAND dsd-neo_test_io_iq_replay_eff
 
 add_executable(dsd-neo_test_io_iq_metadata io/test_io_iq_metadata.c)
 target_include_directories(dsd-neo_test_io_iq_metadata PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_io_iq_metadata PRIVATE dsd-neo_io_iq dsd-neo_platform)
+target_link_libraries(dsd-neo_test_io_iq_metadata PRIVATE dsd-neo_io_iq dsd-neo_platform dsd-neo_test_support)
 add_test(NAME IO_IQ_METADATA COMMAND dsd-neo_test_io_iq_metadata)
 
 add_executable(dsd-neo_test_io_iq_capture_writer io/test_io_iq_capture_writer.c)
 target_include_directories(dsd-neo_test_io_iq_capture_writer PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_io_iq_capture_writer PRIVATE dsd-neo_io_iq dsd-neo_platform)
+target_link_libraries(dsd-neo_test_io_iq_capture_writer PRIVATE dsd-neo_io_iq dsd-neo_platform dsd-neo_test_support)
 add_test(NAME IO_IQ_CAPTURE_WRITER COMMAND dsd-neo_test_io_iq_capture_writer)
 
 add_executable(dsd-neo_test_platform_atomic_u64 platform/test_platform_atomic_u64.c)

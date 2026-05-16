@@ -141,3 +141,16 @@ int ui_chooser_handle_key(int ch);
  * @brief Render the chooser overlay.
  */
 void ui_chooser_render(void);
+
+#ifdef DSD_NEO_TEST_HOOKS
+typedef struct {
+    int active;
+    int count;
+    int sel;
+    int top;
+    int page_rows;
+} UiChooserTestSnapshot;
+
+void ui_chooser_test_set_page_rows(int page_rows);
+UiChooserTestSnapshot ui_chooser_test_snapshot(void);
+#endif

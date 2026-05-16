@@ -1237,7 +1237,7 @@ tg_policy_reload_validate_candidate(const dsd_state* imported) {
 
 int
 dsd_tg_policy_reload_group_file(dsd_opts* opts, dsd_state* state) {
-    dsd_state imported;
+    dsd_state* imported = NULL;
     dsd_tg_policy_context* imported_ctx = NULL;
     const dsd_tg_policy_context* current_ctx = NULL;
     void* imported_policy = NULL;
@@ -1249,13 +1249,19 @@ dsd_tg_policy_reload_group_file(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
 
-    memset(&imported, 0, sizeof(imported));
-    if (csvGroupImportPath(opts->group_in_file, &imported) != 0) {
-        dsd_state_ext_free_all(&imported);
+    imported = (dsd_state*)calloc(1, sizeof(*imported));
+    if (!imported) {
         return -1;
     }
-    if (tg_policy_reload_validate_candidate(&imported) != 0) {
-        dsd_state_ext_free_all(&imported);
+
+    if (csvGroupImportPath(opts->group_in_file, imported) != 0) {
+        dsd_state_ext_free_all(imported);
+        free(imported);
+        return -1;
+    }
+    if (tg_policy_reload_validate_candidate(imported) != 0) {
+        dsd_state_ext_free_all(imported);
+        free(imported);
         return -1;
     }
 
@@ -1265,15 +1271,16 @@ dsd_tg_policy_reload_group_file(dsd_opts* opts, dsd_state* state) {
         next_active_generation = current_ctx->active.generation + 1u;
     }
 
-    imported_policy = imported.state_ext[DSD_STATE_EXT_CORE_TG_POLICY];
-    imported_cleanup = imported.state_ext_cleanup[DSD_STATE_EXT_CORE_TG_POLICY];
-    imported.state_ext[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
-    imported.state_ext_cleanup[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
+    imported_policy = imported->state_ext[DSD_STATE_EXT_CORE_TG_POLICY];
+    imported_cleanup = imported->state_ext_cleanup[DSD_STATE_EXT_CORE_TG_POLICY];
+    imported->state_ext[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
+    imported->state_ext_cleanup[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
 
     if (!imported_policy) {
         imported_ctx = (dsd_tg_policy_context*)tg_policy_calloc(1, sizeof(*imported_ctx));
         if (!imported_ctx) {
-            dsd_state_ext_free_all(&imported);
+            dsd_state_ext_free_all(imported);
+            free(imported);
             return -1;
         }
         imported_policy = imported_ctx;
@@ -1288,12 +1295,14 @@ dsd_tg_policy_reload_group_file(dsd_opts* opts, dsd_state* state) {
         if (imported_cleanup) {
             imported_cleanup(imported_policy);
         }
-        dsd_state_ext_free_all(&imported);
+        dsd_state_ext_free_all(imported);
+        free(imported);
         return -1;
     }
-    memcpy(state->group_array, imported.group_array, sizeof(state->group_array));
-    state->group_tally = imported.group_tally;
+    memcpy(state->group_array, imported->group_array, sizeof(state->group_array));
+    state->group_tally = imported->group_tally;
 
-    dsd_state_ext_free_all(&imported);
+    dsd_state_ext_free_all(imported);
+    free(imported);
     return 0;
 }

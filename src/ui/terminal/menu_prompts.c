@@ -197,6 +197,16 @@ ui_chooser_keep_selection_visible(void) {
     g_chooser.top = ui_scroll_follow_selection(g_chooser.count, g_chooser.page_rows, g_chooser.top, g_chooser.sel);
 }
 
+static int
+ui_prompt_curs_set(int visibility) {
+#ifdef DSD_NEO_TEST_HOOKS
+    (void)visibility;
+    return 0;
+#else
+    return curs_set(visibility);
+#endif
+}
+
 // ---- Prompt implementations ----
 
 void
@@ -218,7 +228,7 @@ ui_prompt_close_all(void) {
         free(g_prompt.buf);
         g_prompt.buf = NULL;
     }
-    (void)curs_set(0); // hide cursor when no prompt is active
+    (void)ui_prompt_curs_set(0); // hide cursor when no prompt is active
     memset(&g_prompt, 0, sizeof(g_prompt));
 }
 
@@ -513,7 +523,7 @@ ui_prompt_render(void) {
         wtimeout(g_prompt.win, 0);
     }
     WINDOW* win = g_prompt.win;
-    (void)curs_set(1); // show cursor while editing prompt text
+    (void)ui_prompt_curs_set(1); // show cursor while editing prompt text
     werase(win);
     box(win, 0, 0);
 
@@ -626,7 +636,7 @@ ui_help_close(void) {
         delwin(g_help.win);
         g_help.win = NULL;
     }
-    (void)curs_set(0);
+    (void)ui_prompt_curs_set(0);
     memset(&g_help, 0, sizeof(g_help));
 }
 
@@ -847,7 +857,7 @@ ui_chooser_close(void) {
         delwin(g_chooser.win);
         g_chooser.win = NULL;
     }
-    (void)curs_set(0);
+    (void)ui_prompt_curs_set(0);
     memset(&g_chooser, 0, sizeof(g_chooser));
 }
 
@@ -1053,3 +1063,25 @@ ui_chooser_render(void) {
     mvwaddnstr(win, h - 2, 2, footer, body_w);
     wnoutrefresh(win);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+ui_chooser_test_set_page_rows(int page_rows) {
+    if (page_rows < 0) {
+        page_rows = 0;
+    }
+    g_chooser.page_rows = page_rows;
+    ui_chooser_keep_selection_visible();
+}
+
+UiChooserTestSnapshot
+ui_chooser_test_snapshot(void) {
+    UiChooserTestSnapshot snapshot;
+    snapshot.active = g_chooser.active;
+    snapshot.count = g_chooser.count;
+    snapshot.sel = g_chooser.sel;
+    snapshot.top = g_chooser.top;
+    snapshot.page_rows = g_chooser.page_rows;
+    return snapshot;
+}
+#endif
