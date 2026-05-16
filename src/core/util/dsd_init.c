@@ -416,6 +416,15 @@ initState(dsd_state* state) {
 
     // RTL-SDR stream context (initialized to NULL; lifecycle managed by caller)
     state->rtl_ctx = NULL;
+    memset(state->rtl_symbol_cache, 0, sizeof(state->rtl_symbol_cache));
+    state->rtl_symbol_cache_pos = 0;
+    state->rtl_symbol_cache_len = 0;
+    state->rtl_symbol_cache_output_kind = 0;
+    state->rtl_symbol_cache_channel_profile = 0;
+    state->rtl_symbol_cache_symbol_rate_hz = 0;
+    state->rtl_symbol_cache_levels = 0;
+    state->rtl_symbol_cache_generation = 0;
+    state->rtl_symbol_cache_published_pending = 0;
     // Optional RC2 crypto context (allocated on demand by key setup path)
     state->rc2_context = NULL;
 

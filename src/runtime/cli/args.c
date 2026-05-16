@@ -627,6 +627,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     }
 
     if (opts->iq_replay_requested) {
+#ifndef USE_RADIO
+        LOG_ERROR("--iq-replay requires a build with radio pipeline support\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return DSD_PARSE_ERROR;
+#else
         dsd_iq_replay_config replay_cfg;
         memset(&replay_cfg, 0, sizeof(replay_cfg));
         char err_buf[256] = {0};
@@ -688,6 +693,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             cli_set_exit_rc(out_exit_rc, 1);
             return DSD_PARSE_ERROR;
         }
+#endif
     }
 
     // If CLI present, set env vars and maybe run calculator

@@ -34,6 +34,16 @@ main(void) {
     state->trunk_chan_map_used[0] = 0x0123U;
     state->trunk_chan_map_used_count = 1U;
     state->trunk_chan_map_seq = 99U;
+    state->rtl_symbol_cache[0] = 1234.0f;
+    state->rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP - 1] = 5678.0f;
+    state->rtl_symbol_cache_pos = 2;
+    state->rtl_symbol_cache_len = 4;
+    state->rtl_symbol_cache_output_kind = 3;
+    state->rtl_symbol_cache_channel_profile = 5;
+    state->rtl_symbol_cache_symbol_rate_hz = 6000;
+    state->rtl_symbol_cache_levels = 4;
+    state->rtl_symbol_cache_generation = 42U;
+    state->rtl_symbol_cache_published_pending = 2;
     initState(state);
 
     if (state->rc2_context != NULL) {
@@ -59,6 +69,17 @@ main(void) {
         return 4;
     }
 
+    if (state->rtl_symbol_cache_pos != 0 || state->rtl_symbol_cache_len != 0 || state->rtl_symbol_cache_output_kind != 0
+        || state->rtl_symbol_cache_channel_profile != 0 || state->rtl_symbol_cache_symbol_rate_hz != 0
+        || state->rtl_symbol_cache_levels != 0 || state->rtl_symbol_cache_generation != 0U
+        || state->rtl_symbol_cache_published_pending != 0 || state->rtl_symbol_cache[0] != 0.0f
+        || state->rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP - 1] != 0.0f) {
+        fprintf(stderr, "initState did not clear RTL symbol cache state\n");
+        freeState(state);
+        free(state);
+        return 5;
+    }
+
     for (int i = 0; i < 4; i++) {
         state->minbuf[i] = (float)(-10 - i);
         state->maxbuf[i] = (float)(10 + i);
@@ -71,7 +92,7 @@ main(void) {
                 state->minmax_sum_window, (double)state->min, (double)state->max);
         freeState(state);
         free(state);
-        return 5;
+        return 6;
     }
 
     dsd_state_set_trunk_chan_freq(state, 0x1234U, 851500000L);
@@ -83,7 +104,7 @@ main(void) {
         fprintf(stderr, "trunk channel-map sparse index mismatch\n");
         freeState(state);
         free(state);
-        return 6;
+        return 7;
     }
 
     dsd_state_set_trunk_chan_freq(state, 0x1234U, 0);
@@ -92,7 +113,7 @@ main(void) {
         fprintf(stderr, "trunk channel-map sparse removal mismatch\n");
         freeState(state);
         free(state);
-        return 7;
+        return 8;
     }
 
     freeState(state);

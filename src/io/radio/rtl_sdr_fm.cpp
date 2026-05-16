@@ -48,6 +48,7 @@
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/threading.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <limits.h>
@@ -262,7 +263,9 @@ static std::atomic<int> g_retune_diag_reason{0};
 static std::atomic<int> g_retune_diag_blocks_remaining{0};
 static std::atomic<uint32_t> g_retune_settle_seq{0};
 static std::atomic<int> g_retune_settle_blocks_remaining{0};
+static std::atomic<uint32_t> g_rtl_output_generation{1};
 static const int kRetuneDiagBlocks = 20;
+static uint32_t rtl_stream_bump_output_generation(void);
 /*
  * The controller already purges stale samples and applies a time-based hardware
  * mute after retunes. Do not additionally drop whole demod blocks here: at RTL
@@ -943,6 +946,29 @@ iq_block_abs_stats(const float* iq, int len, float* mean_abs, float* max_abs, in
  * samples from the previous frequency/SPS from contaminating the display.
  */
 static void
+retune_output_pending(const struct output_state* outp, size_t* out_ring_used, int* out_cached_symbols) {
+    if (out_ring_used) {
+        *out_ring_used = outp ? ring_used(outp) : 0U;
+    }
+    if (out_cached_symbols) {
+        *out_cached_symbols = dsd_rtl_stream_metrics_hook_symbol_cache_pending();
+    }
+}
+
+static int
+retune_output_drained(const struct output_state* outp) {
+    size_t ring_pending = 0U;
+    int cache_pending = 0;
+    retune_output_pending(outp, &ring_pending, &cache_pending);
+    (void)cache_pending;
+    /* The symbol cache belongs to the decoder thread. API/trunking retunes can
+     * run on that same thread, so waiting for cached symbols here can only burn
+     * the full drain timeout. The generation bump below invalidates stale cache
+     * entries before the decoder can consume them. */
+    return (ring_pending == 0U) ? 1 : 0;
+}
+
+static void
 drain_output_on_retune(void) {
     struct output_state* outp = &output;
     if (g_stream && g_stream->output) {
@@ -977,14 +1003,16 @@ drain_output_on_retune(void) {
     }
     size_t before = ring_used(outp);
     int waited_ms = 0;
-    while (!ring_is_empty(outp) && waited_ms < drain_ms) {
+    while (!retune_output_drained(outp) && waited_ms < drain_ms) {
         dsd_sleep_ms(1);
         waited_ms++;
     }
-    if (!ring_is_empty(outp)) {
+    if (!retune_output_drained(outp)) {
         /* Timed out; clear remainder to avoid stale backlog */
         dsd_rtl_stream_clear_output();
+        return;
     }
+    rtl_stream_bump_output_generation();
     (void)before; /* reserved for future diagnostics */
 }
 
@@ -2506,6 +2534,15 @@ controller_arm_post_retune_diagnostics(uint32_t center_freq_hz, DemodRetuneReset
     g_retune_diag_blocks_remaining.store(debug_cqpsk_enabled() ? kRetuneDiagBlocks : 0, std::memory_order_release);
 }
 
+static uint32_t
+rtl_stream_bump_output_generation(void) {
+    uint32_t next = g_rtl_output_generation.fetch_add(1, std::memory_order_acq_rel) + 1U;
+    if (next == 0U) {
+        next = g_rtl_output_generation.fetch_add(1, std::memory_order_acq_rel) + 1U;
+    }
+    return next;
+}
+
 static void
 controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz,
                                int mark_reconfigure, DemodRetuneResetReason reset_reason,
@@ -2519,6 +2556,10 @@ controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts,
     DemodRetuneResetPlan reset_plan = demod_retune_reset_plan(reset_reason, previous_center_freq_hz, center_freq_hz,
                                                               previous_rate_out_hz, demod.rate_out);
     demod_reset_on_retune(&demod, reset_plan);
+    /* Reconfigures invalidate after the configured output drain/clear policy runs. */
+    if (!mark_reconfigure) {
+        rtl_stream_bump_output_generation();
+    }
     if (mark_reconfigure) {
         s->reconfigure_seq.fetch_add(1, std::memory_order_acq_rel);
         controller_request_input_purge();
@@ -4479,6 +4520,7 @@ dsd_rtl_stream_close(void) {
 extern "C" int
 dsd_rtl_stream_soft_stop(void) {
     LOG_INFO("soft stopping...\n");
+    rtl_stream_bump_output_generation();
     if (g_stream) {
         g_stream->replay_forced_stop.store(1, std::memory_order_release);
         g_stream->should_exit.store(1, std::memory_order_release);
@@ -4867,15 +4909,28 @@ dsd_rtl_stream_get_output_kind(void) {
     return demod.output_kind;
 }
 
+extern "C" uint32_t
+dsd_rtl_stream_output_generation(void) {
+    return g_rtl_output_generation.load(std::memory_order_acquire);
+}
+
 extern "C" int
-dsd_rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels) {
+dsd_rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
     if (out_symbol_rate_hz) {
         *out_symbol_rate_hz = demod.symbol_rate_hz;
     }
     if (out_levels) {
         *out_levels = demod.symbol_levels;
     }
+    if (out_channel_profile) {
+        *out_channel_profile = demod.channel_lpf_profile;
+    }
     return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels) {
+    return dsd_rtl_stream_get_symbol_profile_full(out_symbol_rate_hz, out_levels, NULL);
 }
 
 extern "C" int
@@ -5654,6 +5709,136 @@ dsd_rtl_stream_test_request_retune(long int frequency, int timeout_ms) {
 }
 
 extern "C" int
+dsd_rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
+                                              uint32_t* out_generation_before, uint32_t* out_generation_after) {
+    if (!out_used_after || !out_generation_before || !out_generation_after) {
+        return -1;
+    }
+
+    int initialized_output = 0;
+    if (!output.buffer) {
+        output_init(&output);
+        initialized_output = 1;
+    }
+    if (!output.buffer || output.capacity == 0U) {
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -2;
+    }
+    if (queued_samples >= output.capacity) {
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -3;
+    }
+
+    ring_clear(&output);
+    output.tail.store(0);
+    output.head.store(queued_samples);
+
+    *out_generation_before = dsd_rtl_stream_output_generation();
+    controller_prepare_reconfigure_input();
+    *out_generation_after = dsd_rtl_stream_output_generation();
+    *out_used_after = ring_used(&output);
+
+    ring_clear(&output);
+    if (initialized_output) {
+        output_cleanup(&output);
+    }
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,
+                                          int* out_cache_pending, int* out_drained) {
+    if (!out_ring_pending || !out_cache_pending || !out_drained || cached_symbols < 0) {
+        return -1;
+    }
+
+    int initialized_output = 0;
+    if (!output.buffer) {
+        output_init(&output);
+        initialized_output = 1;
+    }
+    if (!output.buffer || output.capacity == 0U) {
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -2;
+    }
+    if (queued_samples >= output.capacity) {
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -3;
+    }
+
+    ring_clear(&output);
+    output.tail.store(0);
+    output.head.store(queued_samples);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(cached_symbols);
+
+    retune_output_pending(&output, out_ring_pending, out_cache_pending);
+    *out_drained = retune_output_drained(&output);
+
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    ring_clear(&output);
+    if (initialized_output) {
+        output_cleanup(&output);
+    }
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
+                                 int* out_cache_pending_after, uint32_t* out_generation_before,
+                                 uint32_t* out_generation_after) {
+    if (!out_used_after || !out_cache_pending_after || !out_generation_before || !out_generation_after
+        || cached_symbols < 0) {
+        return -1;
+    }
+
+    int initialized_output = 0;
+    if (!output.buffer) {
+        output_init(&output);
+        initialized_output = 1;
+    }
+    if (!output.buffer || output.capacity == 0U) {
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -2;
+    }
+    if (queued_samples >= output.capacity) {
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -3;
+    }
+
+    ring_clear(&output);
+    output.tail.store(0);
+    output.head.store(queued_samples);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(cached_symbols);
+
+    *out_generation_before = dsd_rtl_stream_output_generation();
+    dsd_rtl_stream_clear_output();
+    *out_generation_after = dsd_rtl_stream_output_generation();
+    *out_used_after = ring_used(&output);
+    *out_cache_pending_after = dsd_rtl_stream_metrics_hook_symbol_cache_pending();
+
+    ring_clear(&output);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    if (initialized_output) {
+        output_cleanup(&output);
+    }
+    return 0;
+}
+
+extern "C" int
 dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     if (!out_state || !g_stream) {
         return -1;
@@ -5711,8 +5896,11 @@ dsd_rtl_stream_clear_output(void) {
     if (g_stream && g_stream->output) {
         outp = g_stream->output;
     }
+    /* Invalidate decoder-owned cached symbols before clearing the shared output. */
+    rtl_stream_bump_output_generation();
     /* Clear the entire ring to prevent sample 'lag' */
     ring_clear(outp);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     /* Wake producer waiting for space */
     safe_cond_signal(&outp->space, &outp->ready_m);
 }

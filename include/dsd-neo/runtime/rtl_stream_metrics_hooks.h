@@ -14,6 +14,8 @@
  */
 #pragma once
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -21,7 +23,8 @@ extern "C" {
 typedef struct {
     unsigned int (*output_rate_hz)(void);
     int (*output_kind)(void);
-    int (*symbol_profile)(int* out_symbol_rate_hz, int* out_levels);
+    int (*symbol_profile)(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
+    uint32_t (*stream_generation)(void);
     int (*set_symbol_profile)(int symbol_rate_hz, int levels, int channel_profile);
     int (*dsp_get)(int* out_cqpsk_enable, int* out_fll_enable, int* out_ted_enable);
     int (*ted_bias)(void);
@@ -48,7 +51,8 @@ void dsd_rtl_stream_metrics_hooks_set(dsd_rtl_stream_metrics_hooks hooks);
 
 unsigned int dsd_rtl_stream_metrics_hook_output_rate_hz(void);
 int dsd_rtl_stream_metrics_hook_output_kind(void);
-int dsd_rtl_stream_metrics_hook_symbol_profile(int* out_symbol_rate_hz, int* out_levels);
+int dsd_rtl_stream_metrics_hook_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
+uint32_t dsd_rtl_stream_metrics_hook_stream_generation(void);
 int dsd_rtl_stream_metrics_hook_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
 int dsd_rtl_stream_metrics_hook_dsp_get(int* out_cqpsk_enable, int* out_fll_enable, int* out_ted_enable);
 int dsd_rtl_stream_metrics_hook_ted_bias(void);
@@ -61,6 +65,9 @@ double dsd_rtl_stream_metrics_hook_snr_qpsk_const_db(void);
 void dsd_rtl_stream_metrics_hook_p25p1_ber_update(int ok_delta, int err_delta);
 void dsd_rtl_stream_metrics_hook_p25p2_err_update(int slot, int facch_ok, int facch_err, int sacch_ok, int sacch_err,
                                                   int voice_err);
+int dsd_rtl_stream_metrics_hook_symbol_cache_pending(void);
+void dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(int delta);
+void dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset(void);
 
 #ifdef __cplusplus
 }

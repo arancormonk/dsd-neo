@@ -15,17 +15,24 @@
  */
 
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/simd_fir.h>
+#include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/input_ring.h>
+#include <dsd-neo/runtime/ring.h>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdint.h>
 #include <vector>
 
 extern "C" int
@@ -77,6 +84,44 @@ fill_rotating_iq(std::vector<float>* v, float step) {
         if (phase > 2.0f * kPi) {
             phase -= 2.0f * kPi;
         }
+    }
+}
+
+static void
+fill_fsk_iq(std::vector<float>* v, int sps, float deviation_per_level) {
+    static const float levels[] = {-3.0f, -1.0f, 1.0f, 3.0f, 1.0f, -1.0f};
+    float phase = 0.19f;
+    const int pairs = (int)(v->size() >> 1);
+    for (int n = 0; n < pairs; n++) {
+        float sym = levels[(n / sps) % (int)(sizeof(levels) / sizeof(levels[0]))];
+        phase += deviation_per_level * sym;
+        if (phase > kPi) {
+            phase -= 2.0f * kPi;
+        } else if (phase < -kPi) {
+            phase += 2.0f * kPi;
+        }
+        (*v)[(size_t)n * 2] = 0.85f * std::cos(phase);
+        (*v)[(size_t)n * 2 + 1] = 0.85f * std::sin(phase);
+    }
+}
+
+static void
+fill_cqpsk_iq(std::vector<float>* v, int sps) {
+    static const float symbols[] = {-3.0f, -1.0f, 1.0f, 3.0f};
+    float phase = 0.0f;
+    const int pairs = (int)(v->size() >> 1);
+    for (int n = 0; n < pairs; n++) {
+        if ((n % sps) == 0) {
+            phase += symbols[(n / sps) & 3] * (kPi / 4.0f);
+            while (phase > kPi) {
+                phase -= 2.0f * kPi;
+            }
+            while (phase < -kPi) {
+                phase += 2.0f * kPi;
+            }
+        }
+        (*v)[(size_t)n * 2] = std::cos(phase);
+        (*v)[(size_t)n * 2 + 1] = std::sin(phase);
     }
 }
 
@@ -150,6 +195,55 @@ bench_input_ring(int iterations) {
     });
 
     input_ring_destroy(&ring);
+}
+
+static void
+bench_output_ring(int iterations) {
+    constexpr size_t kBlock = 8192;
+    std::vector<float> in(kBlock);
+    std::vector<float> out(kBlock);
+    fill_noise(&in, 0x4567u);
+
+    output_state ring = {};
+    ring.rate = 48000;
+    ring.capacity = kBlock + 1U;
+    ring.buffer = (float*)std::calloc(ring.capacity, sizeof(float));
+    if (!ring.buffer) {
+        std::fprintf(stderr, "output ring allocation failed\n");
+        return;
+    }
+    dsd_cond_init(&ring.ready);
+    dsd_cond_init(&ring.space);
+    dsd_mutex_init(&ring.ready_m);
+    ring.head.store(0);
+    ring.tail.store(0);
+    ring.write_timeouts.store(0);
+    ring.read_timeouts.store(0);
+
+    run_case("output_ring_read_one", iterations, (double)kBlock, [&]() -> float {
+        ring_clear(&ring);
+        ring_write_no_signal(&ring, in.data(), kBlock);
+        float sum = 0.0f;
+        for (size_t i = 0; i < kBlock; i++) {
+            float sample = 0.0f;
+            if (ring_read_one(&ring, &sample) == 0) {
+                sum += sample;
+            }
+        }
+        return sum;
+    });
+
+    run_case("output_ring_read_batch", iterations, (double)kBlock, [&]() -> float {
+        ring_clear(&ring);
+        ring_write_no_signal(&ring, in.data(), kBlock);
+        int got = ring_read_batch(&ring, out.data(), kBlock);
+        return out[0] + out[(got > 0) ? (size_t)got - 1U : 0U] + (float)got;
+    });
+
+    dsd_mutex_destroy(&ring.ready_m);
+    dsd_cond_destroy(&ring.ready);
+    dsd_cond_destroy(&ring.space);
+    std::free(ring.buffer);
 }
 
 static void
@@ -234,6 +328,87 @@ bench_carrier_loops(int iterations) {
     std::free(costas_state);
 }
 
+static void
+bench_full_demod(int iterations) {
+    constexpr int kFskSps = 10;
+    constexpr int kFskSymbols = 512;
+    constexpr int kFskInLen = kFskSymbols * kFskSps * 2;
+    constexpr int kCqpskSps = 5;
+    constexpr int kCqpskSymbols = 512;
+    constexpr int kCqpskInLen = kCqpskSymbols * kCqpskSps * 2;
+
+    std::vector<float> fsk_in(kFskInLen);
+    std::vector<float> cqpsk_in(kCqpskInLen);
+    fill_fsk_iq(&fsk_in, kFskSps, 0.028f);
+    fill_cqpsk_iq(&cqpsk_in, kCqpskSps);
+
+    demod_state* fsk_state = (demod_state*)std::calloc(1, sizeof(*fsk_state));
+    demod_state* cqpsk_state = (demod_state*)std::calloc(1, sizeof(*cqpsk_state));
+    if (!fsk_state || !cqpsk_state) {
+        std::fprintf(stderr, "demod_state allocation failed\n");
+        std::free(fsk_state);
+        std::free(cqpsk_state);
+        return;
+    }
+
+    fsk_state->rate_in = 48000;
+    fsk_state->rate_out = 48000;
+    fsk_state->rate_out2 = 12000;
+    fsk_state->lowpassed = fsk_state->input_cb_buf;
+    fsk_state->mode_demod = &dsd_fm_demod;
+    fsk_state->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_FSK;
+    fsk_state->symbol_rate_hz = 4800;
+    fsk_state->symbol_levels = 4;
+    fsk_state->channel_lpf_enable = 1;
+    fsk_state->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
+    {
+        dsd_fsk_modem_config cfg = {};
+        cfg.sample_rate_hz = fsk_state->rate_out;
+        cfg.symbol_rate_hz = fsk_state->symbol_rate_hz;
+        cfg.levels = fsk_state->symbol_levels;
+        cfg.channel_profile = fsk_state->channel_lpf_profile;
+        dsd_fsk_modem_init(&fsk_state->fsk_modem_state, &cfg);
+    }
+
+    cqpsk_state->rate_in = 24000;
+    cqpsk_state->rate_out = 24000;
+    cqpsk_state->lowpassed = cqpsk_state->input_cb_buf;
+    cqpsk_state->mode_demod = &dsd_fm_demod;
+    cqpsk_state->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    cqpsk_state->cqpsk_enable = 1;
+    cqpsk_state->symbol_rate_hz = 4800;
+    cqpsk_state->symbol_levels = 4;
+    cqpsk_state->ted_sps = kCqpskSps;
+    cqpsk_state->sps_is_integer = 1;
+    cqpsk_state->channel_lpf_enable = 1;
+    cqpsk_state->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    cqpsk_state->cqpsk_diff_prev_r = 1.0f;
+    cqpsk_state->cqpsk_diff_prev_j = 0.0f;
+    ted_init_state(&cqpsk_state->ted_state);
+
+    run_case("full_demod_symbol_fsk", iterations, (double)kFskSymbols, [&]() -> float {
+        std::memcpy(fsk_state->input_cb_buf, fsk_in.data(), fsk_in.size() * sizeof(float));
+        fsk_state->lowpassed = fsk_state->input_cb_buf;
+        fsk_state->lp_len = kFskInLen;
+        full_demod(fsk_state);
+        return fsk_state->result[0] + fsk_state->result[(fsk_state->result_len > 0) ? fsk_state->result_len - 1 : 0]
+               + (float)fsk_state->result_len;
+    });
+
+    run_case("full_demod_symbol_cqpsk", iterations, (double)kCqpskSymbols, [&]() -> float {
+        std::memcpy(cqpsk_state->input_cb_buf, cqpsk_in.data(), cqpsk_in.size() * sizeof(float));
+        cqpsk_state->lowpassed = cqpsk_state->input_cb_buf;
+        cqpsk_state->lp_len = kCqpskInLen;
+        full_demod(cqpsk_state);
+        return cqpsk_state->result[0]
+               + cqpsk_state->result[(cqpsk_state->result_len > 0) ? cqpsk_state->result_len - 1 : 0]
+               + (float)cqpsk_state->result_len;
+    });
+
+    std::free(fsk_state);
+    std::free(cqpsk_state);
+}
+
 } /* namespace */
 
 int
@@ -245,8 +420,10 @@ main(int argc, char** argv) {
     std::printf("iterations=%d simd_fir_impl=%s\n\n", iterations, simd_fir_get_impl_name());
 
     bench_input_ring(iterations);
+    bench_output_ring(iterations);
     bench_fir(iterations);
     bench_carrier_loops(iterations);
+    bench_full_demod(iterations);
 
     std::printf("\nsink=% .6e\n", (double)g_bench_sink);
     return 0;

@@ -343,9 +343,58 @@ enum {
     RTL_STREAM_OUTPUT_SYMBOL_CQPSK_LOCAL = 2,
 };
 
+enum {
+    RTL_SYMBOL_CACHE_EMPTY = 0,
+    RTL_SYMBOL_CACHE_READY = 1,
+    RTL_SYMBOL_CACHE_RETRY = 2,
+};
+
 static inline int
 rtl_symbol_output_active(int output_kind) {
     return output_kind == RTL_STREAM_OUTPUT_SYMBOL_FSK_LOCAL || output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK_LOCAL;
+}
+
+static inline int
+rtl_symbol_current_profile(int* output_kind, int* channel_profile, int* symbol_rate_hz, int* levels,
+                           uint32_t* generation) {
+    int current_output_kind = dsd_rtl_stream_metrics_hook_output_kind();
+    if (output_kind) {
+        *output_kind = current_output_kind;
+    }
+    if (generation) {
+        *generation = dsd_rtl_stream_metrics_hook_stream_generation();
+    }
+    if (!rtl_symbol_output_active(current_output_kind)) {
+        if (channel_profile) {
+            *channel_profile = 0;
+        }
+        if (symbol_rate_hz) {
+            *symbol_rate_hz = 0;
+        }
+        if (levels) {
+            *levels = 4;
+        }
+        return 0;
+    }
+
+    int current_symbol_rate_hz = 0;
+    int current_levels = 4;
+    int current_channel_profile = 0;
+    (void)dsd_rtl_stream_metrics_hook_symbol_profile(&current_symbol_rate_hz, &current_levels,
+                                                     &current_channel_profile);
+    if (current_levels != 2) {
+        current_levels = 4;
+    }
+    if (channel_profile) {
+        *channel_profile = current_channel_profile;
+    }
+    if (symbol_rate_hz) {
+        *symbol_rate_hz = current_symbol_rate_hz;
+    }
+    if (levels) {
+        *levels = current_levels;
+    }
+    return 1;
 }
 
 static inline void
@@ -368,6 +417,137 @@ apply_rtl_symbol_thresholds(dsd_state* state, int levels) {
         state->umid = 2.0f;
         state->minref = -2.4f;
         state->maxref = 2.4f;
+    }
+}
+
+static inline void
+rtl_symbol_cache_publish_pending(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    int pending = 0;
+    if (state->rtl_symbol_cache_pos < state->rtl_symbol_cache_len) {
+        pending = state->rtl_symbol_cache_len - state->rtl_symbol_cache_pos;
+    }
+    int delta = pending - state->rtl_symbol_cache_published_pending;
+    if (delta != 0) {
+        dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(delta);
+        state->rtl_symbol_cache_published_pending = pending;
+    }
+}
+
+static inline void
+rtl_symbol_cache_reset_pending(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->rtl_symbol_cache_pos = 0;
+    state->rtl_symbol_cache_len = 0;
+    rtl_symbol_cache_publish_pending(state);
+}
+
+static inline int
+rtl_symbol_cache_pop(dsd_state* state, uint32_t generation, float* sample_out) {
+    if (!state || !sample_out || state->rtl_symbol_cache_pos >= state->rtl_symbol_cache_len) {
+        return RTL_SYMBOL_CACHE_EMPTY;
+    }
+    if (dsd_rtl_stream_metrics_hook_stream_generation() != generation) {
+        rtl_symbol_cache_reset_pending(state);
+        return RTL_SYMBOL_CACHE_RETRY;
+    }
+    float sample = state->rtl_symbol_cache[state->rtl_symbol_cache_pos++];
+    rtl_symbol_cache_publish_pending(state);
+    if (dsd_rtl_stream_metrics_hook_stream_generation() != generation) {
+        rtl_symbol_cache_reset_pending(state);
+        return RTL_SYMBOL_CACHE_RETRY;
+    }
+    *sample_out = sample;
+    return RTL_SYMBOL_CACHE_READY;
+}
+
+static inline void
+rtl_symbol_cache_profile(dsd_state* state, int output_kind, int channel_profile, int symbol_rate_hz, int levels,
+                         uint32_t generation) {
+    if (!state) {
+        return;
+    }
+    if (state->rtl_symbol_cache_output_kind != output_kind || state->rtl_symbol_cache_channel_profile != channel_profile
+        || state->rtl_symbol_cache_symbol_rate_hz != symbol_rate_hz || state->rtl_symbol_cache_levels != levels
+        || state->rtl_symbol_cache_generation != generation) {
+        rtl_symbol_cache_reset_pending(state);
+        state->rtl_symbol_cache_output_kind = output_kind;
+        state->rtl_symbol_cache_channel_profile = channel_profile;
+        state->rtl_symbol_cache_symbol_rate_hz = symbol_rate_hz;
+        state->rtl_symbol_cache_levels = levels;
+        state->rtl_symbol_cache_generation = generation;
+    }
+}
+
+static inline void
+rtl_symbol_cache_clear(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    rtl_symbol_cache_reset_pending(state);
+    state->rtl_symbol_cache_output_kind = 0;
+    state->rtl_symbol_cache_channel_profile = 0;
+    state->rtl_symbol_cache_symbol_rate_hz = 0;
+    state->rtl_symbol_cache_levels = 0;
+    state->rtl_symbol_cache_generation = 0;
+}
+
+static int
+rtl_symbol_cache_take(dsd_state* state, int output_kind, int channel_profile, int symbol_rate_hz, int levels,
+                      uint32_t* generation, float* sample_out) {
+    if (!state || !sample_out) {
+        return RTL_SYMBOL_CACHE_EMPTY;
+    }
+
+    uint32_t current_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+    if (generation && current_generation != *generation) {
+        *generation = current_generation;
+        rtl_symbol_cache_reset_pending(state);
+        return RTL_SYMBOL_CACHE_RETRY;
+    }
+    uint32_t expected_generation = generation ? *generation : current_generation;
+    int pop_status = rtl_symbol_cache_pop(state, expected_generation, sample_out);
+    if (pop_status != RTL_SYMBOL_CACHE_EMPTY) {
+        return pop_status;
+    }
+
+    for (;;) {
+        int got = 0;
+        uint32_t read_generation = generation ? *generation : expected_generation;
+        if (dsd_rtl_stream_io_hook_read(state, state->rtl_symbol_cache, DSD_RTL_SYMBOL_CACHE_CAP, &got) < 0
+            || got <= 0) {
+            rtl_symbol_cache_reset_pending(state);
+            return RTL_SYMBOL_CACHE_EMPTY;
+        }
+        if (got > DSD_RTL_SYMBOL_CACHE_CAP) {
+            got = DSD_RTL_SYMBOL_CACHE_CAP;
+        }
+
+        uint32_t fill_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+        if (fill_generation != read_generation) {
+            if (generation) {
+                *generation = fill_generation;
+            }
+            rtl_symbol_cache_reset_pending(state);
+            return RTL_SYMBOL_CACHE_RETRY;
+        }
+
+        state->rtl_symbol_cache_len = got;
+        state->rtl_symbol_cache_pos = 0;
+        state->rtl_symbol_cache_output_kind = output_kind;
+        state->rtl_symbol_cache_channel_profile = channel_profile;
+        state->rtl_symbol_cache_symbol_rate_hz = symbol_rate_hz;
+        state->rtl_symbol_cache_levels = levels;
+        state->rtl_symbol_cache_generation = generation ? *generation : fill_generation;
+        rtl_symbol_cache_publish_pending(state);
+        pop_status = rtl_symbol_cache_pop(state, read_generation, sample_out);
+        if (pop_status != RTL_SYMBOL_CACHE_EMPTY) {
+            return pop_status;
+        }
     }
 }
 #endif
@@ -404,13 +584,60 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 #ifdef USE_RADIO
     int rtl_output_kind = 0;
     int rtl_symbol_rate_output = 0;
+    int rtl_channel_profile = 0;
+    int rtl_symbol_rate_hz = 0;
     int rtl_symbol_levels = 4;
+    uint32_t rtl_stream_generation = 0;
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        rtl_output_kind = dsd_rtl_stream_metrics_hook_output_kind();
-        rtl_symbol_rate_output = rtl_symbol_output_active(rtl_output_kind);
-        (void)dsd_rtl_stream_metrics_hook_symbol_profile(NULL, &rtl_symbol_levels);
-        if (rtl_symbol_levels != 2) {
-            rtl_symbol_levels = 4;
+        rtl_symbol_rate_output = rtl_symbol_current_profile(&rtl_output_kind, &rtl_channel_profile, &rtl_symbol_rate_hz,
+                                                            &rtl_symbol_levels, &rtl_stream_generation);
+    }
+    if (rtl_symbol_rate_output) {
+        rtl_symbol_cache_profile(state, rtl_output_kind, rtl_channel_profile, rtl_symbol_rate_hz, rtl_symbol_levels,
+                                 rtl_stream_generation);
+    } else {
+        rtl_symbol_cache_clear(state);
+    }
+
+    if (rtl_symbol_rate_output && opts->symboltiming != 1) {
+        if (!state->rtl_ctx) {
+            cleanupAndExit(opts, state);
+            return 0.0f;
+        }
+
+        state->samplesPerSymbol = 1;
+        state->symbolCenter = 0;
+        state->jitter = -1;
+
+        for (;;) {
+            apply_rtl_symbol_thresholds(state, rtl_symbol_levels);
+            int cache_status = rtl_symbol_cache_take(state, rtl_output_kind, rtl_channel_profile, rtl_symbol_rate_hz,
+                                                     rtl_symbol_levels, &rtl_stream_generation, &sample);
+            if (cache_status == RTL_SYMBOL_CACHE_READY) {
+                break;
+            }
+            if (cache_status != RTL_SYMBOL_CACHE_RETRY) {
+                cleanupAndExit(opts, state);
+                return 0.0f;
+            }
+
+            rtl_symbol_rate_output =
+                rtl_symbol_current_profile(&rtl_output_kind, &rtl_channel_profile, &rtl_symbol_rate_hz,
+                                           &rtl_symbol_levels, &rtl_stream_generation);
+            if (!rtl_symbol_rate_output) {
+                rtl_symbol_cache_clear(state);
+                break;
+            }
+            rtl_symbol_cache_profile(state, rtl_output_kind, rtl_channel_profile, rtl_symbol_rate_hz, rtl_symbol_levels,
+                                     rtl_stream_generation);
+        }
+
+        if (rtl_symbol_rate_output) {
+            opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
+            state->lastsample = sample;
+            dmr_sample_history_push(state, sample);
+            state->symbolcnt++;
+            return sample;
         }
     }
 #else

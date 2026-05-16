@@ -157,6 +157,14 @@ int rtl_stream_read_monitor(RtlSdrContext* ctx, float* out, size_t count, int* o
 uint32_t rtl_stream_output_rate(const RtlSdrContext* ctx);
 uint32_t rtl_stream_monitor_rate(const RtlSdrContext* ctx);
 /**
+ * @brief Return the RTL output stream generation.
+ *
+ * Increments whenever the RTL output stream can contain a different logical
+ * sample/symbol sequence, such as fresh stream setup, retune, restart, or
+ * explicit output clear.
+ */
+uint32_t rtl_stream_output_generation(void);
+/**
  * @brief Return the active RTL stream output kind.
  *
  * Digital RTL-family paths return symbol kinds. Soapy and analog monitor paths
@@ -164,6 +172,7 @@ uint32_t rtl_stream_monitor_rate(const RtlSdrContext* ctx);
  */
 int rtl_stream_get_output_kind(void);
 int rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels);
+int rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
 
 /**
  * @brief Update symbol modem profile for RTL-family digital modes.
@@ -250,6 +259,31 @@ int rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz);
  * and -2 on timeout.
  */
 int rtl_stream_test_request_retune(RtlSdrContext* ctx, uint32_t freq_hz, int timeout_ms);
+
+/**
+ * @brief Seed queued output, run reconfigure input preparation, and report the result.
+ *
+ * This verifies retune preparation preserves queued samples that the later
+ * drain/clear policy is responsible for handling.
+ */
+int rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
+                                              uint32_t* out_generation_before, uint32_t* out_generation_after);
+
+/**
+ * @brief Seed output/cache counts and report whether retune drain sees them.
+ *
+ * Decoder-owned cached symbols are reported for diagnostics but do not block
+ * the retune drain predicate.
+ */
+int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,
+                                          int* out_cache_pending, int* out_drained);
+
+/**
+ * @brief Seed output/cache counts, clear output, and report the resulting state.
+ */
+int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
+                                 int* out_cache_pending_after, uint32_t* out_generation_before,
+                                 uint32_t* out_generation_after);
 
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;

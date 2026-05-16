@@ -176,7 +176,7 @@ dsd_cli_usage(void) {
     printf("  --iq-capture <path>        Write I/Q capture data + metadata sidecar\n");
     printf("  --iq-capture-format <fmt>  Capture format (cu8|cf32)\n");
     printf("  --iq-capture-max-mb <n>    Capture size limit in MiB (0 = unlimited)\n");
-    printf("  --iq-replay <path>         Replay I/Q capture metadata/data through RTL path\n");
+    printf("  --iq-replay <path>         Replay I/Q capture metadata/data through RTL path (requires radio)\n");
     printf("  --iq-replay-rate <mode>    Replay pacing mode (fast|realtime)\n");
     printf("  --iq-loop                  Loop I/Q replay at EOF\n");
     printf("  --iq-info <path>           Print metadata/alignment summary and exit\n");

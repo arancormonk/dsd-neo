@@ -1469,17 +1469,15 @@ test_iq_replay_long_options_parse(void) {
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+
+#ifdef USE_RADIO
     if (rc != DSD_PARSE_CONTINUE) {
         fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
-        (void)remove(metadata_path);
-        (void)remove(data_path);
-        freeState(state);
-        free(opts);
-        free(state);
-        return 1;
+        test_rc = 1;
+        goto out;
     }
 
-    int test_rc = 0;
     if (!opts->iq_replay_requested || !opts->iq_replay_loop) {
         fprintf(stderr, "expected iq replay requested+loop flags to be set\n");
         test_rc = 1;
@@ -1515,13 +1513,60 @@ test_iq_replay_long_options_parse(void) {
         fprintf(stderr, "expected iqreplay open to keep AUDIO_IN_RTL, got %d\n", opts->audio_in_type);
         test_rc = 1;
     }
+#else
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        fprintf(stderr, "expected no-radio iq replay parse error, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        fprintf(stderr, "expected no-radio iq replay parse to avoid AUDIO_IN_RTL\n");
+        test_rc = 1;
+    }
+#endif
 
+out:
     (void)remove(metadata_path);
     (void)remove(data_path);
     freeState(state);
     free(opts);
     free(state);
     return test_rc;
+}
+
+static int
+test_iq_replay_audio_classifier_respects_radio_guard(void) {
+#ifdef USE_RADIO
+    return 0;
+#else
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+    opts->iq_replay_requested = 1;
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
+
+    int test_rc = 0;
+    if (openAudioInDevice(opts, state) == 0) {
+        fprintf(stderr, "expected no-radio iqreplay classifier to reject input\n");
+        test_rc = 1;
+    }
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        fprintf(stderr, "expected no-radio iqreplay classifier to avoid AUDIO_IN_RTL\n");
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+#endif
 }
 
 static int
@@ -3145,6 +3190,7 @@ main(void) {
     rc |= test_iq_capture_format_missing_value_returns_error();
     rc |= test_iq_capture_max_mb_missing_value_returns_error();
     rc |= test_iq_replay_long_options_parse();
+    rc |= test_iq_replay_audio_classifier_respects_radio_guard();
     rc |= test_iq_replay_rate_missing_value_returns_error();
     rc |= test_iq_info_returns_one_shot();
     rc |= test_iq_info_missing_value_returns_error();

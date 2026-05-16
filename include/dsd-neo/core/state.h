@@ -30,6 +30,7 @@ enum {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
     DSD_VERTEX_KS_MAP_MAX = 64,
+    DSD_RTL_SYMBOL_CACHE_CAP = 512,
 };
 
 /* Forward declaration for mbelib decoder state (opaque in public API). */
@@ -371,6 +372,19 @@ struct dsd_state {
     char ftype[16];
     int symbolcnt;
     int symbolc;
+
+    /* RTL DSP symbol-output cache. The RTL demod thread already produces
+       symbol-rate floats in blocks; this lets legacy getSymbol() consume them
+       without one ring read per dibit. */
+    float rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP];
+    int rtl_symbol_cache_pos;
+    int rtl_symbol_cache_len;
+    int rtl_symbol_cache_output_kind;
+    int rtl_symbol_cache_channel_profile;
+    int rtl_symbol_cache_symbol_rate_hz;
+    int rtl_symbol_cache_levels;
+    uint32_t rtl_symbol_cache_generation;
+    int rtl_symbol_cache_published_pending;
 
     /* C4FM timing assist (clock loop hinting). Lightweight EL/M&M error drives
        occasional ±1 nudges of symbolCenter; disabled by default. */

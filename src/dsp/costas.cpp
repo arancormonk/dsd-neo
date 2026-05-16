@@ -1244,8 +1244,22 @@ op25_fll_band_edge_cc(struct demod_state* d) {
         float lower_r = 0.0f, lower_i = 0.0f;
         float upper_r = 0.0f, upper_i = 0.0f;
 
-        for (int k = 0; k < n_taps; k++) {
-            int idx = (delay_idx - k + n_taps) % n_taps;
+        int k = 0;
+        for (; k <= delay_idx && k < n_taps; k++) {
+            int idx = delay_idx - k;
+            float dr = delay_r[idx];
+            float di = delay_i[idx];
+
+            /* Lower band-edge filter: complex multiply */
+            lower_r += dr * f->taps_lower_r[k] - di * f->taps_lower_i[k];
+            lower_i += dr * f->taps_lower_i[k] + di * f->taps_lower_r[k];
+
+            /* Upper band-edge filter: complex multiply */
+            upper_r += dr * f->taps_upper_r[k] - di * f->taps_upper_i[k];
+            upper_i += dr * f->taps_upper_i[k] + di * f->taps_upper_r[k];
+        }
+        for (; k < n_taps; k++) {
+            int idx = delay_idx - k + n_taps;
             float dr = delay_r[idx];
             float di = delay_i[idx];
 

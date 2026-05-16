@@ -80,12 +80,8 @@ simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist
         float cc = taps[center];
         __m256 tap_c = _mm256_set1_ps(cc);
 
-        float ci0, cq0, ci1, cq1, ci2, cq2, ci3, cq3;
-        get_iq(hist_len + n, ci0, cq0);
-        get_iq(hist_len + n + 1, ci1, cq1);
-        get_iq(hist_len + n + 2, ci2, cq2);
-        get_iq(hist_len + n + 3, ci3, cq3);
-        __m256 center_val = _mm256_set_ps(cq3, ci3, cq2, ci2, cq1, ci1, cq0, ci0);
+        const size_t center_offset = ((size_t)hist_len + (size_t)n) << 1;
+        __m256 center_val = _mm256_loadu_ps(scratch + center_offset);
         acc = _mm256_fmadd_ps(tap_c, center_val, acc);
 
         /* Symmetric pairs */
@@ -97,22 +93,10 @@ simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist
             int d = center - k;
             __m256 tap_e = _mm256_set1_ps(ce);
 
-            float xmI0, xmQ0, xpI0, xpQ0;
-            float xmI1, xmQ1, xpI1, xpQ1;
-            float xmI2, xmQ2, xpI2, xpQ2;
-            float xmI3, xmQ3, xpI3, xpQ3;
-
-            get_iq(hist_len + n - d, xmI0, xmQ0);
-            get_iq(hist_len + n + d, xpI0, xpQ0);
-            get_iq(hist_len + n + 1 - d, xmI1, xmQ1);
-            get_iq(hist_len + n + 1 + d, xpI1, xpQ1);
-            get_iq(hist_len + n + 2 - d, xmI2, xmQ2);
-            get_iq(hist_len + n + 2 + d, xpI2, xpQ2);
-            get_iq(hist_len + n + 3 - d, xmI3, xmQ3);
-            get_iq(hist_len + n + 3 + d, xpI3, xpQ3);
-
-            __m256 sum_m = _mm256_set_ps(xmQ3, xmI3, xmQ2, xmI2, xmQ1, xmI1, xmQ0, xmI0);
-            __m256 sum_p = _mm256_set_ps(xpQ3, xpI3, xpQ2, xpI2, xpQ1, xpI1, xpQ0, xpI0);
+            const size_t minus_offset = ((size_t)(hist_len + n - d)) << 1;
+            const size_t plus_offset = ((size_t)(hist_len + n + d)) << 1;
+            __m256 sum_m = _mm256_loadu_ps(scratch + minus_offset);
+            __m256 sum_p = _mm256_loadu_ps(scratch + plus_offset);
             __m256 sum = _mm256_add_ps(sum_m, sum_p);
             acc = _mm256_fmadd_ps(tap_e, sum, acc);
         }

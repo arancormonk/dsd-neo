@@ -27,7 +27,9 @@ double dsd_rtl_stream_return_pwr(void);
 int dsd_rtl_stream_ted_bias(void);
 int dsd_rtl_stream_get_output_kind(void);
 int dsd_rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels);
+int dsd_rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
 int dsd_rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
+uint32_t dsd_rtl_stream_output_generation(void);
 int dsd_rtl_stream_monitor_read(float* out, size_t count, int* out_got);
 unsigned int dsd_rtl_stream_monitor_rate(void);
 void dsd_rtl_stream_set_resampler_target(int target_hz);
@@ -73,6 +75,13 @@ void dsd_rtl_stream_set_cqpsk_eq(int enable, int taps, float mu, float modulus);
 void dsd_rtl_stream_reset_cqpsk_eq(void);
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 int dsd_rtl_stream_test_request_retune(long int frequency, int timeout_ms);
+int dsd_rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
+                                                  uint32_t* out_generation_before, uint32_t* out_generation_after);
+int dsd_rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,
+                                              int* out_cache_pending, int* out_drained);
+int dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
+                                     int* out_cache_pending_after, uint32_t* out_generation_before,
+                                     uint32_t* out_generation_after);
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
 #endif
 }
@@ -210,6 +219,28 @@ rtl_stream_test_request_retune(RtlSdrContext* ctx, uint32_t freq_hz, int timeout
 }
 
 extern "C" int
+rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
+                                          uint32_t* out_generation_before, uint32_t* out_generation_after) {
+    return dsd_rtl_stream_test_prepare_reconfigure_input(queued_samples, out_used_after, out_generation_before,
+                                                         out_generation_after);
+}
+
+extern "C" int
+rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,
+                                      int* out_cache_pending, int* out_drained) {
+    return dsd_rtl_stream_test_retune_output_pending(queued_samples, cached_symbols, out_ring_pending,
+                                                     out_cache_pending, out_drained);
+}
+
+extern "C" int
+rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
+                             int* out_cache_pending_after, uint32_t* out_generation_before,
+                             uint32_t* out_generation_after) {
+    return dsd_rtl_stream_test_clear_output(queued_samples, cached_symbols, out_used_after, out_cache_pending_after,
+                                            out_generation_before, out_generation_after);
+}
+
+extern "C" int
 rtl_stream_test_get_replay_state(RtlSdrContext* ctx, rtl_stream_test_replay_state* out_state) {
     if (!ctx || !ctx->stream || !out_state) {
         return -2;
@@ -265,6 +296,11 @@ rtl_stream_monitor_rate(const RtlSdrContext* ctx) {
     return dsd_rtl_stream_monitor_rate();
 }
 
+extern "C" uint32_t
+rtl_stream_output_generation(void) {
+    return dsd_rtl_stream_output_generation();
+}
+
 extern "C" int
 rtl_stream_get_output_kind(void) {
     return dsd_rtl_stream_get_output_kind();
@@ -273,6 +309,11 @@ rtl_stream_get_output_kind(void) {
 extern "C" int
 rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels) {
     return dsd_rtl_stream_get_symbol_profile(out_symbol_rate_hz, out_levels);
+}
+
+extern "C" int
+rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    return dsd_rtl_stream_get_symbol_profile_full(out_symbol_rate_hz, out_levels, out_channel_profile);
 }
 
 extern "C" int

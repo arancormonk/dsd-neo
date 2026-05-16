@@ -1593,6 +1593,15 @@ target_include_directories(dsd-neo_test_rtl_symbol_pipeline PRIVATE ${PROJECT_SO
 dsd_neo_link_dsp_test(dsd-neo_test_rtl_symbol_pipeline ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME RTL_SYMBOL_PIPELINE COMMAND dsd-neo_test_rtl_symbol_pipeline)
 
+if(DSD_HAS_RADIO)
+  add_executable(dsd-neo_test_rtl_symbol_cache_generation dsp/test_rtl_symbol_cache_generation.c)
+  target_include_directories(dsd-neo_test_rtl_symbol_cache_generation PRIVATE ${PROJECT_SOURCE_DIR}/include)
+  dsd_neo_link_dsp_test(dsd-neo_test_rtl_symbol_cache_generation
+    ${DSD_NEO_TEST_MATH_LIB}
+    ${LIBSNDFILE_LIBRARIES})
+  add_test(NAME RTL_SYMBOL_CACHE_GENERATION COMMAND dsd-neo_test_rtl_symbol_cache_generation)
+endif()
+
 # Costas loop (CQPSK carrier recovery)
 add_executable(dsd-neo_test_dsp_costas dsp/test_dsp_costas.cpp)
 target_include_directories(dsd-neo_test_dsp_costas PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -2127,6 +2136,17 @@ if(DSD_HAS_RADIO)
     target_link_libraries(dsd-neo_test_io_rtl_stream_ppm_sync PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
   endif()
   add_test(NAME IO_RTL_STREAM_PPM_SYNC COMMAND dsd-neo_test_io_rtl_stream_ppm_sync)
+
+  add_executable(dsd-neo_test_io_rtl_retune_prepare io/test_io_rtl_retune_prepare.cpp)
+  target_compile_definitions(dsd-neo_test_io_rtl_retune_prepare PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+  target_include_directories(dsd-neo_test_io_rtl_retune_prepare PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+  )
+  target_link_libraries(dsd-neo_test_io_rtl_retune_prepare PRIVATE dsd-neo_io_radio dsd-neo_core)
+  if(DSD_HAS_RTLSDR)
+    target_link_libraries(dsd-neo_test_io_rtl_retune_prepare PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+  endif()
+  add_test(NAME IO_RTL_RETUNE_PREPARE COMMAND dsd-neo_test_io_rtl_retune_prepare)
 
   add_executable(dsd-neo_test_io_rtl_replay_retune_reject io/test_io_rtl_replay_retune_reject.cpp)
   target_compile_definitions(dsd-neo_test_io_rtl_replay_retune_reject PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)

@@ -1,0 +1,260 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+#include <assert.h>
+#include <stdint.h>
+#include <string.h>
+
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+
+static uint32_t g_stream_generation = 1;
+static int g_symbol_rate_hz = 4800;
+static int g_symbol_levels = 4;
+static int g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+static float g_read_base = 1000.0f;
+static float g_read_base_step = 0.0f;
+static int g_read_calls = 0;
+static int g_bump_generation_during_read = 0;
+static int g_symbol_rate_hz_after_bump = 0;
+static int g_symbol_levels_after_bump = 0;
+static int g_channel_profile_after_bump = -1;
+static int g_cleanup_calls = 0;
+
+dsd_socket_t
+Connect(char* hostname, int portno) {
+    (void)hostname;
+    (void)portno;
+    return (dsd_socket_t)0;
+}
+
+int
+openAudioInput(dsd_opts* opts) {
+    (void)opts;
+    return -1;
+}
+
+void
+cleanupAndExit(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_cleanup_calls++;
+}
+
+void
+dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_hz) {
+    (void)state;
+    (void)old_rate_hz;
+    (void)new_rate_hz;
+}
+
+double
+raw_pwr_f(const float* samples, int len, int step) {
+    (void)samples;
+    (void)len;
+    (void)step;
+    return 0.0;
+}
+
+double
+pwr_to_dB(double mean_power) {
+    (void)mean_power;
+    return 0.0;
+}
+
+void
+lpf_f(dsd_state* state, float* input, int len) {
+    (void)state;
+    (void)input;
+    (void)len;
+}
+
+void
+hpf_f(dsd_state* state, float* input, int len) {
+    (void)state;
+    (void)input;
+    (void)len;
+}
+
+void
+pbf_f(dsd_state* state, float* input, int len) {
+    (void)state;
+    (void)input;
+    (void)len;
+}
+
+void
+analog_gain_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
+    (void)opts;
+    (void)state;
+    (void)input;
+    (void)len;
+}
+
+void
+agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
+    (void)opts;
+    (void)state;
+    (void)input;
+    (void)len;
+}
+
+static int
+fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    assert(rtl_ctx != NULL);
+    assert(out != NULL);
+    assert(out_got != NULL);
+    assert(count >= 4U);
+
+    g_read_calls++;
+    float read_base = g_read_base;
+    if (g_bump_generation_during_read) {
+        g_stream_generation++;
+        if (g_symbol_rate_hz_after_bump > 0) {
+            g_symbol_rate_hz = g_symbol_rate_hz_after_bump;
+            g_symbol_rate_hz_after_bump = 0;
+        }
+        if (g_symbol_levels_after_bump > 0) {
+            g_symbol_levels = g_symbol_levels_after_bump;
+            g_symbol_levels_after_bump = 0;
+        }
+        if (g_channel_profile_after_bump >= 0) {
+            g_channel_profile = g_channel_profile_after_bump;
+            g_channel_profile_after_bump = -1;
+        }
+        g_bump_generation_during_read = 0;
+    }
+    for (int i = 0; i < 4; i++) {
+        out[i] = read_base + (float)i;
+    }
+    g_read_base += g_read_base_step;
+    *out_got = 4;
+    return 0;
+}
+
+static double
+fake_rtl_pwr(const void* rtl_ctx) {
+    assert(rtl_ctx != NULL);
+    return 0.0;
+}
+
+static int
+fake_output_kind(void) {
+    return RTL_STREAM_OUTPUT_SYMBOL_FSK;
+}
+
+static int
+fake_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    if (out_symbol_rate_hz) {
+        *out_symbol_rate_hz = g_symbol_rate_hz;
+    }
+    if (out_levels) {
+        *out_levels = g_symbol_levels;
+    }
+    if (out_channel_profile) {
+        *out_channel_profile = g_channel_profile;
+    }
+    return 0;
+}
+
+static uint32_t
+fake_stream_generation(void) {
+    return g_stream_generation;
+}
+
+int
+main(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    memset(&opts, 0, sizeof(opts));
+    memset(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.symboltiming = 0;
+    state.rf_mod = 1;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = fake_rtl_read,
+        .return_pwr = fake_rtl_pwr,
+    });
+    dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){
+        .output_kind = fake_output_kind,
+        .symbol_profile = fake_symbol_profile,
+        .stream_generation = fake_stream_generation,
+    });
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+
+    assert(getSymbol(&opts, &state, 1) == 1000.0f);
+    assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 3);
+    assert(getSymbol(&opts, &state, 1) == 1001.0f);
+    assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 2);
+    assert(g_read_calls == 1);
+
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    g_read_base = 1250.0f;
+
+    assert(getSymbol(&opts, &state, 1) == 1250.0f);
+    assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 3);
+    assert(getSymbol(&opts, &state, 1) == 1251.0f);
+    assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 2);
+    assert(g_read_calls == 2);
+
+    g_symbol_rate_hz = 6000;
+    g_read_base = 1500.0f;
+
+    assert(getSymbol(&opts, &state, 1) == 1500.0f);
+    assert(getSymbol(&opts, &state, 1) == 1501.0f);
+    assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 2);
+    assert(g_read_calls == 3);
+
+    g_stream_generation = 2;
+    g_read_base = 2000.0f;
+
+    assert(getSymbol(&opts, &state, 1) == 2000.0f);
+    assert(getSymbol(&opts, &state, 1) == 2001.0f);
+    assert(g_read_calls == 4);
+
+    assert(getSymbol(&opts, &state, 1) == 2002.0f);
+    assert(getSymbol(&opts, &state, 1) == 2003.0f);
+    assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 0);
+    assert(g_read_calls == 4);
+
+    g_read_base = 3000.0f;
+    g_read_base_step = 100.0f;
+    g_bump_generation_during_read = 1;
+    g_symbol_rate_hz_after_bump = 2400;
+    g_symbol_levels_after_bump = 2;
+    g_channel_profile_after_bump = RTL_STREAM_CHANNEL_PROFILE_6K25;
+
+    assert(getSymbol(&opts, &state, 1) == 3100.0f);
+    assert(g_stream_generation == 3U);
+    assert(g_read_calls == 6);
+    assert(state.rtl_symbol_cache_generation == 3U);
+    assert(state.rtl_symbol_cache_symbol_rate_hz == 2400);
+    assert(state.rtl_symbol_cache_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
+    assert(state.rtl_symbol_cache_levels == 2);
+    assert(state.min == -1.0f);
+    assert(state.max == 1.0f);
+    assert(getSymbol(&opts, &state, 1) == 3101.0f);
+    assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 2);
+    assert(getSymbol(&opts, &state, 1) == 3102.0f);
+    assert(getSymbol(&opts, &state, 1) == 3103.0f);
+    assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 0);
+    assert(g_cleanup_calls == 0);
+
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){0});
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    return 0;
+}

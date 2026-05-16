@@ -972,7 +972,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         int rtl_sym_rate = 0;
                         int rtl_levels = 0;
 #ifdef USE_RADIO
-                        (void)dsd_rtl_stream_metrics_hook_symbol_profile(&rtl_sym_rate, &rtl_levels);
+                        (void)dsd_rtl_stream_metrics_hook_symbol_profile(&rtl_sym_rate, &rtl_levels, NULL);
                         double snr_gfsk = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
 #else
                         double snr_gfsk = -100.0;
