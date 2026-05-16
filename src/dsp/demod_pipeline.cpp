@@ -82,6 +82,17 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
     return p;
 }
 
+static inline float
+phase_delta_small_angle_or_atan2(float im, float re) {
+    float abs_im = fabsf(im);
+    if (re > 1.0e-7f && abs_im <= (0.35f * re)) {
+        float x = im / re;
+        float x2 = x * x;
+        return x * (1.0f + x2 * (-0.3333333333333333f + x2 * 0.2f));
+    }
+    return atan2f(im, re);
+}
+
 /* Fixed channel low-pass for high-rate mode.
  *
  * Profiles (see DSD_CH_LPF_PROFILE_*):
@@ -620,7 +631,7 @@ dsd_fm_demod(struct demod_state* fm) {
         /* z_n * conj(z_{n-1}) => phase delta; amplitude cancels inside atan2 */
         float re = cr * prev_r + cj * prev_j;
         float im = cj * prev_r - cr * prev_j;
-        float angle = atan2f(im, re);
+        float angle = phase_delta_small_angle_or_atan2(im, re);
         if (fm->fll_enabled) {
             /* Restore the per-sample phase advance that the upstream FLL mixer
                subtracted from the I/Q. fll_mix_and_update() applies

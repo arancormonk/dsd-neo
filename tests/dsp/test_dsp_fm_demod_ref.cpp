@@ -68,6 +68,35 @@ main(void) {
         }
     }
 
+    memset(s, 0, sizeof(*s));
+    const double small_dphi = 0.08;
+    for (int k = 0; k < N; k++) {
+        double th = k * small_dphi;
+        iq[(size_t)(2 * k) + 0] = (float)(A * cos(th));
+        iq[(size_t)(2 * k) + 1] = (float)(A * sin(th));
+    }
+
+    s->lowpassed = iq;
+    s->lp_len = N * 2;
+    dsd_fm_demod(s);
+
+    r0 = iq[0];
+    j0 = iq[1];
+    r1 = iq[2];
+    j1 = iq[3];
+    re = (double)r1 * (double)r0 + (double)j1 * (double)j0;
+    im = (double)j1 * (double)r0 - (double)r1 * (double)j0;
+    expect_rad = (float)atan2(im, re);
+    for (int i = 1; i < s->result_len; i++) {
+        float v = s->result[i];
+        float d = fabsf(v - expect_rad);
+        if (d > 1e-4f) {
+            fprintf(stderr, "FM demod small-angle: result[%d]=%f expect~%f\n", i, v, expect_rad);
+            free(s);
+            return 1;
+        }
+    }
+
     free(s);
     return 0;
 }
