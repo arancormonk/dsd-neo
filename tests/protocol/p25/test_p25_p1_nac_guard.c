@@ -16,6 +16,7 @@
 
 #include <dsd-neo/core/state.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "dsd-neo/core/state_fwd.h"
@@ -72,31 +73,34 @@ simulate_nid_processing(dsd_state* state, int new_nac, int check_result) {
 int
 main(void) {
     int rc = 0;
-    dsd_state state;
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
 
     /* ---------------------------------------------------------------
      * Corrupted NID rejection
      * --------------------------------------------------------------- */
 
     /* NAC zeroed by corrupted NID (new_nac = 0x0) */
-    memset(&state, 0, sizeof(state));
-    state.nac = 0x2AA;
-    simulate_nid_processing(&state, 0x0, 1);
-    rc |= expect_eq_int("nac_preserved_after_zero", state.nac, 0x2AA);
+    memset(state, 0, sizeof(*state));
+    state->nac = 0x2AA;
+    simulate_nid_processing(state, 0x0, 1);
+    rc |= expect_eq_int("nac_preserved_after_zero", state->nac, 0x2AA);
 
     /* NAC set to 0xFFF by corrupted NID */
-    memset(&state, 0, sizeof(state));
-    state.nac = 0x2AA;
-    simulate_nid_processing(&state, 0xFFF, 1);
-    rc |= expect_eq_int("nac_preserved_after_0xFFF", state.nac, 0x2AA);
+    memset(state, 0, sizeof(*state));
+    state->nac = 0x2AA;
+    simulate_nid_processing(state, 0xFFF, 1);
+    rc |= expect_eq_int("nac_preserved_after_0xFFF", state->nac, 0x2AA);
 
     /* p2_cc already guarded — existing guard prevents overwrite */
-    memset(&state, 0, sizeof(state));
-    state.nac = 0x2AA;
-    state.p2_cc = 0x2AA;
-    state.p2_hardset = 0;
-    simulate_nid_processing(&state, 0x0, 1);
-    rc |= expect_eq_ull("p2_cc_preserved_after_zero", state.p2_cc, 0x2AA);
+    memset(state, 0, sizeof(*state));
+    state->nac = 0x2AA;
+    state->p2_cc = 0x2AA;
+    state->p2_hardset = 0;
+    simulate_nid_processing(state, 0x0, 1);
+    rc |= expect_eq_ull("p2_cc_preserved_after_zero", state->p2_cc, 0x2AA);
 
     /* ---------------------------------------------------------------
      * Valid NAC updates
@@ -110,63 +114,64 @@ main(void) {
             int new_nac = valid_nacs[i];
             int initial_nac = (new_nac == 0x2AA) ? 0x1B5 : 0x2AA;
 
-            memset(&state, 0, sizeof(state));
-            state.nac = initial_nac;
-            state.p2_hardset = 0;
-            state.p2_cc = initial_nac;
+            memset(state, 0, sizeof(*state));
+            state->nac = initial_nac;
+            state->p2_hardset = 0;
+            state->p2_cc = initial_nac;
 
-            simulate_nid_processing(&state, new_nac, 1);
+            simulate_nid_processing(state, new_nac, 1);
 
             char tag[128];
             snprintf(tag, sizeof(tag), "valid_nac_update_0x%X_to_0x%X", initial_nac, new_nac);
-            rc |= expect_eq_int(tag, state.nac, new_nac);
+            rc |= expect_eq_int(tag, state->nac, new_nac);
 
             snprintf(tag, sizeof(tag), "valid_p2cc_update_0x%X_to_0x%X", initial_nac, new_nac);
-            rc |= expect_eq_ull(tag, state.p2_cc, (unsigned long long)new_nac);
+            rc |= expect_eq_ull(tag, state->p2_cc, (unsigned long long)new_nac);
         }
     }
 
     /* Same NAC no-op — identical NAC short-circuits */
-    memset(&state, 0, sizeof(state));
-    state.nac = 0x2AA;
-    state.debug_header_errors = 0;
-    simulate_nid_processing(&state, 0x2AA, 1);
-    rc |= expect_eq_int("same_nac_noop", state.nac, 0x2AA);
-    rc |= expect_eq_uint("same_nac_no_error_inc", state.debug_header_errors, 0);
+    memset(state, 0, sizeof(*state));
+    state->nac = 0x2AA;
+    state->debug_header_errors = 0;
+    simulate_nid_processing(state, 0x2AA, 1);
+    rc |= expect_eq_int("same_nac_noop", state->nac, 0x2AA);
+    rc |= expect_eq_uint("same_nac_no_error_inc", state->debug_header_errors, 0);
 
     /* ---------------------------------------------------------------
      * BCH failure path — check_result != 1 leaves state unchanged
      * --------------------------------------------------------------- */
 
-    memset(&state, 0, sizeof(state));
-    state.nac = 0x2AA;
-    simulate_nid_processing(&state, 0x0, 0);
-    rc |= expect_eq_int("bch_fail_check0_nac_preserved", state.nac, 0x2AA);
+    memset(state, 0, sizeof(*state));
+    state->nac = 0x2AA;
+    simulate_nid_processing(state, 0x0, 0);
+    rc |= expect_eq_int("bch_fail_check0_nac_preserved", state->nac, 0x2AA);
 
-    memset(&state, 0, sizeof(state));
-    state.nac = 0x2AA;
-    simulate_nid_processing(&state, 0x0, -1);
-    rc |= expect_eq_int("bch_fail_checkn1_nac_preserved", state.nac, 0x2AA);
+    memset(state, 0, sizeof(*state));
+    state->nac = 0x2AA;
+    simulate_nid_processing(state, 0x0, -1);
+    rc |= expect_eq_int("bch_fail_checkn1_nac_preserved", state->nac, 0x2AA);
 
     /* ---------------------------------------------------------------
      * p2_cc hardset guard — p2_cc preserved when p2_hardset == 1
      * --------------------------------------------------------------- */
 
-    memset(&state, 0, sizeof(state));
-    state.nac = 0x2AA;
-    state.p2_hardset = 1;
-    state.p2_cc = 0x2AA;
-    simulate_nid_processing(&state, 0x1B5, 1);
-    rc |= expect_eq_ull("p2cc_hardset_preserved", state.p2_cc, 0x2AA);
+    memset(state, 0, sizeof(*state));
+    state->nac = 0x2AA;
+    state->p2_hardset = 1;
+    state->p2_cc = 0x2AA;
+    simulate_nid_processing(state, 0x1B5, 1);
+    rc |= expect_eq_ull("p2cc_hardset_preserved", state->p2_cc, 0x2AA);
 
     /* ---------------------------------------------------------------
      * First NAC after engine init — state.nac == 0 accepts first valid NAC
      * --------------------------------------------------------------- */
 
-    memset(&state, 0, sizeof(state));
-    state.nac = 0;
-    simulate_nid_processing(&state, 0x2AA, 1);
-    rc |= expect_eq_int("first_nac_after_init", state.nac, 0x2AA);
+    memset(state, 0, sizeof(*state));
+    state->nac = 0;
+    simulate_nid_processing(state, 0x2AA, 1);
+    rc |= expect_eq_int("first_nac_after_init", state->nac, 0x2AA);
 
+    free(state);
     return rc;
 }

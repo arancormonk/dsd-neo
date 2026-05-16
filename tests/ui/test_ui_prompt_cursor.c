@@ -14,16 +14,11 @@
 
 #include <assert.h>
 #include <curses.h>
-#include <locale.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "menu_prompts.h"
-#include "test_support.h"
 
-static SCREEN* g_screen = NULL;
-static FILE* g_in = NULL;
-static FILE* g_out = NULL;
 static int g_done_called = 0;
 static char g_done_text[256];
 
@@ -49,46 +44,8 @@ ui_statusf(const char* fmt, ...) {
     (void)fmt;
 }
 
-static void
-init_screen(void) {
-    setlocale(LC_ALL, "");
-    assert(dsd_test_setenv("TERM", "xterm-256color", 0) == 0);
-    g_in = tmpfile();
-    g_out = tmpfile();
-    assert(g_in != NULL);
-    assert(g_out != NULL);
-    g_screen = newterm(NULL, g_out, g_in);
-    assert(g_screen != NULL);
-    set_term(g_screen);
-    noecho();
-    cbreak();
-    keypad(stdscr, TRUE);
-    resizeterm(24, 80);
-    clear();
-    refresh();
-}
-
-static void
-shutdown_screen(void) {
-    if (g_screen) {
-        endwin();
-        delscreen(g_screen);
-        g_screen = NULL;
-    }
-    if (g_in) {
-        fclose(g_in);
-        g_in = NULL;
-    }
-    if (g_out) {
-        fclose(g_out);
-        g_out = NULL;
-    }
-}
-
 int
 main(void) {
-    init_screen();
-
     // Test: insert at cursor after moving LEFT
     g_done_called = 0;
     ui_prompt_open_string_async("Test", "abc", 64, capture_done, NULL);
@@ -170,7 +127,6 @@ main(void) {
     assert(g_done_called == 1);
     assert(strcmp(g_done_text, "cD") == 0);
 
-    shutdown_screen();
     printf("UI_PROMPT_CURSOR: OK\n");
     return 0;
 }

@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 
 #include "dsd-neo/io/iq_types.h"
+#include "test_support.h"
 
 static int
 expect_true(const char* label, int cond) {
@@ -52,14 +53,7 @@ expect_u64(const char* label, uint64_t got, uint64_t want) {
 
 static int
 path_join(char* out, size_t out_size, const char* a, const char* b) {
-    if (!out || out_size == 0 || !a || !b) {
-        return -1;
-    }
-    int n = snprintf(out, out_size, "%s/%s", a, b);
-    if (n < 0 || (size_t)n >= out_size) {
-        return -1;
-    }
-    return 0;
+    return dsd_test_path_join(out, out_size, a, b);
 }
 
 static int
@@ -93,14 +87,51 @@ write_text_file(const char* path, const char* text) {
 
 static int
 mk_temp_dir(char* out_dir, size_t out_dir_size) {
-    if (!out_dir || out_dir_size < 32) {
+    if (!out_dir || out_dir_size == 0) {
         return -1;
     }
-    snprintf(out_dir, out_dir_size, "/tmp/dsdneo_iq_test_XXXXXX");
-    if (!dsd_mkdtemp(out_dir)) {
+    if (!dsd_test_mkdtemp(out_dir, out_dir_size, "dsdneo_iq_test")) {
         return -1;
     }
     return 0;
+}
+
+static const char*
+path_last_sep(const char* path) {
+    const char* slash = path ? strrchr(path, '/') : NULL;
+    const char* bslash = path ? strrchr(path, '\\') : NULL;
+    if (bslash && (!slash || bslash > slash)) {
+        return bslash;
+    }
+    return slash;
+}
+
+static int
+path_leaf_is(const char* path, const char* leaf) {
+    const char* sep = path_last_sep(path);
+    const char* got = sep ? sep + 1 : path;
+    return got && leaf && strcmp(got, leaf) == 0;
+}
+
+static int
+path_ends_with_components(const char* path, const char* parent, const char* leaf) {
+    const char* sep = path_last_sep(path);
+    if (!sep || !path_leaf_is(path, leaf)) {
+        return 0;
+    }
+    size_t parent_len = strlen(parent);
+    const char* parent_end = sep;
+    while (parent_end > path && dsd_test_is_path_sep(parent_end[-1])) {
+        parent_end--;
+    }
+    if ((size_t)(parent_end - path) < parent_len) {
+        return 0;
+    }
+    const char* parent_start = parent_end - parent_len;
+    if (strncmp(parent_start, parent, parent_len) != 0) {
+        return 0;
+    }
+    return parent_start == path || dsd_test_is_path_sep(parent_start[-1]);
 }
 
 static int
@@ -220,8 +251,7 @@ test_metadata_round_trip_capture_open_close(void) {
         rc |= expect_u64("input_ring_drops", replay_cfg.input_ring_drops, 7);
         rc |= expect_int("contains_retunes", replay_cfg.contains_retunes, 1);
         rc |= expect_u32("capture_retune_count", replay_cfg.capture_retune_count, 2);
-        rc |= expect_true("resolved data path uses metadata directory",
-                          strstr(replay_cfg.data_path, "/capture.iq") != NULL);
+        rc |= expect_true("resolved data path uses metadata directory", strcmp(replay_cfg.data_path, data_path) == 0);
         rc |= expect_true("capture_drops reflects odd-byte carry drop", replay_cfg.capture_drops >= 1);
     }
 
@@ -356,7 +386,7 @@ test_json_unescape_and_control_rejection(void) {
     if (prc == DSD_IQ_OK) {
         rc |= expect_true("notes unescaped quote", strstr(cfg.notes, "q=\"") != NULL);
         rc |= expect_true("notes unescaped slash", strstr(cfg.notes, "s=/") != NULL);
-        rc |= expect_true("resolved relative data path", strstr(cfg.data_path, "/sub/test.iq") != NULL);
+        rc |= expect_true("resolved relative data path", path_ends_with_components(cfg.data_path, "sub", "test.iq"));
     }
 
     char bad1[512];

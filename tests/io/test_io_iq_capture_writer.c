@@ -5,7 +5,6 @@
 
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
-#include <dsd-neo/platform/posix_compat.h>
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -13,6 +12,7 @@
 #include <sys/stat.h>
 
 #include "dsd-neo/io/iq_types.h"
+#include "test_support.h"
 
 static int
 expect_true(const char* label, int cond) {
@@ -43,11 +43,10 @@ expect_u64(const char* label, uint64_t got, uint64_t want) {
 
 static int
 mk_temp_dir(char* out_dir, size_t out_dir_size) {
-    if (!out_dir || out_dir_size < 32) {
+    if (!out_dir || out_dir_size == 0) {
         return -1;
     }
-    snprintf(out_dir, out_dir_size, "/tmp/dsdneo_iq_capture_writer_XXXXXX");
-    if (!dsd_mkdtemp(out_dir)) {
+    if (!dsd_test_mkdtemp(out_dir, out_dir_size, "dsdneo_iq_capture_writer")) {
         return -1;
     }
     return 0;
@@ -55,13 +54,7 @@ mk_temp_dir(char* out_dir, size_t out_dir_size) {
 
 static int
 path_join(char* out, size_t out_size, const char* a, const char* b) {
-    if (!out || out_size == 0 || !a || !b) {
-        return -1;
-    }
-    if (snprintf(out, out_size, "%s/%s", a, b) >= (int)out_size) {
-        return -1;
-    }
-    return 0;
+    return dsd_test_path_join(out, out_size, a, b);
 }
 
 static int
