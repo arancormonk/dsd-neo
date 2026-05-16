@@ -271,7 +271,7 @@ small subset is exposed as config keys for convenience (for example
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
 | `rtl_bw_khz` | INT (4-48) | DSP bandwidth | `48` |
 | `rtl_sql` | INT (-100-0) | Squelch level | `0` |
-| `rtl_volume` | INT (1-3) | Volume multiplier | `2` |
+| `rtl_volume` | INT (1-3) | RTL monitor/non-symbol gain multiplier | `2` |
 | `auto_ppm` | BOOL | Enable carrier/error-based RTL auto-PPM correction | `false` |
 | `rtl_auto_ppm` | BOOL | Deprecated alias for `auto_ppm` | `false` |
 | `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
@@ -427,9 +427,12 @@ version = 1
 ## Notes on Input Sources
 
 - **RTL-SDR (`source = "rtl"`)**: Uses the `rtl_*` keys for frequency,
-  gain, PPM correction, bandwidth, squelch, volume, and auto-PPM.
+  gain, PPM correction, bandwidth, squelch, monitor gain, and auto-PPM.
   Omitted values use sensible defaults. To switch the input to RTL at
   startup, set at least `rtl_freq` (and optionally `rtl_device`).
+  Digital RTL decode runs in the symbol domain: the decoder receives one
+  normalized FSK or CQPSK symbol per decision, not discriminator audio.
+  `rtl_volume` affects only the separate monitor/non-symbol audio path.
 
 - **RTL-TCP (`source = "rtltcp"`)**: Uses `rtltcp_host`/`rtltcp_port`
   for the network endpoint, plus the same `rtl_*` tuning keys. To switch
@@ -441,6 +444,7 @@ version = 1
     `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`.
   - Reuses existing `rtl_*` tuning keys (`rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`)
     so trunking and retune behavior remains unchanged.
+  - `rtl_volume` remains a monitor/non-symbol gain key; it does not scale RTL-family digital symbols.
   - `rtl_device` and `rtltcp_*` endpoint keys are not used in Soapy mode.
   - Set `rtl_freq` explicitly for predictable startup frequency with non-RTL radios.
   - If frequency resolves to `0`, radio startup fails with `Please specify a frequency.`
@@ -477,8 +481,8 @@ CLI modulation options.
 
 If you choose RTL/RTLTCP/Soapy input and omit specific tuning fields, DSD-neo
 falls back to its built-in radio defaults: center frequency 850 MHz, DSP
-bandwidth 48 kHz, and volume multiplier 2. The template still shows 851.375M
-as the example frequency.
+bandwidth 48 kHz, and monitor gain multiplier 2. The template still shows
+851.375M as the example frequency.
 
 ### Soapy Config Usage
 

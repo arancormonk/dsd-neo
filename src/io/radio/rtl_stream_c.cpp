@@ -25,6 +25,11 @@ extern "C" {
 void dsd_rtl_stream_clear_output(void);
 double dsd_rtl_stream_return_pwr(void);
 int dsd_rtl_stream_ted_bias(void);
+int dsd_rtl_stream_get_output_kind(void);
+int dsd_rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels);
+int dsd_rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
+int dsd_rtl_stream_monitor_read(float* out, size_t count, int* out_got);
+unsigned int dsd_rtl_stream_monitor_rate(void);
 void dsd_rtl_stream_set_resampler_target(int target_hz);
 int dsd_rtl_stream_get_ted_sps(void);
 void dsd_rtl_stream_set_ted_sps(int sps);
@@ -230,6 +235,14 @@ rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got) {
     return ctx->stream->read(out, count, *out_got);
 }
 
+extern "C" int
+rtl_stream_read_monitor(RtlSdrContext* ctx, float* out, size_t count, int* out_got) {
+    if (!ctx || !ctx->stream || !out || !out_got) {
+        return -1;
+    }
+    return dsd_rtl_stream_monitor_read(out, count, out_got);
+}
+
 /**
  * @brief Get the current output sample rate in Hz.
  *
@@ -242,6 +255,29 @@ rtl_stream_output_rate(const RtlSdrContext* ctx) {
         return 0U;
     }
     return ctx->stream->output_rate();
+}
+
+extern "C" uint32_t
+rtl_stream_monitor_rate(const RtlSdrContext* ctx) {
+    if (!ctx || !ctx->stream) {
+        return 0U;
+    }
+    return dsd_rtl_stream_monitor_rate();
+}
+
+extern "C" int
+rtl_stream_get_output_kind(void) {
+    return dsd_rtl_stream_get_output_kind();
+}
+
+extern "C" int
+rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels) {
+    return dsd_rtl_stream_get_symbol_profile(out_symbol_rate_hz, out_levels);
+}
+
+extern "C" int
+rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
+    return dsd_rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
 }
 
 /**

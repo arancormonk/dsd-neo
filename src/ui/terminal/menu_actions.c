@@ -1142,7 +1142,7 @@ rtl_set_sql(void* v) {
 void
 rtl_set_vol(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("Volume multiplier (0..3)", c->opts->rtl_volume_multiplier, cb_rtl_vol, c);
+    ui_prompt_open_int_async("Monitor gain multiplier (0..3)", c->opts->rtl_volume_multiplier, cb_rtl_vol, c);
 }
 
 void

@@ -8,6 +8,9 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
 static int g_output_rate_calls = 0;
+static int g_output_kind_calls = 0;
+static int g_symbol_profile_calls = 0;
+static int g_set_symbol_profile_calls = 0;
 static int g_dsp_get_calls = 0;
 static int g_ted_bias_calls = 0;
 static int g_snr_bias_calls = 0;
@@ -22,6 +25,10 @@ static int g_p25p2_err_calls = 0;
 static int g_p25p1_ok_delta = 0;
 static int g_p25p1_err_delta = 0;
 
+static int g_set_symbol_rate_hz = 0;
+static int g_set_symbol_levels = 0;
+static int g_set_symbol_channel_profile = 0;
+
 static int g_p25p2_slot = 0;
 static int g_p25p2_facch_ok_delta = 0;
 static int g_p25p2_facch_err_delta = 0;
@@ -33,6 +40,33 @@ static unsigned int
 fake_output_rate_hz(void) {
     g_output_rate_calls++;
     return 24000U;
+}
+
+static int
+fake_output_kind(void) {
+    g_output_kind_calls++;
+    return 1;
+}
+
+static int
+fake_symbol_profile(int* out_symbol_rate_hz, int* out_levels) {
+    g_symbol_profile_calls++;
+    if (out_symbol_rate_hz) {
+        *out_symbol_rate_hz = 4800;
+    }
+    if (out_levels) {
+        *out_levels = 4;
+    }
+    return 5;
+}
+
+static int
+fake_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
+    g_set_symbol_profile_calls++;
+    g_set_symbol_rate_hz = symbol_rate_hz;
+    g_set_symbol_levels = levels;
+    g_set_symbol_channel_profile = channel_profile;
+    return 6;
 }
 
 static int
@@ -117,6 +151,14 @@ main(void) {
     dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){0});
 
     assert(dsd_rtl_stream_metrics_hook_output_rate_hz() == 0U);
+    assert(dsd_rtl_stream_metrics_hook_output_kind() == 0);
+
+    int symbol_rate_hz = -1;
+    int symbol_levels = -1;
+    assert(dsd_rtl_stream_metrics_hook_symbol_profile(&symbol_rate_hz, &symbol_levels) == 0);
+    assert(symbol_rate_hz == 0);
+    assert(symbol_levels == 0);
+    assert(dsd_rtl_stream_metrics_hook_set_symbol_profile(2400, 2, 1) == 0);
 
     int cqpsk = -1;
     int fll = -1;
@@ -141,6 +183,9 @@ main(void) {
 
     // Installed hooks should be invoked through wrappers
     g_output_rate_calls = 0;
+    g_output_kind_calls = 0;
+    g_symbol_profile_calls = 0;
+    g_set_symbol_profile_calls = 0;
     g_dsp_get_calls = 0;
     g_ted_bias_calls = 0;
     g_snr_bias_calls = 0;
@@ -151,9 +196,15 @@ main(void) {
     g_snr_qpsk_const_calls = 0;
     g_p25p1_ber_calls = 0;
     g_p25p2_err_calls = 0;
+    g_set_symbol_rate_hz = 0;
+    g_set_symbol_levels = 0;
+    g_set_symbol_channel_profile = 0;
 
     dsd_rtl_stream_metrics_hooks hooks = {0};
     hooks.output_rate_hz = fake_output_rate_hz;
+    hooks.output_kind = fake_output_kind;
+    hooks.symbol_profile = fake_symbol_profile;
+    hooks.set_symbol_profile = fake_set_symbol_profile;
     hooks.dsp_get = fake_dsp_get;
     hooks.ted_bias = fake_ted_bias;
     hooks.snr_bias_evm = fake_snr_bias_evm;
@@ -168,6 +219,21 @@ main(void) {
 
     assert(dsd_rtl_stream_metrics_hook_output_rate_hz() == 24000U);
     assert(g_output_rate_calls == 1);
+    assert(dsd_rtl_stream_metrics_hook_output_kind() == 1);
+    assert(g_output_kind_calls == 1);
+
+    symbol_rate_hz = 0;
+    symbol_levels = 0;
+    assert(dsd_rtl_stream_metrics_hook_symbol_profile(&symbol_rate_hz, &symbol_levels) == 5);
+    assert(g_symbol_profile_calls == 1);
+    assert(symbol_rate_hz == 4800);
+    assert(symbol_levels == 4);
+
+    assert(dsd_rtl_stream_metrics_hook_set_symbol_profile(6000, 4, 5) == 6);
+    assert(g_set_symbol_profile_calls == 1);
+    assert(g_set_symbol_rate_hz == 6000);
+    assert(g_set_symbol_levels == 4);
+    assert(g_set_symbol_channel_profile == 5);
 
     cqpsk = fll = ted = 0;
     assert(dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted) == -7);

@@ -89,6 +89,51 @@ test_p25p2_prefers_qpsk(void) {
 }
 
 static int
+test_dmr_prefers_gfsk(void) {
+    static dsd_opts opts = {0};
+    static dsd_state state = {0};
+
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0) {
+        fprintf(stderr, "cli DMR apply failed\n");
+        return 1;
+    }
+    if (!(opts.frame_dmr == 1 && opts.frame_dstar == 0 && opts.frame_p25p1 == 0 && opts.frame_p25p2 == 0)) {
+        fprintf(stderr, "cli DMR frame flags mismatch\n");
+        return 1;
+    }
+    if (!(opts.mod_c4fm == 0 && opts.mod_qpsk == 0 && opts.mod_gfsk == 1 && state.rf_mod == 2)) {
+        fprintf(stderr, "cli DMR should select GFSK demod (mod=%d/%d/%d rf_mod=%d)\n", opts.mod_c4fm, opts.mod_qpsk,
+                opts.mod_gfsk, state.rf_mod);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_dmr_preserves_manual_c4fm_lock(void) {
+    static dsd_opts opts = {0};
+    static dsd_state state = {0};
+
+    opts.mod_cli_lock = 1;
+    opts.mod_c4fm = 1;
+    opts.mod_qpsk = 0;
+    opts.mod_gfsk = 0;
+    state.rf_mod = 0;
+
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0) {
+        fprintf(stderr, "cli DMR apply failed\n");
+        return 1;
+    }
+    if (!(opts.frame_dmr == 1 && opts.mod_cli_lock == 1 && opts.mod_c4fm == 1 && opts.mod_qpsk == 0
+          && opts.mod_gfsk == 0 && state.rf_mod == 0)) {
+        fprintf(stderr, "cli DMR should preserve manual C4FM lock (mod=%d/%d/%d lock=%d rf_mod=%d)\n", opts.mod_c4fm,
+                opts.mod_qpsk, opts.mod_gfsk, opts.mod_cli_lock, state.rf_mod);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_interactive_x2_and_ysf_behavior(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
@@ -147,6 +192,8 @@ main(void) {
     int rc = 0;
     rc |= test_auto_profile_differences();
     rc |= test_p25p2_prefers_qpsk();
+    rc |= test_dmr_prefers_gfsk();
+    rc |= test_dmr_preserves_manual_c4fm_lock();
     rc |= test_interactive_x2_and_ysf_behavior();
     return rc;
 }

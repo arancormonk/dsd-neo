@@ -770,11 +770,11 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
                 memcpy(&v, c->data, sizeof v);
                 int rc = svc_rtl_set_volume_mult(opts, v);
                 if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL volume -> %dX", (int)opts->rtl_volume_multiplier);
+                    ui_set_toast(state, 3, "Applied: RTL monitor gain -> %dX", (int)opts->rtl_volume_multiplier);
                 } else if (ui_rc_is_not_supported(rc)) {
-                    ui_set_toast(state, 3, "Unsupported: volume multiplier not available on active backend");
+                    ui_set_toast(state, 3, "Unsupported: monitor gain not available on active backend");
                 } else {
-                    ui_set_toast(state, 4, "Failed: RTL volume update");
+                    ui_set_toast(state, 4, "Failed: RTL monitor gain update");
                 }
             }
             return 1;

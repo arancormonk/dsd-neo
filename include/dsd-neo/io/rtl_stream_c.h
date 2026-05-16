@@ -25,6 +25,21 @@ extern "C" {
 /* Opaque stream context */
 typedef struct RtlSdrContext RtlSdrContext;
 
+typedef enum rtl_stream_output_kind {
+    RTL_STREAM_OUTPUT_AUDIO_MONITOR = 0,
+    RTL_STREAM_OUTPUT_SYMBOL_FSK = 1,
+    RTL_STREAM_OUTPUT_SYMBOL_CQPSK = 2,
+} rtl_stream_output_kind;
+
+typedef enum rtl_stream_channel_profile {
+    RTL_STREAM_CHANNEL_PROFILE_WIDE = 0,
+    RTL_STREAM_CHANNEL_PROFILE_6K25 = 1,
+    RTL_STREAM_CHANNEL_PROFILE_12K5 = 2,
+    RTL_STREAM_CHANNEL_PROFILE_PROVOICE = 3,
+    RTL_STREAM_CHANNEL_PROFILE_P25_C4FM = 4,
+    RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK = 5,
+} rtl_stream_channel_profile;
+
 /* Lifecycle */
 /**
  * @brief Create a new RTL-SDR stream context from an immutable options snapshot.
@@ -133,12 +148,32 @@ int rtl_stream_get_requested_ppm(const dsd_opts* opts);
  * @return 0 on success; otherwise <0 on error (e.g., shutdown).
  */
 int rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got);
+int rtl_stream_read_monitor(RtlSdrContext* ctx, float* out, size_t count, int* out_got);
 /**
  * @brief Get the current output sample rate in Hz.
  * @param ctx Stream context.
  * @return Output sample rate in Hz; returns 0 if `ctx` is invalid.
  */
 uint32_t rtl_stream_output_rate(const RtlSdrContext* ctx);
+uint32_t rtl_stream_monitor_rate(const RtlSdrContext* ctx);
+/**
+ * @brief Return the active RTL stream output kind.
+ *
+ * Digital RTL-family paths return symbol kinds. Soapy and analog monitor paths
+ * return AUDIO_MONITOR.
+ */
+int rtl_stream_get_output_kind(void);
+int rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels);
+
+/**
+ * @brief Update symbol modem profile for RTL-family digital modes.
+ *
+ * @param symbol_rate_hz Symbol rate in Hz, e.g. 4800, 6000, 2400.
+ * @param levels Number of FSK levels (2 or 4). CQPSK remains selected by modulation.
+ * @param channel_profile rtl_stream_channel_profile profile id.
+ * @return 0 on success, negative on invalid input.
+ */
+int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
 
 /* Optional helpers to mirror legacy API behavior */
 /**
@@ -304,7 +339,7 @@ void rtl_stream_set_ted_gain(float gain);
 float rtl_stream_get_ted_gain(void);
 
 /**
- * @brief Force-enable the TED even for FM/C4FM paths (0/1).
+ * @brief Force-enable TED for non-symbol FM/C4FM paths (0/1).
  *
  * @param onoff Non-zero to force enable; zero to follow mode defaults.
  */
@@ -521,13 +556,13 @@ typedef struct rtl_stream_costas_metrics {
  */
 void rtl_stream_toggle_cqpsk(int onoff);
 /**
- * @brief Toggle FLL on/off (0=off, nonzero=on).
+ * @brief Toggle non-symbol residual FLL on/off (0=off, nonzero=on).
  *
  * @param onoff Non-zero to enable; zero to disable.
  */
 void rtl_stream_toggle_fll(int onoff);
 /**
- * @brief Toggle TED on/off (0=off, nonzero=on).
+ * @brief Toggle non-symbol TED on/off (0=off, nonzero=on).
  *
  * @param onoff Non-zero to enable; zero to disable.
  */
@@ -663,9 +698,9 @@ int rtl_stream_get_demod_rate_hz(void);
 double rtl_stream_get_fll_band_edge_freq_hz(void);
 
 /* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */
-/** Get FM AGC enable state (1 on, 0 off). */
+/** Get non-symbol FM AGC enable state (1 on, 0 off). */
 int rtl_stream_get_fm_agc(void);
-/** Enable/disable FM AGC (0 off, nonzero on). */
+/** Enable/disable non-symbol FM AGC (0 off, nonzero on). */
 void rtl_stream_set_fm_agc(int onoff);
 /**
  * @brief Get FM AGC parameters (any pointer may be NULL).
@@ -687,9 +722,9 @@ void rtl_stream_get_fm_agc_params(float* target_rms, float* min_rms, float* alph
  */
 void rtl_stream_set_fm_agc_params(float target_rms, float min_rms, float alpha_up, float alpha_down);
 
-/** Get FM constant-envelope limiter state (1 on, 0 off). */
+/** Get non-symbol FM constant-envelope limiter state (1 on, 0 off). */
 int rtl_stream_get_fm_limiter(void);
-/** Enable/disable FM constant-envelope limiter (0 off, nonzero on). */
+/** Enable/disable non-symbol FM constant-envelope limiter (0 off, nonzero on). */
 void rtl_stream_set_fm_limiter(int onoff);
 
 /**

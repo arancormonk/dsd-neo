@@ -6,6 +6,39 @@ add_library(dsd-neo_test_support INTERFACE)
 target_include_directories(dsd-neo_test_support INTERFACE ${PROJECT_SOURCE_DIR}/tests/test_support)
 target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)
 
+# Keep direct DSP test links out of Visual Studio's relativized
+# AdditionalDependencies field so preset sub-builds do not resolve sibling
+# build/src archives from an older tree. LINK_DEPENDS preserves file-level
+# relink tracking for Ninja/Makefile generators when these paths are passed
+# as raw MSVC linker inputs.
+function(dsd_neo_link_dsp_test target_name)
+  if(MSVC)
+    set(_dsd_neo_dsp_link_archives
+      "$<TARGET_LINKER_FILE:dsd-neo_dsp>"
+      "$<TARGET_LINKER_FILE:dsd-neo_runtime>"
+      "$<TARGET_LINKER_FILE:dsd-neo_io_iq>"
+      "$<TARGET_LINKER_FILE:dsd-neo_platform>")
+    target_link_options(${target_name} PRIVATE ${_dsd_neo_dsp_link_archives})
+    set_property(TARGET ${target_name} APPEND PROPERTY LINK_DEPENDS ${_dsd_neo_dsp_link_archives})
+    target_link_libraries(${target_name} PRIVATE
+      dsd-neo_feature_radio
+      dsd-neo_feature_rtlsdr
+      dsd-neo_feature_colors_logs
+      dsd-neo_feature_curl
+      ws2_32)
+    add_dependencies(${target_name} dsd-neo_dsp dsd-neo_runtime dsd-neo_io_iq dsd-neo_platform)
+    if(DSD_USE_PORTAUDIO)
+      target_link_libraries(${target_name} PRIVATE PortAudio::PortAudio ${AUDIO_SYSTEM_LIBS})
+    endif()
+  else()
+    target_link_libraries(${target_name} PRIVATE dsd-neo_dsp)
+  endif()
+
+  if(ARGN)
+    target_link_libraries(${target_name} PRIVATE ${ARGN})
+  endif()
+endfunction()
+
 add_test(NAME ARCH_RULES COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake)
 
 set(_DSD_PUBLIC_HEADER_TEST_DIR "${CMAKE_CURRENT_BINARY_DIR}/public_header_smoke")
@@ -610,7 +643,7 @@ target_include_directories(dsd-neo_test_dsp_pcm_input_staging PRIVATE
   ${PROJECT_SOURCE_DIR}/include
   ${PROJECT_SOURCE_DIR}/src/dsp
 )
-target_link_libraries(dsd-neo_test_dsp_pcm_input_staging PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_pcm_input_staging)
 add_test(NAME DSP_PCM_INPUT_STAGING COMMAND dsd-neo_test_dsp_pcm_input_staging)
 
 add_executable(dsd-neo_test_core_dmr_voice_alg_gate core/test_core_dmr_voice_alg_gate.c)
@@ -1432,128 +1465,138 @@ add_test(NAME DMR_T3_RETURN_TO_CC_REGRESSION COMMAND dsd-neo_test_dmr_t3_return_
 # DSP block tests
 add_executable(dsd-neo_test_dsp_halfband dsp/test_dsp_halfband.cpp)
 target_include_directories(dsd-neo_test_dsp_halfband PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_halfband PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_halfband)
 add_test(NAME DSP_HALFBAND COMMAND dsd-neo_test_dsp_halfband)
 
 add_executable(dsd-neo_test_dsp_resampler dsp/test_dsp_resampler.cpp)
 target_include_directories(dsd-neo_test_dsp_resampler PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_resampler PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_resampler)
 add_test(NAME DSP_RESAMPLER COMMAND dsd-neo_test_dsp_resampler)
 
 add_executable(dsd-neo_test_dsp_firdes dsp/test_dsp_firdes.c)
 target_include_directories(dsd-neo_test_dsp_firdes PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_firdes PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_firdes ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_FIRDES COMMAND dsd-neo_test_dsp_firdes)
+
+add_executable(dsd-neo_test_dsp_fsk_modem dsp/test_fsk_modem.c)
+target_include_directories(dsd-neo_test_dsp_fsk_modem PRIVATE ${PROJECT_SOURCE_DIR}/include)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_fsk_modem ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_FSK_MODEM COMMAND dsd-neo_test_dsp_fsk_modem)
 
 add_executable(dsd-neo_test_dsp_fll dsp/test_dsp_fll.cpp)
 target_include_directories(dsd-neo_test_dsp_fll PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_fll PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_fll ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_FLL COMMAND dsd-neo_test_dsp_fll)
 
 add_executable(dsd-neo_test_dsp_fll_band_edge dsp/test_dsp_fll_band_edge.cpp)
 target_include_directories(dsd-neo_test_dsp_fll_band_edge PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_fll_band_edge PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_fll_band_edge ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_FLL_BAND_EDGE COMMAND dsd-neo_test_dsp_fll_band_edge)
 
 add_executable(dsd-neo_test_dsp_ted dsp/test_dsp_ted.cpp)
 target_include_directories(dsd-neo_test_dsp_ted PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_ted PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_ted)
 add_test(NAME DSP_TED COMMAND dsd-neo_test_dsp_ted)
 
 add_executable(dsd-neo_test_dsp_simd_widen dsp/test_dsp_simd_widen.cpp)
 target_include_directories(dsd-neo_test_dsp_simd_widen PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(dsd-neo_test_dsp_simd_widen PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_simd_widen)
 add_test(NAME DSP_SIMD_WIDEN COMMAND dsd-neo_test_dsp_simd_widen)
 
 add_executable(dsd-neo_test_dsp_simd_fir dsp/test_dsp_simd_fir.cpp)
 target_include_directories(dsd-neo_test_dsp_simd_fir PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_simd_fir PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_simd_fir)
 add_test(NAME DSP_SIMD_FIR COMMAND dsd-neo_test_dsp_simd_fir)
 add_executable(dsd-neo_test_dsp_demod_helpers dsp/test_dsp_demod_helpers.cpp)
 target_include_directories(dsd-neo_test_dsp_demod_helpers PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_demod_helpers PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_demod_helpers)
 add_test(NAME DSP_DEMOD_HELPERS COMMAND dsd-neo_test_dsp_demod_helpers)
 
 add_executable(dsd-neo_test_dsp_audio_filters dsp/test_dsp_audio_filters.cpp)
 target_include_directories(dsd-neo_test_dsp_audio_filters PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_audio_filters PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_audio_filters)
 add_test(NAME DSP_AUDIO_FILTERS COMMAND dsd-neo_test_dsp_audio_filters)
 
 
 # Additional DSP coverage
 add_executable(dsd-neo_test_dsp_hb_complex dsp/test_dsp_hb_complex.cpp)
 target_include_directories(dsd-neo_test_dsp_hb_complex PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_hb_complex PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_hb_complex)
 add_test(NAME DSP_HB_COMPLEX COMMAND dsd-neo_test_dsp_hb_complex)
 
 # HB cascade alias rejection quantification
 add_executable(dsd-neo_test_dsp_hb_alias dsp/test_dsp_hb_alias.cpp)
 target_include_directories(dsd-neo_test_dsp_hb_alias PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_hb_alias PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_hb_alias)
 add_test(NAME DSP_HB_ALIAS COMMAND dsd-neo_test_dsp_hb_alias)
 
 add_executable(dsd-neo_test_dsp_iq_dc_block dsp/test_dsp_iq_dc_block.cpp)
 target_include_directories(dsd-neo_test_dsp_iq_dc_block PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_iq_dc_block PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_iq_dc_block)
 add_test(NAME DSP_IQ_DC_BLOCK COMMAND dsd-neo_test_dsp_iq_dc_block)
 
 add_executable(dsd-neo_test_dsp_fm_agc_limit dsp/test_dsp_fm_agc_limit.cpp)
 target_include_directories(dsd-neo_test_dsp_fm_agc_limit PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_fm_agc_limit PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_fm_agc_limit)
 add_test(NAME DSP_FM_AGC_LIMIT COMMAND dsd-neo_test_dsp_fm_agc_limit)
 
 
 
 add_executable(dsd-neo_test_dsp_squelch dsp/test_dsp_squelch.cpp)
 target_include_directories(dsd-neo_test_dsp_squelch PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_squelch PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_squelch)
 add_test(NAME DSP_SQUELCH COMMAND dsd-neo_test_dsp_squelch)
 
 add_executable(dsd-neo_test_dsp_iq_balance dsp/test_dsp_iq_balance.cpp)
 target_include_directories(dsd-neo_test_dsp_iq_balance PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_iq_balance PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_iq_balance)
 add_test(NAME DSP_IQ_BALANCE COMMAND dsd-neo_test_dsp_iq_balance)
 
 add_executable(dsd-neo_test_dsp_fm_demod_ref dsp/test_dsp_fm_demod_ref.cpp)
 target_include_directories(dsd-neo_test_dsp_fm_demod_ref PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_fm_demod_ref PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_fm_demod_ref)
 add_test(NAME DSP_FM_DEMOD_REF COMMAND dsd-neo_test_dsp_fm_demod_ref)
 
 add_executable(dsd-neo_test_dsp_fm_limiter dsp/test_dsp_fm_limiter.cpp)
 target_include_directories(dsd-neo_test_dsp_fm_limiter PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_fm_limiter PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_fm_limiter)
 add_test(NAME DSP_FM_LIMITER COMMAND dsd-neo_test_dsp_fm_limiter)
 
 add_executable(dsd-neo_test_dsp_demod_misc dsp/test_dsp_demod_misc.cpp)
 target_include_directories(dsd-neo_test_dsp_demod_misc PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_demod_misc PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_demod_misc)
 add_test(NAME DSP_DEMOD_MISC COMMAND dsd-neo_test_dsp_demod_misc)
 
 add_executable(dsd-neo_test_dsp_snr_bias dsp/test_dsp_snr_bias.cpp)
 target_include_directories(dsd-neo_test_dsp_snr_bias PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_snr_bias PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_snr_bias ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_SNR_BIAS COMMAND dsd-neo_test_dsp_snr_bias)
 
 # Post-demod audio polyphase decimator (M>2) smoke test
 add_executable(dsd-neo_test_dsp_audio_polydecim dsp/test_dsp_audio_polydecim.cpp)
 target_include_directories(dsd-neo_test_dsp_audio_polydecim PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_audio_polydecim PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_audio_polydecim)
 add_test(NAME DSP_AUDIO_POLYDECIM COMMAND dsd-neo_test_dsp_audio_polydecim)
 
 add_executable(dsd-neo_test_dsp_channel_filters dsp/test_dsp_channel_filters.cpp)
 target_include_directories(dsd-neo_test_dsp_channel_filters PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_channel_filters PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_channel_filters)
 add_test(NAME DSP_CHANNEL_FILTERS COMMAND dsd-neo_test_dsp_channel_filters)
+
+add_executable(dsd-neo_test_rtl_symbol_pipeline dsp/test_rtl_symbol_pipeline.cpp)
+target_include_directories(dsd-neo_test_rtl_symbol_pipeline PRIVATE ${PROJECT_SOURCE_DIR}/include)
+dsd_neo_link_dsp_test(dsd-neo_test_rtl_symbol_pipeline ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME RTL_SYMBOL_PIPELINE COMMAND dsd-neo_test_rtl_symbol_pipeline)
 
 # Costas loop (CQPSK carrier recovery)
 add_executable(dsd-neo_test_dsp_costas dsp/test_dsp_costas.cpp)
 target_include_directories(dsd-neo_test_dsp_costas PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_costas PRIVATE dsd-neo_dsp)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_costas)
 add_test(NAME DSP_COSTAS COMMAND dsd-neo_test_dsp_costas)
 
 add_executable(dsd-neo_test_dsp_equalizer dsp/test_dsp_equalizer.cpp)
 target_include_directories(dsd-neo_test_dsp_equalizer PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_equalizer PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_equalizer ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_EQUALIZER COMMAND dsd-neo_test_dsp_equalizer)
 
 # DMR utility/CRC property tests
@@ -1858,37 +1901,37 @@ add_test(NAME CQPSK_RELIABILITY COMMAND dsd-neo_test_cqpsk_reliability)
 # Symbol .bin dibit→symbol mapping unit test
 add_executable(dsd-neo_test_symbol_bin_mapping dsp/test_symbol_bin_mapping.c)
 target_include_directories(dsd-neo_test_symbol_bin_mapping PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_symbol_bin_mapping PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+dsd_neo_link_dsp_test(dsd-neo_test_symbol_bin_mapping ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME SYMBOL_BIN_MAPPING COMMAND dsd-neo_test_symbol_bin_mapping)
 
 # Sync hamming/remap helper unit test
 add_executable(dsd-neo_test_dsp_sync_hamming dsp/test_dsp_sync_hamming.c)
 target_include_directories(dsd-neo_test_dsp_sync_hamming PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_sync_hamming PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_sync_hamming ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_SYNC_HAMMING COMMAND dsd-neo_test_dsp_sync_hamming)
 
 # Frame sync policy predicates for protocol suppression and SPS dwell.
 add_executable(dsd-neo_test_frame_sync_policy dsp/test_frame_sync_policy.c)
 target_include_directories(dsd-neo_test_frame_sync_policy PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_frame_sync_policy PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_policy ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME FRAME_SYNC_POLICY COMMAND dsd-neo_test_frame_sync_policy)
 
 # DMR sync warm start threshold initialization test
 add_executable(dsd-neo_test_sync_warm_start dsp/test_sync_warm_start.c)
 target_include_directories(dsd-neo_test_sync_warm_start PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_sync_warm_start PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+dsd_neo_link_dsp_test(dsd-neo_test_sync_warm_start ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME SYNC_WARM_START COMMAND dsd-neo_test_sync_warm_start)
 
 # Generic sync calibration module test
 add_executable(dsd-neo_test_sync_calibration dsp/test_sync_calibration.c)
 target_include_directories(dsd-neo_test_sync_calibration PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_sync_calibration PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+dsd_neo_link_dsp_test(dsd-neo_test_sync_calibration ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME SYNC_CALIBRATION COMMAND dsd-neo_test_sync_calibration)
 
 # DMR resample-on-sync CACH re-digitization test
 add_executable(dsd-neo_test_dmr_resample_on_sync protocol/dmr/test_dmr_resample_on_sync.c)
 target_include_directories(dsd-neo_test_dmr_resample_on_sync PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dmr_resample_on_sync PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+dsd_neo_link_dsp_test(dsd-neo_test_dmr_resample_on_sync ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DMR_RESAMPLE_ON_SYNC COMMAND dsd-neo_test_dmr_resample_on_sync)
 
 # P25P2 reliability buffer test
@@ -2057,7 +2100,10 @@ if(DSD_HAS_RADIO)
   target_include_directories(dsd-neo_test_io_rtl_demod_config PRIVATE
     ${PROJECT_SOURCE_DIR}/include
   )
-  target_link_libraries(dsd-neo_test_io_rtl_demod_config PRIVATE dsd-neo_io_radio)
+  target_link_libraries(dsd-neo_test_io_rtl_demod_config PRIVATE dsd-neo_io_radio dsd-neo_core)
+  if(DSD_HAS_RTLSDR)
+    target_link_libraries(dsd-neo_test_io_rtl_demod_config PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+  endif()
   add_test(NAME IO_RTL_DEMOD_CONFIG COMMAND dsd-neo_test_io_rtl_demod_config)
 
   add_executable(dsd-neo_test_io_rtl_ppm_request io/test_io_rtl_ppm_request.cpp)

@@ -20,6 +20,9 @@ extern "C" {
 
 typedef struct {
     unsigned int (*output_rate_hz)(void);
+    int (*output_kind)(void);
+    int (*symbol_profile)(int* out_symbol_rate_hz, int* out_levels);
+    int (*set_symbol_profile)(int symbol_rate_hz, int levels, int channel_profile);
     int (*dsp_get)(int* out_cqpsk_enable, int* out_fll_enable, int* out_ted_enable);
     int (*ted_bias)(void);
     double (*snr_bias_evm)(void);
@@ -32,9 +35,21 @@ typedef struct {
     void (*p25p2_err_update)(int slot, int facch_ok, int facch_err, int sacch_ok, int sacch_err, int voice_err);
 } dsd_rtl_stream_metrics_hooks;
 
+typedef enum dsd_rtl_stream_channel_profile {
+    DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE = 0,
+    DSD_RTL_STREAM_CHANNEL_PROFILE_6K25 = 1,
+    DSD_RTL_STREAM_CHANNEL_PROFILE_12K5 = 2,
+    DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE = 3,
+    DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM = 4,
+    DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK = 5,
+} dsd_rtl_stream_channel_profile;
+
 void dsd_rtl_stream_metrics_hooks_set(dsd_rtl_stream_metrics_hooks hooks);
 
 unsigned int dsd_rtl_stream_metrics_hook_output_rate_hz(void);
+int dsd_rtl_stream_metrics_hook_output_kind(void);
+int dsd_rtl_stream_metrics_hook_symbol_profile(int* out_symbol_rate_hz, int* out_levels);
+int dsd_rtl_stream_metrics_hook_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
 int dsd_rtl_stream_metrics_hook_dsp_get(int* out_cqpsk_enable, int* out_fll_enable, int* out_ted_enable);
 int dsd_rtl_stream_metrics_hook_ted_bias(void);
 double dsd_rtl_stream_metrics_hook_snr_bias_evm(void);

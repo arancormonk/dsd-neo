@@ -1636,10 +1636,12 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                     opts->frame_provoice = 0;
                     opts->frame_ysf = 0;
                     opts->frame_m17 = 0;
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 0;
+                    if (!opts->mod_cli_lock) {
+                        opts->mod_c4fm = 0;
+                        opts->mod_qpsk = 0;
+                        opts->mod_gfsk = 1;
+                        state->rf_mod = 2;
+                    }
                     opts->dmr_stereo = 0;
                     state->dmr_stereo = 0;
                     opts->dmr_mono = 1;

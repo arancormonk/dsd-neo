@@ -24,6 +24,8 @@ bool is_mod_qpsk(void* v);
 bool is_mod_c4fm(void* v);
 bool is_mod_gfsk(void* v);
 bool is_mod_fm(void* v);
+bool is_non_symbol_mod_fm(void* v);
+bool is_sample_window_c4fm(void* v);
 bool is_not_qpsk(void* v);
 bool is_fll_allowed(void* v);
 bool is_ted_allowed(void* v);

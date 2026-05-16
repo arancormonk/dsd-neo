@@ -87,6 +87,14 @@ rtl_stream_toggle_cqpsk(int onoff) {
     (void)onoff;
 }
 
+int
+rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
+    (void)symbol_rate_hz;
+    (void)levels;
+    (void)channel_profile;
+    return 0;
+}
+
 void
 rtl_stream_set_ted_sps(int sps) {
     (void)sps;

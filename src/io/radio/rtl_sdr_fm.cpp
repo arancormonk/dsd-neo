@@ -60,6 +60,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/dsp/fsk_modem.h"
 #include "dsd-neo/platform/platform.h"
 #include "rtl_auto_ppm.h"
 #include "rtl_ppm_request.h"
@@ -249,6 +250,7 @@ struct rtl_device* rtl_device_handle = NULL;
 struct dongle_state dongle;
 struct demod_state demod;
 struct output_state output;
+struct output_state monitor_output;
 struct controller_state controller;
 static struct input_ring_state input_ring;
 static dsd_iq_capture_writer* g_iq_capture_writer = NULL;
@@ -273,6 +275,7 @@ static const int kRetuneSettleStableBlocks = 1;
 static const int kRetuneSettleMaxBlocks = 1;
 static const float kRetuneSettleStableRel = 0.055f;
 static const float kRetuneSettleMinMeanAbs = 0.015f;
+
 static dsd::io::radio::RtlAutoPpmController g_auto_ppm_controller;
 
 static void
@@ -314,6 +317,107 @@ struct RtlSdrInternals {
 };
 
 static struct RtlSdrInternals* g_stream = NULL;
+static float g_monitor_fm_prev_r = 0.0f;
+static float g_monitor_fm_prev_j = 0.0f;
+static int g_monitor_fm_have_prev = 0;
+static float g_monitor_fm_buf[MAXIMUM_BUF_LENGTH / 2];
+
+static void
+ring_write_drop_oldest_signal(struct output_state* o, const float* data, size_t count) {
+    if (!o || !o->buffer || !data || count == 0 || o->capacity < 2) {
+        return;
+    }
+    if (count >= o->capacity) {
+        size_t skip = count - (o->capacity - 1);
+        data += skip;
+        count -= skip;
+    }
+    size_t free_count = ring_free(o);
+    if (free_count < count) {
+        size_t drop = count - free_count;
+        size_t tail = o->tail.load();
+        tail = (tail + drop) % o->capacity;
+        o->tail.store(tail);
+    }
+    int was_empty = ring_is_empty(o);
+    ring_write_no_signal(o, data, count);
+    if (was_empty) {
+        safe_cond_signal(&o->ready, &o->ready_m);
+    }
+}
+
+static int
+ring_read_available(struct output_state* o, float* out, size_t count) {
+    if (!o || !o->buffer || !out || count == 0) {
+        return 0;
+    }
+    size_t got = 0;
+    size_t tail = o->tail.load();
+    const size_t head = o->head.load();
+    while (got < count && tail != head) {
+        out[got++] = o->buffer[tail];
+        tail++;
+        if (tail >= o->capacity) {
+            tail = 0;
+        }
+    }
+    if (got > 0) {
+        o->tail.store(tail);
+        safe_cond_signal(&o->space, &o->ready_m);
+    }
+    return (int)got;
+}
+
+static int
+rtl_monitor_side_tap_active(const struct demod_state* d) {
+    if (!d || !g_stream || !g_stream->opts) {
+        return 0;
+    }
+    if (d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK && d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
+        return 0;
+    }
+    return (g_stream->opts->monitor_input_audio == 1 || g_stream->opts->analog_only == 1) ? 1 : 0;
+}
+
+static void
+rtl_monitor_side_tap_process(struct demod_state* d) {
+    if (!rtl_monitor_side_tap_active(d) || !monitor_output.buffer || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    const int pairs = d->lp_len >> 1;
+    if (pairs <= 0) {
+        return;
+    }
+    const int max_pairs = (int)(sizeof(g_monitor_fm_buf) / sizeof(g_monitor_fm_buf[0]));
+    const int n_out = pairs < max_pairs ? pairs : max_pairs;
+    const float* iq = d->lowpassed;
+    float prev_r = g_monitor_fm_prev_r;
+    float prev_j = g_monitor_fm_prev_j;
+    if (!g_monitor_fm_have_prev) {
+        prev_r = iq[0];
+        prev_j = iq[1];
+        g_monitor_fm_have_prev = 1;
+    }
+    int gain = g_stream->opts->rtl_volume_multiplier;
+    if (gain < 1) {
+        gain = 1;
+    } else if (gain > 3) {
+        gain = 3;
+    }
+    for (int n = 0; n < n_out; n++) {
+        float cr = iq[(size_t)(n << 1) + 0];
+        float cj = iq[(size_t)(n << 1) + 1];
+        float re = cr * prev_r + cj * prev_j;
+        float im = cj * prev_r - cr * prev_j;
+        g_monitor_fm_buf[n] = atan2f(im, re) * (float)gain;
+        prev_r = cr;
+        prev_j = cj;
+    }
+    g_monitor_fm_prev_r = prev_r;
+    g_monitor_fm_prev_j = prev_j;
+    ring_write_drop_oldest_signal(&monitor_output, g_monitor_fm_buf, (size_t)n_out);
+}
+
 /* Keep the requested PPM value and its logical request generation paired so
  * UI and read-thread activity cannot observe mixed snapshots. */
 static std::mutex g_requested_ppm_state_mutex;
@@ -397,6 +501,91 @@ radio_source_is_soapy(const dsd_opts* opts) {
 static int
 radio_source_is_iq_replay(const dsd_opts* opts) {
     return detect_radio_source(opts) == RADIO_SOURCE_IQ_REPLAY;
+}
+
+static int
+radio_source_is_rtl_family(const dsd_opts* opts) {
+    RadioSourceKind kind = detect_radio_source(opts);
+    return (kind == RADIO_SOURCE_RTL_USB || kind == RADIO_SOURCE_RTL_TCP || kind == RADIO_SOURCE_IQ_REPLAY) ? 1 : 0;
+}
+
+static int
+opts_is_digital_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1
+            || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
+            || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
+}
+
+static int
+opts_has_4800_wide_four_level_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1);
+}
+
+static int
+opts_has_12k5_or_cqpsk_bw_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1
+            || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1
+            || opts->mod_qpsk == 1);
+}
+
+static int
+rtl_stream_fsk_channel_profile_for_current_mode(void) {
+    const dsd_opts* opts = (g_stream && g_stream->opts) ? g_stream->opts : NULL;
+    const int sym_rate = demod.symbol_rate_hz > 0 ? demod.symbol_rate_hz : 4800;
+    const int levels = demod.symbol_levels == 2 ? 2 : 4;
+
+    if (opts) {
+        if (sym_rate == 9600 && opts->frame_provoice == 1) {
+            return DSD_CH_LPF_PROFILE_PROVOICE;
+        }
+        if (sym_rate == 2400 && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1)) {
+            return DSD_CH_LPF_PROFILE_6K25;
+        }
+        if (sym_rate == 6000 && opts->frame_x2tdma == 1) {
+            return DSD_CH_LPF_PROFILE_12K5;
+        }
+        if (opts_has_4800_wide_four_level_mode(opts)) {
+            return DSD_CH_LPF_PROFILE_12K5;
+        }
+        if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
+            return DSD_CH_LPF_PROFILE_P25_C4FM;
+        }
+        if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
+            return DSD_CH_LPF_PROFILE_6K25;
+        }
+        if (opts->frame_x2tdma == 1) {
+            return DSD_CH_LPF_PROFILE_12K5;
+        }
+        if (opts->frame_provoice == 1) {
+            return DSD_CH_LPF_PROFILE_PROVOICE;
+        }
+    }
+
+    if (sym_rate == 2400) {
+        return DSD_CH_LPF_PROFILE_6K25;
+    }
+    if (sym_rate == 9600) {
+        return DSD_CH_LPF_PROFILE_PROVOICE;
+    }
+    if (sym_rate >= 6000) {
+        return DSD_CH_LPF_PROFILE_12K5;
+    }
+    if (sym_rate == 4800 && levels == 2) {
+        return DSD_CH_LPF_PROFILE_6K25;
+    }
+    if (sym_rate == 4800 && levels == 4) {
+        return DSD_CH_LPF_PROFILE_12K5;
+    }
+    return DSD_CH_LPF_PROFILE_WIDE;
 }
 
 static void
@@ -636,11 +825,8 @@ debug_cqpsk_enabled(void) {
  * Priority:
  *  - If env DSD_NEO_TUNER_BW_HZ is set:
  *      - value "auto" or 0 => return 0 (driver automatic)
- *      - positive integer => clamp and use that value (in Hz)
- *  - Otherwise, prefer setting BW ~= capture sample rate to avoid
- *    overly narrow IF filtering across retunes/hops.
- *  - As a conservative fallback, derive from DSP bandwidth with a
- *    safety margin and clamp to practical bounds.
+ *      - positive integer => use that value (in Hz)
+ *  - Otherwise, leave tuner bandwidth in driver automatic mode.
  */
 static uint32_t
 choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
@@ -649,84 +835,9 @@ choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
         return (uint32_t)cfg->tuner_bw_hz; /* 0 => driver automatic */
     }
 
-    /* Mode-aware policy:
-       - Scanning (multiple freqs): prefer BW ~= capture rate for consistent IF while hopping.
-       - Single freq:
-           - Digital-like (no deemphasis): target ~2x channel BW with clamps.
-           - Analog-like (deemphasis enabled): keep wide but sane; use min(capture, 1.8 MHz).
-       If uncertain, fall back to prior heuristics. */
-
-    int scanning = (controller.freq_len > 1) ? 1 : 0;
-    int analog_like = (demod.deemph != 0) ? 1 : 0;
-    /* When offset_tuning is unavailable, we apply an fs/4 capture shift.
-       That places the desired channel capture_rate/4 away from tuner center,
-       so ensure the IF filter is wide enough to avoid attenuating it.
-       Tuner BW is total (double-sided), so we need 2×(fs/4 + half-channel). */
-    int fs4_shift_active = (!disable_fs4_shift && dongle.offset_tuning == 0) ? 1 : 0;
-    uint32_t fs4_guard_bw = 0;
-    if (fs4_shift_active && capture_rate_hz > 0) {
-        /* Channel center sits at fs/4 from tuner center; tuner BW is total passband.
-           Need: 2 × (offset + half_channel) = fs/2 + dsp_bw */
-        uint64_t guard = (uint64_t)(capture_rate_hz / 2);
-        if (dsp_bw_hz > 0) {
-            guard += (uint64_t)dsp_bw_hz;
-        }
-        /* Clamp to capture rate - no point requesting wider than what we sample. */
-        if (guard > (uint64_t)capture_rate_hz) {
-            guard = capture_rate_hz;
-        }
-        fs4_guard_bw = (uint32_t)guard;
-    }
-    auto apply_fs4_guard = [&](uint32_t bw) -> uint32_t {
-        if (fs4_guard_bw > 0 && bw < fs4_guard_bw) {
-            return fs4_guard_bw;
-        }
-        return bw;
-    };
-
-    if (scanning) {
-        if (capture_rate_hz >= 225000 && capture_rate_hz <= 5000000) {
-            return apply_fs4_guard(capture_rate_hz);
-        }
-    } else {
-        if (!analog_like && dsp_bw_hz > 0) {
-            /* Digital single-channel: ~2x channel bandwidth (guard), clamps 100 kHz..1.5 MHz */
-            uint64_t tgt = (uint64_t)dsp_bw_hz * 2ULL;
-            if (tgt < 100000ULL) {
-                tgt = 100000ULL;
-            }
-            if (tgt > 1500000ULL) {
-                tgt = 1500000ULL;
-            }
-            /* Optional: don't exceed capture rate much */
-            if (capture_rate_hz > 0 && tgt > capture_rate_hz) {
-                tgt = capture_rate_hz;
-            }
-            return apply_fs4_guard((uint32_t)tgt);
-        }
-        if (analog_like && capture_rate_hz > 0) {
-            uint32_t maxa = 1800000U; /* ~1.8 MHz ceiling for analog */
-            return apply_fs4_guard((capture_rate_hz < maxa) ? capture_rate_hz : maxa);
-        }
-    }
-
-    /* Fallback: derive from DSP bandwidth with margin (x8), clamped. */
-    uint32_t bw = 0;
-    if (dsp_bw_hz > 0) {
-        uint64_t hinted = (uint64_t)dsp_bw_hz * 8ULL; /* generous guard */
-        if (hinted < 100000ULL) {
-            hinted = 100000ULL; /* min 100 kHz */
-        }
-        if (hinted > 3000000ULL) {
-            hinted = 3000000ULL; /* max 3 MHz */
-        }
-        bw = (uint32_t)hinted;
-    }
-    if (bw == 0) {
-        /* Last-resort default */
-        bw = 1200000; /* 1.2 MHz */
-    }
-    return apply_fs4_guard(bw);
+    UNUSED(capture_rate_hz);
+    UNUSED(dsp_bw_hz);
+    return 0; /* driver automatic */
 }
 
 /* Forward declarations for visualization ring clears (defined later in file) */
@@ -1151,7 +1262,7 @@ demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
      * Solution: Always clear filter histories for CQPSK. The AGC/filter settle
      * time (~10-50ms) is much less costly than the prolonged (~1-3s) sync loss
      * caused by stale history corruption. */
-    if (s->cqpsk_enable) {
+    if (s->cqpsk_enable || s->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
         for (int st = 0; st < 10; st++) {
             memset(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
             memset(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
@@ -1165,6 +1276,12 @@ demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
         if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
             memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * 2U * sizeof(float));
         }
+        if (s->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+            dsd_fsk_modem_reset(&s->fsk_modem_state);
+        }
+        g_monitor_fm_have_prev = 0;
+        g_monitor_fm_prev_r = 0.0f;
+        g_monitor_fm_prev_j = 0.0f;
     }
 
     /* Debug: summarize key CQPSK/TED state after retune when DSD_NEO_DEBUG_CQPSK=1.
@@ -1735,6 +1852,7 @@ static DSD_THREAD_RETURN_TYPE
         }
 
         full_demod(d);
+        rtl_monitor_side_tap_process(d);
 
         if (retune_diag_block > 0) {
             float fll_freq_hz = d->fll_band_edge_state.freq * ((float)d->rate_out / 6.28318530717958647692f);
@@ -2087,12 +2205,10 @@ static DSD_THREAD_RETURN_TYPE
         } else {
             d->squelch_hits = 0;
         }
-        /* For CQPSK mode, bypass the resampler entirely. The TED already decimates
-         * to symbol rate, and the symbol stream should go directly to the ring buffer
-         * without upsampling. The downstream symbol reader expects 1 sample per symbol.
-         * Upsampling would cause every-other-symbol to be read, corrupting the data. */
-        if (d->cqpsk_enable) {
-            /* CQPSK: direct symbol passthrough, no resampling or scaling */
+        /* Symbol modem output is already at one float per symbol. Keep it out
+         * of audio resampling and volume scaling so decoder decisions are not
+         * coupled to monitor-audio gain. */
+        if (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
             if (d->result_len > 0) {
                 ring_write_signal_on_empty_transition(o, d->result, (size_t)d->result_len);
             }
@@ -2324,8 +2440,8 @@ controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts,
         return;
     }
     s->last_applied_freq_hz.store(center_freq_hz, std::memory_order_release);
-    rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output);
+    rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
     DemodRetuneResetPlan reset_plan = demod_retune_reset_plan(reset_reason, previous_center_freq_hz, center_freq_hz,
                                                               previous_rate_out_hz, demod.rate_out);
     demod_reset_on_retune(&demod, reset_plan);
@@ -3608,13 +3724,25 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     } persist = {};
 
     rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000; // base DSP bandwidth in Hz
-    /* DMR (GFSK) data decoding is sensitive to overly low DSP basebands; users often (reasonably) set bw≈12 kHz,
-       but the resulting low-rate discriminator stream can degrade LRRP payload reliability even if resampled later. */
-    if (opts->frame_dmr == 1 && opts->rtl_dsp_bw_khz > 0 && opts->rtl_dsp_bw_khz < 24) {
+    /* Wide digital channels need enough DSP baseband to keep the nominal channel edge
+       inside the flat part of the channel LPF. CQPSK/P25P2 and DMR also benefit from
+       24/48 kHz rates for clean SPS and data decode margin. */
+    if (opts_has_12k5_or_cqpsk_bw_mode(opts) && opts->rtl_dsp_bw_khz > 0 && opts->rtl_dsp_bw_khz < 16) {
         static int warned = 0;
         if (!warned) {
             warned = 1;
-            LOG_WARNING("RTL DSP-BW %dkHz is low for DMR; try 48kHz (or at least 24kHz) for more reliable data/LRRP.\n",
+            LOG_WARNING(
+                "RTL DSP-BW %dkHz is too low for active 12.5kHz/CQPSK modes; use at least 16kHz, preferably 24/48kHz, "
+                "to keep the modulation off the filter skirt.\n",
+                opts->rtl_dsp_bw_khz);
+        }
+    } else if ((opts->frame_dmr == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) && opts->rtl_dsp_bw_khz > 0
+               && opts->rtl_dsp_bw_khz < 24) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            LOG_WARNING("RTL DSP-BW %dkHz is marginal for DMR/P25P2/CQPSK; try 48kHz or at least 24kHz for more "
+                        "reliable timing and data decode.\n",
                         opts->rtl_dsp_bw_khz);
         }
     }
@@ -3636,6 +3764,12 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     if (!output.buffer) {
         LOG_ERROR("Output ring buffer allocation failed.\n");
         return -1;
+    }
+    output_init(&monitor_output);
+    if (monitor_output.buffer) {
+        monitor_output.rate = demod.rate_out;
+    } else {
+        LOG_WARNING("Monitor ring buffer allocation failed; RTL monitor tap disabled.\n");
     }
     /* Init input ring */
     {
@@ -4153,6 +4287,9 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     } else {
         output.rate = demod.rate_out;
     }
+    if (monitor_output.buffer) {
+        monitor_output.rate = demod.rate_out;
+    }
 
     /* One-time startup summary of the rate chain */
     {
@@ -4232,12 +4369,14 @@ dsd_rtl_stream_close(void) {
     /* Wake any demod waits on both ready and space condition variables */
     safe_cond_signal(&demod.ready, &demod.ready_m);
     safe_cond_signal(&output.space, &output.ready_m);
+    safe_cond_signal(&monitor_output.space, &monitor_output.ready_m);
     if (g_stream && g_stream->demod_thread_started.load(std::memory_order_acquire)) {
         dsd_thread_join(demod.thread);
         g_stream->demod_thread_started.store(0, std::memory_order_release);
     }
     /* Wake any consumers blocked on output.ready to finish */
     safe_cond_signal(&output.ready, &output.ready_m);
+    safe_cond_signal(&monitor_output.ready, &monitor_output.ready_m);
     if (g_stream && g_stream->controller_thread_started.load(std::memory_order_acquire)) {
         dsd_thread_join(controller.thread);
         g_stream->controller_thread_started.store(0, std::memory_order_release);
@@ -4245,6 +4384,7 @@ dsd_rtl_stream_close(void) {
 
     rtl_demod_cleanup(&demod);
     output_cleanup(&output);
+    output_cleanup(&monitor_output);
     controller_cleanup(&controller);
 
     input_ring_destroy(&input_ring);
@@ -4289,12 +4429,14 @@ dsd_rtl_stream_soft_stop(void) {
     /* Wake any demod waits on both ready and space condition variables */
     safe_cond_signal(&demod.ready, &demod.ready_m);
     safe_cond_signal(&output.space, &output.ready_m);
+    safe_cond_signal(&monitor_output.space, &monitor_output.ready_m);
     if (g_stream && g_stream->demod_thread_started.load(std::memory_order_acquire)) {
         dsd_thread_join(demod.thread);
         g_stream->demod_thread_started.store(0, std::memory_order_release);
     }
     /* Wake any consumers blocked on output.ready to finish */
     safe_cond_signal(&output.ready, &output.ready_m);
+    safe_cond_signal(&monitor_output.ready, &monitor_output.ready_m);
     if (g_stream && g_stream->controller_thread_started.load(std::memory_order_acquire)) {
         dsd_thread_join(controller.thread);
         g_stream->controller_thread_started.store(0, std::memory_order_release);
@@ -4302,6 +4444,7 @@ dsd_rtl_stream_soft_stop(void) {
 
     rtl_demod_cleanup(&demod);
     output_cleanup(&output);
+    output_cleanup(&monitor_output);
     controller_cleanup(&controller);
 
     input_ring_destroy(&input_ring);
@@ -4560,6 +4703,21 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
 }
 
 extern "C" int
+dsd_rtl_stream_monitor_read(float* out, size_t count, int* out_got) {
+    int got_tmp = 0;
+    int* got_ptr = out_got ? out_got : &got_tmp;
+    *got_ptr = 0;
+    if (!out || count == 0) {
+        return 0;
+    }
+    if (!monitor_output.buffer) {
+        return -1;
+    }
+    *got_ptr = ring_read_available(&monitor_output, out, count);
+    return 0;
+}
+
+extern "C" int
 rtl_stream_request_ppm(dsd_opts* opts, int ppm) {
     if (!opts) {
         return -1;
@@ -4595,6 +4753,11 @@ dsd_rtl_stream_output_rate(void) {
     return (unsigned int)output.rate;
 }
 
+extern "C" unsigned int
+dsd_rtl_stream_monitor_rate(void) {
+    return (unsigned int)monitor_output.rate;
+}
+
 /* Helper for generic rings to observe RTL stream shutdown without using exitflag */
 extern "C" int
 dsd_rtl_stream_should_exit(void) {
@@ -4623,6 +4786,48 @@ dsd_rtl_stream_ted_bias(void) {
 extern "C" int
 dsd_rtl_stream_get_ted_sps(void) {
     return demod.ted_sps;
+}
+
+extern "C" int
+dsd_rtl_stream_get_output_kind(void) {
+    return demod.output_kind;
+}
+
+extern "C" int
+dsd_rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels) {
+    if (out_symbol_rate_hz) {
+        *out_symbol_rate_hz = demod.symbol_rate_hz;
+    }
+    if (out_levels) {
+        *out_levels = demod.symbol_levels;
+    }
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
+    if (symbol_rate_hz <= 0) {
+        return -1;
+    }
+    if (levels != 2 && levels != 4) {
+        return -1;
+    }
+    int changed = (demod.symbol_rate_hz != symbol_rate_hz || demod.symbol_levels != levels);
+    demod.symbol_rate_hz = symbol_rate_hz;
+    demod.symbol_levels = levels;
+    if (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_P25_CQPSK) {
+        demod.channel_lpf_profile = channel_profile;
+    }
+    dsd_fsk_modem_config cfg = {};
+    cfg.sample_rate_hz = demod.rate_out > 0 ? demod.rate_out : demod.rate_in;
+    cfg.symbol_rate_hz = demod.symbol_rate_hz;
+    cfg.levels = demod.symbol_levels;
+    cfg.channel_profile = demod.channel_lpf_profile;
+    dsd_fsk_modem_configure(&demod.fsk_modem_state, &cfg);
+    if (changed) {
+        demod.costas_reset_pending = 1;
+    }
+    return 0;
 }
 
 extern "C" void
@@ -4666,6 +4871,13 @@ dsd_rtl_stream_set_ted_sps(int sps) {
     if (demod.cqpsk_enable) {
         demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
+    if (demod.rate_out > 0) {
+        int sym_rate = (demod.rate_out + (sps / 2)) / sps;
+        if (sym_rate > 0) {
+            (void)dsd_rtl_stream_set_symbol_profile(sym_rate, demod.symbol_levels == 2 ? 2 : 4,
+                                                    demod.channel_lpf_profile);
+        }
+    }
 }
 
 extern "C" void
@@ -4707,12 +4919,18 @@ dsd_rtl_stream_set_ted_sps_no_override(int sps) {
         demod.costas_zero_conf_pct = 0;
     }
     demod.ted_sps = sps;
-    /* Does NOT set ted_sps_override, allowing rate-change refresh to
-       recalculate SPS later. Use when returning to CC or switching protocols. */
-
     if (demod.cqpsk_enable) {
         demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
+    if (demod.rate_out > 0) {
+        int sym_rate = (demod.rate_out + (sps / 2)) / sps;
+        if (sym_rate > 0) {
+            (void)dsd_rtl_stream_set_symbol_profile(sym_rate, demod.symbol_levels == 2 ? 2 : 4,
+                                                    demod.channel_lpf_profile);
+        }
+    }
+    /* Does NOT set ted_sps_override, allowing rate-change refresh to
+       recalculate SPS later. Use when returning to CC or switching protocols. */
 }
 
 extern "C" void
@@ -4733,24 +4951,98 @@ dsd_rtl_stream_get_ted_gain(void) {
     return demod.ted_gain;
 }
 
+static inline int
+rtl_stream_symbol_output_active(void) {
+    return demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK || demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK
+           || demod.cqpsk_enable;
+}
+
+static inline int
+rtl_stream_fsk_symbol_output_active(void) {
+    return demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK;
+}
+
+static inline int
+rtl_stream_cqpsk_symbol_output_active(void) {
+    return demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || demod.cqpsk_enable;
+}
+
+static void
+rtl_stream_reset_fll_runtime_state(void) {
+    fll_init_state(&demod.fll_state);
+    demod.fll_freq = 0.0f;
+    demod.fll_phase = 0.0f;
+    demod.fll_prev_r = 0.0f;
+    demod.fll_prev_j = 0.0f;
+}
+
+static void
+rtl_stream_reset_ted_runtime_state(void) {
+    ted_init_state(&demod.ted_state);
+    demod.ted_mu = 0.0f;
+}
+
+static void
+rtl_stream_clear_non_symbol_controls_for_symbol_output(void) {
+    if (rtl_stream_fsk_symbol_output_active()) {
+        demod.fm_agc_enable = 0;
+        demod.fm_limiter_enable = 0;
+        demod.ted_force = 0;
+        if (demod.fll_enabled) {
+            demod.fll_enabled = 0;
+            rtl_stream_reset_fll_runtime_state();
+        }
+        if (demod.ted_enabled) {
+            demod.ted_enabled = 0;
+            rtl_stream_reset_ted_runtime_state();
+        }
+        return;
+    }
+
+    if (rtl_stream_cqpsk_symbol_output_active()) {
+        demod.fm_agc_enable = 0;
+        demod.fm_limiter_enable = 0;
+        demod.ted_force = 0;
+        if (demod.fll_enabled) {
+            demod.fll_enabled = 0;
+            rtl_stream_reset_fll_runtime_state();
+        }
+        demod.ted_enabled = 1;
+    }
+}
+
 extern "C" void
 dsd_rtl_stream_set_ted_force(int onoff) {
+    if (rtl_stream_symbol_output_active()) {
+        demod.ted_force = 0;
+        return;
+    }
     demod.ted_force = onoff ? 1 : 0;
 }
 
 extern "C" int
 dsd_rtl_stream_get_ted_force(void) {
+    if (rtl_stream_symbol_output_active()) {
+        return 0;
+    }
     return demod.ted_force ? 1 : 0;
 }
 
 /* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */
 extern "C" int
 dsd_rtl_stream_get_fm_agc(void) {
+    if (rtl_stream_symbol_output_active()) {
+        return 0;
+    }
     return demod.fm_agc_enable ? 1 : 0;
 }
 
 extern "C" void
 dsd_rtl_stream_set_fm_agc(int onoff) {
+    if (rtl_stream_symbol_output_active()) {
+        demod.fm_agc_enable = 0;
+        return;
+    }
     demod.fm_agc_enable = onoff ? 1 : 0;
 }
 
@@ -4803,11 +5095,18 @@ dsd_rtl_stream_set_fm_agc_params(float target_rms, float min_rms, float alpha_up
 
 extern "C" int
 dsd_rtl_stream_get_fm_limiter(void) {
+    if (rtl_stream_symbol_output_active()) {
+        return 0;
+    }
     return demod.fm_limiter_enable ? 1 : 0;
 }
 
 extern "C" void
 dsd_rtl_stream_set_fm_limiter(int onoff) {
+    if (rtl_stream_symbol_output_active()) {
+        demod.fm_limiter_enable = 0;
+        return;
+    }
     demod.fm_limiter_enable = onoff ? 1 : 0;
 }
 
@@ -4938,6 +5237,8 @@ rtl_stream_toggle_cqpsk(int onoff) {
     int was = demod.cqpsk_enable ? 1 : 0;
     demod.cqpsk_enable = onoff ? 1 : 0;
     if (demod.cqpsk_enable) {
+        demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+        demod.symbol_levels = 4;
         /* CQPSK Costas/differential stage assumes symbol-rate samples from
            the Gardner TED. Require TED whenever CQPSK is active so the
            pipeline never feeds oversampled I/Q into op25_diff_phasor_cc/op25_costas_loop_cc. */
@@ -4969,12 +5270,19 @@ rtl_stream_toggle_cqpsk(int onoff) {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;
         demod.cqpsk_eq_enable = 0;
-        /* If we were using the P25 CQPSK channel LPF profile, revert to P25 C4FM.
-         * This avoids carrying a wide CQPSK cutoff into clean C4FM control channels. */
+        /* If we were using the P25 CQPSK channel LPF profile, revert to the
+         * active FSK mode's profile instead of assuming every CQPSK-off path is
+         * P25 C4FM. DMR/NXDN96/YSF/M17 and ProVoice need wider profiles. */
         if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_P25_CQPSK) {
-            demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
+            demod.channel_lpf_profile = rtl_stream_fsk_channel_profile_for_current_mode();
+        }
+        if (g_stream && opts_is_digital_mode(g_stream->opts) && radio_source_is_rtl_family(g_stream->opts)) {
+            demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_FSK;
+        } else {
+            demod.output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
         }
     }
+    rtl_stream_clear_non_symbol_controls_for_symbol_output();
     /* If the demod family changed, request a Costas reset on the next retune.
      * This keeps loop state consistent when switching between FM and CQPSK paths. */
     if (demod.cqpsk_enable != was) {
@@ -4984,44 +5292,59 @@ rtl_stream_toggle_cqpsk(int onoff) {
 
 extern "C" void
 rtl_stream_toggle_fll(int onoff) {
+    if (rtl_stream_symbol_output_active()) {
+        demod.fll_enabled = 0;
+        rtl_stream_reset_fll_runtime_state();
+        return;
+    }
     demod.fll_enabled = onoff ? 1 : 0;
     if (!demod.fll_enabled) {
         /* Reset FLL state to baseline to avoid carryover */
-        fll_init_state(&demod.fll_state);
-        demod.fll_freq = 0.0f;
-        demod.fll_phase = 0.0f;
-        demod.fll_prev_r = 0.0f;
-        demod.fll_prev_j = 0.0f;
+        rtl_stream_reset_fll_runtime_state();
     }
 }
 
 extern "C" void
 rtl_stream_toggle_ted(int onoff) {
-    if (!onoff && demod.cqpsk_enable) {
+    if (rtl_stream_fsk_symbol_output_active()) {
+        demod.ted_enabled = 0;
+        demod.ted_force = 0;
+        rtl_stream_reset_ted_runtime_state();
+        return;
+    }
+
+    if (rtl_stream_cqpsk_symbol_output_active() || (!onoff && demod.cqpsk_enable)) {
         /* Prevent disabling TED while CQPSK path is active: the CQPSK
            Costas/differential stage requires symbol-rate samples from
            the Gardner TED. Ignore the request when CQPSK is enabled. */
+        demod.ted_enabled = 1;
+        demod.ted_force = 0;
         return;
     }
 
     demod.ted_enabled = onoff ? 1 : 0;
     if (!demod.ted_enabled) {
         /* Reset TED state */
-        ted_init_state(&demod.ted_state);
-        demod.ted_mu = 0.0f;
+        rtl_stream_reset_ted_runtime_state();
     }
 }
 
 extern "C" int
 rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
     if (cqpsk_enable) {
-        *cqpsk_enable = demod.cqpsk_enable ? 1 : 0;
+        *cqpsk_enable = (demod.cqpsk_enable || rtl_stream_cqpsk_symbol_output_active()) ? 1 : 0;
     }
     if (fll_enable) {
-        *fll_enable = demod.fll_enabled ? 1 : 0;
+        *fll_enable = rtl_stream_symbol_output_active() ? 0 : (demod.fll_enabled ? 1 : 0);
     }
     if (ted_enable) {
-        *ted_enable = demod.ted_enabled ? 1 : 0;
+        if (rtl_stream_fsk_symbol_output_active()) {
+            *ted_enable = 0;
+        } else if (rtl_stream_cqpsk_symbol_output_active()) {
+            *ted_enable = 1;
+        } else {
+            *ted_enable = demod.ted_enabled ? 1 : 0;
+        }
     }
     return 0;
 }

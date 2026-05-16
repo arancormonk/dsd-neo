@@ -63,6 +63,8 @@ This project is an active work in progress as we decouple from the upstream fork
 
 - RTL‑SDR optimizations and diagnostics
 
+  - RTL USB, RTL-TCP, and IQ replay digital decode are symbol-domain: FSK and CQPSK paths feed normalized float
+    symbols to the decoder, with source monitor audio handled by a separate tap.
   - Real‑time visual aids in the terminal for faster setup and troubleshooting:
     - Constellation view with adjustable gating and normalization.
     - Eye diagram (Unicode/ASCII, optional color) with adaptive scales and level guides.

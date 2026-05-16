@@ -82,7 +82,7 @@ Optional tuning keys (also shared with RTL/RTL-TCP):
 - `rtl_ppm`
 - `rtl_bw_khz`
 - `rtl_sql`
-- `rtl_volume`
+- `rtl_volume` (monitor/non-symbol gain)
 
 Full example:
 
@@ -98,7 +98,8 @@ rtl_sql = 0
 rtl_volume = 2
 ```
 
-Set `rtl_freq` explicitly for predictable startup frequency.
+Set `rtl_freq` explicitly for predictable startup frequency. `rtl_volume` is a monitor/non-symbol gain field and does not
+scale RTL-family digital symbols.
 
 ## 4) Run
 

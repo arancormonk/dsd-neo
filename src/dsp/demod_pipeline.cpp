@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/dsp/fsk_modem.h"
 
 /* Macros and constants from the original file */
 #ifndef MAXIMUM_OVERSAMPLE
@@ -84,12 +85,17 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
 /* Fixed channel low-pass for high-rate mode.
  *
  * Profiles (see DSD_CH_LPF_PROFILE_*):
- *   - Wide/analog: 8000 Hz cutoff.
- *   - 6.25 kHz modes: 3500 Hz cutoff (NXDN48/dPMR/D-STAR).
- *   - 12.5 kHz 4FSK modes: 5100 Hz cutoff (DMR/NXDN96/X2TDMA/YSF/M17).
- *   - ProVoice: 6250 Hz cutoff.
- *   - P25 C4FM: 5200 Hz cutoff.
- *   - P25 CQPSK/LSM: 7250 Hz cutoff.
+ *   - Wide/analog: 8000 Hz protected passband edge.
+ *   - 6.25 kHz modes: 3125 Hz protected passband edge (NXDN48/dPMR/D-STAR).
+ *   - 12.5 kHz 4FSK modes: 6250 Hz protected passband edge (DMR/NXDN96/X2TDMA/YSF/M17).
+ *   - ProVoice: 6250 Hz protected passband edge.
+ *   - P25 C4FM: 6250 Hz protected passband edge.
+ *   - P25 CQPSK/LSM: 6250 Hz protected passband edge plus guard.
+ *
+ * GNU Radio firdes::low_pass() interprets cutoff_freq as the center of the
+ * transition band, not the last flat passband frequency. The design centers
+ * below include half of the transition width as guard so nominal channel edges
+ * do not sit on the filter skirt.
  *
  * Legacy 63-tap Blackman prototypes are kept as fallback; preferred taps are
  * generated per sample rate to preserve the intended spectral shape at any Fs.
@@ -99,6 +105,14 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
  *   - Blackman: ntaps = (74 * 48000) / (22 * 1200) = 135
  * Size 144 provides headroom for higher sample rates. */
 static const int kChannelLpfTaps = 144;
+static const double kChannelLpfTransitionHz = 1200.0;
+static const double kChannelLpfGuardHz = kChannelLpfTransitionHz * 0.5;
+static const double kChannelLpfWideCutoffHz = 8000.0 + kChannelLpfGuardHz;
+static const double kChannelLpf6k25CutoffHz = 3125.0 + kChannelLpfGuardHz;
+static const double kChannelLpf12k5CutoffHz = 6250.0 + kChannelLpfGuardHz;
+static const double kChannelLpfProvoiceCutoffHz = 6250.0 + kChannelLpfGuardHz;
+static const double kChannelLpfP25C4fmCutoffHz = 6250.0 + kChannelLpfGuardHz;
+static const double kChannelLpfP25CqpskCutoffHz = 7250.0;
 /* Legacy fallback filters are 63 taps (designed for 24 kHz). Only used when
  * dynamic filter generation fails; prefer dynamically generated taps. */
 static const int kChannelLpfFallbackTaps = 63;
@@ -382,6 +396,25 @@ static int s_channel_p25_c4fm_ntaps = 0;
 static int s_channel_p25_cqpsk_ntaps = 0;
 static double s_channel_taps_sample_rate = 0.0;
 
+static int
+channel_lpf_design_low_pass(double sample_rate, double cutoff_hz, float* taps_out, int max_taps) {
+    if (sample_rate <= 0.0 || !taps_out || max_taps <= 0) {
+        return -1;
+    }
+
+    const double nyquist = sample_rate * 0.5;
+    const double max_cutoff = nyquist * 0.90;
+    double cutoff = cutoff_hz;
+    if (cutoff < 100.0) {
+        cutoff = 100.0;
+    }
+    if (cutoff > max_cutoff) {
+        cutoff = max_cutoff;
+    }
+
+    return dsd_firdes_low_pass(1.0, sample_rate, cutoff, kChannelLpfTransitionHz, DSD_WIN_BLACKMAN, taps_out, max_taps);
+}
+
 /**
  * @brief Ensure channel LPF taps are generated for the given sample rate.
  *
@@ -400,37 +433,37 @@ channel_lpf_ensure_taps(double sample_rate) {
     }
 
     s_channel_wide_ntaps =
-        dsd_firdes_low_pass(1.0, sample_rate, 8000.0, 1200.0, DSD_WIN_BLACKMAN, s_channel_wide_taps, kChannelLpfTaps);
+        channel_lpf_design_low_pass(sample_rate, kChannelLpfWideCutoffHz, s_channel_wide_taps, kChannelLpfTaps);
     if (s_channel_wide_ntaps < 0) {
         s_channel_wide_ntaps = 0;
     }
 
     s_channel_6k25_ntaps =
-        dsd_firdes_low_pass(1.0, sample_rate, 3500.0, 1200.0, DSD_WIN_BLACKMAN, s_channel_6k25_taps, kChannelLpfTaps);
+        channel_lpf_design_low_pass(sample_rate, kChannelLpf6k25CutoffHz, s_channel_6k25_taps, kChannelLpfTaps);
     if (s_channel_6k25_ntaps < 0) {
         s_channel_6k25_ntaps = 0;
     }
 
     s_channel_12k5_ntaps =
-        dsd_firdes_low_pass(1.0, sample_rate, 5100.0, 1200.0, DSD_WIN_BLACKMAN, s_channel_12k5_taps, kChannelLpfTaps);
+        channel_lpf_design_low_pass(sample_rate, kChannelLpf12k5CutoffHz, s_channel_12k5_taps, kChannelLpfTaps);
     if (s_channel_12k5_ntaps < 0) {
         s_channel_12k5_ntaps = 0;
     }
 
-    s_channel_provoice_ntaps = dsd_firdes_low_pass(1.0, sample_rate, 6250.0, 1200.0, DSD_WIN_BLACKMAN,
-                                                   s_channel_provoice_taps, kChannelLpfTaps);
+    s_channel_provoice_ntaps =
+        channel_lpf_design_low_pass(sample_rate, kChannelLpfProvoiceCutoffHz, s_channel_provoice_taps, kChannelLpfTaps);
     if (s_channel_provoice_ntaps < 0) {
         s_channel_provoice_ntaps = 0;
     }
 
-    s_channel_p25_c4fm_ntaps = dsd_firdes_low_pass(1.0, sample_rate, 5200.0, 1200.0, DSD_WIN_BLACKMAN,
-                                                   s_channel_p25_c4fm_taps, kChannelLpfTaps);
+    s_channel_p25_c4fm_ntaps =
+        channel_lpf_design_low_pass(sample_rate, kChannelLpfP25C4fmCutoffHz, s_channel_p25_c4fm_taps, kChannelLpfTaps);
     if (s_channel_p25_c4fm_ntaps < 0) {
         s_channel_p25_c4fm_ntaps = 0;
     }
 
-    s_channel_p25_cqpsk_ntaps = dsd_firdes_low_pass(1.0, sample_rate, 7250.0, 1200.0, DSD_WIN_BLACKMAN,
-                                                    s_channel_p25_cqpsk_taps, kChannelLpfTaps);
+    s_channel_p25_cqpsk_ntaps = channel_lpf_design_low_pass(sample_rate, kChannelLpfP25CqpskCutoffHz,
+                                                            s_channel_p25_cqpsk_taps, kChannelLpfTaps);
     if (s_channel_p25_cqpsk_ntaps < 0) {
         s_channel_p25_cqpsk_ntaps = 0;
     }
@@ -1272,6 +1305,10 @@ gardner_timing_adjust(struct demod_state* d) {
        expected sample-rate interface for downstream processing. */
     if (d->cqpsk_enable) {
         gardner_timing_adjust(&cfg, &d->ted_state, d->lowpassed, &d->lp_len, d->timing_buf);
+    } else if (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+        if (!d->channel_squelched) {
+            iq_dc_block(d);
+        }
     } else {
         gardner_timing_adjust_farrow(&cfg, &d->ted_state, d->lowpassed, &d->lp_len, d->timing_buf);
     }
@@ -1501,6 +1538,7 @@ full_demod(struct demod_state* d) {
             cqpsk_diff_phasor(d);
         }
     } else {
+        const int fsk_symbol_output = (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK);
         /* Fast path when squelched: skip expensive DSP for FM/C4FM but keep samples flowing.
          * The buffer is already zeroed, so just skip conditioning and let the demod produce zeros. */
         if (d->channel_squelched) {
@@ -1512,19 +1550,21 @@ full_demod(struct demod_state* d) {
                2) Block-based envelope AGC to normalize |z|
                3) Optional per-sample limiter to clamp fast AM ripple */
             iq_dc_block(d);
-            /* Avoid running both AGC and limiter simultaneously to reduce gain "pumping". */
-            if (d->fm_agc_enable) {
-                fm_envelope_agc(d);
-            } else if (d->fm_limiter_enable) {
-                fm_constant_envelope_limiter(d);
-            }
-            /* Residual-CFO FLL when enabled */
-            if (d->fll_enabled) {
-                /* Update control only when squelch indicates a carrier; always apply rotation. */
-                if (d->squelch_gate_open) {
-                    fll_update_error(d);
+            if (!fsk_symbol_output) {
+                /* Avoid running both AGC and limiter simultaneously to reduce gain "pumping". */
+                if (d->fm_agc_enable) {
+                    fm_envelope_agc(d);
+                } else if (d->fm_limiter_enable) {
+                    fm_constant_envelope_limiter(d);
                 }
-                fll_mix_and_update(d);
+                /* Residual-CFO FLL when enabled */
+                if (d->fll_enabled) {
+                    /* Update control only when squelch indicates a carrier; always apply rotation. */
+                    if (d->squelch_gate_open) {
+                        fll_update_error(d);
+                    }
+                    fll_mix_and_update(d);
+                }
             }
         }
     }
@@ -1579,9 +1619,19 @@ full_demod(struct demod_state* d) {
        stages continue to see sample-rate complex baseband. Requires integer
        SPS; analog FM remains excluded unless explicitly forced.
        Skip when squelched - timing recovery on zeros is pointless. */
-    if (d->ted_enabled && !d->cqpsk_enable && !d->channel_squelched && d->sps_is_integer
-        && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+    if (d->ted_enabled && d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK && !d->cqpsk_enable && !d->channel_squelched
+        && d->sps_is_integer && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);
+    }
+    if (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+        int in_pairs = d->lp_len >> 1;
+        if (d->channel_squelched) {
+            d->result_len = dsd_fsk_modem_zero_symbols(&d->fsk_modem_state, in_pairs, d->result, MAXIMUM_BUF_LENGTH);
+        } else {
+            d->result_len =
+                dsd_fsk_modem_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result, MAXIMUM_BUF_LENGTH);
+        }
+        return;
     }
     /*
      * For CQPSK, produce a single real stream of differential phase symbols
