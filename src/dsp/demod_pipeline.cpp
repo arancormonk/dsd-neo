@@ -93,6 +93,32 @@ phase_delta_small_angle_or_atan2(float im, float re) {
     return atan2f(im, re);
 }
 
+static inline float
+atan_unit_approx(float x) {
+    float ax = fabsf(x);
+    return x * (0.78539816339744830962f - (ax - 1.0f) * (0.2447f + 0.0663f * ax));
+}
+
+static inline float
+atan2_qpsk_approx(float y, float x) {
+    if (x == 0.0f && y == 0.0f) {
+        return 0.0f;
+    }
+
+    float ax = fabsf(x);
+    float ay = fabsf(y);
+    if (ax >= ay) {
+        float angle = atan_unit_approx(y / x);
+        if (x < 0.0f) {
+            angle += (y < 0.0f) ? -3.14159265358979323846f : 3.14159265358979323846f;
+        }
+        return angle;
+    }
+
+    float angle = atan_unit_approx(x / y);
+    return (y > 0.0f) ? (1.57079632679489661923f - angle) : (-1.57079632679489661923f - angle);
+}
+
 /* Fixed channel low-pass for high-rate mode.
  *
  * Profiles (see DSD_CH_LPF_PROFILE_*):
@@ -750,7 +776,7 @@ qpsk_differential_demod(struct demod_state* fm) {
     const float k4_over_pi = 4.0f / 3.14159265358979323846f; /* ~1.2732 */
 
     for (int n = 0; n < pairs; n++) {
-        float phase = atan2f(iq[(size_t)(n << 1) + 1], iq[(size_t)(n << 1) + 0]);
+        float phase = atan2_qpsk_approx(iq[(size_t)(n << 1) + 1], iq[(size_t)(n << 1) + 0]);
         out[n] = phase * k4_over_pi;
     }
 

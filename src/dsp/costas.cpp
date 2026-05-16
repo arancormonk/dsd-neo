@@ -170,6 +170,33 @@ dsd_sincosf(float phase, float* out_sin, float* out_cos) {
 #endif
 }
 
+static inline void
+dsd_sincosf_half_pi(float phase, float* out_sin, float* out_cos) {
+    if (phase < (-kPi / 2.0f) || phase > (kPi / 2.0f)) {
+        dsd_sincosf(phase, out_sin, out_cos);
+        return;
+    }
+
+    float x2 = phase * phase;
+    *out_sin = phase
+               * (1.0f
+                  + x2
+                        * (-0.16666666666666666667f
+                           + x2
+                                 * (0.00833333333333333333f
+                                    + x2
+                                          * (-0.00019841269841269841f
+                                             + x2 * (0.00000275573192239859f + x2 * -0.00000002505210838544f)))));
+    *out_cos = 1.0f
+               + x2
+                     * (-0.5f
+                        + x2
+                              * (0.04166666666666666667f
+                                 + x2
+                                       * (-0.00138888888888888889f
+                                          + x2 * (0.00002480158730158730f + x2 * -0.00000027557319223986f))));
+}
+
 static int
 cqpsk_symbol_rate_hz(const demod_state* d) {
     if (!d || d->rate_out <= 0 || d->ted_sps <= 0) {
@@ -783,7 +810,7 @@ op25_costas_loop_cc(struct demod_state* d) {
          * From costas_loop_cc_impl.cc line 146 */
         float nco_r = 0.0f;
         float nco_j = 0.0f;
-        dsd_sincosf(-phase, &nco_j, &nco_r);
+        dsd_sincosf_half_pi(-phase, &nco_j, &nco_r);
 
         /* OP25: optr[i] = iptr[i] * nco_out
          * Complex multiply: out = in * nco */

@@ -166,6 +166,40 @@ check_cqpsk_symbol_output_contract(demod_state* s) {
     return 0;
 }
 
+static int
+check_cqpsk_phase_extractor_accuracy(demod_state* s) {
+    enum { SAMPLES = 721 };
+
+    reset_demod(s);
+    s->lowpassed = s->input_cb_buf;
+    s->lp_len = SAMPLES * 2;
+
+    const float k4_over_pi = 4.0f / kPi;
+    for (int i = 0; i < SAMPLES; i++) {
+        float phase = -kPi + (2.0f * kPi * (float)i) / (float)(SAMPLES - 1);
+        s->input_cb_buf[(size_t)(i << 1) + 0] = std::cos(phase);
+        s->input_cb_buf[(size_t)(i << 1) + 1] = std::sin(phase);
+    }
+
+    qpsk_differential_demod(s);
+    if (s->result_len != SAMPLES) {
+        std::fprintf(stderr, "CQPSK phase extractor result_len=%d, expected %d\n", s->result_len, SAMPLES);
+        return 1;
+    }
+
+    for (int i = 0; i < SAMPLES; i++) {
+        float i_sample = s->input_cb_buf[(size_t)(i << 1) + 0];
+        float q_sample = s->input_cb_buf[(size_t)(i << 1) + 1];
+        float expected = std::atan2(q_sample, i_sample) * k4_over_pi;
+        if (std::fabs(s->result[i] - expected) > 0.004f) {
+            std::fprintf(stderr, "CQPSK phase extractor[%d]=%.6f, expected %.6f\n", i, s->result[i], expected);
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 } // namespace
 
 int
@@ -178,6 +212,7 @@ main(void) {
     int rc = 0;
     rc |= check_fsk_symbol_output_contract(s);
     rc |= check_cqpsk_symbol_output_contract(s);
+    rc |= check_cqpsk_phase_extractor_accuracy(s);
 
     std::free(s);
     return rc;
