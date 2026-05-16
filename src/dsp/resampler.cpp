@@ -126,21 +126,17 @@ dsd_resampler_state_is_initialized(const dsd_resampler_state* state) {
 
 static int
 dsd_resampler_required_out_len(int in_len, int L, int M, int phase) {
-    int out_len = 0;
-
-    for (int n = 0; n < in_len; n++) {
-        int local_phase = phase;
-        while (local_phase < L) {
-            if (out_len == INT_MAX) {
-                return -1;
-            }
-            out_len++;
-            local_phase += M;
-        }
-        phase = local_phase - L;
+    if (in_len < 0 || L < 1 || M < 1 || phase < 0) {
+        return -1;
     }
 
-    return out_len;
+    int64_t numerator = (int64_t)in_len * (int64_t)L + (int64_t)M - 1 - (int64_t)phase;
+    if (numerator <= 0) {
+        return 0;
+    }
+
+    int64_t out_len = numerator / (int64_t)M;
+    return (out_len > INT_MAX) ? -1 : (int)out_len;
 }
 
 void
