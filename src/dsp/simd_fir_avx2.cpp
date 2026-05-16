@@ -36,7 +36,7 @@ simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist
     const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
     const int total_len = hist_len + N;
-    const int pad = center + 4;                    /* for n+3+d lookups */
+    const int pad = center + 8;                    /* for n+7+d lookups */
     const int scratch_len = (total_len + pad) * 2; /* *2 for complex (I, Q) */
 
     /* Resize thread-local buffer if needed (amortized O(1)) */
@@ -71,8 +71,51 @@ simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist
         xq = scratch[2 * ii + 1];
     };
 
-    /* Process 4 complex samples at a time (8 floats) */
+    /* Process 8 complex samples at a time (16 floats). */
     int n = 0;
+    for (; n + 7 < N; n += 8) {
+        __m256 acc0 = _mm256_setzero_ps(); /* [I0, Q0, I1, Q1, I2, Q2, I3, Q3] */
+        __m256 acc1 = _mm256_setzero_ps(); /* [I4, Q4, I5, Q5, I6, Q6, I7, Q7] */
+
+        const float cc = taps[center];
+        const __m256 tap_c = _mm256_set1_ps(cc);
+
+        const size_t center_offset0 = ((size_t)hist_len + (size_t)n) << 1;
+        const size_t center_offset1 = ((size_t)hist_len + (size_t)n + 4U) << 1;
+        const __m256 center_val0 = _mm256_loadu_ps(scratch + center_offset0);
+        const __m256 center_val1 = _mm256_loadu_ps(scratch + center_offset1);
+        acc0 = _mm256_fmadd_ps(tap_c, center_val0, acc0);
+        acc1 = _mm256_fmadd_ps(tap_c, center_val1, acc1);
+
+        /* Symmetric pairs */
+        for (int k = 0; k < center; k++) {
+            float ce = taps[k];
+            if (ce == 0.0f) {
+                continue;
+            }
+            int d = center - k;
+            const __m256 tap_e = _mm256_set1_ps(ce);
+
+            const size_t minus_offset0 = ((size_t)(hist_len + n - d)) << 1;
+            const size_t plus_offset0 = ((size_t)(hist_len + n + d)) << 1;
+            const __m256 sum_m0 = _mm256_loadu_ps(scratch + minus_offset0);
+            const __m256 sum_p0 = _mm256_loadu_ps(scratch + plus_offset0);
+            const __m256 sum0 = _mm256_add_ps(sum_m0, sum_p0);
+            acc0 = _mm256_fmadd_ps(tap_e, sum0, acc0);
+
+            const size_t minus_offset1 = ((size_t)(hist_len + n + 4 - d)) << 1;
+            const size_t plus_offset1 = ((size_t)(hist_len + n + 4 + d)) << 1;
+            const __m256 sum_m1 = _mm256_loadu_ps(scratch + minus_offset1);
+            const __m256 sum_p1 = _mm256_loadu_ps(scratch + plus_offset1);
+            const __m256 sum1 = _mm256_add_ps(sum_m1, sum_p1);
+            acc1 = _mm256_fmadd_ps(tap_e, sum1, acc1);
+        }
+
+        _mm256_storeu_ps(out + (n << 1), acc0);
+        _mm256_storeu_ps(out + ((n + 4) << 1), acc1);
+    }
+
+    /* Process 4 complex samples at a time (8 floats) */
     for (; n + 3 < N; n += 4) {
         __m256 acc = _mm256_setzero_ps(); /* [I0, Q0, I1, Q1, I2, Q2, I3, Q3] */
 
