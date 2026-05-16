@@ -104,6 +104,38 @@ ui_audio_in_is_soapy(const dsd_opts* opts) {
     return (strcmp(dev, "soapy") == 0) || (strncmp(dev, "soapy:", 6) == 0);
 }
 
+static int
+ui_demod_symbol_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+    int sample_rate_hz = 0;
+
+#ifdef USE_RADIO
+    if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        int symbol_rate_hz = 0;
+        int output_kind = rtl_stream_get_output_kind();
+        /* RTL symbol-output paths feed one sliced symbol per sample; report the configured profile rate. */
+        if ((output_kind == RTL_STREAM_OUTPUT_SYMBOL_FSK || output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK
+             || state->samplesPerSymbol <= 1)
+            && rtl_stream_get_symbol_profile(&symbol_rate_hz, NULL) == 0 && symbol_rate_hz > 0) {
+            return symbol_rate_hz;
+        }
+
+        sample_rate_hz = (int)rtl_stream_output_rate(state->rtl_ctx);
+    }
+#endif
+
+    if (sample_rate_hz <= 0) {
+        sample_rate_hz = dsd_opts_current_input_timing_rate(opts);
+    }
+    if (sample_rate_hz <= 0) {
+        sample_rate_hz = 48000;
+    }
+
+    if (!state || state->samplesPerSymbol <= 0) {
+        return sample_rate_hz;
+    }
+    return (sample_rate_hz + (state->samplesPerSymbol / 2)) / state->samplesPerSymbol;
+}
+
 char* DMRBusrtTypes[32] = {
     "PI       ", "VLC      ", "TLC      ", "CSBK     ", "MBCH     ", "MBCC     ", "DATA     ",
     "R12D     ", "R34D     ", "IDLE     ", "R1_D     ", "ERR      ", "DUID ERR ", "R-S ERR  ",
@@ -797,7 +829,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     ui_print_label_pad("Demod/Rate");
     {
         const char* modlab = (state->rf_mod == 1) ? "QPSK" : (state->rf_mod == 2) ? "GFSK" : "C4FM";
-        printw("[%s][%d] \n", modlab, (48000 * opts->wav_interpolator) / state->samplesPerSymbol);
+        printw("[%s][%d] \n", modlab, ui_demod_symbol_rate_hz(opts, state));
     }
     if (opts->m17encoder == 1) {
         ui_print_kv_line("Encoding", "[%s]", opts->output_name);
