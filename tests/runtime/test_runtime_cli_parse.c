@@ -2231,6 +2231,193 @@ test_f_legacy_fr_mono_still_supported(void) {
                 opts->output_name);
         test_rc = 1;
     }
+    if (!(opts->mod_c4fm == 0 && opts->mod_qpsk == 0 && opts->mod_gfsk == 1 && state->rf_mod == 2)) {
+        fprintf(stderr, "expected -fr to select GFSK demod, got mod=%d/%d/%d rf_mod=%d\n", opts->mod_c4fm,
+                opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_f_dmr_preset_selects_gfsk(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-fs";
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (!(opts->frame_dmr == 1 && opts->mod_c4fm == 0 && opts->mod_qpsk == 0 && opts->mod_gfsk == 1
+          && state->rf_mod == 2)) {
+        fprintf(stderr, "expected -fs to select DMR/GFSK, got frame_dmr=%d mod=%d/%d/%d rf_mod=%d\n", opts->frame_dmr,
+                opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
+        test_rc = 1;
+    }
+    if (opts->mod_cli_lock != 0) {
+        fprintf(stderr, "expected -fs alone to leave demod unlocked, got lock=%d\n", opts->mod_cli_lock);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_mg_before_f_dmr_keeps_gfsk_lock(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-mg";
+    char arg2[] = "-fs";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (!(opts->frame_dmr == 1 && opts->mod_cli_lock == 1 && opts->mod_c4fm == 0 && opts->mod_qpsk == 0
+          && opts->mod_gfsk == 1 && state->rf_mod == 2)) {
+        fprintf(stderr, "expected -mg -fs to keep GFSK lock, got frame_dmr=%d lock=%d mod=%d/%d/%d rf_mod=%d\n",
+                opts->frame_dmr, opts->mod_cli_lock, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_mc_before_f_dmr_preserves_c4fm_lock(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-mc";
+    char arg2[] = "-fs";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (!(opts->frame_dmr == 1 && opts->mod_cli_lock == 1 && opts->mod_c4fm == 1 && opts->mod_qpsk == 0
+          && opts->mod_gfsk == 0 && state->rf_mod == 0)) {
+        fprintf(stderr, "expected -mc -fs to preserve C4FM lock, got frame_dmr=%d lock=%d mod=%d/%d/%d rf_mod=%d\n",
+                opts->frame_dmr, opts->mod_cli_lock, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_mc_before_legacy_fr_preserves_c4fm_lock(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-mc";
+    char arg2[] = "-fr";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (!(opts->frame_dmr == 1 && opts->dmr_mono == 1 && opts->mod_cli_lock == 1 && opts->mod_c4fm == 1
+          && opts->mod_qpsk == 0 && opts->mod_gfsk == 0 && state->rf_mod == 0)) {
+        fprintf(stderr,
+                "expected -mc -fr to preserve C4FM lock and mono DMR, got frame_dmr=%d mono=%d lock=%d mod=%d/%d/%d "
+                "rf_mod=%d\n",
+                opts->frame_dmr, opts->dmr_mono, opts->mod_cli_lock, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk,
+                state->rf_mod);
+        test_rc = 1;
+    }
 
     freeState(state);
     free(opts);
@@ -2974,6 +3161,10 @@ main(void) {
     rc |= test_f_auto_preset_applies_cli_profile();
     rc |= test_f_ysf_preset_applies_cli_profile();
     rc |= test_f_legacy_fr_mono_still_supported();
+    rc |= test_f_dmr_preset_selects_gfsk();
+    rc |= test_mg_before_f_dmr_keeps_gfsk_lock();
+    rc |= test_mc_before_f_dmr_preserves_c4fm_lock();
+    rc |= test_mc_before_legacy_fr_preserves_c4fm_lock();
     rc |= test_f_nxdn48_clears_dmr_mono_after_fr();
     rc |= test_bootstrap_config_file_rate_survives_cli_provoice_preset();
     rc |= test_s_8000_keeps_valid_symbol_timing_for_provoice();

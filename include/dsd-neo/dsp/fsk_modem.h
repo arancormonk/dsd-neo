@@ -27,6 +27,9 @@ typedef struct dsd_fsk_modem_config {
     int channel_profile; /* DSD_CH_LPF_PROFILE_* value for diagnostics/config */
 } dsd_fsk_modem_config;
 
+#define DSD_FSK_MODEM_ACQ_MAX_SAMPLES        2048
+#define DSD_FSK_MODEM_PENDING_INLINE_SYMBOLS 2048
+
 typedef struct dsd_fsk_modem_state {
     dsd_fsk_modem_config cfg;
     float prev_i;
@@ -40,11 +43,20 @@ typedef struct dsd_fsk_modem_state {
     float abs_est;
     float last_symbol;
     uint64_t symbols_emitted;
+    int timing_acquired;
+    int acq_len;
+    float acq_freq[DSD_FSK_MODEM_ACQ_MAX_SAMPLES];
+    int pending_pos;
+    int pending_len;
+    int pending_cap;
+    float* pending_heap;
+    float pending_symbols[DSD_FSK_MODEM_PENDING_INLINE_SYMBOLS];
 } dsd_fsk_modem_state;
 
 void dsd_fsk_modem_init(dsd_fsk_modem_state* st, const dsd_fsk_modem_config* cfg);
 void dsd_fsk_modem_reset(dsd_fsk_modem_state* st);
 void dsd_fsk_modem_configure(dsd_fsk_modem_state* st, const dsd_fsk_modem_config* cfg);
+void dsd_fsk_modem_release(dsd_fsk_modem_state* st);
 int dsd_fsk_modem_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int len_interleaved, float* out_symbols,
                           int max_symbols);
 int dsd_fsk_modem_zero_symbols(dsd_fsk_modem_state* st, int input_complex_samples, float* out_symbols, int max_symbols);

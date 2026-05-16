@@ -6,6 +6,8 @@
 #include <dsd-neo/dsp/fsk_modem.h>
 
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int
@@ -32,6 +34,49 @@ modem_symbol_clock(const dsd_fsk_modem_config* cfg) {
     return clock;
 }
 
+static int
+modem_clock_int(float clock) {
+    int ci = (int)(clock + 0.5f);
+    if (ci < 1) {
+        ci = 1;
+    }
+    if (fabsf(clock - (float)ci) > 0.01f) {
+        return 0;
+    }
+    return ci;
+}
+
+static int
+modem_should_acquire_timing(const dsd_fsk_modem_config* cfg, float clock) {
+    int ci = modem_clock_int(clock);
+    if (!cfg || ci < 4 || ci > 32) {
+        return 0;
+    }
+    return (cfg->levels == 2 || cfg->levels == 4) ? 1 : 0;
+}
+
+static int
+modem_acq_target_samples(int clock_i) {
+    int target = clock_i * 96;
+    if (target > DSD_FSK_MODEM_ACQ_MAX_SAMPLES) {
+        target = DSD_FSK_MODEM_ACQ_MAX_SAMPLES - (DSD_FSK_MODEM_ACQ_MAX_SAMPLES % clock_i);
+    }
+    if (target < clock_i * 12) {
+        target = clock_i * 12;
+    }
+    return target;
+}
+
+static int
+debug_fsk_acq_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* dbg = getenv("DSD_NEO_DEBUG_SYNC");
+        cached = (dbg && *dbg && strcmp(dbg, "0") != 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 static dsd_fsk_modem_config
 normalized_config(const dsd_fsk_modem_config* cfg) {
     dsd_fsk_modem_config out;
@@ -46,16 +91,27 @@ normalized_config(const dsd_fsk_modem_config* cfg) {
     return out;
 }
 
+static void
+release_pending_storage(dsd_fsk_modem_state* st) {
+    if (st->pending_heap) {
+        free(st->pending_heap);
+        st->pending_heap = NULL;
+    }
+    st->pending_cap = 0;
+}
+
 void
 dsd_fsk_modem_reset(dsd_fsk_modem_state* st) {
     if (!st) {
         return;
     }
     dsd_fsk_modem_config cfg = st->cfg;
+    release_pending_storage(st);
     memset(st, 0, sizeof(*st));
     st->cfg = normalized_config(&cfg);
     st->symbol_clock = modem_symbol_clock(&st->cfg);
     st->abs_est = 0.0f;
+    st->timing_acquired = modem_should_acquire_timing(&st->cfg, st->symbol_clock) ? 0 : 1;
 }
 
 void
@@ -81,6 +137,17 @@ dsd_fsk_modem_init(dsd_fsk_modem_state* st, const dsd_fsk_modem_config* cfg) {
     memset(st, 0, sizeof(*st));
     st->cfg = normalized_config(cfg);
     st->symbol_clock = modem_symbol_clock(&st->cfg);
+    st->timing_acquired = modem_should_acquire_timing(&st->cfg, st->symbol_clock) ? 0 : 1;
+}
+
+void
+dsd_fsk_modem_release(dsd_fsk_modem_state* st) {
+    if (!st) {
+        return;
+    }
+    release_pending_storage(st);
+    st->pending_pos = 0;
+    st->pending_len = 0;
 }
 
 static float
@@ -113,27 +180,204 @@ normalize_symbol(dsd_fsk_modem_state* st, float raw_symbol) {
     return clamp_symbol(sym, st->cfg.levels);
 }
 
+static float*
+pending_symbol_data(dsd_fsk_modem_state* st) {
+    return st->pending_heap ? st->pending_heap : st->pending_symbols;
+}
+
+static int
+pending_symbol_capacity(const dsd_fsk_modem_state* st) {
+    return st->pending_heap ? st->pending_cap : DSD_FSK_MODEM_PENDING_INLINE_SYMBOLS;
+}
+
+static void
+clear_pending_symbols(dsd_fsk_modem_state* st) {
+    st->pending_pos = 0;
+    st->pending_len = 0;
+    release_pending_storage(st);
+}
+
+static void
+compact_pending_symbols(dsd_fsk_modem_state* st) {
+    if (st->pending_pos <= 0) {
+        return;
+    }
+
+    int remaining = st->pending_len - st->pending_pos;
+    if (remaining > 0) {
+        float* pending = pending_symbol_data(st);
+        memmove(pending, pending + st->pending_pos, (size_t)remaining * sizeof(float));
+    }
+    st->pending_pos = 0;
+    st->pending_len = remaining;
+}
+
+static int
+ensure_pending_capacity(dsd_fsk_modem_state* st, int needed) {
+    int cap = pending_symbol_capacity(st);
+    if (needed <= cap) {
+        return 1;
+    }
+
+    int new_cap = cap;
+    while (new_cap < needed) {
+        if (new_cap > 1073741823) {
+            return 0;
+        }
+        new_cap *= 2;
+    }
+
+    float* next = NULL;
+    if (st->pending_heap) {
+        next = (float*)realloc(st->pending_heap, (size_t)new_cap * sizeof(float));
+    } else {
+        next = (float*)malloc((size_t)new_cap * sizeof(float));
+        if (next) {
+            memcpy(next, st->pending_symbols, (size_t)st->pending_len * sizeof(float));
+        }
+    }
+    if (!next) {
+        return 0;
+    }
+
+    st->pending_heap = next;
+    st->pending_cap = new_cap;
+    return 1;
+}
+
+static int
+drain_pending_symbols(dsd_fsk_modem_state* st, float* out_symbols, int out_count, int max_symbols) {
+    const float* pending = pending_symbol_data(st);
+    while (st->pending_pos < st->pending_len && out_count < max_symbols) {
+        out_symbols[out_count++] = pending[st->pending_pos++];
+        st->symbols_emitted++;
+    }
+    if (st->pending_pos >= st->pending_len) {
+        clear_pending_symbols(st);
+    }
+    return out_count;
+}
+
+static int
+queue_pending_symbol(dsd_fsk_modem_state* st, float symbol) {
+    if (st->pending_pos > 0 && st->pending_len >= pending_symbol_capacity(st)) {
+        compact_pending_symbols(st);
+    }
+    if (!ensure_pending_capacity(st, st->pending_len + 1)) {
+        return 0;
+    }
+    pending_symbol_data(st)[st->pending_len++] = symbol;
+    return 1;
+}
+
 static int
 emit_symbol(dsd_fsk_modem_state* st, float raw_symbol, float* out_symbols, int out_count, int max_symbols) {
-    if (out_count >= max_symbols) {
-        return out_count;
-    }
     float sym = normalize_symbol(st, raw_symbol);
-    out_symbols[out_count++] = sym;
     st->last_symbol = sym;
-    st->symbols_emitted++;
+    if (out_count < max_symbols) {
+        out_symbols[out_count++] = sym;
+        st->symbols_emitted++;
+    } else {
+        (void)queue_pending_symbol(st, sym);
+    }
+    return out_count;
+}
+
+static float
+sum_freq_window(const float* freq, int start, int len) {
+    float sum = 0.0f;
+    for (int i = 0; i < len; i++) {
+        sum += freq[start + i];
+    }
+    return sum;
+}
+
+static int
+acquire_symbol_phase(const float* freq, int n, int clock_i, float* out_score) {
+    int best_phase = 0;
+    float best_score = -1.0f;
+
+    for (int phase = 0; phase < clock_i; phase++) {
+        double score = 0.0;
+        int count = 0;
+        for (int start = phase; start + clock_i <= n; start += clock_i) {
+            float sum = sum_freq_window(freq, start, clock_i);
+            score += fabs((double)sum / (double)clock_i);
+            count++;
+        }
+        if (count > 0) {
+            score /= (double)count;
+        }
+        if ((float)score > best_score) {
+            best_score = (float)score;
+            best_phase = phase;
+        }
+    }
+
+    if (out_score) {
+        *out_score = best_score;
+    }
+    return best_phase;
+}
+
+static int
+emit_acquisition_symbols(dsd_fsk_modem_state* st, int clock_i, float* out_symbols, int out_count, int max_symbols) {
+    float score = 0.0f;
+    int phase = acquire_symbol_phase(st->acq_freq, st->acq_len, clock_i, &score);
+    if (phase < 0) {
+        phase = 0;
+    } else if (phase >= clock_i) {
+        phase = clock_i - 1;
+    }
+    int start = phase;
+    int emitted_leading = 0;
+
+    if (phase >= clock_i - 1 && phase > 0) {
+        float sum = sum_freq_window(st->acq_freq, 0, phase);
+        out_count = emit_symbol(st, sum / (float)phase, out_symbols, out_count, max_symbols);
+        emitted_leading = 1;
+    }
+
+    while (start + clock_i <= st->acq_len) {
+        float sum = sum_freq_window(st->acq_freq, start, clock_i);
+        out_count = emit_symbol(st, sum / (float)clock_i, out_symbols, out_count, max_symbols);
+        start += clock_i;
+    }
+
+    st->symbol_accum = 0.0f;
+    st->symbol_count = 0;
+    st->symbol_phase = 0.0f;
+    for (int i = start; i < st->acq_len; i++) {
+        st->symbol_accum += st->acq_freq[i];
+        st->symbol_count++;
+        st->symbol_phase += 1.0f;
+    }
+    if (st->symbol_phase >= st->symbol_clock) {
+        st->symbol_phase = fmodf(st->symbol_phase, st->symbol_clock);
+    }
+    st->acq_len = 0;
+    st->timing_acquired = 1;
+
+    if (debug_fsk_acq_enabled()) {
+        fprintf(stderr, "[FSKACQ] clock=%d phase=%d score=%.5f lead=%d carry=%d emitted=%llu\n", clock_i, phase, score,
+                emitted_leading, st->symbol_count, (unsigned long long)st->symbols_emitted);
+    }
     return out_count;
 }
 
 int
 dsd_fsk_modem_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int len_interleaved, float* out_symbols,
                       int max_symbols) {
-    if (!st || !iq_interleaved || !out_symbols || len_interleaved < 2 || max_symbols <= 0) {
+    if (!st || !out_symbols || max_symbols <= 0) {
         return 0;
     }
 
+    int out_count = drain_pending_symbols(st, out_symbols, 0, max_symbols);
+    if (!iq_interleaved || len_interleaved < 2) {
+        return out_count;
+    }
+
     int pairs = len_interleaved >> 1;
-    int out_count = 0;
     float prev_i = st->prev_i;
     float prev_q = st->prev_q;
     int have_prev = st->have_prev;
@@ -142,6 +386,8 @@ dsd_fsk_modem_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int 
     int accum_count = st->symbol_count;
     float dc = st->dc_est;
     float clock = st->symbol_clock > 0.0f ? st->symbol_clock : modem_symbol_clock(&st->cfg);
+    int clock_i = modem_clock_int(clock);
+    int acq_target = (clock_i > 0) ? modem_acq_target_samples(clock_i) : 0;
 
     for (int n = 0; n < pairs; n++) {
         float cur_i = iq_interleaved[(n << 1) + 0];
@@ -164,6 +410,21 @@ dsd_fsk_modem_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int 
         dc += 0.00025f * (freq - dc);
         float centered = freq - dc;
 
+        if (!st->timing_acquired && clock_i > 0) {
+            if (st->acq_len < DSD_FSK_MODEM_ACQ_MAX_SAMPLES) {
+                st->acq_freq[st->acq_len++] = centered;
+            }
+            if (st->acq_len >= acq_target) {
+                out_count = emit_acquisition_symbols(st, clock_i, out_symbols, out_count, max_symbols);
+                phase = st->symbol_phase;
+                accum = st->symbol_accum;
+                accum_count = st->symbol_count;
+            }
+            prev_i = cur_i;
+            prev_q = cur_q;
+            continue;
+        }
+
         accum += centered;
         accum_count++;
         phase += 1.0f;
@@ -175,9 +436,6 @@ dsd_fsk_modem_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int 
             phase -= clock;
             if (phase >= clock) {
                 phase = fmodf(phase, clock);
-            }
-            if (out_count >= max_symbols) {
-                break;
             }
         }
 
@@ -216,6 +474,12 @@ dsd_fsk_modem_zero_symbols(dsd_fsk_modem_state* st, int input_complex_samples, f
     st->symbol_accum = 0.0f;
     st->symbol_count = 0;
     st->last_symbol = 0.0f;
+    clear_pending_symbols(st);
+    st->prev_i = 0.0f;
+    st->prev_q = 0.0f;
+    st->have_prev = 0;
+    st->acq_len = 0;
+    st->timing_acquired = modem_should_acquire_timing(&st->cfg, clock) ? 0 : 1;
     st->symbols_emitted += (uint64_t)n;
     return n;
 }

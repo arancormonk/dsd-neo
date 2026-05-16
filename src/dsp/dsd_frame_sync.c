@@ -25,6 +25,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/time_format.h>
@@ -65,6 +66,46 @@ frame_sync_opts_has_4800_four_level_mode(const dsd_opts* opts) {
 }
 
 #ifdef USE_RADIO
+static int
+dmr_best_sync_hamming(const char* window, const char** out_name) {
+    static const char* names[] = {"bs_data",     "bs_voice",    "ms_data",      "ms_voice",
+                                  "dm_ts1_data", "dm_ts2_data", "dm_ts1_voice", "dm_ts2_voice"};
+    static const char* patterns[] = {DMR_BS_DATA_SYNC,
+                                     DMR_BS_VOICE_SYNC,
+                                     DMR_MS_DATA_SYNC,
+                                     DMR_MS_VOICE_SYNC,
+                                     DMR_DIRECT_MODE_TS1_DATA_SYNC,
+                                     DMR_DIRECT_MODE_TS2_DATA_SYNC,
+                                     DMR_DIRECT_MODE_TS1_VOICE_SYNC,
+                                     DMR_DIRECT_MODE_TS2_VOICE_SYNC};
+    int best = 24;
+    int best_idx = 0;
+
+    if (!window) {
+        if (out_name) {
+            *out_name = "none";
+        }
+        return best;
+    }
+
+    for (int p = 0; p < 8; p++) {
+        int ham = 0;
+        for (int k = 0; k < 24; k++) {
+            if (window[k] != patterns[p][k]) {
+                ham++;
+            }
+        }
+        if (ham < best) {
+            best = ham;
+            best_idx = p;
+        }
+    }
+    if (out_name) {
+        *out_name = names[best_idx];
+    }
+    return best;
+}
+
 static int
 rtl_opts_has_any_four_level_mode(const dsd_opts* opts) {
     if (!opts) {
@@ -925,6 +966,24 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
                 if (debug_sync && (++debug_count % 4800) == 0) {
                     fprintf(stderr, "[SYNC] pattern=%s expect=%s\n", synctest, P25P1_SYNC);
+                    if (opts->frame_dmr == 1) {
+                        const char* best_name = NULL;
+                        int best_ham = dmr_best_sync_hamming(synctest, &best_name);
+                        int rtl_sym_rate = 0;
+                        int rtl_levels = 0;
+#ifdef USE_RADIO
+                        (void)dsd_rtl_stream_metrics_hook_symbol_profile(&rtl_sym_rate, &rtl_levels);
+                        double snr_gfsk = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
+#else
+                        double snr_gfsk = -100.0;
+#endif
+                        fprintf(stderr,
+                                "[DMRDBG] best=%s ham=%d rf_mod=%d lock=%d mods(c/q/g)=%d/%d/%d "
+                                "rtl_profile=%d/%d pwr=%.1fdB sql=%.1fdB snr_gfsk=%.1fdB win=%.*s\n",
+                                best_name ? best_name : "none", best_ham, state->rf_mod, opts->mod_cli_lock,
+                                opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, rtl_sym_rate, rtl_levels,
+                                pwr_to_dB(opts->rtl_pwr), pwr_to_dB(opts->rtl_squelch_level), snr_gfsk, 24, synctest);
+                    }
                 }
                 if (debug_cqpsk && state->rf_mod == 1) {
                     /* Compute Hamming distance of current window vs P25 sync (normal/inverted). */

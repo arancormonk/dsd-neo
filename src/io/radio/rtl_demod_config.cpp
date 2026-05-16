@@ -982,6 +982,7 @@ rtl_demod_cleanup(struct demod_state* demod) {
     dsd_cond_destroy(&demod->ready);
     dsd_mutex_destroy(&demod->ready_m);
     demod_mt_destroy(demod);
+    dsd_fsk_modem_release(&demod->fsk_modem_state);
     if (demod->resamp_taps) {
         dsd_neo_aligned_free(demod->resamp_taps);
         demod->resamp_taps = NULL;
