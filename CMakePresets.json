@@ -50,6 +50,27 @@
       }
     },
     {
+      "name": "perf-bench",
+      "displayName": "Perf Bench",
+      "description": "Optimized benchmark build with tests, debug symbols, and frame pointers",
+      "binaryDir": "${sourceDir}/build/perf-bench",
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_TESTING": "ON",
+        "DSD_ENABLE_LTO": "OFF",
+        "DSD_ENABLE_FAST_MATH": "ON",
+        "DSD_ENABLE_NATIVE": "OFF",
+        "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O2 -g -DNDEBUG -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -DNDEBUG -fno-omit-frame-pointer"
+      }
+    },
+    {
       "name": "asan-ubsan-debug",
       "displayName": "Debug + ASan/UBSan",
       "description": "Debug build with sanitizers enabled",
@@ -202,6 +223,17 @@
     {
       "name": "perf-profile-clean",
       "configurePreset": "perf-profile",
+      "configuration": "RelWithDebInfo",
+      "cleanFirst": true
+    },
+    {
+      "name": "perf-bench",
+      "configurePreset": "perf-bench",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "perf-bench-clean",
+      "configurePreset": "perf-bench",
       "configuration": "RelWithDebInfo",
       "cleanFirst": true
     },
