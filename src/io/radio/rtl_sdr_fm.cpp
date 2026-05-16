@@ -1572,23 +1572,83 @@ static DSD_THREAD_RETURN_TYPE
                 continue;
             }
         }
-        /* Read a block from input ring */
-        int got = input_ring_read_block(&input_ring, d->input_cb_buf, static_cast<size_t>(MAXIMUM_BUF_LENGTH));
+        /* Read a block from input ring. Prefer zero-copy contiguous spans; copy
+         * only when the readable region wraps around the ring boundary. */
+        float* ring_p1 = NULL;
+        float* ring_p2 = NULL;
+        size_t ring_n1 = 0;
+        size_t ring_n2 = 0;
+        int got = input_ring_read_reserve(&input_ring, static_cast<size_t>(MAXIMUM_BUF_LENGTH), &ring_p1, &ring_n1,
+                                          &ring_p2, &ring_n2);
         if (got <= 0) {
             continue;
         }
+        int direct_input_span = (ring_p1 && ring_n1 == (size_t)got && (!ring_p2 || ring_n2 == 0)) ? 1 : 0;
+        size_t reserved_input_count = (size_t)got;
+        auto commit_direct_input_span = [&]() {
+            if (direct_input_span) {
+                input_ring_read_commit(&input_ring, reserved_input_count);
+                direct_input_span = 0;
+            }
+        };
+        auto stabilize_direct_lowpassed = [&]() {
+            if (!direct_input_span || !ring_p1 || !d->lowpassed || d->lp_len <= 0) {
+                return;
+            }
+            uintptr_t lp_addr = (uintptr_t)d->lowpassed;
+            uintptr_t span_begin = (uintptr_t)ring_p1;
+            uintptr_t span_end = span_begin + ring_n1 * sizeof(float);
+            if (lp_addr < span_begin || lp_addr >= span_end) {
+                return;
+            }
+            int stable_len = d->lp_len;
+            if (stable_len > got) {
+                stable_len = got;
+            }
+            if (stable_len > MAXIMUM_BUF_LENGTH) {
+                stable_len = MAXIMUM_BUF_LENGTH;
+            }
+            memcpy(d->input_cb_buf, d->lowpassed, (size_t)stable_len * sizeof(float));
+            d->lowpassed = d->input_cb_buf;
+            d->lp_len = stable_len;
+        };
+        auto release_direct_input_span = [&]() {
+            stabilize_direct_lowpassed();
+            commit_direct_input_span();
+        };
+        if (!direct_input_span) {
+            size_t copied = 0;
+            if (ring_p1 && ring_n1 > 0) {
+                memcpy(d->input_cb_buf, ring_p1, ring_n1 * sizeof(float));
+                copied += ring_n1;
+            }
+            if (ring_p2 && ring_n2 > 0 && copied < static_cast<size_t>(MAXIMUM_BUF_LENGTH)) {
+                size_t room = static_cast<size_t>(MAXIMUM_BUF_LENGTH) - copied;
+                size_t n2 = (ring_n2 < room) ? ring_n2 : room;
+                memcpy(d->input_cb_buf + copied, ring_p2, n2 * sizeof(float));
+                copied += n2;
+            }
+            input_ring_read_commit(&input_ring, reserved_input_count);
+            got = (int)copied;
+            if (got <= 0) {
+                continue;
+            }
+        }
+        float* input_block = direct_input_span ? ring_p1 : d->input_cb_buf;
         /* Recheck after the blocking read in case the controller armed a
          * reconfigure or queued a purge while we were waiting for input. */
         if (controller.retune_in_progress.load(std::memory_order_acquire)
             || g_ring_purge_pending.load(std::memory_order_acquire)) {
+            commit_direct_input_span();
             continue;
         }
         int input_pairs = 0;
         float input_mean_abs = 0.0f;
         float input_max_abs = 0.0f;
-        iq_block_abs_stats(d->input_cb_buf, got, &input_mean_abs, &input_max_abs, &input_pairs);
+        iq_block_abs_stats(input_block, got, &input_mean_abs, &input_max_abs, &input_pairs);
 
         if (retune_settle_should_discard(d, input_mean_abs, input_max_abs, input_pairs)) {
+            commit_direct_input_span();
             continue;
         }
 
@@ -1830,19 +1890,21 @@ static DSD_THREAD_RETURN_TYPE
                 ag_blocks = ag_high = ag_low = 0;
             }
         }
-        d->lowpassed = d->input_cb_buf;
+        d->lowpassed = input_block;
         d->lp_len = got;
         /* Gate: skip demod processing until controller signals cold start complete.
          * This prevents the race where we process samples with uninitialized
          * TED/AGC/filter state, causing symbol timing or gain to lock incorrectly.
          * Applies to all modulations (C4FM, GFSK, QPSK, etc). */
         if (!controller.cold_start_ready.load(std::memory_order_acquire)) {
+            release_direct_input_span();
             continue;
         }
         /* Recheck at the last possible point before demodulation so a
          * controller-side retune or same-frequency live PPM reconfigure
          * cannot race with demod_reset_on_retune() mutating shared state. */
         if (controller.retune_in_progress.load(std::memory_order_acquire)) {
+            release_direct_input_span();
             continue;
         }
         uint64_t consumed_gen = 0;
@@ -1870,10 +1932,22 @@ static DSD_THREAD_RETURN_TYPE
                     d->ted_state.mu, d->ted_state.omega, dsd_rtl_stream_get_carrier_lock());
         }
 
+        release_direct_input_span();
+
         if (replay_active && g_stream) {
             g_stream->replay_last_consume_gen.store(consumed_gen, std::memory_order_release);
             if (!g_stream->replay_demod_drained.load(std::memory_order_acquire)) {
                 int input_drained = g_stream->replay_input_drained.load(std::memory_order_acquire);
+                if (!input_drained && g_stream->replay_input_eof.load(std::memory_order_acquire)
+                    && input_ring_used(&input_ring) == 0U) {
+                    g_stream->replay_input_drained.store(1, std::memory_order_release);
+                    input_drained = 1;
+                    if (g_stream->replay_eof_sync_inited) {
+                        dsd_mutex_lock(&g_stream->replay_eof_m);
+                        dsd_cond_broadcast(&g_stream->replay_eof_cond);
+                        dsd_mutex_unlock(&g_stream->replay_eof_m);
+                    }
+                }
                 uint64_t consumed_at = g_stream->replay_last_consume_gen.load(std::memory_order_acquire);
                 uint64_t eof_gen = g_stream->replay_last_submit_gen_at_eof.load(std::memory_order_acquire);
                 if (input_drained && consumed_at >= eof_gen) {

@@ -171,6 +171,32 @@ void input_ring_write(struct input_ring_state* r, const float* data, size_t coun
 int input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count);
 
 /**
+ * @brief Reserve readable regions in the input ring without copying.
+ *
+ * Blocks until at least one sample is available, then returns up to
+ * @p max_count samples as one or two contiguous spans. The caller owns the
+ * returned spans until it calls input_ring_read_commit().
+ *
+ * @param r         Input ring state.
+ * @param max_count Maximum number of samples to reserve.
+ * @param p1        [out] First readable region pointer.
+ * @param n1        [out] First readable region length.
+ * @param p2        [out] Second readable region pointer or NULL.
+ * @param n2        [out] Second readable region length.
+ * @return Number of reserved samples, 0 if max_count is 0, or -1 on exit/error.
+ */
+int input_ring_read_reserve(struct input_ring_state* r, size_t max_count, float** p1, size_t* n1, float** p2,
+                            size_t* n2);
+
+/**
+ * @brief Commit samples previously obtained with input_ring_read_reserve().
+ *
+ * @param r        Input ring state.
+ * @param consumed Number of samples consumed from the reserved spans.
+ */
+void input_ring_read_commit(struct input_ring_state* r, size_t consumed);
+
+/**
  * @brief Discard all pending samples (consumer-side purge).
  *
  * Safe for the consumer thread to call; only updates tail to match the latest

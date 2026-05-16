@@ -304,6 +304,11 @@ static const char* g_impl_name = "scalar";
 /* Dispatch init state: 0 = not started, 1 = in progress, 2 = done */
 static std::atomic<int> g_fir_init_done{0};
 
+static inline bool
+simd_fir_prefer_scalar_for_block(int in_len, int taps_len) {
+    return in_len > 0 && taps_len > 0 && in_len < taps_len * 2;
+}
+
 static void
 simd_fir_init_dispatch() {
     int expected = 0;
@@ -350,6 +355,10 @@ simd_fir_init_dispatch() {
 extern "C" void
 simd_fir_complex_apply(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
                        int taps_len) {
+    if (simd_fir_prefer_scalar_for_block(in_len, taps_len)) {
+        simd_fir_complex_apply_scalar(in, in_len, out, hist_i, hist_q, taps, taps_len);
+        return;
+    }
     if (g_fir_init_done.load(std::memory_order_acquire) != 2) {
         simd_fir_init_dispatch();
     }
@@ -359,6 +368,9 @@ simd_fir_complex_apply(const float* in, int in_len, float* out, float* hist_i, f
 extern "C" int
 simd_hb_decim2_complex(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
                        int taps_len) {
+    if (simd_fir_prefer_scalar_for_block(in_len, taps_len)) {
+        return simd_hb_decim2_complex_scalar(in, in_len, out, hist_i, hist_q, taps, taps_len);
+    }
     if (g_fir_init_done.load(std::memory_order_acquire) != 2) {
         simd_fir_init_dispatch();
     }
@@ -367,6 +379,9 @@ simd_hb_decim2_complex(const float* in, int in_len, float* out, float* hist_i, f
 
 extern "C" int
 simd_hb_decim2_real(const float* in, int in_len, float* out, float* hist, const float* taps, int taps_len) {
+    if (simd_fir_prefer_scalar_for_block(in_len, taps_len)) {
+        return simd_hb_decim2_real_scalar(in, in_len, out, hist, taps, taps_len);
+    }
     if (g_fir_init_done.load(std::memory_order_acquire) != 2) {
         simd_fir_init_dispatch();
     }

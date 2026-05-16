@@ -35,6 +35,15 @@ expect_size(const char* label, size_t got, size_t want) {
     return 0;
 }
 
+static int
+expect_float(const char* label, float got, float want) {
+    if (got != want) {
+        fprintf(stderr, "FAIL: %s: got=%f want=%f\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -78,6 +87,43 @@ main(void) {
         input_ring_commit(&ring, 4U);
     }
     rc |= expect_size("stale reservation not committed", input_ring_used(&ring), 0U);
+
+    float write_a[6] = {10.0f, 11.0f, 12.0f, 13.0f, 14.0f, 15.0f};
+    input_ring_write(&ring, write_a, 6U);
+    float* rp1 = NULL;
+    float* rp2 = NULL;
+    size_t rn1 = 0;
+    size_t rn2 = 0;
+    rc |= expect_int("read reserve four", input_ring_read_reserve(&ring, 4U, &rp1, &rn1, &rp2, &rn2), 4);
+    rc |= expect_size("read reserve four n1", rn1, 4U);
+    rc |= expect_size("read reserve four n2", rn2, 0U);
+    if (rp1 && rn1 >= 4U) {
+        rc |= expect_float("read reserve p1[0]", rp1[0], 10.0f);
+        rc |= expect_float("read reserve p1[3]", rp1[3], 13.0f);
+    }
+    rc |= expect_size("used before read commit", input_ring_used(&ring), 6U);
+    input_ring_read_commit(&ring, 4U);
+    rc |= expect_size("used after read commit", input_ring_used(&ring), 2U);
+
+    float write_b[5] = {20.0f, 21.0f, 22.0f, 23.0f, 24.0f};
+    input_ring_write(&ring, write_b, 5U);
+    rp1 = NULL;
+    rp2 = NULL;
+    rn1 = 0;
+    rn2 = 0;
+    rc |= expect_int("read reserve wrapped", input_ring_read_reserve(&ring, 7U, &rp1, &rn1, &rp2, &rn2), 7);
+    rc |= expect_size("read reserve wrapped n1", rn1, 4U);
+    rc |= expect_size("read reserve wrapped n2", rn2, 3U);
+    if (rp1 && rn1 >= 4U && rp2 && rn2 >= 3U) {
+        rc |= expect_float("read reserve wrapped p1[0]", rp1[0], 14.0f);
+        rc |= expect_float("read reserve wrapped p1[1]", rp1[1], 15.0f);
+        rc |= expect_float("read reserve wrapped p1[2]", rp1[2], 20.0f);
+        rc |= expect_float("read reserve wrapped p1[3]", rp1[3], 21.0f);
+        rc |= expect_float("read reserve wrapped p2[0]", rp2[0], 22.0f);
+        rc |= expect_float("read reserve wrapped p2[2]", rp2[2], 24.0f);
+    }
+    input_ring_read_commit(&ring, 7U);
+    rc |= expect_size("used after wrapped commit", input_ring_used(&ring), 0U);
 
     dsd_mutex_lock(&ring.ready_m);
     uint64_t wait_start_ns = dsd_time_monotonic_ns();

@@ -149,6 +149,16 @@ branchless_clip(float x, float limit) {
     return 0.5f * (fabsf(x + limit) - fabsf(x - limit));
 }
 
+static inline void
+dsd_sincosf(float phase, float* out_sin, float* out_cos) {
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(_MSC_VER)
+    __builtin_sincosf(phase, out_sin, out_cos);
+#else
+    *out_sin = sinf(phase);
+    *out_cos = cosf(phase);
+#endif
+}
+
 static int
 cqpsk_symbol_rate_hz(const demod_state* d) {
     if (!d || d->rate_out <= 0 || d->ted_sps <= 0) {
@@ -760,8 +770,9 @@ op25_costas_loop_cc(struct demod_state* d) {
 
         /* OP25: nco_out = gr_expj(-d_phase)
          * From costas_loop_cc_impl.cc line 146 */
-        float nco_r = cosf(-phase);
-        float nco_j = sinf(-phase);
+        float nco_r = 0.0f;
+        float nco_j = 0.0f;
+        dsd_sincosf(-phase, &nco_j, &nco_r);
 
         /* OP25: optr[i] = iptr[i] * nco_out
          * Complex multiply: out = in * nco */
@@ -1219,8 +1230,9 @@ op25_fll_band_edge_cc(struct demod_state* d) {
          *   nco_out = gr_expj(d_phase)  // Note: POSITIVE phase!
          *   out[i] = in[i] * nco_out
          */
-        float nco_r = cosf(phase);
-        float nco_i = sinf(phase);
+        float nco_r = 0.0f;
+        float nco_i = 0.0f;
+        dsd_sincosf(phase, &nco_i, &nco_r);
         float out_r = in_r * nco_r - in_i * nco_i;
         float out_i = in_r * nco_i + in_i * nco_r;
 

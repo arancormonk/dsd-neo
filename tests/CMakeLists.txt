@@ -1507,6 +1507,11 @@ add_executable(dsd-neo_test_dsp_simd_fir dsp/test_dsp_simd_fir.cpp)
 target_include_directories(dsd-neo_test_dsp_simd_fir PRIVATE ${PROJECT_SOURCE_DIR}/include)
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_simd_fir)
 add_test(NAME DSP_SIMD_FIR COMMAND dsd-neo_test_dsp_simd_fir)
+
+add_executable(dsd-neo_bench_dsp EXCLUDE_FROM_ALL dsp/bench_dsp.cpp)
+target_include_directories(dsd-neo_bench_dsp PRIVATE ${PROJECT_SOURCE_DIR}/include)
+dsd_neo_link_dsp_test(dsd-neo_bench_dsp ${DSD_NEO_TEST_MATH_LIB})
+
 add_executable(dsd-neo_test_dsp_demod_helpers dsp/test_dsp_demod_helpers.cpp)
 target_include_directories(dsd-neo_test_dsp_demod_helpers PRIVATE ${PROJECT_SOURCE_DIR}/include)
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_demod_helpers)

@@ -301,3 +301,79 @@ input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count) 
 
     return (int)read_now;
 }
+
+int
+input_ring_read_reserve(struct input_ring_state* r, size_t max_count, float** p1, size_t* n1, float** p2, size_t* n2) {
+    if (!r || !p1 || !n1 || !p2 || !n2) {
+        return -1;
+    }
+    *p1 = NULL;
+    *n1 = 0;
+    *p2 = NULL;
+    *n2 = 0;
+    if (max_count == 0) {
+        return 0;
+    }
+
+    while (input_ring_is_empty(r)) {
+#ifdef USE_RADIO
+        if (dsd_rtl_stream_should_exit()) {
+            return -1;
+        }
+#endif
+        dsd_mutex_lock(&r->ready_m);
+        int ret = dsd_cond_timedwait(&r->ready, &r->ready_m, 10); /* 10ms */
+        dsd_mutex_unlock(&r->ready_m);
+        if (ret != 0) {
+            if (exitflag) {
+                return -1;
+            }
+#ifdef USE_RADIO
+            if (dsd_rtl_stream_should_exit()) {
+                return -1;
+            }
+#endif
+            r->read_timeouts.fetch_add(1);
+            continue;
+        }
+    }
+
+    size_t available = input_ring_used(r);
+    size_t reserve_now = (max_count < available) ? max_count : available;
+    size_t t = r->tail.load();
+    size_t first = r->capacity - t;
+    if (first >= reserve_now) {
+        *p1 = r->buffer + t;
+        *n1 = reserve_now;
+    } else {
+        *p1 = r->buffer + t;
+        *n1 = first;
+        *p2 = r->buffer;
+        *n2 = reserve_now - first;
+    }
+
+    return (int)reserve_now;
+}
+
+void
+input_ring_read_commit(struct input_ring_state* r, size_t consumed) {
+    if (!r || consumed == 0 || r->capacity == 0) {
+        return;
+    }
+
+    size_t available = input_ring_used(r);
+    if (consumed > available) {
+        consumed = available;
+    }
+    size_t t = r->tail.load();
+    t += consumed;
+    while (t >= r->capacity) {
+        t -= r->capacity;
+    }
+    r->tail.store(t);
+    if (r->space_notify_enabled.load(std::memory_order_relaxed)) {
+        dsd_mutex_lock(&r->ready_m);
+        dsd_cond_signal(&r->space);
+        dsd_mutex_unlock(&r->ready_m);
+    }
+}
