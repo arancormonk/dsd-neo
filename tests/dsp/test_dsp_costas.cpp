@@ -21,6 +21,7 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 
 #include <math.h>
@@ -704,7 +705,7 @@ test_gardner_omega_absolute_clamp_p25p2(void) {
 
 static int
 expect_p25p2_tracking_gain_after_lock(const char* label, float ted_gain, int ted_gain_is_set, float expected_gain) {
-    unsetenv("DSD_NEO_TED_GAIN");
+    dsd_unsetenv("DSD_NEO_TED_GAIN");
     dsd_neo_config_init(NULL);
 
     const int sps = 8;

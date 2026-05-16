@@ -76,7 +76,7 @@ init_screen(void) {
     noecho();
     cbreak();
     keypad(stdscr, TRUE);
-    resizeterm(17, 80);
+    resize_term(17, 80);
     clear();
     refresh();
 }
