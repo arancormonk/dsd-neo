@@ -177,8 +177,8 @@ struct dongle_state {
     int exit_flag;
     dsd_thread_t thread;
     int dev_index;
-    uint32_t freq;
-    uint32_t rate;
+    std::atomic<uint32_t> freq;
+    std::atomic<uint32_t> rate;
     int gain;
     uint32_t buf_len;
     /* Last PPM value successfully applied to hardware. */
@@ -230,6 +230,9 @@ struct controller_state {
      * during hardware retune before TED/Costas/AGC are reset. Set to 1 at
      * start of retune, cleared to 0 after reset complete. */
     std::atomic<int> retune_in_progress;
+    /* Demod processing gate: the controller waits for the current demod block
+     * to finish before mutating shared demodulator state during reconfigure. */
+    std::atomic<int> demod_processing_active;
     /* Retune completion signaling: allows dsd_rtl_stream_tune() to block until
      * the controller thread has finished the hardware retune and DSP reset.
      * This prevents the race where trunking code sets SPS parameters before
@@ -294,6 +297,26 @@ static const float kRetuneSettleStableRel = 0.055f;
 static const float kRetuneSettleMinMeanAbs = 0.015f;
 
 static dsd::io::radio::RtlAutoPpmController g_auto_ppm_controller;
+
+static inline uint32_t
+load_dongle_frequency(void) {
+    return dongle.freq.load(std::memory_order_acquire);
+}
+
+static inline void
+store_dongle_frequency(uint32_t frequency_hz) {
+    dongle.freq.store(frequency_hz, std::memory_order_release);
+}
+
+static inline uint32_t
+load_dongle_rate(void) {
+    return dongle.rate.load(std::memory_order_acquire);
+}
+
+static inline void
+store_dongle_rate(uint32_t sample_rate_hz) {
+    dongle.rate.store(sample_rate_hz, std::memory_order_release);
+}
 
 static void
 controller_request_input_purge(void) {
@@ -663,7 +686,7 @@ stream_refresh_watermark_for_current_rate(void) {
     if (!g_stream) {
         return;
     }
-    watermark_init(&g_stream->watermark, radio_source_is_rtltcp(g_stream->opts) ? 1 : 0, dongle.rate);
+    watermark_init(&g_stream->watermark, radio_source_is_rtltcp(g_stream->opts) ? 1 : 0, load_dongle_rate());
 }
 
 static const char*
@@ -1582,6 +1605,37 @@ extern "C" void dsd_rtl_stream_set_tuner_autogain(int onoff);
 /* Spectrum updater used in demod thread (implemented in rtl_metrics.cpp). */
 extern "C" void rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interleaved, int out_rate_hz);
 
+static int
+demod_enter_processing_block(struct controller_state* s) {
+    if (!s || s->retune_in_progress.load(std::memory_order_acquire)) {
+        return 0;
+    }
+    s->demod_processing_active.store(1, std::memory_order_release);
+    if (s->retune_in_progress.load(std::memory_order_acquire)) {
+        s->demod_processing_active.store(0, std::memory_order_release);
+        return 0;
+    }
+    return 1;
+}
+
+static void
+demod_leave_processing_block(struct controller_state* s) {
+    if (s) {
+        s->demod_processing_active.store(0, std::memory_order_release);
+    }
+}
+
+static void
+controller_wait_for_demod_idle(struct controller_state* s) {
+    if (!s) {
+        return;
+    }
+    while (s->demod_processing_active.load(std::memory_order_acquire) && !exitflag
+           && !(g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
+        dsd_sleep_ms(1);
+    }
+}
+
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
@@ -1812,7 +1866,7 @@ static DSD_THREAD_RETURN_TYPE
         }
         /* Update simple occupancy metrics on pre-DSP input for autogain */
         if (g_tuner_autogain_on.load(std::memory_order_relaxed)) {
-            uint32_t current_freq_hz = dongle.freq;
+            uint32_t current_freq_hz = load_dongle_frequency();
             uint32_t current_reconfigure_seq = controller.reconfigure_seq.load(std::memory_order_acquire);
             /* Detect retunes, including same-frequency reconfigures such as a
              * live PPM correction, and apply the normal post-retune holdoff. */
@@ -2030,6 +2084,10 @@ static DSD_THREAD_RETURN_TYPE
         int replay_active = stream_is_replay_active();
         if (replay_active && g_stream) {
             consumed_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
+        }
+        if (!demod_enter_processing_block(&controller)) {
+            release_direct_input_span();
+            continue;
         }
 
         int perf_on = rtl_perf_enabled();
@@ -2454,11 +2512,12 @@ static DSD_THREAD_RETURN_TYPE
                     snr_db = gfsk_snr;
                 }
             }
-            rtl_perf_maybe_log(rtl_perf_source_name(), dongle.rate, d->output_kind, input_ring_used(&input_ring),
+            rtl_perf_maybe_log(rtl_perf_source_name(), load_dongle_rate(), d->output_kind, input_ring_used(&input_ring),
                                input_ring.capacity, input_ring.producer_drops.load(std::memory_order_relaxed),
                                ring_used(&output), output.capacity, -1, snr_db, dsd_rtl_stream_get_cfo_hz(),
                                dsd_rtl_stream_get_carrier_lock());
         }
+        demod_leave_processing_block(&controller);
         /* Signaling occurs only when the ring transitions from empty to non-empty. */
     }
     DSD_THREAD_RETURN;
@@ -2568,8 +2627,8 @@ optimal_settings(int freq, int rate) {
         }
         dm->rate_out = out_rate;
     }
-    d->freq = (uint32_t)capture_freq;
-    d->rate = (uint32_t)capture_rate;
+    store_dongle_frequency((uint32_t)capture_freq);
+    store_dongle_rate((uint32_t)capture_rate);
 }
 
 /**
@@ -2581,20 +2640,23 @@ optimal_settings(int freq, int rate) {
 static void
 program_capture_frequency_and_rate(uint32_t center_freq_hz) {
     optimal_settings((int)center_freq_hz, demod.rate_in);
-    rtl_device_set_frequency(rtl_device_handle, dongle.freq);
-    rtl_device_set_sample_rate(rtl_device_handle, dongle.rate);
+    uint32_t capture_freq_hz = load_dongle_frequency();
+    uint32_t capture_rate_hz = load_dongle_rate();
+    rtl_device_set_frequency(rtl_device_handle, capture_freq_hz);
+    rtl_device_set_sample_rate(rtl_device_handle, capture_rate_hz);
     /* Use driver auto hardware bandwidth by default, or override via env */
-    rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_dsp_bw_hz));
+    rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(capture_rate_hz, (uint32_t)rtl_dsp_bw_hz));
     /* Sync to actual device rate (USB may quantize). If it changed, update rate_out. */
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
-    if (actual > 0 && (uint32_t)actual != dongle.rate) {
-        uint32_t prev = dongle.rate;
-        dongle.rate = (uint32_t)actual;
+    if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
+        uint32_t prev = capture_rate_hz;
+        capture_rate_hz = (uint32_t)actual;
+        store_dongle_rate(capture_rate_hz);
         int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
         if (base_decim < 1) {
             base_decim = 1;
         }
-        int out_rate = (int)(dongle.rate / (uint32_t)base_decim);
+        int out_rate = (int)(capture_rate_hz / (uint32_t)base_decim);
         if (demod.post_downsample > 1) {
             out_rate /= demod.post_downsample;
             if (out_rate < 1) {
@@ -2602,7 +2664,7 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz) {
             }
         }
         demod.rate_out = out_rate;
-        LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev, dongle.rate,
+        LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev, capture_rate_hz,
                  demod.rate_out);
     }
     stream_refresh_watermark_for_current_rate();
@@ -2645,13 +2707,14 @@ retune_mute_bytes_for_rate(uint32_t sample_rate_hz) {
 
 static void
 controller_arm_retune_mute(const char* phase) {
-    if (!rtl_device_handle || dongle.rate == 0) {
+    uint32_t sample_rate_hz = load_dongle_rate();
+    if (!rtl_device_handle || sample_rate_hz == 0) {
         return;
     }
-    int mute_bytes = retune_mute_bytes_for_rate(dongle.rate);
+    int mute_bytes = retune_mute_bytes_for_rate(sample_rate_hz);
     rtl_device_mute(rtl_device_handle, mute_bytes);
     if (debug_cqpsk_enabled()) {
-        fprintf(stderr, "[RETUNE-MUTE] phase=%s rate=%u bytes=%d\n", phase ? phase : "unknown", dongle.rate,
+        fprintf(stderr, "[RETUNE-MUTE] phase=%s rate=%u bytes=%d\n", phase ? phase : "unknown", sample_rate_hz,
                 mute_bytes);
     }
 }
@@ -2704,7 +2767,7 @@ controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts,
                                                               previous_rate_out_hz, demod.rate_out);
     demod_reset_on_retune(&demod, reset_plan);
     if (mark_reconfigure) {
-        rtl_device_record_capture_reset(rtl_device_handle, center_freq_hz, dongle.freq, dongle.rate,
+        rtl_device_record_capture_reset(rtl_device_handle, center_freq_hz, load_dongle_frequency(), load_dongle_rate(),
                                         retune_reset_reason_name(reset_plan.reason));
     }
     /* Reconfigures invalidate after the configured output drain/clear policy runs. */
@@ -2732,6 +2795,7 @@ controller_enter_reconfigure_gate(struct controller_state* s) {
         return;
     }
     s->retune_in_progress.store(1, std::memory_order_release);
+    controller_wait_for_demod_idle(s);
     g_retune_settle_blocks_remaining.store(0, std::memory_order_release);
     g_retune_diag_blocks_remaining.store(0, std::memory_order_release);
 }
@@ -2768,7 +2832,7 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     controller_arm_retune_mute("program");
     program_capture_frequency_and_rate(center_freq_hz);
     controller_arm_retune_mute("post");
-    rtl_device_record_capture_retune(rtl_device_handle, center_freq_hz, dongle.freq, dongle.rate,
+    rtl_device_record_capture_retune(rtl_device_handle, center_freq_hz, load_dongle_frequency(), load_dongle_rate(),
                                      retune_reset_reason_name(reset_reason));
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz, reset_reason,
                                     previous_center_freq_hz, previous_rate_out_hz);
@@ -2793,7 +2857,7 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
     DemodRetuneResetReason reset_reason = (ppm_rc == 0 && ppm_error != prev_ppm)
                                               ? DemodRetuneResetReason::PpmCorrection
                                               : DemodRetuneResetReason::FrequencyRetune;
-    rtl_device_record_capture_retune(rtl_device_handle, center_freq_hz, dongle.freq, dongle.rate,
+    rtl_device_record_capture_retune(rtl_device_handle, center_freq_hz, load_dongle_frequency(), load_dongle_rate(),
                                      retune_reset_reason_name(reset_reason));
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz, reset_reason,
                                     previous_center_freq_hz, previous_rate_out_hz);
@@ -2823,8 +2887,8 @@ rtl_replay_on_retune_event(const dsd_iq_event* event, void* user) {
     uint32_t center_hz = (event->center_frequency_hz > UINT32_MAX) ? UINT32_MAX : (uint32_t)event->center_frequency_hz;
     uint32_t capture_hz =
         (event->capture_center_frequency_hz > UINT32_MAX) ? UINT32_MAX : (uint32_t)event->capture_center_frequency_hz;
-    dongle.freq = capture_hz;
-    dongle.rate = event->sample_rate_hz;
+    store_dongle_frequency(capture_hz);
+    store_dongle_rate(event->sample_rate_hz);
     g_replay_event_last_frequency_hz.store(center_hz, std::memory_order_release);
     g_replay_event_retune_count.fetch_add(1U, std::memory_order_acq_rel);
 }
@@ -2851,8 +2915,8 @@ rtl_replay_on_reset_event(const dsd_iq_event* event, void* user) {
     uint32_t previous_center_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     int previous_rate_out_hz = demod.rate_out;
     DemodRetuneResetReason reset_reason = retune_reset_reason_from_name(event->reason);
-    dongle.freq = capture_hz;
-    dongle.rate = event->sample_rate_hz;
+    store_dongle_frequency(capture_hz);
+    store_dongle_rate(event->sample_rate_hz);
     controller_enter_reconfigure_gate(&controller);
     controller_request_input_purge();
     controller_finalize_reconfigure(&controller, g_stream ? g_stream->opts : NULL, center_hz, reset_reason,
@@ -2919,22 +2983,25 @@ controller_apply_initial_settings(struct controller_state* s, const dsd_opts* op
     }
 
     optimal_settings(s->freqs[0], demod.rate_in);
-    (void)rtl_device_set_frequency(rtl_device_handle, dongle.freq);
+    uint32_t capture_freq_hz = load_dongle_frequency();
+    uint32_t capture_rate_hz = load_dongle_rate();
+    (void)rtl_device_set_frequency(rtl_device_handle, capture_freq_hz);
     LOG_INFO("Oversampling input by: %ix.\n", (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1);
     LOG_INFO("Oversampling output by: %ix.\n", demod.post_downsample);
-    LOG_INFO("Buffer size: %0.2fms\n", 1000 * 0.5 * (float)ACTUAL_BUF_LENGTH / (float)dongle.rate);
-    (void)rtl_device_set_sample_rate(rtl_device_handle, dongle.rate);
+    LOG_INFO("Buffer size: %0.2fms\n", 1000 * 0.5 * (float)ACTUAL_BUF_LENGTH / (float)capture_rate_hz);
+    (void)rtl_device_set_sample_rate(rtl_device_handle, capture_rate_hz);
 
     {
         int actual = rtl_device_get_sample_rate(rtl_device_handle);
-        if (actual > 0 && (uint32_t)actual != dongle.rate) {
-            uint32_t prev = dongle.rate;
-            dongle.rate = (uint32_t)actual;
+        if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
+            uint32_t prev = capture_rate_hz;
+            capture_rate_hz = (uint32_t)actual;
+            store_dongle_rate(capture_rate_hz);
             int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
             if (base_decim < 1) {
                 base_decim = 1;
             }
-            int out_rate = (int)(dongle.rate / (uint32_t)base_decim);
+            int out_rate = (int)(capture_rate_hz / (uint32_t)base_decim);
             if (demod.post_downsample > 1) {
                 out_rate /= demod.post_downsample;
                 if (out_rate < 1) {
@@ -2942,12 +3009,13 @@ controller_apply_initial_settings(struct controller_state* s, const dsd_opts* op
                 }
             }
             demod.rate_out = out_rate;
-            LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev, dongle.rate,
-                     demod.rate_out);
+            LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev,
+                     capture_rate_hz, demod.rate_out);
         }
     }
 
-    (void)rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_dsp_bw_hz));
+    (void)rtl_device_set_tuner_bandwidth(rtl_device_handle,
+                                         choose_tuner_bw_hz(capture_rate_hz, (uint32_t)rtl_dsp_bw_hz));
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
 
     controller_finalize_rate_chain(s, opts, (uint32_t)s->freqs[0], 0, DemodRetuneResetReason::FreshStream, 0U, 0);
@@ -2974,9 +3042,10 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
         passes++;
     }
 
-    dongle.rate = cfg->sample_rate_hz;
-    dongle.freq = (uint32_t)((cfg->capture_center_frequency_hz > 0) ? cfg->capture_center_frequency_hz
-                                                                    : cfg->center_frequency_hz);
+    store_dongle_rate(cfg->sample_rate_hz);
+    uint32_t capture_freq_hz = (uint32_t)((cfg->capture_center_frequency_hz > 0) ? cfg->capture_center_frequency_hz
+                                                                                 : cfg->center_frequency_hz);
+    store_dongle_frequency(capture_freq_hz);
     demod.downsample_passes = passes;
     demod.post_downsample = (int)cfg->post_downsample;
     demod.rate_in = (int)(cfg->sample_rate_hz / cfg->base_decimation);
@@ -2988,7 +3057,7 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
     uint32_t center_hz =
         (uint32_t)((cfg->center_frequency_hz > 0) ? cfg->center_frequency_hz : cfg->capture_center_frequency_hz);
     if (center_hz == 0U) {
-        center_hz = dongle.freq;
+        center_hz = capture_freq_hz;
     }
     controller_finalize_rate_chain(s, opts, center_hz, 0, DemodRetuneResetReason::FreshStream, 0U, 0);
     s->cold_start_ready.store(1, std::memory_order_release);
@@ -3508,7 +3577,8 @@ extern std::atomic<double> g_resid_cfo_phase_hz;
  */
 void
 dongle_init(struct dongle_state* s) {
-    s->rate = rtl_dsp_bw_hz;
+    s->freq.store(0, std::memory_order_relaxed);
+    s->rate.store((uint32_t)rtl_dsp_bw_hz, std::memory_order_relaxed);
     s->gain = AUTO_GAIN; // tenths of a dB
     s->ppm_error.store(0, std::memory_order_relaxed);
     s->mute = 0;
@@ -3590,6 +3660,7 @@ controller_init(struct controller_state* s) {
     s->failed_ppm_request_seq.store(0);
     s->cold_start_ready.store(0); /* Demod will wait for controller to signal ready */
     s->retune_in_progress.store(0);
+    s->demod_processing_active.store(0);
     /* Initialize retune completion synchronization */
     dsd_cond_init(&s->retune_done_cond);
     dsd_mutex_init(&s->retune_done_m);
@@ -3865,9 +3936,9 @@ stream_open_capture_writer(dsd_opts* opts, RadioSourceKind source_kind) {
         LOG_ERROR("Failed to map IQ capture stage for active backend.\n");
         return -1;
     }
-    cfg.sample_rate_hz = dongle.rate;
+    cfg.sample_rate_hz = load_dongle_rate();
     cfg.center_frequency_hz = (uint64_t)opts->rtlsdr_center_freq;
-    cfg.capture_center_frequency_hz = (uint64_t)dongle.freq;
+    cfg.capture_center_frequency_hz = (uint64_t)load_dongle_frequency();
     cfg.ppm = load_dongle_ppm_error();
     cfg.tuner_gain_tenth_db = rtl_device_get_tuner_gain(rtl_device_handle);
     cfg.rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
@@ -3971,7 +4042,7 @@ stream_prepare_internals(dsd_opts* opts) {
 
     /* Initialize watermark-based flow control (TCP lag resilience).
      * Enabled only for rtl_tcp connections; passthrough for USB/other. */
-    watermark_init(&g_stream->watermark, radio_source_is_rtltcp(opts) ? 1 : 0, dongle.rate);
+    watermark_init(&g_stream->watermark, radio_source_is_rtltcp(opts) ? 1 : 0, load_dongle_rate());
 
     return 0;
 }
@@ -4524,6 +4595,53 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     /* With demod.rate_out known and resampler configured, refresh TED SPS unless overridden. */
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output);
 
+    /* If resampler is enabled, update output.rate for downstream consumers */
+    if (demod.resamp_enabled && demod.resamp_target_hz > 0) {
+        output.rate = demod.resamp_target_hz;
+        LOG_INFO("Output rate set to %d Hz via resampler.\n", output.rate);
+    } else {
+        output.rate = demod.rate_out;
+    }
+    if (monitor_output.buffer) {
+        monitor_output.rate = demod.rate_out;
+    }
+
+    /* One-time startup summary of the rate chain */
+    {
+        unsigned int capture_hz = load_dongle_rate();
+        int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
+        int post = (demod.post_downsample > 0) ? demod.post_downsample : 1;
+        unsigned int demod_hz = (unsigned int)demod.rate_out;
+        unsigned int out_hz =
+            demod.resamp_enabled && demod.resamp_target_hz > 0 ? (unsigned int)demod.resamp_target_hz : demod_hz;
+        if (demod.resamp_enabled) {
+            LOG_INFO("Rate chain: capture=%u Hz, base_decim=%d, post=%d -> demod=%u Hz; resampler L/M=%d/%d -> "
+                     "output=%u Hz.\n",
+                     capture_hz, base_decim, post, demod_hz, demod.resamp_L, demod.resamp_M, out_hz);
+        } else {
+            LOG_INFO("Rate chain: capture=%u Hz, base_decim=%d, post=%d -> demod=%u Hz; resampler bypassed -> "
+                     "output=%u Hz.\n",
+                     capture_hz, base_decim, post, demod_hz, out_hz);
+        }
+
+        /* Derived SPS for common digital modes at current output rate */
+        if (out_hz > 0) {
+            int sps_p25p1 = (int)((out_hz + 2400) / 4800);  /* ~10 at 48k */
+            int sps_p25p2 = (int)((out_hz + 3000) / 6000);  /* ~8 at 48k */
+            int sps_nxdn48 = (int)((out_hz + 1200) / 2400); /* ~20 at 48k */
+            const char* approx2 = dsd_unicode_or_ascii("≈", "~");
+            LOG_INFO("Derived SPS (@%u Hz): P25P1%s%d, P25P2%s%d, NXDN48%s%d.\n", out_hz, approx2, sps_p25p1, approx2,
+                     sps_p25p2, approx2, sps_nxdn48);
+            /* Warn if far from canonical 48k-based SPS expectations */
+            if ((sps_p25p1 < 8 || sps_p25p1 > 12) || (sps_p25p2 < 6 || sps_p25p2 > 10)
+                || (sps_nxdn48 < 16 || sps_nxdn48 > 24)) {
+                LOG_WARNING("Output rate %u Hz implies atypical SPS; digital decoders assume ~48k. Consider enabling "
+                            "resampler to 48000 Hz.\n",
+                            out_hz);
+            }
+        }
+    }
+
     if (source_kind != RADIO_SOURCE_IQ_REPLAY) {
         /* Reset endpoint before async startup on live backends. */
         (void)rtl_device_reset_buffer(rtl_device_handle);
@@ -4547,7 +4665,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         /* Compute desired prebuffer in float samples (I+Q), and ensure the
            input ring is large enough so that half the ring equals the
            requested prebuffer. This provides headroom while starting demod. */
-        size_t desired_prebuf = (size_t)((double)dongle.rate * 2.0 * ((double)pre_ms / 1000.0));
+        uint32_t sample_rate_hz = load_dongle_rate();
+        size_t desired_prebuf = (size_t)((double)sample_rate_hz * 2.0 * ((double)pre_ms / 1000.0));
         if (desired_prebuf < 16384) {
             desired_prebuf = 16384;
         }
@@ -4581,9 +4700,9 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         }
 
         /* Announce computed prebuffer duration at current sample rate */
-        double target_sec = (dongle.rate > 0) ? ((double)target / (2.0 * (double)dongle.rate)) : 0.0;
+        double target_sec = (sample_rate_hz > 0) ? ((double)target / (2.0 * (double)sample_rate_hz)) : 0.0;
         LOG_INFO("rtltcp prebuffer target: %zu samples (%.3f s at %u Hz).\n", target, target_sec,
-                 (unsigned)dongle.rate);
+                 (unsigned)sample_rate_hz);
 
         /* Begin async capture first, then wait for ring to accumulate */
         LOG_INFO("Starting RTL async read (rtltcp prebuffer %d ms)...\n", pre_ms);
@@ -4647,53 +4766,6 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     } else {
         /* Start controller/demod threads and async (USB path and defaults) */
         start_threads_and_async();
-    }
-
-    /* If resampler is enabled, update output.rate for downstream consumers */
-    if (demod.resamp_enabled && demod.resamp_target_hz > 0) {
-        output.rate = demod.resamp_target_hz;
-        LOG_INFO("Output rate set to %d Hz via resampler.\n", output.rate);
-    } else {
-        output.rate = demod.rate_out;
-    }
-    if (monitor_output.buffer) {
-        monitor_output.rate = demod.rate_out;
-    }
-
-    /* One-time startup summary of the rate chain */
-    {
-        unsigned int capture_hz = dongle.rate;
-        int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
-        int post = (demod.post_downsample > 0) ? demod.post_downsample : 1;
-        unsigned int demod_hz = (unsigned int)demod.rate_out;
-        unsigned int out_hz =
-            demod.resamp_enabled && demod.resamp_target_hz > 0 ? (unsigned int)demod.resamp_target_hz : demod_hz;
-        if (demod.resamp_enabled) {
-            LOG_INFO("Rate chain: capture=%u Hz, base_decim=%d, post=%d -> demod=%u Hz; resampler L/M=%d/%d -> "
-                     "output=%u Hz.\n",
-                     capture_hz, base_decim, post, demod_hz, demod.resamp_L, demod.resamp_M, out_hz);
-        } else {
-            LOG_INFO("Rate chain: capture=%u Hz, base_decim=%d, post=%d -> demod=%u Hz; resampler bypassed -> "
-                     "output=%u Hz.\n",
-                     capture_hz, base_decim, post, demod_hz, out_hz);
-        }
-
-        /* Derived SPS for common digital modes at current output rate */
-        if (out_hz > 0) {
-            int sps_p25p1 = (int)((out_hz + 2400) / 4800);  /* ~10 at 48k */
-            int sps_p25p2 = (int)((out_hz + 3000) / 6000);  /* ~8 at 48k */
-            int sps_nxdn48 = (int)((out_hz + 1200) / 2400); /* ~20 at 48k */
-            const char* approx2 = dsd_unicode_or_ascii("≈", "~");
-            LOG_INFO("Derived SPS (@%u Hz): P25P1%s%d, P25P2%s%d, NXDN48%s%d.\n", out_hz, approx2, sps_p25p1, approx2,
-                     sps_p25p2, approx2, sps_nxdn48);
-            /* Warn if far from canonical 48k-based SPS expectations */
-            if ((sps_p25p1 < 8 || sps_p25p1 > 12) || (sps_p25p2 < 6 || sps_p25p2 > 10)
-                || (sps_nxdn48 < 16 || sps_nxdn48 > 24)) {
-                LOG_WARNING("Output rate %u Hz implies atypical SPS; digital decoders assume ~48k. Consider enabling "
-                            "resampler to 48000 Hz.\n",
-                            out_hz);
-            }
-        }
     }
 
     return 0;
@@ -5602,7 +5674,7 @@ dsd_rtl_stream_set_resampler_target(int target_hz) {
         demod.resamp_target_hz = target_hz;
     }
     /* Schedule retune to current center to apply changes on controller thread */
-    schedule_manual_retune(dongle.freq);
+    schedule_manual_retune(load_dongle_frequency());
 }
 
 /* Runtime DSP tuning entrypoints (C shim) */
@@ -5882,14 +5954,15 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
         LOG_INFO("\nTuning to %ld Hz.", frequency);
     }
     uint32_t requested_freq = (uint32_t)frequency;
-    dongle.freq = opts->rtlsdr_center_freq = frequency;
+    opts->rtlsdr_center_freq = frequency;
+    store_dongle_frequency(requested_freq);
 
     /* Enqueue retune, coalescing with any already-pending request so completion IDs
      * stay aligned with the number of retunes the controller will actually execute. */
-    uint32_t my_request_id = schedule_manual_retune((uint32_t)dongle.freq);
+    uint32_t my_request_id = schedule_manual_retune(requested_freq);
 
     if (opts->payload == 1) {
-        LOG_INFO(" (Center Frequency: %u Hz.) \n", dongle.freq);
+        LOG_INFO(" (Center Frequency: %u Hz.) \n", requested_freq);
     }
 
     /* Wait for controller to complete the retune with a timeout.
@@ -5933,7 +6006,7 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
         if (applied_freq != 0 && applied_freq != requested_freq) {
             LOG_NOTICE("Retune request %u Hz superseded by %u Hz (coalesced pending tune).\n", requested_freq,
                        applied_freq);
-            dongle.freq = applied_freq;
+            store_dongle_frequency(applied_freq);
             if (opts) {
                 opts->rtlsdr_center_freq = (long int)applied_freq;
             }
