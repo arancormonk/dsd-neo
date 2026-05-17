@@ -19,10 +19,12 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/equalizer.h>
+#include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/simd_fir.h>
+#include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
@@ -68,6 +70,13 @@ struct BenchStats {
     double median_ns_per_item = 0.0;
     double items_per_second = 0.0;
     float checksum = 0.0f;
+};
+
+struct BenchMeta {
+    int rate_hz = 0;
+    const char* profile = "";
+    int tap_count = 0;
+    const char* variant = "";
 };
 
 struct DemodHolder {
@@ -213,6 +222,29 @@ fill_fsk_iq(std::vector<float>* v, int sps, float deviation_per_level) {
 }
 
 static void
+fill_fsk_iq_levels(std::vector<float>* v, int sps, int levels, float deviation_per_level) {
+    static const float levels2[] = {-1.0f, 1.0f, 1.0f, -1.0f};
+    static const float levels4[] = {-3.0f, -1.0f, 1.0f, 3.0f, 1.0f, -1.0f};
+    const float* table = (levels == 2) ? levels2 : levels4;
+    const int table_len =
+        (levels == 2) ? (int)(sizeof(levels2) / sizeof(levels2[0])) : (int)(sizeof(levels4) / sizeof(levels4[0]));
+
+    float phase = 0.19f;
+    const int pairs = (int)(v->size() >> 1);
+    for (int n = 0; n < pairs; n++) {
+        float sym = table[(n / sps) % table_len];
+        phase += deviation_per_level * sym;
+        if (phase > kPi) {
+            phase -= 2.0f * kPi;
+        } else if (phase < -kPi) {
+            phase += 2.0f * kPi;
+        }
+        (*v)[(size_t)n * 2] = 0.85f * std::cos(phase);
+        (*v)[(size_t)n * 2 + 1] = 0.85f * std::sin(phase);
+    }
+}
+
+static void
 fill_cqpsk_iq(std::vector<float>* v, int sps) {
     static const float symbols[] = {-3.0f, -1.0f, 1.0f, 3.0f};
     float phase = 0.0f;
@@ -258,12 +290,14 @@ median_of(std::vector<double> values) {
 
 static void
 print_result(const BenchOptions& opts, const char* name, const char* item_unit, double work_items,
-             const BenchStats& stats) {
+             const BenchStats& stats, const BenchMeta* meta) {
     if (opts.format == OutputFormat::Csv) {
-        std::printf("%s,%d,%d,%d,%.0f,%s,%.3f,%.3f,%.3f,%.6f,%.3f,%.9e,%s\n", name, opts.repeat, opts.iterations,
-                    opts.warmup, work_items, item_unit, stats.median_ns_per_call, stats.min_ns_per_call,
-                    stats.mean_ns_per_call, stats.median_ns_per_item, stats.items_per_second, (double)stats.checksum,
-                    simd_fir_get_impl_name());
+        std::printf("%s,%d,%d,%d,%.0f,%s,%.3f,%.3f,%.3f,%.6f,%.3f,%.9e,%s,%d,%s,%d,%s\n", name, opts.repeat,
+                    opts.iterations, opts.warmup, work_items, item_unit, stats.median_ns_per_call,
+                    stats.min_ns_per_call, stats.mean_ns_per_call, stats.median_ns_per_item, stats.items_per_second,
+                    (double)stats.checksum, simd_fir_get_impl_name(), meta ? meta->rate_hz : 0,
+                    (meta && meta->profile) ? meta->profile : "", meta ? meta->tap_count : 0,
+                    (meta && meta->variant) ? meta->variant : "");
         return;
     }
 
@@ -272,11 +306,18 @@ print_result(const BenchOptions& opts, const char* name, const char* item_unit, 
                 name, opts.repeat, stats.median_ns_per_call / 1000.0, stats.min_ns_per_call / 1000.0,
                 stats.mean_ns_per_call / 1000.0, stats.median_ns_per_item, item_unit, stats.items_per_second,
                 (double)stats.checksum);
+    if (meta
+        && (meta->rate_hz > 0 || meta->tap_count > 0 || (meta->profile && meta->profile[0] != '\0')
+            || (meta->variant && meta->variant[0] != '\0'))) {
+        std::printf("    meta rate_hz=%d profile=%s tap_count=%d variant=%s\n", meta->rate_hz,
+                    meta->profile ? meta->profile : "", meta->tap_count, meta->variant ? meta->variant : "");
+    }
 }
 
 template <typename Fn>
 static int
-run_case(const BenchOptions& opts, const char* name, const char* item_unit, double work_items, Fn fn) {
+run_case(const BenchOptions& opts, const char* name, const char* item_unit, double work_items, Fn fn,
+         const BenchMeta* meta = NULL) {
     if (opts.case_filter && std::strcmp(opts.case_filter, name) != 0) {
         return 0;
     }
@@ -317,7 +358,7 @@ run_case(const BenchOptions& opts, const char* name, const char* item_unit, doub
     stats.items_per_second = (stats.median_ns_per_item > 0.0) ? (1000000000.0 / stats.median_ns_per_item) : 0.0;
 
     g_bench_sink += checksum;
-    print_result(opts, name, item_unit, work_items, stats);
+    print_result(opts, name, item_unit, work_items, stats, meta);
     return 1;
 }
 
@@ -414,6 +455,137 @@ bench_output_ring(const BenchOptions& opts) {
 }
 
 static int
+bench_u8_widen(const BenchOptions& opts) {
+    int ran = 0;
+    constexpr uint32_t kBytes = 16384;
+    std::vector<unsigned char> in(kBytes);
+    std::vector<unsigned char> legacy(kBytes);
+    std::vector<float> out(kBytes);
+    uint32_t seed = 0x9e3779b9u;
+    for (uint32_t i = 0; i < kBytes; i++) {
+        seed = seed * 1664525u + 1013904223u;
+        in[i] = (unsigned char)((seed >> 24) & 0xffu);
+    }
+    legacy = in;
+
+    ran += run_case(opts, "widen_u8_to_f32_bias127", "byte", (double)kBytes, [&]() -> float {
+        widen_u8_to_f32_bias127(in.data(), out.data(), kBytes);
+        return out[0] + out[kBytes - 1];
+    });
+
+    uint32_t combined_phase = 0;
+    ran += run_case(opts, "widen_rotate90_u8_to_f32_bias127", "byte", (double)kBytes, [&]() -> float {
+        combined_phase = widen_rotate90_u8_to_f32_bias127_phase(in.data(), out.data(), kBytes, combined_phase);
+        return out[0] + out[kBytes - 1] + (float)combined_phase;
+    });
+
+    uint32_t legacy_phase = 0;
+    ran += run_case(opts, "rotate90_u8_then_widen_bias128", "byte", (double)kBytes, [&]() -> float {
+        legacy_phase = rotate90_u8_inplace_phase(legacy.data(), kBytes, legacy_phase);
+        widen_u8_to_f32_bias128_scalar(legacy.data(), out.data(), kBytes);
+        return out[0] + out[kBytes - 1] + (float)legacy_phase;
+    });
+
+    return ran;
+}
+
+static const char*
+channel_profile_name(int profile) {
+    switch (profile) {
+        case DSD_CH_LPF_PROFILE_6K25: return "6k25";
+        case DSD_CH_LPF_PROFILE_12K5: return "12k5";
+        case DSD_CH_LPF_PROFILE_PROVOICE: return "provoice";
+        case DSD_CH_LPF_PROFILE_P25_C4FM: return "p25_c4fm";
+        case DSD_CH_LPF_PROFILE_P25_CQPSK: return "p25_cqpsk";
+        case DSD_CH_LPF_PROFILE_WIDE:
+        default: return "wide";
+    }
+}
+
+static double
+channel_profile_cutoff_hz(int profile) {
+    constexpr double kTransitionHz = 1200.0;
+    constexpr double kGuardHz = kTransitionHz * 0.5;
+    switch (profile) {
+        case DSD_CH_LPF_PROFILE_6K25: return 3125.0 + kGuardHz;
+        case DSD_CH_LPF_PROFILE_12K5: return 6250.0 + kGuardHz;
+        case DSD_CH_LPF_PROFILE_PROVOICE: return 6250.0 + kGuardHz;
+        case DSD_CH_LPF_PROFILE_P25_C4FM: return 6250.0 + kGuardHz;
+        case DSD_CH_LPF_PROFILE_P25_CQPSK: return 7250.0;
+        case DSD_CH_LPF_PROFILE_WIDE:
+        default: return 8000.0 + kGuardHz;
+    }
+}
+
+static int
+design_channel_lpf_taps(int rate_hz, int profile, float* taps, int max_taps) {
+    constexpr double kTransitionHz = 1200.0;
+    if (rate_hz <= 0 || !taps || max_taps <= 0) {
+        return -1;
+    }
+
+    const double nyquist = (double)rate_hz * 0.5;
+    const double max_cutoff = nyquist * 0.90;
+    double cutoff = channel_profile_cutoff_hz(profile);
+    if (cutoff < 100.0) {
+        cutoff = 100.0;
+    }
+    if (cutoff > max_cutoff) {
+        cutoff = max_cutoff;
+    }
+
+    return dsd_firdes_low_pass(1.0, (double)rate_hz, cutoff, kTransitionHz, DSD_WIN_BLACKMAN, taps, max_taps);
+}
+
+static int
+bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int profile) {
+    constexpr int kPairs = 4096;
+    constexpr int kInLen = kPairs * 2;
+    constexpr int kMaxTaps = 144;
+
+    std::vector<float> in(kInLen);
+    std::vector<float> out(kInLen);
+    std::vector<float> hist_i(kMaxTaps - 1, 0.0f);
+    std::vector<float> hist_q(kMaxTaps - 1, 0.0f);
+    std::vector<float> taps(kMaxTaps);
+    fill_noise(&in, (uint32_t)rate_hz ^ (uint32_t)(profile * 2654435761u));
+
+    int taps_len = design_channel_lpf_taps(rate_hz, profile, taps.data(), kMaxTaps);
+    if (taps_len <= 0) {
+        std::fprintf(stderr, "channel LPF design failed for %s\n", name);
+        return 0;
+    }
+
+    BenchMeta meta;
+    meta.rate_hz = rate_hz;
+    meta.profile = channel_profile_name(profile);
+    meta.tap_count = taps_len;
+    meta.variant = "blackman";
+
+    return run_case(
+        opts, name, "pair", (double)kPairs,
+        [&]() -> float {
+            simd_fir_complex_apply(in.data(), kInLen, out.data(), hist_i.data(), hist_q.data(), taps.data(), taps_len);
+            return out[0] + out[kInLen - 1] + hist_i[0] + hist_q[0];
+        },
+        &meta);
+}
+
+static int
+bench_channel_lpf(const BenchOptions& opts) {
+    int ran = 0;
+    ran += bench_one_channel_lpf(opts, "channel_lpf_24k_p25_c4fm", 24000, DSD_CH_LPF_PROFILE_P25_C4FM);
+    ran += bench_one_channel_lpf(opts, "channel_lpf_48k_p25_c4fm", 48000, DSD_CH_LPF_PROFILE_P25_C4FM);
+    ran += bench_one_channel_lpf(opts, "channel_lpf_24k_p25_cqpsk", 24000, DSD_CH_LPF_PROFILE_P25_CQPSK);
+    ran += bench_one_channel_lpf(opts, "channel_lpf_48k_p25_cqpsk", 48000, DSD_CH_LPF_PROFILE_P25_CQPSK);
+    ran += bench_one_channel_lpf(opts, "channel_lpf_24k_6k25", 24000, DSD_CH_LPF_PROFILE_6K25);
+    ran += bench_one_channel_lpf(opts, "channel_lpf_48k_6k25", 48000, DSD_CH_LPF_PROFILE_6K25);
+    ran += bench_one_channel_lpf(opts, "channel_lpf_24k_12k5", 24000, DSD_CH_LPF_PROFILE_12K5);
+    ran += bench_one_channel_lpf(opts, "channel_lpf_48k_12k5", 48000, DSD_CH_LPF_PROFILE_12K5);
+    return ran;
+}
+
+static int
 bench_fir(const BenchOptions& opts) {
     int ran = 0;
     constexpr int kPairs = 4096;
@@ -450,6 +622,62 @@ bench_fir(const BenchOptions& opts) {
         return real_out[0] + real_out[(got > 0) ? got - 1 : 0] + (float)got;
     });
 
+    return ran;
+}
+
+static int
+bench_one_fsk_modem_variant(const BenchOptions& opts, const char* name, int sample_rate, int symbol_rate, int levels,
+                            int reset_each_call) {
+    const int sps = sample_rate / symbol_rate;
+    constexpr int kPairs = 4096;
+    constexpr int kInLen = kPairs * 2;
+    std::vector<float> fsk_iq(kInLen);
+    std::vector<float> fsk_out(kPairs);
+    fill_fsk_iq_levels(&fsk_iq, sps, levels, (levels == 2) ? 0.046f : 0.028f);
+
+    dsd_fsk_modem_state fsk_state = {};
+    dsd_fsk_modem_config fsk_cfg = {};
+    fsk_cfg.sample_rate_hz = sample_rate;
+    fsk_cfg.symbol_rate_hz = symbol_rate;
+    fsk_cfg.levels = levels;
+    fsk_cfg.channel_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
+    dsd_fsk_modem_init(&fsk_state, &fsk_cfg);
+
+    if (!reset_each_call) {
+        (void)dsd_fsk_modem_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(), (int)fsk_out.size());
+    }
+
+    BenchMeta meta;
+    meta.rate_hz = sample_rate;
+    meta.profile = (levels == 2) ? "2level" : "4level";
+    meta.variant = reset_each_call ? "acquisition" : "steady";
+
+    int ran = run_case(
+        opts, name, "pair", (double)kPairs,
+        [&]() -> float {
+            if (reset_each_call) {
+                dsd_fsk_modem_reset(&fsk_state);
+            }
+            int got = dsd_fsk_modem_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(), (int)fsk_out.size());
+            return fsk_out[0] + fsk_out[(got > 0) ? got - 1 : 0] + (float)got;
+        },
+        &meta);
+
+    dsd_fsk_modem_release(&fsk_state);
+    return ran;
+}
+
+static int
+bench_fsk_modem_variants(const BenchOptions& opts) {
+    int ran = 0;
+    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_24k_acq", 24000, 4800, 4, 1);
+    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_24k_steady", 24000, 4800, 4, 0);
+    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_48k_acq", 48000, 4800, 4, 1);
+    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_48k_steady", 48000, 4800, 4, 0);
+    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_24k_acq", 24000, 2400, 2, 1);
+    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_24k_steady", 24000, 2400, 2, 0);
+    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_48k_acq", 48000, 2400, 2, 1);
+    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_48k_steady", 48000, 2400, 2, 0);
     return ran;
 }
 
@@ -505,6 +733,7 @@ bench_kernel_demods(const BenchOptions& opts) {
         return fsk_out[0] + fsk_out[(got > 0) ? got - 1 : 0] + (float)got;
     });
     dsd_fsk_modem_release(&fsk_state);
+    ran += bench_fsk_modem_variants(opts);
 
     dsd_resampler_state resampler = {};
     std::vector<float> resamp_in(kInLen);
@@ -561,6 +790,152 @@ bench_carrier_loops(const BenchOptions& opts) {
         op25_costas_loop_cc(costas_state.s);
         return costas_iq[0] + costas_iq[kInLen - 1] + costas_state.s->costas_state.freq;
     });
+
+    return ran;
+}
+
+static void
+configure_cqpsk_stage_state(demod_state* s, int sample_rate, int sps, int eq_enable) {
+    s->cqpsk_enable = 1;
+    s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    s->rate_out = sample_rate;
+    s->symbol_rate_hz = (sps > 0) ? sample_rate / sps : 4800;
+    s->symbol_levels = 4;
+    s->ted_sps = sps;
+    s->sps_is_integer = 1;
+    s->ted_gain = 0.025f;
+    s->cqpsk_diff_prev_r = 1.0f;
+    s->cqpsk_diff_prev_j = 0.0f;
+    s->cqpsk_agc_avg = 1.0f;
+    s->cqpsk_eq_enable = eq_enable;
+    s->cqpsk_eq_taps = DSD_CQPSK_CMA_EQ_DEFAULT_TAPS;
+    s->cqpsk_eq_mu = DSD_CQPSK_CMA_EQ_DEFAULT_MU;
+    s->cqpsk_eq_modulus = DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
+    ted_init_state(&s->ted_state);
+    dsd_cqpsk_cma_equalizer_init(&s->cqpsk_eq_state, s->cqpsk_eq_taps);
+}
+
+static int
+bench_one_cqpsk_fll_stage(const BenchOptions& opts, const char* name, int sample_rate, int sps) {
+    constexpr int kPairs = 4096;
+    constexpr int kInLen = kPairs * 2;
+    std::vector<float> in(kInLen);
+    fill_rotating_iq(&in, 0.0125f);
+
+    DemodHolder state;
+    if (!state) {
+        std::fprintf(stderr, "demod_state allocation failed\n");
+        return 0;
+    }
+    configure_cqpsk_stage_state(state.s, sample_rate, sps, 0);
+    state.s->lowpassed = in.data();
+    state.s->lp_len = kInLen;
+
+    BenchMeta meta;
+    meta.rate_hz = sample_rate;
+    meta.profile = "cqpsk";
+    meta.tap_count = 2 * sps + 1;
+    meta.variant = (sps == 8) ? "p25p2" : "p25p1";
+
+    return run_case(
+        opts, name, "pair", (double)kPairs,
+        [&]() -> float {
+            state.s->lowpassed = in.data();
+            state.s->lp_len = kInLen;
+            op25_fll_band_edge_cc(state.s);
+            return in[0] + in[kInLen - 1] + state.s->fll_band_edge_state.freq;
+        },
+        &meta);
+}
+
+static int
+bench_one_cqpsk_gardner_stage(const BenchOptions& opts, const char* name, int sample_rate, int sps) {
+    constexpr int kSymbols = 512;
+    const int kPairs = kSymbols * sps;
+    const int kInLen = kPairs * 2;
+    std::vector<float> in((size_t)kInLen);
+    fill_cqpsk_iq(&in, sps);
+
+    DemodHolder state;
+    if (!state) {
+        std::fprintf(stderr, "demod_state allocation failed\n");
+        return 0;
+    }
+    configure_cqpsk_stage_state(state.s, sample_rate, sps, 0);
+
+    BenchMeta meta;
+    meta.rate_hz = sample_rate;
+    meta.profile = "cqpsk";
+    meta.tap_count = 8;
+    meta.variant = (sps == 8) ? "p25p2" : "p25p1";
+
+    return run_case(
+        opts, name, "symbol", (double)kSymbols,
+        [&]() -> float {
+            std::memcpy(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
+            state.s->lowpassed = state.s->input_cb_buf;
+            state.s->lp_len = kInLen;
+            op25_gardner_cc(state.s);
+            return state.s->lowpassed[0] + state.s->lowpassed[(state.s->lp_len > 0) ? state.s->lp_len - 1 : 0]
+                   + (float)state.s->lp_len;
+        },
+        &meta);
+}
+
+static int
+bench_one_cqpsk_equalizer_stage(const BenchOptions& opts, const char* name, int taps) {
+    constexpr int kPairs = 4096;
+    constexpr int kInLen = kPairs * 2;
+    std::vector<float> in(kInLen);
+    std::vector<float> work(kInLen);
+    fill_cqpsk_iq(&in, 1);
+
+    dsd_cqpsk_cma_equalizer_state_t eq = {};
+    dsd_cqpsk_cma_equalizer_init(&eq, taps);
+
+    BenchMeta meta;
+    meta.profile = "cqpsk";
+    meta.tap_count = taps;
+    meta.variant = "cma";
+
+    return run_case(
+        opts, name, "pair", (double)kPairs,
+        [&]() -> float {
+            std::memcpy(work.data(), in.data(), in.size() * sizeof(float));
+            dsd_cqpsk_cma_equalizer_apply(&eq, work.data(), kInLen, taps, DSD_CQPSK_CMA_EQ_DEFAULT_MU,
+                                          DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS);
+            return work[0] + work[kInLen - 1] + eq.err_ema;
+        },
+        &meta);
+}
+
+static int
+bench_cqpsk_stages(const BenchOptions& opts) {
+    int ran = 0;
+    constexpr int kPairs = 4096;
+    constexpr int kInLen = kPairs * 2;
+
+    ran += bench_one_cqpsk_fll_stage(opts, "op25_fll_band_edge_cc_p25p1", 24000, 5);
+    ran += bench_one_cqpsk_fll_stage(opts, "op25_fll_band_edge_cc_p25p2", 48000, 8);
+    ran += bench_one_cqpsk_gardner_stage(opts, "op25_gardner_cc_p25p1", 24000, 5);
+    ran += bench_one_cqpsk_gardner_stage(opts, "op25_gardner_cc_p25p2", 48000, 8);
+    ran += bench_one_cqpsk_equalizer_stage(opts, "cqpsk_cma_equalizer_9tap", 9);
+    ran += bench_one_cqpsk_equalizer_stage(opts, "cqpsk_cma_equalizer_15tap", 15);
+
+    {
+        std::vector<float> diff_iq(kInLen);
+        fill_cqpsk_iq(&diff_iq, 1);
+        DemodHolder diff_state;
+        if (diff_state) {
+            configure_cqpsk_stage_state(diff_state.s, 24000, 5, 0);
+            diff_state.s->lowpassed = diff_iq.data();
+            diff_state.s->lp_len = kInLen;
+            ran += run_case(opts, "op25_diff_phasor_cc", "pair", (double)kPairs, [&]() -> float {
+                op25_diff_phasor_cc(diff_state.s);
+                return diff_iq[0] + diff_iq[kInLen - 1] + diff_state.s->cqpsk_diff_prev_r;
+            });
+        }
+    }
 
     return ran;
 }
@@ -763,15 +1138,19 @@ main(int argc, char** argv) {
                     simd_fir_get_impl_name());
     } else if (opts.format == OutputFormat::Csv && !opts.list_cases) {
         std::printf("case,repeat,iters,warmup,work_items,item_unit,median_ns_per_call,min_ns_per_call,"
-                    "mean_ns_per_call,median_ns_per_item,items_per_second,checksum,simd_impl\n");
+                    "mean_ns_per_call,median_ns_per_item,items_per_second,checksum,simd_impl,rate_hz,profile,"
+                    "tap_count,variant\n");
     }
 
     int ran = 0;
     ran += bench_input_ring(opts);
     ran += bench_output_ring(opts);
+    ran += bench_u8_widen(opts);
     ran += bench_fir(opts);
+    ran += bench_channel_lpf(opts);
     ran += bench_kernel_demods(opts);
     ran += bench_carrier_loops(opts);
+    ran += bench_cqpsk_stages(opts);
     ran += bench_full_demod(opts);
 
     if (opts.case_filter && ran == 0) {
