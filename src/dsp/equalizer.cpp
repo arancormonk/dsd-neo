@@ -205,16 +205,15 @@ dsd_cqpsk_cma_equalizer_apply(dsd_cqpsk_cma_equalizer_state_t* st, float* iq, in
 
         const float mu_err_r = -effective_step * err_r;
         const float mu_err_i = -effective_step * err_i;
+        float tap_energy = 0.0f;
         for (int k = 0; k < taps; k++) {
             const float xr = st->hist_r[k];
             const float xi = st->hist_i[k];
-            st->taps_r[k] += mu_err_r * xr + mu_err_i * xi;
-            st->taps_i[k] += mu_err_i * xr - mu_err_r * xi;
-        }
-
-        float tap_energy = 0.0f;
-        for (int k = 0; k < taps; k++) {
-            tap_energy += st->taps_r[k] * st->taps_r[k] + st->taps_i[k] * st->taps_i[k];
+            const float tr = st->taps_r[k] + mu_err_r * xr + mu_err_i * xi;
+            const float ti = st->taps_i[k] + mu_err_i * xr - mu_err_r * xi;
+            st->taps_r[k] = tr;
+            st->taps_i[k] = ti;
+            tap_energy += tr * tr + ti * ti;
         }
         if (!std::isfinite(tap_energy) || tap_energy > 16.0f || tap_energy < 1.0e-6f) {
             reset_center_spike(st, taps);
