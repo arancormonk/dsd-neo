@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/ring.h>
 
 #include <algorithm>
+#include <atomic>
 // IWYU pragma: no_include <bits/chrono.h>
 #include <chrono> // IWYU pragma: keep
 #include <cmath>

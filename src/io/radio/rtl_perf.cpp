@@ -11,6 +11,7 @@
 #include "rtl_perf.h"
 
 #include <atomic>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -98,9 +99,9 @@ init_locked(void) {
     }
 
     int needs_header = 1;
-    if (fseek(f, 0, SEEK_END) == 0) {
-        long pos = ftell(f);
-        needs_header = (pos <= 0L) ? 1 : 0;
+    dsd_stat_t st;
+    if (dsd_fstat(dsd_fileno(f), &st) == 0) {
+        needs_header = (st.st_size <= 0) ? 1 : 0;
     }
     if (needs_header) {
         write_header(f);
