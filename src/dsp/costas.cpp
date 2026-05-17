@@ -197,6 +197,28 @@ dsd_sincosf_half_pi(float phase, float* out_sin, float* out_cos) {
                                           + x2 * (0.00002480158730158730f + x2 * -0.00000027557319223986f))));
 }
 
+static inline void
+dsd_sincosf_clamped_half_pi(float phase, float* out_sin, float* out_cos) {
+    float x2 = phase * phase;
+    *out_sin = phase
+               * (1.0f
+                  + x2
+                        * (-0.16666666666666666667f
+                           + x2
+                                 * (0.00833333333333333333f
+                                    + x2
+                                          * (-0.00019841269841269841f
+                                             + x2 * (0.00000275573192239859f + x2 * -0.00000002505210838544f)))));
+    *out_cos = 1.0f
+               + x2
+                     * (-0.5f
+                        + x2
+                              * (0.04166666666666666667f
+                                 + x2
+                                       * (-0.00138888888888888889f
+                                          + x2 * (0.00002480158730158730f + x2 * -0.00000027557319223986f))));
+}
+
 static int
 cqpsk_symbol_rate_hz(const demod_state* d) {
     if (!d || d->rate_out <= 0 || d->ted_sps <= 0) {
@@ -249,6 +271,8 @@ phase_detector_4(float real, float imag) {
 constexpr float kCqpskCostasDetectorTargetMag = 0.85f * 0.85f;
 constexpr float kCqpskCostasConfidenceFloorMag = 0.10f;
 constexpr float kCqpskCostasConfidenceFullMag = 0.35f;
+constexpr float kCqpskCostasConfidenceFloorMag2 = kCqpskCostasConfidenceFloorMag * kCqpskCostasConfidenceFloorMag;
+constexpr float kCqpskCostasConfidenceFullMag2 = kCqpskCostasConfidenceFullMag * kCqpskCostasConfidenceFullMag;
 constexpr float kCqpskCostasErrorSmoothAlpha = 0.25f;
 constexpr float kCqpskCostasErrorSmoothAlphaMin = 0.10f;
 constexpr float kCqpskCostasErrorKickDeltaLow = 0.02f;
@@ -298,13 +322,14 @@ normalize_costas_detector_sample(float real, float imag, float* out_real, float*
         return 0.0f;
     }
 
-    float mag = sqrtf(mag2);
-    float confidence = cqpsk_costas_confidence_from_mag(mag);
-    if (mag <= kCqpskCostasConfidenceFloorMag) {
+    if (mag2 <= kCqpskCostasConfidenceFloorMag2) {
         *out_real = real;
         *out_imag = imag;
-        return confidence;
+        return 0.0f;
     }
+
+    float mag = sqrtf(mag2);
+    float confidence = (mag2 >= kCqpskCostasConfidenceFullMag2) ? 1.0f : cqpsk_costas_confidence_from_mag(mag);
 
     float scale = kCqpskCostasDetectorTargetMag / mag;
     if (!std::isfinite(scale)) {
@@ -792,14 +817,21 @@ op25_costas_loop_cc(struct demod_state* d) {
     const float min_freq = c->min_freq;
     float last_error = 0.0f;
     float error_smooth = std::isfinite(c->error_smooth) ? c->error_smooth : 0.0f;
-    double err_abs_acc = 0.0;
-    double err_raw_abs_acc = 0.0;
-    double confidence_acc = 0.0;
+    float err_abs_acc = 0.0f;
+    float err_raw_abs_acc = 0.0f;
+    float confidence_acc = 0.0f;
     int zero_conf_count = 0;
 
     /* OP25 max_phase = TWO_PI/4 = π/2 */
     const float max_phase = kPi / 2.0f;
     const float min_phase = -max_phase;
+    if (!std::isfinite(phase)) {
+        phase = 0.0f;
+    } else if (phase > max_phase) {
+        phase = max_phase;
+    } else if (phase < min_phase) {
+        phase = min_phase;
+    }
 
     for (int n = 0; n < pairs; n++) {
         const size_t nn = (size_t)n;
@@ -810,7 +842,7 @@ op25_costas_loop_cc(struct demod_state* d) {
          * From costas_loop_cc_impl.cc line 146 */
         float nco_r = 0.0f;
         float nco_j = 0.0f;
-        dsd_sincosf_half_pi(-phase, &nco_j, &nco_r);
+        dsd_sincosf_clamped_half_pi(-phase, &nco_j, &nco_r);
 
         /* OP25: optr[i] = iptr[i] * nco_out
          * Complex multiply: out = in * nco */
@@ -839,8 +871,8 @@ op25_costas_loop_cc(struct demod_state* d) {
             confidence_acc += confidence;
         }
         last_error = error;
-        err_abs_acc += std::fabs((double)error);
-        err_raw_abs_acc += std::fabs((double)error_raw);
+        err_abs_acc += fabsf(error);
+        err_raw_abs_acc += fabsf(error_raw);
 
         /* OP25 advance_loop (PI controller)
          * From costas_loop_cc_impl.cc lines 169-173:
@@ -876,8 +908,8 @@ op25_costas_loop_cc(struct demod_state* d) {
     c->error = last_error;
     c->error_smooth = error_smooth;
     if (pairs > 0) {
-        double avg_abs = err_abs_acc / (double)pairs;
-        int q14 = (int)std::lrint(avg_abs * 16384.0);
+        float avg_abs = err_abs_acc / (float)pairs;
+        int q14 = (int)std::lrint(avg_abs * 16384.0f);
         if (q14 < 0) {
             q14 = 0;
         }
@@ -886,8 +918,8 @@ op25_costas_loop_cc(struct demod_state* d) {
         }
         d->costas_err_avg_q14 = q14;
 
-        double raw_avg_abs = err_raw_abs_acc / (double)pairs;
-        int raw_q14 = (int)std::lrint(raw_avg_abs * 16384.0);
+        float raw_avg_abs = err_raw_abs_acc / (float)pairs;
+        int raw_q14 = (int)std::lrint(raw_avg_abs * 16384.0f);
         if (raw_q14 < 0) {
             raw_q14 = 0;
         }
@@ -896,8 +928,8 @@ op25_costas_loop_cc(struct demod_state* d) {
         }
         d->costas_err_raw_avg_q14 = raw_q14;
 
-        double conf_avg = confidence_acc / (double)pairs;
-        int conf_q14 = (int)std::lrint(conf_avg * 16384.0);
+        float conf_avg = confidence_acc / (float)pairs;
+        int conf_q14 = (int)std::lrint(conf_avg * 16384.0f);
         if (conf_q14 < 0) {
             conf_q14 = 0;
         }
