@@ -846,6 +846,10 @@ initState(dsd_state* state) {
     state->lcn_freq_roll = 0;  //needs reset if sync is found?
     state->last_cc_sync_time = time(NULL);
     state->last_vc_sync_time = time(NULL);
+    state->rtl_fsk_reacquire_last_sync_time = 0;
+    state->rtl_fsk_reacquire_last_sync_m = 0.0;
+    state->rtl_fsk_reacquire_gap_start_m = 0.0;
+    state->rtl_fsk_reacquire_last_request_m = 0.0;
     state->last_active_time = time(NULL);
     state->last_t3_tune_time = time(NULL);
     state->is_con_plus = 0;

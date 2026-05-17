@@ -28,6 +28,7 @@ typedef struct dsd_fsk_modem_config {
 } dsd_fsk_modem_config;
 
 #define DSD_FSK_MODEM_ACQ_MAX_SAMPLES        2048
+#define DSD_FSK_MODEM_TRACK_MAX_SAMPLES      2048
 #define DSD_FSK_MODEM_PENDING_INLINE_SYMBOLS 2048
 
 typedef struct dsd_fsk_modem_state {
@@ -46,6 +47,13 @@ typedef struct dsd_fsk_modem_state {
     int timing_acquired;
     int acq_len;
     float acq_freq[DSD_FSK_MODEM_ACQ_MAX_SAMPLES];
+    int track_len;
+    float track_start_phase;
+    float track_last_error;
+    float track_last_score;
+    uint64_t track_updates;
+    uint64_t track_skips;
+    float track_freq[DSD_FSK_MODEM_TRACK_MAX_SAMPLES];
     int pending_pos;
     int pending_len;
     int pending_cap;

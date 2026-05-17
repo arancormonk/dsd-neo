@@ -265,6 +265,9 @@ static std::atomic<int> g_retune_diag_blocks_remaining{0};
 static std::atomic<uint32_t> g_retune_settle_seq{0};
 static std::atomic<int> g_retune_settle_blocks_remaining{0};
 static std::atomic<uint32_t> g_rtl_output_generation{1};
+static std::atomic<int> g_fsk_reacquire_pending{0};
+
+static int rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d);
 static const int kRetuneDiagBlocks = 20;
 static uint32_t rtl_stream_bump_output_generation(void);
 /*
@@ -833,6 +836,12 @@ static inline int
 debug_cqpsk_enabled(void) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     return (cfg && cfg->debug_cqpsk_enable) ? 1 : 0;
+}
+
+static inline int
+debug_sync_enabled(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    return (cfg && cfg->debug_sync_enable) ? 1 : 0;
 }
 
 /*
@@ -1956,6 +1965,7 @@ static DSD_THREAD_RETURN_TYPE
 
         int perf_on = rtl_perf_enabled();
         uint64_t perf_full_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
+        (void)rtl_stream_consume_fsk_reacquire_pending(d);
         full_demod(d);
         uint64_t perf_full_demod_ns = perf_on ? (rtl_perf_now_ns() - perf_full_start_ns) : 0ULL;
         rtl_monitor_side_tap_process(d);
@@ -2594,6 +2604,21 @@ rtl_stream_bump_output_generation(void) {
         next = g_rtl_output_generation.fetch_add(1, std::memory_order_acq_rel) + 1U;
     }
     return next;
+}
+
+static int
+rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d) {
+    int pending = g_fsk_reacquire_pending.exchange(0, std::memory_order_acq_rel);
+    if (!pending || !d || d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+        return 0;
+    }
+    dsd_rtl_stream_clear_output();
+    dsd_fsk_modem_reset(&d->fsk_modem_state);
+    if (debug_sync_enabled()) {
+        fprintf(stderr, "[FSKREACQ] consumed output_generation=%u\n",
+                g_rtl_output_generation.load(std::memory_order_acquire));
+    }
+    return 1;
 }
 
 static void
@@ -5024,6 +5049,19 @@ dsd_rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
     return 0;
 }
 
+extern "C" int
+dsd_rtl_stream_request_fsk_reacquire(void) {
+    if (demod.output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+        return 0;
+    }
+    g_fsk_reacquire_pending.store(1, std::memory_order_release);
+    if (debug_sync_enabled()) {
+        fprintf(stderr, "[FSKREACQ] requested output_generation=%u\n",
+                g_rtl_output_generation.load(std::memory_order_acquire));
+    }
+    return 1;
+}
+
 extern "C" void
 dsd_rtl_stream_set_ted_sps(int sps) {
     if (sps < 2) {
@@ -5895,6 +5933,87 @@ dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size
     *out_used_after = ring_used(&output);
     *out_cache_pending_after = dsd_rtl_stream_metrics_hook_symbol_cache_pending();
 
+    ring_clear(&output);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    if (initialized_output) {
+        output_cleanup(&output);
+    }
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached_symbols, size_t* out_used_after,
+                                  int* out_cache_pending_after, uint32_t* out_generation_before,
+                                  uint32_t* out_generation_after, int* out_request_rc, int* out_consumed) {
+    if (!out_used_after || !out_cache_pending_after || !out_generation_before || !out_generation_after
+        || !out_request_rc || !out_consumed || cached_symbols < 0) {
+        return -1;
+    }
+
+    int initialized_output = 0;
+    if (!output.buffer) {
+        output_init(&output);
+        initialized_output = 1;
+    }
+    if (!output.buffer || output.capacity == 0U) {
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -2;
+    }
+    if (queued_samples >= output.capacity) {
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -3;
+    }
+
+    int prev_output_kind = demod.output_kind;
+    if (demod.fsk_modem_state.pending_heap) {
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -4;
+    }
+    dsd_fsk_modem_state prev_modem = demod.fsk_modem_state;
+    demod.output_kind = output_kind;
+    demod.fsk_modem_state.have_prev = 1;
+    demod.fsk_modem_state.timing_acquired = 1;
+    demod.fsk_modem_state.track_len = 9;
+    g_fsk_reacquire_pending.store(0, std::memory_order_release);
+
+    ring_clear(&output);
+    output.tail.store(0);
+    output.head.store(queued_samples);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(cached_symbols);
+
+    *out_generation_before = dsd_rtl_stream_output_generation();
+    *out_request_rc = dsd_rtl_stream_request_fsk_reacquire();
+    size_t used_after_request = ring_used(&output);
+    int cache_after_request = dsd_rtl_stream_metrics_hook_symbol_cache_pending();
+    uint32_t generation_after_request = dsd_rtl_stream_output_generation();
+    if (*out_request_rc > 0
+        && (used_after_request != queued_samples || cache_after_request != cached_symbols
+            || generation_after_request != *out_generation_before)) {
+        demod.output_kind = prev_output_kind;
+        demod.fsk_modem_state = prev_modem;
+        g_fsk_reacquire_pending.store(0, std::memory_order_release);
+        ring_clear(&output);
+        dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -5;
+    }
+    *out_consumed = rtl_stream_consume_fsk_reacquire_pending(&demod);
+    *out_generation_after = dsd_rtl_stream_output_generation();
+    *out_used_after = ring_used(&output);
+    *out_cache_pending_after = dsd_rtl_stream_metrics_hook_symbol_cache_pending();
+
+    demod.output_kind = prev_output_kind;
+    demod.fsk_modem_state = prev_modem;
+    g_fsk_reacquire_pending.store(0, std::memory_order_release);
     ring_clear(&output);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     if (initialized_output) {

@@ -184,6 +184,15 @@ int rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels,
  */
 int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
 
+/**
+ * @brief Request fresh acquisition for the active RTL FSK symbol modem.
+ *
+ * The request is consumed by the demod thread before the next FSK block so the
+ * modem state is not mutated from decoder/control threads. Returns 1 when a
+ * request was queued, 0 when FSK symbol output is inactive.
+ */
+int rtl_stream_request_fsk_reacquire(void);
+
 /* Optional helpers to mirror legacy API behavior */
 /**
  * @brief Clear the output ring buffer and wake any waiting producer.
@@ -284,6 +293,13 @@ int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symb
 int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                  int* out_cache_pending_after, uint32_t* out_generation_before,
                                  uint32_t* out_generation_after);
+
+/**
+ * @brief Seed output/cache state, request FSK reacquire, and consume pending reset.
+ */
+int rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached_symbols, size_t* out_used_after,
+                                  int* out_cache_pending_after, uint32_t* out_generation_before,
+                                  uint32_t* out_generation_after, int* out_request_rc, int* out_consumed);
 
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;

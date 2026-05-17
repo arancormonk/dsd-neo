@@ -10,6 +10,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define DSD_FSK_TRACK_SYMBOLS        64
+#define DSD_FSK_TRACK_MIN_SCORE      1.0e-4f
+#define DSD_FSK_TRACK_MIN_RATIO      1.10f
+#define DSD_FSK_TRACK_GAIN           0.125f
+#define DSD_FSK_TRACK_MAX_CORRECTION 0.25f
+
 static int
 clamp_levels(int levels) {
     return (levels == 2) ? 2 : 4;
@@ -307,9 +313,10 @@ sum_freq_window(const float* freq, int start, int len) {
 }
 
 static int
-acquire_symbol_phase(const float* freq, int n, int clock_i, float* out_score) {
+acquire_symbol_phase_scored(const float* freq, int n, int clock_i, float* out_score, float* out_second_score) {
     int best_phase = 0;
     float best_score = -1.0f;
+    float second_score = -1.0f;
 
     for (int phase = 0; phase < clock_i; phase++) {
         double score = 0.0;
@@ -323,15 +330,166 @@ acquire_symbol_phase(const float* freq, int n, int clock_i, float* out_score) {
             score /= (double)count;
         }
         if ((float)score > best_score) {
+            second_score = best_score;
             best_score = (float)score;
             best_phase = phase;
+        } else if ((float)score > second_score) {
+            second_score = (float)score;
         }
     }
 
     if (out_score) {
         *out_score = best_score;
     }
+    if (out_second_score) {
+        *out_second_score = second_score;
+    }
     return best_phase;
+}
+
+static int
+acquire_symbol_phase(const float* freq, int n, int clock_i, float* out_score) {
+    return acquire_symbol_phase_scored(freq, n, clock_i, out_score, NULL);
+}
+
+static int
+tracking_target_samples(int clock_i) {
+    int target = clock_i * DSD_FSK_TRACK_SYMBOLS;
+    if (target > DSD_FSK_MODEM_TRACK_MAX_SAMPLES) {
+        target = DSD_FSK_MODEM_TRACK_MAX_SAMPLES - (DSD_FSK_MODEM_TRACK_MAX_SAMPLES % clock_i);
+    }
+    if (target < clock_i * 12) {
+        target = clock_i * 12;
+    }
+    return target;
+}
+
+static void
+clear_tracking_window(dsd_fsk_modem_state* st) {
+    st->track_len = 0;
+    st->track_start_phase = 0.0f;
+}
+
+static float
+wrap_timing_error(float err, int clock_i) {
+    float half = (float)clock_i * 0.5f;
+    while (err > half) {
+        err -= (float)clock_i;
+    }
+    while (err < -half) {
+        err += (float)clock_i;
+    }
+    return err;
+}
+
+static int
+track_boundary_phase_scored(const float* freq, int n, int clock_i, float* out_score, float* out_second_score) {
+    int best_phase = 0;
+    float best_score = -1.0f;
+    float second_score = -1.0f;
+
+    for (int phase = 0; phase < clock_i; phase++) {
+        double score = 0.0;
+        int count = 0;
+        for (int pos = phase; pos < n; pos += clock_i) {
+            if (pos <= 0) {
+                continue;
+            }
+            score += fabs((double)freq[pos] - (double)freq[pos - 1]);
+            count++;
+        }
+        if (count > 0) {
+            score /= (double)count;
+        }
+        if ((float)score > best_score) {
+            second_score = best_score;
+            best_score = (float)score;
+            best_phase = phase;
+        } else if ((float)score > second_score) {
+            second_score = (float)score;
+        }
+    }
+
+    if (out_score) {
+        *out_score = best_score;
+    }
+    if (out_second_score) {
+        *out_second_score = second_score;
+    }
+    return best_phase;
+}
+
+static void
+maybe_track_symbol_timing(dsd_fsk_modem_state* st, float centered, int clock_i, float sample_phase, float* phase_io) {
+    if (!st || !phase_io || clock_i < 4 || clock_i > 32 || !st->timing_acquired) {
+        return;
+    }
+    int target = tracking_target_samples(clock_i);
+    if (target <= 0) {
+        return;
+    }
+    if (st->track_len == 0) {
+        st->track_start_phase = sample_phase;
+    }
+    if (st->track_len < DSD_FSK_MODEM_TRACK_MAX_SAMPLES) {
+        st->track_freq[st->track_len++] = centered;
+    }
+    if (st->track_len < target) {
+        return;
+    }
+
+    float best_score = 0.0f;
+    float second_score = 0.0f;
+    int best_phase = track_boundary_phase_scored(st->track_freq, st->track_len, clock_i, &best_score, &second_score);
+    int start_phase = (int)floorf(st->track_start_phase);
+    start_phase %= clock_i;
+    if (start_phase < 0) {
+        start_phase += clock_i;
+    }
+    int expected_phase = (clock_i - start_phase) % clock_i;
+    float ratio = (second_score > 1.0e-12f) ? (best_score / second_score) : (best_score > 0.0f ? 1000.0f : 0.0f);
+    float err = wrap_timing_error((float)(best_phase - expected_phase), clock_i);
+    int accept = (best_score >= DSD_FSK_TRACK_MIN_SCORE && ratio >= DSD_FSK_TRACK_MIN_RATIO && fabsf(err) <= 2.0f);
+
+    if (accept) {
+        float correction = err * DSD_FSK_TRACK_GAIN;
+        if (correction > DSD_FSK_TRACK_MAX_CORRECTION) {
+            correction = DSD_FSK_TRACK_MAX_CORRECTION;
+        } else if (correction < -DSD_FSK_TRACK_MAX_CORRECTION) {
+            correction = -DSD_FSK_TRACK_MAX_CORRECTION;
+        }
+        float corrected_phase = *phase_io - correction;
+        if (corrected_phase < 0.0f) {
+            correction = *phase_io;
+            corrected_phase = 0.0f;
+        } else if (corrected_phase >= st->symbol_clock) {
+            float phase_limit = st->symbol_clock - 1.0e-4f;
+            if (phase_limit < 0.0f) {
+                phase_limit = 0.0f;
+            }
+            correction = *phase_io - phase_limit;
+            corrected_phase = phase_limit;
+        }
+        *phase_io = corrected_phase;
+        st->track_last_error = err;
+        st->track_last_score = best_score;
+        st->track_updates++;
+        if (debug_fsk_acq_enabled()) {
+            fprintf(stderr,
+                    "[FSKTRACK] clock=%d best=%d expect=%d err=%.3f corr=%.3f score=%.5f ratio=%.3f updates=%llu\n",
+                    clock_i, best_phase, expected_phase, err, correction, best_score, ratio,
+                    (unsigned long long)st->track_updates);
+        }
+    } else {
+        st->track_last_error = 0.0f;
+        st->track_last_score = best_score;
+        st->track_skips++;
+        if (debug_fsk_acq_enabled()) {
+            fprintf(stderr, "[FSKTRACK] skip clock=%d best=%d expect=%d score=%.5f ratio=%.3f skips=%llu\n", clock_i,
+                    best_phase, expected_phase, best_score, ratio, (unsigned long long)st->track_skips);
+        }
+    }
+    clear_tracking_window(st);
 }
 
 static int
@@ -371,6 +529,7 @@ emit_acquisition_symbols(dsd_fsk_modem_state* st, int clock_i, float* out_symbol
     }
     st->acq_len = 0;
     st->timing_acquired = 1;
+    clear_tracking_window(st);
 
     if (debug_fsk_acq_enabled()) {
         fprintf(stderr, "[FSKACQ] clock=%d phase=%d score=%.5f lead=%d carry=%d emitted=%llu\n", clock_i, phase, score,
@@ -439,6 +598,7 @@ dsd_fsk_modem_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int 
             continue;
         }
 
+        float sample_phase = phase;
         accum += centered;
         accum_count++;
         phase += 1.0f;
@@ -452,6 +612,7 @@ dsd_fsk_modem_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int 
                 phase = fmodf(phase, clock);
             }
         }
+        maybe_track_symbol_timing(st, centered, clock_i, sample_phase, &phase);
 
         prev_i = cur_i;
         prev_q = cur_q;
@@ -489,6 +650,9 @@ dsd_fsk_modem_zero_symbols(dsd_fsk_modem_state* st, int input_complex_samples, f
     st->symbol_count = 0;
     st->last_symbol = 0.0f;
     clear_pending_symbols(st);
+    clear_tracking_window(st);
+    st->track_last_error = 0.0f;
+    st->track_last_score = 0.0f;
     st->prev_i = 0.0f;
     st->prev_q = 0.0f;
     st->have_prev = 0;

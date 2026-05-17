@@ -11,10 +11,16 @@
 #include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #undef DSD_NEO_MAIN
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#ifdef USE_RADIO
+#include <dsd-neo/io/rtl_stream_c.h>
+#endif
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -30,6 +36,13 @@ expect_true(const char* tag, int cond) {
     }
     return 0;
 }
+
+#ifdef USE_RADIO
+static int
+fake_rtl_fsk_output_kind(void) {
+    return RTL_STREAM_OUTPUT_SYMBOL_FSK;
+}
+#endif
 
 int
 ui_start(dsd_opts* opts, dsd_state* state) {
@@ -142,6 +155,24 @@ main(void) {
 
     rc |= expect_true("p25-stale-vc-clears-tuned", opts->p25_is_tuned == 0);
     rc |= expect_true("p25-stale-vc-clears-freq", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
+
+#ifdef USE_RADIO
+    dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){.output_kind = fake_rtl_fsk_output_kind});
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (struct RtlSdrContext*)state;
+    state->lastsynctype = DSD_SYNC_YSF_POS;
+    state->rtl_fsk_reacquire_gap_start_m = dsd_time_now_monotonic_s() - 1.0;
+    state->rtl_fsk_reacquire_last_sync_m = state->rtl_fsk_reacquire_gap_start_m - 1.0;
+    state->rtl_fsk_reacquire_last_sync_time = time(NULL) - 2;
+    double old_reacquire_sync_m = state->rtl_fsk_reacquire_last_sync_m;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("rtl-fsk-recovered-sync-clears-gap", state->rtl_fsk_reacquire_gap_start_m == 0.0);
+    rc |= expect_true("rtl-fsk-recovered-sync-refreshes-timer",
+                      state->rtl_fsk_reacquire_last_sync_m > old_reacquire_sync_m);
+    dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){0});
+#endif
 
     free_test_runtime(opts, state);
 

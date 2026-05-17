@@ -753,12 +753,14 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     dsd-neo_engine
     "-Wl,--end-group"
     ${LIBS}
+    dsd-neo_feature_radio
     dsd-neo_test_support
   )
 else()
   target_link_libraries(dsd-neo_test_engine_no_carrier_reset PRIVATE
     dsd-neo_engine
     ${LIBS}
+    dsd-neo_feature_radio
     dsd-neo_test_support
   )
 endif()

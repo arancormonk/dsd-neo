@@ -27,6 +27,7 @@
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -260,6 +261,7 @@ edacsVoteFr(unsigned long long int fr_1_4, unsigned long long int fr_2_5, unsign
 void
 edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     const time_t now = time(NULL);
+    const double nowm = dsd_time_now_monotonic_s();
     int i, result;
     int count = 5; //PWR has a 5 count (5 * 180ms) now before cutting off;
     short analog1[960];
@@ -278,6 +280,8 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
     state->last_cc_sync_time = now;
     state->last_vc_sync_time = now;
+    state->last_cc_sync_time_m = nowm;
+    state->last_vc_sync_time_m = nowm;
 
     memset(analog1, 0, sizeof(analog1));
     memset(analog2, 0, sizeof(analog2));
@@ -2507,6 +2511,7 @@ EDACS_END:
 void
 eot_cc(dsd_opts* opts, dsd_state* state) {
     const time_t now = time(NULL);
+    const double nowm = dsd_time_now_monotonic_s();
 
     fprintf(stderr, "EOT; \n");
 
@@ -2527,6 +2532,8 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
     //set here so that when returning to the CC, it doesn't go into an immediate hunt if not immediately acquired
     state->last_cc_sync_time = now;
     state->last_vc_sync_time = now;
+    state->last_cc_sync_time_m = nowm;
+    state->last_vc_sync_time_m = nowm;
 
     //jump back to CC here
     long int cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;

@@ -89,5 +89,29 @@ main(void) {
     failed |= expect_size_eq("clear output clears queued ring", used_after, 0U);
     failed |= expect_int_eq("clear output resets cached symbols", cache_pending, 0);
 
+    int request_rc = -1;
+    int consumed = -1;
+    cache_pending = -1;
+    rc = rtl_stream_test_fsk_reacquire(RTL_STREAM_OUTPUT_SYMBOL_FSK, 9U, 4, &used_after, &cache_pending,
+                                       &generation_before, &generation_after, &request_rc, &consumed);
+    failed |= expect_int_eq("fsk reacquire helper rc", rc, 0);
+    failed |= expect_int_eq("fsk reacquire request queued", request_rc, 1);
+    failed |= expect_int_eq("fsk reacquire consumed", consumed, 1);
+    failed |= expect_generation_changed("fsk reacquire bumps generation", generation_before, generation_after);
+    failed |= expect_size_eq("fsk reacquire clears queued ring", used_after, 0U);
+    failed |= expect_int_eq("fsk reacquire resets cached symbols", cache_pending, 0);
+
+    request_rc = -1;
+    consumed = -1;
+    cache_pending = -1;
+    rc = rtl_stream_test_fsk_reacquire(RTL_STREAM_OUTPUT_AUDIO_MONITOR, 9U, 4, &used_after, &cache_pending,
+                                       &generation_before, &generation_after, &request_rc, &consumed);
+    failed |= expect_int_eq("inactive fsk reacquire helper rc", rc, 0);
+    failed |= expect_int_eq("inactive fsk reacquire no-op", request_rc, 0);
+    failed |= expect_int_eq("inactive fsk reacquire not consumed", consumed, 0);
+    failed |= expect_generation_eq("inactive fsk reacquire keeps generation", generation_before, generation_after);
+    failed |= expect_size_eq("inactive fsk reacquire leaves queued ring", used_after, 9U);
+    failed |= expect_int_eq("inactive fsk reacquire leaves cached symbols", cache_pending, 4);
+
     return failed ? 1 : 0;
 }

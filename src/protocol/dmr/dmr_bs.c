@@ -668,11 +668,12 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
 
             //update cc amd vc sync time for trunking purposes (particularly Con+)
             if (opts->p25_is_tuned == 1) {
-                state->last_vc_sync_time = time(NULL);
-                state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-                state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-                state->last_cc_sync_time = time(NULL);
-                state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+                time_t now = time(NULL);
+                double nowm = dsd_time_now_monotonic_s();
+                state->last_vc_sync_time = now;
+                state->last_vc_sync_time_m = nowm;
+                state->last_cc_sync_time = now;
+                state->last_cc_sync_time_m = nowm;
             }
 
             //reset err checks
@@ -1078,6 +1079,7 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
     //update voice sync time for trunking purposes (particularly Con+)
     if (opts->p25_is_tuned == 1) {
         state->last_vc_sync_time = time(NULL);
+        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
     }
 
     //NOTE: Only play on slot 1, if slot 0, then it'll play after the next TDMA frame in the BS loop instead

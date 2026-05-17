@@ -2370,6 +2370,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
     state->nxdn_last_ran = area;
 
     state->last_cc_sync_time = now;
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
 
     //OSM messages
     if (opcode == 0x4 || opcode == 0x0) //INFO 4

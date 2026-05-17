@@ -1407,6 +1407,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
                 // not following.
                 if (state->p25_p2_audio_allowed[state->currentslot] || opts->trunk_tune_enc_calls == 1) {
                     state->last_vc_sync_time = now;
+                    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
                 }
                 process_4V(opts, state);
             }
@@ -1418,6 +1419,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
                 && state->p2_cc != 0xFFF && state->p2_sysid != 0xFFF) {
                 if (state->p25_p2_audio_allowed[state->currentslot] || opts->trunk_tune_enc_calls == 1) {
                     state->last_vc_sync_time = now;
+                    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
                 }
                 process_2V(opts, state);
             }

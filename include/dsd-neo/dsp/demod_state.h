@@ -76,6 +76,7 @@ struct output_state;
  *  - src/dsp/demod_pipeline.cpp
  *  - src/dsp/resampler.cpp
  */
+// NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 struct demod_state {
     /* Large aligned buffers first to minimize padding */
     alignas(64) float hb_i_buf[MAXIMUM_BUF_LENGTH / 2];
@@ -295,3 +296,5 @@ struct demod_state {
     int costas_conf_avg_q14;    /* average Costas confidence, scaled to Q14 */
     int costas_zero_conf_pct;   /* percent of symbols with zero Costas confidence */
 };
+
+// NOLINTEND(clang-analyzer-optin.performance.Padding)

@@ -29,6 +29,7 @@ int dsd_rtl_stream_get_output_kind(void);
 int dsd_rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels);
 int dsd_rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
 int dsd_rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
+int dsd_rtl_stream_request_fsk_reacquire(void);
 uint32_t dsd_rtl_stream_output_generation(void);
 int dsd_rtl_stream_monitor_read(float* out, size_t count, int* out_got);
 unsigned int dsd_rtl_stream_monitor_rate(void);
@@ -82,6 +83,10 @@ int dsd_rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_
 int dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                      int* out_cache_pending_after, uint32_t* out_generation_before,
                                      uint32_t* out_generation_after);
+int dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached_symbols,
+                                      size_t* out_used_after, int* out_cache_pending_after,
+                                      uint32_t* out_generation_before, uint32_t* out_generation_after,
+                                      int* out_request_rc, int* out_consumed);
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
 #endif
 }
@@ -241,6 +246,15 @@ rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* 
 }
 
 extern "C" int
+rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached_symbols, size_t* out_used_after,
+                              int* out_cache_pending_after, uint32_t* out_generation_before,
+                              uint32_t* out_generation_after, int* out_request_rc, int* out_consumed) {
+    return dsd_rtl_stream_test_fsk_reacquire(output_kind, queued_samples, cached_symbols, out_used_after,
+                                             out_cache_pending_after, out_generation_before, out_generation_after,
+                                             out_request_rc, out_consumed);
+}
+
+extern "C" int
 rtl_stream_test_get_replay_state(RtlSdrContext* ctx, rtl_stream_test_replay_state* out_state) {
     if (!ctx || !ctx->stream || !out_state) {
         return -2;
@@ -319,6 +333,11 @@ rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int
 extern "C" int
 rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
     return dsd_rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+}
+
+extern "C" int
+rtl_stream_request_fsk_reacquire(void) {
+    return dsd_rtl_stream_request_fsk_reacquire();
 }
 
 /**

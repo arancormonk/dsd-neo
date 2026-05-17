@@ -8,6 +8,7 @@
 #include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -42,6 +43,7 @@
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <limits.h>
@@ -87,6 +89,82 @@ reset_device_io_caches(void) {
     s_last_rtl_freq = 0;
 #endif
 }
+
+#ifdef USE_RADIO
+static time_t
+max_time_t(time_t a, time_t b) {
+    return (a > b) ? a : b;
+}
+
+static double
+max_double(double a, double b) {
+    return (a > b) ? a : b;
+}
+
+static int
+rtl_fsk_reacquire_output_is_fsk(void) {
+    int output_kind = dsd_rtl_stream_metrics_hook_output_kind();
+    if (output_kind == 0) {
+        output_kind = rtl_stream_get_output_kind();
+    }
+    return output_kind == RTL_STREAM_OUTPUT_SYMBOL_FSK;
+}
+
+static void
+maybe_request_rtl_fsk_reacquire_on_no_sync(dsd_opts* opts, dsd_state* state, time_t now) {
+    const double gap_s = 0.300;
+    const double cooldown_s = 0.750;
+
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        return;
+    }
+    if (!rtl_fsk_reacquire_output_is_fsk()) {
+        state->rtl_fsk_reacquire_gap_start_m = 0.0;
+        return;
+    }
+
+    double nowm = dsd_time_now_monotonic_s();
+    time_t latest_sync_time = max_time_t(state->last_cc_sync_time, state->last_vc_sync_time);
+    double latest_sync_m = max_double(state->last_cc_sync_time_m, state->last_vc_sync_time_m);
+
+    if (state->lastsynctype != DSD_SYNC_NONE) {
+        state->rtl_fsk_reacquire_last_sync_time = now;
+        state->rtl_fsk_reacquire_last_sync_m = nowm;
+        state->rtl_fsk_reacquire_gap_start_m = 0.0;
+        return;
+    }
+
+    if (state->rtl_fsk_reacquire_last_sync_time == 0 && state->rtl_fsk_reacquire_last_sync_m <= 0.0) {
+        state->rtl_fsk_reacquire_last_sync_time = latest_sync_time;
+        state->rtl_fsk_reacquire_last_sync_m = (latest_sync_m > 0.0) ? latest_sync_m : nowm;
+        state->rtl_fsk_reacquire_gap_start_m = nowm;
+        return;
+    }
+
+    if (latest_sync_time > state->rtl_fsk_reacquire_last_sync_time
+        || latest_sync_m > state->rtl_fsk_reacquire_last_sync_m) {
+        state->rtl_fsk_reacquire_last_sync_time = latest_sync_time;
+        state->rtl_fsk_reacquire_last_sync_m = latest_sync_m;
+        state->rtl_fsk_reacquire_gap_start_m = 0.0;
+        return;
+    }
+
+    if (state->rtl_fsk_reacquire_gap_start_m <= 0.0) {
+        state->rtl_fsk_reacquire_gap_start_m = nowm;
+        return;
+    }
+    if ((nowm - state->rtl_fsk_reacquire_gap_start_m) < gap_s) {
+        return;
+    }
+    if (state->rtl_fsk_reacquire_last_request_m > 0.0
+        && (nowm - state->rtl_fsk_reacquire_last_request_m) < cooldown_s) {
+        return;
+    }
+    if (rtl_stream_request_fsk_reacquire() > 0) {
+        state->rtl_fsk_reacquire_last_request_m = nowm;
+    }
+}
+#endif
 
 void dsd_engine_frame_sync_hooks_install(void);
 void dsd_engine_trunk_tuning_hooks_install(void);
@@ -975,6 +1053,10 @@ void
 noCarrier(dsd_opts* opts, dsd_state* state) {
     const time_t now = time(NULL);
 
+#ifdef USE_RADIO
+    maybe_request_rtl_fsk_reacquire_on_no_sync(opts, state, now);
+#endif
+
     //when no carrier sync, rotate the symbol out file every hour, if enabled
     if (opts->symbol_out_f && opts->symbol_out_file_is_auto == 1) {
         rotate_symbol_out_file(opts, state);
@@ -1038,6 +1120,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
         }
         state->lcn_freq_roll++;
         state->last_cc_sync_time = now;
+        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
     }
     //end experimental conventional frequency scanner mode
 
@@ -1096,6 +1179,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
                 state->edacs_tuned_lcn = -1;
 
                 state->last_cc_sync_time = now;
+                state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
                 //test to switch back to 10/4 P1 QPSK for P25 FDMA CC
 
                 //if P25p2 VCH and going back to P25p1 CC, flip symbolrate

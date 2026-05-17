@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifndef DSD_TEST_PI
 #define DSD_TEST_PI 3.14159265358979323846f
@@ -79,6 +80,30 @@ synthesize_fsk_capture_offset(float* iq, const float* symbols, int sample_count,
     }
 }
 
+static void
+synthesize_fsk_fractional(float* iq, const float* symbols, int symbol_count, int sample_count, float actual_sps,
+                          float deviation_per_level, float cfo, float noise_amp) {
+    float phase = 0.41f;
+    int out = 0;
+    for (int sample = 0; sample < sample_count; sample++) {
+        int sym = (int)floorf((float)sample / actual_sps);
+        if (sym < 0) {
+            sym = 0;
+        } else if (sym >= symbol_count) {
+            sym = symbol_count - 1;
+        }
+        phase += cfo + deviation_per_level * symbols[sym];
+        if (phase > DSD_TEST_PI) {
+            phase -= 2.0f * DSD_TEST_PI;
+        } else if (phase < -DSD_TEST_PI) {
+            phase += 2.0f * DSD_TEST_PI;
+        }
+        float amp = 0.82f + 0.18f * (float)((sample / 3) % 19) / 18.0f;
+        iq[out++] = amp * cosf(phase) + noise_amp * test_rand_pm1();
+        iq[out++] = amp * sinf(phase) + noise_amp * test_rand_pm1();
+    }
+}
+
 static int
 classify4(float sym) {
     if (sym < -2.0f) {
@@ -144,6 +169,21 @@ expect_2level_accuracy(const char* name, const float* out, int out_count, const 
         fprintf(stderr, "%s: 2-level accuracy %.3f below %.3f (%d/%d)\n", name, accuracy, min_accuracy, ok, checked);
         assert(0);
     }
+}
+
+static void
+seed_tracking_boundary_window(dsd_fsk_modem_state* modem, int clock_i, int best_phase, float start_phase) {
+    int target = clock_i * 64;
+    assert(target <= DSD_FSK_MODEM_TRACK_MAX_SAMPLES);
+    memset(modem->track_freq, 0, sizeof(modem->track_freq));
+    for (int pos = best_phase; pos < target - 1; pos += clock_i) {
+        if (pos > 0) {
+            modem->track_freq[pos - 1] = -1.0f;
+            modem->track_freq[pos] = 1.0f;
+        }
+    }
+    modem->track_len = target - 1;
+    modem->track_start_phase = start_phase;
 }
 
 static void
@@ -387,6 +427,127 @@ test_nxdn48_2400_at_48000(void) {
 }
 
 static void
+test_timing_tracker_clamps_phase_underflow(void) {
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    modem.timing_acquired = 1;
+    modem.have_prev = 1;
+    modem.prev_i = 1.0f;
+    modem.prev_q = 0.0f;
+    modem.symbol_phase = 9.1f;
+    modem.symbol_accum = 0.1f;
+    modem.symbol_count = 9;
+    seed_tracking_boundary_window(&modem, 10, 2, 0.0f);
+
+    float iq[] = {1.0f, 0.0f};
+    float out[8];
+    (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
+    assert(modem.track_updates > 0);
+    assert(modem.symbol_phase >= 0.0f);
+    assert(modem.symbol_phase < 1.0f);
+}
+
+static void
+test_timing_tracker_clamps_phase_overflow(void) {
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    modem.timing_acquired = 1;
+    modem.have_prev = 1;
+    modem.prev_i = 1.0f;
+    modem.prev_q = 0.0f;
+    modem.symbol_phase = 8.95f;
+    seed_tracking_boundary_window(&modem, 10, 0, 8.0f);
+
+    float iq[] = {1.0f, 0.0f};
+    float out[8];
+    (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
+    assert(modem.track_updates > 0);
+    assert(modem.symbol_phase > 9.0f);
+    assert(modem.symbol_phase < 10.0f);
+}
+
+static void
+test_timing_tracker_uses_floor_for_fractional_start_phase(void) {
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    modem.timing_acquired = 1;
+    modem.have_prev = 1;
+    modem.prev_i = 1.0f;
+    modem.prev_q = 0.0f;
+    modem.symbol_phase = 0.6f;
+    seed_tracking_boundary_window(&modem, 10, 0, 0.6f);
+
+    float iq[] = {1.0f, 0.0f};
+    float out[8];
+    (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
+    assert(modem.track_updates > 0);
+    assert(fabsf(modem.track_last_error) < 1.0e-6f);
+    assert(fabsf(modem.symbol_phase - 1.6f) < 1.0e-4f);
+}
+
+static void
+test_dmr_gfsk_tracks_fractional_symbol_clock(void) {
+    enum { SYMBOLS = 4200, RUN = 17 };
+
+    const float actual_sps = 10.005f;
+    int sample_count = (int)((float)SYMBOLS * actual_sps);
+
+    static const float levels[] = {-3.0f, 3.0f, -1.0f, 1.0f, 3.0f, -3.0f};
+    float* symbols = (float*)calloc(SYMBOLS, sizeof(float));
+    float* iq = (float*)calloc((size_t)sample_count * 2U, sizeof(float));
+    float* out = (float*)calloc(SYMBOLS + 512, sizeof(float));
+    assert(symbols && iq && out);
+
+    fill_run_pattern(symbols, SYMBOLS, levels, (int)(sizeof(levels) / sizeof(levels[0])), RUN);
+    synthesize_fsk_fractional(iq, symbols, SYMBOLS, sample_count, actual_sps, 0.025f, 0.0015f, 0.002f);
+
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    int produced = dsd_fsk_modem_process(&modem, iq, sample_count * 2, out, SYMBOLS + 512);
+    assert(produced >= SYMBOLS - 24);
+    assert(modem.track_updates > 0);
+    expect_4level_accuracy("dmr-gfsk-fractional-clock-tracking", out, produced, symbols, SYMBOLS, RUN, 900, 0.88f);
+
+    free(out);
+    free(iq);
+    free(symbols);
+}
+
+static void
+test_timing_tracker_skips_low_confidence_windows(void) {
+    enum { SYMBOLS = 128, SPS = 10, ZERO_SAMPLES = SPS * 80 };
+
+    static const float levels[] = {-3.0f, -1.0f, 1.0f, 3.0f};
+    float symbols[SYMBOLS];
+    float iq[SYMBOLS * SPS * 2];
+    float zeros[ZERO_SAMPLES * 2];
+    float out[SYMBOLS + 128];
+
+    for (int i = 0; i < SYMBOLS; i++) {
+        symbols[i] = levels[i & 3];
+    }
+    synthesize_fsk(iq, symbols, SYMBOLS, SPS, 0.026f, 0.0f, 0.0f, 0);
+    memset(zeros, 0, sizeof(zeros));
+
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 4};
+    dsd_fsk_modem_init(&modem, &cfg);
+    int produced = dsd_fsk_modem_process(&modem, iq, SYMBOLS * SPS * 2, out, SYMBOLS + 128);
+    assert(produced > 0);
+    assert(modem.timing_acquired == 1);
+
+    modem.track_len = 0;
+    modem.have_prev = 0;
+    uint64_t skips_before = modem.track_skips;
+    (void)dsd_fsk_modem_process(&modem, zeros, ZERO_SAMPLES * 2, out, SYMBOLS + 128);
+    assert(modem.track_skips > skips_before);
+}
+
+static void
 test_reconfigure_resets_state(void) {
     dsd_fsk_modem_state modem;
     dsd_fsk_modem_config cfg = {48000, 4800, 4, 4};
@@ -402,6 +563,12 @@ test_reconfigure_resets_state(void) {
     (void)dsd_fsk_modem_process(&modem, iq, 128 * 10 * 2, out, 160);
     assert(modem.have_prev == 1);
     assert(modem.symbols_emitted > 0);
+    modem.track_len = 11;
+    modem.track_start_phase = 3.0f;
+    modem.track_last_error = 2.0f;
+    modem.track_last_score = 0.5f;
+    modem.track_updates = 7;
+    modem.track_skips = 5;
 
     dsd_fsk_modem_config next = {48000, 2400, 2, 1};
     dsd_fsk_modem_configure(&modem, &next);
@@ -412,6 +579,12 @@ test_reconfigure_resets_state(void) {
     assert(modem.have_prev == 0);
     assert(modem.symbol_count == 0);
     assert(modem.symbols_emitted == 0);
+    assert(modem.track_len == 0);
+    assert(modem.track_start_phase == 0.0f);
+    assert(modem.track_last_error == 0.0f);
+    assert(modem.track_last_score == 0.0f);
+    assert(modem.track_updates == 0);
+    assert(modem.track_skips == 0);
 }
 
 int
@@ -426,6 +599,11 @@ main(void) {
     test_acquisition_preserves_backlog_with_small_output();
     test_binary_fsk_4800();
     test_nxdn48_2400_at_48000();
+    test_timing_tracker_clamps_phase_underflow();
+    test_timing_tracker_clamps_phase_overflow();
+    test_timing_tracker_uses_floor_for_fractional_start_phase();
+    test_dmr_gfsk_tracks_fractional_symbol_clock();
+    test_timing_tracker_skips_low_confidence_windows();
     test_reconfigure_resets_state();
     return 0;
 }

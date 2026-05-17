@@ -25,6 +25,7 @@
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -346,6 +347,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     //enable these after good lich parity and known lich value
     state->carrier = 1;
     state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
 
     //printframesync after determining we have a good lich and it has something in it
     if (idas) {
@@ -669,6 +671,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
         }
         //update last voice sync time
         state->last_vc_sync_time = time(NULL);
+        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         //turn on scrambler if forced by user option
         if (state->M == 1 && state->R != 0) {
             state->nxdn_cipher_type = 0x1;

@@ -277,6 +277,10 @@ struct dsd_state {
     double last_cc_sync_time_m;
     double last_vc_sync_time_m;
     double p25_last_vc_tune_time_m;
+    time_t rtl_fsk_reacquire_last_sync_time;
+    double rtl_fsk_reacquire_last_sync_m;
+    double rtl_fsk_reacquire_gap_start_m;
+    double rtl_fsk_reacquire_last_request_m;
     time_t
         last_active_time; //time the a 'call grant' was received, used to clear the active_channel strings after x seconds
     time_t last_t3_tune_time;   // last time a DMR T3 grant was received (wall clock)

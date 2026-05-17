@@ -498,6 +498,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         // Passed FEC checks: mark recent voice activity for trunk hangtime
         // tracking so we don't prematurely return to CC mid-call.
         state->last_vc_sync_time = time(NULL);
+        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         // Same comments as in processHDU. See there.
 
         char fixed_parity[8 * 6];
