@@ -162,7 +162,7 @@ branchless_clip(float x, float limit) {
 
 static inline void
 dsd_sincosf(float phase, float* out_sin, float* out_cos) {
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(_MSC_VER)
+#if defined(__GNUC__) && !defined(__clang__) && !defined(_MSC_VER)
     __builtin_sincosf(phase, out_sin, out_cos);
 #else
     *out_sin = sinf(phase);
