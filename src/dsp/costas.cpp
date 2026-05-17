@@ -219,6 +219,39 @@ dsd_sincosf_clamped_half_pi(float phase, float* out_sin, float* out_cos) {
                                           + x2 * (0.00002480158730158730f + x2 * -0.00000027557319223986f))));
 }
 
+static inline void
+dsd_sincosf_wrapped_two_pi(float phase, float* out_sin, float* out_cos) {
+    if (!std::isfinite(phase) || phase < -kTwoPi || phase > kTwoPi) {
+        dsd_sincosf(phase, out_sin, out_cos);
+        return;
+    }
+
+    if (phase > kPi) {
+        phase -= kTwoPi;
+    } else if (phase < -kPi) {
+        phase += kTwoPi;
+    }
+
+    if (phase > (kPi / 2.0f)) {
+        float sin_v = 0.0f;
+        float cos_v = 0.0f;
+        dsd_sincosf_clamped_half_pi(kPi - phase, &sin_v, &cos_v);
+        *out_sin = sin_v;
+        *out_cos = -cos_v;
+        return;
+    }
+    if (phase < (-kPi / 2.0f)) {
+        float sin_v = 0.0f;
+        float cos_v = 0.0f;
+        dsd_sincosf_clamped_half_pi(-kPi - phase, &sin_v, &cos_v);
+        *out_sin = sin_v;
+        *out_cos = -cos_v;
+        return;
+    }
+
+    dsd_sincosf_clamped_half_pi(phase, out_sin, out_cos);
+}
+
 static int
 cqpsk_symbol_rate_hz(const demod_state* d) {
     if (!d || d->rate_out <= 0 || d->ted_sps <= 0) {
@@ -1289,7 +1322,7 @@ op25_fll_band_edge_cc(struct demod_state* d) {
          */
         float nco_r = 0.0f;
         float nco_i = 0.0f;
-        dsd_sincosf(phase, &nco_i, &nco_r);
+        dsd_sincosf_wrapped_two_pi(phase, &nco_i, &nco_r);
         float out_r = in_r * nco_r - in_i * nco_i;
         float out_i = in_r * nco_i + in_i * nco_r;
 
