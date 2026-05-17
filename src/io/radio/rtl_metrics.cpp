@@ -133,6 +133,24 @@ pffft_get_cached_setup(int N) {
     return setup;
 }
 
+static inline const float*
+rtl_metrics_hann_window(int N) {
+    alignas(16) static float window[kSpecMaxN];
+    static int window_N = 0;
+    if (window_N != N) {
+        if (N <= 1) {
+            window[0] = 1.0f;
+        } else {
+            const float scale = 2.0f * static_cast<float>(M_PI) / static_cast<float>(N - 1);
+            for (int n = 0; n < N; n++) {
+                window[n] = 0.5f * (1.0f - cosf(scale * static_cast<float>(n)));
+            }
+        }
+        window_N = N;
+    }
+    return window;
+}
+
 /**
  * @brief Update spectrum, CFO, and SNR exports from an interleaved I/Q block.
  *
@@ -173,15 +191,17 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
     }
     float meanI = (take > 0) ? static_cast<float>(sumI / static_cast<double>(take)) : 0.0f;
     float meanQ = (take > 0) ? static_cast<float>(sumQ / static_cast<double>(take)) : 0.0f;
-    for (int n = 0; n < (N << 1); n++) {
-        z[n] = 0.0f;
+    if (take < N) {
+        for (int n = 0; n < (N << 1); n++) {
+            z[n] = 0.0f;
+        }
     }
+    const float* hann = rtl_metrics_hann_window(N);
     for (int n = 0; n < take; n++) {
-        float w =
-            0.5f * (1.0f - cosf(2.0f * static_cast<float>(M_PI) * static_cast<float>(n) / static_cast<float>(N - 1)));
         int idx = start + n;
         float I = iq_interleaved[(size_t)(idx << 1) + 0];
         float Q = iq_interleaved[(size_t)(idx << 1) + 1];
+        float w = hann[n];
         z[(n << 1) + 0] = w * (static_cast<float>(I) - meanI);
         z[(n << 1) + 1] = w * (static_cast<float>(Q) - meanQ);
     }
