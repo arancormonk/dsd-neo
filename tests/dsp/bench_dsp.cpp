@@ -508,8 +508,8 @@ channel_profile_cutoff_hz(int profile) {
     constexpr double kGuardHz = kTransitionHz * 0.5;
     switch (profile) {
         case DSD_CH_LPF_PROFILE_6K25: return 3125.0 + kGuardHz;
-        case DSD_CH_LPF_PROFILE_12K5: return 6250.0 + kGuardHz;
-        case DSD_CH_LPF_PROFILE_PROVOICE: return 6250.0 + kGuardHz;
+        case DSD_CH_LPF_PROFILE_12K5:
+        case DSD_CH_LPF_PROFILE_PROVOICE:
         case DSD_CH_LPF_PROFILE_P25_C4FM: return 6250.0 + kGuardHz;
         case DSD_CH_LPF_PROFILE_P25_CQPSK: return 7250.0;
         case DSD_CH_LPF_PROFILE_WIDE:
@@ -737,7 +737,7 @@ bench_kernel_demods(const BenchOptions& opts) {
 
     dsd_resampler_state resampler = {};
     std::vector<float> resamp_in(kInLen);
-    std::vector<float> resamp_out(kInLen * 2);
+    std::vector<float> resamp_out(static_cast<size_t>(kInLen) * 2U);
     fill_noise(&resamp_in, 0x7788u);
     if (dsd_resampler_design(&resampler, 1, 2)) {
         ran += run_case(opts, "dsd_resampler_process_block", "sample", (double)kInLen, [&]() -> float {
