@@ -34,9 +34,11 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
+// IWYU pragma: no_include <bits/chrono.h>
+#include <chrono> // IWYU pragma: keep
 #include <cmath>
 #include <cstdio>
+// IWYU pragma: no_include <bits/std_abs.h>
 #include <cstdlib>
 #include <cstring>
 #include <stdint.h>
