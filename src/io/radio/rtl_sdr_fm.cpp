@@ -64,6 +64,7 @@
 #include "dsd-neo/dsp/fsk_modem.h"
 #include "dsd-neo/platform/platform.h"
 #include "rtl_auto_ppm.h"
+#include "rtl_perf.h"
 #include "rtl_ppm_request.h"
 #include "rtl_replay_device.h"
 
@@ -510,6 +511,18 @@ static int
 radio_source_is_rtl_family(const dsd_opts* opts) {
     RadioSourceKind kind = detect_radio_source(opts);
     return (kind == RADIO_SOURCE_RTL_USB || kind == RADIO_SOURCE_RTL_TCP || kind == RADIO_SOURCE_IQ_REPLAY) ? 1 : 0;
+}
+
+static const char*
+rtl_perf_source_name(void) {
+    const dsd_opts* opts = (g_stream && g_stream->opts) ? g_stream->opts : NULL;
+    switch (detect_radio_source(opts)) {
+        case RADIO_SOURCE_RTL_TCP: return "rtltcp";
+        case RADIO_SOURCE_SOAPY: return "soapy";
+        case RADIO_SOURCE_IQ_REPLAY: return "iq_replay";
+        case RADIO_SOURCE_RTL_USB:
+        default: return "rtl";
+    }
 }
 
 static int
@@ -1941,7 +1954,10 @@ static DSD_THREAD_RETURN_TYPE
             consumed_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
         }
 
+        int perf_on = rtl_perf_enabled();
+        uint64_t perf_full_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
         full_demod(d);
+        uint64_t perf_full_demod_ns = perf_on ? (rtl_perf_now_ns() - perf_full_start_ns) : 0ULL;
         rtl_monitor_side_tap_process(d);
 
         if (retune_diag_block > 0) {
@@ -1994,7 +2010,9 @@ static DSD_THREAD_RETURN_TYPE
         const int rtl_symbol_output =
             (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK);
         const int metrics_due = (!rtl_symbol_output || ((++dsp_metrics_block & 1U) == 0U)) ? 1 : 0;
+        uint64_t perf_metrics_ns = 0ULL;
         if (metrics_due) {
+            uint64_t perf_metrics_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
             /* Capture decimated I/Q for constellation view after DSP. */
             extern void constellation_ring_append(const float* iq, int len, int sps_hint);
             constellation_ring_append(d->lowpassed, d->lp_len, d->cqpsk_enable ? 1 : d->ted_sps);
@@ -2296,6 +2314,9 @@ static DSD_THREAD_RETURN_TYPE
                     gfsk_missed = 0;
                 }
             }
+            if (perf_on) {
+                perf_metrics_ns = rtl_perf_now_ns() - perf_metrics_start_ns;
+            }
         }
 
         if (d->exit_flag) {
@@ -2318,22 +2339,46 @@ static DSD_THREAD_RETURN_TYPE
         /* Symbol modem output is already at one float per symbol. Keep it out
          * of audio resampling and volume scaling so decoder decisions are not
          * coupled to monitor-audio gain. */
+        uint64_t perf_output_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
+        size_t perf_output_samples = 0U;
         if (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
             if (d->result_len > 0) {
+                perf_output_samples = (size_t)d->result_len;
                 ring_write_signal_on_empty_transition(o, d->result, (size_t)d->result_len);
             }
         } else if (d->resamp_enabled) {
             int out_n = resamp_process_block(d, d->result, d->result_len, d->resamp_outbuf);
             if (out_n > 0) {
                 apply_output_scale(d, d->resamp_outbuf, out_n);
+                perf_output_samples = (size_t)out_n;
                 ring_write_signal_on_empty_transition(o, d->resamp_outbuf, (size_t)out_n);
             }
         } else {
             /* When resampler is disabled, pass-through. */
             if (d->result_len > 0) {
                 apply_output_scale(d, d->result, d->result_len);
+                perf_output_samples = (size_t)d->result_len;
                 ring_write_signal_on_empty_transition(o, d->result, (size_t)d->result_len);
             }
+        }
+        if (perf_on) {
+            uint64_t perf_output_write_ns = rtl_perf_now_ns() - perf_output_start_ns;
+            rtl_perf_record_demod_block(perf_full_demod_ns, perf_metrics_ns, perf_output_write_ns, (size_t)got,
+                                        perf_output_samples);
+
+            double snr_db = g_snr_c4fm_db.load(std::memory_order_relaxed);
+            if (d->cqpsk_enable) {
+                snr_db = g_snr_qpsk_db.load(std::memory_order_relaxed);
+            } else {
+                double gfsk_snr = g_snr_gfsk_db.load(std::memory_order_relaxed);
+                if (gfsk_snr > -50.0 && (snr_db <= -50.0 || gfsk_snr > snr_db)) {
+                    snr_db = gfsk_snr;
+                }
+            }
+            rtl_perf_maybe_log(rtl_perf_source_name(), dongle.rate, d->output_kind, input_ring_used(&input_ring),
+                               input_ring.capacity, input_ring.producer_drops.load(std::memory_order_relaxed),
+                               ring_used(&output), output.capacity, -1, snr_db, dsd_rtl_stream_get_cfo_hz(),
+                               dsd_rtl_stream_get_carrier_lock());
         }
         /* Signaling occurs only when the ring transitions from empty to non-empty. */
     }
@@ -4515,6 +4560,7 @@ dsd_rtl_stream_close(void) {
     rtl_device_destroy(rtl_device_handle);
     rtl_device_handle = NULL;
 
+    rtl_perf_shutdown();
     stream_destroy_internals();
 }
 
@@ -4574,6 +4620,7 @@ dsd_rtl_stream_soft_stop(void) {
     input_ring_destroy(&input_ring);
     rtl_device_destroy(rtl_device_handle);
     rtl_device_handle = NULL;
+    rtl_perf_shutdown();
     stream_destroy_internals();
     return 0;
 }
@@ -4769,9 +4816,14 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
         auto_ppm_maybe_adjust(opts, state);
         sync_requested_ppm_to_controller(opts);
 
+        int perf_on = rtl_perf_enabled();
+        uint64_t perf_read_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
         int got = ring_read_batch(&output, out, count);
         if (got <= 0) {
             return -1;
+        }
+        if (perf_on) {
+            rtl_perf_record_consumer_read(rtl_perf_now_ns() - perf_read_start_ns, (size_t)got);
         }
         return got;
     }
@@ -4787,9 +4839,14 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
         size_t used = ring_used(&output);
         if (used > 0) {
             size_t want = (count < used) ? count : used;
+            int perf_on = rtl_perf_enabled();
+            uint64_t perf_read_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
             int got = ring_read_batch(&output, out, want);
             if (got <= 0) {
                 return -1;
+            }
+            if (perf_on) {
+                rtl_perf_record_consumer_read(rtl_perf_now_ns() - perf_read_start_ns, (size_t)got);
             }
 
             if (g_stream->replay_demod_drained.load(std::memory_order_acquire) && ring_used(&output) == 0U) {

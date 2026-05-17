@@ -41,6 +41,7 @@
 
 #include "dsd-neo/platform/platform.h"
 #include "rtl_capture_phase.h"
+#include "rtl_perf.h"
 #include "rtl_replay_device.h"
 
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
@@ -556,6 +557,9 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
         return 0;
     }
 
+    int perf_on = rtl_perf_enabled();
+    uint64_t perf_t0 = perf_on ? rtl_perf_now_ns() : 0ULL;
+    uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
     size_t done = 0;
     size_t need = len;
     int phase = s->rot_phase & 3;
@@ -659,6 +663,11 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
     if (fs4_shift_active && !generation_stale) {
         s->rot_phase = phase;
     }
+    if (perf_on) {
+        uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
+        uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
+        rtl_perf_record_ingest(rtl_perf_now_ns() - perf_t0, done, drops_delta);
+    }
     return generation_stale ? 2 : ring_exhausted;
 }
 
@@ -703,6 +712,9 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
     if (!s || !s->input_ring || !src || num_elems == 0) {
         return 0;
     }
+    int perf_on = rtl_perf_enabled();
+    uint64_t perf_t0 = perf_on ? rtl_perf_now_ns() : 0ULL;
+    uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
     size_t need = num_elems * 2;
     size_t done = 0;
     int phase = s->rot_phase & 3;
@@ -768,6 +780,11 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
     if (apply_rot) {
         s->rot_phase = phase;
     }
+    if (perf_on) {
+        uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
+        uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
+        rtl_perf_record_ingest(rtl_perf_now_ns() - perf_t0, done, drops_delta);
+    }
     return done / 2;
 }
 
@@ -776,6 +793,9 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
     if (!s || !s->input_ring || !src || num_elems == 0) {
         return 0;
     }
+    int perf_on = rtl_perf_enabled();
+    uint64_t perf_t0 = perf_on ? rtl_perf_now_ns() : 0ULL;
+    uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
     const float scale = 1.0f / 32768.0f;
     size_t need = num_elems * 2;
     size_t done = 0;
@@ -843,6 +863,11 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
     }
     if (apply_rot) {
         s->rot_phase = phase;
+    }
+    if (perf_on) {
+        uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
+        uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
+        rtl_perf_record_ingest(rtl_perf_now_ns() - perf_t0, done, drops_delta);
     }
     return done / 2;
 }
