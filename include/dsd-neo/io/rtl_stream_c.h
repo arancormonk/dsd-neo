@@ -167,8 +167,8 @@ uint32_t rtl_stream_output_generation(void);
 /**
  * @brief Return the active RTL stream output kind.
  *
- * Digital RTL-family paths return symbol kinds. Soapy and analog monitor paths
- * return AUDIO_MONITOR.
+ * Digital RTL-family paths, including SoapySDR, return symbol kinds. Analog
+ * monitor paths return AUDIO_MONITOR.
  */
 int rtl_stream_get_output_kind(void);
 int rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels);

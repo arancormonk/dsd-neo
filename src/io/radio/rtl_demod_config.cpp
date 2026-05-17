@@ -64,15 +64,6 @@ fsk_modem_apply_config(struct demod_state* s) {
 }
 
 static int
-opts_radio_source_is_soapy(const dsd_opts* opts) {
-    const char* dev = opts ? opts->audio_in_dev : NULL;
-    if (!dev) {
-        return 0;
-    }
-    return (strcmp(dev, "soapy") == 0 || strncmp(dev, "soapy:", 6) == 0) ? 1 : 0;
-}
-
-static int
 opts_is_digital_mode(const dsd_opts* opts) {
     if (!opts) {
         return 0;
@@ -219,8 +210,7 @@ demod_apply_output_kind(struct demod_state* s, const dsd_opts* opts) {
     s->symbol_rate_hz = opts_symbol_rate_hz(opts);
     s->symbol_levels = opts_symbol_levels_for_rate(opts, s->symbol_rate_hz);
 
-    if (!opts_is_digital_mode(opts) || opts->analog_only == 1 || opts->m17encoder == 1
-        || opts_radio_source_is_soapy(opts)) {
+    if (!opts_is_digital_mode(opts) || opts->analog_only == 1 || opts->m17encoder == 1) {
         s->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
     } else if (s->cqpsk_enable) {
         s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;

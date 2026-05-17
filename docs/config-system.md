@@ -444,6 +444,7 @@ version = 1
     `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`.
   - Reuses existing `rtl_*` tuning keys (`rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`)
     so trunking and retune behavior remains unchanged.
+  - Digital decode uses the same normalized symbol-domain stream as RTL USB, RTL-TCP, and IQ replay.
   - `rtl_volume` remains a monitor/non-symbol gain key; it does not scale RTL-family digital symbols.
   - `rtl_device` and `rtltcp_*` endpoint keys are not used in Soapy mode.
   - Set `rtl_freq` explicitly for predictable startup frequency with non-RTL radios.

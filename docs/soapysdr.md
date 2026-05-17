@@ -65,6 +65,7 @@ In Soapy mode, you can either:
 Trailing Soapy tuning fields map to the same shared controls used by RTL/RTL-TCP (`rtl_*` keys).
 If your Soapy args string itself contains `:`, prefer config (`soapy_args` + `rtl_*`) to avoid ambiguity.
 `--print-config` normalizes this shorthand before rendering, so effective output shows `soapy_args` plus `rtl_*` fields.
+For digital decode, SoapySDR uses the same normalized symbol-domain stream as RTL USB, RTL-TCP, and IQ replay.
 
 Minimal config (recommended):
 
@@ -99,7 +100,7 @@ rtl_volume = 2
 ```
 
 Set `rtl_freq` explicitly for predictable startup frequency. `rtl_volume` is a monitor/non-symbol gain field and does not
-scale RTL-family digital symbols.
+scale SoapySDR or other RTL-family digital symbols.
 
 ## 4) Run
 

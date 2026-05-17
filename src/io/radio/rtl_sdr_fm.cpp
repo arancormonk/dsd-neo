@@ -513,7 +513,10 @@ radio_source_is_iq_replay(const dsd_opts* opts) {
 static int
 radio_source_is_rtl_family(const dsd_opts* opts) {
     RadioSourceKind kind = detect_radio_source(opts);
-    return (kind == RADIO_SOURCE_RTL_USB || kind == RADIO_SOURCE_RTL_TCP || kind == RADIO_SOURCE_IQ_REPLAY) ? 1 : 0;
+    return (kind == RADIO_SOURCE_RTL_USB || kind == RADIO_SOURCE_RTL_TCP || kind == RADIO_SOURCE_SOAPY
+            || kind == RADIO_SOURCE_IQ_REPLAY)
+               ? 1
+               : 0;
 }
 
 static const char*

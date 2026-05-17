@@ -685,7 +685,7 @@ typedef struct dsdneoUserConfig {
     int rtl_ppm_is_set; /* distinguish explicit 0 from omitted */
     int rtl_bw_khz;
     int rtl_sql;
-    int rtl_volume;   /* monitor/non-symbol gain; does not scale RTL-family digital symbols */
+    int rtl_volume;   /* monitor/non-symbol gain; does not scale symbol streams */
     int rtl_auto_ppm; /* bool */
     char rtltcp_host[128];
     int rtltcp_port;

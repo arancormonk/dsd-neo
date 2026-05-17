@@ -63,8 +63,8 @@ This project is an active work in progress as we decouple from the upstream fork
 
 - RTL‑SDR optimizations and diagnostics
 
-  - RTL USB, RTL-TCP, and IQ replay digital decode are symbol-domain: FSK and CQPSK paths feed normalized float
-    symbols to the decoder, with source monitor audio handled by a separate tap.
+  - RTL USB, RTL-TCP, SoapySDR, and IQ replay digital decode are symbol-domain: FSK and CQPSK paths feed normalized
+    float symbols to the decoder, with source monitor audio handled by a separate tap.
   - Real‑time visual aids in the terminal for faster setup and troubleshooting:
     - Constellation view with adjustable gating and normalization.
     - Eye diagram (Unicode/ASCII, optional color) with adaptive scales and level guides.
@@ -323,6 +323,8 @@ Common options:
   `SoapySDRUtil --find`.
 - Run with `-i soapy[:args]`. The `soapy:` string selects backend/device only; set tuning via `rtl_*` keys (at minimum
   `rtl_freq`; easiest via config). See the guide for a minimal config snippet.
+- SoapySDR digital decode uses the same normalized symbol-domain path as RTL USB/RTL-TCP/IQ replay; `rtl_volume` only
+  affects monitor and other non-symbol audio.
 - Full guide: `docs/soapysdr.md`.
 
 ## Using The CLI

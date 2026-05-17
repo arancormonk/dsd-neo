@@ -239,8 +239,8 @@ Notes
 - Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (dB or linear), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`.
 - For DMR data/LRRP on direct RTL input, use `bw=48` when possible, or at least `bw=24`; lower basebands may still decode voice but corrupt data PDUs.
 - Note: For EDACS analog voice follow, `sql <= 0` now uses a bounded fallback watchdog to avoid indefinite VC hold when no release marker is detected.
-- RTL USB, RTL-TCP, and IQ replay digital decode run in the symbol domain. The digital decoder receives one normalized
-  float per FSK or CQPSK symbol decision; discriminator audio is not used for digital decode.
+- RTL USB, RTL-TCP, SoapySDR, and IQ replay digital decode run in the symbol domain. The digital decoder receives one
+  normalized float per FSK or CQPSK symbol decision; discriminator audio is not used for digital decode.
 - The trailing `vol` field and `rtl_volume` config key are monitor/non-symbol gain only. They do not scale RTL-family
   digital symbols. `-8` enables the separate source monitor tap.
 - Examples:

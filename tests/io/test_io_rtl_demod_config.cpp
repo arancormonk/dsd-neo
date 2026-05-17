@@ -443,11 +443,29 @@ main(void) {
     rc |= expect_configured_mode("AUTO starts on 4.8 ksps wide 4FSK profile", auto_all, 48000,
                                  DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4, DSD_CH_LPF_PROFILE_12K5);
 
-    dsd_opts soapy_p25;
-    std::memset(&soapy_p25, 0, sizeof(soapy_p25));
-    soapy_p25.frame_p25p1 = 1;
-    std::snprintf(soapy_p25.audio_in_dev, sizeof(soapy_p25.audio_in_dev), "%s", "soapy");
-    rc |= expect_output_kind("Soapy stays monitor/audio path", soapy_p25, DSD_DEMOD_OUTPUT_AUDIO_MONITOR, 4800, 4);
+    dsd_opts soapy_p25_c4fm = p25_c4fm;
+    std::snprintf(soapy_p25_c4fm.audio_in_dev, sizeof(soapy_p25_c4fm.audio_in_dev), "%s", "soapy");
+    rc |=
+        expect_output_kind("Soapy P25 C4FM selects FSK symbols", soapy_p25_c4fm, DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4);
+    rc |= expect_configured_mode("Soapy P25 C4FM uses P25 C4FM LPF", soapy_p25_c4fm, 48000, DSD_DEMOD_OUTPUT_SYMBOL_FSK,
+                                 4800, 4, DSD_CH_LPF_PROFILE_P25_C4FM);
+
+    dsd_opts soapy_p25p1_qpsk = p25p1_qpsk;
+    std::snprintf(soapy_p25p1_qpsk.audio_in_dev, sizeof(soapy_p25p1_qpsk.audio_in_dev), "%s", "soapy:driver=test");
+    rc |= expect_configured_mode("Soapy P25 QPSK uses 4.8 ksps CQPSK symbols", soapy_p25p1_qpsk, 48000,
+                                 DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK);
+
+    dsd_opts soapy_p25p2_qpsk = p25p2_qpsk;
+    std::snprintf(soapy_p25p2_qpsk.audio_in_dev, sizeof(soapy_p25p2_qpsk.audio_in_dev), "%s", "soapy");
+    rc |= expect_configured_mode("Soapy P25P2 QPSK uses 6 ksps CQPSK symbols", soapy_p25p2_qpsk, 48000,
+                                 DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 6000, 4, DSD_CH_LPF_PROFILE_P25_CQPSK);
+
+    dsd_opts soapy_analog;
+    std::memset(&soapy_analog, 0, sizeof(soapy_analog));
+    soapy_analog.analog_only = 1;
+    std::snprintf(soapy_analog.audio_in_dev, sizeof(soapy_analog.audio_in_dev), "%s", "soapy");
+    rc |= expect_output_kind("Soapy analog-only stays monitor/audio path", soapy_analog, DSD_DEMOD_OUTPUT_AUDIO_MONITOR,
+                             4800, 4);
 
     rc |= expect_live_symbol_controls_guarded();
     rc |= expect_cqpsk_toggle_restores_fsk_channel_profile();
