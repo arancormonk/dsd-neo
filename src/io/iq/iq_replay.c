@@ -36,6 +36,15 @@ set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) {
     err_buf[err_buf_size - 1] = '\0';
 }
 
+void
+dsd_iq_replay_config_clear(dsd_iq_replay_config* cfg) {
+    if (!cfg) {
+        return;
+    }
+    free(cfg->events);
+    memset(cfg, 0, sizeof(*cfg));
+}
+
 static int
 copy_string_checked(const char* src, char* dst, size_t dst_size, char* err_buf, size_t err_buf_size, const char* name) {
     if (!dst || dst_size == 0) {
@@ -503,6 +512,10 @@ token_to_u64(const json_token* tok, uint64_t* out, char* err_buf, size_t err_buf
         set_error(err_buf, err_buf_size, "integer for '%s' is invalid", field_name);
         return DSD_IQ_ERR_INVALID_META;
     }
+    if (tok->num[0] == '-') {
+        set_error(err_buf, err_buf_size, "integer for '%s' must be non-negative", field_name);
+        return DSD_IQ_ERR_INVALID_META;
+    }
     memcpy(buf, tok->num, tok->num_len);
     buf[tok->num_len] = '\0';
     errno = 0;
@@ -606,10 +619,11 @@ typedef struct {
     unsigned capture_drop_blocks         : 1;
     unsigned input_ring_drops            : 1;
     unsigned notes                       : 1;
+    unsigned events                      : 1;
 } replay_seen_fields;
 
 static int
-validate_replay_semantics(const dsd_iq_replay_config* cfg, int reject_retunes, char* err_buf, size_t err_buf_size) {
+validate_replay_semantics(const dsd_iq_replay_config* cfg, char* err_buf, size_t err_buf_size) {
     if (!cfg) {
         return DSD_IQ_ERR_INVALID_ARG;
     }
@@ -645,10 +659,6 @@ validate_replay_semantics(const dsd_iq_replay_config* cfg, int reject_retunes, c
         set_error(err_buf, err_buf_size, "unsupported capture_stage '%s'", cfg->capture_stage);
         return DSD_IQ_ERR_UNSUPPORTED_FMT;
     }
-    if (reject_retunes && cfg->contains_retunes) {
-        set_error(err_buf, err_buf_size, "capture contains retunes; replay requires single-segment capture");
-        return DSD_IQ_ERR_RETUNE_REJECT;
-    }
     return DSD_IQ_OK;
 }
 
@@ -659,6 +669,364 @@ require_field(unsigned seen, const char* field_name, char* err_buf, size_t err_b
     }
     set_error(err_buf, err_buf_size, "missing metadata field '%s'", field_name);
     return DSD_IQ_ERR_INVALID_META;
+}
+
+static int
+event_kind_from_string(const char* s, dsd_iq_event_kind* out) {
+    if (!s || !out) {
+        return 0;
+    }
+    if (strcmp(s, "RETUNE") == 0) {
+        *out = DSD_IQ_EVENT_RETUNE;
+        return 1;
+    }
+    if (strcmp(s, "MUTE") == 0) {
+        *out = DSD_IQ_EVENT_MUTE;
+        return 1;
+    }
+    if (strcmp(s, "RESET") == 0) {
+        *out = DSD_IQ_EVENT_RESET;
+        return 1;
+    }
+    return 0;
+}
+
+static int
+append_parsed_event(dsd_iq_event** events, size_t* count, size_t* cap, const dsd_iq_event* event) {
+    if (!events || !count || !cap || !event) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (*count == *cap) {
+        size_t new_cap = (*cap == 0U) ? 8U : (*cap * 2U);
+        if (new_cap < *cap) {
+            return DSD_IQ_ERR_ALLOC;
+        }
+        dsd_iq_event* next = (dsd_iq_event*)realloc(*events, new_cap * sizeof(*next));
+        if (!next) {
+            return DSD_IQ_ERR_ALLOC;
+        }
+        *events = next;
+        *cap = new_cap;
+    }
+    (*events)[(*count)++] = *event;
+    return DSD_IQ_OK;
+}
+
+static int
+parse_event_object(json_tokenizer* tk, dsd_iq_event* out, char* err_buf, size_t err_buf_size) {
+    if (!tk || !out) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    dsd_iq_event ev;
+    memset(&ev, 0, sizeof(ev));
+
+    struct {
+        unsigned kind                        : 1;
+        unsigned byte_offset                 : 1;
+        unsigned duration_bytes              : 1;
+        unsigned center_frequency_hz         : 1;
+        unsigned capture_center_frequency_hz : 1;
+        unsigned sample_rate_hz              : 1;
+        unsigned reason                      : 1;
+    } seen = {0};
+
+    for (;;) {
+        json_token key_tok = tokenizer_next(tk);
+        if (tk->err_msg) {
+            set_error(err_buf, err_buf_size, "%s at byte %zu", tk->err_msg, tk->err_pos);
+            return DSD_IQ_ERR_INVALID_META;
+        }
+        if (key_tok.type == JTOK_RBRACE) {
+            break;
+        }
+        if (key_tok.type != JTOK_STRING) {
+            set_error(err_buf, err_buf_size, "expected event string key at byte %zu", key_tok.offset);
+            return DSD_IQ_ERR_INVALID_META;
+        }
+        char key_buf[128];
+        if (key_tok.str_len + 1 > sizeof(key_buf)) {
+            set_error(err_buf, err_buf_size, "event key too long at byte %zu", key_tok.offset);
+            return DSD_IQ_ERR_INVALID_META;
+        }
+        memcpy(key_buf, key_tok.str, key_tok.str_len);
+        key_buf[key_tok.str_len] = '\0';
+
+        json_token colon_tok = tokenizer_next(tk);
+        if (colon_tok.type != JTOK_COLON) {
+            set_error(err_buf, err_buf_size, "expected ':' after event key at byte %zu", key_tok.offset);
+            return DSD_IQ_ERR_INVALID_META;
+        }
+        json_token val_tok = tokenizer_next(tk);
+        if (tk->err_msg) {
+            set_error(err_buf, err_buf_size, "%s at byte %zu", tk->err_msg, tk->err_pos);
+            return DSD_IQ_ERR_INVALID_META;
+        }
+        if (val_tok.type == JTOK_LBRACE || val_tok.type == JTOK_LBRACKET) {
+            set_error(err_buf, err_buf_size, "nested event fields are unsupported at byte %zu", val_tok.offset);
+            return DSD_IQ_ERR_INVALID_META;
+        }
+
+        int rc = DSD_IQ_OK;
+        if (strcmp(key_buf, "kind") == 0) {
+            if (val_tok.type != JTOK_STRING) {
+                set_error(err_buf, err_buf_size, "event field 'kind' expects string");
+                return DSD_IQ_ERR_INVALID_META;
+            }
+            char kind_buf[32];
+            rc = copy_token_to_buffer(&val_tok, kind_buf, sizeof(kind_buf), err_buf, err_buf_size, "events.kind", 1);
+            if (rc != DSD_IQ_OK) {
+                return rc;
+            }
+            if (!event_kind_from_string(kind_buf, &ev.kind)) {
+                set_error(err_buf, err_buf_size, "unsupported IQ event kind '%s'", kind_buf);
+                return DSD_IQ_ERR_INVALID_META;
+            }
+            seen.kind = 1;
+        } else if (strcmp(key_buf, "byte_offset") == 0) {
+            if (val_tok.type != JTOK_NUMBER_INT) {
+                set_error(err_buf, err_buf_size, "event field 'byte_offset' expects integer");
+                return DSD_IQ_ERR_INVALID_META;
+            }
+            rc = token_to_u64(&val_tok, &ev.byte_offset, err_buf, err_buf_size, "events.byte_offset");
+            seen.byte_offset = 1;
+        } else if (strcmp(key_buf, "duration_bytes") == 0) {
+            if (val_tok.type != JTOK_NUMBER_INT) {
+                set_error(err_buf, err_buf_size, "event field 'duration_bytes' expects integer");
+                return DSD_IQ_ERR_INVALID_META;
+            }
+            rc = token_to_u64(&val_tok, &ev.duration_bytes, err_buf, err_buf_size, "events.duration_bytes");
+            seen.duration_bytes = 1;
+        } else if (strcmp(key_buf, "center_frequency_hz") == 0) {
+            if (val_tok.type != JTOK_NUMBER_INT) {
+                set_error(err_buf, err_buf_size, "event field 'center_frequency_hz' expects integer");
+                return DSD_IQ_ERR_INVALID_META;
+            }
+            rc = token_to_u64(&val_tok, &ev.center_frequency_hz, err_buf, err_buf_size, "events.center_frequency_hz");
+            seen.center_frequency_hz = 1;
+        } else if (strcmp(key_buf, "capture_center_frequency_hz") == 0) {
+            if (val_tok.type != JTOK_NUMBER_INT) {
+                set_error(err_buf, err_buf_size, "event field 'capture_center_frequency_hz' expects integer");
+                return DSD_IQ_ERR_INVALID_META;
+            }
+            rc = token_to_u64(&val_tok, &ev.capture_center_frequency_hz, err_buf, err_buf_size,
+                              "events.capture_center_frequency_hz");
+            seen.capture_center_frequency_hz = 1;
+        } else if (strcmp(key_buf, "sample_rate_hz") == 0) {
+            if (val_tok.type != JTOK_NUMBER_INT) {
+                set_error(err_buf, err_buf_size, "event field 'sample_rate_hz' expects integer");
+                return DSD_IQ_ERR_INVALID_META;
+            }
+            rc = token_to_u32(&val_tok, &ev.sample_rate_hz, err_buf, err_buf_size, "events.sample_rate_hz");
+            seen.sample_rate_hz = 1;
+        } else if (strcmp(key_buf, "reason") == 0) {
+            if (val_tok.type != JTOK_STRING) {
+                set_error(err_buf, err_buf_size, "event field 'reason' expects string");
+                return DSD_IQ_ERR_INVALID_META;
+            }
+            rc =
+                copy_token_to_buffer(&val_tok, ev.reason, sizeof(ev.reason), err_buf, err_buf_size, "events.reason", 1);
+            seen.reason = 1;
+        }
+        if (rc != DSD_IQ_OK) {
+            return rc;
+        }
+
+        json_token delim_tok = tokenizer_next(tk);
+        if (delim_tok.type == JTOK_COMMA) {
+            continue;
+        }
+        if (delim_tok.type == JTOK_RBRACE) {
+            break;
+        }
+        if (tk->err_msg) {
+            set_error(err_buf, err_buf_size, "%s at byte %zu", tk->err_msg, tk->err_pos);
+        } else {
+            set_error(err_buf, err_buf_size, "expected ',' or '}' after event field at byte %zu", delim_tok.offset);
+        }
+        return DSD_IQ_ERR_INVALID_META;
+    }
+
+    if (!seen.kind || !seen.byte_offset || !seen.reason) {
+        set_error(err_buf, err_buf_size, "event is missing required kind, byte_offset, or reason");
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    if (ev.kind == DSD_IQ_EVENT_MUTE) {
+        if (!seen.duration_bytes || ev.duration_bytes == 0) {
+            set_error(err_buf, err_buf_size, "MUTE event requires positive duration_bytes");
+            return DSD_IQ_ERR_INVALID_META;
+        }
+    } else if (!seen.center_frequency_hz || !seen.capture_center_frequency_hz || !seen.sample_rate_hz
+               || ev.center_frequency_hz == 0 || ev.capture_center_frequency_hz == 0 || ev.sample_rate_hz == 0) {
+        set_error(
+            err_buf, err_buf_size,
+            "RETUNE and RESET events require center_frequency_hz, capture_center_frequency_hz, and sample_rate_hz");
+        return DSD_IQ_ERR_INVALID_META;
+    }
+
+    *out = ev;
+    return DSD_IQ_OK;
+}
+
+static int
+parse_events_array(json_tokenizer* tk, dsd_iq_event** out_events, uint32_t* out_count, char* err_buf,
+                   size_t err_buf_size) {
+    if (!tk || !out_events || !out_count) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    dsd_iq_event* events = NULL;
+    size_t count = 0;
+    size_t cap = 0;
+
+    json_token tok = tokenizer_next(tk);
+    if (tok.type == JTOK_RBRACKET) {
+        *out_events = NULL;
+        *out_count = 0;
+        return DSD_IQ_OK;
+    }
+
+    for (;;) {
+        if (tok.type != JTOK_LBRACE) {
+            set_error(err_buf, err_buf_size, "events array expects objects at byte %zu", tok.offset);
+            free(events);
+            return DSD_IQ_ERR_INVALID_META;
+        }
+        if (count >= UINT32_MAX) {
+            set_error(err_buf, err_buf_size, "too many IQ events");
+            free(events);
+            return DSD_IQ_ERR_INVALID_META;
+        }
+        dsd_iq_event ev;
+        int rc = parse_event_object(tk, &ev, err_buf, err_buf_size);
+        if (rc != DSD_IQ_OK) {
+            free(events);
+            return rc;
+        }
+        rc = append_parsed_event(&events, &count, &cap, &ev);
+        if (rc != DSD_IQ_OK) {
+            set_error(err_buf, err_buf_size, "event allocation failed");
+            free(events);
+            return rc;
+        }
+
+        tok = tokenizer_next(tk);
+        if (tok.type == JTOK_COMMA) {
+            tok = tokenizer_next(tk);
+            continue;
+        }
+        if (tok.type == JTOK_RBRACKET) {
+            break;
+        }
+        if (tk->err_msg) {
+            set_error(err_buf, err_buf_size, "%s at byte %zu", tk->err_msg, tk->err_pos);
+        } else {
+            set_error(err_buf, err_buf_size, "expected ',' or ']' after event at byte %zu", tok.offset);
+        }
+        free(events);
+        return DSD_IQ_ERR_INVALID_META;
+    }
+
+    *out_events = events;
+    *out_count = (uint32_t)count;
+    return DSD_IQ_OK;
+}
+
+static int
+validate_replay_events_metadata(const dsd_iq_replay_config* cfg, uint64_t max_offset, int check_max_offset,
+                                int reject_missing_timeline, char* err_buf, size_t err_buf_size) {
+    if (!cfg) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (cfg->event_count > 0U && cfg->metadata_version != 2U) {
+        set_error(err_buf, err_buf_size, "events require metadata version 2");
+        return DSD_IQ_ERR_UNSUPPORTED_VER;
+    }
+    if (reject_missing_timeline && (cfg->contains_retunes || cfg->capture_retune_count > 0U)) {
+        if (cfg->event_count == 0U) {
+            set_error(err_buf, err_buf_size, "capture contains retunes but has no replay event timeline");
+            return DSD_IQ_ERR_RETUNE_REJECT;
+        }
+    }
+    size_t align = dsd_iq_sample_format_alignment_bytes(cfg->format);
+    uint64_t prev_offset = 0;
+    int has_frequency_event = 0;
+    uint32_t retune_event_count = 0;
+    uint32_t completed_retune_reset_count = 0;
+    int retune_needs_reset = 0;
+    for (uint32_t i = 0; i < cfg->event_count; i++) {
+        const dsd_iq_event* ev = &cfg->events[i];
+        if (i > 0U && ev->byte_offset < prev_offset) {
+            set_error(err_buf, err_buf_size, "IQ events are not sorted by byte_offset");
+            return DSD_IQ_ERR_INVALID_META;
+        }
+        prev_offset = ev->byte_offset;
+        if (check_max_offset && ev->byte_offset > max_offset) {
+            set_error(err_buf, err_buf_size, "IQ event byte_offset %" PRIu64 " exceeds replay bytes %" PRIu64,
+                      ev->byte_offset, max_offset);
+            return DSD_IQ_ERR_INVALID_META;
+        }
+        if (align > 0U && (ev->byte_offset % (uint64_t)align) != 0ULL) {
+            set_error(err_buf, err_buf_size, "IQ event byte_offset is not aligned to sample format");
+            return DSD_IQ_ERR_ALIGNMENT;
+        }
+        if (ev->kind == DSD_IQ_EVENT_MUTE) {
+            if (ev->duration_bytes == 0) {
+                set_error(err_buf, err_buf_size, "MUTE event duration_bytes must be > 0");
+                return DSD_IQ_ERR_INVALID_META;
+            }
+            if (align > 0U && (ev->duration_bytes % (uint64_t)align) != 0ULL) {
+                set_error(err_buf, err_buf_size, "MUTE event duration_bytes is not aligned to sample format");
+                return DSD_IQ_ERR_ALIGNMENT;
+            }
+        } else if (ev->kind == DSD_IQ_EVENT_RETUNE || ev->kind == DSD_IQ_EVENT_RESET) {
+            has_frequency_event = 1;
+            if (ev->center_frequency_hz == 0 || ev->capture_center_frequency_hz == 0 || ev->sample_rate_hz == 0) {
+                set_error(err_buf, err_buf_size, "RETUNE/RESET event is missing frequency or sample-rate fields");
+                return DSD_IQ_ERR_INVALID_META;
+            }
+            if (ev->sample_rate_hz != cfg->sample_rate_hz) {
+                set_error(err_buf, err_buf_size, "event sample_rate_hz changes are not supported for replay");
+                return DSD_IQ_ERR_RATE_CHAIN;
+            }
+            if (ev->kind == DSD_IQ_EVENT_RETUNE) {
+                if (reject_missing_timeline && retune_needs_reset) {
+                    set_error(err_buf, err_buf_size, "RETUNE event is missing a following RESET event");
+                    return DSD_IQ_ERR_RETUNE_REJECT;
+                }
+                retune_event_count++;
+                retune_needs_reset = 1;
+            } else if (retune_needs_reset) {
+                completed_retune_reset_count++;
+                retune_needs_reset = 0;
+            }
+        } else {
+            set_error(err_buf, err_buf_size, "unsupported IQ event kind %d", (int)ev->kind);
+            return DSD_IQ_ERR_INVALID_META;
+        }
+    }
+    if (reject_missing_timeline && cfg->contains_retunes && !has_frequency_event) {
+        set_error(err_buf, err_buf_size, "capture contains retunes but event timeline has no RETUNE/RESET event");
+        return DSD_IQ_ERR_RETUNE_REJECT;
+    }
+    if (reject_missing_timeline
+        && (cfg->contains_retunes || cfg->capture_retune_count > 0U || retune_event_count > 0U)) {
+        if (retune_needs_reset) {
+            set_error(err_buf, err_buf_size, "capture retune timeline is missing a RESET event");
+            return DSD_IQ_ERR_RETUNE_REJECT;
+        }
+        if (cfg->capture_retune_count == 0U) {
+            set_error(err_buf, err_buf_size, "capture contains retunes but capture_retune_count is zero");
+            return DSD_IQ_ERR_RETUNE_REJECT;
+        }
+        if (retune_event_count != cfg->capture_retune_count) {
+            set_error(err_buf, err_buf_size, "capture retune count does not match RETUNE events");
+            return DSD_IQ_ERR_RETUNE_REJECT;
+        }
+        if (completed_retune_reset_count != cfg->capture_retune_count) {
+            set_error(err_buf, err_buf_size, "capture retune timeline is missing a RESET event");
+            return DSD_IQ_ERR_RETUNE_REJECT;
+        }
+    }
+    return DSD_IQ_OK;
 }
 
 static int
@@ -675,6 +1043,11 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
 
     dsd_iq_replay_config cfg;
     memset(&cfg, 0, sizeof(cfg));
+#define PARSE_RETURN(rc_)                                                                                              \
+    do {                                                                                                               \
+        dsd_iq_replay_config_clear(&cfg);                                                                              \
+        return (rc_);                                                                                                  \
+    } while (0)
     replay_seen_fields seen;
     memset(&seen, 0, sizeof(seen));
     int version = 0;
@@ -691,27 +1064,27 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else {
             set_error(err_buf, err_buf_size, "metadata must start with '{'");
         }
-        return DSD_IQ_ERR_INVALID_META;
+        PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
     }
 
     for (;;) {
         json_token key_tok = tokenizer_next(&tk);
         if (tk.err_msg) {
             set_error(err_buf, err_buf_size, "%s at byte %zu", tk.err_msg, tk.err_pos);
-            return DSD_IQ_ERR_INVALID_META;
+            PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
         }
         if (key_tok.type == JTOK_RBRACE) {
             break;
         }
         if (key_tok.type != JTOK_STRING) {
             set_error(err_buf, err_buf_size, "expected string key at byte %zu", key_tok.offset);
-            return DSD_IQ_ERR_INVALID_META;
+            PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
         }
 
         char key_buf[128];
         if (key_tok.str_len + 1 > sizeof(key_buf)) {
             set_error(err_buf, err_buf_size, "metadata key too long at byte %zu", key_tok.offset);
-            return DSD_IQ_ERR_INVALID_META;
+            PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
         }
         memcpy(key_buf, key_tok.str, key_tok.str_len);
         key_buf[key_tok.str_len] = '\0';
@@ -719,40 +1092,38 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         json_token colon_tok = tokenizer_next(&tk);
         if (colon_tok.type != JTOK_COLON) {
             set_error(err_buf, err_buf_size, "expected ':' after key at byte %zu", key_tok.offset);
-            return DSD_IQ_ERR_INVALID_META;
+            PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
         }
 
         json_token val_tok = tokenizer_next(&tk);
         if (tk.err_msg) {
             set_error(err_buf, err_buf_size, "%s at byte %zu", tk.err_msg, tk.err_pos);
-            return DSD_IQ_ERR_INVALID_META;
+            PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
         }
-        if (val_tok.type == JTOK_LBRACE || val_tok.type == JTOK_LBRACKET) {
-            set_error(err_buf, err_buf_size, "nested structures are unsupported in metadata v1 (at byte %zu)",
-                      val_tok.offset);
-            return DSD_IQ_ERR_INVALID_META;
-        }
-
         const char* key = key_buf;
         int rc = DSD_IQ_OK;
         if (strcmp(key, "format") == 0) {
+            if (val_tok.type == JTOK_LBRACE || val_tok.type == JTOK_LBRACKET) {
+                set_error(err_buf, err_buf_size, "field 'format' expects string");
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
+            }
             if (val_tok.type != JTOK_STRING) {
                 set_error(err_buf, err_buf_size, "field 'format' expects string");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = copy_token_to_buffer(&val_tok, format_buf, sizeof(format_buf), err_buf, err_buf_size, "format", 1);
             seen.format = 1;
         } else if (strcmp(key, "version") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'version' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_i32(&val_tok, &version, err_buf, err_buf_size, "version");
             seen.version = 1;
         } else if (strcmp(key, "sample_format") == 0) {
             if (val_tok.type != JTOK_STRING) {
                 set_error(err_buf, err_buf_size, "field 'sample_format' expects string");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = copy_token_to_buffer(&val_tok, sample_format_buf, sizeof(sample_format_buf), err_buf, err_buf_size,
                                       "sample_format", 1);
@@ -760,7 +1131,7 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else if (strcmp(key, "iq_order") == 0) {
             if (val_tok.type != JTOK_STRING) {
                 set_error(err_buf, err_buf_size, "field 'iq_order' expects string");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = copy_token_to_buffer(&val_tok, iq_order_buf, sizeof(iq_order_buf), err_buf, err_buf_size, "iq_order",
                                       1);
@@ -768,7 +1139,7 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else if (strcmp(key, "endianness") == 0) {
             if (val_tok.type != JTOK_STRING) {
                 set_error(err_buf, err_buf_size, "field 'endianness' expects string");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = copy_token_to_buffer(&val_tok, endianness_buf, sizeof(endianness_buf), err_buf, err_buf_size,
                                       "endianness", 1);
@@ -776,7 +1147,7 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else if (strcmp(key, "capture_stage") == 0) {
             if (val_tok.type != JTOK_STRING) {
                 set_error(err_buf, err_buf_size, "field 'capture_stage' expects string");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = copy_token_to_buffer(&val_tok, cfg.capture_stage, sizeof(cfg.capture_stage), err_buf, err_buf_size,
                                       "capture_stage", 1);
@@ -784,21 +1155,21 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else if (strcmp(key, "sample_rate_hz") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'sample_rate_hz' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_u32(&val_tok, &cfg.sample_rate_hz, err_buf, err_buf_size, "sample_rate_hz");
             seen.sample_rate_hz = 1;
         } else if (strcmp(key, "center_frequency_hz") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'center_frequency_hz' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_u64(&val_tok, &cfg.center_frequency_hz, err_buf, err_buf_size, "center_frequency_hz");
             seen.center_frequency_hz = 1;
         } else if (strcmp(key, "capture_center_frequency_hz") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'capture_center_frequency_hz' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_u64(&val_tok, &cfg.capture_center_frequency_hz, err_buf, err_buf_size,
                               "capture_center_frequency_hz");
@@ -806,42 +1177,42 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else if (strcmp(key, "ppm") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'ppm' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_i32(&val_tok, &cfg.ppm, err_buf, err_buf_size, "ppm");
             seen.ppm = 1;
         } else if (strcmp(key, "tuner_gain_tenth_db") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'tuner_gain_tenth_db' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_i32(&val_tok, &cfg.tuner_gain_tenth_db, err_buf, err_buf_size, "tuner_gain_tenth_db");
             seen.tuner_gain_tenth_db = 1;
         } else if (strcmp(key, "rtl_dsp_bw_khz") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'rtl_dsp_bw_khz' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_i32(&val_tok, &cfg.rtl_dsp_bw_khz, err_buf, err_buf_size, "rtl_dsp_bw_khz");
             seen.rtl_dsp_bw_khz = 1;
         } else if (strcmp(key, "base_decimation") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'base_decimation' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_u32(&val_tok, &cfg.base_decimation, err_buf, err_buf_size, "base_decimation");
             seen.base_decimation = 1;
         } else if (strcmp(key, "post_downsample") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'post_downsample' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_u32(&val_tok, &cfg.post_downsample, err_buf, err_buf_size, "post_downsample");
             seen.post_downsample = 1;
         } else if (strcmp(key, "demod_rate_hz") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'demod_rate_hz' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_u32(&val_tok, &cfg.demod_rate_hz, err_buf, err_buf_size, "demod_rate_hz");
             seen.demod_rate_hz = 1;
@@ -863,14 +1234,14 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else if (strcmp(key, "capture_retune_count") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'capture_retune_count' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_u32(&val_tok, &cfg.capture_retune_count, err_buf, err_buf_size, "capture_retune_count");
             seen.capture_retune_count = 1;
         } else if (strcmp(key, "source_backend") == 0) {
             if (val_tok.type != JTOK_STRING) {
                 set_error(err_buf, err_buf_size, "field 'source_backend' expects string");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = copy_token_to_buffer(&val_tok, cfg.source_backend, sizeof(cfg.source_backend), err_buf, err_buf_size,
                                       "source_backend", 1);
@@ -878,7 +1249,7 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else if (strcmp(key, "source_args") == 0) {
             if (val_tok.type != JTOK_STRING) {
                 set_error(err_buf, err_buf_size, "field 'source_args' expects string");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = copy_token_to_buffer(&val_tok, cfg.source_args, sizeof(cfg.source_args), err_buf, err_buf_size,
                                       "source_args", 1);
@@ -886,7 +1257,7 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else if (strcmp(key, "capture_started_utc") == 0) {
             if (val_tok.type != JTOK_STRING) {
                 set_error(err_buf, err_buf_size, "field 'capture_started_utc' expects string");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = copy_token_to_buffer(&val_tok, cfg.capture_started_utc, sizeof(cfg.capture_started_utc), err_buf,
                                       err_buf_size, "capture_started_utc", 1);
@@ -894,7 +1265,7 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else if (strcmp(key, "data_file") == 0) {
             if (val_tok.type != JTOK_STRING) {
                 set_error(err_buf, err_buf_size, "field 'data_file' expects string");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = copy_token_to_buffer(&val_tok, data_file_buf, sizeof(data_file_buf), err_buf, err_buf_size,
                                       "data_file", 1);
@@ -902,28 +1273,28 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else if (strcmp(key, "data_bytes") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'data_bytes' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_u64(&val_tok, &cfg.data_bytes, err_buf, err_buf_size, "data_bytes");
             seen.data_bytes = 1;
         } else if (strcmp(key, "capture_drops") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'capture_drops' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_u64(&val_tok, &cfg.capture_drops, err_buf, err_buf_size, "capture_drops");
             seen.capture_drops = 1;
         } else if (strcmp(key, "capture_drop_blocks") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'capture_drop_blocks' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_u64(&val_tok, &cfg.capture_drop_blocks, err_buf, err_buf_size, "capture_drop_blocks");
             seen.capture_drop_blocks = 1;
         } else if (strcmp(key, "input_ring_drops") == 0) {
             if (val_tok.type != JTOK_NUMBER_INT) {
                 set_error(err_buf, err_buf_size, "field 'input_ring_drops' expects integer");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             rc = token_to_u64(&val_tok, &cfg.input_ring_drops, err_buf, err_buf_size, "input_ring_drops");
             seen.input_ring_drops = 1;
@@ -935,15 +1306,32 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
                 rc = copy_token_to_buffer(&val_tok, cfg.notes, sizeof(cfg.notes), err_buf, err_buf_size, "notes", 0);
             } else {
                 set_error(err_buf, err_buf_size, "field 'notes' expects string or null");
-                return DSD_IQ_ERR_INVALID_META;
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
             }
             seen.notes = 1;
+        } else if (strcmp(key, "events") == 0) {
+            if (val_tok.type != JTOK_LBRACKET) {
+                set_error(err_buf, err_buf_size, "field 'events' expects array");
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
+            }
+            if (cfg.events) {
+                free(cfg.events);
+                cfg.events = NULL;
+                cfg.event_count = 0;
+            }
+            rc = parse_events_array(&tk, &cfg.events, &cfg.event_count, err_buf, err_buf_size);
+            seen.events = 1;
         } else {
+            if (val_tok.type == JTOK_LBRACE || val_tok.type == JTOK_LBRACKET) {
+                set_error(err_buf, err_buf_size, "nested structures are unsupported in metadata (at byte %zu)",
+                          val_tok.offset);
+                PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
+            }
             /* Unknown fields are ignored for forward compatibility. */
         }
 
         if (rc != DSD_IQ_OK) {
-            return rc;
+            PARSE_RETURN(rc);
         }
 
         json_token delim_tok = tokenizer_next(&tk);
@@ -958,13 +1346,13 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         } else {
             set_error(err_buf, err_buf_size, "expected ',' or '}' after field '%s' at byte %zu", key, delim_tok.offset);
         }
-        return DSD_IQ_ERR_INVALID_META;
+        PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
     }
 
     tok = tokenizer_next(&tk);
     if (tok.type != JTOK_EOF) {
         set_error(err_buf, err_buf_size, "trailing JSON content at byte %zu", tok.offset);
-        return DSD_IQ_ERR_INVALID_META;
+        PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
     }
 
     if (require_field(seen.format, "format", err_buf, err_buf_size) != DSD_IQ_OK
@@ -998,61 +1386,72 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         || require_field(seen.capture_drop_blocks, "capture_drop_blocks", err_buf, err_buf_size) != DSD_IQ_OK
         || require_field(seen.input_ring_drops, "input_ring_drops", err_buf, err_buf_size) != DSD_IQ_OK
         || require_field(seen.notes, "notes", err_buf, err_buf_size) != DSD_IQ_OK) {
-        return DSD_IQ_ERR_INVALID_META;
+        PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
     }
 
     if (strcmp(format_buf, "dsd-neo-iq") != 0) {
         set_error(err_buf, err_buf_size, "unsupported format '%s'", format_buf);
-        return DSD_IQ_ERR_INVALID_META;
+        PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
     }
-    if (version != 1) {
+    if (version != 1 && version != 2) {
         set_error(err_buf, err_buf_size, "unsupported metadata version %d", version);
-        return DSD_IQ_ERR_UNSUPPORTED_VER;
+        PARSE_RETURN(DSD_IQ_ERR_UNSUPPORTED_VER);
+    }
+    cfg.metadata_version = (uint32_t)version;
+    if (seen.events && version != 2) {
+        set_error(err_buf, err_buf_size, "events require metadata version 2");
+        PARSE_RETURN(DSD_IQ_ERR_UNSUPPORTED_VER);
     }
     if (strcmp(iq_order_buf, "IQ") != 0) {
         set_error(err_buf, err_buf_size, "unsupported iq_order '%s'", iq_order_buf);
-        return DSD_IQ_ERR_INVALID_META;
+        PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
     }
 
     if (strcmp(sample_format_buf, "cu8") == 0) {
         cfg.format = DSD_IQ_FORMAT_CU8;
         if (strcmp(endianness_buf, "none") != 0) {
             set_error(err_buf, err_buf_size, "cu8 requires endianness 'none'");
-            return DSD_IQ_ERR_INVALID_META;
+            PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
         }
     } else if (strcmp(sample_format_buf, "cf32") == 0) {
         cfg.format = DSD_IQ_FORMAT_CF32;
         if (strcmp(endianness_buf, "little") != 0) {
             set_error(err_buf, err_buf_size, "cf32 requires endianness 'little'");
-            return DSD_IQ_ERR_INVALID_META;
+            PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
         }
     } else if (strcmp(sample_format_buf, "cs16") == 0) {
         cfg.format = DSD_IQ_FORMAT_CS16;
         if (strcmp(endianness_buf, "little") != 0) {
             set_error(err_buf, err_buf_size, "cs16 requires endianness 'little'");
-            return DSD_IQ_ERR_INVALID_META;
+            PARSE_RETURN(DSD_IQ_ERR_INVALID_META);
         }
     } else {
         set_error(err_buf, err_buf_size, "unsupported sample_format '%s'", sample_format_buf);
-        return DSD_IQ_ERR_UNSUPPORTED_FMT;
+        PARSE_RETURN(DSD_IQ_ERR_UNSUPPORTED_FMT);
     }
 
     int drc =
         resolve_data_path(metadata_path, data_file_buf, cfg.data_path, sizeof(cfg.data_path), err_buf, err_buf_size);
     if (drc != DSD_IQ_OK) {
-        return drc;
+        PARSE_RETURN(drc);
     }
     int cprc = copy_string_checked(metadata_path, cfg.metadata_path, sizeof(cfg.metadata_path), err_buf, err_buf_size,
                                    "metadata_path");
     if (cprc != DSD_IQ_OK) {
-        return cprc;
+        PARSE_RETURN(cprc);
     }
 
-    int src = validate_replay_semantics(&cfg, reject_retunes, err_buf, err_buf_size);
+    int src = validate_replay_semantics(&cfg, err_buf, err_buf_size);
     if (src != DSD_IQ_OK) {
-        return src;
+        PARSE_RETURN(src);
+    }
+    src = validate_replay_events_metadata(&cfg, cfg.data_bytes, cfg.data_bytes > 0, reject_retunes, err_buf,
+                                          err_buf_size);
+    if (src != DSD_IQ_OK) {
+        PARSE_RETURN(src);
     }
 
+#undef PARSE_RETURN
     *out_cfg = cfg;
     return DSD_IQ_OK;
 }
@@ -1132,7 +1531,19 @@ replay_read_metadata_internal(const char* path, dsd_iq_replay_config* out_cfg, i
 
 int
 dsd_iq_replay_read_metadata(const char* path, dsd_iq_replay_config* out_cfg, char* err_buf, size_t err_buf_size) {
-    return replay_read_metadata_internal(path, out_cfg, 0, err_buf, err_buf_size);
+    if (!out_cfg) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+
+    dsd_iq_replay_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    int rc = replay_read_metadata_internal(path, &cfg, 0, err_buf, err_buf_size);
+    if (rc != DSD_IQ_OK) {
+        return rc;
+    }
+
+    *out_cfg = cfg;
+    return DSD_IQ_OK;
 }
 
 int
@@ -1146,6 +1557,7 @@ dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_repla
     }
 
     dsd_iq_replay_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
     int rc = replay_read_metadata_internal(path, &cfg, 1, err_buf, err_buf_size);
     if (rc != DSD_IQ_OK) {
         return rc;
@@ -1154,6 +1566,7 @@ dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_repla
     uint64_t actual_size = 0;
     if (file_size_u64(cfg.data_path, &actual_size) != DSD_IQ_OK) {
         set_error(err_buf, err_buf_size, "failed to stat data file '%s': %s", cfg.data_path, strerror(errno));
+        dsd_iq_replay_config_clear(&cfg);
         return DSD_IQ_ERR_IO;
     }
 
@@ -1162,34 +1575,44 @@ dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_repla
     rc = dsd_iq_replay_compute_effective_bytes(cfg.data_bytes, actual_size, cfg.format, &effective, &mismatch);
     if (rc != DSD_IQ_OK) {
         set_error(err_buf, err_buf_size, "failed to compute effective replay bytes");
+        dsd_iq_replay_config_clear(&cfg);
         return rc;
     }
     rc = dsd_iq_replay_validate_effective_bytes_for_replay(effective, cfg.loop);
     if (rc != DSD_IQ_OK) {
         set_error(err_buf, err_buf_size, "no aligned I/Q samples available for replay");
+        dsd_iq_replay_config_clear(&cfg);
+        return rc;
+    }
+    rc = validate_replay_events_metadata(&cfg, effective, 1, 1, err_buf, err_buf_size);
+    if (rc != DSD_IQ_OK) {
+        dsd_iq_replay_config_clear(&cfg);
         return rc;
     }
 
     (void)mismatch;
-    *out_cfg = cfg;
 
     if (!out) {
+        *out_cfg = cfg;
         return DSD_IQ_OK;
     }
 
     struct dsd_iq_replay_source* src = (struct dsd_iq_replay_source*)calloc(1, sizeof(*src));
     if (!src) {
         set_error(err_buf, err_buf_size, "replay source allocation failed");
+        dsd_iq_replay_config_clear(&cfg);
         return DSD_IQ_ERR_ALLOC;
     }
     src->fp = fopen(cfg.data_path, "rb");
     if (!src->fp) {
         set_error(err_buf, err_buf_size, "failed to open replay data '%s': %s", cfg.data_path, strerror(errno));
         free(src);
+        dsd_iq_replay_config_clear(&cfg);
         return DSD_IQ_ERR_IO;
     }
     src->remaining_bytes = effective;
     src->total_bytes = effective;
+    *out_cfg = cfg;
     *out = src;
     return DSD_IQ_OK;
 }
@@ -1260,9 +1683,13 @@ dsd_iq_info_print(const dsd_iq_replay_config* cfg, const char* display_path, uin
     if (align > 0) {
         complex_samples = effective / (uint64_t)align;
     }
+    char compat_err[256] = {0};
+    int replay_compatible =
+        (effective > 0
+         && validate_replay_events_metadata(cfg, effective, 1, 1, compat_err, sizeof(compat_err)) == DSD_IQ_OK);
 
     fprintf(out, "IQ Capture Info: %s\n", display_path ? display_path : cfg->metadata_path);
-    fprintf(out, "  Format:              dsd-neo-iq v1\n");
+    fprintf(out, "  Format:              dsd-neo-iq v%u\n", cfg->metadata_version ? cfg->metadata_version : 1U);
     fprintf(out, "  Sample format:       %s\n", dsd_iq_sample_format_name(cfg->format));
     fprintf(out, "  Sample rate:         %u Hz\n", cfg->sample_rate_hz);
     fprintf(out, "  Center frequency:    %.6f MHz\n", (double)cfg->center_frequency_hz / 1000000.0);
@@ -1287,7 +1714,8 @@ dsd_iq_info_print(const dsd_iq_replay_config* cfg, const char* display_path, uin
     fprintf(out, "  Input ring drops:    %" PRIu64 "\n", cfg->input_ring_drops);
     fprintf(out, "  Contains retunes:    %s (%u retune events)\n", cfg->contains_retunes ? "yes" : "no",
             cfg->capture_retune_count);
-    fprintf(out, "  Replay compatible:   %s\n", (!cfg->contains_retunes && effective > 0) ? "yes" : "no");
+    fprintf(out, "  Event timeline:      %u event(s)\n", cfg->event_count);
+    fprintf(out, "  Replay compatible:   %s\n", replay_compatible ? "yes" : "no");
 
     if (err) {
         if (mismatch) {
@@ -1303,10 +1731,11 @@ dsd_iq_info_print(const dsd_iq_replay_config* cfg, const char* display_path, uin
             fprintf(err, "WARNING: data file size not aligned to sample boundary (%s requires %zu-byte alignment)\n",
                     dsd_iq_sample_format_name(cfg->format), align);
         }
-        if (cfg->contains_retunes) {
-            fprintf(err,
-                    "WARNING: capture contains %u retune(s) — not replayable until segment metadata is implemented\n",
+        if (cfg->contains_retunes && cfg->event_count == 0U) {
+            fprintf(err, "WARNING: capture contains %u retune(s) but has no replay event timeline\n",
                     cfg->capture_retune_count);
+        } else if (!replay_compatible && compat_err[0] != '\0') {
+            fprintf(err, "WARNING: replay compatibility check failed: %s\n", compat_err);
         }
     }
 

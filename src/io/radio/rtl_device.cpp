@@ -54,6 +54,12 @@
 
 #include <stdint.h>
 
+enum {
+    RTL_CAPTURE_RECONFIGURE_INACTIVE = 0,
+    RTL_CAPTURE_RECONFIGURE_ACTIVE = 1,
+    RTL_CAPTURE_RECONFIGURE_RELEASING = 2,
+};
+
 #ifdef USE_SOAPYSDR
 #include <SoapySDR/Constants.h>
 #include <SoapySDR/Device.hpp>
@@ -270,6 +276,36 @@ enum : int {
 // Internal RTL device structure
 struct rtl_device {
     rtlsdr_dev_t* dev;
+    dsd_thread_t thread;
+    struct input_ring_state* input_ring;
+    struct dsd_iq_capture_writer* iq_capture_writer;
+    std::atomic<uint64_t> capture_mute_pending_bytes;
+    uint64_t replay_initial_center_frequency_hz;
+    uint64_t replay_initial_capture_center_frequency_hz;
+    dsd_iq_replay_source* replay_src;
+    uint64_t replay_float_elements_written;
+    /* SoapySDR backend */
+    SoapySDR::Device* soapy_dev;
+    SoapySDR::Stream* soapy_stream;
+    uint64_t soapy_overflow_count;
+    uint64_t soapy_timeout_count;
+    uint64_t soapy_read_errors;
+    uint64_t soapy_last_overflow_log_ns;
+    /* TCP stats (optional) */
+    uint64_t tcp_bytes_total;
+    uint64_t tcp_bytes_window;
+    uint64_t reserve_full_events;
+    uint64_t stats_last_ns;
+    /* TCP reassembly to uniform chunk size */
+    unsigned char* tcp_pending;
+    size_t tcp_pending_len;
+    size_t tcp_pending_cap;
+    dsd_mutex_t soapy_lock;
+    dsd_mutex_t tcp_metrics_lock;
+    /* TCP connection quality metrics (lag resilience) */
+    struct tcp_quality_metrics tcp_metrics;
+    struct rtl_replay_eof_state replay_eof;
+    dsd_iq_replay_config replay_cfg;
     int dev_index;
     uint32_t freq;
     uint32_t rate;
@@ -279,68 +315,45 @@ struct rtl_device {
     int offset_tuning;
     int direct_sampling;
     std::atomic<int> mute;
-    dsd_thread_t thread;
     int thread_started;
-    struct input_ring_state* input_ring;
     int combine_rotate_enabled;
-    struct dsd_iq_capture_writer* iq_capture_writer;
     std::atomic<uint32_t> capture_retune_count;
+    std::atomic<int> capture_reconfigure_hold;
     /* Backend selector: 0 = USB (librtlsdr), 1 = rtl_tcp, 2 = SoapySDR */
     int backend;
     int replay_fs4_shift_enabled;
     int replay_combine_rotate_enabled;
-    dsd_iq_replay_config replay_cfg;
-    dsd_iq_replay_source* replay_src;
-    struct rtl_replay_eof_state replay_eof;
+    uint32_t replay_initial_sample_rate_hz;
+    uint32_t replay_initial_freq;
+    uint32_t replay_initial_rate;
     int replay_has_eof_state;
-    uint64_t replay_float_elements_written;
-    /* SoapySDR backend */
-    SoapySDR::Device* soapy_dev;
-    SoapySDR::Stream* soapy_stream;
-    dsd_mutex_t soapy_lock;
     int soapy_lock_inited;
     int soapy_format; /* SOAPY_FMT_* */
     uint32_t soapy_mtu_elems;
-    int rot_phase;                                  /* persistent j^n phase in [0..3] for capture-side FS/4 rotation */
-    struct rtl_capture_u8_byte_carry iq_byte_carry; /* one buffered raw byte when a chunk ends mid-I/Q sample */
-    std::atomic<int> mute_byte_phase;               /* byte carry while an active mute span is discarded in fragments */
-    uint64_t soapy_overflow_count;
-    uint64_t soapy_timeout_count;
-    uint64_t soapy_read_errors;
-    uint64_t soapy_last_overflow_log_ns;
+    int rot_phase;                    /* persistent j^n phase in [0..3] for capture-side FS/4 rotation */
+    std::atomic<int> mute_byte_phase; /* byte carry while an active mute span is discarded in fragments */
     /* rtl_tcp connection */
     dsd_socket_t sockfd;
-    char host[1024];
     int port;
     std::atomic<int> run;
     int agc_mode; /* cached for TCP backend */
     int bias_tee_on;
     int tcp_autotune; /* adaptive recv/buffering */
-    /* TCP stats (optional) */
-    uint64_t tcp_bytes_total;
-    uint64_t tcp_bytes_window;
-    uint64_t reserve_full_events;
     int stats_enabled;
-    uint64_t stats_last_ns;
-    /* TCP connection quality metrics (lag resilience) */
-    struct tcp_quality_metrics tcp_metrics;
-    dsd_mutex_t tcp_metrics_lock;
     int tcp_metrics_lock_inited;
-    /* TCP reassembly to uniform chunk size */
-    unsigned char* tcp_pending;
-    size_t tcp_pending_len;
-    size_t tcp_pending_cap;
     /* Extra driver state for reconnect replay */
     int testmode_on;
     uint32_t rtl_xtal_hz;
     uint32_t tuner_xtal_hz;
+    int if_gain_count;
+    struct rtl_capture_u8_byte_carry iq_byte_carry; /* one buffered raw byte when a chunk ends mid-I/Q sample */
 
     struct {
         int stage;
         int gain;
     } if_gains[16];
 
-    int if_gain_count;
+    char host[1024];
 };
 
 static void
@@ -517,6 +530,29 @@ rtl_account_fragmented_muted_u8_bytes(struct rtl_device* s, size_t discarded_byt
 }
 
 static inline void
+rtl_complete_fragmented_capture_discard(struct rtl_device* s) {
+    if (!s || (s->backend != RTL_BACKEND_USB && s->backend != RTL_BACKEND_TCP)) {
+        return;
+    }
+
+    unsigned int carry = (unsigned int)(s->mute_byte_phase.load(std::memory_order_relaxed) & 1U);
+    if ((carry & 1U) == 0U) {
+        return;
+    }
+
+    int remaining = s->mute.load(std::memory_order_relaxed);
+    for (;;) {
+        int realigned = rtl_capture_complete_fragmented_u8_discard(remaining, carry);
+        if (realigned == remaining) {
+            break;
+        }
+        if (s->mute.compare_exchange_weak(remaining, realigned, std::memory_order_relaxed)) {
+            break;
+        }
+    }
+}
+
+static inline void
 rtl_reset_capture_state_on_stream_boundary(struct rtl_device* s) {
     if (!s) {
         return;
@@ -677,6 +713,133 @@ rtl_submit_capture_bytes(struct rtl_device* s, const void* data, size_t bytes) {
         return;
     }
     (void)dsd_iq_capture_submit(s->iq_capture_writer, data, bytes);
+}
+
+static inline void
+rtl_copy_event_reason(char* dst, size_t dst_size, const char* reason) {
+    if (!dst || dst_size == 0U) {
+        return;
+    }
+    if (!reason) {
+        reason = "";
+    }
+    snprintf(dst, dst_size, "%s", reason);
+}
+
+static inline void
+rtl_record_capture_event(struct rtl_device* s, const dsd_iq_event* event) {
+    if (!s || !s->iq_capture_writer || !event) {
+        return;
+    }
+    (void)dsd_iq_capture_record_event(s->iq_capture_writer, event);
+}
+
+static inline int
+rtl_capture_reconfigure_hold_active(const struct rtl_device* s) {
+    return (s && s->capture_reconfigure_hold.load(std::memory_order_acquire)) ? 1 : 0;
+}
+
+static inline int
+rtl_capture_reconfigure_hold_accepting_discards(const struct rtl_device* s) {
+    return (s && s->capture_reconfigure_hold.load(std::memory_order_acquire) == RTL_CAPTURE_RECONFIGURE_ACTIVE) ? 1 : 0;
+}
+
+static inline size_t
+rtl_capture_event_alignment_bytes(const struct rtl_device* s) {
+    if (!s) {
+        return 0U;
+    }
+    if (s->backend == RTL_BACKEND_USB || s->backend == RTL_BACKEND_TCP) {
+        return 2U;
+    }
+    if (s->backend == RTL_BACKEND_SOAPY) {
+        if (s->soapy_format == SOAPY_FMT_CF32) {
+            return 2U * sizeof(float);
+        }
+        if (s->soapy_format == SOAPY_FMT_CS16) {
+            return 2U * sizeof(int16_t);
+        }
+    }
+    return 0U;
+}
+
+static inline uint64_t
+rtl_coalesce_capture_mute_duration(uint64_t* pending_bytes, uint64_t duration_bytes, size_t alignment) {
+    if (!pending_bytes || duration_bytes == 0U || alignment <= 1U) {
+        return duration_bytes;
+    }
+
+    if (UINT64_MAX - *pending_bytes < duration_bytes) {
+        *pending_bytes = 0U;
+        return duration_bytes - (duration_bytes % (uint64_t)alignment);
+    }
+
+    uint64_t total = *pending_bytes + duration_bytes;
+    uint64_t emit = total - (total % (uint64_t)alignment);
+    *pending_bytes = total - emit;
+    return emit;
+}
+
+static inline uint64_t
+rtl_coalesce_capture_mute_duration(std::atomic<uint64_t>* pending_bytes, uint64_t duration_bytes, size_t alignment) {
+    if (!pending_bytes || duration_bytes == 0U || alignment <= 1U) {
+        return duration_bytes;
+    }
+
+    uint64_t pending = pending_bytes->load(std::memory_order_acquire);
+    for (;;) {
+        uint64_t next_pending = 0U;
+        uint64_t emit = 0U;
+        if (UINT64_MAX - pending < duration_bytes) {
+            emit = duration_bytes - (duration_bytes % (uint64_t)alignment);
+        } else {
+            uint64_t total = pending + duration_bytes;
+            emit = total - (total % (uint64_t)alignment);
+            next_pending = total - emit;
+        }
+        if (pending_bytes->compare_exchange_weak(pending, next_pending, std::memory_order_acq_rel,
+                                                 std::memory_order_acquire)) {
+            return emit;
+        }
+    }
+}
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" uint64_t
+rtl_device_test_coalesce_capture_mute_duration(uint64_t* pending_bytes, uint64_t duration_bytes, size_t alignment) {
+    return rtl_coalesce_capture_mute_duration(pending_bytes, duration_bytes, alignment);
+}
+
+extern "C" int
+rtl_device_test_complete_fragmented_capture_discard(int byte_count, unsigned int partial_byte_count) {
+    return rtl_capture_complete_fragmented_u8_discard(byte_count, partial_byte_count);
+}
+#endif
+
+static inline void
+rtl_finish_capture_mute_span(struct rtl_device* s) {
+    if (!s) {
+        return;
+    }
+    s->capture_mute_pending_bytes.store(0U, std::memory_order_release);
+}
+
+static inline void
+rtl_record_capture_mute(struct rtl_device* s, uint64_t duration_bytes, const char* reason) {
+    if (!s || !s->iq_capture_writer || duration_bytes == 0U) {
+        return;
+    }
+    duration_bytes = rtl_coalesce_capture_mute_duration(&s->capture_mute_pending_bytes, duration_bytes,
+                                                        rtl_capture_event_alignment_bytes(s));
+    if (duration_bytes == 0U) {
+        return;
+    }
+    dsd_iq_event event;
+    memset(&event, 0, sizeof(event));
+    event.kind = DSD_IQ_EVENT_MUTE;
+    event.duration_bytes = duration_bytes;
+    rtl_copy_event_reason(event.reason, sizeof(event.reason), reason);
+    rtl_record_capture_event(s, &event);
 }
 
 static inline void
@@ -938,6 +1101,69 @@ replay_wait_for_ring_progress(struct rtl_device* s, size_t needed_free, uint64_t
 }
 
 static int
+replay_event_boundary_drained(struct rtl_device* s) {
+    if (!s || !s->input_ring || s->input_ring->capacity == 0U) {
+        return 1;
+    }
+
+    struct input_ring_state* ring = s->input_ring;
+    int generation_drained = 1;
+    if (s->replay_has_eof_state && s->replay_eof.replay_last_submit_gen && s->replay_eof.replay_last_consume_gen) {
+        uint64_t submitted = s->replay_eof.replay_last_submit_gen->load(std::memory_order_acquire);
+        uint64_t consumed = s->replay_eof.replay_last_consume_gen->load(std::memory_order_acquire);
+        generation_drained = (consumed >= submitted) ? 1 : 0;
+    }
+    return (input_ring_used(ring) == 0U && generation_drained) ? 1 : 0;
+}
+
+static int
+replay_wait_for_event_boundary_drain(struct rtl_device* s) {
+    if (!s || !s->input_ring || s->input_ring->capacity == 0U) {
+        return 1;
+    }
+
+    struct input_ring_state* ring = s->input_ring;
+    for (;;) {
+        if (replay_forced_stop_requested(s)) {
+            return 0;
+        }
+
+        if (replay_event_boundary_drained(s)) {
+            return 1;
+        }
+
+        replay_signal_input_waiters(s);
+        dsd_mutex_lock(&ring->ready_m);
+        if (!replay_forced_stop_requested(s) && !replay_event_boundary_drained(s)) {
+            uint64_t wait_deadline = dsd_time_monotonic_ns() + 50000000ULL;
+            (void)dsd_cond_timedwait_monotonic(&ring->space, &ring->ready_m, wait_deadline);
+        }
+        dsd_mutex_unlock(&ring->ready_m);
+    }
+}
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" int
+rtl_device_test_replay_event_boundary_drained(size_t ring_used, uint64_t submitted_gen, uint64_t consumed_gen) {
+    input_ring_state ring{};
+    float buffer[8] = {0};
+    ring.buffer = buffer;
+    ring.capacity = sizeof(buffer) / sizeof(buffer[0]);
+    ring.tail.store(0, std::memory_order_relaxed);
+    ring.head.store(ring_used < ring.capacity ? ring_used : (ring.capacity - 1U), std::memory_order_relaxed);
+
+    std::atomic<uint64_t> submitted{submitted_gen};
+    std::atomic<uint64_t> consumed{consumed_gen};
+    rtl_device dev{};
+    dev.input_ring = &ring;
+    dev.replay_has_eof_state = 1;
+    dev.replay_eof.replay_last_submit_gen = &submitted;
+    dev.replay_eof.replay_last_consume_gen = &consumed;
+    return replay_event_boundary_drained(&dev);
+}
+#endif
+
+static int
 replay_wait_until(struct rtl_device* s, uint64_t deadline_ns) {
     if (!s || !s->input_ring) {
         return 0;
@@ -956,6 +1182,15 @@ replay_wait_until(struct rtl_device* s, uint64_t deadline_ns) {
     }
     dsd_mutex_unlock(&s->input_ring->ready_m);
     return 0;
+}
+
+static int
+replay_wait_for_timeline_position(struct rtl_device* s, uint64_t complex_written, uint64_t start_ns, int realtime) {
+    if (!realtime || !s || s->replay_cfg.sample_rate_hz == 0U) {
+        return 1;
+    }
+    uint64_t deadline_ns = start_ns + ((complex_written * 1000000000ULL) / (uint64_t)s->replay_cfg.sample_rate_hz);
+    return replay_wait_until(s, deadline_ns);
 }
 
 static int
@@ -1130,6 +1365,133 @@ replay_convert_cf32_to_f32(struct rtl_device* s, const uint8_t* in, size_t in_by
 }
 
 static void
+replay_advance_omitted_bytes(struct rtl_device* s, uint64_t duration_bytes, int* io_phase, int* io_have_carry,
+                             uint8_t* io_carry_byte, uint64_t* complex_written) {
+    if (!s || duration_bytes == 0U || !io_phase || !io_have_carry || !io_carry_byte || !complex_written) {
+        return;
+    }
+    if (s->replay_cfg.format == DSD_IQ_FORMAT_CU8) {
+        uint64_t remaining = duration_bytes;
+        if (*io_have_carry && remaining > 0U) {
+            *io_have_carry = 0;
+            *io_carry_byte = 0;
+            remaining--;
+            if (s->replay_cfg.fs4_shift_enabled) {
+                *io_phase = rtl_capture_phase_advance_pairs(*io_phase & 3, 1U);
+            }
+            (*complex_written)++;
+        }
+        uint64_t pairs = remaining / 2U;
+        if (pairs > 0U) {
+            if (s->replay_cfg.fs4_shift_enabled) {
+                *io_phase = rtl_capture_phase_advance_pairs(*io_phase & 3, (size_t)pairs);
+            }
+            *complex_written += pairs;
+        }
+        if ((remaining & 1U) != 0U) {
+            *io_have_carry = 1;
+            *io_carry_byte = 127U;
+        }
+        return;
+    }
+
+    size_t align = dsd_iq_sample_format_alignment_bytes(s->replay_cfg.format);
+    if (align == 0U) {
+        return;
+    }
+    uint64_t complex_samples = duration_bytes / (uint64_t)align;
+    if (complex_samples == 0U) {
+        return;
+    }
+    if (s->replay_cfg.fs4_shift_enabled) {
+        *io_phase = rtl_capture_phase_advance_pairs(*io_phase & 3, (size_t)complex_samples);
+    }
+    *complex_written += complex_samples;
+}
+
+static void
+replay_reset_stream_position(struct rtl_device* s, int* io_phase, int* io_have_carry, uint8_t* io_carry_byte) {
+    if (s && s->replay_cfg.fs4_shift_enabled && io_phase) {
+        *io_phase = 0;
+    }
+    if (io_have_carry) {
+        *io_have_carry = 0;
+    }
+    if (io_carry_byte) {
+        *io_carry_byte = 0;
+    }
+}
+
+static void
+replay_dispatch_event(struct rtl_device* s, const dsd_iq_event* event, int* io_phase, int* io_have_carry,
+                      uint8_t* io_carry_byte, uint64_t* complex_written) {
+    if (!s || !event) {
+        return;
+    }
+    switch (event->kind) {
+        case DSD_IQ_EVENT_RETUNE:
+            replay_reset_stream_position(s, io_phase, io_have_carry, io_carry_byte);
+            s->replay_cfg.center_frequency_hz = event->center_frequency_hz;
+            s->replay_cfg.capture_center_frequency_hz = event->capture_center_frequency_hz;
+            s->replay_cfg.sample_rate_hz = event->sample_rate_hz;
+            s->freq = (event->capture_center_frequency_hz > UINT32_MAX) ? UINT32_MAX
+                                                                        : (uint32_t)event->capture_center_frequency_hz;
+            s->rate = event->sample_rate_hz;
+            if (s->replay_has_eof_state && s->replay_eof.on_retune_event) {
+                s->replay_eof.on_retune_event(event, s->replay_eof.event_user);
+            }
+            break;
+        case DSD_IQ_EVENT_MUTE:
+            replay_advance_omitted_bytes(s, event->duration_bytes, io_phase, io_have_carry, io_carry_byte,
+                                         complex_written);
+            if (s->replay_has_eof_state && s->replay_eof.on_mute_event) {
+                s->replay_eof.on_mute_event(event, s->replay_eof.event_user);
+            }
+            break;
+        case DSD_IQ_EVENT_RESET:
+            replay_reset_stream_position(s, io_phase, io_have_carry, io_carry_byte);
+            if (s->replay_has_eof_state && s->replay_eof.on_reset_event) {
+                s->replay_eof.on_reset_event(event, s->replay_eof.event_user);
+            }
+            break;
+        default: break;
+    }
+}
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" void
+rtl_device_test_replay_dispatch_reset_event_state(int* phase, int* have_carry, uint8_t* carry_byte) {
+    rtl_device dev{};
+    dev.replay_cfg.fs4_shift_enabled = 1;
+
+    dsd_iq_event event;
+    memset(&event, 0, sizeof(event));
+    event.kind = DSD_IQ_EVENT_RESET;
+    event.center_frequency_hz = 851500000ULL;
+    event.capture_center_frequency_hz = 851884000ULL;
+    event.sample_rate_hz = 1536000U;
+
+    uint64_t complex_written = 0;
+    replay_dispatch_event(&dev, &event, phase, have_carry, carry_byte, &complex_written);
+}
+#endif
+
+static void
+replay_restore_initial_state(struct rtl_device* s) {
+    if (!s) {
+        return;
+    }
+    s->replay_cfg.center_frequency_hz = s->replay_initial_center_frequency_hz;
+    s->replay_cfg.capture_center_frequency_hz = s->replay_initial_capture_center_frequency_hz;
+    s->replay_cfg.sample_rate_hz = s->replay_initial_sample_rate_hz;
+    s->freq = s->replay_initial_freq;
+    s->rate = s->replay_initial_rate;
+    if (s->replay_has_eof_state && s->replay_eof.on_loop_restart) {
+        s->replay_eof.on_loop_restart(&s->replay_cfg, s->replay_eof.event_user);
+    }
+}
+
+static void
 replay_mark_input_eof(struct rtl_device* s) {
     if (!s || !s->replay_has_eof_state) {
         return;
@@ -1170,6 +1532,31 @@ replay_wait_for_demod_drain(struct rtl_device* s) {
 }
 
 static void
+replay_maybe_mark_demod_drained(struct rtl_device* s) {
+    if (!s || !s->replay_has_eof_state || !s->replay_eof.replay_input_drained || !s->replay_eof.replay_demod_drained
+        || !s->replay_eof.replay_last_consume_gen || !s->replay_eof.replay_last_submit_gen_at_eof) {
+        return;
+    }
+    if (!s->replay_eof.replay_input_drained->load(std::memory_order_acquire)) {
+        return;
+    }
+    if (s->replay_eof.replay_demod_drained->load(std::memory_order_acquire)) {
+        return;
+    }
+    uint64_t consumed_gen = s->replay_eof.replay_last_consume_gen->load(std::memory_order_acquire);
+    uint64_t eof_gen = s->replay_eof.replay_last_submit_gen_at_eof->load(std::memory_order_acquire);
+    if (consumed_gen < eof_gen) {
+        return;
+    }
+    s->replay_eof.replay_demod_drained->store(1, std::memory_order_release);
+    if (s->replay_eof.eof_cond && s->replay_eof.eof_m) {
+        dsd_mutex_lock(s->replay_eof.eof_m);
+        dsd_cond_broadcast(s->replay_eof.eof_cond);
+        dsd_mutex_unlock(s->replay_eof.eof_m);
+    }
+}
+
+static void
 replay_handle_eof_sequence(struct rtl_device* s) {
     if (!s || !s->input_ring) {
         return;
@@ -1187,6 +1574,7 @@ replay_handle_eof_sequence(struct rtl_device* s) {
         if (s->replay_eof.on_input_drained) {
             s->replay_eof.on_input_drained(s->replay_eof.eof_user);
         }
+        replay_maybe_mark_demod_drained(s);
     }
     replay_wait_for_demod_drain(s);
 }
@@ -1220,30 +1608,65 @@ static DSD_THREAD_RETURN_TYPE
     int have_carry = 0;
     uint8_t carry_byte = 0;
     uint64_t complex_written = 0;
+    uint64_t data_offset = 0;
+    uint32_t event_cursor = 0;
     uint64_t start_ns = dsd_time_monotonic_ns();
     int realtime = s->replay_cfg.realtime ? 1 : 0;
 
     while (!replay_forced_stop_requested(s)) {
+        int stop_replay = 0;
+        while (event_cursor < s->replay_cfg.event_count
+               && s->replay_cfg.events[event_cursor].byte_offset <= data_offset) {
+            const dsd_iq_event* event = &s->replay_cfg.events[event_cursor];
+            if (event->kind == DSD_IQ_EVENT_RESET && !replay_wait_for_event_boundary_drain(s)) {
+                stop_replay = 1;
+                break;
+            }
+            replay_dispatch_event(s, event, &phase, &have_carry, &carry_byte, &complex_written);
+            event_cursor++;
+        }
+        if (stop_replay) {
+            break;
+        }
+
+        size_t read_limit = raw_block_bytes;
+        if (event_cursor < s->replay_cfg.event_count && s->replay_cfg.events[event_cursor].byte_offset > data_offset) {
+            uint64_t until_event = s->replay_cfg.events[event_cursor].byte_offset - data_offset;
+            if (until_event < (uint64_t)read_limit) {
+                read_limit = (size_t)until_event;
+            }
+        }
+        if (read_limit == 0U) {
+            continue;
+        }
+
         size_t out_bytes = 0;
-        int rc = dsd_iq_replay_read(s->replay_src, raw_block, raw_block_bytes, &out_bytes);
+        int rc = dsd_iq_replay_read(s->replay_src, raw_block, read_limit, &out_bytes);
         if (rc != DSD_IQ_OK) {
             break;
         }
         if (out_bytes == 0U) {
+            if (!replay_wait_for_timeline_position(s, complex_written, start_ns, realtime)) {
+                break;
+            }
             if (s->replay_cfg.loop) {
                 if (dsd_iq_replay_rewind(s->replay_src) != DSD_IQ_OK) {
                     break;
                 }
+                replay_restore_initial_state(s);
                 phase = 0;
                 have_carry = 0;
                 carry_byte = 0;
                 complex_written = 0;
+                data_offset = 0;
+                event_cursor = 0;
                 start_ns = dsd_time_monotonic_ns();
                 continue;
             }
             replay_handle_eof_sequence(s);
             break;
         }
+        data_offset += (uint64_t)out_bytes;
 
         int produced = -1;
         if (s->replay_cfg.format == DSD_IQ_FORMAT_CU8) {
@@ -1324,19 +1747,31 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
             if (m >= len) {
                 /* Entire buffer is muted - discard all and update counter */
                 rtl_account_fragmented_muted_u8_bytes(s, len, fs4_shift_active);
+                rtl_record_capture_mute(s, (uint64_t)len, "retune_mute");
                 s->mute.fetch_sub((int)len, std::memory_order_relaxed);
                 if (m == len) {
                     s->mute_byte_phase.store(0, std::memory_order_relaxed);
+                    rtl_finish_capture_mute_span(s);
                 }
                 return; /* Nothing to process */
             }
             /* Partial mute: skip first m bytes, process remainder */
             rtl_account_fragmented_muted_u8_bytes(s, m, fs4_shift_active);
+            rtl_record_capture_mute(s, (uint64_t)m, "retune_mute");
             buf += m;
             len -= m;
             s->mute.fetch_sub((int)m, std::memory_order_relaxed);
             s->mute_byte_phase.store(0, std::memory_order_relaxed);
+            rtl_finish_capture_mute_span(s);
         }
+    }
+    if (rtl_capture_reconfigure_hold_active(s)) {
+        rtl_account_fragmented_muted_u8_bytes(s, len, fs4_shift_active);
+        rtl_record_capture_mute(s, (uint64_t)len, "retune_reconfigure");
+        if (!rtl_capture_reconfigure_hold_accepting_discards(s)) {
+            rtl_complete_fragmented_capture_discard(s);
+        }
+        return;
     }
     rtl_submit_capture_bytes(s, buf, len);
     /* Convert incoming u8 I/Q and write directly into input ring without extra copy. */
@@ -1604,10 +2039,38 @@ static DSD_THREAD_RETURN_TYPE
             if (apply_rot && drop_elems > 0U) {
                 s->rot_phase = rtl_capture_phase_advance_pairs(s->rot_phase & 3, drop_elems);
             }
+            if (drop_elems > 0U) {
+                uint64_t event_bytes = 0;
+                if (s->soapy_format == SOAPY_FMT_CF32) {
+                    event_bytes = (uint64_t)drop_elems * (uint64_t)sizeof(std::complex<float>);
+                } else if (s->soapy_format == SOAPY_FMT_CS16) {
+                    event_bytes = (uint64_t)drop_elems * 2ULL * (uint64_t)sizeof(int16_t);
+                }
+                rtl_record_capture_mute(s, event_bytes, "retune_mute");
+            }
             s->mute.fetch_sub(consumed_mute_bytes, std::memory_order_relaxed);
+            if (consumed_mute_bytes >= mute_bytes) {
+                rtl_finish_capture_mute_span(s);
+            }
             if (drop_elems >= (size_t)ret) {
                 continue;
             }
+        }
+        if (rtl_capture_reconfigure_hold_active(s)) {
+            size_t kept_elems = (size_t)ret - drop_elems;
+            if (apply_rot && kept_elems > 0U) {
+                s->rot_phase = rtl_capture_phase_advance_pairs(s->rot_phase & 3, kept_elems);
+            }
+            if (kept_elems > 0U) {
+                uint64_t event_bytes = 0;
+                if (s->soapy_format == SOAPY_FMT_CF32) {
+                    event_bytes = (uint64_t)kept_elems * (uint64_t)sizeof(std::complex<float>);
+                } else if (s->soapy_format == SOAPY_FMT_CS16) {
+                    event_bytes = (uint64_t)kept_elems * 2ULL * (uint64_t)sizeof(int16_t);
+                }
+                rtl_record_capture_mute(s, event_bytes, "retune_reconfigure");
+            }
+            continue;
         }
 
         size_t kept_elems = (size_t)ret - drop_elems;
@@ -1955,19 +2418,31 @@ static DSD_THREAD_RETURN_TYPE
                 if (m >= len) {
                     /* Entire buffer is muted - discard all */
                     rtl_account_fragmented_muted_u8_bytes(s, len, fs4_shift_active);
+                    rtl_record_capture_mute(s, (uint64_t)len, "retune_mute");
                     s->mute.fetch_sub((int)len, std::memory_order_relaxed);
                     if (m == len) {
                         s->mute_byte_phase.store(0, std::memory_order_relaxed);
+                        rtl_finish_capture_mute_span(s);
                     }
                     continue; /* Skip processing, get next recv */
                 }
                 /* Partial mute: skip first m bytes, process remainder */
                 rtl_account_fragmented_muted_u8_bytes(s, m, fs4_shift_active);
+                rtl_record_capture_mute(s, (uint64_t)m, "retune_mute");
                 memmove(u8, u8 + m, len - m);
                 len -= m;
                 s->mute.fetch_sub((int)m, std::memory_order_relaxed);
                 s->mute_byte_phase.store(0, std::memory_order_relaxed);
+                rtl_finish_capture_mute_span(s);
             }
+        }
+        if (rtl_capture_reconfigure_hold_active(s)) {
+            rtl_account_fragmented_muted_u8_bytes(s, len, fs4_shift_active);
+            rtl_record_capture_mute(s, (uint64_t)len, "retune_reconfigure");
+            if (!rtl_capture_reconfigure_hold_accepting_discards(s)) {
+                rtl_complete_fragmented_capture_discard(s);
+            }
+            continue;
         }
         /* Stats: bytes in */
         if (s->stats_enabled) {
@@ -2391,9 +2866,16 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     }
     dev->iq_capture_writer = NULL;
     dev->capture_retune_count.store(0, std::memory_order_relaxed);
+    dev->capture_mute_pending_bytes.store(0U, std::memory_order_relaxed);
+    dev->capture_reconfigure_hold.store(RTL_CAPTURE_RECONFIGURE_INACTIVE, std::memory_order_relaxed);
     dev->replay_fs4_shift_enabled = 0;
     dev->replay_combine_rotate_enabled = 0;
     memset(&dev->replay_cfg, 0, sizeof(dev->replay_cfg));
+    dev->replay_initial_center_frequency_hz = 0;
+    dev->replay_initial_capture_center_frequency_hz = 0;
+    dev->replay_initial_sample_rate_hz = 0;
+    dev->replay_initial_freq = 0;
+    dev->replay_initial_rate = 0;
     dev->replay_src = NULL;
     memset(&dev->replay_eof, 0, sizeof(dev->replay_eof));
     dev->replay_has_eof_state = 0;
@@ -2730,6 +3212,7 @@ rtl_device_create_iq_replay(const dsd_iq_replay_config* cfg, struct input_ring_s
     }
 
     dsd_iq_replay_config opened_cfg;
+    memset(&opened_cfg, 0, sizeof(opened_cfg));
     dsd_iq_replay_source* replay_src = NULL;
     char err_buf[256] = {0};
     const char* open_path = cfg->metadata_path[0] ? cfg->metadata_path : cfg->data_path;
@@ -2750,6 +3233,11 @@ rtl_device_create_iq_replay(const dsd_iq_replay_config* cfg, struct input_ring_s
                     ? UINT32_MAX
                     : (uint32_t)opened_cfg.capture_center_frequency_hz;
     dev->rate = opened_cfg.sample_rate_hz;
+    dev->replay_initial_center_frequency_hz = opened_cfg.center_frequency_hz;
+    dev->replay_initial_capture_center_frequency_hz = opened_cfg.capture_center_frequency_hz;
+    dev->replay_initial_sample_rate_hz = opened_cfg.sample_rate_hz;
+    dev->replay_initial_freq = dev->freq;
+    dev->replay_initial_rate = dev->rate;
     dev->gain = opened_cfg.tuner_gain_tenth_db;
     dev->ppm_error = opened_cfg.ppm;
     return dev;
@@ -2820,6 +3308,9 @@ rtl_device_destroy(struct rtl_device* dev) {
     if (dev->backend == RTL_BACKEND_IQ_REPLAY && dev->replay_src) {
         dsd_iq_replay_close(dev->replay_src);
         dev->replay_src = NULL;
+    }
+    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        dsd_iq_replay_config_clear(&dev->replay_cfg);
     }
     if (dev->tcp_pending) {
         free(dev->tcp_pending);
@@ -3450,8 +3941,15 @@ rtl_device_mute(struct rtl_device* dev, int bytes) {
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         return;
     }
-    dev->mute_byte_phase.store(0, std::memory_order_relaxed);
-    dev->mute.store(rtl_capture_align_u8_iq_bytes(bytes), std::memory_order_relaxed);
+    int mute_bytes = rtl_capture_align_u8_iq_bytes(bytes);
+    if (rtl_capture_reconfigure_hold_active(dev)) {
+        unsigned int carry = (unsigned int)(dev->mute_byte_phase.load(std::memory_order_relaxed) & 1U);
+        mute_bytes = rtl_capture_complete_fragmented_u8_discard(mute_bytes, carry);
+    } else {
+        dev->capture_mute_pending_bytes.store(0U, std::memory_order_release);
+        dev->mute_byte_phase.store(0, std::memory_order_relaxed);
+    }
+    dev->mute.store(mute_bytes, std::memory_order_relaxed);
 }
 
 int
@@ -3638,10 +4136,56 @@ rtl_device_set_iq_capture_writer(struct rtl_device* dev, struct dsd_iq_capture_w
         return;
     }
     dev->iq_capture_writer = writer;
+    dev->capture_mute_pending_bytes.store(0U, std::memory_order_release);
+    dev->capture_reconfigure_hold.store(RTL_CAPTURE_RECONFIGURE_INACTIVE, std::memory_order_release);
     if (!writer) {
         dev->capture_retune_count.store(0, std::memory_order_release);
     }
 }
+
+void
+rtl_device_begin_capture_reconfigure(struct rtl_device* dev) {
+    if (!dev || !dev->iq_capture_writer) {
+        return;
+    }
+    dev->capture_reconfigure_hold.store(RTL_CAPTURE_RECONFIGURE_ACTIVE, std::memory_order_release);
+}
+
+void
+rtl_device_end_capture_reconfigure(struct rtl_device* dev) {
+    if (!dev) {
+        return;
+    }
+    int expected = RTL_CAPTURE_RECONFIGURE_ACTIVE;
+    if (dev->capture_reconfigure_hold.compare_exchange_strong(expected, RTL_CAPTURE_RECONFIGURE_RELEASING,
+                                                              std::memory_order_acq_rel, std::memory_order_acquire)) {
+        rtl_complete_fragmented_capture_discard(dev);
+        dev->capture_reconfigure_hold.store(RTL_CAPTURE_RECONFIGURE_INACTIVE, std::memory_order_release);
+    }
+}
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" void
+rtl_device_test_end_capture_reconfigure_with_odd_carry(int* out_hold, int* out_mute, int* out_mute_byte_phase) {
+    rtl_device dev{};
+    dev.backend = RTL_BACKEND_TCP;
+    dev.capture_reconfigure_hold.store(RTL_CAPTURE_RECONFIGURE_ACTIVE, std::memory_order_relaxed);
+    dev.mute.store(0, std::memory_order_relaxed);
+    dev.mute_byte_phase.store(1, std::memory_order_relaxed);
+
+    rtl_device_end_capture_reconfigure(&dev);
+
+    if (out_hold) {
+        *out_hold = dev.capture_reconfigure_hold.load(std::memory_order_acquire);
+    }
+    if (out_mute) {
+        *out_mute = dev.mute.load(std::memory_order_acquire);
+    }
+    if (out_mute_byte_phase) {
+        *out_mute_byte_phase = dev.mute_byte_phase.load(std::memory_order_acquire);
+    }
+}
+#endif
 
 void
 rtl_device_note_capture_retune(struct rtl_device* dev) {
@@ -3649,6 +4193,39 @@ rtl_device_note_capture_retune(struct rtl_device* dev) {
         return;
     }
     (void)dev->capture_retune_count.fetch_add(1U, std::memory_order_relaxed);
+}
+
+void
+rtl_device_record_capture_retune(struct rtl_device* dev, uint64_t center_frequency_hz,
+                                 uint64_t capture_center_frequency_hz, uint32_t sample_rate_hz, const char* reason) {
+    if (!dev || !dev->iq_capture_writer) {
+        return;
+    }
+    dsd_iq_event event;
+    memset(&event, 0, sizeof(event));
+    event.kind = DSD_IQ_EVENT_RETUNE;
+    event.center_frequency_hz = center_frequency_hz;
+    event.capture_center_frequency_hz = capture_center_frequency_hz;
+    event.sample_rate_hz = sample_rate_hz;
+    rtl_copy_event_reason(event.reason, sizeof(event.reason), reason ? reason : "retune");
+    rtl_record_capture_event(dev, &event);
+    (void)dev->capture_retune_count.fetch_add(1U, std::memory_order_relaxed);
+}
+
+void
+rtl_device_record_capture_reset(struct rtl_device* dev, uint64_t center_frequency_hz,
+                                uint64_t capture_center_frequency_hz, uint32_t sample_rate_hz, const char* reason) {
+    if (!dev || !dev->iq_capture_writer) {
+        return;
+    }
+    dsd_iq_event event;
+    memset(&event, 0, sizeof(event));
+    event.kind = DSD_IQ_EVENT_RESET;
+    event.center_frequency_hz = center_frequency_hz;
+    event.capture_center_frequency_hz = capture_center_frequency_hz;
+    event.sample_rate_hz = sample_rate_hz;
+    rtl_copy_event_reason(event.reason, sizeof(event.reason), reason ? reason : "reset");
+    rtl_record_capture_event(dev, &event);
 }
 
 uint32_t

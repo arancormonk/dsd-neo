@@ -12,6 +12,15 @@
 #include <cstdint>
 #include <cstdio>
 
+extern "C" uint64_t rtl_device_test_coalesce_capture_mute_duration(uint64_t* pending_bytes, uint64_t duration_bytes,
+                                                                   size_t alignment);
+extern "C" int rtl_device_test_complete_fragmented_capture_discard(int byte_count, unsigned int partial_byte_count);
+extern "C" void rtl_device_test_end_capture_reconfigure_with_odd_carry(int* out_hold, int* out_mute,
+                                                                       int* out_mute_byte_phase);
+extern "C" void rtl_device_test_replay_dispatch_reset_event_state(int* phase, int* have_carry, uint8_t* carry_byte);
+extern "C" int rtl_device_test_replay_event_boundary_drained(size_t ring_used, uint64_t submitted_gen,
+                                                             uint64_t consumed_gen);
+
 static int
 expect_int_eq(const char* label, int got, int want) {
     if (got != want) {
@@ -112,6 +121,51 @@ main(void) {
     failed |= expect_generation_eq("inactive fsk reacquire keeps generation", generation_before, generation_after);
     failed |= expect_size_eq("inactive fsk reacquire leaves queued ring", used_after, 9U);
     failed |= expect_int_eq("inactive fsk reacquire leaves cached symbols", cache_pending, 4);
+
+    uint64_t pending_mute = 0U;
+    uint64_t emitted = rtl_device_test_coalesce_capture_mute_duration(&pending_mute, 1U, 2U);
+    failed |= expect_size_eq("odd mute fragment held", (size_t)emitted, 0U);
+    failed |= expect_size_eq("odd mute pending byte", (size_t)pending_mute, 1U);
+    emitted = rtl_device_test_coalesce_capture_mute_duration(&pending_mute, 1U, 2U);
+    failed |= expect_size_eq("second odd mute completes pair", (size_t)emitted, 2U);
+    failed |= expect_size_eq("completed mute clears pending", (size_t)pending_mute, 0U);
+    emitted = rtl_device_test_coalesce_capture_mute_duration(&pending_mute, 3U, 2U);
+    failed |= expect_size_eq("larger odd mute emits aligned part", (size_t)emitted, 2U);
+    failed |= expect_size_eq("larger odd mute retains one byte", (size_t)pending_mute, 1U);
+    emitted = rtl_device_test_coalesce_capture_mute_duration(&pending_mute, 5U, 2U);
+    failed |= expect_size_eq("fragmented mute coalesces with prior pending", (size_t)emitted, 6U);
+    failed |= expect_size_eq("fragmented mute pending clears", (size_t)pending_mute, 0U);
+
+    failed |= expect_int_eq("odd reconfigure hold completes empty mute",
+                            rtl_device_test_complete_fragmented_capture_discard(0, 1U), 1);
+    failed |= expect_int_eq("odd reconfigure hold extends even mute",
+                            rtl_device_test_complete_fragmented_capture_discard(4, 1U), 5);
+    failed |= expect_int_eq("odd reconfigure hold keeps odd mute",
+                            rtl_device_test_complete_fragmented_capture_discard(5, 1U), 5);
+    failed |= expect_int_eq("aligned reconfigure hold leaves mute",
+                            rtl_device_test_complete_fragmented_capture_discard(4, 0U), 4);
+
+    int hold = -1;
+    int mute = -1;
+    int mute_byte_phase = -1;
+    rtl_device_test_end_capture_reconfigure_with_odd_carry(&hold, &mute, &mute_byte_phase);
+    failed |= expect_int_eq("end reconfigure clears hold after completion", hold, 0);
+    failed |= expect_int_eq("end reconfigure schedules odd carry mute byte", mute, 1);
+    failed |= expect_int_eq("end reconfigure preserves carry until scheduled mute drains", mute_byte_phase, 1);
+
+    int replay_phase = 3;
+    int replay_have_carry = 1;
+    uint8_t replay_carry_byte = 42U;
+    rtl_device_test_replay_dispatch_reset_event_state(&replay_phase, &replay_have_carry, &replay_carry_byte);
+    failed |= expect_int_eq("reset event clears replay fs4 phase", replay_phase, 0);
+    failed |= expect_int_eq("reset event clears replay cu8 carry", replay_have_carry, 0);
+    failed |= expect_int_eq("reset event clears replay carry byte", (int)replay_carry_byte, 0);
+    failed |= expect_int_eq("reset event waits for queued ring samples",
+                            rtl_device_test_replay_event_boundary_drained(2U, 3U, 3U), 0);
+    failed |= expect_int_eq("reset event waits for reserved demod generation",
+                            rtl_device_test_replay_event_boundary_drained(0U, 3U, 2U), 0);
+    failed |=
+        expect_int_eq("reset event boundary drained", rtl_device_test_replay_event_boundary_drained(0U, 3U, 3U), 1);
 
     return failed ? 1 : 0;
 }

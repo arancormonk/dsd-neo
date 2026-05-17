@@ -272,11 +272,32 @@ int rtl_device_get_tcp_autotune(struct rtl_device* dev);
 void rtl_device_set_iq_capture_writer(struct rtl_device* dev, struct dsd_iq_capture_writer* writer);
 
 /**
+ * @brief Hold IQ capture submission while a live reconfigure timeline is being stamped.
+ *
+ * Samples received during the hold are omitted from capture data and recorded as mute spans.
+ *
+ * @param dev RTL-SDR device handle.
+ */
+void rtl_device_begin_capture_reconfigure(struct rtl_device* dev);
+
+/**
+ * @brief Release a capture reconfigure hold after reset/post-reset events are armed.
+ *
+ * @param dev RTL-SDR device handle.
+ */
+void rtl_device_end_capture_reconfigure(struct rtl_device* dev);
+
+/**
  * @brief Increment capture retune diagnostics when a capture writer is attached.
  *
  * @param dev RTL-SDR device handle.
  */
 void rtl_device_note_capture_retune(struct rtl_device* dev);
+void rtl_device_record_capture_retune(struct rtl_device* dev, uint64_t center_frequency_hz,
+                                      uint64_t capture_center_frequency_hz, uint32_t sample_rate_hz,
+                                      const char* reason);
+void rtl_device_record_capture_reset(struct rtl_device* dev, uint64_t center_frequency_hz,
+                                     uint64_t capture_center_frequency_hz, uint32_t sample_rate_hz, const char* reason);
 
 /**
  * @brief Snapshot replay/capture retune count accumulated by the device.

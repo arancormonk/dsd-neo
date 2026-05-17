@@ -32,7 +32,10 @@ Path handling:
 
 ## Format Notes
 
-Metadata is JSON with `format: "dsd-neo-iq"` and `version: 1`.
+Metadata is JSON with `format: "dsd-neo-iq"`.
+
+- `version: 1` is used for legacy single-segment captures with no replay event timeline.
+- `version: 2` is used when the capture contains a replay event timeline.
 
 The writer records:
 
@@ -42,13 +45,29 @@ The writer records:
 - source identity (`source_backend`, `source_args`).
 - finalized byte/counter fields (`data_bytes`, `capture_drops`, `capture_drop_blocks`, `input_ring_drops`).
 - retune fields (`contains_retunes`, `capture_retune_count`).
+- for v2 captures, an `events` array describing scheduled replay events.
+
+The v2 `events` array is ordered by capture-data `byte_offset`, not wall-clock time. Replay dispatches every event at an
+offset when the reader reaches that byte position in the data stream. Equal offsets are allowed and preserve file order.
+
+Event objects contain:
+
+- `kind`: `RETUNE`, `MUTE`, or `RESET`.
+- `byte_offset`: capture-data byte offset where the event applies.
+- `reason`: a short event source/reason string.
+- `duration_bytes`: required for `MUTE`; omitted muted data duration in capture-data bytes.
+- `center_frequency_hz`, `capture_center_frequency_hz`, and `sample_rate_hz`: required for `RETUNE` and `RESET`.
+
+The legacy summary fields remain present. `contains_retunes` and `capture_retune_count` summarize retune activity, while
+the v2 `events` array provides the ordering needed for replay.
 
 `--iq-info` reports:
 
 - metadata bytes vs actual file bytes.
 - aligned effective replay bytes and estimated duration.
+- event timeline count.
 - warnings for interrupted captures (`data_bytes == 0`), metadata/data mismatch, misalignment, and retune-containing
-  captures.
+  captures that do not include a replay event timeline.
 
 Replay uses `min(data_bytes, actual_file_size)` rounded down to sample alignment after metadata is finalized. If an
 interrupted capture never finalized metadata (`data_bytes == 0`), replay falls back to the actual file size and still
@@ -57,7 +76,17 @@ rounds down to sample alignment. Zero effective bytes are rejected for `--iq-rep
 ## Operational Limits
 
 - `--iq-capture` and `--iq-replay` are mutually exclusive in one invocation.
-- Replay retune events are not supported in this format version. Captures with `contains_retunes: true` are rejected.
+- Single-segment v1 captures continue to replay unchanged.
+- Retuned captures are replayable only when they include a v2 event timeline. Older retuned v1 captures with
+  `contains_retunes: true` and no `events` array are rejected because they do not preserve enough ordering data to replay
+  safely.
+- `RETUNE` events update replay-visible center frequency state. `RESET` events apply the same demod reset/purge/output
+  handling used by live retunes. `MUTE` events emit no samples, but advance replay phase accounting and realtime virtual
+  sample time by `duration_bytes`.
+- `--iq-loop` rewinds the event cursor and replay timing so the event schedule repeats each pass.
+- User/API retune requests during IQ replay remain ignored; only metadata-scheduled replay events are applied.
+- Event timelines currently require a constant sample rate through the capture. Metadata with event sample-rate changes is
+  rejected until segment-rate replay is supported.
 - Direct `-i iqreplay:...` is intentionally rejected; use `--iq-replay <path>`.
 - Replay currently feeds the RTL radio path and reuses existing demod processing/state handling.
 

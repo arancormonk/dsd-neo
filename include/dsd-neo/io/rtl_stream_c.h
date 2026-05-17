@@ -313,6 +313,14 @@ typedef struct rtl_stream_test_replay_state {
     uint64_t replay_last_consume_gen;
     size_t input_ring_used;
     size_t output_ring_used;
+    uint32_t replay_event_retune_count;
+    uint32_t replay_event_mute_count;
+    uint32_t replay_event_reset_count;
+    uint32_t replay_event_last_frequency_hz;
+    uint64_t replay_event_last_mute_bytes;
+    int replay_event_last_reset_reason;
+    uint32_t replay_loop_restart_count;
+    uint32_t replay_loop_restart_last_frequency_hz;
 } rtl_stream_test_replay_state;
 
 /**

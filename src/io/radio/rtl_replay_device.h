@@ -12,6 +12,8 @@
 #include <dsd-neo/platform/threading.h>
 
 typedef void (*rtl_replay_input_drained_cb)(void* user);
+typedef void (*rtl_replay_event_cb)(const dsd_iq_event* event, void* user);
+typedef void (*rtl_replay_loop_restart_cb)(const dsd_iq_replay_config* cfg, void* user);
 
 struct rtl_replay_eof_state {
     std::atomic<int>* stream_exit_flag;
@@ -26,7 +28,12 @@ struct rtl_replay_eof_state {
     dsd_mutex_t* eof_m;
     dsd_cond_t* eof_cond;
     rtl_replay_input_drained_cb on_input_drained;
+    rtl_replay_event_cb on_retune_event;
+    rtl_replay_event_cb on_mute_event;
+    rtl_replay_event_cb on_reset_event;
+    rtl_replay_loop_restart_cb on_loop_restart;
     void* eof_user;
+    void* event_user;
 };
 
 struct rtl_device* rtl_device_create_iq_replay(const dsd_iq_replay_config* cfg, struct input_ring_state* input_ring,

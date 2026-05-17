@@ -19,6 +19,7 @@ extern "C" {
 #endif
 
 typedef struct {
+    uint32_t metadata_version;
     char data_path[2048];
     char metadata_path[2048];
     dsd_iq_sample_format format;
@@ -46,6 +47,8 @@ typedef struct {
     char source_args[256];
     char capture_started_utc[64];
     char notes[256];
+    uint32_t event_count;
+    dsd_iq_event* events;
     int loop;
     int realtime;
 } dsd_iq_replay_config;
@@ -54,6 +57,10 @@ typedef struct dsd_iq_replay_source dsd_iq_replay_source;
 
 /**
  * @brief Parse replay metadata without opening a data stream.
+ *
+ * On success, overwrites @p out_cfg without inspecting its prior contents.
+ * Call dsd_iq_replay_config_clear() when done with a successful result. If
+ * reusing a config that already owns events, clear it before the next read.
  */
 int dsd_iq_replay_read_metadata(const char* path, dsd_iq_replay_config* out_cfg, char* err_buf, size_t err_buf_size);
 
@@ -61,9 +68,19 @@ int dsd_iq_replay_read_metadata(const char* path, dsd_iq_replay_config* out_cfg,
  * @brief Parse replay metadata and optionally open the data stream.
  *
  * If @p out is NULL, metadata-only validation is performed.
+ * On success, overwrites @p out_cfg without inspecting its prior contents.
+ * Call dsd_iq_replay_config_clear() when done with a successful result. If
+ * reusing a config that already owns events, clear it before the next open.
  */
 int dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_replay_source** out, char* err_buf,
                        size_t err_buf_size);
+/**
+ * @brief Release owned replay config allocations and reset the struct to zero.
+ *
+ * Only call this on a zero-initialized config or a config returned by a
+ * successful replay metadata/open call.
+ */
+void dsd_iq_replay_config_clear(dsd_iq_replay_config* cfg);
 int dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_t* out_bytes);
 int dsd_iq_replay_rewind(dsd_iq_replay_source* src);
 void dsd_iq_replay_close(dsd_iq_replay_source* src);

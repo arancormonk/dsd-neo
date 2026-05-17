@@ -622,6 +622,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             return DSD_PARSE_ONE_SHOT;
         }
         rc = dsd_iq_info_print(&info_cfg, iq_info_cli, (uint64_t)st.st_size, stdout, stderr);
+        dsd_iq_replay_config_clear(&info_cfg);
         cli_set_exit_rc(out_exit_rc, (rc == DSD_IQ_OK) ? 0 : 1);
         return DSD_PARSE_ONE_SHOT;
     }
@@ -635,14 +636,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         dsd_iq_replay_config replay_cfg;
         memset(&replay_cfg, 0, sizeof(replay_cfg));
         char err_buf[256] = {0};
-        int rc = dsd_iq_replay_read_metadata(opts->iq_replay_path, &replay_cfg, err_buf, sizeof(err_buf));
+        int rc = dsd_iq_replay_open(opts->iq_replay_path, &replay_cfg, NULL, err_buf, sizeof(err_buf));
         if (rc != DSD_IQ_OK) {
             LOG_ERROR("--iq-replay: %s\n", err_buf[0] ? err_buf : "failed to parse metadata");
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-        if (replay_cfg.contains_retunes) {
-            LOG_ERROR("--iq-replay: capture contains retunes and is not replayable in this build\n");
             cli_set_exit_rc(out_exit_rc, 1);
             return DSD_PARSE_ERROR;
         }
@@ -650,6 +646,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         struct stat st;
         if (stat(replay_cfg.data_path, &st) != 0 || st.st_size < 0) {
             LOG_ERROR("--iq-replay: failed to stat data file '%s'\n", replay_cfg.data_path);
+            dsd_iq_replay_config_clear(&replay_cfg);
             cli_set_exit_rc(out_exit_rc, 1);
             return DSD_PARSE_ERROR;
         }
@@ -659,12 +656,14 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                                                    &effective_bytes, &size_mismatch);
         if (rc != DSD_IQ_OK) {
             LOG_ERROR("--iq-replay: failed to compute effective replay bytes\n");
+            dsd_iq_replay_config_clear(&replay_cfg);
             cli_set_exit_rc(out_exit_rc, 1);
             return DSD_PARSE_ERROR;
         }
         rc = dsd_iq_replay_validate_effective_bytes_for_replay(effective_bytes, opts->iq_replay_loop);
         if (rc != DSD_IQ_OK) {
             LOG_ERROR("--iq-replay: no aligned I/Q samples available for replay\n");
+            dsd_iq_replay_config_clear(&replay_cfg);
             cli_set_exit_rc(out_exit_rc, 1);
             return DSD_PARSE_ERROR;
         }
@@ -676,6 +675,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         if (replay_cfg.center_frequency_hz > UINT32_MAX) {
             LOG_ERROR("--iq-replay: center_frequency_hz %" PRIu64 " exceeds RTL path range\n",
                       replay_cfg.center_frequency_hz);
+            dsd_iq_replay_config_clear(&replay_cfg);
             cli_set_exit_rc(out_exit_rc, 1);
             return DSD_PARSE_ERROR;
         }
@@ -690,9 +690,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         opts->audio_in_type = AUDIO_IN_RTL;
         if (cli_set_iqreplay_audio_dev(opts, opts->iq_replay_path) != 0) {
             LOG_ERROR("--iq-replay path is too long\n");
+            dsd_iq_replay_config_clear(&replay_cfg);
             cli_set_exit_rc(out_exit_rc, 1);
             return DSD_PARSE_ERROR;
         }
+        dsd_iq_replay_config_clear(&replay_cfg);
 #endif
     }
 

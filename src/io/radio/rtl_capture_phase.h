@@ -115,6 +115,23 @@ rtl_capture_restart_fragmented_u8_bytes(int byte_count, unsigned int* partial_by
 }
 
 static inline int
+rtl_capture_complete_fragmented_u8_discard(int byte_count, unsigned int partial_byte_count) {
+    if ((partial_byte_count & 1U) == 0U) {
+        return byte_count > 0 ? byte_count : 0;
+    }
+    if (byte_count <= 0) {
+        return 1;
+    }
+    if ((byte_count & 1) != 0) {
+        return byte_count;
+    }
+    if (byte_count >= INT_MAX) {
+        return INT_MAX;
+    }
+    return byte_count + 1;
+}
+
+static inline int
 rtl_capture_restart_u8_stream(int* phase, int byte_count, unsigned int* partial_byte_count) {
     /* A fresh stream always resumes with phase-0 sample alignment. */
     if (phase) {

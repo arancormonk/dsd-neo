@@ -44,6 +44,12 @@ struct dsd_iq_capture_writer {
     int run;
     int writer_failed;
 
+    dsd_mutex_t event_m;
+    int event_m_inited;
+    dsd_iq_event* events;
+    size_t event_count;
+    size_t event_cap;
+
     dsd_iq_capture_queue_entry* queue_entries;
     size_t q_head;
     size_t q_tail;
@@ -262,6 +268,69 @@ write_json_bool_field(FILE* out, const char* key, int value, int is_last) {
     return 0;
 }
 
+static const char*
+iq_event_kind_name(dsd_iq_event_kind kind) {
+    switch (kind) {
+        case DSD_IQ_EVENT_RETUNE: return "RETUNE";
+        case DSD_IQ_EVENT_MUTE: return "MUTE";
+        case DSD_IQ_EVENT_RESET: return "RESET";
+        default: break;
+    }
+    return "UNKNOWN";
+}
+
+static int
+write_json_events_field(FILE* out, const dsd_iq_event* events, size_t event_count, int is_last) {
+    if (fprintf(out, "  \"events\": [\n") < 0) {
+        return -1;
+    }
+    for (size_t i = 0; i < event_count; i++) {
+        const dsd_iq_event* ev = &events[i];
+        if (fprintf(out, "    {\n") < 0) {
+            return -1;
+        }
+        if (fprintf(out, "      \"kind\": \"%s\",\n", iq_event_kind_name(ev->kind)) < 0) {
+            return -1;
+        }
+        if (fprintf(out, "      \"byte_offset\": %" PRIu64 ",\n", ev->byte_offset) < 0) {
+            return -1;
+        }
+        if (ev->kind == DSD_IQ_EVENT_MUTE) {
+            if (fprintf(out, "      \"duration_bytes\": %" PRIu64 ",\n", ev->duration_bytes) < 0) {
+                return -1;
+            }
+        }
+        if (ev->kind == DSD_IQ_EVENT_RETUNE || ev->kind == DSD_IQ_EVENT_RESET) {
+            if (fprintf(out, "      \"center_frequency_hz\": %" PRIu64 ",\n", ev->center_frequency_hz) < 0) {
+                return -1;
+            }
+            if (fprintf(out, "      \"capture_center_frequency_hz\": %" PRIu64 ",\n", ev->capture_center_frequency_hz)
+                < 0) {
+                return -1;
+            }
+            if (fprintf(out, "      \"sample_rate_hz\": %u,\n", ev->sample_rate_hz) < 0) {
+                return -1;
+            }
+        }
+        if (fprintf(out, "      \"reason\": \"") < 0) {
+            return -1;
+        }
+        if (json_escape_write(out, ev->reason) != 0) {
+            return -1;
+        }
+        if (fprintf(out, "\"\n") < 0) {
+            return -1;
+        }
+        if (fprintf(out, "    }%s\n", (i + 1U == event_count) ? "" : ",") < 0) {
+            return -1;
+        }
+    }
+    if (fprintf(out, "  ]%s\n", is_last ? "" : ",") < 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int
 format_utc_now(char* out, size_t out_size) {
     if (!out || out_size < 21) {
@@ -289,7 +358,7 @@ static int
 metadata_write_file(const dsd_iq_capture_config* cfg, const char* capture_started_utc, uint64_t data_bytes,
                     uint64_t capture_drops, uint64_t capture_drop_blocks, uint64_t input_ring_drops,
                     int contains_retunes, uint32_t capture_retune_count, const char* notes, const char* metadata_path,
-                    char* err_buf, size_t err_buf_size) {
+                    const dsd_iq_event* events, size_t event_count, char* err_buf, size_t err_buf_size) {
     if (!cfg || !metadata_path || metadata_path[0] == '\0') {
         set_error(err_buf, err_buf_size, "invalid metadata writer arguments");
         return DSD_IQ_ERR_INVALID_ARG;
@@ -314,7 +383,7 @@ metadata_write_file(const dsd_iq_capture_config* cfg, const char* capture_starte
     if (!io_err && write_json_string_field(fp, "format", "dsd-neo-iq", 0)) {
         io_err = 1;
     }
-    if (!io_err && write_json_u64_field(fp, "version", 1, 0)) {
+    if (!io_err && write_json_u64_field(fp, "version", (event_count > 0U) ? 2U : 1U, 0)) {
         io_err = 1;
     }
     if (!io_err && write_json_string_field(fp, "sample_format", dsd_iq_sample_format_name(cfg->format), 0)) {
@@ -415,7 +484,10 @@ metadata_write_file(const dsd_iq_capture_config* cfg, const char* capture_starte
     if (!io_err && write_json_u64_field(fp, "input_ring_drops", input_ring_drops, 0)) {
         io_err = 1;
     }
-    if (!io_err && write_json_string_field(fp, "notes", notes ? notes : "", 1)) {
+    if (!io_err && write_json_string_field(fp, "notes", notes ? notes : "", event_count == 0U)) {
+        io_err = 1;
+    }
+    if (!io_err && event_count > 0U && write_json_events_field(fp, events, event_count, 1)) {
         io_err = 1;
     }
     if (!io_err && fprintf(fp, "}\n") < 0) {
@@ -611,6 +683,127 @@ writer_queue_destroy(struct dsd_iq_capture_writer* w) {
     w->block_pool = NULL;
     w->q_head = w->q_tail = w->q_count = 0;
     w->free_top = 0;
+}
+
+static void
+writer_event_destroy(struct dsd_iq_capture_writer* w) {
+    if (!w) {
+        return;
+    }
+    if (w->event_m_inited) {
+        (void)dsd_mutex_destroy(&w->event_m);
+        w->event_m_inited = 0;
+    }
+    free(w->events);
+    w->events = NULL;
+    w->event_count = 0;
+    w->event_cap = 0;
+}
+
+static int
+writer_event_append_locked(struct dsd_iq_capture_writer* w, const dsd_iq_event* event) {
+    if (!w || !event) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (event->kind == DSD_IQ_EVENT_RETUNE && w->event_count > 0U) {
+        size_t insert_at = w->event_count;
+        while (insert_at > 0U) {
+            dsd_iq_event* prev = &w->events[insert_at - 1U];
+            if (prev->byte_offset != event->byte_offset || prev->kind != DSD_IQ_EVENT_MUTE) {
+                break;
+            }
+            insert_at--;
+        }
+        if (insert_at < w->event_count) {
+            if (w->event_count == w->event_cap) {
+                size_t new_cap = (w->event_cap == 0U) ? 8U : (w->event_cap * 2U);
+                if (new_cap < w->event_cap) {
+                    return DSD_IQ_ERR_ALLOC;
+                }
+                dsd_iq_event* next = (dsd_iq_event*)realloc(w->events, new_cap * sizeof(*next));
+                if (!next) {
+                    return DSD_IQ_ERR_ALLOC;
+                }
+                w->events = next;
+                w->event_cap = new_cap;
+            }
+            memmove(&w->events[insert_at + 1U], &w->events[insert_at],
+                    (w->event_count - insert_at) * sizeof(w->events[0]));
+            w->events[insert_at] = *event;
+            w->event_count++;
+            return DSD_IQ_OK;
+        }
+    }
+    if (event->kind == DSD_IQ_EVENT_MUTE && w->event_count > 0U) {
+        dsd_iq_event* prev = &w->events[w->event_count - 1U];
+        if (prev->kind == DSD_IQ_EVENT_MUTE && prev->byte_offset == event->byte_offset) {
+            if (UINT64_MAX - prev->duration_bytes < event->duration_bytes) {
+                return DSD_IQ_ERR_INVALID_ARG;
+            }
+            prev->duration_bytes += event->duration_bytes;
+            return DSD_IQ_OK;
+        }
+    }
+    if (w->event_count == w->event_cap) {
+        size_t new_cap = (w->event_cap == 0U) ? 8U : (w->event_cap * 2U);
+        if (new_cap < w->event_cap) {
+            return DSD_IQ_ERR_ALLOC;
+        }
+        dsd_iq_event* next = (dsd_iq_event*)realloc(w->events, new_cap * sizeof(*next));
+        if (!next) {
+            return DSD_IQ_ERR_ALLOC;
+        }
+        w->events = next;
+        w->event_cap = new_cap;
+    }
+    w->events[w->event_count++] = *event;
+    return DSD_IQ_OK;
+}
+
+static int
+event_reason_has_control_bytes(const dsd_iq_event* event) {
+    if (!event) {
+        return 0;
+    }
+    for (size_t i = 0; i < sizeof(event->reason) && event->reason[i] != '\0'; i++) {
+        if ((unsigned char)event->reason[i] < 0x20U) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+validate_capture_event_for_replay(const struct dsd_iq_capture_writer* writer, const dsd_iq_event* event) {
+    if (!writer || !event) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (event->kind != DSD_IQ_EVENT_RETUNE && event->kind != DSD_IQ_EVENT_MUTE && event->kind != DSD_IQ_EVENT_RESET) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (event->kind == DSD_IQ_EVENT_MUTE) {
+        size_t align = dsd_iq_sample_format_alignment_bytes(writer->cfg.format);
+        if (event->duration_bytes == 0) {
+            return DSD_IQ_ERR_INVALID_ARG;
+        }
+        if (event_reason_has_control_bytes(event)) {
+            return DSD_IQ_ERR_INVALID_META;
+        }
+        if (align > 0U && (event->duration_bytes % (uint64_t)align) != 0ULL) {
+            return DSD_IQ_ERR_ALIGNMENT;
+        }
+        return DSD_IQ_OK;
+    }
+    if (event_reason_has_control_bytes(event)) {
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    if (event->center_frequency_hz == 0 || event->capture_center_frequency_hz == 0 || event->sample_rate_hz == 0) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (event->sample_rate_hz != writer->cfg.sample_rate_hz) {
+        return DSD_IQ_ERR_RATE_CHAIN;
+    }
+    return DSD_IQ_OK;
 }
 
 static int
@@ -933,8 +1126,8 @@ dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** ou
     }
 
     {
-        int mrc = metadata_write_file(&w->cfg, w->capture_started_utc, 0, 0, 0, 0, 0, 0, "", w->cfg.metadata_path,
-                                      err_buf, err_buf_size);
+        int mrc = metadata_write_file(&w->cfg, w->capture_started_utc, 0, 0, 0, 0, 0, 0, "", w->cfg.metadata_path, NULL,
+                                      0, err_buf, err_buf_size);
         if (mrc != DSD_IQ_OK) {
             fclose(w->data_fp);
             w->data_fp = NULL;
@@ -949,6 +1142,17 @@ dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** ou
     dsd_atomic_u64_init(&w->dropped_bytes, 0);
     dsd_atomic_u64_init(&w->dropped_blocks, 0);
 
+    if (dsd_mutex_init(&w->event_m) != 0) {
+        set_error(err_buf, err_buf_size, "capture event mutex initialization failed");
+        fclose(w->data_fp);
+        w->data_fp = NULL;
+        (void)remove(w->cfg.data_path);
+        (void)remove(w->cfg.metadata_path);
+        free(w);
+        return DSD_IQ_ERR_QUEUE_INIT;
+    }
+    w->event_m_inited = 1;
+
     {
         int qrc = writer_queue_init(w);
         if (qrc != DSD_IQ_OK) {
@@ -957,6 +1161,7 @@ dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** ou
             w->data_fp = NULL;
             (void)remove(w->cfg.data_path);
             (void)remove(w->cfg.metadata_path);
+            writer_event_destroy(w);
             writer_queue_destroy(w);
             free(w);
             return DSD_IQ_ERR_QUEUE_INIT;
@@ -967,6 +1172,7 @@ dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** ou
         set_error(err_buf, err_buf_size, "capture writer thread creation failed");
         w->run = 0;
         writer_queue_destroy(w);
+        writer_event_destroy(w);
         fclose(w->data_fp);
         w->data_fp = NULL;
         (void)remove(w->cfg.data_path);
@@ -989,25 +1195,64 @@ dsd_iq_capture_submit(dsd_iq_capture_writer* writer, const void* data, size_t by
         return DSD_IQ_OK;
     }
 
-    {
-        int writer_failed = 0;
-        dsd_mutex_lock(&writer->q_m);
-        writer_failed = writer->writer_failed;
-        dsd_mutex_unlock(&writer->q_m);
-        if (writer_failed) {
-            return DSD_IQ_ERR_QUEUE_INIT;
-        }
+    if (writer->event_m_inited) {
+        dsd_mutex_lock(&writer->event_m);
     }
 
+    int writer_failed = 0;
+    dsd_mutex_lock(&writer->q_m);
+    writer_failed = writer->writer_failed;
+    dsd_mutex_unlock(&writer->q_m);
+    if (writer_failed) {
+        if (writer->event_m_inited) {
+            dsd_mutex_unlock(&writer->event_m);
+        }
+        return DSD_IQ_ERR_QUEUE_INIT;
+    }
+
+    int rc = DSD_IQ_OK;
     {
         const uint8_t* in = (const uint8_t*)data;
         switch (writer->cfg.format) {
-            case DSD_IQ_FORMAT_CU8: return writer_submit_cu8(writer, in, bytes);
-            case DSD_IQ_FORMAT_CF32: return writer_submit_aligned(writer, in, bytes, 8);
-            case DSD_IQ_FORMAT_CS16: return writer_submit_aligned(writer, in, bytes, 4);
-            default: return DSD_IQ_ERR_UNSUPPORTED_FMT;
+            case DSD_IQ_FORMAT_CU8: rc = writer_submit_cu8(writer, in, bytes); break;
+            case DSD_IQ_FORMAT_CF32: rc = writer_submit_aligned(writer, in, bytes, 8); break;
+            case DSD_IQ_FORMAT_CS16: rc = writer_submit_aligned(writer, in, bytes, 4); break;
+            default: rc = DSD_IQ_ERR_UNSUPPORTED_FMT; break;
         }
     }
+
+    if (writer->event_m_inited) {
+        dsd_mutex_unlock(&writer->event_m);
+    }
+    return rc;
+}
+
+int
+dsd_iq_capture_record_event(dsd_iq_capture_writer* writer, const dsd_iq_event* event) {
+    if (!writer || !event) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (!writer->event_m_inited) {
+        return DSD_IQ_ERR_QUEUE_INIT;
+    }
+
+    int vrc = validate_capture_event_for_replay(writer, event);
+    if (vrc != DSD_IQ_OK) {
+        return vrc;
+    }
+
+    dsd_mutex_lock(&writer->event_m);
+    if (writer->cfg.format == DSD_IQ_FORMAT_CU8 && writer->cu8_carry_valid) {
+        writer_count_drop(writer, 1, 1);
+        writer->cu8_carry_valid = 0;
+    }
+
+    dsd_iq_event stamped = *event;
+    stamped.byte_offset = dsd_atomic_u64_load_relaxed(&writer->accepted_bytes);
+    stamped.reason[sizeof(stamped.reason) - 1U] = '\0';
+    int rc = writer_event_append_locked(writer, &stamped);
+    dsd_mutex_unlock(&writer->event_m);
+    return rc;
 }
 
 static void
@@ -1037,9 +1282,15 @@ dsd_iq_capture_close(dsd_iq_capture_writer* writer, const dsd_iq_capture_final_s
         return;
     }
 
+    if (writer->event_m_inited) {
+        dsd_mutex_lock(&writer->event_m);
+    }
     if (writer->cu8_carry_valid) {
         writer_count_drop(writer, 1, 1);
         writer->cu8_carry_valid = 0;
+    }
+    if (writer->event_m_inited) {
+        dsd_mutex_unlock(&writer->event_m);
     }
 
     writer_stop_thread(writer);
@@ -1055,12 +1306,24 @@ dsd_iq_capture_close(dsd_iq_capture_writer* writer, const dsd_iq_capture_final_s
         uint64_t written_bytes = dsd_atomic_u64_load_relaxed(&writer->written_bytes);
         uint64_t dropped_bytes = dsd_atomic_u64_load_relaxed(&writer->dropped_bytes);
         uint64_t dropped_blocks = dsd_atomic_u64_load_relaxed(&writer->dropped_blocks);
+        uint32_t event_retune_count = 0;
+        for (size_t i = 0; i < writer->event_count; i++) {
+            if (writer->events[i].kind == DSD_IQ_EVENT_RETUNE && event_retune_count < UINT32_MAX) {
+                event_retune_count++;
+            }
+        }
+        uint32_t capture_retune_count = event_retune_count;
+        if (final_stats->retune_count > capture_retune_count) {
+            capture_retune_count = final_stats->retune_count;
+        }
         (void)metadata_write_file(&writer->cfg, writer->capture_started_utc, written_bytes, dropped_bytes,
-                                  dropped_blocks, final_stats->input_ring_drops, final_stats->retune_count > 0 ? 1 : 0,
-                                  final_stats->retune_count, "", writer->cfg.metadata_path, err_buf, sizeof(err_buf));
+                                  dropped_blocks, final_stats->input_ring_drops, capture_retune_count > 0 ? 1 : 0,
+                                  capture_retune_count, "", writer->cfg.metadata_path, writer->events,
+                                  writer->event_count, err_buf, sizeof(err_buf));
     }
 
     writer_queue_destroy(writer);
+    writer_event_destroy(writer);
     free(writer);
 }
 
@@ -1079,6 +1342,7 @@ dsd_iq_capture_abort(dsd_iq_capture_writer* writer) {
     (void)remove(writer->cfg.metadata_path);
 
     writer_queue_destroy(writer);
+    writer_event_destroy(writer);
     free(writer);
 }
 

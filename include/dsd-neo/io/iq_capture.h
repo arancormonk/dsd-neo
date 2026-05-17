@@ -66,6 +66,7 @@ int dsd_iq_capture_derive_paths(const char* path, char* out_data_path, size_t ou
 int dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** out, char* err_buf,
                         size_t err_buf_size);
 int dsd_iq_capture_submit(dsd_iq_capture_writer* writer, const void* data, size_t bytes);
+int dsd_iq_capture_record_event(dsd_iq_capture_writer* writer, const dsd_iq_event* event);
 void dsd_iq_capture_close(dsd_iq_capture_writer* writer, const dsd_iq_capture_final_stats* final_stats);
 void dsd_iq_capture_abort(dsd_iq_capture_writer* writer);
 

@@ -45,6 +45,21 @@ expect_true(const char* label, int cond) {
 }
 
 static int
+expect_u64_ge(const char* label, uint64_t got, uint64_t want_min) {
+    if (got < want_min) {
+        std::fprintf(stderr, "FAIL: %s got=%llu want>=%llu\n", label, (unsigned long long)got,
+                     (unsigned long long)want_min);
+        return 1;
+    }
+    return 0;
+}
+
+enum {
+    kReplayResetReasonFrequency = 0,
+    kReplayResetReasonPpmCorrection = 2,
+};
+
+static int
 write_bytes_file(const char* path, const uint8_t* bytes, size_t len) {
     FILE* fp = std::fopen(path, "wb");
     if (!fp) {
@@ -107,6 +122,18 @@ prepare_replay_opts(dsd_opts* opts, const char* metadata_path) {
     opts->iq_replay_loop = 0;
     std::snprintf(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", metadata_path);
     std::snprintf(opts->audio_in_dev, sizeof(opts->audio_in_dev), "iqreplay:%s", metadata_path);
+}
+
+static void
+prepare_replay_opts_with_loop(dsd_opts* opts, const char* metadata_path, int loop) {
+    prepare_replay_opts(opts, metadata_path);
+    opts->iq_replay_loop = loop ? 1 : 0;
+}
+
+static void
+prepare_replay_opts_with_loop_and_rate(dsd_opts* opts, const char* metadata_path, int loop, int realtime) {
+    prepare_replay_opts_with_loop(opts, metadata_path, loop);
+    opts->iq_replay_rate_mode = realtime ? DSD_IQ_REPLAY_RATE_REALTIME : DSD_IQ_REPLAY_RATE_FAST;
 }
 
 static int
@@ -191,6 +218,164 @@ make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, dsd_
 }
 
 static int
+make_eventful_replay_fixture_with_reset_reason(char* out_metadata_path, size_t out_metadata_path_size,
+                                               size_t payload_bytes, const char* reset_reason) {
+    if (!out_metadata_path || out_metadata_path_size == 0U) {
+        return 1;
+    }
+    if (payload_bytes < 8192U) {
+        payload_bytes = 8192U;
+    }
+    if ((payload_bytes & 1U) != 0U) {
+        payload_bytes++;
+    }
+
+    char temp_dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_replay_events")) {
+        std::fprintf(stderr, "FAIL: could not create event fixture directory\n");
+        return 1;
+    }
+
+    char data_path[DSD_TEST_PATH_MAX];
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(data_path, sizeof(data_path), temp_dir, "events.iq") != 0
+        || dsd_test_path_join(metadata_path, sizeof(metadata_path), temp_dir, "events.iq.json") != 0) {
+        return 1;
+    }
+
+    dsd_iq_capture_config cfg;
+    fill_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1);
+
+    dsd_iq_capture_writer* writer = NULL;
+    char err_buf[256] = {0};
+    if (dsd_iq_capture_open(&cfg, &writer, err_buf, sizeof(err_buf)) != DSD_IQ_OK || !writer) {
+        std::fprintf(stderr, "FAIL: could not open event IQ capture writer: %s\n", err_buf[0] ? err_buf : "unknown");
+        return 1;
+    }
+
+    std::vector<uint8_t> payload(payload_bytes);
+    for (size_t i = 0; i < payload.size(); i++) {
+        payload[i] = static_cast<uint8_t>((i * 3U) & 0xFFU);
+    }
+
+    const size_t first = 4096U;
+    if (dsd_iq_capture_submit(writer, payload.data(), first) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return 1;
+    }
+
+    dsd_iq_event ev;
+    std::memset(&ev, 0, sizeof(ev));
+    ev.kind = DSD_IQ_EVENT_RETUNE;
+    ev.center_frequency_hz = 851500000ULL;
+    ev.capture_center_frequency_hz = 851884000ULL;
+    ev.sample_rate_hz = 1536000U;
+    std::snprintf(ev.reason, sizeof(ev.reason), "%s", "frequency");
+    if (dsd_iq_capture_record_event(writer, &ev) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return 1;
+    }
+
+    std::memset(&ev, 0, sizeof(ev));
+    ev.kind = DSD_IQ_EVENT_MUTE;
+    ev.duration_bytes = 4096U;
+    std::snprintf(ev.reason, sizeof(ev.reason), "%s", "retune_mute");
+    if (dsd_iq_capture_record_event(writer, &ev) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return 1;
+    }
+
+    std::memset(&ev, 0, sizeof(ev));
+    ev.kind = DSD_IQ_EVENT_RESET;
+    ev.center_frequency_hz = 851500000ULL;
+    ev.capture_center_frequency_hz = 851884000ULL;
+    ev.sample_rate_hz = 1536000U;
+    std::snprintf(ev.reason, sizeof(ev.reason), "%s", reset_reason ? reset_reason : "frequency");
+    if (dsd_iq_capture_record_event(writer, &ev) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return 1;
+    }
+
+    if (dsd_iq_capture_submit(writer, payload.data() + first, payload.size() - first) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return 1;
+    }
+
+    dsd_iq_capture_final_stats stats;
+    std::memset(&stats, 0, sizeof(stats));
+    dsd_iq_capture_close(writer, &stats);
+
+    if (std::snprintf(out_metadata_path, out_metadata_path_size, "%s", metadata_path) >= (int)out_metadata_path_size) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
+make_eventful_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, size_t payload_bytes) {
+    return make_eventful_replay_fixture_with_reset_reason(out_metadata_path, out_metadata_path_size, payload_bytes,
+                                                          "frequency");
+}
+
+static int
+make_terminal_mute_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, uint64_t mute_bytes) {
+    if (!out_metadata_path || out_metadata_path_size == 0U) {
+        return 1;
+    }
+
+    char temp_dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_replay_terminal_mute")) {
+        std::fprintf(stderr, "FAIL: could not create terminal mute fixture directory\n");
+        return 1;
+    }
+
+    char data_path[DSD_TEST_PATH_MAX];
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(data_path, sizeof(data_path), temp_dir, "terminal.iq") != 0
+        || dsd_test_path_join(metadata_path, sizeof(metadata_path), temp_dir, "terminal.iq.json") != 0) {
+        return 1;
+    }
+
+    dsd_iq_capture_config cfg;
+    fill_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1);
+
+    dsd_iq_capture_writer* writer = NULL;
+    char err_buf[256] = {0};
+    if (dsd_iq_capture_open(&cfg, &writer, err_buf, sizeof(err_buf)) != DSD_IQ_OK || !writer) {
+        std::fprintf(stderr, "FAIL: could not open terminal mute writer: %s\n", err_buf[0] ? err_buf : "unknown");
+        return 1;
+    }
+
+    uint8_t payload[4096];
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = static_cast<uint8_t>(i & 0xFFU);
+    }
+    if (dsd_iq_capture_submit(writer, payload, sizeof(payload)) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return 1;
+    }
+
+    dsd_iq_event ev;
+    std::memset(&ev, 0, sizeof(ev));
+    ev.kind = DSD_IQ_EVENT_MUTE;
+    ev.duration_bytes = mute_bytes;
+    std::snprintf(ev.reason, sizeof(ev.reason), "%s", "terminal_mute");
+    if (dsd_iq_capture_record_event(writer, &ev) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return 1;
+    }
+
+    dsd_iq_capture_final_stats stats;
+    std::memset(&stats, 0, sizeof(stats));
+    dsd_iq_capture_close(writer, &stats);
+
+    if (std::snprintf(out_metadata_path, out_metadata_path_size, "%s", metadata_path) >= (int)out_metadata_path_size) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
 start_replay_stream(const char* metadata_path, std::unique_ptr<dsd_opts>* out_opts, RtlSdrContext** out_ctx) {
     if (!metadata_path || !out_opts || !out_ctx) {
         return 1;
@@ -210,6 +395,35 @@ start_replay_stream(const char* metadata_path, std::unique_ptr<dsd_opts>* out_op
     }
     *out_ctx = ctx;
     return 0;
+}
+
+static int
+start_replay_stream_with_loop_and_rate(const char* metadata_path, int loop, int realtime,
+                                       std::unique_ptr<dsd_opts>* out_opts, RtlSdrContext** out_ctx) {
+    if (!metadata_path || !out_opts || !out_ctx) {
+        return 1;
+    }
+    out_opts->reset(new dsd_opts());
+    prepare_replay_opts_with_loop_and_rate(out_opts->get(), metadata_path, loop, realtime);
+
+    RtlSdrContext* ctx = NULL;
+    if (rtl_stream_create_mirrored(out_opts->get(), &ctx) != 0 || !ctx) {
+        std::fprintf(stderr, "FAIL: rtl_stream_create_mirrored failed\n");
+        return 1;
+    }
+    if (rtl_stream_start(ctx) != 0) {
+        std::fprintf(stderr, "FAIL: rtl_stream_start failed\n");
+        rtl_stream_destroy(ctx);
+        return 1;
+    }
+    *out_ctx = ctx;
+    return 0;
+}
+
+static int
+start_replay_stream_with_loop(const char* metadata_path, int loop, std::unique_ptr<dsd_opts>* out_opts,
+                              RtlSdrContext** out_ctx) {
+    return start_replay_stream_with_loop_and_rate(metadata_path, loop, 0, out_opts, out_ctx);
 }
 
 static void
@@ -361,6 +575,190 @@ test_replay_output_tail_available_after_demod_drain(void) {
 }
 
 static int
+test_eventful_replay_applies_scheduled_events(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_eventful_replay_fixture(metadata_path, sizeof(metadata_path), 131072U);
+    if (rc != 0) {
+        return 1;
+    }
+
+    dsd_iq_replay_config cfg;
+    std::memset(&cfg, 0, sizeof(cfg));
+    char err[256] = {0};
+    int prc = dsd_iq_replay_open(metadata_path, &cfg, NULL, err, sizeof(err));
+    rc |= expect_int_eq("eventful replay metadata opens", prc, DSD_IQ_OK);
+    if (prc == DSD_IQ_OK) {
+        rc |= expect_int_eq("eventful metadata version", (int)cfg.metadata_version, 2);
+        rc |= expect_int_eq("eventful event count", (int)cfg.event_count, 3);
+    }
+    dsd_iq_replay_config_clear(&cfg);
+    if (rc != 0) {
+        return rc;
+    }
+
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    rc |= start_replay_stream(metadata_path, &opts, &ctx);
+    if (rc != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+
+    uint64_t drained_samples = 0;
+    rc |= drain_stream_to_eof(ctx, 5000U, &drained_samples);
+
+    rtl_stream_test_replay_state state;
+    std::memset(&state, 0, sizeof(state));
+    rc |= expect_int_eq("eventful replay state", rtl_stream_test_get_replay_state(ctx, &state), 0);
+    rc |= expect_int_eq("scheduled retune count", (int)state.replay_event_retune_count, 1);
+    rc |= expect_int_eq("scheduled mute count", (int)state.replay_event_mute_count, 1);
+    rc |= expect_int_eq("scheduled reset count", (int)state.replay_event_reset_count, 1);
+    rc |= expect_int_eq("scheduled last frequency", (int)state.replay_event_last_frequency_hz, 851500000);
+    rc |= expect_int_eq("scheduled reset reason", state.replay_event_last_reset_reason, kReplayResetReasonFrequency);
+    rc |= expect_true("scheduled mute duration recorded", state.replay_event_last_mute_bytes == 4096ULL);
+
+    uint32_t applied_freq = 0;
+    rc |= expect_int_eq("last applied freq hook", rtl_stream_get_last_applied_freq(&applied_freq), 0);
+    rc |= expect_int_eq("last applied freq after reset", (int)applied_freq, 851500000);
+
+    stop_and_destroy_stream(ctx);
+    return rc;
+}
+
+static int
+test_eventful_replay_preserves_ppm_reset_reason(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |=
+        make_eventful_replay_fixture_with_reset_reason(metadata_path, sizeof(metadata_path), 131072U, "ppm-correction");
+    if (rc != 0) {
+        return 1;
+    }
+
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    rc |= start_replay_stream(metadata_path, &opts, &ctx);
+    if (rc != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+
+    uint64_t drained_samples = 0;
+    rc |= drain_stream_to_eof(ctx, 5000U, &drained_samples);
+
+    rtl_stream_test_replay_state state;
+    std::memset(&state, 0, sizeof(state));
+    rc |= expect_int_eq("ppm replay state", rtl_stream_test_get_replay_state(ctx, &state), 0);
+    rc |= expect_int_eq("ppm scheduled reset count", (int)state.replay_event_reset_count, 1);
+    rc |= expect_int_eq("ppm scheduled reset reason", state.replay_event_last_reset_reason,
+                        kReplayResetReasonPpmCorrection);
+
+    stop_and_destroy_stream(ctx);
+    return rc;
+}
+
+static int
+test_loop_replay_reapplies_event_timeline(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_eventful_replay_fixture(metadata_path, sizeof(metadata_path), 32768U);
+    if (rc != 0) {
+        return 1;
+    }
+
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    rc |= start_replay_stream_with_loop(metadata_path, 1, &opts, &ctx);
+    if (rc != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+
+    float audio[1024];
+    int saw_repeated_events = 0;
+    uint64_t start_ns = dsd_time_monotonic_ns();
+    while (dsd_time_monotonic_ns() - start_ns < 5000ULL * 1000000ULL) {
+        int got = 0;
+        (void)rtl_stream_read(ctx, audio, sizeof(audio) / sizeof(audio[0]), &got);
+
+        rtl_stream_test_replay_state state;
+        std::memset(&state, 0, sizeof(state));
+        if (rtl_stream_test_get_replay_state(ctx, &state) != 0) {
+            rc |= 1;
+            break;
+        }
+        if (state.replay_event_retune_count >= 2U && state.replay_event_mute_count >= 2U
+            && state.replay_event_reset_count >= 2U) {
+            saw_repeated_events = 1;
+            break;
+        }
+        dsd_sleep_ms(2U);
+    }
+
+    rc |= expect_true("loop replay reapplies scheduled events", saw_repeated_events);
+    rtl_stream_test_replay_state final_state;
+    std::memset(&final_state, 0, sizeof(final_state));
+    rc |= expect_int_eq("loop replay final state", rtl_stream_test_get_replay_state(ctx, &final_state), 0);
+    rc |= expect_true("loop replay restored initial state", final_state.replay_loop_restart_count >= 1U);
+    rc |= expect_int_eq("loop replay restored initial frequency",
+                        (int)final_state.replay_loop_restart_last_frequency_hz, 851375000);
+    stop_and_destroy_stream(ctx);
+    return rc;
+}
+
+static int
+test_realtime_loop_waits_for_terminal_mute_before_rewind(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    const uint64_t terminal_mute_bytes = 307200ULL;
+    rc |= make_terminal_mute_replay_fixture(metadata_path, sizeof(metadata_path), terminal_mute_bytes);
+    if (rc != 0) {
+        return 1;
+    }
+
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    rc |= start_replay_stream_with_loop_and_rate(metadata_path, 1, 1, &opts, &ctx);
+    if (rc != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+
+    uint64_t mute_seen_ns = 0;
+    uint64_t restart_seen_ns = 0;
+    uint64_t deadline_ns = dsd_time_monotonic_ns() + 3000ULL * 1000000ULL;
+    while (dsd_time_monotonic_ns() < deadline_ns) {
+        rtl_stream_test_replay_state state;
+        std::memset(&state, 0, sizeof(state));
+        rc |= expect_int_eq("terminal mute replay state", rtl_stream_test_get_replay_state(ctx, &state), 0);
+        if (rc != 0) {
+            break;
+        }
+
+        uint64_t now_ns = dsd_time_monotonic_ns();
+        if (mute_seen_ns == 0ULL && state.replay_event_mute_count >= 1U) {
+            mute_seen_ns = now_ns;
+        }
+        if (mute_seen_ns != 0ULL && state.replay_loop_restart_count >= 1U) {
+            restart_seen_ns = now_ns;
+            break;
+        }
+        dsd_sleep_ms(1U);
+    }
+
+    rc |= expect_true("terminal mute event observed", mute_seen_ns != 0ULL);
+    rc |= expect_true("loop restart observed after terminal mute", restart_seen_ns != 0ULL);
+    if (mute_seen_ns != 0ULL && restart_seen_ns != 0ULL) {
+        uint64_t elapsed_ms = (restart_seen_ns - mute_seen_ns) / 1000000ULL;
+        rc |= expect_u64_ge("realtime loop terminal mute interval", elapsed_ms, 40ULL);
+    }
+
+    stop_and_destroy_stream(ctx);
+    return rc;
+}
+
+static int
 collect_replay_samples(const char* metadata_path, size_t target_samples, std::vector<float>* out_samples) {
     if (!metadata_path || !out_samples || target_samples == 0U) {
         return 1;
@@ -496,6 +894,10 @@ main(void) {
     int rc = 0;
     rc |= test_replay_eof_partial_block_drains_before_exit();
     rc |= test_replay_output_tail_available_after_demod_drain();
+    rc |= test_eventful_replay_applies_scheduled_events();
+    rc |= test_eventful_replay_preserves_ppm_reset_reason();
+    rc |= test_loop_replay_reapplies_event_timeline();
+    rc |= test_realtime_loop_waits_for_terminal_mute_before_rewind();
     rc |= test_cf32_replay_fs4_policy_changes_output();
     rc |= test_cf32_unknown_capture_stage_rejected();
     return rc ? 1 : 0;

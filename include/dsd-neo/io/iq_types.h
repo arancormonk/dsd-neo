@@ -37,6 +37,22 @@ typedef enum {
     DSD_IQ_FORMAT_CS16 = 3,
 } dsd_iq_sample_format;
 
+typedef enum {
+    DSD_IQ_EVENT_RETUNE = 1,
+    DSD_IQ_EVENT_MUTE = 2,
+    DSD_IQ_EVENT_RESET = 3,
+} dsd_iq_event_kind;
+
+typedef struct {
+    dsd_iq_event_kind kind;
+    uint64_t byte_offset;
+    uint64_t duration_bytes;
+    uint64_t center_frequency_hz;
+    uint64_t capture_center_frequency_hz;
+    uint32_t sample_rate_hz;
+    char reason[64];
+} dsd_iq_event;
+
 /**
  * @brief Return the required sample alignment in bytes for the sample format.
  *

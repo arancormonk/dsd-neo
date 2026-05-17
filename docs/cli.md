@@ -154,7 +154,8 @@ Notes
 
 - Replay and capture are mutually exclusive in one invocation.
 - `--iq-replay` and `--iq-info` accept either the data file or the `.json` metadata path.
-- Captures marked with retunes are reported by `--iq-info` and rejected by `--iq-replay`.
+- Retuned captures with v2 replay event timelines can be replayed. Older retuned captures without an event timeline are
+  reported by `--iq-info` and rejected by `--iq-replay`.
 - `-i iqreplay:...` is intentionally not a supported public input form; use `--iq-replay`.
 - More details and format notes: `docs/iq-capture-replay.md`.
 
