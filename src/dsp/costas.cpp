@@ -154,10 +154,16 @@ mmse_interp_cc(const float* dl, float mu, float* out_r, float* out_j) {
     *out_j = mmse_interp_8tap(sj, mu);
 }
 
-/* Branchless clip (matches GNU Radio) */
+/* Saturating clip equivalent to GNU Radio's branchless_clip. */
 static inline float
-branchless_clip(float x, float limit) {
-    return 0.5f * (fabsf(x + limit) - fabsf(x - limit));
+clipf_limit(float x, float limit) {
+    if (x > limit) {
+        return limit;
+    }
+    if (x < -limit) {
+        return -limit;
+    }
+    return x;
 }
 
 static inline void
@@ -686,7 +692,7 @@ op25_gardner_cc(struct demod_state* d) {
          *   d_omega = d_omega_mid + gr::branchless_clip(d_omega-d_omega_mid, d_omega_rel);
          * Despite the name, OP25 uses d_omega_rel as an absolute sample clamp,
          * not omega_mid-scaled relative error. */
-        omega = ted->omega_mid + branchless_clip(omega - ted->omega_mid, ted->omega_rel);
+        omega = ted->omega_mid + clipf_limit(omega - ted->omega_mid, ted->omega_rel);
 
         /* Save current symbol as last for next iteration */
         last_r = sym_r;
@@ -895,10 +901,10 @@ op25_costas_loop_cc(struct demod_state* d) {
             error_smooth = 0.0f;
             zero_conf_count++;
         } else {
-            error_raw = branchless_clip(phase_detector_4(det_r, det_j) * confidence, 1.0f);
+            error_raw = clipf_limit(phase_detector_4(det_r, det_j) * confidence, 1.0f);
             float smooth_alpha = cqpsk_costas_error_smooth_alpha(error_raw, error_smooth);
             error_smooth += smooth_alpha * (error_raw - error_smooth);
-            error = branchless_clip(error_smooth, 1.0f);
+            error = clipf_limit(error_smooth, 1.0f);
             confidence_acc += confidence;
         }
         last_error = error;
