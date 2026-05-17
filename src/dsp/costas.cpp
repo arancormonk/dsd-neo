@@ -712,9 +712,7 @@ op25_gardner_cc(struct demod_state* d) {
 
     /* Copy output back to lowpassed buffer and update length */
     if (o >= 2) {
-        for (int j = 0; j < o; j++) {
-            d->lowpassed[j] = iq_out[j];
-        }
+        d->lowpassed = iq_out;
         d->lp_len = o;
     } else {
         d->lp_len = 0;
