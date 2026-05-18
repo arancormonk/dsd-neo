@@ -2062,6 +2062,13 @@ target_include_directories(dsd-neo_test_io_iq_capture_writer PRIVATE ${PROJECT_S
 target_link_libraries(dsd-neo_test_io_iq_capture_writer PRIVATE dsd-neo_io_iq dsd-neo_platform dsd-neo_test_support)
 add_test(NAME IO_IQ_CAPTURE_WRITER COMMAND dsd-neo_test_io_iq_capture_writer)
 
+add_executable(dsd-neo_test_io_soapy_profile
+  io/test_io_soapy_profile.cpp
+  ${PROJECT_SOURCE_DIR}/src/io/radio/soapy_profile.cpp
+)
+target_include_directories(dsd-neo_test_io_soapy_profile PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio)
+add_test(NAME IO_SOAPY_PROFILE COMMAND dsd-neo_test_io_soapy_profile)
+
 add_executable(dsd-neo_test_platform_atomic_u64 platform/test_platform_atomic_u64.c)
 target_include_directories(dsd-neo_test_platform_atomic_u64 PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_platform_atomic_u64 PRIVATE dsd-neo_platform)

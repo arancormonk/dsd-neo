@@ -29,7 +29,6 @@
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
 #include <limits.h>
-#include <math.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -43,6 +42,7 @@
 #include "rtl_capture_phase.h"
 #include "rtl_perf.h"
 #include "rtl_replay_device.h"
+#include "soapy_profile.h"
 
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
 #include <excpt.h>
@@ -67,6 +67,8 @@ enum {
 #include <SoapySDR/Errors.hpp>
 #include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
+#include <cctype>
+#include <cmath>
 #include <complex>
 #include <exception>
 #include <string>
@@ -291,6 +293,19 @@ struct rtl_device {
     uint64_t soapy_timeout_count;
     uint64_t soapy_read_errors;
     uint64_t soapy_last_overflow_log_ns;
+    int soapy_profile_id;
+    int soapy_requested_bandwidth_hz;
+    int soapy_named_gain_override;
+    int soapy_named_gain_skip_logged;
+    char soapy_args_string[1024];
+    char soapy_driver_key[64];
+    char soapy_hardware_key[128];
+    char soapy_native_stream_format[16];
+    char soapy_requested_profile[32];
+    char soapy_requested_antenna[64];
+    char soapy_requested_clock[64];
+    char soapy_requested_gains[512];
+    char soapy_requested_stream_format[16];
     /* TCP stats (optional) */
     uint64_t tcp_bytes_total;
     uint64_t tcp_bytes_window;
@@ -1828,6 +1843,258 @@ soapy_call_locked(struct rtl_device* dev, const char* op, Fn&& fn) {
     (void)dsd_mutex_unlock(&dev->soapy_lock);
     return ret;
 }
+
+static void
+soapy_copy_cstr(char* dst, size_t dst_size, const char* src) {
+    if (!dst || dst_size == 0) {
+        return;
+    }
+    snprintf(dst, dst_size, "%s", src ? src : "");
+    dst[dst_size - 1] = '\0';
+}
+
+static std::vector<dsdneo::SoapyRange>
+soapy_ranges_from_range_list(const SoapySDR::RangeList& ranges) {
+    std::vector<dsdneo::SoapyRange> out;
+    out.reserve(ranges.size());
+    for (const SoapySDR::Range& range : ranges) {
+        out.push_back({range.minimum(), range.maximum(), range.step()});
+    }
+    return out;
+}
+
+static std::vector<double>
+soapy_valid_positive_rates(const std::vector<double>& rates) {
+    std::vector<double> out;
+    out.reserve(rates.size());
+    for (double rate : rates) {
+        if (rate > 0.0) {
+            out.push_back(rate);
+        }
+    }
+    return out;
+}
+
+static void
+soapy_set_cached_format(struct rtl_device* dev, const std::string& format) {
+    if (!dev) {
+        return;
+    }
+    if (format == SOAPY_SDR_CF32) {
+        dev->soapy_format = SOAPY_FMT_CF32;
+    } else if (format == SOAPY_SDR_CS16) {
+        dev->soapy_format = SOAPY_FMT_CS16;
+    } else {
+        dev->soapy_format = SOAPY_FMT_NONE;
+    }
+}
+
+static void
+soapy_select_profile_locked(struct rtl_device* dev) {
+    if (!dev) {
+        return;
+    }
+    dsdneo::SoapyProfileSelection selection;
+    selection.requested_profile = dev->soapy_requested_profile;
+    selection.driver_key = dev->soapy_driver_key;
+    selection.hardware_key = dev->soapy_hardware_key;
+    selection.args = dev->soapy_args_string;
+    dev->soapy_profile_id = (int)dsdneo::soapy_select_profile_id(selection);
+}
+
+static void
+soapy_cache_identity_locked(struct rtl_device* dev) {
+    if (!dev || !dev->soapy_dev) {
+        return;
+    }
+    try {
+        soapy_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), dev->soapy_dev->getDriverKey().c_str());
+    } catch (const std::exception&) {
+        dev->soapy_driver_key[0] = '\0';
+    }
+    try {
+        soapy_copy_cstr(dev->soapy_hardware_key, sizeof(dev->soapy_hardware_key),
+                        dev->soapy_dev->getHardwareKey().c_str());
+    } catch (const std::exception&) {
+        dev->soapy_hardware_key[0] = '\0';
+    }
+    try {
+        double full_scale = 0.0;
+        std::string native_format = dev->soapy_dev->getNativeStreamFormat(SOAPY_SDR_RX, 0, full_scale);
+        soapy_copy_cstr(dev->soapy_native_stream_format, sizeof(dev->soapy_native_stream_format),
+                        native_format.c_str());
+    } catch (const std::exception&) {
+        dev->soapy_native_stream_format[0] = '\0';
+    }
+    soapy_select_profile_locked(dev);
+}
+
+static int
+soapy_refresh_stream_format_locked(struct rtl_device* dev, std::string* out_format) {
+    if (!dev || !dev->soapy_dev) {
+        return -1;
+    }
+    std::vector<std::string> formats = dev->soapy_dev->getStreamFormats(SOAPY_SDR_RX, 0);
+    std::string chosen = dsdneo::soapy_choose_stream_format(formats, dev->soapy_requested_stream_format,
+                                                            dev->soapy_native_stream_format);
+    if (chosen.empty()) {
+        fprintf(stderr, "SoapySDR: RX stream formats [%s] do not satisfy requested format '%s' (native=%s).\n",
+                dsdneo::soapy_join_names(formats, 160).c_str(),
+                dev->soapy_requested_stream_format[0] ? dev->soapy_requested_stream_format : "auto",
+                dev->soapy_native_stream_format[0] ? dev->soapy_native_stream_format : "-");
+        dev->soapy_format = SOAPY_FMT_NONE;
+        return -1;
+    }
+    soapy_set_cached_format(dev, chosen);
+    if (out_format) {
+        *out_format = chosen;
+    }
+    return 0;
+}
+
+static void
+soapy_log_capability_summary_locked(struct rtl_device* dev) {
+    if (!dev || !dev->soapy_dev) {
+        return;
+    }
+    std::vector<std::string> formats;
+    std::vector<std::string> gains;
+    std::vector<std::string> antennas;
+    std::vector<std::string> clocks;
+    try {
+        formats = dev->soapy_dev->getStreamFormats(SOAPY_SDR_RX, 0);
+    } catch (const std::exception&) {}
+    try {
+        gains = dev->soapy_dev->listGains(SOAPY_SDR_RX, 0);
+    } catch (const std::exception&) {}
+    try {
+        antennas = dev->soapy_dev->listAntennas(SOAPY_SDR_RX, 0);
+    } catch (const std::exception&) {}
+    try {
+        clocks = dev->soapy_dev->listClockSources();
+    } catch (const std::exception&) {}
+
+    const dsdneo::SoapyProfile& profile = dsdneo::soapy_profile_by_id((dsdneo::SoapyProfileId)dev->soapy_profile_id);
+    fprintf(stderr,
+            "SoapySDR: driver=%s hardware=%s profile=%s native=%s formats=[%s] gains=[%s] antennas=[%s] clocks=[%s].\n",
+            dev->soapy_driver_key[0] ? dev->soapy_driver_key : "-",
+            dev->soapy_hardware_key[0] ? dev->soapy_hardware_key : "-", profile.name,
+            dev->soapy_native_stream_format[0] ? dev->soapy_native_stream_format : "-",
+            dsdneo::soapy_join_names(formats, 120).c_str(), dsdneo::soapy_join_names(gains, 120).c_str(),
+            dsdneo::soapy_join_names(antennas, 80).c_str(), dsdneo::soapy_join_names(clocks, 80).c_str());
+}
+
+static std::string
+soapy_trim_copy(const std::string& value) {
+    size_t start = 0;
+    while (start < value.size() && isspace((unsigned char)value[start])) {
+        start++;
+    }
+    size_t end = value.size();
+    while (end > start && isspace((unsigned char)value[end - 1])) {
+        end--;
+    }
+    return value.substr(start, end - start);
+}
+
+static int
+soapy_apply_antenna_locked(struct rtl_device* dev) {
+    if (!dev || !dev->soapy_dev || dev->soapy_requested_antenna[0] == '\0') {
+        return 0;
+    }
+    std::vector<std::string> antennas = dev->soapy_dev->listAntennas(SOAPY_SDR_RX, 0);
+    if (!dsdneo::soapy_name_list_contains(antennas, dev->soapy_requested_antenna)) {
+        fprintf(stderr, "SoapySDR: antenna '%s' is unavailable; choices=[%s].\n", dev->soapy_requested_antenna,
+                dsdneo::soapy_join_names(antennas, 160).c_str());
+        return DSD_ERR_NOT_SUPPORTED;
+    }
+    dev->soapy_dev->setAntenna(SOAPY_SDR_RX, 0, dev->soapy_requested_antenna);
+    fprintf(stderr, "SoapySDR: selected antenna '%s'.\n", dev->soapy_requested_antenna);
+    return 0;
+}
+
+static int
+soapy_apply_clock_locked(struct rtl_device* dev) {
+    if (!dev || !dev->soapy_dev || dev->soapy_requested_clock[0] == '\0') {
+        return 0;
+    }
+    std::vector<std::string> clocks = dev->soapy_dev->listClockSources();
+    if (!dsdneo::soapy_name_list_contains(clocks, dev->soapy_requested_clock)) {
+        fprintf(stderr, "SoapySDR: clock source '%s' is unavailable; choices=[%s].\n", dev->soapy_requested_clock,
+                dsdneo::soapy_join_names(clocks, 160).c_str());
+        return DSD_ERR_NOT_SUPPORTED;
+    }
+    dev->soapy_dev->setClockSource(dev->soapy_requested_clock);
+    fprintf(stderr, "SoapySDR: selected clock source '%s'.\n", dev->soapy_requested_clock);
+    return 0;
+}
+
+static int
+soapy_apply_named_gains_locked(struct rtl_device* dev) {
+    if (!dev || !dev->soapy_dev || dev->soapy_requested_gains[0] == '\0') {
+        return 0;
+    }
+
+    std::vector<std::string> available = dev->soapy_dev->listGains(SOAPY_SDR_RX, 0);
+    std::string spec = dev->soapy_requested_gains;
+    size_t pos = 0;
+    int applied_count = 0;
+    while (pos < spec.size()) {
+        size_t next = spec.find_first_of(",; ", pos);
+        std::string item =
+            soapy_trim_copy(spec.substr(pos, next == std::string::npos ? std::string::npos : next - pos));
+        pos = (next == std::string::npos) ? spec.size() : next + 1;
+        if (item.empty()) {
+            continue;
+        }
+
+        size_t colon = item.find(':');
+        if (colon == std::string::npos) {
+            fprintf(stderr, "SoapySDR: named gain '%s' must use NAME:dB syntax.\n", item.c_str());
+            return -1;
+        }
+        std::string name = soapy_trim_copy(item.substr(0, colon));
+        std::string value = soapy_trim_copy(item.substr(colon + 1));
+        if (name.empty() || value.empty()) {
+            fprintf(stderr, "SoapySDR: named gain '%s' must use NAME:dB syntax.\n", item.c_str());
+            return -1;
+        }
+        if (!dsdneo::soapy_name_list_contains(available, name)) {
+            fprintf(stderr, "SoapySDR: gain stage '%s' is unavailable; choices=[%s].\n", name.c_str(),
+                    dsdneo::soapy_join_names(available, 160).c_str());
+            return DSD_ERR_NOT_SUPPORTED;
+        }
+        char* end = NULL;
+        double requested_db = strtod(value.c_str(), &end);
+        if (end == value.c_str()) {
+            fprintf(stderr, "SoapySDR: invalid gain value '%s' for stage '%s'.\n", value.c_str(), name.c_str());
+            return -1;
+        }
+        bool supported = false;
+        SoapySDR::Range range = dev->soapy_dev->getGainRange(SOAPY_SDR_RX, 0, name);
+        double applied_db = dsdneo::soapy_nearest_in_ranges(
+            requested_db, {{range.minimum(), range.maximum(), range.step()}}, &supported);
+        if (!supported) {
+            applied_db = requested_db;
+        }
+        if (std::fabs(applied_db - requested_db) > 0.05) {
+            fprintf(stderr, "SoapySDR: adjusted gain %s from %.2f dB to %.2f dB.\n", name.c_str(), requested_db,
+                    applied_db);
+        }
+        if (dev->soapy_dev->hasGainMode(SOAPY_SDR_RX, 0)) {
+            dev->soapy_dev->setGainMode(SOAPY_SDR_RX, 0, false);
+        }
+        dev->soapy_dev->setGain(SOAPY_SDR_RX, 0, name, applied_db);
+        applied_count++;
+    }
+
+    if (applied_count > 0) {
+        dev->soapy_named_gain_override = 1;
+        dev->agc_mode = 0;
+        fprintf(stderr, "SoapySDR: applied named gain profile '%s'.\n", dev->soapy_requested_gains);
+    }
+    return 0;
+}
 #endif
 
 static void
@@ -1895,24 +2162,7 @@ static DSD_THREAD_RETURN_TYPE
         fatal = 1;
     } else {
         try {
-            std::vector<std::string> formats = s->soapy_dev->getStreamFormats(SOAPY_SDR_RX, 0);
-            bool have_cf32 = false;
-            bool have_cs16 = false;
-            for (size_t i = 0; i < formats.size(); i++) {
-                if (formats[i] == SOAPY_SDR_CF32) {
-                    have_cf32 = true;
-                } else if (formats[i] == SOAPY_SDR_CS16) {
-                    have_cs16 = true;
-                }
-            }
-            if (have_cf32) {
-                s->soapy_format = SOAPY_FMT_CF32;
-                stream_format = SOAPY_SDR_CF32;
-            } else if (have_cs16) {
-                s->soapy_format = SOAPY_FMT_CS16;
-                stream_format = SOAPY_SDR_CS16;
-            } else {
-                fprintf(stderr, "SoapySDR: RX stream formats do not include CF32 or CS16.\n");
+            if (soapy_refresh_stream_format_locked(s, &stream_format) != 0) {
                 fatal = 1;
             }
             if (!fatal) {
@@ -2880,6 +3130,19 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     memset(&dev->replay_eof, 0, sizeof(dev->replay_eof));
     dev->replay_has_eof_state = 0;
     dev->replay_float_elements_written = 0;
+    dev->soapy_profile_id = (int)dsdneo::SoapyProfileId::Generic;
+    dev->soapy_requested_bandwidth_hz = -1;
+    dev->soapy_named_gain_override = 0;
+    dev->soapy_named_gain_skip_logged = 0;
+    dev->soapy_args_string[0] = '\0';
+    dev->soapy_driver_key[0] = '\0';
+    dev->soapy_hardware_key[0] = '\0';
+    dev->soapy_native_stream_format[0] = '\0';
+    dev->soapy_requested_profile[0] = '\0';
+    dev->soapy_requested_antenna[0] = '\0';
+    dev->soapy_requested_clock[0] = '\0';
+    dev->soapy_requested_gains[0] = '\0';
+    dev->soapy_requested_stream_format[0] = '\0';
     if (dsd_mutex_init(&dev->tcp_metrics_lock) == 0) {
         dev->tcp_metrics_lock_inited = 1;
     }
@@ -3099,6 +3362,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
     std::string args_string;
     try {
         args_string = args_cstr;
+        soapy_copy_cstr(dev->soapy_args_string, sizeof(dev->soapy_args_string), args_cstr);
         (void)SoapySDR::KwargsFromString(args_string);
     } catch (const std::exception& e) {
         fprintf(stderr, "SoapySDR: invalid args string '%s': %s\n", args_cstr, e.what());
@@ -3140,23 +3404,9 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
 
     if (dsd_mutex_lock(&dev->soapy_lock) == 0) {
         try {
-            std::vector<std::string> formats = dev->soapy_dev->getStreamFormats(SOAPY_SDR_RX, 0);
-            bool have_cf32 = false;
-            bool have_cs16 = false;
-            for (size_t i = 0; i < formats.size(); i++) {
-                if (formats[i] == SOAPY_SDR_CF32) {
-                    have_cf32 = true;
-                } else if (formats[i] == SOAPY_SDR_CS16) {
-                    have_cs16 = true;
-                }
-            }
-            if (have_cf32) {
-                dev->soapy_format = SOAPY_FMT_CF32;
-            } else if (have_cs16) {
-                dev->soapy_format = SOAPY_FMT_CS16;
-            } else {
-                fprintf(stderr, "SoapySDR: RX stream formats do not include CF32 or CS16.\n");
-            }
+            soapy_cache_identity_locked(dev);
+            (void)soapy_refresh_stream_format_locked(dev, NULL);
+            soapy_log_capability_summary_locked(dev);
         } catch (const std::exception& e) {
             fprintf(stderr, "SoapySDR: exception selecting stream format: %s\n", e.what());
         }
@@ -3164,6 +3414,59 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
     }
 
     return dev;
+#endif
+}
+
+int
+rtl_device_configure_soapy(struct rtl_device* dev, const struct rtl_soapy_config* config) {
+    if (!dev || dev->backend != RTL_BACKEND_SOAPY) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
+#ifndef USE_SOAPYSDR
+    (void)config;
+    return DSD_ERR_NOT_SUPPORTED;
+#else
+    if (!dev->soapy_dev || !dev->soapy_lock_inited) {
+        return -1;
+    }
+
+    soapy_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile),
+                    config ? config->profile : NULL);
+    soapy_copy_cstr(dev->soapy_requested_antenna, sizeof(dev->soapy_requested_antenna),
+                    config ? config->antenna : NULL);
+    soapy_copy_cstr(dev->soapy_requested_clock, sizeof(dev->soapy_requested_clock),
+                    config ? config->clock_source : NULL);
+    soapy_copy_cstr(dev->soapy_requested_gains, sizeof(dev->soapy_requested_gains), config ? config->gains : NULL);
+    soapy_copy_cstr(dev->soapy_requested_stream_format, sizeof(dev->soapy_requested_stream_format),
+                    config ? config->stream_format : NULL);
+    dev->soapy_requested_bandwidth_hz = config ? config->bandwidth_hz : -1;
+
+    return soapy_call_locked(dev, "configure Soapy profile", [&]() -> int {
+        dsdneo::SoapyProfileId parsed = dsdneo::SoapyProfileId::Auto;
+        if (dev->soapy_requested_profile[0] != '\0'
+            && !dsdneo::soapy_profile_parse_name(dev->soapy_requested_profile, &parsed)) {
+            fprintf(stderr, "SoapySDR: unknown profile '%s'; using automatic profile detection.\n",
+                    dev->soapy_requested_profile);
+        }
+        soapy_cache_identity_locked(dev);
+        const dsdneo::SoapyProfile& profile =
+            dsdneo::soapy_profile_by_id((dsdneo::SoapyProfileId)dev->soapy_profile_id);
+        fprintf(stderr, "SoapySDR: using %s profile.\n", profile.display_name);
+
+        int rc = soapy_apply_antenna_locked(dev);
+        if (rc != 0) {
+            return rc;
+        }
+        rc = soapy_apply_clock_locked(dev);
+        if (rc != 0) {
+            return rc;
+        }
+        rc = soapy_apply_named_gains_locked(dev);
+        if (rc != 0) {
+            return rc;
+        }
+        return soapy_refresh_stream_format_locked(dev, NULL);
+    });
 #endif
 }
 
@@ -3402,7 +3705,23 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
 #ifdef USE_SOAPYSDR
     if (dev->backend == RTL_BACKEND_SOAPY) {
         return soapy_call_locked(dev, "setSampleRate", [&]() -> int {
-            dev->soapy_dev->setSampleRate(SOAPY_SDR_RX, 0, (double)samp_rate);
+            double requested = (double)samp_rate;
+            double applied = requested;
+            bool adjusted = false;
+            try {
+                std::vector<double> listed =
+                    soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
+                std::vector<dsdneo::SoapyRange> ranges =
+                    soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
+                applied = dsdneo::soapy_nearest_sample_rate(requested, listed, ranges, &adjusted);
+            } catch (const std::exception&) {
+                applied = requested;
+            }
+            if (adjusted) {
+                fprintf(stderr, "SoapySDR: adjusted sample rate from %.0f Hz to %.0f Hz.\n", requested, applied);
+            }
+            dev->soapy_dev->setSampleRate(SOAPY_SDR_RX, 0, applied);
+            dev->rate = (uint32_t)(applied + 0.5);
             return 0;
         });
     }
@@ -3497,6 +3816,14 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
     }
 #ifdef USE_SOAPYSDR
     if (dev->backend == RTL_BACKEND_SOAPY) {
+        if (dev->soapy_named_gain_override) {
+            if (!dev->soapy_named_gain_skip_logged) {
+                fprintf(stderr, "SoapySDR: preserving explicit named gains; aggregate gain requests are ignored.\n");
+                dev->soapy_named_gain_skip_logged = 1;
+            }
+            dev->agc_mode = 0;
+            return 0;
+        }
         if (gain == AUTO_GAIN) {
             int rc = soapy_call_locked(dev, "setGainMode(auto)", [&]() -> int {
                 if (!dev->soapy_dev->hasGainMode(SOAPY_SDR_RX, 0)) {
@@ -3569,6 +3896,14 @@ rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db) {
     }
 #ifdef USE_SOAPYSDR
     if (dev->backend == RTL_BACKEND_SOAPY) {
+        if (dev->soapy_named_gain_override) {
+            if (!dev->soapy_named_gain_skip_logged) {
+                fprintf(stderr, "SoapySDR: preserving explicit named gains; aggregate gain requests are ignored.\n");
+                dev->soapy_named_gain_skip_logged = 1;
+            }
+            dev->agc_mode = 0;
+            return 0;
+        }
         const double target_db = (double)target_tenth_db / 10.0;
         double applied_db = target_db;
         int rc = soapy_call_locked(dev, "setGain(nearest)", [&]() -> int {
@@ -3799,11 +4134,48 @@ rtl_device_set_tuner_bandwidth(struct rtl_device* dev, uint32_t bw_hz) {
 #ifdef USE_SOAPYSDR
     if (dev->backend == RTL_BACKEND_SOAPY) {
         return soapy_call_locked(dev, "setBandwidth", [&]() -> int {
-            SoapySDR::RangeList bw_range = dev->soapy_dev->getBandwidthRange(SOAPY_SDR_RX, 0);
-            if (bw_range.empty()) {
-                return DSD_ERR_NOT_SUPPORTED;
+            int tuner_bw_hz = (int)bw_hz;
+            bool tuner_bw_hz_is_set = false;
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            if (cfg && cfg->tuner_bw_hz_is_set) {
+                tuner_bw_hz = cfg->tuner_bw_hz;
+                tuner_bw_hz_is_set = true;
             }
-            dev->soapy_dev->setBandwidth(SOAPY_SDR_RX, 0, (double)bw_hz);
+
+            const dsdneo::SoapyProfile& profile =
+                dsdneo::soapy_profile_by_id((dsdneo::SoapyProfileId)dev->soapy_profile_id);
+            dsdneo::SoapyBandwidthChoice choice = dsdneo::soapy_choose_bandwidth_hz(
+                tuner_bw_hz, tuner_bw_hz_is_set, dev->soapy_requested_bandwidth_hz, profile.default_bandwidth_hz);
+            if (!choice.should_apply) {
+                return 0; /* user/default requested driver automatic/no explicit bandwidth */
+            }
+
+            std::vector<dsdneo::SoapyRange> ranges;
+            try {
+                ranges = soapy_ranges_from_range_list(dev->soapy_dev->getBandwidthRange(SOAPY_SDR_RX, 0));
+            } catch (const std::exception& e) {
+                if (choice.explicit_request) {
+                    fprintf(stderr,
+                            "SoapySDR: explicit bandwidth %d Hz is unsupported; could not query bandwidth ranges: "
+                            "%s\n",
+                            choice.bandwidth_hz, e.what());
+                }
+                return choice.explicit_request ? DSD_ERR_NOT_SUPPORTED : 0;
+            }
+            bool supported = false;
+            double applied_hz = dsdneo::soapy_nearest_in_ranges((double)choice.bandwidth_hz, ranges, &supported);
+            if (!supported) {
+                if (choice.explicit_request) {
+                    fprintf(stderr, "SoapySDR: explicit bandwidth %d Hz is unsupported by this device.\n",
+                            choice.bandwidth_hz);
+                }
+                return choice.explicit_request ? DSD_ERR_NOT_SUPPORTED : 0;
+            }
+            if (std::fabs(applied_hz - (double)choice.bandwidth_hz) > 0.5) {
+                fprintf(stderr, "SoapySDR: adjusted bandwidth from %d Hz to %.0f Hz.\n", choice.bandwidth_hz,
+                        applied_hz);
+            }
+            dev->soapy_dev->setBandwidth(SOAPY_SDR_RX, 0, applied_hz);
             return 0;
         });
     }

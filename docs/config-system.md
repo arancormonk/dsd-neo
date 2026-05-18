@@ -491,6 +491,10 @@ bandwidth 48 kHz, and monitor gain multiplier 2. The template still shows
 [input]
 source = "soapy"
 soapy_args = "driver=sdrplay,serial=123456"
+soapy_profile = "sdrplay"
+soapy_stream_format = "auto"
+soapy_gains = "IFGR:35"
+soapy_bandwidth_hz = 200000
 
 # Soapy tuning reuses rtl_* keys
 rtl_freq = "851.375M"
@@ -503,6 +507,8 @@ rtl_volume = 2
 
 If you omit `soapy_args`, DSD-neo uses the default Soapy device args (equivalent to `-i soapy`).
 For multiple identical devices, prefer including a stable selector like `serial=...`.
+Soapy-specific keys are optional: profiles default to `auto`, stream format defaults to `auto`, named gains are only
+applied when `soapy_gains` is present, and `soapy_bandwidth_hz = 0` leaves bandwidth selection to the driver.
 
 ### Soapy Troubleshooting
 

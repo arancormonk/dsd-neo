@@ -30,6 +30,7 @@ if(DSD_HAS_RADIO)
     radio/rtl_stream.cpp
     radio/rtl_stream_c.cpp
     radio/rtl_sdr_fm.cpp
+    radio/soapy_profile.cpp
   )
   target_include_directories(dsd-neo_io_radio
     PUBLIC ${PROJECT_SOURCE_DIR}/include

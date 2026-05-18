@@ -28,6 +28,22 @@ struct rtl_device;
 struct dsd_iq_capture_writer;
 
 /**
+ * @brief Optional SoapySDR-specific startup controls.
+ *
+ * String pointers may be NULL or empty. bandwidth_hz uses -1 for profile/default
+ * behavior, 0 for driver automatic/no explicit bandwidth request, and positive
+ * values for a requested hardware bandwidth in Hz.
+ */
+struct rtl_soapy_config {
+    const char* profile;
+    const char* antenna;
+    const char* clock_source;
+    const char* gains;
+    const char* stream_format;
+    int bandwidth_hz;
+};
+
+/**
  * @brief Create and initialize a local RTL-SDR device over USB (librtlsdr).
  *
  * @param dev_index Device index to open.
@@ -64,6 +80,14 @@ struct rtl_device* rtl_device_create_tcp(const char* host, int port, struct inpu
  */
 struct rtl_device* rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring,
                                            int combine_rotate_enabled);
+
+/**
+ * @brief Apply SoapySDR-specific profile and capability-aware startup options.
+ *
+ * Must be called after rtl_device_create_soapy() and before rtl_device_start_async().
+ * Returns 0 for success, negative for failure/unsupported backend.
+ */
+int rtl_device_configure_soapy(struct rtl_device* dev, const struct rtl_soapy_config* config);
 
 /**
  * @brief Destroy an RTL-SDR device and free resources.

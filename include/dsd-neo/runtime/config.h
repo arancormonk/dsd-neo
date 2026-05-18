@@ -690,6 +690,13 @@ typedef struct dsdneoUserConfig {
     char rtltcp_host[128];
     int rtltcp_port;
     char soapy_args[256];
+    char soapy_profile[32];
+    char soapy_stream_format[16];
+    char soapy_antenna[64];
+    char soapy_clock[64];
+    char soapy_gains[512];
+    int soapy_bandwidth_hz;
+    int soapy_bandwidth_hz_is_set;
     char file_path[1024];
     int file_sample_rate;
     char tcp_host[128];

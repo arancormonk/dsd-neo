@@ -409,6 +409,12 @@ test_load_and_apply_soapy_input_with_args(void) {
                              "[input]\n"
                              "source = \"soapy\"\n"
                              "soapy_args = \"driver=airspy,serial=ABC123\"\n"
+                             "soapy_profile = \"airspy\"\n"
+                             "soapy_stream_format = \"cf32\"\n"
+                             "soapy_antenna = \"RX\"\n"
+                             "soapy_clock = \"external\"\n"
+                             "soapy_gains = \"LNA:12,MIX:8\"\n"
+                             "soapy_bandwidth_hz = 250000\n"
                              "rtl_freq = \"851.375M\"\n"
                              "rtl_gain = 30\n"
                              "rtl_ppm = 5\n"
@@ -437,6 +443,13 @@ test_load_and_apply_soapy_input_with_args(void) {
         fprintf(stderr, "soapy_args parse mismatch: \"%s\"\n", cfg.soapy_args);
         rc |= 1;
     }
+    if (strcmp(cfg.soapy_profile, "airspy") != 0 || strcmp(cfg.soapy_stream_format, "cf32") != 0
+        || strcmp(cfg.soapy_antenna, "RX") != 0 || strcmp(cfg.soapy_clock, "external") != 0
+        || strcmp(cfg.soapy_gains, "LNA:12,MIX:8") != 0 || cfg.soapy_bandwidth_hz != 250000
+        || !cfg.soapy_bandwidth_hz_is_set) {
+        fprintf(stderr, "soapy extended fields not parsed correctly\n");
+        rc |= 1;
+    }
 
     static dsd_opts opts;
     static dsd_state state;
@@ -456,6 +469,12 @@ test_load_and_apply_soapy_input_with_args(void) {
         || opts.rtl_volume_multiplier != 2) {
         fprintf(stderr, "shared rtl tuning values not applied for soapy gain=%d ppm=%d bw=%d vol=%d\n",
                 opts.rtl_gain_value, opts.rtlsdr_ppm_error, opts.rtl_dsp_bw_khz, opts.rtl_volume_multiplier);
+        rc |= 1;
+    }
+    if (strcmp(opts.soapy_profile, "airspy") != 0 || strcmp(opts.soapy_stream_format, "cf32") != 0
+        || strcmp(opts.soapy_antenna, "RX") != 0 || strcmp(opts.soapy_clock, "external") != 0
+        || strcmp(opts.soapy_gains, "LNA:12,MIX:8") != 0 || opts.soapy_bandwidth_hz != 250000) {
+        fprintf(stderr, "soapy extended fields not applied correctly\n");
         rc |= 1;
     }
     if (!(opts.rtl_squelch_level > 0.0 && opts.rtl_squelch_level < 1.0)) {
@@ -482,6 +501,12 @@ test_snapshot_roundtrip_soapy_args(void) {
     opts.rtl_dsp_bw_khz = 24;
     opts.rtl_squelch_level = 1.0;
     opts.rtl_volume_multiplier = 5;
+    snprintf(opts.soapy_profile, sizeof opts.soapy_profile, "%s", "sdrplay");
+    snprintf(opts.soapy_stream_format, sizeof opts.soapy_stream_format, "%s", "cs16");
+    snprintf(opts.soapy_antenna, sizeof opts.soapy_antenna, "%s", "A");
+    snprintf(opts.soapy_clock, sizeof opts.soapy_clock, "%s", "internal");
+    snprintf(opts.soapy_gains, sizeof opts.soapy_gains, "%s", "IFGR:35");
+    opts.soapy_bandwidth_hz = 200000;
 
     dsdneoUserConfig snap;
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
@@ -505,6 +530,13 @@ test_snapshot_roundtrip_soapy_args(void) {
         fprintf(stderr, "snapshot rtl_sql expected 0 from unit squelch power, got %d\n", snap.rtl_sql);
         rc |= 1;
     }
+    if (strcmp(snap.soapy_profile, "sdrplay") != 0 || strcmp(snap.soapy_stream_format, "cs16") != 0
+        || strcmp(snap.soapy_antenna, "A") != 0 || strcmp(snap.soapy_clock, "internal") != 0
+        || strcmp(snap.soapy_gains, "IFGR:35") != 0 || snap.soapy_bandwidth_hz != 200000
+        || !snap.soapy_bandwidth_hz_is_set) {
+        fprintf(stderr, "snapshot soapy extended fields mismatch\n");
+        rc |= 1;
+    }
 
     char rendered[4096];
     if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
@@ -512,6 +544,11 @@ test_snapshot_roundtrip_soapy_args(void) {
     }
     if (!strstr(rendered, "source = \"soapy\"") || !strstr(rendered, "soapy_args = \"driver=sdrplay,serial=RSP1A\"")) {
         fprintf(stderr, "rendered Soapy config missing source/args:\n%s\n", rendered);
+        rc |= 1;
+    }
+    if (!strstr(rendered, "soapy_profile = \"sdrplay\"") || !strstr(rendered, "soapy_stream_format = \"cs16\"")
+        || !strstr(rendered, "soapy_bandwidth_hz = 200000")) {
+        fprintf(stderr, "rendered Soapy config missing extended fields:\n%s\n", rendered);
         rc |= 1;
     }
 
@@ -533,6 +570,13 @@ test_snapshot_roundtrip_soapy_args(void) {
                 cfg_reload.soapy_args);
         rc |= 1;
     }
+    if (strcmp(cfg_reload.soapy_profile, "sdrplay") != 0 || strcmp(cfg_reload.soapy_stream_format, "cs16") != 0
+        || strcmp(cfg_reload.soapy_antenna, "A") != 0 || strcmp(cfg_reload.soapy_clock, "internal") != 0
+        || strcmp(cfg_reload.soapy_gains, "IFGR:35") != 0 || cfg_reload.soapy_bandwidth_hz != 200000
+        || !cfg_reload.soapy_bandwidth_hz_is_set) {
+        fprintf(stderr, "reloaded soapy extended fields mismatch\n");
+        rc |= 1;
+    }
 
     static dsd_opts opts_reload;
     static dsd_state state_reload;
@@ -540,6 +584,12 @@ test_snapshot_roundtrip_soapy_args(void) {
     dsd_apply_user_config_to_opts(&cfg_reload, &opts_reload, &state_reload);
     if (strcmp(opts_reload.audio_in_dev, "soapy:driver=sdrplay,serial=RSP1A") != 0) {
         fprintf(stderr, "reloaded audio_in_dev mismatch: \"%s\"\n", opts_reload.audio_in_dev);
+        rc |= 1;
+    }
+    if (strcmp(opts_reload.soapy_profile, "sdrplay") != 0 || strcmp(opts_reload.soapy_stream_format, "cs16") != 0
+        || strcmp(opts_reload.soapy_antenna, "A") != 0 || strcmp(opts_reload.soapy_clock, "internal") != 0
+        || strcmp(opts_reload.soapy_gains, "IFGR:35") != 0 || opts_reload.soapy_bandwidth_hz != 200000) {
+        fprintf(stderr, "reloaded opts soapy extended fields mismatch\n");
         rc |= 1;
     }
 

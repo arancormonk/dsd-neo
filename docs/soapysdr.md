@@ -85,12 +85,28 @@ Optional tuning keys (also shared with RTL/RTL-TCP):
 - `rtl_sql`
 - `rtl_volume` (monitor/non-symbol gain)
 
+Optional Soapy-specific keys:
+
+- `soapy_profile = "auto|generic|airspy|sdrplay|hackrf|lime|pluto|rtlsdr|uhd"` selects a capability profile. `auto`
+  detects from the Soapy driver/hardware strings.
+- `soapy_stream_format = "auto|cf32|cs16"` controls RX stream format selection. `auto` prefers the device native
+  format when it is `CF32` or `CS16`, then falls back to supported formats.
+- `soapy_antenna = "<name>"` selects a listed RX antenna.
+- `soapy_clock = "<source>"` selects a listed clock source.
+- `soapy_gains = "NAME:dB[,NAME:dB...]"` applies named Soapy gain stages and suppresses aggregate gain changes.
+- `soapy_bandwidth_hz = -1|0|<Hz>` uses profile/default behavior for `-1`, driver automatic/no explicit request for
+  `0`, or validates and applies an explicit hardware bandwidth in Hz.
+
 Full example:
 
 ```ini
 [input]
 source = "soapy"
 soapy_args = "driver=sdrplay,serial=123456"
+soapy_profile = "sdrplay"
+soapy_stream_format = "auto"
+soapy_gains = "IFGR:35"
+soapy_bandwidth_hz = 200000
 rtl_freq = "851.375M"
 rtl_gain = 22
 rtl_ppm = -2
@@ -125,8 +141,8 @@ dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan
 - Driver capability support varies. Frequency correction (PPM), manual gain mode/range, and bandwidth control may be
   unavailable on some hardware.
 - Requested sample rate/gain may be quantized or clamped by the driver.
-- The current backend expects Soapy RX stream format support for `CF32` or `CS16`, preferring `CF32` when both are
-  advertised.
+- The current backend expects Soapy RX stream format support for `CF32` or `CS16`; `auto` chooses the native format
+  first when it is supported.
 - IQ capture from Soapy requires an active `CF32` stream. Devices that only expose `CS16` can still be used for live
   decode, but `--iq-capture` is rejected for that stream format.
 

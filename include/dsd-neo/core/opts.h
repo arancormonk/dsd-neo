@@ -147,7 +147,8 @@ struct dsd_opts {
     /* Base DSP bandwidth for RTL path in kHz (4,6,8,12,16,24,48). Influences capture rate planning.
        Not the hardware tuner IF bandwidth. */
     int rtl_dsp_bw_khz;
-    int rtl_bias_tee; /* 1 to enable RTL-SDR bias tee (if supported) */
+    int rtl_bias_tee;       /* 1 to enable RTL-SDR bias tee (if supported) */
+    int soapy_bandwidth_hz; /* -1=profile/default, 0=driver automatic, >0 explicit Soapy hardware bandwidth */
     int rtl_started;
     /* Mark when RTL-SDR stream must be destroyed/recreated to apply changes
        that cannot be updated live (e.g., device index, bandwidth, manual gain). */
@@ -333,6 +334,11 @@ struct dsd_opts {
     char lcn_in_file[1024];
     char chan_in_file[1024];
     char key_in_file[1024];
+    char soapy_profile[32];
+    char soapy_stream_format[16];
+    char soapy_antenna[64];
+    char soapy_clock[64];
+    char soapy_gains[512];
     char audio_in_dev[2048]; //increase size for super long directory/file names
     char iq_capture_path[2048];
     char iq_replay_path[2048];

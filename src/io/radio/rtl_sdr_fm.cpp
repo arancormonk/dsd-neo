@@ -321,6 +321,78 @@ store_dongle_rate(uint32_t sample_rate_hz) {
     dongle.rate.store(sample_rate_hz, std::memory_order_release);
 }
 
+static uint32_t
+clamp_capture_frequency_hz(int64_t frequency_hz) {
+    if (frequency_hz <= 0) {
+        return 0U;
+    }
+    if (frequency_hz > (int64_t)UINT32_MAX) {
+        return UINT32_MAX;
+    }
+    return (uint32_t)frequency_hz;
+}
+
+static uint32_t
+capture_frequency_for_rate(int64_t center_freq_hz, uint32_t capture_rate_hz) {
+    int64_t capture_freq_hz = center_freq_hz;
+    if (!dongle.offset_tuning && !disable_fs4_shift) {
+        capture_freq_hz += (int64_t)(capture_rate_hz / 4U);
+    }
+    capture_freq_hz += ((int64_t)controller.edge * (int64_t)demod.rate_in) / 2;
+    return clamp_capture_frequency_hz(capture_freq_hz);
+}
+
+static int
+demod_output_rate_for_capture_rate(uint32_t capture_rate_hz) {
+    int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
+    if (base_decim < 1) {
+        base_decim = 1;
+    }
+
+    int out_rate = (int)(capture_rate_hz / (uint32_t)base_decim);
+    if (demod.post_downsample > 1) {
+        out_rate /= demod.post_downsample;
+        if (out_rate < 1) {
+            out_rate = 1;
+        }
+    }
+    return out_rate;
+}
+
+static void
+retune_capture_frequency_for_actual_rate(uint32_t center_freq_hz, uint32_t requested_capture_freq_hz,
+                                         uint32_t actual_capture_rate_hz) {
+    uint32_t actual_capture_freq_hz = capture_frequency_for_rate((int64_t)center_freq_hz, actual_capture_rate_hz);
+    if (actual_capture_freq_hz == requested_capture_freq_hz) {
+        return;
+    }
+
+    int rc = rtl_device_set_frequency(rtl_device_handle, actual_capture_freq_hz);
+    if (rc == 0) {
+        store_dongle_frequency(actual_capture_freq_hz);
+        LOG_INFO("Adjusted fs/4 capture center for actual device rate: center=%u, capture=%u Hz.\n", center_freq_hz,
+                 actual_capture_freq_hz);
+    } else {
+        LOG_WARNING("Failed to adjust fs/4 capture center for actual device rate: center=%u, capture=%u Hz (rc=%d).\n",
+                    center_freq_hz, actual_capture_freq_hz, rc);
+    }
+}
+
+static uint32_t
+apply_actual_capture_rate(uint32_t center_freq_hz, uint32_t requested_capture_freq_hz,
+                          uint32_t requested_capture_rate_hz, uint32_t actual_capture_rate_hz) {
+    if (actual_capture_rate_hz == 0 || actual_capture_rate_hz == requested_capture_rate_hz) {
+        return requested_capture_rate_hz;
+    }
+
+    store_dongle_rate(actual_capture_rate_hz);
+    demod.rate_out = demod_output_rate_for_capture_rate(actual_capture_rate_hz);
+    retune_capture_frequency_for_actual_rate(center_freq_hz, requested_capture_freq_hz, actual_capture_rate_hz);
+    LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", requested_capture_rate_hz,
+             actual_capture_rate_hz, demod.rate_out);
+    return actual_capture_rate_hz;
+}
+
 static void
 controller_request_input_purge(void) {
     input_ring_request_discard(&input_ring);
@@ -952,6 +1024,34 @@ choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
     UNUSED(capture_rate_hz);
     UNUSED(dsp_bw_hz);
     return 0; /* driver automatic */
+}
+
+static int
+soapy_bandwidth_request_is_explicit(const dsd_opts* opts) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (cfg && cfg->tuner_bw_hz_is_set) {
+        return 1;
+    }
+    return (opts && radio_source_is_soapy(opts) && opts->soapy_bandwidth_hz >= 0) ? 1 : 0;
+}
+
+static int
+apply_capture_tuner_bandwidth(uint32_t capture_rate_hz, const dsd_opts* opts, int fail_explicit_soapy) {
+    int rc =
+        rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(capture_rate_hz, (uint32_t)rtl_dsp_bw_hz));
+    if (rc == 0) {
+        return 0;
+    }
+    if (radio_source_is_soapy(opts) && soapy_bandwidth_request_is_explicit(opts)) {
+        if (fail_explicit_soapy) {
+            LOG_ERROR("Failed to apply explicit SoapySDR bandwidth request (rc=%d).\n", rc);
+            return rc;
+        }
+        LOG_NOTICE("Explicit SoapySDR bandwidth request failed during reconfigure (rc=%d).\n", rc);
+        return 0;
+    }
+    log_unsupported_control_if_needed("Tuner bandwidth control", rc);
+    return 0;
 }
 
 /* Forward declarations for visualization ring clears (defined later in file) */
@@ -2669,10 +2769,8 @@ static void
 optimal_settings(int freq, int rate) {
     UNUSED(rate);
 
-    int capture_freq, capture_rate;
-    struct dongle_state* d = &dongle;
+    int capture_rate;
     struct demod_state* dm = &demod;
-    struct controller_state* cs = &controller;
     /* Compute integer oversample factor to target ~1 MS/s capture then map
        to a cascade of 2:1 decimators via passes = ceil(log2(ds)). */
     int downsample_factor = (1000000 / dm->rate_in) + 1;
@@ -2739,30 +2837,16 @@ optimal_settings(int freq, int rate) {
             downsample_factor = 1 << adj_passes;
         }
     }
-    capture_freq = freq;
     capture_rate = downsample_factor * dm->rate_in;
-    /* Apply fs/4 shift for zero-IF DC spur avoidance when offset_tuning is disabled. */
-    if (!d->offset_tuning && !disable_fs4_shift) {
-        capture_freq = freq + capture_rate / 4;
-    }
-    capture_freq += cs->edge * dm->rate_in / 2;
+    uint32_t capture_rate_hz = (capture_rate > 0) ? (uint32_t)capture_rate : 0U;
+    uint32_t capture_freq_hz = capture_frequency_for_rate((int64_t)freq, capture_rate_hz);
     /* Normalize discriminator radians into roughly [-1,1] for float pipeline. */
     dm->output_scale = (float)(1.0 / M_PI);
     /* Update the effective discriminator output sample rate based on current settings.
        HB cascade reduces by (1<<downsample_passes). Apply optional post_downsample on audio. */
-    {
-        int base_decim = (dm->downsample_passes > 0) ? (1 << dm->downsample_passes) : 1;
-        int out_rate = capture_rate / base_decim;
-        if (dm->post_downsample > 1) {
-            out_rate /= dm->post_downsample;
-            if (out_rate < 1) {
-                out_rate = 1;
-            }
-        }
-        dm->rate_out = out_rate;
-    }
-    store_dongle_frequency((uint32_t)capture_freq);
-    store_dongle_rate((uint32_t)capture_rate);
+    dm->rate_out = demod_output_rate_for_capture_rate(capture_rate_hz);
+    store_dongle_frequency(capture_freq_hz);
+    store_dongle_rate(capture_rate_hz);
 }
 
 /**
@@ -2778,29 +2862,13 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz) {
     uint32_t capture_rate_hz = load_dongle_rate();
     rtl_device_set_frequency(rtl_device_handle, capture_freq_hz);
     rtl_device_set_sample_rate(rtl_device_handle, capture_rate_hz);
-    /* Use driver auto hardware bandwidth by default, or override via env */
-    rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(capture_rate_hz, (uint32_t)rtl_dsp_bw_hz));
     /* Sync to actual device rate (USB may quantize). If it changed, update rate_out. */
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
     if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
-        uint32_t prev = capture_rate_hz;
-        capture_rate_hz = (uint32_t)actual;
-        store_dongle_rate(capture_rate_hz);
-        int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
-        if (base_decim < 1) {
-            base_decim = 1;
-        }
-        int out_rate = (int)(capture_rate_hz / (uint32_t)base_decim);
-        if (demod.post_downsample > 1) {
-            out_rate /= demod.post_downsample;
-            if (out_rate < 1) {
-                out_rate = 1;
-            }
-        }
-        demod.rate_out = out_rate;
-        LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev, capture_rate_hz,
-                 demod.rate_out);
+        capture_rate_hz = apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual);
     }
+    /* Use driver auto hardware bandwidth by default, or override via env */
+    (void)apply_capture_tuner_bandwidth(capture_rate_hz, g_stream ? g_stream->opts : NULL, 0);
     stream_refresh_watermark_for_current_rate();
 }
 
@@ -3130,28 +3198,14 @@ controller_apply_initial_settings(struct controller_state* s, const dsd_opts* op
     {
         int actual = rtl_device_get_sample_rate(rtl_device_handle);
         if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
-            uint32_t prev = capture_rate_hz;
-            capture_rate_hz = (uint32_t)actual;
-            store_dongle_rate(capture_rate_hz);
-            int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
-            if (base_decim < 1) {
-                base_decim = 1;
-            }
-            int out_rate = (int)(capture_rate_hz / (uint32_t)base_decim);
-            if (demod.post_downsample > 1) {
-                out_rate /= demod.post_downsample;
-                if (out_rate < 1) {
-                    out_rate = 1;
-                }
-            }
-            demod.rate_out = out_rate;
-            LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev,
-                     capture_rate_hz, demod.rate_out);
+            capture_rate_hz =
+                apply_actual_capture_rate((uint32_t)s->freqs[0], capture_freq_hz, capture_rate_hz, (uint32_t)actual);
         }
     }
 
-    (void)rtl_device_set_tuner_bandwidth(rtl_device_handle,
-                                         choose_tuner_bw_hz(capture_rate_hz, (uint32_t)rtl_dsp_bw_hz));
+    if (apply_capture_tuner_bandwidth(capture_rate_hz, opts, 1) != 0) {
+        return -1;
+    }
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
 
     controller_finalize_rate_chain(s, opts, (uint32_t)s->freqs[0], 0, DemodRetuneResetReason::FreshStream, 0U, 0);
@@ -4482,6 +4536,21 @@ dsd_rtl_stream_open(dsd_opts* opts) {
                 LOG_INFO("Using SoapySDR default source.\n");
             }
             rtl_device_print_offset_capability(rtl_device_handle);
+        }
+        struct rtl_soapy_config soapy_cfg = {};
+        soapy_cfg.profile = opts ? opts->soapy_profile : NULL;
+        soapy_cfg.antenna = opts ? opts->soapy_antenna : NULL;
+        soapy_cfg.clock_source = opts ? opts->soapy_clock : NULL;
+        soapy_cfg.gains = opts ? opts->soapy_gains : NULL;
+        soapy_cfg.stream_format = opts ? opts->soapy_stream_format : NULL;
+        soapy_cfg.bandwidth_hz = opts ? opts->soapy_bandwidth_hz : -1;
+        int soapy_cfg_rc = rtl_device_configure_soapy(rtl_device_handle, &soapy_cfg);
+        if (soapy_cfg_rc != 0) {
+            LOG_ERROR("Failed to apply SoapySDR profile/configuration (rc=%d).\n", soapy_cfg_rc);
+            rtl_device_destroy(rtl_device_handle);
+            rtl_device_handle = NULL;
+            stream_destroy_internals();
+            return -1;
         }
     } else {
         rtl_device_handle = rtl_device_create(dongle.dev_index, &input_ring, combine_rotate_enabled);

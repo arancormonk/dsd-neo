@@ -241,6 +241,19 @@ apply_input_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* v
         cfg->rtltcp_port = (int)parse_int_for_mode(val, 1234, mode);
     } else if (strcmp(key_lc, "soapy_args") == 0) {
         copy_text_value(cfg->soapy_args, sizeof cfg->soapy_args, val);
+    } else if (strcmp(key_lc, "soapy_profile") == 0) {
+        copy_text_value(cfg->soapy_profile, sizeof cfg->soapy_profile, val);
+    } else if (strcmp(key_lc, "soapy_stream_format") == 0) {
+        copy_text_value(cfg->soapy_stream_format, sizeof cfg->soapy_stream_format, val);
+    } else if (strcmp(key_lc, "soapy_antenna") == 0) {
+        copy_text_value(cfg->soapy_antenna, sizeof cfg->soapy_antenna, val);
+    } else if (strcmp(key_lc, "soapy_clock") == 0) {
+        copy_text_value(cfg->soapy_clock, sizeof cfg->soapy_clock, val);
+    } else if (strcmp(key_lc, "soapy_gains") == 0) {
+        copy_text_value(cfg->soapy_gains, sizeof cfg->soapy_gains, val);
+    } else if (strcmp(key_lc, "soapy_bandwidth_hz") == 0) {
+        cfg->soapy_bandwidth_hz = (int)parse_int_for_mode(val, -1, mode);
+        cfg->soapy_bandwidth_hz_is_set = 1;
     } else if (strcmp(key_lc, "file_path") == 0) {
         copy_path_expanded(cfg->file_path, sizeof cfg->file_path, val);
     } else if (strcmp(key_lc, "file_sample_rate") == 0) {

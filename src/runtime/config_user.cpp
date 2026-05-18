@@ -87,6 +87,8 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_tune_enc_calls = 1;
 
     cfg->rtl_auto_ppm = 0;
+    cfg->soapy_bandwidth_hz = -1;
+    cfg->soapy_bandwidth_hz_is_set = 0;
 
     cfg->call_alert_enabled = 0;
     cfg->call_alert_events = DSD_CALL_ALERT_EVENT_ALL;
@@ -267,6 +269,31 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
 }
 
 static void
+apply_soapy_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    if (!cfg || !opts) {
+        return;
+    }
+    if (cfg->soapy_profile[0]) {
+        copy_token_string(opts->soapy_profile, sizeof opts->soapy_profile, cfg->soapy_profile);
+    }
+    if (cfg->soapy_stream_format[0]) {
+        copy_token_string(opts->soapy_stream_format, sizeof opts->soapy_stream_format, cfg->soapy_stream_format);
+    }
+    if (cfg->soapy_antenna[0]) {
+        copy_token_string(opts->soapy_antenna, sizeof opts->soapy_antenna, cfg->soapy_antenna);
+    }
+    if (cfg->soapy_clock[0]) {
+        copy_token_string(opts->soapy_clock, sizeof opts->soapy_clock, cfg->soapy_clock);
+    }
+    if (cfg->soapy_gains[0]) {
+        copy_token_string(opts->soapy_gains, sizeof opts->soapy_gains, cfg->soapy_gains);
+    }
+    if (cfg->soapy_bandwidth_hz_is_set) {
+        opts->soapy_bandwidth_hz = cfg->soapy_bandwidth_hz;
+    }
+}
+
+static void
 snapshot_apply_live_rtl_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (!opts || !cfg) {
         return;
@@ -281,6 +308,32 @@ snapshot_apply_live_rtl_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (opts->rtlsdr_center_freq > 0) {
         snprintf(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);
         cfg->rtl_freq[sizeof cfg->rtl_freq - 1] = '\0';
+    }
+}
+
+static void
+snapshot_apply_live_soapy_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    if (!opts || !cfg) {
+        return;
+    }
+    if (opts->soapy_profile[0]) {
+        copy_token_string(cfg->soapy_profile, sizeof cfg->soapy_profile, opts->soapy_profile);
+    }
+    if (opts->soapy_stream_format[0]) {
+        copy_token_string(cfg->soapy_stream_format, sizeof cfg->soapy_stream_format, opts->soapy_stream_format);
+    }
+    if (opts->soapy_antenna[0]) {
+        copy_token_string(cfg->soapy_antenna, sizeof cfg->soapy_antenna, opts->soapy_antenna);
+    }
+    if (opts->soapy_clock[0]) {
+        copy_token_string(cfg->soapy_clock, sizeof cfg->soapy_clock, opts->soapy_clock);
+    }
+    if (opts->soapy_gains[0]) {
+        copy_token_string(cfg->soapy_gains, sizeof cfg->soapy_gains, opts->soapy_gains);
+    }
+    if (opts->soapy_bandwidth_hz >= 0) {
+        cfg->soapy_bandwidth_hz = opts->soapy_bandwidth_hz;
+        cfg->soapy_bandwidth_hz_is_set = 1;
     }
 }
 
@@ -588,6 +641,24 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
             if (cfg->soapy_args[0]) {
                 fprintf(out, "soapy_args = \"%s\"\n", cfg->soapy_args);
             }
+            if (cfg->soapy_profile[0]) {
+                fprintf(out, "soapy_profile = \"%s\"\n", cfg->soapy_profile);
+            }
+            if (cfg->soapy_stream_format[0]) {
+                fprintf(out, "soapy_stream_format = \"%s\"\n", cfg->soapy_stream_format);
+            }
+            if (cfg->soapy_antenna[0]) {
+                fprintf(out, "soapy_antenna = \"%s\"\n", cfg->soapy_antenna);
+            }
+            if (cfg->soapy_clock[0]) {
+                fprintf(out, "soapy_clock = \"%s\"\n", cfg->soapy_clock);
+            }
+            if (cfg->soapy_gains[0]) {
+                fprintf(out, "soapy_gains = \"%s\"\n", cfg->soapy_gains);
+            }
+            if (cfg->soapy_bandwidth_hz_is_set) {
+                fprintf(out, "soapy_bandwidth_hz = %d\n", cfg->soapy_bandwidth_hz);
+            }
             if (cfg->rtl_freq[0]) {
                 fprintf(out, "rtl_freq = \"%s\"\n", cfg->rtl_freq);
             }
@@ -799,6 +870,7 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
                     snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy");
                 }
                 apply_shared_radio_tuning_from_config(cfg, opts);
+                apply_soapy_tuning_from_config(cfg, opts);
                 break;
             case DSDCFG_INPUT_FILE:
                 if (cfg->file_path[0]) {
@@ -1054,6 +1126,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
         cfg->input_source = DSDCFG_INPUT_SOAPY;
         snapshot_parse_soapy_device_spec(opts->audio_in_dev, cfg);
         snapshot_apply_live_rtl_values(opts, cfg);
+        snapshot_apply_live_soapy_values(opts, cfg);
     } else if (strncmp(opts->audio_in_dev, "tcp:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_TCP;
         snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->tcp_host, sizeof cfg->tcp_host, &cfg->tcp_port);

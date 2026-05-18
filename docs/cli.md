@@ -272,13 +272,17 @@ Advanced (env)
   `soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`.
 - Those trailing fields map to existing shared controls and keys:
   `rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`.
+- Additional `[input]` keys expose Soapy-specific capabilities: `soapy_profile`, `soapy_stream_format`,
+  `soapy_antenna`, `soapy_clock`, `soapy_gains`, and `soapy_bandwidth_hz`.
+- `soapy_gains = "NAME:dB[,NAME:dB...]"` uses named gain stages and takes precedence over aggregate `rtl_gain`.
 - `--print-config` reflects shorthand as normalized config fields (`soapy_args` + `rtl_*`) rather than the raw input
   string.
 - If your Soapy args string itself contains `:`, prefer config keys (`soapy_args` + `rtl_*`) to avoid ambiguity.
 - `rtl_device` index selection is for `rtl` input and is ignored in Soapy mode.
 - Set an explicit `rtl_freq` for predictable startup frequency (otherwise defaults may not match your target system).
 - Some controls are RTL/RTL-TCP specific and not supported in the Soapy backend path (`bias tee`, direct sampling, offset tuning, xtal/IF-gain/testmode controls, RTL-TCP autotune).
-- The Soapy backend requires an RX stream format of `CF32` or `CS16` from the driver.
+- The Soapy backend requires an RX stream format of `CF32` or `CS16` from the driver; `soapy_stream_format = "auto"`
+  prefers a supported native format first.
 
 Troubleshooting:
 
