@@ -58,6 +58,14 @@ dsd_rtl_stream_metrics_hook_stream_generation(void) {
 }
 
 int
+dsd_rtl_stream_metrics_hook_stream_active(void) {
+    if (g_rtl_stream_metrics_hooks.stream_active) {
+        return g_rtl_stream_metrics_hooks.stream_active() ? 1 : 0;
+    }
+    return 0;
+}
+
+int
 dsd_rtl_stream_metrics_hook_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
     if (g_rtl_stream_metrics_hooks.set_symbol_profile) {
         return g_rtl_stream_metrics_hooks.set_symbol_profile(symbol_rate_hz, levels, channel_profile);

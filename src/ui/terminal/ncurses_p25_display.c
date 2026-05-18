@@ -26,6 +26,10 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
+#endif
+
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -266,6 +270,18 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
             }
         }
     }
+
+#ifdef USE_RTLSDR
+    if (is_p25p1 || is_p25p2) {
+        rtl_stream_decode_health h;
+        memset(&h, 0, sizeof(h));
+        if (rtl_stream_get_decode_health(&h) == 0 && h.valid) {
+            printw("| RTL Health: P1 FEC %u/%u P2 FACCH %u/%u SACCH %u/%u VERR %u\n", h.p25p1_fec_ok, h.p25p1_fec_err,
+                   h.p25p2_facch_ok, h.p25p2_facch_err, h.p25p2_sacch_ok, h.p25p2_sacch_err, h.p25p2_voice_err);
+            lines++;
+        }
+    }
+#endif
 
     /* Trunking state-machine counters and IDEN trust summary (trunking only) */
     if (opts && opts->p25_trunk == 1) {

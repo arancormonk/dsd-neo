@@ -338,6 +338,79 @@ test_squelch_clears_partial_acquisition(void) {
 }
 
 static void
+test_soft_metrics_track_clean_signal(void) {
+    enum { SYMBOLS = 1400, SPS = 10, RUN = 13 };
+
+    static const float levels[] = {1.0f, -1.0f, -1.0f, 1.0f};
+    float* symbols = (float*)calloc(SYMBOLS, sizeof(float));
+    float* iq = (float*)calloc((size_t)SYMBOLS * SPS * 2U, sizeof(float));
+    float* out = (float*)calloc(SYMBOLS + 16, sizeof(float));
+    assert(symbols && iq && out);
+
+    fill_run_pattern(symbols, SYMBOLS, levels, (int)(sizeof(levels) / sizeof(levels[0])), RUN);
+    synthesize_fsk(iq, symbols, SYMBOLS, SPS, 0.035f, 0.0f, 0.0f, 0);
+
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 2, 1};
+    dsd_fsk_modem_init(&modem, &cfg);
+    int produced = dsd_fsk_modem_process(&modem, iq, SYMBOLS * SPS * 2, out, SYMBOLS + 16);
+    assert(produced >= SYMBOLS - 2);
+
+    dsd_fsk_modem_metrics metrics;
+    assert(dsd_fsk_modem_get_metrics(&modem, &metrics) == 0);
+    assert(metrics.valid == 1);
+    assert(metrics.levels == 2);
+    assert(metrics.symbol_rate_hz == 4800);
+    assert(metrics.window_symbols > 0);
+    assert(metrics.window_symbols <= 256U);
+    assert(metrics.symbols_total >= (uint64_t)(SYMBOLS - 2));
+    assert(metrics.mean_reliability > 128U);
+    assert(metrics.min_reliability <= metrics.mean_reliability);
+    assert(metrics.rms_error >= 0.0f && metrics.rms_error < 0.8f);
+    assert(metrics.evm_snr_db > 0.0f);
+    assert(metrics.low_reliability_pct < 50.0f);
+    assert(metrics.clip_pct == 0.0f);
+    assert(metrics.timing_acquired == modem.timing_acquired);
+    assert(metrics.track_updates == modem.track_updates);
+    assert(metrics.track_skips == modem.track_skips);
+
+    free(out);
+    free(iq);
+    free(symbols);
+}
+
+static void
+test_soft_metrics_invalidate_on_zero_symbols(void) {
+    enum { SYMBOLS = 240, SPS = 10 };
+
+    static const float levels[] = {-3.0f, -1.0f, 1.0f, 3.0f};
+    float symbols[SYMBOLS];
+    float iq[SYMBOLS * SPS * 2];
+    float out[SYMBOLS + 32];
+
+    for (int i = 0; i < SYMBOLS; i++) {
+        symbols[i] = levels[i & 3];
+    }
+    synthesize_fsk(iq, symbols, SYMBOLS, SPS, 0.026f, 0.0f, 0.0f, 0);
+
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 4};
+    dsd_fsk_modem_init(&modem, &cfg);
+    int produced = dsd_fsk_modem_process(&modem, iq, SYMBOLS * SPS * 2, out, SYMBOLS + 32);
+    assert(produced > 0);
+
+    dsd_fsk_modem_metrics metrics;
+    assert(dsd_fsk_modem_get_metrics(&modem, &metrics) == 0);
+    assert(metrics.valid == 1);
+
+    int zeros = dsd_fsk_modem_zero_symbols(&modem, SPS * 8, out, SYMBOLS + 32);
+    assert(zeros > 0);
+    assert(dsd_fsk_modem_get_metrics(&modem, &metrics) == 0);
+    assert(metrics.valid == 0);
+    assert(metrics.window_symbols == 0U);
+}
+
+static void
 test_acquisition_preserves_backlog_with_small_output(void) {
     enum { SYMBOLS = 3600, SPS = 10, RUN = 13, CHUNK = 7 };
 
@@ -563,6 +636,9 @@ test_reconfigure_resets_state(void) {
     (void)dsd_fsk_modem_process(&modem, iq, 128 * 10 * 2, out, 160);
     assert(modem.have_prev == 1);
     assert(modem.symbols_emitted > 0);
+    dsd_fsk_modem_metrics metrics;
+    assert(dsd_fsk_modem_get_metrics(&modem, &metrics) == 0);
+    assert(metrics.valid == 1);
     modem.track_len = 11;
     modem.track_start_phase = 3.0f;
     modem.track_last_error = 2.0f;
@@ -585,6 +661,9 @@ test_reconfigure_resets_state(void) {
     assert(modem.track_last_score == 0.0f);
     assert(modem.track_updates == 0);
     assert(modem.track_skips == 0);
+    assert(dsd_fsk_modem_get_metrics(&modem, &metrics) == 0);
+    assert(metrics.valid == 0);
+    assert(metrics.window_symbols == 0U);
 }
 
 int
@@ -596,6 +675,8 @@ main(void) {
     test_binary_fsk_acquires_mid_symbol_start();
     test_provoice_fsk_acquires_mid_symbol_start();
     test_squelch_clears_partial_acquisition();
+    test_soft_metrics_track_clean_signal();
+    test_soft_metrics_invalidate_on_zero_symbols();
     test_acquisition_preserves_backlog_with_small_output();
     test_binary_fsk_4800();
     test_nxdn48_2400_at_48000();

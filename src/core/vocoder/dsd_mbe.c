@@ -39,6 +39,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -51,6 +52,30 @@
 
 //NOTE: This set of functions will be reorganized and simplified (hopefully) or at least
 //a more logical flow will be established to jive with the new audio handling
+
+static void
+p25p2_record_voice_err(dsd_state* state, int voice_err) {
+    if (!state || !DSD_SYNC_IS_P25P2(state->synctype)) {
+        return;
+    }
+
+    int len = state->p25_p2_voice_err_hist_len > 0 ? state->p25_p2_voice_err_hist_len : 50;
+    if (len > (int)sizeof(state->p25_p2_voice_err_hist[0])) {
+        len = (int)sizeof(state->p25_p2_voice_err_hist[0]);
+    }
+    state->p25_p2_voice_err_hist_len = len;
+
+    int slot = (state->currentslot == 1) ? 1 : 0;
+    int hpos = state->p25_p2_voice_err_hist_pos[slot] % len;
+    uint8_t old = state->p25_p2_voice_err_hist[slot][hpos];
+    uint8_t val = (uint8_t)(voice_err & 0xFF);
+    state->p25_p2_voice_err_hist[slot][hpos] = val;
+    state->p25_p2_voice_err_hist_sum[slot] += val;
+    state->p25_p2_voice_err_hist_sum[slot] -= old;
+    state->p25_p2_voice_err_hist_pos[slot] = (hpos + 1) % len;
+
+    dsd_rtl_stream_metrics_hook_p25p2_err_update(slot, 0, 0, 0, 0, (int)val);
+}
 
 void
 keyring(dsd_opts* opts, dsd_state* state) {
@@ -576,21 +601,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
         mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
                                  state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
-        if (DSD_SYNC_IS_P25P2(state->synctype)) {
-            int len2 = state->p25_p2_voice_err_hist_len > 0 ? state->p25_p2_voice_err_hist_len : 50;
-            if (len2 > 64) {
-                len2 = 64;
-            }
-            state->p25_p2_voice_err_hist_len = len2;
-            int sidx = (state->currentslot == 1) ? 1 : 0;
-            int hpos = state->p25_p2_voice_err_hist_pos[sidx] % len2;
-            uint8_t hold = state->p25_p2_voice_err_hist[sidx][hpos];
-            uint8_t hval = (uint8_t)(state->errs2 & 0xFF);
-            state->p25_p2_voice_err_hist[sidx][hpos] = hval;
-            state->p25_p2_voice_err_hist_sum[sidx] += hval;
-            state->p25_p2_voice_err_hist_sum[sidx] -= hold;
-            state->p25_p2_voice_err_hist_pos[sidx] = (hpos + 1) % len2;
-        }
+        p25p2_record_voice_err(state, state->errs2);
 
         if (dsd_frame_detail_enabled(opts)) {
             PrintAMBEData(opts, state, ambe_d);
@@ -967,21 +978,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
             mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
                                      state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
-            if (DSD_SYNC_IS_P25P2(state->synctype)) {
-                int len2 = state->p25_p2_voice_err_hist_len > 0 ? state->p25_p2_voice_err_hist_len : 50;
-                if (len2 > 64) {
-                    len2 = 64;
-                }
-                state->p25_p2_voice_err_hist_len = len2;
-                int sidx = (state->currentslot == 1) ? 1 : 0;
-                int hpos = state->p25_p2_voice_err_hist_pos[sidx] % len2;
-                uint8_t hold = state->p25_p2_voice_err_hist[sidx][hpos];
-                uint8_t hval = (uint8_t)(state->errs2 & 0xFF);
-                state->p25_p2_voice_err_hist[sidx][hpos] = hval;
-                state->p25_p2_voice_err_hist_sum[sidx] += hval;
-                state->p25_p2_voice_err_hist_sum[sidx] -= hold;
-                state->p25_p2_voice_err_hist_pos[sidx] = (hpos + 1) % len2;
-            }
+            p25p2_record_voice_err(state, state->errs2);
 
             //old method for this step below
             //mbe_processAmbe3600x2450Framef (state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_fr, ambe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
@@ -1362,21 +1359,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
             mbe_processAmbe2450Dataf(state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR, ambe_d,
                                      state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2, opts->uvquality);
-            if (DSD_SYNC_IS_P25P2(state->synctype)) {
-                int len2 = state->p25_p2_voice_err_hist_len > 0 ? state->p25_p2_voice_err_hist_len : 50;
-                if (len2 > 64) {
-                    len2 = 64;
-                }
-                state->p25_p2_voice_err_hist_len = len2;
-                int sidx = 1;
-                int hpos = state->p25_p2_voice_err_hist_pos[sidx] % len2;
-                uint8_t hold = state->p25_p2_voice_err_hist[sidx][hpos];
-                uint8_t hval = (uint8_t)(state->errs2R & 0xFF);
-                state->p25_p2_voice_err_hist[sidx][hpos] = hval;
-                state->p25_p2_voice_err_hist_sum[sidx] += hval;
-                state->p25_p2_voice_err_hist_sum[sidx] -= hold;
-                state->p25_p2_voice_err_hist_pos[sidx] = (hpos + 1) % len2;
-            }
+            p25p2_record_voice_err(state, state->errs2R);
 
             //old method for this step below
             //mbe_processAmbe3600x2450Framef (state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR, ambe_fr, ambe_d, state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2, opts->uvquality);

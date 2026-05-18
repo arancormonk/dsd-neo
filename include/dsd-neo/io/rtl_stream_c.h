@@ -165,6 +165,14 @@ uint32_t rtl_stream_monitor_rate(const RtlSdrContext* ctx);
  */
 uint32_t rtl_stream_output_generation(void);
 /**
+ * @brief Return 1 when an RTL-family stream context is currently running.
+ *
+ * The predicate is false before startup, after soft/hard stop, and during
+ * cooperative shutdown. Use it before consuming stream-local metadata that may
+ * retain its last configured value after cleanup.
+ */
+int rtl_stream_is_active(void);
+/**
  * @brief Return the active RTL stream output kind.
  *
  * Digital RTL-family paths, including SoapySDR, return symbol kinds. Analog
@@ -607,6 +615,41 @@ typedef struct rtl_stream_costas_metrics {
     int zero_conf_pct;
 } rtl_stream_costas_metrics;
 
+typedef struct rtl_stream_fsk_metrics {
+    int valid;
+    int levels;
+    int symbol_rate_hz;
+    uint64_t symbols_total;
+    unsigned int window_symbols;
+    unsigned int mean_reliability;
+    unsigned int min_reliability;
+    float rms_error;
+    float evm_snr_db;
+    float low_reliability_pct;
+    float clip_pct;
+    int timing_acquired;
+    float track_last_error;
+    float track_last_score;
+    uint64_t track_updates;
+    uint64_t track_skips;
+    float abs_est;
+    float dc_est;
+    float last_symbol;
+    uint32_t generation;
+} rtl_stream_fsk_metrics;
+
+typedef struct rtl_stream_decode_health {
+    int valid;
+    uint32_t generation;
+    unsigned int p25p1_fec_ok;
+    unsigned int p25p1_fec_err;
+    unsigned int p25p2_facch_ok;
+    unsigned int p25p2_facch_err;
+    unsigned int p25p2_sacch_ok;
+    unsigned int p25p2_sacch_err;
+    unsigned int p25p2_voice_err;
+} rtl_stream_decode_health;
+
 /**
  * @brief Toggle CQPSK path pre-processing on/off (0=off, nonzero=on).
  *
@@ -646,6 +689,29 @@ int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable);
  * @return 0 on success; negative on invalid input.
  */
 int rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out);
+
+/**
+ * @brief Get recent soft-symbol quality metrics from the RTL FSK symbol modem.
+ *
+ * These metrics observe the current FSK symbol stream and do not affect slicer
+ * decisions. The snapshot is invalidated on retune, output clear, or squelch
+ * zero-symbol generation.
+ *
+ * @param out [out] FSK metrics snapshot. Must not be NULL.
+ * @return 0 on success; negative on invalid input.
+ */
+int rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out);
+
+/**
+ * @brief Get RTL-path decode-health counters for the current output generation.
+ *
+ * Counters are reset on output generation changes and accumulate protocol
+ * health callbacks such as P25 Phase 1 FEC and Phase 2 RS/voice deltas.
+ *
+ * @param out [out] Decode-health snapshot. Must not be NULL.
+ * @return 0 on success; negative on invalid input.
+ */
+int rtl_stream_get_decode_health(rtl_stream_decode_health* out);
 
 /**
  * @brief Set live CQPSK CMA equalizer controls; pass negative values to keep a field unchanged.

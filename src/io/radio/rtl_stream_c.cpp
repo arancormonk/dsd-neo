@@ -24,6 +24,7 @@ extern "C" {
 // Local forward declarations for legacy helpers used under the hood
 void dsd_rtl_stream_clear_output(void);
 double dsd_rtl_stream_return_pwr(void);
+int dsd_rtl_stream_is_active(void);
 int dsd_rtl_stream_ted_bias(void);
 int dsd_rtl_stream_get_output_kind(void);
 int dsd_rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels);
@@ -72,6 +73,8 @@ double dsd_rtl_stream_get_snr_bias_evm(void);
 int dsd_rtl_stream_get_tuner_autogain(void);
 void dsd_rtl_stream_set_tuner_autogain(int onoff);
 int dsd_rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out);
+int dsd_rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out);
+int dsd_rtl_stream_get_decode_health(rtl_stream_decode_health* out);
 void dsd_rtl_stream_set_cqpsk_eq(int enable, int taps, float mu, float modulus);
 void dsd_rtl_stream_reset_cqpsk_eq(void);
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
@@ -316,6 +319,11 @@ rtl_stream_output_generation(void) {
 }
 
 extern "C" int
+rtl_stream_is_active(void) {
+    return dsd_rtl_stream_is_active();
+}
+
+extern "C" int
 rtl_stream_get_output_kind(void) {
     return dsd_rtl_stream_get_output_kind();
 }
@@ -521,6 +529,16 @@ rtl_stream_get_fll_band_edge_freq_hz(void) {
 extern "C" int
 rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out) {
     return dsd_rtl_stream_get_cqpsk_eq_status(out);
+}
+
+extern "C" int
+rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out) {
+    return dsd_rtl_stream_get_fsk_metrics(out);
+}
+
+extern "C" int
+rtl_stream_get_decode_health(rtl_stream_decode_health* out) {
+    return dsd_rtl_stream_get_decode_health(out);
 }
 
 extern "C" void

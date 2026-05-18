@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/dsp/fsk_modem.h>
+#include <dsd-neo/dsp/symbol_levels.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -15,6 +16,8 @@
 #define DSD_FSK_TRACK_MIN_RATIO      1.10f
 #define DSD_FSK_TRACK_GAIN           0.125f
 #define DSD_FSK_TRACK_MAX_CORRECTION 0.25f
+#define DSD_FSK_METRICS_WINDOW       256U
+#define DSD_FSK_LOW_RELIABILITY      128U
 
 static int
 clamp_levels(int levels) {
@@ -170,6 +173,93 @@ dsd_fsk_modem_release(dsd_fsk_modem_state* st) {
     st->pending_len = 0;
 }
 
+static void
+reset_soft_metrics(dsd_fsk_modem_state* st) {
+    if (!st) {
+        return;
+    }
+    memset(&st->metrics, 0, sizeof(st->metrics));
+    st->metrics_rel_sum = 0.0f;
+    st->metrics_err2_sum = 0.0f;
+    st->metrics_ref2_sum = 0.0f;
+    st->metrics_low_count = 0;
+    st->metrics_clip_count = 0;
+    st->metrics_min_reliability = 0;
+}
+
+static void
+refresh_soft_metrics_snapshot(dsd_fsk_modem_state* st) {
+    if (!st || st->metrics.window_symbols == 0U) {
+        if (st) {
+            st->metrics.valid = 0;
+        }
+        return;
+    }
+
+    const unsigned int n = st->metrics.window_symbols;
+    st->metrics.valid = 1;
+    st->metrics.levels = st->cfg.levels;
+    st->metrics.symbol_rate_hz = st->cfg.symbol_rate_hz;
+    st->metrics.mean_reliability = (unsigned int)((st->metrics_rel_sum / (float)n) + 0.5f);
+    if (st->metrics.mean_reliability > 255U) {
+        st->metrics.mean_reliability = 255U;
+    }
+    st->metrics.min_reliability = st->metrics_min_reliability;
+    st->metrics.rms_error = sqrtf(st->metrics_err2_sum / (float)n);
+    if (st->metrics_err2_sum > 1.0e-12f && st->metrics_ref2_sum > 1.0e-12f) {
+        st->metrics.evm_snr_db = 10.0f * log10f(st->metrics_ref2_sum / st->metrics_err2_sum);
+    } else if (st->metrics_ref2_sum > 1.0e-12f) {
+        st->metrics.evm_snr_db = 99.0f;
+    } else {
+        st->metrics.evm_snr_db = -100.0f;
+    }
+    st->metrics.low_reliability_pct = (100.0f * (float)st->metrics_low_count) / (float)n;
+    st->metrics.clip_pct = (100.0f * (float)st->metrics_clip_count) / (float)n;
+    st->metrics.timing_acquired = st->timing_acquired;
+    st->metrics.track_last_error = st->track_last_error;
+    st->metrics.track_last_score = st->track_last_score;
+    st->metrics.track_updates = st->track_updates;
+    st->metrics.track_skips = st->track_skips;
+    st->metrics.abs_est = st->abs_est;
+    st->metrics.dc_est = st->dc_est;
+    st->metrics.last_symbol = st->last_symbol;
+}
+
+static void
+update_soft_metrics(dsd_fsk_modem_state* st, float symbol) {
+    if (!st) {
+        return;
+    }
+    if (st->metrics.window_symbols >= DSD_FSK_METRICS_WINDOW) {
+        st->metrics.window_symbols = 0;
+        st->metrics_rel_sum = 0.0f;
+        st->metrics_err2_sum = 0.0f;
+        st->metrics_ref2_sum = 0.0f;
+        st->metrics_low_count = 0;
+        st->metrics_clip_count = 0;
+    }
+    if (st->metrics.window_symbols == 0U) {
+        st->metrics_min_reliability = 255U;
+    }
+
+    dsd_fsk_soft_symbol_metrics sm = dsd_fsk_soft_symbol_metrics_from_symbol(symbol, st->cfg.levels);
+    st->metrics.window_symbols++;
+    st->metrics.symbols_total++;
+    st->metrics_rel_sum += (float)sm.reliability;
+    st->metrics_err2_sum += sm.error * sm.error;
+    st->metrics_ref2_sum += sm.ideal * sm.ideal;
+    if ((unsigned int)sm.reliability < st->metrics_min_reliability) {
+        st->metrics_min_reliability = (unsigned int)sm.reliability;
+    }
+    if ((unsigned int)sm.reliability < DSD_FSK_LOW_RELIABILITY) {
+        st->metrics_low_count++;
+    }
+    if (sm.clipped) {
+        st->metrics_clip_count++;
+    }
+    refresh_soft_metrics_snapshot(st);
+}
+
 static float
 clamp_symbol(float sym, int levels) {
     float limit = (levels == 2) ? 2.25f : 4.5f;
@@ -294,6 +384,7 @@ static int
 emit_symbol(dsd_fsk_modem_state* st, float raw_symbol, float* out_symbols, int out_count, int max_symbols) {
     float sym = normalize_symbol(st, raw_symbol);
     st->last_symbol = sym;
+    update_soft_metrics(st, sym);
     if (out_count < max_symbols) {
         out_symbols[out_count++] = sym;
         st->symbols_emitted++;
@@ -658,6 +749,29 @@ dsd_fsk_modem_zero_symbols(dsd_fsk_modem_state* st, int input_complex_samples, f
     st->have_prev = 0;
     st->acq_len = 0;
     st->timing_acquired = modem_should_acquire_timing(&st->cfg, clock) ? 0 : 1;
+    reset_soft_metrics(st);
     st->symbols_emitted += (uint64_t)n;
     return n;
+}
+
+int
+dsd_fsk_modem_get_metrics(const dsd_fsk_modem_state* st, dsd_fsk_modem_metrics* out) {
+    if (!st || !out) {
+        return -1;
+    }
+    *out = st->metrics;
+    out->levels = st->cfg.levels;
+    out->symbol_rate_hz = st->cfg.symbol_rate_hz;
+    out->timing_acquired = st->timing_acquired;
+    out->track_last_error = st->track_last_error;
+    out->track_last_score = st->track_last_score;
+    out->track_updates = st->track_updates;
+    out->track_skips = st->track_skips;
+    out->abs_est = st->abs_est;
+    out->dc_est = st->dc_est;
+    out->last_symbol = st->last_symbol;
+    if (out->window_symbols == 0U) {
+        out->valid = 0;
+    }
+    return 0;
 }

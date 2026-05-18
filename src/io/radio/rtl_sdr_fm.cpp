@@ -283,6 +283,9 @@ static int controller_apply_replay_settings(struct controller_state* s, const ds
                                             const dsd_iq_replay_config* cfg);
 static const int kRetuneDiagBlocks = 20;
 static uint32_t rtl_stream_bump_output_generation(void);
+static void rtl_fsk_metrics_reset_snapshot(void);
+static void rtl_decode_health_reset(void);
+static void rtl_publish_fsk_metrics_from_demod(const struct demod_state* d);
 /*
  * The controller already purges stale samples and applies a time-based hardware
  * mute after retunes. Do not additionally drop whole demod blocks here: at RTL
@@ -467,6 +470,18 @@ static int radio_source_is_iq_replay(const dsd_opts* opts);
 static inline int
 stream_is_replay_active(void) {
     return (g_stream && g_stream->opts && radio_source_is_iq_replay(g_stream->opts)) ? 1 : 0;
+}
+
+static inline int
+rtl_stream_context_active(void) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!s || s->should_exit.load(std::memory_order_acquire)) {
+        return 0;
+    }
+    return (s->async_started.load(std::memory_order_acquire) || s->demod_thread_started.load(std::memory_order_acquire)
+            || s->controller_thread_started.load(std::memory_order_acquire))
+               ? 1
+               : 0;
 }
 
 static void
@@ -1465,6 +1480,122 @@ static std::atomic<double> g_snr_ema_gfsk{-100.0};
 /* QPSK accumulator reset flag (actual buffer is in demod loop) */
 static std::atomic<int> g_snr_qpsk_acc_reset{0};
 
+static std::atomic<int> g_fsk_metrics_valid{0};
+static std::atomic<uint32_t> g_fsk_metrics_generation{0};
+static std::atomic<int> g_fsk_metrics_levels{0};
+static std::atomic<int> g_fsk_metrics_symbol_rate_hz{0};
+static std::atomic<uint64_t> g_fsk_metrics_symbols_total{0};
+static std::atomic<unsigned int> g_fsk_metrics_window_symbols{0};
+static std::atomic<unsigned int> g_fsk_metrics_mean_reliability{0};
+static std::atomic<unsigned int> g_fsk_metrics_min_reliability{0};
+static std::atomic<double> g_fsk_metrics_rms_error{0.0};
+static std::atomic<double> g_fsk_metrics_evm_snr_db{-100.0};
+static std::atomic<double> g_fsk_metrics_low_reliability_pct{0.0};
+static std::atomic<double> g_fsk_metrics_clip_pct{0.0};
+static std::atomic<int> g_fsk_metrics_timing_acquired{0};
+static std::atomic<double> g_fsk_metrics_track_last_error{0.0};
+static std::atomic<double> g_fsk_metrics_track_last_score{0.0};
+static std::atomic<uint64_t> g_fsk_metrics_track_updates{0};
+static std::atomic<uint64_t> g_fsk_metrics_track_skips{0};
+static std::atomic<double> g_fsk_metrics_abs_est{0.0};
+static std::atomic<double> g_fsk_metrics_dc_est{0.0};
+static std::atomic<double> g_fsk_metrics_last_symbol{0.0};
+
+static std::atomic<int> g_decode_health_valid{0};
+static std::atomic<uint32_t> g_decode_health_generation{0};
+static std::atomic<unsigned int> g_decode_p25p1_fec_ok{0};
+static std::atomic<unsigned int> g_decode_p25p1_fec_err{0};
+static std::atomic<unsigned int> g_decode_p25p2_facch_ok{0};
+static std::atomic<unsigned int> g_decode_p25p2_facch_err{0};
+static std::atomic<unsigned int> g_decode_p25p2_sacch_ok{0};
+static std::atomic<unsigned int> g_decode_p25p2_sacch_err{0};
+static std::atomic<unsigned int> g_decode_p25p2_voice_err{0};
+
+static void
+rtl_fsk_metrics_reset_snapshot(void) {
+    g_fsk_metrics_valid.store(0, std::memory_order_release);
+    g_fsk_metrics_generation.store(g_rtl_output_generation.load(std::memory_order_acquire), std::memory_order_release);
+    g_fsk_metrics_levels.store(0, std::memory_order_relaxed);
+    g_fsk_metrics_symbol_rate_hz.store(0, std::memory_order_relaxed);
+    g_fsk_metrics_symbols_total.store(0, std::memory_order_relaxed);
+    g_fsk_metrics_window_symbols.store(0, std::memory_order_relaxed);
+    g_fsk_metrics_mean_reliability.store(0, std::memory_order_relaxed);
+    g_fsk_metrics_min_reliability.store(0, std::memory_order_relaxed);
+    g_fsk_metrics_rms_error.store(0.0, std::memory_order_relaxed);
+    g_fsk_metrics_evm_snr_db.store(-100.0, std::memory_order_relaxed);
+    g_fsk_metrics_low_reliability_pct.store(0.0, std::memory_order_relaxed);
+    g_fsk_metrics_clip_pct.store(0.0, std::memory_order_relaxed);
+    g_fsk_metrics_timing_acquired.store(0, std::memory_order_relaxed);
+    g_fsk_metrics_track_last_error.store(0.0, std::memory_order_relaxed);
+    g_fsk_metrics_track_last_score.store(0.0, std::memory_order_relaxed);
+    g_fsk_metrics_track_updates.store(0, std::memory_order_relaxed);
+    g_fsk_metrics_track_skips.store(0, std::memory_order_relaxed);
+    g_fsk_metrics_abs_est.store(0.0, std::memory_order_relaxed);
+    g_fsk_metrics_dc_est.store(0.0, std::memory_order_relaxed);
+    g_fsk_metrics_last_symbol.store(0.0, std::memory_order_relaxed);
+}
+
+static void
+rtl_decode_health_reset(void) {
+    g_decode_health_valid.store(0, std::memory_order_release);
+    g_decode_health_generation.store(g_rtl_output_generation.load(std::memory_order_acquire),
+                                     std::memory_order_release);
+    g_decode_p25p1_fec_ok.store(0, std::memory_order_relaxed);
+    g_decode_p25p1_fec_err.store(0, std::memory_order_relaxed);
+    g_decode_p25p2_facch_ok.store(0, std::memory_order_relaxed);
+    g_decode_p25p2_facch_err.store(0, std::memory_order_relaxed);
+    g_decode_p25p2_sacch_ok.store(0, std::memory_order_relaxed);
+    g_decode_p25p2_sacch_err.store(0, std::memory_order_relaxed);
+    g_decode_p25p2_voice_err.store(0, std::memory_order_relaxed);
+}
+
+static int
+rtl_decode_health_prepare_update(void) {
+    if (!rtl_stream_context_active()) {
+        rtl_decode_health_reset();
+        return 0;
+    }
+    uint32_t gen = g_rtl_output_generation.load(std::memory_order_acquire);
+    if (g_decode_health_generation.load(std::memory_order_acquire) != gen) {
+        rtl_decode_health_reset();
+        g_decode_health_generation.store(gen, std::memory_order_release);
+    }
+    return 1;
+}
+
+static void
+rtl_publish_fsk_metrics_from_demod(const struct demod_state* d) {
+    dsd_fsk_modem_metrics m = {};
+    if (!d || d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK || dsd_fsk_modem_get_metrics(&d->fsk_modem_state, &m) != 0
+        || !m.valid) {
+        rtl_fsk_metrics_reset_snapshot();
+        return;
+    }
+
+    uint32_t gen = g_rtl_output_generation.load(std::memory_order_acquire);
+    g_fsk_metrics_valid.store(0, std::memory_order_release);
+    g_fsk_metrics_generation.store(gen, std::memory_order_relaxed);
+    g_fsk_metrics_levels.store(m.levels, std::memory_order_relaxed);
+    g_fsk_metrics_symbol_rate_hz.store(m.symbol_rate_hz, std::memory_order_relaxed);
+    g_fsk_metrics_symbols_total.store(m.symbols_total, std::memory_order_relaxed);
+    g_fsk_metrics_window_symbols.store(m.window_symbols, std::memory_order_relaxed);
+    g_fsk_metrics_mean_reliability.store(m.mean_reliability, std::memory_order_relaxed);
+    g_fsk_metrics_min_reliability.store(m.min_reliability, std::memory_order_relaxed);
+    g_fsk_metrics_rms_error.store((double)m.rms_error, std::memory_order_relaxed);
+    g_fsk_metrics_evm_snr_db.store((double)m.evm_snr_db, std::memory_order_relaxed);
+    g_fsk_metrics_low_reliability_pct.store((double)m.low_reliability_pct, std::memory_order_relaxed);
+    g_fsk_metrics_clip_pct.store((double)m.clip_pct, std::memory_order_relaxed);
+    g_fsk_metrics_timing_acquired.store(m.timing_acquired, std::memory_order_relaxed);
+    g_fsk_metrics_track_last_error.store((double)m.track_last_error, std::memory_order_relaxed);
+    g_fsk_metrics_track_last_score.store((double)m.track_last_score, std::memory_order_relaxed);
+    g_fsk_metrics_track_updates.store(m.track_updates, std::memory_order_relaxed);
+    g_fsk_metrics_track_skips.store(m.track_skips, std::memory_order_relaxed);
+    g_fsk_metrics_abs_est.store((double)m.abs_est, std::memory_order_relaxed);
+    g_fsk_metrics_dc_est.store((double)m.dc_est, std::memory_order_relaxed);
+    g_fsk_metrics_last_symbol.store((double)m.last_symbol, std::memory_order_relaxed);
+    g_fsk_metrics_valid.store(1, std::memory_order_release);
+}
+
 static void
 snr_ema_reset(void) {
     g_snr_ema_c4fm.store(-100.0, std::memory_order_relaxed);
@@ -1477,6 +1608,8 @@ snr_ema_reset(void) {
     g_snr_qpsk_src.store(0, std::memory_order_relaxed);
     g_snr_gfsk_src.store(0, std::memory_order_relaxed);
     g_snr_qpsk_acc_reset.store(1, std::memory_order_relaxed);
+    rtl_fsk_metrics_reset_snapshot();
+    rtl_decode_health_reset();
 }
 
 static int
@@ -2094,6 +2227,7 @@ static DSD_THREAD_RETURN_TYPE
         uint64_t perf_full_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
         (void)rtl_stream_consume_fsk_reacquire_pending(d);
         full_demod(d);
+        rtl_publish_fsk_metrics_from_demod(d);
         uint64_t perf_full_demod_ns = perf_on ? (rtl_perf_now_ns() - perf_full_start_ns) : 0ULL;
         rtl_monitor_side_tap_process(d);
 
@@ -2735,6 +2869,8 @@ rtl_stream_bump_output_generation(void) {
     if (next == 0U) {
         next = g_rtl_output_generation.fetch_add(1, std::memory_order_acq_rel) + 1U;
     }
+    rtl_fsk_metrics_reset_snapshot();
+    rtl_decode_health_reset();
     return next;
 }
 
@@ -4780,6 +4916,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 extern "C" void
 dsd_rtl_stream_close(void) {
     LOG_INFO("cleaning up...\n");
+    rtl_stream_bump_output_generation();
     if (g_stream) {
         g_stream->replay_forced_stop.store(1, std::memory_order_release);
         g_stream->should_exit.store(1, std::memory_order_release);
@@ -5247,6 +5384,11 @@ dsd_rtl_stream_get_output_kind(void) {
     return demod.output_kind;
 }
 
+extern "C" int
+dsd_rtl_stream_is_active(void) {
+    return rtl_stream_context_active();
+}
+
 extern "C" uint32_t
 dsd_rtl_stream_output_generation(void) {
     return g_rtl_output_generation.load(std::memory_order_acquire);
@@ -5292,6 +5434,7 @@ dsd_rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
     cfg.channel_profile = demod.channel_lpf_profile;
     dsd_fsk_modem_configure(&demod.fsk_modem_state, &cfg);
     if (changed) {
+        rtl_fsk_metrics_reset_snapshot();
         demod.costas_reset_pending = 1;
     }
     return 0;
@@ -5687,17 +5830,116 @@ extern "C" void
 dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                 int sacch_err_delta, int voice_err_delta) {
     (void)slot;
-    (void)facch_ok_delta;
-    (void)facch_err_delta;
-    (void)sacch_ok_delta;
-    (void)sacch_err_delta;
-    (void)voice_err_delta;
+    if (!rtl_decode_health_prepare_update()) {
+        return;
+    }
+    int changed = 0;
+    if (facch_ok_delta > 0) {
+        g_decode_p25p2_facch_ok.fetch_add((unsigned int)facch_ok_delta, std::memory_order_relaxed);
+        changed = 1;
+    }
+    if (facch_err_delta > 0) {
+        g_decode_p25p2_facch_err.fetch_add((unsigned int)facch_err_delta, std::memory_order_relaxed);
+        changed = 1;
+    }
+    if (sacch_ok_delta > 0) {
+        g_decode_p25p2_sacch_ok.fetch_add((unsigned int)sacch_ok_delta, std::memory_order_relaxed);
+        changed = 1;
+    }
+    if (sacch_err_delta > 0) {
+        g_decode_p25p2_sacch_err.fetch_add((unsigned int)sacch_err_delta, std::memory_order_relaxed);
+        changed = 1;
+    }
+    if (voice_err_delta > 0) {
+        g_decode_p25p2_voice_err.fetch_add((unsigned int)voice_err_delta, std::memory_order_relaxed);
+        changed = 1;
+    }
+    if (changed) {
+        g_decode_health_valid.store(1, std::memory_order_release);
+    }
 }
 
 extern "C" void
 rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta) {
-    (void)fec_ok_delta;
-    (void)fec_err_delta;
+    if (!rtl_decode_health_prepare_update()) {
+        return;
+    }
+    int changed = 0;
+    if (fec_ok_delta > 0) {
+        g_decode_p25p1_fec_ok.fetch_add((unsigned int)fec_ok_delta, std::memory_order_relaxed);
+        changed = 1;
+    }
+    if (fec_err_delta > 0) {
+        g_decode_p25p1_fec_err.fetch_add((unsigned int)fec_err_delta, std::memory_order_relaxed);
+        changed = 1;
+    }
+    if (changed) {
+        g_decode_health_valid.store(1, std::memory_order_release);
+    }
+}
+
+extern "C" int
+dsd_rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = rtl_stream_fsk_metrics{};
+    uint32_t current_generation = g_rtl_output_generation.load(std::memory_order_acquire);
+    uint32_t snapshot_generation = g_fsk_metrics_generation.load(std::memory_order_acquire);
+    out->generation = current_generation;
+    if (!rtl_stream_context_active()) {
+        rtl_fsk_metrics_reset_snapshot();
+        return 0;
+    }
+    if (!g_fsk_metrics_valid.load(std::memory_order_acquire) || snapshot_generation != current_generation) {
+        return 0;
+    }
+    out->valid = 1;
+    out->levels = g_fsk_metrics_levels.load(std::memory_order_relaxed);
+    out->symbol_rate_hz = g_fsk_metrics_symbol_rate_hz.load(std::memory_order_relaxed);
+    out->symbols_total = g_fsk_metrics_symbols_total.load(std::memory_order_relaxed);
+    out->window_symbols = g_fsk_metrics_window_symbols.load(std::memory_order_relaxed);
+    out->mean_reliability = g_fsk_metrics_mean_reliability.load(std::memory_order_relaxed);
+    out->min_reliability = g_fsk_metrics_min_reliability.load(std::memory_order_relaxed);
+    out->rms_error = (float)g_fsk_metrics_rms_error.load(std::memory_order_relaxed);
+    out->evm_snr_db = (float)g_fsk_metrics_evm_snr_db.load(std::memory_order_relaxed);
+    out->low_reliability_pct = (float)g_fsk_metrics_low_reliability_pct.load(std::memory_order_relaxed);
+    out->clip_pct = (float)g_fsk_metrics_clip_pct.load(std::memory_order_relaxed);
+    out->timing_acquired = g_fsk_metrics_timing_acquired.load(std::memory_order_relaxed);
+    out->track_last_error = (float)g_fsk_metrics_track_last_error.load(std::memory_order_relaxed);
+    out->track_last_score = (float)g_fsk_metrics_track_last_score.load(std::memory_order_relaxed);
+    out->track_updates = g_fsk_metrics_track_updates.load(std::memory_order_relaxed);
+    out->track_skips = g_fsk_metrics_track_skips.load(std::memory_order_relaxed);
+    out->abs_est = (float)g_fsk_metrics_abs_est.load(std::memory_order_relaxed);
+    out->dc_est = (float)g_fsk_metrics_dc_est.load(std::memory_order_relaxed);
+    out->last_symbol = (float)g_fsk_metrics_last_symbol.load(std::memory_order_relaxed);
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_get_decode_health(rtl_stream_decode_health* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = rtl_stream_decode_health{};
+    uint32_t current_generation = g_rtl_output_generation.load(std::memory_order_acquire);
+    uint32_t snapshot_generation = g_decode_health_generation.load(std::memory_order_acquire);
+    out->generation = current_generation;
+    if (!rtl_stream_context_active()) {
+        return 0;
+    }
+    if (!g_decode_health_valid.load(std::memory_order_acquire) || snapshot_generation != current_generation) {
+        return 0;
+    }
+    out->valid = 1;
+    out->p25p1_fec_ok = g_decode_p25p1_fec_ok.load(std::memory_order_relaxed);
+    out->p25p1_fec_err = g_decode_p25p1_fec_err.load(std::memory_order_relaxed);
+    out->p25p2_facch_ok = g_decode_p25p2_facch_ok.load(std::memory_order_relaxed);
+    out->p25p2_facch_err = g_decode_p25p2_facch_err.load(std::memory_order_relaxed);
+    out->p25p2_sacch_ok = g_decode_p25p2_sacch_ok.load(std::memory_order_relaxed);
+    out->p25p2_sacch_err = g_decode_p25p2_sacch_err.load(std::memory_order_relaxed);
+    out->p25p2_voice_err = g_decode_p25p2_voice_err.load(std::memory_order_relaxed);
+    return 0;
 }
 
 /* Toggle generic IQ balance prefilter */

@@ -152,6 +152,19 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
 #endif
     }
 
+    {
+        rtl_stream_fsk_metrics fm;
+        memset(&fm, 0, sizeof(fm));
+        if (rtl_stream_get_fsk_metrics(&fm) == 0 && fm.valid) {
+            ui_print_kv_line("FSK Soft", "rel:%u min:%u low:%4.1f%% clip:%4.1f%% err:%.3f snr:%4.1f dB",
+                             fm.mean_reliability, fm.min_reliability, fm.low_reliability_pct, fm.clip_pct, fm.rms_error,
+                             fm.evm_snr_db);
+            ui_print_kv_line("FSK Track", "acq:%s e:%.2f score:%.4f upd:%llu skip:%llu", fm.timing_acquired ? "Y" : "N",
+                             fm.track_last_error, fm.track_last_score, (unsigned long long)fm.track_updates,
+                             (unsigned long long)fm.track_skips);
+        }
+    }
+
     if (mod == 0 || clk_mode != 0) {
         const char* clk = (clk_mode == 1) ? "EL" : (clk_mode == 2) ? "MM" : "Off";
         ui_print_kv_line("C4FM", "CLK:%s%s", clk, (clk_mode && clk_sync) ? " (sync)" : "");

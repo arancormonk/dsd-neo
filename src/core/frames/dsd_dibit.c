@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #ifdef USE_RADIO
@@ -38,6 +39,10 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#ifdef USE_RADIO
+#define DSD_RTL_OUTPUT_KIND_SYMBOL_FSK 1
+#endif
 
 static void
 throttle_symbol_bin_replay(dsd_opts* opts, dsd_state* state) {
@@ -426,50 +431,80 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
     /* ========== END CQPSK path ========== */
 
     else {
-        /* ========== C4FM/GFSK path (unchanged) ========== */
-        const float eps = 1e-6f;
-        float min = st->min, max = st->max, lmid = st->lmid, center = st->center, umid = st->umid;
+        /* ========== C4FM/GFSK path ========== */
+        int rtl_fsk_soft = 0;
+        int rtl_fsk_levels = 4;
+#ifdef USE_RADIO
+        {
+            int symbol_rate_hz = 0;
+            int levels = 0;
+            int channel_profile = 0;
+            if (dsd_rtl_stream_metrics_hook_stream_active()
+                && dsd_rtl_stream_metrics_hook_output_kind() == DSD_RTL_OUTPUT_KIND_SYMBOL_FSK
+                && dsd_rtl_stream_metrics_hook_symbol_profile(&symbol_rate_hz, &levels, &channel_profile) == 0) {
+                (void)symbol_rate_hz;
+                (void)channel_profile;
+                rtl_fsk_soft = 1;
+                rtl_fsk_levels = (levels == 2) ? 2 : 4;
+            }
+        }
+#endif
 
-        if (sym > umid) {
-            float span = max - umid;
-            if (span < eps) {
-                span = eps;
-            }
-            rel = (int)lrintf(((sym - umid) * 255.0f) / span);
-        } else if (sym > center) {
-            float d1 = sym - center;
-            float d2 = umid - sym;
-            float span = umid - center;
-            if (span < eps) {
-                span = eps;
-            }
-            float m = d1 < d2 ? d1 : d2;
-            rel = (int)lrintf((m * 510.0f) / span);
-        } else if (sym >= lmid) {
-            float d1 = center - sym;
-            float d2 = sym - lmid;
-            float span = center - lmid;
-            if (span < eps) {
-                span = eps;
-            }
-            float m = d1 < d2 ? d1 : d2;
-            rel = (int)lrintf((m * 510.0f) / span);
+        if (rtl_fsk_soft) {
+            rel = (int)dsd_fsk_symbol_reliability(sym, rtl_fsk_levels);
         } else {
-            float span = lmid - min;
-            if (span < eps) {
-                span = eps;
+            const float eps = 1e-6f;
+            float min = st->min, max = st->max, lmid = st->lmid, center = st->center, umid = st->umid;
+
+            if (sym > umid) {
+                float span = max - umid;
+                if (span < eps) {
+                    span = eps;
+                }
+                rel = (int)lrintf(((sym - umid) * 255.0f) / span);
+            } else if (sym > center) {
+                float d1 = sym - center;
+                float d2 = umid - sym;
+                float span = umid - center;
+                if (span < eps) {
+                    span = eps;
+                }
+                float m = d1 < d2 ? d1 : d2;
+                rel = (int)lrintf((m * 510.0f) / span);
+            } else if (sym >= lmid) {
+                float d1 = center - sym;
+                float d2 = sym - lmid;
+                float span = center - lmid;
+                if (span < eps) {
+                    span = eps;
+                }
+                float m = d1 < d2 ? d1 : d2;
+                rel = (int)lrintf((m * 510.0f) / span);
+            } else {
+                float span = lmid - min;
+                if (span < eps) {
+                    span = eps;
+                }
+                rel = (int)lrintf(((lmid - sym) * 255.0f) / span);
             }
-            rel = (int)lrintf(((lmid - sym) * 255.0f) / span);
-        }
-        if (rel < 0) {
-            rel = 0;
-        }
-        if (rel > 255) {
-            rel = 255;
+            if (rel < 0) {
+                rel = 0;
+            }
+            if (rel > 255) {
+                rel = 255;
+            }
         }
 
 #ifdef USE_RADIO
-        double snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
+        double snr_db = -100.0;
+        if (rtl_fsk_soft && rtl_fsk_levels == 2) {
+            snr_db = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
+            if (snr_db < -50.0) {
+                snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
+            }
+        } else {
+            snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
+        }
         if (snr_db < -50.0) {
             snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
         }

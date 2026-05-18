@@ -12,6 +12,7 @@ static int g_output_rate_calls = 0;
 static int g_output_kind_calls = 0;
 static int g_symbol_profile_calls = 0;
 static int g_stream_generation_calls = 0;
+static int g_stream_active_calls = 0;
 static int g_set_symbol_profile_calls = 0;
 static int g_dsp_get_calls = 0;
 static int g_ted_bias_calls = 0;
@@ -69,6 +70,12 @@ static uint32_t
 fake_stream_generation(void) {
     g_stream_generation_calls++;
     return 1234U;
+}
+
+static int
+fake_stream_active(void) {
+    g_stream_active_calls++;
+    return 1;
 }
 
 static int
@@ -172,6 +179,7 @@ main(void) {
     assert(symbol_levels == 0);
     assert(channel_profile == 0);
     assert(dsd_rtl_stream_metrics_hook_stream_generation() == 0U);
+    assert(dsd_rtl_stream_metrics_hook_stream_active() == 0);
     assert(dsd_rtl_stream_metrics_hook_set_symbol_profile(2400, 2, 1) == 0);
 
     int cqpsk = -1;
@@ -209,6 +217,7 @@ main(void) {
     g_output_kind_calls = 0;
     g_symbol_profile_calls = 0;
     g_stream_generation_calls = 0;
+    g_stream_active_calls = 0;
     g_set_symbol_profile_calls = 0;
     g_dsp_get_calls = 0;
     g_ted_bias_calls = 0;
@@ -229,6 +238,7 @@ main(void) {
     hooks.output_kind = fake_output_kind;
     hooks.symbol_profile = fake_symbol_profile;
     hooks.stream_generation = fake_stream_generation;
+    hooks.stream_active = fake_stream_active;
     hooks.set_symbol_profile = fake_set_symbol_profile;
     hooks.dsp_get = fake_dsp_get;
     hooks.ted_bias = fake_ted_bias;
@@ -257,6 +267,8 @@ main(void) {
     assert(channel_profile == 5);
     assert(dsd_rtl_stream_metrics_hook_stream_generation() == 1234U);
     assert(g_stream_generation_calls == 1);
+    assert(dsd_rtl_stream_metrics_hook_stream_active() == 1);
+    assert(g_stream_active_calls == 1);
 
     assert(dsd_rtl_stream_metrics_hook_set_symbol_profile(6000, 4, 5) == 6);
     assert(g_set_symbol_profile_calls == 1);
