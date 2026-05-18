@@ -1,9 +1,9 @@
 # RTL Demod Pipeline Audit
 
 This note documents the RTL-family digital demod path and the contracts that keep
-clean symbols flowing into the legacy slicers. It covers RTL USB, RTL-TCP, and IQ
-replay. SoapySDR shares the input-ring plumbing, but current demod configuration
-keeps Soapy in monitor/audio output mode instead of the RTL symbol-output mode.
+clean symbols flowing into the legacy slicers. It covers RTL USB, RTL-TCP,
+SoapySDR, and IQ replay; all four sources feed the same normalized symbol-output
+contract into the legacy slicers.
 
 ## Source-To-Slicer Path
 
@@ -92,8 +92,5 @@ ctest --preset dev-debug --output-on-failure
 
 - Capture-backed IQ replay vectors should be added for real-world marginal
   signals once representative captures are available.
-- SoapySDR should either remain documented as monitor/audio-only for digital
-  demod or be deliberately moved onto the same symbol-domain contract as RTL
-  USB/RTL-TCP/IQ replay.
 - Any future change to channel LPF cutoffs, default RTL DSP bandwidth, CQPSK
   loop gains, or FSK normalization must update the mode matrix tests first.
