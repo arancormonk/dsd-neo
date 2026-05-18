@@ -28,6 +28,7 @@ int ez_rs28_sacch_soft(int payload[180], int parity[132], const int* erasures, i
 int ez_rs28_ess_soft(int payload[96], int parity[168], const int* erasures, int n_erasures);
 
 int isch_lookup(uint64_t isch);
+int isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]);
 
 #ifdef __cplusplus
 }

@@ -137,6 +137,7 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
         int soft_result = check_and_fix_golay_24_12_soft(dodeca, parity, reliab, &soft_fixed);
         if (soft_result == 0) {
             /* Soft decode succeeded */
+            state->p25_p1_soft_golay_ok++;
             state->debug_header_errors += soft_fixed;
             irrecoverable_errors = 0;
         }

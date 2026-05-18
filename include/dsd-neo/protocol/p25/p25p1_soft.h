@@ -30,10 +30,11 @@ extern "C" {
  * 1. Try hard decode first. If syndrome=0, return success.
  * 2. If hard decode corrects (1 bit), return success.
  * 3. If hard decode fails (2+ errors detected):
- *    a. Find the 3 least reliable bit positions.
+ *    a. Find up to 3 candidate bit positions, preferring symbols below the
+ *       configured erasure threshold and then the next-lowest reliabilities.
  *    b. Generate all 2^3=8 candidates by flipping combinations of these bits.
  *    c. For each candidate, compute syndrome. If valid (syndrome=0), compute penalty.
- *    d. Penalty = sum of (255 - reliab[i]) for each bit that differs from original.
+ *    d. Penalty = sum of reliab[i] for each bit that differs from original.
  *    e. Pick candidate with lowest penalty. Ties: prefer fewer flips.
  * 4. If no valid candidate found, return uncorrectable.
  */
@@ -50,12 +51,12 @@ int hamming_10_6_3_soft(const char* bits, const int* reliab, char* out_bits);
  *
  * Algorithm:
  * 1. Try hard decode. If success (<=3 errors), return.
- * 2. Sort bit indices 0..17 by reliability (ascending = least reliable first).
- * 3. Take the 5 least reliable positions.
+ * 2. Prefer indices below the configured erasure threshold, then the next-lowest reliabilities.
+ * 3. Take up to 5 candidate positions.
  * 4. Generate candidates: flip weight-1, weight-2, weight-3 combinations.
  *    Total candidates: C(5,1) + C(5,2) + C(5,3) = 5 + 10 + 10 = 25, plus original = 26 max.
  * 5. For each candidate, run hard decode. If valid:
- *    a. Compute penalty = sum of (255 - reliab[i]) for differing bits.
+ *    a. Compute penalty = sum of reliab[i] for differing bits.
  *    b. Track minimum penalty candidate.
  * 6. Return best candidate, or uncorrectable if none valid.
  */

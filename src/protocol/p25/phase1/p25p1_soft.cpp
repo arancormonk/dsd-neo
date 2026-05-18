@@ -36,7 +36,22 @@ p25p1_get_erasure_threshold(void) {
     return g_p25p1_erasure_thresh;
 }
 
-/* Helper: find indices of k smallest values in reliab[0..n-1] */
+static int
+clamp_reliability(int reliab) {
+    if (reliab < 0) {
+        return 0;
+    }
+    if (reliab > 255) {
+        return 255;
+    }
+    return reliab;
+}
+
+/* Helper: find indices of k smallest values in reliab[0..n-1].
+ * Prefer configured erasure-threshold hits, then fill from the next weakest
+ * symbols so the Chase list remains useful when only a few symbols are below
+ * threshold.
+ */
 static void
 find_k_least_reliable(const int* reliab, int n, int k, int* out_indices) {
     /* Simple selection: copy indices, partial sort by reliability */
@@ -45,16 +60,33 @@ find_k_least_reliable(const int* reliab, int n, int k, int* out_indices) {
         indices[i] = i;
     }
 
-    /* Bubble sort first k elements to front (good enough for small k) */
-    for (int i = 0; i < k && i < n; i++) {
+    /* Sort by reliability (good enough for small n). */
+    for (int i = 0; i < n && i < 32; i++) {
         for (int j = i + 1; j < n; j++) {
-            if (reliab[indices[j]] < reliab[indices[i]]) {
+            int rel_j = clamp_reliability(reliab[indices[j]]);
+            int rel_i = clamp_reliability(reliab[indices[i]]);
+            if (rel_j < rel_i || (rel_j == rel_i && indices[j] < indices[i])) {
                 int tmp = indices[i];
                 indices[i] = indices[j];
                 indices[j] = tmp;
             }
         }
-        out_indices[i] = indices[i];
+    }
+
+    int threshold = p25p1_get_erasure_threshold();
+    int selected[32] = {0};
+    int out_count = 0;
+    for (int i = 0; i < n && i < 32 && out_count < k; i++) {
+        int idx = indices[i];
+        if (clamp_reliability(reliab[idx]) < threshold) {
+            out_indices[out_count++] = idx;
+            selected[i] = 1;
+        }
+    }
+    for (int i = 0; i < n && i < 32 && out_count < k; i++) {
+        if (!selected[i]) {
+            out_indices[out_count++] = indices[i];
+        }
     }
 }
 
@@ -75,13 +107,13 @@ hamming_syndrome(const char* bits) {
     return (s0 << 3) | (s1 << 2) | (s2 << 1) | s3;
 }
 
-/* Compute penalty for flipping bits: sum of (255 - reliab[i]) for each flipped bit */
+/* Compute penalty for flipping bits: confident bits are expensive to flip. */
 static int
 compute_penalty(const char* orig, const char* candidate, const int* reliab, int n) {
     int penalty = 0;
     for (int i = 0; i < n; i++) {
         if (orig[i] != candidate[i]) {
-            penalty += (255 - reliab[i]);
+            penalty += clamp_reliability(reliab[i]);
         }
     }
     return penalty;

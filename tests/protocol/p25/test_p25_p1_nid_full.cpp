@@ -18,6 +18,7 @@
 #include <dsd-neo/fec/BCH_63_16.hpp>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 
@@ -415,6 +416,173 @@ test_observed_nac_retry_after_bch_failure(void) {
     return 0;
 }
 
+/**
+ * @brief Verify soft NID retry can use low-reliability BCH bits to recover
+ *        a codeword that is just outside the hard BCH correction radius.
+ */
+static int
+test_soft_nid_low_reliability_recovery(void) {
+    BCH_63_16_11 bch;
+
+    int nac = 0x293;
+    int duid = 0x5; // LDU1
+    char info[16];
+    char codeword[63];
+
+    make_info_word(nac, duid, info);
+    bch.encode(info, codeword);
+
+    char corrupted[63];
+    std::memcpy(corrupted, codeword, 63);
+    int flip_12[12] = {0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55};
+    for (int i = 0; i < 12; i++) {
+        corrupted[flip_12[i]] ^= 1;
+    }
+
+    int decoded_nac = -1;
+    char decoded_duid[3] = {0};
+    int error_count = -1;
+    int hard_result =
+        check_NID_with_observed_nac(corrupted, 0, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
+    if (hard_result != NID_DECODE_FAIL) {
+        std::fprintf(stderr, "test_soft_nid_low_reliability_recovery: expected hard decode failure, got %d\n",
+                     hard_result);
+        return 1;
+    }
+
+    uint8_t reliab[63];
+    for (int i = 0; i < 63; i++) {
+        reliab[i] = 220;
+    }
+    reliab[flip_12[0]] = 10;
+
+    decoded_nac = -1;
+    decoded_duid[0] = decoded_duid[1] = decoded_duid[2] = 0;
+    error_count = -1;
+    int soft_result = check_NID_with_observed_nac_soft(corrupted, reliab, 0, &decoded_nac, decoded_duid,
+                                                       expected_parity(duid), 220, &error_count);
+    if (soft_result != NID_OK) {
+        std::fprintf(stderr, "test_soft_nid_low_reliability_recovery: expected soft decode success, got %d\n",
+                     soft_result);
+        return 1;
+    }
+    if (decoded_nac != nac || std::strcmp(decoded_duid, "11") != 0 || error_count != 11) {
+        std::fprintf(stderr,
+                     "test_soft_nid_low_reliability_recovery: expected NAC=0x%X DUID=11 errors=11, "
+                     "got NAC=0x%X DUID=%s errors=%d\n",
+                     nac, decoded_nac, decoded_duid, error_count);
+        return 1;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Verify soft NID fallback does not flip high-confidence bits when no
+ *        low-reliability candidate supports the retry.
+ */
+static int
+test_soft_nid_high_reliability_rejected(void) {
+    BCH_63_16_11 bch;
+
+    int nac = 0x293;
+    int duid = 0x5;
+    char info[16];
+    char codeword[63];
+
+    make_info_word(nac, duid, info);
+    bch.encode(info, codeword);
+
+    char corrupted[63];
+    std::memcpy(corrupted, codeword, 63);
+    int flip_12[12] = {0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55};
+    for (int i = 0; i < 12; i++) {
+        corrupted[flip_12[i]] ^= 1;
+    }
+
+    uint8_t reliab[63];
+    for (int i = 0; i < 63; i++) {
+        reliab[i] = 220;
+    }
+
+    int decoded_nac = -1;
+    char decoded_duid[3] = {0};
+    int error_count = -1;
+    int result = check_NID_with_observed_nac_soft(corrupted, reliab, 0, &decoded_nac, decoded_duid,
+                                                  expected_parity(duid), 220, &error_count);
+    if (result != NID_DECODE_FAIL) {
+        std::fprintf(stderr, "test_soft_nid_high_reliability_rejected: expected soft decode failure, got %d\n", result);
+        return 1;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Verify observed-NAC soft retry scores only Chase flips, not the trusted
+ *        NAC rewrite itself.
+ */
+static int
+test_soft_observed_nac_retry_exempts_forced_nac_bits(void) {
+    BCH_63_16_11 bch;
+
+    int nac = 0x293;
+    int duid = 0x5;
+    char info[16];
+    char codeword[63];
+
+    make_info_word(nac, duid, info);
+    bch.encode(info, codeword);
+
+    char corrupted[63];
+    std::memcpy(corrupted, codeword, 63);
+    corrupted[0] ^= 1; // High-confidence NAC bit corrected by observed_nac.
+
+    int parity_errors[12] = {16, 22, 28, 34, 40, 46, 52, 18, 24, 30, 36, 42};
+    for (int i = 0; i < 12; i++) {
+        corrupted[parity_errors[i]] ^= 1;
+    }
+
+    int decoded_nac = -1;
+    char decoded_duid[3] = {0};
+    int error_count = -1;
+    int hard_result =
+        check_NID_with_observed_nac(corrupted, nac, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
+    if (hard_result != NID_DECODE_FAIL) {
+        std::fprintf(stderr,
+                     "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected hard retry failure, got %d\n",
+                     hard_result);
+        return 1;
+    }
+
+    uint8_t reliab[63];
+    for (int i = 0; i < 63; i++) {
+        reliab[i] = 220;
+    }
+    reliab[parity_errors[0]] = 10;
+
+    decoded_nac = -1;
+    decoded_duid[0] = decoded_duid[1] = decoded_duid[2] = 0;
+    error_count = -1;
+    int soft_result = check_NID_with_observed_nac_soft(corrupted, reliab, nac, &decoded_nac, decoded_duid,
+                                                       expected_parity(duid), 220, &error_count);
+    if (soft_result != NID_OK) {
+        std::fprintf(stderr,
+                     "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected soft retry success, got %d\n",
+                     soft_result);
+        return 1;
+    }
+    if (decoded_nac != nac || std::strcmp(decoded_duid, "11") != 0 || error_count != 11) {
+        std::fprintf(stderr,
+                     "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected NAC=0x%X DUID=11 errors=11, "
+                     "got NAC=0x%X DUID=%s errors=%d\n",
+                     nac, decoded_nac, decoded_duid, error_count);
+        return 1;
+    }
+
+    return 0;
+}
+
 /* --------------------------------------------------------------------------
  * Main
  * -------------------------------------------------------------------------- */
@@ -429,6 +597,9 @@ main(void) {
     rc |= test_parity_override_correctable_range();
     rc |= test_decode_failure_no_error_count();
     rc |= test_observed_nac_retry_after_bch_failure();
+    rc |= test_soft_nid_low_reliability_recovery();
+    rc |= test_soft_nid_high_reliability_rejected();
+    rc |= test_soft_observed_nac_retry_exempts_forced_nac_bits();
 
     if (rc == 0) {
         std::printf("P25 P1 NID full correction unit tests passed.\n");

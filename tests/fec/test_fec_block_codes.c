@@ -5,7 +5,9 @@
 
 #include <assert.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/fec/ez.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -219,12 +221,36 @@ test_golay_qr(void) {
     return 0;
 }
 
+static int
+test_isch_soft_lookup(void) {
+    const uint64_t isch0 = 0x184229d461ULL;
+    uint8_t reliab[40];
+    for (int i = 0; i < 40; i++) {
+        reliab[i] = 220;
+    }
+
+    assert(isch_lookup_soft(isch0, reliab) == 0);
+
+    uint64_t corrupted = isch0;
+    int low_bits[3] = {3, 11, 27};
+    for (int i = 0; i < 3; i++) {
+        corrupted ^= 1ULL << (39 - low_bits[i]);
+        reliab[low_bits[i]] = 10;
+    }
+    assert(isch_lookup_soft(corrupted, reliab) == 0);
+
+    return 0;
+}
+
 int
 main(void) {
     if (test_hamming_codes() != 0) {
         return 1;
     }
     if (test_golay_qr() != 0) {
+        return 1;
+    }
+    if (test_isch_soft_lookup() != 0) {
         return 1;
     }
 

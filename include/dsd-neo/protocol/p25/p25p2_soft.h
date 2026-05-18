@@ -26,6 +26,14 @@ extern "C" {
 uint8_t p25p2_hexbit_reliability(const uint16_t bit_offsets[6], int ts_counter, const uint8_t* reliab);
 
 /**
+ * Return the configured P25P2 soft-decision erasure threshold.
+ *
+ * Reliability values below this threshold are treated as low-confidence
+ * symbols by P25P2 soft-decision helpers.
+ */
+int p25p2_soft_erasure_threshold(void);
+
+/**
  * Build soft-decision erasure list for FACCH.
  *
  * @param ts_counter  Current timeslot counter (0-3).

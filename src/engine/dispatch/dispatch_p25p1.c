@@ -16,6 +16,7 @@
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/runtime/colors.h>
 #include <mbelib.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -58,8 +59,11 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     UNUSED(nac);
 
     char bch_code[63];
+    uint8_t bch_reliab[63];
     int index_bch_code;
     unsigned char parity;
+    uint8_t rel;
+    uint8_t parity_reliab;
     char v;
     int new_nac;
     char new_duid[3];
@@ -76,18 +80,20 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     j = 0;
     index_bch_code = 0;
     for (i = 0; i < 6; i++) {
-        dibit = getDibit(opts, state);
+        dibit = getDibitWithReliability(opts, state, &rel);
 
         v = 1 & (dibit >> 1); // bit 1
         nac[j] = v + '0';
         j++;
         bch_code[index_bch_code] = v;
+        bch_reliab[index_bch_code] = rel;
         index_bch_code++;
 
         v = 1 & dibit; // bit 0
         nac[j] = v + '0';
         j++;
         bch_code[index_bch_code] = v;
+        bch_reliab[index_bch_code] = rel;
         index_bch_code++;
     }
     //this one setting bogus nac data
@@ -95,48 +101,57 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
 
     // Read the DUID, 4 bits
     for (i = 0; i < 2; i++) {
-        dibit = getDibit(opts, state);
+        dibit = getDibitWithReliability(opts, state, &rel);
         duid[i] = dibit + '0';
 
         bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
+        bch_reliab[index_bch_code] = rel;
         index_bch_code++;
         bch_code[index_bch_code] = 1 & dibit; // bit 0
+        bch_reliab[index_bch_code] = rel;
         index_bch_code++;
     }
 
     // Read the BCH data for error correction of NAC and DUID
     for (i = 0; i < 3; i++) {
-        dibit = getDibit(opts, state);
+        dibit = getDibitWithReliability(opts, state, &rel);
 
         bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
+        bch_reliab[index_bch_code] = rel;
         index_bch_code++;
         bch_code[index_bch_code] = 1 & dibit; // bit 0
+        bch_reliab[index_bch_code] = rel;
         index_bch_code++;
     }
     // Intermission: read and record the status dibit embedded in the NID.
-    dibit = getDibit(opts, state);
+    dibit = getDibitWithReliability(opts, state, &rel);
     p25_status_accum_add(state, dibit);
     // ... continue reading the BCH error correction data
     for (i = 0; i < 20; i++) {
-        dibit = getDibit(opts, state);
+        dibit = getDibitWithReliability(opts, state, &rel);
 
         bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
+        bch_reliab[index_bch_code] = rel;
         index_bch_code++;
         bch_code[index_bch_code] = 1 & dibit; // bit 0
+        bch_reliab[index_bch_code] = rel;
         index_bch_code++;
     }
 
     // Read the parity bit
-    dibit = getDibit(opts, state);
+    dibit = getDibitWithReliability(opts, state, &rel);
     bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
-    parity = (1 & dibit);                        // bit 0
+    bch_reliab[index_bch_code] = rel;
+    parity = (1 & dibit); // bit 0
+    parity_reliab = rel;
 
     // Decode and validate the NID using full BCH(63,16,23) correction.
     // check_NID_with_observed_nac returns NID_OK (1) or NID_PARITY_OVERRIDE (2)
     // on success, NID_DECODE_FAIL (0) on failure.
     // error_count receives the number of BCH bit errors corrected (0-11).
     observed_nac = p25p1_observed_nac(state);
-    check_result = check_NID_with_observed_nac(bch_code, observed_nac, &new_nac, new_duid, parity, &error_count);
+    check_result = check_NID_with_observed_nac_soft(bch_code, bch_reliab, observed_nac, &new_nac, new_duid, parity,
+                                                    parity_reliab, &error_count);
     if (check_result > 0) {
         // NID_OK (1) or NID_PARITY_OVERRIDE (2) - frame accepted
 

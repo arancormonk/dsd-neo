@@ -177,6 +177,43 @@ test_golay_12_three_errors() {
     }
 }
 
+static void
+test_golay_12_prefers_low_reliability_flips() {
+    DSDGolay24 golay;
+    char orig_data[12] = {0};
+    char data[12];
+    char parity[12];
+
+    memcpy(data, orig_data, 12);
+    golay.encode_12(data, parity);
+
+    /* Four errors force the soft path. With the old inverted penalty this
+     * vector selected a different valid codeword by preferring high-confidence
+     * flips.
+     */
+    data[0] ^= 1;
+    data[1] ^= 1;
+    data[2] ^= 1;
+    data[3] ^= 1;
+
+    int reliab[24];
+    for (int i = 0; i < 24; i++) {
+        reliab[i] = 180;
+    }
+    reliab[0] = 20;
+    reliab[1] = 20;
+    reliab[2] = 20;
+    reliab[3] = 20;
+
+    int fixed = 0;
+    int result = check_and_fix_golay_24_12_soft(data, parity, reliab, &fixed);
+    ASSERT_EQ(result, 0, "Low-reliability four-error case should soft-correct");
+
+    for (int i = 0; i < 12; i++) {
+        ASSERT_EQ(data[i], orig_data[i], "Soft Golay should prefer low-reliability flips");
+    }
+}
+
 int
 main(void) {
     /* Golay(24,6) tests */
@@ -188,6 +225,7 @@ main(void) {
     test_golay_12_no_error();
     test_golay_12_two_errors();
     test_golay_12_three_errors();
+    test_golay_12_prefers_low_reliability_flips();
 
     if (g_fail_count > 0) {
         fprintf(stderr, "FAILED: %d test(s) failed\n", g_fail_count);

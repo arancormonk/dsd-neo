@@ -4,12 +4,19 @@
  */
 #include <dsd-neo/fec/BCH_63_16.hpp>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
+#include <dsd-neo/protocol/p25/p25p1_soft.h>
+
+#include <cstring>
+#include <stdint.h>
 
 // Ideas taken from http://op25.osmocom.org/trac/wiki.png/browser/op25/gr-op25/lib/decoder_ff_impl.cc
 // See also p25_training_guide.pdf page 48.
 // See also tia-102-baaa-a-project_25-fdma-common_air_interface.pdf page 40.
 
 static BCH_63_16_11 bch;
+
+static int decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity,
+                               int* error_count, bool* bch_decode_failed);
 
 /**
  * @brief Valid DUID values from TIA-102.BAAA-A Table 8-4.
@@ -83,6 +90,161 @@ static void
 set_received_nac(char* bch_code, int nac) {
     for (int i = 0; i < 12; i++) {
         bch_code[i] = (char)((nac >> (11 - i)) & 1);
+    }
+}
+
+static int
+clamp_reliability(uint8_t reliab) {
+    return (int)reliab;
+}
+
+static int
+score_bit_changes(const char* original, const char* candidate, const uint8_t* reliab, int n) {
+    int score = 0;
+    for (int i = 0; i < n; i++) {
+        if (original[i] != candidate[i]) {
+            score += clamp_reliability(reliab[i]);
+        }
+    }
+    return score;
+}
+
+static int
+count_bit_changes(const char* original, const char* candidate, int n) {
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        if (original[i] != candidate[i]) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static int
+candidate_flip_allowed(const char* original, const char* candidate, const uint8_t* reliab, int n) {
+    int changed = count_bit_changes(original, candidate, n);
+    if (changed == 0) {
+        return 1;
+    }
+
+    int threshold = p25p1_get_erasure_threshold();
+    int score = score_bit_changes(original, candidate, reliab, n);
+    return score <= threshold * changed;
+}
+
+static int
+compare_reliability_index(const uint8_t* reliab, int a, int b) {
+    int rel_a = clamp_reliability(reliab[a]);
+    int rel_b = clamp_reliability(reliab[b]);
+    if (rel_a != rel_b) {
+        return rel_a - rel_b;
+    }
+    return a - b;
+}
+
+static int
+build_soft_nid_pool(const uint8_t* reliab, int* pool, int max_pool) {
+    int order[63];
+    for (int i = 0; i < 63; i++) {
+        order[i] = i;
+    }
+    for (int i = 0; i < 63; i++) {
+        for (int j = i + 1; j < 63; j++) {
+            if (compare_reliability_index(reliab, order[j], order[i]) < 0) {
+                int tmp = order[i];
+                order[i] = order[j];
+                order[j] = tmp;
+            }
+        }
+    }
+
+    int threshold = p25p1_get_erasure_threshold();
+    int selected[63] = {0};
+    int count = 0;
+    for (int i = 0; i < 63 && count < max_pool; i++) {
+        if (clamp_reliability(reliab[order[i]]) < threshold) {
+            pool[count++] = order[i];
+            selected[i] = 1;
+        }
+    }
+    for (int i = 0; i < 63 && count < 6; i++) {
+        if (!selected[i]) {
+            pool[count++] = order[i];
+        }
+    }
+    return count;
+}
+
+struct SoftNidCandidate {
+    int found;
+    int result;
+    int nac;
+    char duid[3];
+    int error_count;
+    int score;
+    int changes;
+};
+
+static void
+soft_nid_consider_candidate(const char* scoring_code, const char* candidate, const uint8_t* reliab,
+                            unsigned char parity, uint8_t parity_reliab, SoftNidCandidate* best) {
+    int decoded_nac = 0;
+    char decoded_duid[3] = {0};
+    int decoded_errors = 0;
+    int result = decode_nid_codeword(candidate, &decoded_nac, decoded_duid, parity, &decoded_errors, 0);
+    if (result <= 0) {
+        return;
+    }
+
+    int score = score_bit_changes(scoring_code, candidate, reliab, 63);
+    if (result == NID_PARITY_OVERRIDE) {
+        score += (int)parity_reliab;
+    }
+    int changes = count_bit_changes(scoring_code, candidate, 63);
+
+    if (!best->found || score < best->score || (score == best->score && result == NID_OK && best->result != NID_OK)
+        || (score == best->score && result == best->result && decoded_errors < best->error_count)
+        || (score == best->score && result == best->result && decoded_errors == best->error_count
+            && changes < best->changes)) {
+        best->found = 1;
+        best->result = result;
+        best->nac = decoded_nac;
+        best->duid[0] = decoded_duid[0];
+        best->duid[1] = decoded_duid[1];
+        best->duid[2] = decoded_duid[2];
+        best->error_count = decoded_errors;
+        best->score = score;
+        best->changes = changes;
+    }
+}
+
+static void
+soft_nid_search_from_base(const char* scoring_code, const char* base_code, const uint8_t* reliab, const int* pool,
+                          int pool_count, unsigned char parity, uint8_t parity_reliab, SoftNidCandidate* best) {
+    int max_mask = 1 << pool_count;
+    for (int mask = 0; mask < max_mask; mask++) {
+        int weight = 0;
+        for (int bit = 0; bit < pool_count; bit++) {
+            if ((mask & (1 << bit)) != 0) {
+                weight++;
+            }
+        }
+        if (weight > 3) {
+            continue;
+        }
+
+        char candidate[63];
+        std::memcpy(candidate, base_code, 63);
+        for (int bit = 0; bit < pool_count; bit++) {
+            if ((mask & (1 << bit)) != 0) {
+                candidate[pool[bit]] ^= 1;
+            }
+        }
+
+        if (!candidate_flip_allowed(scoring_code, candidate, reliab, 63)) {
+            continue;
+        }
+        soft_nid_consider_candidate(scoring_code, candidate, reliab, parity, parity_reliab, best);
     }
 }
 
@@ -191,6 +353,43 @@ check_NID_with_observed_nac(char* bch_code, int observed_nac, int* new_nac, char
     set_received_nac(retry_code, observed_nac);
 
     return decode_nid_codeword(retry_code, new_nac, new_duid, parity, error_count, 0);
+}
+
+int
+check_NID_with_observed_nac_soft(char* bch_code, const uint8_t* reliab63, int observed_nac, int* new_nac,
+                                 char* new_duid, unsigned char parity, uint8_t parity_reliab, int* error_count) {
+    int hard_result = check_NID_with_observed_nac(bch_code, observed_nac, new_nac, new_duid, parity, error_count);
+    if (hard_result > 0 || reliab63 == 0) {
+        return hard_result;
+    }
+
+    int pool[8];
+    int pool_count = build_soft_nid_pool(reliab63, pool, 8);
+    if (pool_count <= 0) {
+        return hard_result;
+    }
+
+    SoftNidCandidate best = {0, NID_DECODE_FAIL, 0, {0, 0, 0}, 0, 0, 0};
+    soft_nid_search_from_base(bch_code, bch_code, reliab63, pool, pool_count, parity, parity_reliab, &best);
+
+    if (valid_observed_nac(observed_nac) && received_nac(bch_code) != observed_nac) {
+        char retry_code[63];
+        std::memcpy(retry_code, bch_code, 63);
+        set_received_nac(retry_code, observed_nac);
+        // Score Chase flips against the trusted NAC rewrite, not the raw received word.
+        soft_nid_search_from_base(retry_code, retry_code, reliab63, pool, pool_count, parity, parity_reliab, &best);
+    }
+
+    if (!best.found) {
+        return hard_result;
+    }
+
+    *new_nac = best.nac;
+    new_duid[0] = best.duid[0];
+    new_duid[1] = best.duid[1];
+    new_duid[2] = best.duid[2];
+    *error_count = best.error_count;
+    return best.result;
 }
 
 /**

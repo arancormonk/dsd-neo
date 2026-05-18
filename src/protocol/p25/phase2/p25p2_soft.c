@@ -20,8 +20,8 @@ extern uint8_t p2xreliab[700];
  */
 static int g_erasure_thresh = -1; /* -1 = uninitialized */
 
-static int
-get_erasure_threshold(void) {
+int
+p25p2_soft_erasure_threshold(void) {
     if (g_erasure_thresh < 0) {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
 
@@ -193,7 +193,7 @@ static const uint16_t sacch_parity_bit_offsets[22][6] = {
 int
 p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fixed, int max_add) {
     const uint8_t* reliab = scrambled ? p2xreliab : p2reliab;
-    int thresh = get_erasure_threshold();
+    int thresh = p25p2_soft_erasure_threshold();
     int added = 0;
     int total = n_fixed;
 
@@ -256,7 +256,7 @@ p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fi
 int
 p25p2_sacch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fixed, int max_add) {
     const uint8_t* reliab = scrambled ? p2xreliab : p2reliab;
-    int thresh = get_erasure_threshold();
+    int thresh = p25p2_soft_erasure_threshold();
     int added = 0;
     int total = n_fixed;
 
@@ -397,7 +397,7 @@ static const uint16_t ess_a_parity_bit_offsets[28][6] = {
 int
 p25p2_ess_soft_erasures(int ts_counter, int is_4v, int* erasures, int n_fixed, int max_add) {
     const uint8_t* reliab = p2xreliab; /* ESS uses descrambled buffer */
-    int thresh = get_erasure_threshold();
+    int thresh = p25p2_soft_erasure_threshold();
     int added = 0;
     int total = n_fixed;
 

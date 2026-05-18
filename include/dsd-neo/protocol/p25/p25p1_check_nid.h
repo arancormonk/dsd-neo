@@ -11,6 +11,8 @@
 #ifndef P25P1_CHECK_NID_H_3af071e917ea43fdb51326e2cbfbde0a
 #define P25P1_CHECK_NID_H_3af071e917ea43fdb51326e2cbfbde0a
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -80,6 +82,27 @@ int check_NID_with_error_count(char* bch_code, int* new_nac, char* new_duid, uns
  */
 int check_NID_with_observed_nac(char* bch_code, int observed_nac, int* new_nac, char* new_duid, unsigned char parity,
                                 int* error_count);
+
+/**
+ * @brief Decode and validate a P25 NID with reliability-guided fallback.
+ *
+ * Runs the hard observed-NAC path first. If hard BCH/NID validation fails,
+ * a bounded Chase retry flips only low-cost candidate bits selected from
+ * @p reliab63, scoring each candidate with the P25 soft-information convention
+ * where 0 is uncertain and 255 is confident.
+ *
+ * @param bch_code      Input. An array of 63 bytes, each containing one bit of the NID.
+ * @param reliab63      Input. Per-bit reliability for @p bch_code, or NULL to use hard-only decode.
+ * @param observed_nac  Known 12-bit NAC to use for retry, or 0 when unavailable.
+ * @param new_nac       Output. Pointer to store the decoded 12-bit NAC value.
+ * @param new_duid      Output. Pointer to a 3-char buffer for the decoded DUID string.
+ * @param parity        Input. The 64th parity bit read from the air interface.
+ * @param parity_reliab Input. Reliability of the final parity bit.
+ * @param error_count   Output. Pointer to store the number of BCH errors corrected.
+ * @return NidResult code (same semantics as check_NID_with_error_count()).
+ */
+int check_NID_with_observed_nac_soft(char* bch_code, const uint8_t* reliab63, int observed_nac, int* new_nac,
+                                     char* new_duid, unsigned char parity, uint8_t parity_reliab, int* error_count);
 
 /**
  * @brief Decode and validate a P25 NID codeword.

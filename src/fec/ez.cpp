@@ -12,6 +12,7 @@
  * 2022-09 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <climits>
 #include <dsd-neo/platform/posix_compat.h>
 #include <stdint.h>
 #include <unordered_map>
@@ -28,6 +29,7 @@ int ez_rs28_ess_soft(int payload[96], int parity[168], const int* erasures, int 
 int ez_rs28_facch_soft(int payload[156], int parity[114], const int* erasures, int n_erasures);
 int ez_rs28_sacch_soft(int payload[180], int parity[132], const int* erasures, int n_erasures);
 int isch_lookup(uint64_t isch);
+int isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]);
 }
 
 std::vector<uint8_t> ESS_A(28, 0); // ESS_A and ESS_B are hexbits vectors
@@ -409,6 +411,49 @@ isch_lookup(uint64_t isch) {
         if ((popct <= 7) && (popct < popmin)) {
             decoded = kv.second;
             popmin = popct;
+        }
+    }
+    return decoded;
+}
+
+static int
+isch_weighted_mismatch_cost(uint64_t received, uint64_t candidate, const uint8_t reliab40[40]) {
+    int cost = 0;
+    uint64_t diff = received ^ candidate;
+    for (int i = 0; i < 40; i++) {
+        uint64_t mask = 1ULL << (39 - i);
+        if ((diff & mask) != 0) {
+            cost += (int)reliab40[i];
+        }
+    }
+    return cost;
+}
+
+int
+isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]) {
+    const auto& m = isch_table();
+    auto it = m.find(isch);
+    if (it != m.end()) {
+        return it->second; // exact hard matches remain authoritative
+    }
+    if (reliab40 == 0) {
+        return isch_lookup(isch);
+    }
+
+    int decoded = -2;
+    int best_cost = INT_MAX;
+    int best_popct = 40;
+    for (const auto& kv : m) {
+        int popct = dsd_popcount64(isch ^ kv.first);
+        if (popct > 7) {
+            continue;
+        }
+        int cost = isch_weighted_mismatch_cost(isch, kv.first, reliab40);
+        if (cost < best_cost || (cost == best_cost && popct < best_popct)
+            || (cost == best_cost && popct == best_popct && kv.second < decoded)) {
+            decoded = kv.second;
+            best_cost = cost;
+            best_popct = popct;
         }
     }
     return decoded;

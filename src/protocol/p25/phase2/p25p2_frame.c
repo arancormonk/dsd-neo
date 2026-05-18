@@ -156,6 +156,82 @@ static const int16_t duid_lookup[256] =
         -1, 6,  12, -1, 14, 14, 14, -1, 14, -1, -1, 15, -1, 13, 7,  -1, 11, -1, -1, 15, 14, -1, -1, 15, -1, 15, 15, 15,
 };
 
+extern uint8_t p2reliab[700];
+
+static uint8_t
+p25p2_reliability_for_abs_bit(int abs_bit) {
+    if (abs_bit < 0) {
+        return 0;
+    }
+    int dibit_idx = abs_bit / 2;
+    if (dibit_idx < 0 || dibit_idx >= 700) {
+        return 0;
+    }
+    return p2reliab[dibit_idx];
+}
+
+static int
+p25p2_duid_hamming8(uint8_t a, uint8_t b) {
+    uint8_t diff = (uint8_t)(a ^ b);
+    int count = 0;
+    for (int i = 0; i < 8; i++) {
+        count += (diff >> i) & 1U;
+    }
+    return count;
+}
+
+static int
+p25p2_duid_flip_reliability(uint8_t received, uint8_t candidate, const uint8_t reliab8[8]) {
+    for (int i = 0; i < 8; i++) {
+        uint8_t mask = (uint8_t)(1U << (7 - i));
+        if ((received & mask) != (candidate & mask)) {
+            return (int)reliab8[i];
+        }
+    }
+    return 256;
+}
+
+static int
+p25p2_duid_lookup_soft(uint8_t received, const uint8_t reliab8[8]) {
+    int hard = duid_lookup[received];
+    if (hard >= 0 || reliab8 == NULL || received == 0x80U) {
+        return hard;
+    }
+
+    int thresh = p25p2_soft_erasure_threshold();
+    int best_decoded = hard;
+    int best_cost = 999999;
+    int tied_best = 0;
+    for (int candidate = 0; candidate < 256; candidate++) {
+        int decoded = duid_lookup[candidate];
+        if (decoded < 0 || p25p2_duid_hamming8(received, (uint8_t)candidate) != 1) {
+            continue;
+        }
+        int cost = p25p2_duid_flip_reliability(received, (uint8_t)candidate, reliab8);
+        if (cost >= thresh) {
+            continue;
+        }
+        if (cost < best_cost) {
+            best_cost = cost;
+            best_decoded = decoded;
+            tied_best = 0;
+        } else if (cost == best_cost && decoded != best_decoded) {
+            tied_best = 1;
+        }
+    }
+    if (tied_best) {
+        return hard;
+    }
+    return best_decoded;
+}
+
+#if defined(DSD_NEO_P25P2_TEST_STUB)
+int
+p25p2_duid_lookup_soft_test(uint8_t received, const uint8_t reliab8[8]) {
+    return p25p2_duid_lookup_soft(received, reliab8);
+}
+#endif
+
 //4V and 2V deinterleave schedule
 const int c0[25] = {23, 5, 22, 4, 21, 3, 20, 2, 19, 1, 18, 0, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6};
 
@@ -575,16 +651,19 @@ process_ISCH(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
 
     isch = 0;
+    uint8_t isch_reliab[40];
     for (int i = 0; i < 40; i++) {
+        int abs_bit = i + 320 + (360 * framing_counter);
         isch = isch << 1;
-        isch = isch | p2bit[i + 320 + (360 * framing_counter)];
+        isch = isch | p2bit[abs_bit];
+        isch_reliab[i] = p25p2_reliability_for_abs_bit(abs_bit);
     }
 
     if (isch == 0x575D57F7FF) //S-ISCH frame sync, pass;
     {
         //do nothing
     } else {
-        isch_decoded = isch_lookup(isch);
+        isch_decoded = isch_lookup_soft(isch, isch_reliab);
 
         if (isch_decoded > -1) {
             int uf_count = isch_decoded & 0x3;
@@ -1269,6 +1348,15 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         p2_duid[5] = p2bit[245 + (ts_counter * 360)];
         p2_duid[6] = p2bit[318 + (ts_counter * 360)];
         p2_duid[7] = p2bit[319 + (ts_counter * 360)];
+        uint8_t p2_duid_reliab[8];
+        p2_duid_reliab[0] = p25p2_reliability_for_abs_bit(0 + (ts_counter * 360));
+        p2_duid_reliab[1] = p25p2_reliability_for_abs_bit(1 + (ts_counter * 360));
+        p2_duid_reliab[2] = p25p2_reliability_for_abs_bit(74 + (ts_counter * 360));
+        p2_duid_reliab[3] = p25p2_reliability_for_abs_bit(75 + (ts_counter * 360));
+        p2_duid_reliab[4] = p25p2_reliability_for_abs_bit(244 + (ts_counter * 360));
+        p2_duid_reliab[5] = p25p2_reliability_for_abs_bit(245 + (ts_counter * 360));
+        p2_duid_reliab[6] = p25p2_reliability_for_abs_bit(318 + (ts_counter * 360));
+        p2_duid_reliab[7] = p25p2_reliability_for_abs_bit(319 + (ts_counter * 360));
 
         //process p2_duid with (8,4,4) encoding/decoding
         int p2_duid_complete = 0;
@@ -1276,7 +1364,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             p2_duid_complete = p2_duid_complete << 1;
             p2_duid_complete = p2_duid_complete | p2_duid[i];
         }
-        duid_decoded = duid_lookup[p2_duid_complete];
+        duid_decoded = p25p2_duid_lookup_soft((uint8_t)p2_duid_complete, p2_duid_reliab);
 
         char timestr[9];
         getTimeC_buf(timestr);

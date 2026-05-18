@@ -27,6 +27,7 @@ extern int p2bit[4320];
 extern uint8_t p2reliab[700];
 extern uint8_t p2xreliab[700];
 extern void p25_p2_frame_reset(void);
+extern int p25p2_duid_lookup_soft_test(uint8_t received, const uint8_t reliab8[8]);
 
 /* Stubs for external functions referenced by p25p2_frame.c */
 struct RtlSdrContext* g_rtl_ctx = 0;
@@ -193,6 +194,12 @@ isch_lookup(uint64_t isch) {
 }
 
 int
+isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]) {
+    (void)reliab40;
+    return isch_lookup(isch);
+}
+
+int
 ez_rs28_facch_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
     (void)payload;
     (void)parity;
@@ -324,6 +331,61 @@ main(void) {
         printf("PASS\n");
     } else {
         printf("FAIL (%d mismatches)\n", mismatch);
+        failures++;
+    }
+
+    /* Test 5: P2 DUID soft fallback only recovers invalid hard decisions */
+    printf("Test 5: DUID soft fallback preserves valid hard decisions... ");
+    uint8_t duid_reliab[8] = {200, 200, 200, 200, 200, 200, 200, 5};
+    int valid_decoded = p25p2_duid_lookup_soft_test(0x07U, duid_reliab);
+    if (valid_decoded == 1) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (expected 1, got %d)\n", valid_decoded);
+        failures++;
+    }
+
+    printf("Test 6: DUID soft fallback uses weakest invalid bit... ");
+    memset(duid_reliab, 200, sizeof(duid_reliab));
+    duid_reliab[7] = 5; /* 0x03 -> 0x02 is the cheapest one-bit valid candidate. */
+    int recovered_decoded = p25p2_duid_lookup_soft_test(0x03U, duid_reliab);
+    if (recovered_decoded == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (expected 0, got %d)\n", recovered_decoded);
+        failures++;
+    }
+
+    printf("Test 7: DUID soft fallback rejects high-confidence invalid bits... ");
+    memset(duid_reliab, 200, sizeof(duid_reliab));
+    int high_confidence_decoded = p25p2_duid_lookup_soft_test(0x03U, duid_reliab);
+    if (high_confidence_decoded == -1) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (expected -1, got %d)\n", high_confidence_decoded);
+        failures++;
+    }
+
+    printf("Test 8: DUID soft fallback preserves 0x80 invalid guard... ");
+    memset(duid_reliab, 200, sizeof(duid_reliab));
+    duid_reliab[0] = 5;
+    int sentinel_decoded = p25p2_duid_lookup_soft_test(0x80U, duid_reliab);
+    if (sentinel_decoded == -1) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (expected -1, got %d)\n", sentinel_decoded);
+        failures++;
+    }
+
+    printf("Test 9: DUID soft fallback rejects tied frame candidates... ");
+    memset(duid_reliab, 200, sizeof(duid_reliab));
+    duid_reliab[5] = 5; /* 0x03 -> 0x07 decodes to 1. */
+    duid_reliab[7] = 5; /* 0x03 -> 0x02 decodes to 0. */
+    int tied_decoded = p25p2_duid_lookup_soft_test(0x03U, duid_reliab);
+    if (tied_decoded == -1) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (expected -1, got %d)\n", tied_decoded);
         failures++;
     }
 
