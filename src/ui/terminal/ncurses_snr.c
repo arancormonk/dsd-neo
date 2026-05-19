@@ -51,6 +51,7 @@ snr_meter_bar_count(double snr_db) {
     return SNR_METER_BARS;
 }
 
+#ifdef PRETTY_COLORS
 static short
 snr_quality_color_pair(double snr_db, int mod) {
     const short C_GOOD = 11, C_MOD = 12, C_POOR = 13;
@@ -64,6 +65,7 @@ snr_quality_color_pair(double snr_db, int mod) {
     }
     return (snr_db < thr1) ? C_POOR : (snr_db < thr2) ? C_MOD : C_GOOD;
 }
+#endif
 
 #ifdef DSD_NEO_TEST_HOOKS
 static void
@@ -170,18 +172,6 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
     /* Map most recent to the right; older to the left */
     int idx = (start + (len - count)) % SNR_HIST_N;
 
-    /* Color bands (per modulation, unbiased SNR):
-       - C4FM: poor<4, 4..10 moderate, >10 good
-       - QPSK/GFSK: poor<10, 10..16 moderate, >16 good */
-    const short C_GOOD = 11, C_MOD = 12, C_POOR = 13;
-    double thr1 = 12.0, thr2 = 18.0; /* fallback */
-    if (mod == 0) {                  /* C4FM */
-        thr1 = 4.0;
-        thr2 = 10.0;
-    } else if (mod == 1 || mod == 2) { /* QPSK or GFSK */
-        thr1 = 10.0;
-        thr2 = 16.0;
-    }
     for (int x = 0; x < count; x++) {
         double v = buf[idx];
         idx = (idx + 1) % SNR_HIST_N;
@@ -199,8 +189,8 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
         if (li >= levels) {
             li = levels - 1;
         }
-        short cp = (v < thr1) ? C_POOR : (v < thr2) ? C_MOD : C_GOOD;
 #ifdef PRETTY_COLORS
+        short cp = snr_quality_color_pair(v, mod);
         attron(COLOR_PAIR(cp));
 #endif
         if (use_unicode) {
@@ -230,8 +220,8 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     static const char* uni_bars[SNR_METER_BARS] = {"▁", "▂", "▃", "▄", "▅"};
     const int bars = snr_meter_bar_count(snr_db);
     int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
-    short cp = snr_quality_color_pair(snr_db, mod);
 #ifdef PRETTY_COLORS
+    short cp = snr_quality_color_pair(snr_db, mod);
     if (bars > 0) {
         attron(COLOR_PAIR(cp));
     }
