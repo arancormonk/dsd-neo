@@ -445,6 +445,19 @@ add_executable(dsd-neo_test_ui_burst_active_call ui/test_ui_burst_active_call.c)
 target_include_directories(dsd-neo_test_ui_burst_active_call PRIVATE ${PROJECT_SOURCE_DIR}/include)
 add_test(NAME UI_BURST_ACTIVE_CALL COMMAND dsd-neo_test_ui_burst_active_call)
 
+add_executable(dsd-neo_test_ui_snr_meter
+  ui/test_ui_snr_meter.c
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_snr.c)
+target_include_directories(dsd-neo_test_ui_snr_meter PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${CURSES_INCLUDE_DIRS})
+target_compile_definitions(dsd-neo_test_ui_snr_meter PRIVATE DSD_NEO_TEST_HOOKS)
+if(DSD_ENABLE_FAST_MATH)
+  target_compile_definitions(dsd-neo_test_ui_snr_meter PRIVATE DSD_NEO_FAST_MATH=1)
+endif()
+target_link_libraries(dsd-neo_test_ui_snr_meter PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME UI_SNR_METER COMMAND dsd-neo_test_ui_snr_meter)
+
 add_executable(dsd-neo_test_ui_menu_navigation
   ui/test_ui_menu_navigation.c
   ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c)

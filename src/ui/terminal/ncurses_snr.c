@@ -29,6 +29,72 @@ static double snr_hist_gfsk[SNR_HIST_N];
 static int snr_hist_len_gfsk = 0;
 static int snr_hist_head_gfsk = 0;
 
+enum { SNR_METER_BARS = 5 };
+
+static int
+snr_meter_bar_count(double snr_db) {
+    if (!isfinite(snr_db) || snr_db <= -50.0) {
+        return 0;
+    }
+    if (snr_db < -6.0) {
+        return 1;
+    }
+    if (snr_db < 3.0) {
+        return 2;
+    }
+    if (snr_db < 12.0) {
+        return 3;
+    }
+    if (snr_db < 21.0) {
+        return 4;
+    }
+    return SNR_METER_BARS;
+}
+
+static short
+snr_quality_color_pair(double snr_db, int mod) {
+    const short C_GOOD = 11, C_MOD = 12, C_POOR = 13;
+    double thr1 = 12.0, thr2 = 18.0; /* fallback */
+    if (mod == 0) {                  /* C4FM */
+        thr1 = 4.0;
+        thr2 = 10.0;
+    } else if (mod == 1 || mod == 2) { /* QPSK or GFSK */
+        thr1 = 10.0;
+        thr2 = 16.0;
+    }
+    return (snr_db < thr1) ? C_POOR : (snr_db < thr2) ? C_MOD : C_GOOD;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+static void
+snr_meter_ascii(double snr_db, char* out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return;
+    }
+
+    size_t n = out_size - 1;
+    if (n > SNR_METER_BARS) {
+        n = SNR_METER_BARS;
+    }
+
+    int bars = snr_meter_bar_count(snr_db);
+    for (size_t i = 0; i < n; i++) {
+        out[i] = ((int)i < bars) ? '|' : ' ';
+    }
+    out[n] = '\0';
+}
+
+int
+dsd_ncurses_snr_meter_bar_count_for_test(double snr_db) {
+    return snr_meter_bar_count(snr_db);
+}
+
+void
+dsd_ncurses_snr_meter_ascii_for_test(double snr_db, char* out, size_t out_size) {
+    snr_meter_ascii(snr_db, out, out_size);
+}
+#endif
+
 void
 snr_hist_push(int mod, double snr) {
     if (snr < -50.0) {
@@ -152,7 +218,7 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
 #endif
 }
 
-/* Render a compact horizontal meter for current SNR using existing glyphs. */
+/* Render a compact ascending signal-bar meter for current SNR. */
 void
 print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     /* Preserve the current color pair so our temporary colors don't clear it */
@@ -161,52 +227,33 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     short saved_pair = 0;
     attr_get(&saved_attrs, &saved_pair, NULL);
 #endif
-    /* Color bands match sparkline thresholds (per modulation) */
-    const short C_GOOD = 11, C_MOD = 12, C_POOR = 13;
-    double thr1 = 12.0, thr2 = 18.0; /* fallback */
-    if (mod == 0) {                  /* C4FM */
-        thr1 = 4.0;
-        thr2 = 10.0;
-    } else if (mod == 1 || mod == 2) { /* QPSK or GFSK */
-        thr1 = 10.0;
-        thr2 = 16.0;
-    }
-    /* Map -15..30 dB onto 8 glyph levels (same set used elsewhere) */
-    static const char* uni8[] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
-    static const char ascii8[] = ".:;-=+*#"; /* 8 levels */
-
-    const double clip_lo = -15.0, clip_hi = 30.0; /* dB window (allow negatives) */
-    double v = snr_db;
-    if (v < clip_lo) {
-        v = clip_lo;
-    }
-    if (v > clip_hi) {
-        v = clip_hi;
-    }
-    const int levels = 8;
-    int li = (int)floor(((v - clip_lo) / (clip_hi - clip_lo)) * (levels - 1) + 0.5);
-    if (li < 0) {
-        li = 0;
-    }
-    if (li >= levels) {
-        li = levels - 1;
-    }
-
+    static const char* uni_bars[SNR_METER_BARS] = {"▁", "▂", "▃", "▄", "▅"};
+    const int bars = snr_meter_bar_count(snr_db);
     int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
-    short cp = (snr_db < thr1) ? C_POOR : (snr_db < thr2) ? C_MOD : C_GOOD;
+    short cp = snr_quality_color_pair(snr_db, mod);
 #ifdef PRETTY_COLORS
-    attron(COLOR_PAIR(cp));
+    if (bars > 0) {
+        attron(COLOR_PAIR(cp));
+    }
 #endif
-    if (use_unicode) {
-        addstr(uni8[li]);
-    } else {
-        addch(ascii8[li]);
+    for (int i = 0; i < SNR_METER_BARS; i++) {
+        if (i >= bars) {
+            break;
+        }
+        if (use_unicode) {
+            addstr(uni_bars[i]);
+        } else {
+            addch('|');
+        }
     }
 #ifdef PRETTY_COLORS
-    attroff(COLOR_PAIR(cp));
-#endif
-#ifdef PRETTY_COLORS
-    /* Restore previously active color pair (e.g., green call banner) */
+    if (bars > 0) {
+        attroff(COLOR_PAIR(cp));
+    }
+    /* Padding belongs to the caller's line styling, not the temporary SNR color. */
     attr_set(saved_attrs, saved_pair, NULL);
 #endif
+    for (int i = bars; i < SNR_METER_BARS; i++) {
+        addch(' ');
+    }
 }

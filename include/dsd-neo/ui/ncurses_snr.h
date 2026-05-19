@@ -13,6 +13,7 @@
 #pragma once
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,8 +25,13 @@ void snr_hist_push(int mod, double snr);
 /** Render a sparkline showing recent SNR history. */
 void print_snr_sparkline(const dsd_opts* opts, int mod);
 
-/** Render a compact single-glyph SNR meter. */
+/** Render a compact SNR meter. */
 void print_snr_meter(const dsd_opts* opts, double snr_db, int mod);
+
+#ifdef DSD_NEO_TEST_HOOKS
+int dsd_ncurses_snr_meter_bar_count_for_test(double snr_db);
+void dsd_ncurses_snr_meter_ascii_for_test(double snr_db, char* out, size_t out_size);
+#endif
 
 #ifdef __cplusplus
 }
