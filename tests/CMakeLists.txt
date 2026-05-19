@@ -458,6 +458,24 @@ endif()
 target_link_libraries(dsd-neo_test_ui_snr_meter PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME UI_SNR_METER COMMAND dsd-neo_test_ui_snr_meter)
 
+if(NOT DSD_HAS_PDCURSES_WIDE_API)
+  add_executable(dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+    ui/test_ui_snr_meter.c
+    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_snr.c)
+  target_include_directories(dsd-neo_test_ui_snr_meter_pdc_wide_no_api PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${CURSES_INCLUDE_DIRS})
+  target_compile_definitions(dsd-neo_test_ui_snr_meter_pdc_wide_no_api PRIVATE
+    DSD_NEO_TEST_HOOKS
+    DSD_USE_PDCURSES
+    PDC_WIDE)
+  if(DSD_ENABLE_FAST_MATH)
+    target_compile_definitions(dsd-neo_test_ui_snr_meter_pdc_wide_no_api PRIVATE DSD_NEO_FAST_MATH=1)
+  endif()
+  target_link_libraries(dsd-neo_test_ui_snr_meter_pdc_wide_no_api PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB})
+  add_test(NAME UI_SNR_METER_PDC_WIDE_NO_API COMMAND dsd-neo_test_ui_snr_meter_pdc_wide_no_api)
+endif()
+
 add_executable(dsd-neo_test_ui_menu_navigation
   ui/test_ui_menu_navigation.c
   ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c)

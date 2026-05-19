@@ -17,7 +17,11 @@
 
 #if defined(DSD_USE_PDCURSES)
 /* PDCurses backend */
-#ifndef PDC_WIDE
+/*
+ * PDC_WIDE only controls the declarations visible from curses.h. It does not
+ * prove that the linked PDCurses library exports the wide-character entrypoints.
+ */
+#if defined(DSD_HAS_PDCURSES_WIDE_API) && !defined(PDC_WIDE)
 #define PDC_WIDE
 #endif
 #include <curses.h>

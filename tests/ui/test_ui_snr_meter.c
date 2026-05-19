@@ -45,6 +45,15 @@ assert_ascii(double snr_db, const char* expected) {
 
 int
 main(void) {
+    assert(dsd_ncurses_snr_use_unicode_for_test(0, 0) == 0);
+    assert(dsd_ncurses_snr_use_unicode_for_test(0, 1) == 0);
+    assert(dsd_ncurses_snr_use_unicode_for_test(1, 0) == 0);
+#if defined(DSD_USE_PDCURSES) && !defined(DSD_HAS_PDCURSES_WIDE_API)
+    assert(dsd_ncurses_snr_use_unicode_for_test(1, 1) == 0);
+#else
+    assert(dsd_ncurses_snr_use_unicode_for_test(1, 1) == 1);
+#endif
+
 #if !DSD_NEO_TEST_FAST_MATH
     assert(dsd_ncurses_snr_meter_bar_count_for_test(NAN) == 0);
 #endif

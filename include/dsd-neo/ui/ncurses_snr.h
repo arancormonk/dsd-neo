@@ -31,6 +31,7 @@ void print_snr_meter(const dsd_opts* opts, double snr_db, int mod);
 #ifdef DSD_NEO_TEST_HOOKS
 int dsd_ncurses_snr_meter_bar_count_for_test(double snr_db);
 void dsd_ncurses_snr_meter_ascii_for_test(double snr_db, char* out, size_t out_size);
+int dsd_ncurses_snr_use_unicode_for_test(int option_enabled, int unicode_supported);
 #endif
 
 #ifdef __cplusplus

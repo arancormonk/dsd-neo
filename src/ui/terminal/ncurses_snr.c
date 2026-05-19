@@ -7,12 +7,18 @@
  * SNR history, sparkline, and meter rendering
  */
 
-#include <curses.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_snr.h>
+#if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API) && !defined(PDC_WIDE)
+#define PDC_WIDE
+#endif
+#include <curses.h>
 #include <math.h>
 #include <stddef.h>
+#if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
+#include <wchar.h>
+#endif
 
 #include "dsd-neo/core/opts_fwd.h"
 
@@ -30,6 +36,8 @@ static int snr_hist_len_gfsk = 0;
 static int snr_hist_head_gfsk = 0;
 
 enum { SNR_METER_BARS = 5 };
+
+enum { SNR_BLOCK_LEVELS = 8 };
 
 static int
 snr_meter_bar_count(double snr_db) {
@@ -67,6 +75,41 @@ snr_quality_color_pair(double snr_db, int mod) {
 }
 #endif
 
+static int
+snr_unicode_backend_supported(void) {
+#if defined(DSD_USE_PDCURSES) && !defined(DSD_HAS_PDCURSES_WIDE_API)
+    return 0;
+#else
+    return 1;
+#endif
+}
+
+static int
+snr_use_unicode(int option_enabled, int unicode_supported) {
+    return option_enabled && unicode_supported && snr_unicode_backend_supported();
+}
+
+static void
+snr_add_block_level(int level) {
+    if (level < 0) {
+        level = 0;
+    }
+    if (level >= SNR_BLOCK_LEVELS) {
+        level = SNR_BLOCK_LEVELS - 1;
+    }
+
+#if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
+    static const wchar_t glyphs[SNR_BLOCK_LEVELS][2] = {
+        {(wchar_t)0x2581, 0}, {(wchar_t)0x2582, 0}, {(wchar_t)0x2583, 0}, {(wchar_t)0x2584, 0},
+        {(wchar_t)0x2585, 0}, {(wchar_t)0x2586, 0}, {(wchar_t)0x2587, 0}, {(wchar_t)0x2588, 0},
+    };
+    addwstr(glyphs[level]);
+#else
+    static const char* glyphs[SNR_BLOCK_LEVELS] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
+    addstr(glyphs[level]);
+#endif
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
 static void
 snr_meter_ascii(double snr_db, char* out, size_t out_size) {
@@ -94,6 +137,11 @@ dsd_ncurses_snr_meter_bar_count_for_test(double snr_db) {
 void
 dsd_ncurses_snr_meter_ascii_for_test(double snr_db, char* out, size_t out_size) {
     snr_meter_ascii(snr_db, out, out_size);
+}
+
+int
+dsd_ncurses_snr_use_unicode_for_test(int option_enabled, int unicode_supported) {
+    return snr_use_unicode(option_enabled, unicode_supported);
 }
 #endif
 
@@ -138,12 +186,11 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
     short saved_pair = 0;
     attr_get(&saved_attrs, &saved_pair, NULL);
 #endif
-    static const char* uni8[] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
     /* Make the lowest ASCII level visible (no leading space) */
     static const char ascii8[] = ".:;-=+*#"; /* 8 levels */
     /* Respect the UI toggle: only use Unicode blocks when enabled and locale supports it */
-    int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
-    const int levels = 8;
+    int use_unicode = snr_use_unicode(opts && opts->eye_unicode, ui_unicode_supported());
+    const int levels = SNR_BLOCK_LEVELS;
     const int W = 24;                             /* sparkline width */
     const double clip_lo = -15.0, clip_hi = 30.0; /* dB window (allow negatives) */
     const double span = (clip_hi - clip_lo) > 1e-6 ? (clip_hi - clip_lo) : 1.0;
@@ -194,7 +241,7 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
         attron(COLOR_PAIR(cp));
 #endif
         if (use_unicode) {
-            addstr(uni8[li]);
+            snr_add_block_level(li);
         } else {
             addch(ascii8[li]);
         }
@@ -217,9 +264,8 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     short saved_pair = 0;
     attr_get(&saved_attrs, &saved_pair, NULL);
 #endif
-    static const char* uni_bars[SNR_METER_BARS] = {"▁", "▂", "▃", "▄", "▅"};
     const int bars = snr_meter_bar_count(snr_db);
-    int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
+    int use_unicode = snr_use_unicode(opts && opts->eye_unicode, ui_unicode_supported());
 #ifdef PRETTY_COLORS
     short cp = snr_quality_color_pair(snr_db, mod);
     if (bars > 0) {
@@ -231,7 +277,7 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
             break;
         }
         if (use_unicode) {
-            addstr(uni_bars[i]);
+            snr_add_block_level(i);
         } else {
             addch('|');
         }

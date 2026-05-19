@@ -320,11 +320,36 @@ message(STATUS "Radio pipeline available: ${DSD_HAS_RADIO}")
 # - MinGW/POSIX: ncurses via CMake's FindCurses
 if(WIN32 AND NOT MINGW)
     find_package(PDCurses REQUIRED)
-    set(CURSES_LIBRARIES ${PDCURSES_LIBRARIES})
+    set(CURSES_LIBRARIES PDCurses::PDCurses)
     set(CURSES_INCLUDE_DIRS ${PDCURSES_INCLUDE_DIRS})
-    add_compile_definitions(PDC_WIDE)  # Wide character support for PDCurses
     add_compile_definitions(DSD_USE_PDCURSES)
+    include(CheckCSourceCompiles)
+    set(_CMAKE_REQUIRED_DEFINITIONS_SAVE "${CMAKE_REQUIRED_DEFINITIONS}")
+    set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
+    set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
+    set(CMAKE_REQUIRED_DEFINITIONS -DPDC_WIDE)
+    set(CMAKE_REQUIRED_INCLUDES ${PDCURSES_INCLUDE_DIRS})
+    set(CMAKE_REQUIRED_LIBRARIES PDCurses::PDCurses)
+    unset(DSD_HAS_PDCURSES_WIDE_API CACHE)
+    check_c_source_compiles("
+        #include <wchar.h>
+        #include <curses.h>
+        int main(void) {
+            static const wchar_t glyph[] = {0x2588, 0};
+            return addwstr(glyph);
+        }
+    " DSD_HAS_PDCURSES_WIDE_API)
+    set(CMAKE_REQUIRED_DEFINITIONS "${_CMAKE_REQUIRED_DEFINITIONS_SAVE}")
+    set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
+    set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
+    unset(_CMAKE_REQUIRED_DEFINITIONS_SAVE)
+    unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
+    unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
+    if(DSD_HAS_PDCURSES_WIDE_API)
+        add_compile_definitions(DSD_HAS_PDCURSES_WIDE_API=1 PDC_WIDE)
+    endif()
     message(STATUS "Curses backend: PDCurses")
+    message(STATUS "PDCurses wide-character API: ${DSD_HAS_PDCURSES_WIDE_API}")
 else()
     find_package(Curses REQUIRED)
     # Some ncurses installs (notably vcpkg's ncursesw on MinGW) do not provide a
