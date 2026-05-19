@@ -15,6 +15,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -233,7 +234,7 @@ import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
         LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
     }
 
-    if (trunk_enabled && opts->group_in_file[0] != '\0' && state->group_tally == 0) {
+    if (trunk_enabled && opts->group_in_file[0] != '\0' && !dsd_tg_policy_has_entries(state)) {
         if (csvGroupImport(opts, state) != 0) {
             return -1;
         }

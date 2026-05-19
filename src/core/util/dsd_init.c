@@ -847,7 +847,6 @@ initState(dsd_state* state) {
     memset(state->trunk_chan_map_used, 0, sizeof(state->trunk_chan_map_used));
     state->trunk_chan_map_used_count = 0;
     state->trunk_chan_map_seq = 0;
-    state->group_tally = 0;
     state->lcn_freq_count = 0; //number of frequncies imported as an enumerated lcn list
     state->lcn_freq_roll = 0;  //needs reset if sync is found?
     state->last_cc_sync_time = time(NULL);

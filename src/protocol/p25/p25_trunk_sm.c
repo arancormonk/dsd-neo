@@ -141,9 +141,10 @@ is_tdma_channel(const dsd_state* state, int channel) {
 
 static int
 p25_upsert_de_lockout(dsd_state* state, int tg, int* out_was_de) {
-    int idx = -1;
     int was_de = 0;
     const char* name = "ENC LO";
+    char mode_buf[8];
+    char name_buf[50];
     dsd_tg_policy_entry entry;
 
     if (!state || tg <= 0) {
@@ -153,16 +154,10 @@ p25_upsert_de_lockout(dsd_state* state, int tg, int* out_was_de) {
         return 1;
     }
 
-    for (unsigned int i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == (unsigned long)tg) {
-            idx = (int)i;
-            break;
-        }
-    }
-    if (idx >= 0) {
-        was_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
-        if (state->group_array[idx].groupName[0] != '\0') {
-            name = state->group_array[idx].groupName;
+    if (dsd_tg_policy_lookup_label(state, (uint32_t)tg, mode_buf, sizeof(mode_buf), name_buf, sizeof(name_buf))) {
+        was_de = (strcmp(mode_buf, "DE") == 0);
+        if (name_buf[0] != '\0') {
+            name = name_buf;
         }
     }
     if (out_was_de) {
@@ -172,11 +167,10 @@ p25_upsert_de_lockout(dsd_state* state, int tg, int* out_was_de) {
         return 0;
     }
 
-    if (dsd_tg_policy_make_legacy_exact_entry((uint32_t)tg, "DE", name, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &entry)
-        != 0) {
+    if (dsd_tg_policy_make_exact_entry((uint32_t)tg, "DE", name, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &entry) != 0) {
         return 1;
     }
-    return dsd_tg_policy_upsert_legacy_exact(state, &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    return dsd_tg_policy_upsert_exact(state, &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
 }
 
 static inline int

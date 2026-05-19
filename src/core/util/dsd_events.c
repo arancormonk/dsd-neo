@@ -17,6 +17,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <stdint.h>
@@ -693,30 +694,20 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         }
     }
 
-    //if we have a group_array import, search and load it here
+    //if we have talkgroup policy labels, search and load them here
     //will search and load both target values, and src values if available
     uint8_t t_name_loaded = 0;
     uint8_t s_name_loaded = 0;
     if (target_id != 0) {
-        for (unsigned int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == target_id) {
-                sprintf(t_name, "%s", state->group_array[i].groupName);
-                sprintf(t_mode, "%s", state->group_array[i].groupMode);
-                t_name_loaded = 1;
-                break;
-            }
+        if (dsd_tg_policy_lookup_label(state, target_id, t_mode, sizeof(t_mode), t_name, sizeof(t_name))) {
+            t_name_loaded = 1;
         }
     }
 
     if (source_id != 0) //&& state->gi[slot] == 1
     {
-        for (unsigned int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == source_id) {
-                sprintf(s_name, "%s", state->group_array[i].groupName);
-                sprintf(s_mode, "%s", state->group_array[i].groupMode);
-                s_name_loaded = 1;
-                break;
-            }
+        if (dsd_tg_policy_lookup_label(state, source_id, s_mode, sizeof(s_mode), s_name, sizeof(s_name))) {
+            s_name_loaded = 1;
         }
     }
 

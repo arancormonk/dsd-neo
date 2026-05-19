@@ -668,35 +668,25 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
             // shares the carrier on the other TDMA slot.
             if (opts->trunk_enable == 1 && opts->trunk_tune_enc_calls == 0) // && type != 2
             {
-                unsigned int i, lo = 0;
-                uint32_t t = 0;
+                unsigned int lo = 0;
                 char gm[8] = {0};
                 char gn[50] = {0};
                 dsd_tg_policy_entry lockout_entry;
-                size_t before = state->group_tally;
 
                 //check to see if this group already exists, or has already been locked out, or is allowed
-                for (i = 0; i < state->group_tally; i++) {
-                    t = (uint32_t)state->group_array[i].groupNumber;
-                    if (target == t && t != 0) {
-                        lo = 1;
-                        //write current mode and name to temp strings
-                        sprintf(gm, "%s", state->group_array[i].groupMode);
-                        sprintf(gn, "%s", state->group_array[i].groupName);
-                        break;
-                    }
+                if (target != 0 && dsd_tg_policy_lookup_label(state, target, gm, sizeof(gm), gn, sizeof(gn))) {
+                    lo = 1;
                 }
 
                 //if group doesn't exist, or isn't locked out, then do so now.
                 if (lo == 0) { //changing from DE to B to fit the rest of the lockout logic ("Buzzer Fix")
-                    if (dsd_tg_policy_make_legacy_exact_entry(target, "B", "ENC LO", DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
-                                                              &lockout_entry)
+                    if (dsd_tg_policy_make_exact_entry(target, "B", "ENC LO", DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
+                                                       &lockout_entry)
                             == 0
-                        && dsd_tg_policy_upsert_legacy_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING)
-                               == 0
-                        && state->group_tally > before) {
-                        sprintf(gm, "%s", "B");
-                        sprintf(gn, "%s", "ENC LO");
+                        && dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING)
+                               == 0) {
+                        snprintf(gm, sizeof(gm), "%s", "B");
+                        snprintf(gn, sizeof(gn), "%s", "ENC LO");
                     } else {
                         lo = 1;
                     }
@@ -824,11 +814,12 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         fprintf(stderr, "%s ", KNRM);
 
         //group labels
-        for (unsigned int i = 0; i < state->group_tally; i++) {
+        {
+            char name[50];
             //Remus! Change target to source if you prefer
-            if (state->group_array[i].groupNumber == (unsigned long)target) {
+            if (dsd_tg_policy_lookup_label(state, target, NULL, 0, name, sizeof(name))) {
                 fprintf(stderr, "%s", KCYN);
-                fprintf(stderr, "[%s] ", state->group_array[i].groupName);
+                fprintf(stderr, "[%s] ", name);
                 fprintf(stderr, "%s", KNRM);
             }
         }

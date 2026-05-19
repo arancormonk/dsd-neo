@@ -45,6 +45,14 @@
 
 #define PCLEAR_TUNE_AWAY //disable if slower return is preferred
 
+static void
+dmr_csbk_print_group_label(const dsd_state* state, uint32_t id) {
+    char name[50];
+    if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+        fprintf(stderr, " [%s]", name);
+    }
+}
+
 // Safe append helper: appends src to dst within dstsz, NUL-terminating
 static inline void
 dsd_append(char* dst, size_t dstsz, const char* src) {
@@ -562,12 +570,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         dsd_tg_policy_decision policy_decision;
                         int policy_allowed = 0;
 
-                        for (unsigned int i = 0; i < state->group_tally; i++) {
-                            if (state->group_array[i].groupNumber == (unsigned long)target) {
-                                fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                                break;
-                            }
-                        }
+                        dmr_csbk_print_group_label(state, (uint32_t)target);
 
                         policy_allowed = dmr_policy_tune_allowed(opts, state, (uint32_t)target, (uint32_t)source,
                                                                  is_group_call, data_call, &policy_decision);
@@ -1827,7 +1830,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 uint8_t ts = cs_pdu_bits[18];  //timeslot this PDU occurs in
                 uint8_t res = cs_pdu_bits[19]; //unknown or unused bit value
                 uint8_t rest_channel = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[20], 4);
-                uint8_t group_tally = 0; //set this to the number of active channels tallied
+                uint8_t active_group_count = 0; //set this to the number of active channels tallied
                 uint8_t bank_one = 0;
                 uint8_t bank_two = 0;
                 uint8_t b2_start = 0;
@@ -1911,24 +1914,25 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 for (int i = 0; i < 8; i++) {
                     ch[i] = state->cap_plus_csbk_bits[ts][i + 24];
                     if (ch[i] == 1) {
-                        group_tally++; //figure out where to start looking in the byte stream for the 0next bank of calls
+                        active_group_count++; //figure out where to start looking in the byte stream for the 0next bank of calls
                     }
                 }
 
                 //Expanded to cover larger systems up to 16 slots.
-                bank_two = (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ts][32 + (group_tally * 8)], 8); //32
-                b2_start = group_tally;
+                bank_two =
+                    (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ts][32 + (active_group_count * 8)], 8); //32
+                b2_start = active_group_count;
                 if (bank_two) {
                     for (int i = 0; i < 8; i++) {
                         ch[i + 8] = state->cap_plus_csbk_bits[ts][i + 32 + (b2_start * 8)];
                         if (ch[i + 8] == 1) {
-                            group_tally++;
+                            active_group_count++;
                         }
                     }
                 }
 
                 //check flag for appended private and/or data calls
-                pdflag = (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ts][40 + (group_tally * 8)], 8);
+                pdflag = (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ts][40 + (active_group_count * 8)], 8);
 
                 //check for private activity on LSNs 1-8
                 if (fl == 1 || fl == 3) {
@@ -1938,11 +1942,11 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         fprintf(stderr, "\n");
                         fprintf(stderr, " Bank One F%X Private or Data Call(s) - ", pdflag);
                         for (int i = 0; i < 8; i++) {
-                            pch[i] = state->cap_plus_csbk_bits[ts][i + 48 + (group_tally * 8)];
+                            pch[i] = state->cap_plus_csbk_bits[ts][i + 48 + (active_group_count * 8)];
                             if (pch[i] == 1) {
                                 fprintf(stderr, " LSN %02d:", i + 1);
                                 private_target = (uint16_t)ConvertBitIntoBytes(
-                                    &state->cap_plus_csbk_bits[ts][56 + (k * 16) + (group_tally * 8)], 16);
+                                    &state->cap_plus_csbk_bits[ts][56 + (k * 16) + (active_group_count * 8)], 16);
                                 fprintf(stderr, " TGT %d;", private_target);
                                 k++;
                                 if (bank_one == 0) {
@@ -1959,7 +1963,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                 //check flag for appended private and/or data calls -- flag two still needs work or testing, double checking, etc, disable if issues arise
                 pdflag2 = (uint8_t)ConvertBitIntoBytes(
-                    &state->cap_plus_csbk_bits[ts][56 + (group_tally * 8) + (pd_b2 * 16)],
+                    &state->cap_plus_csbk_bits[ts][56 + (active_group_count * 8) + (pd_b2 * 16)],
                     8); //48 -- had wrong value here (atleast in the one sample with the false positive)
 
                 //check for private activity on LSNs 9-16
@@ -1972,11 +1976,13 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         fprintf(stderr, "\n");
                         fprintf(stderr, " Bank Two F%02X Private or Data Call(s) - ", pdflag2);
                         for (int i = 0; i < 8; i++) {
-                            pch[i + 8] = state->cap_plus_csbk_bits[ts][i + 64 + (group_tally * 8) + (pd_b2 * 16)]; //56
+                            pch[i + 8] =
+                                state->cap_plus_csbk_bits[ts][i + 64 + (active_group_count * 8) + (pd_b2 * 16)]; //56
                             if (pch[i + 8] == 1) {
                                 fprintf(stderr, " LSN %02d:", i + 1);
                                 private_target = (uint16_t)ConvertBitIntoBytes(
-                                    &state->cap_plus_csbk_bits[ts][64 + (k * 16) + (group_tally * 8) + (pd_b2 * 16)],
+                                    &state->cap_plus_csbk_bits[ts]
+                                                              [64 + (k * 16) + (active_group_count * 8) + (pd_b2 * 16)],
                                     16); //56 -- had wrong value here (atleast in the one sample with the false positive)
                                 fprintf(stderr, " TGT %d;", private_target);
                                 k++;
@@ -2072,7 +2078,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         } else if (pch[i] == 1) //private or data channels
                         {
                             tg = (uint16_t)ConvertBitIntoBytes(
-                                &state->cap_plus_csbk_bits[ts][(group_tally * 8) + (x * 16) + 56],
+                                &state->cap_plus_csbk_bits[ts][(active_group_count * 8) + (x * 16) + 56],
                                 16); //don't change this AGAIN!, this is correct!
                             if (tg != 0) {
                                 fprintf(stderr, "%5d;  ", tg);
@@ -2141,12 +2147,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             dsd_tg_policy_decision policy_decision;
                             int policy_allowed = 0;
 
-                            for (unsigned int i = 0; i < state->group_tally; i++) {
-                                if (state->group_array[i].groupNumber == (unsigned long)t_tg[j]) {
-                                    fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                                    break;
-                                }
-                            }
+                            dmr_csbk_print_group_label(state, (uint32_t)t_tg[j]);
                             policy_allowed =
                                 dmr_policy_tune_allowed(opts, state, t_tg[j], 0, is_group_call, 0, &policy_decision);
 
@@ -2348,12 +2349,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     state->last_vc_sync_time_m = 0.0;
                 }
 
-                for (unsigned int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == (unsigned long)grpAddr) {
-                        fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        break;
-                    }
-                }
+                dmr_csbk_print_group_label(state, (uint32_t)grpAddr);
 
                 //TG Hop if the target here matches the target currently listening to (may be better to just rely on TG hold for this)
                 // if (state->currentslot == 1 && state->lasttg  == grpAddr) state->last_vc_sync_time = 0; //opposite slot if TLC in current
@@ -2436,12 +2432,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 // if (state->tg_hold != 0 && state->tg_hold == dtarget)
                 //   state->last_vc_sync_time = 0;
 
-                for (unsigned int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == (unsigned long)dtarget) {
-                        fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        break;
-                    }
-                }
+                dmr_csbk_print_group_label(state, (uint32_t)dtarget);
 
                 //don't tune if currently a vc on the control channel
                 if ((opts->trunk_tune_data_calls == 1) && (time(NULL) - state->last_vc_sync_time > 2)) {
@@ -2673,12 +2664,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         //this won't work properly on hashed TGT values
                         //unless users load a TGT hash in a csv file
                         //and hope it doesn't clash with other normal TG values
-                        for (unsigned int i = 0; i < state->group_tally; i++) {
-                            if (state->group_array[i].groupNumber == (unsigned long)t_tg[j + xpt_bank]) {
-                                fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                                break;
-                            }
-                        }
+                        dmr_csbk_print_group_label(state, (uint32_t)t_tg[j + xpt_bank]);
                         policy_allowed =
                             dmr_policy_tune_allowed(opts, state, t_tg[j + xpt_bank], 0, 1, 0, &policy_decision);
 

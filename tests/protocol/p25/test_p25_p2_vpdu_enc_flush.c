@@ -114,10 +114,10 @@ expect_eq(const char* tag, int got, int want) {
 static int
 seed_policy_group(dsd_state* st, uint32_t id, const char* mode, const char* name) {
     dsd_tg_policy_entry row;
-    if (dsd_tg_policy_make_legacy_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+    if (dsd_tg_policy_make_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
         return 1;
     }
-    return dsd_tg_policy_append_legacy_exact(st, &row);
+    return dsd_tg_policy_append_exact(st, &row);
 }
 
 int

@@ -7,8 +7,8 @@
  * Shared utility functions for ncurses UI modules
  */
 
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <math.h>
@@ -133,16 +133,13 @@ ui_is_locked_from_label(const dsd_state* state, const char* label) {
     }
     char* endp = NULL;
     long id = strtol(pos, &endp, 10);
-    if (endp == pos || id <= 0) {
+    if (endp == pos || id <= 0 || id > UINT32_MAX) {
         return 0;
     }
-    for (unsigned int k = 0; k < state->group_tally; k++) {
-        if (state->group_array[k].groupNumber == (unsigned long)id) {
-            const char* m = state->group_array[k].groupMode;
-            if (strcmp(m, "DE") == 0 || strcmp(m, "B") == 0) {
-                return 1;
-            }
-            break;
+    char mode[8];
+    if (dsd_tg_policy_lookup_label(state, (uint32_t)id, mode, sizeof(mode), NULL, 0)) {
+        if (strcmp(mode, "DE") == 0 || strcmp(mode, "B") == 0) {
+            return 1;
         }
     }
     return 0;

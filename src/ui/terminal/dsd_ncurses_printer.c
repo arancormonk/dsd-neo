@@ -22,6 +22,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -53,6 +54,21 @@
 #endif
 
 extern unsigned long long int edacs_channel_tree[33][6];
+
+static int
+ui_lookup_group_label(const dsd_state* state, unsigned long id, char* mode, size_t mode_sz, char* name,
+                      size_t name_sz) {
+    if (id == 0UL || id > UINT32_MAX) {
+        if (mode && mode_sz > 0) {
+            mode[0] = '\0';
+        }
+        if (name && name_sz > 0) {
+            name[0] = '\0';
+        }
+        return 0;
+    }
+    return dsd_tg_policy_lookup_label(state, (uint32_t)id, mode, mode_sz, name, name_sz);
+}
 
 /* Small helpers to align key/value fields to a consistent value column. */
 static inline void
@@ -1461,15 +1477,21 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("Alias: [%s]", state->generic_talker_alias[0]);
 
         //Group Name Labels from CSV import
-        for (unsigned int k = 0; k < state->group_tally; k++) {
-            if (state->group_array[k].groupNumber == (unsigned long)state->nxdn_last_tg) {
+        {
+            char group_mode[8];
+            char group_name[50];
+            if (ui_lookup_group_label(state, (unsigned long)state->nxdn_last_tg, group_mode, sizeof(group_mode),
+                                      group_name, sizeof(group_name))) {
                 printw("TG: ");
                 attron(COLOR_PAIR(4));
-                printw(" [%s]", state->group_array[k].groupName);
-                printw("[%s] ", state->group_array[k].groupMode);
-            } else if (state->group_array[k].groupNumber == (unsigned long)state->nxdn_last_rid) {
+                printw(" [%s]", group_name);
+                printw("[%s] ", group_mode);
+            }
+            if (state->nxdn_last_rid != state->nxdn_last_tg
+                && ui_lookup_group_label(state, (unsigned long)state->nxdn_last_rid, NULL, 0, group_name,
+                                         sizeof(group_name))) {
                 attron(COLOR_PAIR(4));
-                printw(" [%s]", state->group_array[k].groupName);
+                printw(" [%s]", group_name);
             }
             if (state->carrier == 1) {
                 attron(COLOR_PAIR(3));
@@ -1620,12 +1642,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
 
             //load talker aliases here (Moto, Tait, Harris)
-            for (unsigned int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == (unsigned long)state->lastsrc) //or state->lastsrc
+            {
+                char group_name[50];
+                if (ui_lookup_group_label(state, (unsigned long)state->lastsrc, NULL, 0, group_name,
+                                          sizeof(group_name))) //or state->lastsrc
                 {
-                    snprintf(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s",
-                             state->group_array[i].groupName);
-                    break;
+                    snprintf(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", group_name);
                 }
             }
 
@@ -1658,20 +1680,20 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
 
             //load talker aliases here (Moto, Tait, Harris)
-            for (unsigned int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == (unsigned long)state->lastsrc) {
-                    snprintf(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s",
-                             state->group_array[i].groupName);
-                    break;
+            {
+                char group_name[50];
+                if (ui_lookup_group_label(state, (unsigned long)state->lastsrc, NULL, 0, group_name,
+                                          sizeof(group_name))) {
+                    snprintf(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", group_name);
                 }
             }
 
             //load talker aliases here (Moto, Tait, Harris)
-            for (unsigned int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == (unsigned long)state->lastsrcR) {
-                    snprintf(state->generic_talker_alias[1], sizeof state->generic_talker_alias[1], "%s",
-                             state->group_array[i].groupName);
-                    break;
+            {
+                char group_name[50];
+                if (ui_lookup_group_label(state, (unsigned long)state->lastsrcR, NULL, 0, group_name,
+                                          sizeof(group_name))) {
+                    snprintf(state->generic_talker_alias[1], sizeof state->generic_talker_alias[1], "%s", group_name);
                 }
             }
         }
@@ -1878,14 +1900,15 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
         //Group Name Labels from CSV import
         if (show_l_ids) {
-            for (unsigned int k = 0; k < state->group_tally; k++) {
-                if (state->group_array[k].groupNumber == (unsigned long)state->lasttg) {
-                    attron(COLOR_PAIR(4));
-                    printw(" [%s]", state->group_array[k].groupName);
-                    printw("[%s] ", state->group_array[k].groupMode);
-                    if (state->carrier == 1) {
-                        attron(COLOR_PAIR(3));
-                    }
+            char group_mode[8];
+            char group_name[50];
+            if (ui_lookup_group_label(state, (unsigned long)state->lasttg, group_mode, sizeof(group_mode), group_name,
+                                      sizeof(group_name))) {
+                attron(COLOR_PAIR(4));
+                printw(" [%s]", group_name);
+                printw("[%s] ", group_mode);
+                if (state->carrier == 1) {
+                    attron(COLOR_PAIR(3));
                 }
             }
         }
@@ -2096,15 +2119,16 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
             //Group Name Labels from CSV import
             if (show_r_ids) {
-                for (unsigned int k = 0; k < state->group_tally; k++) {
-                    if (state->group_array[k].groupNumber == (unsigned long)state->lasttgR) {
-                        attron(COLOR_PAIR(4));
-                        printw(" [%s]", state->group_array[k].groupName);
-                        printw("[%s] ", state->group_array[k].groupMode);
-                    }
-                    if (state->carrier == 1) {
-                        attron(COLOR_PAIR(3));
-                    }
+                char group_mode[8];
+                char group_name[50];
+                if (ui_lookup_group_label(state, (unsigned long)state->lasttgR, group_mode, sizeof(group_mode),
+                                          group_name, sizeof(group_name))) {
+                    attron(COLOR_PAIR(4));
+                    printw(" [%s]", group_name);
+                    printw("[%s] ", group_mode);
+                }
+                if (state->carrier == 1) {
+                    attron(COLOR_PAIR(3));
                 }
             }
 
@@ -2381,14 +2405,21 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                         printw(" TGT [      DATA     ] SRC [%5lld] Data", edacs_channel_tree[i][3]);
                     }
                 }
-                for (unsigned int k = 0; k < state->group_tally; k++) {
-                    if ((state->group_array[k].groupNumber == (unsigned long)edacs_channel_tree[i][2]
-                         && edacs_channel_tree[i][2] != 0)
-                        || (state->group_array[k].groupNumber == (unsigned long)edacs_channel_tree[i][3]
-                            && edacs_channel_tree[i][3] != 0)) {
-                        printw(" [%s]", state->group_array[k].groupName);
-                        printw("[%s]", state->group_array[k].groupMode);
-                        break;
+                {
+                    char group_mode[8];
+                    char group_name[50];
+                    int label_found = 0;
+                    if (edacs_channel_tree[i][2] != 0) {
+                        label_found = ui_lookup_group_label(state, (unsigned long)edacs_channel_tree[i][2], group_mode,
+                                                            sizeof(group_mode), group_name, sizeof(group_name));
+                    }
+                    if (!label_found && edacs_channel_tree[i][3] != 0) {
+                        label_found = ui_lookup_group_label(state, (unsigned long)edacs_channel_tree[i][3], group_mode,
+                                                            sizeof(group_mode), group_name, sizeof(group_name));
+                    }
+                    if (label_found) {
+                        printw(" [%s]", group_name);
+                        printw("[%s]", group_mode);
                     }
                 }
 

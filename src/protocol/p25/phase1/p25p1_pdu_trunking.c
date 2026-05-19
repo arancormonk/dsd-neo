@@ -34,6 +34,14 @@ p25_signed_offset_units(int sign_bit, int raw_offset) {
     return sign_bit ? raw_offset : -raw_offset;
 }
 
+static void
+p25p1_pdu_print_group_label(const dsd_state* state, uint32_t id) {
+    char name[50];
+    if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+        fprintf(stderr, " [%s]", name);
+    }
+}
+
 //trunking data delivered via PDU format
 void
 p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
@@ -299,12 +307,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; ", channelt, suf1, group);
         state->last_active_time = time(NULL);
 
-        for (unsigned int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == (unsigned long)group) {
-                fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                break;
-            }
-        }
+        p25p1_pdu_print_group_label(state, (uint32_t)group);
 
         {
             dsd_tg_policy_decision decision;
@@ -388,12 +391,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         p25_format_chan_suffix(state, channelt, -1, suf2, sizeof suf2);
         sprintf(state->active_channel[0], "Active Ch: %04X%s TGT: %u; ", channelt, suf2, (uint32_t)target);
 
-        for (unsigned int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == (unsigned long)target) {
-                fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                break;
-            }
-        }
+        p25p1_pdu_print_group_label(state, (uint32_t)target);
 
         {
             dsd_tg_policy_decision decision;
@@ -466,12 +464,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         state->last_active_time = time(NULL);
 
         //telephone only has a target address (manual shows combined source/target of 24-bits)
-        for (unsigned int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == (unsigned long)target) {
-                fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                break;
-            }
-        }
+        p25p1_pdu_print_group_label(state, (uint32_t)target);
 
         {
             dsd_tg_policy_decision decision;
@@ -544,12 +537,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             }
             state->last_active_time = time(NULL);
 
-            for (unsigned int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == (unsigned long)group) {
-                    fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    break;
-                }
-            }
+            p25p1_pdu_print_group_label(state, (uint32_t)group);
 
             {
                 dsd_tg_policy_decision decision;

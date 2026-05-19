@@ -9,6 +9,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -114,7 +115,6 @@ main(void) {
     static dsd_opts o4;
     static dsd_state s4;
     init_basic(&o4, &s4);
-    s4.group_tally = 0;
     s4.payload_algid = 0x84;
     s4.payload_keyid = 0x1234;
     s4.payload_miP = 0x1122334455667788ULL;
@@ -124,15 +124,10 @@ main(void) {
     assert(s4.payload_miP == 0x1122334455667788ULL);
     // re-emit should no-op
     p25_emit_enc_lockout_once(&o4, &s4, 0, 1234, 0x40);
-    // We can at least assert we have a group entry and mode set to "DE"
-    int found = 0;
-    for (unsigned i = 0; i < s4.group_tally; i++) {
-        if (s4.group_array[i].groupNumber == 1234) {
-            found = (strcmp(s4.group_array[i].groupMode, "DE") == 0);
-            break;
-        }
-    }
-    assert(found);
+    dsd_tg_policy_lookup lockout_lookup;
+    assert(dsd_tg_policy_lookup_id(&s4, 1234U, &lockout_lookup) == 0);
+    assert(lockout_lookup.match == DSD_TG_POLICY_MATCH_EXACT);
+    assert(strcmp(lockout_lookup.entry.mode, "DE") == 0);
 
     // 4) NAC mismatch uses the latched expected CC NAC, not mutable state->p2_cc.
     static dsd_opts o5;

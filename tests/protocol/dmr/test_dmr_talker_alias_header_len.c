@@ -6,6 +6,8 @@
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,13 +107,7 @@ main(void) {
     dmr_talker_alias_lc_header(opts, st, 0, lc_bits);
     rc |= expect_has_substr(st->generic_talker_alias[0], "KE8NAX", "talker_alias_header");
 
-    // Capacity guard regression: when group table is full, runtime alias handling
-    // must not write past group_array bounds.
-    const size_t cap = sizeof(st->group_array) / sizeof(st->group_array[0]);
-    st->group_tally = (unsigned int)cap;
-    for (size_t i = 0; i < cap; i++) {
-        st->group_array[i].groupNumber = (unsigned long)(i + 1u);
-    }
+    // Runtime alias handling stores learned aliases through the policy table.
     st->lastsrc = 600000u;
     st->late_entry_mi_fragment[0][0][0] = 0x1122334455667788ULL;
 
@@ -119,15 +115,17 @@ main(void) {
     memset(tait_bits, 0, sizeof tait_bits);
     tait_iso7_embedded_alias_decode(opts, st, 0, 1, tait_bits);
 
-    if (st->group_tally != cap) {
-        fprintf(stderr, "group capacity guard failed: tally changed (%u)\n", st->group_tally);
+    dsd_tg_policy_lookup lookup;
+    if (dsd_tg_policy_lookup_id(st, st->lastsrc, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT) {
+        fprintf(stderr, "runtime alias policy insert failed\n");
         rc = 1;
     }
     if (st->late_entry_mi_fragment[0][0][0] != 0x1122334455667788ULL) {
-        fprintf(stderr, "group capacity guard failed: sentinel changed\n");
+        fprintf(stderr, "runtime alias handling changed sentinel\n");
         rc = 1;
     }
 
+    dsd_state_ext_free_all(st);
     free(st->event_history_s);
     st->event_history_s = NULL;
     free(st);

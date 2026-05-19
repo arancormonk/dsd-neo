@@ -43,10 +43,10 @@ free_test_state(dsd_state* st) {
 static int
 seed_exact(dsd_state* st, uint32_t id, const char* mode, const char* name) {
     dsd_tg_policy_entry row;
-    if (dsd_tg_policy_make_legacy_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+    if (dsd_tg_policy_make_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
         return -1;
     }
-    return dsd_tg_policy_upsert_legacy_exact(st, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    return dsd_tg_policy_upsert_exact(st, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
 }
 
 int

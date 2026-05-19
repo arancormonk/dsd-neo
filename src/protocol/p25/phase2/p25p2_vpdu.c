@@ -42,6 +42,14 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static void
+p25p2_vpdu_print_group_label(const dsd_state* state, uint32_t id) {
+    char name[50];
+    if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+        fprintf(stderr, " [%s]", name);
+    }
+}
+
 static int
 p25p2_sccb_matches_current_site(const dsd_state* state, int rfssid, int siteid) {
     if (!state) {
@@ -545,12 +553,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             //add active channel to string for ncurses display
             p25_set_mfid90_active_channel_single(state, channel, sgroup);
 
-            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-                if (state->group_array[gi].groupNumber == (unsigned long)sgroup) {
-                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    break;
-                }
-            }
+            p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
             if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
                 /* No SVC bits are carried here; use conservative ENC gating policy facts. */
@@ -578,12 +581,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             //add active channel to string for ncurses display
             p25_set_mfid90_active_channel_single(state, channel, sgroup);
 
-            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-                if (state->group_array[gi].groupNumber == (unsigned long)sgroup) {
-                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    break;
-                }
-            }
+            p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
             if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
                 /* No SVC bits are carried here; use conservative ENC gating policy facts. */
@@ -650,12 +648,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     tunable_group = group2;
                 }
 
-                for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-                    if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
-                        fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                        break;
-                    }
-                }
+                p25p2_vpdu_print_group_label(state, (uint32_t)tunable_group);
 
                 if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
                     const int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, tunable_group) ? 1 : 0;
@@ -733,12 +726,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; ", channel, suf_gvg, group);
             state->last_active_time = time(NULL);
 
-            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-                if (state->group_array[gi].groupNumber == (unsigned long)group) {
-                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    break;
-                }
-            }
+            p25p2_vpdu_print_group_label(state, (uint32_t)group);
 
             if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
                 p25p2_mac_handle(&mac_res, opts, state, channel, svc, group, source, /*policy_encrypted*/ -1,
@@ -839,12 +827,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             state->last_active_time = time(NULL);
 
             //telephone only has a target address (manual shows combined source/target of 24-bits)
-            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-                if (state->group_array[gi].groupNumber == (unsigned long)target) {
-                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    break;
-                }
-            }
+            p25p2_vpdu_print_group_label(state, target);
 
             if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
                 p25p2_mac_handle_indiv(&mac_res, opts, state, channel, svc, (int)target, /*src*/ 0,
@@ -901,12 +884,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // if (opts->trunk_tune_enc_calls == 0) goto SKIPCALL; //enable, or disable?
 
             //unit to unit needs work, may fail under certain conditions (first blocked, second allowed, etc) (labels should still work though)
-            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-                if (state->group_array[gi].groupNumber == (unsigned long)source
-                    || state->group_array[gi].groupNumber == (unsigned long)target) {
-                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    break;
-                }
+            p25p2_vpdu_print_group_label(state, (uint32_t)source);
+            if (source != target) {
+                p25p2_vpdu_print_group_label(state, (uint32_t)target);
             }
 
             if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
@@ -1057,12 +1037,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     tunable_chan = channelt2;
                     tunable_group = group2;
                 }
-                for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-                    if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
-                        fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                        break;
-                    }
-                }
+                p25p2_vpdu_print_group_label(state, (uint32_t)tunable_group);
 
                 if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
                     int svc_bits = (j == 0) ? svc1 : svc2;
@@ -1228,12 +1203,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     tunable_group = group3;
                 }
 
-                for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-                    if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
-                        fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                        break;
-                    }
-                }
+                p25p2_vpdu_print_group_label(state, (uint32_t)tunable_group);
 
                 if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
                     int svc_bits = (j == 0) ? so1 : ((j == 1) ? so2 : so3);
@@ -1321,12 +1291,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     tunable_group = group2;
                 }
 
-                for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-                    if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
-                        fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                        break;
-                    }
-                }
+                p25p2_vpdu_print_group_label(state, (uint32_t)tunable_group);
 
                 if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
                     p25p2_mac_handle(&mac_res, opts, state, tunable_chan, /*svc_bits*/ 0, tunable_group, /*src*/ 0,
@@ -1407,12 +1372,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // }
             // else state->lasttgR = group;
 
-            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-                if (state->group_array[gi].groupNumber == (unsigned long)group) {
-                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    break;
-                }
-            }
+            p25p2_vpdu_print_group_label(state, (uint32_t)group);
 
             if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
                 p25p2_mac_handle(&mac_res, opts, state, channelt, svc, group, /*src*/ 0, /*policy_encrypted*/ -1,
@@ -1468,12 +1428,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int target = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
             fprintf(stderr, "\n  DSO: %02X; CHAN-T: %04X; CHAN-R: %04X; Target: %d;", dso, channelt, channelr, target);
 
-            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-                if (state->group_array[gi].groupNumber == (unsigned long)target) {
-                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
-                    break;
-                }
-            }
+            p25p2_vpdu_print_group_label(state, (uint32_t)target);
 
             long int freq = process_channel_to_freq(opts, state, channelt);
 

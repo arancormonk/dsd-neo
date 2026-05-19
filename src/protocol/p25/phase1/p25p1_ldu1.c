@@ -579,11 +579,11 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
                 && state->R == 0) {
                 mode = "DE";
             }
-            if (dsd_tg_policy_make_legacy_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS,
-                                                      &alias_entry)
+            if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS,
+                                               &alias_entry)
                 == 0) {
-                (void)dsd_tg_policy_upsert_legacy_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY);
-                (void)dsd_tg_policy_upsert_legacy_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
+                (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY);
+                (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
             }
         }
 

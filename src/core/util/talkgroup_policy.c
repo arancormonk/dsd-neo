@@ -289,19 +289,6 @@ tg_policy_table_reserve(dsd_tg_policy_context* ctx, size_t needed) {
 }
 
 static int
-tg_policy_find_legacy_exact_idx(const dsd_state* state, uint32_t id) {
-    if (!state) {
-        return -1;
-    }
-    for (unsigned int i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == (unsigned long)id) {
-            return (int)i;
-        }
-    }
-    return -1;
-}
-
-static int
 tg_policy_find_policy_exact_idx_first(const dsd_tg_policy_context* ctx, uint32_t id) {
     if (!ctx) {
         return -1;
@@ -332,9 +319,20 @@ tg_policy_lookup_exact_only(const dsd_state* state, uint32_t id, dsd_tg_policy_e
     return 1;
 }
 
+static void
+tg_policy_table_note_mutation(dsd_tg_policy_context* ctx) {
+    if (!ctx) {
+        return;
+    }
+    ctx->table.generation++;
+    if (ctx->table.generation == 0u) {
+        ctx->table.generation = 1u;
+    }
+}
+
 int
-dsd_tg_policy_make_legacy_exact_entry(uint32_t id, const char* mode, const char* name,
-                                      dsd_tg_policy_entry_source source, dsd_tg_policy_entry* out) {
+dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, dsd_tg_policy_entry_source source,
+                               dsd_tg_policy_entry* out) {
     if (!out || !mode || !name) {
         return 1;
     }
@@ -375,21 +373,18 @@ dsd_tg_policy_add_range_entry(dsd_state* state, const dsd_tg_policy_entry* entry
     }
 
     ctx->table.entries[ctx->table.count++] = normalized;
+    tg_policy_table_note_mutation(ctx);
     return 0;
 }
 
 int
-dsd_tg_policy_append_legacy_exact(dsd_state* state, const dsd_tg_policy_entry* entry) {
+dsd_tg_policy_append_exact(dsd_state* state, const dsd_tg_policy_entry* entry) {
     dsd_tg_policy_context* ctx = NULL;
     dsd_tg_policy_entry normalized;
-    const size_t group_cap = state ? (sizeof(state->group_array) / sizeof(state->group_array[0])) : 0;
     if (!state || !entry) {
         return 1;
     }
     if (!tg_policy_entry_valid_exact(entry)) {
-        return 1;
-    }
-    if (state->group_tally >= group_cap) {
         return 1;
     }
 
@@ -406,44 +401,15 @@ dsd_tg_policy_append_legacy_exact(dsd_state* state, const dsd_tg_policy_entry* e
     }
 
     ctx->table.entries[ctx->table.count++] = normalized;
-
-    state->group_array[state->group_tally].groupNumber = (unsigned long)normalized.id_start;
-    tg_policy_safe_copy(state->group_array[state->group_tally].groupMode,
-                        sizeof(state->group_array[state->group_tally].groupMode), normalized.mode);
-    tg_policy_safe_copy(state->group_array[state->group_tally].groupName,
-                        sizeof(state->group_array[state->group_tally].groupName), normalized.name);
-    state->group_tally++;
+    tg_policy_table_note_mutation(ctx);
     return 0;
 }
 
-static void
-tg_policy_apply_exact_to_legacy_row(dsd_state* state, int idx, const dsd_tg_policy_entry* entry) {
-    if (!state || idx < 0 || !entry) {
-        return;
-    }
-    state->group_array[idx].groupNumber = (unsigned long)entry->id_start;
-    tg_policy_safe_copy(state->group_array[idx].groupMode, sizeof(state->group_array[idx].groupMode), entry->mode);
-    tg_policy_safe_copy(state->group_array[idx].groupName, sizeof(state->group_array[idx].groupName), entry->name);
-}
-
-static void
-tg_policy_build_legacy_mirror_entry(const dsd_state* state, int legacy_idx, dsd_tg_policy_entry* out) {
-    if (!state || legacy_idx < 0 || !out) {
-        return;
-    }
-    (void)dsd_tg_policy_make_legacy_exact_entry(
-        (uint32_t)state->group_array[legacy_idx].groupNumber, state->group_array[legacy_idx].groupMode,
-        state->group_array[legacy_idx].groupName, DSD_TG_POLICY_SOURCE_LEGACY_UNKNOWN, out);
-    out->row = 0;
-}
-
 int
-dsd_tg_policy_upsert_legacy_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode) {
+dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode) {
     dsd_tg_policy_context* ctx = NULL;
     dsd_tg_policy_entry normalized;
-    int legacy_idx = -1;
     int policy_idx = -1;
-    const size_t group_cap = state ? (sizeof(state->group_array) / sizeof(state->group_array[0])) : 0;
 
     if (!state || !entry) {
         return 1;
@@ -455,58 +421,37 @@ dsd_tg_policy_upsert_legacy_exact(dsd_state* state, const dsd_tg_policy_entry* e
     normalized.is_range = 0;
     normalized.id_end = normalized.id_start;
 
-    legacy_idx = tg_policy_find_legacy_exact_idx(state, normalized.id_start);
+    ctx = tg_policy_ctx_get_mut(state, mode != DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
+    policy_idx = tg_policy_find_policy_exact_idx_first(ctx, normalized.id_start);
 
     if (mode == DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) {
-        if (legacy_idx >= 0) {
+        if (policy_idx >= 0) {
             return 0;
         }
-        if (state->group_tally >= group_cap) {
-            return 1;
-        }
-        return dsd_tg_policy_append_legacy_exact(state, &normalized);
+        return dsd_tg_policy_append_exact(state, &normalized);
     }
 
-    ctx = tg_policy_ctx_get_mut(state, 1);
     if (!ctx) {
         return -1;
     }
-    policy_idx = tg_policy_find_policy_exact_idx_first(ctx, normalized.id_start);
 
     if (mode == DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY) {
-        if (legacy_idx < 0 || policy_idx < 0) {
+        if (policy_idx < 0) {
             return 0;
         }
         if (ctx->table.entries[policy_idx].source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS) {
             return 0;
         }
-        tg_policy_apply_exact_to_legacy_row(state, legacy_idx, &normalized);
         ctx->table.entries[policy_idx] = normalized;
+        tg_policy_table_note_mutation(ctx);
         return 0;
     }
 
-    if (legacy_idx < 0) {
-        if (state->group_tally >= group_cap) {
-            return 1;
-        }
-        return dsd_tg_policy_append_legacy_exact(state, &normalized);
-    }
-
     if (policy_idx < 0) {
-        dsd_tg_policy_entry mirror;
-        memset(&mirror, 0, sizeof(mirror));
-        tg_policy_build_legacy_mirror_entry(state, legacy_idx, &mirror);
-        if (tg_policy_table_reserve(ctx, ctx->table.count + 1) != 0) {
-            return -1;
-        }
-        ctx->table.entries[ctx->table.count++] = mirror;
-        policy_idx = tg_policy_find_policy_exact_idx_first(ctx, normalized.id_start);
+        return dsd_tg_policy_append_exact(state, &normalized);
     }
-
-    tg_policy_apply_exact_to_legacy_row(state, legacy_idx, &normalized);
-    if (policy_idx >= 0) {
-        ctx->table.entries[policy_idx] = normalized;
-    }
+    ctx->table.entries[policy_idx] = normalized;
+    tg_policy_table_note_mutation(ctx);
     return 0;
 }
 
@@ -537,22 +482,6 @@ dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_looku
             }
         }
     }
-
-    for (unsigned int i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == (unsigned long)id) {
-            dsd_tg_policy_entry synth;
-            if (dsd_tg_policy_make_legacy_exact_entry(id, state->group_array[i].groupMode,
-                                                      state->group_array[i].groupName,
-                                                      DSD_TG_POLICY_SOURCE_LEGACY_UNKNOWN, &synth)
-                == 0) {
-                synth.row = 0;
-                out->match = DSD_TG_POLICY_MATCH_EXACT;
-                out->entry = synth;
-            }
-            return 0;
-        }
-    }
-
     if (!ctx) {
         return 0;
     }
@@ -574,6 +503,105 @@ dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_looku
     if (best_idx >= 0) {
         out->match = DSD_TG_POLICY_MATCH_RANGE;
         out->entry = ctx->table.entries[best_idx];
+    }
+    return 0;
+}
+
+int
+dsd_tg_policy_has_entries(const dsd_state* state) {
+    const dsd_tg_policy_context* ctx = NULL;
+    if (!state) {
+        return 0;
+    }
+    ctx = tg_policy_ctx_get_const(state);
+    if (ctx && ctx->table.count > 0) {
+        return 1;
+    }
+    return 0;
+}
+
+int
+dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
+                           size_t name_sz) {
+    dsd_tg_policy_lookup lookup;
+    if (mode && mode_sz > 0) {
+        mode[0] = '\0';
+    }
+    if (name && name_sz > 0) {
+        name[0] = '\0';
+    }
+    if (dsd_tg_policy_lookup_id(state, id, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT) {
+        return 0;
+    }
+    tg_policy_safe_copy(mode, mode_sz, lookup.entry.mode);
+    tg_policy_safe_copy(name, name_sz, lookup.entry.name);
+    return 1;
+}
+
+static int
+tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context** out) {
+    dsd_tg_policy_context* clone = NULL;
+    if (!out) {
+        return -1;
+    }
+    *out = NULL;
+    if (!src) {
+        return 0;
+    }
+    clone = (dsd_tg_policy_context*)tg_policy_calloc(1, sizeof(*clone));
+    if (!clone) {
+        return -1;
+    }
+    clone->table.count = src->table.count;
+    clone->table.capacity = src->table.count;
+    clone->table.generation = src->table.generation;
+    clone->active = src->active;
+    if (src->table.count > 0) {
+        clone->table.entries = (dsd_tg_policy_entry*)tg_policy_calloc(src->table.count, sizeof(*clone->table.entries));
+        if (!clone->table.entries) {
+            tg_policy_context_free(clone);
+            return -1;
+        }
+        memcpy(clone->table.entries, src->table.entries, src->table.count * sizeof(*clone->table.entries));
+    }
+    *out = clone;
+    return 0;
+}
+
+int
+dsd_tg_policy_copy_snapshot(dsd_state* dst, const dsd_state* src) {
+    const dsd_tg_policy_context* src_ctx = NULL;
+    dsd_tg_policy_context* dst_ctx = NULL;
+    dsd_tg_policy_context* clone = NULL;
+    if (!dst || !src) {
+        return -1;
+    }
+    if (dst == src) {
+        return 0;
+    }
+
+    src_ctx = tg_policy_ctx_get_const(src);
+    if (!src_ctx) {
+        return dsd_state_ext_set(dst, DSD_STATE_EXT_CORE_TG_POLICY, NULL, NULL);
+    }
+
+    dst_ctx = tg_policy_ctx_get_mut(dst, 0);
+    if (dst_ctx && dst_ctx != src_ctx && dst_ctx->table.generation == src_ctx->table.generation
+        && dst_ctx->table.count == src_ctx->table.count) {
+        dst_ctx->active = src_ctx->active;
+        return 0;
+    }
+
+    if (tg_policy_context_clone(src_ctx, &clone) != 0) {
+        return -1;
+    }
+    if (dst_ctx == src_ctx) {
+        dst->state_ext[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
+        dst->state_ext_cleanup[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
+    }
+    if (dsd_state_ext_set(dst, DSD_STATE_EXT_CORE_TG_POLICY, clone, tg_policy_context_free) != 0) {
+        tg_policy_context_free(clone);
+        return -1;
     }
     return 0;
 }
@@ -888,8 +916,7 @@ tg_policy_header_is_policy(const char* header_line) {
 }
 
 int
-dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry,
-                                    const char* legacy_metadata) {
+dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry, const char* metadata) {
     char first_line[512];
     char clean_mode[16];
     char clean_name[128];
@@ -914,7 +941,7 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_en
 
     tg_policy_csv_sanitize_copy(clean_mode, sizeof(clean_mode), entry->mode);
     tg_policy_csv_sanitize_copy(clean_name, sizeof(clean_name), entry->name);
-    tg_policy_csv_sanitize_copy(clean_meta, sizeof(clean_meta), legacy_metadata ? legacy_metadata : "");
+    tg_policy_csv_sanitize_copy(clean_meta, sizeof(clean_meta), metadata ? metadata : "");
 
     rf = fopen(path, "r");
     if (rf) {
@@ -1177,35 +1204,10 @@ tg_policy_is_terminated_cstr(const char* s, size_t cap) {
 
 static int
 tg_policy_reload_validate_candidate(const dsd_state* imported) {
-    dsd_tg_policy_lookup lookup;
     const dsd_tg_policy_context* ctx = NULL;
-    const size_t group_cap = imported ? (sizeof(imported->group_array) / sizeof(imported->group_array[0])) : 0;
 
     if (!imported) {
         return -1;
-    }
-    if (imported->group_tally > group_cap) {
-        return -1;
-    }
-
-    for (unsigned int i = 0; i < imported->group_tally; i++) {
-        const uint32_t id = (uint32_t)imported->group_array[i].groupNumber;
-        if (imported->group_array[i].groupNumber > UINT32_MAX) {
-            return -1;
-        }
-        if (!tg_policy_is_terminated_cstr(imported->group_array[i].groupMode,
-                                          sizeof(imported->group_array[i].groupMode))
-            || !tg_policy_is_terminated_cstr(imported->group_array[i].groupName,
-                                             sizeof(imported->group_array[i].groupName))) {
-            return -1;
-        }
-        if (dsd_tg_policy_lookup_id(imported, id, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT) {
-            return -1;
-        }
-        if (strcmp(lookup.entry.mode, imported->group_array[i].groupMode) != 0
-            || strcmp(lookup.entry.name, imported->group_array[i].groupName) != 0) {
-            return -1;
-        }
     }
 
     ctx = tg_policy_ctx_get_const(imported);
@@ -1220,9 +1222,6 @@ tg_policy_reload_validate_candidate(const dsd_state* imported) {
         }
         if (e->is_range == 0u) {
             if (!tg_policy_entry_valid_exact(e)) {
-                return -1;
-            }
-            if (tg_policy_find_legacy_exact_idx(imported, e->id_start) < 0) {
                 return -1;
             }
         } else {
@@ -1299,9 +1298,6 @@ dsd_tg_policy_reload_group_file(dsd_opts* opts, dsd_state* state) {
         free(imported);
         return -1;
     }
-    memcpy(state->group_array, imported->group_array, sizeof(state->group_array));
-    state->group_tally = imported->group_tally;
-
     dsd_state_ext_free_all(imported);
     free(imported);
     return 0;

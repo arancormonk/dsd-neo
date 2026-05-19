@@ -649,19 +649,17 @@ processHDU(dsd_opts* opts, dsd_state* state) {
                 // Optional: mark TG as ENC LO for visibility when known
                 int ttg = state->lasttg;
                 if (ttg != 0) {
+                    char lockout_name_buf[50];
                     const char* lockout_name = "ENC LO";
                     dsd_tg_policy_entry lockout_entry;
-                    for (unsigned int xx = 0; xx < state->group_tally; xx++) {
-                        if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                            lockout_name = state->group_array[xx].groupName;
-                            break;
-                        }
+                    if (dsd_tg_policy_lookup_label(state, (uint32_t)ttg, NULL, 0, lockout_name_buf,
+                                                   sizeof(lockout_name_buf))) {
+                        lockout_name = lockout_name_buf;
                     }
-                    if (dsd_tg_policy_make_legacy_exact_entry((uint32_t)ttg, "DE", lockout_name,
-                                                              DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &lockout_entry)
+                    if (dsd_tg_policy_make_exact_entry((uint32_t)ttg, "DE", lockout_name,
+                                                       DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &lockout_entry)
                             == 0
-                        && dsd_tg_policy_upsert_legacy_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST)
-                               == 0) {
+                        && dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0) {
                         sprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
                                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
                         dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);

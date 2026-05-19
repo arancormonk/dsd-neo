@@ -58,8 +58,8 @@ Notes:
   - `A` usually means allow/normal.
   - `B` and `DE` are treated as locked out.
 - Names are not CSV-escaped; avoid commas and line breaks in fields.
-- Exact IDs are decimal `uint32_t` values (`0..4294967295`). Runtime exact alias display stores up to 1023 imported
-  exact rows; range policy entries can still be added after that exact-row cap is reached.
+- Exact IDs are decimal `uint32_t` values (`0..4294967295`). Runtime policy lookups import all valid exact
+  rows that fit memory.
 
 Extended policy columns are supported only when the header opts into this exact ordered prefix starting at column 4:
 
@@ -73,11 +73,11 @@ Extended policy columns are supported only when the header opts into this exact 
 Important behavior:
 
 - The header must contain `priority` in column 4 and continue in that order for the available policy columns.
-- If the header is legacy/unknown (for example `id,mode,name,metadata`), optional policy parsing is disabled and extra
-  columns remain legacy metadata.
+- If the header is basic/unknown (for example `id,mode,name,metadata`), optional policy parsing is disabled and extra
+  columns remain metadata-only values.
 - `id` supports exact IDs (`1201`) and ranges (`1200-1299`).
-  - Exact rows populate both runtime alias display state and policy.
-  - Range rows are policy-only and are not inserted as exact aliases.
+  - Exact rows populate the runtime policy table used for labels and decisions.
+  - Range rows are policy entries that match IDs within the configured range.
 - `preempt`, `audio`, `record`, and `stream` accept `true`/`false`, `yes`/`no`, `on`/`off`, or `1`/`0`.
 - Exact duplicates preserve first-match behavior.
 - `audio=off` forces `record=off` and `stream=off`.

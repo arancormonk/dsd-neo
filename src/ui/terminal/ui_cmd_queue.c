@@ -1764,7 +1764,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         case UI_CMD_LOCKOUT_SLOT: {
             uint8_t slot = 0;
             dsd_tg_policy_entry lockout_entry;
-            char legacy_meta[16];
+            char metadata[16];
             int upsert_rc = 0;
             if (c->n >= 1) {
                 memcpy(&slot, c->data, 1);
@@ -1776,12 +1776,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (tg == 0) {
                 break;
             }
-            if (dsd_tg_policy_make_legacy_exact_entry((uint32_t)tg, "B", "LOCKOUT", DSD_TG_POLICY_SOURCE_USER_LOCKOUT,
-                                                      &lockout_entry)
+            if (dsd_tg_policy_make_exact_entry((uint32_t)tg, "B", "LOCKOUT", DSD_TG_POLICY_SOURCE_USER_LOCKOUT,
+                                               &lockout_entry)
                 != 0) {
                 break;
             }
-            upsert_rc = dsd_tg_policy_upsert_legacy_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+            upsert_rc = dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
             if (upsert_rc != 0) {
                 LOG_WARNING("User lockout for TG %d could not be applied (rc=%d); skipping persistence.\n", tg,
                             upsert_rc);
@@ -1797,9 +1797,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             snprintf(state->call_string[eh_slot], sizeof state->call_string[eh_slot], "%s",
                      "                     "); // 21 spaces
 
-            snprintf(legacy_meta, sizeof(legacy_meta), "%02X",
+            snprintf(metadata, sizeof(metadata), "%02X",
                      (unsigned int)((slot == 0) ? state->payload_algid : state->payload_algidR));
-            if (dsd_tg_policy_append_group_file_row(opts, &lockout_entry, legacy_meta) != 0) {
+            if (dsd_tg_policy_append_group_file_row(opts, &lockout_entry, metadata) != 0) {
                 LOG_WARNING("User lockout for TG %d was applied in-memory but could not be persisted to '%s'.\n", tg,
                             opts->group_in_file);
             }

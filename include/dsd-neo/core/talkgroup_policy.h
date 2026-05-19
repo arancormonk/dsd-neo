@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -41,7 +42,6 @@ typedef enum {
     DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS = 1,
     DSD_TG_POLICY_SOURCE_USER_LOCKOUT = 2,
     DSD_TG_POLICY_SOURCE_ENC_LOCKOUT = 3,
-    DSD_TG_POLICY_SOURCE_LEGACY_UNKNOWN = 4,
 } dsd_tg_policy_entry_source;
 
 typedef enum {
@@ -112,10 +112,14 @@ typedef struct {
     int requires_tuner_retune;
 } dsd_tg_policy_call_route;
 
-int dsd_tg_policy_make_legacy_exact_entry(uint32_t id, const char* mode, const char* name,
-                                          dsd_tg_policy_entry_source source, dsd_tg_policy_entry* out);
+int dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, dsd_tg_policy_entry_source source,
+                                   dsd_tg_policy_entry* out);
 int dsd_tg_policy_add_range_entry(dsd_state* state, const dsd_tg_policy_entry* entry);
 int dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_lookup* out);
+int dsd_tg_policy_has_entries(const dsd_state* state);
+int dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
+                               size_t name_sz);
+int dsd_tg_policy_copy_snapshot(dsd_state* dst, const dsd_state* src);
 int dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
                                       int encrypted, int data_call, dsd_tg_policy_hold_behavior hold_behavior,
                                       dsd_tg_policy_decision* out);
@@ -123,11 +127,9 @@ int dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* s
                                         int encrypted, int data_call,
                                         dsd_tg_policy_private_allowlist_mode allowlist_mode,
                                         dsd_tg_policy_hold_behavior hold_behavior, dsd_tg_policy_decision* out);
-int dsd_tg_policy_append_legacy_exact(dsd_state* state, const dsd_tg_policy_entry* entry);
-int dsd_tg_policy_upsert_legacy_exact(dsd_state* state, const dsd_tg_policy_entry* entry,
-                                      dsd_tg_policy_upsert_mode mode);
-int dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry,
-                                        const char* legacy_metadata);
+int dsd_tg_policy_append_exact(dsd_state* state, const dsd_tg_policy_entry* entry);
+int dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode);
+int dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry, const char* metadata);
 
 int dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,
                                  const dsd_tg_policy_call_route* candidate_route,

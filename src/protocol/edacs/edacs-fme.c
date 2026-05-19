@@ -64,6 +64,14 @@
 
 unsigned long long int edacs_bch(unsigned long long int message);
 
+static void
+edacs_print_group_label(const dsd_state* state, uint32_t id) {
+    char name[50];
+    if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+        fprintf(stderr, " [%s]", name);
+    }
+}
+
 static inline short
 clip_float_to_short(float v) {
     if (v > 32767.0f) {
@@ -1331,12 +1339,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 dsd_tg_policy_decision decision;
                 int policy_ok = 0;
 
-                for (unsigned int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == (unsigned long)group) {
-                        fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        break;
-                    }
-                }
+                edacs_print_group_label(state, (uint32_t)group);
                 policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, 0, 0,
                                                                DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
                                  == 0

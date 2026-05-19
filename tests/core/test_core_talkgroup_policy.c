@@ -69,6 +69,16 @@ policy_generation(const dsd_state* st) {
     return ctx->table.generation;
 }
 
+static size_t
+policy_count(const dsd_state* st) {
+    const test_tg_policy_context_view* ctx =
+        (const test_tg_policy_context_view*)dsd_state_ext_get_const(st, DSD_STATE_EXT_CORE_TG_POLICY);
+    if (!ctx) {
+        return 0u;
+    }
+    return ctx->table.count;
+}
+
 static int
 test_lookup_and_precedence(void) {
     int rc = 0;
@@ -80,9 +90,9 @@ test_lookup_and_precedence(void) {
     }
 
     init_entry(&e, 1201, "A", "FIRST", DSD_TG_POLICY_SOURCE_IMPORTED);
-    rc |= expect_true("append exact first", dsd_tg_policy_append_legacy_exact(st, &e) == 0);
+    rc |= expect_true("append exact first", dsd_tg_policy_append_exact(st, &e) == 0);
     init_entry(&e, 1201, "B", "SECOND", DSD_TG_POLICY_SOURCE_IMPORTED);
-    rc |= expect_true("append exact duplicate", dsd_tg_policy_append_legacy_exact(st, &e) == 0);
+    rc |= expect_true("append exact duplicate", dsd_tg_policy_append_exact(st, &e) == 0);
 
     init_entry(&e, 1200, "B", "RANGE", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1299;
@@ -120,7 +130,7 @@ test_lookup_and_precedence(void) {
 }
 
 static int
-test_legacy_exact_fallback(void) {
+test_policy_exact_lookup(void) {
     int rc = 0;
     dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
     dsd_tg_policy_entry e;
@@ -128,20 +138,18 @@ test_legacy_exact_fallback(void) {
     if (!st) {
         return 1;
     }
-    st->group_array[0].groupNumber = 42;
-    snprintf(st->group_array[0].groupMode, sizeof(st->group_array[0].groupMode), "%s", "DE");
-    snprintf(st->group_array[0].groupName, sizeof(st->group_array[0].groupName), "%s", "LEGACY");
-    st->group_tally = 1;
 
     init_entry(&e, 1, "A", "RANGE", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 100;
     e.is_range = 1;
-    rc |= expect_true("append range fallback", dsd_tg_policy_add_range_entry(st, &e) == 0);
+    rc |= expect_true("append range", dsd_tg_policy_add_range_entry(st, &e) == 0);
+    init_entry(&e, 42, "DE", "EXACT", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("append exact", dsd_tg_policy_append_exact(st, &e) == 0);
 
-    rc |= expect_true("lookup fallback exact", dsd_tg_policy_lookup_id(st, 42, &lookup) == 0);
-    rc |= expect_true("fallback is exact", lookup.match == DSD_TG_POLICY_MATCH_EXACT);
-    rc |= expect_true("fallback source", lookup.entry.source == DSD_TG_POLICY_SOURCE_LEGACY_UNKNOWN);
-    rc |= expect_true("fallback mode", strcmp(lookup.entry.mode, "DE") == 0);
+    rc |= expect_true("lookup exact", dsd_tg_policy_lookup_id(st, 42, &lookup) == 0);
+    rc |= expect_true("exact wins over range", lookup.match == DSD_TG_POLICY_MATCH_EXACT);
+    rc |= expect_true("exact source", lookup.entry.source == DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("exact mode", strcmp(lookup.entry.mode, "DE") == 0);
     rc |= expect_true("lookup range other", dsd_tg_policy_lookup_id(st, 55, &lookup) == 0);
     rc |= expect_true("range for non-exact", lookup.match == DSD_TG_POLICY_MATCH_RANGE);
 
@@ -164,30 +172,30 @@ test_upsert_modes(void) {
     }
 
     init_entry(&e, 500, "A", "IMPORTED", DSD_TG_POLICY_SOURCE_IMPORTED);
-    rc |= expect_true("append imported", dsd_tg_policy_append_legacy_exact(st, &e) == 0);
+    rc |= expect_true("append imported", dsd_tg_policy_append_exact(st, &e) == 0);
 
     init_entry(&e, 500, "B", "LOCKOUT", DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
     rc |= expect_true("add-if-missing no-op",
-                      dsd_tg_policy_upsert_legacy_exact(st, &e, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0);
+                      dsd_tg_policy_upsert_exact(st, &e, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0);
     rc |= expect_true("lookup imported unchanged", dsd_tg_policy_lookup_id(st, 500, &lookup) == 0);
     rc |= expect_true("imported protected", strcmp(lookup.entry.mode, "A") == 0);
 
     rc |= expect_true("replace-first updates",
-                      dsd_tg_policy_upsert_legacy_exact(st, &e, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
+                      dsd_tg_policy_upsert_exact(st, &e, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
     rc |= expect_true("lookup replaced", dsd_tg_policy_lookup_id(st, 500, &lookup) == 0);
     rc |= expect_true("mode replaced", strcmp(lookup.entry.mode, "B") == 0);
 
     init_entry(&e, 600, "D", "LEARN-OLD", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
-    rc |= expect_true("append learned", dsd_tg_policy_append_legacy_exact(st, &e) == 0);
+    rc |= expect_true("append learned", dsd_tg_policy_append_exact(st, &e) == 0);
     init_entry(&e, 600, "D", "LEARN-NEW", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
     rc |= expect_true("replace-learned updates learned",
-                      dsd_tg_policy_upsert_legacy_exact(st, &e, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY) == 0);
+                      dsd_tg_policy_upsert_exact(st, &e, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY) == 0);
     rc |= expect_true("learned refreshed", dsd_tg_policy_lookup_id(st, 600, &lookup) == 0);
     rc |= expect_true("learned name refreshed", strcmp(lookup.entry.name, "LEARN-NEW") == 0);
 
     init_entry(&e, 500, "D", "SHOULD-NOT-CHANGE", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
     rc |= expect_true("replace-learned protects imported/lockout",
-                      dsd_tg_policy_upsert_legacy_exact(st, &e, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY) == 0);
+                      dsd_tg_policy_upsert_exact(st, &e, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY) == 0);
     rc |= expect_true("protected row unchanged", dsd_tg_policy_lookup_id(st, 500, &lookup) == 0);
     rc |= expect_true("protected row still lockout", strcmp(lookup.entry.mode, "B") == 0);
 
@@ -219,7 +227,7 @@ test_evaluator_behaviors(void) {
     e.stream = 1;
     e.priority = 10;
     e.preempt = 1;
-    rc |= expect_true("append eval row", dsd_tg_policy_append_legacy_exact(st, &e) == 0);
+    rc |= expect_true("append eval row", dsd_tg_policy_append_exact(st, &e) == 0);
 
     rc |= expect_true(
         "allowlist miss eval",
@@ -257,7 +265,7 @@ test_evaluator_behaviors(void) {
     opts->trunk_tune_enc_calls = 1;
 
     init_entry(&e, 702, "DE", "ENC-LO", DSD_TG_POLICY_SOURCE_IMPORTED);
-    rc |= expect_true("append de row", dsd_tg_policy_append_legacy_exact(st, &e) == 0);
+    rc |= expect_true("append de row", dsd_tg_policy_append_exact(st, &e) == 0);
     st->tg_hold = 702;
     rc |= expect_true(
         "hold compat keeps mode block",
@@ -288,7 +296,7 @@ test_evaluator_behaviors(void) {
     rc |= expect_true("hold mismatch mutes media", decision.audio_allowed == 0);
 
     init_entry(&e, 900, "A", "SRC-ALIAS", DSD_TG_POLICY_SOURCE_IMPORTED);
-    rc |= expect_true("append private src", dsd_tg_policy_append_legacy_exact(st, &e) == 0);
+    rc |= expect_true("append private src", dsd_tg_policy_append_exact(st, &e) == 0);
     opts->trunk_tune_private_calls = 1;
     opts->trunk_use_allow_list = 1;
     st->tg_hold = 0;
@@ -307,7 +315,7 @@ test_evaluator_behaviors(void) {
     rc |= expect_true("private known src allowed", decision.tune_allowed == 1);
 
     init_entry(&e, 901, "B", "DST-BLOCK", DSD_TG_POLICY_SOURCE_IMPORTED);
-    rc |= expect_true("append private dst block", dsd_tg_policy_append_legacy_exact(st, &e) == 0);
+    rc |= expect_true("append private dst block", dsd_tg_policy_append_exact(st, &e) == 0);
     rc |= expect_true("private mode block", dsd_tg_policy_evaluate_private_call(
                                                 opts, st, 900, 901, 0, 0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_ALLOW,
                                                 DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
@@ -440,9 +448,9 @@ test_group_file_append_helper(void) {
         fclose(fp);
     }
     snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
-    rc |= expect_true("append to legacy header", dsd_tg_policy_append_group_file_row(opts, &e, "VEND") == 0);
-    rc |= expect_true("read legacy file", read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
-    rc |= expect_true("legacy row contains metadata", strstr(l2, ",VEND") != NULL);
+    rc |= expect_true("append to basic header", dsd_tg_policy_append_group_file_row(opts, &e, "VEND") == 0);
+    rc |= expect_true("read basic file", read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
+    rc |= expect_true("basic row contains metadata", strstr(l2, ",VEND") != NULL);
     (void)remove(path_template);
 
     snprintf(path_template, sizeof(path_template), "%s", path_seed);
@@ -512,11 +520,11 @@ test_group_file_append_helper(void) {
         fclose(fp);
     }
     snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
-    rc |= expect_true("append unknown legacy header", dsd_tg_policy_append_group_file_row(opts, &e, "META") == 0);
-    rc |= expect_true("read unknown legacy file",
+    rc |= expect_true("append unknown metadata header", dsd_tg_policy_append_group_file_row(opts, &e, "META") == 0);
+    rc |= expect_true("read unknown metadata file",
                       read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
     rc |= expect_true("unknown header unchanged", strcmp(l1, "id,mode,name,something_else\n") == 0);
-    rc |= expect_true("unknown row legacy format", strstr(l2, "100,D,Alias,META") == l2);
+    rc |= expect_true("unknown row basic format", strstr(l2, "100,D,Alias,META") == l2);
     (void)remove(path_template);
 
     free(opts);
@@ -634,7 +642,7 @@ test_preemption_helpers(void) {
     init_entry(&e, 5001, "B", "HOLD-CAND", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.priority = 90;
     e.preempt = 1;
-    rc |= expect_true("seed hold candidate row", dsd_tg_policy_append_legacy_exact(st, &e) == 0);
+    rc |= expect_true("seed hold candidate row", dsd_tg_policy_append_exact(st, &e) == 0);
     init_route(&cand, 5001, 10, 854000000L, 30, 0, 0);
 
     st->tg_hold = 5999;
@@ -665,7 +673,7 @@ test_preemption_helpers(void) {
     init_entry(&e, 5002, "A", "ENC-CAND", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.priority = 95;
     e.preempt = 1;
-    rc |= expect_true("seed encrypted candidate row", dsd_tg_policy_append_legacy_exact(st, &e) == 0);
+    rc |= expect_true("seed encrypted candidate row", dsd_tg_policy_append_exact(st, &e) == 0);
     init_route(&cand, 5002, 11, 854000000L, 30, 0, 0);
     opts->trunk_tune_enc_calls = 0;
     rc |= expect_true(
@@ -706,8 +714,8 @@ test_reload_group_file(void) {
     }
 
     init_entry(&e, 999, "A", "OLD", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
-    rc |= expect_true("seed old row", dsd_tg_policy_append_legacy_exact(st, &e) == 0);
-    rc |= expect_true("seed generation starts at zero", policy_generation(st) == 0u);
+    rc |= expect_true("seed old row", dsd_tg_policy_append_exact(st, &e) == 0);
+    rc |= expect_true("seed generation records mutation", policy_generation(st) == 1u);
 
     snprintf(path_template, sizeof(path_template), "%s", "dsd-neo-test-tg-reload-XXXXXX");
     fd = dsd_mkstemp(path_template);
@@ -733,7 +741,7 @@ test_reload_group_file(void) {
     snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     generation_before = policy_generation(st);
     rc |= expect_true("reload success", dsd_tg_policy_reload_group_file(opts, st) == 0);
-    rc |= expect_true("reload replaced legacy rows", st->group_tally == 2);
+    rc |= expect_true("reload replaced policy rows", policy_count(st) == 2u);
     generation_after = policy_generation(st);
     rc |= expect_true("reload success increments generation", generation_after == generation_before + 1u);
     rc |= expect_true("lookup row 100", dsd_tg_policy_lookup_id(st, 100, &lookup) == 0);
@@ -745,7 +753,7 @@ test_reload_group_file(void) {
     snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", "/tmp/dsd-neo-missing-group-file-nope.csv");
     generation_before = policy_generation(st);
     rc |= expect_true("reload missing file fails", dsd_tg_policy_reload_group_file(opts, st) != 0);
-    rc |= expect_true("failed reload keeps current rows", st->group_tally == 2);
+    rc |= expect_true("failed reload keeps current rows", policy_count(st) == 2u);
     rc |= expect_true("failed reload keeps policy", dsd_tg_policy_lookup_id(st, 100, &lookup) == 0);
     rc |= expect_true("failed reload preserved entry", strcmp(lookup.entry.name, "ONE") == 0);
     rc |= expect_true("failed reload keeps generation", policy_generation(st) == generation_before);
@@ -765,7 +773,7 @@ test_reload_group_file(void) {
     snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     generation_before = policy_generation(st);
     rc |= expect_true("second reload success", dsd_tg_policy_reload_group_file(opts, st) == 0);
-    rc |= expect_true("second reload replaced legacy rows", st->group_tally == 1);
+    rc |= expect_true("second reload replaced policy rows", policy_count(st) == 1u);
     rc |= expect_true("second reload increments generation", policy_generation(st) == generation_before + 1u);
     rc |= expect_true("second reload row applied", dsd_tg_policy_lookup_id(st, 300, &lookup) == 0);
     rc |= expect_true("second reload row exact", lookup.match == DSD_TG_POLICY_MATCH_EXACT);
@@ -781,7 +789,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_lookup_and_precedence();
-    rc |= test_legacy_exact_fallback();
+    rc |= test_policy_exact_lookup();
     rc |= test_upsert_modes();
     rc |= test_evaluator_behaviors();
     rc |= test_group_file_append_helper();

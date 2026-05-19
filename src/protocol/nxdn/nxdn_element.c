@@ -48,6 +48,7 @@ static uint8_t nxdn_alias_crc_ok(const dsd_state* state);
 static void nxdn_reset_data_call_state(dsd_state* state);
 static void nxdn_data_call_option_to_str(uint8_t data_call_option, char* duplex, size_t duplex_sz, char* mode,
                                          size_t mode_sz);
+static void nxdn_print_group_label(const dsd_state* state, uint32_t id);
 static void nxdn_pdu_scrambler_keystream_creation(uint8_t* ks, int lfsr, int len_bits);
 static void nxdn_lfsr128_expand_iv_from_mi64(uint64_t mi, uint8_t out[16]);
 static int nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[32], uint64_t* key_stub);
@@ -71,6 +72,14 @@ void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_
 char* NXDN_Call_Type_To_Str(uint8_t CallType);
 void NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t* TransmissionMode);
 char* NXDN_Cipher_Type_To_Str(uint8_t CipherType);
+
+static void
+nxdn_print_group_label(const dsd_state* state, uint32_t id) {
+    char name[50];
+    if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+        fprintf(stderr, " [%s]", name);
+    }
+}
 
 void
 NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
@@ -1473,22 +1482,11 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     }
 
     //run target/source analysis for labeling and tune if available/desired
-    for (unsigned int i = 0; i < state->group_tally; i++) {
-        if ((state->group_array[i].groupNumber == (unsigned long)DestinationID && DestinationID != 0)
-            || (state->group_array[i].groupNumber == (unsigned long)SourceUnitID && DestinationID == 0)) {
-            fprintf(stderr, " [%s]", state->group_array[i].groupName);
-            break;
-        }
-    }
+    nxdn_print_group_label(state, DestinationID != 0 ? DestinationID : SourceUnitID);
 
     //check purely by SourceUnitID as last resort -- this is a bugfix to block individual radios on selected systems
     if (DestinationID != 0) {
-        for (unsigned int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == (unsigned long)SourceUnitID) {
-                fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                break;
-            }
-        }
+        nxdn_print_group_label(state, SourceUnitID);
     }
 
     //TG hold on NXDN -- allow matching DestinationID to break out of current VC.
@@ -2181,33 +2179,23 @@ NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     //TG ENC LO/B if ENC trunked following disabled #121 -- was locking out everything
     if (opts->p25_trunk == 1 && opts->trunk_tune_enc_calls == 0 && MessageType == 0x1 && state->dmr_encL == 1) {
         int lo = 0;
-        uint16_t t = 0;
         char gm[8] = {0};
         char gn[50] = {0};
         dsd_tg_policy_entry lockout_entry;
-        size_t before = state->group_tally;
 
         //check to see if this group already exists, or has already been locked out, or is allowed
-        for (unsigned int i = 0; i < state->group_tally; i++) {
-            t = (uint16_t)state->group_array[i].groupNumber;
-            if (DestinationID == t && t != 0) {
-                lo = 1;
-                //write current mode and name to temp strings
-                sprintf(gm, "%s", state->group_array[i].groupMode);
-                sprintf(gn, "%s", state->group_array[i].groupName);
-                break;
-            }
+        if (DestinationID != 0 && dsd_tg_policy_lookup_label(state, DestinationID, gm, sizeof(gm), gn, sizeof(gn))) {
+            lo = 1;
         }
 
         //if group doesn't exist, or isn't locked out, then do so now.
         if (lo == 0) {
-            if (dsd_tg_policy_make_legacy_exact_entry(DestinationID, "DE", "ENC LO", DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
-                                                      &lockout_entry)
+            if (dsd_tg_policy_make_exact_entry(DestinationID, "DE", "ENC LO", DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
+                                               &lockout_entry)
                     == 0
-                && dsd_tg_policy_upsert_legacy_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0
-                && state->group_tally > before) {
-                sprintf(gm, "%s", "DE");
-                sprintf(gn, "%s", "ENC LO");
+                && dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0) {
+                snprintf(gm, sizeof(gm), "%s", "DE");
+                snprintf(gn, sizeof(gn), "%s", "ENC LO");
             } else {
                 lo = 1;
             }
@@ -2500,13 +2488,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                 }
 
                 //run group/tgt analysis and tune if available/desired
-                for (unsigned int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == (unsigned long)id) //tg/tgt only on info4 unit
-                    {
-                        fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        break;
-                    }
-                }
+                nxdn_print_group_label(state, id);
 
                 //TG hold on IDAS -- allow matching target to break out of current VC.
                 if (state->tg_hold != 0 && state->tg_hold == id) {

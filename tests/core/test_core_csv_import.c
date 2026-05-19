@@ -11,6 +11,7 @@
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -60,7 +61,15 @@ test_group_import_missing_file(void) {
         return 1;
     }
 
-    state->group_tally = 123;
+    {
+        dsd_tg_policy_entry row;
+        if (dsd_tg_policy_make_exact_entry(123U, "A", "UNCHANGED", DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0
+            || dsd_tg_policy_append_exact(state, &row) != 0) {
+            free(opts);
+            free_test_state(state);
+            return 1;
+        }
+    }
     (void)snprintf(opts->group_in_file, sizeof opts->group_in_file, "%s/%s", dir, "missing.csv");
     int rc = csvGroupImport(opts, state);
     if (rc == 0) {
@@ -68,10 +77,14 @@ test_group_import_missing_file(void) {
         free_test_state(state);
         return 1;
     }
-    if (state->group_tally != 123) {
-        free(opts);
-        free_test_state(state);
-        return 1;
+    {
+        dsd_tg_policy_lookup lookup;
+        if (dsd_tg_policy_lookup_id(state, 123U, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
+            || strcmp(lookup.entry.name, "UNCHANGED") != 0) {
+            free(opts);
+            free_test_state(state);
+            return 1;
+        }
     }
 
     free(opts);
@@ -117,7 +130,7 @@ test_channel_import_missing_file(void) {
 }
 
 static int
-test_group_import_capacity_cap(void) {
+test_group_import_large_exact_file(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
@@ -144,8 +157,7 @@ test_group_import_capacity_cap(void) {
     }
 
     fprintf(fp, "group,mode,name\n");
-    const size_t cap = sizeof(state->group_array) / sizeof(state->group_array[0]);
-    const size_t rows = cap + 25;
+    const size_t rows = 1048;
     for (size_t i = 0; i < rows; i++) {
         fprintf(fp, "%zu,D,Alias %zu\n", i + 1, i + 1);
     }
@@ -155,13 +167,101 @@ test_group_import_capacity_cap(void) {
     int rc = csvGroupImport(opts, state);
 
     int failed = 0;
+    dsd_tg_policy_lookup lookup;
     if (rc != 0) {
         failed = 1;
     }
-    if (state->group_tally != cap) {
+    if (dsd_tg_policy_lookup_id(state, 1U, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
+        || strcmp(lookup.entry.name, "Alias 1") != 0) {
         failed = 1;
     }
-    if (state->group_array[cap - 1].groupNumber != (unsigned long)cap) {
+    if (dsd_tg_policy_lookup_id(state, (uint32_t)rows, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
+        || strcmp(lookup.entry.name, "Alias 1048") != 0) {
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
+static int
+test_group_import_large_file_policy(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_tg_policy_lookup lookup;
+    dsd_tg_policy_decision decision;
+    char tmpl[] = "dsd-neo-test-group-large-XXXXXX";
+    int fd = -1;
+    const size_t rows = 6864;
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    {
+        FILE* fp = fopen(tmpl, "w");
+        if (!fp) {
+            (void)remove(tmpl);
+            free(opts);
+            free_test_state(state);
+            return 1;
+        }
+        fprintf(fp, "id,mode,name\n");
+        for (size_t i = 1; i <= rows; i++) {
+            if (i == 6500) {
+                fprintf(fp, "%zu,A,Late Allow\n", i);
+            } else if (i == rows) {
+                fprintf(fp, "%zu,B,This Alias Name Is Definitely Longer Than Forty Nine Characters For Safety\n", i);
+            } else {
+                fprintf(fp, "%zu,A,Alias %zu\n", i, i);
+            }
+        }
+        fclose(fp);
+    }
+
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    opts->trunk_tune_data_calls = 1;
+    opts->trunk_tune_enc_calls = 1;
+    opts->trunk_use_allow_list = 1;
+    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
+
+    if (csvGroupImport(opts, state) != 0) {
+        failed = 1;
+    }
+    if (dsd_tg_policy_lookup_id(state, 6500U, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
+        || strcmp(lookup.entry.name, "Late Allow") != 0) {
+        failed = 1;
+    }
+    if (dsd_tg_policy_evaluate_group_call(opts, state, 6500U, 1U, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) != 0
+        || decision.match != DSD_TG_POLICY_MATCH_EXACT || decision.tune_allowed != 1) {
+        failed = 1;
+    }
+    if (dsd_tg_policy_evaluate_group_call(opts, state, 7000U, 1U, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) != 0
+        || decision.tune_allowed != 0 || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0) {
+        failed = 1;
+    }
+    if (dsd_tg_policy_lookup_id(state, (uint32_t)rows, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
+        || lookup.entry.name[sizeof(lookup.entry.name) - 1] != '\0'
+        || strlen(lookup.entry.name) != sizeof(lookup.entry.name) - 1) {
+        failed = 1;
+    }
+    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)rows, 1U, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT,
+                                          &decision)
+            != 0
+        || decision.tune_allowed != 0 || (decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE) == 0) {
         failed = 1;
     }
 
@@ -186,7 +286,7 @@ write_text_file(const char* path, const char* text) {
 }
 
 static int
-test_group_import_policy_and_legacy_headers(void) {
+test_group_import_policy_and_basic_headers(void) {
     int failed = 0;
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -215,9 +315,6 @@ test_group_import_policy_and_legacy_headers(void) {
     }
     snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
     if (csvGroupImport(opts, state) != 0) {
-        failed = 1;
-    }
-    if (state->group_tally != 2) {
         failed = 1;
     }
     if (dsd_tg_policy_lookup_id(state, 100, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
@@ -282,6 +379,7 @@ test_group_import_invalid_ids_and_required_fields(void) {
     int failed = 0;
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_tg_policy_lookup lookup;
     char tmpl[] = "dsd-neo-test-group-invalid-XXXXXX";
     int fd = -1;
     if (!opts || !state) {
@@ -320,7 +418,8 @@ test_group_import_invalid_ids_and_required_fields(void) {
     if (csvGroupImport(opts, state) != 0) {
         failed = 1;
     }
-    if (state->group_tally != 1 || state->group_array[0].groupNumber != 400UL) {
+    if (dsd_tg_policy_lookup_id(state, 400U, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
+        || strcmp(lookup.entry.name, "Valid") != 0) {
         failed = 1;
     }
 
@@ -331,7 +430,7 @@ test_group_import_invalid_ids_and_required_fields(void) {
 }
 
 static int
-test_group_import_range_after_exact_capacity(void) {
+test_group_import_range_after_many_exact_rows(void) {
     int failed = 0;
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -353,7 +452,7 @@ test_group_import_range_after_exact_capacity(void) {
 
     {
         FILE* fp = fopen(tmpl, "w");
-        const size_t cap = sizeof(state->group_array) / sizeof(state->group_array[0]);
+        const size_t exact_rows = 1031;
         if (!fp) {
             (void)remove(tmpl);
             free(opts);
@@ -361,7 +460,7 @@ test_group_import_range_after_exact_capacity(void) {
             return 1;
         }
         fprintf(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n");
-        for (size_t i = 0; i < cap + 8; i++) {
+        for (size_t i = 0; i < exact_rows; i++) {
             fprintf(fp, "%zu,D,Alias %zu,0,false,on,on,on,x\n", i + 1, i + 1);
         }
         fprintf(fp, "5000-5005,A,Range,70,true,on,on,on,r\n");
@@ -372,7 +471,7 @@ test_group_import_range_after_exact_capacity(void) {
     if (csvGroupImport(opts, state) != 0) {
         failed = 1;
     }
-    if (state->group_tally != (unsigned int)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+    if (dsd_tg_policy_lookup_id(state, 1031, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT) {
         failed = 1;
     }
     if (dsd_tg_policy_lookup_id(state, 5003, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_RANGE) {
@@ -543,16 +642,19 @@ main(void) {
     if (test_channel_import_missing_file() != 0) {
         return 1;
     }
-    if (test_group_import_capacity_cap() != 0) {
+    if (test_group_import_large_exact_file() != 0) {
         return 1;
     }
-    if (test_group_import_policy_and_legacy_headers() != 0) {
+    if (test_group_import_large_file_policy() != 0) {
+        return 1;
+    }
+    if (test_group_import_policy_and_basic_headers() != 0) {
         return 1;
     }
     if (test_group_import_invalid_ids_and_required_fields() != 0) {
         return 1;
     }
-    if (test_group_import_range_after_exact_capacity() != 0) {
+    if (test_group_import_range_after_many_exact_rows() != 0) {
         return 1;
     }
     if (test_vertex_import_missing_file() != 0) {

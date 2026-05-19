@@ -121,13 +121,6 @@ typedef struct {
 
 //end new filters
 
-//group csv import struct
-typedef struct {
-    unsigned long int groupNumber;
-    char groupMode[8]; //char *?
-    char groupName[50];
-} groupinfo;
-
 typedef struct {
     uint8_t F1;
     uint8_t F2;
@@ -317,7 +310,6 @@ struct dsd_state {
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
-    groupinfo group_array[0x3FF];
     // DMR late entry MI
     uint64_t late_entry_mi_fragment[2][8][3];
     // Multi-key array
@@ -915,8 +907,7 @@ struct dsd_state {
     int edacs_f_mask;       //Calculated Mask for F Bits
     int edacs_s_mask;       //Calculated Mask for S Bits
 
-    //trunking group and lcn freq list
-    unsigned int group_tally; //tally number of groups imported from CSV file for referencing later
+    //trunking lcn freq list
     int lcn_freq_count;
     int lcn_freq_roll; //number we have 'rolled' to in search of the CC
     int is_con_plus;   //con_plus flag for knowing its safe to skip payload channel after x seconds of no voice sync

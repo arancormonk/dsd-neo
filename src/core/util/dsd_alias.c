@@ -32,42 +32,23 @@ void l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, i
 void dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, uint8_t char_size,
                                 uint16_t block_len);
 
-static int g_group_capacity_warned = 0;
-
 static int
-group_array_try_append(dsd_state* state, uint32_t id, const char* mode, const char* name) {
+policy_try_append_alias(dsd_state* state, uint32_t id, const char* mode, const char* name) {
     dsd_tg_policy_entry entry;
-    size_t before = 0;
-    int rc = 0;
+    dsd_tg_policy_lookup lookup;
     if (!state || id == 0 || !mode || !name) {
         return 0;
     }
 
-    const size_t group_cap = sizeof(state->group_array) / sizeof(state->group_array[0]);
-    if (state->group_tally >= group_cap) {
-        if (!g_group_capacity_warned) {
-            g_group_capacity_warned = 1;
-            fprintf(stderr, " WARNING: group_array capacity (%zu) reached; skipping additional alias/group inserts.\n",
-                    group_cap);
-        }
+    if (dsd_tg_policy_lookup_id(state, id, &lookup) == 0 && lookup.match == DSD_TG_POLICY_MATCH_EXACT) {
         return 0;
     }
 
-    if (dsd_tg_policy_make_legacy_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &entry) != 0) {
+    if (dsd_tg_policy_make_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &entry) != 0) {
         return 0;
     }
 
-    before = state->group_tally;
-    rc = dsd_tg_policy_upsert_legacy_exact(state, &entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
-    if (rc == 1 && !g_group_capacity_warned && state->group_tally >= group_cap) {
-        g_group_capacity_warned = 1;
-        fprintf(stderr, " WARNING: group_array capacity (%zu) reached; skipping additional alias/group inserts.\n",
-                group_cap);
-    }
-    if (rc != 0) {
-        return 0;
-    }
-    return (state->group_tally > before) ? 1 : 0;
+    return dsd_tg_policy_upsert_exact(state, &entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0 ? 1 : 0;
 }
 
 //Motorola P25 OTA Alias Decoding ripped/demystified from Ilya Smirnov's SDRTrunk Voodoo Code
@@ -502,9 +483,6 @@ apx_embedded_alias_dump(dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t
         }
     }
 
-    //flag to indicate this already exists in import or group struct
-    uint8_t wr = 0;
-
     //fully qualified SUID
     uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&input[72], 20);
     uint32_t sys = (uint32_t)ConvertBitIntoBytes(&input[92], 12);
@@ -516,18 +494,11 @@ apx_embedded_alias_dump(dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t
                  sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s; %s", str, fqs);
     }
 
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == rid) {
-            wr = 1; //already in there, so no need to assign it
-            break;
-        }
-    }
-
-    if (wr == 0 && group_array_try_append(state, rid, "D", str)) //not already in there, so save it there now
+    if (policy_try_append_alias(state, rid, "D", str)) //not already in there, so save it there now
     {
         dsd_tg_policy_entry row;
         char metadata[128];
-        if (dsd_tg_policy_make_legacy_exact_entry(rid, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row) == 0) {
+        if (dsd_tg_policy_make_exact_entry(rid, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row) == 0) {
             snprintf(metadata, sizeof(metadata), "FQS:%05X.%03X.%06X(%d),Moto", wacn, sys, rid, rid);
             (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
         }
@@ -564,7 +535,6 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     memset(str, 0, sizeof(str));
     char ttemp[40];
     memset(ttemp, 0, sizeof(ttemp));
-    uint8_t wr = 0;
     uint32_t tsrc = 0, ttg = 0;
     if (slot == 0 && state->lastsrc != 0) {
         tsrc = state->lastsrc;
@@ -612,27 +582,17 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 
     //The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
     if (tsrc != 0) {
-        for (unsigned int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == tsrc) {
-                wr = 1; //already in there, so no need to assign it
-                break;
-            }
-        }
-
-        if (wr == 0 && group_array_try_append(state, tsrc, "D", str)) //not already in there, so save it there now
+        if (policy_try_append_alias(state, tsrc, "D", str)) //not already in there, so save it there now
         {
             dsd_tg_policy_entry row;
             char metadata[160];
-            if (dsd_tg_policy_make_legacy_exact_entry(tsrc, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row) == 0) {
+            if (dsd_tg_policy_make_exact_entry(tsrc, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row) == 0) {
                 snprintf(metadata, sizeof(metadata), "TG:%d,SYS:%03llX,RFSS:%lld,SITE:%lld,Harris", ttg,
                          state->p2_sysid, state->p2_rfssid, state->p2_siteid);
                 (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
             }
         }
     }
-
-    //debug
-    // fprintf (stderr, "\n WR: %d TG: %d SRC: %d Res: %d Len: %d STR: %s", wr, ttg, tsrc, res, len, str);
 
     //reset storage
     {
@@ -657,8 +617,6 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
         }
     }
 
-    //flag to indicate this already exists in import or group struct
-    uint8_t wr = 0;
     uint32_t rid = state->lastsrc;
     uint16_t nac = state->nac;
 
@@ -667,20 +625,11 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     }
 
     if (rid != 0) {
-        for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-            if (state->group_array[gi].groupNumber == rid) {
-                wr = 1; //already in there, so no need to assign it
-                break;
-            }
-        }
-
-        if (wr == 0
-            && group_array_try_append(state, rid, "D", (const char*)alias)) //not already in there, so save it there now
+        if (policy_try_append_alias(state, rid, "D", (const char*)alias)) //not already in there, so save it there now
         {
             dsd_tg_policy_entry row;
             char metadata[64];
-            if (dsd_tg_policy_make_legacy_exact_entry(rid, "D", (const char*)alias, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS,
-                                                      &row)
+            if (dsd_tg_policy_make_exact_entry(rid, "D", (const char*)alias, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row)
                 == 0) {
                 snprintf(metadata, sizeof(metadata), "%03X,Tait", nac);
                 (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);

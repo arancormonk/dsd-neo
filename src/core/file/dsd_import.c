@@ -328,9 +328,7 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
     char buffer[BSIZE];
     FILE* fp = NULL;
     unsigned int row_count = 0;
-    size_t dropped_exact_rows = 0;
     size_t dropped_policy_alloc_rows = 0;
-    size_t group_cap = 0;
     group_policy_header header = {0, 0, 0};
     int warned_header_order = 0;
 
@@ -344,8 +342,6 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
         LOG_ERROR("Unable to open group file '%s'\n", filename);
         return -1;
     }
-
-    group_cap = sizeof(state->group_array) / sizeof(state->group_array[0]);
 
     while (fgets(buffer, BSIZE, fp)) {
         char* fields[32];
@@ -492,17 +488,13 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
 
         if (!is_range) {
             int rc = 0;
-            if (state->group_tally >= group_cap) {
-                dropped_exact_rows++;
-                continue;
-            }
-            rc = dsd_tg_policy_append_legacy_exact(state, &entry);
+            rc = dsd_tg_policy_append_exact(state, &entry);
             if (rc == -1) {
                 dropped_policy_alloc_rows++;
                 continue;
             }
             if (rc == 1) {
-                dropped_exact_rows++;
+                LOG_WARNING("Group file '%s' row %u has invalid exact entry and was skipped.\n", filename, row_count);
                 continue;
             }
         } else {
@@ -515,10 +507,6 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
         }
     }
 
-    if (dropped_exact_rows > 0) {
-        LOG_WARNING("Group file '%s' exceeded capacity (%zu entries); ignored %zu additional rows.\n", filename,
-                    group_cap, dropped_exact_rows);
-    }
     if (dropped_policy_alloc_rows > 0) {
         LOG_WARNING("Group file '%s' skipped %zu rows due to policy allocation failure.\n", filename,
                     dropped_policy_alloc_rows);

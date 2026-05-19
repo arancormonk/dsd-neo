@@ -791,11 +791,11 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
                 && state->R == 0) {
                 mode = "DE";
             }
-            if (dsd_tg_policy_make_legacy_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS,
-                                                      &alias_entry)
+            if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS,
+                                               &alias_entry)
                 == 0) {
-                (void)dsd_tg_policy_upsert_legacy_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY);
-                (void)dsd_tg_policy_upsert_legacy_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
+                (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY);
+                (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
             }
         }
 
@@ -840,22 +840,19 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
 
         //if this is locked out by conditions above, then write it into the TG mode if we have a TG value assigned
         if (enc_lo == 1 && ttg != 0) {
-            unsigned int xx = 0;
             int enc_existing = 0;
+            char lockout_name_buf[50];
             const char* lockout_name = "ENC LO";
             dsd_tg_policy_entry lockout_entry;
-            for (xx = 0; xx < state->group_tally; xx++) {
-                if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                    enc_existing = 1;
-                    lockout_name = state->group_array[xx].groupName;
-                    break;
-                }
+            if (dsd_tg_policy_lookup_label(state, (uint32_t)ttg, NULL, 0, lockout_name_buf, sizeof(lockout_name_buf))) {
+                enc_existing = 1;
+                lockout_name = lockout_name_buf;
             }
 
-            if (dsd_tg_policy_make_legacy_exact_entry((uint32_t)ttg, "DE", lockout_name,
-                                                      DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &lockout_entry)
+            if (dsd_tg_policy_make_exact_entry((uint32_t)ttg, "DE", lockout_name, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
+                                               &lockout_entry)
                     == 0
-                && dsd_tg_policy_upsert_legacy_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0) {
+                && dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0) {
                 //run a watchdog here so we can update this with the crypto variables and ENC LO
                 if (ttg != 0 && enc_existing == 0) //
                 {
