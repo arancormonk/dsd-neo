@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/atomic_compat.h>
 
 #include <ctype.h>
 #include <errno.h>
@@ -48,10 +49,13 @@ typedef struct {
 typedef struct {
     dsd_tg_policy_table table;
     dsd_tg_policy_active_table active;
+    uint64_t context_id;
+    uint64_t snapshot_source_context_id;
 } dsd_tg_policy_context;
 
 static long s_alloc_fail_after = -1;
 static long s_alloc_calls = 0;
+static dsd_atomic_u64 s_next_context_id = {1u};
 
 static int
 tg_policy_alloc_should_fail(void) {
@@ -219,6 +223,26 @@ tg_policy_entry_valid_range(const dsd_tg_policy_entry* e) {
     return e->id_start != e->id_end;
 }
 
+static uint64_t
+tg_policy_next_context_id(void) {
+    uint64_t id = 0u;
+    do {
+        id = dsd_atomic_u64_fetch_add_relaxed(&s_next_context_id, 1u);
+    } while (id == 0u);
+    return id;
+}
+
+static dsd_tg_policy_context*
+tg_policy_context_alloc(void) {
+    dsd_tg_policy_context* ctx = (dsd_tg_policy_context*)tg_policy_calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        return NULL;
+    }
+    ctx->context_id = tg_policy_next_context_id();
+    ctx->snapshot_source_context_id = ctx->context_id;
+    return ctx;
+}
+
 static void
 tg_policy_context_free(void* ptr) {
     dsd_tg_policy_context* ctx = (dsd_tg_policy_context*)ptr;
@@ -244,7 +268,7 @@ tg_policy_ctx_get_mut(dsd_state* state, int create_if_missing) {
         return ctx;
     }
 
-    ctx = (dsd_tg_policy_context*)tg_policy_calloc(1, sizeof(*ctx));
+    ctx = tg_policy_context_alloc();
     if (!ctx) {
         return NULL;
     }
@@ -548,7 +572,7 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     if (!src) {
         return 0;
     }
-    clone = (dsd_tg_policy_context*)tg_policy_calloc(1, sizeof(*clone));
+    clone = tg_policy_context_alloc();
     if (!clone) {
         return -1;
     }
@@ -556,6 +580,7 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     clone->table.capacity = src->table.count;
     clone->table.generation = src->table.generation;
     clone->active = src->active;
+    clone->snapshot_source_context_id = src->context_id;
     if (src->table.count > 0) {
         clone->table.entries = (dsd_tg_policy_entry*)tg_policy_calloc(src->table.count, sizeof(*clone->table.entries));
         if (!clone->table.entries) {
@@ -586,8 +611,9 @@ dsd_tg_policy_copy_snapshot(dsd_state* dst, const dsd_state* src) {
     }
 
     dst_ctx = tg_policy_ctx_get_mut(dst, 0);
-    if (dst_ctx && dst_ctx != src_ctx && dst_ctx->table.generation == src_ctx->table.generation
-        && dst_ctx->table.count == src_ctx->table.count) {
+    if (dst_ctx && dst_ctx != src_ctx && src_ctx->context_id != 0u && dst_ctx->snapshot_source_context_id != 0u
+        && dst_ctx->snapshot_source_context_id == src_ctx->context_id
+        && dst_ctx->table.generation == src_ctx->table.generation && dst_ctx->table.count == src_ctx->table.count) {
         dst_ctx->active = src_ctx->active;
         return 0;
     }
@@ -1276,7 +1302,7 @@ dsd_tg_policy_reload_group_file(dsd_opts* opts, dsd_state* state) {
     imported->state_ext_cleanup[DSD_STATE_EXT_CORE_TG_POLICY] = NULL;
 
     if (!imported_policy) {
-        imported_ctx = (dsd_tg_policy_context*)tg_policy_calloc(1, sizeof(*imported_ctx));
+        imported_ctx = tg_policy_context_alloc();
         if (!imported_ctx) {
             dsd_state_ext_free_all(imported);
             free(imported);

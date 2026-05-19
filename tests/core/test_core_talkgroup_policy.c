@@ -80,6 +80,95 @@ policy_count(const dsd_state* st) {
 }
 
 static int
+test_snapshot_reclones_recreated_context(void) {
+    int rc = 0;
+    dsd_state* live = (dsd_state*)calloc(1, sizeof(*live));
+    dsd_state* snap = (dsd_state*)calloc(1, sizeof(*snap));
+    dsd_tg_policy_entry e;
+    dsd_tg_policy_lookup lookup;
+    if (!live || !snap) {
+        free_test_state(live);
+        free_test_state(snap);
+        return 1;
+    }
+
+    init_entry(&e, 42, "A", "OLD", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("snapshot seed live row", dsd_tg_policy_append_exact(live, &e) == 0);
+    rc |= expect_true("snapshot initial copy", dsd_tg_policy_copy_snapshot(snap, live) == 0);
+    rc |= expect_true("snapshot initial lookup", dsd_tg_policy_lookup_id(snap, 42, &lookup) == 0);
+    rc |= expect_true("snapshot initial label", strcmp(lookup.entry.name, "OLD") == 0);
+
+    dsd_state_ext_free_all(live);
+    init_entry(&e, 42, "B", "NEW", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("snapshot recreate live row", dsd_tg_policy_append_exact(live, &e) == 0);
+    rc |= expect_true("snapshot recreated generation matches old", policy_generation(live) == 1u);
+    rc |= expect_true("snapshot recreated count matches old", policy_count(live) == 1u);
+    rc |= expect_true("snapshot recreated copy", dsd_tg_policy_copy_snapshot(snap, live) == 0);
+    rc |= expect_true("snapshot recreated lookup", dsd_tg_policy_lookup_id(snap, 42, &lookup) == 0);
+    rc |= expect_true("snapshot recloned label", strcmp(lookup.entry.name, "NEW") == 0);
+    rc |= expect_true("snapshot recloned mode", strcmp(lookup.entry.mode, "B") == 0);
+
+    free_test_state(live);
+    free_test_state(snap);
+    return rc;
+}
+
+static int
+test_snapshot_reclones_recreated_empty_reload_context(void) {
+    int rc = 0;
+    dsd_state* live = (dsd_state*)calloc(1, sizeof(*live));
+    dsd_state* snap = (dsd_state*)calloc(1, sizeof(*snap));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_tg_policy_entry e;
+    dsd_tg_policy_lookup lookup;
+    char path_template[64];
+    int fd = -1;
+    if (!live || !snap || !opts) {
+        free_test_state(live);
+        free_test_state(snap);
+        free(opts);
+        return 1;
+    }
+
+    snprintf(path_template, sizeof(path_template), "%s", "dsd-neo-test-tg-empty-reload-XXXXXX");
+    fd = dsd_mkstemp(path_template);
+    if (fd < 0) {
+        free_test_state(live);
+        free_test_state(snap);
+        free(opts);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+
+    rc |= expect_true("snapshot empty reload seed", dsd_tg_policy_reload_group_file(opts, live) == 0);
+    init_entry(&e, 42, "A", "OLD", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("snapshot empty reload append old row", dsd_tg_policy_append_exact(live, &e) == 0);
+    rc |= expect_true("snapshot empty reload old generation", policy_generation(live) == 2u);
+    rc |= expect_true("snapshot empty reload old count", policy_count(live) == 1u);
+    rc |= expect_true("snapshot empty reload initial copy", dsd_tg_policy_copy_snapshot(snap, live) == 0);
+    rc |= expect_true("snapshot empty reload initial lookup", dsd_tg_policy_lookup_id(snap, 42, &lookup) == 0);
+    rc |= expect_true("snapshot empty reload initial label", strcmp(lookup.entry.name, "OLD") == 0);
+
+    dsd_state_ext_free_all(live);
+    rc |= expect_true("snapshot empty reload recreate", dsd_tg_policy_reload_group_file(opts, live) == 0);
+    init_entry(&e, 42, "B", "NEW", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("snapshot empty reload append new row", dsd_tg_policy_append_exact(live, &e) == 0);
+    rc |= expect_true("snapshot empty reload recreated generation matches old", policy_generation(live) == 2u);
+    rc |= expect_true("snapshot empty reload recreated count matches old", policy_count(live) == 1u);
+    rc |= expect_true("snapshot empty reload recreated copy", dsd_tg_policy_copy_snapshot(snap, live) == 0);
+    rc |= expect_true("snapshot empty reload recreated lookup", dsd_tg_policy_lookup_id(snap, 42, &lookup) == 0);
+    rc |= expect_true("snapshot empty reload recloned label", strcmp(lookup.entry.name, "NEW") == 0);
+    rc |= expect_true("snapshot empty reload recloned mode", strcmp(lookup.entry.mode, "B") == 0);
+
+    (void)remove(path_template);
+    free_test_state(live);
+    free_test_state(snap);
+    free(opts);
+    return rc;
+}
+
+static int
 test_lookup_and_precedence(void) {
     int rc = 0;
     dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
@@ -788,6 +877,8 @@ test_reload_group_file(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_snapshot_reclones_recreated_context();
+    rc |= test_snapshot_reclones_recreated_empty_reload_context();
     rc |= test_lookup_and_precedence();
     rc |= test_policy_exact_lookup();
     rc |= test_upsert_modes();
