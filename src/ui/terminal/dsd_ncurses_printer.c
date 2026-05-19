@@ -952,7 +952,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         if (snr > -50.0) {
             /* Show current SNR as a compact, colorized meter */
-            printw(" SNR: %.1f dB ", snr);
+            printw(" SNR: %5.1f dB ", snr);
             printw("[");
             /* Pass current modulation for per-mod color bands */
             print_snr_meter(opts, snr, state->rf_mod);
@@ -960,13 +960,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw(" (%s)", m);
         } else {
             /* Show placeholder so users can see the field even when no estimate */
-            printw(" SNR: n/a (%s) []", m[0] ? m : "-");
+            printw(" SNR: %5s dB [] (%s)", "n/a", m[0] ? m : "-");
         }
     }
 #endif
 #ifndef USE_RADIO
     /* If built without RTL support, still show a placeholder */
-    printw(" SNR: n/a []");
+    printw(" SNR: %5s dB []", "n/a");
 #endif
     printw("\n");
     /* In Level is meaningful for non-RTL inputs and RTL C4FM/GFSK modes.
