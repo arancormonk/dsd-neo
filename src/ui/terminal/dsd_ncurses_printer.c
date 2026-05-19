@@ -102,6 +102,20 @@ ui_print_kv_line(const char* label, const char* fmt, ...) {
     addch('\n');
 }
 
+enum { UI_SNR_DB_FIELD_WIDTH = 8 }; /* "-49.9 dB" */
+
+static void
+ui_print_snr_db_field(const char* value) {
+    const char* s = (value != NULL && value[0] != '\0') ? value : "n/a";
+    addstr(" SNR: ");
+    addstr(s);
+    addstr(" dB");
+    int pad = UI_SNR_DB_FIELD_WIDTH - ((int)strlen(s) + 3);
+    for (int i = 0; i < pad; i++) {
+        addch(' ');
+    }
+}
+
 static inline int
 ui_eh_item_has_content(const Event_History* item) {
     if (item == NULL) {
@@ -952,7 +966,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         if (snr > -50.0) {
             /* Show current SNR as a compact, colorized meter */
-            printw(" SNR: %5.1f dB ", snr);
+            char snr_value[16];
+            if (snprintf(snr_value, sizeof(snr_value), "%.1f", snr) < 0) {
+                snr_value[0] = '\0';
+            }
+            ui_print_snr_db_field(snr_value);
+            addch(' ');
             printw("[");
             /* Pass current modulation for per-mod color bands */
             print_snr_meter(opts, snr, state->rf_mod);
@@ -960,13 +979,15 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw(" (%s)", m);
         } else {
             /* Show placeholder so users can see the field even when no estimate */
-            printw(" SNR: %5s dB [] (%s)", "n/a", m[0] ? m : "-");
+            ui_print_snr_db_field("n/a");
+            printw(" [] (%s)", m[0] ? m : "-");
         }
     }
 #endif
 #ifndef USE_RADIO
     /* If built without RTL support, still show a placeholder */
-    printw(" SNR: %5s dB []", "n/a");
+    ui_print_snr_db_field("n/a");
+    printw(" []");
 #endif
     printw("\n");
     /* In Level is meaningful for non-RTL inputs and RTL C4FM/GFSK modes.
