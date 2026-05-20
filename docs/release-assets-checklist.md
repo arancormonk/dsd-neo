@@ -34,5 +34,6 @@ Required license/notice files in every shipped asset:
 
 ## CI-side sanity
 
+- [ ] Release tags use `vX.Y.Z` and match `project(dsd-neo VERSION X.Y.Z ...)` in `CMakeLists.txt`.
 - [ ] For each workflow run, verify the staging steps did not emit “missing required license file” errors.
 - [ ] Spot-check nightly and tag builds across all OSes after any packaging changes.

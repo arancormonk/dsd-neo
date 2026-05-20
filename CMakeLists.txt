@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(dsd-neo)
+project(dsd-neo VERSION 1.0.0 LANGUAGES C CXX)
 include(CTest) # provides BUILD_TESTING and enables tests when on
 enable_testing()
 include(GNUInstallDirs)
@@ -220,11 +220,11 @@ option(SID "Build with P25p1 LSD/Soft ID Enabled" OFF)
 include(git_revision)
 # Gather git info: semantic-like tag and short hash
 get_git_head_revision(GIT_REFSPEC GIT_HASH)
-git_describe(GIT_TAG --tags --abbrev=0)
+git_describe(GIT_TAG --tags --match "v[0-9]*.[0-9]*.[0-9]*")
 
 # Sanitize/fallbacks for non-git tarballs or archives
 if("${GIT_TAG}" MATCHES "NOTFOUND" OR "${GIT_TAG}" STREQUAL "")
-    set(GIT_TAG "0.1.0")
+    set(GIT_TAG "v${PROJECT_VERSION}")
 endif()
 if("${GIT_HASH}" MATCHES "NOTFOUND" OR "${GIT_HASH}" STREQUAL "")
     set(GIT_HASH "unknown")

@@ -4,6 +4,8 @@ on:
   workflow_dispatch: {}
   push:
     branches: [main, master]
+    tags:
+      - "v*.*.*"
 
   pull_request:
     branches: [main, master]
@@ -454,6 +456,23 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
+  validate-release-tag:
+    name: Validate release tag
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.verify.outputs.version }}
+      archive_prefix: ${{ steps.verify.outputs.archive_prefix }}
+      release_title: ${{ steps.verify.outputs.release_title }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - name: Verify tag matches project version
+        id: verify
+        shell: bash
+        env:
+          RELEASE_TAG_CREATED: ${{ github.event.created }}
+        run: tools/ci_validate_release_tag.sh
+
   update-nightly-tag:
     name: Update nightly tag
     needs: [build-linux]
@@ -480,12 +499,29 @@ jobs:
           fi
           git push --force origin refs/tags/nightly
 
-  update-aur:
-    name: Update AUR package
-    needs: [build-linux]
+  update-aur-git:
+    name: Update AUR package (git)
+    needs: [build-linux, validate-release-tag]
     runs-on: ubuntu-latest
-    # Only run on upstream pushes; steps guard on AUR key presence
-    if: github.repository == 'arancormonk/dsd-neo' && github.event_name != 'pull_request'
+    container:
+      image: archlinux:base-devel
+    env:
+      AUR_MAKEPKG_USER: aurbuilder
+    defaults:
+      run:
+        shell: bash
+    # Run on upstream non-PR refs. For version tags, only proceed after release validation succeeds.
+    if: >-
+      ${{
+        always() &&
+        github.repository == 'arancormonk/dsd-neo' &&
+        github.event_name != 'pull_request' &&
+        needs.build-linux.result == 'success' &&
+        (
+          !startsWith(github.ref, 'refs/tags/v') ||
+          needs.validate-release-tag.result == 'success'
+        )
+      }}
     steps:
       - name: Check AUR SSH key availability
         id: aur_key
@@ -499,42 +535,67 @@ jobs:
             echo "has_key=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Install AUR tooling
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: pacman -Syu --noconfirm --needed git openssh
+
+      - name: Create makepkg user
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          if ! id -u "$AUR_MAKEPKG_USER" >/dev/null 2>&1; then
+            useradd --create-home --shell /bin/bash "$AUR_MAKEPKG_USER"
+          fi
+
       - name: Checkout repository
         if: steps.aur_key.outputs.has_key == 'true'
         uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
 
+      - name: Mark workspace as safe
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Refresh latest main ref
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: git fetch --force origin refs/heads/main:refs/remotes/origin/main --tags
+
       - name: Setup SSH for AUR
         if: steps.aur_key.outputs.has_key == 'true'
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur
-          chmod 600 ~/.ssh/aur
-          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+          mkdir -p "$HOME/.ssh"
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+          ssh-keyscan -t ed25519 aur.archlinux.org >> "$HOME/.ssh/known_hosts"
 
       - name: Clone AUR package
         if: steps.aur_key.outputs.has_key == 'true'
         run: |
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git clone ssh://aur@aur.archlinux.org/dsd-neo-git.git aur-package
+          aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          GIT_SSH_COMMAND="$aur_ssh_command" git clone ssh://aur@aur.archlinux.org/dsd-neo-git.git aur-package
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/aur-package"
 
       - name: Compute new pkgver
         id: pkgver
         if: steps.aur_key.outputs.has_key == 'true'
         run: |
           cd "$GITHUB_WORKSPACE"
-          commit_count=$(git rev-list --count HEAD)
-          commit_hash=$(git rev-parse --short=7 HEAD)
-          new_pkgver="r${commit_count}.${commit_hash}"
+          ref="origin/main"
+          new_pkgver="$(
+            (
+              set -o pipefail
+              git describe --long --tags --abbrev=7 --match 'v[0-9]*.[0-9]*.[0-9]*' "$ref" 2>/dev/null |
+                sed 's/^v//;s/-/.r/;s/-/./'
+            ) || printf "r%s.%s" "$(git rev-list --count "$ref")" "$(git rev-parse --short=7 "$ref")"
+          )"
           echo "pkgver=$new_pkgver" >> "$GITHUB_OUTPUT"
-          echo "Computed pkgver: $new_pkgver"
+          echo "Computed pkgver from $ref ($(git rev-parse --short=7 "$ref")): $new_pkgver"
 
       - name: Check if update needed
         id: check
         if: steps.aur_key.outputs.has_key == 'true'
         run: |
           cd aur-package
-          # Handle PKGBUILDs with or without leading whitespace
           current_pkgver=$(grep -E '^\s*pkgver=' PKGBUILD | sed 's/.*pkgver=//')
           echo "Current pkgver: $current_pkgver"
           echo "New pkgver: ${{ steps.pkgver.outputs.pkgver }}"
@@ -549,22 +610,12 @@ jobs:
       - name: Update PKGBUILD
         if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
+          set -euo pipefail
           cd aur-package
-          # Handle PKGBUILDs with or without leading whitespace
-          sed -i "s/^\(\s*\)pkgver=.*/\1pkgver=${{ steps.pkgver.outputs.pkgver }}/" PKGBUILD
-          # Reset pkgrel to 1 for new upstream version
-          sed -i "s/^\(\s*\)pkgrel=.*/\1pkgrel=1/" PKGBUILD
-
-      - name: Update .SRCINFO
-        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
-        run: |
-          cd aur-package
-          # Update pkgver in .SRCINFO (lightweight approach)
-          sed -i "s/^\(\s*\)pkgver = .*/\1pkgver = ${{ steps.pkgver.outputs.pkgver }}/" .SRCINFO
-          # Reset pkgrel to 1
-          sed -i "s/^\(\s*\)pkgrel = .*/\1pkgrel = 1/" .SRCINFO
-          # Update source line version reference if present
-          sed -i "s/dsd-neo-git-r[0-9]*\.[a-f0-9]*/dsd-neo-git-${{ steps.pkgver.outputs.pkgver }}/" .SRCINFO
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.pkgver.outputs.pkgver }}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          chown -R "$AUR_MAKEPKG_USER:$AUR_MAKEPKG_USER" .
+          runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --printsrcinfo > .SRCINFO"
 
       - name: Commit and push to AUR
         if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
@@ -574,7 +625,180 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add PKGBUILD .SRCINFO
           git commit -m "Update to ${{ steps.pkgver.outputs.pkgver }}"
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git push origin master
+          aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          GIT_SSH_COMMAND="$aur_ssh_command" git push origin master
+
+  update-aur-release:
+    name: Update AUR package (release)
+    needs: [build-linux, validate-release-tag]
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    env:
+      AUR_MAKEPKG_USER: aurbuilder
+    defaults:
+      run:
+        shell: bash
+    if: >-
+      ${{
+        github.repository == 'arancormonk/dsd-neo' &&
+        github.event_name != 'pull_request' &&
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.build-linux.result == 'success' &&
+        needs.validate-release-tag.result == 'success'
+      }}
+    steps:
+      - name: Check AUR SSH key availability
+        id: aur_key
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "AUR_SSH_PRIVATE_KEY is not set; skipping AUR update steps."
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install AUR tooling
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: pacman -Syu --noconfirm --needed git openssh curl
+
+      - name: Create makepkg user
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          if ! id -u "$AUR_MAKEPKG_USER" >/dev/null 2>&1; then
+            useradd --create-home --shell /bin/bash "$AUR_MAKEPKG_USER"
+          fi
+
+      - name: Checkout repository
+        if: steps.aur_key.outputs.has_key == 'true'
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Mark workspace as safe
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Setup SSH for AUR
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          mkdir -p "$HOME/.ssh"
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+          ssh-keyscan -t ed25519 aur.archlinux.org >> "$HOME/.ssh/known_hosts"
+
+      - name: Clone AUR package
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          GIT_SSH_COMMAND="$aur_ssh_command" git clone ssh://aur@aur.archlinux.org/dsd-neo.git aur-package
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/aur-package"
+
+      - name: Compute release metadata
+        id: release_meta
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          pkgver="${GITHUB_REF_NAME#v}"
+          source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          sha256="$(
+            set -o pipefail
+            curl -fsSL "$source_url" | sha256sum | awk '{print $1}'
+          )"
+          echo "pkgver=$pkgver" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "Computed release metadata: pkgver=$pkgver sha256=$sha256"
+
+      - name: Ensure PKGBUILD exists
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          set -euo pipefail
+          cd aur-package
+          if [ -f PKGBUILD ]; then
+            exit 0
+          fi
+          cat > PKGBUILD <<'PKGBUILD'
+          pkgname=dsd-neo
+          pkgver=0.0.0
+          pkgrel=1
+          pkgdesc="Digital Speech Decoder - A modern, modular, and performance enhanced C/C++ decoder for digital voice. DMR, P25, NXDN, YSF, and more."
+          arch=('x86_64' 'aarch64')
+          url="https://github.com/arancormonk/dsd-neo"
+          license=('GPL-3.0-or-later')
+          depends=(
+              'mbelib-neo'
+              'libsndfile'
+              'ncurses'
+              'libpulse'
+              'rtl-sdr'
+              'soapysdr'
+              'codec2'
+              'curl'
+          )
+          makedepends=(
+              'cmake'
+              'help2man'
+          )
+          conflicts=('dsd-neo-git')
+          source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+          sha256sums=('SKIP')
+
+          build() {
+              cmake -B build -S "$pkgname-$pkgver" \
+                  -DCMAKE_BUILD_TYPE=Release \
+                  -DCMAKE_INSTALL_PREFIX=/usr \
+                  -DBUILD_TESTING=OFF \
+                  -Wno-dev
+              cmake --build build
+          }
+
+          package() {
+              DESTDIR="$pkgdir" cmake --install build
+          }
+          PKGBUILD
+
+      - name: Check if update needed
+        id: check
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          cd aur-package
+          current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)
+          current_sha256=$(sed -n "s/^sha256sums=('\\([0-9a-f]\\{64\\}\\)').*/\\1/p" PKGBUILD | head -n1)
+          echo "Current pkgver: $current_pkgver"
+          echo "Current sha256: $current_sha256"
+          echo "New pkgver: ${{ steps.release_meta.outputs.pkgver }}"
+          echo "New sha256: ${{ steps.release_meta.outputs.sha256 }}"
+          if [ "$current_pkgver" = "${{ steps.release_meta.outputs.pkgver }}" ] &&
+             [ "$current_sha256" = "${{ steps.release_meta.outputs.sha256 }}" ]; then
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+            echo "No update needed"
+          else
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+            echo "Update needed"
+          fi
+
+      - name: Update PKGBUILD
+        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        run: |
+          set -euo pipefail
+          cd aur-package
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.release_meta.outputs.pkgver }}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${{ steps.release_meta.outputs.sha256 }}')/" PKGBUILD
+          chown -R "$AUR_MAKEPKG_USER:$AUR_MAKEPKG_USER" .
+          runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Commit and push to AUR
+        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        run: |
+          cd aur-package
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to ${{ steps.release_meta.outputs.pkgver }}"
+          aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          GIT_SSH_COMMAND="$aur_ssh_command" git push origin master
 
   sanitize-linux:
     name: Linux • Debug • sanitizer (${{ matrix.name }})

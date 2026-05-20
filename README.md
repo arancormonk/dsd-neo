@@ -24,7 +24,8 @@ Project homepage: https://github.com/arancormonk/dsd-neo
   - macOS DMG (arm64): [dsd-neo-macos-arm64-portable-nightly.dmg](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-macos-arm64-portable-nightly.dmg)
   - Windows native ZIP (MSVC x86_64, **recommended**): [dsd-neo-msvc-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-msvc-x86_64-native-nightly.zip)
   - Windows native ZIP (MinGW x86_64, alternative): [dsd-neo-mingw-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-mingw-x86_64-native-nightly.zip)
-- Arch Linux (AUR): [dsd-neo-git](https://aur.archlinux.org/packages/dsd-neo-git)
+- Arch Linux (AUR): [dsd-neo](https://aur.archlinux.org/packages/dsd-neo) for stable releases,
+  or [dsd-neo-git](https://aur.archlinux.org/packages/dsd-neo-git) for main-branch snapshots.
 
 On Windows, the native MSVC ZIP is the preferred download for best integration with the Windows console and audio stack. The MinGW ZIP is a fully native alternative.
 

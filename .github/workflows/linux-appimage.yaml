@@ -4,6 +4,8 @@ on:
   workflow_dispatch: {}
   push:
     branches: [main, master]
+    tags:
+      - "v*.*.*"
     paths-ignore:
       - ".*"
       - ".github/*.yml"
@@ -31,6 +33,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG_CREATED: ${{ github.event.created }}
+        run: tools/ci_validate_release_tag.sh
       - name: Login to Docker Hub (optional)
         # Only run on trusted contexts (not forked PRs), otherwise the
         # `secrets` context is unavailable and would error.
@@ -405,7 +414,7 @@ jobs:
         uses: softprops/action-gh-release@v3.0.0
         with:
           files: ${{ steps.names.outputs.OUT }}
-          name: ${{ steps.names.outputs.ART }}
+          name: ${{ steps.release.outputs.release_title }}
           generate_release_notes: true
       - name: Upload nightly asset (overwrite)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}

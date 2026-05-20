@@ -4,6 +4,8 @@ on:
   workflow_dispatch: {}
   push:
     branches: [main, master]
+    tags:
+      - "v*.*.*"
     paths-ignore:
       - ".*"
       - ".github/*.yml"
@@ -31,6 +33,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG_CREATED: ${{ github.event.created }}
+        run: tools/ci_validate_release_tag.sh
 
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -171,6 +180,8 @@ jobs:
         uses: softprops/action-gh-release@v3.0.0
         with:
           files: ${{ steps.zip.outputs.ZIP_PATH }}
+          name: ${{ steps.release.outputs.release_title }}
+          generate_release_notes: true
 
       - name: Upload native MSVC nightly asset (overwrite)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -197,6 +208,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG_CREATED: ${{ github.event.created }}
+        run: tools/ci_validate_release_tag.sh
 
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -368,6 +386,8 @@ jobs:
         uses: softprops/action-gh-release@v3.0.0
         with:
           files: ${{ steps.zip.outputs.ZIP_PATH }}
+          name: ${{ steps.release.outputs.release_title }}
+          generate_release_notes: true
 
       - name: Upload native MinGW nightly asset (overwrite)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
