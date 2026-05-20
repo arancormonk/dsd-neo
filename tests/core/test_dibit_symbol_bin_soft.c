@@ -10,6 +10,7 @@
 #include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/runtime/config.h>
+#include <fcntl.h> // IWYU pragma: keep
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"

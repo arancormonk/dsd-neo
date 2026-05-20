@@ -41,6 +41,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <fcntl.h> // IWYU pragma: keep
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
