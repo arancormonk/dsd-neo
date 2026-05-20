@@ -28,8 +28,10 @@ uint8_t p25p2_hexbit_llr_reliability(const uint16_t bit_offsets[6], int ts_count
 /**
  * Return the P25P2 soft-decision erasure threshold.
  *
- * Reliability values below this threshold are treated as low-confidence
- * symbols by P25P2 soft-decision helpers.
+ * Reliability values below this threshold expand the ranked erasure prefix
+ * used by P25P2 soft-decision helpers. Helpers also retain a conservative
+ * minimum weakest-symbol prefix so soft recovery remains useful when all
+ * symbols are above the threshold.
  */
 int p25p2_soft_erasure_threshold(void);
 
@@ -62,6 +64,12 @@ int p25p2_sacch_soft_erasures(int ts_counter, int scrambled, int* erasures, int 
  */
 int p25p2_ess_soft_erasures_from_llr(const int16_t payload_llr[96], const int16_t parity_llr[168], int* erasures,
                                      int max_payload_add, int max_parity_add);
+
+/**
+ * Build a globally ranked ESS erasure list across all 44 RS symbols.
+ */
+int p25p2_ess_soft_erasures_ranked(const int16_t payload_llr[96], const int16_t parity_llr[168], int* erasures,
+                                   int max_add);
 
 #ifdef __cplusplus
 }

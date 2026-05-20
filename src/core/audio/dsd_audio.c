@@ -39,6 +39,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/resampler.h"
@@ -969,7 +970,7 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
             return -1;
         }
         if (dsd_stat_is_regular(&stat_buf)) {
-            opts->symbolfile = fopen(opts->audio_in_dev, "r");
+            opts->symbolfile = fopen(opts->audio_in_dev, "rb");
             if (opts->symbolfile == NULL) {
                 LOG_ERROR("Error, couldn't open raw (float) file %s\n", opts->audio_in_dev);
                 return -1;
@@ -988,7 +989,7 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
             return -1;
         }
         if (dsd_stat_is_regular(&stat_buf)) {
-            opts->symbolfile = fopen(opts->audio_in_dev, "r");
+            opts->symbolfile = fopen(opts->audio_in_dev, "rb");
             if (opts->symbolfile == NULL) {
                 LOG_ERROR("Error, couldn't open sym (float) file %s\n", opts->audio_in_dev);
                 return -1;
@@ -1006,7 +1007,7 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
             return -1;
         }
         if (dsd_stat_is_regular(&stat_buf)) {
-            opts->symbolfile = fopen(opts->audio_in_dev, "r");
+            opts->symbolfile = fopen(opts->audio_in_dev, "rb");
             if (opts->symbolfile == NULL) {
                 LOG_ERROR("Error, couldn't open bin file %s\n", opts->audio_in_dev);
                 return -1;
@@ -1015,6 +1016,9 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
             if (state) {
                 state->use_throttle = 1;
                 state->symbol_replay_next_deadline_ns = 0;
+                state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+                state->symbol_replay_header_checked = 0;
+                state->symbol_replay_has_soft = 0;
             }
         } else {
             opts->audio_in_type = AUDIO_IN_PULSE;

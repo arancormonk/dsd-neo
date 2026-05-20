@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
@@ -104,7 +105,7 @@ svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
     if (!opts || !filename || !*filename) {
         return -1;
     }
-    opts->symbolfile = fopen(filename, "r");
+    opts->symbolfile = fopen(filename, "rb");
     if (!opts->symbolfile) {
         LOG_ERROR("Error, couldn't open %s\n", filename);
         return -1;
@@ -124,6 +125,11 @@ svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
     }
     snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", filename);
     opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; // symbol capture bin
+    if (state) {
+        state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+        state->symbol_replay_header_checked = 0;
+        state->symbol_replay_has_soft = 0;
+    }
     return 0;
 }
 
@@ -133,7 +139,7 @@ svc_replay_last_symbol(dsd_opts* opts, dsd_state* state) {
     if (!opts) {
         return -1;
     }
-    opts->symbolfile = fopen(opts->audio_in_dev, "r");
+    opts->symbolfile = fopen(opts->audio_in_dev, "rb");
     if (!opts->symbolfile) {
         LOG_ERROR("Error, couldn't open %s\n", opts->audio_in_dev);
         return -1;
@@ -152,6 +158,11 @@ svc_replay_last_symbol(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; // symbol capture bin
+    if (state) {
+        state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+        state->symbol_replay_header_checked = 0;
+        state->symbol_replay_has_soft = 0;
+    }
     return 0;
 }
 

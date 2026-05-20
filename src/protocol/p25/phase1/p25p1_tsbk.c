@@ -35,6 +35,18 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static int16_t
+saturating_llr_add(int acc, int value) {
+    acc += value;
+    if (acc > INT16_MAX) {
+        return INT16_MAX;
+    }
+    if (acc < INT16_MIN) {
+        return INT16_MIN;
+    }
+    return (int16_t)acc;
+}
+
 void
 processTSBK(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_tsbk++;
@@ -63,6 +75,8 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
 
     int16_t tsbk_llr[196];
     memset(tsbk_llr, 0, sizeof(tsbk_llr));
+    int16_t rep_llr[3][196];
+    memset(rep_llr, 0, sizeof(rep_llr));
 
     uint8_t tsbk_byte[12]; // per repetition
     memset(tsbk_byte, 0, sizeof(tsbk_byte));
@@ -114,8 +128,29 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
             skipdibit++;
         }
 
-        // 1/2-rate decode this repetition
-        (void)p25_12_soft_llr(tsbk_dibit, tsbk_llr, tsbk_byte);
+        // 1/2-rate decode this repetition; prefer a CRC-valid soft-list candidate.
+        p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
+        int candidate_count = p25_12_soft_llr_list(tsbk_dibit, tsbk_llr, candidates, P25_12_MAX_CANDIDATES);
+        if (candidate_count > 0) {
+            int selected = 0;
+            for (int c = 0; c < candidate_count; c++) {
+                int candidate_bits[96];
+                int bit_index = 0;
+                for (int b = 0; b < 12; b++) {
+                    for (int bit = 0; bit < 8; bit++) {
+                        candidate_bits[bit_index++] = ((candidates[c].bytes[b] << bit) & 0x80) >> 7;
+                    }
+                }
+                if (crc16_lb_bridge(candidate_bits, 80) == 0) {
+                    selected = c;
+                    break;
+                }
+            }
+            memcpy(tsbk_byte, candidates[selected].bytes, 12);
+        } else {
+            (void)p25_12_soft_llr(tsbk_dibit, tsbk_llr, tsbk_byte);
+        }
+        memcpy(rep_llr[j], tsbk_llr, sizeof(tsbk_llr));
 
         // Convert decoded bytes into a 96-bit MSB-first vector
         k = 0;
@@ -167,7 +202,45 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         // Use passing repetition
         memcpy(tsbk_byte, rep_bytes[sel_idx], 12);
         err = 0;
+    } else if (reps > 1) {
+        int16_t combined_llr[196];
+        memset(combined_llr, 0, sizeof(combined_llr));
+        for (i = 0; i < 196; i++) {
+            int acc = 0;
+            for (int r = 0; r < reps; r++) {
+                acc = saturating_llr_add(acc, rep_llr[r][i]);
+            }
+            combined_llr[i] = (int16_t)acc;
+        }
+
+        p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
+        int candidate_count = p25_12_soft_llr_list(NULL, combined_llr, candidates, P25_12_MAX_CANDIDATES);
+        int selected = -1;
+        for (int c = 0; c < candidate_count; c++) {
+            int candidate_bits[96];
+            int bit_index = 0;
+            for (int b = 0; b < 12; b++) {
+                for (int bit = 0; bit < 8; bit++) {
+                    candidate_bits[bit_index++] = ((candidates[c].bytes[b] << bit) & 0x80) >> 7;
+                }
+            }
+            if (crc16_lb_bridge(candidate_bits, 80) == 0) {
+                selected = c;
+                break;
+            }
+        }
+        if (selected >= 0) {
+            memcpy(tsbk_byte, candidates[selected].bytes, 12);
+            err = 0;
+            state->p25_p1_soft_combined_ok++;
+        } else {
+            err = -1;
+        }
     } else {
+        err = -1;
+    }
+
+    if (err != 0) {
         // No rep passed; compute CRC on majority and use majority bytes
         int maj_bits_int[96];
         for (i = 0; i < 96; i++) {

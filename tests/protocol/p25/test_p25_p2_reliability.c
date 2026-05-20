@@ -16,19 +16,36 @@
  */
 
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/config.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
+struct RtlSdrContext;
 
 /* External declarations matching p25p2_frame.c */
 extern int p2bit[4320];
 extern int16_t p2llr[1400];
 extern int16_t p2xllr[1400];
+extern int ess_a[2][168];
+extern int16_t ess_a_llr[2][168];
 extern void p25_p2_frame_reset(void);
+extern void process_ESS(dsd_opts* opts, dsd_state* state);
 extern int p25p2_duid_lookup_soft_test(uint8_t received, const uint8_t reliab8[8]);
+
+static int g_ess_hard_rc = 0;
+static int g_ess_soft_min_success = -1;
+static int g_ess_soft_success_rc = 0;
+static int g_ess_soft_calls = 0;
+static int g_ess_soft_last_n = 0;
+static int g_ess_soft_mutate_algid = -1;
 
 /* Stubs for external functions referenced by p25p2_frame.c */
 struct RtlSdrContext* g_rtl_ctx = 0;
@@ -185,7 +202,7 @@ int
 ez_rs28_ess(int* payload, int* parity) {
     (void)payload;
     (void)parity;
-    return 0;
+    return g_ess_hard_rc;
 }
 
 int
@@ -220,11 +237,19 @@ ez_rs28_sacch_soft(int* payload, int* parity, const int* erasures, int n_erasure
 
 int
 ez_rs28_ess_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
-    (void)payload;
     (void)parity;
     (void)erasures;
-    (void)n_erasures;
-    return 0;
+    g_ess_soft_calls++;
+    g_ess_soft_last_n = n_erasures;
+    if (g_ess_soft_min_success >= 0 && n_erasures >= g_ess_soft_min_success) {
+        if (g_ess_soft_mutate_algid >= 0) {
+            for (int i = 0; i < 8; i++) {
+                payload[i] = (g_ess_soft_mutate_algid >> (7 - i)) & 1;
+            }
+        }
+        return g_ess_soft_success_rc;
+    }
+    return -1;
 }
 
 /* MAC PDU handlers */
@@ -265,9 +290,98 @@ getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliabili
     return 0;
 }
 
+static void
+set_p25p2_threshold(int threshold) {
+    char value[16];
+    snprintf(value, sizeof(value), "%d", threshold);
+    setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
+    dsd_neo_config_init(NULL);
+}
+
+static void
+reset_ess_stubs(void) {
+    g_ess_hard_rc = 0;
+    g_ess_soft_min_success = -1;
+    g_ess_soft_success_rc = 0;
+    g_ess_soft_calls = 0;
+    g_ess_soft_last_n = 0;
+    g_ess_soft_mutate_algid = -1;
+}
+
+static void
+prepare_ess_soft_inputs(dsd_state* state) {
+    p25_p2_frame_reset();
+    memset(state, 0, sizeof(*state));
+    state->currentslot = 0;
+    state->dmrburstL = 20;
+    for (int i = 0; i < 96; i++) {
+        state->ess_b[0][i] = 0;
+        state->ess_b_llr[0][i] = 1;
+    }
+    for (int i = 0; i < 168; i++) {
+        ess_a[0][i] = 0;
+        ess_a_llr[0][i] = 1;
+    }
+}
+
+static int
+test_ess_soft_accepts_deep_erasure(void) {
+    printf("Test 12: ESS accepts deep soft erasure success... ");
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof(opts));
+    prepare_ess_soft_inputs(&state);
+    reset_ess_stubs();
+    set_p25p2_threshold(64);
+
+    g_ess_hard_rc = -1;
+    g_ess_soft_min_success = 20;
+    g_ess_soft_success_rc = 20;
+    g_ess_soft_mutate_algid = 0x80;
+
+    process_ESS(&opts, &state);
+
+    if (state.p25_p2_rs_ess_ok == 1 && state.p25_p2_rs_ess_err == 0 && state.p25_p2_rs_ess_corr == 20
+        && state.p25_p2_soft_ess_ok == 1 && state.p25_p2_soft_ess_max_depth == 20 && state.payload_algid == 0x80
+        && g_ess_soft_last_n == 20) {
+        printf("PASS\n");
+        return 0;
+    }
+    printf("FAIL (ok=%u err=%u corr=%u soft=%u depth=%u alg=0x%02X last_n=%d calls=%d)\n", state.p25_p2_rs_ess_ok,
+           state.p25_p2_rs_ess_err, state.p25_p2_rs_ess_corr, state.p25_p2_soft_ess_ok, state.p25_p2_soft_ess_max_depth,
+           state.payload_algid, g_ess_soft_last_n, g_ess_soft_calls);
+    return 1;
+}
+
+static int
+test_ess_soft_failure_counts_once(void) {
+    printf("Test 13: ESS hard/soft failure counts once... ");
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof(opts));
+    prepare_ess_soft_inputs(&state);
+    reset_ess_stubs();
+    set_p25p2_threshold(64);
+
+    g_ess_hard_rc = -1;
+    g_ess_soft_min_success = -1;
+
+    process_ESS(&opts, &state);
+
+    if (state.p25_p2_rs_ess_ok == 0 && state.p25_p2_rs_ess_err == 1 && state.p25_p2_soft_ess_ok == 0) {
+        printf("PASS\n");
+        return 0;
+    }
+    printf("FAIL (ok=%u err=%u soft=%u calls=%d)\n", state.p25_p2_rs_ess_ok, state.p25_p2_rs_ess_err,
+           state.p25_p2_soft_ess_ok, g_ess_soft_calls);
+    return 1;
+}
+
 int
 main(void) {
     int failures = 0;
+    reset_ess_stubs();
+    set_p25p2_threshold(64);
 
     printf("P25P2 Soft Metric Buffer Tests\n");
     printf("===============================\n\n");
@@ -361,9 +475,10 @@ main(void) {
         failures++;
     }
 
-    printf("Test 6: DUID soft fallback uses weakest invalid bit... ");
+    printf("Test 6: DUID soft fallback uses weakest invalid bits... ");
     memset(duid_reliab, 200, sizeof(duid_reliab));
-    duid_reliab[7] = 5; /* 0x03 -> 0x02 is the cheapest one-bit valid candidate. */
+    duid_reliab[6] = 5;
+    duid_reliab[7] = 5; /* 0x03 -> 0x00 is the cheapest canonical candidate. */
     int recovered_decoded = p25p2_duid_lookup_soft_test(0x03U, duid_reliab);
     if (recovered_decoded == 0) {
         printf("PASS\n");
@@ -382,10 +497,20 @@ main(void) {
         failures++;
     }
 
-    printf("Test 8: DUID soft fallback preserves 0x80 invalid guard... ");
+    printf("Test 8: DUID soft fallback recovers weak 0x80 MSB... ");
     memset(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[0] = 5;
     int sentinel_decoded = p25p2_duid_lookup_soft_test(0x80U, duid_reliab);
+    if (sentinel_decoded == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (expected 0, got %d)\n", sentinel_decoded);
+        failures++;
+    }
+
+    printf("Test 9: DUID soft fallback preserves high-confidence 0x80 guard... ");
+    memset(duid_reliab, 200, sizeof(duid_reliab));
+    sentinel_decoded = p25p2_duid_lookup_soft_test(0x80U, duid_reliab);
     if (sentinel_decoded == -1) {
         printf("PASS\n");
     } else {
@@ -393,10 +518,24 @@ main(void) {
         failures++;
     }
 
-    printf("Test 9: DUID soft fallback rejects tied frame candidates... ");
+    printf("Test 10: DUID soft fallback rejects weak non-MSB 0x80 guard... ");
     memset(duid_reliab, 200, sizeof(duid_reliab));
-    duid_reliab[5] = 5; /* 0x03 -> 0x07 decodes to 1. */
-    duid_reliab[7] = 5; /* 0x03 -> 0x02 decodes to 0. */
+    duid_reliab[0] = 5;
+    duid_reliab[1] = 5;
+    sentinel_decoded = p25p2_duid_lookup_soft_test(0x80U, duid_reliab);
+    if (sentinel_decoded == -1) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (expected -1, got %d)\n", sentinel_decoded);
+        failures++;
+    }
+
+    printf("Test 11: DUID soft fallback rejects tied frame candidates... ");
+    memset(duid_reliab, 200, sizeof(duid_reliab));
+    duid_reliab[3] = 5; /* 0x03 -> 0x17 decodes to 1. */
+    duid_reliab[5] = 5;
+    duid_reliab[6] = 5; /* 0x03 -> 0x00 decodes to 0. */
+    duid_reliab[7] = 5;
     int tied_decoded = p25p2_duid_lookup_soft_test(0x03U, duid_reliab);
     if (tied_decoded == -1) {
         printf("PASS\n");
@@ -404,6 +543,9 @@ main(void) {
         printf("FAIL (expected -1, got %d)\n", tied_decoded);
         failures++;
     }
+
+    failures += test_ess_soft_accepts_deep_erasure();
+    failures += test_ess_soft_failure_counts_once();
 
     printf("\n%d test(s) failed\n", failures);
     return failures > 0 ? 1 : 0;

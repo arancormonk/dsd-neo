@@ -836,8 +836,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     csymbol = 3; //3
                 }
             }
-            //fprintf (stderr, "%d", dibit);
-            fputc(csymbol, opts->symbol_out_f);
+            write_symbol_capture_record(opts, state, csymbol, symbol);
         }
 
         //digitize test for storing dibits in buffer correctly for dmr recovery

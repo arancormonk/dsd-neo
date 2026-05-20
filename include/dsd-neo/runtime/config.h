@@ -326,6 +326,16 @@ typedef struct dsdneoRuntimeConfig {
     int p25_afc_status_gate_is_set;
     int p25_afc_status_gate_enable;
 
+    /* P25 soft-decision recovery knobs. */
+    int p25_soft_erasure_threshold_is_set;
+    int p25_soft_erasure_threshold;
+    int p25p1_soft_erasure_threshold_is_set;
+    int p25p1_soft_erasure_threshold;
+    int p25p2_soft_erasure_threshold_is_set;
+    int p25p2_soft_erasure_threshold;
+    int p25_soft_hard_override_is_set;
+    int p25_soft_hard_override_enable;
+
     /* Input processing knobs */
     int input_volume_is_set;
     int input_volume_multiplier;

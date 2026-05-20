@@ -115,6 +115,41 @@ test_hdu_soft_rs(void) {
 }
 
 static int
+test_hdu_soft_rs_mixed_errors_and_erasures(void) {
+    char data[20 * 6];
+    char parity[16 * 6];
+    char expected[20 * 6];
+    int erasures[10];
+
+    fill_data(data, 20, 29);
+    encode_reedsolomon_36_20_17(data, parity);
+    std::memcpy(expected, data, sizeof(data));
+
+    corrupt_symbol(data, 0, 0x07);
+    corrupt_symbol(data, 1, 0x19);
+    for (int i = 0; i < 10; i++) {
+        corrupt_symbol(data, i + 2, 0x21 + i);
+        erasures[i] = 16 + i + 2;
+    }
+
+    char hard_data[20 * 6];
+    std::memcpy(hard_data, data, sizeof(data));
+    if (check_and_fix_redsolomon_36_20_17(hard_data, parity) == 0) {
+        std::fprintf(stderr, "hdu hard RS unexpectedly corrected mixed 12 symbol errors\n");
+        return 1;
+    }
+    if (check_and_fix_redsolomon_36_20_17_soft(data, parity, erasures, 10) != 0) {
+        std::fprintf(stderr, "hdu mixed errors+erasures soft RS failed\n");
+        return 1;
+    }
+    if (std::memcmp(data, expected, sizeof(data)) != 0) {
+        std::fprintf(stderr, "hdu mixed errors+erasures data mismatch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_ldu1_soft_rs(void) {
     char data[12 * 6];
     char parity[12 * 6];
@@ -142,6 +177,41 @@ test_ldu1_soft_rs(void) {
     }
     if (std::memcmp(data, expected, sizeof(data)) != 0) {
         std::fprintf(stderr, "ldu1 soft RS data mismatch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_ldu1_soft_rs_mixed_errors_and_erasures(void) {
+    char data[12 * 6];
+    char parity[12 * 6];
+    char expected[12 * 6];
+    int erasures[7];
+
+    fill_data(data, 12, 41);
+    encode_reedsolomon_24_12_13(data, parity);
+    std::memcpy(expected, data, sizeof(data));
+
+    corrupt_symbol(data, 0, 0x05);
+    corrupt_symbol(data, 1, 0x26);
+    for (int i = 0; i < 7; i++) {
+        corrupt_symbol(data, i + 2, 0x11 + i);
+        erasures[i] = 12 + i + 2;
+    }
+
+    char hard_data[12 * 6];
+    std::memcpy(hard_data, data, sizeof(data));
+    if (check_and_fix_reedsolomon_24_12_13(hard_data, parity) == 0) {
+        std::fprintf(stderr, "ldu1 hard RS unexpectedly corrected mixed 9 symbol errors\n");
+        return 1;
+    }
+    if (check_and_fix_reedsolomon_24_12_13_soft(data, parity, erasures, 7) != 0) {
+        std::fprintf(stderr, "ldu1 mixed errors+erasures soft RS failed\n");
+        return 1;
+    }
+    if (std::memcmp(data, expected, sizeof(data)) != 0) {
+        std::fprintf(stderr, "ldu1 mixed errors+erasures data mismatch\n");
         return 1;
     }
     return 0;
@@ -180,13 +250,87 @@ test_ldu2_soft_rs(void) {
     return 0;
 }
 
+static int
+test_ldu2_soft_rs_mixed_errors_and_erasures(void) {
+    char data[16 * 6];
+    char parity[8 * 6];
+    char expected[16 * 6];
+    int erasures[5];
+
+    fill_data(data, 16, 53);
+    encode_reedsolomon_24_16_9(data, parity);
+    std::memcpy(expected, data, sizeof(data));
+
+    corrupt_symbol(data, 0, 0x3A);
+    for (int i = 0; i < 5; i++) {
+        corrupt_symbol(data, i + 1, 0x09 + i);
+        erasures[i] = 8 + i + 1;
+    }
+
+    char hard_data[16 * 6];
+    std::memcpy(hard_data, data, sizeof(data));
+    if (check_and_fix_reedsolomon_24_16_9(hard_data, parity) == 0) {
+        std::fprintf(stderr, "ldu2 hard RS unexpectedly corrected mixed 6 symbol errors\n");
+        return 1;
+    }
+    if (check_and_fix_reedsolomon_24_16_9_soft(data, parity, erasures, 5) != 0) {
+        std::fprintf(stderr, "ldu2 mixed errors+erasures soft RS failed\n");
+        return 1;
+    }
+    if (std::memcmp(data, expected, sizeof(data)) != 0) {
+        std::fprintf(stderr, "ldu2 mixed errors+erasures data mismatch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_ldu2_ranked_reliability_above_threshold(void) {
+    char data[16 * 6];
+    char parity[8 * 6];
+    char expected[16 * 6];
+    uint8_t data_reliab[16];
+    uint8_t parity_reliab[8];
+
+    fill_data(data, 16, 61);
+    encode_reedsolomon_24_16_9(data, parity);
+    std::memcpy(expected, data, sizeof(data));
+
+    std::memset(data_reliab, 200, sizeof(data_reliab));
+    std::memset(parity_reliab, 200, sizeof(parity_reliab));
+    for (int i = 0; i < 5; i++) {
+        corrupt_symbol(data, i, 0x15 + i);
+        data_reliab[i] = 100;
+    }
+
+    char hard_data[16 * 6];
+    std::memcpy(hard_data, data, sizeof(data));
+    if (check_and_fix_reedsolomon_24_16_9(hard_data, parity) == 0) {
+        std::fprintf(stderr, "ldu2 hard RS unexpectedly corrected 5 weak high-confidence errors\n");
+        return 1;
+    }
+    if (p25p1_rs_24_16_9_soft_reliability(data, parity, data_reliab, parity_reliab) != 0) {
+        std::fprintf(stderr, "ldu2 ranked reliability soft RS failed\n");
+        return 1;
+    }
+    if (std::memcmp(data, expected, sizeof(data)) != 0) {
+        std::fprintf(stderr, "ldu2 ranked reliability data mismatch\n");
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_erasure_mapping();
     rc |= test_hdu_soft_rs();
+    rc |= test_hdu_soft_rs_mixed_errors_and_erasures();
     rc |= test_ldu1_soft_rs();
+    rc |= test_ldu1_soft_rs_mixed_errors_and_erasures();
     rc |= test_ldu2_soft_rs();
+    rc |= test_ldu2_soft_rs_mixed_errors_and_erasures();
+    rc |= test_ldu2_ranked_reliability_above_threshold();
     if (rc == 0) {
         std::fprintf(stderr, "PASSED: P25P1 soft RS tests passed\n");
     }

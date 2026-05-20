@@ -372,6 +372,13 @@ struct dsd_state {
     char ftype[16];
     int symbolcnt;
     int symbolc;
+    uint8_t symbol_replay_format;         /* DSD_SYMBOL_REPLAY_FORMAT_* */
+    uint8_t symbol_replay_header_checked; /* header probe already done for current symbol file */
+    uint8_t symbol_replay_has_soft;       /* current replay record supplied soft metrics */
+    dsd_dibit_soft_t symbol_replay_soft;
+    float symbol_replay_soft_symbol;
+    unsigned int symbol_replay_soft_records;
+    unsigned int symbol_capture_soft_records;
 
     /* RTL DSP symbol-output cache. The RTL demod thread already produces
        symbol-rate floats in blocks; this lets legacy getSymbol() consume them
@@ -657,9 +664,12 @@ struct dsd_state {
     unsigned int p25_p2_rs_ess_corr;     // total corrected symbols over accepts
     unsigned int p25_p2_soft_erasure_ok; // soft-decision RS successful recoveries
     // P25P1 soft decision counters
-    unsigned int p25_p1_soft_golay_ok; // soft Golay corrections (hard would have failed)
-    unsigned int p25_p1_soft_rs_ok;    // soft RS erasure corrections (hard would have failed)
-    unsigned int p25_p2_soft_ess_ok;   // soft ESS corrections
+    unsigned int p25_p1_soft_hamming_ok; // soft Hamming corrections
+    unsigned int p25_p1_soft_golay_ok;   // soft Golay corrections (hard would have failed)
+    unsigned int p25_p1_soft_rs_ok;      // soft RS erasure corrections (hard would have failed)
+    unsigned int p25_p2_soft_ess_ok;     // soft ESS corrections
+    unsigned int p25_p2_soft_ess_max_depth;
+    unsigned int p25_p1_soft_combined_ok;
     // P25p2 early ENC lockout counter (MAC_PTT-driven)
     unsigned int p25_p2_enc_lo_early;
     // P25p2 early ENC lockout hardening: require confirmation across two indications

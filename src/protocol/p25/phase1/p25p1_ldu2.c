@@ -532,12 +532,9 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     if (irrecoverable_errors == 1) {
         uint8_t data_reliab[16];
         uint8_t parity_reliab[8];
-        int erasures[8];
 
         build_ldu2_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
-        int n_erasures = p25p1_build_rs_erasures(data_reliab, 16, parity_reliab, 8, erasures, 8);
-        if (n_erasures > 0
-            && check_and_fix_reedsolomon_24_16_9_soft((char*)hex_data, (char*)hex_parity, erasures, n_erasures) == 0) {
+        if (p25p1_rs_24_16_9_soft_reliability((char*)hex_data, (char*)hex_parity, data_reliab, parity_reliab) == 0) {
             state->p25_p1_soft_rs_ok++;
             irrecoverable_errors = 0;
         }

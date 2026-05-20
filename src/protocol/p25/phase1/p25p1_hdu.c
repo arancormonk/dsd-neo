@@ -40,6 +40,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -208,13 +209,17 @@ correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, char* parity, cons
     (void)opts;
     int fixed_errors;
     int irrecoverable_errors;
+    char raw_hex[6];
+    char raw_parity[12];
+    memcpy(raw_hex, hex, sizeof(raw_hex));
+    memcpy(raw_parity, parity, sizeof(raw_parity));
 
     irrecoverable_errors = check_and_fix_golay_24_6(hex, parity, &fixed_errors);
 
     state->debug_header_errors += fixed_errors;
 
-    if (irrecoverable_errors != 0 && analog_signal_array != NULL) {
-        /* Hard decode failed - try soft decode using reliability info.
+    if ((irrecoverable_errors != 0 || fixed_errors > 0) && analog_signal_array != NULL) {
+        /* Hard decode failed or corrected low-confidence bits; try soft decode using reliability info.
          * The analog_signal_array contains 9 dibits:
          *   [0..2] = 3 dibits for 6 data bits
          *   [3..8] = 6 dibits for 12 parity bits
@@ -235,11 +240,18 @@ correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, char* parity, cons
         }
 
         int soft_fixed = 0;
-        int soft_result = check_and_fix_golay_24_6_soft(hex, parity, reliab, &soft_fixed);
+        char soft_hex[6];
+        char soft_parity[12];
+        memcpy(soft_hex, raw_hex, sizeof(soft_hex));
+        memcpy(soft_parity, raw_parity, sizeof(soft_parity));
+        int soft_result = check_and_fix_golay_24_6_soft(soft_hex, soft_parity, reliab, &soft_fixed);
         if (soft_result == 0) {
-            /* Soft decode succeeded */
-            state->p25_p1_soft_golay_ok++;
-            state->debug_header_errors += soft_fixed;
+            memcpy(hex, soft_hex, sizeof(soft_hex));
+            memcpy(parity, soft_parity, sizeof(soft_parity));
+            if (irrecoverable_errors != 0) {
+                state->p25_p1_soft_golay_ok++;
+                state->debug_header_errors += soft_fixed;
+            }
             irrecoverable_errors = 0;
         }
     }
@@ -425,12 +437,9 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     if (irrecoverable_errors != 0) {
         uint8_t data_reliab[20];
         uint8_t parity_reliab[16];
-        int erasures[16];
 
         build_hdu_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
-        int n_erasures = p25p1_build_rs_erasures(data_reliab, 20, parity_reliab, 16, erasures, 16);
-        if (n_erasures > 0
-            && check_and_fix_redsolomon_36_20_17_soft((char*)hex_data, (char*)hex_parity, erasures, n_erasures) == 0) {
+        if (p25p1_rs_36_20_17_soft_reliability((char*)hex_data, (char*)hex_parity, data_reliab, parity_reliab) == 0) {
             state->p25_p1_soft_rs_ok++;
             irrecoverable_errors = 0;
         }

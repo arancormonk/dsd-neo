@@ -143,9 +143,13 @@ unset_all_runtime_env(void) {
         "DSD_NEO_P25P1_ERR_HOLD_S",
         "DSD_NEO_P25_RETUNE_BACKOFF",
         "DSD_NEO_P25_RING_HOLD",
+        "DSD_NEO_P25_SOFT_ERASURE_THRESHOLD",
+        "DSD_NEO_P25_SOFT_HARD_OVERRIDE",
         "DSD_NEO_P25_VC_GRACE",
         "DSD_NEO_P25_VOICE_HOLD",
         "DSD_NEO_P25_WD_MS",
+        "DSD_NEO_P25P1_SOFT_ERASURE_THRESHOLD",
+        "DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD",
         "DSD_NEO_PDU_JSON",
         "DSD_NEO_RESAMP",
         "DSD_NEO_RETUNE_DRAIN_MS",
@@ -1032,6 +1036,10 @@ test_protocol_env_knobs(void) {
     setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", "5.0", 1);
     setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", "6.0", 1);
     setenv("DSD_NEO_P25P1_ERR_HOLD_S", "7.0", 1);
+    setenv("DSD_NEO_P25_SOFT_ERASURE_THRESHOLD", "70", 1);
+    setenv("DSD_NEO_P25P1_SOFT_ERASURE_THRESHOLD", "71", 1);
+    setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", "72", 1);
+    setenv("DSD_NEO_P25_SOFT_HARD_OVERRIDE", "0", 1);
 
     setenv("DSD_NEO_INPUT_VOLUME", "2", 1);
     setenv("DSD_NEO_INPUT_WARN_DB", "-10.0", 1);
@@ -1173,6 +1181,38 @@ test_protocol_env_knobs(void) {
     if (rc != 0) {
         return rc;
     }
+    rc = expect_int_eq(cfg->p25_soft_erasure_threshold_is_set, 1, 1144, "p25_soft_erasure_threshold_is_set");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->p25_soft_erasure_threshold, 70, 1145, "p25_soft_erasure_threshold");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->p25p1_soft_erasure_threshold_is_set, 1, 1146, "p25p1_soft_erasure_threshold_is_set");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->p25p1_soft_erasure_threshold, 71, 1147, "p25p1_soft_erasure_threshold");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->p25p2_soft_erasure_threshold_is_set, 1, 1148, "p25p2_soft_erasure_threshold_is_set");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->p25p2_soft_erasure_threshold, 72, 1149, "p25p2_soft_erasure_threshold");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->p25_soft_hard_override_is_set, 1, 1150, "p25_soft_hard_override_is_set");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->p25_soft_hard_override_enable, 0, 1151, "p25_soft_hard_override_enable");
+    if (rc != 0) {
+        return rc;
+    }
 
     rc = expect_int_eq(cfg->input_volume_is_set, 1, 1160, "input_volume_is_set");
     if (rc != 0) {
@@ -1209,6 +1249,10 @@ test_protocol_env_knobs(void) {
     unsetenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN");
     unsetenv("DSD_NEO_P25P1_ERR_HOLD_PCT");
     unsetenv("DSD_NEO_P25P1_ERR_HOLD_S");
+    unsetenv("DSD_NEO_P25_SOFT_ERASURE_THRESHOLD");
+    unsetenv("DSD_NEO_P25P1_SOFT_ERASURE_THRESHOLD");
+    unsetenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD");
+    unsetenv("DSD_NEO_P25_SOFT_HARD_OVERRIDE");
 
     unsetenv("DSD_NEO_INPUT_VOLUME");
     unsetenv("DSD_NEO_INPUT_WARN_DB");

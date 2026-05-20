@@ -172,11 +172,196 @@ test_symbol_bin_soft_matches_returned_dibit(int dibit) {
     return rc;
 }
 
+static int
+seek_start(FILE* f, const char* label) {
+    if (fseek(f, 0L, SEEK_SET) != 0) {
+        fprintf(stderr, "%s seek failed\n", label);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_soft_symbol_capture_record(void) {
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof(opts));
+    memset(&state, 0, sizeof(state));
+
+    if (!init_state_buffers(&state)) {
+        fprintf(stderr, "failed to allocate state buffers\n");
+        return 1;
+    }
+
+    FILE* f = tmpfile();
+    if (f == NULL) {
+        fprintf(stderr, "tmpfile failed\n");
+        free_state_buffers(&state);
+        return 1;
+    }
+
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    opts.use_heuristics = 0;
+    opts.symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;
+    opts.symbol_out_f = f;
+    state.synctype = DSD_SYNC_P25P1_NEG;
+    state.rf_mod = 0;
+    state.center = 0.0f;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.lmid = -2.0f;
+    state.umid = 2.0f;
+
+    g_next_dibit = 2;
+    dsd_dibit_soft_t soft;
+    memset(&soft, 0, sizeof(soft));
+    int got = getDibitSoft(&opts, &state, &soft);
+
+    unsigned char rec[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
+    size_t n = 0;
+    if (seek_start(f, "soft capture record") == 0) {
+        n = fread(rec, 1, sizeof(rec), f);
+    }
+    fclose(f);
+
+    int rc = 0;
+    if (got != 2 || n != sizeof(rec)) {
+        fprintf(stderr, "soft capture record missing got=%d bytes=%zu\n", got, n);
+        rc = 1;
+    } else if (rec[0] != 2 || rec[1] != 255) {
+        fprintf(stderr, "soft capture record dibit/reliability mismatch %u/%u\n", rec[0], rec[1]);
+        rc = 1;
+    } else if (state.symbol_capture_soft_records != 1) {
+        fprintf(stderr, "soft capture counter mismatch %u\n", state.symbol_capture_soft_records);
+        rc = 1;
+    }
+
+    free_state_buffers(&state);
+    return rc;
+}
+
+static int
+test_symbol_replay_soft_metric_overrides_fallback(void) {
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof(opts));
+    memset(&state, 0, sizeof(state));
+
+    if (!init_state_buffers(&state)) {
+        fprintf(stderr, "failed to allocate state buffers\n");
+        return 1;
+    }
+
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    opts.use_heuristics = 0;
+    state.synctype = DSD_SYNC_P25P1_NEG;
+    state.rf_mod = 0;
+
+    state.symbol_replay_has_soft = 1;
+    state.symbol_replay_soft.reliability = 17;
+    state.symbol_replay_soft.llr[0] = 123;
+    state.symbol_replay_soft.llr[1] = -456;
+    g_next_dibit = 1;
+
+    dsd_dibit_soft_t soft;
+    memset(&soft, 0, sizeof(soft));
+    int got = getDibitSoft(&opts, &state, &soft);
+
+    int rc = 0;
+    if (got != 1) {
+        fprintf(stderr, "soft replay override: got returned dibit %d\n", got);
+        rc = 1;
+    } else if (soft.reliability != 17 || soft.llr[0] != 123 || soft.llr[1] != -456) {
+        fprintf(stderr, "soft replay override mismatch rel=%u llr=(%d,%d)\n", soft.reliability, soft.llr[0],
+                soft.llr[1]);
+        rc = 1;
+    } else if (state.symbol_replay_has_soft != 0) {
+        fprintf(stderr, "soft replay override flag was not consumed\n");
+        rc = 1;
+    }
+
+    free_state_buffers(&state);
+    return rc;
+}
+
+static int
+test_direct_symbol_capture_writer_formats(void) {
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof(opts));
+    memset(&state, 0, sizeof(state));
+
+    if (!init_state_buffers(&state)) {
+        fprintf(stderr, "failed to allocate state buffers\n");
+        return 1;
+    }
+
+    FILE* f = tmpfile();
+    if (f == NULL) {
+        fprintf(stderr, "tmpfile failed\n");
+        free_state_buffers(&state);
+        return 1;
+    }
+
+    state.dmr_soft_p[0].reliability = 7;
+    state.dmr_soft_p++;
+    opts.symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;
+    opts.symbol_out_f = f;
+    write_symbol_capture_record(&opts, &state, 3, -3.0f);
+
+    unsigned char rec[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
+    size_t n = 0;
+    if (seek_start(f, "direct soft capture record") == 0) {
+        n = fread(rec, 1, sizeof(rec), f);
+    }
+    fclose(f);
+
+    int rc = 0;
+    if (n != sizeof(rec)) {
+        fprintf(stderr, "direct soft capture record missing bytes=%zu\n", n);
+        rc = 1;
+    } else if (rec[0] != 3 || rec[1] != 255) {
+        fprintf(stderr, "direct soft capture record mismatch dibit=%u reliability=%u\n", rec[0], rec[1]);
+        rc = 1;
+    } else if (state.symbol_capture_soft_records != 1) {
+        fprintf(stderr, "direct soft capture counter mismatch %u\n", state.symbol_capture_soft_records);
+        rc = 1;
+    }
+
+    f = tmpfile();
+    if (f == NULL) {
+        fprintf(stderr, "tmpfile failed\n");
+        free_state_buffers(&state);
+        return 1;
+    }
+    opts.symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_LEGACY;
+    opts.symbol_out_f = f;
+    write_symbol_capture_record(&opts, &state, 0xFF, 0.0f);
+    int c = EOF;
+    if (seek_start(f, "legacy capture record") == 0) {
+        c = fgetc(f);
+    }
+    fclose(f);
+    if (c != 0xFF) {
+        fprintf(stderr, "legacy capture byte mismatch %d\n", c);
+        rc = 1;
+    } else if (state.symbol_capture_soft_records != 1) {
+        fprintf(stderr, "legacy capture changed soft counter %u\n", state.symbol_capture_soft_records);
+        rc = 1;
+    }
+
+    free_state_buffers(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     for (int dibit = 0; dibit < 4; dibit++) {
         rc |= test_symbol_bin_soft_matches_returned_dibit(dibit);
     }
+    rc |= test_soft_symbol_capture_record();
+    rc |= test_symbol_replay_soft_metric_overrides_fallback();
+    rc |= test_direct_symbol_capture_writer_formats();
     return rc;
 }

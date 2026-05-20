@@ -5,6 +5,7 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -183,6 +184,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* iq_capture_cli = NULL;
     const char* iq_capture_format_cli = NULL;
     const char* iq_capture_max_mb_cli = NULL;
+    const char* symbol_capture_format_cli = NULL;
     const char* iq_replay_cli = NULL;
     const char* iq_replay_rate_cli = NULL;
     const char* iq_info_cli = NULL;
@@ -263,6 +265,19 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }
         if (strncmp(argv[i], "--iq-capture-max-mb=", 20) == 0) {
             iq_capture_max_mb_cli = argv[i] + 20;
+            continue;
+        }
+        if (strcmp(argv[i], "--symbol-capture-format") == 0) {
+            if (i + 1 >= argc) {
+                LOG_ERROR("--symbol-capture-format requires a value (soft|legacy)\n");
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            symbol_capture_format_cli = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "--symbol-capture-format=", 24) == 0) {
+            symbol_capture_format_cli = argv[i] + 24;
             continue;
         }
         if (strcmp(argv[i], "--iq-replay") == 0) {
@@ -568,6 +583,19 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             return DSD_PARSE_ERROR;
         }
         opts->iq_capture_max_bytes = mb * 1024ULL * 1024ULL;
+    }
+
+    if (symbol_capture_format_cli) {
+        if (strcmp(symbol_capture_format_cli, "soft") == 0) {
+            opts->symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;
+        } else if (strcmp(symbol_capture_format_cli, "legacy") == 0) {
+            opts->symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_LEGACY;
+        } else {
+            LOG_ERROR("Invalid --symbol-capture-format value \"%s\" (expected soft or legacy)\n",
+                      symbol_capture_format_cli);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
     }
 
     if (iq_replay_cli) {

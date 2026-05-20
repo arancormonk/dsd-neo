@@ -9,9 +9,11 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <dsd-neo/protocol/p25/p25p2_soft.h>
+#include <dsd-neo/runtime/config.h>
 
 /* Define LLR buffers that p25p2_soft.c will extern */
 int16_t p2llr[1400] = {0};
@@ -24,9 +26,18 @@ fill_llr(int16_t* llr, size_t count, int16_t value) {
     }
 }
 
+static void
+set_p25p2_threshold(int threshold) {
+    char value[16];
+    snprintf(value, sizeof(value), "%d", threshold);
+    setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
+    dsd_neo_config_init(NULL);
+}
+
 int
 main(void) {
     int failures = 0;
+    set_p25p2_threshold(64);
 
     printf("P25P2 Soft Erasure Unit Tests\n");
     printf("==============================\n\n");
@@ -81,8 +92,8 @@ main(void) {
         failures++;
     }
 
-    /* Test 5: FACCH soft erasures with all high reliability - should add no dynamic erasures */
-    printf("Test 5: FACCH soft erasures (all high reliability)... ");
+    /* Test 5: FACCH soft erasures with all high reliability - balanced minimum weakest prefix */
+    printf("Test 5: FACCH soft erasures (all high reliability balanced prefix)... ");
     fill_llr(p2llr, 1400, 200);
     int erasures[28] = {0};
     int n_fixed = 0;
@@ -95,10 +106,11 @@ main(void) {
     }
     /* n_fixed should now be 18 */
     int n_total = p25p2_facch_soft_erasures(0, 0, erasures, n_fixed, 10);
-    if (n_total == n_fixed) {
-        printf("PASS (no dynamic erasures added, total=%d)\n", n_total);
+    if (n_total == n_fixed + 5 && erasures[n_fixed] == 9 && erasures[n_fixed + 4] == 13) {
+        printf("PASS (ranked %d dynamic erasures, total=%d)\n", n_total - n_fixed, n_total);
     } else {
-        printf("FAIL (expected %d, got %d erasures)\n", n_fixed, n_total);
+        printf("FAIL (expected %d with first dynamic 9..13, got total=%d first=%d last=%d)\n", n_fixed + 5, n_total,
+               erasures[n_fixed], erasures[n_fixed + 4]);
         failures++;
     }
 
@@ -144,8 +156,8 @@ main(void) {
         failures++;
     }
 
-    /* Test 8: SACCH soft erasures basic test */
-    printf("Test 8: SACCH soft erasures (all high reliability)... ");
+    /* Test 8: SACCH soft erasures basic balanced-prefix test */
+    printf("Test 8: SACCH soft erasures (all high reliability balanced prefix)... ");
     fill_llr(p2llr, 1400, 200);
     memset(erasures, 0, sizeof(erasures));
     n_fixed = 0;
@@ -158,10 +170,11 @@ main(void) {
     }
     /* n_fixed should now be 11 */
     n_total = p25p2_sacch_soft_erasures(0, 0, erasures, n_fixed, 16);
-    if (n_total == n_fixed) {
-        printf("PASS (no dynamic erasures added, total=%d)\n", n_total);
+    if (n_total == n_fixed + 8 && erasures[n_fixed] == 5 && erasures[n_fixed + 7] == 12) {
+        printf("PASS (ranked %d dynamic erasures, total=%d)\n", n_total - n_fixed, n_total);
     } else {
-        printf("FAIL (expected %d, got %d erasures)\n", n_fixed, n_total);
+        printf("FAIL (expected %d with first dynamic 5..12, got total=%d first=%d last=%d)\n", n_fixed + 8, n_total,
+               erasures[n_fixed], erasures[n_fixed + 7]);
         failures++;
     }
 
@@ -200,6 +213,111 @@ main(void) {
         printf("FAIL (expected dynamic erasures from p2xllr, got total=%d)\n", n_total);
         failures++;
     }
+
+    /* Test 11: FACCH dynamic erasures are globally sorted by weakest reliability, not scan order */
+    printf("Test 11: FACCH ranked erasure ordering... ");
+    fill_llr(p2llr, 1400, 200);
+    for (int bit = 2; bit <= 7; bit++) {
+        p2llr[bit] = 40; /* RS position 9 */
+    }
+    for (int bit = 68; bit <= 73; bit++) {
+        p2llr[bit] = 30; /* RS position 20 */
+    }
+    for (int bit = 312; bit <= 317; bit++) {
+        p2llr[bit] = 5; /* RS position 53 */
+    }
+    memset(erasures, 0, sizeof(erasures));
+    n_fixed = 0;
+    for (int e = 0; e <= 8; e++) {
+        erasures[n_fixed++] = e;
+    }
+    for (int e = 54; e <= 62; e++) {
+        erasures[n_fixed++] = e;
+    }
+    n_total = p25p2_facch_soft_erasures(0, 0, erasures, n_fixed, 3);
+    if (n_total == n_fixed + 3 && erasures[n_fixed] == 53 && erasures[n_fixed + 1] == 20
+        && erasures[n_fixed + 2] == 9) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (got total=%d order=%d,%d,%d)\n", n_total, erasures[n_fixed], erasures[n_fixed + 1],
+               erasures[n_fixed + 2]);
+        failures++;
+    }
+
+    /* Test 12: legacy ESS helper preserves payload/parity grouped ordering */
+    printf("Test 12: ESS ranked erasure ordering... ");
+    int16_t payload_llr[96];
+    int16_t parity_llr[168];
+    fill_llr(payload_llr, 96, 200);
+    fill_llr(parity_llr, 168, 200);
+    for (int bit = 0; bit < 6; bit++) {
+        payload_llr[bit] = 30;          /* position 0 */
+        payload_llr[(4 * 6) + bit] = 9; /* position 4 */
+        parity_llr[(3 * 6) + bit] = 7;  /* position 19 */
+        parity_llr[(27 * 6) + bit] = 5; /* position 43 */
+    }
+    memset(erasures, 0, sizeof(erasures));
+    n_total = p25p2_ess_soft_erasures_from_llr(payload_llr, parity_llr, erasures, 2, 2);
+    if (n_total == 4 && erasures[0] == 4 && erasures[1] == 0 && erasures[2] == 43 && erasures[3] == 19) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (got total=%d order=%d,%d,%d,%d)\n", n_total, erasures[0], erasures[1], erasures[2], erasures[3]);
+        failures++;
+    }
+
+    /* Test 13: production ESS erasures are globally ranked across payload and parity */
+    printf("Test 13: ESS global erasure ordering... ");
+    memset(erasures, 0, sizeof(erasures));
+    n_total = p25p2_ess_soft_erasures_ranked(payload_llr, parity_llr, erasures, 4);
+    if (n_total == 4 && erasures[0] == 43 && erasures[1] == 19 && erasures[2] == 4 && erasures[3] == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (got total=%d order=%d,%d,%d,%d)\n", n_total, erasures[0], erasures[1], erasures[2], erasures[3]);
+        failures++;
+    }
+
+    /* Test 14: Threshold 0 keeps balanced minimum only */
+    printf("Test 14: FACCH threshold 0 uses minimum prefix... ");
+    set_p25p2_threshold(0);
+    fill_llr(p2llr, 1400, 200);
+    memset(erasures, 0, sizeof(erasures));
+    n_fixed = 0;
+    for (int e = 0; e <= 8; e++) {
+        erasures[n_fixed++] = e;
+    }
+    for (int e = 54; e <= 62; e++) {
+        erasures[n_fixed++] = e;
+    }
+    n_total = p25p2_facch_soft_erasures(0, 0, erasures, n_fixed, 10);
+    if (n_total == n_fixed + 5) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (expected %d, got %d)\n", n_fixed + 5, n_total);
+        failures++;
+    }
+
+    /* Test 15: Threshold 255 expands to max depth */
+    printf("Test 15: FACCH threshold 255 uses max prefix... ");
+    set_p25p2_threshold(255);
+    fill_llr(p2llr, 1400, 200);
+    memset(erasures, 0, sizeof(erasures));
+    n_fixed = 0;
+    for (int e = 0; e <= 8; e++) {
+        erasures[n_fixed++] = e;
+    }
+    for (int e = 54; e <= 62; e++) {
+        erasures[n_fixed++] = e;
+    }
+    n_total = p25p2_facch_soft_erasures(0, 0, erasures, n_fixed, 10);
+    int threshold_now = p25p2_soft_erasure_threshold();
+    if (n_total == n_fixed + 10 && threshold_now == 255) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL (expected %d, got %d, threshold=%d)\n", n_fixed + 10, n_total, threshold_now);
+        failures++;
+    }
+
+    set_p25p2_threshold(64);
 
     printf("\n==============================\n");
     printf("%d test(s) failed\n", failures);

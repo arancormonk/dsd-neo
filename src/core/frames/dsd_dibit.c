@@ -37,6 +37,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -743,8 +744,65 @@ replace_previous_dibit_soft(dsd_state* state, const dsd_dibit_soft_t* soft) {
 static void
 replace_symbol_bin_soft_metric(dsd_state* state, int dibit) {
     dsd_dibit_soft_t soft;
-    fallback_soft_from_dibit(dibit, 255, &soft);
+    if (state != NULL && state->symbol_replay_has_soft) {
+        soft = state->symbol_replay_soft;
+        state->symbol_replay_has_soft = 0;
+    } else {
+        fallback_soft_from_dibit(dibit, 255, &soft);
+    }
     replace_previous_dibit_soft(state, &soft);
+}
+
+static void
+write_le_i16(unsigned char* out, int16_t value) {
+    uint16_t u = (uint16_t)value;
+    out[0] = (unsigned char)(u & 0xFFU);
+    out[1] = (unsigned char)((u >> 8) & 0xFFU);
+}
+
+static void
+write_le_u32(unsigned char* out, uint32_t value) {
+    out[0] = (unsigned char)(value & 0xFFU);
+    out[1] = (unsigned char)((value >> 8) & 0xFFU);
+    out[2] = (unsigned char)((value >> 16) & 0xFFU);
+    out[3] = (unsigned char)((value >> 24) & 0xFFU);
+}
+
+static void
+write_symbol_capture_record_with_soft(dsd_opts* opts, dsd_state* state, int dibit, float symbol,
+                                      const dsd_dibit_soft_t* soft_in) {
+    if (opts == NULL || state == NULL || opts->symbol_out_f == NULL) {
+        return;
+    }
+
+    if (opts->symbol_capture_format != DSD_SYMBOL_CAPTURE_FORMAT_SOFT) {
+        fputc(dibit, opts->symbol_out_f);
+        return;
+    }
+
+    dsd_dibit_soft_t soft;
+    if (soft_in != NULL) {
+        soft = *soft_in;
+    } else {
+        fallback_soft_from_dibit(dibit, 255, &soft);
+    }
+
+    unsigned char record[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
+    record[0] = (unsigned char)(dibit & 3);
+    record[1] = soft.reliability;
+    write_le_i16(record + 2, soft.llr[0]);
+    write_le_i16(record + 4, soft.llr[1]);
+    uint32_t raw_symbol = 0;
+    memcpy(&raw_symbol, &symbol, sizeof(raw_symbol));
+    write_le_u32(record + 6, raw_symbol);
+    if (fwrite(record, 1, sizeof(record), opts->symbol_out_f) == sizeof(record)) {
+        state->symbol_capture_soft_records++;
+    }
+}
+
+void
+write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol) {
+    write_symbol_capture_record_with_soft(opts, state, dibit, symbol, NULL);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -1097,11 +1155,9 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
         throttle_symbol_bin_replay(opts, state);
     }
 
-    //symbol/dibit file capture/writing
-    if (opts->symbol_out_f) {
-        //fprintf (stderr, "%d", dibit);
-        fputc(dibit, opts->symbol_out_f);
-    }
+    dsd_dibit_soft_t capture_soft;
+    const dsd_dibit_soft_t* capture_soft_p = read_previous_dibit_soft(state, &capture_soft) ? &capture_soft : NULL;
+    write_symbol_capture_record_with_soft(opts, state, dibit, symbol, capture_soft_p);
 
 #ifdef TRACE_DSD
     {
@@ -1201,9 +1257,9 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
         throttle_symbol_bin_replay(opts, state);
     }
 
-    if (opts->symbol_out_f) {
-        fputc(dibit, opts->symbol_out_f);
-    }
+    dsd_dibit_soft_t capture_soft;
+    const dsd_dibit_soft_t* capture_soft_p = read_previous_dibit_soft(state, &capture_soft) ? &capture_soft : NULL;
+    write_symbol_capture_record_with_soft(opts, state, dibit, symbol, capture_soft_p);
 
     if (out_soft_symbol != NULL) {
         *out_soft_symbol = symbol;

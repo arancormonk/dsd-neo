@@ -47,6 +47,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
@@ -64,6 +65,65 @@ float_to_int16_clip(float v) {
         return -32768;
     }
     return (short)lrintf(v);
+}
+
+static int16_t
+read_le_i16(const unsigned char* in) {
+    uint16_t u = (uint16_t)in[0] | ((uint16_t)in[1] << 8);
+    return (int16_t)u;
+}
+
+static uint32_t
+read_le_u32(const unsigned char* in) {
+    return (uint32_t)in[0] | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16) | ((uint32_t)in[3] << 24);
+}
+
+static void
+probe_symbol_replay_format(dsd_opts* opts, dsd_state* state) {
+    if (opts == NULL || state == NULL || opts->symbolfile == NULL || state->symbol_replay_header_checked) {
+        return;
+    }
+
+    state->symbol_replay_header_checked = 1;
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_LEGACY;
+    state->symbol_replay_has_soft = 0;
+
+    long pos = ftell(opts->symbolfile);
+    unsigned char header[DSD_SYMBOL_CAPTURE_SOFT_HEADER_SIZE];
+    size_t got = fread(header, 1, sizeof(header), opts->symbolfile);
+    if (got == sizeof(header) && memcmp(header, DSD_SYMBOL_CAPTURE_SOFT_MAGIC, 8) == 0 && header[8] == 2
+        && header[9] == DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE) {
+        state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_SOFT;
+        return;
+    }
+
+    if (pos >= 0) {
+        (void)fseek(opts->symbolfile, pos, SEEK_SET);
+    } else {
+        (void)fseek(opts->symbolfile, 0L, SEEK_SET);
+    }
+}
+
+static int
+read_soft_symbol_record(dsd_opts* opts, dsd_state* state, float* symbol_out) {
+    unsigned char record[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
+    if (opts == NULL || state == NULL || opts->symbolfile == NULL || symbol_out == NULL) {
+        return 0;
+    }
+    if (fread(record, 1, sizeof(record), opts->symbolfile) != sizeof(record)) {
+        return 0;
+    }
+
+    state->symbolc = record[0] & 3;
+    state->symbol_replay_soft.reliability = record[1];
+    state->symbol_replay_soft.llr[0] = read_le_i16(record + 2);
+    state->symbol_replay_soft.llr[1] = read_le_i16(record + 4);
+    uint32_t raw_symbol = read_le_u32(record + 6);
+    memcpy(symbol_out, &raw_symbol, sizeof(raw_symbol));
+    state->symbol_replay_soft_symbol = *symbol_out;
+    state->symbol_replay_has_soft = 1;
+    state->symbol_replay_soft_records++;
+    return 1;
 }
 
 static int
@@ -1343,24 +1403,52 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
     //read dibit capture bin files
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
-        //use fopen and read in a symbol, check op25 for clues
         if (opts->symbolfile == NULL) {
             fprintf(stderr, "Error Opening File %s\n", opts->audio_in_dev); //double check this
             return -1.0f;
         }
 
-        state->symbolc = fgetc(opts->symbolfile);
+        probe_symbol_replay_format(opts, state);
 
-        //fprintf(stderr, "%d", state->symbolc);
-        if (feof(opts->symbolfile)) {
+        int replay_retry_count = 0;
+        for (;;) {
+            int read_ok = 0;
+            if (state->symbol_replay_format == DSD_SYMBOL_REPLAY_FORMAT_SOFT) {
+                read_ok = read_soft_symbol_record(opts, state, &symbol);
+            } else {
+                int c = fgetc(opts->symbolfile);
+                if (c != EOF) {
+                    state->symbolc = c & 3;
+                    state->symbol_replay_has_soft = 0;
+                    symbol = dsd_symbol_level_from_dibit((uint8_t)state->symbolc);
+                    read_ok = 1;
+                }
+            }
+
+            if (read_ok) {
+                break;
+            }
+
             // opts->audio_in_type = AUDIO_IN_PULSE; //switch to pulse after playback, ncurses terminal can initiate replay if wanted
             fclose(opts->symbolfile);
+            opts->symbolfile = NULL;
             fprintf(stderr, "\nEnd of %s\n", opts->audio_in_dev);
             //in debug mode, re-run .bin files over and over (look for memory leaks, etc)
             if (state->debug_mode == 1) {
-                opts->symbolfile = NULL;
-                opts->symbolfile = fopen(opts->audio_in_dev, "r");
+                opts->symbolfile = fopen(opts->audio_in_dev, "rb");
                 opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; //symbol capture bin files
+                state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+                state->symbol_replay_header_checked = 0;
+                state->symbol_replay_has_soft = 0;
+                if (opts->symbolfile == NULL) {
+                    fprintf(stderr, "Error Opening File %s\n", opts->audio_in_dev);
+                    return -1.0f;
+                }
+                if (replay_retry_count++ == 0) {
+                    probe_symbol_replay_format(opts, state);
+                    continue;
+                }
+                return 0.0f;
             }
             //open pulse input if we are pulse output AND using ncurses terminal
             else if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
@@ -1369,6 +1457,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     cleanupAndExit(opts, state);
                     return 0.0f;
                 }
+                return 0.0f;
             }
             //else cleanup and exit
             else {
@@ -1376,11 +1465,6 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 return 0.0f;
             }
         }
-
-        // Map capture dibit values (0..3) back to nominal symbol levels.
-        // The .bin capture format stores dibits, not raw discriminator samples, so this mapping must
-        // be stable regardless of the current demod mode (rf_mod).
-        symbol = dsd_symbol_level_from_dibit((uint8_t)state->symbolc);
     }
 
     //.raw or .sym float symbol files

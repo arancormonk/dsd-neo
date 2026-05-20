@@ -1397,7 +1397,7 @@ encodeM17RF(dsd_opts* opts, dsd_state* state, uint8_t* input, int type) {
     if (opts->symbol_out_f) //use -c output.bin to use this format (default type for DSD-neo)
     {
         for (i = 0; i < 192; i++) {
-            fputc(output_dibits[i], opts->symbol_out_f);
+            write_symbol_capture_record(opts, state, output_dibits[i], (float)output_symbols[i]);
         }
     }
 

@@ -226,6 +226,12 @@ main(void) {
         fprintf(stderr, "soft decoder clean block mismatch rc=%d\n", rc);
         return 14;
     }
+    p25_mbf34_candidate_t list[P25_MBF34_MAX_CANDIDATES];
+    int list_count = p25_mbf34_decode_soft_list(in_dibits, bit_llr, list, P25_MBF34_MAX_CANDIDATES);
+    if (list_count <= 0 || memcmp(block, list[0].bytes, 18) != 0) {
+        fprintf(stderr, "soft list decoder clean block mismatch count=%d\n", list_count);
+        return 18;
+    }
 
     uint8_t noisy_dibits[98];
     memcpy(noisy_dibits, in_dibits, sizeof(noisy_dibits));
@@ -237,6 +243,18 @@ main(void) {
     if (rc != 0 || memcmp(block, out_soft, 18) != 0) {
         fprintf(stderr, "soft decoder failed low-confidence dibit correction rc=%d\n", rc);
         return 15;
+    }
+    list_count = p25_mbf34_decode_soft_list(noisy_dibits, bit_llr, list, P25_MBF34_MAX_CANDIDATES);
+    int found_original = 0;
+    for (int c = 0; c < list_count; c++) {
+        if (memcmp(block, list[c].bytes, 18) == 0) {
+            found_original = 1;
+            break;
+        }
+    }
+    if (!found_original) {
+        fprintf(stderr, "soft list decoder failed to include low-confidence correction count=%d\n", list_count);
+        return 19;
     }
 
     // 6) Error injection: flip one dibit, ensure CRC9 no longer matches

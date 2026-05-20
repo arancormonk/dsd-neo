@@ -63,6 +63,15 @@ dsd_cli_compact_args(int argc, char** argv) {
         if (strncmp(arg, "--iq-capture-max-mb=", 20) == 0) {
             continue;
         }
+        if (strcmp(arg, "--symbol-capture-format") == 0) {
+            if (i + 1 < argc && argv[i + 1] != NULL) {
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--symbol-capture-format=", 24) == 0) {
+            continue;
+        }
         if (strcmp(arg, "--iq-replay") == 0) {
             if (i + 1 < argc && argv[i + 1] != NULL) {
                 i++;

@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <dsd-neo/protocol/p25/p25_12.h>
+
 uint8_t p25_interleave[98] = {0,  1,  8,  9,  16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57, 64, 65, 72, 73,
                               80, 81, 88, 89, 96, 97, 2,  3,  10, 11, 18, 19, 26, 27, 34, 35, 42, 43, 50, 51,
                               58, 59, 66, 67, 74, 75, 82, 83, 90, 91, 4,  5,  12, 13, 20, 21, 28, 29, 36, 37,
@@ -163,6 +165,140 @@ p25_llr_bit_cost(int16_t llr, int expected_bit) {
         return (llr < 0) ? (uint32_t)(-llr) : 0U;
     }
     return (llr > 0) ? (uint32_t)llr : 0U;
+}
+
+typedef struct {
+    uint8_t valid;
+    uint32_t metric;
+    uint8_t states[49];
+} p25_12_path_t;
+
+static void
+p25_12_insert_path(p25_12_path_t paths[P25_12_MAX_CANDIDATES], const p25_12_path_t* candidate) {
+    int insert_at = -1;
+    for (int i = 0; i < P25_12_MAX_CANDIDATES; i++) {
+        if (!paths[i].valid || candidate->metric < paths[i].metric) {
+            insert_at = i;
+            break;
+        }
+    }
+    if (insert_at < 0) {
+        return;
+    }
+    for (int i = P25_12_MAX_CANDIDATES - 1; i > insert_at; i--) {
+        paths[i] = paths[i - 1];
+    }
+    paths[insert_at] = *candidate;
+}
+
+static void
+p25_12_pack_path_bytes(const uint8_t states[49], uint8_t out[12]) {
+    for (int i = 0; i < 12; i++) {
+        out[i] = (uint8_t)((states[(i * 4) + 0] << 6) | (states[(i * 4) + 1] << 4) | (states[(i * 4) + 2] << 2)
+                           | states[(i * 4) + 3]);
+    }
+}
+
+static int
+p25_12_candidate_exists(const p25_12_candidate_t* candidates, int count, const uint8_t bytes[12]) {
+    for (int i = 0; i < count; i++) {
+        if (memcmp(candidates[i].bytes, bytes, 12) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+p25_12_insert_candidate(p25_12_candidate_t* candidates, int* count, int max_candidates, const uint8_t bytes[12],
+                        uint32_t metric) {
+    if (p25_12_candidate_exists(candidates, *count, bytes)) {
+        return;
+    }
+    int insert_at = *count;
+    for (int i = 0; i < *count; i++) {
+        if (metric < candidates[i].metric) {
+            insert_at = i;
+            break;
+        }
+    }
+    if (*count < max_candidates) {
+        (*count)++;
+    } else if (insert_at >= max_candidates) {
+        return;
+    }
+    for (int i = *count - 1; i > insert_at; i--) {
+        candidates[i] = candidates[i - 1];
+    }
+    memcpy(candidates[insert_at].bytes, bytes, 12);
+    candidates[insert_at].metric = metric;
+}
+
+int
+p25_12_soft_llr_list(const uint8_t* input, const int16_t* bit_llr196, p25_12_candidate_t* candidates,
+                     int max_candidates) {
+    enum { N_SYMS = 49, N_ST = 4 };
+
+    (void)input;
+    if (bit_llr196 == NULL || candidates == NULL || max_candidates <= 0) {
+        return 0;
+    }
+    if (max_candidates > P25_12_MAX_CANDIDATES) {
+        max_candidates = P25_12_MAX_CANDIDATES;
+    }
+
+    int16_t llr_dei[196];
+    memset(llr_dei, 0, sizeof(llr_dei));
+    for (int i = 0; i < 98; i++) {
+        int p = p25_interleave[i];
+        llr_dei[(p * 2) + 0] = bit_llr196[(i * 2) + 0];
+        llr_dei[(p * 2) + 1] = bit_llr196[(i * 2) + 1];
+    }
+
+    p25_12_path_t prev[N_ST][P25_12_MAX_CANDIDATES];
+    p25_12_path_t curr[N_ST][P25_12_MAX_CANDIDATES];
+    memset(prev, 0, sizeof(prev));
+    for (int st = 0; st < N_ST; st++) {
+        prev[st][0].valid = 1;
+        prev[st][0].metric = (st == 0) ? 0U : 256U;
+    }
+
+    for (int i = 0; i < N_SYMS; i++) {
+        memset(curr, 0, sizeof(curr));
+        int base = i * 4;
+        for (int st_prev = 0; st_prev < N_ST; st_prev++) {
+            for (int rank = 0; rank < P25_12_MAX_CANDIDATES; rank++) {
+                if (!prev[st_prev][rank].valid) {
+                    continue;
+                }
+                for (int st_next = 0; st_next < N_ST; st_next++) {
+                    uint8_t expect = p25_dtm[(st_prev << 2) | st_next] & 0xF;
+                    uint32_t cost = p25_llr_bit_cost(llr_dei[base + 0], (expect >> 3) & 1)
+                                    + p25_llr_bit_cost(llr_dei[base + 1], (expect >> 2) & 1)
+                                    + p25_llr_bit_cost(llr_dei[base + 2], (expect >> 1) & 1)
+                                    + p25_llr_bit_cost(llr_dei[base + 3], expect & 1);
+                    p25_12_path_t candidate = prev[st_prev][rank];
+                    candidate.metric += cost;
+                    candidate.states[i] = (uint8_t)st_next;
+                    p25_12_insert_path(curr[st_next], &candidate);
+                }
+            }
+        }
+        memcpy(prev, curr, sizeof(prev));
+    }
+
+    int out_count = 0;
+    for (int st = 0; st < N_ST; st++) {
+        for (int rank = 0; rank < P25_12_MAX_CANDIDATES; rank++) {
+            if (!prev[st][rank].valid) {
+                continue;
+            }
+            uint8_t bytes[12];
+            p25_12_pack_path_bytes(prev[st][rank].states, bytes);
+            p25_12_insert_candidate(candidates, &out_count, max_candidates, bytes, prev[st][rank].metric);
+        }
+    }
+    return out_count;
 }
 
 int

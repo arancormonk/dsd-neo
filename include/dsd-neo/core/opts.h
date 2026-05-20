@@ -276,6 +276,7 @@ struct dsd_opts {
     // Small flags and bytes
     uint8_t const_norm_mode;         //0=radial (percentile) norm, 1=unit-circle norm
     uint8_t symbol_out_file_is_auto; //if the user hit the R key
+    uint8_t symbol_capture_format;   //DSD_SYMBOL_CAPTURE_FORMAT_* for new symbol captures
     uint8_t reverse_mute;
     uint8_t dmr_dmrla_is_set; //flag to tell us dmrla is set by the user
     uint8_t dmr_dmrla_n;      //n value for dmrla

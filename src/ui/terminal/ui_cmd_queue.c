@@ -50,6 +50,7 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
@@ -1934,9 +1935,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 break;
             }
             if (S_ISREG(sb.st_mode)) {
-                opts->symbolfile = fopen(opts->audio_in_dev, "r");
+                opts->symbolfile = fopen(opts->audio_in_dev, "rb");
                 if (opts->symbolfile) {
                     opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
+                    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+                    state->symbol_replay_header_checked = 0;
+                    state->symbol_replay_has_soft = 0;
                 }
             }
             break;

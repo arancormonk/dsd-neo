@@ -47,6 +47,7 @@ main(void) {
     state->ess_b[0][95] = 1;
     state->ess_b_llr[1][95] = 123;
     state->fourv_counter[0] = 2;
+    state->p25_p1_soft_hamming_ok = 77U;
     initState(state);
 
     if (state->rc2_context != NULL) {
@@ -85,6 +86,12 @@ main(void) {
         freeState(state);
         free(state);
         return 11;
+    }
+    if (state->p25_p1_soft_hamming_ok != 0U) {
+        fprintf(stderr, "initState did not clear P25P1 soft Hamming telemetry\n");
+        freeState(state);
+        free(state);
+        return 12;
     }
 
     if (state->trunk_chan_map_used_count != 0U || state->trunk_chan_map[0x0123] != 0

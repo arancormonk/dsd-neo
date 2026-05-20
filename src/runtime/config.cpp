@@ -165,6 +165,14 @@ config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig
     CONFIG_EQ_FIELD(p25p1_err_hold_s_is_set);
     CONFIG_EQ_FIELD(p25_afc_status_gate_is_set);
     CONFIG_EQ_FIELD(p25_afc_status_gate_enable);
+    CONFIG_EQ_FIELD(p25_soft_erasure_threshold_is_set);
+    CONFIG_EQ_FIELD(p25_soft_erasure_threshold);
+    CONFIG_EQ_FIELD(p25p1_soft_erasure_threshold_is_set);
+    CONFIG_EQ_FIELD(p25p1_soft_erasure_threshold);
+    CONFIG_EQ_FIELD(p25p2_soft_erasure_threshold_is_set);
+    CONFIG_EQ_FIELD(p25p2_soft_erasure_threshold);
+    CONFIG_EQ_FIELD(p25_soft_hard_override_is_set);
+    CONFIG_EQ_FIELD(p25_soft_hard_override_enable);
     CONFIG_EQ_FIELD(input_volume_is_set);
     CONFIG_EQ_FIELD(input_volume_multiplier);
     CONFIG_EQ_FIELD(input_warn_db_is_set);
@@ -698,6 +706,21 @@ dsd_neo_config_init(const dsd_opts* opts) {
     const char* p25_afc_status_gate = getenv("DSD_NEO_P25_AFC_STATUS_GATE");
     c.p25_afc_status_gate_is_set = env_is_set(p25_afc_status_gate);
     c.p25_afc_status_gate_enable = c.p25_afc_status_gate_is_set ? (env_is_truthy(p25_afc_status_gate) ? 1 : 0) : 0;
+
+    const char* p25_soft_thr = getenv("DSD_NEO_P25_SOFT_ERASURE_THRESHOLD");
+    c.p25_soft_erasure_threshold_is_set = env_parse_int_range(p25_soft_thr, 0, 255, &c.p25_soft_erasure_threshold);
+
+    const char* p25p1_soft_thr = getenv("DSD_NEO_P25P1_SOFT_ERASURE_THRESHOLD");
+    c.p25p1_soft_erasure_threshold_is_set =
+        env_parse_int_range(p25p1_soft_thr, 0, 255, &c.p25p1_soft_erasure_threshold);
+
+    const char* p25p2_soft_thr = getenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD");
+    c.p25p2_soft_erasure_threshold_is_set =
+        env_parse_int_range(p25p2_soft_thr, 0, 255, &c.p25p2_soft_erasure_threshold);
+
+    const char* p25_soft_override = getenv("DSD_NEO_P25_SOFT_HARD_OVERRIDE");
+    c.p25_soft_hard_override_is_set = env_is_set(p25_soft_override);
+    c.p25_soft_hard_override_enable = c.p25_soft_hard_override_is_set ? (env_is_falsey(p25_soft_override) ? 0 : 1) : 1;
 
     /* Input processing knobs */
     const char* iv = getenv("DSD_NEO_INPUT_VOLUME");

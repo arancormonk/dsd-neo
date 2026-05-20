@@ -10,8 +10,10 @@
 
 #include <dsd-neo/fec/Hamming.hpp>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
+#include <dsd-neo/runtime/config.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 static int g_fail_count = 0;
@@ -23,6 +25,35 @@ static int g_fail_count = 0;
             g_fail_count++;                                                                                            \
         }                                                                                                              \
     } while (0)
+
+static void
+set_soft_hard_override(int enabled) {
+    setenv("DSD_NEO_P25_SOFT_HARD_OVERRIDE", enabled ? "1" : "0", 1);
+    dsd_neo_config_init(nullptr);
+}
+
+static int
+codeword_distance(const char* a, const char* b) {
+    int d = 0;
+    for (int i = 0; i < 10; i++) {
+        if (a[i] != b[i]) {
+            d++;
+        }
+    }
+    return d;
+}
+
+static void
+build_codeword(Hamming_10_6_3_TableImpl& hamming, int value, char out[10]) {
+    char data[6];
+    for (int i = 0; i < 6; i++) {
+        data[i] = (value >> (5 - i)) & 1;
+    }
+    char parity[4];
+    hamming.encode(data, parity);
+    memcpy(out, data, 6);
+    memcpy(out + 6, parity, 4);
+}
 
 static void
 test_no_error() {
@@ -107,6 +138,59 @@ test_two_errors_with_soft_info() {
 }
 
 static void
+test_soft_hard_override_toggle() {
+    Hamming_10_6_3_TableImpl hamming;
+    char hard_word[10];
+    char soft_word[10];
+    int diff_idx[3] = {-1, -1, -1};
+    int found = 0;
+
+    for (int a = 0; a < 64 && !found; a++) {
+        build_codeword(hamming, a, hard_word);
+        for (int b = a + 1; b < 64 && !found; b++) {
+            build_codeword(hamming, b, soft_word);
+            if (codeword_distance(hard_word, soft_word) == 3) {
+                int k = 0;
+                for (int i = 0; i < 10; i++) {
+                    if (hard_word[i] != soft_word[i] && k < 3) {
+                        diff_idx[k++] = i;
+                    }
+                }
+                found = (k == 3);
+            }
+        }
+    }
+    ASSERT_EQ(found, 1, "Should find distance-3 Hamming codewords");
+    if (!found) {
+        return;
+    }
+
+    char received[10];
+    memcpy(received, hard_word, 10);
+    received[diff_idx[0]] = soft_word[diff_idx[0]];
+
+    int reliab[10] = {200, 200, 200, 200, 200, 200, 200, 200, 200, 200};
+    reliab[diff_idx[0]] = 200;
+    reliab[diff_idx[1]] = 5;
+    reliab[diff_idx[2]] = 5;
+
+    char out[10];
+    set_soft_hard_override(0);
+    int result = hamming_10_6_3_soft(received, reliab, out);
+    ASSERT_EQ(result, 1, "Disabled override should still return corrected");
+    for (int i = 0; i < 10; i++) {
+        ASSERT_EQ(out[i], hard_word[i], "Disabled override should keep hard correction");
+    }
+
+    set_soft_hard_override(1);
+    result = hamming_10_6_3_soft(received, reliab, out);
+    ASSERT_EQ(result, 1, "Enabled override should return soft correction");
+    for (int i = 0; i < 10; i++) {
+        ASSERT_EQ(out[i], soft_word[i], "Enabled override should choose lower-penalty soft candidate");
+    }
+}
+
+static void
 test_high_reliability_no_change() {
     /* When all bits are high reliability, soft decoder should trust hard decode */
     Hamming_10_6_3_TableImpl hamming;
@@ -134,6 +218,7 @@ main(void) {
     test_no_error();
     test_single_error();
     test_two_errors_with_soft_info();
+    test_soft_hard_override_toggle();
     test_high_reliability_no_change();
 
     if (g_fail_count > 0) {

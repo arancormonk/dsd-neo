@@ -34,6 +34,18 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static int16_t
+saturating_llr_add(int acc, int value) {
+    acc += value;
+    if (acc > INT16_MAX) {
+        return INT16_MAX;
+    }
+    if (acc < INT16_MIN) {
+        return INT16_MIN;
+    }
+    return (int16_t)acc;
+}
+
 uint32_t
 crc32mbf(uint8_t* buf, int len) {
     uint32_t g = 0x04c11db7;
@@ -103,6 +115,8 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     // Header repetition buffers for majority vote (first 3 reps only)
     uint8_t hdr_rep_bits[3][96];
     memset(hdr_rep_bits, 0, sizeof(hdr_rep_bits));
+    int16_t hdr_rep_llr[3][196];
+    memset(hdr_rep_llr, 0, sizeof(hdr_rep_llr));
 
     // Per-repetition decoded bytes and CRC results (mirrors TSBK approach)
     uint8_t hdr_rep_bytes[3][12];
@@ -186,7 +200,33 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             //debug
             // fprintf (stderr, " J:%d;", j); //use this with the P_ERR inside of 34 rate decoder to see where the failures occur
 
-            ec[j] = p25_mbf34_decode_soft(tsbk_dibit, tsbk_llr, r34byte_b);
+            p25_mbf34_candidate_t candidates[P25_MBF34_MAX_CANDIDATES];
+            int candidate_count =
+                p25_mbf34_decode_soft_list(tsbk_dibit, tsbk_llr, candidates, P25_MBF34_MAX_CANDIDATES);
+            if (candidate_count > 0) {
+                int selected = 0;
+                for (int c = 0; c < candidate_count; c++) {
+                    uint8_t crc9_bits[135];
+                    int bit_index = 0;
+                    for (x = 0; x < 7; x++) {
+                        crc9_bits[bit_index++] = ((candidates[c].bytes[0] << x) & 0x80) >> 7;
+                    }
+                    for (i = 2; i < 18; i++) {
+                        for (x = 0; x < 8; x++) {
+                            crc9_bits[bit_index++] = ((candidates[c].bytes[i] << x) & 0x80) >> 7;
+                        }
+                    }
+                    uint16_t crc9_ext = (uint16_t)(((candidates[c].bytes[0] & 1) << 8) | candidates[c].bytes[1]);
+                    if (ComputeCrc9Bit(crc9_bits, 135) == crc9_ext) {
+                        selected = c;
+                        break;
+                    }
+                }
+                memcpy(r34byte_b, candidates[selected].bytes, sizeof(r34byte_b));
+                ec[j] = (int)(candidates[selected].metric >> 8);
+            } else {
+                ec[j] = p25_mbf34_decode_soft(tsbk_dibit, tsbk_llr, r34byte_b);
+            }
 
             //shuffle 34 rate data into array
             if (j != 0) { //should never happen, but just in case
@@ -211,7 +251,30 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             }
 
         } else {
-            ec[j] = p25_12_soft_llr(tsbk_dibit, tsbk_llr, tsbk_byte);
+            p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
+            int candidate_count = p25_12_soft_llr_list(tsbk_dibit, tsbk_llr, candidates, P25_12_MAX_CANDIDATES);
+            if (candidate_count > 0) {
+                int selected = 0;
+                if (j == 0) {
+                    for (int c = 0; c < candidate_count; c++) {
+                        int candidate_bits[96];
+                        int bit_index = 0;
+                        for (int b = 0; b < 12; b++) {
+                            for (int bit = 0; bit < 8; bit++) {
+                                candidate_bits[bit_index++] = ((candidates[c].bytes[b] << bit) & 0x80) >> 7;
+                            }
+                        }
+                        if (crc16_lb_bridge(candidate_bits, 80) == 0) {
+                            selected = c;
+                            break;
+                        }
+                    }
+                }
+                memcpy(tsbk_byte, candidates[selected].bytes, sizeof(tsbk_byte));
+                ec[j] = (int)(candidates[selected].metric >> 8);
+            } else {
+                ec[j] = p25_12_soft_llr(tsbk_dibit, tsbk_llr, tsbk_byte);
+            }
         }
 
         //too many bit manipulations!
@@ -228,6 +291,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             for (i = 0; i < 96; i++) {
                 hdr_rep_bits[j][i] = (uint8_t)(tsbk_decoded_bits[i] & 1);
             }
+            memcpy(hdr_rep_llr[j], tsbk_llr, sizeof(tsbk_llr));
             memcpy(hdr_rep_bytes[j], tsbk_byte, 12);
             // Compute per-repetition CRC16 over first 80 bits for later
             // best-rep selection (same approach as TSBK path).
@@ -315,6 +379,46 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
 #endif
         } else {
+            if (hdr_reps > 1) {
+                int16_t combined_llr[196];
+                memset(combined_llr, 0, sizeof(combined_llr));
+                for (i = 0; i < 196; i++) {
+                    int acc = 0;
+                    for (j = 0; j < hdr_reps; j++) {
+                        acc = saturating_llr_add(acc, hdr_rep_llr[j][i]);
+                    }
+                    combined_llr[i] = (int16_t)acc;
+                }
+
+                p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
+                int candidate_count = p25_12_soft_llr_list(NULL, combined_llr, candidates, P25_12_MAX_CANDIDATES);
+                int selected = -1;
+                for (int c = 0; c < candidate_count; c++) {
+                    int candidate_bits[96];
+                    int bit_index = 0;
+                    for (int b = 0; b < 12; b++) {
+                        for (int bit = 0; bit < 8; bit++) {
+                            candidate_bits[bit_index++] = ((candidates[c].bytes[b] << bit) & 0x80) >> 7;
+                        }
+                    }
+                    if (crc16_lb_bridge(candidate_bits, 80) == 0) {
+                        selected = c;
+                        break;
+                    }
+                }
+                if (selected >= 0) {
+                    err[0] = 0;
+                    memcpy(mpdu_byte, candidates[selected].bytes, 12);
+                    state->p25_p1_fec_ok++;
+                    state->p25_p1_soft_combined_ok++;
+#ifdef USE_RADIO
+                    dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
+#endif
+                }
+            }
+        }
+
+        if (sel_idx < 0 && err[0] != 0) {
             // No individual rep passed; fall back to majority-voted bits
             uint8_t hdr_maj_bits[96];
             memset(hdr_maj_bits, 0, sizeof(hdr_maj_bits));

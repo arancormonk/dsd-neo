@@ -96,6 +96,10 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
     read_word(opts, state, dodeca, 12, status_count, analog_signal_array, analog_signal_index);
     // Read the parity
     read_golay24_parity(opts, state, parity, status_count, analog_signal_array, analog_signal_index);
+    char raw_dodeca[12];
+    char raw_parity[12];
+    memcpy(raw_dodeca, dodeca, sizeof(raw_dodeca));
+    memcpy(raw_parity, parity, sizeof(raw_parity));
 
 #ifdef TDULC_DEBUG
     fprintf(stderr, "[");
@@ -114,8 +118,8 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
 
     state->debug_header_errors += fixed_errors;
 
-    if (irrecoverable_errors != 0 && analog_signal_array != NULL) {
-        /* Hard decode failed - try soft decode using reliability info.
+    if ((irrecoverable_errors != 0 || fixed_errors > 0) && analog_signal_array != NULL) {
+        /* Hard decode failed or corrected low-confidence bits; try soft decode using reliability info.
          * The analog_signal_array from start_index contains 12 dibits:
          *   [0..5] = 6 dibits for 12 data bits
          *   [6..11] = 6 dibits for 12 parity bits
@@ -137,11 +141,18 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
         }
 
         int soft_fixed = 0;
-        int soft_result = check_and_fix_golay_24_12_soft(dodeca, parity, reliab, &soft_fixed);
+        char soft_dodeca[12];
+        char soft_parity[12];
+        memcpy(soft_dodeca, raw_dodeca, sizeof(soft_dodeca));
+        memcpy(soft_parity, raw_parity, sizeof(soft_parity));
+        int soft_result = check_and_fix_golay_24_12_soft(soft_dodeca, soft_parity, reliab, &soft_fixed);
         if (soft_result == 0) {
-            /* Soft decode succeeded */
-            state->p25_p1_soft_golay_ok++;
-            state->debug_header_errors += soft_fixed;
+            memcpy(dodeca, soft_dodeca, sizeof(soft_dodeca));
+            memcpy(parity, soft_parity, sizeof(soft_parity));
+            if (irrecoverable_errors != 0) {
+                state->p25_p1_soft_golay_ok++;
+                state->debug_header_errors += soft_fixed;
+            }
             irrecoverable_errors = 0;
         }
     }
@@ -344,13 +355,10 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     if (irrecoverable_errors == 1) {
         uint8_t data_reliab[12];
         uint8_t parity_reliab[12];
-        int erasures[12];
 
         build_tdulc_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
-        int n_erasures = p25p1_build_rs_erasures(data_reliab, 12, parity_reliab, 12, erasures, 12);
-        if (n_erasures > 0
-            && check_and_fix_reedsolomon_24_12_13_soft((char*)dodeca_data, (char*)dodeca_parity, erasures, n_erasures)
-                   == 0) {
+        if (p25p1_rs_24_12_13_soft_reliability((char*)dodeca_data, (char*)dodeca_parity, data_reliab, parity_reliab)
+            == 0) {
             state->p25_p1_soft_rs_ok++;
             irrecoverable_errors = 0;
         }

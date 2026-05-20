@@ -129,6 +129,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload
 - `-r <files>` Play saved MBE files
 - `-c <file>` Save symbol captures to a .bin file
+- `--symbol-capture-format <soft|legacy>` Select symbol capture format. `soft` is the default and preserves dibit reliability, bit LLRs, and raw symbol values for replay; `legacy` writes the historical one-byte hard dibit stream.
 - `-d <dir>` Save raw MBE vocoder frames in this folder
 - `-J <file>` Append event log output
 - `--frame-log <file>` Append frame-level one-line timestamped traces
@@ -363,6 +364,9 @@ Auto‑PPM (RTL‑SDR)
 - `DSD_NEO_AUTO_PPM_ZEROLOCK_HZ=<Hz>` — frequency lock guard (default 60)
 - `DSD_NEO_AUTO_PPM_FREEZE=0/1` — freeze retunes during training (default 1)
 - `DSD_NEO_P25_AFC_STATUS_GATE=1` — opt in to suppress P25 Phase 1 auto-PPM updates when status symbols classify a frame as subscriber-originated or unknown. Default is advisory only because this direction hint is not reliable on every system.
+- `DSD_NEO_P25_SOFT_ERASURE_THRESHOLD=<0..255>` — shared P25 soft-decision erasure threshold override; defaults to 64. Lower values are more conservative; higher values expand ranked erasure retries.
+- `DSD_NEO_P25P1_SOFT_ERASURE_THRESHOLD=<0..255>` / `DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD=<0..255>` — phase-specific soft erasure threshold overrides. P25P2 keeps a balanced minimum weakest-symbol prefix even when all symbols are above threshold.
+- `DSD_NEO_P25_SOFT_HARD_OVERRIDE=0|1` — allow conservative soft candidates to override hard-corrected P25 FEC output; default is enabled with strict gates.
 
 Resampler
 

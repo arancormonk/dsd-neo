@@ -156,6 +156,10 @@ static const int16_t duid_lookup[256] =
         -1, 6,  12, -1, 14, 14, 14, -1, 14, -1, -1, 15, -1, 13, 7,  -1, 11, -1, -1, 15, 14, -1, -1, 15, -1, 15, 15, 15,
 };
 
+static const uint8_t duid_canonical[16] = {
+    0x00U, 0x17U, 0x2EU, 0x39U, 0x4BU, 0x5CU, 0x65U, 0x72U, 0x8DU, 0x9AU, 0xA3U, 0xB4U, 0xC6U, 0xD1U, 0xE8U, 0xFFU,
+};
+
 extern int16_t p2llr[1400];
 
 static uint8_t
@@ -179,6 +183,24 @@ p25p2_reliability_for_abs_bit(int abs_bit) {
 }
 
 static int
+p25p2_duid_is_exact(uint8_t received, int decoded) {
+    return decoded >= 0 && decoded < 16 && received == duid_canonical[decoded];
+}
+
+static int
+p25p2_duid_080_soft_allowed(const uint8_t reliab8[8], int threshold) {
+    if (reliab8 == NULL || (int)reliab8[0] >= threshold) {
+        return 0;
+    }
+    for (int i = 1; i < 8; i++) {
+        if ((int)reliab8[i] < threshold) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
 p25p2_duid_hamming8(uint8_t a, uint8_t b) {
     uint8_t diff = (uint8_t)(a ^ b);
     int count = 0;
@@ -189,34 +211,46 @@ p25p2_duid_hamming8(uint8_t a, uint8_t b) {
 }
 
 static int
-p25p2_duid_flip_reliability(uint8_t received, uint8_t candidate, const uint8_t reliab8[8]) {
+p25p2_duid_flip_cost(uint8_t received, uint8_t candidate, const uint8_t reliab8[8], int threshold) {
+    int cost = 0;
     for (int i = 0; i < 8; i++) {
         uint8_t mask = (uint8_t)(1U << (7 - i));
         if ((received & mask) != (candidate & mask)) {
-            return (int)reliab8[i];
+            if ((int)reliab8[i] >= threshold) {
+                return 999999;
+            }
+            cost += (int)reliab8[i];
         }
     }
-    return 256;
+    return cost;
 }
 
 static int
 p25p2_duid_lookup_soft(uint8_t received, const uint8_t reliab8[8]) {
     int hard = duid_lookup[received];
-    if (hard >= 0 || reliab8 == NULL || received == 0x80U) {
+    if (reliab8 == NULL || p25p2_duid_is_exact(received, hard)) {
         return hard;
     }
 
     int thresh = p25p2_soft_erasure_threshold();
+    if (received == 0x80U && !p25p2_duid_080_soft_allowed(reliab8, thresh)) {
+        return hard;
+    }
+
     int best_decoded = hard;
     int best_cost = 999999;
     int tied_best = 0;
-    for (int candidate = 0; candidate < 256; candidate++) {
-        int decoded = duid_lookup[candidate];
-        if (decoded < 0 || p25p2_duid_hamming8(received, (uint8_t)candidate) != 1) {
+    for (int decoded = 0; decoded < 16; decoded++) {
+        uint8_t candidate = duid_canonical[decoded];
+        int distance = p25p2_duid_hamming8(received, candidate);
+        if (distance < 1 || distance > 2) {
             continue;
         }
-        int cost = p25p2_duid_flip_reliability(received, (uint8_t)candidate, reliab8);
-        if (cost >= thresh) {
+        if (received == 0x80U && decoded != 0) {
+            continue;
+        }
+        int cost = p25p2_duid_flip_cost(received, candidate, reliab8, thresh);
+        if (cost >= 999999) {
             continue;
         }
         if (cost < best_cost) {
@@ -398,6 +432,70 @@ process_Frame_Scramble(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+static int
+p25p2_decode_facch_ranked(int payload[156], int parity[114], int scrambled, int* used_dynamic_erasure) {
+    int original_payload[156];
+    int original_parity[114];
+    memcpy(original_payload, payload, sizeof(original_payload));
+    memcpy(original_parity, parity, sizeof(original_parity));
+
+    int fixed_erasures[28] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 54, 55, 56, 57, 58, 59, 60, 61, 62};
+    int ec = ez_rs28_facch_soft(payload, parity, fixed_erasures, 18);
+    if (ec >= 0) {
+        *used_dynamic_erasure = 0;
+        return ec;
+    }
+
+    int erasures[28] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 54, 55, 56, 57, 58, 59, 60, 61, 62};
+    int n_erasures = p25p2_facch_soft_erasures(ts_counter, scrambled, erasures, 18, 10);
+    for (int n = 19; n <= n_erasures; n++) {
+        memcpy(payload, original_payload, sizeof(original_payload));
+        memcpy(parity, original_parity, sizeof(original_parity));
+        ec = ez_rs28_facch_soft(payload, parity, erasures, n);
+        if (ec >= 0) {
+            *used_dynamic_erasure = 1;
+            return ec;
+        }
+    }
+
+    memcpy(payload, original_payload, sizeof(original_payload));
+    memcpy(parity, original_parity, sizeof(original_parity));
+    *used_dynamic_erasure = 0;
+    return ec;
+}
+
+static int
+p25p2_decode_sacch_ranked(int payload[180], int parity[132], int scrambled, int* used_dynamic_erasure) {
+    int original_payload[180];
+    int original_parity[132];
+    memcpy(original_payload, payload, sizeof(original_payload));
+    memcpy(original_parity, parity, sizeof(original_parity));
+
+    int fixed_erasures[28] = {0, 1, 2, 3, 4, 57, 58, 59, 60, 61, 62};
+    int ec = ez_rs28_sacch_soft(payload, parity, fixed_erasures, 11);
+    if (ec >= 0) {
+        *used_dynamic_erasure = 0;
+        return ec;
+    }
+
+    int erasures[28] = {0, 1, 2, 3, 4, 57, 58, 59, 60, 61, 62};
+    int n_erasures = p25p2_sacch_soft_erasures(ts_counter, scrambled, erasures, 11, 16);
+    for (int n = 12; n <= n_erasures; n++) {
+        memcpy(payload, original_payload, sizeof(original_payload));
+        memcpy(parity, original_parity, sizeof(original_parity));
+        ec = ez_rs28_sacch_soft(payload, parity, erasures, n);
+        if (ec >= 0) {
+            *used_dynamic_erasure = 1;
+            return ec;
+        }
+    }
+
+    memcpy(payload, original_payload, sizeof(original_payload));
+    memcpy(parity, original_parity, sizeof(original_parity));
+    *used_dynamic_erasure = 0;
+    return ec;
+}
+
 void
 process_FACCHc(dsd_opts* opts, dsd_state* state) {
     //gather and process FACCH w/o scrambling (S-OEMI) so we know what to do with the containing data.
@@ -424,11 +522,9 @@ process_FACCHc(dsd_opts* opts, dsd_state* state) {
     //send payload and parity to ez_rs28_facch for error correction (RS(63,35), t=14)
     int ec = -2;
 
-    /* Use soft-decision erasures */
-    int erasures[28] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 54, 55, 56, 57, 58, 59, 60, 61, 62};
-    int n_erasures = p25p2_facch_soft_erasures(ts_counter, 0, erasures, 18, 10);
-    ec = ez_rs28_facch_soft(facch[state->currentslot], facch_rs[state->currentslot], erasures, n_erasures);
-    if (ec >= 0) {
+    int used_dynamic_erasure = 0;
+    ec = p25p2_decode_facch_ranked(facch[state->currentslot], facch_rs[state->currentslot], 0, &used_dynamic_erasure);
+    if (used_dynamic_erasure) {
         state->p25_p2_soft_erasure_ok++;
     }
 
@@ -486,11 +582,9 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
     //send payload and parity to ez_rs28_facch for error correction (RS(63,35), t=14)
     int ec = -2;
 
-    /* Use soft-decision erasures (scrambled buffer) */
-    int erasures[28] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 54, 55, 56, 57, 58, 59, 60, 61, 62};
-    int n_erasures = p25p2_facch_soft_erasures(ts_counter, 1, erasures, 18, 10);
-    ec = ez_rs28_facch_soft(facch[state->currentslot], facch_rs[state->currentslot], erasures, n_erasures);
-    if (ec >= 0) {
+    int used_dynamic_erasure = 0;
+    ec = p25p2_decode_facch_ranked(facch[state->currentslot], facch_rs[state->currentslot], 1, &used_dynamic_erasure);
+    if (used_dynamic_erasure) {
         state->p25_p2_soft_erasure_ok++;
     }
 
@@ -544,11 +638,9 @@ process_SACCHc(dsd_opts* opts, dsd_state* state) {
     //send payload and parity to ez_rs28_sacch for error correction (RS(63,35), t=14)
     int ec = -2;
 
-    /* Use soft-decision erasures */
-    int erasures[28] = {0, 1, 2, 3, 4, 57, 58, 59, 60, 61, 62};
-    int n_erasures = p25p2_sacch_soft_erasures(ts_counter, 0, erasures, 11, 16);
-    ec = ez_rs28_sacch_soft(sacch[state->currentslot], sacch_rs[state->currentslot], erasures, n_erasures);
-    if (ec >= 0) {
+    int used_dynamic_erasure = 0;
+    ec = p25p2_decode_sacch_ranked(sacch[state->currentslot], sacch_rs[state->currentslot], 0, &used_dynamic_erasure);
+    if (used_dynamic_erasure) {
         state->p25_p2_soft_erasure_ok++;
     }
 
@@ -603,11 +695,9 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
     //send payload and parity to ez_rs28_sacch for error correction (RS(63,35), t=14)
     int ec = -2;
 
-    /* Use soft-decision erasures (scrambled buffer) */
-    int erasures[28] = {0, 1, 2, 3, 4, 57, 58, 59, 60, 61, 62};
-    int n_erasures = p25p2_sacch_soft_erasures(ts_counter, 1, erasures, 11, 16);
-    ec = ez_rs28_sacch_soft(sacch[state->currentslot], sacch_rs[state->currentslot], erasures, n_erasures);
-    if (ec >= 0) {
+    int used_dynamic_erasure = 0;
+    ec = p25p2_decode_sacch_ranked(sacch[state->currentslot], sacch_rs[state->currentslot], 1, &used_dynamic_erasure);
+    if (used_dynamic_erasure) {
         state->p25_p2_soft_erasure_ok++;
     }
 
@@ -875,26 +965,43 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
 
     int ec = 69;
     ec = ez_rs28_ess(payload, parity);
+    int ess_accept = (ec >= 0 && ec < 15);
 
-    /* If hard decode failed, try soft-decision erasures. */
-    if (ec < 0) {
-        /* Reload payload and parity (hard decode may have corrupted them) */
+    /* If hard decode failed or exceeded the hard-decision limit, try soft-decision erasures. */
+    if (!ess_accept) {
+        int original_payload[96];
+        int original_parity[168];
+
+        /* Reload payload and parity (hard decode may have mutated them). */
         for (int i = 0; i < 96; i++) {
             payload[i] = state->ess_b[state->currentslot][i];
+            original_payload[i] = payload[i];
         }
         for (int i = 0; i < 168; i++) {
             parity[i] = ess_a[state->currentslot][i];
+            original_parity[i] = parity[i];
         }
 
         int erasures[44];
-        int n_erasures = p25p2_ess_soft_erasures_from_llr(state->ess_b_llr[state->currentslot],
-                                                          ess_a_llr[state->currentslot], erasures, 10, 10);
+        int n_erasures = p25p2_ess_soft_erasures_ranked(state->ess_b_llr[state->currentslot],
+                                                        ess_a_llr[state->currentslot], erasures, 28);
 
-        if (n_erasures > 0) {
-            ec = ez_rs28_ess_soft(payload, parity, erasures, n_erasures);
+        for (int n = 1; n <= n_erasures; n++) {
+            memcpy(payload, original_payload, sizeof(original_payload));
+            memcpy(parity, original_parity, sizeof(original_parity));
+            ec = ez_rs28_ess_soft(payload, parity, erasures, n);
             if (ec >= 0) {
+                ess_accept = 1;
                 state->p25_p2_soft_ess_ok++;
+                if ((unsigned int)n > state->p25_p2_soft_ess_max_depth) {
+                    state->p25_p2_soft_ess_max_depth = (unsigned int)n;
+                }
+                break;
             }
+        }
+        if (!ess_accept) {
+            memcpy(payload, original_payload, sizeof(original_payload));
+            memcpy(parity, original_parity, sizeof(original_parity));
         }
     }
 
@@ -921,8 +1028,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, " VCH %d - ESS_B %08llX%016llX ERR = %02d", state->currentslot + 1, essb_hex1, essb_hex2, ec);
     }
 
-    if (ec >= 0 && ec < 15) //corrected up to 14 errors and not -1 failure
-    {
+    if (ess_accept) {
         state->p25_p2_rs_ess_ok++;
         state->p25_p2_rs_ess_corr += (unsigned int)ec;
         if (state->currentslot == 0) {
@@ -1131,7 +1237,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
         }
 #endif //P25p2_ENC_LO
     }
-    if (ec == -1 || ec >= 15) {
+    if (!ess_accept) {
         state->p25_p2_rs_ess_err++;
         //below needs a line break before LFSRP runs (when payload == 0)
         //ESS R-S Failure -- run LFSR on current MI if applicable

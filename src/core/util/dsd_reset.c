@@ -124,6 +124,14 @@ resetState(dsd_state* state) {
     state->midx = 0;
     dsd_state_invalidate_minmax_sums(state);
     state->symbolcnt = 0;
+    state->symbolc = 0;
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+    state->symbol_replay_header_checked = 0;
+    state->symbol_replay_has_soft = 0;
+    state->symbol_replay_soft.reliability = 0;
+    state->symbol_replay_soft.llr[0] = 0;
+    state->symbol_replay_soft.llr[1] = 0;
+    state->symbol_replay_soft_symbol = 0.0f;
 
     /* Reset C4FM clock assist state to avoid stale nudges across runs */
     state->c4fm_clk_prev_dec = 0;
@@ -212,6 +220,13 @@ resetState(dsd_state* state) {
     state->p25_p2_rs_ess_ok = 0;
     state->p25_p2_rs_ess_err = 0;
     state->p25_p2_rs_ess_corr = 0;
+    state->p25_p2_soft_erasure_ok = 0;
+    state->p25_p1_soft_hamming_ok = 0;
+    state->p25_p1_soft_golay_ok = 0;
+    state->p25_p1_soft_rs_ok = 0;
+    state->p25_p2_soft_ess_ok = 0;
+    state->p25_p2_soft_ess_max_depth = 0;
+    state->p25_p1_soft_combined_ok = 0;
 
     // Reset P25 affiliation table
     state->p25_aff_count = 0;

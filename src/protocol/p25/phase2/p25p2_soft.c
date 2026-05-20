@@ -7,6 +7,7 @@
  * P25P2 soft-decision RS erasure helpers.
  */
 
+#include <dsd-neo/runtime/config.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -18,6 +19,19 @@ extern int16_t p2xllr[1400];
 
 int
 p25p2_soft_erasure_threshold(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
+    }
+    if (cfg) {
+        if (cfg->p25p2_soft_erasure_threshold_is_set) {
+            return cfg->p25p2_soft_erasure_threshold;
+        }
+        if (cfg->p25_soft_erasure_threshold_is_set) {
+            return cfg->p25_soft_erasure_threshold;
+        }
+    }
     return P25P2_SOFT_ERASURE_THRESHOLD;
 }
 
@@ -28,6 +42,67 @@ p25p2_abs_llr_reliability(int16_t llr) {
         v = 255;
     }
     return (uint8_t)v;
+}
+
+typedef struct {
+    uint8_t reliability;
+    int position;
+} P25P2ErasureCandidate;
+
+static int
+erasure_list_contains(const int* erasures, int count, int position) {
+    for (int i = 0; i < count; i++) {
+        if (erasures[i] == position) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+sort_candidates(P25P2ErasureCandidate* candidates, int count) {
+    for (int i = 0; i < count; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (candidates[j].reliability < candidates[i].reliability
+                || (candidates[j].reliability == candidates[i].reliability
+                    && candidates[j].position < candidates[i].position)) {
+                P25P2ErasureCandidate tmp = candidates[i];
+                candidates[i] = candidates[j];
+                candidates[j] = tmp;
+            }
+        }
+    }
+}
+
+static int
+append_ranked_candidates(P25P2ErasureCandidate* candidates, int candidate_count, int* erasures, int total, int max_add,
+                         int min_add) {
+    sort_candidates(candidates, candidate_count);
+    int threshold = p25p2_soft_erasure_threshold();
+    int add_count = 0;
+    for (int i = 0; i < candidate_count; i++) {
+        if ((int)candidates[i].reliability < threshold) {
+            add_count++;
+        }
+    }
+    if (add_count < min_add) {
+        add_count = min_add;
+    }
+    if (add_count > max_add) {
+        add_count = max_add;
+    }
+    if (add_count > candidate_count) {
+        add_count = candidate_count;
+    }
+
+    int added = 0;
+    for (int i = 0; i < candidate_count && added < add_count; i++) {
+        if (!erasure_list_contains(erasures, total, candidates[i].position)) {
+            erasures[total++] = candidates[i].position;
+            added++;
+        }
+    }
+    return total;
 }
 
 uint8_t
@@ -178,54 +253,34 @@ static const uint16_t sacch_parity_bit_offsets[22][6] = {
 int
 p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fixed, int max_add) {
     const int16_t* bit_llr = scrambled ? p2xllr : p2llr;
-    int thresh = p25p2_soft_erasure_threshold();
-    int added = 0;
-    int total = n_fixed;
+    P25P2ErasureCandidate candidates[45];
+    int candidate_count = 0;
 
     /* Check each of the 26 payload hexbits (RS positions 9-34) */
-    for (int hb = 0; hb < 26 && added < max_add; hb++) {
+    for (int hb = 0; hb < 26 && candidate_count < 45; hb++) {
         const uint16_t* bits = facch_payload_bit_offsets[hb];
         uint8_t rel = p25p2_hexbit_llr_reliability(bits, ts_counter, bit_llr);
-
-        if (rel < thresh) {
-            int rs_pos = 9 + hb; /* RS codeword position */
-            /* Check not already in erasure list */
-            int dup = 0;
-            for (int e = 0; e < total; e++) {
-                if (erasures[e] == rs_pos) {
-                    dup = 1;
-                    break;
-                }
-            }
-            if (!dup) {
-                erasures[total++] = rs_pos;
-                added++;
-            }
+        int rs_pos = 9 + hb;
+        if (!erasure_list_contains(erasures, n_fixed, rs_pos)) {
+            candidates[candidate_count].reliability = rel;
+            candidates[candidate_count].position = rs_pos;
+            candidate_count++;
         }
     }
 
-    /* Check parity hexbits (RS positions 35-53) while under cap */
-    for (int hb = 0; hb < 19 && added < max_add; hb++) {
+    /* Check parity hexbits (RS positions 35-53) */
+    for (int hb = 0; hb < 19 && candidate_count < 45; hb++) {
         const uint16_t* bits = facch_parity_bit_offsets[hb];
         uint8_t rel = p25p2_hexbit_llr_reliability(bits, ts_counter, bit_llr);
-
-        if (rel < thresh) {
-            int rs_pos = 35 + hb;
-            int dup = 0;
-            for (int e = 0; e < total; e++) {
-                if (erasures[e] == rs_pos) {
-                    dup = 1;
-                    break;
-                }
-            }
-            if (!dup) {
-                erasures[total++] = rs_pos;
-                added++;
-            }
+        int rs_pos = 35 + hb;
+        if (!erasure_list_contains(erasures, n_fixed, rs_pos)) {
+            candidates[candidate_count].reliability = rel;
+            candidates[candidate_count].position = rs_pos;
+            candidate_count++;
         }
     }
 
-    return total;
+    return append_ranked_candidates(candidates, candidate_count, erasures, n_fixed, max_add, 5);
 }
 
 /**
@@ -241,53 +296,34 @@ p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fi
 int
 p25p2_sacch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fixed, int max_add) {
     const int16_t* bit_llr = scrambled ? p2xllr : p2llr;
-    int thresh = p25p2_soft_erasure_threshold();
-    int added = 0;
-    int total = n_fixed;
+    P25P2ErasureCandidate candidates[52];
+    int candidate_count = 0;
 
     /* Check each of the 30 payload hexbits (RS positions 5-34) */
-    for (int hb = 0; hb < 30 && added < max_add; hb++) {
+    for (int hb = 0; hb < 30 && candidate_count < 52; hb++) {
         const uint16_t* bits = sacch_payload_bit_offsets[hb];
         uint8_t rel = p25p2_hexbit_llr_reliability(bits, ts_counter, bit_llr);
-
-        if (rel < thresh) {
-            int rs_pos = 5 + hb;
-            int dup = 0;
-            for (int e = 0; e < total; e++) {
-                if (erasures[e] == rs_pos) {
-                    dup = 1;
-                    break;
-                }
-            }
-            if (!dup) {
-                erasures[total++] = rs_pos;
-                added++;
-            }
+        int rs_pos = 5 + hb;
+        if (!erasure_list_contains(erasures, n_fixed, rs_pos)) {
+            candidates[candidate_count].reliability = rel;
+            candidates[candidate_count].position = rs_pos;
+            candidate_count++;
         }
     }
 
-    /* Check parity hexbits (RS positions 35-56) while under cap */
-    for (int hb = 0; hb < 22 && added < max_add; hb++) {
+    /* Check parity hexbits (RS positions 35-56) */
+    for (int hb = 0; hb < 22 && candidate_count < 52; hb++) {
         const uint16_t* bits = sacch_parity_bit_offsets[hb];
         uint8_t rel = p25p2_hexbit_llr_reliability(bits, ts_counter, bit_llr);
-
-        if (rel < thresh) {
-            int rs_pos = 35 + hb;
-            int dup = 0;
-            for (int e = 0; e < total; e++) {
-                if (erasures[e] == rs_pos) {
-                    dup = 1;
-                    break;
-                }
-            }
-            if (!dup) {
-                erasures[total++] = rs_pos;
-                added++;
-            }
+        int rs_pos = 35 + hb;
+        if (!erasure_list_contains(erasures, n_fixed, rs_pos)) {
+            candidates[candidate_count].reliability = rel;
+            candidates[candidate_count].position = rs_pos;
+            candidate_count++;
         }
     }
 
-    return total;
+    return append_ranked_candidates(candidates, candidate_count, erasures, n_fixed, max_add, 8);
 }
 
 static uint8_t
@@ -303,26 +339,72 @@ contiguous_hexbit_reliability(const int16_t* llr, int bit_offset) {
 }
 
 int
+p25p2_ess_soft_erasures_ranked(const int16_t payload_llr[96], const int16_t parity_llr[168], int* erasures,
+                               int max_add) {
+    if (!payload_llr || !parity_llr || !erasures || max_add <= 0) {
+        return 0;
+    }
+
+    P25P2ErasureCandidate candidates[44];
+    int candidate_count = 0;
+    for (int hb = 0; hb < 16; hb++) {
+        candidates[candidate_count].reliability = contiguous_hexbit_reliability(payload_llr, hb * 6);
+        candidates[candidate_count].position = hb;
+        candidate_count++;
+    }
+    for (int hb = 0; hb < 28; hb++) {
+        candidates[candidate_count].reliability = contiguous_hexbit_reliability(parity_llr, hb * 6);
+        candidates[candidate_count].position = 16 + hb;
+        candidate_count++;
+    }
+    sort_candidates(candidates, candidate_count);
+
+    int threshold = p25p2_soft_erasure_threshold();
+    int out_count = 0;
+    for (int i = 0; i < candidate_count; i++) {
+        if ((int)candidates[i].reliability < threshold) {
+            out_count++;
+        }
+    }
+    if (out_count < 14) {
+        out_count = 14;
+    }
+    if (out_count > max_add) {
+        out_count = max_add;
+    }
+    if (out_count > candidate_count) {
+        out_count = candidate_count;
+    }
+    for (int i = 0; i < out_count; i++) {
+        erasures[i] = candidates[i].position;
+    }
+    return out_count;
+}
+
+int
 p25p2_ess_soft_erasures_from_llr(const int16_t payload_llr[96], const int16_t parity_llr[168], int* erasures,
                                  int max_payload_add, int max_parity_add) {
     if (!payload_llr || !parity_llr || !erasures) {
         return 0;
     }
-    int thresh = p25p2_soft_erasure_threshold();
+    P25P2ErasureCandidate payload_candidates[16];
+    P25P2ErasureCandidate parity_candidates[28];
     int total = 0;
-    int added_payload = 0;
-    for (int hb = 0; hb < 16 && added_payload < max_payload_add; hb++) {
-        if (contiguous_hexbit_reliability(payload_llr, hb * 6) < thresh) {
-            erasures[total++] = hb;
-            added_payload++;
-        }
+    for (int hb = 0; hb < 16; hb++) {
+        payload_candidates[hb].reliability = contiguous_hexbit_reliability(payload_llr, hb * 6);
+        payload_candidates[hb].position = hb;
     }
-    int added_parity = 0;
-    for (int hb = 0; hb < 28 && added_parity < max_parity_add; hb++) {
-        if (contiguous_hexbit_reliability(parity_llr, hb * 6) < thresh) {
-            erasures[total++] = 16 + hb;
-            added_parity++;
-        }
+    sort_candidates(payload_candidates, 16);
+    for (int i = 0; i < 16 && i < max_payload_add; i++) {
+        erasures[total++] = payload_candidates[i].position;
+    }
+    for (int hb = 0; hb < 28; hb++) {
+        parity_candidates[hb].reliability = contiguous_hexbit_reliability(parity_llr, hb * 6);
+        parity_candidates[hb].position = 16 + hb;
+    }
+    sort_candidates(parity_candidates, 28);
+    for (int i = 0; i < 28 && i < max_parity_add; i++) {
+        erasures[total++] = parity_candidates[i].position;
     }
     return total;
 }

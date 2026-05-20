@@ -49,6 +49,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -894,7 +895,16 @@ closeWavOutFileRaw(dsd_opts* opts, dsd_state* state) {
 void
 openSymbolOutFile(dsd_opts* opts, dsd_state* state) {
     closeSymbolOutFile(opts, state);
-    opts->symbol_out_f = fopen(opts->symbol_out_file, "w");
+    opts->symbol_out_f = fopen(opts->symbol_out_file, "wb");
+    if (opts->symbol_out_f != NULL && opts->symbol_capture_format == DSD_SYMBOL_CAPTURE_FORMAT_SOFT) {
+        const unsigned char header[DSD_SYMBOL_CAPTURE_SOFT_HEADER_SIZE] = {
+            'D', 'S', 'D', 'N', 'S', 'Y', 'M', '2', 2, DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE, 0, 0, 0, 0, 0, 0,
+        };
+        if (fwrite(header, 1, sizeof(header), opts->symbol_out_f) != sizeof(header)) {
+            LOG_ERROR("Error, couldn't write symbol capture header to %s\n", opts->symbol_out_file);
+            closeSymbolOutFile(opts, state);
+        }
+    }
 }
 
 void

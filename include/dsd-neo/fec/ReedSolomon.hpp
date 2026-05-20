@@ -165,6 +165,157 @@ class ReedSolomon_63 {
         return 0;
     }
 
+    int
+    polynomial_degree(const int* poly, int max_degree) const {
+        for (int i = max_degree; i >= 0; i--) {
+            if (poly[i] != 0) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    void
+    build_erasure_locator(const int* erasures, int n_erasures, int* locator) const {
+        for (int i = 0; i <= NN - KK; i++) {
+            locator[i] = 0;
+        }
+        locator[0] = 1;
+
+        int degree = 0;
+        for (int e = 0; e < n_erasures; e++) {
+            int factor = gf_alpha_pow(erasures[e]);
+            for (int i = degree; i >= 0; i--) {
+                locator[i + 1] ^= gf_mul(locator[i], factor);
+            }
+            degree++;
+        }
+    }
+
+    void
+    compute_modified_syndromes(const int* syndromes, const int* erasure_locator, int n_erasures, int* modified) const {
+        for (int i = 0; i < NN - KK; i++) {
+            int value = 0;
+            for (int j = 0; j <= n_erasures && j <= i; j++) {
+                value ^= gf_mul(erasure_locator[j], syndromes[(i - j) + 1]);
+            }
+            modified[i] = value;
+        }
+    }
+
+    int
+    berlekamp_massey(const int* syndromes, int n_syndromes, int* locator, int* degree) const {
+        int c[NN - KK + 1];
+        int b[NN - KK + 1];
+        int t[NN - KK + 1];
+
+        for (int i = 0; i <= NN - KK; i++) {
+            c[i] = 0;
+            b[i] = 0;
+            locator[i] = 0;
+        }
+        c[0] = 1;
+        b[0] = 1;
+
+        int l = 0;
+        int m = 1;
+        int bb = 1;
+
+        for (int n = 0; n < n_syndromes; n++) {
+            int discrepancy = syndromes[n];
+            for (int i = 1; i <= l; i++) {
+                discrepancy ^= gf_mul(c[i], syndromes[n - i]);
+            }
+
+            if (discrepancy == 0) {
+                m++;
+                continue;
+            }
+
+            for (int i = 0; i <= NN - KK; i++) {
+                t[i] = c[i];
+            }
+
+            if (bb == 0) {
+                return 1;
+            }
+            int coefficient = gf_div(discrepancy, bb);
+            for (int i = 0; i + m <= NN - KK; i++) {
+                if (b[i] != 0) {
+                    c[i + m] ^= gf_mul(coefficient, b[i]);
+                }
+            }
+
+            if ((2 * l) <= n) {
+                l = n + 1 - l;
+                for (int i = 0; i <= NN - KK; i++) {
+                    b[i] = t[i];
+                }
+                bb = discrepancy;
+                m = 1;
+            } else {
+                m++;
+            }
+        }
+
+        for (int i = 0; i <= NN - KK; i++) {
+            locator[i] = c[i];
+        }
+        *degree = polynomial_degree(locator, NN - KK);
+        return 0;
+    }
+
+    int
+    multiply_locator_polynomials(const int* lhs, int lhs_degree, const int* rhs, int rhs_degree, int* out) const {
+        if (lhs_degree + rhs_degree > NN - KK) {
+            return 1;
+        }
+        for (int i = 0; i <= NN - KK; i++) {
+            out[i] = 0;
+        }
+        for (int i = 0; i <= lhs_degree; i++) {
+            for (int j = 0; j <= rhs_degree; j++) {
+                out[i + j] ^= gf_mul(lhs[i], rhs[j]);
+            }
+        }
+        return 0;
+    }
+
+    int
+    find_error_locations(const int* locator, int degree, int* locations) const {
+        if (degree == 0) {
+            return 0;
+        }
+
+        int count = 0;
+        for (int pos = 0; pos < NN; pos++) {
+            int x = gf_alpha_pow(NN - pos);
+            int value = 0;
+            int x_power = 1;
+            for (int i = 0; i <= degree; i++) {
+                value ^= gf_mul(locator[i], x_power);
+                x_power = gf_mul(x_power, x);
+            }
+            if (value == 0) {
+                if (count >= NN - KK) {
+                    return count + 1;
+                }
+                locations[count++] = pos;
+            }
+        }
+        return count;
+    }
+
+    int
+    location_list_contains(const int* locations, int n_locations, int position) const {
+        for (int i = 0; i < n_locations; i++) {
+            if (locations[i] == position) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+
     void
     generate_gf(int* generator_polinomial)
     /* generate GF(2**mm) from the irreducible polynomial p(X) in pp[0]..pp[mm]
@@ -569,6 +720,58 @@ class ReedSolomon_63 {
             return 0;
         }
 
+        int erasure_locator[NN - KK + 1];
+        build_erasure_locator(erasures, n_erasures, erasure_locator);
+
+        int modified_syndromes[NN - KK];
+        compute_modified_syndromes(syndromes, erasure_locator, n_erasures, modified_syndromes);
+
+        int unknown_locator[NN - KK + 1];
+        int unknown_degree = 0;
+        if (berlekamp_massey(modified_syndromes + n_erasures, (NN - KK) - n_erasures, unknown_locator, &unknown_degree)
+            != 0) {
+            for (int i = 0; i < NN; i++) {
+                output[i] = input[i];
+            }
+            return 1;
+        }
+
+        if ((2 * unknown_degree) + n_erasures > NN - KK) {
+            for (int i = 0; i < NN; i++) {
+                output[i] = input[i];
+            }
+            return 1;
+        }
+
+        int combined_locator[NN - KK + 1];
+        int erasure_degree = polynomial_degree(erasure_locator, NN - KK);
+        if (multiply_locator_polynomials(erasure_locator, erasure_degree, unknown_locator, unknown_degree,
+                                         combined_locator)
+            != 0) {
+            for (int i = 0; i < NN; i++) {
+                output[i] = input[i];
+            }
+            return 1;
+        }
+
+        int combined_degree = polynomial_degree(combined_locator, NN - KK);
+        int locations[NN - KK];
+        int n_locations = find_error_locations(combined_locator, combined_degree, locations);
+        if (n_locations != combined_degree || n_locations > NN - KK) {
+            for (int i = 0; i < NN; i++) {
+                output[i] = input[i];
+            }
+            return 1;
+        }
+        for (int i = 0; i < n_erasures; i++) {
+            if (!location_list_contains(locations, n_locations, erasures[i])) {
+                for (int j = 0; j < NN; j++) {
+                    output[j] = input[j];
+                }
+                return 1;
+            }
+        }
+
         int matrix[NN - KK][NN - KK + 1];
         for (int row = 0; row < NN - KK; row++) {
             for (int col = 0; col < NN - KK + 1; col++) {
@@ -576,27 +779,27 @@ class ReedSolomon_63 {
             }
         }
 
-        for (int row = 0; row < n_erasures; row++) {
+        for (int row = 0; row < n_locations; row++) {
             int syndrome_order = row + 1;
-            for (int col = 0; col < n_erasures; col++) {
-                matrix[row][col] = gf_alpha_pow(syndrome_order * erasures[col]);
+            for (int col = 0; col < n_locations; col++) {
+                matrix[row][col] = gf_alpha_pow(syndrome_order * locations[col]);
             }
-            matrix[row][n_erasures] = syndromes[syndrome_order];
+            matrix[row][n_locations] = syndromes[syndrome_order];
         }
 
         int corrections[NN - KK];
         for (int i = 0; i < NN - KK; i++) {
             corrections[i] = 0;
         }
-        if (solve_gf_linear_system(matrix, n_erasures, corrections) != 0) {
+        if (solve_gf_linear_system(matrix, n_locations, corrections) != 0) {
             for (int i = 0; i < NN; i++) {
                 output[i] = input[i];
             }
             return 1;
         }
 
-        for (int i = 0; i < n_erasures; i++) {
-            output[erasures[i]] ^= corrections[i];
+        for (int i = 0; i < n_locations; i++) {
+            output[locations[i]] ^= corrections[i];
         }
 
         if (compute_syndromes(output, syndromes)) {

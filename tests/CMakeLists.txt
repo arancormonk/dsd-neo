@@ -938,6 +938,11 @@ set_tests_properties(RUNTIME_BOOTSTRAP_MISSING_PROFILE PROPERTIES
   WILL_FAIL TRUE)
 
 # P25 scaffolding tests
+add_executable(dsd-neo_test_p25_12_list protocol/p25/test_p25_12_list.c)
+target_include_directories(dsd-neo_test_p25_12_list PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_12_list PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_12_LIST COMMAND dsd-neo_test_p25_12_list)
+
 add_executable(dsd-neo_test_p25_mbf34 protocol/p25/test_p25_mbf34.c)
 target_include_directories(dsd-neo_test_p25_mbf34 PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_mbf34 PRIVATE dsd-neo_proto_p25)

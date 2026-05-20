@@ -116,6 +116,7 @@ initOpts(dsd_opts* opts) {
     opts->frame_log_write_error_reported = 0;
     opts->symbol_out_file_creation_time = time(NULL);
     opts->symbol_out_file_is_auto = 0;
+    opts->symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;
     opts->mbe_out = 0;
     opts->mbe_outR = 0; //second slot on a TDMA system
     opts->wav_out_f = NULL;
@@ -515,6 +516,15 @@ initState(dsd_state* state) {
     set_spaces(state->ftype, 13);
     state->symbolcnt = 0;
     state->symbolc = 0; //
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+    state->symbol_replay_header_checked = 0;
+    state->symbol_replay_has_soft = 0;
+    state->symbol_replay_soft.reliability = 0;
+    state->symbol_replay_soft.llr[0] = 0;
+    state->symbol_replay_soft.llr[1] = 0;
+    state->symbol_replay_soft_symbol = 0.0f;
+    state->symbol_replay_soft_records = 0;
+    state->symbol_capture_soft_records = 0;
     state->rf_mod = 0;
     state->lastsynctype = DSD_SYNC_NONE;
     state->lastp25type = 0;
@@ -779,6 +789,13 @@ initState(dsd_state* state) {
     state->p25_p2_rs_ess_ok = 0;
     state->p25_p2_rs_ess_err = 0;
     state->p25_p2_rs_ess_corr = 0;
+    state->p25_p2_soft_erasure_ok = 0;
+    state->p25_p1_soft_hamming_ok = 0;
+    state->p25_p1_soft_golay_ok = 0;
+    state->p25_p1_soft_rs_ok = 0;
+    state->p25_p2_soft_ess_ok = 0;
+    state->p25_p2_soft_ess_max_depth = 0;
+    state->p25_p1_soft_combined_ok = 0;
     state->p25_p2_enc_lo_early = 0;
     state->p25_p2_enc_pending[0] = 0;
     state->p25_p2_enc_pending[1] = 0;

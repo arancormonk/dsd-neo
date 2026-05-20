@@ -12,30 +12,28 @@
 
 #include <stdint.h>
 
+#define P25_MBF34_MAX_CANDIDATES 8
+
+typedef struct {
+    uint8_t bytes[18];
+    uint32_t metric;
+} p25_mbf34_candidate_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/*
- * P25 Phase 1 Confirmed Data (3/4) decoder (MBF).
- *
- * Scaffold API: decodes 98 input dibits (already deinterleaved at the symbol
- * capture boundary) into 18 output bytes representing the de‑trellised 3/4
- * encoded payload chunk as found in the MBF Confirmed Data block.
- *
- * Return value: 0 on success; negative on failure. This is a stub suitable for
- * wiring and unit test scaffolding and is intended to be replaced by a
- * spec‑accurate implementation.
- */
 /**
  * @brief Decode a P25 Phase 1 Confirmed Data MBF (3/4) block.
  *
  * @param dibits 98 input dibits (already deinterleaved at the symbol boundary).
  * @param out [out] Decoded 18-byte payload.
- * @return 0 on success; negative on failure (stub implementation).
+ * @return 0 on success; negative on failure.
  */
 int p25_mbf34_decode(const uint8_t dibits[98], uint8_t out[18]);
 int p25_mbf34_decode_soft(const uint8_t dibits[98], const int16_t bit_llr[196], uint8_t out[18]);
+int p25_mbf34_decode_soft_list(const uint8_t dibits[98], const int16_t bit_llr[196], p25_mbf34_candidate_t* candidates,
+                               int max_candidates);
 
 #ifdef __cplusplus
 }

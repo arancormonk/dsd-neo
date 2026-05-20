@@ -2,6 +2,10 @@
 #include <dsd-neo/fec/Golay24.hpp>
 #include <dsd-neo/fec/ReedSolomon.hpp>
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
+#include <dsd-neo/protocol/p25/p25p1_soft.h>
+
+#include <stdint.h>
+#include <string.h>
 
 // Uncomment for very verbose trace messages
 //#define CHECK_HDU_DEBUG
@@ -137,6 +141,28 @@ check_and_fix_redsolomon_36_20_17(char* data, char* parity) {
 int
 check_and_fix_redsolomon_36_20_17_soft(char* data, char* parity, const int* erasures, int n_erasures) {
     return reed_solomon_36_20_17.decode_soft(data, parity, erasures, n_erasures);
+}
+
+int
+p25p1_rs_36_20_17_soft_reliability(char* data, char* parity, const uint8_t* data_reliab, const uint8_t* parity_reliab) {
+    if (data == NULL || parity == NULL || data_reliab == NULL || parity_reliab == NULL) {
+        return 1;
+    }
+
+    int erasures[16];
+    int n_ranked = p25p1_build_rs_ranked_erasures(data_reliab, 20, parity_reliab, 16, 8, erasures, 16);
+    char original_data[20 * 6];
+    memcpy(original_data, data, sizeof(original_data));
+
+    for (int n = 1; n <= n_ranked; n++) {
+        char candidate_data[20 * 6];
+        memcpy(candidate_data, original_data, sizeof(candidate_data));
+        if (check_and_fix_redsolomon_36_20_17_soft(candidate_data, parity, erasures, n) == 0) {
+            memcpy(data, candidate_data, sizeof(candidate_data));
+            return 0;
+        }
+    }
+    return 1;
 }
 
 void
