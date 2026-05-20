@@ -35,7 +35,7 @@ static double snr_hist_gfsk[SNR_HIST_N];
 static int snr_hist_len_gfsk = 0;
 static int snr_hist_head_gfsk = 0;
 
-enum { SNR_METER_BARS = 5 };
+enum { SNR_METER_BARS = 5, SNR_METER_WIDTH = (SNR_METER_BARS * 2) - 1 };
 
 enum { SNR_BLOCK_LEVELS = 8 };
 
@@ -118,13 +118,20 @@ snr_meter_ascii(double snr_db, char* out, size_t out_size) {
     }
 
     size_t n = out_size - 1;
-    if (n > SNR_METER_BARS) {
-        n = SNR_METER_BARS;
+    if (n > SNR_METER_WIDTH) {
+        n = SNR_METER_WIDTH;
     }
 
     int bars = snr_meter_bar_count(snr_db);
     for (size_t i = 0; i < n; i++) {
-        out[i] = ((int)i < bars) ? '|' : ' ';
+        out[i] = ' ';
+    }
+    for (int i = 0; i < bars; i++) {
+        size_t pos = (size_t)i * 2;
+        if (pos >= n) {
+            break;
+        }
+        out[pos] = '|';
     }
     out[n] = '\0';
 }
@@ -268,28 +275,30 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     int use_unicode = snr_use_unicode(opts && opts->eye_unicode, ui_unicode_supported());
 #ifdef PRETTY_COLORS
     short cp = snr_quality_color_pair(snr_db, mod);
-    if (bars > 0) {
-        attron(COLOR_PAIR(cp));
-    }
 #endif
     for (int i = 0; i < SNR_METER_BARS; i++) {
-        if (i >= bars) {
-            break;
+        if (i > 0) {
+            addch(' ');
         }
+        if (i >= bars) {
+            addch(' ');
+            continue;
+        }
+#ifdef PRETTY_COLORS
+        attron(COLOR_PAIR(cp));
+#endif
         if (use_unicode) {
             snr_add_block_level(i);
         } else {
             addch('|');
         }
+#ifdef PRETTY_COLORS
+        attroff(COLOR_PAIR(cp));
+        attr_set(saved_attrs, saved_pair, NULL);
+#endif
     }
 #ifdef PRETTY_COLORS
-    if (bars > 0) {
-        attroff(COLOR_PAIR(cp));
-    }
     /* Padding belongs to the caller's line styling, not the temporary SNR color. */
     attr_set(saved_attrs, saved_pair, NULL);
 #endif
-    for (int i = bars; i < SNR_METER_BARS; i++) {
-        addch(' ');
-    }
 }

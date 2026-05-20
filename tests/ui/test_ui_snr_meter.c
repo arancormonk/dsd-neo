@@ -33,14 +33,14 @@ assert_bars(double snr_db, int expected) {
 
 static void
 assert_ascii(double snr_db, const char* expected) {
-    char actual[8];
+    char actual[16];
     memset(actual, 'X', sizeof(actual));
     dsd_ncurses_snr_meter_ascii_for_test(snr_db, actual, sizeof(actual));
     if (strcmp(actual, expected) != 0) {
         fprintf(stderr, "ASCII meter for %.1f dB: expected '%s', got '%s'\n", snr_db, expected, actual);
     }
     assert(strcmp(actual, expected) == 0);
-    assert(actual[5] == '\0');
+    assert(actual[9] == '\0');
 }
 
 int
@@ -68,20 +68,20 @@ main(void) {
     assert_bars(60.0, 5);
 
 #if !DSD_NEO_TEST_FAST_MATH
-    assert_ascii(NAN, "     ");
+    assert_ascii(NAN, "         ");
 #endif
-    assert_ascii(-50.0, "     ");
-    assert_ascii(-15.0, "|    ");
-    assert_ascii(-6.0, "||   ");
-    assert_ascii(3.0, "|||  ");
-    assert_ascii(12.0, "|||| ");
-    assert_ascii(21.0, "|||||");
+    assert_ascii(-50.0, "         ");
+    assert_ascii(-15.0, "|        ");
+    assert_ascii(-6.0, "| |      ");
+    assert_ascii(3.0, "| | |    ");
+    assert_ascii(12.0, "| | | |  ");
+    assert_ascii(21.0, "| | | | |");
 
     {
         char tiny[3];
         memset(tiny, 'X', sizeof(tiny));
         dsd_ncurses_snr_meter_ascii_for_test(21.0, tiny, sizeof(tiny));
-        assert(strcmp(tiny, "||") == 0);
+        assert(strcmp(tiny, "| ") == 0);
         assert(tiny[2] == '\0');
     }
 
