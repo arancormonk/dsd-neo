@@ -972,22 +972,20 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
             ui_print_snr_db_field(snr_value);
             addch(' ');
-            printw("[");
             /* Pass current modulation for per-mod color bands */
             print_snr_meter(opts, snr, state->rf_mod);
-            printw("]");
             printw(" (%s)", m);
         } else {
             /* Show placeholder so users can see the field even when no estimate */
             ui_print_snr_db_field("n/a");
-            printw(" [] (%s)", m[0] ? m : "-");
+            printw("      (%s)", m[0] ? m : "-");
         }
     }
 #endif
 #ifndef USE_RADIO
     /* If built without RTL support, still show a placeholder */
     ui_print_snr_db_field("n/a");
-    printw(" []");
+    printw("     ");
 #endif
     printw("\n");
     /* In Level is meaningful for non-RTL inputs and RTL C4FM/GFSK modes.
