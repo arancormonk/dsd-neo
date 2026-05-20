@@ -292,8 +292,6 @@ struct dsd_opts {
     uint8_t use_dsp_output;
     uint8_t use_heuristics;
     uint8_t dmr_t3_heuristic_fill;
-    uint8_t p25_p2_soft_erasure; /* Enable soft-decision RS erasure marking for P25P2 */
-    uint8_t p25_p1_soft_voice;   /* Enable soft-decision FEC for P25P1 voice (HDU/LDU/TDULC) */
     // IQ capture and replay
     uint8_t iq_capture_requested; /* 1 if --iq-capture was provided */
     uint8_t iq_replay_requested;  /* 1 if --iq-replay was provided */

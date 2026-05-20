@@ -349,8 +349,6 @@ dsd_cli_usage(void) {
            "enabled with Data Calls \n");
     printf("  --enc-lockout  P25: Do not tune encrypted calls (ENC lockout On)\n");
     printf("  --enc-follow   P25: Allow encrypted calls (ENC lockout Off; default)\n");
-    printf("  --no-p25p2-soft    Disable P25P2 soft-decision RS erasure marking\n");
-    printf("  --no-p25p1-soft-voice  Disable P25p1 soft-decision voice FEC\n");
     printf("  -I <dec>      Specify TG to Hold During Trunking (DMR, P25, NXDN Type-C Trunking)\n");
     printf("  -U <port>     Enable RIGCTL/TCP; Set TCP Port for RIGCTL. (4532 on SDR++)\n");
     printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - Off)\n");

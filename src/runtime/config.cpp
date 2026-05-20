@@ -163,10 +163,6 @@ config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig
     CONFIG_EQ_FIELD(p25_force_release_margin_is_set);
     CONFIG_EQ_FIELD(p25p1_err_hold_pct_is_set);
     CONFIG_EQ_FIELD(p25p1_err_hold_s_is_set);
-    CONFIG_EQ_FIELD(p25p1_soft_erasure_thresh_is_set);
-    CONFIG_EQ_FIELD(p25p1_soft_erasure_thresh);
-    CONFIG_EQ_FIELD(p25p2_soft_erasure_thresh_is_set);
-    CONFIG_EQ_FIELD(p25p2_soft_erasure_thresh);
     CONFIG_EQ_FIELD(p25_afc_status_gate_is_set);
     CONFIG_EQ_FIELD(p25_afc_status_gate_enable);
     CONFIG_EQ_FIELD(input_volume_is_set);
@@ -497,9 +493,6 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.p25_voice_hold_s = 0.75;
     c.p25_wd_ms = 0; /* 0 => dynamic default selected by caller */
 
-    c.p25p1_soft_erasure_thresh = 64;
-    c.p25p2_soft_erasure_thresh = 64;
-
     c.input_volume_multiplier = 1;
     c.input_warn_db = -40.0;
 
@@ -701,13 +694,6 @@ dsd_neo_config_init(const dsd_opts* opts) {
 
     const char* p25_ehs = getenv("DSD_NEO_P25P1_ERR_HOLD_S");
     c.p25p1_err_hold_s_is_set = env_parse_double_range(p25_ehs, 0.0, 120.0, &c.p25p1_err_hold_s);
-
-    /* P25 soft-decision erasure thresholds (0..255) */
-    const char* p1e = getenv("DSD_NEO_P25P1_SOFT_ERASURE_THRESH");
-    c.p25p1_soft_erasure_thresh_is_set = env_parse_int_range(p1e, 0, 255, &c.p25p1_soft_erasure_thresh);
-
-    const char* p2e = getenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESH");
-    c.p25p2_soft_erasure_thresh_is_set = env_parse_int_range(p2e, 0, 255, &c.p25p2_soft_erasure_thresh);
 
     const char* p25_afc_status_gate = getenv("DSD_NEO_P25_AFC_STATUS_GATE");
     c.p25_afc_status_gate_is_set = env_is_set(p25_afc_status_gate);

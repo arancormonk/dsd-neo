@@ -57,6 +57,7 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1220,6 +1221,10 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     if (state->dmr_reliab_buf) {
         state->dmr_reliab_p = state->dmr_reliab_buf + 200;
         memset(state->dmr_reliab_buf, 0, 200 * sizeof(uint8_t));
+    }
+    if (state->dmr_soft_buf) {
+        state->dmr_soft_p = state->dmr_soft_buf + 200;
+        memset(state->dmr_soft_buf, 0, 200 * sizeof(dsd_dibit_soft_t));
     }
     //dmr buffer end
 

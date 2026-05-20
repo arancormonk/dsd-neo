@@ -92,6 +92,20 @@ encode_tribits_to_dibits(const uint8_t tribits[49], uint8_t out_dibits[98]) {
     }
 }
 
+static void
+dibits_to_llr(const uint8_t dibits[98], int16_t bit_llr[196], int16_t magnitude) {
+    for (int i = 0; i < 98; i++) {
+        bit_llr[(i * 2) + 0] = ((dibits[i] >> 1) & 1) ? magnitude : (int16_t)-magnitude;
+        bit_llr[(i * 2) + 1] = (dibits[i] & 1) ? magnitude : (int16_t)-magnitude;
+    }
+}
+
+static void
+set_dibit_llr_magnitude(const uint8_t dibits[98], int16_t bit_llr[196], int dibit_index, int16_t magnitude) {
+    bit_llr[(dibit_index * 2) + 0] = ((dibits[dibit_index] >> 1) & 1) ? magnitude : (int16_t)-magnitude;
+    bit_llr[(dibit_index * 2) + 1] = (dibits[dibit_index] & 1) ? magnitude : (int16_t)-magnitude;
+}
+
 static uint32_t
 crc32_mbf_bytes(const uint8_t* buf, int nbits) {
     // Copy of p25p1_mdpu.c bit-wise CRC32 for cross-check
@@ -202,7 +216,30 @@ main(void) {
         return 13;
     }
 
-    // 5) Error injection: flip one dibit, ensure CRC9 no longer matches
+    // 5) Soft decoder preserves clean blocks and can use low-confidence LLRs
+    int16_t bit_llr[196];
+    dibits_to_llr(in_dibits, bit_llr, 200);
+    uint8_t out_soft[18];
+    memset(out_soft, 0, sizeof(out_soft));
+    rc = p25_mbf34_decode_soft(in_dibits, bit_llr, out_soft);
+    if (rc != 0 || memcmp(block, out_soft, 18) != 0) {
+        fprintf(stderr, "soft decoder clean block mismatch rc=%d\n", rc);
+        return 14;
+    }
+
+    uint8_t noisy_dibits[98];
+    memcpy(noisy_dibits, in_dibits, sizeof(noisy_dibits));
+    noisy_dibits[7] ^= 1U;
+    dibits_to_llr(noisy_dibits, bit_llr, 200);
+    set_dibit_llr_magnitude(noisy_dibits, bit_llr, 7, 10);
+    memset(out_soft, 0, sizeof(out_soft));
+    rc = p25_mbf34_decode_soft(noisy_dibits, bit_llr, out_soft);
+    if (rc != 0 || memcmp(block, out_soft, 18) != 0) {
+        fprintf(stderr, "soft decoder failed low-confidence dibit correction rc=%d\n", rc);
+        return 15;
+    }
+
+    // 6) Error injection: flip one dibit, ensure CRC9 no longer matches
     // flip a bunch of dibits to induce CRC9 failure
     for (int i = 0; i < 20; i += 2) {
         in_dibits[i] ^= 3;
@@ -212,7 +249,7 @@ main(void) {
     rc = p25_mbf34_decode(in_dibits, out_err);
     if (rc != 0) {
         fprintf(stderr, "decoder(rc=%d) after error inj\n", rc);
-        return 14;
+        return 16;
     }
     for (int i = 0; i < 7; i++) {
         bits[i] = (uint8_t)((out_err[0] >> (7 - i)) & 1);
@@ -223,7 +260,7 @@ main(void) {
     crc9_ext = (uint16_t)(((out_err[0] & 1) << 8) | out_err[1]);
     if (crc9_cmp == crc9_ext) {
         fprintf(stderr, "CRC9 unexpectedly matched after error injection\n");
-        return 15;
+        return 17;
     }
 
     fprintf(stderr, "p25_mbf34 decode+CRC tests OK\n");

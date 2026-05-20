@@ -6,10 +6,12 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/p25p1_heuristics.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/state_fwd.h"
 
 //fixed the memory leak, but now random segfaults occur -- double free or corruption (out) or (!prev)
@@ -66,15 +68,26 @@ resetState(dsd_state* state) {
 
     // DMR reliability buffer (parallel to dmr_payload_buf)
     if (state->dmr_reliab_buf) {
-        free(state->dmr_reliab_buf);
+        dsd_aligned_free(state->dmr_reliab_buf);
         state->dmr_reliab_buf = NULL;
     }
-    state->dmr_reliab_buf = (uint8_t*)malloc(1000000 * sizeof(uint8_t));
+    state->dmr_reliab_buf = (uint8_t*)dsd_aligned_alloc(64, 1000000 * sizeof(uint8_t));
     if (state->dmr_reliab_buf) {
         memset(state->dmr_reliab_buf, 0, 200 * sizeof(uint8_t));
         state->dmr_reliab_p = state->dmr_reliab_buf + 200;
     } else {
         state->dmr_reliab_p = NULL;
+    }
+    if (state->dmr_soft_buf) {
+        dsd_aligned_free(state->dmr_soft_buf);
+        state->dmr_soft_buf = NULL;
+    }
+    state->dmr_soft_buf = (dsd_dibit_soft_t*)dsd_aligned_alloc(64, 1000000 * sizeof(dsd_dibit_soft_t));
+    if (state->dmr_soft_buf) {
+        memset(state->dmr_soft_buf, 0, 200 * sizeof(dsd_dibit_soft_t));
+        state->dmr_soft_p = state->dmr_soft_buf + 200;
+    } else {
+        state->dmr_soft_p = NULL;
     }
 
     // DMR sample history buffer reset (resample-on-sync support)
@@ -161,6 +174,10 @@ resetState(dsd_state* state) {
     state->p25_p2_voice_err_hist_pos[1] = 0;
     state->p25_p2_voice_err_hist_sum[0] = 0;
     state->p25_p2_voice_err_hist_sum[1] = 0;
+    memset(state->ess_b, 0, sizeof(state->ess_b));
+    memset(state->ess_b_llr, 0, sizeof(state->ess_b_llr));
+    state->fourv_counter[0] = 0;
+    state->fourv_counter[1] = 0;
 
     //Misc -- may not be needed
     state->optind = 0;
@@ -228,5 +245,9 @@ reset_dibit_buffer(dsd_state* state) {
     if (state->dmr_reliab_buf) {
         state->dmr_reliab_p = state->dmr_reliab_buf + 200;
         memset(state->dmr_reliab_buf, 0, 200 * sizeof(uint8_t));
+    }
+    if (state->dmr_soft_buf) {
+        state->dmr_soft_p = state->dmr_soft_buf + 200;
+        memset(state->dmr_soft_buf, 0, 200 * sizeof(dsd_dibit_soft_t));
     }
 }

@@ -48,7 +48,8 @@ processTDU(dsd_opts* opts, dsd_state* state) {
 
     // trailing status symbol
     {
-        int ss = getDibit(opts, state);
+        dsd_dibit_soft_t status_soft;
+        int ss = getDibitSoft(opts, state, &status_soft);
         p25_status_accum_add(state, ss);
     }
 

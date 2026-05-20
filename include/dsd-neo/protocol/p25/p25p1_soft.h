@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Soft-decision FEC decoders for P25 Phase 1 voice (HDU/LDU/TDULC).
+ * @brief Soft-decision FEC decoders for P25 Phase 1 non-vocoder paths.
  *
  * These routines use per-bit reliability values (0-255) to improve decode
  * success at low SNR by implementing Chase-style soft decoding for Hamming
@@ -13,6 +13,8 @@
  */
 #ifndef P25P1_SOFT_H_a3b5c7d9e1f24680
 #define P25P1_SOFT_H_a3b5c7d9e1f24680
+
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,12 +81,27 @@ int check_and_fix_golay_24_6_soft(char* data, char* parity, const int* reliab, i
 int check_and_fix_golay_24_12_soft(char* data, char* parity, const int* reliab, int* fixed);
 
 /**
- * Get the P25P1 soft-decision erasure threshold.
+ * Compute a symbol reliability from contiguous per-bit LLR values.
  *
- * Configuration priority:
- * 1. DSD_NEO_P25P1_SOFT_ERASURE_THRESH environment variable (P25P1-specific)
- * 2. DSD_NEO_P25P2_SOFT_ERASURE_THRESH environment variable (shared fallback)
- * 3. Default value: 64
+ * @param llr       Signed bit LLR values. Positive values favor bit 1.
+ * @param bit_count Number of bits in the symbol.
+ * @return Minimum absolute bit reliability [0..255], or 0 for invalid input.
+ */
+uint8_t p25p1_llr_reliability(const int16_t* llr, int bit_count);
+
+/**
+ * Build a Reed-Solomon erasure list from P25P1 data/parity symbol reliabilities.
+ *
+ * Reed-Solomon wrappers use parity-first codeword positions, so returned erasures
+ * are 0..parity_symbols-1 for parity and parity_symbols..parity_symbols+data_symbols-1 for data.
+ *
+ * @return Number of erasures written.
+ */
+int p25p1_build_rs_erasures(const uint8_t* data_reliab, int data_symbols, const uint8_t* parity_reliab,
+                            int parity_symbols, int* erasures, int max_erasures);
+
+/**
+ * Get the P25P1 soft-decision erasure threshold.
  *
  * @return Threshold value 0-255. Symbols with reliability below this are marked as erasures.
  */

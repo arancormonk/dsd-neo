@@ -20,7 +20,9 @@
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
+#include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <stdint.h>
+#include <string.h>
 
 // Parity lookup from legacy implementation in p25_crc.c
 extern uint8_t lsd_parity[256];
@@ -74,4 +76,87 @@ p25_lsd_fec_16x8(uint8_t* bits16) {
 
     // Uncorrectable (likely multi-bit error)
     return 0;
+}
+
+static int
+lsd_abs_i16(int16_t v) {
+    return v < 0 ? -(int)v : (int)v;
+}
+
+static void
+select_low_reliability_bits(const int16_t llr16[16], int* out, int* out_count) {
+    int threshold = p25p1_get_erasure_threshold();
+    int count = 0;
+    for (int i = 0; i < 16; i++) {
+        int r = lsd_abs_i16(llr16[i]);
+        if (r < threshold) {
+            out[count++] = i;
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        for (int j = i + 1; j < count; j++) {
+            int ri = lsd_abs_i16(llr16[out[i]]);
+            int rj = lsd_abs_i16(llr16[out[j]]);
+            if (rj < ri || (rj == ri && out[j] < out[i])) {
+                int tmp = out[i];
+                out[i] = out[j];
+                out[j] = tmp;
+            }
+        }
+    }
+    if (count > 6) {
+        count = 6;
+    }
+    *out_count = count;
+}
+
+int
+p25_lsd_fec_16x8_soft(uint8_t* bits16, const int16_t llr16[16]) {
+    if (!bits16) {
+        return 0;
+    }
+    if (p25_lsd_fec_16x8(bits16)) {
+        return 1;
+    }
+    if (!llr16) {
+        return 0;
+    }
+
+    int candidates[16];
+    int candidate_count = 0;
+    select_low_reliability_bits(llr16, candidates, &candidate_count);
+    if (candidate_count <= 0) {
+        return 0;
+    }
+
+    uint8_t best[16];
+    int best_penalty = 999999;
+    int found = 0;
+    int combinations = 1 << candidate_count;
+    for (int mask = 1; mask < combinations; mask++) {
+        uint8_t tmp[16];
+        memcpy(tmp, bits16, 16);
+        int penalty = 0;
+        for (int b = 0; b < candidate_count; b++) {
+            if ((mask & (1 << b)) != 0) {
+                int pos = candidates[b];
+                tmp[pos] ^= 1U;
+                penalty += lsd_abs_i16(llr16[pos]);
+            }
+        }
+        if (penalty >= best_penalty) {
+            continue;
+        }
+        if (p25_lsd_fec_16x8(tmp)) {
+            memcpy(best, tmp, 16);
+            best_penalty = penalty;
+            found = 1;
+        }
+    }
+
+    if (!found) {
+        return 0;
+    }
+    memcpy(bits16, best, 16);
+    return 1;
 }

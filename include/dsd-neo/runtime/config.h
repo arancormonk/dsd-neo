@@ -185,7 +185,6 @@ extern "C" {
  *
  * Protocol timers/holds
  * - DSD_NEO_P25_* and DSD_NEO_DMR_* (hangtimes, grace windows, holds, watchdog)
- * - DSD_NEO_P25P1_SOFT_ERASURE_THRESH, DSD_NEO_P25P2_SOFT_ERASURE_THRESH
  *
  * Cache/path knobs
  * - DSD_NEO_CACHE_DIR, DSD_NEO_CC_CACHE
@@ -322,12 +321,6 @@ typedef struct dsdneoRuntimeConfig {
     int p25_force_release_margin_is_set;
     int p25p1_err_hold_pct_is_set;
     int p25p1_err_hold_s_is_set;
-
-    /* P25 soft-decision erasure thresholds (0..255) */
-    int p25p1_soft_erasure_thresh_is_set;
-    int p25p1_soft_erasure_thresh;
-    int p25p2_soft_erasure_thresh_is_set;
-    int p25p2_soft_erasure_thresh;
 
     /* P25 status-symbol AFC gate. Off by default because status-derived direction is advisory. */
     int p25_afc_status_gate_is_set;

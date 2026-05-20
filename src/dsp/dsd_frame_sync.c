@@ -848,6 +848,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         if (state->dmr_reliab_p && state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
             state->dmr_reliab_p = state->dmr_reliab_buf + 200;
         }
+        if (state->dmr_soft_p && state->dmr_soft_p > state->dmr_soft_buf + 900000) {
+            state->dmr_soft_p = state->dmr_soft_buf + 200;
+        }
 
         if (cqpsk_4level) {
             float sym = symbol - state->center; /* recenter for CQPSK thresholding */
@@ -864,28 +867,44 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
             *state->dmr_payload_p = d;
             /* Reliability computed via dmr_compute_reliability() which handles CQPSK internally */
+            uint8_t rel = dmr_compute_reliability(state, symbol);
             if (state->dmr_reliab_p) {
-                *state->dmr_reliab_p = dmr_compute_reliability(state, symbol);
+                *state->dmr_reliab_p = rel;
                 state->dmr_reliab_p++;
             }
+            if (state->dmr_soft_p) {
+                state->dmr_soft_p->reliability = rel;
+                state->dmr_soft_p->llr[0] = (int16_t)(((d >> 1) & 1) ? rel : -(int)rel);
+                state->dmr_soft_p->llr[1] = (int16_t)((d & 1) ? rel : -(int)rel);
+                state->dmr_soft_p++;
+            }
         } else {
+            int d = 0;
             if (symbol > state->center) {
                 if (symbol > state->umid) {
-                    *state->dmr_payload_p = 1; // +3
+                    d = 1; // +3
                 } else {
-                    *state->dmr_payload_p = 0; // +1
+                    d = 0; // +1
                 }
             } else {
                 if (symbol < state->lmid) {
-                    *state->dmr_payload_p = 3; // -3
+                    d = 3; // -3
                 } else {
-                    *state->dmr_payload_p = 2; // -1
+                    d = 2; // -1
                 }
             }
+            *state->dmr_payload_p = d;
             /* Reliability computed via dmr_compute_reliability() which handles C4FM/GFSK internally */
+            uint8_t rel = dmr_compute_reliability(state, symbol);
             if (state->dmr_reliab_p) {
-                *state->dmr_reliab_p = dmr_compute_reliability(state, symbol);
+                *state->dmr_reliab_p = rel;
                 state->dmr_reliab_p++;
+            }
+            if (state->dmr_soft_p) {
+                state->dmr_soft_p->reliability = rel;
+                state->dmr_soft_p->llr[0] = (int16_t)(((d >> 1) & 1) ? rel : -(int)rel);
+                state->dmr_soft_p->llr[1] = (int16_t)((d & 1) ? rel : -(int)rel);
+                state->dmr_soft_p++;
             }
         }
 

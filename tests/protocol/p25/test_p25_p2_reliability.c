@@ -4,17 +4,18 @@
  */
 
 /*
- * Unit tests for P25P2 reliability buffer handling.
+ * Unit tests for P25P2 soft metric buffer handling.
  *
  * Validates that:
- * 1. p25_p2_frame_reset() clears reliability buffers
- * 2. Buffer sizes are consistent with 700-dibit capture scope
- * 3. Reliability buffers are distinct from bit buffers
+ * 1. p25_p2_frame_reset() clears soft-decision buffers
+ * 2. Buffer sizes are consistent with 700-dibit/1400-bit capture scope
+ * 3. Soft-decision buffers are distinct from bit buffers
  *
  * This test compiles p25p2_frame.c directly with stubs to avoid
  * dragging in full library dependencies.
  */
 
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdbool.h>
@@ -24,8 +25,8 @@
 
 /* External declarations matching p25p2_frame.c */
 extern int p2bit[4320];
-extern uint8_t p2reliab[700];
-extern uint8_t p2xreliab[700];
+extern int16_t p2llr[1400];
+extern int16_t p2xllr[1400];
 extern void p25_p2_frame_reset(void);
 extern int p25p2_duid_lookup_soft_test(uint8_t received, const uint8_t reliab8[8]);
 
@@ -243,6 +244,18 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
 
 /* Dibit acquisition */
 int
+getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
+    (void)opts;
+    (void)state;
+    if (out_soft) {
+        out_soft->reliability = 128;
+        out_soft->llr[0] = -128;
+        out_soft->llr[1] = -128;
+    }
+    return 0;
+}
+
+int
 getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
     (void)opts;
     (void)state;
@@ -256,21 +269,23 @@ int
 main(void) {
     int failures = 0;
 
-    printf("P25P2 Reliability Buffer Tests\n");
+    printf("P25P2 Soft Metric Buffer Tests\n");
     printf("===============================\n\n");
 
-    /* Test 1: Reset clears reliability buffers */
-    printf("Test 1: Reset clears reliability buffers... ");
-    memset(p2reliab, 0xAA, sizeof(p2reliab));
-    memset(p2xreliab, 0xBB, sizeof(p2xreliab));
+    /* Test 1: Reset clears soft-decision buffers */
+    printf("Test 1: Reset clears soft-decision buffers... ");
+    for (int i = 0; i < 1400; i++) {
+        p2llr[i] = 123;
+        p2xllr[i] = -123;
+    }
     p25_p2_frame_reset();
 
     int non_zero = 0;
-    for (int i = 0; i < 700; i++) {
-        if (p2reliab[i] != 0) {
+    for (int i = 0; i < 1400; i++) {
+        if (p2llr[i] != 0) {
             non_zero++;
         }
-        if (p2xreliab[i] != 0) {
+        if (p2xllr[i] != 0) {
             non_zero++;
         }
     }
@@ -281,49 +296,50 @@ main(void) {
         failures++;
     }
 
-    /* Test 2: Buffer sizes are consistent with 700-dibit capture scope */
+    /* Test 2: Buffer sizes are consistent with 700-dibit/1400-bit capture scope */
     printf("Test 2: Buffer size consistency... ");
     size_t p2bit_size = sizeof(p2bit) / sizeof(p2bit[0]);
-    size_t p2reliab_size = sizeof(p2reliab) / sizeof(p2reliab[0]);
-    size_t p2xreliab_size = sizeof(p2xreliab) / sizeof(p2xreliab[0]);
+    size_t p2llr_size = sizeof(p2llr) / sizeof(p2llr[0]);
+    size_t p2xllr_size = sizeof(p2xllr) / sizeof(p2xllr[0]);
 
-    if (p2bit_size == 4320 && p2reliab_size == 700 && p2xreliab_size == 700) {
-        printf("PASS (p2bit=4320 bits, p2reliab=p2xreliab=700 dibits)\n");
+    if (p2bit_size == 4320 && p2llr_size == 1400 && p2xllr_size == 1400) {
+        printf("PASS (p2bit=4320 bits, llr=1400 bits)\n");
     } else {
-        printf("FAIL (p2bit=%zu, p2reliab=%zu, p2xreliab=%zu)\n", p2bit_size, p2reliab_size, p2xreliab_size);
+        printf("FAIL (p2bit=%zu, p2llr=%zu, p2xllr=%zu)\n", p2bit_size, p2llr_size, p2xllr_size);
         failures++;
     }
 
-    /* Test 3: Reliability buffers are distinct from bit buffers */
+    /* Test 3: Soft-decision buffers are distinct from bit buffers */
     printf("Test 3: Buffer address separation... ");
     void* p_p2bit = (void*)p2bit;
-    void* p_p2reliab = (void*)p2reliab;
-    void* p_p2xreliab = (void*)p2xreliab;
-    if (p_p2bit != p_p2reliab && p_p2reliab != p_p2xreliab && p_p2bit != p_p2xreliab) {
+    void* p_p2llr = (void*)p2llr;
+    void* p_p2xllr = (void*)p2xllr;
+    if (p_p2bit != p_p2llr && p_p2bit != p_p2xllr && p_p2llr != p_p2xllr) {
         printf("PASS\n");
     } else {
         printf("FAIL (overlapping buffers)\n");
         failures++;
     }
 
-    /* Test 4: Reliability propagation through descramble preserves values */
-    printf("Test 4: Reliability propagation preserves values... ");
+    /* Test 4: LLR descramble preserves confidence magnitudes */
+    printf("Test 4: LLR descramble preserves magnitudes... ");
     p25_p2_frame_reset();
 
-    /* Simulate reliability values from dibit capture */
-    for (int i = 0; i < 700; i++) {
-        p2reliab[i] = (uint8_t)(i & 0xFF);
+    /* Simulate soft values from dibit capture */
+    for (int i = 0; i < 1400; i++) {
+        p2llr[i] = (int16_t)((i & 1) ? -(100 + (i % 50)) : (100 + (i % 50)));
     }
 
-    /* Manually copy to p2xreliab as process_Frame_Scramble would */
-    memset(p2xreliab, 0, sizeof(p2xreliab));
-    for (int i = 0; i < 700; i++) {
-        p2xreliab[i] = p2reliab[i];
+    /* Manually transform to p2xllr as process_Frame_Scramble would. */
+    for (int i = 0; i < 1400; i++) {
+        p2xllr[i] = (i % 3) == 0 ? (int16_t)-p2llr[i] : p2llr[i];
     }
 
     int mismatch = 0;
-    for (int i = 0; i < 700; i++) {
-        if (p2xreliab[i] != p2reliab[i]) {
+    for (int i = 0; i < 1400; i++) {
+        int p2_mag = p2llr[i] < 0 ? -p2llr[i] : p2llr[i];
+        int p2x_mag = p2xllr[i] < 0 ? -p2xllr[i] : p2xllr[i];
+        if (p2x_mag != p2_mag) {
             mismatch++;
         }
     }

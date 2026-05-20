@@ -3,6 +3,7 @@
 #define P25P1_HEURISTICS_H_030dd3530b7546abbb56f8dd1e66a2f6
 
 #include <stddef.h>
+#include <stdint.h>
 
 /**
  * @file
@@ -31,7 +32,8 @@ typedef struct {
     int dibit;
     int corrected_dibit;
     int sequence_broken;
-    int reliab; /* Reliability 0-255 (0=uncertain, 255=confident). Use int for struct alignment consistency. */
+    int reliab;     /* Reliability 0-255 (0=uncertain, 255=confident). Use int for struct alignment consistency. */
+    int16_t llr[2]; /* [0]=dibit MSB, [1]=dibit LSB. Positive values favor bit 1. */
 } AnalogSignal;
 
 #ifdef __cplusplus

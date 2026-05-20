@@ -1962,6 +1962,15 @@ target_include_directories(dsd-neo_test_symbol_bin_mapping PRIVATE ${PROJECT_SOU
 dsd_neo_link_dsp_test(dsd-neo_test_symbol_bin_mapping ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME SYMBOL_BIN_MAPPING COMMAND dsd-neo_test_symbol_bin_mapping)
 
+# Symbol .bin soft metrics must match the replayed hard dibit
+add_executable(dsd-neo_test_dibit_symbol_bin_soft
+  core/test_dibit_symbol_bin_soft.c
+  ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+)
+target_include_directories(dsd-neo_test_dibit_symbol_bin_soft PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dibit_symbol_bin_soft PRIVATE ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DIBIT_SYMBOL_BIN_SOFT COMMAND dsd-neo_test_dibit_symbol_bin_soft)
+
 # Sync hamming/remap helper unit test
 add_executable(dsd-neo_test_dsp_sync_hamming dsp/test_dsp_sync_hamming.c)
 target_include_directories(dsd-neo_test_dsp_sync_hamming PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -2030,6 +2039,17 @@ add_executable(dsd-neo_test_p25p1_soft_golay
 target_include_directories(dsd-neo_test_p25p1_soft_golay PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25p1_soft_golay PRIVATE dsd-neo_fec dsd-neo_runtime)
 add_test(NAME P25P1_SOFT_GOLAY COMMAND dsd-neo_test_p25p1_soft_golay)
+
+# P25P1 soft Reed-Solomon erasure decoder test
+add_executable(dsd-neo_test_p25p1_soft_rs
+  protocol/p25/test_p25p1_soft_rs.cpp
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_check_hdu.cpp
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_check_ldu.cpp
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_soft.cpp
+)
+target_include_directories(dsd-neo_test_p25p1_soft_rs PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25p1_soft_rs PRIVATE dsd-neo_fec dsd-neo_runtime)
+add_test(NAME P25P1_SOFT_RS COMMAND dsd-neo_test_p25p1_soft_rs)
 
 # P25 P2: flush partial SS18 audio on release
 add_executable(dsd-neo_test_p25_p2_release_partial_audio protocol/p25/test_p25_p2_release_partial_audio.c)

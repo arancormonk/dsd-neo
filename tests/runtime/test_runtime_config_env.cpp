@@ -141,8 +141,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_P25_MIN_FOLLOW_DWELL",
         "DSD_NEO_P25P1_ERR_HOLD_PCT",
         "DSD_NEO_P25P1_ERR_HOLD_S",
-        "DSD_NEO_P25P1_SOFT_ERASURE_THRESH",
-        "DSD_NEO_P25P2_SOFT_ERASURE_THRESH",
         "DSD_NEO_P25_RETUNE_BACKOFF",
         "DSD_NEO_P25_RING_HOLD",
         "DSD_NEO_P25_VC_GRACE",
@@ -1035,9 +1033,6 @@ test_protocol_env_knobs(void) {
     setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", "6.0", 1);
     setenv("DSD_NEO_P25P1_ERR_HOLD_S", "7.0", 1);
 
-    setenv("DSD_NEO_P25P1_SOFT_ERASURE_THRESH", "100", 1);
-    setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESH", "101", 1);
-
     setenv("DSD_NEO_INPUT_VOLUME", "2", 1);
     setenv("DSD_NEO_INPUT_WARN_DB", "-10.0", 1);
 
@@ -1179,23 +1174,6 @@ test_protocol_env_knobs(void) {
         return rc;
     }
 
-    rc = expect_int_eq(cfg->p25p1_soft_erasure_thresh_is_set, 1, 1150, "p25p1_soft_erasure_thresh_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->p25p1_soft_erasure_thresh, 100, 1151, "p25p1_soft_erasure_thresh");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->p25p2_soft_erasure_thresh_is_set, 1, 1152, "p25p2_soft_erasure_thresh_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->p25p2_soft_erasure_thresh, 101, 1153, "p25p2_soft_erasure_thresh");
-    if (rc != 0) {
-        return rc;
-    }
-
     rc = expect_int_eq(cfg->input_volume_is_set, 1, 1160, "input_volume_is_set");
     if (rc != 0) {
         return rc;
@@ -1232,9 +1210,6 @@ test_protocol_env_knobs(void) {
     unsetenv("DSD_NEO_P25P1_ERR_HOLD_PCT");
     unsetenv("DSD_NEO_P25P1_ERR_HOLD_S");
 
-    unsetenv("DSD_NEO_P25P1_SOFT_ERASURE_THRESH");
-    unsetenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESH");
-
     unsetenv("DSD_NEO_INPUT_VOLUME");
     unsetenv("DSD_NEO_INPUT_WARN_DB");
 
@@ -1264,19 +1239,6 @@ test_protocol_env_knobs(void) {
         return rc;
     }
     unsetenv("DSD_NEO_INPUT_VOLUME");
-
-    setenv("DSD_NEO_P25P1_SOFT_ERASURE_THRESH", "256", 1);
-    dsd_neo_config_init(NULL);
-    cfg = dsd_neo_get_config();
-    rc = expect_int_eq(cfg->p25p1_soft_erasure_thresh_is_set, 0, 1204, "p25p1_soft_erasure_thresh_is_set (256)");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->p25p1_soft_erasure_thresh, 64, 1205, "p25p1_soft_erasure_thresh default");
-    if (rc != 0) {
-        return rc;
-    }
-    unsetenv("DSD_NEO_P25P1_SOFT_ERASURE_THRESH");
 
     return 0;
 }

@@ -78,8 +78,8 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     uint8_t tsbk_dibit[98];
     memset(tsbk_dibit, 0, sizeof(tsbk_dibit));
 
-    uint8_t tsbk_reliab[98]; // per-dibit reliability for soft decoding
-    memset(tsbk_reliab, 255, sizeof(tsbk_reliab));
+    int16_t tsbk_llr[196];
+    memset(tsbk_llr, 0, sizeof(tsbk_llr));
 
     int dibit = 0;
     int r34 = 0;
@@ -159,12 +159,13 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         k = 0;
         dibit_count = 0;
         for (i = start; i < stop; i++) {
-            uint8_t rel = 255;
-            dibit = getDibitWithReliability(opts, state, &rel);
+            dsd_dibit_soft_t soft;
+            dibit = getDibitSoft(opts, state, &soft);
             if ((skipdibit / 36) == 0) {
                 dibit_count++;
                 tsbk_dibit[k] = dibit;
-                tsbk_reliab[k] = rel;
+                tsbk_llr[(k * 2) + 0] = soft.llr[0];
+                tsbk_llr[(k * 2) + 1] = soft.llr[1];
                 k++;
             } else {
                 p25_status_accum_add(state, dibit);
@@ -185,7 +186,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             //debug
             // fprintf (stderr, " J:%d;", j); //use this with the P_ERR inside of 34 rate decoder to see where the failures occur
 
-            ec[j] = p25_mbf34_decode(tsbk_dibit, r34byte_b);
+            ec[j] = p25_mbf34_decode_soft(tsbk_dibit, tsbk_llr, r34byte_b);
 
             //shuffle 34 rate data into array
             if (j != 0) { //should never happen, but just in case
@@ -210,7 +211,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             }
 
         } else {
-            ec[j] = p25_12_soft(tsbk_dibit, tsbk_reliab, tsbk_byte);
+            ec[j] = p25_12_soft_llr(tsbk_dibit, tsbk_llr, tsbk_byte);
         }
 
         //too many bit manipulations!

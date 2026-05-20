@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -233,6 +234,10 @@ symbol_window_extrema_avg2(const float* samples, int count, float* out_min, floa
 static void
 use_symbol(dsd_opts* opts, dsd_state* state, float symbol) {
     UNUSED(symbol);
+
+    if (opts == NULL || state == NULL) {
+        return;
+    }
 
     float lmin, lmax;
 
@@ -539,6 +544,209 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
     return (uint8_t)rel;
 }
 
+static int
+clamp_u8_int(int v) {
+    if (v < 0) {
+        return 0;
+    }
+    if (v > 255) {
+        return 255;
+    }
+    return v;
+}
+
+static int
+abs_i16_to_int(int16_t v) {
+    return v < 0 ? -(int)v : (int)v;
+}
+
+static int16_t
+llr_from_magnitude_and_bit(int magnitude, int bit) {
+    magnitude = clamp_u8_int(magnitude);
+    return (int16_t)(bit ? magnitude : -magnitude);
+}
+
+static void
+fallback_soft_from_dibit(int dibit, uint8_t reliability, dsd_dibit_soft_t* out) {
+    if (!out) {
+        return;
+    }
+    int hard_dibit = dibit & 3;
+    reliability = (uint8_t)clamp_u8_int(reliability);
+    out->reliability = reliability;
+    out->llr[0] = llr_from_magnitude_and_bit(reliability, (hard_dibit >> 1) & 1);
+    out->llr[1] = llr_from_magnitude_and_bit(reliability, hard_dibit & 1);
+}
+
+static float
+square_float(float v) {
+    return v * v;
+}
+
+static int
+soft_metric_for_bit(float symbol, const float ideal[4], int bit_index) {
+    float best0 = 3.4028234663852886e38f;
+    float best1 = 3.4028234663852886e38f;
+    float min_spacing = 3.4028234663852886e38f;
+
+    for (int i = 0; i < 4; i++) {
+        float d = square_float(symbol - ideal[i]);
+        if (((i >> (1 - bit_index)) & 1) != 0) {
+            if (d < best1) {
+                best1 = d;
+            }
+        } else if (d < best0) {
+            best0 = d;
+        }
+        for (int j = i + 1; j < 4; j++) {
+            float spacing = fabsf(ideal[i] - ideal[j]);
+            if (spacing > 1e-6f && spacing < min_spacing) {
+                min_spacing = spacing;
+            }
+        }
+    }
+
+    if (min_spacing == 3.4028234663852886e38f) {
+        min_spacing = 2.0f;
+    }
+    float scale = 255.0f / (min_spacing * min_spacing);
+    int magnitude = (int)lrintf(fabsf(best0 - best1) * scale);
+    return clamp_u8_int(magnitude);
+}
+
+static void
+build_standard_dibit_ideals(const dsd_state* state, int inverted, float ideal[4]) {
+    float plus_one = 0.5f * (state->center + state->umid);
+    float minus_one = 0.5f * (state->lmid + state->center);
+
+    if (inverted) {
+        ideal[0] = minus_one;
+        ideal[1] = state->min;
+        ideal[2] = plus_one;
+        ideal[3] = state->max;
+    } else {
+        ideal[0] = plus_one;
+        ideal[1] = state->max;
+        ideal[2] = minus_one;
+        ideal[3] = state->min;
+    }
+}
+
+static void
+build_cqpsk_dibit_ideals(const dsd_state* state, float ideal[4]) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
+    }
+
+    int inv = (cfg && cfg->cqpsk_sync_inv) ? 1 : 0;
+    int negate = (cfg && cfg->cqpsk_sync_neg) ? 1 : 0;
+    const float base_ideal[4] = {1.0f, 3.0f, -1.0f, -3.0f};
+
+    for (int dibit = 0; dibit < 4; dibit++) {
+        int base = inv ? invert_dibit(dibit) : dibit;
+        float level = base_ideal[base];
+        if (negate) {
+            level = -level;
+        }
+        ideal[dibit] = state->center + level;
+    }
+}
+
+static void
+compute_dibit_soft_metric(const dsd_state* state, float symbol, int dibit, int inverted, int cqpsk_aligned,
+                          dsd_dibit_soft_t* out) {
+    if (!state || !out || dibit < 0 || dibit > 3) {
+        fallback_soft_from_dibit(dibit & 3, 255, out);
+        return;
+    }
+
+    float ideal[4];
+    if (cqpsk_aligned) {
+        build_cqpsk_dibit_ideals(state, ideal);
+    } else {
+        build_standard_dibit_ideals(state, inverted, ideal);
+    }
+
+    int mag0 = soft_metric_for_bit(symbol, ideal, 0);
+    int mag1 = soft_metric_for_bit(symbol, ideal, 1);
+
+    uint8_t rel = dmr_compute_reliability(state, symbol);
+    int min_mag = mag0 < mag1 ? mag0 : mag1;
+    if (min_mag > 0 && rel < min_mag) {
+        mag0 = (mag0 * (int)rel) / min_mag;
+        mag1 = (mag1 * (int)rel) / min_mag;
+    }
+
+    out->llr[0] = llr_from_magnitude_and_bit(mag0, (dibit >> 1) & 1);
+    out->llr[1] = llr_from_magnitude_and_bit(mag1, dibit & 1);
+    int rel_from_llr = abs_i16_to_int(out->llr[0]);
+    int rel1 = abs_i16_to_int(out->llr[1]);
+    if (rel1 < rel_from_llr) {
+        rel_from_llr = rel1;
+    }
+    out->reliability = (uint8_t)clamp_u8_int(rel_from_llr);
+}
+
+static void
+wrap_soft_buffer(dsd_state* state) {
+    if (state && state->dmr_soft_buf && state->dmr_soft_p > state->dmr_soft_buf + 900000) {
+        state->dmr_soft_p = state->dmr_soft_buf + 200;
+    }
+}
+
+static void
+write_dibit_soft_metric(dsd_state* state, const dsd_dibit_soft_t* soft) {
+    if (!state || !soft || !state->dmr_soft_p) {
+        return;
+    }
+    wrap_soft_buffer(state);
+    *state->dmr_soft_p = *soft;
+    state->dmr_soft_p++;
+}
+
+static int
+read_previous_dibit_soft(const dsd_state* state, dsd_dibit_soft_t* out) {
+    if (!state || !out || !state->dmr_soft_buf || !state->dmr_soft_p) {
+        return 0;
+    }
+    const dsd_dibit_soft_t* sp = state->dmr_soft_p;
+    if (sp <= state->dmr_soft_buf + 200 || sp > state->dmr_soft_buf + 1000000) {
+        return 0;
+    }
+    *out = *(sp - 1);
+    return 1;
+}
+
+static void
+replace_previous_dibit_soft(dsd_state* state, const dsd_dibit_soft_t* soft) {
+    if (!state || !soft) {
+        return;
+    }
+
+    if (state->dmr_soft_buf != NULL && state->dmr_soft_p != NULL) {
+        dsd_dibit_soft_t* sp = state->dmr_soft_p;
+        if (sp > state->dmr_soft_buf + 200 && sp <= state->dmr_soft_buf + 1000000) {
+            *(sp - 1) = *soft;
+        }
+    }
+
+    if (state->dmr_reliab_buf != NULL && state->dmr_reliab_p != NULL) {
+        uint8_t* rp = state->dmr_reliab_p;
+        if (rp > state->dmr_reliab_buf + 200 && rp <= state->dmr_reliab_buf + 1000000) {
+            *(rp - 1) = soft->reliability;
+        }
+    }
+}
+
+static void
+replace_symbol_bin_soft_metric(dsd_state* state, int dibit) {
+    dsd_dibit_soft_t soft;
+    fallback_soft_from_dibit(dibit, 255, &soft);
+    replace_previous_dibit_soft(state, &soft);
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
 uint8_t
 dsd_test_compute_cqpsk_reliability(float sym) {
@@ -630,6 +838,10 @@ debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
 
 int
 digitize(dsd_opts* opts, dsd_state* state, float symbol) {
+    if (opts == NULL || state == NULL) {
+        return -1;
+    }
+
     // determine dibit state
     if ((state->synctype == DSD_SYNC_DSTAR_VOICE_POS) || (state->synctype == DSD_SYNC_PROVOICE_POS)
         || (state->synctype == DSD_SYNC_DSTAR_HD_POS) || (state->synctype == DSD_SYNC_EDACS_POS))
@@ -702,10 +914,12 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
             && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == DSD_SYNC_P25P1_NEG
                 || state->synctype == DSD_SYNC_P25P2_NEG || state->lastsynctype == DSD_SYNC_P25P1_NEG
                 || state->lastsynctype == DSD_SYNC_P25P2_NEG);
+        int used_cqpsk_slice = 0;
         if (want_cqpsk_slice) {
             float sym = symbol - state->center; /* remove DC bias before fixed-threshold slice */
             dibit = cqpsk_slice_aligned(sym);
             valid = 1;
+            used_cqpsk_slice = 1;
             debug_log_cqpsk_slice(dibit, symbol, state);
         }
 
@@ -733,6 +947,8 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
         }
 
         int out_dibit = invert_dibit(dibit);
+        dsd_dibit_soft_t soft;
+        compute_dibit_soft_metric(state, symbol, dibit, !used_cqpsk_slice, used_cqpsk_slice, &soft);
 
         state->last_dibit = dibit;
 
@@ -745,9 +961,10 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
             if (state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
                 state->dmr_reliab_p = state->dmr_reliab_buf + 200;
             }
-            *state->dmr_reliab_p = dmr_compute_reliability(state, symbol);
+            *state->dmr_reliab_p = soft.reliability;
             state->dmr_reliab_p++;
         }
+        write_dibit_soft_metric(state, &soft);
         state->dmr_payload_p++;
         //dmr buffer end
 
@@ -779,10 +996,12 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
             && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == DSD_SYNC_P25P1_POS
                 || state->synctype == DSD_SYNC_P25P2_POS || state->lastsynctype == DSD_SYNC_P25P1_POS
                 || state->lastsynctype == DSD_SYNC_P25P2_POS);
+        int used_cqpsk_slice = 0;
         if (want_cqpsk_slice) {
             float sym = symbol - state->center; /* remove DC bias before fixed-threshold slice */
             dibit = cqpsk_slice_aligned(sym);
             valid = 1;
+            used_cqpsk_slice = 1;
             debug_log_cqpsk_slice(dibit, symbol, state);
         }
 
@@ -809,6 +1028,9 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
             }
         }
 
+        dsd_dibit_soft_t soft;
+        compute_dibit_soft_metric(state, symbol, dibit, 0, used_cqpsk_slice, &soft);
+
         state->last_dibit = dibit;
 
         *state->dibit_buf_p = dibit;
@@ -824,9 +1046,10 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
             if (state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
                 state->dmr_reliab_p = state->dmr_reliab_buf + 200;
             }
-            *state->dmr_reliab_p = dmr_compute_reliability(state, symbol);
+            *state->dmr_reliab_p = soft.reliability;
             state->dmr_reliab_p++;
         }
+        write_dibit_soft_metric(state, &soft);
         state->dmr_payload_p++;
         //dmr buffer end
 
@@ -836,6 +1059,10 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
 
 int
 get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
+    if (opts == NULL || state == NULL) {
+        return -1;
+    }
+
     float symbol;
     int dibit;
 
@@ -866,6 +1093,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         //assign dibit from last symbol/dibit read from capture bin
         dibit = state->symbolc;
+        replace_symbol_bin_soft_metric(state, dibit);
         throttle_symbol_bin_replay(opts, state);
     }
 
@@ -901,6 +1129,23 @@ getDibit(dsd_opts* opts, dsd_state* state) {
     return get_dibit_and_analog_signal(opts, state, NULL);
 }
 
+int
+getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
+    int dibit = get_dibit_and_analog_signal(opts, state, NULL);
+
+    if (out_soft != NULL) {
+        if (!read_previous_dibit_soft(state, out_soft)) {
+            uint8_t rel = 255;
+            if (state && state->dmr_reliab_p != NULL && state->dmr_reliab_buf != NULL) {
+                rel = *(state->dmr_reliab_p - 1);
+            }
+            fallback_soft_from_dibit(dibit, rel, out_soft);
+        }
+    }
+
+    return dibit;
+}
+
 /**
  * \brief Get the next dibit along with its reliability value.
  *
@@ -915,19 +1160,11 @@ getDibit(dsd_opts* opts, dsd_state* state) {
  */
 int
 getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
-    int dibit = get_dibit_and_analog_signal(opts, state, NULL);
+    dsd_dibit_soft_t soft;
+    int dibit = getDibitSoft(opts, state, &soft);
 
     if (out_reliability != NULL) {
-        /* Reliability was written at dmr_reliab_p - 1 (pointer already advanced).
-         * We read from there rather than caching the pointer before the call,
-         * because get_dibit_and_analog_signal() may wrap dmr_reliab_p back to
-         * dmr_reliab_buf + 200 when it exceeds 900000 elements. */
-        if (state->dmr_reliab_p != NULL && state->dmr_reliab_buf != NULL) {
-            *out_reliability = *(state->dmr_reliab_p - 1);
-        } else {
-            /* Fallback: max reliability if buffer not available */
-            *out_reliability = 255;
-        }
+        *out_reliability = soft.reliability;
     }
 
     return dibit;
@@ -941,6 +1178,10 @@ getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliabili
  */
 int
 getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) {
+    if (opts == NULL || state == NULL) {
+        return -1;
+    }
+
     float symbol;
     int dibit;
 
@@ -956,6 +1197,7 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
 
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         dibit = state->symbolc;
+        replace_symbol_bin_soft_metric(state, dibit);
         throttle_symbol_bin_replay(opts, state);
     }
 

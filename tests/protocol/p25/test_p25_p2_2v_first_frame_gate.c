@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -160,6 +161,18 @@ int
 getDibit(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    return 0;
+}
+
+int
+getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
+    (void)opts;
+    (void)state;
+    if (out_soft) {
+        out_soft->reliability = 128;
+        out_soft->llr[0] = -128;
+        out_soft->llr[1] = -128;
+    }
     return 0;
 }
 

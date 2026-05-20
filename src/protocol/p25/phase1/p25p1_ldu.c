@@ -10,10 +10,16 @@
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+static int
+soft_abs_i16(int16_t v) {
+    return v < 0 ? -(int)v : (int)v;
+}
 
 #ifdef TRACE_DSD
 static void
@@ -90,7 +96,8 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
             state->debug_prefix = 's';
 #endif
             {
-                int ss = getDibit(opts, state);
+                dsd_dibit_soft_t status_soft;
+                int ss = getDibitSoft(opts, state, &status_soft);
                 p25_status_accum_add(state, ss);
             }
             *status_count = 1;
@@ -202,7 +209,7 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
     // Use Hamming to error correct the hex word
     error_count = check_and_fix_hamming_10_6_3(hex, parity);
 
-    if (error_count == 2 && opts->p25_p1_soft_voice && analog_signal_array != NULL) {
+    if (error_count == 2 && analog_signal_array != NULL) {
         /* Hard decode failed - try soft decode using reliability info.
          * The analog_signal_array from start_index contains 5 dibits:
          *   [0..2] = 3 dibits for 6 data bits
@@ -215,19 +222,17 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
 
         /* Data bits: 3 dibits -> 6 bits */
         for (int d = 0; d < 3; d++) {
-            int r = analog_signal_array[start_index + d].reliab;
             bits[idx] = hex[(d * 2) + 0];
-            reliab[idx++] = r;
+            reliab[idx++] = soft_abs_i16(analog_signal_array[start_index + d].llr[0]);
             bits[idx] = hex[(d * 2) + 1];
-            reliab[idx++] = r;
+            reliab[idx++] = soft_abs_i16(analog_signal_array[start_index + d].llr[1]);
         }
         /* Parity bits: 2 dibits -> 4 bits */
         for (int d = 0; d < 2; d++) {
-            int r = analog_signal_array[start_index + 3 + d].reliab;
             bits[idx] = parity[(d * 2) + 0];
-            reliab[idx++] = r;
+            reliab[idx++] = soft_abs_i16(analog_signal_array[start_index + 3 + d].llr[0]);
             bits[idx] = parity[(d * 2) + 1];
-            reliab[idx++] = r;
+            reliab[idx++] = soft_abs_i16(analog_signal_array[start_index + 3 + d].llr[1]);
         }
 
         char corrected[10];
@@ -263,6 +268,20 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
     }
     fprintf(stderr, "\n");
 #endif
+}
+
+uint8_t
+p25p1_hamming_rs_symbol_reliability(const AnalogSignal* symbol) {
+    int16_t llr[6];
+
+    if (symbol == NULL) {
+        return 0;
+    }
+    for (int i = 0; i < 3; i++) {
+        llr[(i * 2) + 0] = symbol[i].llr[0];
+        llr[(i * 2) + 1] = symbol[i].llr[1];
+    }
+    return p25p1_llr_reliability(llr, 6);
 }
 
 void

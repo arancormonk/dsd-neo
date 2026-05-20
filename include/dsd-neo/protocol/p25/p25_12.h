@@ -21,6 +21,7 @@ extern "C" {
 
 int p25_12(uint8_t* input, uint8_t treturn[12]);
 int p25_12_soft(uint8_t* input, const uint8_t* reliab98, uint8_t treturn[12]);
+int p25_12_soft_llr(const uint8_t* input, const int16_t* bit_llr196, uint8_t treturn[12]);
 
 #ifdef __cplusplus
 }

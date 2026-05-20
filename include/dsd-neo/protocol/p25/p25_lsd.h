@@ -34,6 +34,7 @@ extern "C" {
  * @return 1 if valid after optional single-bit correction; 0 if uncorrectable.
  */
 int p25_lsd_fec_16x8(uint8_t* bits16);
+int p25_lsd_fec_16x8_soft(uint8_t* bits16, const int16_t llr16[16]);
 
 #ifdef __cplusplus
 }

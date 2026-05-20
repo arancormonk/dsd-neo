@@ -79,8 +79,7 @@ void p25_status_accum_ensure_started(dsd_state* state);
 /**
  * @brief Add a status symbol value to the accumulator.
  *
- * Called at each status symbol position during frame processing (where
- * getDibit() is currently called and the result discarded). The value is
+ * Called at each status symbol position during frame processing. The value is
  * clamped to 2 bits (& 0x03) before storage. If the accumulator is full
  * (count >= P25_STATUS_ACCUM_MAX), the value is silently ignored.
  *

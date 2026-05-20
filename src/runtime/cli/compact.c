@@ -189,12 +189,6 @@ dsd_cli_compact_args(int argc, char** argv) {
         if (strcmp(arg, "--enc-follow") == 0) {
             continue;
         }
-        if (strcmp(arg, "--no-p25p2-soft") == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--no-p25p1-soft-voice") == 0) {
-            continue;
-        }
         if (strcmp(arg, "--config") == 0) {
             // Optional path argument (skip only if it doesn't look like another option)
             if (i + 1 < argc && argv[i + 1] != NULL && argv[i + 1][0] != '-') {

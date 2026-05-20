@@ -34,6 +34,7 @@
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
+#include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <stdint.h>
@@ -45,6 +46,35 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/p25p1_heuristics.h"
+
+static void
+build_ldu2_rs_reliability(const AnalogSignal* analog_signal_array, uint8_t data_reliab[16], uint8_t parity_reliab[8]) {
+    for (int i = 0; i < 16; i++) {
+        int analog_index = (15 - i) * (3 + 2);
+        data_reliab[i] = p25p1_hamming_rs_symbol_reliability(analog_signal_array + analog_index);
+    }
+    for (int i = 0; i < 8; i++) {
+        int analog_index = (16 * (3 + 2)) + ((7 - i) * (3 + 2));
+        parity_reliab[i] = p25p1_hamming_rs_symbol_reliability(analog_signal_array + analog_index);
+    }
+}
+
+static uint8_t
+p25p1_lsd_corrected_byte(const uint8_t bits16[16], char out_bits[9]) {
+    uint8_t value = 0;
+
+    for (int i = 0; i < 8; i++) {
+        uint8_t bit = (uint8_t)(bits16[i] & 1U);
+        value = (uint8_t)((value << 1) | bit);
+        if (out_bits != NULL) {
+            out_bits[i] = (char)(bit + '0');
+        }
+    }
+    if (out_bits != NULL) {
+        out_bits[8] = 0;
+    }
+    return value;
+}
 
 void
 processLDU2(dsd_opts* opts, dsd_state* state) {
@@ -100,6 +130,8 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     uint8_t lsd_hex1, lsd_hex2;
     uint8_t lowspeeddata[32];
     memset(lowspeeddata, 0, sizeof(lowspeeddata));
+    int16_t lowspeed_llr[32];
+    memset(lowspeed_llr, 0, sizeof(lowspeed_llr));
     unsigned long long int mihex1, mihex2, mihex3;
     int status_count;
     int lsd1_okay, lsd2_okay = 0;
@@ -413,10 +445,16 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         char cyclic_parity[8];
 
         for (i = 0; i <= 6; i += 2) {
-            read_dibit(opts, state, lsd + i, &status_count, NULL, NULL, NULL);
+            int16_t llr[2];
+            read_dibit_soft(opts, state, lsd + i, &status_count, NULL, NULL, NULL, llr);
+            lowspeed_llr[i + 0] = llr[0];
+            lowspeed_llr[i + 1] = llr[1];
         }
         for (i = 0; i <= 6; i += 2) {
-            read_dibit(opts, state, cyclic_parity + i, &status_count, NULL, NULL, NULL);
+            int16_t llr[2];
+            read_dibit_soft(opts, state, cyclic_parity + i, &status_count, NULL, NULL, NULL, llr);
+            lowspeed_llr[8 + i + 0] = llr[0];
+            lowspeed_llr[8 + i + 1] = llr[1];
         }
         lsd_hex1 = 0;
         for (i = 0; i < 8; i++) {
@@ -428,10 +466,16 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         }
 
         for (i = 0; i <= 6; i += 2) {
-            read_dibit(opts, state, lsd + i, &status_count, NULL, NULL, NULL);
+            int16_t llr[2];
+            read_dibit_soft(opts, state, lsd + i, &status_count, NULL, NULL, NULL, llr);
+            lowspeed_llr[16 + i + 0] = llr[0];
+            lowspeed_llr[16 + i + 1] = llr[1];
         }
         for (i = 0; i <= 6; i += 2) {
-            read_dibit(opts, state, cyclic_parity + i, &status_count, NULL, NULL, NULL);
+            int16_t llr[2];
+            read_dibit_soft(opts, state, cyclic_parity + i, &status_count, NULL, NULL, NULL, llr);
+            lowspeed_llr[24 + i + 0] = llr[0];
+            lowspeed_llr[24 + i + 1] = llr[1];
         }
         lsd_hex2 = 0;
         for (i = 0; i < 8; i++) {
@@ -475,7 +519,8 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
 
     // Trailing status symbol: feed to accumulator for advisory source classification.
     {
-        int ss = getDibit(opts, state);
+        dsd_dibit_soft_t status_soft;
+        int ss = getDibitSoft(opts, state, &status_soft);
         p25_status_accum_add(state, ss);
     }
 
@@ -484,6 +529,19 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
 
     // Error correct the hex_data using Reed-Solomon hex_parity
     irrecoverable_errors = check_and_fix_reedsolomon_24_16_9((char*)hex_data, (char*)hex_parity);
+    if (irrecoverable_errors == 1) {
+        uint8_t data_reliab[16];
+        uint8_t parity_reliab[8];
+        int erasures[8];
+
+        build_ldu2_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
+        int n_erasures = p25p1_build_rs_erasures(data_reliab, 16, parity_reliab, 8, erasures, 8);
+        if (n_erasures > 0
+            && check_and_fix_reedsolomon_24_16_9_soft((char*)hex_data, (char*)hex_parity, erasures, n_erasures) == 0) {
+            state->p25_p1_soft_rs_ok++;
+            irrecoverable_errors = 0;
+        }
+    }
     if (irrecoverable_errors == 1) {
         state->p25_p1_voice_fec_err++;
         state->debug_header_critical_errors++;
@@ -647,15 +705,17 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     mihex2 = (unsigned long long int)ConvertBitIntoBytes(&mi[32], 32);
     mihex3 = (unsigned long long int)ConvertBitIntoBytes(&mi[64], 8);
 
+    // LSD FEC (16,8) — correct single-bit errors in full codeword
+    lsd1_okay = p25_lsd_fec_16x8_soft(lowspeeddata + 0, lowspeed_llr + 0);
+    lsd2_okay = p25_lsd_fec_16x8_soft(lowspeeddata + 16, lowspeed_llr + 16);
+    lsd_hex1 = p25p1_lsd_corrected_byte(lowspeeddata + 0, lsd1);
+    lsd_hex2 = p25p1_lsd_corrected_byte(lowspeeddata + 16, lsd2);
+
     //NOTE: LSD is also encrypted if voice is encrypted, so let's just zip it for now
     if (state->payload_algid != 0x80) {
         lsd_hex1 = 0;
         lsd_hex2 = 0;
     }
-
-    // LSD FEC (16,8) — correct single-bit errors in full codeword
-    lsd1_okay = p25_lsd_fec_16x8(lowspeeddata + 0);
-    lsd2_okay = p25_lsd_fec_16x8(lowspeeddata + 16);
 
     if (irrecoverable_errors == 0) {
         fprintf(stderr, "%s", KYEL);

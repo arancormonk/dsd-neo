@@ -75,6 +75,96 @@ class ReedSolomon_63 {
     int* index_of;
     int* gg;
 
+    int
+    gf_mul(int a, int b) const {
+        if (a == 0 || b == 0) {
+            return 0;
+        }
+        return alpha_to[(index_of[a] + index_of[b]) % NN];
+    }
+
+    int
+    gf_div(int a, int b) const {
+        if (a == 0) {
+            return 0;
+        }
+        if (b == 0) {
+            return 0;
+        }
+        return alpha_to[(index_of[a] - index_of[b] + NN) % NN];
+    }
+
+    int
+    gf_alpha_pow(int exponent) const {
+        int e = exponent % NN;
+        if (e < 0) {
+            e += NN;
+        }
+        return alpha_to[e];
+    }
+
+    int
+    compute_syndromes(const int* word, int* syndromes) const {
+        int syn_error = 0;
+        syndromes[0] = 0;
+        for (int i = 1; i <= NN - KK; i++) {
+            int s = 0;
+            for (int j = 0; j < NN; j++) {
+                if (word[j] != 0) {
+                    s ^= gf_mul(word[j], gf_alpha_pow(i * j));
+                }
+            }
+            syndromes[i] = s;
+            if (s != 0) {
+                syn_error = 1;
+            }
+        }
+        return syn_error;
+    }
+
+    int
+    solve_gf_linear_system(int matrix[NN - KK][NN - KK + 1], int size, int* solution) const {
+        for (int col = 0; col < size; col++) {
+            int pivot = -1;
+            for (int row = col; row < size; row++) {
+                if (matrix[row][col] != 0) {
+                    pivot = row;
+                    break;
+                }
+            }
+            if (pivot < 0) {
+                return 1;
+            }
+            if (pivot != col) {
+                for (int c = col; c <= size; c++) {
+                    int tmp = matrix[col][c];
+                    matrix[col][c] = matrix[pivot][c];
+                    matrix[pivot][c] = tmp;
+                }
+            }
+
+            int pivot_value = matrix[col][col];
+            for (int c = col; c <= size; c++) {
+                matrix[col][c] = gf_div(matrix[col][c], pivot_value);
+            }
+
+            for (int row = 0; row < size; row++) {
+                if (row == col || matrix[row][col] == 0) {
+                    continue;
+                }
+                int factor = matrix[row][col];
+                for (int c = col; c <= size; c++) {
+                    matrix[row][c] ^= gf_mul(factor, matrix[col][c]);
+                }
+            }
+        }
+
+        for (int i = 0; i < size; i++) {
+            solution[i] = matrix[i][size];
+        }
+        return 0;
+    }
+
     void
     generate_gf(int* generator_polinomial)
     /* generate GF(2**mm) from the irreducible polynomial p(X) in pp[0]..pp[mm]
@@ -446,6 +536,78 @@ class ReedSolomon_63 {
         return irrecoverable_error;
     }
 
+    int
+    decode_with_erasures(const int* input, int* output, const int* erasures, int n_erasures) const {
+        if (input == NULL || output == NULL || n_erasures < 0 || n_erasures > NN - KK) {
+            return 1;
+        }
+        for (int i = 0; i < NN; i++) {
+            output[i] = input[i];
+        }
+        if (n_erasures == 0) {
+            int syndromes[NN - KK + 1];
+            return compute_syndromes(output, syndromes) ? 1 : 0;
+        }
+        if (erasures == NULL) {
+            return 1;
+        }
+
+        int seen[NN];
+        for (int i = 0; i < NN; i++) {
+            seen[i] = 0;
+        }
+        for (int i = 0; i < n_erasures; i++) {
+            int pos = erasures[i];
+            if (pos < 0 || pos >= NN || seen[pos]) {
+                return 1;
+            }
+            seen[pos] = 1;
+        }
+
+        int syndromes[NN - KK + 1];
+        if (!compute_syndromes(output, syndromes)) {
+            return 0;
+        }
+
+        int matrix[NN - KK][NN - KK + 1];
+        for (int row = 0; row < NN - KK; row++) {
+            for (int col = 0; col < NN - KK + 1; col++) {
+                matrix[row][col] = 0;
+            }
+        }
+
+        for (int row = 0; row < n_erasures; row++) {
+            int syndrome_order = row + 1;
+            for (int col = 0; col < n_erasures; col++) {
+                matrix[row][col] = gf_alpha_pow(syndrome_order * erasures[col]);
+            }
+            matrix[row][n_erasures] = syndromes[syndrome_order];
+        }
+
+        int corrections[NN - KK];
+        for (int i = 0; i < NN - KK; i++) {
+            corrections[i] = 0;
+        }
+        if (solve_gf_linear_system(matrix, n_erasures, corrections) != 0) {
+            for (int i = 0; i < NN; i++) {
+                output[i] = input[i];
+            }
+            return 1;
+        }
+
+        for (int i = 0; i < n_erasures; i++) {
+            output[erasures[i]] ^= corrections[i];
+        }
+
+        if (compute_syndromes(output, syndromes)) {
+            for (int i = 0; i < NN; i++) {
+                output[i] = input[i];
+            }
+            return 1;
+        }
+        return 0;
+    }
+
   protected:
     int
     bin_to_hex(const char* input) {
@@ -536,50 +698,30 @@ class DSDReedSolomon_36_20_17 : public ReedSolomon_63<8> {
             return 0; // Success
         }
 
-        // Hard decode failed. If we have erasure info, try zeroing erased symbols.
-        // This is a simplified approach - true erasure decoding would modify the
-        // Berlekamp-Massey algorithm. For now, we try helping the decoder by
-        // assuming erased positions have value 0 (which may be correct).
-        if (n_erasures > 0 && n_erasures <= 16) {
-            char hex_data_copy[20 * 6];
-            char hex_parity_copy[16 * 6];
-
-            for (int i = 0; i < 20 * 6; i++) {
-                hex_data_copy[i] = hex_data[i];
-            }
-            for (int i = 0; i < 16 * 6; i++) {
-                hex_parity_copy[i] = hex_parity[i];
-            }
-
-            // Zero out erased symbols
-            for (int e = 0; e < n_erasures; e++) {
-                int pos = erasures[e];
-                if (pos >= 0 && pos < 16) {
-                    // Parity position
-                    for (int b = 0; b < 6; b++) {
-                        hex_parity_copy[pos * 6 + b] = 0;
-                    }
-                } else if (pos >= 16 && pos < 36) {
-                    // Data position
-                    int data_idx = pos - 16;
-                    for (int b = 0; b < 6; b++) {
-                        hex_data_copy[data_idx * 6 + b] = 0;
-                    }
-                }
-            }
-
-            // Try decode with zeroed erasures
-            result = decode(hex_data_copy, hex_parity_copy);
-            if (result == 0) {
-                // Success - copy corrected data back
-                for (int i = 0; i < 20 * 6; i++) {
-                    hex_data[i] = hex_data_copy[i];
-                }
-                return 0;
-            }
+        if (n_erasures <= 0 || n_erasures > 16 || erasures == NULL) {
+            return 1;
         }
 
-        return 1; // Failed
+        int input[63];
+        int output[63];
+
+        for (size_t i = 0; i < 16; i++) {
+            input[i] = bin_to_hex(hex_parity + i * 6);
+        }
+        for (size_t i = 16; i < 16 + 20; i++) {
+            input[i] = bin_to_hex(hex_data + (i - 16) * 6);
+        }
+        for (size_t i = 16 + 20; i < 63; i++) {
+            input[i] = 0;
+        }
+
+        result = ReedSolomon_63<8>::decode_with_erasures(input, output, erasures, n_erasures);
+        if (result == 0) {
+            for (size_t i = 16; i < 16 + 20; i++) {
+                hex_to_bin(output[i], hex_data + (i - 16) * 6);
+            }
+        }
+        return result;
     }
 
     void
@@ -675,39 +817,30 @@ class DSDReedSolomon_24_12_13 : public ReedSolomon_63<6> {
             return 0;
         }
 
-        if (n_erasures > 0 && n_erasures <= 12) {
-            char hex_data_copy[12 * 6];
-            char hex_parity_copy[12 * 6];
-
-            for (int i = 0; i < 12 * 6; i++) {
-                hex_data_copy[i] = hex_data[i];
-                hex_parity_copy[i] = hex_parity[i];
-            }
-
-            for (int e = 0; e < n_erasures; e++) {
-                int pos = erasures[e];
-                if (pos >= 0 && pos < 12) {
-                    for (int b = 0; b < 6; b++) {
-                        hex_parity_copy[pos * 6 + b] = 0;
-                    }
-                } else if (pos >= 12 && pos < 24) {
-                    int data_idx = pos - 12;
-                    for (int b = 0; b < 6; b++) {
-                        hex_data_copy[data_idx * 6 + b] = 0;
-                    }
-                }
-            }
-
-            result = decode(hex_data_copy, hex_parity_copy);
-            if (result == 0) {
-                for (int i = 0; i < 12 * 6; i++) {
-                    hex_data[i] = hex_data_copy[i];
-                }
-                return 0;
-            }
+        if (n_erasures <= 0 || n_erasures > 12 || erasures == NULL) {
+            return 1;
         }
 
-        return 1;
+        int input[63];
+        int output[63];
+
+        for (size_t i = 0; i < 12; i++) {
+            input[i] = bin_to_hex(hex_parity + i * 6);
+        }
+        for (size_t i = 12; i < 12 + 12; i++) {
+            input[i] = bin_to_hex(hex_data + (i - 12) * 6);
+        }
+        for (size_t i = 12 + 12; i < 63; i++) {
+            input[i] = 0;
+        }
+
+        result = ReedSolomon_63<6>::decode_with_erasures(input, output, erasures, n_erasures);
+        if (result == 0) {
+            for (size_t i = 12; i < 12 + 12; i++) {
+                hex_to_bin(output[i], hex_data + (i - 12) * 6);
+            }
+        }
+        return result;
     }
 
     void
@@ -803,41 +936,30 @@ class DSDReedSolomon_24_16_9 : public ReedSolomon_63<4> {
             return 0;
         }
 
-        if (n_erasures > 0 && n_erasures <= 8) {
-            char hex_data_copy[16 * 6];
-            char hex_parity_copy[8 * 6];
-
-            for (int i = 0; i < 16 * 6; i++) {
-                hex_data_copy[i] = hex_data[i];
-            }
-            for (int i = 0; i < 8 * 6; i++) {
-                hex_parity_copy[i] = hex_parity[i];
-            }
-
-            for (int e = 0; e < n_erasures; e++) {
-                int pos = erasures[e];
-                if (pos >= 0 && pos < 8) {
-                    for (int b = 0; b < 6; b++) {
-                        hex_parity_copy[pos * 6 + b] = 0;
-                    }
-                } else if (pos >= 8 && pos < 24) {
-                    int data_idx = pos - 8;
-                    for (int b = 0; b < 6; b++) {
-                        hex_data_copy[data_idx * 6 + b] = 0;
-                    }
-                }
-            }
-
-            result = decode(hex_data_copy, hex_parity_copy);
-            if (result == 0) {
-                for (int i = 0; i < 16 * 6; i++) {
-                    hex_data[i] = hex_data_copy[i];
-                }
-                return 0;
-            }
+        if (n_erasures <= 0 || n_erasures > 8 || erasures == NULL) {
+            return 1;
         }
 
-        return 1;
+        int input[63];
+        int output[63];
+
+        for (size_t i = 0; i < 8; i++) {
+            input[i] = bin_to_hex(hex_parity + i * 6);
+        }
+        for (size_t i = 8; i < 8 + 16; i++) {
+            input[i] = bin_to_hex(hex_data + (i - 8) * 6);
+        }
+        for (size_t i = 8 + 16; i < 63; i++) {
+            input[i] = 0;
+        }
+
+        result = ReedSolomon_63<4>::decode_with_erasures(input, output, erasures, n_erasures);
+        if (result == 0) {
+            for (size_t i = 8; i < 8 + 16; i++) {
+                hex_to_bin(output[i], hex_data + (i - 8) * 6);
+            }
+        }
+        return result;
     }
 
     void

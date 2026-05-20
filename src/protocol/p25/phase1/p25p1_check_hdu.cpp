@@ -134,6 +134,11 @@ check_and_fix_redsolomon_36_20_17(char* data, char* parity) {
     return irrecoverable_errors;
 }
 
+int
+check_and_fix_redsolomon_36_20_17_soft(char* data, char* parity, const int* erasures, int n_erasures) {
+    return reed_solomon_36_20_17.decode_soft(data, parity, erasures, n_erasures);
+}
+
 void
 encode_reedsolomon_36_20_17(char* hex_data, char* fixed_parity) {
     reed_solomon_36_20_17.encode(hex_data, fixed_parity);

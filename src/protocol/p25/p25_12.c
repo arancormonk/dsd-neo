@@ -157,43 +157,29 @@ p25_12(uint8_t* input, uint8_t treturn[12]) {
     return (int)best_final;
 }
 
-/*
- * Soft-decision 1/2-rate trellis decoder.
- * Same algorithm as p25_12() but weights bit mismatches by reliability values.
- * reliab98: per-dibit reliability (0=uncertain, 255=confident) parallel to input.
- */
+static uint32_t
+p25_llr_bit_cost(int16_t llr, int expected_bit) {
+    if (expected_bit) {
+        return (llr < 0) ? (uint32_t)(-llr) : 0U;
+    }
+    return (llr > 0) ? (uint32_t)llr : 0U;
+}
+
 int
-p25_12_soft(uint8_t* input, const uint8_t* reliab98, uint8_t treturn[12]) {
+p25_12_soft_llr(const uint8_t* input, const int16_t* bit_llr196, uint8_t treturn[12]) {
     enum { N_SYMS = 49, N_ST = 4 };
 
     int i, j;
+    (void)input;
 
-    /* Deinterleave input dibits (98) into symbol-ordered dibits */
-    uint8_t deinterleaved_dibits[98];
-    memset(deinterleaved_dibits, 0, sizeof(deinterleaved_dibits));
+    int16_t llr_dei[196];
+    memset(llr_dei, 0, sizeof(llr_dei));
     for (i = 0; i < 98; i++) {
-        deinterleaved_dibits[p25_interleave[i]] = input[i];
+        int p = p25_interleave[i];
+        llr_dei[(p * 2) + 0] = bit_llr196[(i * 2) + 0];
+        llr_dei[(p * 2) + 1] = bit_llr196[(i * 2) + 1];
     }
 
-    /* Deinterleave reliabilities in parallel */
-    uint8_t reliab_dei[98];
-    memset(reliab_dei, 0, sizeof(reliab_dei));
-    for (i = 0; i < 98; i++) {
-        reliab_dei[p25_interleave[i]] = reliab98[i];
-    }
-
-    /* Pack dibit pairs into 4-bit nibbles and gather per-dibit reliability */
-    uint8_t nibs[N_SYMS];
-    uint8_t rhi[N_SYMS], rlo[N_SYMS]; /* reliability for high/low dibit in nibble */
-    memset(nibs, 0, sizeof(nibs));
-    for (i = 0; i < N_SYMS; i++) {
-        nibs[i] = (uint8_t)((deinterleaved_dibits[(i * 2) + 0] << 2) | (deinterleaved_dibits[(i * 2) + 1]));
-        rhi[i] = reliab_dei[(i * 2) + 0];
-        rlo[i] = reliab_dei[(i * 2) + 1];
-    }
-
-    /* Viterbi: path metrics and backpointers */
-    /* Worst-case metric: 49 symbols * 4 bits * 255 = ~50k, fits uint32_t easily */
     uint32_t prev_metric[N_ST];
     uint32_t curr_metric[N_ST];
     uint8_t backptr[N_SYMS][N_ST];
@@ -211,25 +197,11 @@ p25_12_soft(uint8_t* input, const uint8_t* reliab98, uint8_t treturn[12]) {
             for (int st_prev = 0; st_prev < N_ST; st_prev++) {
                 /* Expected transition nibble from (st_prev -> st_next) */
                 uint8_t expect = p25_dtm[(st_prev << 2) | st_next] & 0xF;
-                uint8_t obs = nibs[i];
-                uint8_t diff = (uint8_t)((obs ^ expect) & 0xF);
-
-                /* Weighted bit mismatch cost:
-                 * High dibit (bits 3,2) weighted by rhi, low dibit (bits 1,0) by rlo.
-                 * Each differing bit adds the corresponding reliability as cost. */
-                uint32_t cost = 0;
-                if (diff & 0x8) {
-                    cost += rhi[i];
-                }
-                if (diff & 0x4) {
-                    cost += rhi[i];
-                }
-                if (diff & 0x2) {
-                    cost += rlo[i];
-                }
-                if (diff & 0x1) {
-                    cost += rlo[i];
-                }
+                int base = i * 4;
+                uint32_t cost = p25_llr_bit_cost(llr_dei[base + 0], (expect >> 3) & 1)
+                                + p25_llr_bit_cost(llr_dei[base + 1], (expect >> 2) & 1)
+                                + p25_llr_bit_cost(llr_dei[base + 2], (expect >> 1) & 1)
+                                + p25_llr_bit_cost(llr_dei[base + 3], expect & 1);
 
                 uint32_t m = prev_metric[st_prev] + cost;
                 if (m < best) {
@@ -274,4 +246,19 @@ p25_12_soft(uint8_t* input, const uint8_t* reliab98, uint8_t treturn[12]) {
 
     /* Return normalized metric (divide by 256 to roughly match hard-decision scale) */
     return (int)(best_final >> 8);
+}
+
+/*
+ * Soft-decision 1/2-rate trellis decoder.
+ * reliab98: per-dibit reliability (0=uncertain, 255=confident) parallel to input.
+ */
+int
+p25_12_soft(uint8_t* input, const uint8_t* reliab98, uint8_t treturn[12]) {
+    int16_t llr[196];
+    for (int i = 0; i < 98; i++) {
+        int r = reliab98 ? reliab98[i] : 255;
+        llr[(i * 2) + 0] = (int16_t)(((input[i] >> 1) & 1) ? r : -r);
+        llr[(i * 2) + 1] = (int16_t)((input[i] & 1) ? r : -r);
+    }
+    return p25_12_soft_llr(input, llr, treturn);
 }

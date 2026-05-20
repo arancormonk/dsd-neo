@@ -60,33 +60,45 @@
  * at +200). Only read when rp lies in [dmr_reliab_buf+200, dmr_reliab_buf+900000).
  */
 static int
-get_dibit_analog_and_reliability(dsd_opts* opts, dsd_state* state, int* analog, int* reliab) {
+soft_abs_i16(int16_t v) {
+    return v < 0 ? -(int)v : (int)v;
+}
+
+static int
+get_dibit_analog_and_soft(dsd_opts* opts, dsd_state* state, int* analog, dsd_dibit_soft_t* soft) {
     int dibit = get_dibit_and_analog_signal(opts, state, analog);
 
-    int r = 255;
-    if (state->dmr_reliab_p != NULL && state->dmr_reliab_buf != NULL) {
-        uint8_t* rp = state->dmr_reliab_p - 1;
-        if (rp >= state->dmr_reliab_buf + 200 && rp < state->dmr_reliab_buf + 1000000) {
-            r = (int)(*rp);
+    if (soft != NULL) {
+        int found = 0;
+        if (state->dmr_soft_p != NULL && state->dmr_soft_buf != NULL) {
+            dsd_dibit_soft_t* sp = state->dmr_soft_p - 1;
+            if (sp >= state->dmr_soft_buf + 200 && sp < state->dmr_soft_buf + 1000000) {
+                *soft = *sp;
+                found = 1;
+            }
+        }
+        if (!found) {
+            uint8_t r = 255;
+            if (state->dmr_reliab_p != NULL && state->dmr_reliab_buf != NULL) {
+                uint8_t* rp = state->dmr_reliab_p - 1;
+                if (rp >= state->dmr_reliab_buf + 200 && rp < state->dmr_reliab_buf + 1000000) {
+                    r = *rp;
+                }
+            }
+            soft->reliability = r;
+            soft->llr[0] = (int16_t)(((dibit >> 1) & 1) ? r : -(int)r);
+            soft->llr[1] = (int16_t)((dibit & 1) ? r : -(int)r);
         }
     }
-
-    if (r < 0) {
-        r = 0;
-    }
-    if (r > 255) {
-        r = 255;
-    }
-    *reliab = r;
 
     return dibit;
 }
 
 int
-read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal, int* did_read_status,
-           int* reliab) {
+read_dibit_soft(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal,
+                int* did_read_status, int* reliab, int16_t llr[2]) {
     int dibit;
-    int r;
+    dsd_dibit_soft_t soft;
 
     if (*status_count == 35) {
 
@@ -95,7 +107,8 @@ read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, in
         state->debug_prefix = 's';
 #endif
 
-        int status_dibit = getDibit(opts, state);
+        dsd_dibit_soft_t status_soft;
+        int status_dibit = getDibitSoft(opts, state, &status_soft);
         p25_status_accum_add(state, status_dibit);
         if (did_read_status != NULL) {
             *did_read_status = 1;
@@ -113,14 +126,24 @@ read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, in
         (*status_count)++;
     }
 
-    dibit = get_dibit_analog_and_reliability(opts, state, analog_signal, &r);
+    dibit = get_dibit_analog_and_soft(opts, state, analog_signal, &soft);
     if (reliab != NULL) {
-        *reliab = r;
+        *reliab = soft.reliability;
+    }
+    if (llr != NULL) {
+        llr[0] = soft.llr[0];
+        llr[1] = soft.llr[1];
     }
     output[0] = (1 & (dibit >> 1)); // bit 1
     output[1] = (1 & dibit);        // bit 0
 
     return dibit;
+}
+
+int
+read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal, int* did_read_status,
+           int* reliab) {
+    return read_dibit_soft(opts, state, output, status_count, analog_signal, did_read_status, reliab, NULL);
 }
 
 void
@@ -133,9 +156,10 @@ read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* output, un
         int analog_signal;
         int did_read_status;
         int reliab;
+        int16_t llr[2];
         int dibit;
 
-        dibit = read_dibit(opts, state, output + i, status_count, &analog_signal, &did_read_status, &reliab);
+        dibit = read_dibit_soft(opts, state, output + i, status_count, &analog_signal, &did_read_status, &reliab, llr);
 
         if (analog_signal_array != NULL) {
             // Fill up the AnalogSignal struct
@@ -143,6 +167,8 @@ read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* output, un
             analog_signal_array[*analog_signal_index].dibit = dibit;
             analog_signal_array[*analog_signal_index].sequence_broken = did_read_status;
             analog_signal_array[*analog_signal_index].reliab = reliab;
+            analog_signal_array[*analog_signal_index].llr[0] = llr[0];
+            analog_signal_array[*analog_signal_index].llr[1] = llr[1];
             (*analog_signal_index)++;
         }
     }
@@ -179,6 +205,7 @@ read_hamm_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_cou
  */
 static void
 correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, char* parity, const AnalogSignal* analog_signal_array) {
+    (void)opts;
     int fixed_errors;
     int irrecoverable_errors;
 
@@ -186,7 +213,7 @@ correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, char* parity, cons
 
     state->debug_header_errors += fixed_errors;
 
-    if (irrecoverable_errors != 0 && analog_signal_array != NULL && opts->p25_p1_soft_voice) {
+    if (irrecoverable_errors != 0 && analog_signal_array != NULL) {
         /* Hard decode failed - try soft decode using reliability info.
          * The analog_signal_array contains 9 dibits:
          *   [0..2] = 3 dibits for 6 data bits
@@ -198,15 +225,13 @@ correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, char* parity, cons
 
         /* Data bits: 3 dibits -> 6 bits */
         for (int d = 0; d < 3; d++) {
-            int r = analog_signal_array[d].reliab;
-            reliab[idx++] = r; /* bit 0 of dibit */
-            reliab[idx++] = r; /* bit 1 of dibit */
+            reliab[idx++] = soft_abs_i16(analog_signal_array[d].llr[0]);
+            reliab[idx++] = soft_abs_i16(analog_signal_array[d].llr[1]);
         }
         /* Parity bits: 6 dibits -> 12 bits */
         for (int d = 3; d < 9; d++) {
-            int r = analog_signal_array[d].reliab;
-            reliab[idx++] = r;
-            reliab[idx++] = r;
+            reliab[idx++] = soft_abs_i16(analog_signal_array[d].llr[0]);
+            reliab[idx++] = soft_abs_i16(analog_signal_array[d].llr[1]);
         }
 
         int soft_fixed = 0;
@@ -221,6 +246,29 @@ correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, char* parity, cons
 
     if (irrecoverable_errors != 0) {
         state->debug_header_critical_errors++;
+    }
+}
+
+static uint8_t
+rs_hex_symbol_reliability(const AnalogSignal* symbol) {
+    int16_t llr[6];
+
+    for (int i = 0; i < 3; i++) {
+        llr[(i * 2) + 0] = symbol[i].llr[0];
+        llr[(i * 2) + 1] = symbol[i].llr[1];
+    }
+    return p25p1_llr_reliability(llr, 6);
+}
+
+static void
+build_hdu_rs_reliability(const AnalogSignal* analog_signal_array, uint8_t data_reliab[20], uint8_t parity_reliab[16]) {
+    for (int i = 0; i < 20; i++) {
+        int analog_index = (19 - i) * (3 + 6);
+        data_reliab[i] = rs_hex_symbol_reliability(analog_signal_array + analog_index);
+    }
+    for (int i = 0; i < 16; i++) {
+        int analog_index = (20 * (3 + 6)) + ((15 - i) * (3 + 6));
+        parity_reliab[i] = rs_hex_symbol_reliability(analog_signal_array + analog_index);
     }
 }
 
@@ -374,6 +422,19 @@ processHDU(dsd_opts* opts, dsd_state* state) {
 
     // Use the Reed-Solomon algorithm to correct the data. hex_data is modified in place
     irrecoverable_errors = check_and_fix_redsolomon_36_20_17((char*)hex_data, (char*)hex_parity);
+    if (irrecoverable_errors != 0) {
+        uint8_t data_reliab[20];
+        uint8_t parity_reliab[16];
+        int erasures[16];
+
+        build_hdu_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
+        int n_erasures = p25p1_build_rs_erasures(data_reliab, 20, parity_reliab, 16, erasures, 16);
+        if (n_erasures > 0
+            && check_and_fix_redsolomon_36_20_17_soft((char*)hex_data, (char*)hex_parity, erasures, n_erasures) == 0) {
+            state->p25_p1_soft_rs_ok++;
+            irrecoverable_errors = 0;
+        }
+    }
     if (irrecoverable_errors != 0) {
         state->p25_p1_voice_fec_err++;
         // The hex words failed the Reed-Solomon check. There were too many errors. Still we can use this
@@ -562,11 +623,15 @@ processHDU(dsd_opts* opts, dsd_state* state) {
 
     state->p25kid = strtol(kid, NULL, 2);
 
-    skipDibit(opts, state, 5);
+    for (i = 0; i < 5; i++) {
+        dsd_dibit_soft_t skip_soft;
+        (void)getDibitSoft(opts, state, &skip_soft);
+    }
 
     // Trailing status symbol: record for advisory source classification.
     {
-        int ss = getDibit(opts, state);
+        dsd_dibit_soft_t status_soft;
+        int ss = getDibitSoft(opts, state, &status_soft);
         p25_status_accum_add(state, ss);
     }
 

@@ -69,6 +69,11 @@ check_and_fix_reedsolomon_24_12_13(char* data, char* parity) {
     return irrecoverable_error;
 }
 
+int
+check_and_fix_reedsolomon_24_12_13_soft(char* data, char* parity, const int* erasures, int n_erasures) {
+    return reed_solomon_24_12_13.decode_soft(data, parity, erasures, n_erasures);
+}
+
 void
 encode_reedsolomon_24_12_13(char* hex_data, char* fixed_parity) {
     reed_solomon_24_12_13.encode(hex_data, fixed_parity);
@@ -117,6 +122,11 @@ check_and_fix_reedsolomon_24_16_9(char* data, char* parity) {
 #endif
 
     return irrecoverable_error;
+}
+
+int
+check_and_fix_reedsolomon_24_16_9_soft(char* data, char* parity, const int* erasures, int n_erasures) {
+    return reed_solomon_24_16_9.decode_soft(data, parity, erasures, n_erasures);
 }
 
 void

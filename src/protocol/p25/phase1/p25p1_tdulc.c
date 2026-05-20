@@ -40,6 +40,11 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static int
+soft_abs_i16(int16_t v) {
+    return v < 0 ? -(int)v : (int)v;
+}
+
 // Uncomment for some verbose debug info
 //#define TDULC_DEBUG
 
@@ -109,7 +114,7 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
 
     state->debug_header_errors += fixed_errors;
 
-    if (irrecoverable_errors != 0 && analog_signal_array != NULL && opts->p25_p1_soft_voice) {
+    if (irrecoverable_errors != 0 && analog_signal_array != NULL) {
         /* Hard decode failed - try soft decode using reliability info.
          * The analog_signal_array from start_index contains 12 dibits:
          *   [0..5] = 6 dibits for 12 data bits
@@ -122,15 +127,13 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
 
         /* Data bits: 6 dibits -> 12 bits */
         for (int d = 0; d < 6; d++) {
-            int r = sig[d].reliab;
-            reliab[idx++] = r;
-            reliab[idx++] = r;
+            reliab[idx++] = soft_abs_i16(sig[d].llr[0]);
+            reliab[idx++] = soft_abs_i16(sig[d].llr[1]);
         }
         /* Parity bits: 6 dibits -> 12 bits */
         for (int d = 6; d < 12; d++) {
-            int r = sig[d].reliab;
-            reliab[idx++] = r;
-            reliab[idx++] = r;
+            reliab[idx++] = soft_abs_i16(sig[d].llr[0]);
+            reliab[idx++] = soft_abs_i16(sig[d].llr[1]);
         }
 
         int soft_fixed = 0;
@@ -164,6 +167,35 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
     }
     fprintf(stderr, "\n");
 #endif
+}
+
+static uint8_t
+dodeca_half_reliability(const AnalogSignal* word, int half) {
+    int16_t llr[6];
+    int dibit_offset = half == 0 ? 0 : 3;
+
+    for (int i = 0; i < 3; i++) {
+        llr[(i * 2) + 0] = word[dibit_offset + i].llr[0];
+        llr[(i * 2) + 1] = word[dibit_offset + i].llr[1];
+    }
+    return p25p1_llr_reliability(llr, 6);
+}
+
+static void
+build_tdulc_rs_reliability(const AnalogSignal* analog_signal_array, uint8_t data_reliab[12],
+                           uint8_t parity_reliab[12]) {
+    const AnalogSignal* data_word = analog_signal_array + 60;
+    for (int i = 0; i < 6; i++, data_word -= 12) {
+        const AnalogSignal* word = data_word;
+        data_reliab[(i * 2) + 0] = dodeca_half_reliability(word, 1);
+        data_reliab[(i * 2) + 1] = dodeca_half_reliability(word, 0);
+    }
+    const AnalogSignal* parity_word = analog_signal_array + 132;
+    for (int i = 0; i < 6; i++, parity_word -= 12) {
+        const AnalogSignal* word = parity_word;
+        parity_reliab[(i * 2) + 0] = dodeca_half_reliability(word, 1);
+        parity_reliab[(i * 2) + 1] = dodeca_half_reliability(word, 0);
+    }
 }
 
 /**
@@ -309,6 +341,20 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
 
     // Error correct the hex_data using Reed-Solomon hex_parity
     irrecoverable_errors = check_and_fix_reedsolomon_24_12_13((char*)dodeca_data, (char*)dodeca_parity);
+    if (irrecoverable_errors == 1) {
+        uint8_t data_reliab[12];
+        uint8_t parity_reliab[12];
+        int erasures[12];
+
+        build_tdulc_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
+        int n_erasures = p25p1_build_rs_erasures(data_reliab, 12, parity_reliab, 12, erasures, 12);
+        if (n_erasures > 0
+            && check_and_fix_reedsolomon_24_12_13_soft((char*)dodeca_data, (char*)dodeca_parity, erasures, n_erasures)
+                   == 0) {
+            state->p25_p1_soft_rs_ok++;
+            irrecoverable_errors = 0;
+        }
+    }
 
     // Recover the original order
     swap_hex_words((char*)dodeca_data, (char*)dodeca_parity);
@@ -366,7 +412,8 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
 
     // trailing status symbol
     {
-        int ss = getDibit(opts, state);
+        dsd_dibit_soft_t status_soft;
+        int ss = getDibitSoft(opts, state, &status_soft);
         p25_status_accum_add(state, ss);
     }
 

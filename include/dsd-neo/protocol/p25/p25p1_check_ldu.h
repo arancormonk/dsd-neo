@@ -34,6 +34,16 @@ void encode_hamming_10_6_3(char* hex, char* out_parity);
 int check_and_fix_reedsolomon_24_12_13(char* data, char* parity);
 
 /**
+ * Attempts to correct 12 hex words using Reed-Solomon(24,12,13) plus erasure positions.
+ * \param data The packed 12 data hex words, corrected in place on success.
+ * \param parity The corresponding 12 parity hex words.
+ * \param erasures RS codeword positions, 0-11 parity and 12-23 data.
+ * \param n_erasures Number of erasure positions, max 12.
+ * \return 1 if irrecoverable errors have been detected, 0 otherwise.
+ */
+int check_and_fix_reedsolomon_24_12_13_soft(char* data, char* parity, const int* erasures, int n_erasures);
+
+/**
  * Encodes 12 hex words with the  Reed-Solomon(24,12,13) FEC.
  * \param hex_data The packed 12 hex words to encode.
  * \fixed_parity The address were to store the 12 hex words with the Reed-Solomon parity.
@@ -47,6 +57,16 @@ void encode_reedsolomon_24_12_13(char* hex_data, char* fixed_parity);
  * \return 1 if irrecoverable errors have been detected, 0 otherwise.
  */
 int check_and_fix_reedsolomon_24_16_9(char* data, char* parity);
+
+/**
+ * Attempts to correct 16 hex words using Reed-Solomon(24,16,9) plus erasure positions.
+ * \param data The packed 16 data hex words, corrected in place on success.
+ * \param parity The corresponding 8 parity hex words.
+ * \param erasures RS codeword positions, 0-7 parity and 8-23 data.
+ * \param n_erasures Number of erasure positions, max 8.
+ * \return 1 if irrecoverable errors have been detected, 0 otherwise.
+ */
+int check_and_fix_reedsolomon_24_16_9_soft(char* data, char* parity, const int* erasures, int n_erasures);
 
 /**
  * Encodes 12 hex words with the  Reed-Solomon(24,16,9) FEC.

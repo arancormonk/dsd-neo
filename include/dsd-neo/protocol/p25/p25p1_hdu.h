@@ -30,6 +30,8 @@
  */
 int read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal,
                int* did_read_status, int* reliab);
+int read_dibit_soft(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal,
+                    int* did_read_status, int* reliab, int16_t llr[2]);
 
 /**
  * Reads a number of dibits and stores its value together with the actual analog value that has been

@@ -51,6 +51,16 @@ void encode_golay_24_12(char* dodeca, char* out_parity);
 int check_and_fix_redsolomon_36_20_17(char* data, char* parity);
 
 /**
+ * Attempts to correct 20 hex words using Reed-Solomon(36,20,17) plus erasure positions.
+ * \param data The packed 20 data hex words, corrected in place on success.
+ * \param parity The corresponding 16 parity hex words.
+ * \param erasures RS codeword positions, 0-15 parity and 16-35 data.
+ * \param n_erasures Number of erasure positions, max 16.
+ * \return 1 if irrecoverable errors have been detected, 0 otherwise.
+ */
+int check_and_fix_redsolomon_36_20_17_soft(char* data, char* parity, const int* erasures, int n_erasures);
+
+/**
  * Calculates the Reed-Solomon parity of 20 words of 6 bits each.
  * \param hex_data The address with the words whose parity we want to calculate.
  * \param fixed_parity The address to be filled with the calculated parity. 16 words of 6 bits are produced.

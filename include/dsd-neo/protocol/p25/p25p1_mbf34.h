@@ -35,6 +35,7 @@ extern "C" {
  * @return 0 on success; negative on failure (stub implementation).
  */
 int p25_mbf34_decode(const uint8_t dibits[98], uint8_t out[18]);
+int p25_mbf34_decode_soft(const uint8_t dibits[98], const int16_t bit_llr[196], uint8_t out[18]);
 
 #ifdef __cplusplus
 }

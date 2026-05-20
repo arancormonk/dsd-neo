@@ -15,6 +15,7 @@
  *  - Asserts that return_to_cc() is not called (i.e., no immediate CC bounce)
  */
 
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -162,6 +163,15 @@ check_and_fix_reedsolomon_24_12_13(char* data, char* parity) {
     return 1; // irrecoverable
 }
 
+int
+check_and_fix_reedsolomon_24_12_13_soft(char* data, char* parity, const int* erasures, int n_erasures) {
+    (void)data;
+    (void)parity;
+    (void)erasures;
+    (void)n_erasures;
+    return 1;
+}
+
 void
 encode_reedsolomon_24_12_13(char* data, char* parity) {
     (void)data;
@@ -184,6 +194,18 @@ int
 getDibit(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    return 0;
+}
+
+int
+getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
+    (void)opts;
+    (void)state;
+    if (out_soft) {
+        out_soft->reliability = 255;
+        out_soft->llr[0] = -255;
+        out_soft->llr[1] = -255;
+    }
     return 0;
 }
 

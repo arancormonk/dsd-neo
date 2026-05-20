@@ -45,6 +45,15 @@ p25p1_observed_nac(const dsd_state* state) {
     return 0;
 }
 
+static uint8_t
+p25p1_llr_reliability(int16_t llr) {
+    int v = llr < 0 ? -(int)llr : (int)llr;
+    if (v > 255) {
+        v = 255;
+    }
+    return (uint8_t)v;
+}
+
 int
 dsd_dispatch_matches_p25p1(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype);
@@ -70,6 +79,7 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     int check_result;
     int error_count = 0;
     int observed_nac;
+    dsd_dibit_soft_t soft;
 
     nac[12] = 0;
     duid[2] = 0;
@@ -80,20 +90,20 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     j = 0;
     index_bch_code = 0;
     for (i = 0; i < 6; i++) {
-        dibit = getDibitWithReliability(opts, state, &rel);
+        dibit = getDibitSoft(opts, state, &soft);
 
         v = 1 & (dibit >> 1); // bit 1
         nac[j] = v + '0';
         j++;
         bch_code[index_bch_code] = v;
-        bch_reliab[index_bch_code] = rel;
+        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[0]);
         index_bch_code++;
 
         v = 1 & dibit; // bit 0
         nac[j] = v + '0';
         j++;
         bch_code[index_bch_code] = v;
-        bch_reliab[index_bch_code] = rel;
+        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[1]);
         index_bch_code++;
     }
     //this one setting bogus nac data
@@ -101,26 +111,26 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
 
     // Read the DUID, 4 bits
     for (i = 0; i < 2; i++) {
-        dibit = getDibitWithReliability(opts, state, &rel);
+        dibit = getDibitSoft(opts, state, &soft);
         duid[i] = dibit + '0';
 
         bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
-        bch_reliab[index_bch_code] = rel;
+        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[0]);
         index_bch_code++;
         bch_code[index_bch_code] = 1 & dibit; // bit 0
-        bch_reliab[index_bch_code] = rel;
+        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[1]);
         index_bch_code++;
     }
 
     // Read the BCH data for error correction of NAC and DUID
     for (i = 0; i < 3; i++) {
-        dibit = getDibitWithReliability(opts, state, &rel);
+        dibit = getDibitSoft(opts, state, &soft);
 
         bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
-        bch_reliab[index_bch_code] = rel;
+        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[0]);
         index_bch_code++;
         bch_code[index_bch_code] = 1 & dibit; // bit 0
-        bch_reliab[index_bch_code] = rel;
+        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[1]);
         index_bch_code++;
     }
     // Intermission: read and record the status dibit embedded in the NID.
@@ -128,22 +138,22 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     p25_status_accum_add(state, dibit);
     // ... continue reading the BCH error correction data
     for (i = 0; i < 20; i++) {
-        dibit = getDibitWithReliability(opts, state, &rel);
+        dibit = getDibitSoft(opts, state, &soft);
 
         bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
-        bch_reliab[index_bch_code] = rel;
+        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[0]);
         index_bch_code++;
         bch_code[index_bch_code] = 1 & dibit; // bit 0
-        bch_reliab[index_bch_code] = rel;
+        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[1]);
         index_bch_code++;
     }
 
     // Read the parity bit
-    dibit = getDibitWithReliability(opts, state, &rel);
+    dibit = getDibitSoft(opts, state, &soft);
     bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
-    bch_reliab[index_bch_code] = rel;
+    bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[0]);
     parity = (1 & dibit); // bit 0
-    parity_reliab = rel;
+    parity_reliab = p25p1_llr_reliability(soft.llr[1]);
 
     // Decode and validate the NID using full BCH(63,16,23) correction.
     // check_NID_with_observed_nac returns NID_OK (1) or NID_PARITY_OVERRIDE (2)

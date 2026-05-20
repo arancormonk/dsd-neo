@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <time.h>
 
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/fec/rs_12_9.h>
 
 #include <dsd-neo/dsp/p25p1_heuristics.h>
@@ -219,6 +220,9 @@ struct dsd_state {
     // Per-dibit reliability buffer (0..255). Aligned with dmr_payload_buf.
     uint8_t* dmr_reliab_buf;
     uint8_t* dmr_reliab_p;
+    // Per-dibit signed soft metrics. Aligned with dmr_payload_buf.
+    dsd_dibit_soft_t* dmr_soft_buf;
+    dsd_dibit_soft_t* dmr_soft_p;
     int repeat;
     short* audio_out_buf;
     short* audio_out_buf_p;
@@ -616,9 +620,10 @@ struct dsd_state {
     int p2_scramble_offset; //offset counter for scrambling application
     int p2_vch_chan_num;    //vch channel number (0 or 1, not the 0-11 TS)
     int ess_b[2][96];       //external storage for ESS_B fragments
-    int fourv_counter[2];   //external reference counter for ESS_B fragment collection
-    int voice_counter[2];   //external reference counter for 18V x 2 P25p2 Superframe
-    int p2_is_lcch;         //flag to tell us when a frame is lcch and not sacch
+    int16_t ess_b_llr[2][96];
+    int fourv_counter[2]; //external reference counter for ESS_B fragment collection
+    int voice_counter[2]; //external reference counter for 18V x 2 P25p2 Superframe
+    int p2_is_lcch;       //flag to tell us when a frame is lcch and not sacch
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
     int p25_p2_audio_allowed[2];
     // P25p2 small output jitter buffers (per-slot ring of decoded 20 ms frames)
@@ -653,6 +658,7 @@ struct dsd_state {
     unsigned int p25_p2_soft_erasure_ok; // soft-decision RS successful recoveries
     // P25P1 soft decision counters
     unsigned int p25_p1_soft_golay_ok; // soft Golay corrections (hard would have failed)
+    unsigned int p25_p1_soft_rs_ok;    // soft RS erasure corrections (hard would have failed)
     unsigned int p25_p2_soft_ess_ok;   // soft ESS corrections
     // P25p2 early ENC lockout counter (MAC_PTT-driven)
     unsigned int p25_p2_enc_lo_early;

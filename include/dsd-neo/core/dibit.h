@@ -18,12 +18,18 @@
 
 #include <stdint.h>
 
+typedef struct {
+    uint8_t reliability; /* 0=uncertain, 255=confident; min confidence across both bits. */
+    int16_t llr[2];      /* [0]=MSB, [1]=LSB. Positive values favor bit 1. */
+} dsd_dibit_soft_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 int getDibit(dsd_opts* opts, dsd_state* state);
 int get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
+int getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft);
 int getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability);
 int getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol);
 uint8_t dmr_compute_reliability(const dsd_state* st, float sym);

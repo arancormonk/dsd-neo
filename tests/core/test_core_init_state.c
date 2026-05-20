@@ -44,6 +44,9 @@ main(void) {
     state->rtl_symbol_cache_levels = 4;
     state->rtl_symbol_cache_generation = 42U;
     state->rtl_symbol_cache_published_pending = 2;
+    state->ess_b[0][95] = 1;
+    state->ess_b_llr[1][95] = 123;
+    state->fourv_counter[0] = 2;
     initState(state);
 
     if (state->rc2_context != NULL) {
@@ -54,11 +57,34 @@ main(void) {
         free(state);
         return 2;
     }
+    if (!state->dmr_reliab_buf || state->dmr_reliab_p != state->dmr_reliab_buf + 200 || !state->dmr_soft_buf
+        || state->dmr_soft_p != state->dmr_soft_buf + 200) {
+        fprintf(stderr, "initState did not allocate/reset dibit soft-decision buffers\n");
+        freeState(state);
+        free(state);
+        return 9;
+    }
+    for (int i = 0; i < 200; i++) {
+        if (state->dmr_reliab_buf[i] != 0 || state->dmr_soft_buf[i].reliability != 0
+            || state->dmr_soft_buf[i].llr[0] != 0 || state->dmr_soft_buf[i].llr[1] != 0) {
+            fprintf(stderr, "initState did not clear dibit soft-decision buffer prefix\n");
+            freeState(state);
+            free(state);
+            return 10;
+        }
+    }
     if (state->nid_corrections_total != 0 || state->nid_failures_total != 0 || state->nid_parity_overrides != 0) {
         fprintf(stderr, "expected NID counters to be reset after initState\n");
         freeState(state);
         free(state);
         return 3;
+    }
+    if (state->ess_b[0][95] != 0 || state->ess_b_llr[1][95] != 0 || state->fourv_counter[0] != 0
+        || state->fourv_counter[1] != 0) {
+        fprintf(stderr, "initState did not clear P25P2 ESS fragment state\n");
+        freeState(state);
+        free(state);
+        return 11;
     }
 
     if (state->trunk_chan_map_used_count != 0U || state->trunk_chan_map[0x0123] != 0

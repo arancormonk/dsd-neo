@@ -22,6 +22,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/p25p1_heuristics.h"
@@ -358,12 +359,6 @@ initOpts(dsd_opts* opts) {
     //DMR TIII heuristic LCN fill (opt-in)
     opts->dmr_t3_heuristic_fill = 0;
 
-    // P25P2 soft-decision RS erasure marking (enabled by default)
-    opts->p25_p2_soft_erasure = 1;
-
-    // P25P1 soft-decision FEC for voice (enabled by default)
-    opts->p25_p1_soft_voice = 1;
-
     // Low input level warning defaults
     opts->input_warn_db = -40.0;        // warn if below -40 dBFS
     opts->input_warn_cooldown_sec = 10; // rate-limit warnings
@@ -405,6 +400,16 @@ initState(dsd_state* state) {
     state->dmr_payload_buf = aligned_alloc_64(sizeof(int) * 1000000);
     state->dmr_payload_p = state->dmr_payload_buf + 200;
     memset(state->dmr_payload_buf, 0, sizeof(int) * 200);
+    state->dmr_reliab_buf = aligned_alloc_64(sizeof(uint8_t) * 1000000);
+    if (state->dmr_reliab_buf) {
+        state->dmr_reliab_p = state->dmr_reliab_buf + 200;
+        memset(state->dmr_reliab_buf, 0, sizeof(uint8_t) * 200);
+    }
+    state->dmr_soft_buf = aligned_alloc_64(sizeof(dsd_dibit_soft_t) * 1000000);
+    if (state->dmr_soft_buf) {
+        state->dmr_soft_p = state->dmr_soft_buf + 200;
+        memset(state->dmr_soft_buf, 0, sizeof(dsd_dibit_soft_t) * 200);
+    }
     memset(state->dmr_stereo_payload, 1, sizeof(int) * 144);
     //dmr buffer end
 
@@ -629,10 +634,8 @@ initState(dsd_state* state) {
     state->payload_keyidR = 0;
 
     //init P2 ESS_B fragments and 4V counter
-    for (short i = 0; i < 4; i++) {
-        state->ess_b[0][i] = 0;
-        state->ess_b[1][i] = 0;
-    }
+    memset(state->ess_b, 0, sizeof(state->ess_b));
+    memset(state->ess_b_llr, 0, sizeof(state->ess_b_llr));
     state->fourv_counter[0] = 0;
     state->fourv_counter[1] = 0;
     state->voice_counter[0] = 0;
@@ -1100,9 +1103,13 @@ freeState(dsd_state* state) {
     state->dmr_payload_buf = NULL;
     state->dmr_payload_p = NULL;
 
-    free(state->dmr_reliab_buf);
+    dsd_aligned_free(state->dmr_reliab_buf);
     state->dmr_reliab_buf = NULL;
     state->dmr_reliab_p = NULL;
+
+    dsd_aligned_free(state->dmr_soft_buf);
+    state->dmr_soft_buf = NULL;
+    state->dmr_soft_p = NULL;
 
     free(state->rc2_context);
     state->rc2_context = NULL;

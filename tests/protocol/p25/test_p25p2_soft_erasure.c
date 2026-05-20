@@ -11,14 +11,18 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Define reliability buffers that p25p2_soft.c will extern */
-uint8_t p2reliab[700] = {0};
-uint8_t p2xreliab[700] = {0};
+#include <dsd-neo/protocol/p25/p25p2_soft.h>
 
-/* Import test targets from p25p2_soft.c (linked directly) */
-extern uint8_t p25p2_hexbit_reliability(const uint16_t bit_offsets[6], int ts_counter, const uint8_t* reliab);
-extern int p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fixed, int max_add);
-extern int p25p2_sacch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fixed, int max_add);
+/* Define LLR buffers that p25p2_soft.c will extern */
+int16_t p2llr[1400] = {0};
+int16_t p2xllr[1400] = {0};
+
+static void
+fill_llr(int16_t* llr, size_t count, int16_t value) {
+    for (size_t i = 0; i < count; i++) {
+        llr[i] = value;
+    }
+}
 
 int
 main(void) {
@@ -31,10 +35,10 @@ main(void) {
     static const uint16_t hex0_offsets[6] = {2, 3, 4, 5, 6, 7};
     static const uint16_t oob_offsets[6] = {1396, 1397, 1398, 1399, 1400, 1401};
 
-    /* Test 1: Hexbit reliability with uniform high reliability */
-    printf("Test 1: Hexbit reliability (uniform high)... ");
-    memset(p2reliab, 200, sizeof(p2reliab));
-    uint8_t r1 = p25p2_hexbit_reliability(hex0_offsets, 0, p2reliab);
+    /* Test 1: Hexbit reliability with uniform high LLR magnitude */
+    printf("Test 1: Hexbit LLR reliability (uniform high)... ");
+    fill_llr(p2llr, 1400, 200);
+    uint8_t r1 = p25p2_hexbit_llr_reliability(hex0_offsets, 0, p2llr);
     if (r1 == 200) {
         printf("PASS (rel=%u)\n", r1);
     } else {
@@ -42,12 +46,11 @@ main(void) {
         failures++;
     }
 
-    /* Test 2: Hexbit reliability with one low dibit */
-    printf("Test 2: Hexbit reliability (one low dibit)... ");
-    memset(p2reliab, 200, sizeof(p2reliab));
-    /* hex0_offsets map to dibits 1,2,3. Set dibit 2 to low reliability */
-    p2reliab[2] = 50;
-    uint8_t r2 = p25p2_hexbit_reliability(hex0_offsets, 0, p2reliab);
+    /* Test 2: Hexbit reliability with one low-confidence bit */
+    printf("Test 2: Hexbit LLR reliability (one low bit)... ");
+    fill_llr(p2llr, 1400, 200);
+    p2llr[4] = 50;
+    uint8_t r2 = p25p2_hexbit_llr_reliability(hex0_offsets, 0, p2llr);
     if (r2 == 50) {
         printf("PASS (rel=%u)\n", r2);
     } else {
@@ -56,12 +59,11 @@ main(void) {
     }
 
     /* Test 3: Hexbit reliability across the FACCH boundary (hexbit 22) */
-    printf("Test 3: Hexbit reliability (FACCH hexbit 22 cross-segment)... ");
+    printf("Test 3: Hexbit LLR reliability (FACCH hexbit 22 cross-segment)... ");
     static const uint16_t hex22_offsets[6] = {136, 137, 180, 181, 182, 183};
-    memset(p2reliab, 200, sizeof(p2reliab));
-    /* hexbit 22 uses dibits 68, 90, 91; make dibit 90 the weakest */
-    p2reliab[90] = 40;
-    uint8_t r3 = p25p2_hexbit_reliability(hex22_offsets, 0, p2reliab);
+    fill_llr(p2llr, 1400, 200);
+    p2llr[181] = -40;
+    uint8_t r3 = p25p2_hexbit_llr_reliability(hex22_offsets, 0, p2llr);
     if (r3 == 40) {
         printf("PASS (rel=%u)\n", r3);
     } else {
@@ -70,8 +72,8 @@ main(void) {
     }
 
     /* Test 4: Hexbit reliability out of bounds */
-    printf("Test 4: Hexbit reliability (out of bounds)... ");
-    uint8_t r4 = p25p2_hexbit_reliability(oob_offsets, 0, p2reliab);
+    printf("Test 4: Hexbit LLR reliability (out of bounds)... ");
+    uint8_t r4 = p25p2_hexbit_llr_reliability(oob_offsets, 0, p2llr);
     if (r4 == 0) {
         printf("PASS (rel=%u, forced erasure)\n", r4);
     } else {
@@ -81,7 +83,7 @@ main(void) {
 
     /* Test 5: FACCH soft erasures with all high reliability - should add no dynamic erasures */
     printf("Test 5: FACCH soft erasures (all high reliability)... ");
-    memset(p2reliab, 200, sizeof(p2reliab));
+    fill_llr(p2llr, 1400, 200);
     int erasures[28] = {0};
     int n_fixed = 0;
     /* Add fixed erasures for FACCH: 0-8, 54-62 */
@@ -102,11 +104,10 @@ main(void) {
 
     /* Test 6: FACCH soft erasures with some low-reliability symbols */
     printf("Test 6: FACCH soft erasures (some low reliability)... ");
-    memset(p2reliab, 200, sizeof(p2reliab));
-    /* Set first payload hexbit (bit_offset=2, dibits 1,2,3) to low reliability */
-    p2reliab[1] = 30;
-    p2reliab[2] = 30;
-    p2reliab[3] = 30;
+    fill_llr(p2llr, 1400, 200);
+    for (int bit = 2; bit <= 7; bit++) {
+        p2llr[bit] = 30;
+    }
     /* Reset erasure array */
     memset(erasures, 0, sizeof(erasures));
     n_fixed = 0;
@@ -126,7 +127,7 @@ main(void) {
 
     /* Test 7: Max erasure cap is respected */
     printf("Test 7: FACCH soft erasures (max cap)... ");
-    memset(p2reliab, 10, sizeof(p2reliab)); /* All low reliability */
+    fill_llr(p2llr, 1400, 10); /* All low reliability */
     memset(erasures, 0, sizeof(erasures));
     n_fixed = 0;
     for (int e = 0; e <= 8; e++) {
@@ -145,7 +146,7 @@ main(void) {
 
     /* Test 8: SACCH soft erasures basic test */
     printf("Test 8: SACCH soft erasures (all high reliability)... ");
-    memset(p2reliab, 200, sizeof(p2reliab));
+    fill_llr(p2llr, 1400, 200);
     memset(erasures, 0, sizeof(erasures));
     n_fixed = 0;
     /* Add fixed erasures for SACCH: 0-4, 57-62 */
@@ -166,16 +167,37 @@ main(void) {
 
     /* Test 9: Timeslot offset affects dibit lookup correctly */
     printf("Test 9: Timeslot offset (ts_counter=1)... ");
-    memset(p2reliab, 200, sizeof(p2reliab));
-    /* With ts_counter=1, hex0_offsets[0]=2 -> abs_bit = 2 + 360 = 362, dibit_idx = 181 */
-    p2reliab[181] = 42; /* Set the target dibit to a known value */
-    p2reliab[182] = 42;
-    p2reliab[183] = 42;
-    uint8_t r8 = p25p2_hexbit_reliability(hex0_offsets, 1, p2reliab);
+    fill_llr(p2llr, 1400, 200);
+    /* With ts_counter=1, hex0_offsets[0]=2 -> abs_bit = 2 + 360 = 362 */
+    p2llr[362] = 42;
+    uint8_t r8 = p25p2_hexbit_llr_reliability(hex0_offsets, 1, p2llr);
     if (r8 == 42) {
         printf("PASS (rel=%u at ts=1)\n", r8);
     } else {
         printf("FAIL (expected 42, got %u)\n", r8);
+        failures++;
+    }
+
+    /* Test 10: Scrambled erasure path uses p2xllr */
+    printf("Test 10: SACCH soft erasures (descrambled LLR buffer)... ");
+    fill_llr(p2llr, 1400, 200);
+    fill_llr(p2xllr, 1400, 200);
+    for (int bit = 2; bit <= 7; bit++) {
+        p2xllr[bit] = 25;
+    }
+    memset(erasures, 0, sizeof(erasures));
+    n_fixed = 0;
+    for (int e = 0; e <= 4; e++) {
+        erasures[n_fixed++] = e;
+    }
+    for (int e = 57; e <= 62; e++) {
+        erasures[n_fixed++] = e;
+    }
+    n_total = p25p2_sacch_soft_erasures(0, 1, erasures, n_fixed, 16);
+    if (n_total > n_fixed) {
+        printf("PASS (added %d dynamic erasures, total=%d)\n", n_total - n_fixed, n_total);
+    } else {
+        printf("FAIL (expected dynamic erasures from p2xllr, got total=%d)\n", n_total);
         failures++;
     }
 

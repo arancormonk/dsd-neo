@@ -16,17 +16,17 @@ extern "C" {
 #endif
 
 /**
- * Compute reliability for a hexbit (6 bits = 3 dibits).
+ * Compute reliability for a hexbit from per-bit signed LLR metrics.
  *
  * @param bit_offsets Six p2bit/p2xbit indices (relative to TS start).
  * @param ts_counter  Current timeslot counter (0-3).
- * @param reliab      Per-dibit reliability array (p2reliab or p2xreliab).
- * @return Minimum reliability of constituent dibits [0..255]; 0 on OOB.
+ * @param bit_llr     Per-bit signed reliability array (p2llr or p2xllr).
+ * @return Minimum absolute reliability of constituent bits [0..255]; 0 on OOB.
  */
-uint8_t p25p2_hexbit_reliability(const uint16_t bit_offsets[6], int ts_counter, const uint8_t* reliab);
+uint8_t p25p2_hexbit_llr_reliability(const uint16_t bit_offsets[6], int ts_counter, const int16_t* bit_llr);
 
 /**
- * Return the configured P25P2 soft-decision erasure threshold.
+ * Return the P25P2 soft-decision erasure threshold.
  *
  * Reliability values below this threshold are treated as low-confidence
  * symbols by P25P2 soft-decision helpers.
@@ -37,7 +37,7 @@ int p25p2_soft_erasure_threshold(void);
  * Build soft-decision erasure list for FACCH.
  *
  * @param ts_counter  Current timeslot counter (0-3).
- * @param scrambled   1 for p2xreliab, 0 for p2reliab.
+ * @param scrambled   1 for p2xllr, 0 for p2llr.
  * @param erasures    Erasure array (in/out). Must have space for n_fixed + max_add.
  * @param n_fixed     Number of fixed erasures already present (typically 18 for FACCH).
  * @param max_add     Maximum dynamic erasures to add (recommend <=10 for FACCH).
@@ -49,7 +49,7 @@ int p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int 
  * Build soft-decision erasure list for SACCH.
  *
  * @param ts_counter  Current timeslot counter (0-3).
- * @param scrambled   1 for p2xreliab, 0 for p2reliab.
+ * @param scrambled   1 for p2xllr, 0 for p2llr.
  * @param erasures    Erasure array (in/out). Must have space for n_fixed + max_add.
  * @param n_fixed     Number of fixed erasures already present (typically 11 for SACCH).
  * @param max_add     Maximum dynamic erasures to add (recommend <=16 for SACCH).
@@ -58,20 +58,10 @@ int p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int 
 int p25p2_sacch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fixed, int max_add);
 
 /**
- * Build soft-decision erasure list for ESS.
- *
- * ESS uses RS(44,16,29) with:
- *   - 16 payload hexbits (positions 0-15 in RS space)
- *   - 28 parity hexbits (positions 16-43 in RS space)
- *
- * @param ts_counter  Current timeslot counter (0-3).
- * @param is_4v       1 for ESS_B (4V mode, 96 bits across 4 frames), 0 for ESS_A (2V mode).
- * @param erasures    Erasure array (in/out). Must have space for n_fixed + max_add.
- * @param n_fixed     Number of fixed erasures already present.
- * @param max_add     Maximum dynamic erasures to add.
- * @return Total erasure count.
+ * Build soft-decision ESS erasures from collected contiguous LLR buffers.
  */
-int p25p2_ess_soft_erasures(int ts_counter, int is_4v, int* erasures, int n_fixed, int max_add);
+int p25p2_ess_soft_erasures_from_llr(const int16_t payload_llr[96], const int16_t parity_llr[168], int* erasures,
+                                     int max_payload_add, int max_parity_add);
 
 #ifdef __cplusplus
 }

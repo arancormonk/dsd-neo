@@ -5,35 +5,20 @@
 
 /**
  * @file
- * @brief Soft-decision FEC decoders for P25 Phase 1 voice.
+ * @brief Soft-decision FEC decoders for P25 Phase 1 non-vocoder paths.
  */
 
 #include <cstring>
 #include <dsd-neo/fec/Golay24.hpp>
 #include <dsd-neo/fec/Hamming.hpp>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
-#include <dsd-neo/runtime/config.h>
+#include <stdint.h>
 
-/* Erasure threshold: symbols with reliability below this are marked as erasures.
- * Range: 0-255. Default: 64 (~25% confidence).
- */
-static int g_p25p1_erasure_thresh = -1; /* -1 = uninitialized */
+static constexpr int P25P1_SOFT_ERASURE_THRESHOLD = 64;
 
 extern "C" int
 p25p1_get_erasure_threshold(void) {
-    if (g_p25p1_erasure_thresh < 0) {
-        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-
-        g_p25p1_erasure_thresh = 64; /* default */
-        if (cfg) {
-            if (cfg->p25p1_soft_erasure_thresh_is_set) {
-                g_p25p1_erasure_thresh = cfg->p25p1_soft_erasure_thresh;
-            } else if (cfg->p25p2_soft_erasure_thresh_is_set) {
-                g_p25p1_erasure_thresh = cfg->p25p2_soft_erasure_thresh;
-            }
-        }
-    }
-    return g_p25p1_erasure_thresh;
+    return P25P1_SOFT_ERASURE_THRESHOLD;
 }
 
 static int
@@ -45,6 +30,76 @@ clamp_reliability(int reliab) {
         return 255;
     }
     return reliab;
+}
+
+extern "C" uint8_t
+p25p1_llr_reliability(const int16_t* llr, int bit_count) {
+    if (llr == nullptr || bit_count <= 0) {
+        return 0;
+    }
+
+    int min_r = 255;
+    for (int i = 0; i < bit_count; i++) {
+        int r = llr[i] < 0 ? -(int)llr[i] : (int)llr[i];
+        r = clamp_reliability(r);
+        if (r < min_r) {
+            min_r = r;
+        }
+    }
+    return (uint8_t)min_r;
+}
+
+typedef struct {
+    uint8_t reliability;
+    int position;
+} P25P1RsErasureCandidate;
+
+extern "C" int
+p25p1_build_rs_erasures(const uint8_t* data_reliab, int data_symbols, const uint8_t* parity_reliab, int parity_symbols,
+                        int* erasures, int max_erasures) {
+    if (data_reliab == nullptr || parity_reliab == nullptr || erasures == nullptr || data_symbols < 0
+        || parity_symbols < 0 || max_erasures <= 0) {
+        return 0;
+    }
+
+    P25P1RsErasureCandidate candidates[64];
+    int candidate_count = 0;
+    int threshold = p25p1_get_erasure_threshold();
+
+    for (int i = 0; i < parity_symbols && candidate_count < 64; i++) {
+        uint8_t rel = parity_reliab[i];
+        if (rel < threshold) {
+            candidates[candidate_count].reliability = rel;
+            candidates[candidate_count].position = i;
+            candidate_count++;
+        }
+    }
+    for (int i = 0; i < data_symbols && candidate_count < 64; i++) {
+        uint8_t rel = data_reliab[i];
+        if (rel < threshold) {
+            candidates[candidate_count].reliability = rel;
+            candidates[candidate_count].position = parity_symbols + i;
+            candidate_count++;
+        }
+    }
+
+    for (int i = 0; i < candidate_count; i++) {
+        for (int j = i + 1; j < candidate_count; j++) {
+            if (candidates[j].reliability < candidates[i].reliability
+                || (candidates[j].reliability == candidates[i].reliability
+                    && candidates[j].position < candidates[i].position)) {
+                P25P1RsErasureCandidate tmp = candidates[i];
+                candidates[i] = candidates[j];
+                candidates[j] = tmp;
+            }
+        }
+    }
+
+    int out_count = candidate_count < max_erasures ? candidate_count : max_erasures;
+    for (int i = 0; i < out_count; i++) {
+        erasures[i] = candidates[i].position;
+    }
+    return out_count;
 }
 
 /* Helper: find indices of k smallest values in reliab[0..n-1].
