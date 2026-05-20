@@ -1703,6 +1703,12 @@ target_include_directories(dsd-neo_test_dmr_bs_alg_refresh_error PRIVATE ${PROJE
 target_link_libraries(dsd-neo_test_dmr_bs_alg_refresh_error PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_BS_ALG_REFRESH_ERROR COMMAND dsd-neo_test_dmr_bs_alg_refresh_error)
 
+add_executable(dsd-neo_test_dmr_confidence_gate protocol/dmr/test_dmr_confidence_gate.c)
+target_include_directories(dsd-neo_test_dmr_confidence_gate PRIVATE ${PROJECT_SOURCE_DIR}/include
+                                                               ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+target_link_libraries(dsd-neo_test_dmr_confidence_gate PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_CONFIDENCE_GATE COMMAND dsd-neo_test_dmr_confidence_gate)
+
 add_executable(dsd-neo_test_dmr_r34_stub protocol/dmr/test_dmr_r34_stub.c)
 target_include_directories(dsd-neo_test_dmr_r34_stub PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dmr_r34_stub PRIVATE dsd-neo_proto_dmr)

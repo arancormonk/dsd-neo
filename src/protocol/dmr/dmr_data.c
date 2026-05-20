@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dmr_confidence.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -46,11 +47,13 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     uint8_t cachdata[25];
     UNUSED(syncdata);
 
-    uint8_t burst;
+    uint8_t burst = 0;
     char info[196];
     uint8_t rel98[98];
     unsigned char SlotType[20];
-    unsigned int SlotTypeOk;
+    unsigned int SlotTypeOk = 0;
+    int confidence_pending = 0;
+    int confidence_reject = 0;
     // CACH handler called for side effects; ignore return
 
     int cachInterleave[24] = {0, 7, 8, 9, 1, 10, 11, 12, 2, 13, 14, 15, 3, 16, 4, 17, 18, 19, 5, 20, 21, 22, 6, 23};
@@ -357,24 +360,26 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     state->color_code = (SlotType[0] << 3) + (SlotType[1] << 2) + (SlotType[2] << 1) + (SlotType[3] << 0);
     state->color_code_ok = SlotTypeOk;
 
-    //not sure why I still have two variables for this, need to look and see what state->color_code still ties into
-    if (SlotTypeOk == 1) {
+    /* Reconstitute the burst type */
+    burst = (uint8_t)((SlotType[4] << 3) + (SlotType[5] << 2) + (SlotType[6] << 1) + SlotType[7]);
+
+    if (state->dmr_ms_mode == 0 && opts->dmr_mono == 0) {
+        dmr_confidence_result confidence = dmr_confidence_note_data_burst(state, state->color_code, burst);
+        if (confidence == DMR_CONFIDENCE_REJECT) {
+            confidence_reject = 1;
+        } else if (confidence != DMR_CONFIDENCE_LOCKED && burst != 9U) {
+            confidence_pending = 1;
+        }
+    } else {
+        //not sure why I still have two variables for this, need to look and see what state->color_code still ties into
         state->dmr_color_code = state->color_code;
     }
 
-    /* Reconstitute the burst type */
-    burst = (uint8_t)((SlotType[4] << 3) + (SlotType[5] << 2) + (SlotType[6] << 1) + SlotType[7]);
     if (state->currentslot == 0) {
         state->dmrburstL = burst;
     }
     if (state->currentslot == 1) {
         state->dmrburstR = burst;
-    }
-
-    // Emit data sync to trunk SM for data burst types (DATA header, R12D, R34D, R1_D)
-    // This keeps the channel active when trunk_tune_data_calls is enabled
-    if (burst == 6 || burst == 7 || burst == 8 || burst == 10) {
-        dmr_sm_emit_data_sync(opts, state, state->currentslot);
     }
 
     // Current slot - Second Half - Data Payload - 2nd part
@@ -463,6 +468,21 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
 
         info[(2 * i) + 98] = (1 & (dibit >> 1)); // bit 1
         info[(2 * i) + 99] = (1 & dibit);        // bit 0
+    }
+
+    if (confidence_reject != 0) {
+        SlotTypeOk = 0;
+        goto END;
+    }
+
+    if (confidence_pending != 0) {
+        fprintf(stderr, "\n");
+        goto END;
+    }
+
+    // Emit data sync to trunk SM for accepted data burst types (DATA header, R12D, R34D, R1_D).
+    if (burst == 6 || burst == 7 || burst == 8 || burst == 10) {
+        dmr_sm_emit_data_sync(opts, state, state->currentslot);
     }
 
     dmr_data_burst_handler_ex(opts, state, (uint8_t*)info, burst, rel98);

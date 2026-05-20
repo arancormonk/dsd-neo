@@ -45,6 +45,7 @@ void dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dh
 void dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uint8_t block_len, uint8_t databurst,
                          uint8_t type);
 void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
+void dmr_confidence_reset(dsd_state* state);
 
 void dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU);
 void dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU);

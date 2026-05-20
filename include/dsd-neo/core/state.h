@@ -510,6 +510,14 @@ struct dsd_state {
 
     unsigned int color_code;
     unsigned int color_code_ok;
+    uint8_t dmr_confidence_locked;
+    uint8_t dmr_confidence_color_code;
+    uint8_t dmr_confidence_candidate_cc;
+    uint8_t dmr_confidence_candidate_count;
+    uint8_t dmr_confidence_voice_sync_seen[2];
+    uint8_t dmr_confidence_voice_open[2];
+    uint8_t dmr_confidence_voice_count[2];
+    uint8_t dmr_confidence_mismatch_count;
     unsigned int PI;
     unsigned int PI_ok;
     unsigned int LCSS;

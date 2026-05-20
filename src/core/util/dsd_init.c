@@ -1031,6 +1031,8 @@ initState(dsd_state* state) {
 #endif
 
     state->dmr_color_code = 16;
+    state->dmr_confidence_color_code = 16;
+    state->dmr_confidence_candidate_cc = 16;
     state->dmr_t3_syscode = 0;
 
     // Allocate per-slot event history (2 slots)

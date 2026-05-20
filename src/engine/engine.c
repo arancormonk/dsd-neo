@@ -31,6 +31,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
@@ -1249,6 +1250,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     set_spaces(state->ftype, 13);
     state->errs = 0;
     state->errs2 = 0;
+    dmr_confidence_reset(state);
 
     //zero out right away if not trunking
     if (opts->p25_trunk == 0) {

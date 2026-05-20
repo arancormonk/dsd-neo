@@ -37,6 +37,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "dmr_confidence.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -288,6 +289,7 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
                 vc2 = 1;
                 state->dmr_emb_err[1] = 0; // reset EMB miss counter on fresh voice sync
             }
+            dmr_confidence_note_voice_sync(state, internalslot);
         }
 
         //check for sync pattern here after collected the rest of the payload, decide what to do with it
@@ -453,7 +455,7 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
                 state->dmr_emb_err[internalslot] = 0;
                 cc = ((emb_pdu[0] << 3) + (emb_pdu[1] << 2) + (emb_pdu[2] << 1) + emb_pdu[3]);
                 power = emb_pdu[4];
-                state->dmr_color_code = state->color_code = cc;
+                state->color_code = cc;
             } else {
                 // If not a voice sync frame and EMB is invalid, increment miss counter.
                 // Abort only after 2 consecutive failures to improve robustness.
@@ -469,6 +471,37 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
                     // On voice sync frames, do not penalize; clear any transient miss.
                     state->dmr_emb_err[internalslot] = 0;
                 }
+            }
+
+            int voice_gate_open = dmr_confidence_voice_slot_open(state, internalslot);
+            if (emb_ok == 1) {
+                dmr_confidence_result confidence = dmr_confidence_note_voice_burst(state, internalslot, cc);
+                if (confidence == DMR_CONFIDENCE_REJECT) {
+                    emb_ok = 0;
+                    dmr_confidence_reset_slot(state, internalslot);
+                    goto END;
+                }
+                voice_gate_open = dmr_confidence_voice_slot_open(state, internalslot);
+            }
+
+            if (voice_gate_open == 0) {
+                if (emb_ok != 1 && strcmp(sync, DMR_BS_VOICE_SYNC) != 0) {
+                    dmr_confidence_reset_slot(state, internalslot);
+                    goto END;
+                }
+
+                if (internalslot == 0) {
+                    vc1++;
+                }
+                if (internalslot == 1) {
+                    vc2++;
+                }
+                tact_okay = 0;
+                emb_ok = 0;
+                if ((vc1 > 14 || vc2 > 14)) {
+                    goto END;
+                }
+                goto SKIP;
             }
 
             skipcount = 0; //reset skip count if processing voice frames
@@ -693,10 +726,12 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
 
         //both working now, will need support added for ENC audio and no key
         //NOTE: We want this to play regardless of whether the slot is voice or data, to play silence in one slot and voice in the second, or voices in both
-        if (internalslot == 1 && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000) {
+        if (dmr_confidence_any_voice_open(state) && internalslot == 1 && opts->floating_point == 1
+            && opts->pulse_digi_rate_out == 8000) {
             playSynthesizedVoiceFS3(opts, state); //Float Stereo Mix 3v2
         }
-        if (internalslot == 1 && opts->floating_point == 0 && opts->pulse_digi_rate_out == 8000) {
+        if (dmr_confidence_any_voice_open(state) && internalslot == 1 && opts->floating_point == 0
+            && opts->pulse_digi_rate_out == 8000) {
             playSynthesizedVoiceSS3(opts, state); //Short Stereo Mix 3v2
         }
 
@@ -781,6 +816,7 @@ END:
     // reset EMB miss counters on exit
     state->dmr_emb_err[0] = 0;
     state->dmr_emb_err[1] = 0;
+    dmr_confidence_reset(state);
 }
 
 //Process buffered half frame and 2nd half and then jump to full BS decoding
@@ -850,6 +886,7 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
     }
 
     internalslot = state->currentslot = tact_bits[1];
+    dmr_confidence_note_voice_sync(state, internalslot);
 
     //reset static ks counter
     state->static_ks_counter[internalslot] = 0;
@@ -966,7 +1003,6 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    fprintf(stderr, "%s ", timestr);
     char polarity[3];
     char light[18];
 
@@ -988,112 +1024,116 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
     } else {
         sprintf(polarity, "%s", "-");
     }
-    if (state->dmr_color_code != 16) {
-        fprintf(stderr, "Sync: %sDMR %s| Color Code=%02d | VC1*", polarity, light, state->dmr_color_code);
-    } else {
-        fprintf(stderr, "Sync: %sDMR %s| Color Code=XX | VC1*", polarity, light);
-    }
-
     dmr_alg_reset(opts, state);
+    int bootstrap_gate_open = dmr_confidence_voice_slot_open(state, internalslot);
+    if (bootstrap_gate_open) {
+        fprintf(stderr, "%s ", timestr);
+        if (state->dmr_color_code != 16) {
+            fprintf(stderr, "Sync: %sDMR %s| Color Code=%02d | VC1*", polarity, light, state->dmr_color_code);
+        } else {
+            fprintf(stderr, "Sync: %sDMR %s| Color Code=XX | VC1*", polarity, light);
+        }
 
-    //copy ambe_fr frames first, running process mbe will correct them,
-    //but this also leads to issues extracting good le mi values when
-    //we go to do correction on them there too
-    memcpy(m1, ambe_fr, sizeof(m1));
-    memcpy(m2, ambe_fr2, sizeof(m2));
-    memcpy(m3, ambe_fr3, sizeof(m3));
+        //copy ambe_fr frames first, running process mbe will correct them,
+        //but this also leads to issues extracting good le mi values when
+        //we go to do correction on them there too
+        memcpy(m1, ambe_fr, sizeof(m1));
+        memcpy(m2, ambe_fr2, sizeof(m2));
+        memcpy(m3, ambe_fr3, sizeof(m3));
 
-    if (state->tyt_bp == 1) {
-        tyt16_ambe2_codeword_keystream(state, ambe_fr, 0);
-        tyt16_ambe2_codeword_keystream(state, ambe_fr2, 1);
-        tyt16_ambe2_codeword_keystream(state, ambe_fr3, 0);
-    }
-    if (state->csi_ee == 1) {
-        csi72_ambe2_codeword_keystream(state, ambe_fr);
-        csi72_ambe2_codeword_keystream(state, ambe_fr2);
-        csi72_ambe2_codeword_keystream(state, ambe_fr3);
-    }
+        if (state->tyt_bp == 1) {
+            tyt16_ambe2_codeword_keystream(state, ambe_fr, 0);
+            tyt16_ambe2_codeword_keystream(state, ambe_fr2, 1);
+            tyt16_ambe2_codeword_keystream(state, ambe_fr3, 0);
+        }
+        if (state->csi_ee == 1) {
+            csi72_ambe2_codeword_keystream(state, ambe_fr);
+            csi72_ambe2_codeword_keystream(state, ambe_fr2);
+            csi72_ambe2_codeword_keystream(state, ambe_fr3);
+        }
 
 #ifdef PRINT_AMBE72
-    ambe2_codeword_print_i(opts, ambe_fr);
-    ambe2_codeword_print_i(opts, ambe_fr2);
-    ambe2_codeword_print_i(opts, ambe_fr3);
+        ambe2_codeword_print_i(opts, ambe_fr);
+        ambe2_codeword_print_i(opts, ambe_fr2);
+        ambe2_codeword_print_i(opts, ambe_fr3);
 #endif
 
-    if (opts->payload == 1) {
-        fprintf(stderr, "\n"); //extra line break necessary here
-    }
-    // processMbeFrame (opts, state, NULL, ambe_fr, NULL);
-    // processMbeFrame (opts, state, NULL, ambe_fr2, NULL);
-    // processMbeFrame (opts, state, NULL, ambe_fr3, NULL);
+        if (opts->payload == 1) {
+            fprintf(stderr, "\n"); //extra line break necessary here
+        }
+        // processMbeFrame (opts, state, NULL, ambe_fr, NULL);
+        // processMbeFrame (opts, state, NULL, ambe_fr2, NULL);
+        // processMbeFrame (opts, state, NULL, ambe_fr3, NULL);
 
-    processMbeFrame(opts, state, NULL, ambe_fr, NULL);
-    if (internalslot == 0) {
-        memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-        memcpy(state->s_l4[0], state->s_l, sizeof(state->s_l));
-        memcpy(state->s_l4u[0], state->s_lu, sizeof(state->s_lu));
-    }
+        processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+        if (internalslot == 0) {
+            memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
+            memcpy(state->s_l4[0], state->s_l, sizeof(state->s_l));
+            memcpy(state->s_l4u[0], state->s_lu, sizeof(state->s_lu));
+        }
 
-    else {
-        memcpy(state->f_r4[0], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-        memcpy(state->s_r4[0], state->s_r, sizeof(state->s_r));
-        memcpy(state->s_r4u[0], state->s_ru, sizeof(state->s_ru));
-    }
+        else {
+            memcpy(state->f_r4[0], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
+            memcpy(state->s_r4[0], state->s_r, sizeof(state->s_r));
+            memcpy(state->s_r4u[0], state->s_ru, sizeof(state->s_ru));
+        }
 
-    processMbeFrame(opts, state, NULL, ambe_fr2, NULL);
-    if (internalslot == 0) {
-        memcpy(state->f_l4[1], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-        memcpy(state->s_l4[1], state->s_l, sizeof(state->s_l));
-        memcpy(state->s_l4u[1], state->s_lu, sizeof(state->s_lu));
-    }
+        processMbeFrame(opts, state, NULL, ambe_fr2, NULL);
+        if (internalslot == 0) {
+            memcpy(state->f_l4[1], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
+            memcpy(state->s_l4[1], state->s_l, sizeof(state->s_l));
+            memcpy(state->s_l4u[1], state->s_lu, sizeof(state->s_lu));
+        }
 
-    else {
-        memcpy(state->f_r4[1], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-        memcpy(state->s_r4[1], state->s_r, sizeof(state->s_r));
-        memcpy(state->s_r4u[1], state->s_ru, sizeof(state->s_ru));
-    }
+        else {
+            memcpy(state->f_r4[1], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
+            memcpy(state->s_r4[1], state->s_r, sizeof(state->s_r));
+            memcpy(state->s_r4u[1], state->s_ru, sizeof(state->s_ru));
+        }
 
-    processMbeFrame(opts, state, NULL, ambe_fr3, NULL);
-    if (internalslot == 0) {
-        memcpy(state->f_l4[2], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-        memcpy(state->s_l4[2], state->s_l, sizeof(state->s_l));
-        memcpy(state->s_l4u[2], state->s_lu, sizeof(state->s_lu));
-    }
+        processMbeFrame(opts, state, NULL, ambe_fr3, NULL);
+        if (internalslot == 0) {
+            memcpy(state->f_l4[2], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
+            memcpy(state->s_l4[2], state->s_l, sizeof(state->s_l));
+            memcpy(state->s_l4u[2], state->s_lu, sizeof(state->s_lu));
+        }
 
-    else {
-        memcpy(state->f_r4[2], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-        memcpy(state->s_r4[2], state->s_r, sizeof(state->s_r));
-        memcpy(state->s_r4u[2], state->s_ru, sizeof(state->s_ru));
-    }
+        else {
+            memcpy(state->f_r4[2], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
+            memcpy(state->s_r4[2], state->s_r, sizeof(state->s_r));
+            memcpy(state->s_r4u[2], state->s_ru, sizeof(state->s_ru));
+        }
 
-    //collect the mi fragment
-    if (opts->dmr_le != 2) { //if not Hytera Enhanced
-        dmr_late_entry_mi_fragment(opts, state, 1, m1, m2, m3);
-    }
+        //collect the mi fragment
+        if (opts->dmr_le != 2) { //if not Hytera Enhanced
+            dmr_late_entry_mi_fragment(opts, state, 1, m1, m2, m3);
+        }
 
-    (void)dmr_cach(opts, state, cachdata);
-    if (opts->payload == 0) {
-        fprintf(stderr, "\n");
-    }
+        (void)dmr_cach(opts, state, cachdata);
+        if (opts->payload == 0) {
+            fprintf(stderr, "\n");
+        }
 
-    //update voice sync time for trunking purposes (particularly Con+)
-    if (opts->p25_is_tuned == 1) {
-        state->last_vc_sync_time = time(NULL);
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-    }
+        //update voice sync time for trunking purposes (particularly Con+)
+        if (opts->p25_is_tuned == 1) {
+            state->last_vc_sync_time = time(NULL);
+            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+        }
 
-    //NOTE: Only play on slot 1, if slot 0, then it'll play after the next TDMA frame in the BS loop instead
-    if (internalslot == 1 && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000) {
-        playSynthesizedVoiceFS3(opts, state); //Float Stereo Mix 3v2
-    }
-    if (internalslot == 1 && opts->floating_point == 0 && opts->pulse_digi_rate_out == 8000) {
-        playSynthesizedVoiceSS3(opts, state); //Short Stereo Mix 3v2
+        //NOTE: Only play on slot 1, if slot 0, then it'll play after the next TDMA frame in the BS loop instead
+        if (internalslot == 1 && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000) {
+            playSynthesizedVoiceFS3(opts, state); //Float Stereo Mix 3v2
+        }
+        if (internalslot == 1 && opts->floating_point == 0 && opts->pulse_digi_rate_out == 8000) {
+            playSynthesizedVoiceSS3(opts, state); //Short Stereo Mix 3v2
+        }
     }
 
     dmrBS(opts, state); //bootstrap into full TDMA frame for BS mode
 END:
     //if we have a tact err, then produce sync pattern/err message
     if (tact_okay != 1 || sync_okay != 1) {
+        dmr_confidence_reset(state);
         fprintf(stderr, "%s ", timestr);
         fprintf(stderr, "Sync:  DMR                  ");
         fprintf(stderr, "%s", KRED);
