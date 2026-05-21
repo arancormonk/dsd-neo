@@ -29,6 +29,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -75,6 +76,114 @@ p25p2_record_voice_err(dsd_state* state, int voice_err) {
     state->p25_p2_voice_err_hist_pos[slot] = (hpos + 1) % len;
 
     dsd_rtl_stream_metrics_hook_p25p2_err_update(slot, 0, 0, 0, 0, (int)val);
+}
+
+static void
+copy_imbe7200_soft_frame(dsd_vocoder_soft_bit src[8][23], mbe_soft_bit dst[8][23]) {
+    if (!src || !dst) {
+        return;
+    }
+    for (int row = 0; row < 8; row++) {
+        for (int bit = 0; bit < 23; bit++) {
+            dst[row][bit].bit = src[row][bit].bit ? 1u : 0u;
+            dst[row][bit].reliability = src[row][bit].reliability;
+        }
+    }
+}
+
+static void
+copy_ambe_soft_frame(dsd_vocoder_soft_bit src[4][24], mbe_soft_bit dst[4][24]) {
+    if (!src || !dst) {
+        return;
+    }
+    for (int row = 0; row < 4; row++) {
+        for (int bit = 0; bit < 24; bit++) {
+            dst[row][bit].bit = src[row][bit].bit ? 1u : 0u;
+            dst[row][bit].reliability = src[row][bit].reliability;
+        }
+    }
+}
+
+static void
+store_mbe_result(int* errs, int* errs2, char* err_str, size_t err_str_size, const mbe_process_result* result) {
+    if (!result) {
+        return;
+    }
+    if (errs) {
+        *errs = result->c0_errors;
+    }
+    if (errs2) {
+        *errs2 = result->total_errors;
+    }
+    if (err_str && err_str_size > 0) {
+        mbe_formatProcessResult(err_str, err_str_size, result);
+    }
+}
+
+static int
+decode_imbe7200_frame(dsd_state* state, char imbe_fr[8][23], dsd_vocoder_soft_bit imbe_soft_fr[8][23], char imbe_d[88],
+                      mbe_process_result* result) {
+    if (imbe_soft_fr) {
+        mbe_soft_bit soft_fr[8][23];
+
+        copy_imbe7200_soft_frame(imbe_soft_fr, soft_fr);
+        mbe_initProcessResult(result);
+        (void)mbe_decodeImbe7200x4400SoftFrame((const mbe_soft_bit(*)[23])soft_fr, imbe_d, result);
+        store_mbe_result(&state->errs, &state->errs2, NULL, 0, result);
+        return 1;
+    }
+
+    state->errs = mbe_eccImbe7200x4400C0(imbe_fr);
+    state->errs2 = state->errs;
+    mbe_demodulateImbe7200x4400Data(imbe_fr);
+    state->errs2 += mbe_eccImbe7200x4400Data(imbe_fr, imbe_d);
+    return 0;
+}
+
+static int
+decode_ambe2450_frame(int* errs, int* errs2, char ambe_fr[4][24], dsd_vocoder_soft_bit ambe_soft_fr[4][24],
+                      char ambe_d[49], mbe_process_result* result) {
+    if (ambe_soft_fr) {
+        mbe_soft_bit soft_fr[4][24];
+
+        copy_ambe_soft_frame(ambe_soft_fr, soft_fr);
+        mbe_initProcessResult(result);
+        (void)mbe_decodeAmbe3600x2450SoftFrame((const mbe_soft_bit(*)[24])soft_fr, ambe_d, result);
+        store_mbe_result(errs, errs2, NULL, 0, result);
+        return 1;
+    }
+
+    *errs = mbe_eccAmbe3600x2450C0(ambe_fr);
+    *errs2 = *errs;
+    mbe_demodulateAmbe3600x2450Data(ambe_fr);
+    *errs2 += mbe_eccAmbe3600x2450Data(ambe_fr, ambe_d);
+    return 0;
+}
+
+static void
+process_imbe4400_params(float* aout_buf, int* errs, int* errs2, char* err_str, size_t err_str_size,
+                        const char imbe_d[88], mbe_parms* cur_mp, mbe_parms* prev_mp, mbe_parms* prev_mp_enhanced,
+                        int uvquality, mbe_process_result* result, int have_result) {
+    if (have_result) {
+        (void)mbe_processImbe4400DatafV2(aout_buf, result, imbe_d, cur_mp, prev_mp, prev_mp_enhanced, uvquality);
+        store_mbe_result(errs, errs2, err_str, err_str_size, result);
+        return;
+    }
+
+    mbe_processImbe4400Dataf(aout_buf, errs, errs2, err_str, imbe_d, cur_mp, prev_mp, prev_mp_enhanced, uvquality);
+}
+
+static void
+process_ambe2450_params(float* aout_buf, int* errs, int* errs2, char* err_str, size_t err_str_size,
+                        const char ambe_d[49], mbe_parms* cur_mp, mbe_parms* prev_mp, mbe_parms* prev_mp_enhanced,
+                        int uvquality, mbe_process_result* result, int have_result) {
+    if (have_result) {
+        (void)mbe_processAmbe2450DatafV2(aout_buf, result, ambe_d, cur_mp, prev_mp, prev_mp_enhanced, uvquality);
+        store_mbe_result(errs, errs2, err_str, err_str_size, result);
+        return;
+    }
+
+    mbe_processAmbe2450Dataf(aout_buf, errs, errs2, err_str, ambe_d, cur_mp, prev_mp, prev_mp_enhanced, uvquality);
 }
 
 void
@@ -254,8 +363,10 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
     }
 }
 
-void
-processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
+static void
+processMbeFrameInternal(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24],
+                        char imbe7100_fr[7][24], dsd_vocoder_soft_bit imbe_soft_fr[8][23],
+                        dsd_vocoder_soft_bit ambe_soft_fr[4][24], dsd_vocoder_soft_bit imbe7100_soft_fr[7][24]) {
 
     int i;
     char imbe_d[88];
@@ -264,6 +375,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
     int x;
     int vertex_ks_applied_l = 0;
     int vertex_ks_applied_r = 0;
+
+    (void)imbe7100_soft_fr;
 
     //these conditions should ensure no clashing with the BP/HBP/Scrambler key loading machanisms already coded in
     if (state->currentslot == 0 && state->payload_algid != 0 && state->payload_algid != 0x80 && state->keyloader == 1) {
@@ -291,10 +404,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         //  0 +P25p1
         //  1 -P25p1
-        state->errs = mbe_eccImbe7200x4400C0(imbe_fr);
-        state->errs2 = state->errs;
-        mbe_demodulateImbe7200x4400Data(imbe_fr);
-        state->errs2 += mbe_eccImbe7200x4400Data(imbe_fr, imbe_d);
+        mbe_process_result imbe_result;
+        int have_imbe_result = decode_imbe7200_frame(state, imbe_fr, imbe_soft_fr, imbe_d, &imbe_result);
 
         //P25p1 Multi Crypt Handler (DES1, DES3, DES-XL and AES)
         if ((state->payload_algid == 0x81 && state->R != 0) || //DES-56
@@ -441,8 +552,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             }
         }
 
-        mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
-                                 state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+        process_imbe4400_params(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
+                                sizeof(state->err_str), imbe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced,
+                                opts->uvquality, &imbe_result, have_imbe_result);
         if (DSD_SYNC_IS_P25P1(state->synctype)) {
             int len = state->p25_p1_voice_err_hist_len > 0 ? state->p25_p1_voice_err_hist_len : 50;
             if (len > (int)sizeof(state->p25_p1_voice_err_hist)) {
@@ -520,10 +632,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
     } else if (DSD_SYNC_IS_NXDN(state->synctype)) //was 8 and 9
     {
 
-        state->errs = mbe_eccAmbe3600x2450C0(ambe_fr);
-        state->errs2 = state->errs;
-        mbe_demodulateAmbe3600x2450Data(ambe_fr);
-        state->errs2 += mbe_eccAmbe3600x2450Data(ambe_fr, ambe_d);
+        mbe_process_result ambe_result;
+        int have_ambe_result =
+            decode_ambe2450_frame(&state->errs, &state->errs2, ambe_fr, ambe_soft_fr, ambe_d, &ambe_result);
 
         if ((state->nxdn_cipher_type == 0x01 && state->R != 0) || (state->M == 1 && state->R > 0)) {
 
@@ -599,8 +710,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             // fprintf (stderr, " bc: %04d;", state->bit_counterL); //debug to see what the counter value is up to currently (seems nominal)
         }
 
-        mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
-                                 state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+        process_ambe2450_params(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
+                                sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced,
+                                opts->uvquality, &ambe_result, have_ambe_result);
         p25p2_record_voice_err(state, state->errs2);
 
         if (dsd_frame_detail_enabled(opts)) {
@@ -615,11 +727,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         //stereo slots and slot 0 (left slot)
         if (state->currentslot == 0) //&& opts->dmr_stereo == 1
         {
-
-            state->errs = mbe_eccAmbe3600x2450C0(ambe_fr);
-            state->errs2 = state->errs;
-            mbe_demodulateAmbe3600x2450Data(ambe_fr);
-            state->errs2 += mbe_eccAmbe3600x2450Data(ambe_fr, ambe_d);
+            mbe_process_result ambe_result;
+            int have_ambe_result =
+                decode_ambe2450_frame(&state->errs, &state->errs2, ambe_fr, ambe_soft_fr, ambe_d, &ambe_result);
 
             //EXPERIMENTAL!!
             //load basic privacy key number from array by the tg value (if not forced)
@@ -976,8 +1086,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
                 straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
             }
 
-            mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
-                                     state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+            process_ambe2450_params(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
+                                    sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
+                                    state->prev_mp_enhanced, opts->uvquality, &ambe_result, have_ambe_result);
             p25p2_record_voice_err(state, state->errs2);
 
             //old method for this step below
@@ -996,11 +1107,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         //stereo slots and slot 1 (right slot)
         if (state->currentslot == 1) //&& opts->dmr_stereo == 1
         {
-
-            state->errsR = mbe_eccAmbe3600x2450C0(ambe_fr);
-            state->errs2R = state->errsR;
-            mbe_demodulateAmbe3600x2450Data(ambe_fr);
-            state->errs2R += mbe_eccAmbe3600x2450Data(ambe_fr, ambe_d);
+            mbe_process_result ambe_result;
+            int have_ambe_result =
+                decode_ambe2450_frame(&state->errsR, &state->errs2R, ambe_fr, ambe_soft_fr, ambe_d, &ambe_result);
 
             //EXPERIMENTAL!!
             //load basic privacy key number from array by the tg value (if not forced)
@@ -1357,8 +1466,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
                 straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
             }
 
-            mbe_processAmbe2450Dataf(state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR, ambe_d,
-                                     state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2, opts->uvquality);
+            process_ambe2450_params(state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR,
+                                    sizeof(state->err_strR), ambe_d, state->cur_mp2, state->prev_mp2,
+                                    state->prev_mp_enhanced2, opts->uvquality, &ambe_result, have_ambe_result);
             p25p2_record_voice_err(state, state->errs2R);
 
             //old method for this step below
@@ -1569,4 +1679,15 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
     if (opts->audio_out_type == 9) {
         opts->audio_out = 0;
     }
+}
+
+void
+processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
+    processMbeFrameInternal(opts, state, imbe_fr, ambe_fr, imbe7100_fr, NULL, NULL, NULL);
+}
+
+void
+processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23],
+                    dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
+    processMbeFrameInternal(opts, state, NULL, NULL, NULL, imbe_fr, ambe_fr, imbe7100_fr);
 }

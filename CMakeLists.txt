@@ -236,8 +236,10 @@ endif()
 # Dependencies
 find_package(LibSndFile REQUIRED)
 
-# Require mbelib-neo (no legacy mbelib fallback)
-find_package(mbe-neo CONFIG REQUIRED)
+# Require mbelib-neo 2.x (no legacy mbelib fallback). The 2.x ABI provides the
+# soft-decision frame decode and mbe_process_result APIs used by dsd-neo.
+set(_DSD_MBE_REQUIRED_VERSION 2.0)
+find_package(mbe-neo ${_DSD_MBE_REQUIRED_VERSION} CONFIG REQUIRED)
 if(TARGET mbe_neo::mbe_shared)
     set(MBE_LINK_TARGET mbe_neo::mbe_shared)
 else()
@@ -245,7 +247,77 @@ else()
 endif()
 # Ensure includes for legacy-style #include <mbelib.h>
 # by adding the directory that directly contains mbelib.h
-find_path(MBE_INCLUDE_DIR NAMES mbelib.h PATH_SUFFIXES mbelib-neo)
+get_target_property(_MBE_TARGET_INCLUDE_DIRS ${MBE_LINK_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
+if(NOT _MBE_TARGET_INCLUDE_DIRS)
+    set(_MBE_TARGET_INCLUDE_DIRS "")
+endif()
+set(_MBE_INCLUDE_HINTS "")
+foreach(_MBE_TARGET_INCLUDE_DIR IN LISTS _MBE_TARGET_INCLUDE_DIRS)
+    if(IS_ABSOLUTE "${_MBE_TARGET_INCLUDE_DIR}" AND NOT _MBE_TARGET_INCLUDE_DIR MATCHES "^\\$<")
+        list(APPEND _MBE_INCLUDE_HINTS "${_MBE_TARGET_INCLUDE_DIR}" "${_MBE_TARGET_INCLUDE_DIR}/mbelib-neo")
+    endif()
+endforeach()
+find_path(MBE_INCLUDE_DIR NAMES mbelib.h HINTS ${_MBE_INCLUDE_HINTS} PATH_SUFFIXES mbelib-neo)
+if(NOT MBE_INCLUDE_DIR)
+    message(FATAL_ERROR "mbe-neo 2.x package found, but mbelib.h was not found")
+endif()
+
+include(CheckCSourceCompiles)
+set(_DSD_SAVED_CMAKE_REQUIRED_INCLUDES "${CMAKE_REQUIRED_INCLUDES}")
+set(_DSD_SAVED_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+if(DEFINED CMAKE_TRY_COMPILE_TARGET_TYPE)
+    set(_DSD_HAD_CMAKE_TRY_COMPILE_TARGET_TYPE TRUE)
+    set(_DSD_SAVED_CMAKE_TRY_COMPILE_TARGET_TYPE "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
+endif()
+set(CMAKE_REQUIRED_INCLUDES "${MBE_INCLUDE_DIR}")
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    string(APPEND CMAKE_REQUIRED_FLAGS " -Werror=implicit-function-declaration")
+endif()
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+unset(DSD_HAVE_MBE_NEO_SOFT_API CACHE)
+check_c_source_compiles([[
+#include <stddef.h>
+#include <stdint.h>
+#include <mbelib.h>
+
+int main(void) {
+    mbe_soft_bit imbe_soft[8][23] = {{{0}}};
+    mbe_soft_bit ambe_soft[4][24] = {{{0}}};
+    char imbe_d[88] = {0};
+    char ambe_d[49] = {0};
+    char err_str[16] = {0};
+    float audio[160] = {0.0f};
+    mbe_parms cur = {0};
+    mbe_parms prev = {0};
+    mbe_parms prev_enhanced = {0};
+    mbe_process_result result;
+
+    mbe_initProcessResult(&result);
+    result.c0_errors = 0;
+    result.total_errors = 0;
+    result.flags = MBE_PROCESS_FLAG_SOFT_INPUT;
+    (void)mbe_decodeImbe7200x4400SoftFrame(imbe_soft, imbe_d, &result);
+    (void)mbe_decodeAmbe3600x2450SoftFrame(ambe_soft, ambe_d, &result);
+    (void)mbe_processImbe4400DatafV2(audio, &result, imbe_d, &cur, &prev, &prev_enhanced, 3);
+    (void)mbe_processAmbe2450DatafV2(audio, &result, ambe_d, &cur, &prev, &prev_enhanced, 3);
+    mbe_formatProcessResult(err_str, sizeof(err_str), &result);
+    return (int)(sizeof(mbe_soft_bit) + sizeof(mbe_process_result));
+}
+]] DSD_HAVE_MBE_NEO_SOFT_API)
+set(CMAKE_REQUIRED_INCLUDES "${_DSD_SAVED_CMAKE_REQUIRED_INCLUDES}")
+set(CMAKE_REQUIRED_FLAGS "${_DSD_SAVED_CMAKE_REQUIRED_FLAGS}")
+if(_DSD_HAD_CMAKE_TRY_COMPILE_TARGET_TYPE)
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_DSD_SAVED_CMAKE_TRY_COMPILE_TARGET_TYPE}")
+else()
+    unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
+endif()
+unset(_DSD_HAD_CMAKE_TRY_COMPILE_TARGET_TYPE)
+unset(_DSD_SAVED_CMAKE_TRY_COMPILE_TARGET_TYPE)
+unset(_DSD_SAVED_CMAKE_REQUIRED_INCLUDES)
+unset(_DSD_SAVED_CMAKE_REQUIRED_FLAGS)
+if(NOT DSD_HAVE_MBE_NEO_SOFT_API)
+    message(FATAL_ERROR "mbe-neo 2.x with the soft-decision/V2 API is required; update mbelib-neo")
+endif()
 if(DSD_ENABLE_RTLSDR)
     find_package(RTLSDR)
 endif()

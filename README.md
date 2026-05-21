@@ -38,7 +38,7 @@ This project is an active work in progress as we decouple from the upstream fork
 - A performance‑enhanced fork of [lwvmobile/dsd-fme](https://github.com/lwvmobile/dsd-fme), which is a fork of [szechyjs/dsd](https://github.com/szechyjs/dsd)
 - Modularized fork with clear boundaries: `runtime`, `platform`, `dsp`, `io`, `engine`, `fec`, `crypto`, `protocol`, `core`, plus `ui` and a CLI app.
 - Protocol coverage: DMR, dPMR, D‑STAR, NXDN, P25 Phase 1/2, X2‑TDMA, EDACS, ProVoice, M17, YSF.
-- Requires [arancormonk/mbelib-neo](https://github.com/arancormonk/mbelib-neo) for IMBE/AMBE vocoder primitives.
+- Requires [arancormonk/mbelib-neo](https://github.com/arancormonk/mbelib-neo) 2.x for IMBE/AMBE vocoder primitives.
 - Public headers live under `include/dsd-neo/...` and are included as `#include <dsd-neo/<module>/<header>>`.
 
 ## How DSD‑neo Is Different
@@ -103,7 +103,7 @@ Requirements
 - Dependencies:
   - Required: libsndfile; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
   - Optional: librtlsdr (RTL‑SDR support), SoapySDR (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl (rdio API uploads), PortAudio on non-Windows builds, help2man (man page generation).
-  - Vocoder: mbelib-neo (`mbe-neo` CMake package) is required.
+  - Vocoder: mbelib-neo 2.x (`mbe-neo` CMake package) is required.
 
 OS package hints
 
@@ -117,7 +117,7 @@ OS package hints
 
 MBE vocoder dependency (mbelib-neo)
 
-DSD‑neo requires the `mbe-neo` CMake package (from `mbelib-neo`). If CMake fails with “could not find mbe-neo”, install it and re-run configure.
+DSD‑neo requires the `mbe-neo` 2.x CMake package (from `mbelib-neo`) with the soft-decision/V2 API. The older 1.x mbelib-neo releases are not supported. If CMake fails with “could not find mbe-neo”, install it and re-run configure.
 
 Example (Linux/macOS):
 

@@ -288,5 +288,5 @@ Optional feature interface targets (compile definitions + include paths; stubbed
 External dependencies (resolved via CMake):
 
 - Required: LibSndFile; curses (ncursesw/PDCurses); an audio backend (PulseAudio by default, PortAudio on Windows);
-  MBE vocoder (`mbe-neo`).
+  MBE vocoder (`mbe-neo` 2.x).
 - Optional: RTL‑SDR, SoapySDR, CODEC2, libcurl.

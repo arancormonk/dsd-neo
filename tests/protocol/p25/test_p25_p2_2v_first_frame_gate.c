@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/vocoder.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -262,6 +263,8 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 // Interpose the MBE frame decoder to count invocations without pulling in the
 // full vocoder stack. The signature must match src/core/vocoder/dsd_mbe.c.
 static int g_mbe_calls = 0;
+static int g_mbe_hard_calls = 0;
+static int g_mbe_soft_calls = 0;
 
 void
 processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
@@ -271,6 +274,19 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
     (void)ambe_fr;
     (void)imbe7100_fr;
     g_mbe_calls++;
+    g_mbe_hard_calls++;
+}
+
+void
+processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23],
+                    dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
+    (void)opts;
+    (void)state;
+    (void)imbe_fr;
+    (void)ambe_fr;
+    (void)imbe7100_fr;
+    g_mbe_calls++;
+    g_mbe_soft_calls++;
 }
 
 static int
@@ -290,6 +306,13 @@ reset_state(dsd_opts* opts, dsd_state* st) {
     opts->floating_point = 0;
 }
 
+static void
+reset_mbe_calls(void) {
+    g_mbe_calls = 0;
+    g_mbe_hard_calls = 0;
+    g_mbe_soft_calls = 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -300,33 +323,41 @@ main(void) {
     reset_state(&opts, &st);
     st.currentslot = 0;
     st.p25_p2_audio_allowed[0] = 0;
-    g_mbe_calls = 0;
+    reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("slot0 gated: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot0 gated: soft mbe calls", g_mbe_soft_calls, 0);
+    rc |= expect_eq("slot0 gated: hard mbe calls", g_mbe_hard_calls, 0);
 
     // Slot 0: audio allowed -> expect 2 MBE calls (both 2V subframes decoded)
     reset_state(&opts, &st);
     st.currentslot = 0;
     st.p25_p2_audio_allowed[0] = 1;
-    g_mbe_calls = 0;
+    reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("slot0 allowed: mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot0 allowed: soft mbe calls", g_mbe_soft_calls, 2);
+    rc |= expect_eq("slot0 allowed: hard mbe calls", g_mbe_hard_calls, 0);
 
     // Slot 1: audio gated off -> expect 0 MBE calls
     reset_state(&opts, &st);
     st.currentslot = 1;
     st.p25_p2_audio_allowed[1] = 0;
-    g_mbe_calls = 0;
+    reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("slot1 gated: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot1 gated: soft mbe calls", g_mbe_soft_calls, 0);
+    rc |= expect_eq("slot1 gated: hard mbe calls", g_mbe_hard_calls, 0);
 
     // Slot 1: audio allowed -> expect 2 MBE calls
     reset_state(&opts, &st);
     st.currentslot = 1;
     st.p25_p2_audio_allowed[1] = 1;
-    g_mbe_calls = 0;
+    reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("slot1 allowed: mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot1 allowed: soft mbe calls", g_mbe_soft_calls, 2);
+    rc |= expect_eq("slot1 allowed: hard mbe calls", g_mbe_hard_calls, 0);
 
     return rc;
 }

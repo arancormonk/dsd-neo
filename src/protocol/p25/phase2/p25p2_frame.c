@@ -323,6 +323,14 @@ int facch_rs[2][114] = {0};
 int sacch[2][180] = {0};
 int sacch_rs[2][132] = {0};
 
+static dsd_vocoder_soft_bit
+p25p2_soft_bit_from_abs_bit(int abs_bit) {
+    if (abs_bit < 0 || abs_bit >= 1400) {
+        return dsd_vocoder_soft_bit_from_hard_llr(0, 0);
+    }
+    return dsd_vocoder_soft_bit_from_hard_llr(p2xbit[abs_bit], p2xllr[abs_bit]);
+}
+
 // Reset all P25P2 frame processing global state variables.
 // This must be called when tuning to a new P25P2 voice channel to clear stale
 // data from the previous channel that would otherwise cause decode failures.
@@ -783,6 +791,10 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     int r = 0;
     int s = 0;
     int t = 0;
+    dsd_vocoder_soft_bit ambe_fr1_soft[4][24] = {0};
+    dsd_vocoder_soft_bit ambe_fr2_soft[4][24] = {0};
+    dsd_vocoder_soft_bit ambe_fr3_soft[4][24] = {0};
+    dsd_vocoder_soft_bit ambe_fr4_soft[4][24] = {0};
 
     // SM event: ACTIVE on current slot - only emit if audio is allowed for this
     // slot (clear or decryptable). This prevents encrypted/undecryptable frames
@@ -816,10 +828,18 @@ process_4V(dsd_opts* opts, dsd_state* state) {
         }
 
         if (*w >= 0 && *w < 4 && b >= 0 && b < 24) {
-            ambe_fr1[*w][b] = p2xbit[x + 2 + vc_counter];
-            ambe_fr2[*w][b] = p2xbit[x + 76 + vc_counter];
-            ambe_fr3[*w][b] = p2xbit[x + 172 + vc_counter];
-            ambe_fr4[*w][b] = p2xbit[x + 246 + vc_counter];
+            int bit1 = x + 2 + vc_counter;
+            int bit2 = x + 76 + vc_counter;
+            int bit3 = x + 172 + vc_counter;
+            int bit4 = x + 246 + vc_counter;
+            ambe_fr1[*w][b] = p2xbit[bit1];
+            ambe_fr2[*w][b] = p2xbit[bit2];
+            ambe_fr3[*w][b] = p2xbit[bit3];
+            ambe_fr4[*w][b] = p2xbit[bit4];
+            ambe_fr1_soft[*w][b] = p25p2_soft_bit_from_abs_bit(bit1);
+            ambe_fr2_soft[*w][b] = p25p2_soft_bit_from_abs_bit(bit2);
+            ambe_fr3_soft[*w][b] = p25p2_soft_bit_from_abs_bit(bit3);
+            ambe_fr4_soft[*w][b] = p25p2_soft_bit_from_abs_bit(bit4);
         }
         w++;
     }
@@ -858,7 +878,7 @@ process_4V(dsd_opts* opts, dsd_state* state) {
 
     // Gate before decode to avoid spurious/stuttery output when audio not allowed
     if (state->p25_p2_audio_allowed[state->currentslot]) {
-        processMbeFrame(opts, state, NULL, ambe_fr1, NULL);
+        processMbeFrameSoft(opts, state, NULL, ambe_fr1_soft, NULL);
         if (state->currentslot == 0) {
             memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
             memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
@@ -885,7 +905,7 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->p25_p2_audio_allowed[state->currentslot]) {
-        processMbeFrame(opts, state, NULL, ambe_fr2, NULL);
+        processMbeFrameSoft(opts, state, NULL, ambe_fr2_soft, NULL);
         if (state->currentslot == 0) {
             memcpy(state->f_l4[1], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
             memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
@@ -906,7 +926,7 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->p25_p2_audio_allowed[state->currentslot]) {
-        processMbeFrame(opts, state, NULL, ambe_fr3, NULL);
+        processMbeFrameSoft(opts, state, NULL, ambe_fr3_soft, NULL);
         if (state->currentslot == 0) {
             memcpy(state->f_l4[2], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
             memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
@@ -927,7 +947,7 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->p25_p2_audio_allowed[state->currentslot]) {
-        processMbeFrame(opts, state, NULL, ambe_fr4, NULL);
+        processMbeFrameSoft(opts, state, NULL, ambe_fr4_soft, NULL);
         if (state->currentslot == 0) {
             memcpy(state->f_l4[3], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
             memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
@@ -1274,6 +1294,8 @@ process_2V(dsd_opts* opts, dsd_state* state) {
     int r = 0;
     int s = 0;
     int t = 0;
+    dsd_vocoder_soft_bit ambe_fr1_soft[4][24] = {0};
+    dsd_vocoder_soft_bit ambe_fr2_soft[4][24] = {0};
 
     // SM event: ACTIVE on current slot - only emit if audio is allowed for this
     // slot (clear or decryptable). This prevents encrypted/undecryptable frames
@@ -1307,8 +1329,12 @@ process_2V(dsd_opts* opts, dsd_state* state) {
         }
 
         if (*w >= 0 && *w < 4 && b >= 0 && b < 24) {
-            ambe_fr1[*w][b] = p2xbit[x + 2 + vc_counter];
-            ambe_fr2[*w][b] = p2xbit[x + 76 + vc_counter];
+            int bit1 = x + 2 + vc_counter;
+            int bit2 = x + 76 + vc_counter;
+            ambe_fr1[*w][b] = p2xbit[bit1];
+            ambe_fr2[*w][b] = p2xbit[bit2];
+            ambe_fr1_soft[*w][b] = p25p2_soft_bit_from_abs_bit(bit1);
+            ambe_fr2_soft[*w][b] = p25p2_soft_bit_from_abs_bit(bit2);
         }
         w++;
     }
@@ -1350,7 +1376,7 @@ process_2V(dsd_opts* opts, dsd_state* state) {
     // disallowed for this slot. ESS has already run above to open audio early
     // when clear/decryptable.
     if (state->p25_p2_audio_allowed[state->currentslot]) {
-        processMbeFrame(opts, state, NULL, ambe_fr1, NULL);
+        processMbeFrameSoft(opts, state, NULL, ambe_fr1_soft, NULL);
         if (state->currentslot == 0) {
             memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
             memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
@@ -1373,7 +1399,7 @@ process_2V(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->p25_p2_audio_allowed[state->currentslot]) {
-        processMbeFrame(opts, state, NULL, ambe_fr2, NULL);
+        processMbeFrameSoft(opts, state, NULL, ambe_fr2_soft, NULL);
         if (state->currentslot == 0) {
             memcpy(state->f_l4[1], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
             memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));

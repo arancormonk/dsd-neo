@@ -78,8 +78,12 @@ void
 process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
     int j, dibit, status;
     char imbe_fr[8][23];
+    dsd_vocoder_soft_bit imbe_soft_fr[8][23];
     const int *w, *x, *y, *z;
     UNUSED(status);
+
+    memset(imbe_fr, 0, sizeof(imbe_fr));
+    memset(imbe_soft_fr, 0, sizeof(imbe_soft_fr));
 
     w = iW;
     x = iX;
@@ -109,9 +113,12 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
         } else {
             (*status_count)++;
         }
-        dibit = getDibit(opts, state);
+        dsd_dibit_soft_t soft;
+        dibit = getDibitSoft(opts, state, &soft);
         imbe_fr[*w][*x] = (1 & (dibit >> 1)); // bit 1
         imbe_fr[*y][*z] = (1 & dibit);        // bit 0
+        imbe_soft_fr[*w][*x] = dsd_vocoder_soft_bit_from_hard_llr(imbe_fr[*w][*x], soft.llr[0]);
+        imbe_soft_fr[*y][*z] = dsd_vocoder_soft_bit_from_hard_llr(imbe_fr[*y][*z], soft.llr[1]);
 
 #ifdef TRACE_DSD
         if (*w == 0) {
@@ -172,7 +179,7 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
             fprintf(stderr, "\n IMBE Non-standard c0 detected, skipped;");
         }
     } else {
-        processMbeFrame(opts, state, imbe_fr, NULL, NULL);
+        processMbeFrameSoft(opts, state, imbe_soft_fr, NULL, NULL);
     }
 }
 

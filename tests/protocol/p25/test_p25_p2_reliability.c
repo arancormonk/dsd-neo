@@ -18,6 +18,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -151,12 +152,22 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 void
-processMbeFrame(dsd_opts* opts, dsd_state* state, void* a, char fr[4][24], void* c) {
+processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
     (void)opts;
     (void)state;
-    (void)a;
-    (void)fr;
-    (void)c;
+    (void)imbe_fr;
+    (void)ambe_fr;
+    (void)imbe7100_fr;
+}
+
+void
+processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23],
+                    dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
+    (void)opts;
+    (void)state;
+    (void)imbe_fr;
+    (void)ambe_fr;
+    (void)imbe7100_fr;
 }
 
 void
