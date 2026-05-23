@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "test_support.h"
 
@@ -22,19 +22,19 @@ write_temp_config(const char* contents, char* out_path, size_t out_sz) {
     char tmpl[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(tmpl, sizeof(tmpl), "dsdneo_config_val");
     if (fd < 0) {
-        fprintf(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
         return 1;
     }
     size_t len = strlen(contents);
     ssize_t wr = dsd_write(fd, contents, len);
     if (wr < 0 || (size_t)wr != len) {
-        fprintf(stderr, "write failed: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "write failed: %s\n", strerror(errno));
         (void)dsd_close(fd);
         (void)remove(tmpl);
         return 1;
     }
     (void)dsd_close(fd);
-    snprintf(out_path, out_sz, "%s", tmpl);
+    DSD_SNPRINTF(out_path, out_sz, "%s", tmpl);
     out_path[out_sz - 1] = '\0';
     return 0;
 }
@@ -67,21 +67,21 @@ test_valid_config(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
 
     int result = 0;
     if (rc != 0) {
-        fprintf(stderr, "FAIL: valid config returned error %d\n", rc);
+        DSD_FPRINTF(stderr, "FAIL: valid config returned error %d\n", rc);
         result = 1;
     }
     if (diags.error_count > 0) {
-        fprintf(stderr, "FAIL: valid config has %d errors\n", diags.error_count);
+        DSD_FPRINTF(stderr, "FAIL: valid config has %d errors\n", diags.error_count);
         result = 1;
     }
     if (diags.warning_count > 0) {
-        fprintf(stderr, "FAIL: valid config has %d warnings\n", diags.warning_count);
+        DSD_FPRINTF(stderr, "FAIL: valid config has %d warnings\n", diags.warning_count);
         result = 1;
     }
 
@@ -104,19 +104,19 @@ test_unknown_key_warning(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
 
     int result = 0;
     // Should succeed (warnings don't cause failure)
     if (rc != 0) {
-        fprintf(stderr, "FAIL: unknown key caused failure (rc=%d)\n", rc);
+        DSD_FPRINTF(stderr, "FAIL: unknown key caused failure (rc=%d)\n", rc);
         result = 1;
     }
     // Should have a warning for unknown key
     if (diags.warning_count == 0) {
-        fprintf(stderr, "FAIL: no warning for unknown key\n");
+        DSD_FPRINTF(stderr, "FAIL: no warning for unknown key\n");
         result = 1;
     }
 
@@ -129,7 +129,7 @@ test_unknown_key_warning(void) {
         }
     }
     if (!found_warning) {
-        fprintf(stderr, "FAIL: warning doesn't mention unknown_key\n");
+        DSD_FPRINTF(stderr, "FAIL: warning doesn't mention unknown_key\n");
         result = 1;
     }
 
@@ -151,19 +151,19 @@ test_unknown_section_warning(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
 
     int result = 0;
     // Should succeed (warnings don't cause failure)
     if (rc != 0) {
-        fprintf(stderr, "FAIL: unknown section caused failure (rc=%d)\n", rc);
+        DSD_FPRINTF(stderr, "FAIL: unknown section caused failure (rc=%d)\n", rc);
         result = 1;
     }
     // Should have a warning for unknown section
     if (diags.warning_count == 0) {
-        fprintf(stderr, "FAIL: no warning for unknown section\n");
+        DSD_FPRINTF(stderr, "FAIL: no warning for unknown section\n");
         result = 1;
     }
 
@@ -185,18 +185,18 @@ test_invalid_enum_error(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
 
     int result = 0;
     // Should return error for invalid enum
     if (rc == 0) {
-        fprintf(stderr, "FAIL: invalid enum should cause error\n");
+        DSD_FPRINTF(stderr, "FAIL: invalid enum should cause error\n");
         result = 1;
     }
     if (diags.error_count == 0) {
-        fprintf(stderr, "FAIL: no error for invalid enum value\n");
+        DSD_FPRINTF(stderr, "FAIL: no error for invalid enum value\n");
         result = 1;
     }
 
@@ -230,17 +230,17 @@ test_decode_mode_aliases_valid(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
 
     int result = 0;
     if (rc != 0) {
-        fprintf(stderr, "FAIL: decode alias config returned error %d\n", rc);
+        DSD_FPRINTF(stderr, "FAIL: decode alias config returned error %d\n", rc);
         result = 1;
     }
     if (diags.error_count > 0) {
-        fprintf(stderr, "FAIL: decode alias config has %d errors\n", diags.error_count);
+        DSD_FPRINTF(stderr, "FAIL: decode alias config has %d errors\n", diags.error_count);
         result = 1;
     }
 
@@ -264,17 +264,17 @@ test_soapy_source_valid(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
 
     int result = 0;
     if (rc != 0) {
-        fprintf(stderr, "FAIL: soapy source config returned error %d\n", rc);
+        DSD_FPRINTF(stderr, "FAIL: soapy source config returned error %d\n", rc);
         result = 1;
     }
     if (diags.error_count > 0) {
-        fprintf(stderr, "FAIL: soapy source config has %d errors\n", diags.error_count);
+        DSD_FPRINTF(stderr, "FAIL: soapy source config has %d errors\n", diags.error_count);
         result = 1;
     }
 
@@ -296,17 +296,17 @@ test_invalid_source_rejected_after_soapy_added(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
 
     int result = 0;
     if (rc == 0) {
-        fprintf(stderr, "FAIL: invalid source soapyy should cause error\n");
+        DSD_FPRINTF(stderr, "FAIL: invalid source soapyy should cause error\n");
         result = 1;
     }
     if (diags.error_count == 0) {
-        fprintf(stderr, "FAIL: no error for invalid source soapyy\n");
+        DSD_FPRINTF(stderr, "FAIL: no error for invalid source soapyy\n");
         result = 1;
     }
 
@@ -329,7 +329,7 @@ test_int_out_of_range(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
     (void)rc;
@@ -337,7 +337,7 @@ test_int_out_of_range(void) {
     int result = 0;
     // Should have a warning for out-of-range value
     if (diags.warning_count == 0) {
-        fprintf(stderr, "FAIL: no warning for out-of-range rtl_device=999\n");
+        DSD_FPRINTF(stderr, "FAIL: no warning for out-of-range rtl_device=999\n");
         result = 1;
     }
 
@@ -361,7 +361,7 @@ test_int_out_of_range_negative_max(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
     (void)rc;
@@ -369,7 +369,7 @@ test_int_out_of_range_negative_max(void) {
     int result = 0;
     // Should have a warning for out-of-range value
     if (diags.warning_count == 0) {
-        fprintf(stderr, "FAIL: no warning for out-of-range rtl_sql=10\n");
+        DSD_FPRINTF(stderr, "FAIL: no warning for out-of-range rtl_sql=10\n");
         result = 1;
     }
 
@@ -383,7 +383,7 @@ test_int_out_of_range_negative_max(void) {
         }
     }
     if (!found_warning) {
-        fprintf(stderr, "FAIL: missing out-of-range warning for rtl_sql=10\n");
+        DSD_FPRINTF(stderr, "FAIL: missing out-of-range warning for rtl_sql=10\n");
         result = 1;
     }
 
@@ -406,7 +406,7 @@ test_diags_have_line_numbers(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     dsd_user_config_validate(path, &diags);
 
@@ -424,7 +424,7 @@ test_diags_have_line_numbers(void) {
         }
     }
     if (diags.count > 0 && !found_line_num) {
-        fprintf(stderr, "FAIL: diagnostics missing line numbers\n");
+        DSD_FPRINTF(stderr, "FAIL: diagnostics missing line numbers\n");
         result = 1;
     }
 
@@ -443,14 +443,14 @@ test_empty_config(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
 
     // Empty config should not crash and should succeed (no errors)
     int result = 0;
     if (rc != 0) {
-        fprintf(stderr, "FAIL: empty config returned error %d\n", rc);
+        DSD_FPRINTF(stderr, "FAIL: empty config returned error %d\n", rc);
         result = 1;
     }
 
@@ -462,13 +462,13 @@ test_empty_config(void) {
 static int
 test_nonexistent_file(void) {
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate("/nonexistent/path/config.ini", &diags);
 
     // Should return error for nonexistent file
     if (rc == 0) {
-        fprintf(stderr, "FAIL: nonexistent file should return error\n");
+        DSD_FPRINTF(stderr, "FAIL: nonexistent file should return error\n");
         dsd_user_config_diags_free(&diags);
         return 1;
     }
@@ -494,18 +494,18 @@ test_profile_invalid_enum(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
 
     int result = 0;
     // Should return error for invalid enum in profile
     if (rc == 0) {
-        fprintf(stderr, "FAIL: profile with invalid enum should cause error\n");
+        DSD_FPRINTF(stderr, "FAIL: profile with invalid enum should cause error\n");
         result = 1;
     }
     if (diags.error_count == 0) {
-        fprintf(stderr, "FAIL: no error for invalid enum in profile\n");
+        DSD_FPRINTF(stderr, "FAIL: no error for invalid enum in profile\n");
         result = 1;
     }
 
@@ -518,7 +518,7 @@ test_profile_invalid_enum(void) {
         }
     }
     if (!found_error) {
-        fprintf(stderr, "FAIL: error doesn't mention invalid_mode\n");
+        DSD_FPRINTF(stderr, "FAIL: error doesn't mention invalid_mode\n");
         result = 1;
     }
 
@@ -544,14 +544,14 @@ test_profile_int_out_of_range(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     dsd_user_config_validate(path, &diags);
 
     int result = 0;
     // Should have warning for out-of-range value in profile
     if (diags.warning_count == 0) {
-        fprintf(stderr, "FAIL: no warning for out-of-range value in profile\n");
+        DSD_FPRINTF(stderr, "FAIL: no warning for out-of-range value in profile\n");
         result = 1;
     }
 
@@ -564,7 +564,7 @@ test_profile_int_out_of_range(void) {
         }
     }
     if (!found_warning) {
-        fprintf(stderr, "FAIL: warning doesn't mention out of range for profile value\n");
+        DSD_FPRINTF(stderr, "FAIL: warning doesn't mention out of range for profile value\n");
         result = 1;
     }
 
@@ -590,18 +590,18 @@ test_profile_invalid_bool(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
 
     int result = 0;
     // Should return error for invalid boolean in profile
     if (rc == 0) {
-        fprintf(stderr, "FAIL: profile with invalid bool should cause error\n");
+        DSD_FPRINTF(stderr, "FAIL: profile with invalid bool should cause error\n");
         result = 1;
     }
     if (diags.error_count == 0) {
-        fprintf(stderr, "FAIL: no error for invalid bool in profile\n");
+        DSD_FPRINTF(stderr, "FAIL: no error for invalid bool in profile\n");
         result = 1;
     }
 
@@ -629,17 +629,17 @@ test_profile_valid_values(void) {
     }
 
     dsdcfg_diagnostics_t diags;
-    memset(&diags, 0, sizeof(diags));
+    DSD_MEMSET(&diags, 0, sizeof(diags));
 
     int rc = dsd_user_config_validate(path, &diags);
 
     int result = 0;
     if (rc != 0) {
-        fprintf(stderr, "FAIL: valid profile config returned error %d\n", rc);
+        DSD_FPRINTF(stderr, "FAIL: valid profile config returned error %d\n", rc);
         result = 1;
     }
     if (diags.error_count > 0) {
-        fprintf(stderr, "FAIL: valid profile config has %d errors\n", diags.error_count);
+        DSD_FPRINTF(stderr, "FAIL: valid profile config has %d errors\n", diags.error_count);
         result = 1;
     }
 

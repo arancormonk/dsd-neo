@@ -8,7 +8,8 @@
  * @brief Parse frequency strings into Hz (supports K/M/G suffixes).
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_FREQ_PARSE_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_FREQ_PARSE_H_
 
 #include <stdint.h>
 
@@ -27,3 +28,5 @@ uint32_t dsd_parse_freq_hz(const char* s);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_FREQ_PARSE_H_ */

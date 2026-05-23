@@ -18,10 +18,9 @@
  */
 
 #include <dsd-neo/platform/audio_concealment.h>
-
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 #define FRAMES   256
 #define CHANNELS 1
@@ -34,7 +33,7 @@
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -43,7 +42,7 @@ expect_int(const char* label, int got, int want) {
 static int
 expect_i16(const char* label, int16_t got, int16_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, (int)got, (int)want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, (int)got, (int)want);
         return 1;
     }
     return 0;
@@ -75,7 +74,7 @@ static int
 test_reset_after_one_underrun(void) {
     int rc = 0;
     struct audio_conceal_state cs;
-    memset(&cs, 0, sizeof(cs));
+    DSD_MEMSET(&cs, 0, sizeof(cs));
 
     rc |= expect_int("init", audio_conceal_init(&cs, FRAMES, CHANNELS), 0);
 
@@ -101,7 +100,7 @@ test_reset_after_one_underrun(void) {
     rc |= expect_int("repeat_count after good_buffer", cs.repeat_count, 0);
 
     /* Next underrun should use k=1 attenuation on the NEW buffer. */
-    memset(out, 0xAA, sizeof(out));
+    DSD_MEMSET(out, 0xAA, sizeof(out));
     audio_conceal_on_underrun(&cs, out, FRAMES);
 
     int16_t want = expected_sample(2000, 1);
@@ -120,7 +119,7 @@ static int
 test_reset_after_max_underruns(void) {
     int rc = 0;
     struct audio_conceal_state cs;
-    memset(&cs, 0, sizeof(cs));
+    DSD_MEMSET(&cs, 0, sizeof(cs));
 
     rc |= expect_int("init", audio_conceal_init(&cs, FRAMES, CHANNELS), 0);
 
@@ -148,7 +147,7 @@ test_reset_after_max_underruns(void) {
     rc |= expect_int("repeat_count after good_buffer", cs.repeat_count, 0);
 
     /* Next underrun should use k=1 attenuation on the NEW buffer. */
-    memset(out, 0xAA, sizeof(out));
+    DSD_MEMSET(out, 0xAA, sizeof(out));
     audio_conceal_on_underrun(&cs, out, FRAMES);
 
     int16_t want = expected_sample(8000, 1);
@@ -165,7 +164,7 @@ static int
 test_repeat_count_is_zero_after_good_buffer(void) {
     int rc = 0;
     struct audio_conceal_state cs;
-    memset(&cs, 0, sizeof(cs));
+    DSD_MEMSET(&cs, 0, sizeof(cs));
 
     rc |= expect_int("init", audio_conceal_init(&cs, FRAMES, CHANNELS), 0);
 
@@ -198,7 +197,7 @@ static int
 test_multiple_reset_cycles(void) {
     int rc = 0;
     struct audio_conceal_state cs;
-    memset(&cs, 0, sizeof(cs));
+    DSD_MEMSET(&cs, 0, sizeof(cs));
 
     rc |= expect_int("init", audio_conceal_init(&cs, FRAMES, CHANNELS), 0);
 
@@ -222,7 +221,7 @@ test_multiple_reset_cycles(void) {
         /* Verify k=2 attenuation on this cycle's buffer. */
         int16_t want = expected_sample(val, 2);
         if (out[0] != want) {
-            fprintf(stderr, "FAIL: cycle=%d k=2 sample[0]: got=%d want=%d\n", cycle, (int)out[0], (int)want);
+            DSD_FPRINTF(stderr, "FAIL: cycle=%d k=2 sample[0]: got=%d want=%d\n", cycle, (int)out[0], (int)want);
             rc = 1;
         }
     }

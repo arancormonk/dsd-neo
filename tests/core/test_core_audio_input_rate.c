@@ -12,8 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/resampler.h"
 #include "dsd-neo/platform/file_compat.h"
@@ -22,7 +22,7 @@
 static int
 expect_true(const char* label, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         return 1;
     }
     return 0;
@@ -31,7 +31,7 @@ expect_true(const char* label, int cond) {
 static int
 expect_int_eq(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s (got %d want %d)\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s (got %d want %d)\n", label, got, want);
         return 1;
     }
     return 0;
@@ -40,7 +40,7 @@ expect_int_eq(const char* label, int got, int want) {
 static int
 expect_float_eq(const char* label, float got, float want) {
     if (fabsf(got - want) > 1e-6f) {
-        fprintf(stderr, "FAIL: %s (got %.6f want %.6f)\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s (got %.6f want %.6f)\n", label, got, want);
         return 1;
     }
     return 0;
@@ -69,34 +69,34 @@ static int
 create_temp_raw_pcm_wav_suffix(const char* prefix, const short* samples, size_t sample_count, char* out_path,
                                size_t out_path_sz) {
     if (!prefix || !samples || sample_count == 0 || !out_path || out_path_sz == 0) {
-        fprintf(stderr, "FAIL: invalid raw temp file request\n");
+        DSD_FPRINTF(stderr, "FAIL: invalid raw temp file request\n");
         return 1;
     }
 
     char base_path[DSD_TEST_PATH_MAX] = {0};
     int fd = dsd_test_mkstemp(base_path, sizeof base_path, prefix);
     if (fd < 0) {
-        fprintf(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
+        DSD_FPRINTF(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
         return 1;
     }
     (void)dsd_close(fd);
     (void)remove(base_path);
 
-    if (snprintf(out_path, out_path_sz, "%s.wav", base_path) >= (int)out_path_sz) {
-        fprintf(stderr, "FAIL: temp raw wav path too long for %s\n", prefix);
+    if (DSD_SNPRINTF(out_path, out_path_sz, "%s.wav", base_path) >= (int)out_path_sz) {
+        DSD_FPRINTF(stderr, "FAIL: temp raw wav path too long for %s\n", prefix);
         return 1;
     }
 
     FILE* fp = fopen(out_path, "wb");
     if (!fp) {
-        fprintf(stderr, "FAIL: fopen write failed for %s\n", out_path);
+        DSD_FPRINTF(stderr, "FAIL: fopen write failed for %s\n", out_path);
         return 1;
     }
 
     size_t nwritten = fwrite(samples, sizeof(samples[0]), sample_count, fp);
     fclose(fp);
     if (nwritten != sample_count) {
-        fprintf(stderr, "FAIL: fwrite failed for %s\n", out_path);
+        DSD_FPRINTF(stderr, "FAIL: fwrite failed for %s\n", out_path);
         (void)remove(out_path);
         return 1;
     }
@@ -109,21 +109,21 @@ create_temp_wav_family_file(const char* prefix, int sample_rate, int format, con
                             const char* expected_magic, char* out_path, size_t out_path_sz) {
     if (!prefix || !samples || sample_count == 0 || !expected_magic || !out_path || out_path_sz == 0
         || sample_rate <= 0) {
-        fprintf(stderr, "FAIL: invalid wav family temp file request\n");
+        DSD_FPRINTF(stderr, "FAIL: invalid wav family temp file request\n");
         return 1;
     }
 
     char base_path[DSD_TEST_PATH_MAX] = {0};
     int fd = dsd_test_mkstemp(base_path, sizeof base_path, prefix);
     if (fd < 0) {
-        fprintf(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
+        DSD_FPRINTF(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
         return 1;
     }
     (void)dsd_close(fd);
     (void)remove(base_path);
 
-    if (snprintf(out_path, out_path_sz, "%s.wav", base_path) >= (int)out_path_sz) {
-        fprintf(stderr, "FAIL: temp wav family path too long for %s\n", prefix);
+    if (DSD_SNPRINTF(out_path, out_path_sz, "%s.wav", base_path) >= (int)out_path_sz) {
+        DSD_FPRINTF(stderr, "FAIL: temp wav family path too long for %s\n", prefix);
         return 1;
     }
 
@@ -134,26 +134,26 @@ create_temp_wav_family_file(const char* prefix, int sample_rate, int format, con
 
     SNDFILE* sf = sf_open(out_path, SFM_WRITE, &info);
     if (sf == NULL) {
-        fprintf(stderr, "FAIL: sf_open write failed for %s: %s\n", out_path, sf_strerror(NULL));
+        DSD_FPRINTF(stderr, "FAIL: sf_open write failed for %s: %s\n", out_path, sf_strerror(NULL));
         (void)remove(out_path);
         return 1;
     }
 
     if (sf_write_short(sf, samples, (sf_count_t)sample_count) != (sf_count_t)sample_count) {
-        fprintf(stderr, "FAIL: sf_write_short failed for %s\n", out_path);
+        DSD_FPRINTF(stderr, "FAIL: sf_write_short failed for %s\n", out_path);
         sf_close(sf);
         (void)remove(out_path);
         return 1;
     }
     if (sf_close(sf) != 0) {
-        fprintf(stderr, "FAIL: sf_close failed for %s\n", out_path);
+        DSD_FPRINTF(stderr, "FAIL: sf_close failed for %s\n", out_path);
         (void)remove(out_path);
         return 1;
     }
 
     FILE* fp = fopen(out_path, "rb");
     if (!fp) {
-        fprintf(stderr, "FAIL: fopen read failed for %s\n", out_path);
+        DSD_FPRINTF(stderr, "FAIL: fopen read failed for %s\n", out_path);
         (void)remove(out_path);
         return 1;
     }
@@ -163,7 +163,7 @@ create_temp_wav_family_file(const char* prefix, int sample_rate, int format, con
     fclose(fp);
 
     if (nread != sizeof header || memcmp(header, expected_magic, 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) {
-        fprintf(stderr, "FAIL: unexpected wav family header for %s\n", out_path);
+        DSD_FPRINTF(stderr, "FAIL: unexpected wav family header for %s\n", out_path);
         (void)remove(out_path);
         return 1;
     }
@@ -175,7 +175,7 @@ static int
 test_input_rate_rescale_for_72000(void) {
     dsd_opts* opts = alloc_opts();
     if (!opts) {
-        fprintf(stderr, "FAIL: alloc opts\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
         return 1;
     }
     opts->wav_decimator = 48000;
@@ -183,7 +183,7 @@ test_input_rate_rescale_for_72000(void) {
 
     dsd_state* state = alloc_state();
     if (!state) {
-        fprintf(stderr, "FAIL: alloc state\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc state\n");
         free_opts(opts);
         return 1;
     }
@@ -214,7 +214,7 @@ static int
 test_input_rate_rescale_for_44100(void) {
     dsd_opts* opts = alloc_opts();
     if (!opts) {
-        fprintf(stderr, "FAIL: alloc opts\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
         return 1;
     }
     opts->wav_decimator = 48000;
@@ -222,7 +222,7 @@ test_input_rate_rescale_for_44100(void) {
 
     dsd_state* state = alloc_state();
     if (!state) {
-        fprintf(stderr, "FAIL: alloc state\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc state\n");
         free_opts(opts);
         return 1;
     }
@@ -253,7 +253,7 @@ static int
 test_input_rate_rejects_unsupported_staged_upsample_factor(void) {
     dsd_opts* opts = alloc_opts();
     if (!opts) {
-        fprintf(stderr, "FAIL: alloc opts\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
         return 1;
     }
     opts->wav_decimator = 48000;
@@ -268,7 +268,7 @@ test_input_rate_rejects_unsupported_staged_upsample_factor(void) {
 
     dsd_state* state = alloc_state();
     if (!state) {
-        fprintf(stderr, "FAIL: alloc state\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc state\n");
         free_opts(opts);
         return 1;
     }
@@ -299,13 +299,13 @@ static int
 test_input_rate_preserves_48k_effective_timing_for_24000(void) {
     dsd_opts* opts = alloc_opts();
     if (!opts) {
-        fprintf(stderr, "FAIL: alloc opts\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
         return 1;
     }
     opts->wav_decimator = 48000;
     opts->wav_sample_rate = 48000;
     if (!dsd_resampler_design(&opts->input_resampler, 6, 1)) {
-        fprintf(stderr, "FAIL: input resampler design\n");
+        DSD_FPRINTF(stderr, "FAIL: input resampler design\n");
         free_opts(opts);
         return 1;
     }
@@ -319,7 +319,7 @@ test_input_rate_preserves_48k_effective_timing_for_24000(void) {
 
     dsd_state* state = alloc_state();
     if (!state) {
-        fprintf(stderr, "FAIL: alloc state\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc state\n");
         free_opts(opts);
         return 1;
     }
@@ -369,46 +369,46 @@ static int
 test_source_effective_input_rate_classifier(void) {
     dsd_opts* opts = alloc_opts();
     if (!opts) {
-        fprintf(stderr, "FAIL: alloc opts\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
         return 1;
     }
     opts->wav_sample_rate = 72000;
 
     int rc = 0;
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     rc |= expect_int_eq("pulse ignores stale file sample rate", dsd_opts_source_uses_effective_input_rate(opts), 0);
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "/tmp/input.wav");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "/tmp/input.wav");
     rc |= expect_int_eq("file input uses effective sample rate", dsd_opts_source_uses_effective_input_rate(opts), 1);
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl_capture.wav");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl_capture.wav");
     rc |= expect_int_eq("rtl-prefixed filename still uses effective sample rate",
                         dsd_opts_source_uses_effective_input_rate(opts), 1);
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse_96000.wav");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse_96000.wav");
     rc |= expect_int_eq("pulse-prefixed filename still uses effective sample rate",
                         dsd_opts_source_uses_effective_input_rate(opts), 1);
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy.raw");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy.raw");
     rc |= expect_int_eq("soapy-prefixed filename still uses effective sample rate",
                         dsd_opts_source_uses_effective_input_rate(opts), 1);
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp:127.0.0.1:7355");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp:127.0.0.1:7355");
     rc |= expect_int_eq("udp input uses effective sample rate", dsd_opts_source_uses_effective_input_rate(opts), 1);
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:100000000");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:100000000");
     rc |= expect_int_eq("rtl input bypasses effective sample rate", dsd_opts_source_uses_effective_input_rate(opts), 0);
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
     rc |= expect_int_eq("rtltcp input bypasses effective sample rate", dsd_opts_source_uses_effective_input_rate(opts),
                         0);
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=airspy");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=airspy");
     rc |=
         expect_int_eq("soapy input bypasses effective sample rate", dsd_opts_source_uses_effective_input_rate(opts), 0);
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
     rc |= expect_int_eq("iqreplay input bypasses effective sample rate",
                         dsd_opts_source_uses_effective_input_rate(opts), 0);
 
@@ -425,7 +425,7 @@ static int
 test_current_input_timing_rate_prefers_active_backend(void) {
     dsd_opts* opts = alloc_opts();
     if (!opts) {
-        fprintf(stderr, "FAIL: alloc opts\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
         return 1;
     }
 
@@ -434,18 +434,18 @@ test_current_input_timing_rate_prefers_active_backend(void) {
     opts->wav_sample_rate = 72000;
     opts->audio_in_type = AUDIO_IN_PULSE;
     opts->pulse_digi_rate_in = 48000;
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "/tmp/requested.wav");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "/tmp/requested.wav");
     rc |= expect_int_eq("mixed pulse/file state keeps live pulse timing", dsd_opts_current_input_timing_rate(opts),
                         48000);
 
     opts->wav_sample_rate = 24000;
     opts->audio_in_type = AUDIO_IN_TCP;
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "tcp:127.0.0.1:7355");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "tcp:127.0.0.1:7355");
     rc |= expect_int_eq("tcp timing uses staged 48k effective rate", dsd_opts_current_input_timing_rate(opts), 48000);
 
     opts->wav_sample_rate = 24000;
     opts->audio_in_type = AUDIO_IN_NULL;
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
     rc |= expect_int_eq("iqreplay timing bypasses wav sample rate", dsd_opts_current_input_timing_rate(opts), 0);
 
     free_opts(opts);
@@ -468,7 +468,7 @@ test_headerless_wav_suffix_falls_back_to_raw_pcm(void) {
     int opened_as_container = 1;
     int rc = dsd_audio_open_mono_file_input(path, 24000, &file, &info, &active_sample_rate, &opened_as_container);
     if (rc != 0) {
-        fprintf(stderr, "FAIL: dsd_audio_open_mono_file_input failed for %s: %s\n", path, sf_strerror(NULL));
+        DSD_FPRINTF(stderr, "FAIL: dsd_audio_open_mono_file_input failed for %s: %s\n", path, sf_strerror(NULL));
         (void)remove(path);
         return 1;
     }
@@ -505,7 +505,7 @@ test_rifx_wav_suffix_uses_container_metadata(void) {
     int opened_as_container = 0;
     int rc = dsd_audio_open_mono_file_input(path, 24000, &file, &info, &active_sample_rate, &opened_as_container);
     if (rc != 0) {
-        fprintf(stderr, "FAIL: dsd_audio_open_mono_file_input failed for %s: %s\n", path, sf_strerror(NULL));
+        DSD_FPRINTF(stderr, "FAIL: dsd_audio_open_mono_file_input failed for %s: %s\n", path, sf_strerror(NULL));
         (void)remove(path);
         return 1;
     }
@@ -542,7 +542,7 @@ test_rf64_wav_suffix_uses_container_metadata(void) {
     int opened_as_container = 0;
     int rc = dsd_audio_open_mono_file_input(path, 24000, &file, &info, &active_sample_rate, &opened_as_container);
     if (rc != 0) {
-        fprintf(stderr, "FAIL: dsd_audio_open_mono_file_input failed for %s: %s\n", path, sf_strerror(NULL));
+        DSD_FPRINTF(stderr, "FAIL: dsd_audio_open_mono_file_input failed for %s: %s\n", path, sf_strerror(NULL));
         (void)remove(path);
         return 1;
     }
@@ -567,11 +567,11 @@ static int
 test_reset_input_upsample_state_clears_staging_only(void) {
     dsd_opts* opts = alloc_opts();
     if (!opts) {
-        fprintf(stderr, "FAIL: alloc opts\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
         return 1;
     }
     if (!dsd_resampler_design(&opts->input_resampler, 6, 1)) {
-        fprintf(stderr, "FAIL: input resampler design\n");
+        DSD_FPRINTF(stderr, "FAIL: input resampler design\n");
         free_opts(opts);
         return 1;
     }
@@ -611,7 +611,7 @@ test_reset_input_upsample_state_clears_staging_only(void) {
     rc |= expect_int_eq("reset clears staged upsample validity", opts->input_upsample_prev_valid, 0);
     for (size_t i = 0; i < sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]); i++) {
         char label[64];
-        snprintf(label, sizeof label, "reset clears staged sample %zu", i);
+        DSD_SNPRINTF(label, sizeof label, "reset clears staged sample %zu", i);
         rc |= expect_float_eq(label, opts->input_upsample_buf[i], 0.0f);
     }
     free_opts(opts);
@@ -622,11 +622,11 @@ static int
 test_reset_pcm_input_state_clears_resampler_and_staging(void) {
     dsd_opts* opts = alloc_opts();
     if (!opts) {
-        fprintf(stderr, "FAIL: alloc opts\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
         return 1;
     }
     if (!dsd_resampler_design(&opts->input_resampler, 6, 1)) {
-        fprintf(stderr, "FAIL: input resampler design\n");
+        DSD_FPRINTF(stderr, "FAIL: input resampler design\n");
         free_opts(opts);
         return 1;
     }
@@ -652,7 +652,7 @@ test_reset_pcm_input_state_clears_resampler_and_staging(void) {
     rc |= expect_int_eq("reset pcm input clears staged upsample validity", opts->input_upsample_prev_valid, 0);
     for (size_t i = 0; i < sizeof(opts->input_upsample_buf) / sizeof(opts->input_upsample_buf[0]); i++) {
         char label[64];
-        snprintf(label, sizeof label, "reset pcm input clears staged sample %zu", i);
+        DSD_SNPRINTF(label, sizeof label, "reset pcm input clears staged sample %zu", i);
         rc |= expect_float_eq(label, opts->input_upsample_buf[i], 0.0f);
     }
     free_opts(opts);

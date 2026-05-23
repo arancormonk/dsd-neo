@@ -8,7 +8,8 @@
  * @brief IQ replay metadata and source reader API.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_IQ_REPLAY_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_IQ_REPLAY_H_
 
 #include <dsd-neo/io/iq_types.h>
 #include <stdint.h>
@@ -113,3 +114,5 @@ int dsd_iq_info_print(const dsd_iq_replay_config* cfg, const char* display_path,
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_IQ_REPLAY_H_ */

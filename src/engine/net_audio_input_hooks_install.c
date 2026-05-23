@@ -8,6 +8,8 @@
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 
+#include "engine_hooks_install.h"
+
 void
 dsd_engine_net_audio_input_hooks_install(void) {
     dsd_net_audio_input_hooks hooks = {0};

@@ -25,90 +25,108 @@ int optind = 1;
 int opterr = 1;
 int optopt = 0;
 
+static void
+getopt_reset_if_requested(int* optpos) {
+    if (optind <= 1) {
+        optind = 1;
+        *optpos = 1;
+    }
+}
+
+static void
+getopt_advance_position(char* arg, int* optpos) {
+    (*optpos)++;
+    if (arg[*optpos] == '\0') {
+        optind++;
+        *optpos = 1;
+    }
+}
+
+static int
+getopt_next_option_char(int argc, char* const argv[], int* optpos, char** arg_out, char* option_out) {
+    while (1) {
+        if (optind >= argc) {
+            return -1;
+        }
+
+        *arg_out = argv[optind];
+        if (*arg_out == NULL) {
+            return -1;
+        }
+
+        if (*optpos == 1) {
+            if ((*arg_out)[0] != '-' || (*arg_out)[1] == '\0') {
+                return -1;
+            }
+            if ((*arg_out)[1] == '-' && (*arg_out)[2] == '\0') {
+                optind++;
+                return -1;
+            }
+        }
+
+        *option_out = (*arg_out)[*optpos];
+        if (*option_out != '\0') {
+            return 0;
+        }
+
+        optind++;
+        *optpos = 1;
+    }
+}
+
+static int
+getopt_handle_required_argument(int argc, char* const argv[], char* arg, int* optpos, const char* optstring) {
+    if (arg[*optpos + 1] != '\0') {
+        optarg = &arg[*optpos + 1];
+        optind++;
+        *optpos = 1;
+        return 0;
+    }
+
+    if (optind + 1 < argc && argv[optind + 1] != NULL) {
+        optarg = argv[optind + 1];
+        optind += 2;
+        *optpos = 1;
+        return 0;
+    }
+
+    getopt_advance_position(arg, optpos);
+    return (optstring[0] == ':') ? ':' : '?';
+}
+
 int
 getopt(int argc, char* const argv[], const char* optstring) {
     static int optpos = 1;
+    char* arg = NULL;
+    char c = '\0';
 
     if (argv == NULL || optstring == NULL) {
         return -1;
     }
 
     /* Allow callers to reset parsing by setting optind <= 1. */
-    if (optind <= 1) {
-        optind = 1;
-        optpos = 1;
-    }
-
+    getopt_reset_if_requested(&optpos);
     optarg = NULL;
 
-    if (optind >= argc) {
+    if (getopt_next_option_char(argc, argv, &optpos, &arg, &c) != 0) {
         return -1;
-    }
-
-    char* arg = argv[optind];
-    if (arg == NULL) {
-        return -1;
-    }
-
-    /* Start of a new argv element: validate that it looks like an option. */
-    if (optpos == 1) {
-        if (arg[0] != '-' || arg[1] == '\0') {
-            return -1;
-        }
-        /* End-of-options marker */
-        if (arg[1] == '-' && arg[2] == '\0') {
-            optind++;
-            return -1;
-        }
-    }
-
-    /* Consume next option character from this argv element. */
-    char c = arg[optpos];
-    if (c == '\0') {
-        optind++;
-        optpos = 1;
-        return getopt(argc, argv, optstring);
     }
 
     optopt = (unsigned char)c;
-
     const char* spec = strchr(optstring, c);
     if (spec == NULL || c == ':') {
         /* Unknown option */
-        optpos++;
-        if (arg[optpos] == '\0') {
-            optind++;
-            optpos = 1;
-        }
+        getopt_advance_position(arg, &optpos);
         return '?';
     }
 
     if (spec[1] == ':') {
-        /* Option requires an argument. */
-        if (arg[optpos + 1] != '\0') {
-            optarg = &arg[optpos + 1];
-            optind++;
-            optpos = 1;
-        } else if (optind + 1 < argc && argv[optind + 1] != NULL) {
-            optarg = argv[optind + 1];
-            optind += 2;
-            optpos = 1;
-        } else {
-            /* Missing required argument */
-            optpos++;
-            if (arg[optpos] == '\0') {
-                optind++;
-                optpos = 1;
-            }
-            return (optstring[0] == ':') ? ':' : '?';
+        int arg_result = getopt_handle_required_argument(argc, argv, arg, &optpos, optstring);
+        if (arg_result != 0) {
+            return arg_result;
         }
     } else {
-        /* Option does not take an argument. */
-        optpos++;
-        if (arg[optpos] == '\0') {
-            optind++;
-            optpos = 1;
-        }
+        getopt_advance_position(arg, &optpos);
     }
 
     return (int)c;
@@ -236,16 +254,13 @@ dsd_gettimeofday(struct dsd_timeval* tv, void* tz) {
 
     /* FILETIME is 100-nanosecond intervals since Jan 1, 1601 */
     /* Convert to Unix epoch (Jan 1, 1970) */
-    ULARGE_INTEGER uli;
-    uli.LowPart = ft.dwLowDateTime;
-    uli.HighPart = ft.dwHighDateTime;
-
     /* 116444736000000000 is the number of 100-ns intervals between
      * Jan 1, 1601 and Jan 1, 1970 */
-    uli.QuadPart -= 116444736000000000ULL;
+    uint64_t filetime_100ns = ((uint64_t)ft.dwHighDateTime << 32) | (uint64_t)ft.dwLowDateTime;
+    uint64_t unix_100ns = filetime_100ns - 116444736000000000ULL;
 
-    tv->tv_sec = (long)(uli.QuadPart / 10000000ULL);
-    tv->tv_usec = (long)((uli.QuadPart % 10000000ULL) / 10);
+    tv->tv_sec = (long)(unix_100ns / 10000000ULL);
+    tv->tv_usec = (long)((unix_100ns % 10000000ULL) / 10);
 
     return 0;
 }

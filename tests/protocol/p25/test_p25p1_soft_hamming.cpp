@@ -8,20 +8,19 @@
  * @brief Unit tests for soft-decision Hamming(10,6,3) decoder.
  */
 
+#include <cstdio>
+#include <cstdlib>
 #include <dsd-neo/fec/Hamming.hpp>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/config.h>
-
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
+#include "dsd-neo/core/safe_api.h"
 
 static int g_fail_count = 0;
 
 #define ASSERT_EQ(a, b, msg)                                                                                           \
     do {                                                                                                               \
         if ((a) != (b)) {                                                                                              \
-            fprintf(stderr, "FAIL: %s: expected %d, got %d\n", msg, (int)(b), (int)(a));                               \
+            DSD_FPRINTF(stderr, "FAIL: %s: expected %d, got %d\n", msg, (int)(b), (int)(a));                           \
             g_fail_count++;                                                                                            \
         }                                                                                                              \
     } while (0)
@@ -51,8 +50,8 @@ build_codeword(Hamming_10_6_3_TableImpl& hamming, int value, char out[10]) {
     }
     char parity[4];
     hamming.encode(data, parity);
-    memcpy(out, data, 6);
-    memcpy(out + 6, parity, 4);
+    DSD_MEMCPY(out, data, 6);
+    DSD_MEMCPY(out + 6, parity, 4);
 }
 
 static void
@@ -64,8 +63,8 @@ test_no_error() {
     hamming.encode(hex, parity);
 
     char bits[10];
-    memcpy(bits, hex, 6);
-    memcpy(bits + 6, parity, 4);
+    DSD_MEMCPY(bits, hex, 6);
+    DSD_MEMCPY(bits + 6, parity, 4);
 
     int reliab[10] = {200, 200, 200, 200, 200, 200, 200, 200, 200, 200};
     char out[10];
@@ -87,8 +86,8 @@ test_single_error() {
     hamming.encode(hex, parity);
 
     char bits[10];
-    memcpy(bits, hex, 6);
-    memcpy(bits + 6, parity, 4);
+    DSD_MEMCPY(bits, hex, 6);
+    DSD_MEMCPY(bits + 6, parity, 4);
 
     /* Flip bit 2 (in data portion) */
     bits[2] ^= 1;
@@ -114,8 +113,8 @@ test_two_errors_with_soft_info() {
     hamming.encode(hex, parity);
 
     char bits[10];
-    memcpy(bits, hex, 6);
-    memcpy(bits + 6, parity, 4);
+    DSD_MEMCPY(bits, hex, 6);
+    DSD_MEMCPY(bits + 6, parity, 4);
 
     /* Flip bits 1 and 3 (both in data portion) */
     bits[1] ^= 1;
@@ -133,7 +132,7 @@ test_two_errors_with_soft_info() {
             ASSERT_EQ(out[i], hex[i], "Soft-corrected data should match original");
         }
     } else {
-        fprintf(stderr, "INFO: Two-error case returned uncorrectable (expected for some patterns)\n");
+        DSD_FPRINTF(stderr, "INFO: Two-error case returned uncorrectable (expected for some patterns)\n");
     }
 }
 
@@ -166,7 +165,7 @@ test_soft_hard_override_toggle() {
     }
 
     char received[10];
-    memcpy(received, hard_word, 10);
+    DSD_MEMCPY(received, hard_word, 10);
     received[diff_idx[0]] = soft_word[diff_idx[0]];
 
     int reliab[10] = {200, 200, 200, 200, 200, 200, 200, 200, 200, 200};
@@ -199,8 +198,8 @@ test_high_reliability_no_change() {
     hamming.encode(hex, parity);
 
     char bits[10];
-    memcpy(bits, hex, 6);
-    memcpy(bits + 6, parity, 4);
+    DSD_MEMCPY(bits, hex, 6);
+    DSD_MEMCPY(bits + 6, parity, 4);
 
     int reliab[10] = {255, 255, 255, 255, 255, 255, 255, 255, 255, 255};
     char out[10];
@@ -222,10 +221,10 @@ main(void) {
     test_high_reliability_no_change();
 
     if (g_fail_count > 0) {
-        fprintf(stderr, "FAILED: %d test(s) failed\n", g_fail_count);
+        DSD_FPRINTF(stderr, "FAILED: %d test(s) failed\n", g_fail_count);
         return 1;
     }
 
-    fprintf(stderr, "PASSED: All soft Hamming tests passed\n");
+    DSD_FPRINTF(stderr, "PASSED: All soft Hamming tests passed\n");
     return 0;
 }

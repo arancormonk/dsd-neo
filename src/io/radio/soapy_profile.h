@@ -3,16 +3,18 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_IO_RADIO_SOAPY_PROFILE_H
+#define DSD_NEO_IO_RADIO_SOAPY_PROFILE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <string>
 #include <vector>
 
 namespace dsdneo {
 
-enum class SoapyProfileId {
+enum class SoapyProfileId : uint8_t {
     Auto = 0,
     Generic,
     Airspy,
@@ -24,7 +26,7 @@ enum class SoapyProfileId {
     Uhd,
 };
 
-enum class SoapyStreamFormat {
+enum class SoapyStreamFormat : uint8_t {
     Auto = 0,
     CF32,
     CS16,
@@ -74,3 +76,5 @@ double soapy_nearest_sample_rate(double requested, const std::vector<double>& li
 std::string soapy_join_names(const std::vector<std::string>& names, size_t max_chars);
 
 } // namespace dsdneo
+
+#endif /* DSD_NEO_IO_RADIO_SOAPY_PROFILE_H */

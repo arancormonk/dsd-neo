@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_TRUNK_SM_API_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_TRUNK_SM_API_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -31,3 +32,5 @@ void p25_sm_reset_api(void);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_TRUNK_SM_API_H_ */

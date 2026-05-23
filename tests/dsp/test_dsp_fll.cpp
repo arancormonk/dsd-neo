@@ -8,7 +8,7 @@
 #include <cmath>
 #include <dsd-neo/dsp/fll.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -32,7 +32,7 @@ int
 main(void) {
     // Test 1: mix with freq=0 should be a no-op
     {
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
 
         fll_state_t st;
@@ -44,26 +44,26 @@ main(void) {
             x[i] = (float)(i * 17 - 100);
         }
         float y[20];
-        memcpy(y, x, sizeof(x));
+        DSD_MEMCPY(y, x, sizeof(x));
 
         fll_mix_and_update(&cfg, &st, x, 20);
         if (!arrays_close(x, y, 20, 1)) {
-            fprintf(stderr, "FLL mix (fast): freq=0 deviated >1 LSB\n");
+            DSD_FPRINTF(stderr, "FLL mix (fast): freq=0 deviated >1 LSB\n");
             return 1;
         }
 
         /* Re-run once more to ensure determinism */
-        memcpy(x, y, sizeof(x));
+        DSD_MEMCPY(x, y, sizeof(x));
         fll_mix_and_update(&cfg, &st, x, 20);
         if (!arrays_close(x, y, 20, 1)) {
-            fprintf(stderr, "FLL mix: freq=0 deviated >1 LSB\n");
+            DSD_FPRINTF(stderr, "FLL mix: freq=0 deviated >1 LSB\n");
             return 1;
         }
     }
 
     // Test 1b: phase accumulation wraps correctly on mix
     {
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
 
         fll_state_t st;
@@ -73,7 +73,7 @@ main(void) {
         st.freq = 0.05f;        // rad/sample increment per complex sample
         const int pairs = 1000; // complex samples
         float x[2 * pairs];
-        memset(x, 0, sizeof(x)); // content doesn't matter for phase advance
+        DSD_MEMSET(x, 0, sizeof(x)); // content doesn't matter for phase advance
 
         fll_mix_and_update(&cfg, &st, x, 2 * pairs);
 
@@ -89,14 +89,14 @@ main(void) {
             got_phase += (float)(2.0 * M_PI);
         }
         if (fabsf(got_phase - expected) > 0.01f) {
-            fprintf(stderr, "FLL mix: phase wrap mismatch, got %f expected %f\n", got_phase, expected);
+            DSD_FPRINTF(stderr, "FLL mix: phase wrap mismatch, got %f expected %f\n", got_phase, expected);
             return 1;
         }
     }
 
     // Test 1c: disabled config leaves buffers/state unchanged
     {
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 0;
 
         fll_state_t st;
@@ -106,11 +106,11 @@ main(void) {
 
         float x[8] = {10, 20, 30, 40, 50, 60, 70, 80};
         float y[8];
-        memcpy(y, x, sizeof(x));
+        DSD_MEMCPY(y, x, sizeof(x));
 
         fll_mix_and_update(&cfg, &st, x, 8);
         if (!arrays_close(x, y, 8, 0) || fabsf(st.phase - 0.01f) > 1e-6f) {
-            fprintf(stderr, "FLL mix: disabled mode altered output/state\n");
+            DSD_FPRINTF(stderr, "FLL mix: disabled mode altered output/state\n");
             return 1;
         }
 
@@ -118,7 +118,7 @@ main(void) {
         st.integrator = 0.004f;
         fll_update_error(&cfg, &st, x, 8);
         if (!(fabsf(st.freq - 0.015f) < 1e-6f && fabsf(st.integrator - 0.004f) < 1e-6f)) {
-            fprintf(stderr, "FLL update: disabled mode altered control state\n");
+            DSD_FPRINTF(stderr, "FLL update: disabled mode altered control state\n");
             return 1;
         }
     }
@@ -137,7 +137,7 @@ main(void) {
             iq[2 * k + 1] = q;
         }
 
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
         cfg.alpha = 0.04f;   // native float proportional gain
         cfg.beta = 0.025f;   // native float integral gain
@@ -148,7 +148,7 @@ main(void) {
         fll_init_state(&st);
         fll_update_error(&cfg, &st, iq, 2 * N);
         if (st.freq <= 0.0f) {
-            fprintf(stderr, "FLL update: expected positive freq correction, got %f\n", st.freq);
+            DSD_FPRINTF(stderr, "FLL update: expected positive freq correction, got %f\n", st.freq);
             return 1;
         }
 
@@ -163,14 +163,14 @@ main(void) {
         fll_init_state(&st);
         fll_update_error(&cfg, &st, iq, 2 * N);
         if (st.freq >= 0.0f) {
-            fprintf(stderr, "FLL update: expected negative freq correction, got %f\n", st.freq);
+            DSD_FPRINTF(stderr, "FLL update: expected negative freq correction, got %f\n", st.freq);
             return 1;
         }
     }
 
     // Test 2c: pathological NaN phase/freq state is sanitized
     {
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
 
         fll_state_t st;
@@ -182,12 +182,12 @@ main(void) {
         fll_mix_and_update(&cfg, &st, x, 8);
 
         if (!std::isfinite(st.phase) || !std::isfinite(st.freq)) {
-            fprintf(stderr, "FLL sanitize: state remained non-finite (phase=%f freq=%f)\n", st.phase, st.freq);
+            DSD_FPRINTF(stderr, "FLL sanitize: state remained non-finite (phase=%f freq=%f)\n", st.phase, st.freq);
             return 1;
         }
         for (int i = 0; i < 8; i++) {
             if (!std::isfinite(x[i])) {
-                fprintf(stderr, "FLL sanitize: output sample %d became non-finite\n", i);
+                DSD_FPRINTF(stderr, "FLL sanitize: output sample %d became non-finite\n", i);
                 return 1;
             }
         }
@@ -195,7 +195,7 @@ main(void) {
 
     // Test 2b: update_error early return when N=2 and prev=0, integrator unchanged
     {
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
         cfg.alpha = 0.15f;
         cfg.beta = 0.15f;
@@ -209,18 +209,18 @@ main(void) {
         float one[2] = {1234.0f, -5678.0f};
         fll_update_error(&cfg, &st, one, 2);
         if (!(fabsf(st.freq) < 1e-6f && fabsf(st.integrator - 0.024f) < 1e-6f)) {
-            fprintf(stderr, "FLL small-N adj: unexpected change on first call\n");
+            DSD_FPRINTF(stderr, "FLL small-N adj: unexpected change on first call\n");
             return 1;
         }
         if (!(fabsf(st.prev_r - 1234.0f) < 1e-3f && fabsf(st.prev_j + 5678.0f) < 1e-3f)) {
-            fprintf(stderr, "FLL small-N adj: prev sample not latched\n");
+            DSD_FPRINTF(stderr, "FLL small-N adj: prev sample not latched\n");
             return 1;
         }
     }
 
     // Test 2d: explicit prev_valid gate controls history use (no prev==0 heuristic)
     {
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
         cfg.alpha = 0.4f;
         cfg.beta = 0.25f;
@@ -236,7 +236,7 @@ main(void) {
         st.prev_valid = 0; // history explicitly invalid
         fll_update_error(&cfg, &st, one, 2);
         if (fabsf(st.freq) > 1e-6f) {
-            fprintf(stderr, "FLL prev_valid: history-invalid sample unexpectedly affected loop\n");
+            DSD_FPRINTF(stderr, "FLL prev_valid: history-invalid sample unexpectedly affected loop\n");
             return 1;
         }
 
@@ -246,7 +246,7 @@ main(void) {
         st.prev_valid = 1; // same numeric history, but now valid
         fll_update_error(&cfg, &st, one, 2);
         if (st.freq <= 0.0f) {
-            fprintf(stderr, "FLL prev_valid: history-valid sample failed to drive positive update\n");
+            DSD_FPRINTF(stderr, "FLL prev_valid: history-valid sample failed to drive positive update\n");
             return 1;
         }
     }
@@ -260,7 +260,7 @@ main(void) {
             iq[i + 1] = 0.0f;
         }
 
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
         cfg.alpha = 0.3f;
         cfg.beta = 0.3f;
@@ -274,13 +274,13 @@ main(void) {
 
         fll_update_error(&cfg, &st, iq, 16);
         if (fabsf(st.freq - 0.024f) > 1e-6f) {
-            fprintf(stderr, "FLL deadband: freq changed unexpectedly\n");
+            DSD_FPRINTF(stderr, "FLL deadband: freq changed unexpectedly\n");
             return 1;
         }
         /* Integrator has very small leakage (~1-1/4096 per update), so allow
          * a tiny drift. For one call, drift is about 0.03 * (1/4096) ≈ 7e-6. */
         if (fabsf(st.integrator - 0.03f) > 1e-4f) {
-            fprintf(stderr, "FLL deadband: integrator changed unexpectedly (%f)\n", st.integrator);
+            DSD_FPRINTF(stderr, "FLL deadband: integrator changed unexpectedly (%f)\n", st.integrator);
             return 1;
         }
     }
@@ -297,7 +297,7 @@ main(void) {
             iq[2 * k + 1] = (float)(r * sin(th));
         }
 
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
         cfg.alpha = 0.6f;
         cfg.beta = 0.6f;
@@ -309,12 +309,12 @@ main(void) {
 
         fll_update_error(&cfg, &st, iq, 2 * N);
         if (fabsf(st.freq - 0.001f) > 1e-5f) {
-            fprintf(stderr, "FLL slew: first step %f, want ~0.001\n", st.freq);
+            DSD_FPRINTF(stderr, "FLL slew: first step %f, want ~0.001\n", st.freq);
             return 1;
         }
         fll_update_error(&cfg, &st, iq, 2 * N);
         if (fabsf(st.freq - 0.002f) > 1e-5f) {
-            fprintf(stderr, "FLL slew: second step %f, want ~0.002\n", st.freq);
+            DSD_FPRINTF(stderr, "FLL slew: second step %f, want ~0.002\n", st.freq);
             return 1;
         }
     }
@@ -331,7 +331,7 @@ main(void) {
             iq[2 * k + 1] = (float)(r * sin(th));
         }
 
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
         cfg.alpha = 0.9f;
         cfg.beta = 0.9f;
@@ -344,11 +344,11 @@ main(void) {
         /* Clamp at ±0.2 rad/sample (kFreqClamp in fll.cpp) */
         const float F_CLAMP = 0.2f;
         if (st.freq > F_CLAMP || st.freq < -F_CLAMP) {
-            fprintf(stderr, "FLL clamp: freq exceeded clamp (%f)\n", st.freq);
+            DSD_FPRINTF(stderr, "FLL clamp: freq exceeded clamp (%f)\n", st.freq);
             return 1;
         }
         if (st.integrator > F_CLAMP || st.integrator < -F_CLAMP) {
-            fprintf(stderr, "FLL clamp: integrator exceeded clamp (%f)\n", st.integrator);
+            DSD_FPRINTF(stderr, "FLL clamp: integrator exceeded clamp (%f)\n", st.integrator);
             return 1;
         }
     }
@@ -356,7 +356,7 @@ main(void) {
     // Test 6: small-N behavior uses prev sample across calls
     {
         // First call: only one complex sample -> no update
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
         cfg.alpha = 0.4f;
         cfg.beta = 0.25f;
@@ -369,7 +369,7 @@ main(void) {
         float b1[2] = {16000.0f, 0.0f};
         fll_update_error(&cfg, &st, b1, 2);
         if (!(fabsf(st.freq) < 1e-6f && fabsf(st.prev_r - 16000.0f) < 1e-3f && fabsf(st.prev_j) < 1e-3f)) {
-            fprintf(stderr, "FLL small-N: first call state wrong\n");
+            DSD_FPRINTF(stderr, "FLL small-N: first call state wrong\n");
             return 1;
         }
 
@@ -377,7 +377,7 @@ main(void) {
         float b2[2] = {0.0f, 16000.0f}; // +90 deg relative to previous
         fll_update_error(&cfg, &st, b2, 2);
         if (st.freq <= 0.0f) {
-            fprintf(stderr, "FLL small-N: expected positive update after carry-over\n");
+            DSD_FPRINTF(stderr, "FLL small-N: expected positive update after carry-over\n");
             return 1;
         }
     }
@@ -394,7 +394,7 @@ main(void) {
             iq[2 * k + 1] = (float)(r * sin(th));
         }
 
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
         fll_state_t st;
         fll_init_state(&st);
@@ -412,14 +412,14 @@ main(void) {
         // Allow small numeric drift due to rounding (<0.2%)
         double diff = fabs(e0 - e1);
         if (diff > (e0 / 500.0)) {
-            fprintf(stderr, "FLL mix: energy changed too much (|d|=%f)\n", diff);
+            DSD_FPRINTF(stderr, "FLL mix: energy changed too much (|d|=%f)\n", diff);
             return 1;
         }
     }
 
     // Test 8: phase accumulation wraps with negative frequency
     {
-        fll_config_t cfg = {0};
+        fll_config_t cfg = {};
         cfg.enabled = 1;
 
         fll_state_t st;
@@ -427,7 +427,7 @@ main(void) {
         st.freq = -0.05f; // negative rad/sample
         const int pairs = 1000;
         float x[2 * pairs];
-        memset(x, 0, sizeof(x));
+        DSD_MEMSET(x, 0, sizeof(x));
         fll_mix_and_update(&cfg, &st, x, 2 * pairs);
         /* Phase should have accumulated pairs * freq, modulo 2π, negative wrap handled */
         float raw_expected = (float)(pairs * (-0.05));
@@ -440,7 +440,7 @@ main(void) {
             got_phase += (float)(2.0 * M_PI);
         }
         if (fabsf(got_phase - expected) > 0.01f) {
-            fprintf(stderr, "FLL mix neg: phase wrap mismatch, got %f expected %f\n", got_phase, expected);
+            DSD_FPRINTF(stderr, "FLL mix neg: phase wrap mismatch, got %f expected %f\n", got_phase, expected);
             return 1;
         }
     }

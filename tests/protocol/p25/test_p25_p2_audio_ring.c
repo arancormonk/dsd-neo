@@ -14,14 +14,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdio.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -31,7 +30,7 @@ static int
 expect_frame(const char* tag, const float* got, const float* want) {
     for (int i = 0; i < 160; i++) {
         if (got[i] != want[i]) {
-            fprintf(stderr, "%s: sample %d mismatch (got %.3f want %.3f)\n", tag, i, got[i], want[i]);
+            DSD_FPRINTF(stderr, "%s: sample %d mismatch (got %.3f want %.3f)\n", tag, i, got[i], want[i]);
             return 1;
         }
     }
@@ -42,7 +41,7 @@ int
 main(void) {
     int rc = 0;
     static dsd_state st;
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     /* Reset both slots and verify counters. */
     p25_p2_audio_ring_reset(&st, -1);
@@ -73,22 +72,22 @@ main(void) {
     rc |= expect_int("count after 4 pushes", st.p25_p2_audio_ring_count[0], 4);
 
     float out[160];
-    memset(out, 0, sizeof out);
+    DSD_MEMSET(out, 0, sizeof out);
     rc |= expect_int("pop f0 ok", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f0 frame", out, f0);
     rc |= expect_int("count after pop1", st.p25_p2_audio_ring_count[0], 3);
 
-    memset(out, 0, sizeof out);
+    DSD_MEMSET(out, 0, sizeof out);
     rc |= expect_int("pop f1 ok", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f1 frame", out, f1);
     rc |= expect_int("count after pop2", st.p25_p2_audio_ring_count[0], 2);
 
-    memset(out, 0, sizeof out);
+    DSD_MEMSET(out, 0, sizeof out);
     rc |= expect_int("pop f2 ok", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f2 frame", out, f2);
     rc |= expect_int("count after pop3", st.p25_p2_audio_ring_count[0], 1);
 
-    memset(out, 0, sizeof out);
+    DSD_MEMSET(out, 0, sizeof out);
     rc |= expect_int("pop f3 ok", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f3 frame", out, f3);
     rc |= expect_int("count after pop4", st.p25_p2_audio_ring_count[0], 0);
@@ -100,7 +99,7 @@ main(void) {
     rc |= expect_int("pop empty", p25_p2_audio_ring_pop(&st, 0, out), 0);
     for (int i = 0; i < 160; i++) {
         if (out[i] != 0.0f) {
-            fprintf(stderr, "pop empty: out[%d]=%.3f not zero\n", i, out[i]);
+            DSD_FPRINTF(stderr, "pop empty: out[%d]=%.3f not zero\n", i, out[i]);
             rc |= 1;
             break;
         }
@@ -117,19 +116,19 @@ main(void) {
     p25_p2_audio_ring_push(&st, 0, f4); /* should evict f0 */
     rc |= expect_int("count after overflow pushes", st.p25_p2_audio_ring_count[0], 4);
 
-    memset(out, 0, sizeof out);
+    DSD_MEMSET(out, 0, sizeof out);
     rc |= expect_int("pop f1 ok (overflow)", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f1 frame (overflow)", out, f1);
 
-    memset(out, 0, sizeof out);
+    DSD_MEMSET(out, 0, sizeof out);
     rc |= expect_int("pop f2 ok (overflow)", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f2 frame (overflow)", out, f2);
 
-    memset(out, 0, sizeof out);
+    DSD_MEMSET(out, 0, sizeof out);
     rc |= expect_int("pop f3 ok (overflow)", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f3 frame (overflow)", out, f3);
 
-    memset(out, 0, sizeof out);
+    DSD_MEMSET(out, 0, sizeof out);
     rc |= expect_int("pop f4 ok (overflow)", p25_p2_audio_ring_pop(&st, 0, out), 1);
     rc |= expect_frame("pop f4 frame (overflow)", out, f4);
     rc |= expect_int("count after draining overflow", st.p25_p2_audio_ring_count[0], 0);

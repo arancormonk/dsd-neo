@@ -13,14 +13,14 @@
  */
 
 #include <dsd-neo/runtime/input_ring_watermark.h>
-
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -29,7 +29,7 @@ expect_int(const char* label, int got, int want) {
 static int
 expect_size(const char* label, size_t got, size_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%zu want=%zu\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%zu want=%zu\n", label, got, want);
         return 1;
     }
     return 0;
@@ -38,7 +38,7 @@ expect_size(const char* label, size_t got, size_t want) {
 static int
 expect_u32(const char* label, uint32_t got, uint32_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%u want=%u\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%u want=%u\n", label, got, want);
         return 1;
     }
     return 0;
@@ -47,7 +47,7 @@ expect_u32(const char* label, uint32_t got, uint32_t want) {
 static int
 expect_float(const char* label, float got, float want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%f want=%f\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%f want=%f\n", label, got, want);
         return 1;
     }
     return 0;

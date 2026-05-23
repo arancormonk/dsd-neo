@@ -16,7 +16,8 @@
  * to maintain proper dependency direction: DSP/protocol -> runtime (hooks).
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TELEMETRY_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TELEMETRY_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -65,3 +66,4 @@ void ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TELEMETRY_H_H */

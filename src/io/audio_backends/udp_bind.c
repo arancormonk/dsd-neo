@@ -3,18 +3,19 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <arpa/inet.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/io/udp_bind.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
-#if !DSD_PLATFORM_WIN_NATIVE
-#include <arpa/inet.h>
 #include <netinet/in.h>
-#include <sys/socket.h>
-#endif
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include <sys/socket.h>
+#include "dsd-neo/core/safe_api.h"
+
+#if !DSD_PLATFORM_WIN_NATIVE
+#endif
 
 dsd_socket_t
 UDPBind(char* hostname, int portno) {
@@ -28,13 +29,13 @@ UDPBind(char* hostname, int portno) {
     sockfd = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
     if (sockfd == DSD_INVALID_SOCKET) {
-        fprintf(stderr, "ERROR opening UDP socket\n");
+        DSD_FPRINTF(stderr, "ERROR opening UDP socket\n");
         perror("ERROR opening UDP socket");
         return DSD_INVALID_SOCKET;
     }
 
     /* build the server's Internet address */
-    memset((char*)&serveraddr, 0, sizeof(serveraddr));
+    DSD_MEMSET((char*)&serveraddr, 0, sizeof(serveraddr));
     serveraddr.sin_family = AF_INET;
     serveraddr.sin_addr.s_addr = INADDR_ANY; //INADDR_ANY
     serveraddr.sin_port = htons((uint16_t)portno);

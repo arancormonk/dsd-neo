@@ -76,7 +76,23 @@ option(DSD_REQUIRE_SOAPYSDR "Fail configure when SoapySDR is enabled but not fou
 # this helper target PRIVATE.
 # -----------------------------------------------------------------------------
 
+add_library(dsd-neo_safe_api INTERFACE)
+target_include_directories(dsd-neo_safe_api INTERFACE ${PROJECT_SOURCE_DIR}/include)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(dsd-neo_safe_api INTERFACE _GNU_SOURCE)
+endif()
+if(MSVC)
+    target_compile_options(dsd-neo_safe_api INTERFACE
+        $<$<COMPILE_LANGUAGE:C>:/FI${PROJECT_SOURCE_DIR}/include/dsd-neo/core/safe_api.h>
+        $<$<COMPILE_LANGUAGE:CXX>:/FI${PROJECT_SOURCE_DIR}/include/dsd-neo/core/safe_api.h>)
+else()
+    target_compile_options(dsd-neo_safe_api INTERFACE
+        $<$<COMPILE_LANGUAGE:C>:-include> $<$<COMPILE_LANGUAGE:C>:dsd-neo/core/safe_api.h>
+        $<$<COMPILE_LANGUAGE:CXX>:-include> $<$<COMPILE_LANGUAGE:CXX>:dsd-neo/core/safe_api.h>)
+endif()
+
 add_library(dsd-neo_sanitizers INTERFACE)
+target_link_libraries(dsd-neo_sanitizers INTERFACE dsd-neo_safe_api)
 
 if(DSD_ENABLE_TSAN AND (DSD_ENABLE_ASAN OR DSD_ENABLE_UBSAN))
     message(FATAL_ERROR "DSD_ENABLE_TSAN must use a separate build from ASan/UBSan.")

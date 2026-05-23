@@ -15,9 +15,14 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Strong test stubs override weak fallbacks in SM
 static long g_last_tuned_vc = 0;
@@ -26,6 +31,7 @@ static int g_return_to_cc_called = 0;
 static int g_mark_cc_sync_on_cc_tune = 0;
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)opts;
     (void)state;
@@ -34,6 +40,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
@@ -41,6 +48,7 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)opts;
     (void)ted_sps;
@@ -61,8 +69,8 @@ install_trunk_tuning_hooks(void) {
 
 static void
 init_basic(dsd_opts* o, dsd_state* s) {
-    memset(o, 0, sizeof(*o));
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(o, 0, sizeof(*o));
+    DSD_MEMSET(s, 0, sizeof(*s));
     o->p25_trunk = 1;
     o->trunk_hangtime = 0.2; // short for tests
     o->p25_prefer_candidates = 1;
@@ -220,8 +228,8 @@ main(void) {
     // primary control channel even when no user LCN list was loaded.
     static dsd_opts o8;
     static dsd_state s8;
-    memset(&o8, 0, sizeof(o8));
-    memset(&s8, 0, sizeof(s8));
+    DSD_MEMSET(&o8, 0, sizeof(o8));
+    DSD_MEMSET(&s8, 0, sizeof(s8));
     o8.p25_trunk = 1;
     o8.trunk_hangtime = 0.2;
     o8.p25_prefer_candidates = 1;
@@ -234,6 +242,10 @@ main(void) {
     p25_sm_tick_ctx(&ctx8, &o8, &s8);
     assert(g_last_tuned_cc == 851000000);
 
-    fprintf(stderr, "P25 SM core tests passed\n");
+    DSD_FPRINTF(stderr, "P25 SM core tests passed\n");
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

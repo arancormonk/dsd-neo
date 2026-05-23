@@ -9,6 +9,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/platform/sockets.h"
+#include "engine_hooks_install.h"
 
 static long int
 dsd_engine_rigctl_get_current_freq_hz(const dsd_opts* opts) {

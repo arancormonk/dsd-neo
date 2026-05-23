@@ -14,9 +14,6 @@
 #ifndef RUNTIME_WORKER_POOL_H
 #define RUNTIME_WORKER_POOL_H
 
-#include <dsd-neo/platform/threading.h>
-#include <stdint.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif

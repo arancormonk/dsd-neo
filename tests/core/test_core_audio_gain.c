@@ -9,14 +9,14 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_true(const char* label, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         return 1;
     }
     return 0;
@@ -25,7 +25,7 @@ expect_true(const char* label, int cond) {
 static int
 expect_int_eq(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s (got %d want %d)\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s (got %d want %d)\n", label, got, want);
         return 1;
     }
     return 0;
@@ -34,7 +34,7 @@ expect_int_eq(const char* label, int got, int want) {
 static int
 expect_float_close(const char* label, float got, float want, float tol) {
     if (fabsf(got - want) > tol) {
-        fprintf(stderr, "FAIL: %s (got %.6f want %.6f tol %.6f)\n", label, got, want, tol);
+        DSD_FPRINTF(stderr, "FAIL: %s (got %.6f want %.6f tol %.6f)\n", label, got, want, tol);
         return 1;
     }
     return 0;
@@ -45,7 +45,7 @@ test_agsm_applies_gain_to_entire_block(void) {
     dsd_opts opts = {0};
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!state) {
-        fprintf(stderr, "FAIL: alloc state\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc state\n");
         return 1;
     }
 
@@ -60,7 +60,7 @@ test_agsm_applies_gain_to_entire_block(void) {
     /* nom/max = 4.8, clamped to 3.0 -> all samples should scale to 3000 */
     for (int i = 0; i < 64; i++) {
         char label[64];
-        snprintf(label, sizeof label, "agsm scales sample %d", i);
+        DSD_SNPRINTF(label, sizeof label, "agsm scales sample %d", i);
         rc |= expect_int_eq(label, in[i], 3000);
     }
     rc |= expect_float_close("agsm stores applied gain", state->aout_gainA, 3.0f, 1e-6f);
@@ -74,7 +74,7 @@ test_agsm_handles_silence_without_invalid_values(void) {
     dsd_opts opts = {0};
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!state) {
-        fprintf(stderr, "FAIL: alloc state\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc state\n");
         return 1;
     }
 
@@ -84,7 +84,7 @@ test_agsm_handles_silence_without_invalid_values(void) {
     int rc = 0;
     for (int i = 0; i < 32; i++) {
         char label[64];
-        snprintf(label, sizeof label, "agsm keeps silent sample %d", i);
+        DSD_SNPRINTF(label, sizeof label, "agsm keeps silent sample %d", i);
         rc |= expect_int_eq(label, in[i], 0);
     }
     rc |= expect_true("agsm gain state is finite", isfinite(state->aout_gainA) ? 1 : 0);

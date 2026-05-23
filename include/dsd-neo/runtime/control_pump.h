@@ -12,7 +12,8 @@
  *
  * The default behavior is a safe no-op until a control pump is registered.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_CONTROL_PUMP_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_CONTROL_PUMP_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -40,3 +41,4 @@ void dsd_runtime_pump_controls(dsd_opts* opts, dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_CONTROL_PUMP_H_H */

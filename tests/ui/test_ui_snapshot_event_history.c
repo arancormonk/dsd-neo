@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 void ui_terminal_telemetry_publish_snapshot(const dsd_state* state);
@@ -59,7 +59,7 @@ main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     Event_History_I* history = (Event_History_I*)calloc(2u, sizeof(*history));
     if (!state || !history) {
-        fprintf(stderr, "allocation failed\n");
+        DSD_FPRINTF(stderr, "allocation failed\n");
         free(history);
         free(state);
         return 1;
@@ -70,7 +70,7 @@ main(void) {
     dsd_tg_policy_entry entry;
     assert(dsd_tg_policy_make_exact_entry(321U, "A", "DISPATCH", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
     assert(dsd_tg_policy_append_exact(state, &entry) == 0);
-    snprintf(state->ui_msg, sizeof(state->ui_msg), "%s", "snapshot ready");
+    DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "snapshot ready");
     state->rkey_array[7] = 0x12345678ULL;
     assert(dsd_trunk_cc_candidates_add(state, 851006250L, 1) == 1);
     assert(dsd_trunk_cc_candidates_add(state, 852006250L, 1) == 1);
@@ -98,7 +98,7 @@ main(void) {
     assert_slot_tail(ui_get_latest_snapshot(), 789U, 987U);
 
     // Reset-like clear with unchanged head rows must also be reflected.
-    memset(history, 0, 2u * sizeof(*history));
+    DSD_MEMSET(history, 0, 2u * sizeof(*history));
     ui_terminal_telemetry_publish_snapshot(state);
     assert_slot_tail(ui_get_latest_snapshot(), 0U, 0U);
 

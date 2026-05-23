@@ -3,12 +3,12 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include "soapy_profile.h"
-
 #include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
+#include "dsd-neo/core/safe_api.h"
+#include "soapy_profile.h"
 
 using dsdneo::SoapyProfileId;
 using dsdneo::SoapyProfileSelection;
@@ -17,7 +17,7 @@ using dsdneo::SoapyRange;
 static int
 expect_true(const char* label, bool value) {
     if (!value) {
-        std::fprintf(stderr, "%s failed\n", label);
+        DSD_FPRINTF(stderr, "%s failed\n", label);
         return 1;
     }
     return 0;
@@ -27,7 +27,7 @@ static int
 expect_profile(const char* label, const SoapyProfileSelection& selection, SoapyProfileId want) {
     SoapyProfileId got = dsdneo::soapy_select_profile_id(selection);
     if (got != want) {
-        std::fprintf(stderr, "%s: got profile=%d want=%d\n", label, (int)got, (int)want);
+        DSD_FPRINTF(stderr, "%s: got profile=%d want=%d\n", label, (int)got, (int)want);
         return 1;
     }
     return 0;
@@ -36,7 +36,7 @@ expect_profile(const char* label, const SoapyProfileSelection& selection, SoapyP
 static int
 expect_string(const char* label, const std::string& got, const char* want) {
     if (got != want) {
-        std::fprintf(stderr, "%s: got \"%s\" want \"%s\"\n", label, got.c_str(), want);
+        DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", label, got.c_str(), want);
         return 1;
     }
     return 0;
@@ -45,7 +45,7 @@ expect_string(const char* label, const std::string& got, const char* want) {
 static int
 expect_double(const char* label, double got, double want) {
     if (std::fabs(got - want) > 0.5) {
-        std::fprintf(stderr, "%s: got %.3f want %.3f\n", label, got, want);
+        DSD_FPRINTF(stderr, "%s: got %.3f want %.3f\n", label, got, want);
         return 1;
     }
     return 0;
@@ -56,9 +56,9 @@ expect_bandwidth(const char* label, const dsdneo::SoapyBandwidthChoice& got, boo
                  bool explicit_request) {
     if (got.should_apply != should_apply || got.bandwidth_hz != bandwidth_hz
         || got.explicit_request != explicit_request) {
-        std::fprintf(stderr, "%s: got apply=%d hz=%d explicit=%d want apply=%d hz=%d explicit=%d\n", label,
-                     got.should_apply ? 1 : 0, got.bandwidth_hz, got.explicit_request ? 1 : 0, should_apply ? 1 : 0,
-                     bandwidth_hz, explicit_request ? 1 : 0);
+        DSD_FPRINTF(stderr, "%s: got apply=%d hz=%d explicit=%d want apply=%d hz=%d explicit=%d\n", label,
+                    got.should_apply ? 1 : 0, got.bandwidth_hz, got.explicit_request ? 1 : 0, should_apply ? 1 : 0,
+                    bandwidth_hz, explicit_request ? 1 : 0);
         return 1;
     }
     return 0;

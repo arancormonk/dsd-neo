@@ -11,10 +11,14 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Test shim helper (exposed by protocol library)
 int p25_test_mbt_iden_bridge(const unsigned char* mbt, int mbt_len, long* out_base, int* out_spac, int* out_type,
@@ -88,13 +92,15 @@ sm_noop_api(void) {
 
 // Additional stubs referenced by MAC VPDU path (unused in this test)
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -103,6 +109,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -111,6 +118,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -120,6 +128,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -131,7 +140,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 static int
 expect_eq_long(const char* tag, long got, long want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %ld want %ld\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %ld want %ld\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -140,7 +149,7 @@ expect_eq_long(const char* tag, long got, long want) {
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -155,7 +164,7 @@ main(void) {
     // Craft a minimal ALT MBT PDU carrying Identifier Update (UHF/VHF, opcode 0x74)
     // IDEN=1, spacing=100 (12.5 kHz), base=851.000000 MHz (base field in 5 Hz units)
     uint8_t mbt[48];
-    memset(mbt, 0, sizeof(mbt));
+    DSD_MEMSET(mbt, 0, sizeof(mbt));
 
     mbt[0] = 0x17; // ALT format
     mbt[2] = 0x00; // MFID (standard)
@@ -183,7 +192,7 @@ main(void) {
     // Exercise the bridge via the shim and extract state results
     int sh = p25_test_mbt_iden_bridge(mbt, (int)sizeof(mbt), &base, &spac, &type, &tdma, &freq);
     if (sh != 0) {
-        fprintf(stderr, "shim invocation failed (%d)\n", sh);
+        DSD_FPRINTF(stderr, "shim invocation failed (%d)\n", sh);
         return 99;
     }
 
@@ -201,7 +210,7 @@ main(void) {
     // It must not populate the active system IDEN table.
     {
         uint8_t tdma_mbt[48];
-        memset(tdma_mbt, 0, sizeof(tdma_mbt));
+        DSD_MEMSET(tdma_mbt, 0, sizeof(tdma_mbt));
 
         tdma_mbt[0] = 0x17; // ALT format
         tdma_mbt[2] = 0x00; // MFID (standard)
@@ -222,7 +231,7 @@ main(void) {
         freq = -1;
         int sh = p25_test_mbt_iden_bridge(tdma_mbt, (int)sizeof(tdma_mbt), &base, &spac, &type, &tdma, &freq);
         if (sh != 0) {
-            fprintf(stderr, "tdma shim invocation failed (%d)\n", sh);
+            DSD_FPRINTF(stderr, "tdma shim invocation failed (%d)\n", sh);
             return 98;
         }
 
@@ -235,3 +244,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

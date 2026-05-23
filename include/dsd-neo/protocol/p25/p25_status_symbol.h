@@ -25,19 +25,18 @@
  * direction is not reliable on every system.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_STATUS_SYMBOL_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_STATUS_SYMBOL_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-
-#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /** Status symbol classification result. */
-typedef enum {
+typedef enum __attribute__((packed)) {
     P25_SS_CLASS_UNKNOWN = 0,        /**< No symbols collected, or all-10 pattern */
     P25_SS_CLASS_INFRASTRUCTURE = 1, /**< Repeater symbols outnumber subscriber symbols */
     P25_SS_CLASS_SUBSCRIBER = 2      /**< Subscriber symbols present without repeater majority */
@@ -114,3 +113,4 @@ void p25_status_accum_classify(dsd_state* state, const dsd_opts* opts);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_STATUS_SYMBOL_H_H */

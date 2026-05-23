@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_AUDIO_CONCEALMENT_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_AUDIO_CONCEALMENT_H_
 
 /**
  * @file
@@ -122,3 +123,5 @@ size_t audio_conceal_on_underrun(struct audio_conceal_state* cs, int16_t* out, s
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_AUDIO_CONCEALMENT_H_ */

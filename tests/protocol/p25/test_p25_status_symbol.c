@@ -11,12 +11,11 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 typedef struct {
@@ -28,7 +27,7 @@ static test_ctx
 make_ctx(const char* test_name) {
     test_ctx ctx = {(dsd_state*)calloc(1, sizeof(*ctx.state)), (dsd_opts*)calloc(1, sizeof(*ctx.opts))};
     if (!ctx.state || !ctx.opts) {
-        fprintf(stderr, "%s: alloc failed\n", test_name);
+        DSD_FPRINTF(stderr, "%s: alloc failed\n", test_name);
         free(ctx.state);
         free(ctx.opts);
         ctx.state = NULL;
@@ -48,7 +47,7 @@ free_ctx(test_ctx* ctx) {
 static int
 expect_u32(const char* test_name, const char* field_name, unsigned int actual, unsigned int expected) {
     if (actual != expected) {
-        fprintf(stderr, "%s: expected %s=%u, got %u\n", test_name, field_name, expected, actual);
+        DSD_FPRINTF(stderr, "%s: expected %s=%u, got %u\n", test_name, field_name, expected, actual);
         return 1;
     }
     return 0;

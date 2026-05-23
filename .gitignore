@@ -27,5 +27,8 @@ Thumbs.db
 /logs/
 *.log
 *.out
+/.strict-analysis/
+/.strict-checkpoints/
+/.preflight-baseline*/
 /.scan-build.local/
 /.cppcheck-build/

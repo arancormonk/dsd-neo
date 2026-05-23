@@ -11,7 +11,8 @@
  * DMR CSBK table helpers (opcode names, etc.).
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_CSBK_TABLES_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_CSBK_TABLES_H_
 
 #include <stdint.h>
 
@@ -31,3 +32,5 @@ const char* dmr_csbk_grant_opcode_name(uint8_t opcode);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_CSBK_TABLES_H_ */

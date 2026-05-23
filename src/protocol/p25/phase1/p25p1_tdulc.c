@@ -22,7 +22,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/p25p1_heuristics.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -34,10 +34,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
@@ -78,6 +77,53 @@ swap_hex_words(char* dodeca_data, char* dodeca_parity) {
     }
 }
 
+static void
+tdulc_read_word_with_parity(dsd_opts* opts, dsd_state* state, char* dodeca, char parity[12], int* status_count,
+                            AnalogSignal* analog_signal_array, int* analog_signal_index) {
+    read_word(opts, state, dodeca, 12, status_count, analog_signal_array, analog_signal_index);
+    read_golay24_parity(opts, state, parity, status_count, analog_signal_array, analog_signal_index);
+}
+
+static void
+tdulc_collect_golay_reliability(const AnalogSignal* sig, int reliab[24]) {
+    int idx = 0;
+    for (int d = 0; d < 6; d++) {
+        reliab[idx++] = soft_abs_i16(sig[d].llr[0]);
+        reliab[idx++] = soft_abs_i16(sig[d].llr[1]);
+    }
+    for (int d = 6; d < 12; d++) {
+        reliab[idx++] = soft_abs_i16(sig[d].llr[0]);
+        reliab[idx++] = soft_abs_i16(sig[d].llr[1]);
+    }
+}
+
+static int
+tdulc_try_soft_recover_golay(dsd_state* state, char* dodeca, const char raw_dodeca[12], const char raw_parity[12],
+                             const AnalogSignal* sig, int irrecoverable_errors, int fixed_errors) {
+    if ((irrecoverable_errors == 0 && fixed_errors == 0) || sig == NULL) {
+        return irrecoverable_errors;
+    }
+
+    int reliab[24];
+    int soft_fixed = 0;
+    char soft_dodeca[12];
+    char soft_parity[12];
+    tdulc_collect_golay_reliability(sig, reliab);
+    DSD_MEMCPY(soft_dodeca, raw_dodeca, sizeof(soft_dodeca));
+    DSD_MEMCPY(soft_parity, raw_parity, sizeof(soft_parity));
+    int soft_result = check_and_fix_golay_24_12_soft(soft_dodeca, soft_parity, reliab, &soft_fixed);
+    if (soft_result != 0) {
+        return irrecoverable_errors;
+    }
+
+    DSD_MEMCPY(dodeca, soft_dodeca, sizeof(soft_dodeca));
+    if (irrecoverable_errors != 0) {
+        state->p25_p1_soft_golay_ok++;
+        state->debug_header_errors += soft_fixed;
+    }
+    return 0;
+}
+
 /**
  * Read a dodeca (12-bit) word, its parity bits and attempts to error correct it using the Golay(24,12) algorithm.
  * Uses soft decode if hard decode fails and reliability info is available.
@@ -89,28 +135,23 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
     int fixed_errors;
     int irrecoverable_errors;
 
-    /* Remember where this dodeca word's analog signals start */
     int start_index = *analog_signal_index;
-
-    // Read the hex word
-    read_word(opts, state, dodeca, 12, status_count, analog_signal_array, analog_signal_index);
-    // Read the parity
-    read_golay24_parity(opts, state, parity, status_count, analog_signal_array, analog_signal_index);
+    tdulc_read_word_with_parity(opts, state, dodeca, parity, status_count, analog_signal_array, analog_signal_index);
     char raw_dodeca[12];
     char raw_parity[12];
-    memcpy(raw_dodeca, dodeca, sizeof(raw_dodeca));
-    memcpy(raw_parity, parity, sizeof(raw_parity));
+    DSD_MEMCPY(raw_dodeca, dodeca, sizeof(raw_dodeca));
+    DSD_MEMCPY(raw_parity, parity, sizeof(raw_parity));
 
 #ifdef TDULC_DEBUG
-    fprintf(stderr, "[");
+    DSD_FPRINTF(stderr, "[");
     for (int i = 0; i < 12; i++) {
-        fprintf(stderr, "%c", (dodeca[i] == 1) ? 'X' : ' ');
+        DSD_FPRINTF(stderr, "%c", (dodeca[i] == 1) ? 'X' : ' ');
     }
-    fprintf(stderr, "-");
+    DSD_FPRINTF(stderr, "-");
     for (int i = 0; i < 12; i++) {
-        fprintf(stderr, "%c", (parity[i] == 1) ? 'X' : ' ');
+        DSD_FPRINTF(stderr, "%c", (parity[i] == 1) ? 'X' : ' ');
     }
-    fprintf(stderr, "]");
+    DSD_FPRINTF(stderr, "]");
 #endif
 
     // Use extended golay to error correct the dodeca word
@@ -118,65 +159,30 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
 
     state->debug_header_errors += fixed_errors;
 
-    if ((irrecoverable_errors != 0 || fixed_errors > 0) && analog_signal_array != NULL) {
-        /* Hard decode failed or corrected low-confidence bits; try soft decode using reliability info.
-         * The analog_signal_array from start_index contains 12 dibits:
-         *   [0..5] = 6 dibits for 12 data bits
-         *   [6..11] = 6 dibits for 12 parity bits
-         * Extract per-bit reliability by taking dibit reliability for both bits.
-         */
-        const AnalogSignal* sig = &analog_signal_array[start_index];
-        int reliab[24];
-        int idx = 0;
-
-        /* Data bits: 6 dibits -> 12 bits */
-        for (int d = 0; d < 6; d++) {
-            reliab[idx++] = soft_abs_i16(sig[d].llr[0]);
-            reliab[idx++] = soft_abs_i16(sig[d].llr[1]);
-        }
-        /* Parity bits: 6 dibits -> 12 bits */
-        for (int d = 6; d < 12; d++) {
-            reliab[idx++] = soft_abs_i16(sig[d].llr[0]);
-            reliab[idx++] = soft_abs_i16(sig[d].llr[1]);
-        }
-
-        int soft_fixed = 0;
-        char soft_dodeca[12];
-        char soft_parity[12];
-        memcpy(soft_dodeca, raw_dodeca, sizeof(soft_dodeca));
-        memcpy(soft_parity, raw_parity, sizeof(soft_parity));
-        int soft_result = check_and_fix_golay_24_12_soft(soft_dodeca, soft_parity, reliab, &soft_fixed);
-        if (soft_result == 0) {
-            memcpy(dodeca, soft_dodeca, sizeof(soft_dodeca));
-            memcpy(parity, soft_parity, sizeof(soft_parity));
-            if (irrecoverable_errors != 0) {
-                state->p25_p1_soft_golay_ok++;
-                state->debug_header_errors += soft_fixed;
-            }
-            irrecoverable_errors = 0;
-        }
-    }
+    const AnalogSignal* sig = (analog_signal_array != NULL) ? &analog_signal_array[start_index] : NULL;
+    irrecoverable_errors =
+        tdulc_try_soft_recover_golay(state, dodeca, raw_dodeca, raw_parity, sig, irrecoverable_errors, fixed_errors);
 
     if (irrecoverable_errors != 0) {
         state->debug_header_critical_errors++;
     }
 
 #ifdef TDULC_DEBUG
-    fprintf(stderr, " -> [");
+    DSD_FPRINTF(stderr, " -> [");
     for (int i = 0; i < 12; i++) {
-        fprintf(stderr, "%c", (dodeca[i] == 1) ? 'X' : ' ');
+        DSD_FPRINTF(stderr, "%c", (dodeca[i] == 1) ? 'X' : ' ');
     }
-    fprintf(stderr, "]");
+    DSD_FPRINTF(stderr, "]");
     if (irrecoverable_errors == 0) {
         if (fixed_errors > 0) {
-            fprintf(stderr, " fixed!");
+            DSD_FPRINTF(stderr, " fixed!");
         }
     } else {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, " IRRECOVERABLE");
-        fprintf(stderr, "%s", KNRM);
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " IRRECOVERABLE");
+        DSD_FPRINTF(stderr, "%s", KNRM);
     }
-    fprintf(stderr, "\n");
+    DSD_FPRINTF(stderr, "\n");
 #endif
 }
 
@@ -217,7 +223,7 @@ build_tdulc_rs_reliability(const AnalogSignal* analog_signal_array, uint8_t data
  * \param analog_signal_array Pointer to a sequence of AnalogSignal elements, as many as the value of count.
  */
 static void
-correct_golay_dibits_12(char* data, int count, AnalogSignal* analog_signal_array) {
+correct_golay_dibits_12(const char* data, int count, AnalogSignal* analog_signal_array) {
     int i, j;
     int analog_signal_index;
     int dibit;
@@ -233,9 +239,9 @@ correct_golay_dibits_12(char* data, int count, AnalogSignal* analog_signal_array
 
 #ifdef HEURISTICS_DEBUG
             if (analog_signal_array[analog_signal_index].dibit != dibit) {
-                fprintf(stderr, "TDULC data word corrected from %i to %i, analog value %i\n",
-                        analog_signal_array[analog_signal_index].dibit, dibit,
-                        analog_signal_array[analog_signal_index].value);
+                DSD_FPRINTF(stderr, "TDULC data word corrected from %i to %i, analog value %i\n",
+                            analog_signal_array[analog_signal_index].dibit, dibit,
+                            analog_signal_array[analog_signal_index].value);
             }
 #endif
 
@@ -252,9 +258,9 @@ correct_golay_dibits_12(char* data, int count, AnalogSignal* analog_signal_array
 
 #ifdef HEURISTICS_DEBUG
             if (analog_signal_array[analog_signal_index].dibit != dibit) {
-                fprintf(stderr, "TDULC parity corrected from %i to %i, analog value %i\n",
-                        analog_signal_array[analog_signal_index].dibit, dibit,
-                        analog_signal_array[analog_signal_index].value);
+                DSD_FPRINTF(stderr, "TDULC parity corrected from %i to %i, analog value %i\n",
+                            analog_signal_array[analog_signal_index].dibit, dibit,
+                            analog_signal_array[analog_signal_index].value);
             }
 #endif
 
@@ -282,8 +288,8 @@ read_zeros(dsd_opts* opts, dsd_state* state, AnalogSignal* analog_signal_array, 
         analog_signal_array[i].corrected_dibit = 0;
 #ifdef HEURISTICS_DEBUG
         if (analog_signal_array[i].corrected_dibit != analog_signal_array[i].dibit) {
-            fprintf(stderr, "TDULC ending zeros corrected from %i to %i, analog value %i\n",
-                    analog_signal_array[i].dibit, 0, analog_signal_array[i].value);
+            DSD_FPRINTF(stderr, "TDULC ending zeros corrected from %i to %i, analog value %i\n",
+                        analog_signal_array[i].dibit, 0, analog_signal_array[i].value);
         }
 #endif
     }
@@ -293,69 +299,27 @@ read_zeros(dsd_opts* opts, dsd_state* state, AnalogSignal* analog_signal_array, 
     contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, length / 2);
 }
 
-void
-processTDULC(dsd_opts* opts, dsd_state* state) {
-    state->p25_p1_duid_tdulc++;
-
-    // Start status-symbol collection unless the dispatcher already did so for this data unit.
-    p25_status_accum_ensure_started(state);
-
-    P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
-
-    //push current slot to 0, just in case swapping p2 to p1
-    //or stale slot value from p2 and then decoding a pdu
-    state->currentslot = 0;
-
-    // SM event: TDULC is a non-voice boundary and may carry mid-call updates (e.g., LCW 0x44).
-    // Do not treat TDULC as a definitive call termination; call termination is handled by LCW 0x4F
-    // when present. Clearing voice activity here allows hangtime/grant-timeout to manage teardown
-    // without immediately bouncing back to the control channel.
-    p25_sm_emit_idle(opts, state, 0);
-
-    // Clear call flags for single-carrier channel
-    state->p25_call_emergency[0] = 0;
-    state->p25_call_priority[0] = 0;
-    state->p25_call_is_packet[0] = 0;
-
-    int i;
-    uint8_t lcinfo[57], lcformat[9], mfid[9];
-
-    int status_count;
-
-    char dodeca_data[6][12];   // Data in 12-bit words. A total of 6 words.
-    char dodeca_parity[6][12]; // Reed-Solomon parity of the data. A total of 6 parity 12-bit words.
-
-    int irrecoverable_errors;
-
-    AnalogSignal analog_signal_array[6 * (6 + 6) + 6 * (6 + 6) + 10] = {0};
-    int analog_signal_index;
-
-    analog_signal_index = 0;
-
-    // we skip the status dibits that occur every 36 symbols
-    // the first IMBE frame starts 14 symbols before next status
-    // so we start counter at 36-14-1 = 21
-    status_count = 21;
-
-    for (i = 5; i >= 0; i--) {
-        read_and_correct_dodeca_word(opts, state, &(dodeca_data[i][0]), &status_count, analog_signal_array,
-                                     &analog_signal_index);
+static void
+tdulc_read_data_and_parity_words(dsd_opts* opts, dsd_state* state, char dodeca_data[6][12], char dodeca_parity[6][12],
+                                 int* status_count, AnalogSignal* analog_signal_array, int* analog_signal_index) {
+    for (int i = 5; i >= 0; i--) {
+        read_and_correct_dodeca_word(opts, state, &(dodeca_data[i][0]), status_count, analog_signal_array,
+                                     analog_signal_index);
     }
-
-    for (i = 5; i >= 0; i--) {
-        read_and_correct_dodeca_word(opts, state, &(dodeca_parity[i][0]), &status_count, analog_signal_array,
-                                     &analog_signal_index);
+    for (int i = 5; i >= 0; i--) {
+        read_and_correct_dodeca_word(opts, state, &(dodeca_parity[i][0]), status_count, analog_signal_array,
+                                     analog_signal_index);
     }
+}
 
-    // Swap the two 6-bit words to accommodate for the expected word order of the Reed-Solomon decoding
+static int
+tdulc_recover_reedsolomon(dsd_state* state, char dodeca_data[6][12], char dodeca_parity[6][12],
+                          const AnalogSignal* analog_signal_array) {
     swap_hex_words((char*)dodeca_data, (char*)dodeca_parity);
-
-    // Error correct the hex_data using Reed-Solomon hex_parity
-    irrecoverable_errors = check_and_fix_reedsolomon_24_12_13((char*)dodeca_data, (char*)dodeca_parity);
+    int irrecoverable_errors = check_and_fix_reedsolomon_24_12_13((char*)dodeca_data, (char*)dodeca_parity);
     if (irrecoverable_errors == 1) {
         uint8_t data_reliab[12];
         uint8_t parity_reliab[12];
-
         build_tdulc_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
         if (p25p1_rs_24_12_13_soft_reliability((char*)dodeca_data, (char*)dodeca_parity, data_reliab, parity_reliab)
             == 0) {
@@ -363,212 +327,122 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
             irrecoverable_errors = 0;
         }
     }
-
-    // Recover the original order
     swap_hex_words((char*)dodeca_data, (char*)dodeca_parity);
+    return irrecoverable_errors;
+}
 
+static void
+tdulc_apply_recovery_result(dsd_state* state, P25Heuristics* heur, char dodeca_data[6][12], char dodeca_parity[6][12],
+                            AnalogSignal* analog_signal_array, int irrecoverable_errors) {
     if (irrecoverable_errors == 1) {
         state->p25_p1_voice_fec_err++;
         state->debug_header_critical_errors++;
-
-        // We can correct (13-1)/2 = 6 errors. If we failed, it means that there were more than 6 errors in
-        // these 12+12 words. But take into account that each hex word was already error corrected with
-        // Golay 24, which can correct 3 bits on each sequence of (12+12) bits. We could say that there were
-        // 7 errors of 4 bits.
         update_error_stats(heur, 12 * 6 + 12 * 6, 7 * 4);
-
-    } else {
-        state->p25_p1_voice_fec_ok++;
-        // Same comments as in processHDU. See there.
-
-        char fixed_parity[6 * 12];
-
-        // Correct the dibits that we read according with hex_data values
-        correct_golay_dibits_12((char*)dodeca_data, 6, analog_signal_array);
-
-        // Generate again the Reed-Solomon parity
-        // Now, swap again for Reed-Solomon
-        swap_hex_words((char*)dodeca_data, (char*)dodeca_parity);
-        encode_reedsolomon_24_12_13((char*)dodeca_data, fixed_parity);
-        // Swap again to recover the original order
-        swap_hex_words((char*)dodeca_data, fixed_parity);
-
-        // Correct the dibits that we read according with the fixed parity values
-        correct_golay_dibits_12(fixed_parity, 6, analog_signal_array + ((size_t)6) * (6 + 6));
-
-        // Once corrected, contribute this information to the heuristics module
-        analog_signal_array[0].sequence_broken = 1;
-        size_t trusted = ((size_t)6) * (6 + 6) + ((size_t)6) * (6 + 6);
-        contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, (int)trusted);
+        return;
     }
 
-    // Next 10 dibits should be zeros
-    // If an irrecoverable error happens, you should start a new sequence since the previous dibit was not set
-    read_zeros(opts, state, analog_signal_array + ((size_t)6) * (6 + 6) + ((size_t)6) * (6 + 6), 20, &status_count,
+    state->p25_p1_voice_fec_ok++;
+
+    char fixed_parity[6 * 12];
+    correct_golay_dibits_12((char*)dodeca_data, 6, analog_signal_array);
+    swap_hex_words((char*)dodeca_data, (char*)dodeca_parity);
+    encode_reedsolomon_24_12_13((char*)dodeca_data, fixed_parity);
+    swap_hex_words((char*)dodeca_data, fixed_parity);
+    correct_golay_dibits_12(fixed_parity, 6, analog_signal_array + ((size_t)6) * (6 + 6));
+
+    analog_signal_array[0].sequence_broken = 1;
+    size_t trusted = ((size_t)6) * (6 + 6) + ((size_t)6) * (6 + 6);
+    contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, (int)trusted);
+}
+
+static void
+tdulc_finalize_tail_symbols(dsd_opts* opts, dsd_state* state, AnalogSignal* analog_signal_array, int* status_count,
+                            int irrecoverable_errors) {
+    read_zeros(opts, state, analog_signal_array + ((size_t)6) * (6 + 6) + ((size_t)6) * (6 + 6), 20, status_count,
                irrecoverable_errors);
 
-    // Next we should find an status dibit
-    // Register a Phase 1 termination boundary to allow early teardown on TDULC
     state->p25_p1_last_tdu = time(NULL);
     state->p25_p1_last_tdu_m = dsd_time_now_monotonic_s();
     state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-    if (status_count != 35) {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, "*** SYNC ERROR\n");
-        fprintf(stderr, "%s", KNRM);
+    if (*status_count != 35) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, "*** SYNC ERROR\n");
+        DSD_FPRINTF(stderr, "%s", KNRM);
     }
 
-    // trailing status symbol
-    {
-        dsd_dibit_soft_t status_soft;
-        int ss = getDibitSoft(opts, state, &status_soft);
-        p25_status_accum_add(state, ss);
+    dsd_dibit_soft_t status_soft;
+    int ss = getDibitSoft(opts, state, &status_soft);
+    p25_status_accum_add(state, ss);
+}
+
+static void
+tdulc_build_lcw_payload(const char dodeca_data[6][12], uint8_t LCW_bytes[9], uint8_t LCW_bits[72]) {
+    DSD_MEMSET(LCW_bytes, 0, 9);
+    for (int bit_idx = 0; bit_idx < 72; bit_idx++) {
+        int word = 5 - (bit_idx / 12);
+        int bit_in_word = bit_idx % 12;
+        uint8_t bit = (uint8_t)(dodeca_data[word][bit_in_word] & 0x01);
+        LCW_bits[bit_idx] = bit;
+        LCW_bytes[bit_idx / 8] |= (uint8_t)(bit << (7 - (bit_idx % 8)));
     }
+}
 
-    // Put the corrected data into the DSD structures
+static void
+tdulc_print_lcw_payload(const dsd_opts* opts, const uint8_t LCW_bytes[9]) {
+    if (opts->payload != 1) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, " P25 LCW Payload ");
+    for (int i = 0; i < 9; i++) {
+        DSD_FPRINTF(stderr, "[%02X]", LCW_bytes[i]);
+    }
+    DSD_FPRINTF(stderr, "%s\n", KNRM);
+}
 
-    lcformat[8] = 0;
-    mfid[8] = 0;
-    lcinfo[56] = 0;
+void
+processTDULC(dsd_opts* opts, dsd_state* state) {
+    state->p25_p1_duid_tdulc++;
+    p25_status_accum_ensure_started(state);
 
-    lcformat[0] = dodeca_data[5][0] + '0';
-    lcformat[1] = dodeca_data[5][1] + '0';
-    lcformat[2] = dodeca_data[5][2] + '0';
-    lcformat[3] = dodeca_data[5][3] + '0';
-    lcformat[4] = dodeca_data[5][4] + '0';
-    lcformat[5] = dodeca_data[5][5] + '0';
-    lcformat[6] = dodeca_data[5][6] + '0';
-    lcformat[7] = dodeca_data[5][7] + '0';
-    mfid[0] = dodeca_data[5][8] + '0';
-    mfid[1] = dodeca_data[5][9] + '0';
-    mfid[2] = dodeca_data[5][10] + '0';
-    mfid[3] = dodeca_data[5][11] + '0';
+    P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
 
-    mfid[4] = dodeca_data[4][0] + '0';
-    mfid[5] = dodeca_data[4][1] + '0';
-    mfid[6] = dodeca_data[4][2] + '0';
-    mfid[7] = dodeca_data[4][3] + '0';
-    lcinfo[0] = dodeca_data[4][4] + '0';
-    lcinfo[1] = dodeca_data[4][5] + '0';
-    lcinfo[2] = dodeca_data[4][6] + '0';
-    lcinfo[3] = dodeca_data[4][7] + '0';
-    lcinfo[4] = dodeca_data[4][8] + '0';
-    lcinfo[5] = dodeca_data[4][9] + '0';
-    lcinfo[6] = dodeca_data[4][10] + '0';
-    lcinfo[7] = dodeca_data[4][11] + '0';
+    state->currentslot = 0;
+    p25_sm_emit_idle(opts, state, 0);
 
-    lcinfo[8] = dodeca_data[3][0] + '0';
-    lcinfo[9] = dodeca_data[3][1] + '0';
-    lcinfo[10] = dodeca_data[3][2] + '0';
-    lcinfo[11] = dodeca_data[3][3] + '0';
-    lcinfo[12] = dodeca_data[3][4] + '0';
-    lcinfo[13] = dodeca_data[3][5] + '0';
-    lcinfo[14] = dodeca_data[3][6] + '0';
-    lcinfo[15] = dodeca_data[3][7] + '0';
-    lcinfo[16] = dodeca_data[3][8] + '0';
-    lcinfo[17] = dodeca_data[3][9] + '0';
-    lcinfo[18] = dodeca_data[3][10] + '0';
-    lcinfo[19] = dodeca_data[3][11] + '0';
+    state->p25_call_emergency[0] = 0;
+    state->p25_call_priority[0] = 0;
+    state->p25_call_is_packet[0] = 0;
 
-    lcinfo[20] = dodeca_data[2][0] + '0';
-    lcinfo[21] = dodeca_data[2][1] + '0';
-    lcinfo[22] = dodeca_data[2][2] + '0';
-    lcinfo[23] = dodeca_data[2][3] + '0';
-    lcinfo[24] = dodeca_data[2][4] + '0';
-    lcinfo[25] = dodeca_data[2][5] + '0';
-    lcinfo[26] = dodeca_data[2][6] + '0';
-    lcinfo[27] = dodeca_data[2][7] + '0';
-    lcinfo[28] = dodeca_data[2][8] + '0';
-    lcinfo[29] = dodeca_data[2][9] + '0';
-    lcinfo[30] = dodeca_data[2][10] + '0';
-    lcinfo[31] = dodeca_data[2][11] + '0';
-
-    lcinfo[32] = dodeca_data[1][0] + '0';
-    lcinfo[33] = dodeca_data[1][1] + '0';
-    lcinfo[34] = dodeca_data[1][2] + '0';
-    lcinfo[35] = dodeca_data[1][3] + '0';
-    lcinfo[36] = dodeca_data[1][4] + '0';
-    lcinfo[37] = dodeca_data[1][5] + '0';
-    lcinfo[38] = dodeca_data[1][6] + '0';
-    lcinfo[39] = dodeca_data[1][7] + '0';
-    lcinfo[40] = dodeca_data[1][8] + '0';
-    lcinfo[41] = dodeca_data[1][9] + '0';
-    lcinfo[42] = dodeca_data[1][10] + '0';
-    lcinfo[43] = dodeca_data[1][11] + '0';
-
-    lcinfo[44] = dodeca_data[0][0] + '0';
-    lcinfo[45] = dodeca_data[0][1] + '0';
-    lcinfo[46] = dodeca_data[0][2] + '0';
-    lcinfo[47] = dodeca_data[0][3] + '0';
-    lcinfo[48] = dodeca_data[0][4] + '0';
-    lcinfo[49] = dodeca_data[0][5] + '0';
-    lcinfo[50] = dodeca_data[0][6] + '0';
-    lcinfo[51] = dodeca_data[0][7] + '0';
-    lcinfo[52] = dodeca_data[0][8] + '0';
-    lcinfo[53] = dodeca_data[0][9] + '0';
-    lcinfo[54] = dodeca_data[0][10] + '0';
-    lcinfo[55] = dodeca_data[0][11] + '0';
-
-    int j;
+    char dodeca_data[6][12];
+    char dodeca_parity[6][12];
+    AnalogSignal analog_signal_array[6 * (6 + 6) + 6 * (6 + 6) + 10] = {0};
     uint8_t LCW_bytes[9];
     uint8_t LCW_bits[72];
-    memset(LCW_bytes, 0, sizeof(LCW_bytes));
-    memset(LCW_bits, 0, sizeof(LCW_bits));
+    int analog_signal_index = 0;
+    int status_count = 21;
+    tdulc_read_data_and_parity_words(opts, state, dodeca_data, dodeca_parity, &status_count, analog_signal_array,
+                                     &analog_signal_index);
 
-    //load array above into byte form first
-    LCW_bytes[0] = (uint8_t)ConvertBitIntoBytes(&lcformat[0], 8);
-    LCW_bytes[1] = (uint8_t)ConvertBitIntoBytes(&mfid[0], 8);
-    for (i = 0; i < 7; i++) {
-        LCW_bytes[i + 2] = (uint8_t)ConvertBitIntoBytes(&lcinfo[(size_t)i * 8u], 8);
-    }
+    int irrecoverable_errors = tdulc_recover_reedsolomon(state, dodeca_data, dodeca_parity, analog_signal_array);
+    tdulc_apply_recovery_result(state, heur, dodeca_data, dodeca_parity, analog_signal_array, irrecoverable_errors);
+    tdulc_finalize_tail_symbols(opts, state, analog_signal_array, &status_count, irrecoverable_errors);
+    tdulc_build_lcw_payload((const char (*)[12])dodeca_data, LCW_bytes, LCW_bits);
 
-    //load as bit array next (easier to process data in bit form)
-    for (i = 0, j = 0; i < 9; i++, j += 8) {
-        LCW_bits[j + 0] = (LCW_bytes[i] >> 7) & 0x01;
-        LCW_bits[j + 1] = (LCW_bytes[i] >> 6) & 0x01;
-        LCW_bits[j + 2] = (LCW_bytes[i] >> 5) & 0x01;
-        LCW_bits[j + 3] = (LCW_bytes[i] >> 4) & 0x01;
-        LCW_bits[j + 4] = (LCW_bytes[i] >> 3) & 0x01;
-        LCW_bits[j + 5] = (LCW_bytes[i] >> 2) & 0x01;
-        LCW_bits[j + 6] = (LCW_bytes[i] >> 1) & 0x01;
-        LCW_bits[j + 7] = (LCW_bytes[i] >> 0) & 0x01;
-    }
-
-    //send to new P25 LCW function
     if (irrecoverable_errors == 0) {
-        fprintf(stderr, "%s", KYEL);
+        DSD_FPRINTF(stderr, "%s", KYEL);
         p25_lcw(opts, state, LCW_bits, 0);
-        fprintf(stderr, "%s", KNRM);
+        DSD_FPRINTF(stderr, "%s", KNRM);
     } else {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, " LCW FEC ERR ");
-        fprintf(stderr, "%s\n", KNRM);
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " LCW FEC ERR ");
+        DSD_FPRINTF(stderr, "%s\n", KNRM);
     }
-
-    if (opts->payload == 1) {
-        fprintf(stderr, "%s", KCYN);
-        fprintf(stderr, " P25 LCW Payload ");
-        for (i = 0; i < 9; i++) {
-            fprintf(stderr, "[%02X]", LCW_bytes[i]);
-        }
-
-        fprintf(stderr, "%s\n", KNRM);
-    }
-
-    //reset some strings -- since its a tdu, blank out any call strings, only want during actual call
-    sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-    sprintf(state->call_string[1], "%s", "                     "); //21 spaces
-
-    //reset gain
+    tdulc_print_lcw_payload(opts, LCW_bytes);
+    DSD_SPRINTF(state->call_string[0], "%s", "                     ");
+    DSD_SPRINTF(state->call_string[1], "%s", "                     ");
     if (opts->floating_point == 1) {
         state->aout_gain = opts->audio_gain;
     }
-
-    // Classify accumulated status symbols and set advisory AFC gate flag.
     p25_status_accum_classify(state, opts);
-
-    //zero out MI, key, alg
-    // state->payload_miP = 0;
-    // state->payload_algid = 0;
-    // state->payload_keyid = 0;
 }

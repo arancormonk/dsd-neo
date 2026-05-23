@@ -11,7 +11,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Test shim wrapper
 void p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, int p25_trunk, long p25_cc_freq,
@@ -22,13 +27,15 @@ typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
 
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -37,6 +44,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -45,6 +53,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -54,6 +63,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -63,6 +73,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -70,6 +81,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -77,13 +89,16 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -93,7 +108,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 expect_eq_long(const char* tag, long got, long want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %ld want %ld\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %ld want %ld\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -102,7 +117,7 @@ expect_eq_long(const char* tag, long got, long want) {
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "%s: expected true\n", tag);
+        DSD_FPRINTF(stderr, "%s: expected true\n", tag);
         return 1;
     }
     return 0;
@@ -122,7 +137,7 @@ main(void) {
     // Case A: MFID 0x90, opcode A3 (Group Regroup Channel Grant - Implicit)
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0xA3;
         mac[2] = 0x90;
         mac[5] = 0x10;
@@ -139,7 +154,7 @@ main(void) {
     // Case B: UU Voice Service Channel Grant (opcode 0x44)
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0x44;
         mac[2] = 0x00; // std MFID
         mac[2] = 0x10;
@@ -159,3 +174,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

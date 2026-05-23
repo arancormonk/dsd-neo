@@ -8,7 +8,8 @@
  * @brief NXDN alias decoding helpers (standard + ARIB segmented variants).
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_ALIAS_DECODE_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_ALIAS_DECODE_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -28,12 +29,12 @@ void nxdn_alias_reset(dsd_state* state);
 /**
  * Decode/assemble a standard NXDN alias block (message type 0x3F).
  */
-void nxdn_alias_decode_prop(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok);
+void nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok);
 
 /**
  * Decode/assemble an ARIB-style segmented alias payload.
  */
-void nxdn_alias_decode_arib(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok);
+void nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok);
 
 /**
  * Return whether full Shift-JIS multibyte decoding support is available.
@@ -56,3 +57,5 @@ size_t nxdn_alias_decode_shift_jis_like(const uint8_t* in, size_t in_len, char* 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_ALIAS_DECODE_H_ */

@@ -8,7 +8,7 @@
 #include <dsd-neo/crypto/pc4.h>
 #include <stdint.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #define KIR_MD2_MAX_BLOCK 264U
@@ -51,7 +51,7 @@ rol48(uint64_t x, int n) {
 
 static void
 kir_md2ii_init(kir_md2ii_ctx* ctx, size_t block_len) {
-    memset(ctx, 0, sizeof(*ctx));
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->block_len = block_len;
 }
 
@@ -84,7 +84,7 @@ kir_md2ii_update(kir_md2ii_ctx* ctx, const uint8_t* input, size_t len) {
 static void
 kir_md2ii_final(kir_md2ii_ctx* ctx, uint8_t* out, size_t out_len) {
     uint8_t pad[KIR_MD2_MAX_BLOCK];
-    memset(pad, 0, sizeof(pad));
+    DSD_MEMSET(pad, 0, sizeof(pad));
     const size_t pad_len = ctx->block_len - ctx->x2;
     for (size_t i = 0; i < pad_len; i++) {
         pad[i] = (uint8_t)pad_len;
@@ -96,11 +96,11 @@ kir_md2ii_final(kir_md2ii_ctx* ctx, uint8_t* out, size_t out_len) {
     if (out_len > ctx->block_len) {
         out_len = ctx->block_len;
     }
-    memcpy(out, ctx->h1, out_len);
+    DSD_MEMCPY(out, ctx->h1, out_len);
 }
 
 static int
-kir_load_slot_key(dsd_state* state, uint8_t slot, uint8_t out_key[32]) {
+kir_load_slot_key(const dsd_state* state, uint8_t slot, uint8_t out_key[32]) {
     if (!state || !out_key || slot > 1U) {
         return -1;
     }
@@ -118,11 +118,11 @@ kir_load_slot_key(dsd_state* state, uint8_t slot, uint8_t out_key[32]) {
 static void
 kir_store_keystream(dsd_state* state, uint8_t slot, const uint8_t* ks, size_t len) {
     if (slot == 0U) {
-        memset(state->ks_octetL, 0, sizeof(state->ks_octetL));
-        memcpy(state->ks_octetL, ks, len);
+        DSD_MEMSET(state->ks_octetL, 0, sizeof(state->ks_octetL));
+        DSD_MEMCPY(state->ks_octetL, ks, len);
     } else {
-        memset(state->ks_octetR, 0, sizeof(state->ks_octetR));
-        memcpy(state->ks_octetR, ks, len);
+        DSD_MEMSET(state->ks_octetR, 0, sizeof(state->ks_octetR));
+        DSD_MEMCPY(state->ks_octetR, ks, len);
     }
 }
 
@@ -208,7 +208,7 @@ kirisun_uni_keystream_creation(dsd_state* state) {
     const uint32_t mi = (uint32_t)((slot == 0U) ? state->payload_mi : state->payload_miR);
 
     uint8_t user_key[32];
-    memset(user_key, 0, sizeof(user_key));
+    DSD_MEMSET(user_key, 0, sizeof(user_key));
     if (kir_load_slot_key(state, slot, user_key) != 0) {
         return;
     }
@@ -221,7 +221,7 @@ kirisun_uni_keystream_creation(dsd_state* state) {
     };
 
     uint8_t real_key[32];
-    memset(real_key, 0, sizeof(real_key));
+    DSD_MEMSET(real_key, 0, sizeof(real_key));
     {
         kir_md2ii_ctx md2;
         kir_md2ii_init(&md2, 32U);
@@ -230,7 +230,7 @@ kirisun_uni_keystream_creation(dsd_state* state) {
     }
 
     uint8_t hash8[8];
-    memset(hash8, 0, sizeof(hash8));
+    DSD_MEMSET(hash8, 0, sizeof(hash8));
     {
         kir_md2ii_ctx md2;
         kir_md2ii_init(&md2, 8U);
@@ -245,7 +245,7 @@ kirisun_uni_keystream_creation(dsd_state* state) {
     }
 
     uint8_t key24[24];
-    memset(key24, 0, sizeof(key24));
+    DSD_MEMSET(key24, 0, sizeof(key24));
     {
         kir_md2ii_ctx md2;
         kir_md2ii_init(&md2, 24U);
@@ -255,7 +255,7 @@ kirisun_uni_keystream_creation(dsd_state* state) {
     }
 
     uint8_t ks_bytes[126];
-    memset(ks_bytes, 0, sizeof(ks_bytes));
+    DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
     kir_keystream37(key24, internal_state, ks_bytes);
     kir_store_keystream(state, slot, ks_bytes, sizeof(ks_bytes));
 }
@@ -270,20 +270,13 @@ kirisun_adv_keystream_creation(dsd_state* state) {
     const uint32_t mi = (uint32_t)((slot == 0U) ? state->payload_mi : state->payload_miR);
 
     uint8_t user_key[32];
-    memset(user_key, 0, sizeof(user_key));
+    DSD_MEMSET(user_key, 0, sizeof(user_key));
     if (kir_load_slot_key(state, slot, user_key) != 0) {
         return;
     }
 
-    uint8_t mi_bytes[4] = {
-        (uint8_t)((mi >> 24) & 0xFFU),
-        (uint8_t)((mi >> 16) & 0xFFU),
-        (uint8_t)((mi >> 8) & 0xFFU),
-        (uint8_t)(mi & 0xFFU),
-    };
-
     uint8_t real_key[32];
-    memset(real_key, 0, sizeof(real_key));
+    DSD_MEMSET(real_key, 0, sizeof(real_key));
     {
         kir_md2ii_ctx md2;
         kir_md2ii_init(&md2, 32U);
@@ -292,8 +285,14 @@ kirisun_adv_keystream_creation(dsd_state* state) {
     }
 
     uint8_t hash32[32];
-    memset(hash32, 0, sizeof(hash32));
+    DSD_MEMSET(hash32, 0, sizeof(hash32));
     {
+        uint8_t mi_bytes[4] = {
+            (uint8_t)((mi >> 24) & 0xFFU),
+            (uint8_t)((mi >> 16) & 0xFFU),
+            (uint8_t)((mi >> 8) & 0xFFU),
+            (uint8_t)(mi & 0xFFU),
+        };
         kir_md2ii_ctx md2;
         kir_md2ii_init(&md2, 32U);
         kir_md2ii_update(&md2, mi_bytes, sizeof(mi_bytes));
@@ -307,12 +306,12 @@ kirisun_adv_keystream_creation(dsd_state* state) {
     }
 
     PC4Context local_ctx;
-    memset(&local_ctx, 0, sizeof(local_ctx));
+    DSD_MEMSET(&local_ctx, 0, sizeof(local_ctx));
     create_keys(&local_ctx, user_key, sizeof(user_key));
     local_ctx.rounds = nbround;
 
     uint8_t ks_bytes[126];
-    memset(ks_bytes, 0, sizeof(ks_bytes));
+    DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
 
     int k = 0;
     for (int frame = 0; frame < 18; frame++) {

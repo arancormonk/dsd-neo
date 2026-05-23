@@ -11,7 +11,8 @@
  * installs real hook functions at startup; the runtime provides safe wrappers
  * that no-op when hooks are not installed.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_UDP_AUDIO_HOOKS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_UDP_AUDIO_HOOKS_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -23,15 +24,17 @@ extern "C" {
 #endif
 
 typedef struct {
-    void (*blast)(dsd_opts* opts, dsd_state* state, size_t nsam, void* data);
-    void (*blast_analog)(dsd_opts* opts, dsd_state* state, size_t nsam, void* data);
+    void (*blast)(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data);
+    void (*blast_analog)(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data);
 } dsd_udp_audio_hooks;
 
 void dsd_udp_audio_hooks_set(dsd_udp_audio_hooks hooks);
 
-void dsd_udp_audio_hook_blast(dsd_opts* opts, dsd_state* state, size_t nsam, void* data);
-void dsd_udp_audio_hook_blast_analog(dsd_opts* opts, dsd_state* state, size_t nsam, void* data);
+void dsd_udp_audio_hook_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data);
+void dsd_udp_audio_hook_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_UDP_AUDIO_HOOKS_H_ */

@@ -5,11 +5,11 @@
 
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/symbol_levels.h>
-
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 #define DSD_FSK_TRACK_SYMBOLS        64
 #define DSD_FSK_TRACK_MIN_SCORE      1.0e-4f
@@ -106,7 +106,7 @@ normalized_config(const dsd_fsk_modem_config* cfg) {
     if (cfg) {
         out = *cfg;
     } else {
-        memset(&out, 0, sizeof(out));
+        DSD_MEMSET(&out, 0, sizeof(out));
     }
     out.sample_rate_hz = valid_rate(out.sample_rate_hz, 48000);
     out.symbol_rate_hz = valid_rate(out.symbol_rate_hz, 4800);
@@ -130,7 +130,7 @@ dsd_fsk_modem_reset(dsd_fsk_modem_state* st) {
     }
     dsd_fsk_modem_config cfg = st->cfg;
     release_pending_storage(st);
-    memset(st, 0, sizeof(*st));
+    DSD_MEMSET(st, 0, sizeof(*st));
     st->cfg = normalized_config(&cfg);
     st->symbol_clock = modem_symbol_clock(&st->cfg);
     st->abs_est = 0.0f;
@@ -157,7 +157,7 @@ dsd_fsk_modem_init(dsd_fsk_modem_state* st, const dsd_fsk_modem_config* cfg) {
     if (!st) {
         return;
     }
-    memset(st, 0, sizeof(*st));
+    DSD_MEMSET(st, 0, sizeof(*st));
     st->cfg = normalized_config(cfg);
     st->symbol_clock = modem_symbol_clock(&st->cfg);
     st->timing_acquired = modem_should_acquire_timing(&st->cfg, st->symbol_clock) ? 0 : 1;
@@ -178,7 +178,7 @@ reset_soft_metrics(dsd_fsk_modem_state* st) {
     if (!st) {
         return;
     }
-    memset(&st->metrics, 0, sizeof(st->metrics));
+    DSD_MEMSET(&st->metrics, 0, sizeof(st->metrics));
     st->metrics_rel_sum = 0.0f;
     st->metrics_err2_sum = 0.0f;
     st->metrics_ref2_sum = 0.0f;
@@ -316,7 +316,7 @@ compact_pending_symbols(dsd_fsk_modem_state* st) {
     int remaining = st->pending_len - st->pending_pos;
     if (remaining > 0) {
         float* pending = pending_symbol_data(st);
-        memmove(pending, pending + st->pending_pos, (size_t)remaining * sizeof(float));
+        DSD_MEMMOVE(pending, pending + st->pending_pos, (size_t)remaining * sizeof(float));
     }
     st->pending_pos = 0;
     st->pending_len = remaining;
@@ -343,7 +343,7 @@ ensure_pending_capacity(dsd_fsk_modem_state* st, int needed) {
     } else {
         next = (float*)malloc((size_t)new_cap * sizeof(float));
         if (next) {
-            memcpy(next, st->pending_symbols, (size_t)st->pending_len * sizeof(float));
+            DSD_MEMCPY(next, st->pending_symbols, (size_t)st->pending_len * sizeof(float));
         }
     }
     if (!next) {
@@ -473,6 +473,122 @@ wrap_timing_error(float err, int clock_i) {
     return err;
 }
 
+typedef struct {
+    int best_phase;
+    int expected_phase;
+    float best_score;
+    float ratio;
+    float err;
+    int accept;
+} dsd_fsk_track_eval;
+
+static int track_boundary_phase_scored(const float* freq, int n, int clock_i, float* out_score,
+                                       float* out_second_score);
+
+static int
+track_start_phase_mod(float start_phase, int clock_i) {
+    int phase = (int)floorf(start_phase);
+    phase %= clock_i;
+    if (phase < 0) {
+        phase += clock_i;
+    }
+    return phase;
+}
+
+static float
+track_score_ratio(float best_score, float second_score) {
+    if (second_score > 1.0e-12f) {
+        return best_score / second_score;
+    }
+    return (best_score > 0.0f) ? 1000.0f : 0.0f;
+}
+
+static int
+track_timing_ready(const dsd_fsk_modem_state* st, const float* phase_io, int clock_i) {
+    if (!st || !phase_io || clock_i < 4 || clock_i > 32 || !st->timing_acquired) {
+        return 0;
+    }
+    return 1;
+}
+
+static int
+track_push_sample(dsd_fsk_modem_state* st, float centered, float sample_phase, int target) {
+    if (target <= 0) {
+        return 0;
+    }
+    if (st->track_len == 0) {
+        st->track_start_phase = sample_phase;
+    }
+    if (st->track_len < DSD_FSK_MODEM_TRACK_MAX_SAMPLES) {
+        st->track_freq[st->track_len++] = centered;
+    }
+    return (st->track_len >= target) ? 1 : 0;
+}
+
+static dsd_fsk_track_eval
+track_compute_eval(const dsd_fsk_modem_state* st, int clock_i) {
+    dsd_fsk_track_eval eval;
+    float second_score = 0.0f;
+    eval.best_score = 0.0f;
+    eval.best_phase =
+        track_boundary_phase_scored(st->track_freq, st->track_len, clock_i, &eval.best_score, &second_score);
+    int start_phase = track_start_phase_mod(st->track_start_phase, clock_i);
+    eval.expected_phase = (clock_i - start_phase) % clock_i;
+    eval.ratio = track_score_ratio(eval.best_score, second_score);
+    eval.err = wrap_timing_error((float)(eval.best_phase - eval.expected_phase), clock_i);
+    eval.accept = (eval.best_score >= DSD_FSK_TRACK_MIN_SCORE && eval.ratio >= DSD_FSK_TRACK_MIN_RATIO
+                   && fabsf(eval.err) <= 2.0f);
+    return eval;
+}
+
+static float
+track_gain_correction(float err) {
+    float correction = err * DSD_FSK_TRACK_GAIN;
+    if (correction > DSD_FSK_TRACK_MAX_CORRECTION) {
+        correction = DSD_FSK_TRACK_MAX_CORRECTION;
+    } else if (correction < -DSD_FSK_TRACK_MAX_CORRECTION) {
+        correction = -DSD_FSK_TRACK_MAX_CORRECTION;
+    }
+    return correction;
+}
+
+static float
+track_apply_correction(const dsd_fsk_modem_state* st, float* phase_io, float correction) {
+    float corrected_phase = *phase_io - correction;
+    if (corrected_phase < 0.0f) {
+        correction = *phase_io;
+        corrected_phase = 0.0f;
+    } else if (corrected_phase >= st->symbol_clock) {
+        float phase_limit = st->symbol_clock - 1.0e-4f;
+        if (phase_limit < 0.0f) {
+            phase_limit = 0.0f;
+        }
+        correction = *phase_io - phase_limit;
+        corrected_phase = phase_limit;
+    }
+    *phase_io = corrected_phase;
+    return correction;
+}
+
+static void
+track_log_accept(const dsd_fsk_modem_state* st, int clock_i, const dsd_fsk_track_eval* eval, float correction) {
+    if (debug_fsk_acq_enabled()) {
+        DSD_FPRINTF(stderr,
+                    "[FSKTRACK] clock=%d best=%d expect=%d err=%.3f corr=%.3f score=%.5f ratio=%.3f updates=%llu\n",
+                    clock_i, eval->best_phase, eval->expected_phase, eval->err, correction, eval->best_score,
+                    eval->ratio, (unsigned long long)st->track_updates);
+    }
+}
+
+static void
+track_log_skip(const dsd_fsk_modem_state* st, int clock_i, const dsd_fsk_track_eval* eval) {
+    if (debug_fsk_acq_enabled()) {
+        DSD_FPRINTF(stderr, "[FSKTRACK] skip clock=%d best=%d expect=%d score=%.5f ratio=%.3f skips=%llu\n", clock_i,
+                    eval->best_phase, eval->expected_phase, eval->best_score, eval->ratio,
+                    (unsigned long long)st->track_skips);
+    }
+}
+
 static int
 track_boundary_phase_scored(const float* freq, int n, int clock_i, float* out_score, float* out_second_score) {
     int best_phase = 0;
@@ -512,73 +628,26 @@ track_boundary_phase_scored(const float* freq, int n, int clock_i, float* out_sc
 
 static void
 maybe_track_symbol_timing(dsd_fsk_modem_state* st, float centered, int clock_i, float sample_phase, float* phase_io) {
-    if (!st || !phase_io || clock_i < 4 || clock_i > 32 || !st->timing_acquired) {
+    if (!track_timing_ready(st, phase_io, clock_i)) {
         return;
     }
-    int target = tracking_target_samples(clock_i);
-    if (target <= 0) {
-        return;
-    }
-    if (st->track_len == 0) {
-        st->track_start_phase = sample_phase;
-    }
-    if (st->track_len < DSD_FSK_MODEM_TRACK_MAX_SAMPLES) {
-        st->track_freq[st->track_len++] = centered;
-    }
-    if (st->track_len < target) {
+    if (!track_push_sample(st, centered, sample_phase, tracking_target_samples(clock_i))) {
         return;
     }
 
-    float best_score = 0.0f;
-    float second_score = 0.0f;
-    int best_phase = track_boundary_phase_scored(st->track_freq, st->track_len, clock_i, &best_score, &second_score);
-    int start_phase = (int)floorf(st->track_start_phase);
-    start_phase %= clock_i;
-    if (start_phase < 0) {
-        start_phase += clock_i;
-    }
-    int expected_phase = (clock_i - start_phase) % clock_i;
-    float ratio = (second_score > 1.0e-12f) ? (best_score / second_score) : (best_score > 0.0f ? 1000.0f : 0.0f);
-    float err = wrap_timing_error((float)(best_phase - expected_phase), clock_i);
-    int accept = (best_score >= DSD_FSK_TRACK_MIN_SCORE && ratio >= DSD_FSK_TRACK_MIN_RATIO && fabsf(err) <= 2.0f);
-
-    if (accept) {
-        float correction = err * DSD_FSK_TRACK_GAIN;
-        if (correction > DSD_FSK_TRACK_MAX_CORRECTION) {
-            correction = DSD_FSK_TRACK_MAX_CORRECTION;
-        } else if (correction < -DSD_FSK_TRACK_MAX_CORRECTION) {
-            correction = -DSD_FSK_TRACK_MAX_CORRECTION;
-        }
-        float corrected_phase = *phase_io - correction;
-        if (corrected_phase < 0.0f) {
-            correction = *phase_io;
-            corrected_phase = 0.0f;
-        } else if (corrected_phase >= st->symbol_clock) {
-            float phase_limit = st->symbol_clock - 1.0e-4f;
-            if (phase_limit < 0.0f) {
-                phase_limit = 0.0f;
-            }
-            correction = *phase_io - phase_limit;
-            corrected_phase = phase_limit;
-        }
-        *phase_io = corrected_phase;
-        st->track_last_error = err;
-        st->track_last_score = best_score;
+    dsd_fsk_track_eval eval = track_compute_eval(st, clock_i);
+    if (eval.accept) {
+        float correction = track_gain_correction(eval.err);
+        correction = track_apply_correction(st, phase_io, correction);
+        st->track_last_error = eval.err;
+        st->track_last_score = eval.best_score;
         st->track_updates++;
-        if (debug_fsk_acq_enabled()) {
-            fprintf(stderr,
-                    "[FSKTRACK] clock=%d best=%d expect=%d err=%.3f corr=%.3f score=%.5f ratio=%.3f updates=%llu\n",
-                    clock_i, best_phase, expected_phase, err, correction, best_score, ratio,
-                    (unsigned long long)st->track_updates);
-        }
+        track_log_accept(st, clock_i, &eval, correction);
     } else {
         st->track_last_error = 0.0f;
-        st->track_last_score = best_score;
+        st->track_last_score = eval.best_score;
         st->track_skips++;
-        if (debug_fsk_acq_enabled()) {
-            fprintf(stderr, "[FSKTRACK] skip clock=%d best=%d expect=%d score=%.5f ratio=%.3f skips=%llu\n", clock_i,
-                    best_phase, expected_phase, best_score, ratio, (unsigned long long)st->track_skips);
-        }
+        track_log_skip(st, clock_i, &eval);
     }
     clear_tracking_window(st);
 }
@@ -623,10 +692,136 @@ emit_acquisition_symbols(dsd_fsk_modem_state* st, int clock_i, float* out_symbol
     clear_tracking_window(st);
 
     if (debug_fsk_acq_enabled()) {
-        fprintf(stderr, "[FSKACQ] clock=%d phase=%d score=%.5f lead=%d carry=%d emitted=%llu\n", clock_i, phase, score,
-                emitted_leading, st->symbol_count, (unsigned long long)st->symbols_emitted);
+        DSD_FPRINTF(stderr, "[FSKACQ] clock=%d phase=%d score=%.5f lead=%d carry=%d emitted=%llu\n", clock_i, phase,
+                    score, emitted_leading, st->symbol_count, (unsigned long long)st->symbols_emitted);
     }
     return out_count;
+}
+
+typedef struct {
+    float prev_i;
+    float prev_q;
+    int have_prev;
+    float phase;
+    float accum;
+    int accum_count;
+    float dc;
+    float clock;
+    int clock_i;
+    int acq_target;
+} dsd_fsk_process_ctx;
+
+static float
+modem_clock_or_default(const dsd_fsk_modem_state* st) {
+    if (st->symbol_clock > 0.0f) {
+        return st->symbol_clock;
+    }
+    return modem_symbol_clock(&st->cfg);
+}
+
+static int
+modem_acquisition_target(int clock_i) {
+    if (clock_i <= 0) {
+        return 0;
+    }
+    return modem_acq_target_samples(clock_i);
+}
+
+static float
+symbol_average_or_zero(float accum, int count) {
+    if (count > 0) {
+        return accum / (float)count;
+    }
+    return 0.0f;
+}
+
+static dsd_fsk_process_ctx
+process_ctx_load(const dsd_fsk_modem_state* st) {
+    dsd_fsk_process_ctx ctx;
+    ctx.prev_i = st->prev_i;
+    ctx.prev_q = st->prev_q;
+    ctx.have_prev = st->have_prev;
+    ctx.phase = st->symbol_phase;
+    ctx.accum = st->symbol_accum;
+    ctx.accum_count = st->symbol_count;
+    ctx.dc = st->dc_est;
+    ctx.clock = modem_clock_or_default(st);
+    ctx.clock_i = modem_clock_int(ctx.clock);
+    ctx.acq_target = modem_acquisition_target(ctx.clock_i);
+    return ctx;
+}
+
+static void
+process_ctx_store(dsd_fsk_modem_state* st, const dsd_fsk_process_ctx* ctx) {
+    st->prev_i = ctx->prev_i;
+    st->prev_q = ctx->prev_q;
+    st->have_prev = ctx->have_prev;
+    st->symbol_phase = ctx->phase;
+    st->symbol_accum = ctx->accum;
+    st->symbol_count = ctx->accum_count;
+    st->dc_est = ctx->dc;
+    st->symbol_clock = ctx->clock;
+}
+
+static float
+discriminator_frequency(float cur_i, float cur_q, float prev_i, float prev_q) {
+    float re = cur_i * prev_i + cur_q * prev_q;
+    float im = cur_q * prev_i - cur_i * prev_q;
+    return phase_delta_small_angle_or_atan2(im, re);
+}
+
+static float
+update_centered_frequency(float* dc_io, float freq) {
+    /* Very slow carrier centering. The symbol stream is expected to be
+     * roughly balanced over frame-sync windows; keeping this slow prevents
+     * long same-symbol runs from being mistaken for CFO. */
+    *dc_io += 0.00025f * (freq - *dc_io);
+    return freq - *dc_io;
+}
+
+static int
+process_acquisition_window(dsd_fsk_modem_state* st, dsd_fsk_process_ctx* ctx, float centered, float* out_symbols,
+                           int* out_count, int max_symbols) {
+    if (st->timing_acquired || ctx->clock_i <= 0) {
+        return 0;
+    }
+    if (st->acq_len < DSD_FSK_MODEM_ACQ_MAX_SAMPLES) {
+        st->acq_freq[st->acq_len++] = centered;
+    }
+    if (st->acq_len >= ctx->acq_target) {
+        *out_count = emit_acquisition_symbols(st, ctx->clock_i, out_symbols, *out_count, max_symbols);
+        ctx->phase = st->symbol_phase;
+        ctx->accum = st->symbol_accum;
+        ctx->accum_count = st->symbol_count;
+    }
+    return 1;
+}
+
+static void
+normalize_symbol_phase(float* phase_io, float clock) {
+    if (*phase_io >= clock) {
+        *phase_io -= clock;
+        if (*phase_io >= clock) {
+            *phase_io = fmodf(*phase_io, clock);
+        }
+    }
+}
+
+static void
+process_tracking_window(dsd_fsk_modem_state* st, dsd_fsk_process_ctx* ctx, float centered, float* out_symbols,
+                        int* out_count, int max_symbols) {
+    float sample_phase = ctx->phase;
+    ctx->accum += centered;
+    ctx->accum_count++;
+    ctx->phase += 1.0f;
+    if (ctx->phase >= ctx->clock) {
+        float raw_symbol = symbol_average_or_zero(ctx->accum, ctx->accum_count);
+        *out_count = emit_symbol(st, raw_symbol, out_symbols, *out_count, max_symbols);
+        ctx->accum = 0.0f;
+        ctx->accum_count = 0;
+        normalize_symbol_phase(&ctx->phase, ctx->clock);
+    }
+    maybe_track_symbol_timing(st, centered, ctx->clock_i, sample_phase, &ctx->phase);
 }
 
 int
@@ -641,82 +836,34 @@ dsd_fsk_modem_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int 
         return out_count;
     }
 
+    dsd_fsk_process_ctx ctx = process_ctx_load(st);
     int pairs = len_interleaved >> 1;
-    float prev_i = st->prev_i;
-    float prev_q = st->prev_q;
-    int have_prev = st->have_prev;
-    float phase = st->symbol_phase;
-    float accum = st->symbol_accum;
-    int accum_count = st->symbol_count;
-    float dc = st->dc_est;
-    float clock = st->symbol_clock > 0.0f ? st->symbol_clock : modem_symbol_clock(&st->cfg);
-    int clock_i = modem_clock_int(clock);
-    int acq_target = (clock_i > 0) ? modem_acq_target_samples(clock_i) : 0;
-
     for (int n = 0; n < pairs; n++) {
         float cur_i = iq_interleaved[(n << 1) + 0];
         float cur_q = iq_interleaved[(n << 1) + 1];
 
-        if (!have_prev) {
-            prev_i = cur_i;
-            prev_q = cur_q;
-            have_prev = 1;
+        if (!ctx.have_prev) {
+            ctx.prev_i = cur_i;
+            ctx.prev_q = cur_q;
+            ctx.have_prev = 1;
             continue;
         }
 
-        float re = cur_i * prev_i + cur_q * prev_q;
-        float im = cur_q * prev_i - cur_i * prev_q;
-        float freq = phase_delta_small_angle_or_atan2(im, re);
+        float freq = discriminator_frequency(cur_i, cur_q, ctx.prev_i, ctx.prev_q);
+        float centered = update_centered_frequency(&ctx.dc, freq);
 
-        /* Very slow carrier centering. The symbol stream is expected to be
-         * roughly balanced over frame-sync windows; keeping this slow prevents
-         * long same-symbol runs from being mistaken for CFO. */
-        dc += 0.00025f * (freq - dc);
-        float centered = freq - dc;
-
-        if (!st->timing_acquired && clock_i > 0) {
-            if (st->acq_len < DSD_FSK_MODEM_ACQ_MAX_SAMPLES) {
-                st->acq_freq[st->acq_len++] = centered;
-            }
-            if (st->acq_len >= acq_target) {
-                out_count = emit_acquisition_symbols(st, clock_i, out_symbols, out_count, max_symbols);
-                phase = st->symbol_phase;
-                accum = st->symbol_accum;
-                accum_count = st->symbol_count;
-            }
-            prev_i = cur_i;
-            prev_q = cur_q;
+        if (process_acquisition_window(st, &ctx, centered, out_symbols, &out_count, max_symbols)) {
+            ctx.prev_i = cur_i;
+            ctx.prev_q = cur_q;
             continue;
         }
 
-        float sample_phase = phase;
-        accum += centered;
-        accum_count++;
-        phase += 1.0f;
-        if (phase >= clock) {
-            float raw_symbol = (accum_count > 0) ? (accum / (float)accum_count) : 0.0f;
-            out_count = emit_symbol(st, raw_symbol, out_symbols, out_count, max_symbols);
-            accum = 0.0f;
-            accum_count = 0;
-            phase -= clock;
-            if (phase >= clock) {
-                phase = fmodf(phase, clock);
-            }
-        }
-        maybe_track_symbol_timing(st, centered, clock_i, sample_phase, &phase);
-
-        prev_i = cur_i;
-        prev_q = cur_q;
+        process_tracking_window(st, &ctx, centered, out_symbols, &out_count, max_symbols);
+        ctx.prev_i = cur_i;
+        ctx.prev_q = cur_q;
     }
 
-    st->prev_i = prev_i;
-    st->prev_q = prev_q;
-    st->have_prev = have_prev;
-    st->symbol_phase = phase;
-    st->symbol_accum = accum;
-    st->symbol_count = accum_count;
-    st->dc_est = dc;
-    st->symbol_clock = clock;
+    process_ctx_store(st, &ctx);
     return out_count;
 }
 

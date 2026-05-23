@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_IO_RADIO_RTL_PPM_REQUEST_H
+#define DSD_NEO_IO_RADIO_RTL_PPM_REQUEST_H
 
 #include <stdint.h>
 
@@ -103,3 +104,5 @@ rtl_ppm_plan_apply_to_active_stream(uint32_t last_applied_freq_hz, uint32_t fall
 } // namespace radio
 } // namespace io
 } // namespace dsd
+
+#endif /* DSD_NEO_IO_RADIO_RTL_PPM_REQUEST_H */

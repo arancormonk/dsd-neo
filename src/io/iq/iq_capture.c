@@ -8,7 +8,6 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
-
 #include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
@@ -16,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
@@ -74,6 +73,12 @@ struct dsd_iq_capture_writer {
     char capture_started_utc[32];
 };
 
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    writer_thread_fn(void* arg);
+
 static void
 set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) {
     if (!err_buf || err_buf_size == 0 || !fmt) {
@@ -81,8 +86,7 @@ set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) {
     }
     va_list ap;
     va_start(ap, fmt);
-    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
-    (void)vsnprintf(err_buf, err_buf_size, fmt, ap);
+    (void)DSD_VSNPRINTF(err_buf, err_buf_size, fmt, ap);
     va_end(ap);
     err_buf[err_buf_size - 1] = '\0';
 }
@@ -100,7 +104,7 @@ copy_string_checked(const char* src, char* dst, size_t dst_size, char* err_buf, 
         set_error(err_buf, err_buf_size, "%s path too long", (name) ? name : "string");
         return DSD_IQ_ERR_INVALID_ARG;
     }
-    memcpy(dst, src, n + 1);
+    DSD_MEMCPY(dst, src, n + 1);
     return DSD_IQ_OK;
 }
 
@@ -132,14 +136,14 @@ dsd_iq_capture_derive_paths(const char* path, char* out_data_path, size_t out_da
             set_error(err_buf, err_buf_size, "metadata path too long");
             return DSD_IQ_ERR_INVALID_ARG;
         }
-        memcpy(out_metadata_path, path, meta_len + 1);
+        DSD_MEMCPY(out_metadata_path, path, meta_len + 1);
 
         size_t data_len = meta_len - 5U;
         if (data_len == 0 || data_len + 1 > out_data_path_size) {
             set_error(err_buf, err_buf_size, "derived data path too long");
             return DSD_IQ_ERR_INVALID_ARG;
         }
-        memcpy(out_data_path, path, data_len);
+        DSD_MEMCPY(out_data_path, path, data_len);
         out_data_path[data_len] = '\0';
     } else {
         size_t data_len = strlen(path);
@@ -147,7 +151,7 @@ dsd_iq_capture_derive_paths(const char* path, char* out_data_path, size_t out_da
             set_error(err_buf, err_buf_size, "data path too long");
             return DSD_IQ_ERR_INVALID_ARG;
         }
-        memcpy(out_data_path, path, data_len + 1);
+        DSD_MEMCPY(out_data_path, path, data_len + 1);
 
         {
             const char* suffix = ".json";
@@ -156,75 +160,63 @@ dsd_iq_capture_derive_paths(const char* path, char* out_data_path, size_t out_da
                 set_error(err_buf, err_buf_size, "metadata path too long");
                 return DSD_IQ_ERR_INVALID_ARG;
             }
-            snprintf(out_metadata_path, out_metadata_path_size, "%s%s", path, suffix);
+            DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s%s", path, suffix);
         }
     }
     return DSD_IQ_OK;
 }
 
 static int
+json_simple_escape(unsigned char c, const char** out_esc) {
+    if (!out_esc) {
+        return -1;
+    }
+    *out_esc = NULL;
+    switch (c) {
+        case '\"': *out_esc = "\\\""; break;
+        case '\\': *out_esc = "\\\\"; break;
+        case '\b': *out_esc = "\\b"; break;
+        case '\t': *out_esc = "\\t"; break;
+        case '\n': *out_esc = "\\n"; break;
+        case '\f': *out_esc = "\\f"; break;
+        case '\r': *out_esc = "\\r"; break;
+        default: break;
+    }
+    return 0;
+}
+
+static int
 json_escape_write(FILE* out, const char* s) {
-    static const char* hex = "0123456789abcdef";
     if (!out || !s) {
         return -1;
     }
+    static const char* hex = "0123456789abcdef";
     for (size_t i = 0; s[i] != '\0'; ++i) {
         unsigned char c = (unsigned char)s[i];
-        switch (c) {
-            case '\"':
-                if (fputs("\\\"", out) == EOF) {
-                    return -1;
-                }
-                break;
-            case '\\':
-                if (fputs("\\\\", out) == EOF) {
-                    return -1;
-                }
-                break;
-            case '\b':
-                if (fputs("\\b", out) == EOF) {
-                    return -1;
-                }
-                break;
-            case '\t':
-                if (fputs("\\t", out) == EOF) {
-                    return -1;
-                }
-                break;
-            case '\n':
-                if (fputs("\\n", out) == EOF) {
-                    return -1;
-                }
-                break;
-            case '\f':
-                if (fputs("\\f", out) == EOF) {
-                    return -1;
-                }
-                break;
-            case '\r':
-                if (fputs("\\r", out) == EOF) {
-                    return -1;
-                }
-                break;
-            default:
-                if (c < 0x20) {
-                    char tmp[7];
-                    tmp[0] = '\\';
-                    tmp[1] = 'u';
-                    tmp[2] = '0';
-                    tmp[3] = '0';
-                    tmp[4] = hex[(c >> 4) & 0x0F];
-                    tmp[5] = hex[c & 0x0F];
-                    tmp[6] = '\0';
-                    if (fputs(tmp, out) == EOF) {
-                        return -1;
-                    }
-                } else {
-                    if (fputc((int)c, out) == EOF) {
-                        return -1;
-                    }
-                }
-                break;
+        const char* esc = NULL;
+        (void)json_simple_escape(c, &esc);
+        if (esc) {
+            if (fputs(esc, out) == EOF) {
+                return -1;
+            }
+            continue;
+        }
+        if (c < 0x20U) {
+            char tmp[7];
+            tmp[0] = '\\';
+            tmp[1] = 'u';
+            tmp[2] = '0';
+            tmp[3] = '0';
+            tmp[4] = hex[(c >> 4) & 0x0F];
+            tmp[5] = hex[c & 0x0F];
+            tmp[6] = '\0';
+            if (fputs(tmp, out) == EOF) {
+                return -1;
+            }
+            continue;
+        }
+        if (fputc((int)c, out) == EOF) {
+            return -1;
         }
     }
     return 0;
@@ -232,13 +224,13 @@ json_escape_write(FILE* out, const char* s) {
 
 static int
 write_json_string_field(FILE* out, const char* key, const char* value, int is_last) {
-    if (fprintf(out, "  \"%s\": \"", key) < 0) {
+    if (DSD_FPRINTF(out, "  \"%s\": \"", key) < 0) {
         return -1;
     }
     if (json_escape_write(out, value ? value : "") != 0) {
         return -1;
     }
-    if (fprintf(out, "\"%s\n", is_last ? "" : ",") < 0) {
+    if (DSD_FPRINTF(out, "\"%s\n", is_last ? "" : ",") < 0) {
         return -1;
     }
     return 0;
@@ -246,7 +238,7 @@ write_json_string_field(FILE* out, const char* key, const char* value, int is_la
 
 static int
 write_json_u64_field(FILE* out, const char* key, uint64_t value, int is_last) {
-    if (fprintf(out, "  \"%s\": %" PRIu64 "%s\n", key, value, is_last ? "" : ",") < 0) {
+    if (DSD_FPRINTF(out, "  \"%s\": %" PRIu64 "%s\n", key, value, is_last ? "" : ",") < 0) {
         return -1;
     }
     return 0;
@@ -254,7 +246,7 @@ write_json_u64_field(FILE* out, const char* key, uint64_t value, int is_last) {
 
 static int
 write_json_i64_field(FILE* out, const char* key, int64_t value, int is_last) {
-    if (fprintf(out, "  \"%s\": %" PRId64 "%s\n", key, value, is_last ? "" : ",") < 0) {
+    if (DSD_FPRINTF(out, "  \"%s\": %" PRId64 "%s\n", key, value, is_last ? "" : ",") < 0) {
         return -1;
     }
     return 0;
@@ -262,7 +254,7 @@ write_json_i64_field(FILE* out, const char* key, int64_t value, int is_last) {
 
 static int
 write_json_bool_field(FILE* out, const char* key, int value, int is_last) {
-    if (fprintf(out, "  \"%s\": %s%s\n", key, value ? "true" : "false", is_last ? "" : ",") < 0) {
+    if (DSD_FPRINTF(out, "  \"%s\": %s%s\n", key, value ? "true" : "false", is_last ? "" : ",") < 0) {
         return -1;
     }
     return 0;
@@ -280,52 +272,76 @@ iq_event_kind_name(dsd_iq_event_kind kind) {
 }
 
 static int
+write_json_event_frequency_fields(FILE* out, const dsd_iq_event* ev) {
+    if (ev->kind != DSD_IQ_EVENT_RETUNE && ev->kind != DSD_IQ_EVENT_RESET) {
+        return 0;
+    }
+    if (DSD_FPRINTF(out, "      \"center_frequency_hz\": %" PRIu64 ",\n", ev->center_frequency_hz) < 0) {
+        return -1;
+    }
+    if (DSD_FPRINTF(out, "      \"capture_center_frequency_hz\": %" PRIu64 ",\n", ev->capture_center_frequency_hz)
+        < 0) {
+        return -1;
+    }
+    if (DSD_FPRINTF(out, "      \"sample_rate_hz\": %u,\n", ev->sample_rate_hz) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int
+write_json_event_reason_field(FILE* out, const dsd_iq_event* ev) {
+    if (DSD_FPRINTF(out, "      \"reason\": \"") < 0) {
+        return -1;
+    }
+    if (json_escape_write(out, ev->reason) != 0) {
+        return -1;
+    }
+    if (DSD_FPRINTF(out, "\"\n") < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int
+write_json_event(FILE* out, const dsd_iq_event* ev, int is_last) {
+    if (DSD_FPRINTF(out, "    {\n") < 0) {
+        return -1;
+    }
+    if (DSD_FPRINTF(out, "      \"kind\": \"%s\",\n", iq_event_kind_name(ev->kind)) < 0) {
+        return -1;
+    }
+    if (DSD_FPRINTF(out, "      \"byte_offset\": %" PRIu64 ",\n", ev->byte_offset) < 0) {
+        return -1;
+    }
+    if (ev->kind == DSD_IQ_EVENT_MUTE) {
+        if (DSD_FPRINTF(out, "      \"duration_bytes\": %" PRIu64 ",\n", ev->duration_bytes) < 0) {
+            return -1;
+        }
+    }
+    if (write_json_event_frequency_fields(out, ev) != 0) {
+        return -1;
+    }
+    if (write_json_event_reason_field(out, ev) != 0) {
+        return -1;
+    }
+    if (DSD_FPRINTF(out, "    }%s\n", is_last ? "" : ",") < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int
 write_json_events_field(FILE* out, const dsd_iq_event* events, size_t event_count, int is_last) {
-    if (fprintf(out, "  \"events\": [\n") < 0) {
+    if (DSD_FPRINTF(out, "  \"events\": [\n") < 0) {
         return -1;
     }
     for (size_t i = 0; i < event_count; i++) {
-        const dsd_iq_event* ev = &events[i];
-        if (fprintf(out, "    {\n") < 0) {
-            return -1;
-        }
-        if (fprintf(out, "      \"kind\": \"%s\",\n", iq_event_kind_name(ev->kind)) < 0) {
-            return -1;
-        }
-        if (fprintf(out, "      \"byte_offset\": %" PRIu64 ",\n", ev->byte_offset) < 0) {
-            return -1;
-        }
-        if (ev->kind == DSD_IQ_EVENT_MUTE) {
-            if (fprintf(out, "      \"duration_bytes\": %" PRIu64 ",\n", ev->duration_bytes) < 0) {
-                return -1;
-            }
-        }
-        if (ev->kind == DSD_IQ_EVENT_RETUNE || ev->kind == DSD_IQ_EVENT_RESET) {
-            if (fprintf(out, "      \"center_frequency_hz\": %" PRIu64 ",\n", ev->center_frequency_hz) < 0) {
-                return -1;
-            }
-            if (fprintf(out, "      \"capture_center_frequency_hz\": %" PRIu64 ",\n", ev->capture_center_frequency_hz)
-                < 0) {
-                return -1;
-            }
-            if (fprintf(out, "      \"sample_rate_hz\": %u,\n", ev->sample_rate_hz) < 0) {
-                return -1;
-            }
-        }
-        if (fprintf(out, "      \"reason\": \"") < 0) {
-            return -1;
-        }
-        if (json_escape_write(out, ev->reason) != 0) {
-            return -1;
-        }
-        if (fprintf(out, "\"\n") < 0) {
-            return -1;
-        }
-        if (fprintf(out, "    }%s\n", (i + 1U == event_count) ? "" : ",") < 0) {
+        if (write_json_event(out, &events[i], i + 1U == event_count) != 0) {
             return -1;
         }
     }
-    if (fprintf(out, "  ]%s\n", is_last ? "" : ",") < 0) {
+    if (DSD_FPRINTF(out, "  ]%s\n", is_last ? "" : ",") < 0) {
         return -1;
     }
     return 0;
@@ -354,18 +370,197 @@ format_utc_now(char* out, size_t out_size) {
     return 0;
 }
 
+typedef struct {
+    uint64_t data_bytes;
+    uint64_t capture_drops;
+    uint64_t capture_drop_blocks;
+    uint64_t input_ring_drops;
+    int contains_retunes;
+    uint32_t capture_retune_count;
+} dsd_iq_capture_metadata_stats;
+
+static const char*
+metadata_data_basename(const char* path) {
+    if (!path || path[0] == '\0') {
+        return "";
+    }
+    const char* slash = strrchr(path, '/');
+    const char* bslash = strrchr(path, '\\');
+    const char* base = slash;
+    if (bslash && (!base || bslash > base)) {
+        base = bslash;
+    }
+    if (!base || base[1] == '\0') {
+        return path;
+    }
+    return base + 1;
+}
+
 static int
-metadata_write_file(const dsd_iq_capture_config* cfg, const char* capture_started_utc, uint64_t data_bytes,
-                    uint64_t capture_drops, uint64_t capture_drop_blocks, uint64_t input_ring_drops,
-                    int contains_retunes, uint32_t capture_retune_count, const char* notes, const char* metadata_path,
+metadata_write_identity_fields(FILE* fp, const dsd_iq_capture_config* cfg, size_t event_count) {
+    if (write_json_string_field(fp, "format", "dsd-neo-iq", 0) != 0) {
+        return -1;
+    }
+    if (write_json_u64_field(fp, "version", (event_count > 0U) ? 2U : 1U, 0) != 0) {
+        return -1;
+    }
+    if (write_json_string_field(fp, "sample_format", dsd_iq_sample_format_name(cfg->format), 0) != 0) {
+        return -1;
+    }
+    if (write_json_string_field(fp, "iq_order", "IQ", 0) != 0) {
+        return -1;
+    }
+    if (write_json_string_field(fp, "endianness", (cfg->format == DSD_IQ_FORMAT_CU8) ? "none" : "little", 0) != 0) {
+        return -1;
+    }
+    if (write_json_string_field(fp, "capture_stage", cfg->capture_stage, 0) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int
+metadata_write_chain_fields(FILE* fp, const dsd_iq_capture_config* cfg) {
+    if (write_json_u64_field(fp, "sample_rate_hz", cfg->sample_rate_hz, 0) != 0) {
+        return -1;
+    }
+    if (write_json_u64_field(fp, "center_frequency_hz", cfg->center_frequency_hz, 0) != 0) {
+        return -1;
+    }
+    if (write_json_u64_field(fp, "capture_center_frequency_hz", cfg->capture_center_frequency_hz, 0) != 0) {
+        return -1;
+    }
+    if (write_json_i64_field(fp, "ppm", cfg->ppm, 0) != 0) {
+        return -1;
+    }
+    if (write_json_i64_field(fp, "tuner_gain_tenth_db", cfg->tuner_gain_tenth_db, 0) != 0) {
+        return -1;
+    }
+    if (write_json_i64_field(fp, "rtl_dsp_bw_khz", cfg->rtl_dsp_bw_khz, 0) != 0) {
+        return -1;
+    }
+    if (write_json_u64_field(fp, "base_decimation", cfg->base_decimation, 0) != 0) {
+        return -1;
+    }
+    if (write_json_u64_field(fp, "post_downsample", cfg->post_downsample, 0) != 0) {
+        return -1;
+    }
+    if (write_json_u64_field(fp, "demod_rate_hz", cfg->demod_rate_hz, 0) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int
+metadata_write_feature_fields(FILE* fp, const dsd_iq_capture_config* cfg, const dsd_iq_capture_metadata_stats* stats) {
+    if (write_json_bool_field(fp, "offset_tuning_enabled", cfg->offset_tuning_enabled, 0) != 0) {
+        return -1;
+    }
+    if (write_json_bool_field(fp, "fs4_shift_enabled", cfg->fs4_shift_enabled, 0) != 0) {
+        return -1;
+    }
+    if (write_json_bool_field(fp, "combine_rotate_enabled", cfg->combine_rotate_enabled, 0) != 0) {
+        return -1;
+    }
+    if (write_json_bool_field(fp, "muted_bytes_excluded", cfg->muted_bytes_excluded, 0) != 0) {
+        return -1;
+    }
+    if (write_json_bool_field(fp, "contains_retunes", stats->contains_retunes, 0) != 0) {
+        return -1;
+    }
+    if (write_json_u64_field(fp, "capture_retune_count", stats->capture_retune_count, 0) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int
+metadata_write_source_fields(FILE* fp, const dsd_iq_capture_config* cfg, const char* capture_started_utc) {
+    if (write_json_string_field(fp, "source_backend", cfg->source_backend, 0) != 0) {
+        return -1;
+    }
+    if (write_json_string_field(fp, "source_args", cfg->source_args, 0) != 0) {
+        return -1;
+    }
+    if (write_json_string_field(fp, "capture_started_utc", capture_started_utc, 0) != 0) {
+        return -1;
+    }
+    if (write_json_string_field(fp, "data_file", metadata_data_basename(cfg->data_path), 0) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int
+metadata_write_stats_fields(FILE* fp, const dsd_iq_capture_metadata_stats* stats, const char* notes,
+                            size_t event_count) {
+    if (write_json_u64_field(fp, "data_bytes", stats->data_bytes, 0) != 0) {
+        return -1;
+    }
+    if (write_json_u64_field(fp, "capture_drops", stats->capture_drops, 0) != 0) {
+        return -1;
+    }
+    if (write_json_u64_field(fp, "capture_drop_blocks", stats->capture_drop_blocks, 0) != 0) {
+        return -1;
+    }
+    if (write_json_u64_field(fp, "input_ring_drops", stats->input_ring_drops, 0) != 0) {
+        return -1;
+    }
+    if (write_json_string_field(fp, "notes", notes ? notes : "", event_count == 0U) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int
+metadata_write_payload(FILE* fp, const dsd_iq_capture_config* cfg, const char* capture_started_utc,
+                       const dsd_iq_capture_metadata_stats* stats, const char* notes, const dsd_iq_event* events,
+                       size_t event_count) {
+    if (DSD_FPRINTF(fp, "{\n") < 0) {
+        return -1;
+    }
+    if (metadata_write_identity_fields(fp, cfg, event_count) != 0) {
+        return -1;
+    }
+    if (metadata_write_chain_fields(fp, cfg) != 0) {
+        return -1;
+    }
+    if (metadata_write_feature_fields(fp, cfg, stats) != 0) {
+        return -1;
+    }
+    if (metadata_write_source_fields(fp, cfg, capture_started_utc) != 0) {
+        return -1;
+    }
+    if (metadata_write_stats_fields(fp, stats, notes, event_count) != 0) {
+        return -1;
+    }
+    if (event_count > 0U && write_json_events_field(fp, events, event_count, 1) != 0) {
+        return -1;
+    }
+    if (DSD_FPRINTF(fp, "}\n") < 0) {
+        return -1;
+    }
+    if (fflush(fp) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int
+metadata_write_file(const dsd_iq_capture_config* cfg, const char* capture_started_utc,
+                    const dsd_iq_capture_metadata_stats* stats, const char* notes, const char* metadata_path,
                     const dsd_iq_event* events, size_t event_count, char* err_buf, size_t err_buf_size) {
     if (!cfg || !metadata_path || metadata_path[0] == '\0') {
         set_error(err_buf, err_buf_size, "invalid metadata writer arguments");
         return DSD_IQ_ERR_INVALID_ARG;
     }
+    if (!stats) {
+        set_error(err_buf, err_buf_size, "invalid metadata writer stats");
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
 
     char tmp_path[2304];
-    if (snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", metadata_path) >= (int)sizeof(tmp_path)) {
+    if (DSD_SNPRINTF(tmp_path, sizeof(tmp_path), "%s.tmp", metadata_path) >= (int)sizeof(tmp_path)) {
         set_error(err_buf, err_buf_size, "metadata temp path too long");
         return DSD_IQ_ERR_INVALID_ARG;
     }
@@ -376,128 +571,8 @@ metadata_write_file(const dsd_iq_capture_config* cfg, const char* capture_starte
         return DSD_IQ_ERR_IO;
     }
 
-    int io_err = 0;
-    if (fprintf(fp, "{\n") < 0) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_string_field(fp, "format", "dsd-neo-iq", 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_u64_field(fp, "version", (event_count > 0U) ? 2U : 1U, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_string_field(fp, "sample_format", dsd_iq_sample_format_name(cfg->format), 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_string_field(fp, "iq_order", "IQ", 0)) {
-        io_err = 1;
-    }
-    if (!io_err
-        && write_json_string_field(fp, "endianness", (cfg->format == DSD_IQ_FORMAT_CU8) ? "none" : "little", 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_string_field(fp, "capture_stage", cfg->capture_stage, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_u64_field(fp, "sample_rate_hz", cfg->sample_rate_hz, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_u64_field(fp, "center_frequency_hz", cfg->center_frequency_hz, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_u64_field(fp, "capture_center_frequency_hz", cfg->capture_center_frequency_hz, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_i64_field(fp, "ppm", cfg->ppm, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_i64_field(fp, "tuner_gain_tenth_db", cfg->tuner_gain_tenth_db, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_i64_field(fp, "rtl_dsp_bw_khz", cfg->rtl_dsp_bw_khz, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_u64_field(fp, "base_decimation", cfg->base_decimation, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_u64_field(fp, "post_downsample", cfg->post_downsample, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_u64_field(fp, "demod_rate_hz", cfg->demod_rate_hz, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_bool_field(fp, "offset_tuning_enabled", cfg->offset_tuning_enabled, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_bool_field(fp, "fs4_shift_enabled", cfg->fs4_shift_enabled, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_bool_field(fp, "combine_rotate_enabled", cfg->combine_rotate_enabled, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_bool_field(fp, "muted_bytes_excluded", cfg->muted_bytes_excluded, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_bool_field(fp, "contains_retunes", contains_retunes, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_u64_field(fp, "capture_retune_count", capture_retune_count, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_string_field(fp, "source_backend", cfg->source_backend, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_string_field(fp, "source_args", cfg->source_args, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_string_field(fp, "capture_started_utc", capture_started_utc, 0)) {
-        io_err = 1;
-    }
-
-    {
-        const char* data_basename = cfg->data_path;
-        const char* slash = strrchr(cfg->data_path, '/');
-        const char* bslash = strrchr(cfg->data_path, '\\');
-        if (slash || bslash) {
-            const char* base = slash;
-            if (bslash && (!base || bslash > base)) {
-                base = bslash;
-            }
-            if (base && base[1] != '\0') {
-                data_basename = base + 1;
-            }
-        }
-        if (!io_err && write_json_string_field(fp, "data_file", data_basename, 0)) {
-            io_err = 1;
-        }
-    }
-
-    if (!io_err && write_json_u64_field(fp, "data_bytes", data_bytes, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_u64_field(fp, "capture_drops", capture_drops, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_u64_field(fp, "capture_drop_blocks", capture_drop_blocks, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_u64_field(fp, "input_ring_drops", input_ring_drops, 0)) {
-        io_err = 1;
-    }
-    if (!io_err && write_json_string_field(fp, "notes", notes ? notes : "", event_count == 0U)) {
-        io_err = 1;
-    }
-    if (!io_err && event_count > 0U && write_json_events_field(fp, events, event_count, 1)) {
-        io_err = 1;
-    }
-    if (!io_err && fprintf(fp, "}\n") < 0) {
-        io_err = 1;
-    }
-    if (fflush(fp) != 0) {
-        io_err = 1;
-    }
-
-    if (fclose(fp) != 0 || io_err) {
+    int write_rc = metadata_write_payload(fp, cfg, capture_started_utc, stats, notes, events, event_count);
+    if (fclose(fp) != 0 || write_rc != 0) {
         (void)remove(tmp_path);
         set_error(err_buf, err_buf_size, "failed to write metadata '%s': %s", metadata_path, strerror(errno));
         return DSD_IQ_ERR_IO;
@@ -701,62 +776,169 @@ writer_event_destroy(struct dsd_iq_capture_writer* w) {
 }
 
 static int
+writer_event_ensure_capacity(struct dsd_iq_capture_writer* w, size_t min_cap) {
+    if (!w) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (w->event_cap >= min_cap) {
+        return DSD_IQ_OK;
+    }
+    size_t new_cap = (w->event_cap == 0U) ? 8U : (w->event_cap * 2U);
+    while (new_cap < min_cap) {
+        if (new_cap > (SIZE_MAX / 2U)) {
+            return DSD_IQ_ERR_ALLOC;
+        }
+        new_cap *= 2U;
+    }
+    dsd_iq_event* next = (dsd_iq_event*)realloc(w->events, new_cap * sizeof(*next));
+    if (!next) {
+        return DSD_IQ_ERR_ALLOC;
+    }
+    w->events = next;
+    w->event_cap = new_cap;
+    return DSD_IQ_OK;
+}
+
+static size_t
+writer_event_find_retune_insert_at(const struct dsd_iq_capture_writer* w, const dsd_iq_event* event) {
+    if (!w || !event || event->kind != DSD_IQ_EVENT_RETUNE || w->event_count == 0U) {
+        return w ? w->event_count : 0U;
+    }
+    size_t insert_at = w->event_count;
+    while (insert_at > 0U) {
+        const dsd_iq_event* prev = &w->events[insert_at - 1U];
+        if (prev->byte_offset != event->byte_offset || prev->kind != DSD_IQ_EVENT_MUTE) {
+            break;
+        }
+        insert_at--;
+    }
+    return insert_at;
+}
+
+static int
+writer_event_try_merge_mute(struct dsd_iq_capture_writer* w, const dsd_iq_event* event) {
+    if (!w || !event || event->kind != DSD_IQ_EVENT_MUTE || w->event_count == 0U) {
+        return 0;
+    }
+    dsd_iq_event* prev = &w->events[w->event_count - 1U];
+    if (prev->kind != DSD_IQ_EVENT_MUTE || prev->byte_offset != event->byte_offset) {
+        return 0;
+    }
+    if (UINT64_MAX - prev->duration_bytes < event->duration_bytes) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    prev->duration_bytes += event->duration_bytes;
+    return 1;
+}
+
+static int
+writer_event_insert_at(struct dsd_iq_capture_writer* w, const dsd_iq_event* event, size_t insert_at) {
+    int rc = writer_event_ensure_capacity(w, w->event_count + 1U);
+    if (rc != DSD_IQ_OK) {
+        return rc;
+    }
+    if (insert_at < w->event_count) {
+        DSD_MEMMOVE(&w->events[insert_at + 1U], &w->events[insert_at],
+                    (w->event_count - insert_at) * sizeof(w->events[0]));
+    }
+    w->events[insert_at] = *event;
+    w->event_count++;
+    return DSD_IQ_OK;
+}
+
+static int
 writer_event_append_locked(struct dsd_iq_capture_writer* w, const dsd_iq_event* event) {
     if (!w || !event) {
         return DSD_IQ_ERR_INVALID_ARG;
     }
-    if (event->kind == DSD_IQ_EVENT_RETUNE && w->event_count > 0U) {
-        size_t insert_at = w->event_count;
-        while (insert_at > 0U) {
-            dsd_iq_event* prev = &w->events[insert_at - 1U];
-            if (prev->byte_offset != event->byte_offset || prev->kind != DSD_IQ_EVENT_MUTE) {
-                break;
-            }
-            insert_at--;
-        }
-        if (insert_at < w->event_count) {
-            if (w->event_count == w->event_cap) {
-                size_t new_cap = (w->event_cap == 0U) ? 8U : (w->event_cap * 2U);
-                if (new_cap < w->event_cap) {
-                    return DSD_IQ_ERR_ALLOC;
-                }
-                dsd_iq_event* next = (dsd_iq_event*)realloc(w->events, new_cap * sizeof(*next));
-                if (!next) {
-                    return DSD_IQ_ERR_ALLOC;
-                }
-                w->events = next;
-                w->event_cap = new_cap;
-            }
-            memmove(&w->events[insert_at + 1U], &w->events[insert_at],
-                    (w->event_count - insert_at) * sizeof(w->events[0]));
-            w->events[insert_at] = *event;
-            w->event_count++;
-            return DSD_IQ_OK;
-        }
+
+    size_t insert_at = writer_event_find_retune_insert_at(w, event);
+    if (insert_at < w->event_count) {
+        return writer_event_insert_at(w, event, insert_at);
     }
-    if (event->kind == DSD_IQ_EVENT_MUTE && w->event_count > 0U) {
-        dsd_iq_event* prev = &w->events[w->event_count - 1U];
-        if (prev->kind == DSD_IQ_EVENT_MUTE && prev->byte_offset == event->byte_offset) {
-            if (UINT64_MAX - prev->duration_bytes < event->duration_bytes) {
-                return DSD_IQ_ERR_INVALID_ARG;
-            }
-            prev->duration_bytes += event->duration_bytes;
-            return DSD_IQ_OK;
-        }
+
+    int merge_rc = writer_event_try_merge_mute(w, event);
+    if (merge_rc < 0) {
+        return merge_rc;
     }
-    if (w->event_count == w->event_cap) {
-        size_t new_cap = (w->event_cap == 0U) ? 8U : (w->event_cap * 2U);
-        if (new_cap < w->event_cap) {
-            return DSD_IQ_ERR_ALLOC;
-        }
-        dsd_iq_event* next = (dsd_iq_event*)realloc(w->events, new_cap * sizeof(*next));
-        if (!next) {
-            return DSD_IQ_ERR_ALLOC;
-        }
-        w->events = next;
-        w->event_cap = new_cap;
+    if (merge_rc > 0) {
+        return DSD_IQ_OK;
     }
-    w->events[w->event_count++] = *event;
+
+    return writer_event_insert_at(w, event, w->event_count);
+}
+
+static void
+capture_open_cleanup(struct dsd_iq_capture_writer* w, int remove_data, int remove_meta) {
+    if (!w) {
+        return;
+    }
+    if (w->data_fp) {
+        fclose(w->data_fp);
+        w->data_fp = NULL;
+    }
+    if (remove_data && w->cfg.data_path[0] != '\0') {
+        (void)remove(w->cfg.data_path);
+    }
+    if (remove_meta && w->cfg.metadata_path[0] != '\0') {
+        (void)remove(w->cfg.metadata_path);
+    }
+    writer_event_destroy(w);
+    writer_queue_destroy(w);
+    free(w);
+}
+
+static int
+capture_open_resolve_paths(struct dsd_iq_capture_writer* w, const dsd_iq_capture_config* cfg, char* err_buf,
+                           size_t err_buf_size) {
+    if (w->cfg.data_path[0] == '\0' && w->cfg.metadata_path[0] == '\0') {
+        set_error(err_buf, err_buf_size, "capture paths are empty");
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (w->cfg.data_path[0] == '\0') {
+        return dsd_iq_capture_derive_paths(w->cfg.metadata_path, w->cfg.data_path, sizeof(w->cfg.data_path),
+                                           w->cfg.metadata_path, sizeof(w->cfg.metadata_path), err_buf, err_buf_size);
+    }
+    if (w->cfg.metadata_path[0] == '\0') {
+        return dsd_iq_capture_derive_paths(w->cfg.data_path, w->cfg.data_path, sizeof(w->cfg.data_path),
+                                           w->cfg.metadata_path, sizeof(w->cfg.metadata_path), err_buf, err_buf_size);
+    }
+    if (copy_string_checked(cfg->data_path, w->cfg.data_path, sizeof(w->cfg.data_path), err_buf, err_buf_size, "data")
+            != DSD_IQ_OK
+        || copy_string_checked(cfg->metadata_path, w->cfg.metadata_path, sizeof(w->cfg.metadata_path), err_buf,
+                               err_buf_size, "metadata")
+               != DSD_IQ_OK) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    return DSD_IQ_OK;
+}
+
+static int
+capture_open_init_files(struct dsd_iq_capture_writer* w, char* err_buf, size_t err_buf_size) {
+    dsd_iq_capture_metadata_stats initial_stats;
+    DSD_MEMSET(&initial_stats, 0, sizeof(initial_stats));
+
+    if (format_utc_now(w->capture_started_utc, sizeof(w->capture_started_utc)) != 0) {
+        set_error(err_buf, err_buf_size, "failed to build UTC capture timestamp");
+        return DSD_IQ_ERR_IO;
+    }
+    w->data_fp = fopen(w->cfg.data_path, "wb");
+    if (!w->data_fp) {
+        set_error(err_buf, err_buf_size, "failed to open capture data file '%s': %s", w->cfg.data_path,
+                  strerror(errno));
+        return DSD_IQ_ERR_IO;
+    }
+    return metadata_write_file(&w->cfg, w->capture_started_utc, &initial_stats, "", w->cfg.metadata_path, NULL, 0,
+                               err_buf, err_buf_size);
+}
+
+static int
+capture_open_start_worker(struct dsd_iq_capture_writer* w, char* err_buf, size_t err_buf_size) {
+    if (dsd_thread_create(&w->writer_thread, (dsd_thread_fn)writer_thread_fn, w) != 0) {
+        set_error(err_buf, err_buf_size, "capture writer thread creation failed");
+        return DSD_IQ_ERR_QUEUE_INIT;
+    }
+    w->writer_thread_started = 1;
     return DSD_IQ_OK;
 }
 
@@ -774,26 +956,27 @@ event_reason_has_control_bytes(const dsd_iq_event* event) {
 }
 
 static int
-validate_capture_event_for_replay(const struct dsd_iq_capture_writer* writer, const dsd_iq_event* event) {
-    if (!writer || !event) {
+capture_event_kind_supported(dsd_iq_event_kind kind) {
+    return kind == DSD_IQ_EVENT_RETUNE || kind == DSD_IQ_EVENT_MUTE || kind == DSD_IQ_EVENT_RESET;
+}
+
+static int
+validate_mute_event_for_replay(const struct dsd_iq_capture_writer* writer, const dsd_iq_event* event) {
+    size_t align = dsd_iq_sample_format_alignment_bytes(writer->cfg.format);
+    if (event->duration_bytes == 0) {
         return DSD_IQ_ERR_INVALID_ARG;
     }
-    if (event->kind != DSD_IQ_EVENT_RETUNE && event->kind != DSD_IQ_EVENT_MUTE && event->kind != DSD_IQ_EVENT_RESET) {
-        return DSD_IQ_ERR_INVALID_ARG;
+    if (event_reason_has_control_bytes(event)) {
+        return DSD_IQ_ERR_INVALID_META;
     }
-    if (event->kind == DSD_IQ_EVENT_MUTE) {
-        size_t align = dsd_iq_sample_format_alignment_bytes(writer->cfg.format);
-        if (event->duration_bytes == 0) {
-            return DSD_IQ_ERR_INVALID_ARG;
-        }
-        if (event_reason_has_control_bytes(event)) {
-            return DSD_IQ_ERR_INVALID_META;
-        }
-        if (align > 0U && (event->duration_bytes % (uint64_t)align) != 0ULL) {
-            return DSD_IQ_ERR_ALIGNMENT;
-        }
-        return DSD_IQ_OK;
+    if (align > 0U && (event->duration_bytes % (uint64_t)align) != 0ULL) {
+        return DSD_IQ_ERR_ALIGNMENT;
     }
+    return DSD_IQ_OK;
+}
+
+static int
+validate_retune_or_reset_event_for_replay(const struct dsd_iq_capture_writer* writer, const dsd_iq_event* event) {
     if (event_reason_has_control_bytes(event)) {
         return DSD_IQ_ERR_INVALID_META;
     }
@@ -804,6 +987,20 @@ validate_capture_event_for_replay(const struct dsd_iq_capture_writer* writer, co
         return DSD_IQ_ERR_RATE_CHAIN;
     }
     return DSD_IQ_OK;
+}
+
+static int
+validate_capture_event_for_replay(const struct dsd_iq_capture_writer* writer, const dsd_iq_event* event) {
+    if (!writer || !event) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (!capture_event_kind_supported(event->kind)) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (event->kind == DSD_IQ_EVENT_MUTE) {
+        return validate_mute_event_for_replay(writer, event);
+    }
+    return validate_retune_or_reset_event_for_replay(writer, event);
 }
 
 static int
@@ -824,7 +1021,7 @@ writer_enqueue_chunk(struct dsd_iq_capture_writer* w, const uint8_t* data, size_
 
     size_t block_index = w->free_stack[--w->free_top];
     uint8_t* dst = w->block_pool + (block_index * w->block_bytes);
-    memcpy(dst, data, len);
+    DSD_MEMCPY(dst, data, len);
 
     w->queue_entries[w->q_tail].block_index = block_index;
     w->queue_entries[w->q_tail].len = len;
@@ -986,7 +1183,7 @@ static DSD_THREAD_RETURN_TYPE
 
     for (;;) {
         dsd_iq_capture_queue_entry entry;
-        memset(&entry, 0, sizeof(entry));
+        DSD_MEMSET(&entry, 0, sizeof(entry));
 
         dsd_mutex_lock(&w->q_m);
         while (w->q_count == 0 && w->run) {
@@ -1003,7 +1200,7 @@ static DSD_THREAD_RETURN_TYPE
         dsd_mutex_unlock(&w->q_m);
 
         {
-            uint8_t* src = w->block_pool + (entry.block_index * w->block_bytes);
+            const uint8_t* src = w->block_pool + (entry.block_index * w->block_bytes);
             size_t n = fwrite(src, 1, entry.len, w->data_fp);
             if (n != entry.len) {
                 uint64_t dropped_bytes = (uint64_t)(entry.len - n);
@@ -1080,60 +1277,18 @@ dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** ou
         return DSD_IQ_ERR_QUEUE_INIT;
     }
 
-    if (w->cfg.data_path[0] == '\0' && w->cfg.metadata_path[0] == '\0') {
-        set_error(err_buf, err_buf_size, "capture paths are empty");
-        free(w);
-        return DSD_IQ_ERR_INVALID_ARG;
-    }
-    if (w->cfg.data_path[0] == '\0') {
-        int rc = dsd_iq_capture_derive_paths(w->cfg.metadata_path, w->cfg.data_path, sizeof(w->cfg.data_path),
-                                             w->cfg.metadata_path, sizeof(w->cfg.metadata_path), err_buf, err_buf_size);
-        if (rc != DSD_IQ_OK) {
-            free(w);
-            return rc;
-        }
-    } else if (w->cfg.metadata_path[0] == '\0') {
-        int rc = dsd_iq_capture_derive_paths(w->cfg.data_path, w->cfg.data_path, sizeof(w->cfg.data_path),
-                                             w->cfg.metadata_path, sizeof(w->cfg.metadata_path), err_buf, err_buf_size);
-        if (rc != DSD_IQ_OK) {
-            free(w);
-            return rc;
-        }
-    } else {
-        if (copy_string_checked(cfg->data_path, w->cfg.data_path, sizeof(w->cfg.data_path), err_buf, err_buf_size,
-                                "data")
-                != DSD_IQ_OK
-            || copy_string_checked(cfg->metadata_path, w->cfg.metadata_path, sizeof(w->cfg.metadata_path), err_buf,
-                                   err_buf_size, "metadata")
-                   != DSD_IQ_OK) {
-            free(w);
-            return DSD_IQ_ERR_INVALID_ARG;
-        }
-    }
-
-    if (format_utc_now(w->capture_started_utc, sizeof(w->capture_started_utc)) != 0) {
-        set_error(err_buf, err_buf_size, "failed to build UTC capture timestamp");
-        free(w);
-        return DSD_IQ_ERR_IO;
-    }
-
-    w->data_fp = fopen(w->cfg.data_path, "wb");
-    if (!w->data_fp) {
-        set_error(err_buf, err_buf_size, "failed to open capture data file '%s': %s", w->cfg.data_path,
-                  strerror(errno));
-        free(w);
-        return DSD_IQ_ERR_IO;
-    }
-
     {
-        int mrc = metadata_write_file(&w->cfg, w->capture_started_utc, 0, 0, 0, 0, 0, 0, "", w->cfg.metadata_path, NULL,
-                                      0, err_buf, err_buf_size);
-        if (mrc != DSD_IQ_OK) {
-            fclose(w->data_fp);
-            w->data_fp = NULL;
-            (void)remove(w->cfg.data_path);
-            free(w);
-            return mrc;
+        int rc = capture_open_resolve_paths(w, cfg, err_buf, err_buf_size);
+        if (rc != DSD_IQ_OK) {
+            capture_open_cleanup(w, 0, 0);
+            return rc;
+        }
+    }
+    {
+        int rc = capture_open_init_files(w, err_buf, err_buf_size);
+        if (rc != DSD_IQ_OK) {
+            capture_open_cleanup(w, 1, 0);
+            return rc;
         }
     }
 
@@ -1144,43 +1299,25 @@ dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** ou
 
     if (dsd_mutex_init(&w->event_m) != 0) {
         set_error(err_buf, err_buf_size, "capture event mutex initialization failed");
-        fclose(w->data_fp);
-        w->data_fp = NULL;
-        (void)remove(w->cfg.data_path);
-        (void)remove(w->cfg.metadata_path);
-        free(w);
+        capture_open_cleanup(w, 1, 1);
         return DSD_IQ_ERR_QUEUE_INIT;
     }
     w->event_m_inited = 1;
 
     {
-        int qrc = writer_queue_init(w);
-        if (qrc != DSD_IQ_OK) {
+        int rc = writer_queue_init(w);
+        if (rc != DSD_IQ_OK) {
             set_error(err_buf, err_buf_size, "capture queue initialization failed");
-            fclose(w->data_fp);
-            w->data_fp = NULL;
-            (void)remove(w->cfg.data_path);
-            (void)remove(w->cfg.metadata_path);
-            writer_event_destroy(w);
-            writer_queue_destroy(w);
-            free(w);
+            capture_open_cleanup(w, 1, 1);
             return DSD_IQ_ERR_QUEUE_INIT;
         }
     }
 
-    if (dsd_thread_create(&w->writer_thread, (dsd_thread_fn)writer_thread_fn, w) != 0) {
-        set_error(err_buf, err_buf_size, "capture writer thread creation failed");
+    if (capture_open_start_worker(w, err_buf, err_buf_size) != DSD_IQ_OK) {
         w->run = 0;
-        writer_queue_destroy(w);
-        writer_event_destroy(w);
-        fclose(w->data_fp);
-        w->data_fp = NULL;
-        (void)remove(w->cfg.data_path);
-        (void)remove(w->cfg.metadata_path);
-        free(w);
+        capture_open_cleanup(w, 1, 1);
         return DSD_IQ_ERR_QUEUE_INIT;
     }
-    w->writer_thread_started = 1;
 
     *out = w;
     return DSD_IQ_OK;
@@ -1306,6 +1443,12 @@ dsd_iq_capture_close(dsd_iq_capture_writer* writer, const dsd_iq_capture_final_s
         uint64_t written_bytes = dsd_atomic_u64_load_relaxed(&writer->written_bytes);
         uint64_t dropped_bytes = dsd_atomic_u64_load_relaxed(&writer->dropped_bytes);
         uint64_t dropped_blocks = dsd_atomic_u64_load_relaxed(&writer->dropped_blocks);
+        dsd_iq_capture_metadata_stats stats;
+        DSD_MEMSET(&stats, 0, sizeof(stats));
+        stats.data_bytes = written_bytes;
+        stats.capture_drops = dropped_bytes;
+        stats.capture_drop_blocks = dropped_blocks;
+        stats.input_ring_drops = final_stats->input_ring_drops;
         uint32_t event_retune_count = 0;
         for (size_t i = 0; i < writer->event_count; i++) {
             if (writer->events[i].kind == DSD_IQ_EVENT_RETUNE && event_retune_count < UINT32_MAX) {
@@ -1316,10 +1459,10 @@ dsd_iq_capture_close(dsd_iq_capture_writer* writer, const dsd_iq_capture_final_s
         if (final_stats->retune_count > capture_retune_count) {
             capture_retune_count = final_stats->retune_count;
         }
-        (void)metadata_write_file(&writer->cfg, writer->capture_started_utc, written_bytes, dropped_bytes,
-                                  dropped_blocks, final_stats->input_ring_drops, capture_retune_count > 0 ? 1 : 0,
-                                  capture_retune_count, "", writer->cfg.metadata_path, writer->events,
-                                  writer->event_count, err_buf, sizeof(err_buf));
+        stats.contains_retunes = capture_retune_count > 0 ? 1 : 0;
+        stats.capture_retune_count = capture_retune_count;
+        (void)metadata_write_file(&writer->cfg, writer->capture_started_utc, &stats, "", writer->cfg.metadata_path,
+                                  writer->events, writer->event_count, err_buf, sizeof(err_buf));
     }
 
     writer_queue_destroy(writer);

@@ -88,6 +88,70 @@ branch_metric(int sym1, int sym0, int ref1, int ref0) {
     return (sym1 ^ ref1) + (sym0 ^ ref0);
 }
 
+#define DSTAR_VITERBI_STATE_COUNT 4
+
+static inline void
+dstar_select_survivor_int(int metric_a, int metric_b, int* decision, int* survivor_metric) {
+    if (metric_a <= metric_b) {
+        *decision = 0;
+        *survivor_metric = metric_a;
+        return;
+    }
+    *decision = 1;
+    *survivor_metric = metric_b;
+}
+
+static void
+dstar_viterbi_step_hard(int s1, int s0, const int path_metric[DSTAR_VITERBI_STATE_COUNT],
+                        int temp_metric[DSTAR_VITERBI_STATE_COUNT],
+                        int path_memory[DSTAR_VITERBI_STATE_COUNT][DSD_DSTAR_HEADER_INFO_BITS], size_t step_idx) {
+    int m_from_s0 = branch_metric(s1, s0, 0, 0) + path_metric[0];
+    int m_from_s2 = branch_metric(s1, s0, 1, 1) + path_metric[2];
+    dstar_select_survivor_int(m_from_s0, m_from_s2, &path_memory[0][step_idx], &temp_metric[0]);
+
+    m_from_s0 = branch_metric(s1, s0, 1, 1) + path_metric[0];
+    m_from_s2 = branch_metric(s1, s0, 0, 0) + path_metric[2];
+    dstar_select_survivor_int(m_from_s0, m_from_s2, &path_memory[1][step_idx], &temp_metric[1]);
+
+    int m_from_s1 = branch_metric(s1, s0, 1, 0) + path_metric[1];
+    int m_from_s3 = branch_metric(s1, s0, 0, 1) + path_metric[3];
+    dstar_select_survivor_int(m_from_s1, m_from_s3, &path_memory[2][step_idx], &temp_metric[2]);
+
+    m_from_s1 = branch_metric(s1, s0, 0, 1) + path_metric[1];
+    m_from_s3 = branch_metric(s1, s0, 1, 0) + path_metric[3];
+    dstar_select_survivor_int(m_from_s1, m_from_s3, &path_memory[3][step_idx], &temp_metric[3]);
+}
+
+static int
+dstar_select_best_state_int(const int path_metric[DSTAR_VITERBI_STATE_COUNT]) {
+    int state = 0;
+    int best_metric = path_metric[0];
+
+    for (int s = 1; s < DSTAR_VITERBI_STATE_COUNT; s++) {
+        if (path_metric[s] < best_metric) {
+            best_metric = path_metric[s];
+            state = s;
+        }
+    }
+    return state;
+}
+
+static void
+dstar_traceback_header_bits(int path_memory[DSTAR_VITERBI_STATE_COUNT][DSD_DSTAR_HEADER_INFO_BITS], int state,
+                            int* out_bits) {
+    static const int prev_state[2][DSTAR_VITERBI_STATE_COUNT] = {
+        {0, 0, 1, 1},
+        {2, 2, 3, 3},
+    };
+    static const int decoded_bit[DSTAR_VITERBI_STATE_COUNT] = {0, 1, 0, 1};
+
+    for (int i = (int)DSD_DSTAR_HEADER_INFO_BITS - 1; i >= 0; i--) {
+        int decision = path_memory[state][i];
+        out_bits[i] = decoded_bit[state];
+        state = prev_state[decision][state];
+    }
+}
+
 // Rate 1/2, K=3, generator polynomials (7,5)_octal.
 size_t
 dstar_header_viterbi_decode(const int* symbols, size_t symbol_count, int* out_bits, size_t out_capacity) {
@@ -95,99 +159,22 @@ dstar_header_viterbi_decode(const int* symbols, size_t symbol_count, int* out_bi
         return 0;
     }
 
-    int path_metric[4] = {0, 0, 0, 0};
-    int path_memory[4][DSD_DSTAR_HEADER_INFO_BITS];
+    int path_metric[DSTAR_VITERBI_STATE_COUNT] = {0, 0, 0, 0};
+    int path_memory[DSTAR_VITERBI_STATE_COUNT][DSD_DSTAR_HEADER_INFO_BITS];
 
-    size_t n = 0;
-    for (size_t i = 0; i < symbol_count; i += 2, n++) {
+    for (size_t i = 0, n = 0; i < symbol_count; i += 2, n++) {
         int s1 = symbols[i];
         int s0 = symbols[i + 1];
-
-        int temp_metric[4];
-
-        // Next state S0 can come from S0 (00) or S2 (10)
-        int m1 = branch_metric(s1, s0, 0, 0) + path_metric[0];
-        int m2 = branch_metric(s1, s0, 1, 1) + path_metric[2];
-        if (m1 <= m2) {
-            path_memory[0][n] = 0;
-            temp_metric[0] = m1;
-        } else {
-            path_memory[0][n] = 1;
-            temp_metric[0] = m2;
-        }
-
-        // Next state S1 can come from S0 (11) or S2 (00)
-        m1 = branch_metric(s1, s0, 1, 1) + path_metric[0];
-        m2 = branch_metric(s1, s0, 0, 0) + path_metric[2];
-        if (m1 <= m2) {
-            path_memory[1][n] = 0;
-            temp_metric[1] = m1;
-        } else {
-            path_memory[1][n] = 1;
-            temp_metric[1] = m2;
-        }
-
-        // Next state S2 can come from S1 (11) or S3 (01)
-        m1 = branch_metric(s1, s0, 1, 0) + path_metric[1];
-        m2 = branch_metric(s1, s0, 0, 1) + path_metric[3];
-        if (m1 <= m2) {
-            path_memory[2][n] = 0;
-            temp_metric[2] = m1;
-        } else {
-            path_memory[2][n] = 1;
-            temp_metric[2] = m2;
-        }
-
-        // Next state S3 can come from S1 (01) or S3 (10)
-        m1 = branch_metric(s1, s0, 0, 1) + path_metric[1];
-        m2 = branch_metric(s1, s0, 1, 0) + path_metric[3];
-        if (m1 <= m2) {
-            path_memory[3][n] = 0;
-            temp_metric[3] = m1;
-        } else {
-            path_memory[3][n] = 1;
-            temp_metric[3] = m2;
-        }
-
-        for (int s = 0; s < 4; s++) {
-            path_metric[s] = temp_metric[s];
-        }
+        int temp_metric[DSTAR_VITERBI_STATE_COUNT];
+        dstar_viterbi_step_hard(s1, s0, path_metric, temp_metric, path_memory, n);
+        path_metric[0] = temp_metric[0];
+        path_metric[1] = temp_metric[1];
+        path_metric[2] = temp_metric[2];
+        path_metric[3] = temp_metric[3];
     }
 
-    // Traceback: pick the best-metric end state (headers are not tail-padded).
-    int state = 0;
-    int best_metric = path_metric[0];
-    for (int s = 1; s < 4; s++) {
-        if (path_metric[s] < best_metric) {
-            best_metric = path_metric[s];
-            state = s;
-        }
-    }
-    for (int i = (int)DSD_DSTAR_HEADER_INFO_BITS - 1; i >= 0; i--) {
-        int decision = path_memory[state][i];
-        switch (state) {
-            case 0:
-                state = decision ? 2 : 0;
-                out_bits[i] = 0;
-                break;
-            case 1:
-                state = decision ? 2 : 0;
-                out_bits[i] = 1;
-                break;
-            case 2:
-                state = decision ? 3 : 1;
-                out_bits[i] = 0;
-                break;
-            case 3:
-                state = decision ? 3 : 1;
-                out_bits[i] = 1;
-                break;
-            default:
-                state = 0;
-                out_bits[i] = 0;
-                break;
-        }
-    }
+    int state = dstar_select_best_state_int(path_metric);
+    dstar_traceback_header_bits(path_memory, state, out_bits);
 
     return DSD_DSTAR_HEADER_INFO_BITS;
 }
@@ -211,6 +198,52 @@ soft_branch_metric(uint16_t sym1, uint16_t sym0, int ref1, int ref0) {
     return d1 + d0;
 }
 
+static inline void
+dstar_select_survivor_u32(uint32_t metric_a, uint32_t metric_b, int* decision, uint32_t* survivor_metric) {
+    if (metric_a <= metric_b) {
+        *decision = 0;
+        *survivor_metric = metric_a;
+        return;
+    }
+    *decision = 1;
+    *survivor_metric = metric_b;
+}
+
+static void
+dstar_viterbi_step_soft(uint16_t s1, uint16_t s0, const uint32_t path_metric[DSTAR_VITERBI_STATE_COUNT],
+                        uint32_t temp_metric[DSTAR_VITERBI_STATE_COUNT],
+                        int path_memory[DSTAR_VITERBI_STATE_COUNT][DSD_DSTAR_HEADER_INFO_BITS], size_t step_idx) {
+    uint32_t m_from_s0 = soft_branch_metric(s1, s0, 0, 0) + path_metric[0];
+    uint32_t m_from_s2 = soft_branch_metric(s1, s0, 1, 1) + path_metric[2];
+    dstar_select_survivor_u32(m_from_s0, m_from_s2, &path_memory[0][step_idx], &temp_metric[0]);
+
+    m_from_s0 = soft_branch_metric(s1, s0, 1, 1) + path_metric[0];
+    m_from_s2 = soft_branch_metric(s1, s0, 0, 0) + path_metric[2];
+    dstar_select_survivor_u32(m_from_s0, m_from_s2, &path_memory[1][step_idx], &temp_metric[1]);
+
+    uint32_t m_from_s1 = soft_branch_metric(s1, s0, 1, 0) + path_metric[1];
+    uint32_t m_from_s3 = soft_branch_metric(s1, s0, 0, 1) + path_metric[3];
+    dstar_select_survivor_u32(m_from_s1, m_from_s3, &path_memory[2][step_idx], &temp_metric[2]);
+
+    m_from_s1 = soft_branch_metric(s1, s0, 0, 1) + path_metric[1];
+    m_from_s3 = soft_branch_metric(s1, s0, 1, 0) + path_metric[3];
+    dstar_select_survivor_u32(m_from_s1, m_from_s3, &path_memory[3][step_idx], &temp_metric[3]);
+}
+
+static int
+dstar_select_best_state_u32(const uint32_t path_metric[DSTAR_VITERBI_STATE_COUNT]) {
+    int state = 0;
+    uint32_t best_metric = path_metric[0];
+
+    for (int s = 1; s < DSTAR_VITERBI_STATE_COUNT; s++) {
+        if (path_metric[s] < best_metric) {
+            best_metric = path_metric[s];
+            state = s;
+        }
+    }
+    return state;
+}
+
 // Soft-decision Viterbi decoder for D-STAR header.
 // Rate 1/2, K=3, generator polynomials (7,5)_octal.
 // Input: soft costs where 0x0000 = strong 0, 0xFFFF = strong 1, 0x7FFF = uncertain
@@ -221,99 +254,22 @@ dstar_header_viterbi_decode_soft(const uint16_t* soft_symbols, size_t symbol_cou
         return 0;
     }
 
-    uint32_t path_metric[4] = {0, 0, 0, 0};
-    int path_memory[4][DSD_DSTAR_HEADER_INFO_BITS];
+    uint32_t path_metric[DSTAR_VITERBI_STATE_COUNT] = {0, 0, 0, 0};
+    int path_memory[DSTAR_VITERBI_STATE_COUNT][DSD_DSTAR_HEADER_INFO_BITS];
 
-    size_t n = 0;
-    for (size_t i = 0; i < symbol_count; i += 2, n++) {
+    for (size_t i = 0, n = 0; i < symbol_count; i += 2, n++) {
         uint16_t s1 = soft_symbols[i];
         uint16_t s0 = soft_symbols[i + 1];
-
-        uint32_t temp_metric[4];
-
-        // Next state S0 can come from S0 (output 00) or S2 (output 11)
-        uint32_t m1 = soft_branch_metric(s1, s0, 0, 0) + path_metric[0];
-        uint32_t m2 = soft_branch_metric(s1, s0, 1, 1) + path_metric[2];
-        if (m1 <= m2) {
-            path_memory[0][n] = 0;
-            temp_metric[0] = m1;
-        } else {
-            path_memory[0][n] = 1;
-            temp_metric[0] = m2;
-        }
-
-        // Next state S1 can come from S0 (output 11) or S2 (output 00)
-        m1 = soft_branch_metric(s1, s0, 1, 1) + path_metric[0];
-        m2 = soft_branch_metric(s1, s0, 0, 0) + path_metric[2];
-        if (m1 <= m2) {
-            path_memory[1][n] = 0;
-            temp_metric[1] = m1;
-        } else {
-            path_memory[1][n] = 1;
-            temp_metric[1] = m2;
-        }
-
-        // Next state S2 can come from S1 (output 10) or S3 (output 01)
-        m1 = soft_branch_metric(s1, s0, 1, 0) + path_metric[1];
-        m2 = soft_branch_metric(s1, s0, 0, 1) + path_metric[3];
-        if (m1 <= m2) {
-            path_memory[2][n] = 0;
-            temp_metric[2] = m1;
-        } else {
-            path_memory[2][n] = 1;
-            temp_metric[2] = m2;
-        }
-
-        // Next state S3 can come from S1 (output 01) or S3 (output 10)
-        m1 = soft_branch_metric(s1, s0, 0, 1) + path_metric[1];
-        m2 = soft_branch_metric(s1, s0, 1, 0) + path_metric[3];
-        if (m1 <= m2) {
-            path_memory[3][n] = 0;
-            temp_metric[3] = m1;
-        } else {
-            path_memory[3][n] = 1;
-            temp_metric[3] = m2;
-        }
-
-        for (int s = 0; s < 4; s++) {
-            path_metric[s] = temp_metric[s];
-        }
+        uint32_t temp_metric[DSTAR_VITERBI_STATE_COUNT];
+        dstar_viterbi_step_soft(s1, s0, path_metric, temp_metric, path_memory, n);
+        path_metric[0] = temp_metric[0];
+        path_metric[1] = temp_metric[1];
+        path_metric[2] = temp_metric[2];
+        path_metric[3] = temp_metric[3];
     }
 
-    // Traceback: pick the best-metric end state (headers are not tail-padded).
-    int state = 0;
-    uint32_t best_metric = path_metric[0];
-    for (int s = 1; s < 4; s++) {
-        if (path_metric[s] < best_metric) {
-            best_metric = path_metric[s];
-            state = s;
-        }
-    }
-    for (int i = (int)DSD_DSTAR_HEADER_INFO_BITS - 1; i >= 0; i--) {
-        int decision = path_memory[state][i];
-        switch (state) {
-            case 0:
-                state = decision ? 2 : 0;
-                out_bits[i] = 0;
-                break;
-            case 1:
-                state = decision ? 2 : 0;
-                out_bits[i] = 1;
-                break;
-            case 2:
-                state = decision ? 3 : 1;
-                out_bits[i] = 0;
-                break;
-            case 3:
-                state = decision ? 3 : 1;
-                out_bits[i] = 1;
-                break;
-            default:
-                state = 0;
-                out_bits[i] = 0;
-                break;
-        }
-    }
+    int state = dstar_select_best_state_u32(path_metric);
+    dstar_traceback_header_bits(path_memory, state, out_bits);
 
     return DSD_DSTAR_HEADER_INFO_BITS;
 }

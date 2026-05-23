@@ -16,14 +16,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -32,7 +32,7 @@ expect_int(const char* tag, int got, int want) {
 static int
 expect_str(const char* tag, const char* got, const char* want) {
     if (strcmp(got, want) != 0) {
-        fprintf(stderr, "%s: got \"%s\" want \"%s\"\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -43,8 +43,8 @@ main(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     /* Initial ring is empty. */
     rc |= expect_int("init count", st.p25_sm_tag_count, 0);
@@ -60,7 +60,7 @@ main(void) {
     const int N = 10;
     char buf[16];
     for (int i = 0; i < N; i++) {
-        snprintf(buf, sizeof buf, "T%d", i);
+        DSD_SNPRINTF(buf, sizeof buf, "T%d", i);
         p25_sm_log_status(&opts, &st, buf);
     }
 
@@ -79,21 +79,21 @@ main(void) {
         const char* got = st.p25_sm_tags[idx];
         int expected_index = N - len + k; /* expect T2..T9 when N=10, len=8 */
         char want[16];
-        snprintf(want, sizeof want, "T%d", expected_index);
+        DSD_SNPRINTF(want, sizeof want, "T%d", expected_index);
         rc |= expect_str("ring order", got, want);
     }
 
     /* Last reason should reflect the most recent tag. */
     rc |= expect_str("last reason", st.p25_sm_last_reason, "T9");
     if (st.p25_sm_last_reason_time == 0) {
-        fprintf(stderr, "last reason time not set\n");
+        DSD_FPRINTF(stderr, "last reason time not set\n");
         rc |= 1;
     }
 
     /* Basic sanity: head/time are monotonic. */
     time_t now = time(NULL);
     if (st.p25_sm_last_reason_time > now + 5) {
-        fprintf(stderr, "last reason time in the future\n");
+        DSD_FPRINTF(stderr, "last reason time in the future\n");
         rc |= 1;
     }
 

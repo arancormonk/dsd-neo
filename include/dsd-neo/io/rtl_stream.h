@@ -11,7 +11,8 @@
  * and buffered reads over the legacy C RTL-SDR streaming control.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_STREAM_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_STREAM_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <stddef.h>
@@ -102,7 +103,7 @@ class RtlSdrOrchestrator {
      * @brief Current output sample rate in Hz.
      * @return Output sample rate in Hz.
      */
-    unsigned int output_rate() const;
+    static unsigned int output_rate();
 
     /**
      * @brief Return the live requested PPM value observed by this stream snapshot.
@@ -139,3 +140,5 @@ class RtlSdrOrchestrator {
     bool started_;
     int last_error_code_;
 };
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_STREAM_H_ */

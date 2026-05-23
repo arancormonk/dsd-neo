@@ -15,14 +15,6 @@
  * don't depend on the app target for this symbol.
  */
 
-#include <stdint.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include <dsd-neo/runtime/exitflag.h>
 
 volatile uint8_t exitflag = 0;
-
-#ifdef __cplusplus
-}
-#endif

@@ -8,7 +8,8 @@
  * @brief Samples-per-symbol FIR helpers for per-protocol shaping.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_SPS_FILTERS_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_SPS_FILTERS_H_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,3 +25,4 @@ void init_rrc_filter_memory(void);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_SPS_FILTERS_H_H */

@@ -42,9 +42,9 @@ typedef struct {
 
 /* Public API */
 /** @brief Derive cipher keys from provided seed bytes. */
-void create_keys_rc2(CryptoContext* ctx, unsigned char key1[], size_t size1);
+void create_keys_rc2(CryptoContext* ctx, const unsigned char key1[], size_t size1);
 /** @brief Encrypt a 49-bit frame using the composite cipher suite. */
-void encryption_rc2(CryptoContext* ctx, uint8_t s1[49]);
+void encryption_rc2(CryptoContext* ctx, uint8_t bits[49]);
 /** @brief Decrypt a 49-bit frame using the composite cipher suite. */
 void decrypt_rc2(CryptoContext* ctx, uint8_t bits[49]);
 

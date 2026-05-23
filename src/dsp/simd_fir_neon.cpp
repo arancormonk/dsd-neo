@@ -37,7 +37,7 @@ prepare_complex_scratch(const float* in, int in_len, const float* hist_i, const 
         scratch[2 * kk + 1] = hist_q[k];
     }
 
-    std::memcpy(scratch + (size_t)hist_len * 2, in, (size_t)samples * 2 * sizeof(float));
+    DSD_MEMCPY(scratch + (size_t)hist_len * 2, in, (size_t)samples * 2 * sizeof(float));
 
     const float last_i = (samples > 0) ? in[(samples - 1) << 1] : 0.0f;
     const float last_q = (samples > 0) ? in[((samples - 1) << 1) + 1] : 0.0f;
@@ -62,10 +62,8 @@ update_complex_history(const float* in, int samples, float* hist_i, float* hist_
     }
 
     const int need = hist_len - samples;
-    if (need > 0) {
-        std::memmove(hist_i, hist_i + (hist_len - need), (size_t)need * sizeof(float));
-        std::memmove(hist_q, hist_q + (hist_len - need), (size_t)need * sizeof(float));
-    }
+    DSD_MEMMOVE(hist_i, hist_i + (hist_len - need), (size_t)need * sizeof(float));
+    DSD_MEMMOVE(hist_q, hist_q + (hist_len - need), (size_t)need * sizeof(float));
     for (int k = 0; k < samples; k++) {
         hist_i[need + k] = in[k << 1];
         hist_q[need + k] = in[(k << 1) + 1];
@@ -82,8 +80,8 @@ prepare_real_scratch(const float* in, int in_len, const float* hist, int hist_le
     }
 
     float* scratch = tls_scratch_real.data();
-    std::memcpy(scratch, hist, (size_t)hist_len * sizeof(float));
-    std::memcpy(scratch + hist_len, in, (size_t)in_len * sizeof(float));
+    DSD_MEMCPY(scratch, hist, (size_t)hist_len * sizeof(float));
+    DSD_MEMCPY(scratch + hist_len, in, (size_t)in_len * sizeof(float));
 
     const float last = in[in_len - 1];
     for (int k = 0; k < pad; k++) {
@@ -96,15 +94,13 @@ prepare_real_scratch(const float* in, int in_len, const float* hist, int hist_le
 static void
 update_real_history(const float* in, int in_len, float* hist, int hist_len) {
     if (in_len >= hist_len) {
-        std::memcpy(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
+        DSD_MEMCPY(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
         return;
     }
 
     const int need = hist_len - in_len;
-    if (need > 0) {
-        std::memmove(hist, hist + in_len, (size_t)need * sizeof(float));
-    }
-    std::memcpy(hist + need, in, (size_t)in_len * sizeof(float));
+    DSD_MEMMOVE(hist, hist + in_len, (size_t)need * sizeof(float));
+    DSD_MEMCPY(hist + need, in, (size_t)in_len * sizeof(float));
 }
 
 } /* namespace */

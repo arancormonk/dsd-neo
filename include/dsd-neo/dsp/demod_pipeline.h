@@ -14,10 +14,6 @@
 #ifndef DSP_DEMOD_PIPELINE_H
 #define DSP_DEMOD_PIPELINE_H
 
-#include <stdint.h>
-
-#include <dsd-neo/platform/threading.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -100,7 +96,7 @@ void audio_lpf_filter(struct demod_state* fm);
  * @param step    Step size for sampling.
  * @return Mean power (squared RMS) with DC bias removed.
  */
-float mean_power(float* samples, int len, int step);
+float mean_power(const float* samples, int len, int step);
 
 /**
  * Full demodulation pipeline for one block.

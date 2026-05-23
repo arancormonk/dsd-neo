@@ -13,9 +13,9 @@
 
 #include <cmath>
 #include <cstdio>
-#include <vector>
-
 #include <dsd-neo/dsp/halfband.h>
+#include <vector>
+#include "dsd-neo/core/safe_api.h"
 
 static double
 rms(const std::vector<float>& x) {
@@ -109,7 +109,7 @@ main(void) {
     // One stage: expect at least ~18 dB attenuation (conservative)
     double a1 = stage_atten_db(1, Fs, f_pass, f_stop);
     if (!(a1 <= -18.0)) {
-        std::fprintf(stderr, "HB alias rejection (1 stage) too low: %.2f dB\n", a1);
+        DSD_FPRINTF(stderr, "HB alias rejection (1 stage) too low: %.2f dB\n", a1);
         return 1;
     }
     // Multi-stage effects depend on where the tone falls after each decimate;

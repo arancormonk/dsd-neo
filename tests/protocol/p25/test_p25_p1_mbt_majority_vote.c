@@ -22,9 +22,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-/* Bridge to the CRC16 implementation in p25_crc.c */
 int crc16_lb_bridge(const int* payload, int len);
 
 /*
@@ -69,7 +68,7 @@ majority_vote_3(const uint8_t rep0[96], const uint8_t rep1[96], const uint8_t re
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL %s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "FAIL %s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -119,7 +118,7 @@ main(void) {
      * ------------------------------------------------------------------- */
     for (int i = 0; i < num_captured; i++) {
         char tag[64];
-        snprintf(tag, sizeof(tag), "hdr_only_crc16_pass[%d]", i);
+        DSD_SNPRINTF(tag, sizeof(tag), "hdr_only_crc16_pass[%d]", i);
         int crc_result = check_crc16_on_header(captured_hdrs[i]);
         rc |= expect_eq_int(tag, crc_result, 0);
     }
@@ -158,15 +157,15 @@ main(void) {
             /* The majority-voted result should FAIL CRC16 (non-zero).
              * This confirms the bug: voting header against data block
              * content produces corrupted bits. */
-            snprintf(tag, sizeof(tag), "majority_vote_crc16_fails[%d]", i);
+            DSD_SNPRINTF(tag, sizeof(tag), "majority_vote_crc16_fails[%d]", i);
             if (crc_result == 0) {
                 /* If CRC somehow passes, the corruption didn't happen
                  * for this header — track it but don't fail the test
                  * unless ALL headers pass (which would mean no bug). */
                 all_corrupted = 0;
-                fprintf(stderr, "NOTE %s: CRC16 unexpectedly passed on majority-voted bits\n", tag);
+                DSD_FPRINTF(stderr, "NOTE %s: CRC16 unexpectedly passed on majority-voted bits\n", tag);
             } else {
-                fprintf(stderr, "OK   %s: CRC16 failed as expected (bug confirmed)\n", tag);
+                DSD_FPRINTF(stderr, "OK   %s: CRC16 failed as expected (bug confirmed)\n", tag);
             }
         }
 
@@ -196,7 +195,7 @@ main(void) {
      * ------------------------------------------------------------------- */
     for (int i = 0; i < num_captured; i++) {
         char tag[64];
-        snprintf(tag, sizeof(tag), "best_rep0_only_pass[%d]", i);
+        DSD_SNPRINTF(tag, sizeof(tag), "best_rep0_only_pass[%d]", i);
         /* This is identical to test case 1 — checking rep 0 alone.
          * The point is to explicitly frame it as "the fix would do this". */
         int crc_result = check_crc16_on_header(captured_hdrs[i]);
@@ -215,7 +214,7 @@ main(void) {
     {
         /* Work with header 0: flip bit 80 (first bit of CRC16 field) */
         uint8_t fec_hdr[12];
-        memcpy(fec_hdr, captured_hdrs[0], 12);
+        DSD_MEMCPY(fec_hdr, captured_hdrs[0], 12);
         fec_hdr[10] ^= 0x80; /* Flip MSB of byte 10 = bit 80 */
 
         /* Rep 0 with FEC artifact should fail CRC16 */
@@ -239,15 +238,15 @@ main(void) {
          * things worse because reps 1 and 2 are not header data */
         rc |= expect_eq_int("fec_plus_majority_vote_fails", (voted_crc != 0) ? 1 : 0, 1);
 
-        fprintf(stderr, "OK   FEC artifact on rep 0 -> CRC fails; majority-vote -> still fails\n");
-        fprintf(stderr, "     This confirms: majority-vote cannot recover MBT headers because\n");
-        fprintf(stderr, "     reps 1 and 2 are data blocks, not header copies.\n");
+        DSD_FPRINTF(stderr, "OK   FEC artifact on rep 0 -> CRC fails; majority-vote -> still fails\n");
+        DSD_FPRINTF(stderr, "     This confirms: majority-vote cannot recover MBT headers because\n");
+        DSD_FPRINTF(stderr, "     reps 1 and 2 are data blocks, not header copies.\n");
     }
 
     if (rc == 0) {
-        fprintf(stderr, "P25 MBT majority-vote bug condition: all tests passed\n");
-        fprintf(stderr, "Bug mechanism confirmed: majority-voting header against data block\n");
-        fprintf(stderr, "content corrupts CRC16 on valid MBT headers.\n");
+        DSD_FPRINTF(stderr, "P25 MBT majority-vote bug condition: all tests passed\n");
+        DSD_FPRINTF(stderr, "Bug mechanism confirmed: majority-voting header against data block\n");
+        DSD_FPRINTF(stderr, "content corrupts CRC16 on valid MBT headers.\n");
     }
     return rc;
 }

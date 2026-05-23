@@ -22,7 +22,7 @@ static int g_udp_read_calls = 0;
 
 static dsd_socket_t g_last_sockfd = DSD_INVALID_SOCKET;
 static int g_last_samplerate = 0;
-static tcp_input_ctx* g_last_tcp_ctx = NULL;
+static const tcp_input_ctx* g_last_tcp_ctx = NULL;
 static dsd_opts* g_last_udp_opts = NULL;
 static const char* g_last_bindaddr = NULL;
 static int g_last_port = 0;
@@ -40,12 +40,18 @@ fake_tcp_open(dsd_socket_t sockfd, int samplerate) {
 static void
 fake_tcp_close(tcp_input_ctx* ctx) {
     g_tcp_close_calls++;
+    if (ctx) {
+        ((unsigned char*)ctx)[0] = 0U;
+    }
     g_last_tcp_ctx = ctx;
 }
 
 static int
 fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out) {
     g_tcp_read_calls++;
+    if (ctx) {
+        ((unsigned char*)ctx)[0] = 0U;
+    }
     g_last_tcp_ctx = ctx;
     g_last_out = out;
     if (out) {
@@ -55,14 +61,14 @@ fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out) {
 }
 
 static int
-fake_tcp_is_valid(tcp_input_ctx* ctx) {
+fake_tcp_is_valid(const tcp_input_ctx* ctx) {
     g_tcp_is_valid_calls++;
     g_last_tcp_ctx = ctx;
     return 1;
 }
 
 static dsd_socket_t
-fake_tcp_get_socket(tcp_input_ctx* ctx) {
+fake_tcp_get_socket(const tcp_input_ctx* ctx) {
     g_tcp_get_socket_calls++;
     g_last_tcp_ctx = ctx;
     return (dsd_socket_t)42;

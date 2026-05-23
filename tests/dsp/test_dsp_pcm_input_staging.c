@@ -7,16 +7,15 @@
 #include <dsd-neo/core/opts.h>
 #include <math.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/resampler.h"
 #include "pcm_input_staging.h"
 
 static void
 expect_close(const char* label, float actual, float expected, float tol) {
     if (fabsf(actual - expected) > tol) {
-        fprintf(stderr, "%s: expected %.3f got %.3f\n", label, expected, actual);
+        DSD_FPRINTF(stderr, "%s: expected %.3f got %.3f\n", label, expected, actual);
         assert(0);
     }
 }
@@ -24,7 +23,7 @@ expect_close(const char* label, float actual, float expected, float tol) {
 int
 main(void) {
     dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.wav_sample_rate = 8000;
 
@@ -41,7 +40,7 @@ main(void) {
     assert(opts.input_upsample_prev_valid == 1);
     for (int i = 0; i < factor; i++) {
         char label[64];
-        snprintf(label, sizeof(label), "first staged sample %d", i);
+        DSD_SNPRINTF(label, sizeof(label), "first staged sample %d", i);
         expect_close(label, opts.input_upsample_buf[i], 1200.0f, 0.01f);
     }
 
@@ -74,7 +73,7 @@ main(void) {
     assert(opts.input_upsample_prev_valid == 1);
     for (int i = 0; i < factor; i++) {
         char label[64];
-        snprintf(label, sizeof(label), "reprimed staged sample %d", i);
+        DSD_SNPRINTF(label, sizeof(label), "reprimed staged sample %d", i);
         expect_close(label, opts.input_upsample_buf[i], -850.0f, 0.01f);
     }
 

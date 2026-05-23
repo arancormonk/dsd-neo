@@ -10,10 +10,10 @@
  * 2022-09 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/protocol/p25/p25_crc.h>
 #include <stdint.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-//modified from the LEH ComputeCrcCCITT to accept variable len buffer bits
 uint16_t
 ComputeCrcCCITT16b(const uint8_t buf[], unsigned int len) {
     uint32_t i;
@@ -38,7 +38,7 @@ ComputeCrcCCITT16b(const uint8_t buf[], unsigned int len) {
 static uint16_t
 crc16_ok(const uint8_t bits[], unsigned int len, unsigned int cap) {
     uint16_t crc = 0;
-    // fprintf (stderr, "\n  LEN = %d", len);
+    // DSD_FPRINTF(stderr, "\n  LEN = %d", len);
     if ((unsigned int)16 > cap || len > cap || (len + 16) > cap) {
         return (uint16_t)-1;
     }
@@ -49,10 +49,10 @@ crc16_ok(const uint8_t bits[], unsigned int len, unsigned int cap) {
     uint16_t check = ComputeCrcCCITT16b(bits, len);
 
     if (crc == check) {
-        //fprintf (stderr, " CRC = %04X %04X", crc, check);
+        //DSD_FPRINTF(stderr, " CRC = %04X %04X", crc, check);
         return (0);
     } else {
-        //fprintf (stderr, " CRC = %04X %04X", crc, check);
+        //DSD_FPRINTF(stderr, " CRC = %04X %04X", crc, check);
         return (-1);
     }
 }
@@ -87,10 +87,10 @@ crc12(const uint8_t bits[], unsigned int len) {
     static const uint8_t poly[13] = {1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1}; // p25 p2 crc 12 poly
     uint8_t buf[256];
     if (len + K > sizeof(buf)) {
-        //fprintf (stderr, "crc12: buffer length %u exceeds maximum %u\n", len+K, sizeof(buf));
+        //DSD_FPRINTF(stderr, "crc12: buffer length %u exceeds maximum %u\n", len+K, sizeof(buf));
         return 0;
     }
-    memset(buf, 0, sizeof(buf));
+    DSD_MEMSET(buf, 0, sizeof(buf));
     for (unsigned int i = 0; i < len; i++) {
         buf[i] = bits[i];
     }
@@ -121,10 +121,10 @@ crc12_ok(const uint8_t bits[], unsigned int len, unsigned int cap) {
     uint16_t check = crc12(bits, len);
 
     if (crc == check) {
-        //fprintf (stderr, " CRC = %03X %03X", crc, check);
+        //DSD_FPRINTF(stderr, " CRC = %03X %03X", crc, check);
         return (0);
     } else {
-        //fprintf (stderr, " CRC = %03X %03X", crc, check);
+        //DSD_FPRINTF(stderr, " CRC = %03X %03X", crc, check);
         return (-1);
     }
 }

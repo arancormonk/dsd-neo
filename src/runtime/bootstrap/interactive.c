@@ -6,6 +6,7 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/cli.h>
@@ -16,8 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
@@ -53,7 +54,7 @@ trim_newline(char* s) {
 static int
 prompt_yes_no(const char* q, int def_yes) {
     char buf[32];
-    fprintf(stderr, "%s [%c/%c]: ", q, def_yes ? 'Y' : 'y', def_yes ? 'n' : 'N');
+    DSD_FPRINTF(stderr, "%s [%c/%c]: ", q, def_yes ? 'Y' : 'y', def_yes ? 'n' : 'N');
     if (!fgets(buf, sizeof buf, stdin)) {
         return def_yes;
     }
@@ -73,7 +74,7 @@ prompt_yes_no(const char* q, int def_yes) {
 static int
 prompt_int(const char* q, int def_val, int min_val, int max_val) {
     char buf[64];
-    fprintf(stderr, "%s [%d]: ", q, def_val);
+    DSD_FPRINTF(stderr, "%s [%d]: ", q, def_val);
     if (!fgets(buf, sizeof buf, stdin)) {
         return def_val;
     }
@@ -101,10 +102,10 @@ prompt_string(const char* q, const char* def_val, char* out, size_t out_sz) {
     if (!out || out_sz == 0) {
         return;
     }
-    fprintf(stderr, "%s [%s]: ", q, (def_val && *def_val) ? def_val : "");
+    DSD_FPRINTF(stderr, "%s [%s]: ", q, (def_val && *def_val) ? def_val : "");
     if (!fgets(buf, sizeof buf, stdin)) {
         if (def_val) {
-            snprintf(out, out_sz, "%s", def_val);
+            DSD_SNPRINTF(out, out_sz, "%s", def_val);
         } else {
             out[0] = '\0';
         }
@@ -113,13 +114,251 @@ prompt_string(const char* q, const char* def_val, char* out, size_t out_sz) {
     trim_newline(buf);
     if (buf[0] == '\0') {
         if (def_val) {
-            snprintf(out, out_sz, "%s", def_val);
+            DSD_SNPRINTF(out, out_sz, "%s", def_val);
         } else {
             out[0] = '\0';
         }
         return;
     }
-    snprintf(out, out_sz, "%s", buf);
+    DSD_SNPRINTF(out, out_sz, "%s", buf);
+}
+
+static int
+interactive_choose_input_source(void) {
+    DSD_FPRINTF(stderr, "\nChoose input source:\n");
+    DSD_FPRINTF(stderr, "  1) PulseAudio (mic/loopback) [default]\n");
+    DSD_FPRINTF(stderr, "  2) RTL-SDR USB dongle\n");
+    DSD_FPRINTF(stderr, "  3) rtl_tcp (network RTL-SDR)\n");
+    DSD_FPRINTF(stderr, "  4) File (WAV/BIN)\n");
+    DSD_FPRINTF(stderr, "  5) TCP audio (7355)\n");
+    DSD_FPRINTF(stderr, "  6) UDP audio (7355)\n");
+    return prompt_int("Selection", 1, 1, 6);
+}
+
+static void
+interactive_configure_rtl_input(dsd_opts* opts, int* src) {
+#ifdef USE_RTLSDR
+    char freq[64];
+    prompt_string("Center frequency in Hz (K/M/G suffix ok, e.g., 851.375M or 851375000)", "", freq, sizeof freq);
+    if (freq[0] == '\0') {
+        LOG_WARNING("No frequency entered; falling back to PulseAudio input.\n");
+        *src = 1;
+        return;
+    }
+    int dev = prompt_int("RTL device index", 0, 0, 255);
+    int gain = prompt_int("RTL gain (dB)", 22, 0, 60);
+    int ppm = prompt_int("PPM error", 0, -200, 200);
+    int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24,48)", 48, 4, 48);
+    int sql = prompt_int("Squelch (0=off; negative dB ok via CLI later)", 0, -1000, 100000);
+    int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d:%s:%d:%d:%d:%d:%d", dev, freq, gain, ppm, bw,
+                 sql, vol);
+#else
+    LOG_WARNING("RTL-SDR support not enabled in this build.\n");
+    *src = 1;
+#endif
+}
+
+static void
+interactive_configure_rtltcp_input(dsd_opts* opts) {
+    char host[128];
+    prompt_string("rtl_tcp host", "127.0.0.1", host, sizeof host);
+    int port = prompt_int("rtl_tcp port", 1234, 1, 65535);
+    char freq[64];
+    prompt_string("Center frequency in Hz (K/M/G suffix ok, optional — Enter to skip)", "", freq, sizeof freq);
+    if (freq[0] == '\0') {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:%s:%d", host, port);
+        return;
+    }
+    int gain = prompt_int("RTL gain (dB)", 22, 0, 60);
+    int ppm = prompt_int("PPM error", 0, -200, 200);
+    int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24,48)", 48, 4, 48);
+    int sql = prompt_int("Squelch (0=off)", 0, -1000, 100000);
+    int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:%s:%d:%s:%d:%d:%d:%d:%d", host, port, freq,
+                 gain, ppm, bw, sql, vol);
+}
+
+static void
+interactive_configure_file_input(dsd_opts* opts, dsd_state* state, int* src) {
+    char path[1024];
+    prompt_string("Path to WAV/BIN/RAW/SYM file", "", path, sizeof path);
+    if (path[0] == '\0') {
+        LOG_WARNING("No file provided; falling back to PulseAudio input.\n");
+        *src = 1;
+        return;
+    }
+    int sr = prompt_int("Sample rate for WAV/RAW (48000 or 96000)", 48000, 8000, 192000);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", path);
+    {
+        int old_effective_rate = dsd_opts_effective_input_rate(opts);
+        dsd_opts_apply_input_sample_rate(opts, sr);
+        dsd_state_rescale_symbol_timing(state, old_effective_rate, dsd_opts_effective_input_rate(opts));
+    }
+}
+
+static void
+interactive_configure_tcp_input(dsd_opts* opts) {
+    char host[128];
+    prompt_string("TCP host", "127.0.0.1", host, sizeof host);
+    int port = prompt_int("TCP port", 7355, 1, 65535);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "tcp:%s:%d", host, port);
+}
+
+static void
+interactive_configure_udp_input(dsd_opts* opts) {
+    char addr[64];
+    prompt_string("UDP bind address", "127.0.0.1", addr, sizeof addr);
+    int port = prompt_int("UDP port", 7355, 1, 65535);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "udp:%s:%d", addr, port);
+}
+
+static void
+interactive_configure_input_source(dsd_opts* opts, dsd_state* state, int* src) {
+    switch (*src) {
+        case 2: interactive_configure_rtl_input(opts, src); break;
+        case 3: interactive_configure_rtltcp_input(opts); break;
+        case 4: interactive_configure_file_input(opts, state, src); break;
+        case 5: interactive_configure_tcp_input(opts); break;
+        case 6: interactive_configure_udp_input(opts); break;
+        case 1:
+        default: break;
+    }
+}
+
+static int
+interactive_choose_decode_mode(void) {
+    DSD_FPRINTF(stderr, "\nWhat do you want to decode?\n");
+    DSD_FPRINTF(stderr, "  1) Auto (P25, YSF, D-STAR, X2-TDMA, DMR) [default]\n");
+    DSD_FPRINTF(stderr, "  2) P25 Phase 1 only\n");
+    DSD_FPRINTF(stderr, "  3) P25 Phase 2 only\n");
+    DSD_FPRINTF(stderr, "  4) DMR\n");
+    DSD_FPRINTF(stderr, "  5) NXDN48 (6.25 kHz)\n");
+    DSD_FPRINTF(stderr, "  6) NXDN96 (12.5 kHz)\n");
+    DSD_FPRINTF(stderr, "  7) X2-TDMA\n");
+    DSD_FPRINTF(stderr, "  8) YSF\n");
+    DSD_FPRINTF(stderr, "  9) D-STAR\n");
+    DSD_FPRINTF(stderr, " 10) EDACS/ProVoice (std/net)\n");
+    DSD_FPRINTF(stderr, " 11) dPMR\n");
+    DSD_FPRINTF(stderr, " 12) M17\n");
+    DSD_FPRINTF(stderr, " 13) P25 + DMR (TDMA)\n");
+    DSD_FPRINTF(stderr, " 14) Analog monitor (passive)\n");
+    return prompt_int("Selection", 1, 1, 14);
+}
+
+static dsdneoUserDecodeMode
+interactive_mode_to_decode_mode(int mode) {
+    switch (mode) {
+        case 1: return DSDCFG_MODE_AUTO;
+        case 2: return DSDCFG_MODE_P25P1;
+        case 3: return DSDCFG_MODE_P25P2;
+        case 4: return DSDCFG_MODE_DMR;
+        case 5: return DSDCFG_MODE_NXDN48;
+        case 6: return DSDCFG_MODE_NXDN96;
+        case 7: return DSDCFG_MODE_X2TDMA;
+        case 8: return DSDCFG_MODE_YSF;
+        case 9: return DSDCFG_MODE_DSTAR;
+        case 10: return DSDCFG_MODE_EDACS_PV;
+        case 11: return DSDCFG_MODE_DPMR;
+        case 12: return DSDCFG_MODE_M17;
+        case 13: return DSDCFG_MODE_TDMA;
+        case 14: return DSDCFG_MODE_ANALOG;
+        default: return DSDCFG_MODE_UNSET;
+    }
+}
+
+static int
+interactive_mode_supports_trunk(int mode) {
+    switch (mode) {
+        case 1:
+        case 2:
+        case 3:
+        case 4:
+        case 5:
+        case 6:
+        case 10:
+        case 13: return 1;
+        default: return 0;
+    }
+}
+
+static void
+interactive_maybe_import_channel_map(dsd_opts* opts, dsd_state* state) {
+    char cpath[1024];
+    prompt_string("Channel map CSV path (optional)", "", cpath, sizeof cpath);
+    if (cpath[0] == '\0') {
+        return;
+    }
+    if (!path_is_regular_file(cpath)) {
+        LOG_WARNING("Channel map file not found: %s — skipping import.\n", cpath);
+        return;
+    }
+    DSD_STRNCPY(opts->chan_in_file, cpath, sizeof opts->chan_in_file - 1);
+    opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
+    if (csvChanImport(opts, state) == 0) {
+        LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
+    } else {
+        LOG_WARNING("Failed to import channel map from %s\n", opts->chan_in_file);
+    }
+}
+
+static void
+interactive_maybe_import_group_list(dsd_opts* opts, dsd_state* state) {
+    char gpath[1024];
+    prompt_string("Group list CSV path (optional)", "", gpath, sizeof gpath);
+    if (gpath[0] == '\0') {
+        return;
+    }
+    if (!path_is_regular_file(gpath)) {
+        LOG_WARNING("Group list file not found: %s — skipping import.\n", gpath);
+        return;
+    }
+    DSD_STRNCPY(opts->group_in_file, gpath, sizeof opts->group_in_file - 1);
+    opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
+    if (csvGroupImport(opts, state) == 0) {
+        LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
+    } else {
+        LOG_WARNING("Failed to import group list from %s\n", opts->group_in_file);
+    }
+    if (prompt_yes_no("Use group list as allow/white list?", 0)) {
+        opts->trunk_use_allow_list = 1;
+        LOG_NOTICE("Allow/white list: Enabled.\n");
+    }
+}
+
+static void
+interactive_maybe_configure_trunking(int mode, int src, dsd_opts* opts, dsd_state* state) {
+    if (!interactive_mode_supports_trunk(mode) || (src != 2 && src != 3 && src != 5)) {
+        return;
+    }
+    if (!prompt_yes_no("Is this a trunked system?", 0)) {
+        return;
+    }
+    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
+    if (src == 5) {
+        if (opts->rigctlportno == 0) {
+            opts->rigctlportno = 4532;
+        }
+        opts->use_rigctl = 1;
+    }
+    LOG_NOTICE("Trunking: Enabled.\n");
+    interactive_maybe_import_channel_map(opts, state);
+    interactive_maybe_import_group_list(opts, state);
+}
+
+static void
+interactive_maybe_configure_output(dsd_opts* opts, int src) {
+    if (src == 1) {
+        return;
+    }
+    if (prompt_yes_no("Use PulseAudio for output?", 1)) {
+        dsd_bootstrap_choose_audio_output(opts);
+        return;
+    }
+    if (prompt_yes_no("Mute audio output (null sink)?", 0)) {
+        DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "null");
+    }
 }
 
 void
@@ -141,98 +380,8 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
     LOG_NOTICE("No CLI arguments detected — starting interactive setup.\n");
     LOG_NOTICE("Press Enter to accept defaults in [brackets].\n");
 
-    fprintf(stderr, "\nChoose input source:\n");
-    fprintf(stderr, "  1) PulseAudio (mic/loopback) [default]\n");
-    fprintf(stderr, "  2) RTL-SDR USB dongle\n");
-    fprintf(stderr, "  3) rtl_tcp (network RTL-SDR)\n");
-    fprintf(stderr, "  4) File (WAV/BIN)\n");
-    fprintf(stderr, "  5) TCP audio (7355)\n");
-    fprintf(stderr, "  6) UDP audio (7355)\n");
-    int src = prompt_int("Selection", 1, 1, 6);
-
-    switch (src) {
-        case 2: {
-#ifdef USE_RTLSDR
-            // RTL-SDR path: rtl:dev:freq:gain:ppm:bw:sql:monitor_gain
-            char freq[64];
-            prompt_string("Center frequency in Hz (K/M/G suffix ok, e.g., 851.375M or 851375000)", "", freq,
-                          sizeof freq);
-            if (freq[0] == '\0') {
-                LOG_WARNING("No frequency entered; falling back to PulseAudio input.\n");
-                src = 1;
-                break;
-            }
-            int dev = prompt_int("RTL device index", 0, 0, 255);
-            int gain = prompt_int("RTL gain (dB)", 22, 0, 60);
-            int ppm = prompt_int("PPM error", 0, -200, 200);
-            int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24,48)", 48, 4, 48);
-            int sql = prompt_int("Squelch (0=off; negative dB ok via CLI later)", 0, -1000, 100000);
-            int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
-            snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d:%s:%d:%d:%d:%d:%d", dev, freq, gain, ppm,
-                     bw, sql, vol);
-            break;
-#else
-            LOG_WARNING("RTL-SDR support not enabled in this build.\n");
-            src = 1; // fall back
-            break;
-#endif
-        }
-        case 3: {
-            // rtl_tcp: rtltcp[:host:port[:freq:gain:ppm:bw:sql:monitor_gain]]
-            char host[128];
-            prompt_string("rtl_tcp host", "127.0.0.1", host, sizeof host);
-            int port = prompt_int("rtl_tcp port", 1234, 1, 65535);
-            char freq[64];
-            prompt_string("Center frequency in Hz (K/M/G suffix ok, optional — Enter to skip)", "", freq, sizeof freq);
-            if (freq[0] == '\0') {
-                snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:%s:%d", host, port);
-            } else {
-                int gain = prompt_int("RTL gain (dB)", 22, 0, 60);
-                int ppm = prompt_int("PPM error", 0, -200, 200);
-                int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24,48)", 48, 4, 48);
-                int sql = prompt_int("Squelch (0=off)", 0, -1000, 100000);
-                int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
-                snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:%s:%d:%s:%d:%d:%d:%d:%d", host, port,
-                         freq, gain, ppm, bw, sql, vol);
-            }
-            break;
-        }
-        case 4: {
-            // File input
-            char path[1024];
-            prompt_string("Path to WAV/BIN/RAW/SYM file", "", path, sizeof path);
-            if (path[0] == '\0') {
-                LOG_WARNING("No file provided; falling back to PulseAudio input.\n");
-                src = 1;
-                break;
-            }
-            // Optional sample rate tweak for WAV/RAW
-            int sr = prompt_int("Sample rate for WAV/RAW (48000 or 96000)", 48000, 8000, 192000);
-            snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", path);
-            {
-                int old_effective_rate = dsd_opts_effective_input_rate(opts);
-                dsd_opts_apply_input_sample_rate(opts, sr);
-                dsd_state_rescale_symbol_timing(state, old_effective_rate, dsd_opts_effective_input_rate(opts));
-            }
-            break;
-        }
-        case 5: {
-            char host[128];
-            prompt_string("TCP host", "127.0.0.1", host, sizeof host);
-            int port = prompt_int("TCP port", 7355, 1, 65535);
-            snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "tcp:%s:%d", host, port);
-            break;
-        }
-        case 6: {
-            char addr[64];
-            prompt_string("UDP bind address", "127.0.0.1", addr, sizeof addr);
-            int port = prompt_int("UDP port", 7355, 1, 65535);
-            snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "udp:%s:%d", addr, port);
-            break;
-        }
-        case 1:
-        default: break;
-    }
+    int src = interactive_choose_input_source();
+    interactive_configure_input_source(opts, state, &src);
 
     if (src == 1) {
         LOG_NOTICE("PulseAudio selected; choose devices.\n");
@@ -240,133 +389,14 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
         dsd_bootstrap_choose_audio_output(opts);
     }
 
-    // Choose what to decode (default: Auto)
-    fprintf(stderr, "\nWhat do you want to decode?\n");
-    fprintf(stderr, "  1) Auto (P25, YSF, D-STAR, X2-TDMA, DMR) [default]\n");
-    fprintf(stderr, "  2) P25 Phase 1 only\n");
-    fprintf(stderr, "  3) P25 Phase 2 only\n");
-    fprintf(stderr, "  4) DMR\n");
-    fprintf(stderr, "  5) NXDN48 (6.25 kHz)\n");
-    fprintf(stderr, "  6) NXDN96 (12.5 kHz)\n");
-    fprintf(stderr, "  7) X2-TDMA\n");
-    fprintf(stderr, "  8) YSF\n");
-    fprintf(stderr, "  9) D-STAR\n");
-    fprintf(stderr, " 10) EDACS/ProVoice (std/net)\n");
-    fprintf(stderr, " 11) dPMR\n");
-    fprintf(stderr, " 12) M17\n");
-    fprintf(stderr, " 13) P25 + DMR (TDMA)\n");
-    fprintf(stderr, " 14) Analog monitor (passive)\n");
-    int mode = prompt_int("Selection", 1, 1, 14);
-
-    // Apply decode mode selection
-    dsdneoUserDecodeMode decode_mode = DSDCFG_MODE_UNSET;
-    switch (mode) {
-        case 1: decode_mode = DSDCFG_MODE_AUTO; break;
-        case 2: decode_mode = DSDCFG_MODE_P25P1; break;
-        case 3: decode_mode = DSDCFG_MODE_P25P2; break;
-        case 4: decode_mode = DSDCFG_MODE_DMR; break;
-        case 5: decode_mode = DSDCFG_MODE_NXDN48; break;
-        case 6: decode_mode = DSDCFG_MODE_NXDN96; break;
-        case 7: decode_mode = DSDCFG_MODE_X2TDMA; break;
-        case 8: decode_mode = DSDCFG_MODE_YSF; break;
-        case 9: decode_mode = DSDCFG_MODE_DSTAR; break;
-        case 10: decode_mode = DSDCFG_MODE_EDACS_PV; break;
-        case 11: decode_mode = DSDCFG_MODE_DPMR; break;
-        case 12: decode_mode = DSDCFG_MODE_M17; break;
-        case 13: decode_mode = DSDCFG_MODE_TDMA; break;
-        case 14: decode_mode = DSDCFG_MODE_ANALOG; break;
-        default: break;
-    }
+    int mode = interactive_choose_decode_mode();
+    dsdneoUserDecodeMode decode_mode = interactive_mode_to_decode_mode(mode);
     if (decode_mode != DSDCFG_MODE_UNSET) {
         (void)dsd_apply_decode_mode_preset(decode_mode, DSD_DECODE_PRESET_PROFILE_INTERACTIVE, opts, state);
     }
 
-    // Offer trunking toggle when applicable
-    int trunk_supported = 0;
-    switch (mode) {
-        case 1:  // Auto
-        case 2:  // P25p1
-        case 3:  // P25p2
-        case 4:  // DMR
-        case 5:  // NXDN48
-        case 6:  // NXDN96
-        case 10: // EDACS/ProVoice
-        case 13: // P25+DMR (TDMA)
-            trunk_supported = 1;
-            break;
-        default: trunk_supported = 0; break;
-    }
-    if (trunk_supported && (src == 2 || src == 3 || src == 5)) {
-        int want_trunk = prompt_yes_no("Is this a trunked system?", 0);
-        if (want_trunk) {
-            opts->p25_trunk = 1;
-            opts->trunk_enable = 1;
-            // For TCP audio source, enable rigctl on default SDR++ port to allow tuning
-            if (src == 5) {
-                if (opts->rigctlportno == 0) {
-                    opts->rigctlportno = 4532; // SDR++ default
-                }
-                opts->use_rigctl = 1;
-            }
-            LOG_NOTICE("Trunking: Enabled.\n");
-
-            // Optional trunking CSV imports
-            // Channel map CSV (channum,freq) — usually required for DMR/EDACS/NXDN Type-C; P25 often learns
-            char cpath[1024];
-            prompt_string("Channel map CSV path (optional)", "", cpath, sizeof cpath);
-            if (cpath[0] != '\0') {
-                // Verify file exists before attempting import
-                if (path_is_regular_file(cpath)) {
-                    strncpy(opts->chan_in_file, cpath, sizeof opts->chan_in_file - 1);
-                    opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
-                    if (csvChanImport(opts, state) == 0) {
-                        LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
-                    } else {
-                        LOG_WARNING("Failed to import channel map from %s\n", opts->chan_in_file);
-                    }
-                } else {
-                    LOG_WARNING("Channel map file not found: %s — skipping import.\n", cpath);
-                }
-            }
-
-            // Group list CSV (TG,Mode,Name)
-            char gpath[1024];
-            prompt_string("Group list CSV path (optional)", "", gpath, sizeof gpath);
-            if (gpath[0] != '\0') {
-                if (path_is_regular_file(gpath)) {
-                    strncpy(opts->group_in_file, gpath, sizeof opts->group_in_file - 1);
-                    opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
-                    if (csvGroupImport(opts, state) == 0) {
-                        LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
-                    } else {
-                        LOG_WARNING("Failed to import group list from %s\n", opts->group_in_file);
-                    }
-                    // Optional allow-list toggle
-                    int use_allow = prompt_yes_no("Use group list as allow/white list?", 0);
-                    if (use_allow) {
-                        opts->trunk_use_allow_list = 1;
-                        LOG_NOTICE("Allow/white list: Enabled.\n");
-                    }
-                } else {
-                    LOG_WARNING("Group list file not found: %s — skipping import.\n", gpath);
-                }
-            }
-        }
-    }
-
-    // Output sink quick choice when not using Pulse input helper
-    if (src != 1) {
-        int use_pulse_out = prompt_yes_no("Use PulseAudio for output?", 1);
-        if (use_pulse_out) {
-            // Only pick output sink; do not touch input previously chosen
-            dsd_bootstrap_choose_audio_output(opts);
-        } else {
-            int mute = prompt_yes_no("Mute audio output (null sink)?", 0);
-            if (mute) {
-                snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "null");
-            }
-        }
-    }
+    interactive_maybe_configure_trunking(mode, src, opts, state);
+    interactive_maybe_configure_output(opts, src);
 
     int want_ncurses = prompt_yes_no("Enable ncurses terminal UI (-N)?", 1);
     if (want_ncurses) {

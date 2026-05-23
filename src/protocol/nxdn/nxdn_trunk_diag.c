@@ -9,10 +9,9 @@
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/runtime/log.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 typedef struct {
@@ -128,8 +127,50 @@ nxdn_trunk_diag_log_missing_channel_once(const dsd_opts* opts, dsd_state* state,
     }
 }
 
+static void
+nxdn_trunk_diag_summary_append_channels(char* msg, size_t msg_cap, size_t* used, const uint16_t* missing,
+                                        size_t shown) {
+    if (!msg || !used || !missing || msg_cap == 0) {
+        return;
+    }
+
+    for (size_t i = 0; i < shown && *used < msg_cap; i++) {
+        const char* sep = (i == 0) ? " CH " : ", CH ";
+        int w = DSD_SNPRINTF(msg + *used, msg_cap - *used, "%s%u", sep, missing[i]);
+        if (w < 0) {
+            break;
+        }
+        *used += (size_t)w;
+    }
+}
+
+static void
+nxdn_trunk_diag_summary_append_overflow(char* msg, size_t msg_cap, size_t* used, size_t total, size_t shown) {
+    if (!msg || !used || msg_cap == 0 || total <= shown || *used >= msg_cap) {
+        return;
+    }
+
+    int w = DSD_SNPRINTF(msg + *used, msg_cap - *used, " (+%zu more)", total - shown);
+    if (w > 0) {
+        *used += (size_t)w;
+    }
+}
+
+static void
+nxdn_trunk_diag_summary_finalize(char* msg, size_t msg_cap, size_t used) {
+    if (!msg || msg_cap == 0) {
+        return;
+    }
+
+    if (used < msg_cap) {
+        (void)DSD_SNPRINTF(msg + used, msg_cap - used, "\n");
+    } else {
+        msg[msg_cap - 1] = '\0';
+    }
+}
+
 void
-nxdn_trunk_diag_log_summary(const dsd_opts* opts, dsd_state* state) {
+nxdn_trunk_diag_log_summary(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return;
     }
@@ -145,7 +186,8 @@ nxdn_trunk_diag_log_summary(const dsd_opts* opts, dsd_state* state) {
     }
 
     char msg[512];
-    int n = snprintf(msg, sizeof msg, "NXDN trunking: %zu channel%s missing frequency mapping in chan_csv (%s):", total,
+    int n =
+        DSD_SNPRINTF(msg, sizeof msg, "NXDN trunking: %zu channel%s missing frequency mapping in chan_csv (%s):", total,
                      (total == 1) ? " is" : "s are", opts->chan_in_file);
     if (n < 0) {
         return;
@@ -153,25 +195,9 @@ nxdn_trunk_diag_log_summary(const dsd_opts* opts, dsd_state* state) {
     size_t used = (size_t)n;
 
     const size_t shown = (total < cap) ? total : cap;
-    for (size_t i = 0; i < shown && used < sizeof msg; i++) {
-        const char* sep = (i == 0) ? " CH " : ", CH ";
-        int w = snprintf(msg + used, sizeof msg - used, "%s%u", sep, missing[i]);
-        if (w < 0) {
-            break;
-        }
-        used += (size_t)w;
-    }
-    if (total > shown && used < sizeof msg) {
-        int w = snprintf(msg + used, sizeof msg - used, " (+%zu more)", total - shown);
-        if (w > 0) {
-            used += (size_t)w;
-        }
-    }
-    if (used < sizeof msg) {
-        (void)snprintf(msg + used, sizeof msg - used, "\n");
-    } else {
-        msg[sizeof msg - 1] = '\0';
-    }
+    nxdn_trunk_diag_summary_append_channels(msg, sizeof msg, &used, missing, shown);
+    nxdn_trunk_diag_summary_append_overflow(msg, sizeof msg, &used, total, shown);
+    nxdn_trunk_diag_summary_finalize(msg, sizeof msg, used);
 
     LOG_NOTICE("%s", msg);
 }

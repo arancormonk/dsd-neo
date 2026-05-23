@@ -9,7 +9,8 @@
  *
  * This header is internal to src/ui/terminal/ and should NOT be installed.
  */
-#pragma once
+#ifndef DSD_NEO_SRC_UI_TERMINAL_MENU_ACTIONS_H_
+#define DSD_NEO_SRC_UI_TERMINAL_MENU_ACTIONS_H_
 
 // ---- Main menu actions ----
 void act_toggle_invert(void* v);
@@ -216,3 +217,5 @@ void act_cqpsk_eq_modulus_dn(void* v);
 void act_cqpsk_eq_reset(void* v);
 void act_toggle_dsp_panel(void* v);
 #endif
+
+#endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_ACTIONS_H_ */

@@ -7,9 +7,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int g_tune_to_freq_calls = 0;
@@ -54,8 +53,8 @@ main(void) {
 
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     g_tune_to_freq_calls = 0;
     g_tune_to_cc_calls = 0;
@@ -79,8 +78,8 @@ main(void) {
 
     // Verify fallback behavior when hooks are not installed
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     dsd_trunk_tuning_hook_tune_to_freq(&opts, &state, 853000000, 0);
     assert(opts.p25_is_tuned == 1);

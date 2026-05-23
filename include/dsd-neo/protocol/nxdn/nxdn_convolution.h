@@ -12,7 +12,8 @@
  * helpers.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_CONVOLUTION_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_CONVOLUTION_H_H
 
 #include <stdint.h>
 
@@ -30,3 +31,4 @@ void CNXDNConvolution_init(void);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_CONVOLUTION_H_H */

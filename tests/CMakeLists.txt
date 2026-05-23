@@ -1307,9 +1307,14 @@ target_link_libraries(dsd-neo_test_p25_p2_early_enc_lockout PRIVATE dsd-neo_prot
 add_test(NAME P25_P2_EARLY_ENC_LOCKOUT COMMAND dsd-neo_test_p25_p2_early_enc_lockout)
 
 # P25 P2 2V first-subframe gating should not decode when audio is disallowed
-add_executable(dsd-neo_test_p25_p2_2v_first_frame_gate protocol/p25/test_p25_p2_2v_first_frame_gate.c)
+add_executable(dsd-neo_test_p25_p2_2v_first_frame_gate
+  protocol/p25/test_p25_p2_2v_first_frame_gate.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2/p25p2_frame.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2/p25p2_soft.c
+)
 target_include_directories(dsd-neo_test_p25_p2_2v_first_frame_gate PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES})
-target_link_libraries(dsd-neo_test_p25_p2_2v_first_frame_gate PRIVATE dsd-neo_proto_p25)
+target_compile_definitions(dsd-neo_test_p25_p2_2v_first_frame_gate PRIVATE DSD_NEO_P25P2_TEST_STUB=1)
+target_link_libraries(dsd-neo_test_p25_p2_2v_first_frame_gate PRIVATE dsd-neo_platform dsd-neo_runtime)
 add_test(NAME P25_P2_2V_FIRST_FRAME_GATE COMMAND dsd-neo_test_p25_p2_2v_first_frame_gate)
 
 # P25 P2 mid-call ENC flush behavior: ensure per-slot jitter buffer flush

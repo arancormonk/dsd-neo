@@ -16,6 +16,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/ring.h>
 #include <stdint.h>
+#include "dsd-neo/core/safe_api.h"
 
 extern "C" volatile uint8_t exitflag; // defined in src/runtime/exitflag.c
 
@@ -60,7 +61,7 @@ ring_write(struct output_state* o, const float* data, size_t count) {
         /* First region: from head to end of buffer */
         size_t to_end = o->capacity - h;
         if (to_end >= write_now) {
-            memcpy(o->buffer + h, data, write_now * sizeof(float));
+            DSD_MEMCPY(o->buffer + h, data, write_now * sizeof(float));
             h += write_now;
             if (h >= o->capacity) {
                 h = 0;
@@ -73,17 +74,13 @@ ring_write(struct output_state* o, const float* data, size_t count) {
 
         /* Handle wrap-around case: split write_now across tail and head */
         if (to_end > 0) {
-            memcpy(o->buffer + h, data, to_end * sizeof(float));
+            DSD_MEMCPY(o->buffer + h, data, to_end * sizeof(float));
             data += to_end;
         }
         size_t remaining = write_now - to_end;
-        if (remaining > 0) {
-            memcpy(o->buffer, data, remaining * sizeof(float));
-            h = remaining;
-            data += remaining;
-        } else {
-            h = 0;
-        }
+        DSD_MEMCPY(o->buffer, data, remaining * sizeof(float));
+        h = remaining;
+        data += remaining;
         o->head.store(h);
         count -= write_now;
     }
@@ -134,7 +131,7 @@ ring_write_no_signal(struct output_state* o, const float* data, size_t count) {
         /* First region: from head to end of buffer */
         size_t to_end = o->capacity - h;
         if (to_end >= write_now) {
-            memcpy(o->buffer + h, data, write_now * sizeof(float));
+            DSD_MEMCPY(o->buffer + h, data, write_now * sizeof(float));
             h += write_now;
             if (h >= o->capacity) {
                 h = 0;
@@ -147,17 +144,13 @@ ring_write_no_signal(struct output_state* o, const float* data, size_t count) {
 
         /* Handle wrap-around case: split write_now across tail and head */
         if (to_end > 0) {
-            memcpy(o->buffer + h, data, to_end * sizeof(float));
+            DSD_MEMCPY(o->buffer + h, data, to_end * sizeof(float));
             data += to_end;
         }
         size_t remaining = write_now - to_end;
-        if (remaining > 0) {
-            memcpy(o->buffer, data, remaining * sizeof(float));
-            h = remaining;
-            data += remaining;
-        } else {
-            h = 0;
-        }
+        DSD_MEMCPY(o->buffer, data, remaining * sizeof(float));
+        h = remaining;
+        data += remaining;
         o->head.store(h);
         count -= write_now;
     }
@@ -272,14 +265,14 @@ ring_read_batch(struct output_state* o, float* out, size_t max_count) {
     size_t t = o->tail.load();
     size_t first = o->capacity - t;
     if (first >= read_now) {
-        memcpy(out, o->buffer + t, read_now * sizeof(float));
+        DSD_MEMCPY(out, o->buffer + t, read_now * sizeof(float));
         t += read_now;
         if (t >= o->capacity) {
             t = 0;
         }
     } else {
-        memcpy(out, o->buffer + t, first * sizeof(float));
-        memcpy(out + first, o->buffer, (read_now - first) * sizeof(float));
+        DSD_MEMCPY(out, o->buffer + t, first * sizeof(float));
+        DSD_MEMCPY(out + first, o->buffer, (read_now - first) * sizeof(float));
         t = read_now - first;
     }
     o->tail.store(t);

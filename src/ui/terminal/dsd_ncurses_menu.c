@@ -12,19 +12,13 @@
 
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
-#include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-uint32_t temp_freq = -1;
-
 //testing a few things, going to put this into ncursesMenu
 #define WIDTH  36
 #define HEIGHT 25
-
-int startx = 0;
-int starty = 0;
 
 //ncursesMenu
 void

@@ -9,7 +9,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static double
 mean_of(const float* x, int n, int step) {
@@ -28,7 +28,7 @@ main(void) {
     if (!s) {
         return 1;
     }
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(s, 0, sizeof(*s));
 
     const int pairs = 256;
     static float in[(size_t)pairs * 2];
@@ -58,12 +58,12 @@ main(void) {
     double post_Q = mean_of(s->result + 1, s->result_len - 1, 2);
 
     if (!(pre_I > 0.09 && pre_Q < -0.04)) {
-        fprintf(stderr, "IQ DC pre means unexpected: I=%.2f Q=%.2f\n", pre_I, pre_Q);
+        DSD_FPRINTF(stderr, "IQ DC pre means unexpected: I=%.2f Q=%.2f\n", pre_I, pre_Q);
         free(s);
         return 1;
     }
     if (!(post_I > -0.005 && post_I < 0.005 && post_Q > -0.005 && post_Q < 0.005)) {
-        fprintf(stderr, "IQ DC block insufficient: post I=%.2f Q=%.2f\n", post_I, post_Q);
+        DSD_FPRINTF(stderr, "IQ DC block insufficient: post I=%.2f Q=%.2f\n", post_I, post_Q);
         free(s);
         return 1;
     }

@@ -3,7 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_SOCKETS_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_SOCKETS_H_H
 
 /**
  * @file
@@ -13,6 +14,7 @@
  */
 
 #include <dsd-neo/platform/platform.h>
+#include <stddef.h>
 
 #if DSD_PLATFORM_WIN_NATIVE
 #include <winsock2.h>
@@ -21,19 +23,15 @@ typedef SOCKET dsd_socket_t;
 #define DSD_INVALID_SOCKET INVALID_SOCKET
 #define DSD_SOCKET_ERROR   SOCKET_ERROR
 #else
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
 #include <sys/socket.h>
-#include <unistd.h>
 typedef int dsd_socket_t;
 #define DSD_INVALID_SOCKET (-1)
 #define DSD_SOCKET_ERROR   (-1)
 #endif
 
-#include <stddef.h>
+#ifndef __cplusplus
+struct sockaddr_in;
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -250,3 +248,4 @@ int dsd_socket_resolve(const char* hostname, int port, struct sockaddr_in* addr)
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_SOCKETS_H_H */

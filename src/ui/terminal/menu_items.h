@@ -9,7 +9,8 @@
  *
  * This header is internal to src/ui/terminal/ and should NOT be installed.
  */
-#pragma once
+#ifndef DSD_NEO_SRC_UI_TERMINAL_MENU_ITEMS_H_
+#define DSD_NEO_SRC_UI_TERMINAL_MENU_ITEMS_H_
 
 #include <dsd-neo/ui/menu_core.h>
 #include <stddef.h>
@@ -62,3 +63,5 @@ extern const size_t DSP_TED_ITEMS_LEN;
 extern const NcMenuItem DSP_CQPSK_EQ_ITEMS[];
 extern const size_t DSP_CQPSK_EQ_ITEMS_LEN;
 #endif
+
+#endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_ITEMS_H_ */

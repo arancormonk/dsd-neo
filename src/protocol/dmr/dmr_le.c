@@ -17,9 +17,8 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
@@ -31,6 +30,212 @@ dmr_slot_is_kirisun_call(const dsd_state* state, uint8_t slot_idx) {
     }
 
     return state->dmr_fidR == 0x0A;
+}
+
+static int
+dmr_algid_is_kirisun(int algid) {
+    return algid == 0x35 || algid == 0x36 || algid == 0x37;
+}
+
+static void
+dmr_run_lfsr_for_verified_alg(dsd_state* state, int algid) {
+    if (algid == 0x22) {
+        LFSR64(state);
+        DSD_FPRINTF(stderr, "\n");
+    }
+
+    if (algid == 0x24 || algid == 0x25) {
+        LFSR128d(state);
+        DSD_FPRINTF(stderr, "\n");
+    }
+}
+
+static uint64_t
+dmr_pack_le_fragments(const dsd_state* state, uint8_t slot_idx, uint8_t vc_base) {
+    static const uint8_t shifts[9] = {32, 28, 24, 20, 16, 12, 8, 4, 0};
+    uint64_t packed = 0;
+    uint8_t shift_idx = 0;
+
+    for (uint8_t frag_col = 0; frag_col < 3; frag_col++) {
+        for (uint8_t frag_row = 0; frag_row < 3; frag_row++) {
+            packed |= (uint64_t)state->late_entry_mi_fragment[slot_idx][vc_base + frag_row][frag_col]
+                      << shifts[shift_idx++];
+        }
+    }
+
+    return packed;
+}
+
+static void
+dmr_decode_golay_triplet(uint64_t mi_test, uint64_t go_test, int g[3], uint64_t* mi_corrected, uint64_t* go_corrected,
+                         uint8_t mi_bits[36]) {
+    unsigned char mi_go_bits[24];
+
+    for (int j = 0; j < 3; j++) {
+        for (int i = 0; i < 12; i++) {
+            mi_go_bits[i] = ((mi_test << (i + j * 12)) & 0x800000000) >> 35;
+            mi_go_bits[i + 12] = ((go_test << (i + j * 12)) & 0x800000000) >> 35;
+        }
+
+        g[j] = Golay_24_12_decode(mi_go_bits) ? 1 : 0;
+
+        for (int i = 0; i < 12; i++) {
+            *mi_corrected = *mi_corrected << 1;
+            *mi_corrected |= mi_go_bits[i];
+            *go_corrected = *go_corrected << 1;
+            *go_corrected |= mi_go_bits[i + 12];
+            mi_bits[i + (j * 12)] = mi_go_bits[i];
+        }
+    }
+}
+
+static int
+dmr_golay_triplet_all_pass(const int g[3]) {
+    return g[0] && g[1] && g[2];
+}
+
+static void
+dmr_maybe_infer_algid_from_key(dsd_state* state, uint8_t slot_idx, unsigned long long mi_final) {
+    if (slot_idx == 0U) {
+        const unsigned int so = state->dmr_so;
+        const int so_enc_or_unknown = (so == 0) || ((so & 0x40U) != 0);
+        if (state->payload_algid == 0 && state->R != 0 && so_enc_or_unknown) {
+            state->payload_algid = (state->R <= 0xFFFFFFFFFFULL) ? 0x21 : 0x22;
+            state->payload_keyid = 0xFF;
+            state->payload_mi = mi_final;
+        }
+        return;
+    }
+
+    const unsigned int so = state->dmr_soR;
+    const int so_enc_or_unknown = (so == 0) || ((so & 0x40U) != 0);
+    if (state->payload_algidR == 0 && state->RR != 0 && so_enc_or_unknown) {
+        state->payload_algidR = (state->RR <= 0xFFFFFFFFFFULL) ? 0x21 : 0x22;
+        state->payload_keyidR = 0xFF;
+        state->payload_miR = mi_final;
+    }
+}
+
+static void
+dmr_print_le_mi_mismatch(unsigned long long old_mi, unsigned long long new_mi, uint8_t mi_crc_ok, uint8_t slot_number) {
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, " Slot %u PI/LFSR and Late Entry MI Mismatch - %08llX : %08llX ", slot_number, old_mi, new_mi);
+    if (mi_crc_ok == 1) {
+        DSD_FPRINTF(stderr, "(CRC OK)");
+    } else {
+        DSD_FPRINTF(stderr, "(CRC ERR)");
+    }
+    DSD_FPRINTF(stderr, "\n");
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+dmr_process_verified_mi_slot(dsd_state* state, uint8_t slot_idx, unsigned long long mi_final, uint8_t mi_crc_ok) {
+    unsigned long long* payload_mi = NULL;
+    int algid = 0;
+    uint8_t slot_number = 1;
+
+    if (slot_idx == 0U) {
+        payload_mi = &state->payload_mi;
+        algid = state->payload_algid;
+        slot_number = 1;
+    } else {
+        payload_mi = &state->payload_miR;
+        algid = state->payload_algidR;
+        slot_number = 2;
+    }
+
+    if (algid == 0) {
+        return;
+    }
+
+    if (*payload_mi != mi_final) {
+        dmr_print_le_mi_mismatch(*payload_mi, mi_final, mi_crc_ok, slot_number);
+        if (mi_crc_ok == 1) {
+            *payload_mi = mi_final;
+        }
+    }
+
+    // Run expansions afterwards, or LE verification won't match up properly.
+    dmr_run_lfsr_for_verified_alg(state, algid);
+}
+
+static void
+dmr_print_hytera_refresh(const dsd_state* state, uint8_t slot_idx) {
+    const char* slot_label = (slot_idx == 0U) ? " Slot 1" : " Slot 2";
+    const int algid = (slot_idx == 0U) ? state->payload_algid : state->payload_algidR;
+    const int keyid = (slot_idx == 0U) ? state->payload_keyid : state->payload_keyidR;
+    const unsigned long long mi = (slot_idx == 0U) ? state->payload_mi : state->payload_miR;
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "%s", slot_label);
+    DSD_FPRINTF(stderr, " DMR PI C- ALG ID: %02X; KEY ID: %02X;", algid, keyid);
+    DSD_FPRINTF(stderr, " MI(40): %010llX;", mi);
+    DSD_FPRINTF(stderr, " Hytera Enhanced;");
+    DSD_FPRINTF(stderr, "%s\n", KNRM);
+}
+
+static void
+dmr_print_kirisun_refresh(const dsd_state* state, uint8_t slot_idx) {
+    const char* slot_label = (slot_idx == 0U) ? " Slot 1" : " Slot 2";
+    const int algid = (slot_idx == 0U) ? state->payload_algid : state->payload_algidR;
+    const int keyid = (slot_idx == 0U) ? state->payload_keyid : state->payload_keyidR;
+    const unsigned long long mi = (slot_idx == 0U) ? state->payload_mi : state->payload_miR;
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "%s", slot_label);
+    DSD_FPRINTF(stderr, " DMR PI C- ALG ID: %02X; KEY ID: %02X;", algid, keyid);
+    DSD_FPRINTF(stderr, " MI(32): %08llX;", mi);
+    DSD_FPRINTF(stderr, " Kirisun");
+    if (algid == 0x36) {
+        DSD_FPRINTF(stderr, " Advanced;");
+    } else if (algid == 0x37) {
+        DSD_FPRINTF(stderr, " Universal;");
+    } else {
+        DSD_FPRINTF(stderr, " Encryption;");
+    }
+    DSD_FPRINTF(stderr, "%s\n", KNRM);
+}
+
+static void
+dmr_alg_refresh_slot(dsd_state* state, uint8_t slot_idx) {
+    int* dmrvc = NULL;
+    int algid = 0;
+    unsigned long long* payload_mi = NULL;
+
+    if (slot_idx == 0U) {
+        state->dropL = 256;
+        if (state->K1 != 0) {
+            state->DMRvcL = 0;
+        }
+        dmrvc = &state->DMRvcL;
+        algid = state->payload_algid;
+        payload_mi = &state->payload_mi;
+    } else {
+        state->dropR = 256;
+        if (state->K1 != 0) {
+            state->DMRvcR = 0;
+        }
+        dmrvc = &state->DMRvcR;
+        algid = state->payload_algidR;
+        payload_mi = &state->payload_miR;
+    }
+
+    if (algid == 0x21) {
+        LFSR(state);
+        DSD_FPRINTF(stderr, "\n");
+    }
+
+    if (algid == 0x02) {
+        *dmrvc = 0;
+        dmr_print_hytera_refresh(state, slot_idx);
+    }
+
+    if (dmr_algid_is_kirisun(algid)) {
+        *dmrvc = 0;
+        *payload_mi = kirisun_lfsr(*payload_mi);
+        dmr_print_kirisun_refresh(state, slot_idx);
+    }
 }
 
 //gather ambe_fr mi fragments for processing
@@ -72,54 +277,21 @@ dmr_late_entry_mi(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
 
     uint8_t slot = state->currentslot;
-    int i, j;
+    uint8_t slot_idx = (slot >= 2U) ? 1U : slot;
     int g[3];
-    unsigned char mi_go_bits[24];
 
-    uint64_t mi_test = 0;
-    uint64_t go_test = 0;
+    uint64_t mi_test = dmr_pack_le_fragments(state, slot_idx, 1);
+    uint64_t go_test = dmr_pack_le_fragments(state, slot_idx, 4);
     uint64_t mi_corrected = 0;
     uint64_t go_corrected = 0;
 
     uint8_t mi_bits[36];
-    memset(mi_bits, 0, sizeof(mi_bits));
+    DSD_MEMSET(mi_bits, 0, sizeof(mi_bits));
     uint8_t mi_crc_cmp = 0;
     uint8_t mi_crc_ext = 1;
     uint8_t mi_crc_ok = 0;
 
-    mi_test = (state->late_entry_mi_fragment[slot][1][0] << 32L) | (state->late_entry_mi_fragment[slot][2][0] << 28)
-              | (state->late_entry_mi_fragment[slot][3][0] << 24) | (state->late_entry_mi_fragment[slot][1][1] << 20)
-              | (state->late_entry_mi_fragment[slot][2][1] << 16) | (state->late_entry_mi_fragment[slot][3][1] << 12)
-              | (state->late_entry_mi_fragment[slot][1][2] << 8) | (state->late_entry_mi_fragment[slot][2][2] << 4)
-              | (state->late_entry_mi_fragment[slot][3][2] << 0);
-
-    go_test = (state->late_entry_mi_fragment[slot][4][0] << 32L) | (state->late_entry_mi_fragment[slot][5][0] << 28)
-              | (state->late_entry_mi_fragment[slot][6][0] << 24) | (state->late_entry_mi_fragment[slot][4][1] << 20)
-              | (state->late_entry_mi_fragment[slot][5][1] << 16) | (state->late_entry_mi_fragment[slot][6][1] << 12)
-              | (state->late_entry_mi_fragment[slot][4][2] << 8) | (state->late_entry_mi_fragment[slot][5][2] << 4)
-              | (state->late_entry_mi_fragment[slot][6][2] << 0);
-
-    for (j = 0; j < 3; j++) {
-        for (i = 0; i < 12; i++) {
-            mi_go_bits[i] = ((mi_test << (i + j * 12)) & 0x800000000) >> 35;
-            mi_go_bits[i + 12] = ((go_test << (i + j * 12)) & 0x800000000) >> 35;
-        }
-        //execute golay decode and assign pass or fail to g
-        if (Golay_24_12_decode(mi_go_bits)) {
-            g[j] = 1;
-        } else {
-            g[j] = 0;
-        }
-
-        for (i = 0; i < 12; i++) {
-            mi_corrected = mi_corrected << 1;
-            mi_corrected |= mi_go_bits[i];
-            go_corrected = go_corrected << 1;
-            go_corrected |= mi_go_bits[i + 12];
-            //manipulate for crc check
-            mi_bits[i + (j * 12)] = mi_go_bits[i];
-        }
-    }
+    dmr_decode_golay_triplet(mi_test, go_test, g, &mi_corrected, &go_corrected, mi_bits);
 
     unsigned long long int mi_final = 0;
     mi_final = (mi_corrected >> 4) & 0xFFFFFFFF;
@@ -131,122 +303,25 @@ dmr_late_entry_mi(dsd_opts* opts, dsd_state* state) {
     }
 
     //debug -- working now
-    // fprintf (stderr, " LE MI: %09llX; CRC EXT: %X; CRC CMP: %X; \n", mi_corrected, mi_crc_ext, mi_crc_cmp);
+    // DSD_FPRINTF(stderr, " LE MI: %09llX; CRC EXT: %X; CRC CMP: %X; \n", mi_corrected, mi_crc_ext, mi_crc_cmp);
+
+    const int golay_all_pass = dmr_golay_triplet_all_pass(g);
 
     // If PI/SB didn't provide ALG/Key ID but we have a valid LE MI and a manually provided key,
     // infer the ALG ID from key size so users don't need to force `-0` in common RC4/DES cases.
-    if (g[0] && g[1] && g[2] && mi_crc_ok == 1 && state->M == 0) {
-        if (slot == 0 && state->payload_algid == 0 && state->R != 0) {
-            const unsigned int so = state->dmr_so;
-            const int so_enc_or_unknown = (so == 0) || ((so & 0x40U) != 0);
-            if (so_enc_or_unknown) {
-                state->payload_algid = (state->R <= 0xFFFFFFFFFFULL) ? 0x21 : 0x22;
-                state->payload_keyid = 0xFF;
-                state->payload_mi = mi_final;
-            }
-        }
-        if (slot == 1 && state->payload_algidR == 0 && state->RR != 0) {
-            const unsigned int so = state->dmr_soR;
-            const int so_enc_or_unknown = (so == 0) || ((so & 0x40U) != 0);
-            if (so_enc_or_unknown) {
-                state->payload_algidR = (state->RR <= 0xFFFFFFFFFFULL) ? 0x21 : 0x22;
-                state->payload_keyidR = 0xFF;
-                state->payload_miR = mi_final;
-            }
-        }
+    if (golay_all_pass && mi_crc_ok == 1 && state->M == 0) {
+        dmr_maybe_infer_algid_from_key(state, slot_idx, mi_final);
     }
 
-    if (g[0] && g[1] && g[2]) {
-        if (slot == 0 && state->payload_algid != 0) {
-            if (state->payload_mi != mi_final) {
-                fprintf(stderr, "%s", KCYN);
-                fprintf(stderr, " Slot 1 PI/LFSR and Late Entry MI Mismatch - %08llX : %08llX ", state->payload_mi,
-                        mi_final);
-                if (mi_crc_ok == 1) {
-                    state->payload_mi = mi_final;
-                }
-                if (mi_crc_ok == 1) {
-                    fprintf(stderr, "(CRC OK)");
-                } else {
-                    fprintf(stderr, "(CRC ERR)");
-                }
-                fprintf(stderr, "\n");
-                fprintf(stderr, "%s", KNRM);
-            }
-
-            //run expansions afterwards, or le verification won't match up properly
-
-            //DES1
-            if (state->payload_algid == 0x22) {
-                LFSR64(state);
-                fprintf(stderr, "\n");
-            }
-
-            //AES-128 or AES-256
-            if (state->payload_algid == 0x24 || state->payload_algid == 0x25) {
-                LFSR128d(state);
-                fprintf(stderr, "\n");
-            }
-        }
-        if (slot == 1 && state->payload_algidR != 0) {
-            if (state->payload_miR != mi_final) {
-                fprintf(stderr, "%s", KCYN);
-                fprintf(stderr, " Slot 2 PI/LFSR and Late Entry MI Mismatch - %08llX : %08llX ", state->payload_miR,
-                        mi_final);
-                if (mi_crc_ok == 1) {
-                    state->payload_miR = mi_final;
-                }
-                if (mi_crc_ok == 1) {
-                    fprintf(stderr, "(CRC OK)");
-                } else {
-                    fprintf(stderr, "(CRC ERR)");
-                }
-                fprintf(stderr, "\n");
-                fprintf(stderr, "%s", KNRM);
-            }
-
-            //run expansions afterwards, or le verification won't match up properly
-
-            //DES1
-            if (state->payload_algidR == 0x22) {
-                LFSR64(state);
-                fprintf(stderr, "\n");
-            }
-
-            //AES-128 or AES-256
-            if (state->payload_algidR == 0x24 || state->payload_algidR == 0x25) {
-                LFSR128d(state);
-                fprintf(stderr, "\n");
-            }
-        }
-
+    if (golay_all_pass) {
+        dmr_process_verified_mi_slot(state, slot_idx, mi_final, mi_crc_ok);
     }
 
-    //run LFSR even if golay fails
+    // Run LFSR even if Golay fails.
     else if (slot == 0 && state->payload_algid != 0) {
-        //DES1
-        if (state->payload_algid == 0x22) {
-            LFSR64(state);
-            fprintf(stderr, "\n");
-        }
-
-        //AES-128 or AES-256
-        if (state->payload_algid == 0x24 || state->payload_algid == 0x25) {
-            LFSR128d(state);
-            fprintf(stderr, "\n");
-        }
+        dmr_run_lfsr_for_verified_alg(state, state->payload_algid);
     } else if (slot == 1 && state->payload_algidR != 0) {
-        //DES1
-        if (state->payload_algidR == 0x22) {
-            LFSR64(state);
-            fprintf(stderr, "\n");
-        }
-
-        //AES-128 or AES-256
-        if (state->payload_algidR == 0x24 || state->payload_algidR == 0x25) {
-            LFSR128d(state);
-            fprintf(stderr, "\n");
-        }
+        dmr_run_lfsr_for_verified_alg(state, state->payload_algidR);
     }
 }
 
@@ -270,91 +345,8 @@ void
 dmr_alg_refresh(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
 
-    if (state->currentslot == 0) {
-        state->dropL = 256;
-
-        if (state->K1 != 0) {
-            state->DMRvcL = 0;
-        }
-
-        if (state->payload_algid == 0x21) {
-            LFSR(state);
-            fprintf(stderr, "\n");
-        }
-
-        //LFSR64/128 carried out after LE verification in order to keep it from constantly resetting the MI to the previous value
-
-        if (state->payload_algid == 0x02) {
-            state->DMRvcL = 0;
-            //LFSR already calculated, just dump it now
-            fprintf(stderr, "%s", KYEL);
-            fprintf(stderr, " Slot 1");
-            fprintf(stderr, " DMR PI C- ALG ID: %02X; KEY ID: %02X;", state->payload_algid, state->payload_keyid);
-            fprintf(stderr, " MI(40): %010llX;", state->payload_mi);
-            fprintf(stderr, " Hytera Enhanced;");
-            fprintf(stderr, "%s\n", KNRM);
-        }
-
-        if (state->payload_algid == 0x35 || state->payload_algid == 0x36 || state->payload_algid == 0x37) {
-            state->DMRvcL = 0;
-            state->payload_mi = kirisun_lfsr(state->payload_mi);
-            fprintf(stderr, "%s", KYEL);
-            fprintf(stderr, " Slot 1");
-            fprintf(stderr, " DMR PI C- ALG ID: %02X; KEY ID: %02X;", state->payload_algid, state->payload_keyid);
-            fprintf(stderr, " MI(32): %08llX;", state->payload_mi);
-            fprintf(stderr, " Kirisun");
-            if (state->payload_algid == 0x36) {
-                fprintf(stderr, " Advanced;");
-            } else if (state->payload_algid == 0x37) {
-                fprintf(stderr, " Universal;");
-            } else {
-                fprintf(stderr, " Encryption;");
-            }
-            fprintf(stderr, "%s\n", KNRM);
-        }
-    }
-    if (state->currentslot == 1) {
-        state->dropR = 256;
-
-        if (state->K1 != 0) {
-            state->DMRvcR = 0;
-        }
-
-        if (state->payload_algidR == 0x21) {
-            LFSR(state);
-            fprintf(stderr, "\n");
-        }
-
-        //LFSR64/128 carried out after LE verification in order to keep it from constantly resetting the MI to the previous value
-
-        if (state->payload_algidR == 0x02) {
-            state->DMRvcR = 0;
-            //LFSR already calculated, just dump it now
-            fprintf(stderr, "%s", KYEL);
-            fprintf(stderr, " Slot 2");
-            fprintf(stderr, " DMR PI C- ALG ID: %02X; KEY ID: %02X;", state->payload_algidR, state->payload_keyidR);
-            fprintf(stderr, " MI(40): %010llX;", state->payload_miR);
-            fprintf(stderr, " Hytera Enhanced;");
-            fprintf(stderr, "%s\n", KNRM);
-        }
-
-        if (state->payload_algidR == 0x35 || state->payload_algidR == 0x36 || state->payload_algidR == 0x37) {
-            state->DMRvcR = 0;
-            state->payload_miR = kirisun_lfsr(state->payload_miR);
-            fprintf(stderr, "%s", KYEL);
-            fprintf(stderr, " Slot 2");
-            fprintf(stderr, " DMR PI C- ALG ID: %02X; KEY ID: %02X;", state->payload_algidR, state->payload_keyidR);
-            fprintf(stderr, " MI(32): %08llX;", state->payload_miR);
-            fprintf(stderr, " Kirisun");
-            if (state->payload_algidR == 0x36) {
-                fprintf(stderr, " Advanced;");
-            } else if (state->payload_algidR == 0x37) {
-                fprintf(stderr, " Universal;");
-            } else {
-                fprintf(stderr, " Encryption;");
-            }
-            fprintf(stderr, "%s\n", KNRM);
-        }
+    if (state->currentslot == 0U || state->currentslot == 1U) {
+        dmr_alg_refresh_slot(state, state->currentslot);
     }
 }
 
@@ -370,350 +362,372 @@ dmr_alg_reset(dsd_opts* opts, dsd_state* state) {
     // state->payload_miN = 0; //running these clears out before we can create a new keystream
 }
 
-//handle Single Burst (Voice Burst F) or Reverse Channel Signalling
-void
-dmr_sbrc(dsd_opts* opts, dsd_state* state, uint8_t power) {
-    int i;
-    uint8_t slot = state->currentslot;
-    uint8_t slot_idx = (slot >= 2) ? 1 : slot;
+typedef struct {
+    uint8_t slot;
+    uint8_t slot_idx;
+    uint8_t power;
     uint8_t sbrc_interleaved[32];
     uint8_t sbrc_return[32];
-    uint8_t sbrc_retcrc[32]; //crc significant bits of the return for SB
-    memset(sbrc_interleaved, 0, sizeof(sbrc_interleaved));
-    memset(sbrc_return, 0, sizeof(sbrc_return));
-    memset(sbrc_retcrc, 0, sizeof(sbrc_retcrc));
-    uint32_t irr_err = 0;
-    uint32_t sbrc_hex = 0;
-    uint16_t crc_extracted = 7777;
-    uint16_t crc_computed = 9999;
-    uint8_t crc7_okay = 0; //RC
-    uint8_t crc3_okay = 0; //TXI
-    uint8_t txi = 0;       //SEE: https://patents.google.com/patent/US8271009B2
-    UNUSED(txi);
+    uint8_t sbrc_retcrc[32];
+    uint32_t irr_err;
+    uint32_t sbrc_hex;
+    uint16_t crc_extracted;
+    uint16_t crc_computed;
+    uint8_t crc7_okay;
+    uint8_t crc3_okay;
+} dmr_sbrc_data;
 
-    //NOTE: Any previous mentions to Cap+ in this area may have been in error,
-    //The signalling observed here was actually TXI information, not Cap+ Specifically
+static void
+dmr_sbrc_init_data(dmr_sbrc_data* data, const dsd_state* state, uint8_t power) {
+    data->slot = state->currentslot;
+    data->slot_idx = (data->slot >= 2U) ? 1U : data->slot;
+    data->power = power;
+    DSD_MEMSET(data->sbrc_interleaved, 0, sizeof(data->sbrc_interleaved));
+    DSD_MEMSET(data->sbrc_return, 0, sizeof(data->sbrc_return));
+    DSD_MEMSET(data->sbrc_retcrc, 0, sizeof(data->sbrc_retcrc));
+    data->irr_err = 0;
+    data->sbrc_hex = 0;
+    data->crc_extracted = 7777;
+    data->crc_computed = 9999;
+    data->crc7_okay = 0;
+    data->crc3_okay = 0;
 
-    //check to see if this a TXI system
-    if (slot == 0 && (state->dmr_so & 0x20)) {
-        /* TXI present on slot 0 */
+    for (int i = 0; i < 32; i++) {
+        data->sbrc_interleaved[i] = state->dmr_embedded_signalling[data->slot_idx][5][i + 8];
     }
-    if (slot == 1 && (state->dmr_soR & 0x20)) {
-        /* TXI present on slot 1 */
+}
+
+static int
+dmr_sbrc_extract_data(dmr_sbrc_data* data) {
+    if (data->power == 0U) {
+        data->irr_err = BPTC_16x2_Extract_Data(data->sbrc_interleaved, data->sbrc_return, 0);
+        return 1;
+    }
+    if (data->power == 1U) {
+        data->irr_err = BPTC_16x2_Extract_Data(data->sbrc_interleaved, data->sbrc_return, 1);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+dmr_sbrc_prepare_crc_input(dmr_sbrc_data* data) {
+    for (int i = 0; i < 8; i++) {
+        data->sbrc_retcrc[i] = data->sbrc_return[i + 3];
+    }
+}
+
+static void
+dmr_sbrc_compute_crc(dmr_sbrc_data* data) {
+    if (data->power == 1U) {
+        data->crc_extracted = 0;
+        for (int i = 0; i < 7; i++) {
+            data->crc_extracted = data->crc_extracted << 1;
+            data->crc_extracted = data->crc_extracted | data->sbrc_return[i + 4];
+        }
+        data->crc_extracted = data->crc_extracted ^ 0x7A;
+        data->crc_computed = crc7((uint8_t*)data->sbrc_return, 4); // #187 fix
+        if (data->crc_extracted == data->crc_computed) {
+            data->crc7_okay = 1;
+        }
+        return;
     }
 
-    // 9.3.2 Pre-emption and power control Indicator (PI)
-    // 0 - The embedded signalling carries information associated to the same logical channel or the Null embedded message
-    // 1 - The embedded signalling carries RC information associated to the other logical channel
+    data->crc_extracted = 0;
+    for (int i = 0; i < 3; i++) {
+        data->crc_extracted = data->crc_extracted << 1;
+        data->crc_extracted = data->crc_extracted | data->sbrc_return[i]; // first 3 most significant bits
+    }
+    data->crc_computed = crc3((uint8_t*)data->sbrc_retcrc, 8); // working now seems consistent as well
+    if (data->crc_extracted == data->crc_computed) {
+        data->crc3_okay = 1;
+    }
+}
 
-    for (i = 0; i < 32; i++) {
-        sbrc_interleaved[i] = state->dmr_embedded_signalling[slot_idx][5][i + 8];
+static void
+dmr_sbrc_compute_hex(dmr_sbrc_data* data) {
+    for (int i = 0; i < 11; i++) {
+        data->sbrc_hex = data->sbrc_hex << 1;
+        data->sbrc_hex |= data->sbrc_return[i] & 1;
     }
-    //power == 0 should be single burst
-    if (power == 0) {
-        irr_err = BPTC_16x2_Extract_Data(sbrc_interleaved, sbrc_return, 0);
-    }
-    //power == 1 should be reverse channel -- still need to check the interleave inside of BPTC
-    if (power == 1) {
-        irr_err = BPTC_16x2_Extract_Data(sbrc_interleaved, sbrc_return, 1);
-    }
-    //bad emb burst, never set a valid power indicator value (probably 9)
-    if (power > 1) {
-        goto SBRC_END;
-    }
+}
 
-    //arrange the return for proper order for the crc3 check
-    for (i = 0; i < 8; i++) {
-        sbrc_retcrc[i] = sbrc_return[i + 3];
-    }
-
-    //RC Channel CRC 7 Mask = 0x7A; CRC bits are used as privacy indicators on
-    //Single Voice Burst F (see below), other moto values seem to exist there as well -- See TXI patent
-    if (power == 1) //RC
+static void
+dmr_sbrc_print_payload_bits(const dsd_opts* opts, const dmr_sbrc_data* data) {
+    if (opts->payload == 1) // hide the SB/RC behind payload printer
     {
-        crc_extracted = 0;
-        for (i = 0; i < 7; i++) {
-            crc_extracted = crc_extracted << 1;
-            crc_extracted = crc_extracted | sbrc_return[i + 4];
+        DSD_FPRINTF(stderr, "%s", KCYN);
+        if (data->power == 0U) {
+            DSD_FPRINTF(stderr, " SB: ");
         }
-        crc_extracted = crc_extracted ^ 0x7A;
-        crc_computed = crc7((uint8_t*)sbrc_return, 4); //#187 fix
-        if (crc_extracted == crc_computed) {
-            crc7_okay = 1;
+        if (data->power == 1U) {
+            DSD_FPRINTF(stderr, " RC: ");
         }
-    } else //if (txi == 1) //if TXI -- but TXI systems also carry the non-crc protected ENC identifiers
-    {
-        crc_extracted = 0;
-        for (i = 0; i < 3; i++) {
-            crc_extracted = crc_extracted << 1;
-            crc_extracted = crc_extracted | sbrc_return[i]; //first 3 most significant bits
+        for (int i = 0; i < 11; i++) {
+            DSD_FPRINTF(stderr, "%d", data->sbrc_return[i]);
         }
-        crc_computed = crc3((uint8_t*)sbrc_retcrc, 8); //working now seems consistent as well
-        if (crc_extracted == crc_computed) {
-            crc3_okay = 1;
-        }
-        // fprintf (stderr, " CRC EXT %02X, CRC CMP %02X", crc_extracted, crc_computed);
+        DSD_FPRINTF(stderr, " - %03X; ", data->sbrc_hex);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        DSD_FPRINTF(stderr, "\n");
     }
-    // else //crc_okay = 0; //CRC invalid / not available when is ENC Identifiers (I really hate that)
+}
 
-    for (i = 0; i < 11; i++) {
-        sbrc_hex = sbrc_hex << 1;
-        sbrc_hex |= sbrc_return[i] & 1;
+static void
+dmr_sbrc_print_fec_error(const dsd_opts* opts, const dmr_sbrc_data* data) {
+    uint32_t sbrcpl = 0;
+    for (int i = 0; i < 32; i++) {
+        sbrcpl = sbrcpl << 1;
+        sbrcpl |= data->sbrc_interleaved[i] & 1;
+    }
+    if (opts->payload == 0) {
+        DSD_FPRINTF(stderr, "\n");
+    }
+    DSD_FPRINTF(stderr, "%s SLOT %d SB/RC (FEC ERR) E:%d; I:%08X D:%03X; %s ", KRED, data->slot + 1, data->irr_err,
+                sbrcpl, data->sbrc_hex, KNRM);
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n");
+    }
+}
+
+static void
+dmr_sbrc_print_rc_command(const dsd_opts* opts, uint32_t sbrc_hex) {
+    static const char* rc_commands[] = {" RC: Increase Power By One Step;", " RC: Decrease Power By One Step;",
+                                        " RC: Set Power To Highest;",       " RC: Set Power To Lowest;",
+                                        " RC: Cease Transmission Command;", " RC: Cease Transmission Request;"};
+    const uint32_t rc_value = sbrc_hex >> 7;
+
+    if (opts->payload == 0) {
+        DSD_FPRINTF(stderr, "\n");
+    }
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    if (rc_value < (sizeof(rc_commands) / sizeof(rc_commands[0]))) {
+        DSD_FPRINTF(stderr, "%s", rc_commands[rc_value]);
+    } else {
+        DSD_FPRINTF(stderr, " RC: Reserved %02X;", rc_value);
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "\n");
+}
+
+static void
+dmr_sbrc_print_txi(const dsd_opts* opts, uint8_t sbrc_opcode, uint8_t txi_delay) {
+    if (opts->payload == 0) {
+        DSD_FPRINTF(stderr, "\n");
+    }
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, " TXI Op: %X -", sbrc_opcode);
+    if (sbrc_opcode == 0U) {
+        DSD_FPRINTF(stderr, " Null; ");
+    } else if (sbrc_opcode == 3U) {
+        if (txi_delay != 0U) {
+            DSD_FPRINTF(stderr, " BR Delay: %d - %d ms;", txi_delay,
+                        txi_delay * 30); // could also indicate superframes until next VC6 pre-emption
+        } else {
+            DSD_FPRINTF(stderr, "BR Delay: Irrelevant / Send at any time;");
+        }
+
+        if (txi_delay == 2U) {
+            DSD_FPRINTF(stderr, " SF3, Burst E;");
+        }
+        if (txi_delay == 4U) {
+            DSD_FPRINTF(stderr, " SF3, Burst D;");
+        }
+        if (txi_delay == 6U) {
+            DSD_FPRINTF(stderr, " SF3, Burst C;");
+        }
+        if (txi_delay == 8U) {
+            DSD_FPRINTF(stderr, " SF3, Burst B;");
+        }
+    } else {
+        DSD_FPRINTF(stderr, " Unk; ");
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n"); // only during payload
+    }
+}
+
+static void
+dmr_sbrc_print_alg_name(uint8_t alg) {
+    if (alg == 1U) {
+        DSD_FPRINTF(stderr, " RC4;");
+    }
+    if (alg == 2U) {
+        DSD_FPRINTF(stderr, " DES;");
+    }
+    if (alg == 4U) {
+        DSD_FPRINTF(stderr, " AES128;");
+    }
+    if (alg == 5U) {
+        DSD_FPRINTF(stderr, " AES256;");
+    }
+}
+
+static void
+dmr_sbrc_apply_enc_identifier_slot0(const dsd_opts* opts, dsd_state* state, uint8_t alg, uint8_t key) {
+    if (!(state->dmr_so & 0x40) || key == 0U || alg == 0U || state->M != 0) {
+        return;
     }
 
-    if (opts->payload == 1) //hide the sb/rc behind the payload printer, won't be useful to most people
-    {
-        fprintf(stderr, "%s", KCYN);
-        if (power == 0) {
-            fprintf(stderr, " SB: ");
-        }
-        if (power == 1) {
-            fprintf(stderr, " RC: ");
-        }
-        for (i = 0; i < 11; i++) {
-            fprintf(stderr, "%d", sbrc_return[i]);
-        }
-        fprintf(stderr, " - %03X; ", sbrc_hex);
-        fprintf(stderr, "%s", KNRM);
-
-        // if (crc_okay == 0) //forego this since the crc can vary or not be used at all
-        // {
-        //   fprintf (stderr, "%s", KRED);
-        //   fprintf (stderr, " (CRC ERR)");
-        //   fprintf (stderr, "%s", KNRM);
-        //   fprintf (stderr, " CRC EXT %02X, CRC CMP %02X", crc_extracted, crc_computed);
-        // }
-
-        fprintf(stderr, "\n");
+    DSD_FPRINTF(stderr, "\n");
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, " Slot 1");
+    DSD_FPRINTF(stderr, " DMR LE SB ALG ID: %02X; KEY ID: %02X;", alg + 0x20, key);
+    dmr_sbrc_print_alg_name(alg);
+    DSD_FPRINTF(stderr, "%s ", KNRM);
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n");
     }
 
-    uint8_t sbrc_opcode =
-        sbrc_hex
-        & 0x7; //opcode and alg the same bits, but the alg is present when CRC is bad (I know they are limited on bits, but I hate that idea)
-    uint8_t alg = sbrc_hex & 0x7; //SEE: https://patents.google.com/patent/EP2347540B1/en
-    uint8_t key = (sbrc_hex >> 3) & 0xFF;
-    uint8_t txi_delay = (sbrc_hex >> 3) & 0x1F; //middle five are the 'delay' value on a TXI system
-    const int kirisun_call = dmr_slot_is_kirisun_call(state, slot_idx);
+    state->payload_keyid = key;
+    if (state->payload_algid != alg) {
+        state->payload_algid = alg + 0x20; // assuming DMRA approved alg values (moto patent)
+    }
+}
 
-    //Note: AES-256 Key 1 will pass a CRC3 due to its bit arrangement vs the CRC poly 1101
-    // if (irr_err == 0 && sbrc_hex = 0xD) crc3_okay = 0; //SB: 00000001101
-
-    //NOTE: on above, I belive that we need to check by opcode as well, as a CRC3 can have multiple collisions
-    //so we need to exclude op/alg 0 and 3 from the check (does algID 0x03/0x23 even exist?)
-
-    if (opts->dmr_le == 3 && kirisun_call) {
-        if (irr_err != 0) {
-            uint32_t sbrcpl = 0;
-            for (i = 0; i < 32; i++) {
-                sbrcpl = sbrcpl << 1;
-                sbrcpl |= sbrc_interleaved[i] & 1;
-            }
-            if (opts->payload == 0) {
-                fprintf(stderr, "\n");
-            }
-            fprintf(stderr, "%s SLOT %d SB/RC (FEC ERR) E:%d; I:%08X D:%03X; %s ", KRED, slot + 1, irr_err, sbrcpl,
-                    sbrc_hex, KNRM);
-            if (opts->payload == 1) {
-                fprintf(stderr, "\n");
-            }
-        } else if (power == 0 && sbrc_hex != 0) {
-            fprintf(stderr, "\n");
-            fprintf(stderr, "%s", KCYN);
-            fprintf(stderr, " Slot %d", state->currentslot + 1);
-            fprintf(stderr, " DMR LE SB Kirisun Encryption Identifier;");
-            fprintf(stderr, "%s ", KNRM);
-            if (slot_idx == 0U) {
-                if (state->payload_algid == 0 && (state->dmr_so & 0x40U)) {
-                    state->payload_algid = 0x35;
-                }
-            } else {
-                if (state->payload_algidR == 0 && (state->dmr_soR & 0x40U)) {
-                    state->payload_algidR = 0x35;
-                }
-            }
-        }
+static void
+dmr_sbrc_apply_enc_identifier_slot1(const dsd_opts* opts, dsd_state* state, uint8_t alg, uint8_t key) {
+    if (!(state->dmr_soR & 0x40) || key == 0U || alg == 0U || state->M != 0) {
+        return;
     }
 
+    DSD_FPRINTF(stderr, "\n");
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, " Slot 2");
+    DSD_FPRINTF(stderr, " DMR LE SB ALG ID: %02X; KEY ID: %02X;", alg + 0x20, key);
+    DSD_FPRINTF(stderr, "%s ", KNRM);
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n");
+    }
+
+    state->payload_keyidR = key;
+    if (state->payload_algidR != alg) {
+        state->payload_algidR = alg + 0x20; // assuming DMRA approved alg values (moto patent)
+    }
+}
+
+static void
+dmr_sbrc_apply_enc_identifier(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t alg, uint8_t key) {
+    if (slot == 0U) {
+        dmr_sbrc_apply_enc_identifier_slot0(opts, state, alg, key);
+    }
+    if (slot == 1U) {
+        dmr_sbrc_apply_enc_identifier_slot1(opts, state, alg, key);
+    }
+}
+
+static void
+dmr_sbrc_handle_kirisun_mode(const dsd_opts* opts, dsd_state* state, const dmr_sbrc_data* data, int kirisun_call) {
+    if (!(opts->dmr_le == 3 && kirisun_call)) {
+        return;
+    }
+
+    if (data->irr_err != 0) {
+        dmr_sbrc_print_fec_error(opts, data);
+        return;
+    }
+
+    if (data->power == 0U && data->sbrc_hex != 0U) {
+        DSD_FPRINTF(stderr, "\n");
+        DSD_FPRINTF(stderr, "%s", KCYN);
+        DSD_FPRINTF(stderr, " Slot %d", state->currentslot + 1);
+        DSD_FPRINTF(stderr, " DMR LE SB Kirisun Encryption Identifier;");
+        DSD_FPRINTF(stderr, "%s ", KNRM);
+        if (data->slot_idx == 0U) {
+            if (state->payload_algid == 0 && (state->dmr_so & 0x40U)) {
+                state->payload_algid = 0x35;
+            }
+        } else if (state->payload_algidR == 0 && (state->dmr_soR & 0x40U)) {
+            state->payload_algidR = 0x35;
+        }
+    }
+}
+
+static void
+dmr_sbrc_handle_standard_payload(const dsd_opts* opts, dsd_state* state, const dmr_sbrc_data* data, uint8_t sbrc_opcode,
+                                 uint8_t alg, uint8_t key, uint8_t txi_delay) {
+    if (data->sbrc_hex == 0U && data->crc7_okay == 0U) {
+        return;
+    }
+
+    if (data->crc7_okay == 1U) {
+        dmr_sbrc_print_rc_command(opts, data->sbrc_hex);
+        return;
+    }
+
+    if (data->crc3_okay == 1U && (sbrc_opcode == 0U || sbrc_opcode == 3U)) {
+        dmr_sbrc_print_txi(opts, sbrc_opcode, txi_delay);
+        return;
+    }
+
+    if (sbrc_opcode != 0U && sbrc_opcode != 3U) {
+        dmr_sbrc_apply_enc_identifier(opts, state, data->slot, alg, key);
+    }
+}
+
+static void
+dmr_sbrc_handle_standard_mode(const dsd_opts* opts, dsd_state* state, const dmr_sbrc_data* data, uint8_t sbrc_opcode,
+                              uint8_t alg, uint8_t key, uint8_t txi_delay, int kirisun_call) {
     // opts->dmr_le is global; fall back to standard SB/RC parsing for non-Kirisun calls.
-    if (opts->dmr_le == 1 || (opts->dmr_le == 3 && !kirisun_call)) {
-        if (irr_err != 0) {
-            uint32_t sbrcpl = 0;
-            for (i = 0; i < 32; i++) {
-                sbrcpl = sbrcpl << 1;
-                sbrcpl |= sbrc_interleaved[i] & 1;
-            }
-            if (opts->payload == 0) {
-                fprintf(stderr, "\n");
-            }
-            fprintf(stderr, "%s SLOT %d SB/RC (FEC ERR) E:%d; I:%08X D:%03X; %s ", KRED, slot + 1, irr_err, sbrcpl,
-                    sbrc_hex, KNRM);
-            if (opts->payload == 1) {
-                fprintf(stderr, "\n");
-            }
-        }
-        if (irr_err == 0) {
-            if (sbrc_hex == 0 && crc7_okay == 0)
-                ; //NULL Single Burst, do nothing (changed to allow the 0 value of RC below to trigger)
-
-            //else if (placeholder for future conditions)
-            // {
-            //   placeholder for future conditions
-            // }
-
-            else if (crc7_okay == 1) {
-                //decode the reverse channel information ETSI TS 102 361-4 V1.12.1 (2023-07) p 103 Table 6.32: MS Reverse Channel (RC) Command Information Elements
-                if (opts->payload == 0) {
-                    fprintf(stderr, "\n");
-                }
-                fprintf(stderr, "%s", KCYN);
-                sbrc_hex = sbrc_hex >> 7; //set value to its 4-bit form
-                if (sbrc_hex == 0) {
-                    fprintf(stderr, " RC: Increase Power By One Step;");
-                } else if (sbrc_hex == 1) {
-                    fprintf(stderr, " RC: Decrease Power By One Step;");
-                } else if (sbrc_hex == 2) {
-                    fprintf(stderr, " RC: Set Power To Highest;");
-                } else if (sbrc_hex == 3) {
-                    fprintf(stderr, " RC: Set Power To Lowest;");
-                } else if (sbrc_hex == 4) {
-                    fprintf(stderr, " RC: Cease Transmission Command;");
-                } else if (sbrc_hex == 5) {
-                    fprintf(stderr, " RC: Cease Transmission Request;");
-                } else {
-                    fprintf(stderr, " RC: Reserved %02X;", sbrc_hex);
-                }
-                fprintf(stderr, "%s", KNRM);
-                // if (opts->payload == 1)
-                fprintf(stderr, "\n");
-            }
-
-            //if the call is interruptable (TXI) and the crc3 is okay and TXI Opcode
-            else if (crc3_okay == 1 && (sbrc_opcode == 0 || sbrc_opcode == 3)) {
-                //opcodes -- 0 (NULL), BR Delay (3)
-                if (opts->payload == 0) {
-                    fprintf(stderr, "\n");
-                }
-                fprintf(stderr, "%s", KCYN);
-                fprintf(stderr, " TXI Op: %X -", sbrc_opcode);
-                if (sbrc_opcode == 0) {
-                    fprintf(stderr, " Null; ");
-                } else if (sbrc_opcode == 3) {
-                    if (txi_delay != 0) {
-                        fprintf(stderr, " BR Delay: %d - %d ms;", txi_delay,
-                                txi_delay * 30); //could also indicate number of superframes until next VC6 pre-emption
-                    } else {
-                        fprintf(stderr, "BR Delay: Irrelevant / Send at any time;");
-                    }
-
-                    //alignment of inbound backwards channel and outbound burst
-                    if (txi_delay == 2) {
-                        fprintf(stderr, " SF3, Burst E;"); //E is inbound
-                    }
-                    if (txi_delay == 4) {
-                        fprintf(stderr, " SF3, Burst D;"); //D is inbound
-                    }
-                    if (txi_delay == 6) {
-                        fprintf(stderr, " SF3, Burst C;"); //C is inbound
-                    }
-                    if (txi_delay == 8) {
-                        fprintf(stderr, " SF3, Burst B;"); //B is inbound
-                    }
-                } else {
-                    fprintf(stderr, " Unk; ");
-                }
-                fprintf(stderr, "%s", KNRM);
-
-                if (opts->payload == 1) {
-                    fprintf(stderr, "\n"); //only during payload
-                }
-
-            }
-
-            else if (sbrc_opcode != 0
-                     && sbrc_opcode != 3) //all that should be left in this field is the potential ENC identifiers
-            {
-
-                if (slot == 0) //may not need the state->errs anymore //&& state->errs < 3
-                {
-                    if (state->dmr_so & 0x40 && key != 0 && alg != 0) {
-                        //if we aren't forcing a particular alg or privacy key set
-                        if (state->M == 0) {
-                            fprintf(stderr, "\n");
-                            fprintf(stderr, "%s", KCYN);
-                            fprintf(stderr, " Slot 1");
-                            fprintf(stderr, " DMR LE SB ALG ID: %02X; KEY ID: %02X;", alg + 0x20, key);
-                            if (alg == 1) {
-                                fprintf(stderr, " RC4;");
-                            }
-                            if (alg == 2) {
-                                fprintf(stderr, " DES;");
-                            }
-                            if (alg == 4) {
-                                fprintf(stderr, " AES128;");
-                            }
-                            if (alg == 5) {
-                                fprintf(stderr, " AES256;");
-                            }
-                            fprintf(stderr, "%s ", KNRM);
-                            if (opts->payload == 1) {
-                                fprintf(stderr, "\n");
-                            }
-                            if (state->payload_keyid != key) {
-                                state->payload_keyid = key;
-                            }
-                            if (state->payload_algid != alg) {
-                                state->payload_algid = alg + 0x20; //assuming DMRA approved alg values (moto patent)
-                            }
-                        }
-                    }
-                }
-
-                if (slot == 1) //may not need the state->errs anymore //&& state->errsR < 3
-                {
-                    if (state->dmr_soR & 0x40 && key != 0 && alg != 0) {
-                        //if we aren't forcing a particular alg or privacy key set
-                        if (state->M == 0) {
-                            fprintf(stderr, "\n");
-                            fprintf(stderr, "%s", KCYN);
-                            fprintf(stderr, " Slot 2");
-                            fprintf(stderr, " DMR LE SB ALG ID: %02X; KEY ID: %02X;", alg + 0x20, key);
-                            fprintf(stderr, "%s ", KNRM);
-                            if (opts->payload == 1) {
-                                fprintf(stderr, "\n");
-                            }
-                            if (state->payload_keyidR != key) {
-                                state->payload_keyidR = key;
-                            }
-                            if (state->payload_algidR != alg) {
-                                state->payload_algidR = alg + 0x20; //assuming DMRA approved alg values (moto patent)
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    if (!(opts->dmr_le == 1 || (opts->dmr_le == 3 && !kirisun_call))) {
+        return;
     }
 
-SBRC_END:
+    if (data->irr_err != 0) {
+        dmr_sbrc_print_fec_error(opts, data);
+        return;
+    }
 
-    //'DSP' output to file -- SB and RC
+    dmr_sbrc_handle_standard_payload(opts, state, data, sbrc_opcode, alg, key, txi_delay);
+}
+
+static void
+dmr_sbrc_write_dsp_output(const dsd_opts* opts, const dsd_state* state, uint8_t slot) {
     if (opts->use_dsp_output == 1) {
-        FILE* pFile; //file pointer
-        pFile = fopen(opts->dsp_out_file, "a");
+        FILE* pFile = fopen(opts->dsp_out_file, "a");
         if (pFile != NULL) {
-            fprintf(pFile, "\n%d 99 ", slot + 1); //'99' is SB and RC designation value
-            for (i = 0; i < 12; i++)              //48 bits (includes CC, PPI, LCSS, and QR)
-            // for (i = 2; i < 10; i++) //32 bits (only SB/RC Data and its PC/H)
+            DSD_FPRINTF(pFile, "\n%d 99 ", slot + 1); // '99' is SB and RC designation value
+            for (int i = 0; i < 12; i++)              // 48 bits (includes CC, PPI, LCSS, and QR)
             {
                 uint8_t sbrc_nib = (state->dmr_embedded_signalling[slot][5][(i * 4) + 0] << 3)
                                    | (state->dmr_embedded_signalling[slot][5][(i * 4) + 1] << 2)
                                    | (state->dmr_embedded_signalling[slot][5][(i * 4) + 2] << 1)
                                    | (state->dmr_embedded_signalling[slot][5][(i * 4) + 3] << 0);
-                fprintf(pFile, "%X", sbrc_nib);
+                DSD_FPRINTF(pFile, "%X", sbrc_nib);
             }
             fclose(pFile);
         }
     }
+}
+
+//handle Single Burst (Voice Burst F) or Reverse Channel Signalling
+void
+dmr_sbrc(const dsd_opts* opts, dsd_state* state, uint8_t power) {
+    dmr_sbrc_data data;
+    dmr_sbrc_init_data(&data, state, power);
+
+    // 9.3.2 Pre-emption and power control Indicator (PI)
+    // 0 - embedded signalling carries same logical channel information or Null embedded message.
+    // 1 - embedded signalling carries RC information for the other logical channel.
+    if (dmr_sbrc_extract_data(&data)) {
+        dmr_sbrc_prepare_crc_input(&data);
+        dmr_sbrc_compute_crc(&data);
+        dmr_sbrc_compute_hex(&data);
+        dmr_sbrc_print_payload_bits(opts, &data);
+
+        // opcode and alg share bits; alg can still appear when CRC is bad.
+        const uint8_t sbrc_opcode = data.sbrc_hex & 0x7;
+        const uint8_t alg = data.sbrc_hex & 0x7;
+        const uint8_t key = (data.sbrc_hex >> 3) & 0xFF;
+        const uint8_t txi_delay = (data.sbrc_hex >> 3) & 0x1F; // middle five are TXI delay
+        const int kirisun_call = dmr_slot_is_kirisun_call(state, data.slot_idx);
+
+        dmr_sbrc_handle_kirisun_mode(opts, state, &data, kirisun_call);
+        dmr_sbrc_handle_standard_mode(opts, state, &data, sbrc_opcode, alg, key, txi_delay, kirisun_call);
+    }
+
+    dmr_sbrc_write_dsp_output(opts, state, data.slot);
 }
 
 uint8_t
@@ -721,12 +735,12 @@ crc3(uint8_t bits[], unsigned int len) {
     uint8_t crc = 0;
     unsigned int K = 3;
     //x^3+x+1
-    uint8_t poly[4] = {1, 1, 0, 1};
+    const uint8_t poly[4] = {1, 1, 0, 1};
     uint8_t buf[256];
     if (len + K > sizeof(buf)) {
         return 0;
     }
-    memset(buf, 0, sizeof(buf));
+    DSD_MEMSET(buf, 0, sizeof(buf));
     for (unsigned int i = 0; i < len; i++) {
         buf[i] = bits[i];
     }
@@ -748,12 +762,12 @@ crc4(uint8_t bits[], unsigned int len) {
     uint8_t crc = 0;
     unsigned int K = 4;
     //x^4+x+1
-    uint8_t poly[5] = {1, 0, 0, 1, 1};
+    const uint8_t poly[5] = {1, 0, 0, 1, 1};
     uint8_t buf[256];
     if (len + K > sizeof(buf)) {
         return 0;
     }
-    memset(buf, 0, sizeof(buf));
+    DSD_MEMSET(buf, 0, sizeof(buf));
     for (unsigned int i = 0; i < len; i++) {
         buf[i] = bits[i];
     }

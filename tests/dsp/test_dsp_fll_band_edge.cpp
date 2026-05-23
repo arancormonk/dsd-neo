@@ -7,7 +7,7 @@
 
 #include <dsd-neo/dsp/costas.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 closef(float a, float b, float tol) {
@@ -24,16 +24,16 @@ check_upper_taps(const dsd_fll_band_edge_state_t* f, const float* exp_r, const f
         float ur = f->taps_upper_r[i];
         float ui = f->taps_upper_i[i];
         if (!closef(ur, exp_r[i], tol) || !closef(ui, exp_i[i], tol)) {
-            fprintf(stderr, "BE-FLL taps: mismatch at i=%d got=(%.8f,%.8f) exp=(%.8f,%.8f)\n", i, ur, ui, exp_r[i],
-                    exp_i[i]);
+            DSD_FPRINTF(stderr, "BE-FLL taps: mismatch at i=%d got=(%.8f,%.8f) exp=(%.8f,%.8f)\n", i, ur, ui, exp_r[i],
+                        exp_i[i]);
             return 0;
         }
         /* Lower band-edge is complex conjugate of upper band-edge. */
         float lr = f->taps_lower_r[i];
         float li = f->taps_lower_i[i];
         if (!closef(lr, ur, tol) || !closef(li, -ui, tol)) {
-            fprintf(stderr, "BE-FLL taps: lower != conj(upper) at i=%d lower=(%.8f,%.8f) upper=(%.8f,%.8f)\n", i, lr,
-                    li, ur, ui);
+            DSD_FPRINTF(stderr, "BE-FLL taps: lower != conj(upper) at i=%d lower=(%.8f,%.8f) upper=(%.8f,%.8f)\n", i,
+                        lr, li, ur, ui);
             return 0;
         }
     }
@@ -48,11 +48,11 @@ main(void) {
      * for rolloff=0.2 and filter_size=2*sps+1. */
     {
         dsd_fll_band_edge_state_t f;
-        memset(&f, 0, sizeof(f));
+        DSD_MEMSET(&f, 0, sizeof(f));
         dsd_fll_band_edge_init(&f, 5);
         if (!(f.initialized && f.sps == 5 && f.n_taps == 11)) {
-            fprintf(stderr, "BE-FLL init: unexpected state sps=%d n_taps=%d initialized=%d\n", f.sps, f.n_taps,
-                    f.initialized);
+            DSD_FPRINTF(stderr, "BE-FLL init: unexpected state sps=%d n_taps=%d initialized=%d\n", f.sps, f.n_taps,
+                        f.initialized);
             return 1;
         }
 
@@ -67,11 +67,11 @@ main(void) {
 
     {
         dsd_fll_band_edge_state_t f;
-        memset(&f, 0, sizeof(f));
+        DSD_MEMSET(&f, 0, sizeof(f));
         dsd_fll_band_edge_init(&f, 4);
         if (!(f.initialized && f.sps == 4 && f.n_taps == 9)) {
-            fprintf(stderr, "BE-FLL init: unexpected state sps=%d n_taps=%d initialized=%d\n", f.sps, f.n_taps,
-                    f.initialized);
+            DSD_FPRINTF(stderr, "BE-FLL init: unexpected state sps=%d n_taps=%d initialized=%d\n", f.sps, f.n_taps,
+                        f.initialized);
             return 1;
         }
 

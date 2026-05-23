@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: ISC
 #include <ctype.h>
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -11,8 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #define BSIZE 999
@@ -50,6 +51,26 @@ trim_ws(char* s) {
 }
 
 static int
+hex_nibble_value(unsigned char c, int* out_nibble) {
+    if (!out_nibble) {
+        return 0;
+    }
+    if (c >= '0' && c <= '9') {
+        *out_nibble = (int)(c - '0');
+        return 1;
+    }
+    if (c >= 'a' && c <= 'f') {
+        *out_nibble = 10 + (int)(c - 'a');
+        return 1;
+    }
+    if (c >= 'A' && c <= 'F') {
+        *out_nibble = 10 + (int)(c - 'A');
+        return 1;
+    }
+    return 0;
+}
+
+static int
 parse_hex_u64_strict(const char* token, unsigned long long* out) {
     if (token == NULL || out == NULL) {
         return 0;
@@ -68,20 +89,10 @@ parse_hex_u64_strict(const char* token, unsigned long long* out) {
     unsigned long long v = 0ULL;
     int digits = 0;
     for (const unsigned char* p = (const unsigned char*)token; *p != '\0'; p++) {
-        if (is_ascii_space(*p)) {
-            return 0;
-        }
         int nib = -1;
-        if (*p >= '0' && *p <= '9') {
-            nib = (int)(*p - '0');
-        } else if (*p >= 'a' && *p <= 'f') {
-            nib = 10 + (int)(*p - 'a');
-        } else if (*p >= 'A' && *p <= 'F') {
-            nib = 10 + (int)(*p - 'A');
-        } else {
+        if (is_ascii_space(*p) || !hex_nibble_value(*p, &nib)) {
             return 0;
         }
-
         if (digits >= 16) {
             return 0;
         }
@@ -90,6 +101,62 @@ parse_hex_u64_strict(const char* token, unsigned long long* out) {
     }
 
     if (digits == 0) {
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+
+static int
+parse_dec_u64_strict(const char* token, unsigned long long* out) {
+    char* end = NULL;
+    unsigned long long v = 0ULL;
+    if (token == NULL || out == NULL) {
+        return 0;
+    }
+    while (*token != '\0' && is_ascii_space((unsigned char)*token)) {
+        token++;
+    }
+    if (*token == '\0' || *token == '-' || *token == '+') {
+        return 0;
+    }
+    errno = 0;
+    v = strtoull(token, &end, 10);
+    if (errno != 0 || end == token) {
+        return 0;
+    }
+    while (*end != '\0' && is_ascii_space((unsigned char)*end)) {
+        end++;
+    }
+    if (*end != '\0') {
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+
+static int
+parse_dec_long_strict(const char* token, long int* out) {
+    char* end = NULL;
+    long int v = 0;
+    if (token == NULL || out == NULL) {
+        return 0;
+    }
+    while (*token != '\0' && is_ascii_space((unsigned char)*token)) {
+        token++;
+    }
+    if (*token == '\0') {
+        return 0;
+    }
+    errno = 0;
+    v = strtol(token, &end, 10);
+    if (errno != 0 || end == token) {
+        return 0;
+    }
+    while (*end != '\0' && is_ascii_space((unsigned char)*end)) {
+        end++;
+    }
+    if (*end != '\0') {
         return 0;
     }
     *out = v;
@@ -180,41 +247,36 @@ group_parse_u32_token(const char* token, uint32_t* out) {
 }
 
 static int
-group_parse_id_field(char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    char* dash = NULL;
-    char* a = NULL;
-    char* b = NULL;
-    uint32_t start = 0;
-    uint32_t end = 0;
+group_parse_single_id(const char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
     if (!token || !out_start || !out_end || !out_is_range) {
         return 0;
     }
-    token = trim_ws(token);
-    if (!token || token[0] == '\0') {
+    if (!group_parse_u32_token(token, out_start)) {
         return 0;
     }
+    *out_end = *out_start;
+    *out_is_range = 0;
+    return 1;
+}
 
-    dash = strchr(token, '-');
-    if (!dash) {
-        if (!group_parse_u32_token(token, &start)) {
-            return 0;
-        }
-        *out_start = start;
-        *out_end = start;
-        *out_is_range = 0;
-        return 1;
+static int
+group_parse_range_id(char* token, char* dash, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
+    uint32_t start = 0;
+    uint32_t end = 0;
+    if (!token || !dash || !out_start || !out_end || !out_is_range) {
+        return 0;
     }
     if (strchr(dash + 1, '-') != NULL) {
         return 0;
     }
 
     *dash = '\0';
-    a = trim_ws(token);
-    b = trim_ws(dash + 1);
-    if (!a || !b || a[0] == '\0' || b[0] == '\0') {
+    const char* start_token = trim_ws(token);
+    const char* end_token = trim_ws(dash + 1);
+    if (!start_token || !end_token || start_token[0] == '\0' || end_token[0] == '\0') {
         return 0;
     }
-    if (!group_parse_u32_token(a, &start) || !group_parse_u32_token(b, &end)) {
+    if (!group_parse_u32_token(start_token, &start) || !group_parse_u32_token(end_token, &end)) {
         return 0;
     }
     if (start > end) {
@@ -226,6 +288,23 @@ group_parse_id_field(char* token, uint32_t* out_start, uint32_t* out_end, int* o
     return 1;
 }
 
+static int
+group_parse_id_field(char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
+    if (!token || !out_start || !out_end || !out_is_range) {
+        return 0;
+    }
+    token = trim_ws(token);
+    if (!token || token[0] == '\0') {
+        return 0;
+    }
+
+    char* dash = strchr(token, '-');
+    if (!dash) {
+        return group_parse_single_id(token, out_start, out_end, out_is_range);
+    }
+    return group_parse_range_id(token, dash, out_start, out_end, out_is_range);
+}
+
 enum group_parse_value_result {
     GROUP_PARSE_VALUE_MISSING = 0,
     GROUP_PARSE_VALUE_OK = 1,
@@ -234,7 +313,7 @@ enum group_parse_value_result {
 
 static int
 group_parse_bool_field(char* token, int* out) {
-    char* p = NULL;
+    const char* p = NULL;
     if (!token || !out) {
         return GROUP_PARSE_VALUE_INVALID;
     }
@@ -257,7 +336,7 @@ group_parse_bool_field(char* token, int* out) {
 
 static int
 group_parse_priority_field(char* token, int* out) {
-    char* p = NULL;
+    const char* p = NULL;
     char* end = NULL;
     long v = 0;
     if (!token || !out) {
@@ -291,6 +370,16 @@ typedef struct {
     int invalid_order;
 } group_policy_header;
 
+typedef struct {
+    unsigned long long key[DSD_VERTEX_KS_MAP_MAX];
+    uint8_t bits[DSD_VERTEX_KS_MAP_MAX][882];
+    int mod[DSD_VERTEX_KS_MAP_MAX];
+    int frame_mode[DSD_VERTEX_KS_MAP_MAX];
+    int frame_off[DSD_VERTEX_KS_MAP_MAX];
+    int frame_step[DSD_VERTEX_KS_MAP_MAX];
+    int count;
+} vertex_map_tmp_t;
+
 static group_policy_header
 group_parse_policy_header(char* header_line) {
     group_policy_header info = {0, 0, 0};
@@ -309,7 +398,7 @@ group_parse_policy_header(char* header_line) {
     info.prefix_len = 1;
 
     for (size_t i = 4; i < field_count && expected_idx < (sizeof(expected) / sizeof(expected[0])); i++) {
-        char* col = trim_ws(fields[i]);
+        const char* col = trim_ws(fields[i]);
         if (group_ascii_casecmp(col, expected[expected_idx]) == 0) {
             info.prefix_len++;
             expected_idx++;
@@ -320,6 +409,166 @@ group_parse_policy_header(char* header_line) {
     }
 
     return info;
+}
+
+static void
+group_entry_init(dsd_tg_policy_entry* entry, uint32_t id_start, uint32_t id_end, int is_range, const char* mode_field,
+                 const char* name_field, unsigned int row_count, int* out_mode_blocking) {
+    if (!entry || !out_mode_blocking) {
+        return;
+    }
+    DSD_MEMSET(entry, 0, sizeof(*entry));
+    entry->id_start = id_start;
+    entry->id_end = id_end;
+    entry->is_range = is_range ? 1u : 0u;
+    entry->source = DSD_TG_POLICY_SOURCE_IMPORTED;
+    entry->row = row_count;
+    DSD_SNPRINTF(entry->mode, sizeof(entry->mode), "%s", mode_field ? mode_field : "");
+    DSD_SNPRINTF(entry->name, sizeof(entry->name), "%s", name_field ? name_field : "");
+    entry->priority = 0;
+    entry->preempt = 0;
+    *out_mode_blocking = (strcmp(entry->mode, "B") == 0 || strcmp(entry->mode, "DE") == 0);
+    entry->audio = *out_mode_blocking ? 0u : 1u;
+    entry->record = entry->audio;
+    entry->stream = entry->audio;
+}
+
+static void
+group_apply_optional_bool_field(const char* filename, unsigned int row_count, const char* label, char* token,
+                                uint8_t* target, int* has_flag) {
+    int parsed = 0;
+    int br = group_parse_bool_field(token, &parsed);
+    if (br == GROUP_PARSE_VALUE_OK) {
+        *target = parsed ? 1u : 0u;
+        if (has_flag) {
+            *has_flag = 1;
+        }
+        return;
+    }
+    if (br == GROUP_PARSE_VALUE_INVALID) {
+        LOG_WARNING("Group file '%s' row %u has invalid %s value '%s'; using default.\n", filename, row_count, label,
+                    token);
+    }
+}
+
+static void
+group_apply_priority_field(const group_policy_header* header, const char* filename, unsigned int row_count,
+                           size_t field_count, char** fields, dsd_tg_policy_entry* entry) {
+    if (!header || !fields || !entry) {
+        return;
+    }
+    if (header->prefix_len >= 1 && field_count > 3) {
+        int parsed_priority = 0;
+        int pr = group_parse_priority_field(fields[3], &parsed_priority);
+        if (pr == GROUP_PARSE_VALUE_OK) {
+            entry->priority = parsed_priority;
+        } else if (pr == GROUP_PARSE_VALUE_INVALID) {
+            LOG_WARNING("Group file '%s' row %u has invalid priority '%s'; defaulting to 0.\n", filename, row_count,
+                        fields[3]);
+            entry->priority = 0;
+        }
+    }
+}
+
+static void
+group_apply_preempt_field(const group_policy_header* header, const char* filename, unsigned int row_count,
+                          size_t field_count, char** fields, dsd_tg_policy_entry* entry) {
+    if (!header || !fields || !entry) {
+        return;
+    }
+    if (header->prefix_len >= 2 && field_count > 4) {
+        int parsed = 0;
+        int br = group_parse_bool_field(fields[4], &parsed);
+        if (br == GROUP_PARSE_VALUE_OK) {
+            entry->preempt = parsed ? 1u : 0u;
+        } else if (br == GROUP_PARSE_VALUE_INVALID) {
+            LOG_WARNING("Group file '%s' row %u has invalid preempt value '%s'; defaulting to false.\n", filename,
+                        row_count, fields[4]);
+            entry->preempt = 0;
+        }
+    }
+}
+
+static void
+group_apply_media_fields(const group_policy_header* header, const char* filename, unsigned int row_count,
+                         size_t field_count, char** fields, dsd_tg_policy_entry* entry, int* has_audio, int* has_record,
+                         int* has_stream) {
+    if (!header || !fields || !entry || !has_audio || !has_record || !has_stream) {
+        return;
+    }
+    if (header->prefix_len >= 3 && field_count > 5) {
+        group_apply_optional_bool_field(filename, row_count, "audio", fields[5], &entry->audio, has_audio);
+    }
+    if (header->prefix_len >= 4 && field_count > 6) {
+        group_apply_optional_bool_field(filename, row_count, "record", fields[6], &entry->record, has_record);
+    }
+    if (header->prefix_len >= 5 && field_count > 7) {
+        group_apply_optional_bool_field(filename, row_count, "stream", fields[7], &entry->stream, has_stream);
+    }
+}
+
+static void
+group_enforce_media_constraints(const char* filename, unsigned int row_count, dsd_tg_policy_entry* entry,
+                                int mode_blocking, int has_audio, int has_record, int has_stream) {
+    if (!entry) {
+        return;
+    }
+    if (mode_blocking) {
+        if ((has_audio && entry->audio) || (has_record && entry->record) || (has_stream && entry->stream)) {
+            LOG_WARNING("Group file '%s' row %u has blocking mode with enabled media flags; forcing media off.\n",
+                        filename, row_count);
+        }
+        entry->audio = 0u;
+        entry->record = 0u;
+        entry->stream = 0u;
+        return;
+    }
+    if (entry->audio == 0u && ((has_record && entry->record) || (has_stream && entry->stream))) {
+        LOG_WARNING("Group file '%s' row %u sets audio off with record/stream on; forcing record/stream off.\n",
+                    filename, row_count);
+        entry->record = 0u;
+        entry->stream = 0u;
+    }
+}
+
+static void
+group_apply_policy_fields(const group_policy_header* header, const char* filename, unsigned int row_count,
+                          size_t field_count, char** fields, dsd_tg_policy_entry* entry, int mode_blocking) {
+    int has_audio = 0;
+    int has_record = 0;
+    int has_stream = 0;
+
+    if (!header || !entry || !fields || !header->policy_active) {
+        return;
+    }
+
+    group_apply_priority_field(header, filename, row_count, field_count, fields, entry);
+    group_apply_preempt_field(header, filename, row_count, field_count, fields, entry);
+    group_apply_media_fields(header, filename, row_count, field_count, fields, entry, &has_audio, &has_record,
+                             &has_stream);
+    group_enforce_media_constraints(filename, row_count, entry, mode_blocking, has_audio, has_record, has_stream);
+}
+
+static void
+group_commit_entry(dsd_state* state, const dsd_tg_policy_entry* entry, int is_range, const char* filename,
+                   unsigned int row_count, size_t* dropped_policy_alloc_rows) {
+    int rc = 0;
+    if (!state || !entry || !filename || !dropped_policy_alloc_rows) {
+        return;
+    }
+
+    rc = is_range ? dsd_tg_policy_add_range_entry(state, entry) : dsd_tg_policy_append_exact(state, entry);
+    if (rc == -1) {
+        (*dropped_policy_alloc_rows)++;
+        return;
+    }
+    if (rc == 1) {
+        if (!is_range) {
+            LOG_WARNING("Group file '%s' row %u has invalid exact entry and was skipped.\n", filename, row_count);
+        } else {
+            LOG_WARNING("Group file '%s' row %u has invalid range and was skipped.\n", filename, row_count);
+        }
+    }
 }
 
 int
@@ -336,7 +585,7 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
         return -1;
     }
 
-    snprintf(filename, sizeof filename, "%s", group_file_path);
+    DSD_SNPRINTF(filename, sizeof filename, "%s", group_file_path);
     fp = fopen(filename, "r");
     if (fp == NULL) {
         LOG_ERROR("Unable to open group file '%s'\n", filename);
@@ -349,20 +598,17 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
         uint32_t id_start = 0;
         uint32_t id_end = 0;
         int is_range = 0;
-        char* mode_field = NULL;
-        char* name_field = NULL;
+        const char* mode_field = NULL;
+        const char* name_field = NULL;
         dsd_tg_policy_entry entry;
         int mode_blocking = 0;
-        int has_audio = 0;
-        int has_record = 0;
-        int has_stream = 0;
 
         row_count++;
         trim_eol(buffer);
 
         if (row_count == 1) {
             char header_copy[BSIZE];
-            snprintf(header_copy, sizeof(header_copy), "%s", buffer);
+            DSD_SNPRINTF(header_copy, sizeof(header_copy), "%s", buffer);
             header = group_parse_policy_header(header_copy);
             if (header.policy_active && header.invalid_order && !warned_header_order) {
                 warned_header_order = 1;
@@ -387,124 +633,9 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
 
         mode_field = trim_ws(fields[1]);
         name_field = fields[2];
-        if (!mode_field) {
-            mode_field = (char*)"";
-        }
-        if (!name_field) {
-            name_field = (char*)"";
-        }
-
-        memset(&entry, 0, sizeof(entry));
-        entry.id_start = id_start;
-        entry.id_end = id_end;
-        entry.is_range = is_range ? 1u : 0u;
-        entry.source = DSD_TG_POLICY_SOURCE_IMPORTED;
-        entry.row = row_count;
-        snprintf(entry.mode, sizeof(entry.mode), "%s", mode_field);
-        snprintf(entry.name, sizeof(entry.name), "%s", name_field);
-        entry.priority = 0;
-        entry.preempt = 0;
-        mode_blocking = (strcmp(entry.mode, "B") == 0 || strcmp(entry.mode, "DE") == 0);
-        entry.audio = mode_blocking ? 0u : 1u;
-        entry.record = entry.audio;
-        entry.stream = entry.audio;
-
-        if (header.policy_active) {
-            if (header.prefix_len >= 1 && field_count > 3) {
-                int parsed_priority = 0;
-                int pr = group_parse_priority_field(fields[3], &parsed_priority);
-                if (pr == GROUP_PARSE_VALUE_OK) {
-                    entry.priority = parsed_priority;
-                } else if (pr == GROUP_PARSE_VALUE_INVALID) {
-                    LOG_WARNING("Group file '%s' row %u has invalid priority '%s'; defaulting to 0.\n", filename,
-                                row_count, fields[3]);
-                    entry.priority = 0;
-                }
-            }
-            if (header.prefix_len >= 2 && field_count > 4) {
-                int parsed = 0;
-                int br = group_parse_bool_field(fields[4], &parsed);
-                if (br == GROUP_PARSE_VALUE_OK) {
-                    entry.preempt = parsed ? 1u : 0u;
-                } else if (br == GROUP_PARSE_VALUE_INVALID) {
-                    LOG_WARNING("Group file '%s' row %u has invalid preempt value '%s'; defaulting to false.\n",
-                                filename, row_count, fields[4]);
-                    entry.preempt = 0;
-                }
-            }
-            if (header.prefix_len >= 3 && field_count > 5) {
-                int parsed = 0;
-                int br = group_parse_bool_field(fields[5], &parsed);
-                if (br == GROUP_PARSE_VALUE_OK) {
-                    has_audio = 1;
-                    entry.audio = parsed ? 1u : 0u;
-                } else if (br == GROUP_PARSE_VALUE_INVALID) {
-                    LOG_WARNING("Group file '%s' row %u has invalid audio value '%s'; using default.\n", filename,
-                                row_count, fields[5]);
-                }
-            }
-            if (header.prefix_len >= 4 && field_count > 6) {
-                int parsed = 0;
-                int br = group_parse_bool_field(fields[6], &parsed);
-                if (br == GROUP_PARSE_VALUE_OK) {
-                    has_record = 1;
-                    entry.record = parsed ? 1u : 0u;
-                } else if (br == GROUP_PARSE_VALUE_INVALID) {
-                    LOG_WARNING("Group file '%s' row %u has invalid record value '%s'; using default.\n", filename,
-                                row_count, fields[6]);
-                }
-            }
-            if (header.prefix_len >= 5 && field_count > 7) {
-                int parsed = 0;
-                int br = group_parse_bool_field(fields[7], &parsed);
-                if (br == GROUP_PARSE_VALUE_OK) {
-                    has_stream = 1;
-                    entry.stream = parsed ? 1u : 0u;
-                } else if (br == GROUP_PARSE_VALUE_INVALID) {
-                    LOG_WARNING("Group file '%s' row %u has invalid stream value '%s'; using default.\n", filename,
-                                row_count, fields[7]);
-                }
-            }
-
-            if (mode_blocking) {
-                if ((has_audio && entry.audio) || (has_record && entry.record) || (has_stream && entry.stream)) {
-                    LOG_WARNING(
-                        "Group file '%s' row %u has blocking mode with enabled media flags; forcing media off.\n",
-                        filename, row_count);
-                }
-                entry.audio = 0u;
-                entry.record = 0u;
-                entry.stream = 0u;
-            } else if (entry.audio == 0u) {
-                if ((has_record && entry.record) || (has_stream && entry.stream)) {
-                    LOG_WARNING(
-                        "Group file '%s' row %u sets audio off with record/stream on; forcing record/stream off.\n",
-                        filename, row_count);
-                }
-                entry.record = 0u;
-                entry.stream = 0u;
-            }
-        }
-
-        if (!is_range) {
-            int rc = 0;
-            rc = dsd_tg_policy_append_exact(state, &entry);
-            if (rc == -1) {
-                dropped_policy_alloc_rows++;
-                continue;
-            }
-            if (rc == 1) {
-                LOG_WARNING("Group file '%s' row %u has invalid exact entry and was skipped.\n", filename, row_count);
-                continue;
-            }
-        } else {
-            int rc = dsd_tg_policy_add_range_entry(state, &entry);
-            if (rc == -1) {
-                dropped_policy_alloc_rows++;
-            } else if (rc == 1) {
-                LOG_WARNING("Group file '%s' row %u has invalid range and was skipped.\n", filename, row_count);
-            }
-        }
+        group_entry_init(&entry, id_start, id_end, is_range, mode_field, name_field, row_count, &mode_blocking);
+        group_apply_policy_fields(&header, filename, row_count, field_count, fields, &entry, mode_blocking);
+        group_commit_entry(state, &entry, is_range, filename, row_count, &dropped_policy_alloc_rows);
     }
 
     if (dropped_policy_alloc_rows > 0) {
@@ -517,7 +648,7 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
 }
 
 int
-csvGroupImport(dsd_opts* opts, dsd_state* state) {
+csvGroupImport(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
@@ -526,9 +657,9 @@ csvGroupImport(dsd_opts* opts, dsd_state* state) {
 
 //LCN import for EDACS, migrated to channel map (channel map does both)
 int
-csvLCNImport(dsd_opts* opts, dsd_state* state) {
+csvLCNImport(const dsd_opts* opts, dsd_state* state) {
     char filename[1024] = "filename.csv";
-    snprintf(filename, sizeof filename, "%s", opts->lcn_in_file);
+    DSD_SNPRINTF(filename, sizeof filename, "%s", opts->lcn_in_file);
     //filename[1023] = '\0'; //necessary?
     char buffer[BSIZE];
     FILE* fp;
@@ -538,19 +669,23 @@ csvLCNImport(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     int row_count = 0;
-    int field_count = 0;
 
     while (fgets(buffer, BSIZE, fp)) {
-        field_count = 0;
+        int field_count = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
         char* saveptr = NULL;
-        char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
+        const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
 
-            state->trunk_lcn_freq[field_count] = atol(field);
+            long int freq = 0;
+            if (parse_dec_long_strict(field, &freq)) {
+                state->trunk_lcn_freq[field_count] = freq;
+            } else {
+                state->trunk_lcn_freq[field_count] = 0;
+            }
             state->lcn_freq_count++; //keep tally of number of Frequencies imported
             LOG_INFO("LCN [%d] [%ld]", field_count + 1, state->trunk_lcn_freq[field_count]);
             LOG_INFO("\n");
@@ -564,11 +699,48 @@ csvLCNImport(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+static void
+csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field, long int* chan_number) {
+    if (!state || !field || !chan_number) {
+        return;
+    }
+    if (field_count == 0) {
+        long int parsed_chan = 0;
+        if (parse_dec_long_strict(field, &parsed_chan)) {
+            *chan_number = parsed_chan;
+        }
+        return;
+    }
+    if (field_count != 1) {
+        return;
+    }
+
+    if (*chan_number >= 0 && *chan_number < 0xFFFF) {
+        long int freq = 0;
+        if (parse_dec_long_strict(field, &freq)) {
+            dsd_state_set_trunk_chan_freq(state, (uint32_t)*chan_number, freq);
+        }
+    }
+
+    if (state->lcn_freq_count < 0
+        || state->lcn_freq_count >= (int)(sizeof(state->trunk_lcn_freq) / sizeof(state->trunk_lcn_freq[0]))) {
+        return;
+    }
+
+    long int freq = 0;
+    if (parse_dec_long_strict(field, &freq)) {
+        state->trunk_lcn_freq[state->lcn_freq_count] = freq;
+    } else {
+        state->trunk_lcn_freq[state->lcn_freq_count] = 0;
+    }
+    state->lcn_freq_count++; // keep tally of number of Frequencies imported
+}
+
 int
-csvChanImport(dsd_opts* opts, dsd_state* state) //channel map import
+csvChanImport(const dsd_opts* opts, dsd_state* state) //channel map import
 {
     char filename[1024] = "filename.csv";
-    snprintf(filename, sizeof filename, "%s", opts->chan_in_file);
+    DSD_SNPRINTF(filename, sizeof filename, "%s", opts->chan_in_file);
 
     char buffer[BSIZE];
     FILE* fp;
@@ -578,39 +750,19 @@ csvChanImport(dsd_opts* opts, dsd_state* state) //channel map import
         return -1;
     }
     int row_count = 0;
-    int field_count = 0;
 
     long int chan_number = 0;
 
     while (fgets(buffer, BSIZE, fp)) {
-        field_count = 0;
+        int field_count = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
         char* saveptr = NULL;
-        char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
+        const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
-
-            if (field_count == 0) {
-                sscanf(field, "%ld", &chan_number);
-            }
-
-            if (field_count == 1) {
-                if (chan_number >= 0 && chan_number < 0xFFFF) {
-                    long int freq = 0;
-                    sscanf(field, "%ld", &freq);
-                    dsd_state_set_trunk_chan_freq(state, (uint32_t)chan_number, freq);
-                }
-                // adding this should be compatible with EDACS, test and obsolete the LCN Import function if desired
-                if (state->lcn_freq_count >= 0
-                    && state->lcn_freq_count
-                           < (int)(sizeof(state->trunk_lcn_freq) / sizeof(state->trunk_lcn_freq[0]))) {
-                    sscanf(field, "%ld", &state->trunk_lcn_freq[state->lcn_freq_count]);
-                    state->lcn_freq_count++; // keep tally of number of Frequencies imported
-                }
-            }
-
+            csv_chan_import_apply_field(state, field_count, field, &chan_number);
             field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
         }
@@ -625,10 +777,10 @@ csvChanImport(dsd_opts* opts, dsd_state* state) //channel map import
 
 //Decimal Variant of Key Import
 int
-csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
+csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
 {
     char filename[1024] = "filename.csv";
-    snprintf(filename, sizeof filename, "%s", opts->key_in_file);
+    DSD_SNPRINTF(filename, sizeof filename, "%s", opts->key_in_file);
 
     char buffer[BSIZE];
     FILE* fp;
@@ -638,27 +790,28 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
         return -1;
     }
     int row_count = 0;
-    int field_count = 0;
 
     unsigned long long int keynumber = 0;
     unsigned long long int keyvalue = 0;
 
     uint16_t hash = 0;
     uint8_t hash_bits[24];
-    memset(hash_bits, 0, sizeof(hash_bits));
+    DSD_MEMSET(hash_bits, 0, sizeof(hash_bits));
 
     while (fgets(buffer, BSIZE, fp)) {
-        field_count = 0;
+        int field_count = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
         char* saveptr = NULL;
-        char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
+        const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
 
             if (field_count == 0) {
-                sscanf(field, "%llu", &keynumber);
+                if (!parse_dec_u64_strict(field, &keynumber)) {
+                    keynumber = 0;
+                }
                 if (keynumber > 0xFFFF) //if larger than 16-bits, get its hash instead
                 {
                     keynumber = keynumber & 0xFFFFFF; //truncate to 24-bits (max allowed)
@@ -672,7 +825,9 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
             }
 
             if (field_count == 1) {
-                sscanf(field, "%llu", &keyvalue);
+                if (!parse_dec_u64_strict(field, &keyvalue)) {
+                    keyvalue = 0;
+                }
                 if (keynumber < 0x1FFFFULL) {
                     state->rkey_array[keynumber] = keyvalue & 0xFFFFFFFFFF; // doesn't exceed 40-bit value
                 }
@@ -688,12 +843,150 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
     return 0;
 }
 
+static void
+csv_key_import_hex_store_value(dsd_state* state, unsigned long long keynumber, unsigned long long offset,
+                               const char* field) {
+    if (!state || !field) {
+        return;
+    }
+    unsigned long long idx = keynumber + offset;
+    if (idx >= 0x1FFFFULL) {
+        return;
+    }
+    unsigned long long v = 0;
+    if (parse_hex_u64_strict(field, &v)) {
+        state->rkey_array[idx] = v;
+    }
+}
+
+static void
+csv_key_import_hex_log_offsets(const dsd_state* state, unsigned long long keynumber) {
+    unsigned long long out1 = 0, out2 = 0, out3 = 0;
+    unsigned long long idx1 = keynumber + 0x101ULL;
+    unsigned long long idx2 = keynumber + 0x201ULL;
+    unsigned long long idx3 = keynumber + 0x301ULL;
+    if (idx1 < 0x1FFFFULL) {
+        out1 = state->rkey_array[idx1];
+    }
+    if (idx2 < 0x1FFFFULL) {
+        out2 = state->rkey_array[idx2];
+    }
+    if (idx3 < 0x1FFFFULL) {
+        out3 = state->rkey_array[idx3];
+    }
+    // cppcheck-suppress knownConditionTrueFalse
+    if (out1 != 0 || out2 != 0 || out3 != 0) {
+        LOG_INFO(" [%016llX] [%016llX] [%016llX]", out1, out2, out3);
+    }
+}
+
+static int
+vertex_ks_find_or_add_index(vertex_map_tmp_t* tmp, unsigned long long key, const char* path, int row_count,
+                            int* out_idx) {
+    if (!tmp || !out_idx) {
+        return -1;
+    }
+    for (int i = 0; i < tmp->count; i++) {
+        if (tmp->key[i] == key) {
+            *out_idx = i;
+            LOG_WARNING("Vertex KS CSV '%s' line %d: duplicate key 0x%llX, replacing previous mapping.\n", path,
+                        row_count, key);
+            return 0;
+        }
+    }
+    if (tmp->count >= DSD_VERTEX_KS_MAP_MAX) {
+        LOG_ERROR("Vertex KS CSV '%s' exceeds capacity (%d rows max)\n", path, DSD_VERTEX_KS_MAP_MAX);
+        return -1;
+    }
+    *out_idx = tmp->count++;
+    return 0;
+}
+
+static int
+vertex_ks_parse_row(const char* path, int row_count, char* line, vertex_map_tmp_t* tmp) {
+    char* saveptr = NULL;
+    char* key_tok = dsd_strtok_r(line, ",", &saveptr);
+    char* ks_tok = dsd_strtok_r(NULL, ",", &saveptr);
+    if (key_tok == NULL || ks_tok == NULL) {
+        LOG_ERROR("Vertex KS CSV '%s' line %d: expected key_hex,keystream_spec\n", path, row_count);
+        return -1;
+    }
+
+    key_tok = trim_ws(key_tok);
+    ks_tok = trim_ws(ks_tok);
+    if (key_tok == NULL || key_tok[0] == '\0' || ks_tok == NULL || ks_tok[0] == '\0') {
+        LOG_ERROR("Vertex KS CSV '%s' line %d: empty key or keystream field\n", path, row_count);
+        return -1;
+    }
+
+    unsigned long long key = 0ULL;
+    if (parse_hex_u64_strict(key_tok, &key) != 1) {
+        LOG_ERROR("Vertex KS CSV '%s' line %d: invalid key '%s' (expected hex)\n", path, row_count, key_tok);
+        return -1;
+    }
+
+    uint8_t parsed_bits[882];
+    int parsed_mod = 0;
+    int parsed_frame_mode = 0;
+    int parsed_frame_off = 0;
+    int parsed_frame_step = 0;
+    char err[128] = {0};
+    if (dmr_parse_static_keystream_spec(ks_tok, parsed_bits, &parsed_mod, &parsed_frame_mode, &parsed_frame_off,
+                                        &parsed_frame_step, err, sizeof err)
+        != 1) {
+        if (err[0] != '\0') {
+            LOG_ERROR("Vertex KS CSV '%s' line %d: invalid keystream spec '%s' (%s)\n", path, row_count, ks_tok, err);
+        } else {
+            LOG_ERROR("Vertex KS CSV '%s' line %d: invalid keystream spec '%s'\n", path, row_count, ks_tok);
+        }
+        return -1;
+    }
+
+    int idx = -1;
+    if (vertex_ks_find_or_add_index(tmp, key, path, row_count, &idx) != 0) {
+        return -1;
+    }
+
+    tmp->key[idx] = key;
+    tmp->mod[idx] = parsed_mod;
+    tmp->frame_mode[idx] = parsed_frame_mode;
+    tmp->frame_off[idx] = parsed_frame_off;
+    tmp->frame_step[idx] = parsed_frame_step;
+    DSD_MEMSET(tmp->bits[idx], 0, sizeof(tmp->bits[idx]));
+    DSD_MEMCPY(tmp->bits[idx], parsed_bits, sizeof(parsed_bits));
+    return 0;
+}
+
+static void
+vertex_ks_apply_to_state(dsd_state* state, const vertex_map_tmp_t* tmp, const char* path) {
+    DSD_MEMSET(state->vertex_ks_key, 0, sizeof(state->vertex_ks_key));
+    DSD_MEMSET(state->vertex_ks_bits, 0, sizeof(state->vertex_ks_bits));
+    DSD_MEMSET(state->vertex_ks_mod, 0, sizeof(state->vertex_ks_mod));
+    DSD_MEMSET(state->vertex_ks_frame_mode, 0, sizeof(state->vertex_ks_frame_mode));
+    DSD_MEMSET(state->vertex_ks_frame_off, 0, sizeof(state->vertex_ks_frame_off));
+    DSD_MEMSET(state->vertex_ks_frame_step, 0, sizeof(state->vertex_ks_frame_step));
+    state->vertex_ks_count = tmp->count;
+    DSD_MEMCPY(state->vertex_ks_key, tmp->key, sizeof(state->vertex_ks_key));
+    DSD_MEMCPY(state->vertex_ks_bits, tmp->bits, sizeof(state->vertex_ks_bits));
+    DSD_MEMCPY(state->vertex_ks_mod, tmp->mod, sizeof(state->vertex_ks_mod));
+    DSD_MEMCPY(state->vertex_ks_frame_mode, tmp->frame_mode, sizeof(state->vertex_ks_frame_mode));
+    DSD_MEMCPY(state->vertex_ks_frame_off, tmp->frame_off, sizeof(state->vertex_ks_frame_off));
+    DSD_MEMCPY(state->vertex_ks_frame_step, tmp->frame_step, sizeof(state->vertex_ks_frame_step));
+    state->vertex_ks_active_idx[0] = -1;
+    state->vertex_ks_active_idx[1] = -1;
+    state->vertex_ks_counter[0] = 0;
+    state->vertex_ks_counter[1] = 0;
+    state->vertex_ks_warned[0] = 0;
+    state->vertex_ks_warned[1] = 0;
+    LOG_NOTICE("Loaded %d Vertex key->keystream mappings from '%s'.\n", tmp->count, path);
+}
+
 //Hex Variant of Key Import
 int
-csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
+csvKeyImportHex(const dsd_opts* opts, dsd_state* state) //key import for hex keys
 {
     char filename[1024] = "filename.csv";
-    snprintf(filename, sizeof filename, "%s", opts->key_in_file);
+    DSD_SNPRINTF(filename, sizeof filename, "%s", opts->key_in_file);
     char buffer[BSIZE];
     FILE* fp;
     fp = fopen(filename, "r");
@@ -702,46 +995,28 @@ csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
         return -1;
     }
     int row_count = 0;
-    int field_count = 0;
     unsigned long long int keynumber = 0;
 
     while (fgets(buffer, BSIZE, fp)) {
-        field_count = 0;
+        int field_count = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
         char* saveptr = NULL;
-        char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
+        const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
-
-            if (field_count == 0) {
-                sscanf(field, "%llX", &keynumber);
-            }
-
-            if (field_count == 1) {
-                if (keynumber < 0x1FFFFULL) {
-                    sscanf(field, "%llX", &state->rkey_array[keynumber]);
-                }
-            }
-
-            //this could also theoretically nuke other keys that are at the same offset
-            if (field_count == 2) {
-                if (keynumber + 0x101 < 0x1FFFF) {
-                    sscanf(field, "%llX", &state->rkey_array[keynumber + 0x101]);
-                }
-            }
-
-            if (field_count == 3) {
-                if (keynumber + 0x201 < 0x1FFFF) {
-                    sscanf(field, "%llX", &state->rkey_array[keynumber + 0x201]);
-                }
-            }
-
-            if (field_count == 4) {
-                if (keynumber + 0x301 < 0x1FFFF) {
-                    sscanf(field, "%llX", &state->rkey_array[keynumber + 0x301]);
-                }
+            switch (field_count) {
+                case 0:
+                    if (!parse_hex_u64_strict(field, &keynumber)) {
+                        keynumber = 0;
+                    }
+                    break;
+                case 1: csv_key_import_hex_store_value(state, keynumber, 0x0ULL, field); break;
+                case 2: csv_key_import_hex_store_value(state, keynumber, 0x101ULL, field); break;
+                case 3: csv_key_import_hex_store_value(state, keynumber, 0x201ULL, field); break;
+                case 4: csv_key_import_hex_store_value(state, keynumber, 0x301ULL, field); break;
+                default: break;
             }
 
             field = dsd_strtok_r(NULL, ",", &saveptr);
@@ -756,22 +1031,7 @@ csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
 
         // If longer key is loaded (or clash with the 0x101, 0x201, 0x301 offset), then print the full key listing.
         if (keynumber < 0x1FFFFULL) {
-            unsigned long long out1 = 0, out2 = 0, out3 = 0;
-            unsigned long long idx1 = keynumber + 0x101ULL;
-            unsigned long long idx2 = keynumber + 0x201ULL;
-            unsigned long long idx3 = keynumber + 0x301ULL;
-            if (idx1 < 0x1FFFFULL) {
-                out1 = state->rkey_array[idx1];
-            }
-            if (idx2 < 0x1FFFFULL) {
-                out2 = state->rkey_array[idx2];
-            }
-            if (idx3 < 0x1FFFFULL) {
-                out3 = state->rkey_array[idx3];
-            }
-            if (out1 != 0 || out2 != 0 || out3 != 0) {
-                LOG_INFO(" [%016llX] [%016llX] [%016llX]", out1, out2, out3);
-            }
+            csv_key_import_hex_log_offsets(state, keynumber);
         }
         LOG_INFO("\n");
     }
@@ -791,16 +1051,6 @@ csvVertexKsImport(dsd_state* state, const char* path) {
         LOG_ERROR("Unable to open Vertex KS mapping file '%s'\n", path);
         return -1;
     }
-
-    typedef struct {
-        unsigned long long key[DSD_VERTEX_KS_MAP_MAX];
-        uint8_t bits[DSD_VERTEX_KS_MAP_MAX][882];
-        int mod[DSD_VERTEX_KS_MAP_MAX];
-        int frame_mode[DSD_VERTEX_KS_MAP_MAX];
-        int frame_off[DSD_VERTEX_KS_MAP_MAX];
-        int frame_step[DSD_VERTEX_KS_MAP_MAX];
-        int count;
-    } vertex_map_tmp_t;
 
     vertex_map_tmp_t* tmp = (vertex_map_tmp_t*)calloc(1, sizeof(*tmp));
     if (tmp == NULL) {
@@ -824,76 +1074,10 @@ csvVertexKsImport(dsd_state* state, const char* path) {
         if (line == NULL || line[0] == '\0') {
             continue;
         }
-
-        char* saveptr = NULL;
-        char* key_tok = dsd_strtok_r(line, ",", &saveptr);
-        char* ks_tok = dsd_strtok_r(NULL, ",", &saveptr);
-        if (key_tok == NULL || ks_tok == NULL) {
-            LOG_ERROR("Vertex KS CSV '%s' line %d: expected key_hex,keystream_spec\n", path, row_count);
+        if (vertex_ks_parse_row(path, row_count, line, tmp) != 0) {
             rc = -1;
             break;
         }
-
-        key_tok = trim_ws(key_tok);
-        ks_tok = trim_ws(ks_tok);
-        if (key_tok == NULL || key_tok[0] == '\0' || ks_tok == NULL || ks_tok[0] == '\0') {
-            LOG_ERROR("Vertex KS CSV '%s' line %d: empty key or keystream field\n", path, row_count);
-            rc = -1;
-            break;
-        }
-
-        unsigned long long key = 0ULL;
-        if (parse_hex_u64_strict(key_tok, &key) != 1) {
-            LOG_ERROR("Vertex KS CSV '%s' line %d: invalid key '%s' (expected hex)\n", path, row_count, key_tok);
-            rc = -1;
-            break;
-        }
-
-        uint8_t parsed_bits[882];
-        int parsed_mod = 0;
-        int parsed_frame_mode = 0;
-        int parsed_frame_off = 0;
-        int parsed_frame_step = 0;
-        char err[128];
-        if (dmr_parse_static_keystream_spec(ks_tok, parsed_bits, &parsed_mod, &parsed_frame_mode, &parsed_frame_off,
-                                            &parsed_frame_step, err, sizeof err)
-            != 1) {
-            if (err[0] != '\0') {
-                LOG_ERROR("Vertex KS CSV '%s' line %d: invalid keystream spec '%s' (%s)\n", path, row_count, ks_tok,
-                          err);
-            } else {
-                LOG_ERROR("Vertex KS CSV '%s' line %d: invalid keystream spec '%s'\n", path, row_count, ks_tok);
-            }
-            rc = -1;
-            break;
-        }
-
-        int idx = -1;
-        for (int i = 0; i < tmp->count; i++) {
-            if (tmp->key[i] == key) {
-                idx = i;
-                break;
-            }
-        }
-        if (idx < 0) {
-            if (tmp->count >= DSD_VERTEX_KS_MAP_MAX) {
-                LOG_ERROR("Vertex KS CSV '%s' exceeds capacity (%d rows max)\n", path, DSD_VERTEX_KS_MAP_MAX);
-                rc = -1;
-                break;
-            }
-            idx = tmp->count++;
-        } else {
-            LOG_WARNING("Vertex KS CSV '%s' line %d: duplicate key 0x%llX, replacing previous mapping.\n", path,
-                        row_count, key);
-        }
-
-        tmp->key[idx] = key;
-        tmp->mod[idx] = parsed_mod;
-        tmp->frame_mode[idx] = parsed_frame_mode;
-        tmp->frame_off[idx] = parsed_frame_off;
-        tmp->frame_step[idx] = parsed_frame_step;
-        memset(tmp->bits[idx], 0, sizeof(tmp->bits[idx]));
-        memcpy(tmp->bits[idx], parsed_bits, sizeof(parsed_bits));
     }
 
     fclose(fp);
@@ -904,26 +1088,7 @@ csvVertexKsImport(dsd_state* state, const char* path) {
     }
 
     if (rc == 0) {
-        memset(state->vertex_ks_key, 0, sizeof(state->vertex_ks_key));
-        memset(state->vertex_ks_bits, 0, sizeof(state->vertex_ks_bits));
-        memset(state->vertex_ks_mod, 0, sizeof(state->vertex_ks_mod));
-        memset(state->vertex_ks_frame_mode, 0, sizeof(state->vertex_ks_frame_mode));
-        memset(state->vertex_ks_frame_off, 0, sizeof(state->vertex_ks_frame_off));
-        memset(state->vertex_ks_frame_step, 0, sizeof(state->vertex_ks_frame_step));
-        state->vertex_ks_count = tmp->count;
-        memcpy(state->vertex_ks_key, tmp->key, sizeof(state->vertex_ks_key));
-        memcpy(state->vertex_ks_bits, tmp->bits, sizeof(state->vertex_ks_bits));
-        memcpy(state->vertex_ks_mod, tmp->mod, sizeof(state->vertex_ks_mod));
-        memcpy(state->vertex_ks_frame_mode, tmp->frame_mode, sizeof(state->vertex_ks_frame_mode));
-        memcpy(state->vertex_ks_frame_off, tmp->frame_off, sizeof(state->vertex_ks_frame_off));
-        memcpy(state->vertex_ks_frame_step, tmp->frame_step, sizeof(state->vertex_ks_frame_step));
-        state->vertex_ks_active_idx[0] = -1;
-        state->vertex_ks_active_idx[1] = -1;
-        state->vertex_ks_counter[0] = 0;
-        state->vertex_ks_counter[1] = 0;
-        state->vertex_ks_warned[0] = 0;
-        state->vertex_ks_warned[1] = 0;
-        LOG_NOTICE("Loaded %d Vertex key->keystream mappings from '%s'.\n", tmp->count, path);
+        vertex_ks_apply_to_state(state, tmp, path);
     }
 
     free(tmp);

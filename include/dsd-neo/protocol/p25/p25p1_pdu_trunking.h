@@ -11,7 +11,8 @@
  * protocol library.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25P1_PDU_TRUNKING_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25P1_PDU_TRUNKING_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -23,8 +24,10 @@ extern "C" {
 #endif
 
 /** @brief Decode a P25 trunking PDU (MPDU) and update decoder state. */
-void p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte);
+void p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25P1_PDU_TRUNKING_H_ */

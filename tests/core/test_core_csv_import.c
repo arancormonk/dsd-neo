@@ -16,8 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
@@ -26,7 +26,7 @@ pick_missing_dir(char* out, size_t out_sz) {
         return -1;
     }
     for (int i = 0; i < 1000; ++i) {
-        (void)snprintf(out, out_sz, "dsd-neo-test-missing-dir-%d", i);
+        (void)DSD_SNPRINTF(out, out_sz, "dsd-neo-test-missing-dir-%d", i);
         struct stat st;
         if (stat(out, &st) != 0) {
             return 0;
@@ -70,7 +70,7 @@ test_group_import_missing_file(void) {
             return 1;
         }
     }
-    (void)snprintf(opts->group_in_file, sizeof opts->group_in_file, "%s/%s", dir, "missing.csv");
+    (void)DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s/%s", dir, "missing.csv");
     int rc = csvGroupImport(opts, state);
     if (rc == 0) {
         free(opts);
@@ -111,7 +111,7 @@ test_channel_import_missing_file(void) {
     }
 
     state->lcn_freq_count = 456;
-    (void)snprintf(opts->chan_in_file, sizeof opts->chan_in_file, "%s/%s", dir, "missing.csv");
+    (void)DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s/%s", dir, "missing.csv");
     int rc = csvChanImport(opts, state);
     if (rc == 0) {
         free(opts);
@@ -156,14 +156,14 @@ test_group_import_large_exact_file(void) {
         return 1;
     }
 
-    fprintf(fp, "group,mode,name\n");
+    DSD_FPRINTF(fp, "group,mode,name\n");
     const size_t rows = 1048;
     for (size_t i = 0; i < rows; i++) {
-        fprintf(fp, "%zu,D,Alias %zu\n", i + 1, i + 1);
+        DSD_FPRINTF(fp, "%zu,D,Alias %zu\n", i + 1, i + 1);
     }
     fclose(fp);
 
-    (void)snprintf(opts->group_in_file, sizeof opts->group_in_file, "%s", tmpl);
+    (void)DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", tmpl);
     int rc = csvGroupImport(opts, state);
 
     int failed = 0;
@@ -218,14 +218,15 @@ test_group_import_large_file_policy(void) {
             free_test_state(state);
             return 1;
         }
-        fprintf(fp, "id,mode,name\n");
+        DSD_FPRINTF(fp, "id,mode,name\n");
         for (size_t i = 1; i <= rows; i++) {
             if (i == 6500) {
-                fprintf(fp, "%zu,A,Late Allow\n", i);
+                DSD_FPRINTF(fp, "%zu,A,Late Allow\n", i);
             } else if (i == rows) {
-                fprintf(fp, "%zu,B,This Alias Name Is Definitely Longer Than Forty Nine Characters For Safety\n", i);
+                DSD_FPRINTF(fp, "%zu,B,This Alias Name Is Definitely Longer Than Forty Nine Characters For Safety\n",
+                            i);
             } else {
-                fprintf(fp, "%zu,A,Alias %zu\n", i, i);
+                DSD_FPRINTF(fp, "%zu,A,Alias %zu\n", i, i);
             }
         }
         fclose(fp);
@@ -236,7 +237,7 @@ test_group_import_large_file_policy(void) {
     opts->trunk_tune_data_calls = 1;
     opts->trunk_tune_enc_calls = 1;
     opts->trunk_use_allow_list = 1;
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
 
     if (csvGroupImport(opts, state) != 0) {
         failed = 1;
@@ -313,7 +314,7 @@ test_group_import_policy_and_basic_headers(void) {
         free_test_state(state);
         return 1;
     }
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
     if (csvGroupImport(opts, state) != 0) {
         failed = 1;
     }
@@ -327,7 +328,7 @@ test_group_import_policy_and_basic_headers(void) {
     }
 
     dsd_state_ext_free_all(state);
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     if (write_text_file(tmpl, "id,mode,name,priority,preempt,audio,record,stream,tags\n"
                               "200,A,Fire,90,true,on,on,on,fire\n"
                               "201,A,Ops,,true,,,off,ops\n"
@@ -414,7 +415,7 @@ test_group_import_invalid_ids_and_required_fields(void) {
         free_test_state(state);
         return 1;
     }
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
     if (csvGroupImport(opts, state) != 0) {
         failed = 1;
     }
@@ -459,15 +460,15 @@ test_group_import_range_after_many_exact_rows(void) {
             free_test_state(state);
             return 1;
         }
-        fprintf(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n");
+        DSD_FPRINTF(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n");
         for (size_t i = 0; i < exact_rows; i++) {
-            fprintf(fp, "%zu,D,Alias %zu,0,false,on,on,on,x\n", i + 1, i + 1);
+            DSD_FPRINTF(fp, "%zu,D,Alias %zu,0,false,on,on,on,x\n", i + 1, i + 1);
         }
-        fprintf(fp, "5000-5005,A,Range,70,true,on,on,on,r\n");
+        DSD_FPRINTF(fp, "5000-5005,A,Range,70,true,on,on,on,r\n");
         fclose(fp);
     }
 
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
     if (csvGroupImport(opts, state) != 0) {
         failed = 1;
     }
@@ -542,10 +543,10 @@ test_vertex_import_and_apply(void) {
         free_test_state(state);
         return 1;
     }
-    fprintf(fp, "key_hex,keystream_spec\n");
-    fprintf(fp, "1234567891,8:F0:2:3\n");
-    fprintf(fp, "ABCDEF,8:0F\n");
-    fprintf(fp, "0,8:AA\n");
+    DSD_FPRINTF(fp, "key_hex,keystream_spec\n");
+    DSD_FPRINTF(fp, "1234567891,8:F0:2:3\n");
+    DSD_FPRINTF(fp, "ABCDEF,8:0F\n");
+    DSD_FPRINTF(fp, "0,8:AA\n");
     fclose(fp);
 
     int rc = csvVertexKsImport(state, tmpl);
@@ -567,11 +568,11 @@ test_vertex_import_and_apply(void) {
     char frame_slot1[49];
     char frame2[49];
     char frame_zero_key[49];
-    memset(frame0, 0, sizeof(frame0));
-    memset(frame1, 0, sizeof(frame1));
-    memset(frame_slot1, 0, sizeof(frame_slot1));
-    memset(frame2, 0, sizeof(frame2));
-    memset(frame_zero_key, 0, sizeof(frame_zero_key));
+    DSD_MEMSET(frame0, 0, sizeof(frame0));
+    DSD_MEMSET(frame1, 0, sizeof(frame1));
+    DSD_MEMSET(frame_slot1, 0, sizeof(frame_slot1));
+    DSD_MEMSET(frame2, 0, sizeof(frame2));
+    DSD_MEMSET(frame_zero_key, 0, sizeof(frame_zero_key));
 
     if (vertex_key_map_apply_frame49(state, 0, 0x1234567891ULL, frame0) != 1) {
         (void)remove(tmpl);
@@ -617,7 +618,7 @@ test_vertex_import_and_apply(void) {
     }
 
     char unknown[49];
-    memset(unknown, 0, sizeof(unknown));
+    DSD_MEMSET(unknown, 0, sizeof(unknown));
     if (vertex_key_map_apply_frame49(state, 0, 0x999999ULL, unknown) != 0) {
         (void)remove(tmpl);
         free_test_state(state);

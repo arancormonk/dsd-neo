@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static void
 set_bits_from_u32(unsigned char* dst_bits, int nbits, unsigned int v) {
@@ -39,11 +40,11 @@ test_hamming_codes(void) {
         unsigned int v = 0xA; // 1010
         set_bits_from_u32(msg, 4, v);
         Hamming_7_4_encode(msg, enc);
-        memcpy(rx, enc, 7);
+        DSD_MEMCPY(rx, enc, 7);
         assert(Hamming_7_4_decode(rx) == true);
         assert(arrays_equal_u8(rx, enc, 7));
         // 1-bit error
-        memcpy(rx, enc, 7);
+        DSD_MEMCPY(rx, enc, 7);
         rx[2] ^= 1;
         assert(Hamming_7_4_decode(rx) == true);
         assert(arrays_equal_u8(rx, enc, 7));
@@ -57,13 +58,13 @@ test_hamming_codes(void) {
         unsigned char enc[12], rx[12], dec[8];
         set_bits_from_u32(msg, 8, 0x5A); // 01011010
         Hamming_12_8_encode(msg, enc);
-        memcpy(rx, enc, 12);
+        DSD_MEMCPY(rx, enc, 12);
         assert(Hamming_12_8_decode(rx, dec, 1) == true);
         assert(memcmp(dec, msg, 8) == 0);
         // 1-bit error
-        memcpy(rx, enc, 12);
+        DSD_MEMCPY(rx, enc, 12);
         rx[5] ^= 1;
-        memset(dec, 0, sizeof(dec));
+        DSD_MEMSET(dec, 0, sizeof(dec));
         assert(Hamming_12_8_decode(rx, dec, 1) == true);
         assert(memcmp(dec, msg, 8) == 0);
         // Multi-bit errors: decoder may not guarantee detect; skip assertion.
@@ -75,13 +76,13 @@ test_hamming_codes(void) {
         unsigned char enc[13], rx[13], dec[9];
         set_bits_from_u32(msg, 9, 0x155); // pattern
         Hamming_13_9_encode(msg, enc);
-        memcpy(rx, enc, 13);
+        DSD_MEMCPY(rx, enc, 13);
         assert(Hamming_13_9_decode(rx, dec, 1) == true);
         assert(memcmp(dec, msg, 9) == 0);
         // 1-bit error
-        memcpy(rx, enc, 13);
+        DSD_MEMCPY(rx, enc, 13);
         rx[4] ^= 1;
-        memset(dec, 0, sizeof(dec));
+        DSD_MEMSET(dec, 0, sizeof(dec));
         assert(Hamming_13_9_decode(rx, dec, 1) == true);
         assert(memcmp(dec, msg, 9) == 0);
         // Multi-bit errors: skip assertion.
@@ -93,13 +94,13 @@ test_hamming_codes(void) {
         unsigned char enc[15], rx[15], dec[11];
         set_bits_from_u32(msg, 11, 0x3A5);
         Hamming_15_11_encode(msg, enc);
-        memcpy(rx, enc, 15);
+        DSD_MEMCPY(rx, enc, 15);
         assert(Hamming_15_11_decode(rx, dec, 1) == true);
         assert(memcmp(dec, msg, 11) == 0);
         // 1-bit error
-        memcpy(rx, enc, 15);
+        DSD_MEMCPY(rx, enc, 15);
         rx[10] ^= 1;
-        memset(dec, 0, sizeof(dec));
+        DSD_MEMSET(dec, 0, sizeof(dec));
         assert(Hamming_15_11_decode(rx, dec, 1) == true);
         assert(memcmp(dec, msg, 11) == 0);
         // Multi-bit errors: skip assertion.
@@ -111,13 +112,13 @@ test_hamming_codes(void) {
         unsigned char enc[16], rx[16], dec[11];
         set_bits_from_u32(msg, 11, 0x2AA);
         Hamming_16_11_4_encode(msg, enc);
-        memcpy(rx, enc, 16);
+        DSD_MEMCPY(rx, enc, 16);
         assert(Hamming_16_11_4_decode(rx, dec, 1) == true);
         assert(memcmp(dec, msg, 11) == 0);
         // 1-bit error
-        memcpy(rx, enc, 16);
+        DSD_MEMCPY(rx, enc, 16);
         rx[15] ^= 1;
-        memset(dec, 0, sizeof(dec));
+        DSD_MEMSET(dec, 0, sizeof(dec));
         assert(Hamming_16_11_4_decode(rx, dec, 1) == true);
         assert(memcmp(dec, msg, 11) == 0);
         // Multi-bit errors: skip assertion.
@@ -137,21 +138,21 @@ test_golay_qr(void) {
         set_bits_from_u32(msg, 8, 0xA5);
         Golay_20_8_encode(msg, enc);
         // 0 errors
-        memcpy(rx, enc, 20);
+        DSD_MEMCPY(rx, enc, 20);
         assert(Golay_20_8_decode(rx) == true);
         assert(arrays_equal_u8(rx, enc, 20));
         // 1 error
-        memcpy(rx, enc, 20);
+        DSD_MEMCPY(rx, enc, 20);
         rx[3] ^= 1;
         assert(Golay_20_8_decode(rx) == true);
         assert(arrays_equal_u8(rx, enc, 20));
         // 2 errors
-        memcpy(rx, enc, 20);
+        DSD_MEMCPY(rx, enc, 20);
         rx[1] ^= 1;
         rx[9] ^= 1;
         assert(Golay_20_8_decode(rx) == true);
         // 3 errors -> fail (weight-6 code)
-        memcpy(rx, enc, 20);
+        DSD_MEMCPY(rx, enc, 20);
         rx[0] ^= 1;
         rx[5] ^= 1;
         rx[12] ^= 1;
@@ -164,16 +165,16 @@ test_golay_qr(void) {
         unsigned char enc[23], rx[23];
         set_bits_from_u32(msg, 12, 0xBEE);
         Golay_23_12_encode(msg, enc);
-        memcpy(rx, enc, 23); // 0
+        DSD_MEMCPY(rx, enc, 23); // 0
         assert(Golay_23_12_decode(rx) == true);
-        memcpy(rx, enc, 23);
+        DSD_MEMCPY(rx, enc, 23);
         rx[2] ^= 1; // 1
         assert(Golay_23_12_decode(rx) == true);
-        memcpy(rx, enc, 23);
+        DSD_MEMCPY(rx, enc, 23);
         rx[1] ^= 1;
         rx[5] ^= 1; // 2
         assert(Golay_23_12_decode(rx) == true);
-        memcpy(rx, enc, 23);
+        DSD_MEMCPY(rx, enc, 23);
         rx[0] ^= 1;
         rx[4] ^= 1;
         rx[12] ^= 1; // 3
@@ -187,12 +188,12 @@ test_golay_qr(void) {
         unsigned char enc[24], rx[24];
         set_bits_from_u32(msg, 12, 0xACE);
         Golay_24_12_encode(msg, enc);
-        memcpy(rx, enc, 24); // 0
+        DSD_MEMCPY(rx, enc, 24); // 0
         assert(Golay_24_12_decode(rx) == true);
-        memcpy(rx, enc, 24);
+        DSD_MEMCPY(rx, enc, 24);
         rx[2] ^= 1; // 1
         assert(Golay_24_12_decode(rx) == true);
-        memcpy(rx, enc, 24);
+        DSD_MEMCPY(rx, enc, 24);
         rx[1] ^= 1;
         rx[5] ^= 1; // 2
         assert(Golay_24_12_decode(rx) == true);
@@ -206,12 +207,12 @@ test_golay_qr(void) {
         unsigned char enc[16], rx[16];
         set_bits_from_u32(msg, 7, 0x55);
         QR_16_7_6_encode(msg, enc);
-        memcpy(rx, enc, 16); // 0
+        DSD_MEMCPY(rx, enc, 16); // 0
         assert(QR_16_7_6_decode(rx) == true);
-        memcpy(rx, enc, 16);
+        DSD_MEMCPY(rx, enc, 16);
         rx[6] ^= 1; // 1
         assert(QR_16_7_6_decode(rx) == true);
-        memcpy(rx, enc, 16);
+        DSD_MEMCPY(rx, enc, 16);
         rx[0] ^= 1;
         rx[9] ^= 1; // 2
         assert(QR_16_7_6_decode(rx) == true);

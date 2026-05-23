@@ -14,7 +14,7 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static void
 bits_from_byte(unsigned char b, unsigned char out[8]) {
@@ -39,11 +39,11 @@ test_clean_decode(void) {
         unsigned char m[8] = {0};
         bits_from_byte((unsigned char)msg, m);
         unsigned char cw[20];
-        memset(cw, 0, sizeof(cw));
+        DSD_MEMSET(cw, 0, sizeof(cw));
         Golay_20_8_encode(m, cw);
         // decode
         unsigned char cw2[20];
-        memcpy(cw2, cw, sizeof(cw));
+        DSD_MEMCPY(cw2, cw, sizeof(cw));
         assert(Golay_20_8_decode(cw2) == true);
         unsigned char out = byte_from_bits(cw2);
         assert(out == (unsigned char)msg);
@@ -59,7 +59,7 @@ test_two_bit_correction(void) {
     for (int i = 0; i < 20; i++) {
         for (int j = i + 1; j < 20; j++) {
             unsigned char tmp[20];
-            memcpy(tmp, cw, sizeof(tmp));
+            DSD_MEMCPY(tmp, cw, sizeof(tmp));
             tmp[i] ^= 1U;
             tmp[j] ^= 1U;
             if (Golay_20_8_decode(tmp)) {
@@ -80,7 +80,7 @@ test_three_bit_failure(void) {
     Golay_20_8_encode(m, cw);
     // Flip three distinct positions
     unsigned char tmp[20];
-    memcpy(tmp, cw, sizeof(tmp));
+    DSD_MEMCPY(tmp, cw, sizeof(tmp));
     tmp[0] ^= 1U;
     tmp[5] ^= 1U;
     tmp[13] ^= 1U;

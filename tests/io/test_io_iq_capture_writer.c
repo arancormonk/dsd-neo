@@ -5,19 +5,18 @@
 
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
-
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 #include "test_support.h"
 
 static int
 expect_true(const char* label, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         return 1;
     }
     return 0;
@@ -26,7 +25,7 @@ expect_true(const char* label, int cond) {
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -35,7 +34,7 @@ expect_int(const char* label, int got, int want) {
 static int
 expect_u64(const char* label, uint64_t got, uint64_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%" PRIu64 " want=%" PRIu64 "\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%" PRIu64 " want=%" PRIu64 "\n", label, got, want);
         return 1;
     }
     return 0;
@@ -75,11 +74,11 @@ read_file_all(const char* path, uint8_t* out, size_t out_cap, size_t* out_n) {
 static void
 fill_base_capture_cfg(dsd_iq_capture_config* cfg, const char* data_path, const char* metadata_path,
                       dsd_iq_sample_format fmt) {
-    memset(cfg, 0, sizeof(*cfg));
-    snprintf(cfg->data_path, sizeof(cfg->data_path), "%s", data_path);
-    snprintf(cfg->metadata_path, sizeof(cfg->metadata_path), "%s", metadata_path);
+    DSD_MEMSET(cfg, 0, sizeof(*cfg));
+    DSD_SNPRINTF(cfg->data_path, sizeof(cfg->data_path), "%s", data_path);
+    DSD_SNPRINTF(cfg->metadata_path, sizeof(cfg->metadata_path), "%s", metadata_path);
     cfg->format = fmt;
-    snprintf(cfg->capture_stage, sizeof(cfg->capture_stage), "%s", "post_mute_pre_widen");
+    DSD_SNPRINTF(cfg->capture_stage, sizeof(cfg->capture_stage), "%s", "post_mute_pre_widen");
     cfg->sample_rate_hz = 1536000;
     cfg->center_frequency_hz = 851375000ULL;
     cfg->capture_center_frequency_hz = 851759000ULL;
@@ -93,8 +92,8 @@ fill_base_capture_cfg(dsd_iq_capture_config* cfg, const char* data_path, const c
     cfg->fs4_shift_enabled = 1;
     cfg->combine_rotate_enabled = 1;
     cfg->muted_bytes_excluded = 1;
-    snprintf(cfg->source_backend, sizeof(cfg->source_backend), "%s", "rtl");
-    snprintf(cfg->source_args, sizeof(cfg->source_args), "%s", "dev=0");
+    DSD_SNPRINTF(cfg->source_backend, sizeof(cfg->source_backend), "%s", "rtl");
+    DSD_SNPRINTF(cfg->source_args, sizeof(cfg->source_args), "%s", "dev=0");
 }
 
 static int
@@ -131,7 +130,7 @@ test_submit_small_blocks_and_contents(void) {
 
     {
         dsd_iq_capture_final_stats stats;
-        memset(&stats, 0, sizeof(stats));
+        DSD_MEMSET(&stats, 0, sizeof(stats));
         dsd_iq_capture_close(writer, &stats);
     }
 
@@ -179,7 +178,7 @@ test_max_bytes_alignment_cu8_and_cf32(void) {
         rc |= expect_int("submit cu8", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
 
         dsd_iq_capture_final_stats stats;
-        memset(&stats, 0, sizeof(stats));
+        DSD_MEMSET(&stats, 0, sizeof(stats));
         dsd_iq_capture_close(writer, &stats);
 
         struct stat st;
@@ -197,7 +196,7 @@ test_max_bytes_alignment_cu8_and_cf32(void) {
 
         dsd_iq_capture_config cfg;
         fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CF32);
-        snprintf(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_driver_cf32_pre_ring");
+        DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_driver_cf32_pre_ring");
         cfg.max_bytes = 11; /* should align down to 8 */
         cfg.queue_block_bytes = 8;
         cfg.queue_block_count = 2;
@@ -212,7 +211,7 @@ test_max_bytes_alignment_cu8_and_cf32(void) {
         rc |= expect_int("submit cf32", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
 
         dsd_iq_capture_final_stats stats;
-        memset(&stats, 0, sizeof(stats));
+        DSD_MEMSET(&stats, 0, sizeof(stats));
         dsd_iq_capture_close(writer, &stats);
 
         struct stat st;
@@ -259,7 +258,7 @@ test_odd_cu8_preserves_iq_alignment(void) {
 
     {
         dsd_iq_capture_final_stats stats;
-        memset(&stats, 0, sizeof(stats));
+        DSD_MEMSET(&stats, 0, sizeof(stats));
         dsd_iq_capture_close(writer, &stats);
     }
 
@@ -301,20 +300,20 @@ test_queue_overflow_updates_drop_counters(void) {
 
     {
         uint8_t payload[4096];
-        memset(payload, 0x7f, sizeof(payload));
+        DSD_MEMSET(payload, 0x7f, sizeof(payload));
         rc |= expect_int("submit overflow", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
     }
 
     {
         dsd_iq_capture_final_stats stats;
-        memset(&stats, 0, sizeof(stats));
+        DSD_MEMSET(&stats, 0, sizeof(stats));
         stats.input_ring_drops = 123;
         dsd_iq_capture_close(writer, &stats);
     }
 
     {
         dsd_iq_replay_config meta;
-        memset(&meta, 0, sizeof(meta));
+        DSD_MEMSET(&meta, 0, sizeof(meta));
         rc |= expect_int("metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
                          DSD_IQ_OK);
         rc |= expect_true("overflow dropped bytes > 0", meta.capture_drops > 0);
@@ -357,12 +356,12 @@ test_retune_stats_without_events_marks_not_replayable(void) {
     rc |= expect_int("submit retune stats", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
 
     dsd_iq_capture_final_stats stats;
-    memset(&stats, 0, sizeof(stats));
+    DSD_MEMSET(&stats, 0, sizeof(stats));
     stats.retune_count = 1;
     dsd_iq_capture_close(writer, &stats);
 
     dsd_iq_replay_config meta;
-    memset(&meta, 0, sizeof(meta));
+    DSD_MEMSET(&meta, 0, sizeof(meta));
     rc |= expect_int("retune stats metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
                      DSD_IQ_OK);
     rc |= expect_int("retune stats metadata remains v1", (int)meta.metadata_version, 1);
@@ -372,7 +371,7 @@ test_retune_stats_without_events_marks_not_replayable(void) {
     dsd_iq_replay_config_clear(&meta);
 
     dsd_iq_replay_source* replay = NULL;
-    memset(&meta, 0, sizeof(meta));
+    DSD_MEMSET(&meta, 0, sizeof(meta));
     rc |= expect_int("retune stats replay open rejected",
                      dsd_iq_replay_open(metadata_path, &meta, &replay, err, sizeof(err)), DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retune stats replay source null", replay == NULL);
@@ -409,21 +408,21 @@ test_rejects_unaligned_mute_event(void) {
     rc |= expect_int("submit bad mute", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
 
     dsd_iq_event ev;
-    memset(&ev, 0, sizeof(ev));
+    DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_MUTE;
     rc |= expect_int("reject zero-length mute", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_ERR_INVALID_ARG);
 
-    memset(&ev, 0, sizeof(ev));
+    DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_MUTE;
     ev.duration_bytes = 1;
     rc |= expect_int("reject unaligned mute", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_ERR_ALIGNMENT);
 
     dsd_iq_capture_final_stats stats;
-    memset(&stats, 0, sizeof(stats));
+    DSD_MEMSET(&stats, 0, sizeof(stats));
     dsd_iq_capture_close(writer, &stats);
 
     dsd_iq_replay_config meta;
-    memset(&meta, 0, sizeof(meta));
+    DSD_MEMSET(&meta, 0, sizeof(meta));
     rc |= expect_int("bad mute metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
                      DSD_IQ_OK);
     rc |= expect_int("bad mute event_count", (int)meta.event_count, 0);
@@ -460,35 +459,35 @@ test_rejects_unreplayable_retune_reset_events(void) {
     rc |= expect_int("submit bad reconfig events", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
 
     dsd_iq_event ev;
-    memset(&ev, 0, sizeof(ev));
+    DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_RETUNE;
     ev.capture_center_frequency_hz = 851884000ULL;
     ev.sample_rate_hz = cfg.sample_rate_hz;
-    snprintf(ev.reason, sizeof(ev.reason), "%s", "frequency");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "frequency");
     rc |= expect_int("reject zero retune center", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_ERR_INVALID_ARG);
 
-    memset(&ev, 0, sizeof(ev));
+    DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_RESET;
     ev.center_frequency_hz = 851500000ULL;
     ev.capture_center_frequency_hz = 851884000ULL;
-    snprintf(ev.reason, sizeof(ev.reason), "%s", "frequency");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "frequency");
     rc |= expect_int("reject zero reset sample rate", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_ERR_INVALID_ARG);
 
-    memset(&ev, 0, sizeof(ev));
+    DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_RETUNE;
     ev.center_frequency_hz = 851500000ULL;
     ev.capture_center_frequency_hz = 851884000ULL;
     ev.sample_rate_hz = cfg.sample_rate_hz / 2U;
-    snprintf(ev.reason, sizeof(ev.reason), "%s", "frequency");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "frequency");
     rc |=
         expect_int("reject retune sample-rate change", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_ERR_RATE_CHAIN);
 
     dsd_iq_capture_final_stats stats;
-    memset(&stats, 0, sizeof(stats));
+    DSD_MEMSET(&stats, 0, sizeof(stats));
     dsd_iq_capture_close(writer, &stats);
 
     dsd_iq_replay_config meta;
-    memset(&meta, 0, sizeof(meta));
+    DSD_MEMSET(&meta, 0, sizeof(meta));
     rc |= expect_int("bad reconfig metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
                      DSD_IQ_OK);
     rc |= expect_int("bad reconfig event_count", (int)meta.event_count, 0);
@@ -525,26 +524,26 @@ test_retune_event_orders_before_same_offset_mute(void) {
     rc |= expect_int("submit event order", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
 
     dsd_iq_event ev;
-    memset(&ev, 0, sizeof(ev));
+    DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_MUTE;
     ev.duration_bytes = 2;
-    snprintf(ev.reason, sizeof(ev.reason), "%s", "retune_reconfigure");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "retune_reconfigure");
     rc |= expect_int("record same-offset mute", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
 
-    memset(&ev, 0, sizeof(ev));
+    DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_RETUNE;
     ev.center_frequency_hz = 851500000ULL;
     ev.capture_center_frequency_hz = 851884000ULL;
     ev.sample_rate_hz = 1536000;
-    snprintf(ev.reason, sizeof(ev.reason), "%s", "frequency");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "frequency");
     rc |= expect_int("record same-offset retune", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
 
     dsd_iq_capture_final_stats stats;
-    memset(&stats, 0, sizeof(stats));
+    DSD_MEMSET(&stats, 0, sizeof(stats));
     dsd_iq_capture_close(writer, &stats);
 
     dsd_iq_replay_config meta;
-    memset(&meta, 0, sizeof(meta));
+    DSD_MEMSET(&meta, 0, sizeof(meta));
     rc |= expect_int("event order metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
                      DSD_IQ_OK);
     rc |= expect_int("event order count", (int)meta.event_count, 2);

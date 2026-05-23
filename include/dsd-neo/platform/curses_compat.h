@@ -3,7 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_CURSES_COMPAT_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_CURSES_COMPAT_H_
 
 /**
  * @file
@@ -12,8 +13,6 @@
  * Provides a unified include for ncurses (POSIX) and PDCurses (Windows),
  * along with any compatibility macros needed to bridge API differences.
  */
-
-#include <dsd-neo/platform/platform.h>
 
 #if defined(DSD_USE_PDCURSES)
 /* PDCurses backend */
@@ -80,3 +79,5 @@ dsd_curses_set_escdelay(int delay_ms) {
     set_escdelay(delay_ms);
 #endif
 }
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_CURSES_COMPAT_H_ */

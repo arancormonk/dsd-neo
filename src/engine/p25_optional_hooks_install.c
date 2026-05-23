@@ -8,6 +8,8 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/events.h>
 
+#include "engine_hooks_install.h"
+
 void
 dsd_engine_p25_optional_hooks_install(void) {
     dsd_p25_optional_hooks hooks = {0};

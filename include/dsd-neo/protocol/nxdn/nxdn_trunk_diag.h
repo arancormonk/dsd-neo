@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_TRUNK_DIAG_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_TRUNK_DIAG_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -47,8 +48,9 @@ void nxdn_trunk_diag_log_missing_channel_once(const dsd_opts* opts, dsd_state* s
 /**
  * @brief Log an exit summary of channels still missing from the channel map.
  */
-void nxdn_trunk_diag_log_summary(const dsd_opts* opts, dsd_state* state);
+void nxdn_trunk_diag_log_summary(const dsd_opts* opts, const dsd_state* state);
 
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_TRUNK_DIAG_H_H */

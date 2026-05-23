@@ -4,15 +4,14 @@
  */
 
 #include <dsd-neo/crypto/dmr_keystream.h>
-
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -24,7 +23,7 @@ expect_eq_frame(const char* tag, const char got[49], const char want[49]) {
         const int got_bit = ((unsigned char)got[i]) & 1U;
         const int want_bit = ((unsigned char)want[i]) & 1U;
         if (got_bit != want_bit) {
-            fprintf(stderr, "%s: bit %d got %d want %d\n", tag, i, got_bit, want_bit);
+            DSD_FPRINTF(stderr, "%s: bit %d got %d want %d\n", tag, i, got_bit, want_bit);
             return 1;
         }
     }
@@ -86,15 +85,15 @@ main(void) {
     rc |= expect_eq_int("silence-detected", dmr_ambe49_is_default_silence(silence), 1);
 
     char not_silence[49];
-    memcpy(not_silence, silence, sizeof(not_silence));
+    DSD_MEMCPY(not_silence, silence, sizeof(not_silence));
     not_silence[48] ^= 1;
     rc |= expect_eq_int("silence-rejected", dmr_ambe49_is_default_silence(not_silence), 0);
 
     {
         char frame[49];
         char original[49];
-        memcpy(frame, silence, sizeof(frame));
-        memcpy(original, silence, sizeof(original));
+        DSD_MEMCPY(frame, silence, sizeof(frame));
+        DSD_MEMCPY(original, silence, sizeof(original));
         int frame_counter = 0;
         int applied = hytera_bp_apply_frame49(0x0123456789ULL, 0ULL, 0ULL, 0ULL, &frame_counter, frame);
         rc |= expect_eq_int("skip-silence-applied", applied, 0);

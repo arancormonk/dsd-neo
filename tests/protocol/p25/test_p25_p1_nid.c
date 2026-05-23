@@ -13,11 +13,12 @@
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -26,7 +27,7 @@ expect_eq_int(const char* tag, int got, int want) {
 static int
 expect_eq_str(const char* tag, const char* got, const char* want) {
     if (strcmp(got, want) != 0) {
-        fprintf(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -38,7 +39,7 @@ main(void) {
 
     // Case 1: All-zero BCH(63,16) codeword (valid). Expect NAC=0, DUID="00", parity=0 accepted.
     char bch_code[63];
-    memset(bch_code, 0, sizeof(bch_code));
+    DSD_MEMSET(bch_code, 0, sizeof(bch_code));
     int new_nac = -1;
     char new_duid[3] = {0};
     int r1 = check_NID(bch_code, &new_nac, new_duid, /*parity*/ 0);
@@ -57,7 +58,7 @@ main(void) {
     rc |= expect_eq_str("DUID still 00", new_duid, "00");
 
     // Case 3: Single-bit error in codeword should be corrected by BCH
-    memset(bch_code, 0, sizeof(bch_code));
+    DSD_MEMSET(bch_code, 0, sizeof(bch_code));
     bch_code[10] = 1; // flip one bit
     new_nac = -1;
     new_duid[0] = new_duid[1] = '\0';

@@ -10,7 +10,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 approx_eq(float a, float b, float tol) {
@@ -34,7 +34,7 @@ channel_lpf_tone_gain(demod_state* s, int profile, double tone_hz) {
     const float amp = 0.75f;
     const double two_pi = 6.28318530717958647692;
 
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(s, 0, sizeof(*s));
     s->rate_in = sample_rate;
     s->rate_out = sample_rate;
     s->rate_out2 = 0;
@@ -84,8 +84,8 @@ check_channel_lpf_protected_edges(demod_state* s) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         double gain = channel_lpf_tone_gain(s, cases[i].profile, cases[i].edge_hz);
         if (gain < 0.90) {
-            fprintf(stderr, "channel_lpf %s edge %.0f Hz gain %.3f below passband threshold\n", cases[i].name,
-                    cases[i].edge_hz, gain);
+            DSD_FPRINTF(stderr, "channel_lpf %s edge %.0f Hz gain %.3f below passband threshold\n", cases[i].name,
+                        cases[i].edge_hz, gain);
             return 1;
         }
     }
@@ -98,7 +98,7 @@ main(void) {
     if (!s) {
         return 1;
     }
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(s, 0, sizeof(*s));
 
     // deemph_filter: step response
     {
@@ -111,12 +111,12 @@ main(void) {
         s->deemph_avg = 0.0f;
         deemph_filter(s);
         if (!monotonic_nondecreasing(s->result, N)) {
-            fprintf(stderr, "deemph_filter: non-monotonic step response\n");
+            DSD_FPRINTF(stderr, "deemph_filter: non-monotonic step response\n");
             free(s);
             return 1;
         }
         if (!approx_eq(s->result[N - 1], 1.0f, 1e-4f)) {
-            fprintf(stderr, "deemph_filter: final=%f not near 1.0\n", s->result[N - 1]);
+            DSD_FPRINTF(stderr, "deemph_filter: final=%f not near 1.0\n", s->result[N - 1]);
             free(s);
             return 1;
         }
@@ -135,13 +135,13 @@ main(void) {
         s->prev_lpr_index = 0;
         low_pass_real(s);
         if (s->result_len != N / 2) {
-            fprintf(stderr, "low_pass_real: result_len=%d want %d\n", s->result_len, N / 2);
+            DSD_FPRINTF(stderr, "low_pass_real: result_len=%d want %d\n", s->result_len, N / 2);
             free(s);
             return 1;
         }
         for (int i = 0; i < s->result_len; i++) {
             if (!approx_eq(s->result[i], 0.5f, 1e-4f)) {
-                fprintf(stderr, "low_pass_real: out[%d]=%f not ~0.5\n", i, s->result[i]);
+                DSD_FPRINTF(stderr, "low_pass_real: out[%d]=%f not ~0.5\n", i, s->result[i]);
                 free(s);
                 return 1;
             }
@@ -161,7 +161,7 @@ main(void) {
         s->fm_demod_history_valid = 0; /* force seeding path */
         dsd_fm_demod(s);
         if (s->result_len != 3) {
-            fprintf(stderr, "dsd_fm_demod: result_len=%d want 3\n", s->result_len);
+            DSD_FPRINTF(stderr, "dsd_fm_demod: result_len=%d want 3\n", s->result_len);
             free(s);
             return 1;
         }
@@ -173,14 +173,14 @@ main(void) {
         const float pi_2 = 1.5707963f;
         const float fll_offset = 0.003f; /* full fll_freq contribution */
         if (fabsf(s->result[0] - fll_offset) > 0.01f) {
-            fprintf(stderr, "dsd_fm_demod: result[0]=%f want ~%f (fll offset)\n", s->result[0], fll_offset);
+            DSD_FPRINTF(stderr, "dsd_fm_demod: result[0]=%f want ~%f (fll offset)\n", s->result[0], fll_offset);
             free(s);
             return 1;
         }
         for (int i = 1; i < s->result_len; i++) {
             float expect = pi_2 + fll_offset;
             if (fabsf(s->result[i] - expect) > 0.01f) {
-                fprintf(stderr, "dsd_fm_demod: result[%d]=%f want ~%f\n", i, s->result[i], expect);
+                DSD_FPRINTF(stderr, "dsd_fm_demod: result[%d]=%f want ~%f\n", i, s->result[i], expect);
                 free(s);
                 return 1;
             }

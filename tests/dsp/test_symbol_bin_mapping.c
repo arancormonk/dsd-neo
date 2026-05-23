@@ -7,12 +7,13 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_float_eq(const char* label, float actual, float expected) {
     const float eps = 1e-6f;
     if (fabsf(actual - expected) > eps) {
-        fprintf(stderr, "FAIL: %s: got %.6f expected %.6f\n", label, actual, expected);
+        DSD_FPRINTF(stderr, "FAIL: %s: got %.6f expected %.6f\n", label, actual, expected);
         return 0;
     }
     return 1;
@@ -21,7 +22,7 @@ expect_float_eq(const char* label, float actual, float expected) {
 static int
 expect_u8_ge(const char* label, uint8_t actual, uint8_t minimum) {
     if (actual < minimum) {
-        fprintf(stderr, "FAIL: %s: got %u expected >= %u\n", label, actual, minimum);
+        DSD_FPRINTF(stderr, "FAIL: %s: got %u expected >= %u\n", label, actual, minimum);
         return 0;
     }
     return 1;
@@ -30,7 +31,7 @@ expect_u8_ge(const char* label, uint8_t actual, uint8_t minimum) {
 static int
 expect_u8_le(const char* label, uint8_t actual, uint8_t maximum) {
     if (actual > maximum) {
-        fprintf(stderr, "FAIL: %s: got %u expected <= %u\n", label, actual, maximum);
+        DSD_FPRINTF(stderr, "FAIL: %s: got %u expected <= %u\n", label, actual, maximum);
         return 0;
     }
     return 1;
@@ -39,7 +40,7 @@ expect_u8_le(const char* label, uint8_t actual, uint8_t maximum) {
 static int
 expect_int_eq(const char* label, int actual, int expected) {
     if (actual != expected) {
-        fprintf(stderr, "FAIL: %s: got %d expected %d\n", label, actual, expected);
+        DSD_FPRINTF(stderr, "FAIL: %s: got %d expected %d\n", label, actual, expected);
         return 0;
     }
     return 1;

@@ -12,7 +12,8 @@
  * startup; the runtime provides safe wrappers and fallback behavior when
  * hooks are not installed.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_METRICS_HOOKS_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_METRICS_HOOKS_H_H
 
 #include <stdint.h>
 
@@ -39,7 +40,7 @@ typedef struct {
     int (*stream_active)(void);
 } dsd_rtl_stream_metrics_hooks;
 
-typedef enum dsd_rtl_stream_channel_profile {
+typedef enum __attribute__((packed)) dsd_rtl_stream_channel_profile {
     DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE = 0,
     DSD_RTL_STREAM_CHANNEL_PROFILE_6K25 = 1,
     DSD_RTL_STREAM_CHANNEL_PROFILE_12K5 = 2,
@@ -74,3 +75,4 @@ void dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset(void);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_METRICS_HOOKS_H_H */

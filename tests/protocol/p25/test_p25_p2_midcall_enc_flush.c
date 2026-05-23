@@ -10,24 +10,32 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Helper from shim that mirrors early ENC handling and now flushes ring
 int p25_test_p2_early_enc_handle(dsd_opts* opts, dsd_state* state, int slot);
 
 // Stubs/overrides to avoid IO/alias deps pulled by lib
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output,
+                                 int len) { // NOLINT(misc-use-internal-linkage)
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
-apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                 uint8_t* lc_bits) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     (void)slot;
@@ -35,7 +43,9 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
-apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                 uint8_t* lc_bits) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     (void)slot;
@@ -43,7 +53,9 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
-l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len,
+                          uint8_t* input) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     (void)slot;
@@ -52,7 +64,9 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 }
 
 void
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src,
+            int slot) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     (void)input;
@@ -62,10 +76,10 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 
 // Capture return_to_cc calls invoked by p25_sm_on_release
 static int g_return_to_cc_called = 0;
-void return_to_cc(dsd_opts* opts, dsd_state* state);
+void return_to_cc(dsd_opts* opts, dsd_state* state); // NOLINT(misc-use-internal-linkage)
 
 void
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     g_return_to_cc_called++;
@@ -81,7 +95,7 @@ install_trunk_tuning_hooks(void) {
 static int
 expect_eq(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -93,8 +107,8 @@ main(void) {
     static dsd_opts opts;
     static dsd_state st;
     install_trunk_tuning_hooks();
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     opts.p25_trunk = 1;
     opts.p25_is_tuned = 1;
@@ -127,3 +141,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

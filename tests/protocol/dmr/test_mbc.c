@@ -28,7 +28,7 @@ crc16_bit_order_smoke(void) {
     // Known simple pattern: 96 zero bits -> CRC over zero bits with inverted output
     // Just verify the function runs and returns a deterministic value.
     uint8_t bits[96];
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
     uint16_t crc = ComputeCrcCCITT16d(bits, 96);
     // Specific numeric value is not important; ensure stability.
     assert(crc == ComputeCrcCCITT16d(bits, 96));
@@ -38,8 +38,8 @@ static void
 mbc_aggregate_bounds(void) {
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
 
     // Mark header as valid so assembler attempts finalization on LB.
@@ -47,7 +47,7 @@ mbc_aggregate_bounds(void) {
 
     // Feed a dummy header (LB=0, PF=0) as type 2 (MBC/UDT style)
     uint8_t blk[12];
-    memset(blk, 0, sizeof(blk));
+    DSD_MEMSET(blk, 0, sizeof(blk));
     blk[0] = 0x00; // LB=0, PF=0
     dmr_block_assembler(&opts, &state, blk, 12, 0 /*databurst*/, 2 /*type*/);
 

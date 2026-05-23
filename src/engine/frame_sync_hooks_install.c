@@ -10,6 +10,8 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
+#include "engine_hooks_install.h"
+
 void
 dsd_engine_frame_sync_hooks_install(void) {
     dsd_frame_sync_hooks hooks = {0};

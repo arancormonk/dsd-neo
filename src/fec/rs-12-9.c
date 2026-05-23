@@ -28,10 +28,8 @@
 
 #include <dsd-neo/fec/rs_12_9.h>
 #include <stdint.h>
-
-//#include <libs/daemon/console.h>
-
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 typedef struct {
     uint8_t error_locations[256];
@@ -102,7 +100,7 @@ rs_12_9_multiply_poly_z(rs_12_9_poly_t* poly) {
 }
 
 static void
-rs_12_9_multiplicate_polys(uint8_t dst[], rs_12_9_poly_t* p1, rs_12_9_poly_t* p2) {
+rs_12_9_multiplicate_polys(uint8_t dst[], const rs_12_9_poly_t* p1, const rs_12_9_poly_t* p2) {
     int i;
     int j;
     int8_t tmp1[RS_12_9_POLY_MAXDEG * 2];
@@ -138,7 +136,7 @@ rs_12_9_multiplicate_polys(uint8_t dst[], rs_12_9_poly_t* p1, rs_12_9_poly_t* p2
 
 // Computes the combined erasure/error evaluator polynomial (error_locator_poly*syndrome mod z^4)
 static void
-rs_12_9_calc_error_evaluator_poly(rs_12_9_poly_t* error_locator_poly, rs_12_9_poly_t* syndrome,
+rs_12_9_calc_error_evaluator_poly(const rs_12_9_poly_t* error_locator_poly, const rs_12_9_poly_t* syndrome,
                                   rs_12_9_poly_t* error_evaluator_poly) {
     uint8_t i;
     uint8_t product[RS_12_9_POLY_MAXDEG * 2];
@@ -153,7 +151,8 @@ rs_12_9_calc_error_evaluator_poly(rs_12_9_poly_t* error_locator_poly, rs_12_9_po
 }
 
 static uint8_t
-rs_12_9_compute_discrepancy(rs_12_9_poly_t* error_locator_poly, rs_12_9_poly_t* syndrome, uint8_t L, uint8_t n) {
+rs_12_9_compute_discrepancy(const rs_12_9_poly_t* error_locator_poly, const rs_12_9_poly_t* syndrome, uint8_t L,
+                            uint8_t n) {
     uint8_t i;
     uint8_t sum = 0;
 
@@ -168,26 +167,24 @@ rs_12_9_compute_discrepancy(rs_12_9_poly_t* error_locator_poly, rs_12_9_poly_t* 
 // the error evaluator polynomial using the Berlekamp-Massey algorithm.
 // From  Cain, Clark, "Error-Correction Coding For Digital Communications", pp. 216.
 static void
-rs_12_9_calculate(rs_12_9_poly_t* syndrome, rs_12_9_poly_t* error_locator_poly, rs_12_9_poly_t* error_evaluator_poly) {
+rs_12_9_calculate(const rs_12_9_poly_t* syndrome, rs_12_9_poly_t* error_locator_poly,
+                  rs_12_9_poly_t* error_evaluator_poly) {
     uint8_t n;
     uint8_t L = 0;
-    uint8_t L2;
     int8_t k;
-    uint8_t d;
     uint8_t i;
-    uint8_t psi2[RS_12_9_POLY_MAXDEG];
-    rs_12_9_poly_t D = {.data = {
-                            0,
-                            1,
-                            0,
-                        }};
+    uint8_t psi2[RS_12_9_POLY_MAXDEG] = {0};
+    rs_12_9_poly_t D = {{0}};
 
     k = -1;
-    memset(error_locator_poly, 0, sizeof(rs_12_9_poly_t));
+    D.data[1] = 1;
+    for (i = 0; i < RS_12_9_POLY_MAXDEG; i++) {
+        error_locator_poly->data[i] = 0;
+    }
     error_locator_poly->data[0] = 1;
 
     for (n = 0; n < RS_12_9_CHECKSUMSIZE; n++) {
-        d = rs_12_9_compute_discrepancy(error_locator_poly, syndrome, L, n);
+        uint8_t d = rs_12_9_compute_discrepancy(error_locator_poly, syndrome, L, n);
 
         if (d != 0) {
             // psi2 = error_locator_poly - d*D
@@ -196,7 +193,7 @@ rs_12_9_calculate(rs_12_9_poly_t* syndrome, rs_12_9_poly_t* error_locator_poly, 
             }
 
             if (L < (n - k)) {
-                L2 = n - k;
+                uint8_t L2 = n - k;
                 k = n - L;
 
                 for (i = 0; i < RS_12_9_POLY_MAXDEG; i++) {
@@ -222,16 +219,15 @@ rs_12_9_calculate(rs_12_9_poly_t* syndrome, rs_12_9_poly_t* error_locator_poly, 
 // evaluating the polynomial yields zero (evaluating rs_12_9_error_locator_poly at
 // successive values of alpha (Chien's search)).
 static rs_12_9_roots_t*
-rs_12_9_find_roots(rs_12_9_poly_t* error_locator_poly) {
+rs_12_9_find_roots(const rs_12_9_poly_t* error_locator_poly) {
     static rs_12_9_roots_t roots;
-    uint8_t sum;
     uint16_t r;
     uint8_t k;
 
-    memset(&roots, 0, sizeof(rs_12_9_roots_t));
+    DSD_MEMSET(&roots, 0, sizeof(rs_12_9_roots_t));
 
     for (r = 1; r < 256; r++) {
-        sum = 0;
+        uint8_t sum = 0;
         // Evaluate rs_12_9_error_locator_poly at r
         for (k = 0; k < RS_12_9_CHECKSUMSIZE + 1; k++) {
             sum ^=
@@ -262,7 +258,7 @@ rs_12_9_calc_syndrome(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome) {
 
 // Returns 1 if syndrome differs from all zeroes.
 uint8_t
-rs_12_9_check_syndrome(rs_12_9_poly_t* syndrome) {
+rs_12_9_check_syndrome(const rs_12_9_poly_t* syndrome) {
     uint8_t i;
 
     for (i = 0; i < 3; i++) {
@@ -277,15 +273,10 @@ rs_12_9_check_syndrome(rs_12_9_poly_t* syndrome) {
 // Returns 1 if errors have been found and corrected, returns 0 if
 // no errors found or errors can't be corrected.
 rs_12_9_correct_errors_result_t
-rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome, uint8_t* errors_found) {
-    uint8_t r;
-    uint8_t i;
-    uint8_t j;
-    uint8_t err;
+rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, const rs_12_9_poly_t* syndrome, uint8_t* errors_found) {
     rs_12_9_poly_t error_locator_poly;
     rs_12_9_poly_t error_evaluator_poly;
     rs_12_9_roots_t* roots;
-    uint8_t num, denom;
 
     rs_12_9_calculate(syndrome, &error_locator_poly, &error_evaluator_poly);
     roots = rs_12_9_find_roots(&error_locator_poly);
@@ -296,9 +287,9 @@ rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome, u
     }
 
     // Error correction is done using the error-evaluator equation on pp 207.
-    if (roots->errors_num > 0 && roots->errors_num <= RS_12_9_CHECKSUMSIZE) {
+    if (roots->errors_num <= RS_12_9_CHECKSUMSIZE) {
         // First check for illegal error locations.
-        for (r = 0; r < roots->errors_num; r++) {
+        for (uint8_t r = 0; r < roots->errors_num; r++) {
             if (roots->error_locations[r] >= RS_12_9_DATASIZE + RS_12_9_CHECKSUMSIZE) {
                 return RS_12_9_CORRECT_ERRORS_RESULT_ERRORS_CANT_BE_CORRECTED;
             }
@@ -306,24 +297,24 @@ rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome, u
 
         // Evaluates rs_12_9_error_evaluator_poly/rs_12_9_error_locator_poly' at the roots
         // alpha^(-i) for error locs i.
-        for (r = 0; r < roots->errors_num; r++) {
-            i = roots->error_locations[r];
+        for (uint8_t r = 0; r < roots->errors_num; r++) {
+            uint8_t i = roots->error_locations[r];
 
             // Evaluate rs_12_9_error_evaluator_poly at alpha^(-i)
-            num = 0;
-            for (j = 0; j < RS_12_9_POLY_MAXDEG; j++) {
+            uint8_t num = 0;
+            for (uint8_t j = 0; j < RS_12_9_POLY_MAXDEG; j++) {
                 num ^= rs_12_9_galois_multiplication(error_evaluator_poly.data[j],
                                                      rs_12_9_galois_exp_table_get(((255 - i) * j) % 255));
             }
 
             // Evaluate rs_12_9_error_evaluator_poly' (derivative) at alpha^(-i). All odd powers disappear.
-            denom = 0;
-            for (j = 1; j < RS_12_9_POLY_MAXDEG; j += 2) {
+            uint8_t denom = 0;
+            for (uint8_t j = 1; j < RS_12_9_POLY_MAXDEG; j += 2) {
                 denom ^= rs_12_9_galois_multiplication(error_locator_poly.data[j],
                                                        rs_12_9_galois_exp_table_get(((255 - i) * (j - 1)) % 255));
             }
 
-            err = rs_12_9_galois_multiplication(num, rs_12_9_galois_inv(denom));
+            uint8_t err = rs_12_9_galois_multiplication(num, rs_12_9_galois_inv(denom));
             //console_log(LOGLEVEL_CODING LOGLEVEL_DEBUG "    rs (12,9): error magnitude %#x at byte loc. %u\n", err, sizeof(rs_12_9_codeword_t)-i);
 
             codeword->data[sizeof(rs_12_9_codeword_t) - i - 1] ^= err;
@@ -338,15 +329,14 @@ rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome, u
 rs_12_9_checksum_t*
 rs_12_9_calc_checksum(rs_12_9_codeword_t* codeword) {
     // See DMR AI. spec. page 136 for these coefficients.
-    static uint8_t genpoly[] = {0x40, 0x38, 0x0e, 0x01};
+    static const uint8_t genpoly[] = {0x40, 0x38, 0x0e, 0x01};
     static rs_12_9_checksum_t rs_12_9_checksum;
     uint8_t i;
-    uint8_t feedback;
 
     rs_12_9_checksum.bytes[0] = rs_12_9_checksum.bytes[1] = rs_12_9_checksum.bytes[2] = 0;
 
     for (i = 0; i < 9; i++) {
-        feedback = codeword->data[i] ^ rs_12_9_checksum.bytes[0];
+        uint8_t feedback = codeword->data[i] ^ rs_12_9_checksum.bytes[0];
 
         rs_12_9_checksum.bytes[0] = rs_12_9_checksum.bytes[1] ^ rs_12_9_galois_multiplication(genpoly[2], feedback);
         rs_12_9_checksum.bytes[1] = rs_12_9_checksum.bytes[2] ^ rs_12_9_galois_multiplication(genpoly[1], feedback);

@@ -9,7 +9,7 @@
 #include <dsd-neo/fec/rs_12_9.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static void
 set_bits_from_u32_u8(uint8_t* dst_bits, int nbits, unsigned int v) {
@@ -47,7 +47,7 @@ test_bptc_128x77(void) {
     int k = 0;
     for (int row = 0; row < 7; row++) {
         uint8_t orig[11];
-        memset(orig, 0, sizeof(orig));
+        DSD_MEMSET(orig, 0, sizeof(orig));
         if (row < 2) {
             for (int j = 0; j < 11; j++, k++) {
                 orig[j] = data_bits72[k];
@@ -97,7 +97,7 @@ test_bptc_128x77(void) {
 
     // Inject a single-bit error in a data row and ensure correction path yields no irrecoverables
     uint8_t mat_err[8][16];
-    memcpy(mat_err, mat, sizeof(mat_err));
+    DSD_MEMCPY(mat_err, mat, sizeof(mat_err));
     mat_err[1][3] ^= 1U; // single flip in row 1
     irr = BPTC_128x77_Extract_Data(mat_err, extracted);
     assert(irr == 0);

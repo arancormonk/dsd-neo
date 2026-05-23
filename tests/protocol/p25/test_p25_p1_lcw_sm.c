@@ -15,10 +15,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 void p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq);
 void p25_test_invoke_lcw_with_lastsrc(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq,
@@ -26,6 +30,7 @@ void p25_test_invoke_lcw_with_lastsrc(const unsigned char* lcw_bits, int len, in
 
 // Stubs referenced by LCW path (alias helpers and streaming/rigctl)
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -34,6 +39,7 @@ apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -42,6 +48,7 @@ apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -50,6 +57,7 @@ l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -59,6 +67,7 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -66,6 +75,7 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -75,6 +85,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -82,6 +93,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -89,13 +101,16 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -104,7 +119,8 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 
 // Minimal replacement for ConvertBitIntoBytes (MSB-first packing)
 uint64_t
-ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     uint64_t out = 0;
     for (uint32_t i = 0; i < BitLength; i++) {
         out = (out << 1) | (uint64_t)(BufferIn[i] & 1);
@@ -197,7 +213,7 @@ set_bits_msb(uint8_t* bits, int start, int width, unsigned value) {
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -218,7 +234,7 @@ main(void) {
     //   [40..55] CHAN-T (iden:4 | chan:12)
     //   [56..71] CHAN-R (unused here)
     uint8_t lcw[72];
-    memset(lcw, 0, sizeof(lcw));
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
     const int svc = 0x00;  // unencrypted
     const int tg = 0x1234; // talkgroup
     const int ch = 0x100A; // iden=1, chan=0x00A (10)
@@ -253,7 +269,7 @@ main(void) {
     // in the LCW path and must not dispatch a traffic-channel grant.
     {
         uint8_t lcw42[72];
-        memset(lcw42, 0, sizeof(lcw42));
+        DSD_MEMSET(lcw42, 0, sizeof(lcw42));
         set_bits_msb(lcw42, 0, 8, 0x42);
         set_bits_msb(lcw42, 8, 16, (unsigned)ch);
         set_bits_msb(lcw42, 24, 16, (unsigned)tg);
@@ -266,3 +282,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

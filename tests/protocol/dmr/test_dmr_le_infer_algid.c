@@ -11,9 +11,8 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static uint8_t
@@ -35,7 +34,7 @@ fill_le_fragments_for_mi(dsd_state* state, uint8_t slot, uint32_t mi32) {
     const uint8_t crc = crc4(mi_bits32, 32);
 
     unsigned char msg36[36];
-    memset(msg36, 0, sizeof(msg36));
+    DSD_MEMSET(msg36, 0, sizeof(msg36));
     for (int i = 0; i < 32; i++) {
         msg36[i] = (unsigned char)(mi_bits32[i] & 1U);
     }
@@ -45,12 +44,12 @@ fill_le_fragments_for_mi(dsd_state* state, uint8_t slot, uint32_t mi32) {
 
     // Golay(24,12) parity bits for each 12-bit chunk (MSB-first).
     unsigned char go36[36];
-    memset(go36, 0, sizeof(go36));
+    DSD_MEMSET(go36, 0, sizeof(go36));
     for (int chunk = 0; chunk < 3; chunk++) {
         unsigned char orig[12];
         unsigned char enc[24];
-        memset(orig, 0, sizeof(orig));
-        memset(enc, 0, sizeof(enc));
+        DSD_MEMSET(orig, 0, sizeof(orig));
+        DSD_MEMSET(enc, 0, sizeof(enc));
         for (int i = 0; i < 12; i++) {
             orig[i] = msg36[chunk * 12 + i] & 1U;
         }
@@ -77,8 +76,8 @@ static void
 run_case(unsigned long long key, uint32_t mi, int expect_algid) {
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     state.currentslot = 0;
     state.M = 0;

@@ -10,14 +10,19 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-// Forward minimal types and hooks
+#include "dsd-neo/core/safe_api.h"
 #include "test_support.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 #define setenv dsd_test_setenv
 
@@ -32,6 +37,7 @@ void p25_test_p1_pdu_data_decode(const unsigned char* input, int len);
 
 // Stubs required by linked decoder units
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* str, uint8_t slot) {
     (void)opts;
     (void)state;
@@ -42,6 +48,7 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
@@ -49,6 +56,7 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
@@ -56,6 +64,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     (void)state;
     (void)wr;
@@ -65,7 +74,8 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
 
 // Bit helpers expected by p25p1_pdu_data.c implementation
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     // MSB-first bit unpack
     for (int i = 0; i < len * 8; i++) {
         int byte = i / 8;
@@ -75,7 +85,8 @@ unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
 }
 
 uint64_t
-ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     uint64_t v = 0;
     for (uint32_t i = 0; i < BitLength; i++) {
         v = (v << 1) | (BufferIn[i] & 1);
@@ -84,6 +95,7 @@ ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -93,6 +105,7 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
 
 // Additional stubs for rigctl path
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -100,6 +113,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -107,17 +121,40 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
     return 0;
+}
+
+static int
+parse_json_int_field(const char* line, const char* key, int* out) {
+    if (!line || !key || !out) {
+        return 0;
+    }
+    const char* p = strstr(line, key);
+    if (!p) {
+        return 0;
+    }
+    p += strlen(key);
+    errno = 0;
+    char* end = NULL;
+    long v = strtol(p, &end, 10);
+    if (end == p || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
+        return 0;
+    }
+    *out = (int)v;
+    return 1;
 }
 
 static void
@@ -144,8 +181,7 @@ parse_last_json(const char* buf, int len, int* out_sap) {
     const char* last_nl = strrchr(buf, '\n');
     const char* line = last_nl ? (last_nl + 1) : buf;
     int sap = -1;
-    const char* q = strstr(line, "\"sap\":");
-    if (!q || sscanf(q, "\"sap\":%d", &sap) != 1) {
+    if (!parse_json_int_field(line, "\"sap\":", &sap)) {
         return -1;
     }
     if (out_sap) {
@@ -162,14 +198,14 @@ main(void) {
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_p1_pdu_es_ext") != 0) {
-        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 101;
     }
 
     // Build PDU with initial SAP=31 (extended address), which sets aux SAP=1,
     // then ES header sets aux_sap=32 (RegAuth). Follow with small payload.
     uint8_t pdu[96];
-    memset(pdu, 0, sizeof(pdu));
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
 
     pdu[0] = 0x10; // fmt=16, io=0
     pdu[1] = 31;   // SAP 31 triggers extended addressing
@@ -181,14 +217,14 @@ main(void) {
     // Extended Address header (12 bytes) at offset 12
     // Layout: ea_sap @ bit 10 (6b) → 1; ea_mfid @16 (6b) → 0x15; ea_llid @24 (24b) → 0x000102
     uint8_t* ext = pdu + 12;
-    memset(ext, 0, 12);
+    DSD_MEMSET(ext, 0, 12);
     pack_bits(ext, 12, 10, 6, 1);         // ea_sap = 1 (encryption header follows)
     pack_bits(ext, 12, 16, 6, 0x15);      // ea_mfid
     pack_bits(ext, 12, 24, 24, 0x000102); // ea_llid
 
     // ES header (13 bytes) immediately after ext
     uint8_t* es = pdu + 12 + 12;
-    memset(es, 0, 13);
+    DSD_MEMSET(es, 0, 13);
     // MI 64-bit: 0x0102030405060708
     es[0] = 0x01;
     es[1] = 0x02;
@@ -221,7 +257,7 @@ main(void) {
 
     FILE* rf = fopen(cap.path, "rb");
     if (!rf) {
-        fprintf(stderr, "fopen read failed\n");
+        DSD_FPRINTF(stderr, "fopen read failed\n");
         return 102;
     }
     fseek(rf, 0, SEEK_END);
@@ -247,9 +283,13 @@ main(void) {
     free(buf);
     // Expect aux_sap=32 (RegAuth) after ES header
     if (sap != 32) {
-        fprintf(stderr, "expected SAP 32 after ES header, got %d\n", sap);
+        DSD_FPRINTF(stderr, "expected SAP 32 after ES header, got %d\n", sap);
         return 1;
     }
     (void)remove(cap.path);
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

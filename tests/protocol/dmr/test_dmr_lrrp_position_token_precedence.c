@@ -16,12 +16,19 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/unicode.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Minimal stubs for direct link with dmr_pdu.c
 const char*
@@ -35,14 +42,15 @@ dsd_unicode_supported(void) {
 }
 
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     if (len > 0) {
-        memset(output, 0, (size_t)len);
+        DSD_MEMSET(output, 0, (size_t)len);
     }
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -50,6 +58,7 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     (void)opts;
     (void)state;
@@ -69,13 +78,15 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
 
 // Deterministic system time stubs (not used: file output disabled)
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 getTimeC_buf(char out[9]) {
-    snprintf(out, 9, "%s", "11:22:33");
+    DSD_SNPRINTF(out, 9, "%s", "11:22:33");
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 getDateS_buf(char out[11]) {
-    snprintf(out, 11, "%s", "1999/01/02");
+    DSD_SNPRINTF(out, 11, "%s", "1999/01/02");
 }
 
 // Under test
@@ -86,14 +97,29 @@ static int
 expect_has_point(const char* s, double exp_lat, double exp_lon, const char* tag) {
     const char* p = strchr(s, '(');
     if (!p) {
-        fprintf(stderr, "%s: missing '('\n", tag);
+        DSD_FPRINTF(stderr, "%s: missing '('\n", tag);
         return 1;
     }
 
-    double lat = 0.0;
-    double lon = 0.0;
-    if (sscanf(p, "(%lf, %lf)", &lat, &lon) != 2) {
-        fprintf(stderr, "%s: failed to parse coordinates from '%s'\n", tag, s);
+    errno = 0;
+    char* end = NULL;
+    double lat = strtod(p + 1, &end);
+    if (end == p + 1 || errno == ERANGE) {
+        DSD_FPRINTF(stderr, "%s: failed to parse coordinates from '%s'\n", tag, s);
+        return 1;
+    }
+    while (*end == ' ' || *end == '\t') {
+        end++;
+    }
+    if (*end != ',') {
+        DSD_FPRINTF(stderr, "%s: missing coordinate separator in '%s'\n", tag, s);
+        return 1;
+    }
+    end++;
+    errno = 0;
+    double lon = strtod(end, &end);
+    if (errno == ERANGE) {
+        DSD_FPRINTF(stderr, "%s: failed to parse coordinates from '%s'\n", tag, s);
         return 1;
     }
 
@@ -106,7 +132,7 @@ expect_has_point(const char* s, double exp_lat, double exp_lon, const char* tag)
         dlon = -dlon;
     }
     if (dlat > 1e-5 || dlon > 1e-5) {
-        fprintf(stderr, "%s: got (%.8lf, %.8lf) expected (%.8lf, %.8lf)\n", tag, lat, lon, exp_lat, exp_lon);
+        DSD_FPRINTF(stderr, "%s: got (%.8lf, %.8lf) expected (%.8lf, %.8lf)\n", tag, lat, lon, exp_lat, exp_lon);
         return 1;
     }
 
@@ -135,8 +161,8 @@ main(void) {
 
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     st.currentslot = 0;
     opts.lrrp_file_output = 0;
 
@@ -151,7 +177,7 @@ main(void) {
     expected_from_raw(lat_c2d, lon_c2d, &exp_lat, &exp_lon);
 
     uint8_t pdu[64];
-    memset(pdu, 0, sizeof pdu);
+    DSD_MEMSET(pdu, 0, sizeof pdu);
     size_t i = 0;
     pdu[i++] = 0x07; // Immediate Location Response
     pdu[i++] = 23;   // payload length: POINT_3D (12) + CIRCLE_2D (11)
@@ -188,3 +214,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

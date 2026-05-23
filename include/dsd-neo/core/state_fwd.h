@@ -11,7 +11,8 @@
  * references.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_FWD_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_FWD_H_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,3 +24,4 @@ typedef struct Event_History_I Event_History_I;
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_FWD_H_H */

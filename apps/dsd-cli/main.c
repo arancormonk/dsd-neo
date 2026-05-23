@@ -34,8 +34,8 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <stdio.h>
 #include <stdlib.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 int
@@ -43,7 +43,7 @@ main(int argc, char** argv) {
     dsd_opts* opts = calloc(1, sizeof(dsd_opts));
     dsd_state* state = calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
-        fprintf(stderr, "Failed to allocate memory for opts/state\n");
+        DSD_FPRINTF(stderr, "Failed to allocate memory for opts/state\n");
         free(opts);
         free(state);
         return 1;

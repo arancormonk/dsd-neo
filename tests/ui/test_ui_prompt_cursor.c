@@ -14,6 +14,7 @@
 
 #include <assert.h>
 #include <curses.h>
+#include <dsd-neo/core/string_utils.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -27,20 +28,23 @@ capture_done(void* user, const char* text) {
     (void)user;
     g_done_called = 1;
     if (text) {
-        strncpy(g_done_text, text, sizeof g_done_text - 1);
+        DSD_STRNCPY(g_done_text, text, sizeof g_done_text - 1);
         g_done_text[sizeof g_done_text - 1] = '\0';
     } else {
         g_done_text[0] = '\0';
     }
 }
 
+WINDOW* ui_make_window(int h, int w, int y, int x); // NOLINT(misc-use-internal-linkage)
+void ui_statusf(const char* fmt, ...);              // NOLINT(misc-use-internal-linkage)
+
 WINDOW*
-ui_make_window(int h, int w, int y, int x) {
+ui_make_window(int h, int w, int y, int x) { // NOLINT(misc-use-internal-linkage)
     return newwin(h, w, y, x);
 }
 
 void
-ui_statusf(const char* fmt, ...) {
+ui_statusf(const char* fmt, ...) { // NOLINT(misc-use-internal-linkage)
     (void)fmt;
 }
 

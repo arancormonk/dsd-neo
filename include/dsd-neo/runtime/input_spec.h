@@ -15,7 +15,8 @@
  * `soapy:<args>` so only device args are passed to Soapy.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_SPEC_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_SPEC_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 
@@ -45,3 +46,4 @@ int dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_SPEC_H_H */

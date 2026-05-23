@@ -9,6 +9,12 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Test shim helper
 int p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int chan16, long map_override,
@@ -19,13 +25,15 @@ typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
 
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -34,6 +42,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -42,6 +51,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -51,6 +61,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -60,13 +71,16 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -76,7 +90,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 expect_eq_long(const char* tag, long got, long want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %ld want %ld\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %ld want %ld\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -133,6 +147,10 @@ main(void) {
         return 8;
     }
 
-    fprintf(stderr, "P25 IDEN variant checks passed\n");
+    DSD_FPRINTF(stderr, "P25 IDEN variant checks passed\n");
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

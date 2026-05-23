@@ -121,6 +121,112 @@ cqpsk_cma_effective_step(float step, float abs_err, unsigned int symbols) {
     return effective;
 }
 
+static float
+sanitize_step(float step) {
+    if (!(step > 0.0f) || !std::isfinite(step)) {
+        step = DSD_CQPSK_CMA_EQ_DEFAULT_MU;
+    }
+    if (step > 0.01f) {
+        step = 0.01f;
+    }
+    return step;
+}
+
+static float
+sanitize_modulus(float modulus) {
+    if (!(modulus > 0.0f) || !std::isfinite(modulus)) {
+        modulus = DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
+    }
+    return modulus;
+}
+
+static void
+sanitize_iq_sample(float* in_r, float* in_i) {
+    if (!std::isfinite(*in_r)) {
+        *in_r = 0.0f;
+    }
+    if (!std::isfinite(*in_i)) {
+        *in_i = 0.0f;
+    }
+}
+
+static void
+push_iq_history(dsd_cqpsk_cma_equalizer_state_t* st, int taps, float in_r, float in_i) {
+    for (int k = taps - 1; k > 0; k--) {
+        st->hist_r[k] = st->hist_r[k - 1];
+        st->hist_i[k] = st->hist_i[k - 1];
+    }
+    st->hist_r[0] = in_r;
+    st->hist_i[0] = in_i;
+    if (st->filled < taps) {
+        st->filled++;
+    }
+}
+
+static void
+equalize_sample(const dsd_cqpsk_cma_equalizer_state_t* st, int taps, float* out_r, float* out_i) {
+    float y_r = 0.0f;
+    float y_i = 0.0f;
+    for (int k = 0; k < taps; k++) {
+        const float tr = st->taps_r[k];
+        const float ti = st->taps_i[k];
+        const float xr = st->hist_r[k];
+        const float xi = st->hist_i[k];
+        y_r += tr * xr - ti * xi;
+        y_i += tr * xi + ti * xr;
+    }
+    *out_r = y_r;
+    *out_i = y_i;
+}
+
+static bool
+ready_for_cma_update(const dsd_cqpsk_cma_equalizer_state_t* st, int taps, float mag2) {
+    if (st->filled < taps) {
+        return false;
+    }
+    if (mag2 < 1.0e-8f) {
+        return false;
+    }
+    return std::isfinite(mag2);
+}
+
+static float
+update_cma_taps(dsd_cqpsk_cma_equalizer_state_t* st, int taps, float mu_err_r, float mu_err_i) {
+    float tap_energy = 0.0f;
+    for (int k = 0; k < taps; k++) {
+        const float xr = st->hist_r[k];
+        const float xi = st->hist_i[k];
+        const float tr = st->taps_r[k] + mu_err_r * xr + mu_err_i * xi;
+        const float ti = st->taps_i[k] + mu_err_i * xr - mu_err_r * xi;
+        st->taps_r[k] = tr;
+        st->taps_i[k] = ti;
+        tap_energy += tr * tr + ti * ti;
+    }
+    return tap_energy;
+}
+
+static bool
+tap_energy_is_valid(float tap_energy) {
+    if (!std::isfinite(tap_energy)) {
+        return false;
+    }
+    if (tap_energy > 16.0f) {
+        return false;
+    }
+    return tap_energy >= 1.0e-6f;
+}
+
+static void
+update_cma_emas(dsd_cqpsk_cma_equalizer_state_t* st, float abs_err, float mag2) {
+    if (st->symbols == 0U) {
+        st->err_ema = abs_err;
+        st->mag2_ema = mag2;
+        return;
+    }
+    st->err_ema += 0.02f * (abs_err - st->err_ema);
+    st->mag2_ema += 0.02f * (mag2 - st->mag2_ema);
+}
+
 } // namespace
 
 extern "C" void
@@ -145,54 +251,26 @@ dsd_cqpsk_cma_equalizer_apply(dsd_cqpsk_cma_equalizer_state_t* st, float* iq, in
         reset_center_spike(st, taps);
     }
 
-    if (!(step > 0.0f) || !std::isfinite(step)) {
-        step = DSD_CQPSK_CMA_EQ_DEFAULT_MU;
-    }
-    if (step > 0.01f) {
-        step = 0.01f;
-    }
-    if (!(modulus > 0.0f) || !std::isfinite(modulus)) {
-        modulus = DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
-    }
+    step = sanitize_step(step);
+    modulus = sanitize_modulus(modulus);
 
     const int pairs = len >> 1;
     for (int n = 0; n < pairs; n++) {
         const size_t ii = (size_t)n << 1;
         float in_r = iq[ii];
         float in_i = iq[ii + 1];
-        if (!std::isfinite(in_r)) {
-            in_r = 0.0f;
-        }
-        if (!std::isfinite(in_i)) {
-            in_i = 0.0f;
-        }
-
-        for (int k = taps - 1; k > 0; k--) {
-            st->hist_r[k] = st->hist_r[k - 1];
-            st->hist_i[k] = st->hist_i[k - 1];
-        }
-        st->hist_r[0] = in_r;
-        st->hist_i[0] = in_i;
-        if (st->filled < taps) {
-            st->filled++;
-        }
+        sanitize_iq_sample(&in_r, &in_i);
+        push_iq_history(st, taps, in_r, in_i);
 
         float out_r = 0.0f;
         float out_i = 0.0f;
-        for (int k = 0; k < taps; k++) {
-            const float tr = st->taps_r[k];
-            const float ti = st->taps_i[k];
-            const float xr = st->hist_r[k];
-            const float xi = st->hist_i[k];
-            out_r += tr * xr - ti * xi;
-            out_i += tr * xi + ti * xr;
-        }
+        equalize_sample(st, taps, &out_r, &out_i);
 
         iq[ii] = out_r;
         iq[ii + 1] = out_i;
 
         const float mag2 = out_r * out_r + out_i * out_i;
-        if (st->filled < taps || mag2 < 1.0e-8f || !std::isfinite(mag2)) {
+        if (!ready_for_cma_update(st, taps, mag2)) {
             continue;
         }
 
@@ -205,28 +283,13 @@ dsd_cqpsk_cma_equalizer_apply(dsd_cqpsk_cma_equalizer_state_t* st, float* iq, in
 
         const float mu_err_r = -effective_step * err_r;
         const float mu_err_i = -effective_step * err_i;
-        float tap_energy = 0.0f;
-        for (int k = 0; k < taps; k++) {
-            const float xr = st->hist_r[k];
-            const float xi = st->hist_i[k];
-            const float tr = st->taps_r[k] + mu_err_r * xr + mu_err_i * xi;
-            const float ti = st->taps_i[k] + mu_err_i * xr - mu_err_r * xi;
-            st->taps_r[k] = tr;
-            st->taps_i[k] = ti;
-            tap_energy += tr * tr + ti * ti;
-        }
-        if (!std::isfinite(tap_energy) || tap_energy > 16.0f || tap_energy < 1.0e-6f) {
+        const float tap_energy = update_cma_taps(st, taps, mu_err_r, mu_err_i);
+        if (!tap_energy_is_valid(tap_energy)) {
             reset_center_spike(st, taps);
             continue;
         }
 
-        if (st->symbols == 0U) {
-            st->err_ema = abs_err;
-            st->mag2_ema = mag2;
-        } else {
-            st->err_ema += 0.02f * (abs_err - st->err_ema);
-            st->mag2_ema += 0.02f * (mag2 - st->mag2_ema);
-        }
+        update_cma_emas(st, abs_err, mag2);
         st->symbols++;
     }
 }

@@ -9,6 +9,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
@@ -26,22 +27,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <time.h>
-
+#include <unistd.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/runtime/call_alert.h"
+
 #if defined(__MINGW32__) || defined(__MINGW64__)
 #include <getopt.h>
 #include <unistd.h>
 #elif !DSD_PLATFORM_WIN_NATIVE
-#include <unistd.h>
 #endif
 
 // Local helpers --------------------------------------------------------------
 static int dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc);
+extern int optind;
+extern char* optarg;
 
 static void
 cli_set_exit_rc(int* out_exit_rc, int rc) {
@@ -88,7 +91,7 @@ cli_parse_hex_u64_n(const char* hex, size_t n, unsigned long long* out) {
         return 0;
     }
     char buf[17];
-    memcpy(buf, hex, n);
+    DSD_MEMCPY(buf, hex, n);
     buf[n] = '\0';
     char* end = NULL;
     unsigned long long v = strtoull(buf, &end, 16);
@@ -140,6 +143,58 @@ cli_parse_decimal_u64(const char* in, uint64_t* out) {
 }
 
 static int
+cli_parse_long_base(const char* in, int base, long* out) {
+    if (!in || !out || in[0] == '\0') {
+        return 0;
+    }
+    errno = 0;
+    char* end = NULL;
+    long v = strtol(in, &end, base);
+    if (errno != 0 || !end || *end != '\0') {
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+
+static long
+cli_parse_long_or_default(const char* in, int base, long fallback) {
+    long value = fallback;
+    if (!cli_parse_long_base(in, base, &value)) {
+        return fallback;
+    }
+    return value;
+}
+
+static unsigned long long
+cli_parse_u64_or_default(const char* in, int base, unsigned long long fallback) {
+    if (!in || in[0] == '\0') {
+        return fallback;
+    }
+    errno = 0;
+    char* end = NULL;
+    unsigned long long value = strtoull(in, &end, base);
+    if (errno != 0 || !end || *end != '\0') {
+        return fallback;
+    }
+    return value;
+}
+
+static double
+cli_parse_double_or_default(const char* in, double fallback) {
+    if (!in || in[0] == '\0') {
+        return fallback;
+    }
+    errno = 0;
+    char* end = NULL;
+    double value = strtod(in, &end);
+    if (errno != 0 || !end || *end != '\0') {
+        return fallback;
+    }
+    return value;
+}
+
+static int
 cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     if (!opts || !path) {
         return -1;
@@ -148,14 +203,698 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     if (path_len + strlen("iqreplay:") + 1 > sizeof(opts->audio_in_dev)) {
         return -1;
     }
-    memcpy(opts->audio_in_dev, "iqreplay:", strlen("iqreplay:"));
-    memcpy(opts->audio_in_dev + strlen("iqreplay:"), path, path_len + 1);
+    DSD_MEMCPY(opts->audio_in_dev, "iqreplay:", strlen("iqreplay:"));
+    DSD_MEMCPY(opts->audio_in_dev + strlen("iqreplay:"), path, path_len + 1);
     return 0;
 }
 
 // Parse long-style options and environment mapping; also supports the
 // one-shot LCN calculator. Short-option parsing has been migrated here
 // to centralize all CLI handling in runtime.
+
+#define DSD_PARSE_ARGS_PRESCAN_BLOCK()                                                                                 \
+    for (int i = 1; i < argc; i++) {                                                                                   \
+        if (strcmp(argv[i], "--rtltcp-autotune") == 0) {                                                               \
+            opts->rtltcp_autotune = 1;                                                                                 \
+            dsd_setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);                                                                \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--rtl-udp-control") == 0) {                                                               \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--rtl-udp-control requires a port value\n");                                                \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            const char* port_arg = argv[i + 1];                                                                        \
+            unsigned long parsed_port = 0;                                                                             \
+            if (!cli_parse_decimal_u32(port_arg, &parsed_port)) {                                                      \
+                LOG_ERROR("Invalid --rtl-udp-control value \"%s\" (expected decimal port)\n", port_arg);               \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            rtl_udp_control_cli_seen = 1;                                                                              \
+            rtl_udp_control_cli_port = parsed_port;                                                                    \
+            i++;                                                                                                       \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--rtl-udp-control=", 18) == 0) {                                                         \
+            const char* port_arg = argv[i] + 18;                                                                       \
+            unsigned long parsed_port = 0;                                                                             \
+            if (!cli_parse_decimal_u32(port_arg, &parsed_port)) {                                                      \
+                LOG_ERROR("Invalid --rtl-udp-control value \"%s\" (expected decimal port)\n", port_arg);               \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            rtl_udp_control_cli_seen = 1;                                                                              \
+            rtl_udp_control_cli_port = parsed_port;                                                                    \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--iq-capture") == 0) {                                                                    \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--iq-capture requires a path value\n");                                                     \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            iq_capture_cli = argv[++i];                                                                                \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--iq-capture=", 13) == 0) {                                                              \
+            iq_capture_cli = argv[i] + 13;                                                                             \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--iq-capture-format") == 0) {                                                             \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--iq-capture-format requires a value (cu8|cf32)\n");                                        \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            iq_capture_format_cli = argv[++i];                                                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--iq-capture-format=", 20) == 0) {                                                       \
+            iq_capture_format_cli = argv[i] + 20;                                                                      \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--iq-capture-max-mb") == 0) {                                                             \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--iq-capture-max-mb requires a decimal value\n");                                           \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            iq_capture_max_mb_cli = argv[++i];                                                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--iq-capture-max-mb=", 20) == 0) {                                                       \
+            iq_capture_max_mb_cli = argv[i] + 20;                                                                      \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--symbol-capture-format") == 0) {                                                         \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--symbol-capture-format requires a value (soft|legacy)\n");                                 \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            symbol_capture_format_cli = argv[++i];                                                                     \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--symbol-capture-format=", 24) == 0) {                                                   \
+            symbol_capture_format_cli = argv[i] + 24;                                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--iq-replay") == 0) {                                                                     \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--iq-replay requires a path value\n");                                                      \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            iq_replay_cli = argv[++i];                                                                                 \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--iq-replay=", 12) == 0) {                                                               \
+            iq_replay_cli = argv[i] + 12;                                                                              \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--iq-replay-rate") == 0) {                                                                \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--iq-replay-rate requires a value (fast|realtime)\n");                                      \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            iq_replay_rate_cli = argv[++i];                                                                            \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--iq-replay-rate=", 17) == 0) {                                                          \
+            iq_replay_rate_cli = argv[i] + 17;                                                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--iq-loop") == 0) {                                                                       \
+            iq_loop_cli = 1;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--iq-info") == 0) {                                                                       \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--iq-info requires a path value\n");                                                        \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            iq_info_cli = argv[++i];                                                                                   \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--iq-info=", 10) == 0) {                                                                 \
+            iq_info_cli = argv[i] + 10;                                                                                \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-vc-grace") == 0 && i + 1 < argc) {                                                  \
+            opts->p25_vc_grace_s = cli_parse_double_or_default(argv[++i], 0.0);                                        \
+            char buf[32];                                                                                              \
+            DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_vc_grace_s);                                               \
+            dsd_setenv("DSD_NEO_P25_VC_GRACE", buf, 1);                                                                \
+            LOG_NOTICE("P25: VC grace set to %.2fs (CLI).\n", opts->p25_vc_grace_s);                                   \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-min-follow-dwell") == 0 && i + 1 < argc) {                                          \
+            opts->p25_min_follow_dwell_s = cli_parse_double_or_default(argv[++i], 0.0);                                \
+            char buf[32];                                                                                              \
+            DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_min_follow_dwell_s);                                       \
+            dsd_setenv("DSD_NEO_P25_MIN_FOLLOW_DWELL", buf, 1);                                                        \
+            LOG_NOTICE("P25: Min follow dwell set to %.2fs (CLI).\n", opts->p25_min_follow_dwell_s);                   \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-grant-voice-timeout") == 0 && i + 1 < argc) {                                       \
+            opts->p25_grant_voice_to_s = cli_parse_double_or_default(argv[++i], 0.0);                                  \
+            char buf[32];                                                                                              \
+            DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_grant_voice_to_s);                                         \
+            dsd_setenv("DSD_NEO_P25_GRANT_VOICE_TO", buf, 1);                                                          \
+            LOG_NOTICE("P25: Grant->Voice timeout set to %.2fs (CLI).\n", opts->p25_grant_voice_to_s);                 \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-retune-backoff") == 0 && i + 1 < argc) {                                            \
+            opts->p25_retune_backoff_s = cli_parse_double_or_default(argv[++i], 0.0);                                  \
+            char buf[32];                                                                                              \
+            DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_retune_backoff_s);                                         \
+            dsd_setenv("DSD_NEO_P25_RETUNE_BACKOFF", buf, 1);                                                          \
+            LOG_NOTICE("P25: Retune backoff set to %.2fs (CLI).\n", opts->p25_retune_backoff_s);                       \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-mac-hold") == 0 && i + 1 < argc) {                                                  \
+            double v = cli_parse_double_or_default(argv[++i], 0.0);                                                    \
+            char buf[32];                                                                                              \
+            DSD_SNPRINTF(buf, sizeof buf, "%.3f", v);                                                                  \
+            dsd_setenv("DSD_NEO_P25_MAC_HOLD", buf, 1);                                                                \
+            LOG_NOTICE("P25: MAC hold set to %.2fs (CLI).\n", v);                                                      \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-ring-hold") == 0 && i + 1 < argc) {                                                 \
+            double v = cli_parse_double_or_default(argv[++i], 0.0);                                                    \
+            char buf[32];                                                                                              \
+            DSD_SNPRINTF(buf, sizeof buf, "%.3f", v);                                                                  \
+            dsd_setenv("DSD_NEO_P25_RING_HOLD", buf, 1);                                                               \
+            LOG_NOTICE("P25: Ring hold set to %.2fs (CLI).\n", v);                                                     \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-cc-grace") == 0 && i + 1 < argc) {                                                  \
+            double v = cli_parse_double_or_default(argv[++i], 0.0);                                                    \
+            if (v < 0) {                                                                                               \
+                v = 0;                                                                                                 \
+            }                                                                                                          \
+            if (v > 120) {                                                                                             \
+                v = 120;                                                                                               \
+            }                                                                                                          \
+            char buf[32];                                                                                              \
+            DSD_SNPRINTF(buf, sizeof buf, "%.3f", v);                                                                  \
+            dsd_setenv("DSD_NEO_P25_CC_GRACE", buf, 1);                                                                \
+            LOG_NOTICE("P25: CC grace set to %.2fs (CLI).\n", v);                                                      \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-force-release-extra") == 0 && i + 1 < argc) {                                       \
+            opts->p25_force_release_extra_s = cli_parse_double_or_default(argv[++i], 0.0);                             \
+            char buf[32];                                                                                              \
+            DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_force_release_extra_s);                                    \
+            dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA", buf, 1);                                                     \
+            LOG_NOTICE("P25: Force-release extra set to %.2fs (CLI).\n", opts->p25_force_release_extra_s);             \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-force-release-margin") == 0 && i + 1 < argc) {                                      \
+            opts->p25_force_release_margin_s = cli_parse_double_or_default(argv[++i], 0.0);                            \
+            char buf[32];                                                                                              \
+            DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_force_release_margin_s);                                   \
+            dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", buf, 1);                                                    \
+            LOG_NOTICE("P25: Force-release margin set to %.2fs (CLI).\n", opts->p25_force_release_margin_s);           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-p1-err-hold-pct") == 0 && i + 1 < argc) {                                           \
+            opts->p25_p1_err_hold_pct = cli_parse_double_or_default(argv[++i], 0.0);                                   \
+            char buf[32];                                                                                              \
+            DSD_SNPRINTF(buf, sizeof buf, "%.1f", opts->p25_p1_err_hold_pct);                                          \
+            dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", buf, 1);                                                          \
+            LOG_NOTICE("P25p1: Error-hold threshold set to %.1f%% (CLI).\n", opts->p25_p1_err_hold_pct);               \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-p1-err-hold-sec") == 0 && i + 1 < argc) {                                           \
+            opts->p25_p1_err_hold_s = cli_parse_double_or_default(argv[++i], 0.0);                                     \
+            char buf[32];                                                                                              \
+            DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_p1_err_hold_s);                                            \
+            dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_S", buf, 1);                                                            \
+            LOG_NOTICE("P25p1: Error-hold seconds set to %.2fs (CLI).\n", opts->p25_p1_err_hold_s);                    \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--calc-lcn") == 0 && i + 1 < argc) {                                                      \
+            calc_csv_cli = argv[++i];                                                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--calc-step") == 0 && i + 1 < argc) {                                                     \
+            calc_step_cli = argv[++i];                                                                                 \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--calc-cc-freq") == 0 && i + 1 < argc) {                                                  \
+            calc_ccf_cli = argv[++i];                                                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--calc-cc-lcn") == 0 && i + 1 < argc) {                                                   \
+            calc_ccl_cli = argv[++i];                                                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--calc-start-lcn") == 0 && i + 1 < argc) {                                                \
+            calc_start_cli = argv[++i];                                                                                \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--auto-ppm") == 0) {                                                                      \
+            opts->rtl_auto_ppm = 1;                                                                                    \
+            dsd_setenv("DSD_NEO_AUTO_PPM", "1", 1);                                                                    \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--input-volume") == 0 && i + 1 < argc) {                                                  \
+            input_vol_cli = argv[++i];                                                                                 \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--input-level-warn-db") == 0 && i + 1 < argc) {                                           \
+            input_warn_db_cli = argv[++i];                                                                             \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--frame-log") == 0 && i + 1 < argc) {                                                     \
+            frame_log_cli = argv[++i];                                                                                 \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-mode") == 0 && i + 1 < argc) {                                                     \
+            rdio_mode_cli = argv[++i];                                                                                 \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-system-id") == 0 && i + 1 < argc) {                                                \
+            rdio_system_id_cli = argv[++i];                                                                            \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-api-url") == 0 && i + 1 < argc) {                                                  \
+            rdio_api_url_cli = argv[++i];                                                                              \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-api-key") == 0 && i + 1 < argc) {                                                  \
+            rdio_api_key_cli = argv[++i];                                                                              \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-upload-timeout-ms") == 0 && i + 1 < argc) {                                        \
+            rdio_upload_timeout_cli = argv[++i];                                                                       \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-upload-retries") == 0 && i + 1 < argc) {                                           \
+            rdio_upload_retries_cli = argv[++i];                                                                       \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-api-delete-after-upload") == 0) {                                                  \
+            rdio_api_delete_after_upload_cli = 1;                                                                      \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-baofeng-pc5") == 0) {                                                               \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--dmr-baofeng-pc5 requires a hex key value\n");                                             \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            dmr_baofeng_pc5_cli = argv[++i];                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--dmr-baofeng-pc5=", 18) == 0) {                                                         \
+            dmr_baofeng_pc5_cli = argv[i] + 18;                                                                        \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-csi-ee72") == 0) {                                                                  \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--dmr-csi-ee72 requires a hex key value\n");                                                \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            dmr_csi_ee72_cli = argv[++i];                                                                              \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--dmr-csi-ee72=", 15) == 0) {                                                            \
+            dmr_csi_ee72_cli = argv[i] + 15;                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-vertex-ks-csv") == 0) {                                                             \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--dmr-vertex-ks-csv requires a CSV path\n");                                                \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            dmr_vertex_ks_csv_cli = argv[++i];                                                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--dmr-vertex-ks-csv=", 20) == 0) {                                                       \
+            dmr_vertex_ks_csv_cli = argv[i] + 20;                                                                      \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {                                                  \
+            const char* sv = argv[++i];                                                                                \
+            if (sv && *sv) {                                                                                           \
+                opts->rtl_auto_ppm_snr_db = (float)cli_parse_double_or_default(sv, 0.0);                               \
+                char buf[32];                                                                                          \
+                DSD_SNPRINTF(buf, sizeof buf, "%.2f", opts->rtl_auto_ppm_snr_db);                                      \
+                dsd_setenv("DSD_NEO_AUTO_PPM_SNR_DB", buf, 1);                                                         \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--enc-lockout") == 0) {                                                                   \
+            opts->trunk_tune_enc_calls = 0;                                                                            \
+            LOG_NOTICE("P25: Encrypted call lockout: On (skip encrypted).\n");                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--enc-follow") == 0) {                                                                    \
+            opts->trunk_tune_enc_calls = 1;                                                                            \
+            LOG_NOTICE("P25: Encrypted call lockout: Off (follow encrypted).\n");                                      \
+            continue;                                                                                                  \
+        }                                                                                                              \
+    }
+
+#define DSD_PARSE_ARGS_IQ_PRE_BLOCK()                                                                                  \
+    if (iq_capture_cli) {                                                                                              \
+        char err_buf[256];                                                                                             \
+        char data_path[2048];                                                                                          \
+        char meta_path[2048];                                                                                          \
+        int rc = dsd_iq_capture_derive_paths(iq_capture_cli, data_path, sizeof(data_path), meta_path,                  \
+                                             sizeof(meta_path), err_buf, sizeof(err_buf));                             \
+        if (rc != DSD_IQ_OK) {                                                                                         \
+            LOG_ERROR("Invalid --iq-capture path: %s\n", err_buf[0] ? err_buf : "failed to derive paths");             \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        opts->iq_capture_requested = 1;                                                                                \
+        DSD_SNPRINTF(opts->iq_capture_path, sizeof(opts->iq_capture_path), "%s", iq_capture_cli);                      \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (iq_capture_format_cli) {                                                                                       \
+        if (strcmp(iq_capture_format_cli, "cu8") == 0) {                                                               \
+            opts->iq_capture_format = DSD_IQ_FORMAT_CU8;                                                               \
+        } else if (strcmp(iq_capture_format_cli, "cf32") == 0) {                                                       \
+            opts->iq_capture_format = DSD_IQ_FORMAT_CF32;                                                              \
+        } else {                                                                                                       \
+            LOG_ERROR("Invalid --iq-capture-format value \"%s\" (expected cu8 or cf32)\n", iq_capture_format_cli);     \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (iq_capture_max_mb_cli) {                                                                                       \
+        uint64_t mb = 0;                                                                                               \
+        if (!cli_parse_decimal_u64(iq_capture_max_mb_cli, &mb)) {                                                      \
+            LOG_ERROR("Invalid --iq-capture-max-mb value \"%s\" (expected decimal MB)\n", iq_capture_max_mb_cli);      \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        if (mb > (UINT64_MAX / (1024ULL * 1024ULL))) {                                                                 \
+            LOG_ERROR("--iq-capture-max-mb value is too large\n");                                                     \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        opts->iq_capture_max_bytes = mb * 1024ULL * 1024ULL;                                                           \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (symbol_capture_format_cli) {                                                                                   \
+        if (strcmp(symbol_capture_format_cli, "soft") == 0) {                                                          \
+            opts->symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;                                              \
+        } else if (strcmp(symbol_capture_format_cli, "legacy") == 0) {                                                 \
+            opts->symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_LEGACY;                                            \
+        } else {                                                                                                       \
+            LOG_ERROR("Invalid --symbol-capture-format value \"%s\" (expected soft or legacy)\n",                      \
+                      symbol_capture_format_cli);                                                                      \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (iq_replay_cli) {                                                                                               \
+        opts->iq_replay_requested = 1;                                                                                 \
+        DSD_SNPRINTF(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", iq_replay_cli);                         \
+    }                                                                                                                  \
+    if (iq_loop_cli) {                                                                                                 \
+        opts->iq_replay_loop = 1;                                                                                      \
+    }                                                                                                                  \
+    if (iq_replay_rate_cli) {                                                                                          \
+        if (strcmp(iq_replay_rate_cli, "fast") == 0) {                                                                 \
+            opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_FAST;                                                       \
+        } else if (strcmp(iq_replay_rate_cli, "realtime") == 0) {                                                      \
+            opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_REALTIME;                                                   \
+        } else {                                                                                                       \
+            LOG_ERROR("Invalid --iq-replay-rate value \"%s\" (expected fast or realtime)\n", iq_replay_rate_cli);      \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (opts->iq_capture_requested && opts->iq_replay_requested) {                                                     \
+        LOG_ERROR("Cannot combine --iq-capture with --iq-replay in the same invocation\n");                            \
+        cli_set_exit_rc(out_exit_rc, 1);                                                                               \
+        return DSD_PARSE_ERROR;                                                                                        \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (iq_info_cli) {                                                                                                 \
+        dsd_iq_replay_config info_cfg;                                                                                 \
+        DSD_MEMSET(&info_cfg, 0, sizeof(info_cfg));                                                                    \
+        char err_buf[256] = {0};                                                                                       \
+        int rc = dsd_iq_replay_read_metadata(iq_info_cli, &info_cfg, err_buf, sizeof(err_buf));                        \
+        if (rc != DSD_IQ_OK) {                                                                                         \
+            LOG_ERROR("--iq-info: %s\n", err_buf[0] ? err_buf : "failed to parse metadata");                           \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ONE_SHOT;                                                                                 \
+        }                                                                                                              \
+        struct stat st;                                                                                                \
+        if (stat(info_cfg.data_path, &st) != 0 || st.st_size < 0) {                                                    \
+            LOG_ERROR("--iq-info: failed to stat data file '%s'\n", info_cfg.data_path);                               \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ONE_SHOT;                                                                                 \
+        }                                                                                                              \
+        rc = dsd_iq_info_print(&info_cfg, iq_info_cli, (uint64_t)st.st_size, stdout, stderr);                          \
+        dsd_iq_replay_config_clear(&info_cfg);                                                                         \
+        cli_set_exit_rc(out_exit_rc, (rc == DSD_IQ_OK) ? 0 : 1);                                                       \
+        return DSD_PARSE_ONE_SHOT;                                                                                     \
+    }
+
+#define DSD_PARSE_ARGS_IQ_REPLAY_RADIO_BLOCK()                                                                         \
+    dsd_iq_replay_config replay_cfg;                                                                                   \
+    DSD_MEMSET(&replay_cfg, 0, sizeof(replay_cfg));                                                                    \
+    char err_buf[256] = {0};                                                                                           \
+    int rc = dsd_iq_replay_open(opts->iq_replay_path, &replay_cfg, NULL, err_buf, sizeof(err_buf));                    \
+    if (rc != DSD_IQ_OK) {                                                                                             \
+        LOG_ERROR("--iq-replay: %s\n", err_buf[0] ? err_buf : "failed to parse metadata");                             \
+        cli_set_exit_rc(out_exit_rc, 1);                                                                               \
+        return DSD_PARSE_ERROR;                                                                                        \
+    }                                                                                                                  \
+                                                                                                                       \
+    struct stat st;                                                                                                    \
+    if (stat(replay_cfg.data_path, &st) != 0 || st.st_size < 0) {                                                      \
+        LOG_ERROR("--iq-replay: failed to stat data file '%s'\n", replay_cfg.data_path);                               \
+        dsd_iq_replay_config_clear(&replay_cfg);                                                                       \
+        cli_set_exit_rc(out_exit_rc, 1);                                                                               \
+        return DSD_PARSE_ERROR;                                                                                        \
+    }                                                                                                                  \
+    uint64_t effective_bytes = 0;                                                                                      \
+    int size_mismatch = 0;                                                                                             \
+    rc = dsd_iq_replay_compute_effective_bytes(replay_cfg.data_bytes, (uint64_t)st.st_size, replay_cfg.format,         \
+                                               &effective_bytes, &size_mismatch);                                      \
+    if (rc != DSD_IQ_OK) {                                                                                             \
+        LOG_ERROR("--iq-replay: failed to compute effective replay bytes\n");                                          \
+        dsd_iq_replay_config_clear(&replay_cfg);                                                                       \
+        cli_set_exit_rc(out_exit_rc, 1);                                                                               \
+        return DSD_PARSE_ERROR;                                                                                        \
+    }                                                                                                                  \
+    rc = dsd_iq_replay_validate_effective_bytes_for_replay(effective_bytes, opts->iq_replay_loop);                     \
+    if (rc != DSD_IQ_OK) {                                                                                             \
+        LOG_ERROR("--iq-replay: no aligned I/Q samples available for replay\n");                                       \
+        dsd_iq_replay_config_clear(&replay_cfg);                                                                       \
+        cli_set_exit_rc(out_exit_rc, 1);                                                                               \
+        return DSD_PARSE_ERROR;                                                                                        \
+    }                                                                                                                  \
+    if (size_mismatch) {                                                                                               \
+        LOG_WARN("IQ replay metadata/data size mismatch: metadata=%" PRIu64 " actual=%" PRIu64 "\n",                   \
+                 replay_cfg.data_bytes, (uint64_t)st.st_size);                                                         \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (replay_cfg.center_frequency_hz > UINT32_MAX) {                                                                 \
+        LOG_ERROR("--iq-replay: center_frequency_hz %" PRIu64 " exceeds RTL path range\n",                             \
+                  replay_cfg.center_frequency_hz);                                                                     \
+        dsd_iq_replay_config_clear(&replay_cfg);                                                                       \
+        cli_set_exit_rc(out_exit_rc, 1);                                                                               \
+        return DSD_PARSE_ERROR;                                                                                        \
+    }                                                                                                                  \
+    opts->rtlsdr_center_freq = (uint32_t)replay_cfg.center_frequency_hz;                                               \
+    opts->rtlsdr_ppm_error = replay_cfg.ppm;                                                                           \
+    if (replay_cfg.tuner_gain_tenth_db > 0) {                                                                          \
+        opts->rtl_gain_value = replay_cfg.tuner_gain_tenth_db / 10;                                                    \
+    }                                                                                                                  \
+    if (replay_cfg.rtl_dsp_bw_khz > 0) {                                                                               \
+        opts->rtl_dsp_bw_khz = replay_cfg.rtl_dsp_bw_khz;                                                              \
+    }                                                                                                                  \
+    opts->audio_in_type = AUDIO_IN_RTL;                                                                                \
+    if (cli_set_iqreplay_audio_dev(opts, opts->iq_replay_path) != 0) {                                                 \
+        LOG_ERROR("--iq-replay path is too long\n");                                                                   \
+        dsd_iq_replay_config_clear(&replay_cfg);                                                                       \
+        cli_set_exit_rc(out_exit_rc, 1);                                                                               \
+        return DSD_PARSE_ERROR;                                                                                        \
+    }                                                                                                                  \
+    dsd_iq_replay_config_clear(&replay_cfg);
+
+#define DSD_PARSE_ARGS_TRAILING_BLOCK()                                                                                \
+    /* If CLI present, set env vars and maybe run calculator */                                                        \
+    if (calc_csv_cli) {                                                                                                \
+        dsd_setenv("DSD_NEO_DMR_T3_CALC_CSV", calc_csv_cli, 1);                                                        \
+        if (calc_step_cli) {                                                                                           \
+            dsd_setenv("DSD_NEO_DMR_T3_STEP_HZ", calc_step_cli, 1);                                                    \
+        }                                                                                                              \
+        if (calc_ccf_cli) {                                                                                            \
+            dsd_setenv("DSD_NEO_DMR_T3_CC_FREQ", calc_ccf_cli, 1);                                                     \
+        }                                                                                                              \
+        if (calc_ccl_cli) {                                                                                            \
+            dsd_setenv("DSD_NEO_DMR_T3_CC_LCN", calc_ccl_cli, 1);                                                      \
+        }                                                                                                              \
+        if (calc_start_cli) {                                                                                          \
+            dsd_setenv("DSD_NEO_DMR_T3_START_LCN", calc_start_cli, 1);                                                 \
+        }                                                                                                              \
+        /* Refresh typed env config after CLI writes. */                                                               \
+        dsd_neo_config_init(opts);                                                                                     \
+        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_cli);                                                       \
+        cli_set_exit_rc(out_exit_rc, rc);                                                                              \
+        return DSD_PARSE_ONE_SHOT;                                                                                     \
+    }                                                                                                                  \
+                                                                                                                       \
+    /* Environment fallback */                                                                                         \
+    if (cfg && cfg->dmr_t3_calc_csv_is_set && cfg->dmr_t3_calc_csv[0] != '\0') {                                       \
+        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(cfg->dmr_t3_calc_csv);                                               \
+        cli_set_exit_rc(out_exit_rc, rc);                                                                              \
+        return DSD_PARSE_ONE_SHOT;                                                                                     \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (rtl_udp_control_cli_seen) {                                                                                    \
+        int p = rtl_udp_control_cli_port > 65535UL ? 65535 : (int)rtl_udp_control_cli_port;                            \
+        opts->rtl_udp_port = p;                                                                                        \
+        if (p > 0) {                                                                                                   \
+            LOG_NOTICE("RTL: external UDP retune control enabled on UDP/%d\n", p);                                     \
+        } else {                                                                                                       \
+            LOG_NOTICE("RTL: external UDP retune control disabled\n");                                                 \
+        }                                                                                                              \
+    }                                                                                                                  \
+                                                                                                                       \
+    /* Apply input volume and warn threshold */                                                                        \
+    if (input_vol_cli) {                                                                                               \
+        int mv = (int)cli_parse_long_or_default(input_vol_cli, 10, 0);                                                 \
+        if (mv < 1) {                                                                                                  \
+            mv = 1;                                                                                                    \
+        }                                                                                                              \
+        if (mv > 16) {                                                                                                 \
+            mv = 16;                                                                                                   \
+        }                                                                                                              \
+        opts->input_volume_multiplier = mv;                                                                            \
+        char b[16];                                                                                                    \
+        DSD_SNPRINTF(b, sizeof b, "%d", mv);                                                                           \
+        dsd_setenv("DSD_NEO_INPUT_VOLUME", b, 1);                                                                      \
+        LOG_NOTICE("Input volume multiplier: %dx\n", mv);                                                              \
+    } else if (cfg && cfg->input_volume_is_set) {                                                                      \
+        opts->input_volume_multiplier = cfg->input_volume_multiplier;                                                  \
+        LOG_NOTICE("Input volume multiplier (env): %dx\n", opts->input_volume_multiplier);                             \
+    }                                                                                                                  \
+    if (input_warn_db_cli) {                                                                                           \
+        double thr = cli_parse_double_or_default(input_warn_db_cli, 0.0);                                              \
+        if (thr < -200.0) {                                                                                            \
+            thr = -200.0;                                                                                              \
+        }                                                                                                              \
+        if (thr > 0.0) {                                                                                               \
+            thr = 0.0;                                                                                                 \
+        }                                                                                                              \
+        opts->input_warn_db = thr;                                                                                     \
+        char b[32];                                                                                                    \
+        DSD_SNPRINTF(b, sizeof b, "%.1f", thr);                                                                        \
+        dsd_setenv("DSD_NEO_INPUT_WARN_DB", b, 1);                                                                     \
+        LOG_NOTICE("Low input warning threshold: %.1f dBFS\n", thr);                                                   \
+    } else if (cfg && cfg->input_warn_db_is_set) {                                                                     \
+        opts->input_warn_db = cfg->input_warn_db;                                                                      \
+        LOG_NOTICE("Low input warning threshold (env): %.1f dBFS\n", opts->input_warn_db);                             \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (frame_log_cli) {                                                                                               \
+        DSD_SNPRINTF(opts->frame_log_file, sizeof opts->frame_log_file, "%s", frame_log_cli);                          \
+        opts->frame_log_file[sizeof opts->frame_log_file - 1] = '\0';                                                  \
+        opts->frame_log_open_error_reported = 0;                                                                       \
+        opts->frame_log_write_error_reported = 0;                                                                      \
+        dsd_frame_log_close(opts);                                                                                     \
+        LOG_NOTICE("Frame log file: %s\n", opts->frame_log_file);                                                      \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (rdio_mode_cli) {                                                                                               \
+        int mode = DSD_RDIO_MODE_OFF;                                                                                  \
+        if (dsd_rdio_mode_from_string(rdio_mode_cli, &mode) == 0) {                                                    \
+            opts->rdio_mode = mode;                                                                                    \
+            LOG_NOTICE("Rdio export mode: %s\n", dsd_rdio_mode_to_string(opts->rdio_mode));                            \
+        } else {                                                                                                       \
+            LOG_WARN("Invalid --rdio-mode value \"%s\" (expected off|dirwatch|api|both)\n", rdio_mode_cli);            \
+        }                                                                                                              \
+    }                                                                                                                  \
+    if (rdio_system_id_cli) {                                                                                          \
+        int sid = (int)cli_parse_long_or_default(rdio_system_id_cli, 10, 0);                                           \
+        if (sid < 0) {                                                                                                 \
+            sid = 0;                                                                                                   \
+        }                                                                                                              \
+        if (sid > 65535) {                                                                                             \
+            sid = 65535;                                                                                               \
+        }                                                                                                              \
+        opts->rdio_system_id = sid;                                                                                    \
+        LOG_NOTICE("Rdio system ID: %d\n", opts->rdio_system_id);                                                      \
+    }                                                                                                                  \
+    if (rdio_api_url_cli) {                                                                                            \
+        DSD_SNPRINTF(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", rdio_api_url_cli);                           \
+        opts->rdio_api_url[sizeof opts->rdio_api_url - 1] = '\0';                                                      \
+        LOG_NOTICE("Rdio API URL: %s\n", opts->rdio_api_url);                                                          \
+    }                                                                                                                  \
+    if (rdio_api_key_cli) {                                                                                            \
+        DSD_SNPRINTF(opts->rdio_api_key, sizeof opts->rdio_api_key, "%s", rdio_api_key_cli);                           \
+        opts->rdio_api_key[sizeof opts->rdio_api_key - 1] = '\0';                                                      \
+        LOG_NOTICE("Rdio API key configured\n");                                                                       \
+    }                                                                                                                  \
+    if (rdio_upload_timeout_cli) {                                                                                     \
+        int timeout_ms = (int)cli_parse_long_or_default(rdio_upload_timeout_cli, 10, 0);                               \
+        if (timeout_ms < 100) {                                                                                        \
+            timeout_ms = 100;                                                                                          \
+        }                                                                                                              \
+        if (timeout_ms > 120000) {                                                                                     \
+            timeout_ms = 120000;                                                                                       \
+        }                                                                                                              \
+        opts->rdio_upload_timeout_ms = timeout_ms;                                                                     \
+        LOG_NOTICE("Rdio upload timeout: %d ms\n", opts->rdio_upload_timeout_ms);                                      \
+    }                                                                                                                  \
+    if (rdio_upload_retries_cli) {                                                                                     \
+        int retries = (int)cli_parse_long_or_default(rdio_upload_retries_cli, 10, 0);                                  \
+        if (retries < 0) {                                                                                             \
+            retries = 0;                                                                                               \
+        }                                                                                                              \
+        if (retries > 10) {                                                                                            \
+            retries = 10;                                                                                              \
+        }                                                                                                              \
+        opts->rdio_upload_retries = retries;                                                                           \
+        LOG_NOTICE("Rdio upload retries: %d\n", opts->rdio_upload_retries);                                            \
+    }                                                                                                                  \
+    if (rdio_api_delete_after_upload_cli) {                                                                            \
+        opts->rdio_api_delete_after_upload = 1;                                                                        \
+        LOG_NOTICE("Rdio API delete-after-upload enabled\n");                                                          \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (dmr_baofeng_pc5_cli) {                                                                                         \
+        if (baofeng_ap_pc5_keystream_creation(state, dmr_baofeng_pc5_cli) != 0) {                                      \
+            LOG_ERROR("Invalid --dmr-baofeng-pc5 value\n");                                                            \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+    }                                                                                                                  \
+    if (dmr_csi_ee72_cli) {                                                                                            \
+        if (connect_systems_ee72_key_creation(state, dmr_csi_ee72_cli) != 0) {                                         \
+            LOG_ERROR("Invalid --dmr-csi-ee72 value\n");                                                               \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+    }                                                                                                                  \
+    if (dmr_vertex_ks_csv_cli) {                                                                                       \
+        if (csvVertexKsImport(state, dmr_vertex_ks_csv_cli) != 0) {                                                    \
+            LOG_ERROR("Invalid --dmr-vertex-ks-csv value\n");                                                          \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+    }
+
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_exit_rc) {
 
@@ -192,458 +931,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int rtl_udp_control_cli_seen = 0;
     unsigned long rtl_udp_control_cli_port = 0;
 
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--rtltcp-autotune") == 0) {
-            opts->rtltcp_autotune = 1;
-            dsd_setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);
-            continue;
-        }
-        if (strcmp(argv[i], "--rtl-udp-control") == 0) {
-            if (i + 1 >= argc) {
-                LOG_ERROR("--rtl-udp-control requires a port value\n");
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            const char* port_arg = argv[i + 1];
-            unsigned long parsed_port = 0;
-            if (!cli_parse_decimal_u32(port_arg, &parsed_port)) {
-                LOG_ERROR("Invalid --rtl-udp-control value \"%s\" (expected decimal port)\n", port_arg);
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            rtl_udp_control_cli_seen = 1;
-            rtl_udp_control_cli_port = parsed_port;
-            i++;
-            continue;
-        }
-        if (strncmp(argv[i], "--rtl-udp-control=", 18) == 0) {
-            const char* port_arg = argv[i] + 18;
-            unsigned long parsed_port = 0;
-            if (!cli_parse_decimal_u32(port_arg, &parsed_port)) {
-                LOG_ERROR("Invalid --rtl-udp-control value \"%s\" (expected decimal port)\n", port_arg);
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            rtl_udp_control_cli_seen = 1;
-            rtl_udp_control_cli_port = parsed_port;
-            continue;
-        }
-        if (strcmp(argv[i], "--iq-capture") == 0) {
-            if (i + 1 >= argc) {
-                LOG_ERROR("--iq-capture requires a path value\n");
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            iq_capture_cli = argv[++i];
-            continue;
-        }
-        if (strncmp(argv[i], "--iq-capture=", 13) == 0) {
-            iq_capture_cli = argv[i] + 13;
-            continue;
-        }
-        if (strcmp(argv[i], "--iq-capture-format") == 0) {
-            if (i + 1 >= argc) {
-                LOG_ERROR("--iq-capture-format requires a value (cu8|cf32)\n");
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            iq_capture_format_cli = argv[++i];
-            continue;
-        }
-        if (strncmp(argv[i], "--iq-capture-format=", 20) == 0) {
-            iq_capture_format_cli = argv[i] + 20;
-            continue;
-        }
-        if (strcmp(argv[i], "--iq-capture-max-mb") == 0) {
-            if (i + 1 >= argc) {
-                LOG_ERROR("--iq-capture-max-mb requires a decimal value\n");
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            iq_capture_max_mb_cli = argv[++i];
-            continue;
-        }
-        if (strncmp(argv[i], "--iq-capture-max-mb=", 20) == 0) {
-            iq_capture_max_mb_cli = argv[i] + 20;
-            continue;
-        }
-        if (strcmp(argv[i], "--symbol-capture-format") == 0) {
-            if (i + 1 >= argc) {
-                LOG_ERROR("--symbol-capture-format requires a value (soft|legacy)\n");
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            symbol_capture_format_cli = argv[++i];
-            continue;
-        }
-        if (strncmp(argv[i], "--symbol-capture-format=", 24) == 0) {
-            symbol_capture_format_cli = argv[i] + 24;
-            continue;
-        }
-        if (strcmp(argv[i], "--iq-replay") == 0) {
-            if (i + 1 >= argc) {
-                LOG_ERROR("--iq-replay requires a path value\n");
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            iq_replay_cli = argv[++i];
-            continue;
-        }
-        if (strncmp(argv[i], "--iq-replay=", 12) == 0) {
-            iq_replay_cli = argv[i] + 12;
-            continue;
-        }
-        if (strcmp(argv[i], "--iq-replay-rate") == 0) {
-            if (i + 1 >= argc) {
-                LOG_ERROR("--iq-replay-rate requires a value (fast|realtime)\n");
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            iq_replay_rate_cli = argv[++i];
-            continue;
-        }
-        if (strncmp(argv[i], "--iq-replay-rate=", 17) == 0) {
-            iq_replay_rate_cli = argv[i] + 17;
-            continue;
-        }
-        if (strcmp(argv[i], "--iq-loop") == 0) {
-            iq_loop_cli = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "--iq-info") == 0) {
-            if (i + 1 >= argc) {
-                LOG_ERROR("--iq-info requires a path value\n");
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            iq_info_cli = argv[++i];
-            continue;
-        }
-        if (strncmp(argv[i], "--iq-info=", 10) == 0) {
-            iq_info_cli = argv[i] + 10;
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-vc-grace") == 0 && i + 1 < argc) {
-            opts->p25_vc_grace_s = atof(argv[++i]);
-            char buf[32];
-            snprintf(buf, sizeof buf, "%.3f", opts->p25_vc_grace_s);
-            dsd_setenv("DSD_NEO_P25_VC_GRACE", buf, 1);
-            LOG_NOTICE("P25: VC grace set to %.2fs (CLI).\n", opts->p25_vc_grace_s);
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-min-follow-dwell") == 0 && i + 1 < argc) {
-            opts->p25_min_follow_dwell_s = atof(argv[++i]);
-            char buf[32];
-            snprintf(buf, sizeof buf, "%.3f", opts->p25_min_follow_dwell_s);
-            dsd_setenv("DSD_NEO_P25_MIN_FOLLOW_DWELL", buf, 1);
-            LOG_NOTICE("P25: Min follow dwell set to %.2fs (CLI).\n", opts->p25_min_follow_dwell_s);
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-grant-voice-timeout") == 0 && i + 1 < argc) {
-            opts->p25_grant_voice_to_s = atof(argv[++i]);
-            char buf[32];
-            snprintf(buf, sizeof buf, "%.3f", opts->p25_grant_voice_to_s);
-            dsd_setenv("DSD_NEO_P25_GRANT_VOICE_TO", buf, 1);
-            LOG_NOTICE("P25: Grant->Voice timeout set to %.2fs (CLI).\n", opts->p25_grant_voice_to_s);
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-retune-backoff") == 0 && i + 1 < argc) {
-            opts->p25_retune_backoff_s = atof(argv[++i]);
-            char buf[32];
-            snprintf(buf, sizeof buf, "%.3f", opts->p25_retune_backoff_s);
-            dsd_setenv("DSD_NEO_P25_RETUNE_BACKOFF", buf, 1);
-            LOG_NOTICE("P25: Retune backoff set to %.2fs (CLI).\n", opts->p25_retune_backoff_s);
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-mac-hold") == 0 && i + 1 < argc) {
-            double v = atof(argv[++i]);
-            char buf[32];
-            snprintf(buf, sizeof buf, "%.3f", v);
-            dsd_setenv("DSD_NEO_P25_MAC_HOLD", buf, 1);
-            LOG_NOTICE("P25: MAC hold set to %.2fs (CLI).\n", v);
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-ring-hold") == 0 && i + 1 < argc) {
-            double v = atof(argv[++i]);
-            char buf[32];
-            snprintf(buf, sizeof buf, "%.3f", v);
-            dsd_setenv("DSD_NEO_P25_RING_HOLD", buf, 1);
-            LOG_NOTICE("P25: Ring hold set to %.2fs (CLI).\n", v);
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-cc-grace") == 0 && i + 1 < argc) {
-            double v = atof(argv[++i]);
-            if (v < 0) {
-                v = 0;
-            }
-            if (v > 120) {
-                v = 120;
-            }
-            char buf[32];
-            snprintf(buf, sizeof buf, "%.3f", v);
-            dsd_setenv("DSD_NEO_P25_CC_GRACE", buf, 1);
-            LOG_NOTICE("P25: CC grace set to %.2fs (CLI).\n", v);
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-force-release-extra") == 0 && i + 1 < argc) {
-            opts->p25_force_release_extra_s = atof(argv[++i]);
-            char buf[32];
-            snprintf(buf, sizeof buf, "%.3f", opts->p25_force_release_extra_s);
-            dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA", buf, 1);
-            LOG_NOTICE("P25: Force-release extra set to %.2fs (CLI).\n", opts->p25_force_release_extra_s);
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-force-release-margin") == 0 && i + 1 < argc) {
-            opts->p25_force_release_margin_s = atof(argv[++i]);
-            char buf[32];
-            snprintf(buf, sizeof buf, "%.3f", opts->p25_force_release_margin_s);
-            dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", buf, 1);
-            LOG_NOTICE("P25: Force-release margin set to %.2fs (CLI).\n", opts->p25_force_release_margin_s);
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-p1-err-hold-pct") == 0 && i + 1 < argc) {
-            opts->p25_p1_err_hold_pct = atof(argv[++i]);
-            char buf[32];
-            snprintf(buf, sizeof buf, "%.1f", opts->p25_p1_err_hold_pct);
-            dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", buf, 1);
-            LOG_NOTICE("P25p1: Error-hold threshold set to %.1f%% (CLI).\n", opts->p25_p1_err_hold_pct);
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-p1-err-hold-sec") == 0 && i + 1 < argc) {
-            opts->p25_p1_err_hold_s = atof(argv[++i]);
-            char buf[32];
-            snprintf(buf, sizeof buf, "%.3f", opts->p25_p1_err_hold_s);
-            dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_S", buf, 1);
-            LOG_NOTICE("P25p1: Error-hold seconds set to %.2fs (CLI).\n", opts->p25_p1_err_hold_s);
-            continue;
-        }
-        if (strcmp(argv[i], "--calc-lcn") == 0 && i + 1 < argc) {
-            calc_csv_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--calc-step") == 0 && i + 1 < argc) {
-            calc_step_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--calc-cc-freq") == 0 && i + 1 < argc) {
-            calc_ccf_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--calc-cc-lcn") == 0 && i + 1 < argc) {
-            calc_ccl_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--calc-start-lcn") == 0 && i + 1 < argc) {
-            calc_start_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--auto-ppm") == 0) {
-            opts->rtl_auto_ppm = 1;
-            dsd_setenv("DSD_NEO_AUTO_PPM", "1", 1);
-            continue;
-        }
-        if (strcmp(argv[i], "--input-volume") == 0 && i + 1 < argc) {
-            input_vol_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--input-level-warn-db") == 0 && i + 1 < argc) {
-            input_warn_db_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--frame-log") == 0 && i + 1 < argc) {
-            frame_log_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--rdio-mode") == 0 && i + 1 < argc) {
-            rdio_mode_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--rdio-system-id") == 0 && i + 1 < argc) {
-            rdio_system_id_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--rdio-api-url") == 0 && i + 1 < argc) {
-            rdio_api_url_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--rdio-api-key") == 0 && i + 1 < argc) {
-            rdio_api_key_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--rdio-upload-timeout-ms") == 0 && i + 1 < argc) {
-            rdio_upload_timeout_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--rdio-upload-retries") == 0 && i + 1 < argc) {
-            rdio_upload_retries_cli = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--rdio-api-delete-after-upload") == 0) {
-            rdio_api_delete_after_upload_cli = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "--dmr-baofeng-pc5") == 0) {
-            if (i + 1 >= argc) {
-                LOG_ERROR("--dmr-baofeng-pc5 requires a hex key value\n");
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            dmr_baofeng_pc5_cli = argv[++i];
-            continue;
-        }
-        if (strncmp(argv[i], "--dmr-baofeng-pc5=", 18) == 0) {
-            dmr_baofeng_pc5_cli = argv[i] + 18;
-            continue;
-        }
-        if (strcmp(argv[i], "--dmr-csi-ee72") == 0) {
-            if (i + 1 >= argc) {
-                LOG_ERROR("--dmr-csi-ee72 requires a hex key value\n");
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            dmr_csi_ee72_cli = argv[++i];
-            continue;
-        }
-        if (strncmp(argv[i], "--dmr-csi-ee72=", 15) == 0) {
-            dmr_csi_ee72_cli = argv[i] + 15;
-            continue;
-        }
-        if (strcmp(argv[i], "--dmr-vertex-ks-csv") == 0) {
-            if (i + 1 >= argc) {
-                LOG_ERROR("--dmr-vertex-ks-csv requires a CSV path\n");
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-            }
-            dmr_vertex_ks_csv_cli = argv[++i];
-            continue;
-        }
-        if (strncmp(argv[i], "--dmr-vertex-ks-csv=", 20) == 0) {
-            dmr_vertex_ks_csv_cli = argv[i] + 20;
-            continue;
-        }
-        if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {
-            const char* sv = argv[++i];
-            if (sv && *sv) {
-                opts->rtl_auto_ppm_snr_db = (float)atof(sv);
-                char buf[32];
-                snprintf(buf, sizeof buf, "%.2f", opts->rtl_auto_ppm_snr_db);
-                dsd_setenv("DSD_NEO_AUTO_PPM_SNR_DB", buf, 1);
-            }
-            continue;
-        }
-        if (strcmp(argv[i], "--enc-lockout") == 0) {
-            opts->trunk_tune_enc_calls = 0;
-            LOG_NOTICE("P25: Encrypted call lockout: On (skip encrypted).\n");
-            continue;
-        }
-        if (strcmp(argv[i], "--enc-follow") == 0) {
-            opts->trunk_tune_enc_calls = 1;
-            LOG_NOTICE("P25: Encrypted call lockout: Off (follow encrypted).\n");
-            continue;
-        }
-    }
-
-    if (iq_capture_cli) {
-        char err_buf[256];
-        char data_path[2048];
-        char meta_path[2048];
-        int rc = dsd_iq_capture_derive_paths(iq_capture_cli, data_path, sizeof(data_path), meta_path, sizeof(meta_path),
-                                             err_buf, sizeof(err_buf));
-        if (rc != DSD_IQ_OK) {
-            LOG_ERROR("Invalid --iq-capture path: %s\n", err_buf[0] ? err_buf : "failed to derive paths");
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-        opts->iq_capture_requested = 1;
-        snprintf(opts->iq_capture_path, sizeof(opts->iq_capture_path), "%s", iq_capture_cli);
-    }
-
-    if (iq_capture_format_cli) {
-        if (strcmp(iq_capture_format_cli, "cu8") == 0) {
-            opts->iq_capture_format = DSD_IQ_FORMAT_CU8;
-        } else if (strcmp(iq_capture_format_cli, "cf32") == 0) {
-            opts->iq_capture_format = DSD_IQ_FORMAT_CF32;
-        } else {
-            LOG_ERROR("Invalid --iq-capture-format value \"%s\" (expected cu8 or cf32)\n", iq_capture_format_cli);
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-    }
-
-    if (iq_capture_max_mb_cli) {
-        uint64_t mb = 0;
-        if (!cli_parse_decimal_u64(iq_capture_max_mb_cli, &mb)) {
-            LOG_ERROR("Invalid --iq-capture-max-mb value \"%s\" (expected decimal MB)\n", iq_capture_max_mb_cli);
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-        if (mb > (UINT64_MAX / (1024ULL * 1024ULL))) {
-            LOG_ERROR("--iq-capture-max-mb value is too large\n");
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-        opts->iq_capture_max_bytes = mb * 1024ULL * 1024ULL;
-    }
-
-    if (symbol_capture_format_cli) {
-        if (strcmp(symbol_capture_format_cli, "soft") == 0) {
-            opts->symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;
-        } else if (strcmp(symbol_capture_format_cli, "legacy") == 0) {
-            opts->symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_LEGACY;
-        } else {
-            LOG_ERROR("Invalid --symbol-capture-format value \"%s\" (expected soft or legacy)\n",
-                      symbol_capture_format_cli);
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-    }
-
-    if (iq_replay_cli) {
-        opts->iq_replay_requested = 1;
-        snprintf(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", iq_replay_cli);
-    }
-    if (iq_loop_cli) {
-        opts->iq_replay_loop = 1;
-    }
-    if (iq_replay_rate_cli) {
-        if (strcmp(iq_replay_rate_cli, "fast") == 0) {
-            opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_FAST;
-        } else if (strcmp(iq_replay_rate_cli, "realtime") == 0) {
-            opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_REALTIME;
-        } else {
-            LOG_ERROR("Invalid --iq-replay-rate value \"%s\" (expected fast or realtime)\n", iq_replay_rate_cli);
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-    }
-
-    if (opts->iq_capture_requested && opts->iq_replay_requested) {
-        LOG_ERROR("Cannot combine --iq-capture with --iq-replay in the same invocation\n");
-        cli_set_exit_rc(out_exit_rc, 1);
-        return DSD_PARSE_ERROR;
-    }
-
-    if (iq_info_cli) {
-        dsd_iq_replay_config info_cfg;
-        memset(&info_cfg, 0, sizeof(info_cfg));
-        char err_buf[256] = {0};
-        int rc = dsd_iq_replay_read_metadata(iq_info_cli, &info_cfg, err_buf, sizeof(err_buf));
-        if (rc != DSD_IQ_OK) {
-            LOG_ERROR("--iq-info: %s\n", err_buf[0] ? err_buf : "failed to parse metadata");
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ONE_SHOT;
-        }
-        struct stat st;
-        if (stat(info_cfg.data_path, &st) != 0 || st.st_size < 0) {
-            LOG_ERROR("--iq-info: failed to stat data file '%s'\n", info_cfg.data_path);
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ONE_SHOT;
-        }
-        rc = dsd_iq_info_print(&info_cfg, iq_info_cli, (uint64_t)st.st_size, stdout, stderr);
-        dsd_iq_replay_config_clear(&info_cfg);
-        cli_set_exit_rc(out_exit_rc, (rc == DSD_IQ_OK) ? 0 : 1);
-        return DSD_PARSE_ONE_SHOT;
-    }
+    DSD_PARSE_ARGS_PRESCAN_BLOCK();
+    DSD_PARSE_ARGS_IQ_PRE_BLOCK();
 
     if (opts->iq_replay_requested) {
 #ifndef USE_RADIO
@@ -651,242 +940,19 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         cli_set_exit_rc(out_exit_rc, 1);
         return DSD_PARSE_ERROR;
 #else
-        dsd_iq_replay_config replay_cfg;
-        memset(&replay_cfg, 0, sizeof(replay_cfg));
-        char err_buf[256] = {0};
-        int rc = dsd_iq_replay_open(opts->iq_replay_path, &replay_cfg, NULL, err_buf, sizeof(err_buf));
-        if (rc != DSD_IQ_OK) {
-            LOG_ERROR("--iq-replay: %s\n", err_buf[0] ? err_buf : "failed to parse metadata");
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-
-        struct stat st;
-        if (stat(replay_cfg.data_path, &st) != 0 || st.st_size < 0) {
-            LOG_ERROR("--iq-replay: failed to stat data file '%s'\n", replay_cfg.data_path);
-            dsd_iq_replay_config_clear(&replay_cfg);
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-        uint64_t effective_bytes = 0;
-        int size_mismatch = 0;
-        rc = dsd_iq_replay_compute_effective_bytes(replay_cfg.data_bytes, (uint64_t)st.st_size, replay_cfg.format,
-                                                   &effective_bytes, &size_mismatch);
-        if (rc != DSD_IQ_OK) {
-            LOG_ERROR("--iq-replay: failed to compute effective replay bytes\n");
-            dsd_iq_replay_config_clear(&replay_cfg);
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-        rc = dsd_iq_replay_validate_effective_bytes_for_replay(effective_bytes, opts->iq_replay_loop);
-        if (rc != DSD_IQ_OK) {
-            LOG_ERROR("--iq-replay: no aligned I/Q samples available for replay\n");
-            dsd_iq_replay_config_clear(&replay_cfg);
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-        if (size_mismatch) {
-            LOG_WARN("IQ replay metadata/data size mismatch: metadata=%" PRIu64 " actual=%" PRIu64 "\n",
-                     replay_cfg.data_bytes, (uint64_t)st.st_size);
-        }
-
-        if (replay_cfg.center_frequency_hz > UINT32_MAX) {
-            LOG_ERROR("--iq-replay: center_frequency_hz %" PRIu64 " exceeds RTL path range\n",
-                      replay_cfg.center_frequency_hz);
-            dsd_iq_replay_config_clear(&replay_cfg);
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-        opts->rtlsdr_center_freq = (uint32_t)replay_cfg.center_frequency_hz;
-        opts->rtlsdr_ppm_error = replay_cfg.ppm;
-        if (replay_cfg.tuner_gain_tenth_db > 0) {
-            opts->rtl_gain_value = replay_cfg.tuner_gain_tenth_db / 10;
-        }
-        if (replay_cfg.rtl_dsp_bw_khz > 0) {
-            opts->rtl_dsp_bw_khz = replay_cfg.rtl_dsp_bw_khz;
-        }
-        opts->audio_in_type = AUDIO_IN_RTL;
-        if (cli_set_iqreplay_audio_dev(opts, opts->iq_replay_path) != 0) {
-            LOG_ERROR("--iq-replay path is too long\n");
-            dsd_iq_replay_config_clear(&replay_cfg);
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-        dsd_iq_replay_config_clear(&replay_cfg);
+        DSD_PARSE_ARGS_IQ_REPLAY_RADIO_BLOCK();
 #endif
     }
-
-    // If CLI present, set env vars and maybe run calculator
-    if (calc_csv_cli) {
-        dsd_setenv("DSD_NEO_DMR_T3_CALC_CSV", calc_csv_cli, 1);
-        if (calc_step_cli) {
-            dsd_setenv("DSD_NEO_DMR_T3_STEP_HZ", calc_step_cli, 1);
-        }
-        if (calc_ccf_cli) {
-            dsd_setenv("DSD_NEO_DMR_T3_CC_FREQ", calc_ccf_cli, 1);
-        }
-        if (calc_ccl_cli) {
-            dsd_setenv("DSD_NEO_DMR_T3_CC_LCN", calc_ccl_cli, 1);
-        }
-        if (calc_start_cli) {
-            dsd_setenv("DSD_NEO_DMR_T3_START_LCN", calc_start_cli, 1);
-        }
-        /* Refresh typed env config after CLI writes. */
-        dsd_neo_config_init(opts);
-        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_cli);
-        cli_set_exit_rc(out_exit_rc, rc);
-        return DSD_PARSE_ONE_SHOT;
-    }
-
-    // Environment fallback
-    if (cfg && cfg->dmr_t3_calc_csv_is_set && cfg->dmr_t3_calc_csv[0] != '\0') {
-        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(cfg->dmr_t3_calc_csv);
-        cli_set_exit_rc(out_exit_rc, rc);
-        return DSD_PARSE_ONE_SHOT;
-    }
-
-    if (rtl_udp_control_cli_seen) {
-        int p = rtl_udp_control_cli_port > 65535UL ? 65535 : (int)rtl_udp_control_cli_port;
-        opts->rtl_udp_port = p;
-        if (p > 0) {
-            LOG_NOTICE("RTL: external UDP retune control enabled on UDP/%d\n", p);
-        } else {
-            LOG_NOTICE("RTL: external UDP retune control disabled\n");
-        }
-    }
-
-    // Apply input volume and warn threshold
-    if (input_vol_cli) {
-        int mv = atoi(input_vol_cli);
-        if (mv < 1) {
-            mv = 1;
-        }
-        if (mv > 16) {
-            mv = 16;
-        }
-        opts->input_volume_multiplier = mv;
-        char b[16];
-        snprintf(b, sizeof b, "%d", mv);
-        dsd_setenv("DSD_NEO_INPUT_VOLUME", b, 1);
-        LOG_NOTICE("Input volume multiplier: %dx\n", mv);
-    } else if (cfg && cfg->input_volume_is_set) {
-        opts->input_volume_multiplier = cfg->input_volume_multiplier;
-        LOG_NOTICE("Input volume multiplier (env): %dx\n", opts->input_volume_multiplier);
-    }
-    if (input_warn_db_cli) {
-        double thr = atof(input_warn_db_cli);
-        if (thr < -200.0) {
-            thr = -200.0;
-        }
-        if (thr > 0.0) {
-            thr = 0.0;
-        }
-        opts->input_warn_db = thr;
-        char b[32];
-        snprintf(b, sizeof b, "%.1f", thr);
-        dsd_setenv("DSD_NEO_INPUT_WARN_DB", b, 1);
-        LOG_NOTICE("Low input warning threshold: %.1f dBFS\n", thr);
-    } else if (cfg && cfg->input_warn_db_is_set) {
-        opts->input_warn_db = (float)cfg->input_warn_db;
-        LOG_NOTICE("Low input warning threshold (env): %.1f dBFS\n", opts->input_warn_db);
-    }
-
-    if (frame_log_cli) {
-        snprintf(opts->frame_log_file, sizeof opts->frame_log_file, "%s", frame_log_cli);
-        opts->frame_log_file[sizeof opts->frame_log_file - 1] = '\0';
-        opts->frame_log_open_error_reported = 0;
-        opts->frame_log_write_error_reported = 0;
-        dsd_frame_log_close(opts);
-        LOG_NOTICE("Frame log file: %s\n", opts->frame_log_file);
-    }
-
-    if (rdio_mode_cli) {
-        int mode = DSD_RDIO_MODE_OFF;
-        if (dsd_rdio_mode_from_string(rdio_mode_cli, &mode) == 0) {
-            opts->rdio_mode = mode;
-            LOG_NOTICE("Rdio export mode: %s\n", dsd_rdio_mode_to_string(opts->rdio_mode));
-        } else {
-            LOG_WARN("Invalid --rdio-mode value \"%s\" (expected off|dirwatch|api|both)\n", rdio_mode_cli);
-        }
-    }
-    if (rdio_system_id_cli) {
-        int sid = atoi(rdio_system_id_cli);
-        if (sid < 0) {
-            sid = 0;
-        }
-        if (sid > 65535) {
-            sid = 65535;
-        }
-        opts->rdio_system_id = sid;
-        LOG_NOTICE("Rdio system ID: %d\n", opts->rdio_system_id);
-    }
-    if (rdio_api_url_cli) {
-        snprintf(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", rdio_api_url_cli);
-        opts->rdio_api_url[sizeof opts->rdio_api_url - 1] = '\0';
-        LOG_NOTICE("Rdio API URL: %s\n", opts->rdio_api_url);
-    }
-    if (rdio_api_key_cli) {
-        snprintf(opts->rdio_api_key, sizeof opts->rdio_api_key, "%s", rdio_api_key_cli);
-        opts->rdio_api_key[sizeof opts->rdio_api_key - 1] = '\0';
-        LOG_NOTICE("Rdio API key configured\n");
-    }
-    if (rdio_upload_timeout_cli) {
-        int timeout_ms = atoi(rdio_upload_timeout_cli);
-        if (timeout_ms < 100) {
-            timeout_ms = 100;
-        }
-        if (timeout_ms > 120000) {
-            timeout_ms = 120000;
-        }
-        opts->rdio_upload_timeout_ms = timeout_ms;
-        LOG_NOTICE("Rdio upload timeout: %d ms\n", opts->rdio_upload_timeout_ms);
-    }
-    if (rdio_upload_retries_cli) {
-        int retries = atoi(rdio_upload_retries_cli);
-        if (retries < 0) {
-            retries = 0;
-        }
-        if (retries > 10) {
-            retries = 10;
-        }
-        opts->rdio_upload_retries = retries;
-        LOG_NOTICE("Rdio upload retries: %d\n", opts->rdio_upload_retries);
-    }
-    if (rdio_api_delete_after_upload_cli) {
-        opts->rdio_api_delete_after_upload = 1;
-        LOG_NOTICE("Rdio API delete-after-upload enabled\n");
-    }
-
-    if (dmr_baofeng_pc5_cli) {
-        if (baofeng_ap_pc5_keystream_creation(state, dmr_baofeng_pc5_cli) != 0) {
-            LOG_ERROR("Invalid --dmr-baofeng-pc5 value\n");
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-    }
-    if (dmr_csi_ee72_cli) {
-        if (connect_systems_ee72_key_creation(state, dmr_csi_ee72_cli) != 0) {
-            LOG_ERROR("Invalid --dmr-csi-ee72 value\n");
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-    }
-    if (dmr_vertex_ks_csv_cli) {
-        if (csvVertexKsImport(state, dmr_vertex_ks_csv_cli) != 0) {
-            LOG_ERROR("Invalid --dmr-vertex-ks-csv value\n");
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-    }
+    DSD_PARSE_ARGS_TRAILING_BLOCK();
 
     int new_argc = dsd_cli_compact_args(argc, argv);
     // Reset getopt index and parse short options here (migrated)
-    extern int optind;
     // NOTE: We invoke getopt() multiple times (unit tests, bootstrap flows).
     // Linux getopt supports optind=0 full reset; BSD variants use optreset.
-    optind = 1;
 #if defined(__linux__)
     optind = 0;
+#else
+    optind = 1;
 #endif
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
     extern int optreset;
@@ -909,11 +975,999 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
 }
 
 // Short-option getopt loop migrated to runtime
+
+#define DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK()                                                                            \
+    switch (c) {                                                                                                       \
+        case 'h':                                                                                                      \
+            dsd_cli_usage();                                                                                           \
+            cli_set_exit_rc(out_exit_rc, 0);                                                                           \
+            return DSD_PARSE_ONE_SHOT;                                                                                 \
+        case 'a':                                                                                                      \
+            opts->call_alert = 1;                                                                                      \
+            opts->call_alert_events = (uint8_t)DSD_CALL_ALERT_EVENT_ALL;                                               \
+            break;                                                                                                     \
+        case '~':                                                                                                      \
+            state->debug_mode = 1;                                                                                     \
+            LOG_NOTICE("Debug Mode Enabled; \n");                                                                      \
+            break;                                                                                                     \
+        case 'O':                                                                                                      \
+            dsd_audio_list_devices();                                                                                  \
+            cli_set_exit_rc(out_exit_rc, 0);                                                                           \
+            return DSD_PARSE_ONE_SHOT;                                                                                 \
+        case 'M':                                                                                                      \
+            DSD_STRNCPY(state->m17dat, optarg, 49);                                                                    \
+            state->m17dat[49] = '\0';                                                                                  \
+            break;                                                                                                     \
+        case 'I':                                                                                                      \
+            state->tg_hold = (uint32_t)cli_parse_long_or_default(optarg, 10, 0);                                       \
+            LOG_NOTICE("TG Hold set to %u \n", state->tg_hold);                                                        \
+            break;                                                                                                     \
+        case '8':                                                                                                      \
+            opts->monitor_input_audio = 1;                                                                             \
+            LOG_NOTICE("Experimental Raw Analog Source Monitoring Enabled (Pulse Audio Only!)\n");                     \
+            break;                                                                                                     \
+        case 'j':                                                                                                      \
+            opts->p25_lcw_retune = 1;                                                                                  \
+            LOG_NOTICE("P25: LCW explicit retune (0x44) forced ON.\n");                                                \
+            break;                                                                                                     \
+        case '^':                                                                                                      \
+            opts->p25_prefer_candidates = 1;                                                                           \
+            LOG_NOTICE("P25: Prefer CC candidates during hunt: On.\n");                                                \
+            break;                                                                                                     \
+        case '0':                                                                                                      \
+            state->M = 0x21;                                                                                           \
+            LOG_NOTICE("Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR)\n");                      \
+            break;                                                                                                     \
+        case '1':                                                                                                      \
+            if (state) {                                                                                               \
+                char hex[128];                                                                                         \
+                size_t nhex = 0;                                                                                       \
+                if (!cli_collect_hex_digits(optarg, hex, sizeof hex, &nhex)) {                                         \
+                    LOG_ERROR("-1 expects a hex key (spaces allowed)\n");                                              \
+                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                if (nhex == 0 || nhex > 16) {                                                                          \
+                    LOG_ERROR("-1 expects 1..16 hex characters (spaces allowed)\n");                                   \
+                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                unsigned long long key = 0ULL;                                                                         \
+                if (!cli_parse_hex_u64_n(hex, nhex, &key)) {                                                           \
+                    LOG_ERROR("-1 failed to parse key\n");                                                             \
+                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                state->R = key;                                                                                        \
+                state->RR = key;                                                                                       \
+                LOG_NOTICE("RC4/DES Encryption Key Value set to 0x%llX \n", state->R);                                 \
+                opts->unmute_encrypted_p25 = 0;                                                                        \
+                state->keyloader = 0;                                                                                  \
+            }                                                                                                          \
+            break;                                                                                                     \
+        case '2':                                                                                                      \
+            state->tyt_bp = 1;                                                                                         \
+            state->H = cli_parse_u64_or_default(optarg, 16, 0ULL);                                                     \
+            state->H = state->H & 0xFFFF;                                                                              \
+            LOG_NOTICE("DMR TYT Basic 16-bit Key 0x%llX with Forced Application\n", state->H);                         \
+            break;                                                                                                     \
+        case '!': tyt_ap_pc4_keystream_creation(state, optarg); break;                                                 \
+        case '@': retevis_rc2_keystream_creation(state, optarg); break;                                                \
+        case '5': tyt_ep_aes_keystream_creation(state, optarg); break;                                                 \
+        case '9': ken_dmr_scrambler_keystream_creation(state, optarg); break;                                          \
+        case 'A': anytone_bp_keystream_creation(state, optarg); break;                                                 \
+        case 'S': straight_mod_xor_keystream_creation(state, optarg); break;                                           \
+        case '3':                                                                                                      \
+            opts->dmr_le = 0;                                                                                          \
+            LOG_NOTICE("DMRA Late Entry Encryption Identifiers Disabled\n");                                           \
+            break;                                                                                                     \
+        case 'y':                                                                                                      \
+            opts->floating_point = 1;                                                                                  \
+            LOG_NOTICE("Enabling Experimental Floating Point Audio Output\n");                                         \
+            break;                                                                                                     \
+        case 'Y':                                                                                                      \
+            opts->scanner_mode = 1;                                                                                    \
+            opts->p25_trunk = 0;                                                                                       \
+            opts->trunk_enable = 0;                                                                                    \
+            opts->trunk_cli_seen = 1;                                                                                  \
+            break;                                                                                                     \
+        case 'k':                                                                                                      \
+            DSD_STRNCPY(opts->key_in_file, optarg, 1023);                                                              \
+            opts->key_in_file[1023] = '\0';                                                                            \
+            if (csvKeyImportDec(opts, state) != 0) {                                                                   \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            state->keyloader = 1;                                                                                      \
+            break;                                                                                                     \
+        case 'K':                                                                                                      \
+            DSD_STRNCPY(opts->key_in_file, optarg, 1023);                                                              \
+            opts->key_in_file[1023] = '\0';                                                                            \
+            if (csvKeyImportHex(opts, state) != 0) {                                                                   \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            state->keyloader = 1;                                                                                      \
+            break;                                                                                                     \
+        case 'Q':                                                                                                      \
+            DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", "./DSP");                                \
+            wav_file_directory[1023] = '\0';                                                                           \
+            if (stat(wav_file_directory, &st) == -1) {                                                                 \
+                LOG_NOTICE("-Q %s DSP file directory does not exist\n", wav_file_directory);                           \
+                LOG_NOTICE("Creating directory %s to save DSP Structured or M17 Binary Stream files\n",                \
+                           wav_file_directory);                                                                        \
+                dsd_mkdir(wav_file_directory, 0700);                                                                   \
+            }                                                                                                          \
+            DSD_STRNCPY(dsp_filename, optarg, 1023);                                                                   \
+            DSD_SNPRINTF(opts->dsp_out_file, sizeof opts->dsp_out_file, "%s/%s", wav_file_directory, dsp_filename);    \
+            LOG_NOTICE("Saving DSP Structured or M17 Float Stream Output to %s\n", opts->dsp_out_file);                \
+            opts->use_dsp_output = 1;                                                                                  \
+            break;                                                                                                     \
+        case 'z': {                                                                                                    \
+            /* TDMA voice slot preference */                                                                           \
+            /* 0 = prefer slot 1, 1 = prefer slot 2, 2 = auto */                                                       \
+            int pref = (int)cli_parse_long_or_default(optarg, 10, 0);                                                  \
+            if (pref < 0) {                                                                                            \
+                pref = 0;                                                                                              \
+            }                                                                                                          \
+            if (pref > 2) {                                                                                            \
+                pref = 2;                                                                                              \
+            }                                                                                                          \
+            opts->slot_preference = pref;                                                                              \
+            LOG_NOTICE("Slot preference set: %s\n", (pref == 0 ? "Slot 1" : (pref == 1 ? "Slot 2" : "Auto")));         \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case 'H':                                                                                                      \
+            if (state) {                                                                                               \
+                char hex[128];                                                                                         \
+                size_t nhex = 0;                                                                                       \
+                if (!cli_collect_hex_digits(optarg, hex, sizeof hex, &nhex)) {                                         \
+                    LOG_ERROR("-H expects a hex key (spaces allowed)\n");                                              \
+                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                                                                                                                       \
+                unsigned long long k1 = 0ULL, k2 = 0ULL, k3 = 0ULL, k4 = 0ULL;                                         \
+                if (nhex == 10) {                                                                                      \
+                    if (!cli_parse_hex_u64_n(hex, 10, &k1)) {                                                          \
+                        LOG_ERROR("-H failed to parse 10-hex Hytera BP key\n");                                        \
+                        cli_set_exit_rc(out_exit_rc, 1);                                                               \
+                        return DSD_PARSE_ERROR;                                                                        \
+                    }                                                                                                  \
+                    state->H = k1 & 0xFFFFFFFFFFULL;                                                                   \
+                    state->K1 = state->H;                                                                              \
+                    state->K2 = state->K3 = state->K4 = 0ULL;                                                          \
+                    LOG_NOTICE("Hytera BP key loaded (40-bit)\n");                                                     \
+                } else if (nhex == 32) {                                                                               \
+                    if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)) {           \
+                        LOG_ERROR("-H failed to parse 32-hex key (2x16)\n");                                           \
+                        cli_set_exit_rc(out_exit_rc, 1);                                                               \
+                        return DSD_PARSE_ERROR;                                                                        \
+                    }                                                                                                  \
+                    state->H = k1;                                                                                     \
+                    state->K1 = k1;                                                                                    \
+                    state->K2 = k2;                                                                                    \
+                    state->K3 = state->K4 = 0ULL;                                                                      \
+                                                                                                                       \
+                    state->A1[0] = state->A1[1] = k1;                                                                  \
+                    state->A2[0] = state->A2[1] = k2;                                                                  \
+                    state->A3[0] = state->A3[1] = 0ULL;                                                                \
+                    state->A4[0] = state->A4[1] = 0ULL;                                                                \
+                    state->aes_key_loaded[0] = state->aes_key_loaded[1] = (k1 != 0ULL || k2 != 0ULL) ? 1 : 0;          \
+                                                                                                                       \
+                    DSD_MEMSET(state->aes_key, 0, sizeof(state->aes_key));                                             \
+                    for (int i = 0; i < 8; i++) {                                                                      \
+                        state->aes_key[i + 0] = (uint8_t)((state->A1[0] >> (56 - (i * 8))) & 0xFF);                    \
+                        state->aes_key[i + 8] = (uint8_t)((state->A2[0] >> (56 - (i * 8))) & 0xFF);                    \
+                    }                                                                                                  \
+                    LOG_NOTICE("AES-128 / Hytera 128-bit key loaded (2x64)\n");                                        \
+                } else if (nhex == 64) {                                                                               \
+                    if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)              \
+                        || !cli_parse_hex_u64_n(hex + 32, 16, &k3) || !cli_parse_hex_u64_n(hex + 48, 16, &k4)) {       \
+                        LOG_ERROR("-H failed to parse 64-hex key (4x16)\n");                                           \
+                        cli_set_exit_rc(out_exit_rc, 1);                                                               \
+                        return DSD_PARSE_ERROR;                                                                        \
+                    }                                                                                                  \
+                    state->H = k1;                                                                                     \
+                    state->K1 = k1;                                                                                    \
+                    state->K2 = k2;                                                                                    \
+                    state->K3 = k3;                                                                                    \
+                    state->K4 = k4;                                                                                    \
+                                                                                                                       \
+                    state->A1[0] = state->A1[1] = k1;                                                                  \
+                    state->A2[0] = state->A2[1] = k2;                                                                  \
+                    state->A3[0] = state->A3[1] = k3;                                                                  \
+                    state->A4[0] = state->A4[1] = k4;                                                                  \
+                    state->aes_key_loaded[0] = state->aes_key_loaded[1] =                                              \
+                        (k1 != 0ULL || k2 != 0ULL || k3 != 0ULL || k4 != 0ULL) ? 1 : 0;                                \
+                                                                                                                       \
+                    DSD_MEMSET(state->aes_key, 0, sizeof(state->aes_key));                                             \
+                    for (int i = 0; i < 8; i++) {                                                                      \
+                        state->aes_key[i + 0] = (uint8_t)((state->A1[0] >> (56 - (i * 8))) & 0xFF);                    \
+                        state->aes_key[i + 8] = (uint8_t)((state->A2[0] >> (56 - (i * 8))) & 0xFF);                    \
+                        state->aes_key[i + 16] = (uint8_t)((state->A3[0] >> (56 - (i * 8))) & 0xFF);                   \
+                        state->aes_key[i + 24] = (uint8_t)((state->A4[0] >> (56 - (i * 8))) & 0xFF);                   \
+                    }                                                                                                  \
+                    LOG_NOTICE("AES-256 / Hytera 256-bit key loaded (4x64)\n");                                        \
+                } else {                                                                                               \
+                    LOG_ERROR("-H expects 10, 32, or 64 hex characters (spaces allowed)\n");                           \
+                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                state->keyloader = 0;                                                                                  \
+            }                                                                                                          \
+            break;                                                                                                     \
+        case 'V': {                                                                                                    \
+            /* Enable TDMA voice synthesis for selected slot(s) */                                                     \
+            /* 1 = Slot 1, 2 = Slot 2, 3 = Both */                                                                     \
+            int v = (int)cli_parse_long_or_default(optarg, 10, 0);                                                     \
+            if (v < 0) {                                                                                               \
+                v = 0;                                                                                                 \
+            }                                                                                                          \
+            if (v > 3) {                                                                                               \
+                v = 3;                                                                                                 \
+            }                                                                                                          \
+            opts->slot1_on = (v & 1) ? 1 : 0;                                                                          \
+            opts->slot2_on = (v & 2) ? 1 : 0;                                                                          \
+            if (v == 0) {                                                                                              \
+                LOG_NOTICE("Voice synthesis disabled for both slots\n");                                               \
+            } else if (v == 3) {                                                                                       \
+                LOG_NOTICE("Voice synthesis enabled for Slot 1 and 2\n");                                              \
+            } else {                                                                                                   \
+                LOG_NOTICE("Voice synthesis enabled for %s\n", v == 1 ? "Slot 1" : "Slot 2");                          \
+            }                                                                                                          \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case 'W':                                                                                                      \
+            /* Use imported group list as allow/white list (trunking) */                                               \
+            opts->trunk_use_allow_list = 1;                                                                            \
+            LOG_NOTICE("Trunking: Group list allow/white list enabled.\n");                                            \
+            break;                                                                                                     \
+        case 'e':                                                                                                      \
+            /* Enable tune to data calls (DMR TIII, Cap+, NXDN Type-C) */                                              \
+            opts->trunk_tune_data_calls = 1;                                                                           \
+            LOG_NOTICE("Trunking: Tune to data calls enabled.\n");                                                     \
+            break;                                                                                                     \
+        case 'E':                                                                                                      \
+            /* Disable tune to group calls (DMR TIII, P25, NXDN Type-C/D) */                                           \
+            opts->trunk_tune_group_calls = 0;                                                                          \
+            LOG_NOTICE("Trunking: Group call follow disabled.\n");                                                     \
+            break;                                                                                                     \
+        case 'p':                                                                                                      \
+            /* Disable tune to private calls (DMR TIII, P25, NXDN Type-C/D) */                                         \
+            opts->trunk_tune_private_calls = 0;                                                                        \
+            LOG_NOTICE("Trunking: Private call follow disabled.\n");                                                   \
+            break;                                                                                                     \
+        case 'Z':                                                                                                      \
+            /* Log MBE/PDU payloads to console */                                                                      \
+            opts->payload = 1;                                                                                         \
+            LOG_NOTICE("Logging MBE/PDU payloads to console.\n");                                                      \
+            break;                                                                                                     \
+        case 'P':                                                                                                      \
+            if (opts->static_wav_file == 1) {                                                                          \
+                /* Allow CLI to override config-derived static WAV settings (file not opened yet). */                  \
+                if (opts->wav_out_f != NULL) {                                                                         \
+                    LOG_ERROR("-P cannot be used with -w (static WAV output)\n");                                      \
+                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                opts->static_wav_file = 0;                                                                             \
+                opts->wav_out_file[0] = '\0';                                                                          \
+            }                                                                                                          \
+            DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);                      \
+            wav_file_directory[1023] = '\0';                                                                           \
+            if (stat(wav_file_directory, &st) == -1) {                                                                 \
+                LOG_NOTICE("-P %s WAV file directory does not exist\n", wav_file_directory);                           \
+                LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);                   \
+                dsd_mkdir(wav_file_directory, 0700);                                                                   \
+            }                                                                                                          \
+            LOG_NOTICE("Per Call Wav File Enabled.\n");                                                                \
+            opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);                           \
+            opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);                         \
+            opts->dmr_stereo_wav = 1;                                                                                  \
+            break;                                                                                                     \
+        case '7':                                                                                                      \
+            /* Set custom directory for per-call WAV saving */                                                         \
+            DSD_STRNCPY(opts->wav_out_dir, optarg, 511);                                                               \
+            opts->wav_out_dir[511] = '\0';                                                                             \
+            LOG_NOTICE("Per-call WAV directory set to: %s\n", opts->wav_out_dir);                                      \
+            break;                                                                                                     \
+        case 'F':                                                                                                      \
+            opts->aggressive_framesync = 0;                                                                            \
+            opts->dmr_crc_relaxed_default = 1;                                                                         \
+            LOG_NOTICE("%s", KYEL);                                                                                    \
+            LOG_NOTICE("Relax P25 Phase 2 MAC_SIGNAL CRC Checksum Pass/Fail\n");                                       \
+            LOG_NOTICE("Relax DMR RAS/CRC CSBK/DATA Pass/Fail\n");                                                     \
+            LOG_NOTICE("Relax NXDN SACCH/FACCH/CAC/F2U CRC Pass/Fail\n");                                              \
+            LOG_NOTICE("Relax M17 LSF/PKT CRC Pass/Fail\n");                                                           \
+            LOG_NOTICE("%s", KNRM);                                                                                    \
+            break;                                                                                                     \
+        case 'i':                                                                                                      \
+            if (strcmp(opts->audio_in_dev, optarg) != 0) {                                                             \
+                dsd_opts_clear_staged_file_sample_rate(opts);                                                          \
+            }                                                                                                          \
+            DSD_STRNCPY(opts->audio_in_dev, optarg, 2047);                                                             \
+            opts->audio_in_dev[2047] = '\0';                                                                           \
+            break;                                                                                                     \
+        case 'N': opts->use_ncurses_terminal = 1; break;                                                               \
+        case 'T':                                                                                                      \
+            /* Enable trunking features; protocol-agnostic alias kept in sync */                                       \
+            opts->p25_trunk = 1;                                                                                       \
+            opts->trunk_enable = 1;                                                                                    \
+            opts->trunk_cli_seen = 1;                                                                                  \
+            break;                                                                                                     \
+        case 'U':                                                                                                      \
+            /* Enable rigctl/TCP and set port */                                                                       \
+            opts->use_rigctl = 1;                                                                                      \
+            opts->rigctlportno = (int)cli_parse_long_or_default(optarg, 10, 0);                                        \
+            if (opts->rigctlportno <= 0) {                                                                             \
+                opts->rigctlportno = 4532; /* SDR++ default */                                                         \
+            }                                                                                                          \
+            break;                                                                                                     \
+        case 'B':                                                                                                      \
+            /* Set rigctl setmod bandwidth (Hz) */                                                                     \
+            opts->setmod_bw = (int)cli_parse_long_or_default(optarg, 10, 0);                                           \
+            if (opts->setmod_bw < 0) {                                                                                 \
+                opts->setmod_bw = 0;                                                                                   \
+            }                                                                                                          \
+            break;                                                                                                     \
+        case 'o':                                                                                                      \
+            DSD_STRNCPY(opts->audio_out_dev, optarg, 1023);                                                            \
+            opts->audio_out_dev[1023] = '\0';                                                                          \
+            break;                                                                                                     \
+        case 'd':                                                                                                      \
+            DSD_STRNCPY(opts->mbe_out_dir, optarg, 1023);                                                              \
+            opts->mbe_out_dir[1023] = '\0';                                                                            \
+            if (stat(opts->mbe_out_dir, &st) == -1) {                                                                  \
+                LOG_NOTICE("%s directory does not exist\n", opts->mbe_out_dir);                                        \
+                LOG_NOTICE("Creating directory %s to save mbe+ processed files\n", opts->mbe_out_dir);                 \
+                dsd_mkdir(opts->mbe_out_dir, 0700);                                                                    \
+            }                                                                                                          \
+            break;                                                                                                     \
+        case '6':                                                                                                      \
+            /* Output raw 48k/1 audio WAV file */                                                                      \
+            DSD_STRNCPY(opts->wav_out_file_raw, optarg, sizeof opts->wav_out_file_raw - 1);                            \
+            opts->wav_out_file_raw[sizeof opts->wav_out_file_raw - 1] = '\0';                                          \
+            openWavOutFileRaw(opts, state);                                                                            \
+            LOG_NOTICE("Raw audio WAV output: %s\n", opts->wav_out_file_raw);                                          \
+            break;                                                                                                     \
+        case 'c':                                                                                                      \
+            /* Symbol capture (dibit) output file */                                                                   \
+            DSD_STRNCPY(opts->symbol_out_file, optarg, sizeof opts->symbol_out_file - 1);                              \
+            opts->symbol_out_file[sizeof opts->symbol_out_file - 1] = '\0';                                            \
+            opts->symbol_out_file_is_auto = 0;                                                                         \
+            openSymbolOutFile(opts, state);                                                                            \
+            LOG_NOTICE("Saving symbol capture to %s\n", opts->symbol_out_file);                                        \
+            break;                                                                                                     \
+        case 'g': {                                                                                                    \
+            /* Digital output gain (matches legacy main.c semantics). \
+                   0 = auto gain; >0 fixes gain in the 0..50 range. */                                                \
+            float g = (float)cli_parse_double_or_default(optarg, 0.0);                                                 \
+            if (g < 0.0f) {                                                                                            \
+                /* Historical behavior: negative disables manual gain without changing autogain. */                    \
+                LOG_NOTICE("Disabling audio out gain setting\n");                                                      \
+                opts->audio_gain = g;                                                                                  \
+                opts->audio_gainR = g;                                                                                 \
+            } else if (g == 0.0f) {                                                                                    \
+                opts->audio_gain = 0.0f;                                                                               \
+                opts->audio_gainR = 0.0f;                                                                              \
+                LOG_NOTICE("Enabling audio out auto-gain\n");                                                          \
+            } else {                                                                                                   \
+                if (g > 50.0f) {                                                                                       \
+                    g = 50.0f;                                                                                         \
+                }                                                                                                      \
+                opts->audio_gain = g;                                                                                  \
+                opts->audio_gainR = g;                                                                                 \
+                state->aout_gain = g;                                                                                  \
+                state->aout_gainR = g;                                                                                 \
+                LOG_NOTICE("Setting audio out gain to %.1f\n", g);                                                     \
+            }                                                                                                          \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case 'n': {                                                                                                    \
+            /* Dual-purpose: -nm enables DMR mono; otherwise treat as analog gain 0..100. */                           \
+            if (optarg[0] == 'm' && optarg[1] == '\0') {                                                               \
+                opts->dmr_mono = 1;                                                                                    \
+                LOG_NOTICE("DMR Mono (1997 method) enabled\n");                                                        \
+            } else {                                                                                                   \
+                float ga = (float)cli_parse_double_or_default(optarg, 0.0);                                            \
+                if (ga < 0.0f) {                                                                                       \
+                    ga = 0.0f;                                                                                         \
+                } else if (ga > 100.0f) {                                                                              \
+                    ga = 100.0f;                                                                                       \
+                }                                                                                                      \
+                opts->audio_gainA = ga;                                                                                \
+                LOG_NOTICE("Analog Audio Out Gain set to %.1f;\n", ga);                                                \
+                /* 0.0 means auto; analog_gain/agsm will derive the effective coefficient. */                          \
+            }                                                                                                          \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case 'w':                                                                                                      \
+            if (opts->dmr_stereo_wav == 1) {                                                                           \
+                /* Allow CLI to override config-derived per-call WAV settings (files not opened yet). */               \
+                if (opts->wav_out_f != NULL || opts->wav_out_fR != NULL) {                                             \
+                    LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");                                    \
+                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                opts->dmr_stereo_wav = 0;                                                                              \
+            }                                                                                                          \
+            DSD_STRNCPY(opts->wav_out_file, optarg, 1023);                                                             \
+            opts->wav_out_file[1023] = '\0';                                                                           \
+            opts->dmr_stereo_wav = 0;                                                                                  \
+            opts->static_wav_file = 1;                                                                                 \
+            openWavOutFileLR(opts, state);                                                                             \
+            LOG_NOTICE("Static WAV output: %s\n", opts->wav_out_file);                                                 \
+            break;                                                                                                     \
+        case 'C': {                                                                                                    \
+            /* Import channel map CSV (channum,freq) */                                                                \
+            DSD_STRNCPY(opts->chan_in_file, optarg, 1023);                                                             \
+            opts->chan_in_file[1023] = '\0';                                                                           \
+            if (csvChanImport(opts, state) != 0) {                                                                     \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);                                          \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case 'G': {                                                                                                    \
+            /* Import group list CSV (TG,Mode,Name) */                                                                 \
+            DSD_STRNCPY(opts->group_in_file, optarg, 1023);                                                            \
+            opts->group_in_file[1023] = '\0';                                                                          \
+            if (csvGroupImport(opts, state) != 0) {                                                                    \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);                                          \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case 'R':                                                                                                      \
+            DSD_STRNCPY(opts->symbol_out_file, optarg, 1023);                                                          \
+            opts->symbol_out_file[1023] = '\0';                                                                        \
+            opts->symbol_out_file_is_auto = 0;                                                                         \
+            break;                                                                                                     \
+        case 'v': {                                                                                                    \
+            /* Filtering bitmap (PBF/LPF/HPF/HPFD) -- accepts hex or dec */                                            \
+            unsigned long bm = strtoul(optarg, NULL, 0);                                                               \
+            opts->use_pbf = (bm & 0x1) ? 1 : 0;                                                                        \
+            opts->use_lpf = (bm & 0x2) ? 1 : 0;                                                                        \
+            opts->use_hpf = (bm & 0x4) ? 1 : 0;                                                                        \
+            opts->use_hpf_d = (bm & 0x8) ? 1 : 0;                                                                      \
+            LOG_NOTICE("Filters: PBF=%d LPF=%d HPF=%d HPFD=%d\n", opts->use_pbf, opts->use_lpf, opts->use_hpf,         \
+                       opts->use_hpf_d);                                                                               \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case 'f': {                                                                                                    \
+            /* Any -f* preset should stop pure analog-monitor mode unless explicitly selecting it. */                  \
+            opts->analog_only = 0;                                                                                     \
+            opts->monitor_input_audio = 0;                                                                             \
+                                                                                                                       \
+            dsdneoUserDecodeMode core_mode = DSDCFG_MODE_UNSET;                                                        \
+            if (dsd_decode_mode_from_cli_preset(optarg[0], &core_mode) == 0                                            \
+                && dsd_apply_decode_mode_preset(core_mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0) {         \
+                cli_decode_timing_mode = core_mode;                                                                    \
+                cli_decode_timing_seen = 1;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
+                switch (optarg[0]) {                                                                                   \
+                    case 'a': LOG_NOTICE("Decoding AUTO: all digital modes with multi-rate SPS hunting\n"); break;     \
+                    case 'A': LOG_NOTICE("Only Monitoring Passive Analog Signal\n"); break;                            \
+                    case 'd': LOG_NOTICE("Decoding only DSTAR frames.\n"); break;                                      \
+                    case 'x': LOG_NOTICE("Decoding only X2-TDMA frames.\n"); break;                                    \
+                    case '1': LOG_NOTICE("Decoding only P25 Phase 1 frames.\n"); break;                                \
+                    case '2': LOG_NOTICE("Decoding only P25 Phase 2 frames.\n"); break;                                \
+                    case 's': LOG_NOTICE("Decoding only DMR frames.\n"); break;                                        \
+                    case 'i': LOG_NOTICE("Decoding only NXDN48 frames.\n"); break;                                     \
+                    case 'n': LOG_NOTICE("Decoding only NXDN96 frames.\n"); break;                                     \
+                    case 'y': LOG_NOTICE("Decoding only YSF frames.\n"); break;                                        \
+                    case 'm': LOG_NOTICE("Decoding only M17 frames (polarity auto-detected from preamble).\n"); break; \
+                    default: break;                                                                                    \
+                }                                                                                                      \
+            } else if (optarg[0] == 'p') {                                                                             \
+                opts->frame_dstar = 0;                                                                                 \
+                opts->frame_x2tdma = 0;                                                                                \
+                opts->frame_p25p1 = 0;                                                                                 \
+                opts->frame_p25p2 = 0;                                                                                 \
+                opts->frame_nxdn48 = 0;                                                                                \
+                opts->frame_nxdn96 = 0;                                                                                \
+                opts->frame_dmr = 0;                                                                                   \
+                opts->frame_dpmr = 0;                                                                                  \
+                opts->frame_provoice = 1;                                                                              \
+                opts->frame_ysf = 0;                                                                                   \
+                opts->frame_m17 = 0;                                                                                   \
+                state->samplesPerSymbol = 5;                                                                           \
+                state->symbolCenter = 2;                                                                               \
+                opts->mod_c4fm = 0;                                                                                    \
+                opts->mod_qpsk = 0;                                                                                    \
+                opts->mod_gfsk = 1;                                                                                    \
+                state->rf_mod = 2;                                                                                     \
+                opts->pulse_digi_rate_out = 8000;                                                                      \
+                opts->pulse_digi_out_channels = 1;                                                                     \
+                opts->dmr_stereo = 0;                                                                                  \
+                opts->dmr_mono = 0;                                                                                    \
+                state->dmr_stereo = 0;                                                                                 \
+                DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
+                LOG_NOTICE("Setting symbol rate to 9600 / second\n");                                                  \
+                LOG_NOTICE("Decoding only ProVoice frames.\n");                                                        \
+                LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");                                         \
+                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
+                cli_decode_timing_seen = 1;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
+            } else if (optarg[0] == 'h') {                                                                             \
+                if (optarg[1] != 0) {                                                                                  \
+                    char abits[2] = {optarg[1], 0};                                                                    \
+                    char fbits[2] = {optarg[2], 0};                                                                    \
+                    char sbits[2] = {optarg[3], 0};                                                                    \
+                    state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
+                    state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
+                    state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
+                }                                                                                                      \
+                opts->frame_dstar = 0;                                                                                 \
+                opts->frame_x2tdma = 0;                                                                                \
+                opts->frame_p25p1 = 0;                                                                                 \
+                opts->frame_p25p2 = 0;                                                                                 \
+                opts->frame_nxdn48 = 0;                                                                                \
+                opts->frame_nxdn96 = 0;                                                                                \
+                opts->frame_dmr = 0;                                                                                   \
+                opts->frame_dpmr = 0;                                                                                  \
+                opts->frame_provoice = 1;                                                                              \
+                state->ea_mode = 0;                                                                                    \
+                state->esk_mask = 0;                                                                                   \
+                opts->frame_ysf = 0;                                                                                   \
+                opts->frame_m17 = 0;                                                                                   \
+                state->samplesPerSymbol = 5;                                                                           \
+                state->symbolCenter = 2;                                                                               \
+                opts->mod_c4fm = 0;                                                                                    \
+                opts->mod_qpsk = 0;                                                                                    \
+                opts->mod_gfsk = 1;                                                                                    \
+                state->rf_mod = 2;                                                                                     \
+                opts->pulse_digi_rate_out = 8000;                                                                      \
+                opts->pulse_digi_out_channels = 1;                                                                     \
+                opts->dmr_stereo = 0;                                                                                  \
+                opts->dmr_mono = 0;                                                                                    \
+                state->dmr_stereo = 0;                                                                                 \
+                DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
+                LOG_NOTICE("Setting symbol rate to 9600 / second\n");                                                  \
+                LOG_NOTICE("Decoding EDACS STD/NET and ProVoice frames.\n");                                           \
+                LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");                                         \
+                if (optarg[1] != 0) {                                                                                  \
+                    if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {                     \
+                        LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");                              \
+                        state->edacs_a_bits = 4;                                                                       \
+                        state->edacs_f_bits = 4;                                                                       \
+                        state->edacs_s_bits = 3;                                                                       \
+                    }                                                                                                  \
+                    LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,     \
+                               state->edacs_s_bits);                                                                   \
+                }                                                                                                      \
+                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
+                cli_decode_timing_seen = 1;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
+            } else if (optarg[0] == 'H') {                                                                             \
+                if (optarg[1] != 0) {                                                                                  \
+                    char abits[2] = {optarg[1], 0};                                                                    \
+                    char fbits[2] = {optarg[2], 0};                                                                    \
+                    char sbits[2] = {optarg[3], 0};                                                                    \
+                    state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
+                    state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
+                    state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
+                }                                                                                                      \
+                opts->frame_dstar = 0;                                                                                 \
+                opts->frame_x2tdma = 0;                                                                                \
+                opts->frame_p25p1 = 0;                                                                                 \
+                opts->frame_p25p2 = 0;                                                                                 \
+                opts->frame_nxdn48 = 0;                                                                                \
+                opts->frame_nxdn96 = 0;                                                                                \
+                opts->frame_dmr = 0;                                                                                   \
+                opts->frame_dpmr = 0;                                                                                  \
+                opts->frame_provoice = 1;                                                                              \
+                state->ea_mode = 0;                                                                                    \
+                state->esk_mask = 0xA0;                                                                                \
+                opts->frame_ysf = 0;                                                                                   \
+                opts->frame_m17 = 0;                                                                                   \
+                state->samplesPerSymbol = 5;                                                                           \
+                state->symbolCenter = 2;                                                                               \
+                opts->mod_c4fm = 0;                                                                                    \
+                opts->mod_qpsk = 0;                                                                                    \
+                opts->mod_gfsk = 1;                                                                                    \
+                state->rf_mod = 2;                                                                                     \
+                opts->pulse_digi_rate_out = 8000;                                                                      \
+                opts->pulse_digi_out_channels = 1;                                                                     \
+                opts->dmr_stereo = 0;                                                                                  \
+                opts->dmr_mono = 0;                                                                                    \
+                state->dmr_stereo = 0;                                                                                 \
+                DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
+                LOG_NOTICE("Setting symbol rate to 9600 / second\n");                                                  \
+                LOG_NOTICE("Decoding EDACS Extended Addressing w/ ESK and ProVoice frames.\n");                        \
+                LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");                                         \
+                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
+                cli_decode_timing_seen = 1;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
+            } else if (optarg[0] == 'e') {                                                                             \
+                if (optarg[1] != 0) {                                                                                  \
+                    char abits[2] = {optarg[1], 0};                                                                    \
+                    char fbits[2] = {optarg[2], 0};                                                                    \
+                    char sbits[2] = {optarg[3], 0};                                                                    \
+                    state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
+                    state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
+                    state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
+                }                                                                                                      \
+                opts->frame_dstar = 0;                                                                                 \
+                opts->frame_x2tdma = 0;                                                                                \
+                opts->frame_p25p1 = 0;                                                                                 \
+                opts->frame_p25p2 = 0;                                                                                 \
+                opts->frame_nxdn48 = 0;                                                                                \
+                opts->frame_nxdn96 = 0;                                                                                \
+                opts->frame_dmr = 0;                                                                                   \
+                opts->frame_dpmr = 0;                                                                                  \
+                opts->frame_provoice = 1;                                                                              \
+                state->ea_mode = 1;                                                                                    \
+                state->esk_mask = 0;                                                                                   \
+                opts->frame_ysf = 0;                                                                                   \
+                opts->frame_m17 = 0;                                                                                   \
+                state->samplesPerSymbol = 5;                                                                           \
+                state->symbolCenter = 2;                                                                               \
+                opts->mod_c4fm = 0;                                                                                    \
+                opts->mod_qpsk = 0;                                                                                    \
+                opts->mod_gfsk = 1;                                                                                    \
+                state->rf_mod = 2;                                                                                     \
+                opts->pulse_digi_rate_out = 8000;                                                                      \
+                opts->pulse_digi_out_channels = 1;                                                                     \
+                opts->dmr_stereo = 0;                                                                                  \
+                opts->dmr_mono = 0;                                                                                    \
+                state->dmr_stereo = 0;                                                                                 \
+                DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
+                LOG_NOTICE("Setting symbol rate to 9600 / second\n");                                                  \
+                LOG_NOTICE("Decoding EDACS EA/ProVoice frames.\n");                                                    \
+                LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");                                         \
+                if (optarg[1] != 0) {                                                                                  \
+                    if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {                     \
+                        LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");                              \
+                        state->edacs_a_bits = 4;                                                                       \
+                        state->edacs_f_bits = 4;                                                                       \
+                        state->edacs_s_bits = 3;                                                                       \
+                    }                                                                                                  \
+                    LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,     \
+                               state->edacs_s_bits);                                                                   \
+                }                                                                                                      \
+                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
+                cli_decode_timing_seen = 1;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
+            } else if (optarg[0] == 'E') {                                                                             \
+                if (optarg[1] != 0) {                                                                                  \
+                    char abits[2] = {optarg[1], 0};                                                                    \
+                    char fbits[2] = {optarg[2], 0};                                                                    \
+                    char sbits[2] = {optarg[3], 0};                                                                    \
+                    state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
+                    state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
+                    state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
+                }                                                                                                      \
+                opts->frame_dstar = 0;                                                                                 \
+                opts->frame_x2tdma = 0;                                                                                \
+                opts->frame_p25p1 = 0;                                                                                 \
+                opts->frame_p25p2 = 0;                                                                                 \
+                opts->frame_nxdn48 = 0;                                                                                \
+                opts->frame_nxdn96 = 0;                                                                                \
+                opts->frame_dmr = 0;                                                                                   \
+                opts->frame_dpmr = 0;                                                                                  \
+                opts->frame_provoice = 1;                                                                              \
+                state->ea_mode = 1;                                                                                    \
+                state->esk_mask = 0xA0;                                                                                \
+                opts->frame_ysf = 0;                                                                                   \
+                opts->frame_m17 = 0;                                                                                   \
+                state->samplesPerSymbol = 5;                                                                           \
+                state->symbolCenter = 2;                                                                               \
+                opts->mod_c4fm = 0;                                                                                    \
+                opts->mod_qpsk = 0;                                                                                    \
+                opts->mod_gfsk = 1;                                                                                    \
+                state->rf_mod = 2;                                                                                     \
+                opts->pulse_digi_rate_out = 8000;                                                                      \
+                opts->pulse_digi_out_channels = 1;                                                                     \
+                opts->dmr_stereo = 0;                                                                                  \
+                opts->dmr_mono = 0;                                                                                    \
+                state->dmr_stereo = 0;                                                                                 \
+                DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
+                LOG_NOTICE("Setting symbol rate to 9600 / second\n");                                                  \
+                LOG_NOTICE("Decoding EDACS EA/ProVoice w/ ESK frames.\n");                                             \
+                LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");                                         \
+                if (optarg[1] != 0) {                                                                                  \
+                    if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {                     \
+                        LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");                              \
+                        state->edacs_a_bits = 4;                                                                       \
+                        state->edacs_f_bits = 4;                                                                       \
+                        state->edacs_s_bits = 3;                                                                       \
+                    }                                                                                                  \
+                    LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,     \
+                               state->edacs_s_bits);                                                                   \
+                }                                                                                                      \
+                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
+                cli_decode_timing_seen = 1;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
+            } else if (optarg[0] == 'r') {                                                                             \
+                /* Legacy -fr alias: DMR BS/MS simplex with mono audio. \
+                       Mirrors -fs but prefers mono content while keeping a \
+                       2-channel output interface for compatibility. */                                              \
+                opts->frame_dstar = 0;                                                                                 \
+                opts->frame_x2tdma = 0;                                                                                \
+                opts->frame_p25p1 = 0;                                                                                 \
+                opts->frame_p25p2 = 0;                                                                                 \
+                opts->inverted_p2 = 0;                                                                                 \
+                opts->frame_nxdn48 = 0;                                                                                \
+                opts->frame_nxdn96 = 0;                                                                                \
+                opts->frame_dmr = 1;                                                                                   \
+                opts->frame_dpmr = 0;                                                                                  \
+                opts->frame_provoice = 0;                                                                              \
+                opts->frame_ysf = 0;                                                                                   \
+                opts->frame_m17 = 0;                                                                                   \
+                if (!opts->mod_cli_lock) {                                                                             \
+                    opts->mod_c4fm = 0;                                                                                \
+                    opts->mod_qpsk = 0;                                                                                \
+                    opts->mod_gfsk = 1;                                                                                \
+                    state->rf_mod = 2;                                                                                 \
+                }                                                                                                      \
+                opts->dmr_stereo = 0;                                                                                  \
+                state->dmr_stereo = 0;                                                                                 \
+                opts->dmr_mono = 1;                                                                                    \
+                opts->pulse_digi_rate_out = 8000;                                                                      \
+                /* Use 2-channel digital output (like -fs) so audio \
+                       routing stays consistent across sinks; mono behavior \
+                       is provided by dmr_mono in the vocoder/mixers. */                                                  \
+                opts->pulse_digi_out_channels = 2;                                                                     \
+                DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "DMR-Mono");                           \
+                LOG_NOTICE("Decoding DMR (legacy -fr mono mode).\n");                                                  \
+                cli_decode_timing_mode = DSDCFG_MODE_DMR;                                                              \
+                cli_decode_timing_seen = 1;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
+            } else if (optarg[0] == 'Z') {                                                                             \
+                opts->m17encoder = 1;                                                                                  \
+                opts->pulse_digi_rate_out = 48000;                                                                     \
+                opts->pulse_digi_out_channels = 1;                                                                     \
+                opts->use_lpf = 0;                                                                                     \
+                opts->use_hpf = 0;                                                                                     \
+                opts->use_pbf = 0;                                                                                     \
+                opts->dmr_stereo = 0;                                                                                  \
+                DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "M17 Encoder");                        \
+                cli_decode_timing_seen = 0;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;                                                     \
+            } else if (optarg[0] == 'B') {                                                                             \
+                opts->m17encoderbrt = 1;                                                                               \
+                opts->pulse_digi_rate_out = 48000;                                                                     \
+                opts->pulse_digi_out_channels = 1;                                                                     \
+                DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "M17 BERT");                           \
+                cli_decode_timing_seen = 0;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;                                                     \
+            } else if (optarg[0] == 'P') {                                                                             \
+                opts->m17encoderpkt = 1;                                                                               \
+                opts->pulse_digi_rate_out = 48000;                                                                     \
+                opts->pulse_digi_out_channels = 1;                                                                     \
+                DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "M17 Packet");                         \
+                cli_decode_timing_seen = 0;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;                                                     \
+            } else if (optarg[0] == 'U') {                                                                             \
+                opts->m17decoderip = 1;                                                                                \
+                opts->pulse_digi_rate_out = 8000;                                                                      \
+                opts->pulse_digi_out_channels = 1;                                                                     \
+                DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "M17 IP Frame");                       \
+                LOG_NOTICE("Decoding M17 UDP/IP Frames.\n");                                                           \
+                cli_decode_timing_seen = 0;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;                                                     \
+            }                                                                                                          \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case 'm':                                                                                                      \
+            if (optarg[0] == 'a') {                                                                                    \
+                opts->mod_c4fm = 1;                                                                                    \
+                opts->mod_qpsk = 1;                                                                                    \
+                opts->mod_gfsk = 1;                                                                                    \
+                state->rf_mod = 0;                                                                                     \
+                opts->mod_cli_lock = 0;                                                                                \
+                LOG_NOTICE("Don't use the -ma switch.\n");                                                             \
+            } else if (optarg[0] == 'c') {                                                                             \
+                opts->mod_c4fm = 1;                                                                                    \
+                opts->mod_qpsk = 0;                                                                                    \
+                opts->mod_gfsk = 0;                                                                                    \
+                state->rf_mod = 0;                                                                                     \
+                opts->mod_cli_lock = 1;                                                                                \
+                LOG_NOTICE("Enabling only C4FM modulation optimizations.\n");                                          \
+            } else if (optarg[0] == 'g') {                                                                             \
+                opts->mod_c4fm = 0;                                                                                    \
+                opts->mod_qpsk = 0;                                                                                    \
+                opts->mod_gfsk = 1;                                                                                    \
+                state->rf_mod = 2;                                                                                     \
+                opts->mod_cli_lock = 1;                                                                                \
+                LOG_NOTICE("Enabling only GFSK modulation optimizations.\n");                                          \
+            } else if (optarg[0] == 'q') {                                                                             \
+                opts->mod_c4fm = 0;                                                                                    \
+                opts->mod_qpsk = 1;                                                                                    \
+                opts->mod_gfsk = 0;                                                                                    \
+                state->rf_mod = 1;                                                                                     \
+                opts->mod_cli_lock = 1;                                                                                \
+                LOG_NOTICE("Enabling only QPSK modulation optimizations.\n");                                          \
+            } else if (optarg[0] == '2') {                                                                             \
+                opts->mod_c4fm = 0;                                                                                    \
+                opts->mod_qpsk = 1;                                                                                    \
+                opts->mod_gfsk = 0;                                                                                    \
+                state->rf_mod = 1;                                                                                     \
+                state->samplesPerSymbol = 8;                                                                           \
+                state->symbolCenter = 3;                                                                               \
+                opts->mod_cli_lock = 1;                                                                                \
+                cli_decode_timing_seen = 1;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;                                                   \
+                cli_manual_timing_sps = 8;                                                                             \
+                cli_manual_timing_center = 3;                                                                          \
+                LOG_NOTICE("Enabling 6000 sps P25p2 QPSK.\n");                                                         \
+            } else if (optarg[0] == '3') {                                                                             \
+                opts->mod_c4fm = 1;                                                                                    \
+                opts->mod_qpsk = 0;                                                                                    \
+                opts->mod_gfsk = 0;                                                                                    \
+                state->rf_mod = 0;                                                                                     \
+                state->samplesPerSymbol = 10;                                                                          \
+                state->symbolCenter = 4;                                                                               \
+                opts->mod_cli_lock = 1;                                                                                \
+                cli_decode_timing_seen = 1;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;                                                   \
+                cli_manual_timing_sps = 10;                                                                            \
+                cli_manual_timing_center = 4;                                                                          \
+                LOG_NOTICE("Enabling 6000 sps P25p2 C4FM.\n");                                                         \
+            } else if (optarg[0] == '4') {                                                                             \
+                opts->mod_c4fm = 1;                                                                                    \
+                opts->mod_qpsk = 1;                                                                                    \
+                opts->mod_gfsk = 1;                                                                                    \
+                state->rf_mod = 0;                                                                                     \
+                state->samplesPerSymbol = 8;                                                                           \
+                state->symbolCenter = 3;                                                                               \
+                opts->mod_cli_lock = 0;                                                                                \
+                cli_decode_timing_seen = 1;                                                                            \
+                cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;                                                   \
+                cli_manual_timing_sps = 8;                                                                             \
+                cli_manual_timing_center = 3;                                                                          \
+                LOG_NOTICE("Enabling 6000 sps P25p2 all optimizations.\n");                                            \
+            }                                                                                                          \
+            break;                                                                                                     \
+        case 'u':                                                                                                      \
+            opts->uvquality = (int)cli_parse_long_or_default(optarg, 0, 0);                                            \
+            if (opts->uvquality < 1) {                                                                                 \
+                opts->uvquality = 1;                                                                                   \
+            } else if (opts->uvquality > 64) {                                                                         \
+                opts->uvquality = 64;                                                                                  \
+            }                                                                                                          \
+            LOG_NOTICE("Setting unvoice speech quality to %i waves per band.\n", opts->uvquality);                     \
+            break;                                                                                                     \
+        case 's': {                                                                                                    \
+            /* Sample rate for WAV/RAW input files */                                                                  \
+            int sr = (int)cli_parse_long_or_default(optarg, 10, 0);                                                    \
+            int old_effective_rate = dsd_opts_effective_input_rate(opts);                                              \
+            if (sr < 8000) {                                                                                           \
+                sr = 8000;                                                                                             \
+            }                                                                                                          \
+            if (sr > 192000) {                                                                                         \
+                sr = 192000;                                                                                           \
+            }                                                                                                          \
+            dsd_opts_clear_staged_file_sample_rate(opts);                                                              \
+            dsd_opts_apply_input_sample_rate(opts, sr);                                                                \
+            dsd_state_rescale_symbol_timing(state, old_effective_rate, dsd_opts_effective_input_rate(opts));           \
+            LOG_NOTICE("WAV input sample rate: %d Hz (interp=%d)\n", opts->wav_sample_rate, opts->wav_interpolator);   \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case 'J':                                                                                                      \
+            /* Event log output */                                                                                     \
+            DSD_STRNCPY(opts->event_out_file, optarg, 1023);                                                           \
+            opts->event_out_file[1023] = '\0';                                                                         \
+            LOG_NOTICE("Event log file: %s\n", opts->event_out_file);                                                  \
+            break;                                                                                                     \
+        case 'L':                                                                                                      \
+            /* LRRP output */                                                                                          \
+            DSD_STRNCPY(opts->lrrp_out_file, optarg, 1023);                                                            \
+            opts->lrrp_out_file[1023] = '\0';                                                                          \
+            opts->lrrp_file_output = 1;                                                                                \
+            LOG_NOTICE("LRRP output file: %s\n", opts->lrrp_out_file);                                                 \
+            break;                                                                                                     \
+        case 'x':                                                                                                      \
+            if (optarg[0] == 'x') {                                                                                    \
+                opts->inverted_x2tdma = 0;                                                                             \
+                LOG_NOTICE("Expecting non-inverted X2-TDMA signals.\n");                                               \
+            } else if (optarg[0] == 'r') {                                                                             \
+                opts->inverted_dmr = 1;                                                                                \
+                LOG_NOTICE("Expecting inverted DMR signals.\n");                                                       \
+            } else if (optarg[0] == 'd') {                                                                             \
+                opts->inverted_dpmr = 1;                                                                               \
+                LOG_NOTICE("Expecting inverted ICOM dPMR signals.\n");                                                 \
+            } else if (optarg[0] == 'z') {                                                                             \
+                opts->inverted_m17 = 1;                                                                                \
+                LOG_NOTICE("Expecting inverted M17 signals.\n");                                                       \
+            }                                                                                                          \
+            break;                                                                                                     \
+        case 'r':                                                                                                      \
+            opts->playfiles = 1;                                                                                       \
+            opts->errorbars = 0;                                                                                       \
+            opts->datascope = 0;                                                                                       \
+            opts->pulse_digi_rate_out = 48000;                                                                         \
+            opts->pulse_digi_out_channels = 1;                                                                         \
+            opts->dmr_stereo = 0;                                                                                      \
+            state->dmr_stereo = 0;                                                                                     \
+            DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "MBE Playback");                           \
+            break;                                                                                                     \
+        case 'l': opts->use_cosine_filter = 0; break;                                                                  \
+        case 't':                                                                                                      \
+            /* Trunking/scan hangtime seconds (0 = immediate release) */                                               \
+            opts->trunk_hangtime = (float)cli_parse_double_or_default(optarg, 0.0);                                    \
+            if (opts->trunk_hangtime < 0.0f) {                                                                         \
+                opts->trunk_hangtime = 2.0f;                                                                           \
+            }                                                                                                          \
+            break;                                                                                                     \
+        case 'q':                                                                                                      \
+            /* Reverse mute: mute clear and unmute encrypted */                                                        \
+            opts->reverse_mute = 1;                                                                                    \
+            LOG_NOTICE("Reverse mute enabled (mute clear, unmute encrypted).\n");                                      \
+            break;                                                                                                     \
+        case 'X': {                                                                                                    \
+            /* Manually set P25p2 WACN/SYSID/NAC via hex string, e.g., BEE00ABC123 */                                  \
+            const char* s = optarg;                                                                                    \
+            size_t len = strlen(s);                                                                                    \
+            if (len >= 11) {                                                                                           \
+                char wb[6] = {0}, sb[4] = {0}, nb[4] = {0};                                                            \
+                DSD_MEMCPY(wb, s, 5);                                                                                  \
+                DSD_MEMCPY(sb, s + 5, 3);                                                                              \
+                DSD_MEMCPY(nb, s + 8, 3);                                                                              \
+                unsigned long w = strtoul(wb, NULL, 16);                                                               \
+                unsigned long sy = strtoul(sb, NULL, 16);                                                              \
+                unsigned long na = strtoul(nb, NULL, 16);                                                              \
+                state->p2_wacn = w & 0xFFFFF;                                                                          \
+                state->p2_sysid = sy & 0xFFF;                                                                          \
+                state->p2_cc = na & 0xFFF;                                                                             \
+                LOG_NOTICE("P25p2 manual WACN/SYSID/NAC set: %05lX/%03lX/%03lX\n", state->p2_wacn, state->p2_sysid,    \
+                           state->p2_cc);                                                                              \
+            } else {                                                                                                   \
+                LOG_WARNING("-X expects 11 hex chars (WACN[5]+SYSID[3]+NAC[3]), e.g., BEE00ABC123\n");                 \
+            }                                                                                                          \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case 'b': {                                                                                                    \
+            /* Manually enter Basic Privacy key number (decimal 0..255) */                                             \
+            long v = strtol(optarg, NULL, 10);                                                                         \
+            if (v < 0) {                                                                                               \
+                v = 0;                                                                                                 \
+            }                                                                                                          \
+            if (v > 255) {                                                                                             \
+                v = 255;                                                                                               \
+            }                                                                                                          \
+            state->K = v;                                                                                              \
+            LOG_NOTICE("Basic Privacy key number set to %ld (forced priority)\n", v);                                  \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case 'D': {                                                                                                    \
+            /* Manually set DMR TIII Location Area n-bit length */                                                     \
+            long n = strtol(optarg, NULL, 10);                                                                         \
+            if (n < 0) {                                                                                               \
+                n = 0;                                                                                                 \
+            }                                                                                                          \
+            if (n > 10) {                                                                                              \
+                n = 10;                                                                                                \
+            }                                                                                                          \
+            opts->dmr_dmrla_is_set = 1;                                                                                \
+            opts->dmr_dmrla_n = (uint8_t)n;                                                                            \
+            LOG_NOTICE("DMR TIII Location Area n-bit length set to %ld\n", n);                                         \
+            break;                                                                                                     \
+        }                                                                                                              \
+        case '4':                                                                                                      \
+            /* Force Privacy Key over Encryption Identifiers */                                                        \
+            state->M = 1;                                                                                              \
+            LOG_NOTICE("Force Privacy Key priority enabled\n");                                                        \
+            break;                                                                                                     \
+        default:                                                                                                       \
+            dsd_cli_usage();                                                                                           \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+    }
+
 static int
 dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc) {
+
     int c;
-    extern char* optarg;
-    extern int optind;
     struct stat st = {0};
     char wav_file_directory[1024] = {0};
     char dsp_filename[1024] = {0};
@@ -933,995 +1987,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                        "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:u:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:"
                        "89:Ek:I:J:Oj^"))
            != -1) {
-        switch (c) {
-            case 'h':
-                dsd_cli_usage();
-                cli_set_exit_rc(out_exit_rc, 0);
-                return DSD_PARSE_ONE_SHOT;
-            case 'a':
-                opts->call_alert = 1;
-                opts->call_alert_events = (uint8_t)DSD_CALL_ALERT_EVENT_ALL;
-                break;
-            case '~':
-                state->debug_mode = 1;
-                LOG_NOTICE("Debug Mode Enabled; \n");
-                break;
-            case 'O':
-                dsd_audio_list_devices();
-                cli_set_exit_rc(out_exit_rc, 0);
-                return DSD_PARSE_ONE_SHOT;
-            case 'M':
-                strncpy(state->m17dat, optarg, 49);
-                state->m17dat[49] = '\0';
-                break;
-            case 'I':
-                sscanf(optarg, "%u", &state->tg_hold);
-                LOG_NOTICE("TG Hold set to %u \n", state->tg_hold);
-                break;
-            case '8':
-                opts->monitor_input_audio = 1;
-                LOG_NOTICE("Experimental Raw Analog Source Monitoring Enabled (Pulse Audio Only!)\n");
-                break;
-            case 'j':
-                opts->p25_lcw_retune = 1;
-                LOG_NOTICE("P25: LCW explicit retune (0x44) forced ON.\n");
-                break;
-            case '^':
-                opts->p25_prefer_candidates = 1;
-                LOG_NOTICE("P25: Prefer CC candidates during hunt: On.\n");
-                break;
-            case '0':
-                state->M = 0x21;
-                LOG_NOTICE("Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR)\n");
-                break;
-            case '1':
-                if (state) {
-                    char hex[128];
-                    size_t nhex = 0;
-                    if (!cli_collect_hex_digits(optarg, hex, sizeof hex, &nhex)) {
-                        LOG_ERROR("-1 expects a hex key (spaces allowed)\n");
-                        cli_set_exit_rc(out_exit_rc, 1);
-                        return DSD_PARSE_ERROR;
-                    }
-                    if (nhex == 0 || nhex > 16) {
-                        LOG_ERROR("-1 expects 1..16 hex characters (spaces allowed)\n");
-                        cli_set_exit_rc(out_exit_rc, 1);
-                        return DSD_PARSE_ERROR;
-                    }
-                    unsigned long long key = 0ULL;
-                    if (!cli_parse_hex_u64_n(hex, nhex, &key)) {
-                        LOG_ERROR("-1 failed to parse key\n");
-                        cli_set_exit_rc(out_exit_rc, 1);
-                        return DSD_PARSE_ERROR;
-                    }
-                    state->R = key;
-                    state->RR = key;
-                    LOG_NOTICE("RC4/DES Encryption Key Value set to 0x%llX \n", state->R);
-                    opts->unmute_encrypted_p25 = 0;
-                    state->keyloader = 0;
-                }
-                break;
-            case '2':
-                state->tyt_bp = 1;
-                sscanf(optarg, "%llX", &state->H);
-                state->H = state->H & 0xFFFF;
-                LOG_NOTICE("DMR TYT Basic 16-bit Key 0x%llX with Forced Application\n", state->H);
-                break;
-            case '!': tyt_ap_pc4_keystream_creation(state, optarg); break;
-            case '@': retevis_rc2_keystream_creation(state, optarg); break;
-            case '5': tyt_ep_aes_keystream_creation(state, optarg); break;
-            case '9': ken_dmr_scrambler_keystream_creation(state, optarg); break;
-            case 'A': anytone_bp_keystream_creation(state, optarg); break;
-            case 'S': straight_mod_xor_keystream_creation(state, optarg); break;
-            case '3':
-                opts->dmr_le = 0;
-                LOG_NOTICE("DMRA Late Entry Encryption Identifiers Disabled\n");
-                break;
-            case 'y':
-                opts->floating_point = 1;
-                LOG_NOTICE("Enabling Experimental Floating Point Audio Output\n");
-                break;
-            case 'Y':
-                opts->scanner_mode = 1;
-                opts->p25_trunk = 0;
-                opts->trunk_enable = 0;
-                opts->trunk_cli_seen = 1;
-                break;
-            case 'k':
-                strncpy(opts->key_in_file, optarg, 1023);
-                opts->key_in_file[1023] = '\0';
-                if (csvKeyImportDec(opts, state) != 0) {
-                    cli_set_exit_rc(out_exit_rc, 1);
-                    return DSD_PARSE_ERROR;
-                }
-                state->keyloader = 1;
-                break;
-            case 'K':
-                strncpy(opts->key_in_file, optarg, 1023);
-                opts->key_in_file[1023] = '\0';
-                if (csvKeyImportHex(opts, state) != 0) {
-                    cli_set_exit_rc(out_exit_rc, 1);
-                    return DSD_PARSE_ERROR;
-                }
-                state->keyloader = 1;
-                break;
-            case 'Q':
-                snprintf(wav_file_directory, sizeof wav_file_directory, "%s", "./DSP");
-                wav_file_directory[1023] = '\0';
-                if (stat(wav_file_directory, &st) == -1) {
-                    LOG_NOTICE("-Q %s DSP file directory does not exist\n", wav_file_directory);
-                    LOG_NOTICE("Creating directory %s to save DSP Structured or M17 Binary Stream files\n",
-                               wav_file_directory);
-                    dsd_mkdir(wav_file_directory, 0700);
-                }
-                strncpy(dsp_filename, optarg, 1023);
-                snprintf(opts->dsp_out_file, sizeof opts->dsp_out_file, "%s/%s", wav_file_directory, dsp_filename);
-                LOG_NOTICE("Saving DSP Structured or M17 Float Stream Output to %s\n", opts->dsp_out_file);
-                opts->use_dsp_output = 1;
-                break;
-            case 'z': {
-                // TDMA voice slot preference
-                // 0 = prefer slot 1, 1 = prefer slot 2, 2 = auto
-                int pref = atoi(optarg);
-                if (pref < 0) {
-                    pref = 0;
-                }
-                if (pref > 2) {
-                    pref = 2;
-                }
-                opts->slot_preference = pref;
-                LOG_NOTICE("Slot preference set: %s\n", (pref == 0 ? "Slot 1" : (pref == 1 ? "Slot 2" : "Auto")));
-                break;
-            }
-            case 'H':
-                if (state) {
-                    char hex[128];
-                    size_t nhex = 0;
-                    if (!cli_collect_hex_digits(optarg, hex, sizeof hex, &nhex)) {
-                        LOG_ERROR("-H expects a hex key (spaces allowed)\n");
-                        cli_set_exit_rc(out_exit_rc, 1);
-                        return DSD_PARSE_ERROR;
-                    }
-
-                    unsigned long long k1 = 0ULL, k2 = 0ULL, k3 = 0ULL, k4 = 0ULL;
-                    if (nhex == 10) {
-                        if (!cli_parse_hex_u64_n(hex, 10, &k1)) {
-                            LOG_ERROR("-H failed to parse 10-hex Hytera BP key\n");
-                            cli_set_exit_rc(out_exit_rc, 1);
-                            return DSD_PARSE_ERROR;
-                        }
-                        state->H = k1 & 0xFFFFFFFFFFULL;
-                        state->K1 = state->H;
-                        state->K2 = state->K3 = state->K4 = 0ULL;
-                        LOG_NOTICE("Hytera BP key loaded (40-bit)\n");
-                    } else if (nhex == 32) {
-                        if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)) {
-                            LOG_ERROR("-H failed to parse 32-hex key (2x16)\n");
-                            cli_set_exit_rc(out_exit_rc, 1);
-                            return DSD_PARSE_ERROR;
-                        }
-                        state->H = k1;
-                        state->K1 = k1;
-                        state->K2 = k2;
-                        state->K3 = state->K4 = 0ULL;
-
-                        state->A1[0] = state->A1[1] = k1;
-                        state->A2[0] = state->A2[1] = k2;
-                        state->A3[0] = state->A3[1] = 0ULL;
-                        state->A4[0] = state->A4[1] = 0ULL;
-                        state->aes_key_loaded[0] = state->aes_key_loaded[1] = (k1 != 0ULL || k2 != 0ULL) ? 1 : 0;
-
-                        memset(state->aes_key, 0, sizeof(state->aes_key));
-                        for (int i = 0; i < 8; i++) {
-                            state->aes_key[i + 0] = (uint8_t)((state->A1[0] >> (56 - (i * 8))) & 0xFF);
-                            state->aes_key[i + 8] = (uint8_t)((state->A2[0] >> (56 - (i * 8))) & 0xFF);
-                        }
-                        LOG_NOTICE("AES-128 / Hytera 128-bit key loaded (2x64)\n");
-                    } else if (nhex == 64) {
-                        if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)
-                            || !cli_parse_hex_u64_n(hex + 32, 16, &k3) || !cli_parse_hex_u64_n(hex + 48, 16, &k4)) {
-                            LOG_ERROR("-H failed to parse 64-hex key (4x16)\n");
-                            cli_set_exit_rc(out_exit_rc, 1);
-                            return DSD_PARSE_ERROR;
-                        }
-                        state->H = k1;
-                        state->K1 = k1;
-                        state->K2 = k2;
-                        state->K3 = k3;
-                        state->K4 = k4;
-
-                        state->A1[0] = state->A1[1] = k1;
-                        state->A2[0] = state->A2[1] = k2;
-                        state->A3[0] = state->A3[1] = k3;
-                        state->A4[0] = state->A4[1] = k4;
-                        state->aes_key_loaded[0] = state->aes_key_loaded[1] =
-                            (k1 != 0ULL || k2 != 0ULL || k3 != 0ULL || k4 != 0ULL) ? 1 : 0;
-
-                        memset(state->aes_key, 0, sizeof(state->aes_key));
-                        for (int i = 0; i < 8; i++) {
-                            state->aes_key[i + 0] = (uint8_t)((state->A1[0] >> (56 - (i * 8))) & 0xFF);
-                            state->aes_key[i + 8] = (uint8_t)((state->A2[0] >> (56 - (i * 8))) & 0xFF);
-                            state->aes_key[i + 16] = (uint8_t)((state->A3[0] >> (56 - (i * 8))) & 0xFF);
-                            state->aes_key[i + 24] = (uint8_t)((state->A4[0] >> (56 - (i * 8))) & 0xFF);
-                        }
-                        LOG_NOTICE("AES-256 / Hytera 256-bit key loaded (4x64)\n");
-                    } else {
-                        LOG_ERROR("-H expects 10, 32, or 64 hex characters (spaces allowed)\n");
-                        cli_set_exit_rc(out_exit_rc, 1);
-                        return DSD_PARSE_ERROR;
-                    }
-                    state->keyloader = 0;
-                }
-                break;
-            case 'V': {
-                // Enable TDMA voice synthesis for selected slot(s)
-                // 1 = Slot 1, 2 = Slot 2, 3 = Both
-                int v = atoi(optarg);
-                if (v < 0) {
-                    v = 0;
-                }
-                if (v > 3) {
-                    v = 3;
-                }
-                opts->slot1_on = (v & 1) ? 1 : 0;
-                opts->slot2_on = (v & 2) ? 1 : 0;
-                if (v == 0) {
-                    LOG_NOTICE("Voice synthesis disabled for both slots\n");
-                } else if (v == 3) {
-                    LOG_NOTICE("Voice synthesis enabled for Slot 1 and 2\n");
-                } else {
-                    LOG_NOTICE("Voice synthesis enabled for %s\n", v == 1 ? "Slot 1" : "Slot 2");
-                }
-                break;
-            }
-            case 'W':
-                // Use imported group list as allow/white list (trunking)
-                opts->trunk_use_allow_list = 1;
-                LOG_NOTICE("Trunking: Group list allow/white list enabled.\n");
-                break;
-            case 'e':
-                // Enable tune to data calls (DMR TIII, Cap+, NXDN Type-C)
-                opts->trunk_tune_data_calls = 1;
-                LOG_NOTICE("Trunking: Tune to data calls enabled.\n");
-                break;
-            case 'E':
-                // Disable tune to group calls (DMR TIII, P25, NXDN Type-C/D)
-                opts->trunk_tune_group_calls = 0;
-                LOG_NOTICE("Trunking: Group call follow disabled.\n");
-                break;
-            case 'p':
-                // Disable tune to private calls (DMR TIII, P25, NXDN Type-C/D)
-                opts->trunk_tune_private_calls = 0;
-                LOG_NOTICE("Trunking: Private call follow disabled.\n");
-                break;
-            case 'Z':
-                // Log MBE/PDU payloads to console
-                opts->payload = 1;
-                LOG_NOTICE("Logging MBE/PDU payloads to console.\n");
-                break;
-            case 'P':
-                if (opts->static_wav_file == 1) {
-                    // Allow CLI to override config-derived static WAV settings (file not opened yet).
-                    if (opts->wav_out_f != NULL) {
-                        LOG_ERROR("-P cannot be used with -w (static WAV output)\n");
-                        cli_set_exit_rc(out_exit_rc, 1);
-                        return DSD_PARSE_ERROR;
-                    }
-                    opts->static_wav_file = 0;
-                    opts->wav_out_file[0] = '\0';
-                }
-                snprintf(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
-                wav_file_directory[1023] = '\0';
-                if (stat(wav_file_directory, &st) == -1) {
-                    LOG_NOTICE("-P %s WAV file directory does not exist\n", wav_file_directory);
-                    LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
-                    dsd_mkdir(wav_file_directory, 0700);
-                }
-                LOG_NOTICE("Per Call Wav File Enabled.\n");
-                srand(time(NULL));
-                opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
-                opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);
-                opts->dmr_stereo_wav = 1;
-                break;
-            case '7':
-                // Set custom directory for per-call WAV saving
-                strncpy(opts->wav_out_dir, optarg, 511);
-                opts->wav_out_dir[511] = '\0';
-                LOG_NOTICE("Per-call WAV directory set to: %s\n", opts->wav_out_dir);
-                break;
-            case 'F':
-                opts->aggressive_framesync = 0;
-                opts->dmr_crc_relaxed_default = 1;
-                LOG_NOTICE("%s", KYEL);
-                LOG_NOTICE("Relax P25 Phase 2 MAC_SIGNAL CRC Checksum Pass/Fail\n");
-                LOG_NOTICE("Relax DMR RAS/CRC CSBK/DATA Pass/Fail\n");
-                LOG_NOTICE("Relax NXDN SACCH/FACCH/CAC/F2U CRC Pass/Fail\n");
-                LOG_NOTICE("Relax M17 LSF/PKT CRC Pass/Fail\n");
-                LOG_NOTICE("%s", KNRM);
-                break;
-            case 'i':
-                if (strcmp(opts->audio_in_dev, optarg) != 0) {
-                    dsd_opts_clear_staged_file_sample_rate(opts);
-                }
-                strncpy(opts->audio_in_dev, optarg, 2047);
-                opts->audio_in_dev[2047] = '\0';
-                break;
-            case 'N': opts->use_ncurses_terminal = 1; break;
-            case 'T':
-                /* Enable trunking features; protocol-agnostic alias kept in sync */
-                opts->p25_trunk = 1;
-                opts->trunk_enable = 1;
-                opts->trunk_cli_seen = 1;
-                break;
-            case 'U':
-                // Enable rigctl/TCP and set port
-                opts->use_rigctl = 1;
-                opts->rigctlportno = atoi(optarg);
-                if (opts->rigctlportno <= 0) {
-                    opts->rigctlportno = 4532; // SDR++ default
-                }
-                break;
-            case 'B':
-                // Set rigctl setmod bandwidth (Hz)
-                opts->setmod_bw = atoi(optarg);
-                if (opts->setmod_bw < 0) {
-                    opts->setmod_bw = 0;
-                }
-                break;
-            case 'o':
-                strncpy(opts->audio_out_dev, optarg, 1023);
-                opts->audio_out_dev[1023] = '\0';
-                break;
-            case 'd':
-                strncpy(opts->mbe_out_dir, optarg, 1023);
-                opts->mbe_out_dir[1023] = '\0';
-                if (stat(opts->mbe_out_dir, &st) == -1) {
-                    LOG_NOTICE("%s directory does not exist\n", opts->mbe_out_dir);
-                    LOG_NOTICE("Creating directory %s to save mbe+ processed files\n", opts->mbe_out_dir);
-                    dsd_mkdir(opts->mbe_out_dir, 0700);
-                }
-                break;
-            case '6':
-                // Output raw 48k/1 audio WAV file
-                strncpy(opts->wav_out_file_raw, optarg, sizeof opts->wav_out_file_raw - 1);
-                opts->wav_out_file_raw[sizeof opts->wav_out_file_raw - 1] = '\0';
-                openWavOutFileRaw(opts, state);
-                LOG_NOTICE("Raw audio WAV output: %s\n", opts->wav_out_file_raw);
-                break;
-            case 'c':
-                // Symbol capture (dibit) output file
-                strncpy(opts->symbol_out_file, optarg, sizeof opts->symbol_out_file - 1);
-                opts->symbol_out_file[sizeof opts->symbol_out_file - 1] = '\0';
-                opts->symbol_out_file_is_auto = 0;
-                openSymbolOutFile(opts, state);
-                LOG_NOTICE("Saving symbol capture to %s\n", opts->symbol_out_file);
-                break;
-            case 'g': {
-                /* Digital output gain (matches legacy main.c semantics).
-                   0 = auto gain; >0 fixes gain in the 0..50 range. */
-                float g = (float)atof(optarg);
-                if (g < 0.0f) {
-                    /* Historical behavior: negative disables manual gain without changing autogain. */
-                    LOG_NOTICE("Disabling audio out gain setting\n");
-                    opts->audio_gain = g;
-                    opts->audio_gainR = g;
-                } else if (g == 0.0f) {
-                    opts->audio_gain = 0.0f;
-                    opts->audio_gainR = 0.0f;
-                    LOG_NOTICE("Enabling audio out auto-gain\n");
-                } else {
-                    if (g > 50.0f) {
-                        g = 50.0f;
-                    }
-                    opts->audio_gain = g;
-                    opts->audio_gainR = g;
-                    state->aout_gain = g;
-                    state->aout_gainR = g;
-                    LOG_NOTICE("Setting audio out gain to %.1f\n", g);
-                }
-                break;
-            }
-            case 'n': {
-                /* Dual-purpose: -nm enables DMR mono; otherwise treat as analog gain 0..100. */
-                if (optarg[0] == 'm' && optarg[1] == '\0') {
-                    opts->dmr_mono = 1;
-                    LOG_NOTICE("DMR Mono (1997 method) enabled\n");
-                } else {
-                    float ga = (float)atof(optarg);
-                    if (ga < 0.0f) {
-                        ga = 0.0f;
-                    } else if (ga > 100.0f) {
-                        ga = 100.0f;
-                    }
-                    opts->audio_gainA = ga;
-                    LOG_NOTICE("Analog Audio Out Gain set to %.1f;\n", ga);
-                    /* 0.0 means auto; analog_gain/agsm will derive the effective coefficient. */
-                }
-                break;
-            }
-            case 'w':
-                if (opts->dmr_stereo_wav == 1) {
-                    // Allow CLI to override config-derived per-call WAV settings (files not opened yet).
-                    if (opts->wav_out_f != NULL || opts->wav_out_fR != NULL) {
-                        LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");
-                        cli_set_exit_rc(out_exit_rc, 1);
-                        return DSD_PARSE_ERROR;
-                    }
-                    opts->dmr_stereo_wav = 0;
-                }
-                strncpy(opts->wav_out_file, optarg, 1023);
-                opts->wav_out_file[1023] = '\0';
-                opts->dmr_stereo_wav = 0;
-                opts->static_wav_file = 1;
-                openWavOutFileLR(opts, state);
-                LOG_NOTICE("Static WAV output: %s\n", opts->wav_out_file);
-                break;
-            case 'C': {
-                // Import channel map CSV (channum,freq)
-                strncpy(opts->chan_in_file, optarg, 1023);
-                opts->chan_in_file[1023] = '\0';
-                if (csvChanImport(opts, state) != 0) {
-                    cli_set_exit_rc(out_exit_rc, 1);
-                    return DSD_PARSE_ERROR;
-                }
-                LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
-                break;
-            }
-            case 'G': {
-                // Import group list CSV (TG,Mode,Name)
-                strncpy(opts->group_in_file, optarg, 1023);
-                opts->group_in_file[1023] = '\0';
-                if (csvGroupImport(opts, state) != 0) {
-                    cli_set_exit_rc(out_exit_rc, 1);
-                    return DSD_PARSE_ERROR;
-                }
-                LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
-                break;
-            }
-            case 'R':
-                strncpy(opts->symbol_out_file, optarg, 1023);
-                opts->symbol_out_file[1023] = '\0';
-                opts->symbol_out_file_is_auto = 0;
-                break;
-            case 'v': {
-                // Filtering bitmap (PBF/LPF/HPF/HPFD) -- accepts hex or dec
-                unsigned long bm = strtoul(optarg, NULL, 0);
-                opts->use_pbf = (bm & 0x1) ? 1 : 0;
-                opts->use_lpf = (bm & 0x2) ? 1 : 0;
-                opts->use_hpf = (bm & 0x4) ? 1 : 0;
-                opts->use_hpf_d = (bm & 0x8) ? 1 : 0;
-                LOG_NOTICE("Filters: PBF=%d LPF=%d HPF=%d HPFD=%d\n", opts->use_pbf, opts->use_lpf, opts->use_hpf,
-                           opts->use_hpf_d);
-                break;
-            }
-            case 'f': {
-                // Any -f* preset should stop pure analog-monitor mode unless explicitly selecting it.
-                opts->analog_only = 0;
-                opts->monitor_input_audio = 0;
-
-                dsdneoUserDecodeMode core_mode = DSDCFG_MODE_UNSET;
-                if (dsd_decode_mode_from_cli_preset(optarg[0], &core_mode) == 0
-                    && dsd_apply_decode_mode_preset(core_mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0) {
-                    cli_decode_timing_mode = core_mode;
-                    cli_decode_timing_seen = 1;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
-                    switch (optarg[0]) {
-                        case 'a': LOG_NOTICE("Decoding AUTO: all digital modes with multi-rate SPS hunting\n"); break;
-                        case 'A': LOG_NOTICE("Only Monitoring Passive Analog Signal\n"); break;
-                        case 'd': LOG_NOTICE("Decoding only DSTAR frames.\n"); break;
-                        case 'x': LOG_NOTICE("Decoding only X2-TDMA frames.\n"); break;
-                        case '1': LOG_NOTICE("Decoding only P25 Phase 1 frames.\n"); break;
-                        case '2': LOG_NOTICE("Decoding only P25 Phase 2 frames.\n"); break;
-                        case 's': LOG_NOTICE("Decoding only DMR frames.\n"); break;
-                        case 'i': LOG_NOTICE("Decoding only NXDN48 frames.\n"); break;
-                        case 'n': LOG_NOTICE("Decoding only NXDN96 frames.\n"); break;
-                        case 'y': LOG_NOTICE("Decoding only YSF frames.\n"); break;
-                        case 'm':
-                            LOG_NOTICE("Decoding only M17 frames (polarity auto-detected from preamble).\n");
-                            break;
-                        default: break;
-                    }
-                } else if (optarg[0] == 'p') {
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 1;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    state->samplesPerSymbol = 5;
-                    state->symbolCenter = 2;
-                    opts->mod_c4fm = 0;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 1;
-                    state->rf_mod = 2;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    state->dmr_stereo = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");
-                    LOG_NOTICE("Setting symbol rate to 9600 / second\n");
-                    LOG_NOTICE("Decoding only ProVoice frames.\n");
-                    LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");
-                    opts->rtl_dsp_bw_khz = 24;
-                    cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;
-                    cli_decode_timing_seen = 1;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
-                } else if (optarg[0] == 'h') {
-                    if (optarg[1] != 0) {
-                        char abits[2] = {optarg[1], 0};
-                        char fbits[2] = {optarg[2], 0};
-                        char sbits[2] = {optarg[3], 0};
-                        state->edacs_a_bits = atoi(&abits[0]);
-                        state->edacs_f_bits = atoi(&fbits[0]);
-                        state->edacs_s_bits = atoi(&sbits[0]);
-                    }
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 1;
-                    state->ea_mode = 0;
-                    state->esk_mask = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    state->samplesPerSymbol = 5;
-                    state->symbolCenter = 2;
-                    opts->mod_c4fm = 0;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 1;
-                    state->rf_mod = 2;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    state->dmr_stereo = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");
-                    LOG_NOTICE("Setting symbol rate to 9600 / second\n");
-                    LOG_NOTICE("Decoding EDACS STD/NET and ProVoice frames.\n");
-                    LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");
-                    if (optarg[1] != 0) {
-                        if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {
-                            LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");
-                            state->edacs_a_bits = 4;
-                            state->edacs_f_bits = 4;
-                            state->edacs_s_bits = 3;
-                        }
-                        LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,
-                                   state->edacs_s_bits);
-                    }
-                    opts->rtl_dsp_bw_khz = 24;
-                    cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;
-                    cli_decode_timing_seen = 1;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
-                } else if (optarg[0] == 'H') {
-                    if (optarg[1] != 0) {
-                        char abits[2] = {optarg[1], 0};
-                        char fbits[2] = {optarg[2], 0};
-                        char sbits[2] = {optarg[3], 0};
-                        state->edacs_a_bits = atoi(&abits[0]);
-                        state->edacs_f_bits = atoi(&fbits[0]);
-                        state->edacs_s_bits = atoi(&sbits[0]);
-                    }
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 1;
-                    state->ea_mode = 0;
-                    state->esk_mask = 0xA0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    state->samplesPerSymbol = 5;
-                    state->symbolCenter = 2;
-                    opts->mod_c4fm = 0;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 1;
-                    state->rf_mod = 2;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    state->dmr_stereo = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");
-                    LOG_NOTICE("Setting symbol rate to 9600 / second\n");
-                    LOG_NOTICE("Decoding EDACS Extended Addressing w/ ESK and ProVoice frames.\n");
-                    LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");
-                    opts->rtl_dsp_bw_khz = 24;
-                    cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;
-                    cli_decode_timing_seen = 1;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
-                } else if (optarg[0] == 'e') {
-                    if (optarg[1] != 0) {
-                        char abits[2] = {optarg[1], 0};
-                        char fbits[2] = {optarg[2], 0};
-                        char sbits[2] = {optarg[3], 0};
-                        state->edacs_a_bits = atoi(&abits[0]);
-                        state->edacs_f_bits = atoi(&fbits[0]);
-                        state->edacs_s_bits = atoi(&sbits[0]);
-                    }
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 1;
-                    state->ea_mode = 1;
-                    state->esk_mask = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    state->samplesPerSymbol = 5;
-                    state->symbolCenter = 2;
-                    opts->mod_c4fm = 0;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 1;
-                    state->rf_mod = 2;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    state->dmr_stereo = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");
-                    LOG_NOTICE("Setting symbol rate to 9600 / second\n");
-                    LOG_NOTICE("Decoding EDACS EA/ProVoice frames.\n");
-                    LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");
-                    if (optarg[1] != 0) {
-                        if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {
-                            LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");
-                            state->edacs_a_bits = 4;
-                            state->edacs_f_bits = 4;
-                            state->edacs_s_bits = 3;
-                        }
-                        LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,
-                                   state->edacs_s_bits);
-                    }
-                    opts->rtl_dsp_bw_khz = 24;
-                    cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;
-                    cli_decode_timing_seen = 1;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
-                } else if (optarg[0] == 'E') {
-                    if (optarg[1] != 0) {
-                        char abits[2] = {optarg[1], 0};
-                        char fbits[2] = {optarg[2], 0};
-                        char sbits[2] = {optarg[3], 0};
-                        state->edacs_a_bits = atoi(&abits[0]);
-                        state->edacs_f_bits = atoi(&fbits[0]);
-                        state->edacs_s_bits = atoi(&sbits[0]);
-                    }
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 1;
-                    state->ea_mode = 1;
-                    state->esk_mask = 0xA0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    state->samplesPerSymbol = 5;
-                    state->symbolCenter = 2;
-                    opts->mod_c4fm = 0;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 1;
-                    state->rf_mod = 2;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    state->dmr_stereo = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");
-                    LOG_NOTICE("Setting symbol rate to 9600 / second\n");
-                    LOG_NOTICE("Decoding EDACS EA/ProVoice w/ ESK frames.\n");
-                    LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");
-                    if (optarg[1] != 0) {
-                        if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {
-                            LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");
-                            state->edacs_a_bits = 4;
-                            state->edacs_f_bits = 4;
-                            state->edacs_s_bits = 3;
-                        }
-                        LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,
-                                   state->edacs_s_bits);
-                    }
-                    opts->rtl_dsp_bw_khz = 24;
-                    cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;
-                    cli_decode_timing_seen = 1;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
-                } else if (optarg[0] == 'r') {
-                    /* Legacy -fr alias: DMR BS/MS simplex with mono audio.
-                       Mirrors -fs but prefers mono content while keeping a
-                       2-channel output interface for compatibility. */
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->inverted_p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 1;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    if (!opts->mod_cli_lock) {
-                        opts->mod_c4fm = 0;
-                        opts->mod_qpsk = 0;
-                        opts->mod_gfsk = 1;
-                        state->rf_mod = 2;
-                    }
-                    opts->dmr_stereo = 0;
-                    state->dmr_stereo = 0;
-                    opts->dmr_mono = 1;
-                    opts->pulse_digi_rate_out = 8000;
-                    /* Use 2-channel digital output (like -fs) so audio
-                       routing stays consistent across sinks; mono behavior
-                       is provided by dmr_mono in the vocoder/mixers. */
-                    opts->pulse_digi_out_channels = 2;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "DMR-Mono");
-                    LOG_NOTICE("Decoding DMR (legacy -fr mono mode).\n");
-                    cli_decode_timing_mode = DSDCFG_MODE_DMR;
-                    cli_decode_timing_seen = 1;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;
-                } else if (optarg[0] == 'Z') {
-                    opts->m17encoder = 1;
-                    opts->pulse_digi_rate_out = 48000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->use_lpf = 0;
-                    opts->use_hpf = 0;
-                    opts->use_pbf = 0;
-                    opts->dmr_stereo = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "M17 Encoder");
-                    cli_decode_timing_seen = 0;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;
-                } else if (optarg[0] == 'B') {
-                    opts->m17encoderbrt = 1;
-                    opts->pulse_digi_rate_out = 48000;
-                    opts->pulse_digi_out_channels = 1;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "M17 BERT");
-                    cli_decode_timing_seen = 0;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;
-                } else if (optarg[0] == 'P') {
-                    opts->m17encoderpkt = 1;
-                    opts->pulse_digi_rate_out = 48000;
-                    opts->pulse_digi_out_channels = 1;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "M17 Packet");
-                    cli_decode_timing_seen = 0;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;
-                } else if (optarg[0] == 'U') {
-                    opts->m17decoderip = 1;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "M17 IP Frame");
-                    LOG_NOTICE("Decoding M17 UDP/IP Frames.\n");
-                    cli_decode_timing_seen = 0;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_NONE;
-                }
-                break;
-            }
-            case 'm':
-                if (optarg[0] == 'a') {
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 1;
-                    opts->mod_gfsk = 1;
-                    state->rf_mod = 0;
-                    opts->mod_cli_lock = 0;
-                    LOG_NOTICE("Don't use the -ma switch.\n");
-                } else if (optarg[0] == 'c') {
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 0;
-                    opts->mod_cli_lock = 1;
-                    LOG_NOTICE("Enabling only C4FM modulation optimizations.\n");
-                } else if (optarg[0] == 'g') {
-                    opts->mod_c4fm = 0;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 1;
-                    state->rf_mod = 2;
-                    opts->mod_cli_lock = 1;
-                    LOG_NOTICE("Enabling only GFSK modulation optimizations.\n");
-                } else if (optarg[0] == 'q') {
-                    opts->mod_c4fm = 0;
-                    opts->mod_qpsk = 1;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 1;
-                    opts->mod_cli_lock = 1;
-                    LOG_NOTICE("Enabling only QPSK modulation optimizations.\n");
-                } else if (optarg[0] == '2') {
-                    opts->mod_c4fm = 0;
-                    opts->mod_qpsk = 1;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 1;
-                    state->samplesPerSymbol = 8;
-                    state->symbolCenter = 3;
-                    opts->mod_cli_lock = 1;
-                    cli_decode_timing_seen = 1;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;
-                    cli_manual_timing_sps = 8;
-                    cli_manual_timing_center = 3;
-                    LOG_NOTICE("Enabling 6000 sps P25p2 QPSK.\n");
-                } else if (optarg[0] == '3') {
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 0;
-                    state->samplesPerSymbol = 10;
-                    state->symbolCenter = 4;
-                    opts->mod_cli_lock = 1;
-                    cli_decode_timing_seen = 1;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;
-                    cli_manual_timing_sps = 10;
-                    cli_manual_timing_center = 4;
-                    LOG_NOTICE("Enabling 6000 sps P25p2 C4FM.\n");
-                } else if (optarg[0] == '4') {
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 1;
-                    opts->mod_gfsk = 1;
-                    state->rf_mod = 0;
-                    state->samplesPerSymbol = 8;
-                    state->symbolCenter = 3;
-                    opts->mod_cli_lock = 0;
-                    cli_decode_timing_seen = 1;
-                    cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;
-                    cli_manual_timing_sps = 8;
-                    cli_manual_timing_center = 3;
-                    LOG_NOTICE("Enabling 6000 sps P25p2 all optimizations.\n");
-                }
-                break;
-            case 'u':
-                sscanf(optarg, "%i", &opts->uvquality);
-                if (opts->uvquality < 1) {
-                    opts->uvquality = 1;
-                } else if (opts->uvquality > 64) {
-                    opts->uvquality = 64;
-                }
-                LOG_NOTICE("Setting unvoice speech quality to %i waves per band.\n", opts->uvquality);
-                break;
-            case 's': {
-                // Sample rate for WAV/RAW input files
-                int sr = atoi(optarg);
-                int old_effective_rate = dsd_opts_effective_input_rate(opts);
-                if (sr < 8000) {
-                    sr = 8000;
-                }
-                if (sr > 192000) {
-                    sr = 192000;
-                }
-                dsd_opts_clear_staged_file_sample_rate(opts);
-                dsd_opts_apply_input_sample_rate(opts, sr);
-                dsd_state_rescale_symbol_timing(state, old_effective_rate, dsd_opts_effective_input_rate(opts));
-                LOG_NOTICE("WAV input sample rate: %d Hz (interp=%d)\n", opts->wav_sample_rate, opts->wav_interpolator);
-                break;
-            }
-            case 'J':
-                // Event log output
-                strncpy(opts->event_out_file, optarg, 1023);
-                opts->event_out_file[1023] = '\0';
-                LOG_NOTICE("Event log file: %s\n", opts->event_out_file);
-                break;
-            case 'L':
-                // LRRP output
-                strncpy(opts->lrrp_out_file, optarg, 1023);
-                opts->lrrp_out_file[1023] = '\0';
-                opts->lrrp_file_output = 1;
-                LOG_NOTICE("LRRP output file: %s\n", opts->lrrp_out_file);
-                break;
-            case 'x':
-                if (optarg[0] == 'x') {
-                    opts->inverted_x2tdma = 0;
-                    LOG_NOTICE("Expecting non-inverted X2-TDMA signals.\n");
-                } else if (optarg[0] == 'r') {
-                    opts->inverted_dmr = 1;
-                    LOG_NOTICE("Expecting inverted DMR signals.\n");
-                } else if (optarg[0] == 'd') {
-                    opts->inverted_dpmr = 1;
-                    LOG_NOTICE("Expecting inverted ICOM dPMR signals.\n");
-                } else if (optarg[0] == 'z') {
-                    opts->inverted_m17 = 1;
-                    LOG_NOTICE("Expecting inverted M17 signals.\n");
-                }
-                break;
-            case 'r':
-                opts->playfiles = 1;
-                opts->errorbars = 0;
-                opts->datascope = 0;
-                opts->pulse_digi_rate_out = 48000;
-                opts->pulse_digi_out_channels = 1;
-                opts->dmr_stereo = 0;
-                state->dmr_stereo = 0;
-                snprintf(opts->output_name, sizeof opts->output_name, "%s", "MBE Playback");
-                break;
-            case 'l': opts->use_cosine_filter = 0; break;
-            case 't':
-                /* Trunking/scan hangtime seconds (0 = immediate release) */
-                opts->trunk_hangtime = (float)atof(optarg);
-                if (opts->trunk_hangtime < 0.0f) {
-                    opts->trunk_hangtime = 2.0f;
-                }
-                break;
-            case 'q':
-                // Reverse mute: mute clear and unmute encrypted
-                opts->reverse_mute = 1;
-                LOG_NOTICE("Reverse mute enabled (mute clear, unmute encrypted).\n");
-                break;
-            case 'X': {
-                // Manually set P25p2 WACN/SYSID/NAC via hex string, e.g., BEE00ABC123
-                const char* s = optarg;
-                size_t len = strlen(s);
-                if (len >= 11) {
-                    char wb[6] = {0}, sb[4] = {0}, nb[4] = {0};
-                    memcpy(wb, s, 5);
-                    memcpy(sb, s + 5, 3);
-                    memcpy(nb, s + 8, 3);
-                    unsigned long w = strtoul(wb, NULL, 16);
-                    unsigned long sy = strtoul(sb, NULL, 16);
-                    unsigned long na = strtoul(nb, NULL, 16);
-                    state->p2_wacn = w & 0xFFFFF;
-                    state->p2_sysid = sy & 0xFFF;
-                    state->p2_cc = na & 0xFFF;
-                    LOG_NOTICE("P25p2 manual WACN/SYSID/NAC set: %05lX/%03lX/%03lX\n", state->p2_wacn, state->p2_sysid,
-                               state->p2_cc);
-                } else {
-                    LOG_WARNING("-X expects 11 hex chars (WACN[5]+SYSID[3]+NAC[3]), e.g., BEE00ABC123\n");
-                }
-                break;
-            }
-            case 'b': {
-                // Manually enter Basic Privacy key number (decimal 0..255)
-                long v = strtol(optarg, NULL, 10);
-                if (v < 0) {
-                    v = 0;
-                }
-                if (v > 255) {
-                    v = 255;
-                }
-                state->K = v;
-                LOG_NOTICE("Basic Privacy key number set to %ld (forced priority)\n", v);
-                break;
-            }
-            case 'D': {
-                // Manually set DMR TIII Location Area n-bit length
-                long n = strtol(optarg, NULL, 10);
-                if (n < 0) {
-                    n = 0;
-                }
-                if (n > 10) {
-                    n = 10;
-                }
-                opts->dmr_dmrla_is_set = 1;
-                opts->dmr_dmrla_n = (uint8_t)n;
-                LOG_NOTICE("DMR TIII Location Area n-bit length set to %ld\n", n);
-                break;
-            }
-            case '4':
-                // Force Privacy Key over Encryption Identifiers
-                state->M = 1;
-                LOG_NOTICE("Force Privacy Key priority enabled\n");
-                break;
-            default:
-                dsd_cli_usage();
-                cli_set_exit_rc(out_exit_rc, 1);
-                return DSD_PARSE_ERROR;
-        }
+        DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();
     }
     if (cli_decode_timing_seen && dsd_opts_source_uses_effective_input_rate(opts)) {
         int timing_rate_hz = dsd_opts_effective_input_rate(opts);

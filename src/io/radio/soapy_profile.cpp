@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <iterator>
 #include <limits>
 
 namespace dsdneo {
@@ -22,11 +23,21 @@ lower_copy(const std::string& value) {
 }
 
 bool
-contains_ci(const std::string& haystack, const char* needle) {
+contains_lower(const std::string& lower_haystack, const char* needle) {
     if (!needle || !*needle) {
         return false;
     }
-    return lower_copy(haystack).find(needle) != std::string::npos;
+    return lower_haystack.find(needle) != std::string::npos;
+}
+
+bool
+contains_any_lower(const std::string& lower_haystack, const char* const* needles, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        if (contains_lower(lower_haystack, needles[i])) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool
@@ -48,26 +59,34 @@ const SoapyProfile k_profiles[] = {
 
 SoapyProfileId
 detect_profile_from_text(const std::string& text) {
-    if (contains_ci(text, "airspy")) {
+    static const char* const k_airspy_keywords[] = {"airspy"};
+    static const char* const k_sdrplay_keywords[] = {"sdrplay", "rsp1", "rsp2", "rspduo", "rspdx"};
+    static const char* const k_hackrf_keywords[] = {"hackrf"};
+    static const char* const k_lime_keywords[] = {"lime"};
+    static const char* const k_pluto_keywords[] = {"pluto", "ad936"};
+    static const char* const k_rtlsdr_keywords[] = {"rtlsdr", "rtl-sdr", "rtl_sdr"};
+    static const char* const k_uhd_keywords[] = {"uhd", "usrp"};
+
+    const std::string lower_text = lower_copy(text);
+    if (contains_any_lower(lower_text, k_airspy_keywords, sizeof k_airspy_keywords / sizeof k_airspy_keywords[0])) {
         return SoapyProfileId::Airspy;
     }
-    if (contains_ci(text, "sdrplay") || contains_ci(text, "rsp1") || contains_ci(text, "rsp2")
-        || contains_ci(text, "rspduo") || contains_ci(text, "rspdx")) {
+    if (contains_any_lower(lower_text, k_sdrplay_keywords, sizeof k_sdrplay_keywords / sizeof k_sdrplay_keywords[0])) {
         return SoapyProfileId::Sdrplay;
     }
-    if (contains_ci(text, "hackrf")) {
+    if (contains_any_lower(lower_text, k_hackrf_keywords, sizeof k_hackrf_keywords / sizeof k_hackrf_keywords[0])) {
         return SoapyProfileId::Hackrf;
     }
-    if (contains_ci(text, "lime")) {
+    if (contains_any_lower(lower_text, k_lime_keywords, sizeof k_lime_keywords / sizeof k_lime_keywords[0])) {
         return SoapyProfileId::Lime;
     }
-    if (contains_ci(text, "pluto") || contains_ci(text, "ad936")) {
+    if (contains_any_lower(lower_text, k_pluto_keywords, sizeof k_pluto_keywords / sizeof k_pluto_keywords[0])) {
         return SoapyProfileId::Pluto;
     }
-    if (contains_ci(text, "rtlsdr") || contains_ci(text, "rtl-sdr") || contains_ci(text, "rtl_sdr")) {
+    if (contains_any_lower(lower_text, k_rtlsdr_keywords, sizeof k_rtlsdr_keywords / sizeof k_rtlsdr_keywords[0])) {
         return SoapyProfileId::Rtlsdr;
     }
-    if (contains_ci(text, "uhd") || contains_ci(text, "usrp")) {
+    if (contains_any_lower(lower_text, k_uhd_keywords, sizeof k_uhd_keywords / sizeof k_uhd_keywords[0])) {
         return SoapyProfileId::Uhd;
     }
     return SoapyProfileId::Generic;
@@ -105,10 +124,10 @@ nearest_in_one_range(double requested, const SoapyRange& range) {
 
 const SoapyProfile&
 soapy_profile_by_id(SoapyProfileId id) {
-    for (const SoapyProfile& profile : k_profiles) {
-        if (profile.id == id) {
-            return profile;
-        }
+    const SoapyProfile* it = std::find_if(std::begin(k_profiles), std::end(k_profiles),
+                                          [id](const SoapyProfile& profile) { return profile.id == id; });
+    if (it != std::end(k_profiles)) {
+        return *it;
     }
     return k_profiles[1];
 }
@@ -122,11 +141,12 @@ soapy_profile_parse_name(const std::string& value, SoapyProfileId* out_id) {
         *out_id = SoapyProfileId::Auto;
         return true;
     }
-    for (const SoapyProfile& profile : k_profiles) {
-        if (equals_ci(value, profile.name)) {
-            *out_id = profile.id;
-            return true;
-        }
+    const SoapyProfile* it =
+        std::find_if(std::begin(k_profiles), std::end(k_profiles),
+                     [&value](const SoapyProfile& profile) { return equals_ci(value, profile.name); });
+    if (it != std::end(k_profiles)) {
+        *out_id = it->id;
+        return true;
     }
     if (equals_ci(value, "sdr-play")) {
         *out_id = SoapyProfileId::Sdrplay;
@@ -197,12 +217,7 @@ soapy_stream_format_name(SoapyStreamFormat format) {
 
 bool
 soapy_name_list_contains(const std::vector<std::string>& names, const std::string& wanted) {
-    for (const std::string& name : names) {
-        if (name == wanted) {
-            return true;
-        }
-    }
-    return false;
+    return std::any_of(names.begin(), names.end(), [&wanted](const std::string& name) { return name == wanted; });
 }
 
 SoapyBandwidthChoice
@@ -218,7 +233,7 @@ soapy_choose_bandwidth_hz(int tuner_bw_hz, bool tuner_bw_hz_is_set, int soapy_ba
         requested_hz = soapy_bandwidth_hz;
         explicit_request = true;
     } else {
-        requested_hz = (int)(profile_default_bandwidth_hz + 0.5);
+        requested_hz = (int)std::lround(profile_default_bandwidth_hz);
     }
 
     if (requested_hz <= 0) {

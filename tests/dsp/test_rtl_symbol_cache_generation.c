@@ -4,9 +4,6 @@
  */
 
 #include <assert.h>
-#include <stdint.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
@@ -16,6 +13,14 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <stdint.h>
+#include <string.h>
+#include "dsd-neo/core/safe_api.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 static uint32_t g_stream_generation = 1;
 static int g_symbol_rate_hz = 4800;
@@ -31,6 +36,7 @@ static int g_channel_profile_after_bump = -1;
 static int g_cleanup_calls = 0;
 
 dsd_socket_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 Connect(char* hostname, int portno) {
     (void)hostname;
     (void)portno;
@@ -38,12 +44,14 @@ Connect(char* hostname, int portno) {
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 openAudioInput(dsd_opts* opts) {
     (void)opts;
     return -1;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 cleanupAndExit(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
@@ -51,6 +59,7 @@ cleanupAndExit(dsd_opts* opts, dsd_state* state) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_hz) {
     (void)state;
     (void)old_rate_hz;
@@ -58,6 +67,7 @@ dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_
 }
 
 double
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 raw_pwr_f(const float* samples, int len, int step) {
     (void)samples;
     (void)len;
@@ -66,12 +76,14 @@ raw_pwr_f(const float* samples, int len, int step) {
 }
 
 double
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 pwr_to_dB(double mean_power) {
     (void)mean_power;
     return 0.0;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 lpf_f(dsd_state* state, float* input, int len) {
     (void)state;
     (void)input;
@@ -79,6 +91,7 @@ lpf_f(dsd_state* state, float* input, int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 hpf_f(dsd_state* state, float* input, int len) {
     (void)state;
     (void)input;
@@ -86,6 +99,7 @@ hpf_f(dsd_state* state, float* input, int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 pbf_f(dsd_state* state, float* input, int len) {
     (void)state;
     (void)input;
@@ -93,6 +107,7 @@ pbf_f(dsd_state* state, float* input, int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 analog_gain_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
     (void)opts;
     (void)state;
@@ -101,6 +116,7 @@ analog_gain_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
     (void)opts;
     (void)state;
@@ -177,8 +193,8 @@ main(void) {
     static dsd_state state;
     static int fake_rtl_context;
 
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.symboltiming = 0;
     state.rf_mod = 1;
@@ -258,3 +274,7 @@ main(void) {
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

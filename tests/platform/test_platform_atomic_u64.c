@@ -7,9 +7,9 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
-
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 struct inc_args {
     dsd_atomic_u64* counter;
@@ -48,7 +48,7 @@ static DSD_THREAD_RETURN_TYPE
 static int
 expect_u64(const char* label, uint64_t got, uint64_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%llu want=%llu\n", label, (unsigned long long)got, (unsigned long long)want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%llu want=%llu\n", label, (unsigned long long)got, (unsigned long long)want);
         return 1;
     }
     return 0;
@@ -57,7 +57,7 @@ expect_u64(const char* label, uint64_t got, uint64_t want) {
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;

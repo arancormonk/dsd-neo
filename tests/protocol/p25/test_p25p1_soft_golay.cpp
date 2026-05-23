@@ -8,18 +8,17 @@
  * @brief Unit tests for soft-decision Golay(24,6) and Golay(24,12) decoders.
  */
 
+#include <cstdio>
 #include <dsd-neo/fec/Golay24.hpp>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
-
-#include <cstdio>
-#include <cstring>
+#include "dsd-neo/core/safe_api.h"
 
 static int g_fail_count = 0;
 
 #define ASSERT_EQ(a, b, msg)                                                                                           \
     do {                                                                                                               \
         if ((a) != (b)) {                                                                                              \
-            fprintf(stderr, "FAIL: %s: expected %d, got %d\n", msg, (int)(b), (int)(a));                               \
+            DSD_FPRINTF(stderr, "FAIL: %s: expected %d, got %d\n", msg, (int)(b), (int)(a));                           \
             g_fail_count++;                                                                                            \
         }                                                                                                              \
     } while (0)
@@ -51,7 +50,7 @@ test_golay_6_single_error() {
     char data[6];
     char parity[12];
 
-    memcpy(data, orig_data, 6);
+    DSD_MEMCPY(data, orig_data, 6);
     golay.encode_6(data, parity);
 
     /* Flip one data bit */
@@ -78,7 +77,7 @@ test_golay_6_two_errors() {
     char data[6];
     char parity[12];
 
-    memcpy(data, orig_data, 6);
+    DSD_MEMCPY(data, orig_data, 6);
     golay.encode_6(data, parity);
 
     /* Flip two bits (well within Golay correction capability) */
@@ -126,7 +125,7 @@ test_golay_12_two_errors() {
     char data[12];
     char parity[12];
 
-    memcpy(data, orig_data, 12);
+    DSD_MEMCPY(data, orig_data, 12);
     golay.encode_12(data, parity);
 
     /* Flip two bits */
@@ -155,7 +154,7 @@ test_golay_12_three_errors() {
     char data[12];
     char parity[12];
 
-    memcpy(data, orig_data, 12);
+    DSD_MEMCPY(data, orig_data, 12);
     golay.encode_12(data, parity);
 
     /* Flip three bits */
@@ -184,7 +183,7 @@ test_golay_12_prefers_low_reliability_flips() {
     char data[12];
     char parity[12];
 
-    memcpy(data, orig_data, 12);
+    DSD_MEMCPY(data, orig_data, 12);
     golay.encode_12(data, parity);
 
     /* Four errors force the soft path. With the old inverted penalty this
@@ -228,10 +227,10 @@ main(void) {
     test_golay_12_prefers_low_reliability_flips();
 
     if (g_fail_count > 0) {
-        fprintf(stderr, "FAILED: %d test(s) failed\n", g_fail_count);
+        DSD_FPRINTF(stderr, "FAILED: %d test(s) failed\n", g_fail_count);
         return 1;
     }
 
-    fprintf(stderr, "PASSED: All soft Golay tests passed\n");
+    DSD_FPRINTF(stderr, "PASSED: All soft Golay tests passed\n");
     return 0;
 }

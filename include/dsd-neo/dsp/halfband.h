@@ -11,7 +11,10 @@
  * history for real-valued sequences.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_HALFBAND_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_HALFBAND_H_
+
+#include "dsd-neo/dsp/demod_state.h"
 
 /**
  * Number of taps for the half-band FIR low-pass filter.
@@ -49,3 +52,5 @@ extern const float hb23_q15_taps[23];
  * @return Number of output samples written (in_len/2).
  */
 int hb_decim2_real(const float* in, int in_len, float* out, float* hist);
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_HALFBAND_H_ */

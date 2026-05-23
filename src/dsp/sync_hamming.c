@@ -56,14 +56,68 @@
 
 #include <dsd-neo/dsp/sync_hamming.h>
 
+enum {
+    DSD_SYNC_REMAP_COUNT = 5,
+    DSD_SYNC_REFERENCE_COUNT = 2,
+};
+
+static int
+dsd_sync_decode_dibit(char dibit_char) {
+    int d = (unsigned char)dibit_char;
+    if (d >= '0' && d <= '3') {
+        d -= '0';
+    }
+    return d;
+}
+
+static int
+dsd_sync_invert_dibit(int d) {
+    switch (d) {
+        case 0: return 2;
+        case 1: return 3;
+        case 2: return 0;
+        default: return 1;
+    }
+}
+
+static int
+dsd_sync_rotate_dibit(int d) {
+    /* 90° rotation (cyclic remap 0->1->3->2->0). */
+    switch (d & 0x3) {
+        case 0: return 1;
+        case 1: return 3;
+        case 2: return 0;
+        default: return 2; /* d==3 */
+    }
+}
+
+static void
+dsd_sync_fill_remaps(int d, int remaps[DSD_SYNC_REMAP_COUNT]) {
+    remaps[0] = d;
+    remaps[1] = dsd_sync_invert_dibit(d);
+    remaps[2] = ((d & 1) << 1) | ((d & 2) >> 1); /* swap bit order */
+    remaps[3] = d ^ 0x3;                         /* bitwise not in 2-bit space */
+    remaps[4] = dsd_sync_rotate_dibit(d);
+}
+
+static int
+dsd_sync_min_hamming(int hamming[DSD_SYNC_REMAP_COUNT][DSD_SYNC_REFERENCE_COUNT]) {
+    int best = hamming[0][0];
+    for (int remap = 0; remap < DSD_SYNC_REMAP_COUNT; remap++) {
+        for (int ref = 0; ref < DSD_SYNC_REFERENCE_COUNT; ref++) {
+            if (hamming[remap][ref] < best) {
+                best = hamming[remap][ref];
+            }
+        }
+    }
+    return best;
+}
+
 int
 dsd_sync_hamming_distance(const char* buf, const char* pat, int len) {
     int ham = 0;
     for (int i = 0; i < len; i++) {
-        int d = (unsigned char)buf[i];
-        if (d >= '0' && d <= '3') {
-            d -= '0';
-        }
+        int d = dsd_sync_decode_dibit(buf[i]);
         int expect = (unsigned char)pat[i] - '0';
         if (d != expect) {
             ham++;
@@ -74,67 +128,17 @@ dsd_sync_hamming_distance(const char* buf, const char* pat, int len) {
 
 int
 dsd_qpsk_sync_hamming_with_remaps(const char* buf, const char* pat_norm, const char* pat_inv, int len) {
-    int ham_ident_n = 0, ham_ident_i = 0;
-    int ham_invert_n = 0, ham_invert_i = 0;
-    int ham_swap_n = 0, ham_swap_i = 0;
-    int ham_xor3_n = 0, ham_xor3_i = 0;
-    int ham_rot_n = 0, ham_rot_i = 0;
+    int hamming[DSD_SYNC_REMAP_COUNT][DSD_SYNC_REFERENCE_COUNT] = {{0}};
     for (int k = 0; k < len; k++) {
-        int d = (unsigned char)buf[k];
-        if (d >= '0' && d <= '3') {
-            d -= '0';
-        }
-        int expect_n = pat_norm[k] - '0';
-        int expect_i = pat_inv[k] - '0';
-        int d_inv = (d == 0) ? 2 : (d == 1) ? 3 : (d == 2) ? 0 : 1;
-        int d_swap = ((d & 1) << 1) | ((d & 2) >> 1); /* swap bit order */
-        int d_xor3 = d ^ 0x3;                         /* bitwise not in 2-bit space */
-        /* 90° rotation (cyclic remap 0->1->3->2->0) */
-        int d_rot;
-        switch (d & 0x3) {
-            case 0: d_rot = 1; break;
-            case 1: d_rot = 3; break;
-            case 2: d_rot = 0; break;
-            default: d_rot = 2; break; /* d==3 */
-        }
-        if (d != expect_n) {
-            ham_ident_n++;
-        }
-        if (d != expect_i) {
-            ham_ident_i++;
-        }
-        if (d_inv != expect_n) {
-            ham_invert_n++;
-        }
-        if (d_inv != expect_i) {
-            ham_invert_i++;
-        }
-        if (d_swap != expect_n) {
-            ham_swap_n++;
-        }
-        if (d_swap != expect_i) {
-            ham_swap_i++;
-        }
-        if (d_xor3 != expect_n) {
-            ham_xor3_n++;
-        }
-        if (d_xor3 != expect_i) {
-            ham_xor3_i++;
-        }
-        if (d_rot != expect_n) {
-            ham_rot_n++;
-        }
-        if (d_rot != expect_i) {
-            ham_rot_i++;
+        int remaps[DSD_SYNC_REMAP_COUNT];
+        const int expected[DSD_SYNC_REFERENCE_COUNT] = {pat_norm[k] - '0', pat_inv[k] - '0'};
+        int d = dsd_sync_decode_dibit(buf[k]);
+
+        dsd_sync_fill_remaps(d, remaps);
+        for (int remap = 0; remap < DSD_SYNC_REMAP_COUNT; remap++) {
+            hamming[remap][0] += (remaps[remap] != expected[0]);
+            hamming[remap][1] += (remaps[remap] != expected[1]);
         }
     }
-    int best = ham_ident_n;
-    int ham_candidates[] = {ham_ident_i, ham_invert_n, ham_invert_i, ham_swap_n, ham_swap_i,
-                            ham_xor3_n,  ham_xor3_i,   ham_rot_n,    ham_rot_i};
-    for (int idx = 0; idx < (int)(sizeof(ham_candidates) / sizeof(ham_candidates[0])); idx++) {
-        if (ham_candidates[idx] < best) {
-            best = ham_candidates[idx];
-        }
-    }
-    return best;
+    return dsd_sync_min_hamming(hamming);
 }

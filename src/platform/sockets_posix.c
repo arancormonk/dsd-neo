@@ -5,21 +5,20 @@
 
 #include <arpa/inet.h>
 #include <dsd-neo/platform/sockets.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
-
-#include <errno.h>
-#include <string.h>
-#include <sys/time.h>
 
 int
 dsd_socket_init(void) {
@@ -159,7 +158,7 @@ dsd_socket_resolve(const char* hostname, int port, struct sockaddr_in* addr) {
         return -1;
     }
 
-    memset(addr, 0, sizeof(*addr));
+    DSD_MEMSET(addr, 0, sizeof(*addr));
     addr->sin_family = AF_INET;
     addr->sin_port = htons((uint16_t)port);
 
@@ -169,12 +168,12 @@ dsd_socket_resolve(const char* hostname, int port, struct sockaddr_in* addr) {
     }
 
     /* Fall back to DNS lookup */
-    struct hostent* he = gethostbyname(hostname);
+    const struct hostent* he = gethostbyname(hostname);
     if (!he || !he->h_addr_list[0]) {
         return -1;
     }
 
-    memcpy(&addr->sin_addr, he->h_addr_list[0], sizeof(addr->sin_addr));
+    DSD_MEMCPY(&addr->sin_addr, he->h_addr_list[0], sizeof(addr->sin_addr));
     return 0;
 }
 

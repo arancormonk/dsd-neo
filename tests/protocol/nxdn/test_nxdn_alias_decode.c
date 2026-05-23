@@ -13,12 +13,18 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
+
 uint64_t
-ConvertBitIntoBytes(uint8_t* bits, uint32_t n) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
     uint64_t v = 0ULL;
     for (uint32_t i = 0; i < n; i++) {
         v = (v << 1U) | (uint64_t)(bits[i] & 1U);
@@ -36,7 +42,7 @@ write_bits_u8(uint8_t* bits, size_t start, uint8_t value, size_t nbits) {
 
 static void
 build_prop_msg(uint8_t* bits, uint8_t block_number, uint8_t total_blocks, const char* chunk4) {
-    memset(bits, 0, 96);
+    DSD_MEMSET(bits, 0, 96);
     write_bits_u8(bits, 32U, block_number, 4U);
     write_bits_u8(bits, 36U, total_blocks, 4U);
     for (size_t i = 0U; i < 4U; i++) {
@@ -50,7 +56,7 @@ build_prop_msg(uint8_t* bits, uint8_t block_number, uint8_t total_blocks, const 
 
 static void
 build_arib_msg(uint8_t* bits, uint8_t seg_num, uint8_t seg_total, const uint8_t payload6[6]) {
-    memset(bits, 0, 96);
+    DSD_MEMSET(bits, 0, 96);
     write_bits_u8(bits, 16U, seg_num, 4U);
     write_bits_u8(bits, 20U, seg_total, 4U);
     for (size_t i = 0U; i < 6U; i++) {
@@ -78,7 +84,7 @@ arib_crc32_msb_first(const uint8_t* data, size_t len) {
 
 static void
 build_arib_packed_alias8(uint8_t packed12[12], const char alias8[9]) {
-    memset(packed12, 0, 12U);
+    DSD_MEMSET(packed12, 0, 12U);
     for (size_t i = 0U; i < 8U; i++) {
         packed12[i] = (uint8_t)alias8[i];
     }
@@ -92,7 +98,7 @@ build_arib_packed_alias8(uint8_t packed12[12], const char alias8[9]) {
 static int
 expect_str(const char* tag, const char* got, const char* want) {
     if (strcmp(got, want) != 0) {
-        fprintf(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -101,7 +107,7 @@ expect_str(const char* tag, const char* got, const char* want) {
 static int
 expect_u8(const char* tag, uint8_t got, uint8_t want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %u want %u\n", tag, (unsigned)got, (unsigned)want);
+        DSD_FPRINTF(stderr, "%s: got %u want %u\n", tag, (unsigned)got, (unsigned)want);
         return 1;
     }
     return 0;
@@ -110,7 +116,7 @@ expect_u8(const char* tag, uint8_t got, uint8_t want) {
 static int
 expect_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -119,7 +125,7 @@ expect_int(const char* tag, int got, int want) {
 static int
 expect_size(const char* tag, size_t got, size_t want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %zu want %zu\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %zu want %zu\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -132,9 +138,9 @@ main(void) {
     uint8_t bits[96];
     int rc = 0;
 
-    memset(&state, 0, sizeof(state));
-    memset(&opts, 0, sizeof(opts));
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(bits, 0, sizeof(bits));
 
     build_prop_msg(bits, 2U, 2U, "NAME");
     nxdn_alias_decode_prop(&opts, &state, bits, 1U);
@@ -144,7 +150,7 @@ main(void) {
     nxdn_alias_decode_prop(&opts, &state, bits, 1U);
     rc |= expect_str("prop-assembled", state.generic_talker_alias[0], "TESTNAME");
 
-    snprintf(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "KEEP");
+    DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "KEEP");
     build_prop_msg(bits, 1U, 1U, "FAIL");
     nxdn_alias_decode_prop(&opts, &state, bits, 0U);
     rc |= expect_str("prop-crc-gate", state.generic_talker_alias[0], "KEEP");
@@ -163,7 +169,7 @@ main(void) {
     rc |= expect_u8("arib-seen-reset", state.nxdn_alias_arib_seen_mask, 0U);
     rc |= expect_u8("arib-total-reset", state.nxdn_alias_arib_total_segments, 0U);
 
-    snprintf(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "BASE");
+    DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "BASE");
     {
         static const uint8_t stale_seg2[6] = {'Z', 'Z', 0x11, 0x22, 0x33, 0x44};
         uint8_t fresh_packed[12];
@@ -185,7 +191,7 @@ main(void) {
     rc |= expect_u8("arib-restart-reset-mask", state.nxdn_alias_arib_seen_mask, 0U);
     rc |= expect_u8("arib-restart-reset-total", state.nxdn_alias_arib_total_segments, 0U);
 
-    snprintf(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "STABLE");
+    DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "STABLE");
     {
         static const uint8_t total3_seg1[6] = {'B', 'A', 'D', 'A', 'L', 'I'};
         static const uint8_t total2_seg2[6] = {'A', 'S', 0x11, 0x22, 0x33, 0x44};
@@ -201,7 +207,7 @@ main(void) {
     rc |= expect_u8("arib-total-mismatch-mask", state.nxdn_alias_arib_seen_mask, 0x02U);
     rc |= expect_u8("arib-total-mismatch-total", state.nxdn_alias_arib_total_segments, 2U);
 
-    snprintf(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "HOLD");
+    DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "HOLD");
     nxdn_alias_reset(&state);
     {
         uint8_t stale_packed[12];
@@ -236,7 +242,7 @@ main(void) {
         int sjis_full = nxdn_alias_shift_jis_full_available();
 
         if (sjis_full != 0 && sjis_full != 1) {
-            fprintf(stderr, "sjis-full-availability: expected 0/1 got %d\n", sjis_full);
+            DSD_FPRINTF(stderr, "sjis-full-availability: expected 0/1 got %d\n", sjis_full);
             rc |= 1;
         }
         rc |= expect_int("sjis-full-availability-normalized", !!sjis_full, sjis_full);
@@ -263,3 +269,7 @@ main(void) {
     }
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

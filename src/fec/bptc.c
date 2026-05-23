@@ -60,14 +60,79 @@ const uint8_t DeInterleaveReverseChannelBptcPlacement[32] = {0,  16, 1,  17, 2, 
  * @return None
  */
 void
-BPTCDeInterleaveDMRData(uint8_t* Input, uint8_t* Output) {
-    uint32_t i, DeInterleaveIndex;
+BPTCDeInterleaveDMRData(const uint8_t* Input, uint8_t* Output) {
+    uint32_t i;
 
     for (i = 0; i < 196; i++) {
-        DeInterleaveIndex = BPTCDeInterleavingIndex[i];
+        uint32_t DeInterleaveIndex = BPTCDeInterleavingIndex[i];
         Output[DeInterleaveIndex] = (Input[i] & 1);
     }
 } /* End BPTCDeInterleaveDMRData() */
+
+static void
+bptc_196x96_fill_matrix(const uint8_t input[196], uint8_t matrix[13][15]) {
+    uint32_t k = 1;
+    for (uint32_t i = 0; i < 13; i++) {
+        for (uint32_t j = 0; j < 15; j++) {
+            matrix[i][j] = (input[k] & 1);
+            k++;
+        }
+    }
+}
+
+static uint32_t
+bptc_196x96_decode_rows(uint8_t matrix[13][15]) {
+    uint8_t line_uncorrected[15];
+    uint8_t line_corrected[11];
+    uint32_t errors = 0;
+    for (uint32_t i = 0; i < 9; i++) {
+        for (uint32_t j = 0; j < 15; j++) {
+            line_uncorrected[j] = matrix[i][j];
+        }
+        if (Hamming_15_11_decode(line_uncorrected, line_corrected, 1) == false) {
+            errors++;
+        }
+        for (uint32_t j = 0; j < 11; j++) {
+            matrix[i][j] = line_corrected[j];
+        }
+    }
+    return errors;
+}
+
+static uint32_t
+bptc_196x96_decode_cols(uint8_t matrix[13][15]) {
+    uint8_t col_uncorrected[13];
+    uint8_t col_corrected[9];
+    uint32_t errors = 0;
+    for (uint32_t i = 0; i < 15; i++) {
+        for (uint32_t j = 0; j < 13; j++) {
+            col_uncorrected[j] = matrix[j][i];
+        }
+        if (Hamming_13_9_decode(col_uncorrected, col_corrected, 1) == false) {
+            errors++;
+        }
+        for (uint32_t j = 0; j < 9; j++) {
+            matrix[j][i] = col_corrected[j];
+        }
+    }
+    return errors;
+}
+
+static void
+bptc_196x96_extract_payload_and_r(uint8_t matrix[13][15], uint8_t extracted[96], uint8_t r_bits[3]) {
+    uint32_t k = 0;
+    for (uint32_t i = 3; i < 11; i++) {
+        extracted[k++] = matrix[0][i];
+    }
+    for (uint32_t i = 1; i < 9; i++) {
+        for (uint32_t j = 0; j < 11; j++) {
+            extracted[k++] = matrix[i][j];
+        }
+    }
+    r_bits[0] = matrix[0][2];
+    r_bits[1] = matrix[0][1];
+    r_bits[2] = matrix[0][0];
+}
 
 /*
  * @brief : This function extract the 96 bits of a deinteleaved 196 bits
@@ -81,165 +146,17 @@ BPTCDeInterleaveDMRData(uint8_t* Input, uint8_t* Output) {
  */
 uint32_t
 BPTC_196x96_Extract_Data(uint8_t InputDeInteleavedData[196], uint8_t DMRDataExtracted[96], uint8_t R[3]) {
-    uint32_t i, j, k;
     uint8_t DataMatrix[13][15];
-    uint8_t LineUncorrected[15];
-    uint8_t LineCorrected[11];
-    uint8_t ColumnUncorrected[13];
-    uint8_t ColumnCorrected[9];
-    uint32_t HammingIrrecoverableErrorNb = 0;
+    bptc_196x96_fill_matrix(InputDeInteleavedData, DataMatrix);
+    (void)bptc_196x96_decode_rows(DataMatrix);
+    (void)bptc_196x96_decode_cols(DataMatrix);
 
-    /* First step : Reconstitute the BPTC 15x11 matrix
-   * Note : Input data shall be deinterleaved */
-    k = 1; /* Discard R(3) bit - See DMR standard chapter B1.1 BPTC (196,96) */
-    for (i = 0; i < 13; i++) {
-        for (j = 0; j < 15; j++) {
-            /* Only the LSBit of the byte is stored */
-            DataMatrix[i][j] = (InputDeInteleavedData[k] & 1);
-            k++;
-        }
-    }
+    uint32_t hamming_irrecoverable_error_nb = 0;
+    hamming_irrecoverable_error_nb += bptc_196x96_decode_rows(DataMatrix);
+    hamming_irrecoverable_error_nb += bptc_196x96_decode_cols(DataMatrix);
 
-    /* Set to 0 R(0) to R(2) - See DMR standard chapter B1.1 BPTC (196,96) */
-    // DataMatrix[0][0] = 0; /* R(2) */
-    // DataMatrix[0][1] = 0; /* R(1) */
-    // DataMatrix[0][2] = 0; /* R(0) */
-
-    /* Init the Hamming (15,11,3) library
-   * Not needed because it has already been done
-   * in the "InitAllFecFunction()" function */
-    //Hamming_15_11_init();
-
-    /* Init the Hamming (13,9,3) library
-   * Not needed because it has already been done
-   * in the "InitAllFecFunction()" function */
-    //Hamming_13_9_init();
-
-    /* Init the Hamming error counter */
-    HammingIrrecoverableErrorNb = 0;
-
-    /* Process the the Hamming (15,11,3) code
-   * check on each line (first time).
-   * Do not check the 4th last lines */
-    for (i = 0; i < 9; i++) {
-        /* Get a full line */
-        for (j = 0; j < 15; j++) {
-            LineUncorrected[j] = DataMatrix[i][j];
-        }
-
-        /* Apply Hamming (15,11,3) code correction */
-        if (Hamming_15_11_decode(LineUncorrected, LineCorrected, 1) == false) {
-            HammingIrrecoverableErrorNb++;
-        }
-
-        /* Re-inject the line in the matrix (only the util data [11 bit],
-     * not the Hamming part [4 bit]) */
-        for (j = 0; j < 11; j++) {
-            DataMatrix[i][j] = LineCorrected[j];
-        }
-    }
-
-    /* Process the the Hamming (15,11,3) code
-   * check on each column/row (first time) */
-    for (i = 0; i < 15; i++) {
-        /* Get a full column */
-        for (j = 0; j < 13; j++) {
-            ColumnUncorrected[j] = DataMatrix[j][i];
-        }
-
-        /* Apply Hamming (15,11,3) code correction */
-        if (Hamming_13_9_decode(ColumnUncorrected, ColumnCorrected, 1) == false) {
-            HammingIrrecoverableErrorNb++;
-        }
-
-        /* Re-inject the column in the matrix (only the util data [11 bit],
-     * not the Hamming part [4 bit]) */
-        for (j = 0; j < 9; j++) {
-            DataMatrix[j][i] = ColumnCorrected[j];
-        }
-    }
-
-    /* The first Hamming code check has maybe corrected bit
-   * witch can be use to correct other bit, so make the
-   * same operation twice */
-
-    /* Reset the number of irrecoverable errors */
-    HammingIrrecoverableErrorNb = 0;
-
-    /* Process the the Hamming (15,11,3) code
-   * check on each line (second time).
-   * Do not check the 4th last lines */
-    for (i = 0; i < 9; i++) {
-        /* Get a full line */
-        for (j = 0; j < 15; j++) {
-            LineUncorrected[j] = DataMatrix[i][j];
-        }
-
-        /* Apply Hamming (15,11,3) code correction */
-        if (Hamming_15_11_decode(LineUncorrected, LineCorrected, 1) == false) {
-            /* Row/Line contains irrecoverable errors */
-            HammingIrrecoverableErrorNb++;
-        } else {
-            /* Row/Line contains correct data */
-        }
-
-        /* Re-inject the line in the matrix (only the util data [11 bit],
-     * not the Hamming part [4 bit]) */
-        for (j = 0; j < 11; j++) {
-            DataMatrix[i][j] = LineCorrected[j];
-        }
-    }
-
-    /* Process the the Hamming (15,11,3) code
-   * check on each column/row (second time) */
-    for (i = 0; i < 15; i++) {
-        /* Get a full column */
-        for (j = 0; j < 13; j++) {
-            ColumnUncorrected[j] = DataMatrix[j][i];
-        }
-
-        /* Apply Hamming (15,11,3) code correction */
-        if (Hamming_13_9_decode(ColumnUncorrected, ColumnCorrected, 1) == false) {
-            /* Row/Line contains irrecoverable errors */
-            HammingIrrecoverableErrorNb++;
-        } else {
-            /* Row/Line contains correct data */
-        }
-
-        /* Re-inject the column in the matrix (only the util data [11 bit],
-     * not the Hamming part [4 bit]) */
-        for (j = 0; j < 9; j++) {
-            DataMatrix[j][i] = ColumnCorrected[j];
-        }
-    }
-
-    /* Extract the DMR data (96 bit) from the matrix */
-    /* First line : Do not take R(2), R(1) and R(0) */
-    k = 0;
-
-    for (i = 3; i < 11; i++) {
-        DMRDataExtracted[k] = DataMatrix[0][i];
-        k++;
-    }
-
-    /* Next lines */
-    for (i = 1; i < 9; i++) {
-        for (j = 0; j < 11; j++) {
-            DMRDataExtracted[k] = DataMatrix[i][j];
-            k++;
-        }
-    }
-
-    /* R(0) to R(2) may be used to transport some
-   * Restricted Access System (RAS) information,
-   * So save these three bits after hamming correction
-   * See patent US 2013/0288643 A1 */
-    R[0] = DataMatrix[0][2]; /* Save R(0) */
-    R[1] = DataMatrix[0][1]; /* Save R(1) */
-    R[2] = DataMatrix[0][0]; /* Save R(2) */
-
-    /* Return the number of irrecoverable Hamming errors */
-    return HammingIrrecoverableErrorNb;
+    bptc_196x96_extract_payload_and_r(DataMatrix, DMRDataExtracted, R);
+    return hamming_irrecoverable_error_nb;
 } /* End BPTC_196x96_Extract_Data() */
 
 /*
@@ -266,7 +183,6 @@ BPTC_128x77_Extract_Data(uint8_t InputDataMatrix[8][16], uint8_t DMRDataExtracte
     uint8_t LineCorrected[11];
     uint32_t HammingIrrecoverableErrorNb = 0;
     uint32_t ParityCheckErrorNb = 0;
-    uint32_t NbOfOne;
 
     /* First step : Reconstitute the BPTC 16x8 matrix */
     for (i = 0; i < 8; i++) {
@@ -331,7 +247,7 @@ BPTC_128x77_Extract_Data(uint8_t InputDataMatrix[8][16], uint8_t DMRDataExtracte
    * all column parity bit */
     ParityCheckErrorNb = 0;
     for (i = 0; i < 16; i++) {
-        NbOfOne = 0;
+        uint32_t NbOfOne = 0;
 
         /* Get a full column */
         for (j = 0; j < 7; j++) {
@@ -418,14 +334,14 @@ BPTC_16x2_Extract_Data(uint8_t InputInterleavedData[32], uint8_t DMRDataExtracte
         }
     }
 
-    //fprintf(stderr, "Hamming ERR=%u ; Parity odd ERR=%u, Parity even ERR=%u, ", HammingIrrecoverableErrorNb, ParityCheckOddErrorNb, ParityCheckEvenErrorNb);
+    //DSD_FPRINTF(stderr, "Hamming ERR=%u ; Parity odd ERR=%u, Parity even ERR=%u, ", HammingIrrecoverableErrorNb, ParityCheckOddErrorNb, ParityCheckEvenErrorNb);
 
-    //fprintf(stderr, "Content =\n");
+    //DSD_FPRINTF(stderr, "Content =\n");
     //for(i = 0; i < 32; i++)
     //{
-    //  fprintf(stderr, "%u", DMRDataExtracted[i] & 1);
-    //  if((i == 15) || (i == 31)) fprintf(stderr, "\n");
-    //  else fprintf(stderr, "-");
+    //  DSD_FPRINTF(stderr, "%u", DMRDataExtracted[i] & 1);
+    //  if((i == 15) || (i == 31)) DSD_FPRINTF(stderr, "\n");
+    //  else DSD_FPRINTF(stderr, "-");
     //}
 
     /* Return the number of irrecoverable Hamming errors +

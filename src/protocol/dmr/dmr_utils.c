@@ -16,9 +16,31 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-//modified to accept variable payload size and len
+typedef struct {
+    uint8_t syndrome;
+    uint8_t bit_index;
+} dmr_hamming17123_correction_t;
+
+static const dmr_hamming17123_correction_t kHamming17123Corrections[] = {
+    {0x01U, 12U}, {0x02U, 13U}, {0x04U, 14U}, {0x08U, 15U}, {0x10U, 16U}, {0x1BU, 0U},
+    {0x1FU, 1U},  {0x17U, 2U},  {0x07U, 3U},  {0x0EU, 4U},  {0x1CU, 5U},  {0x11U, 6U},
+    {0x0BU, 7U},  {0x16U, 8U},  {0x05U, 9U},  {0x0AU, 10U}, {0x14U, 11U},
+};
+
+static bool
+dmr_hamming17123_apply_correction(uint8_t* d, uint8_t syndrome) {
+    for (uint32_t i = 0; i < (sizeof(kHamming17123Corrections) / sizeof(kHamming17123Corrections[0])); i++) {
+        if (kHamming17123Corrections[i].syndrome == syndrome) {
+            uint8_t bit_index = kHamming17123Corrections[i].bit_index;
+            d[bit_index] = !d[bit_index];
+            return true;
+        }
+    }
+    return false;
+}
+
 uint16_t
 ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
     uint32_t i;
@@ -63,47 +85,23 @@ Hamming17123(uint8_t* d) {
     n |= (c3 != d[15]) ? 0x08U : 0x00U;
     n |= (c4 != d[16]) ? 0x10U : 0x00U;
 
-    switch (n) {
-        // Parity bit errors
-        case 0x01U: d[12] = !d[12]; return true;
-        case 0x02U: d[13] = !d[13]; return true;
-        case 0x04U: d[14] = !d[14]; return true;
-        case 0x08U: d[15] = !d[15]; return true;
-        case 0x10U: d[16] = !d[16]; return true;
-
-        // Data bit errors
-        case 0x1BU: d[0] = !d[0]; return true;
-        case 0x1FU: d[1] = !d[1]; return true;
-        case 0x17U: d[2] = !d[2]; return true;
-        case 0x07U: d[3] = !d[3]; return true;
-        case 0x0EU: d[4] = !d[4]; return true;
-        case 0x1CU: d[5] = !d[5]; return true;
-        case 0x11U: d[6] = !d[6]; return true;
-        case 0x0BU: d[7] = !d[7]; return true;
-        case 0x16U: d[8] = !d[8]; return true;
-        case 0x05U: d[9] = !d[9]; return true;
-        case 0x0AU: d[10] = !d[10]; return true;
-        case 0x14U: d[11] = !d[11]; return true;
-
-        // No bit errors
-        case 0x00U: return true;
-
-        // Unrecoverable errors
-        default: return false;
+    if (n == 0x00U) {
+        return true;
     }
+    return dmr_hamming17123_apply_correction(d, n);
 }
 
 uint8_t
 crc8(uint8_t bits[], unsigned int len) {
     uint8_t crc = 0;
     unsigned int K = 8;
-    uint8_t poly[9] = {1, 0, 0, 0, 0, 0, 1, 1, 1}; // crc8 poly
+    const uint8_t poly[9] = {1, 0, 0, 0, 0, 0, 1, 1, 1}; // crc8 poly
     uint8_t buf[256];
     if (len + K > sizeof(buf)) {
-        //fprintf (stderr, "crc8: buffer length %u exceeds maximum %lu\n", len+K, sizeof(buf));
+        //DSD_FPRINTF(stderr, "crc8: buffer length %u exceeds maximum %lu\n", len+K, sizeof(buf));
         return 0;
     }
-    memset(buf, 0, sizeof(buf));
+    DSD_MEMSET(buf, 0, sizeof(buf));
     for (unsigned int i = 0; i < len; i++) {
         buf[i] = bits[i];
     }
@@ -134,13 +132,13 @@ crc7(uint8_t bits[], unsigned int len) {
     uint8_t crc = 0;
     unsigned int K = 7;
     //G7(x) = x7 + x5 + x2 + x + 1   check poly below for correct (dmr rc crc7)
-    uint8_t poly[8] = {1, 0, 1, 0, 0, 1, 1, 1}; // crc7 poly
+    const uint8_t poly[8] = {1, 0, 1, 0, 0, 1, 1, 1}; // crc7 poly
     uint8_t buf[256];
     if (len + K > sizeof(buf)) {
-        // fprintf (stderr, "crc8: buffer length %u exceeds maximum %lu\n", len+K, sizeof(buf));
+        // DSD_FPRINTF(stderr, "crc8: buffer length %u exceeds maximum %lu\n", len+K, sizeof(buf));
         return 0;
     }
-    memset(buf, 0, sizeof(buf));
+    DSD_MEMSET(buf, 0, sizeof(buf));
     for (unsigned int i = 0; i < len; i++) {
         buf[i] = bits[i];
     }
@@ -167,7 +165,7 @@ crc7(uint8_t bits[], unsigned int len) {
  */
 
 uint16_t
-ComputeCrcCCITT(uint8_t* DMRData) {
+ComputeCrcCCITT(const uint8_t* DMRData) {
     uint32_t i;
     uint16_t CRC = 0x0000; /* Initialization value = 0x0000 */
     /* Polynomial x^16 + x^12 + x^5 + 1
@@ -243,7 +241,7 @@ ComputeAndCorrectFullLinkControlCrc(uint8_t* FullLinkControlDataBytes, uint32_t*
 
     if ((result == RS_12_9_CORRECT_ERRORS_RESULT_NO_ERRORS_FOUND)
         || (result == RS_12_9_CORRECT_ERRORS_RESULT_ERRORS_CORRECTED)) {
-        //fprintf(stderr, "CRC OK : 0x%06X\n", *CRCComputed);
+        //DSD_FPRINTF(stderr, "CRC OK : 0x%06X\n", *CRCComputed);
         CrcIsCorrect = 1;
 
         /* Reconstitue full link control data after FEC correction */
@@ -263,7 +261,7 @@ ComputeAndCorrectFullLinkControlCrc(uint8_t* FullLinkControlDataBytes, uint32_t*
             }
         }
     } else {
-        //fprintf(stderr, "CRC ERROR : 0x%06X\n", *CRCComputed);
+        //DSD_FPRINTF(stderr, "CRC ERROR : 0x%06X\n", *CRCComputed);
         CrcIsCorrect = 0;
     }
 
@@ -281,7 +279,7 @@ ComputeAndCorrectFullLinkControlCrc(uint8_t* FullLinkControlDataBytes, uint32_t*
  */
 
 uint8_t
-ComputeCrc5Bit(uint8_t* DMRData) {
+ComputeCrc5Bit(const uint8_t* DMRData) {
     uint32_t i, j, k;
     uint8_t Buffer[9];
     uint32_t Sum;
@@ -319,7 +317,7 @@ dsd_pack8_bits_msb(const uint8_t* b) {
 }
 
 uint64_t
-ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     uint64_t out = 0;
     const uint8_t* p = BufferIn;
     uint32_t n = BitLength;
@@ -354,7 +352,7 @@ ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
  * @return The 9 bit CRC
  */
 uint16_t
-ComputeCrc9Bit(uint8_t* DMRData, uint32_t NbData) {
+ComputeCrc9Bit(const uint8_t* DMRData, uint32_t NbData) {
     uint32_t i;
     uint16_t CRC = 0x0000; /* Initialization value = 0x0000 */
     /* Polynomial x^9 + x^6 + x^4 + x^3 + 1
@@ -397,7 +395,7 @@ ComputeCrc9Bit(uint8_t* DMRData, uint32_t NbData) {
  * @return The 32 bit CRC
  */
 uint32_t
-ComputeCrc32Bit(uint8_t* DMRData, uint32_t NbData) {
+ComputeCrc32Bit(const uint8_t* DMRData, uint32_t NbData) {
     uint32_t i;
     uint32_t CRC = 0x00000000; /* Initialization value = 0x00000000 */
     /* Polynomial x^32 + x^26 + x^23 + x^22 + x^16 + x^12 + x^11 + x^10 + x^8 + x^7 + x^5 + x^4 + x^2 + x + 1

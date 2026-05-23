@@ -16,16 +16,20 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <errno.h>
-#include <fcntl.h> // IWYU pragma: keep
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "test_support.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Stubs to keep test self-contained and avoid pulling heavy deps
 const char*
@@ -46,12 +50,12 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
 void
 getTimeC_buf(char out[9]) { // HH:MM:SS
     // Not asserting exact value in this test; but keep deterministic if used
-    snprintf(out, 9, "%s", "12:34:56");
+    DSD_SNPRINTF(out, 9, "%s", "12:34:56");
 }
 
 void
 getDateS_buf(char out[11]) { // YYYY/MM/DD
-    snprintf(out, 11, "%s", "2001/02/03");
+    DSD_SNPRINTF(out, 11, "%s", "2001/02/03");
 }
 
 // Additional stubs to satisfy dmr_pdu.c when linked directly
@@ -61,7 +65,7 @@ dsd_unicode_supported(void) {
 }
 
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     if (!input || !output || len <= 0) {
         return;
     }
@@ -80,6 +84,7 @@ unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -87,6 +92,7 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     (void)opts;
     (void)state;
@@ -101,7 +107,7 @@ void dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, u
 static int
 expect_no_substr(const char* buf, const char* needle, const char* tag) {
     if (strstr(buf, needle)) {
-        fprintf(stderr, "%s: found unexpected substring '%s'\n", tag, needle);
+        DSD_FPRINTF(stderr, "%s: found unexpected substring '%s'\n", tag, needle);
         return 1;
     }
     return 0;
@@ -110,7 +116,7 @@ expect_no_substr(const char* buf, const char* needle, const char* tag) {
 static int
 expect_nonempty(const char* buf, const char* tag) {
     if (!buf || buf[0] == '\0') {
-        fprintf(stderr, "%s: got empty output\n", tag);
+        DSD_FPRINTF(stderr, "%s: got empty output\n", tag);
         return 1;
     }
     return 0;
@@ -123,8 +129,8 @@ main(void) {
     // Prepare opts/state
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     st.currentslot = 0;
 
     // Temp file to capture LRRP output
@@ -135,12 +141,12 @@ main(void) {
         return 100;
     }
     (void)dsd_close(ofd);
-    snprintf(opts.lrrp_out_file, sizeof opts.lrrp_out_file, "%s", outtmpl);
+    DSD_SNPRINTF(opts.lrrp_out_file, sizeof opts.lrrp_out_file, "%s", outtmpl);
     opts.lrrp_file_output = 1;
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "dmr_lrrp_time_stderr") != 0) {
-        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 102;
     }
 
@@ -148,7 +154,7 @@ main(void) {
     // [0]=0x07 (Immediate Location Response), [1]=len, [2]=0x22, [3]=0x00 (padding)
     // then token 0x66 (point-2d) with lat/lon, then token 0x34 (Time) with invalid year 2038
     uint8_t pdu[64];
-    memset(pdu, 0, sizeof pdu);
+    DSD_MEMSET(pdu, 0, sizeof pdu);
     int idx = 0;
     pdu[idx++] = 0x07; // response (fmt)
     pdu[idx++] = 24;   // message_len placeholder
@@ -238,3 +244,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

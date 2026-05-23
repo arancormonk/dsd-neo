@@ -5,20 +5,20 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/crypto/rc4.h>
 #include <stdint.h>
 #include <string.h>
-
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-//this version is for voice, going to transition to a block output version
 void
-rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, uint8_t key[], uint8_t cipher[],
+rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, const uint8_t key[], const uint8_t cipher[],
                   uint8_t plain[]) {
     int i, j;
     unsigned int count;
-    uint8_t t, b;
+    uint8_t t;
 
     if (drop < 0) {
         drop = 0;
@@ -48,10 +48,9 @@ rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, uint8_t ke
         t = S[i];
         S[i] = S[j];
         S[j] = t;
-        b = S[(S[i] + S[j]) % 256];
-
         //return mbe payload byte here
         if (count >= (unsigned int)drop) {
+            uint8_t b = S[(S[i] + S[j]) % 256];
             plain[count - drop] = b ^ cipher[count - drop];
         }
     }
@@ -59,7 +58,7 @@ rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, uint8_t ke
 
 //this is for PDU usage
 void
-rc4_block_output(int drop, int keylen, int meslen, uint8_t* key, uint8_t* output_blocks) {
+rc4_block_output(int drop, int keylen, int meslen, const uint8_t* key, uint8_t* output_blocks) {
     int i, j, x;
     unsigned int count;
     unsigned int keylength = (unsigned int)keylen;
@@ -86,9 +85,7 @@ rc4_block_output(int drop, int keylen, int meslen, uint8_t* key, uint8_t* output
     i = 0;
     j = 0;
     x = 0;
-    unsigned int byte;
-
-    // fprintf (stderr, " Keystream Octets = ");
+    // DSD_FPRINTF(stderr, " Keystream Octets = ");
     unsigned int total = messagelength + (unsigned int)drop;
     for (count = 0; count < total; count++) {
         i = (i + 1) % 256;
@@ -96,10 +93,9 @@ rc4_block_output(int drop, int keylen, int meslen, uint8_t* key, uint8_t* output
         unsigned int temp = S[i];
         S[i] = S[j];
         S[j] = temp;
-        byte = S[(S[i] + S[j]) % 256];
-
         //Collect Output blocks
         if (count >= (unsigned int)drop) {
+            unsigned int byte = S[(S[i] + S[j]) % 256];
             output_blocks[x++] = byte;
         }
     }
@@ -113,13 +109,13 @@ hytera_enhanced_rc4_setup(dsd_opts* opts, dsd_state* state, unsigned long long i
 
     UNUSED(opts);
     uint8_t key[5];
-    memset(key, 0, sizeof(key));
+    DSD_MEMSET(key, 0, sizeof(key));
     uint8_t kiv[5];
-    memset(kiv, 0, sizeof(kiv));
+    DSD_MEMSET(kiv, 0, sizeof(kiv));
     uint8_t mi[5];
-    memset(mi, 0, sizeof(mi));
+    DSD_MEMSET(mi, 0, sizeof(mi));
     uint8_t ks[135];
-    memset(ks, 0, sizeof(ks));
+    DSD_MEMSET(ks, 0, sizeof(ks));
 
     //load key_value into key array
     key[0] = ((key_value & 0xFF00000000) >> 32UL);
@@ -155,17 +151,17 @@ hytera_enhanced_rc4_setup(dsd_opts* opts, dsd_state* state, unsigned long long i
     }
 
     //debug
-    // fprintf (stderr, " KS: ");
+    // DSD_FPRINTF(stderr, " KS: ");
     // for (int i = 0; i < 135; i++)
     // {
     //   if ((i != 0) && ((i%7) == 0))
-    //     fprintf (stderr, " ");
-    //   fprintf (stderr, "%02X", ks[i]); //ks_octets
+    //     DSD_FPRINTF(stderr, " ");
+    //   DSD_FPRINTF(stderr, "%02X", ks[i]); //ks_octets
     // }
 
     //NULL pointer to ks_octets
     ks_octets = NULL;
 
     //end line break
-    // fprintf (stderr, "\n");
+    // DSD_FPRINTF(stderr, "\n");
 }

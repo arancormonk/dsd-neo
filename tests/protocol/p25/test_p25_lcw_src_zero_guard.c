@@ -21,10 +21,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
@@ -33,6 +37,7 @@ void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrec
 /* ── Strong stubs (same set used by test_p25_lcw_call_term) ────────────── */
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -40,15 +45,18 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
     return true;
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -56,6 +64,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts) {
         opts->p25_is_tuned = 0;
@@ -76,6 +85,7 @@ install_trunk_tuning_hooks(void) {
 /* Alias / GPS stubs — not exercised by the formats under test */
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -84,6 +94,7 @@ apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -92,6 +103,7 @@ apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -100,6 +112,7 @@ l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -109,6 +122,7 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -116,6 +130,7 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -127,7 +142,8 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 /* ── Minimal ConvertBitIntoBytes (MSB-first) used by LCW ──────────────── */
 
 uint64_t
-ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     uint64_t out = 0;
     for (uint32_t i = 0; i < BitLength; i++) {
         out = (out << 1) | (uint64_t)(BufferIn[i] & 1);
@@ -150,10 +166,10 @@ set_bits_msb(uint8_t* b, int off, int n, uint32_t v) {
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", tag);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", tag);
         return 1;
     }
-    fprintf(stderr, "PASS: %s\n", tag);
+    DSD_FPRINTF(stderr, "PASS: %s\n", tag);
     return 0;
 }
 
@@ -176,12 +192,12 @@ main(void) {
      * would write zero.
      */
     {
-        memset(&opts, 0, sizeof opts);
-        memset(&st, 0, sizeof st);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
         st.lastsrc = 1234567;
 
         uint8_t lcw[96];
-        memset(lcw, 0, sizeof lcw);
+        DSD_MEMSET(lcw, 0, sizeof lcw);
         set_bits_msb(lcw, 0, 8, 0x00);  /* lc_format = 0x00 (Group Voice) */
         set_bits_msb(lcw, 8, 8, 0x00);  /* lc_mfid   = 0x00 (standard)   */
         set_bits_msb(lcw, 16, 8, 0x00); /* lc_svcopt = 0x00              */
@@ -193,9 +209,9 @@ main(void) {
         rc |= expect_true("Fmt0x00_src0_preserves_lastsrc: lastsrc was 1234567, source=0 should NOT overwrite",
                           st.lastsrc == 1234567);
         if (st.lastsrc != 1234567) {
-            fprintf(stderr,
-                    "  counterexample: Format 0x00: lastsrc was 1234567, after LCW with source=0 it became %ld\n",
-                    (long)st.lastsrc);
+            DSD_FPRINTF(stderr,
+                        "  counterexample: Format 0x00: lastsrc was 1234567, after LCW with source=0 it became %ld\n",
+                        (long)st.lastsrc);
         }
     }
 
@@ -206,12 +222,12 @@ main(void) {
      * Expected:      state->lastsrc remains 102
      */
     {
-        memset(&opts, 0, sizeof opts);
-        memset(&st, 0, sizeof st);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
         st.lastsrc = 102;
 
         uint8_t lcw[96];
-        memset(lcw, 0, sizeof lcw);
+        DSD_MEMSET(lcw, 0, sizeof lcw);
         set_bits_msb(lcw, 0, 8, 0x03);  /* lc_format = 0x03 (Unit-to-Unit) */
         set_bits_msb(lcw, 8, 8, 0x00);  /* lc_mfid   = 0x00               */
         set_bits_msb(lcw, 16, 8, 0x00); /* lc_svcopt = 0x00               */
@@ -223,8 +239,9 @@ main(void) {
         rc |= expect_true("Fmt0x03_src0_preserves_lastsrc: lastsrc was 102, source=0 should NOT overwrite",
                           st.lastsrc == 102);
         if (st.lastsrc != 102) {
-            fprintf(stderr, "  counterexample: Format 0x03: lastsrc was 102, after LCW with source=0 it became %ld\n",
-                    (long)st.lastsrc);
+            DSD_FPRINTF(stderr,
+                        "  counterexample: Format 0x03: lastsrc was 102, after LCW with source=0 it became %ld\n",
+                        (long)st.lastsrc);
         }
     }
 
@@ -239,12 +256,12 @@ main(void) {
      * fails (0x90 != 0/1 and SF=0), routing to the MFID90 branch.
      */
     {
-        memset(&opts, 0, sizeof opts);
-        memset(&st, 0, sizeof st);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
         st.lastsrc = 54321;
 
         uint8_t lcw[96];
-        memset(lcw, 0, sizeof lcw);
+        DSD_MEMSET(lcw, 0, sizeof lcw);
         set_bits_msb(lcw, 0, 8, 0x00);  /* lc_format = 0x00 (PB=0,SF=0,LCO=0x00) */
         set_bits_msb(lcw, 8, 8, 0x90);  /* lc_mfid   = 0x90 (Motorola)            */
         set_bits_msb(lcw, 16, 8, 0x00); /* lc_svcopt = 0x00                        */
@@ -256,8 +273,9 @@ main(void) {
         rc |= expect_true("MFID90_Fmt0x00_src0_preserves_lastsrc: lastsrc was 54321, src=0 should NOT overwrite",
                           st.lastsrc == 54321);
         if (st.lastsrc != 54321) {
-            fprintf(stderr, "  counterexample: MFID90 0x00: lastsrc was 54321, after LCW with src=0 it became %ld\n",
-                    (long)st.lastsrc);
+            DSD_FPRINTF(stderr,
+                        "  counterexample: MFID90 0x00: lastsrc was 54321, after LCW with src=0 it became %ld\n",
+                        (long)st.lastsrc);
         }
     }
 
@@ -271,12 +289,12 @@ main(void) {
      * Should PASS — lastsrc is already 0, so the guard is a no-op.
      */
     {
-        memset(&opts, 0, sizeof opts);
-        memset(&st, 0, sizeof st);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
         st.lastsrc = 0;
 
         uint8_t lcw[96];
-        memset(lcw, 0, sizeof lcw);
+        DSD_MEMSET(lcw, 0, sizeof lcw);
         set_bits_msb(lcw, 0, 8, 0x00);  /* lc_format = 0x00 (Group Voice) */
         set_bits_msb(lcw, 8, 8, 0x00);  /* lc_mfid   = 0x00              */
         set_bits_msb(lcw, 16, 8, 0x00); /* lc_svcopt = 0x00              */
@@ -294,12 +312,12 @@ main(void) {
      * The radio ID must not be read starting at bit 40.
      */
     {
-        memset(&opts, 0, sizeof opts);
-        memset(&st, 0, sizeof st);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
         st.lastsrc = 111;
 
         uint8_t lcw[96];
-        memset(lcw, 0, sizeof lcw);
+        DSD_MEMSET(lcw, 0, sizeof lcw);
         set_bits_msb(lcw, 0, 8, 0x49);
         set_bits_msb(lcw, 8, 8, 0x00);
         set_bits_msb(lcw, 16, 20, 0xABCDE);
@@ -314,3 +332,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

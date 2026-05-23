@@ -121,7 +121,7 @@ class Hamming_Inteface {
  */
 class Hamming_10_6_3 : public Hamming_Inteface {
   private:
-    static Hamming_10_6_3_data data;
+    static Hamming_10_6_3_data* data();
 
   public:
     /**
@@ -129,10 +129,10 @@ class Hamming_10_6_3 : public Hamming_Inteface {
      * \arg input The sequence to decode.
      * \return Count of detected errors.
      */
-    int decode(std::bitset<10>& input);
+    static int decode(std::bitset<10>& input);
 
     int
-    decode(int input, int* output) {
+    decode(int input, int* output) override {
         assert(input < 1024 && input >= 0);
 
         std::bitset<10> bitset_input(input);
@@ -152,7 +152,7 @@ class Hamming_10_6_3 : public Hamming_Inteface {
     }
 
     int
-    decode(char* hex, char* parity) {
+    decode(char* hex, char* parity) override {
         // Make a bitset from hex and parity
         std::bitset<10> value;
         // in the bitset 9 is the left-most and 0 is the right-most
@@ -177,10 +177,10 @@ class Hamming_10_6_3 : public Hamming_Inteface {
         return error_count;
     }
 
-    int encode(std::bitset<6>& input);
+    static int encode(const std::bitset<6>& input);
 
     int
-    encode(int input) {
+    encode(int input) override {
         assert(input < 64 && input >= 0);
 
         std::bitset<6> bitset_input(input);
@@ -189,7 +189,7 @@ class Hamming_10_6_3 : public Hamming_Inteface {
     }
 
     void
-    encode(char* hex, char* out_parity) {
+    encode(char* hex, char* out_parity) override {
         // Make a bitset from hex
         std::bitset<6> value;
         // in the bitset 5 is the left-most and 0 is the right-most
@@ -221,18 +221,18 @@ class Hamming_10_6_3_TableImpl_data {
      * hand. Uses Hamming_10_6_3 to build the table.
      */
     Hamming_10_6_3_TableImpl_data() {
-        Hamming_10_6_3 hamming;
+        Hamming_10_6_3 codec;
 
         // Build the tables
         for (int i = 0; i < 1024; i++) {
             int fixed;
-            int error_count = hamming.decode(i, &fixed);
+            int error_count = codec.decode(i, &fixed);
             fixed_values[i] = fixed;
             error_counts[i] = error_count;
         }
 
         for (int i = 0; i < 64; i++) {
-            int parity = hamming.encode(i);
+            int parity = codec.encode(i);
             encode_parities[i] = parity;
         }
     }
@@ -243,13 +243,13 @@ class Hamming_10_6_3_TableImpl_data {
  */
 class Hamming_10_6_3_TableImpl : public Hamming_Inteface {
   private:
-    static Hamming_10_6_3_TableImpl_data data;
+    static Hamming_10_6_3_TableImpl_data* data();
 
   public:
-    int decode(int input, int* output);
+    int decode(int input, int* output) override;
 
     static int
-    convert_hex_to_int(char* hex) {
+    convert_hex_to_int(const char* hex) {
         // Make an int from hex
         int value = 0;
         // in the bitset 9 is the left-most and 0 is the right-most
@@ -263,7 +263,7 @@ class Hamming_10_6_3_TableImpl : public Hamming_Inteface {
     }
 
     static int
-    convert_hex_parity_to_int(char* hex, char* parity) {
+    convert_hex_parity_to_int(const char* hex, const char* parity) {
         // Make an int from hex and parity
         int value = 0;
         // in the bitset 9 is the left-most and 0 is the right-most
@@ -291,7 +291,7 @@ class Hamming_10_6_3_TableImpl : public Hamming_Inteface {
     }
 
     int
-    decode(char* hex, char* parity) {
+    decode(char* hex, char* parity) override {
         int value = convert_hex_parity_to_int(hex, parity);
         int fixed;
         int error_count = decode(value, &fixed);
@@ -306,10 +306,10 @@ class Hamming_10_6_3_TableImpl : public Hamming_Inteface {
         return error_count;
     }
 
-    int encode(int input);
+    int encode(int input) override;
 
     void
-    encode(char* hex, char* out_parity) {
+    encode(char* hex, char* out_parity) override {
         int value = convert_hex_to_int(hex);
         int parity = encode(value);
 

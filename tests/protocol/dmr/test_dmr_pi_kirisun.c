@@ -11,9 +11,8 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static void
@@ -22,10 +21,10 @@ load_single_burst_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
     uint8_t encoded[16];
     uint8_t data_matrix[32];
     uint8_t interleaved[32];
-    memset(info, 0, sizeof(info));
-    memset(encoded, 0, sizeof(encoded));
-    memset(data_matrix, 0, sizeof(data_matrix));
-    memset(interleaved, 0, sizeof(interleaved));
+    DSD_MEMSET(info, 0, sizeof(info));
+    DSD_MEMSET(encoded, 0, sizeof(encoded));
+    DSD_MEMSET(data_matrix, 0, sizeof(data_matrix));
+    DSD_MEMSET(interleaved, 0, sizeof(interleaved));
 
     for (int i = 0; i < 11; i++) {
         info[i] = (uint8_t)((sb_value >> (10 - i)) & 1U);
@@ -50,8 +49,8 @@ static void
 test_pi_kirisun_slot0_sets_fields_and_le_mode(void) {
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     state.currentslot = 0;
     uint8_t pi[10] = {0x36, 0x0A, 0x40, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x01};
@@ -68,8 +67,8 @@ static void
 test_pi_kirisun_requires_crc_ok(void) {
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     opts.dmr_le = 1;
     state.currentslot = 0;
@@ -86,8 +85,8 @@ static void
 test_alg_refresh_advances_kirisun_mi(void) {
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     state.currentslot = 0;
     state.payload_algid = 0x36;
@@ -107,8 +106,8 @@ static void
 test_sbrc_kirisun_gate_rejects_non_kirisun_calls(void) {
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     opts.dmr_le = 3;
     state.currentslot = 1;
@@ -126,8 +125,8 @@ static void
 test_sbrc_kirisun_gate_accepts_kirisun_calls(void) {
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     opts.dmr_le = 3;
     state.currentslot = 1;
@@ -145,8 +144,8 @@ static void
 test_sbrc_kirisun_gate_ignores_stale_kirisun_alg(void) {
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     opts.dmr_le = 3;
     state.currentslot = 1;

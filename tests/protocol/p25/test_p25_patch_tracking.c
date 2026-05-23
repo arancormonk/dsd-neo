@@ -17,14 +17,20 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
 // Stubs for external hooks referenced in the linked library
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -32,6 +38,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -39,13 +46,16 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -55,7 +65,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 expect_eq_str(const char* tag, const char* got, const char* want) {
     if (strcmp(got, want) != 0) {
-        fprintf(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -64,7 +74,7 @@ expect_eq_str(const char* tag, const char* got, const char* want) {
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "%s: expected true\n", tag);
+        DSD_FPRINTF(stderr, "%s: expected true\n", tag);
         return 1;
     }
     return 0;
@@ -84,7 +94,7 @@ int
 main(void) {
     int rc = 0;
     static dsd_state st;
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     // Create a patch SG=069 with WG membership and crypt context
     p25_patch_update(&st, 69, /*is_patch*/ 1, /*active*/ 1);
@@ -161,3 +171,7 @@ main(void) {
     (void)errno;
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

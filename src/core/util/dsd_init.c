@@ -3,7 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/constants.h>
+#include <codec2/codec2.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -17,37 +17,34 @@
 #include <dsd-neo/runtime/shutdown.h>
 #include <mbelib.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/p25p1_heuristics.h"
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/call_alert.h"
 
 #ifdef USE_CODEC2
-#include <codec2/codec2.h>
 #endif
 
 // Small helpers to efficiently set fixed-width strings
 static inline void
 set_spaces(char* buf, size_t count) {
-    memset(buf, ' ', count);
+    DSD_MEMSET(buf, ' ', count);
     buf[count] = '\0';
 }
 
 static inline void
 set_underscores(char* buf, size_t count) {
-    memset(buf, '_', count);
+    DSD_MEMSET(buf, '_', count);
     buf[count] = '\0';
 }
 
-void
-initOpts(dsd_opts* opts) {
+static void
+init_opts_display_and_audio_defaults(dsd_opts* opts) {
     opts->floating_point = 0; //use floating point audio output
     opts->onesymbol = 10;
     opts->mbe_in_file[0] = 0;
@@ -77,15 +74,18 @@ initOpts(dsd_opts* opts) {
     opts->p25status = 0;
     opts->p25tg = 0;
     opts->scoperate = 15;
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
-    snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
     opts->audio_in_fd = -1;
     opts->audio_out_fd = -1;
+}
 
+static void
+init_opts_output_defaults(dsd_opts* opts) {
     opts->split = 0;
     opts->playoffset = 0;
     opts->playoffsetR = 0;
-    snprintf(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", "./WAV");
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", "./WAV");
     opts->mbe_out_dir[0] = 0;
     opts->mbe_out_file[0] = 0;
     opts->mbe_out_fileR[0] = 0; //second slot on a TDMA system
@@ -122,7 +122,10 @@ initOpts(dsd_opts* opts) {
     opts->wav_out_f = NULL;
     opts->wav_out_fR = NULL;
     opts->wav_out_raw = NULL;
+}
 
+static void
+init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->dmr_stereo_wav = 0;  //flag for per call dmr stereo wav recordings
     opts->static_wav_file = 0; //single static wav file for decoding duration
     opts->rdio_mode = 0;
@@ -131,11 +134,11 @@ initOpts(dsd_opts* opts) {
     opts->rdio_upload_retries = 1;
     opts->rdio_api_delete_after_upload = 0;
     opts->rdio_api_key[0] = 0;
-    snprintf(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", "http://127.0.0.1:3000");
+    DSD_SNPRINTF(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", "http://127.0.0.1:3000");
     //opts->wav_out_fd = -1;
     opts->serial_baud = 115200;
     opts->serial_fd = -1;
-    snprintf(opts->serial_dev, sizeof opts->serial_dev, "%s", "/dev/ttyUSB0");
+    DSD_SNPRINTF(opts->serial_dev, sizeof opts->serial_dev, "%s", "/dev/ttyUSB0");
     opts->resume = 0;
     opts->frame_dstar = 1;
     opts->frame_x2tdma = 1;
@@ -201,22 +204,25 @@ initOpts(dsd_opts* opts) {
     opts->pulse_raw_out_channels = 1;
     opts->pulse_digi_in_channels = 1;  //2
     opts->pulse_digi_out_channels = 2; //new default for AUTO
-    memset(opts->pa_input_idx, 0, 100 * sizeof(char));
-    memset(opts->pa_output_idx, 0, 100 * sizeof(char));
+    DSD_MEMSET(opts->pa_input_idx, 0, 100 * sizeof(char));
+    DSD_MEMSET(opts->pa_output_idx, 0, 100 * sizeof(char));
 
     opts->wav_sample_rate = 48000; //default value (DSDPlus uses 96000 on raw signal wav files)
     opts->staged_file_sample_rate = 0;
     opts->wav_interpolator = 1;  //default factor of 1 on 48000; 2 on 96000; sample rate / decimator
     opts->wav_decimator = 48000; //maybe for future use?
-    memset(&opts->input_resampler, 0, sizeof(opts->input_resampler));
-    memset(opts->input_upsample_buf, 0, sizeof(opts->input_upsample_buf));
+    DSD_MEMSET(&opts->input_resampler, 0, sizeof(opts->input_resampler));
+    DSD_MEMSET(opts->input_upsample_buf, 0, sizeof(opts->input_upsample_buf));
     opts->input_upsample_prev = 0.0f;
     opts->input_upsample_len = 0;
     opts->input_upsample_pos = 0;
     opts->input_upsample_tail_blocks = 0;
     opts->input_upsample_prev_valid = 0;
+}
 
-    snprintf(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
+static void
+init_opts_runtime_and_network_defaults(dsd_opts* opts) {
+    DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
     opts->pulse_flush = 1; //set 0 to flush, 1 for flushed
     opts->use_ncurses_terminal = 0;
     opts->ncurses_compact = 0;
@@ -258,33 +264,33 @@ initOpts(dsd_opts* opts) {
     opts->call_alert = 0; //call alert beeper for ncurses
     opts->call_alert_events = (uint8_t)DSD_CALL_ALERT_EVENT_ALL;
 
-    //rigctl options
+    // rigctl options
     opts->use_rigctl = 0;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
     opts->rigctlportno = 4532; //TCP Port Number; GQRX - 7356; SDR++ - 4532
-    snprintf(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", "localhost");
+    DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", "localhost");
 
-    //UDP Socket Blaster Audio
+    // UDP Socket Blaster Audio
     opts->udp_sockfd = DSD_INVALID_SOCKET;
     opts->udp_sockfdA = DSD_INVALID_SOCKET;
     opts->udp_portno = 23456; //default port, same os OP25's sockaudio.py
-    snprintf(opts->udp_hostname, sizeof opts->udp_hostname, "%s", "127.0.0.1");
+    DSD_SNPRINTF(opts->udp_hostname, sizeof opts->udp_hostname, "%s", "127.0.0.1");
 
-    //M17 UDP Port and hostname
+    // M17 UDP Port and hostname
     opts->m17_use_ip = 0;                    //if enabled, open UDP and broadcast IP frame
     opts->m17_portno = 17000;                //default is 17000
     opts->m17_udp_sock = DSD_INVALID_SOCKET; //actual UDP socket for M17 to send to
-    snprintf(opts->m17_hostname, sizeof opts->m17_hostname, "%s", "127.0.0.1");
+    DSD_SNPRINTF(opts->m17_hostname, sizeof opts->m17_hostname, "%s", "127.0.0.1");
 
-    //tcp input options
+    // tcp input options
     opts->tcp_sockfd = DSD_INVALID_SOCKET;
     opts->tcp_portno = 7355; //default favored by SDR++
-    snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", "localhost");
+    DSD_SNPRINTF(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", "localhost");
 
     // rtl_tcp defaults
     opts->rtltcp_enabled = 0;
     opts->rtltcp_portno = 1234;
-    snprintf(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", "127.0.0.1");
+    DSD_SNPRINTF(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", "127.0.0.1");
     opts->rtltcp_autotune = 0; // default off; enable via CLI --rtltcp-autotune or env
 
     // UDP direct input defaults
@@ -295,7 +301,10 @@ initOpts(dsd_opts* opts) {
     opts->udp_in_packets = 0ULL;
     opts->udp_in_bytes = 0ULL;
     opts->udp_in_drops = 0ULL;
+}
 
+static void
+init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->p25_trunk = 0;                  //0 disabled, 1 is enabled
     opts->trunk_enable = opts->p25_trunk; // keep alias in sync
     opts->p25_is_tuned = 0;               //set to 1 if currently on VC, set back to 0 on carrier drop
@@ -374,7 +383,15 @@ initOpts(dsd_opts* opts) {
     opts->p25_force_release_margin_s = 0.0;
     opts->p25_p1_err_hold_pct = 0.0;
     opts->p25_p1_err_hold_s = 0.0;
+}
 
+void
+initOpts(dsd_opts* opts) {
+    init_opts_display_and_audio_defaults(opts);
+    init_opts_output_defaults(opts);
+    init_opts_decoder_and_input_defaults(opts);
+    init_opts_runtime_and_network_defaults(opts);
+    init_opts_trunking_and_filter_defaults(opts);
 } //initopts
 
 static void*
@@ -382,36 +399,34 @@ aligned_alloc_64(size_t size) {
     return dsd_aligned_alloc(64, size);
 }
 
-void
-initState(dsd_state* state) {
-
-    int i, j;
-    // state->testcounter = 0;
-    state->last_dibit = 0;
-
+static void
+init_state_extension_slots(dsd_state* state) {
     for (int ext_i = 0; ext_i < DSD_STATE_EXT_MAX; ext_i++) {
         state->state_ext[ext_i] = NULL;
         state->state_ext_cleanup[ext_i] = NULL;
     }
+}
 
+static void
+init_state_core_buffers(dsd_state* state) {
     state->dibit_buf = aligned_alloc_64(sizeof(int) * 1000000);
     state->dibit_buf_p = state->dibit_buf + 200;
-    memset(state->dibit_buf, 0, sizeof(int) * 200);
+    DSD_MEMSET(state->dibit_buf, 0, sizeof(int) * 200);
     //dmr buffer -- double check this set up
     state->dmr_payload_buf = aligned_alloc_64(sizeof(int) * 1000000);
     state->dmr_payload_p = state->dmr_payload_buf + 200;
-    memset(state->dmr_payload_buf, 0, sizeof(int) * 200);
+    DSD_MEMSET(state->dmr_payload_buf, 0, sizeof(int) * 200);
     state->dmr_reliab_buf = aligned_alloc_64(sizeof(uint8_t) * 1000000);
     if (state->dmr_reliab_buf) {
         state->dmr_reliab_p = state->dmr_reliab_buf + 200;
-        memset(state->dmr_reliab_buf, 0, sizeof(uint8_t) * 200);
+        DSD_MEMSET(state->dmr_reliab_buf, 0, sizeof(uint8_t) * 200);
     }
     state->dmr_soft_buf = aligned_alloc_64(sizeof(dsd_dibit_soft_t) * 1000000);
     if (state->dmr_soft_buf) {
         state->dmr_soft_p = state->dmr_soft_buf + 200;
-        memset(state->dmr_soft_buf, 0, sizeof(dsd_dibit_soft_t) * 200);
+        DSD_MEMSET(state->dmr_soft_buf, 0, sizeof(dsd_dibit_soft_t) * 200);
     }
-    memset(state->dmr_stereo_payload, 1, sizeof(int) * 144);
+    DSD_MEMSET(state->dmr_stereo_payload, 1, sizeof(int) * 144);
     //dmr buffer end
 
     // Symbol history buffer for resample-on-sync (SDRTrunk-style)
@@ -419,7 +434,7 @@ initState(dsd_state* state) {
     state->dmr_sample_history_size = DMR_SAMPLE_HISTORY_SIZE; // ~427ms at 4800 sym/s
     state->dmr_sample_history = aligned_alloc_64(sizeof(float) * state->dmr_sample_history_size);
     if (state->dmr_sample_history) {
-        memset(state->dmr_sample_history, 0, sizeof(float) * state->dmr_sample_history_size);
+        DSD_MEMSET(state->dmr_sample_history, 0, sizeof(float) * state->dmr_sample_history_size);
     }
     state->dmr_sample_history_head = 0;
     state->dmr_sample_history_count = 0;
@@ -428,7 +443,7 @@ initState(dsd_state* state) {
 
     // RTL-SDR stream context (initialized to NULL; lifecycle managed by caller)
     state->rtl_ctx = NULL;
-    memset(state->rtl_symbol_cache, 0, sizeof(state->rtl_symbol_cache));
+    DSD_MEMSET(state->rtl_symbol_cache, 0, sizeof(state->rtl_symbol_cache));
     state->rtl_symbol_cache_pos = 0;
     state->rtl_symbol_cache_len = 0;
     state->rtl_symbol_cache_output_kind = 0;
@@ -443,42 +458,45 @@ initState(dsd_state* state) {
     //Bitmap Filtering Options
     state->audio_smoothing = 0;
 
-    memset(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
-    memset(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));
+    DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
+    DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));
 
     //set float temp buffer to baseline
-    memset(state->f_l, 0.0f, sizeof(state->f_l));
-    memset(state->f_r, 0.0f, sizeof(state->f_r));
+    DSD_MEMSET(state->f_l, 0.0f, sizeof(state->f_l));
+    DSD_MEMSET(state->f_r, 0.0f, sizeof(state->f_r));
 
     //set float temp buffer to baseline
-    memset(state->f_l4, 0.0f, sizeof(state->f_l4));
-    memset(state->f_r4, 0.0f, sizeof(state->f_r4));
+    DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
+    DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
 
     //zero out the short sample storage buffers
-    memset(state->s_l, 0, sizeof(state->s_l));
-    memset(state->s_r, 0, sizeof(state->s_r));
-    memset(state->s_l4, 0, sizeof(state->s_l4));
-    memset(state->s_r4, 0, sizeof(state->s_r4));
+    DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
+    DSD_MEMSET(state->s_r, 0, sizeof(state->s_r));
+    DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
+    DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
 
-    memset(state->s_lu, 0, sizeof(state->s_lu));
-    memset(state->s_ru, 0, sizeof(state->s_ru));
-    memset(state->s_l4u, 0, sizeof(state->s_l4u));
-    memset(state->s_r4u, 0, sizeof(state->s_r4u));
+    DSD_MEMSET(state->s_lu, 0, sizeof(state->s_lu));
+    DSD_MEMSET(state->s_ru, 0, sizeof(state->s_ru));
+    DSD_MEMSET(state->s_l4u, 0, sizeof(state->s_l4u));
+    DSD_MEMSET(state->s_r4u, 0, sizeof(state->s_r4u));
+}
 
+static void
+init_state_audio_output_buffers(dsd_state* state) {
     state->audio_out_buf = aligned_alloc_64(sizeof(short) * 1000000);
     state->audio_out_bufR = aligned_alloc_64(sizeof(short) * 1000000);
-    memset(state->audio_out_buf, 0, 100 * sizeof(short));
-    memset(state->audio_out_bufR, 0, 100 * sizeof(short));
+    DSD_MEMSET(state->audio_out_buf, 0, 100 * sizeof(short));
+    DSD_MEMSET(state->audio_out_bufR, 0, 100 * sizeof(short));
     //analog/raw signal audio buffers
     state->analog_sample_counter = 0; //when it reaches 960, then dump the raw/analog audio signal and reset
-    memset(state->analog_out_f, 0, sizeof(state->analog_out_f));
-    memset(state->analog_out, 0, sizeof(state->analog_out));
+    DSD_MEMSET(state->analog_out_f, 0, sizeof(state->analog_out_f));
+    DSD_MEMSET(state->analog_out, 0, sizeof(state->analog_out));
     state->audio_out_buf_p = state->audio_out_buf + 100;
     state->audio_out_buf_pR = state->audio_out_bufR + 100;
     state->audio_out_float_buf = aligned_alloc_64(sizeof(float) * 1000000);
     state->audio_out_float_bufR = aligned_alloc_64(sizeof(float) * 1000000);
-    memset(state->audio_out_float_buf, 0, 100 * sizeof(float));
-    memset(state->audio_out_float_bufR, 0, 100 * sizeof(float));
+    DSD_MEMSET(state->audio_out_float_buf, 0, 100 * sizeof(float));
+    DSD_MEMSET(state->audio_out_float_bufR, 0, 100 * sizeof(float));
     state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
     state->audio_out_float_buf_pR = state->audio_out_float_bufR + 100;
     state->audio_out_idx = 0;
@@ -487,7 +505,10 @@ initState(dsd_state* state) {
     state->audio_out_idx2R = 0;
     state->audio_out_temp_buf_p = state->audio_out_temp_buf;
     state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;
-    //state->wav_out_bytes = 0;
+}
+
+static void
+init_state_sync_and_stream_defaults(dsd_state* state) {
     state->center = 0;
     state->jitter = -1;
     state->synctype = DSD_SYNC_NONE;
@@ -498,14 +519,14 @@ initState(dsd_state* state) {
     state->minref = -12000;
     state->maxref = 12000;
     state->lastsample = 0;
-    for (i = 0; i < 128; i++) {
+    for (int i = 0; i < 128; i++) {
         state->sbuf[i] = 0;
     }
     state->sidx = 0;
-    for (i = 0; i < 1024; i++) {
+    for (int i = 0; i < 1024; i++) {
         state->maxbuf[i] = 15000;
     }
-    for (i = 0; i < 1024; i++) {
+    for (int i = 0; i < 1024; i++) {
         state->minbuf[i] = -15000;
     }
     state->midx = 0;
@@ -530,8 +551,8 @@ initState(dsd_state* state) {
     state->lastp25type = 0;
     state->offset = 0;
     state->carrier = 0;
-    for (i = 0; i < 25; i++) {
-        for (j = 0; j < 16; j++) {
+    for (int i = 0; i < 25; i++) {
+        for (int j = 0; j < 16; j++) {
             state->tg[i][j] = 48;
         }
     }
@@ -557,11 +578,11 @@ initState(dsd_state* state) {
     state->aout_gain = 25.0f;
     state->aout_gainR = 25.0f;
     state->aout_gainA = 0.0f; //use purely as a display or internal value, no user setting
-    memset(state->aout_max_buf, 0, sizeof(float) * 200);
+    DSD_MEMSET(state->aout_max_buf, 0, sizeof(float) * 200);
     state->aout_max_buf_p = state->aout_max_buf;
     state->aout_max_buf_idx = 0;
 
-    memset(state->aout_max_bufR, 0, sizeof(float) * 200);
+    DSD_MEMSET(state->aout_max_bufR, 0, sizeof(float) * 200);
     state->aout_max_buf_pR = state->aout_max_bufR;
     state->aout_max_buf_idxR = 0;
 
@@ -570,6 +591,10 @@ initState(dsd_state* state) {
     set_underscores(state->algid, 8);
     set_underscores(state->keyid, 16);
     state->currentslot = 0;
+}
+
+static int
+init_state_mbe_contexts(dsd_state* state) {
     state->cur_mp = malloc(sizeof(mbe_parms));
     state->prev_mp = malloc(sizeof(mbe_parms));
     state->prev_mp_enhanced = malloc(sizeof(mbe_parms));
@@ -594,16 +619,20 @@ initState(dsd_state* state) {
         free(state->prev_mp_enhanced2);
         state->prev_mp_enhanced2 = NULL;
         dsd_request_shutdown(NULL, NULL);
-        return;
+        return 0;
     }
 
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     mbe_initMbeParms(state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2);
     state->p25kid = 0;
+    return 1;
+}
 
+static void
+init_state_protocol_defaults_a(dsd_state* state) {
     // Initialize P25 neighbor/candidate UI helpers
     state->p25_nb_count = 0;
-    memset(state->p25_nb_entries, 0, sizeof(state->p25_nb_entries));
+    DSD_MEMSET(state->p25_nb_entries, 0, sizeof(state->p25_nb_entries));
     state->p25_src_nid = 0;
     // Clear P25 call flags
     state->p25_call_emergency[0] = state->p25_call_emergency[1] = 0;
@@ -644,8 +673,8 @@ initState(dsd_state* state) {
     state->payload_keyidR = 0;
 
     //init P2 ESS_B fragments and 4V counter
-    memset(state->ess_b, 0, sizeof(state->ess_b));
-    memset(state->ess_b_llr, 0, sizeof(state->ess_b_llr));
+    DSD_MEMSET(state->ess_b, 0, sizeof(state->ess_b));
+    DSD_MEMSET(state->ess_b_llr, 0, sizeof(state->ess_b_llr));
     state->fourv_counter[0] = 0;
     state->fourv_counter[1] = 0;
     state->voice_counter[0] = 0;
@@ -684,7 +713,7 @@ initState(dsd_state* state) {
     state->tyt_ep = 0;
     state->baofeng_ap = 0;
     state->csi_ee = 0;
-    memset(state->csi_ee_key, 0, sizeof(state->csi_ee_key));
+    DSD_MEMSET(state->csi_ee_key, 0, sizeof(state->csi_ee_key));
     state->retevis_ap = 0;
 
     state->ken_sc = 0;
@@ -696,22 +725,22 @@ initState(dsd_state* state) {
     state->straight_frame_step = 0;
 
     //ks array storage and counters
-    memset(state->ks_octetL, 0, sizeof(state->ks_octetL));
-    memset(state->ks_octetR, 0, sizeof(state->ks_octetR));
-    memset(state->ks_bitstreamL, 0, sizeof(state->ks_bitstreamL));
-    memset(state->ks_bitstreamR, 0, sizeof(state->ks_bitstreamR));
+    DSD_MEMSET(state->ks_octetL, 0, sizeof(state->ks_octetL));
+    DSD_MEMSET(state->ks_octetR, 0, sizeof(state->ks_octetR));
+    DSD_MEMSET(state->ks_bitstreamL, 0, sizeof(state->ks_bitstreamL));
+    DSD_MEMSET(state->ks_bitstreamR, 0, sizeof(state->ks_bitstreamR));
     state->octet_counter = 0;
     state->bit_counterL = 0;
     state->bit_counterR = 0;
 
-    memset(state->static_ks_bits, 0, sizeof(state->static_ks_bits));
-    memset(state->static_ks_counter, 0, sizeof(state->static_ks_counter));
-    memset(state->vertex_ks_key, 0, sizeof(state->vertex_ks_key));
-    memset(state->vertex_ks_bits, 0, sizeof(state->vertex_ks_bits));
-    memset(state->vertex_ks_mod, 0, sizeof(state->vertex_ks_mod));
-    memset(state->vertex_ks_frame_mode, 0, sizeof(state->vertex_ks_frame_mode));
-    memset(state->vertex_ks_frame_off, 0, sizeof(state->vertex_ks_frame_off));
-    memset(state->vertex_ks_frame_step, 0, sizeof(state->vertex_ks_frame_step));
+    DSD_MEMSET(state->static_ks_bits, 0, sizeof(state->static_ks_bits));
+    DSD_MEMSET(state->static_ks_counter, 0, sizeof(state->static_ks_counter));
+    DSD_MEMSET(state->vertex_ks_key, 0, sizeof(state->vertex_ks_key));
+    DSD_MEMSET(state->vertex_ks_bits, 0, sizeof(state->vertex_ks_bits));
+    DSD_MEMSET(state->vertex_ks_mod, 0, sizeof(state->vertex_ks_mod));
+    DSD_MEMSET(state->vertex_ks_frame_mode, 0, sizeof(state->vertex_ks_frame_mode));
+    DSD_MEMSET(state->vertex_ks_frame_off, 0, sizeof(state->vertex_ks_frame_off));
+    DSD_MEMSET(state->vertex_ks_frame_step, 0, sizeof(state->vertex_ks_frame_step));
     state->vertex_ks_count = 0;
     state->vertex_ks_active_idx[0] = -1;
     state->vertex_ks_active_idx[1] = -1;
@@ -719,16 +748,19 @@ initState(dsd_state* state) {
     state->vertex_ks_counter[1] = 0;
     state->vertex_ks_warned[0] = 0;
     state->vertex_ks_warned[1] = 0;
+}
 
+static void
+init_state_protocol_defaults_b(dsd_state* state) {
     //AES Specific Variables
-    memset(state->aes_key, 0, sizeof(state->aes_key));
-    memset(state->aes_iv, 0, sizeof(state->aes_iv));
-    memset(state->aes_ivR, 0, sizeof(state->aes_ivR));
-    memset(state->A1, 0, sizeof(state->A1));
-    memset(state->A2, 0, sizeof(state->A2));
-    memset(state->A3, 0, sizeof(state->A3));
-    memset(state->A4, 0, sizeof(state->A4));
-    memset(state->aes_key_loaded, 0, sizeof(state->aes_key_loaded));
+    DSD_MEMSET(state->aes_key, 0, sizeof(state->aes_key));
+    DSD_MEMSET(state->aes_iv, 0, sizeof(state->aes_iv));
+    DSD_MEMSET(state->aes_ivR, 0, sizeof(state->aes_ivR));
+    DSD_MEMSET(state->A1, 0, sizeof(state->A1));
+    DSD_MEMSET(state->A2, 0, sizeof(state->A2));
+    DSD_MEMSET(state->A3, 0, sizeof(state->A3));
+    DSD_MEMSET(state->A4, 0, sizeof(state->A4));
+    DSD_MEMSET(state->aes_key_loaded, 0, sizeof(state->aes_key_loaded));
 
     //xl specific, we need to know if the ESS is from HDU, or from LDU2
     state->xl_is_hdu = 0;
@@ -770,7 +802,10 @@ initState(dsd_state* state) {
 
     state->dmr_encL = 0;
     state->dmr_encR = 0;
+}
 
+static void
+init_state_p25_and_trunk_defaults(dsd_state* state) {
     //P2 variables
     state->p2_wacn = 0;
     state->p2_sysid = 0;
@@ -862,9 +897,9 @@ initState(dsd_state* state) {
     state->edacs_s_mask = 0x7; //Calculated Mask for S Bits
 
     //trunking
-    memset(state->trunk_lcn_freq, 0, sizeof(state->trunk_lcn_freq));
-    memset(state->trunk_chan_map, 0, sizeof(state->trunk_chan_map));
-    memset(state->trunk_chan_map_used, 0, sizeof(state->trunk_chan_map_used));
+    DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof(state->trunk_lcn_freq));
+    DSD_MEMSET(state->trunk_chan_map, 0, sizeof(state->trunk_chan_map));
+    DSD_MEMSET(state->trunk_chan_map_used, 0, sizeof(state->trunk_chan_map_used));
     state->trunk_chan_map_used_count = 0;
     state->trunk_chan_map_seq = 0;
     state->lcn_freq_count = 0; //number of frequncies imported as an enumerated lcn list
@@ -878,7 +913,10 @@ initState(dsd_state* state) {
     state->last_active_time = time(NULL);
     state->last_t3_tune_time = time(NULL);
     state->is_con_plus = 0;
+}
 
+static void
+init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     //dmr trunking/ncurses stuff
     state->dmr_rest_channel = -1; //init on -1
     state->dmr_mfid = -1;         //
@@ -889,14 +927,14 @@ initState(dsd_state* state) {
     state->nxdn_part_of_frame = 0;
     state->nxdn_ran = 0;
     state->nxdn_sf = 0;
-    memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc)); //init on 1, bad CRC all
-    state->nxdn_sacch_non_superframe = TRUE;
-    memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+    DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc)); //init on 1, bad CRC all
+    state->nxdn_sacch_non_superframe = 1;
+    DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     state->nxdn_alias_block_number = 0;
-    memset(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+    DSD_MEMSET(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
     state->nxdn_alias_arib_total_segments = 0;
     state->nxdn_alias_arib_seen_mask = 0;
-    memset(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));
+    DSD_MEMSET(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));
     state->nxdn_dcr_sf_message_type = 0xFFU;
 
     //site/srv/cch info
@@ -911,7 +949,7 @@ initState(dsd_state* state) {
     state->nxdn_bw = 0;
 
     //multi-key array
-    memset(state->rkey_array, 0, sizeof(state->rkey_array));
+    DSD_MEMSET(state->rkey_array, 0, sizeof(state->rkey_array));
     state->keyloader = 0; //keyloader off
 
     //Remus DMR End Call Alert Beep
@@ -923,34 +961,37 @@ initState(dsd_state* state) {
     state->dmr_site_parms[0] = '\0';
 
     //initialize unified dmr pdu 'superframe'
-    memset(state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));
-    memset(state->data_header_valid, 0, sizeof(state->data_header_valid));
+    DSD_MEMSET(state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));
+    DSD_MEMSET(state->data_header_valid, 0, sizeof(state->data_header_valid));
 
     //initialize cap+ bits and block num storage
-    memset(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
-    memset(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));
+    DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
+    DSD_MEMSET(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));
 
     //init confirmed data individual block crc as invalid
-    memset(state->data_block_crc_valid, 0, sizeof(state->data_block_crc_valid));
+    DSD_MEMSET(state->data_block_crc_valid, 0, sizeof(state->data_block_crc_valid));
 
     //dmr slco stuff
-    memset(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
+    DSD_MEMSET(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
     state->dmr_cach_counter = 0;
 
     //embedded signalling
-    memset(state->dmr_embedded_signalling, 0, sizeof(state->dmr_embedded_signalling));
+    DSD_MEMSET(state->dmr_embedded_signalling, 0, sizeof(state->dmr_embedded_signalling));
 
     //dmr talker alias new/fixed stuff
-    memset(state->dmr_alias_format, 0, sizeof(state->dmr_alias_format));
-    memset(state->dmr_alias_block_len, 0, sizeof(state->dmr_alias_block_len));
-    memset(state->dmr_alias_char_size, 0, sizeof(state->dmr_alias_char_size));
-    memset(state->dmr_alias_block_segment, 0, sizeof(state->dmr_alias_block_segment));
-    memset(state->dmr_embedded_gps, 0, sizeof(state->dmr_embedded_gps));
-    memset(state->dmr_lrrp_gps, 0, sizeof(state->dmr_lrrp_gps));
-    memset(state->active_channel, 0, sizeof(state->active_channel));
+    DSD_MEMSET(state->dmr_alias_format, 0, sizeof(state->dmr_alias_format));
+    DSD_MEMSET(state->dmr_alias_block_len, 0, sizeof(state->dmr_alias_block_len));
+    DSD_MEMSET(state->dmr_alias_char_size, 0, sizeof(state->dmr_alias_char_size));
+    DSD_MEMSET(state->dmr_alias_block_segment, 0, sizeof(state->dmr_alias_block_segment));
+    DSD_MEMSET(state->dmr_embedded_gps, 0, sizeof(state->dmr_embedded_gps));
+    DSD_MEMSET(state->dmr_lrrp_gps, 0, sizeof(state->dmr_lrrp_gps));
+    DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+}
 
+static void
+init_state_string_and_m17_defaults(dsd_state* state) {
     //Generic Talker Alias String
-    memset(state->generic_talker_alias, 0, sizeof(state->generic_talker_alias));
+    DSD_MEMSET(state->generic_talker_alias, 0, sizeof(state->generic_talker_alias));
     state->generic_talker_alias_src[0] = 0;
     state->generic_talker_alias_src[1] = 0;
 
@@ -959,16 +1000,16 @@ initState(dsd_state* state) {
     set_spaces(state->call_string[1], 21);
 
     //late entry mi fragments
-    memset(state->late_entry_mi_fragment, 0, sizeof(state->late_entry_mi_fragment));
+    DSD_MEMSET(state->late_entry_mi_fragment, 0, sizeof(state->late_entry_mi_fragment));
 
     initialize_p25_heuristics(&state->p25_heuristics);
     initialize_p25_heuristics(&state->inv_p25_heuristics);
 
     state->dPMRVoiceFS2Frame.CalledIDOk = 0;
     state->dPMRVoiceFS2Frame.CallingIDOk = 0;
-    memset(state->dPMRVoiceFS2Frame.CalledID, 0, 8);
-    memset(state->dPMRVoiceFS2Frame.CallingID, 0, 8);
-    memset(state->dPMRVoiceFS2Frame.Version, 0, 8);
+    DSD_MEMSET(state->dPMRVoiceFS2Frame.CalledID, 0, 8);
+    DSD_MEMSET(state->dPMRVoiceFS2Frame.CallingID, 0, 8);
+    DSD_MEMSET(state->dPMRVoiceFS2Frame.Version, 0, 8);
 
     set_spaces(state->dpmr_caller_id, 6);
     set_spaces(state->dpmr_target_id, 6);
@@ -982,7 +1023,7 @@ initState(dsd_state* state) {
     set_spaces(state->ysf_rm2, 5);  //5 spaces
     set_spaces(state->ysf_rm3, 5);  //5 spaces
     set_spaces(state->ysf_rm4, 5);  //5 spaces
-    memset(state->ysf_txt, 0, sizeof(state->ysf_txt));
+    DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
     state->ysf_dt = 9;
     state->ysf_fi = 9;
     state->ysf_cm = 9;
@@ -996,16 +1037,16 @@ initState(dsd_state* state) {
     set_spaces(state->dstar_gps, 8);  //8 spaces
 
     //M17 Storage
-    memset(state->m17_lsf, 0, sizeof(state->m17_lsf));
-    memset(state->m17_pkt, 0, sizeof(state->m17_pkt));
+    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
     state->m17_str_dt = 9;
 
     //misc str storage
-    //  sprintf (state->str50a, "%s", "");
-    memset(state->str50b, 0, 50 * sizeof(char));
-    memset(state->str50c, 0, 50 * sizeof(char));
-    memset(state->m17sms, 0, 800 * sizeof(char));
+    //  DSD_SPRINTF(state->str50a, "%s", "");
+    DSD_MEMSET(state->str50b, 0, 50 * sizeof(char));
+    DSD_MEMSET(state->str50c, 0, 50 * sizeof(char));
+    DSD_MEMSET(state->m17sms, 0, 800 * sizeof(char));
     state->m17dat[0] = '\0';
 
     state->m17_dst = 0;
@@ -1014,8 +1055,8 @@ initState(dsd_state* state) {
     state->m17_can_en = -1;  //can value supplied to the encoding side
     state->m17_rate = 48000; //sampling rate for audio input
     state->m17_vox = 0;      //vox mode enabled on M17 encoder
-    memset(state->m17_dst_csd, 0, sizeof(state->m17_dst_csd));
-    memset(state->m17_src_csd, 0, sizeof(state->m17_src_csd));
+    DSD_MEMSET(state->m17_dst_csd, 0, sizeof(state->m17_dst_csd));
+    DSD_MEMSET(state->m17_src_csd, 0, sizeof(state->m17_src_csd));
     state->m17_dst_str[0] = '\0';
     state->m17_src_str[0] = '\0';
 
@@ -1023,8 +1064,11 @@ initState(dsd_state* state) {
     state->m17_enc_st = 0;
     state->m17encoder_tx = 0;
     state->m17encoder_eot = 0;
-    memset(state->m17_meta, 0, sizeof(state->m17_meta));
+    DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
+}
 
+static void
+init_state_codec2_and_events(dsd_state* state) {
 #ifdef USE_CODEC2
     state->codec2_3200 = codec2_create(CODEC2_MODE_3200);
     state->codec2_1600 = codec2_create(CODEC2_MODE_1600);
@@ -1039,7 +1083,7 @@ initState(dsd_state* state) {
     state->event_history_s = calloc(2, sizeof(Event_History_I));
 
     //debug
-    //  fprintf (stderr, "allocated size of event history struct: %ld bytes; \n", 600 * sizeof(Event_History));
+    //  DSD_FPRINTF(stderr, "allocated size of event history struct: %ld bytes; \n", 600 * sizeof(Event_History));
 
     if (state->event_history_s == NULL) {
         LOG_ERROR("memory allocation failure! \n");
@@ -1053,6 +1097,25 @@ initState(dsd_state* state) {
     // Initialize transient UI toast message state
     state->ui_msg[0] = '\0';
     state->ui_msg_expire = 0;
+}
+
+void
+initState(dsd_state* state) {
+    // state->testcounter = 0;
+    state->last_dibit = 0;
+    init_state_extension_slots(state);
+    init_state_core_buffers(state);
+    init_state_audio_output_buffers(state);
+    init_state_sync_and_stream_defaults(state);
+    if (!init_state_mbe_contexts(state)) {
+        return;
+    }
+    init_state_protocol_defaults_a(state);
+    init_state_protocol_defaults_b(state);
+    init_state_p25_and_trunk_defaults(state);
+    init_state_nxdn_and_dmr_defaults(state);
+    init_state_string_and_m17_defaults(state);
+    init_state_codec2_and_events(state);
 
 } //init_state
 

@@ -14,11 +14,15 @@
 #include <dsd-neo/runtime/call_alert.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct sf_private_tag;
 
@@ -35,8 +39,8 @@ open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uint8_t ext)
 }
 
 struct sf_private_tag*
-close_and_rename_wav_file(struct sf_private_tag* wav_file, dsd_opts* opts, char* wav_out_filename, char* dir,
-                          Event_History_I* event_struct) {
+close_and_rename_wav_file(struct sf_private_tag* wav_file, const dsd_opts* opts, const char* wav_out_filename,
+                          const char* dir, const Event_History_I* event_struct) {
     UNUSED(wav_file);
     UNUSED(opts);
     UNUSED(wav_out_filename);
@@ -58,25 +62,25 @@ dsd_synctype_to_string(int synctype) {
 }
 
 int
-getAfsString(dsd_state* state, char* buffer, int a, int f, int s) {
+getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) {
     UNUSED(state);
-    return snprintf(buffer, 7, "%02d-%02d%01d", a, f, s);
+    return DSD_SNPRINTF(buffer, 7, "%02d-%02d%01d", a, f, s);
 }
 
 void
 getTimeN_buf(time_t t, char out[9]) {
     UNUSED(t);
-    snprintf(out, 9, "00:00:00");
+    DSD_SNPRINTF(out, 9, "00:00:00");
 }
 
 void
 getDateN_buf(time_t t, char out[11]) {
     UNUSED(t);
-    snprintf(out, 11, "2026-04-30");
+    DSD_SNPRINTF(out, 11, "2026-04-30");
 }
 
 void
-// NOLINTNEXTLINE(bugprone-reserved-identifier)
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 __wrap_beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
     UNUSED(opts);
     UNUSED(state);
@@ -89,9 +93,9 @@ __wrap_beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len)
 
 static void
 reset_fixture(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]) {
-    memset(opts, 0, sizeof *opts);
-    memset(state, 0, sizeof *state);
-    memset(event_history, 0, sizeof event_history[0] * 2);
+    DSD_MEMSET(opts, 0, sizeof *opts);
+    DSD_MEMSET(state, 0, sizeof *state);
+    DSD_MEMSET(event_history, 0, sizeof event_history[0] * 2);
     state->event_history_s = event_history;
     init_event_history(&state->event_history_s[0], 0, 255);
     init_event_history(&state->event_history_s[1], 0, 255);
@@ -103,7 +107,7 @@ reset_fixture(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", label, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -194,3 +198,7 @@ main(void) {
     }
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

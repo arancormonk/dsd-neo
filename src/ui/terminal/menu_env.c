@@ -9,30 +9,58 @@
  */
 
 #include "menu_env.h"
-
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
-#include <stdio.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+
+static int
+parse_int_with_default(const char* text, int defv) {
+    if (!text || *text == '\0') {
+        return defv;
+    }
+    errno = 0;
+    char* end = NULL;
+    long v = strtol(text, &end, 10);
+    if (end == text || (end && *end != '\0') || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
+        return 0;
+    }
+    return (int)v;
+}
+
+static double
+parse_double_with_default(const char* text, double defv) {
+    if (!text || *text == '\0') {
+        return defv;
+    }
+    errno = 0;
+    char* end = NULL;
+    double v = strtod(text, &end);
+    if (end == text || (end && *end != '\0') || errno == ERANGE) {
+        return 0.0;
+    }
+    return v;
+}
 
 int
 env_get_int(const char* name, int defv) {
     const char* v = dsd_neo_env_get(name);
-    return (v && *v) ? atoi(v) : defv;
+    return parse_int_with_default(v, defv);
 }
 
 double
 env_get_double(const char* name, double defv) {
     const char* v = dsd_neo_env_get(name);
-    return (v && *v) ? atof(v) : defv;
+    return parse_double_with_default(v, defv);
 }
 
 void
 env_set_int(const char* name, int v) {
     char buf[64];
-    snprintf(buf, sizeof buf, "%d", v);
+    DSD_SNPRINTF(buf, sizeof buf, "%d", v);
     dsd_setenv(name, buf, 1);
 }
 
@@ -40,7 +68,7 @@ void
 env_set_double(const char* name, double v) {
     char buf[64];
     // limit precision just for display sanity
-    snprintf(buf, sizeof buf, "%.6g", v);
+    DSD_SNPRINTF(buf, sizeof buf, "%.6g", v);
     dsd_setenv(name, buf, 1);
 }
 

@@ -18,10 +18,9 @@
  */
 
 #include <dsd-neo/platform/audio_concealment.h>
-
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 #define FRAMES   256
 #define CHANNELS 1
@@ -34,7 +33,7 @@
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -43,7 +42,7 @@ expect_int(const char* label, int got, int want) {
 static int
 expect_i16(const char* label, int16_t got, int16_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, (int)got, (int)want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, (int)got, (int)want);
         return 1;
     }
     return 0;
@@ -105,7 +104,7 @@ static int
 test_pattern(const char* name, char pattern) {
     int rc = 0;
     struct audio_conceal_state cs;
-    memset(&cs, 0, sizeof(cs));
+    DSD_MEMSET(&cs, 0, sizeof(cs));
 
     rc |= expect_int("init", audio_conceal_init(&cs, FRAMES, CHANNELS), 0);
 
@@ -119,15 +118,15 @@ test_pattern(const char* name, char pattern) {
 
     /* Verify attenuation for each repeat k = 1 .. max_repeats. */
     for (int k = 1; k <= AUDIO_CONCEAL_MAX_REPEATS; k++) {
-        memset(out, 0xAA, sizeof(out));
+        DSD_MEMSET(out, 0xAA, sizeof(out));
         size_t written = audio_conceal_on_underrun(&cs, out, FRAMES);
         rc |= expect_int("underrun frames", (int)written, FRAMES);
 
         for (int i = 0; i < SAMPLES; i++) {
             int16_t want = expected_sample(original[i], k);
             if (out[i] != want) {
-                fprintf(stderr, "FAIL: pattern=%s k=%d sample[%d]: got=%d want=%d\n", name, k, i, (int)out[i],
-                        (int)want);
+                DSD_FPRINTF(stderr, "FAIL: pattern=%s k=%d sample[%d]: got=%d want=%d\n", name, k, i, (int)out[i],
+                            (int)want);
                 rc = 1;
                 /* Report first failure per k, then move on. */
                 break;
@@ -136,14 +135,14 @@ test_pattern(const char* name, char pattern) {
     }
 
     /* k > max_repeats: output must be silence (all zeros). */
-    memset(out, 0xAA, sizeof(out));
+    DSD_MEMSET(out, 0xAA, sizeof(out));
     size_t written = audio_conceal_on_underrun(&cs, out, FRAMES);
     rc |= expect_int("silence frames", (int)written, FRAMES);
 
     for (int i = 0; i < SAMPLES; i++) {
         if (out[i] != 0) {
-            fprintf(stderr, "FAIL: pattern=%s k=%d (silence) sample[%d]: got=%d want=0\n", name,
-                    AUDIO_CONCEAL_MAX_REPEATS + 1, i, (int)out[i]);
+            DSD_FPRINTF(stderr, "FAIL: pattern=%s k=%d (silence) sample[%d]: got=%d want=0\n", name,
+                        AUDIO_CONCEAL_MAX_REPEATS + 1, i, (int)out[i]);
             rc = 1;
             break;
         }
@@ -161,7 +160,7 @@ static int
 test_reset_and_re_attenuate(void) {
     int rc = 0;
     struct audio_conceal_state cs;
-    memset(&cs, 0, sizeof(cs));
+    DSD_MEMSET(&cs, 0, sizeof(cs));
 
     rc |= expect_int("init", audio_conceal_init(&cs, FRAMES, CHANNELS), 0);
 
@@ -181,13 +180,13 @@ test_reset_and_re_attenuate(void) {
     audio_conceal_on_good_buffer(&cs, new_buf, FRAMES);
 
     /* Next underrun should use k=1 attenuation on the NEW buffer. */
-    memset(out, 0xAA, sizeof(out));
+    DSD_MEMSET(out, 0xAA, sizeof(out));
     audio_conceal_on_underrun(&cs, out, FRAMES);
 
     for (int i = 0; i < SAMPLES; i++) {
         int16_t want = expected_sample(new_buf[i], 1);
         if (out[i] != want) {
-            fprintf(stderr, "FAIL: reset_re_attenuate sample[%d]: got=%d want=%d\n", i, (int)out[i], (int)want);
+            DSD_FPRINTF(stderr, "FAIL: reset_re_attenuate sample[%d]: got=%d want=%d\n", i, (int)out[i], (int)want);
             rc = 1;
             break;
         }
@@ -205,7 +204,7 @@ static int
 test_extended_silence(void) {
     int rc = 0;
     struct audio_conceal_state cs;
-    memset(&cs, 0, sizeof(cs));
+    DSD_MEMSET(&cs, 0, sizeof(cs));
 
     rc |= expect_int("init", audio_conceal_init(&cs, FRAMES, CHANNELS), 0);
 
@@ -222,12 +221,13 @@ test_extended_silence(void) {
 
     /* Three more underruns past max — all must be silence. */
     for (int extra = 0; extra < 3; extra++) {
-        memset(out, 0xAA, sizeof(out));
+        DSD_MEMSET(out, 0xAA, sizeof(out));
         audio_conceal_on_underrun(&cs, out, FRAMES);
 
         for (int i = 0; i < SAMPLES; i++) {
             if (out[i] != 0) {
-                fprintf(stderr, "FAIL: extended_silence extra=%d sample[%d]: got=%d want=0\n", extra, i, (int)out[i]);
+                DSD_FPRINTF(stderr, "FAIL: extended_silence extra=%d sample[%d]: got=%d want=0\n", extra, i,
+                            (int)out[i]);
                 rc = 1;
                 break;
             }

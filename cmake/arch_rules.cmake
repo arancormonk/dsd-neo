@@ -147,7 +147,7 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         if(NOT _ARCH_RULES_HEADER MATCHES "^dsd-neo/"
             AND _ARCH_RULES_HEADER MATCHES "(^|.*/)(curses|ncurses)\\.h$"
         )
-            if(NOT (_ARCH_RULES_REL STREQUAL "include/dsd-neo/platform/curses_compat.h" OR _ARCH_RULES_REL MATCHES "^src/ui/"))
+            if(NOT (_ARCH_RULES_REL STREQUAL "include/dsd-neo/platform/curses_compat.h" OR _ARCH_RULES_REL MATCHES "^src/ui/" OR _ARCH_RULES_REL MATCHES "^include/dsd-neo/ui/"))
                 message(SEND_ERROR "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden curses include '${_ARCH_RULES_HEADER}'")
                 math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
             endif()

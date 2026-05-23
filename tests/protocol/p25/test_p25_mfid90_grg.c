@@ -16,15 +16,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
 // Stubs for external hooks referenced in the linked library
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -32,6 +37,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -39,13 +45,16 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -55,7 +64,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 expect_eq(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -64,7 +73,7 @@ expect_eq(const char* tag, int got, int want) {
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "%s: expected true\n", tag);
+        DSD_FPRINTF(stderr, "%s: expected true\n", tag);
         return 1;
     }
     return 0;
@@ -97,7 +106,7 @@ int
 main(void) {
     int rc = 0;
     static dsd_state st;
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     // Test 1: MFID90 GRG Add Command pattern (sg=100, ga1=200, ga2=300, ga3=400)
     // Simulates the field extraction from p25p1_tsbk.c opcode 0x00 handler
@@ -202,7 +211,7 @@ main(void) {
     // Test 5: Deduplication - adding same WGID twice should not increase count
     {
         static dsd_state st2;
-        memset(&st2, 0, sizeof st2);
+        DSD_MEMSET(&st2, 0, sizeof st2);
 
         p25_patch_add_wgid(&st2, 300, 500);
         p25_patch_add_wgid(&st2, 300, 500); // duplicate
@@ -219,7 +228,7 @@ main(void) {
     // Test 6: Clear SG removes all membership
     {
         static dsd_state st3;
-        memset(&st3, 0, sizeof st3);
+        DSD_MEMSET(&st3, 0, sizeof st3);
 
         p25_patch_add_wgid(&st3, 400, 600);
         p25_patch_add_wgid(&st3, 400, 601);
@@ -240,3 +249,7 @@ main(void) {
     (void)errno;
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

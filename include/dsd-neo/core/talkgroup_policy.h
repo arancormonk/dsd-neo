@@ -8,7 +8,8 @@
  * @brief Talkgroup/private policy evaluation and shared mutation helpers.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_TALKGROUP_POLICY_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_TALKGROUP_POLICY_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -139,8 +140,9 @@ int dsd_tg_policy_note_active_call(dsd_state* state, const dsd_tg_policy_call_ro
 int dsd_tg_policy_clear_active_call(dsd_state* state, int slot);
 int dsd_tg_policy_clear_active_call_route(dsd_state* state, const dsd_tg_policy_call_route* route);
 
-int dsd_tg_policy_reload_group_file(dsd_opts* opts, dsd_state* state);
+int dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_TALKGROUP_POLICY_H_H */

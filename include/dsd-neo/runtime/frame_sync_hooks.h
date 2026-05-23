@@ -11,7 +11,8 @@
  * depending directly on protocol headers. The engine installs the real hook
  * functions at startup; the runtime provides safe no-op wrappers until then.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_FRAME_SYNC_HOOKS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_FRAME_SYNC_HOOKS_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -37,3 +38,5 @@ void dsd_frame_sync_hook_no_carrier(dsd_opts* opts, dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_FRAME_SYNC_HOOKS_H_ */

@@ -10,7 +10,8 @@
  * Declares symbol acquisition entrypoints implemented in `src/dsp/dsd_symbol.c`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_SYMBOL_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_SYMBOL_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -24,3 +25,5 @@ float getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_SYMBOL_H_ */

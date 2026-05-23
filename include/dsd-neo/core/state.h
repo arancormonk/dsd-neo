@@ -11,38 +11,28 @@
  * can include it directly.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_H_H
 
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 
-#include <stdbool.h>
+#include <math.h>
 #include <stdint.h>
 #include <time.h>
 
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/fec/rs_12_9.h>
 
 #include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 
-enum {
+enum __attribute__((packed)) {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
     DSD_VERTEX_KS_MAP_MAX = 64,
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
 };
-
-/* Forward declaration for mbelib decoder state (opaque in public API). */
-struct mbe_parameters;
-typedef struct mbe_parameters mbe_parms;
-
-/* Forward declaration for RTL-SDR stream context (opaque, always present in ABI) */
-struct RtlSdrContext;
-
-/* Forward declaration for Codec2 context (opaque, always present in ABI) */
-struct CODEC2;
 
 //event history (each item)
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
@@ -234,12 +224,12 @@ struct dsd_state {
     float* audio_out_float_buf_pR;
     float* aout_max_buf_p;
     float* aout_max_buf_pR;
-    mbe_parms* cur_mp;
-    mbe_parms* prev_mp;
-    mbe_parms* prev_mp_enhanced;
-    mbe_parms* cur_mp2;
-    mbe_parms* prev_mp2;
-    mbe_parms* prev_mp_enhanced2;
+    struct mbe_parameters* cur_mp;
+    struct mbe_parameters* prev_mp;
+    struct mbe_parameters* prev_mp_enhanced;
+    struct mbe_parameters* cur_mp2;
+    struct mbe_parameters* prev_mp2;
+    struct mbe_parameters* prev_mp_enhanced2;
     // 64-bit state placed early to reduce padding
     unsigned long long int payload_mi;
     unsigned long long int payload_miR;
@@ -940,7 +930,7 @@ struct dsd_state {
     int nxdn_part_of_frame;
     int nxdn_ran;
     int nxdn_sf;
-    bool
+    uint8_t
         nxdn_sacch_non_superframe; //flag to indicate whether or not a sacch is a part of a superframe, or an individual piece
     uint8_t nxdn_sacch_frame_segment[4][18]; //part of frame by 18 bits
     uint8_t nxdn_sacch_frame_segcrc[4];
@@ -1193,7 +1183,7 @@ dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq)
     }
     if (old_freq == 0) {
         dsd_state_track_trunk_chan(state, (uint16_t)channel);
-    } else if (old_freq != 0 && freq == 0) {
+    } else if (freq == 0) {
         dsd_state_untrack_trunk_chan(state, (uint16_t)channel);
     }
     state->trunk_chan_map_seq++;
@@ -1313,7 +1303,7 @@ dsd_state_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_
     if (new_sps > 2) {
         int min_c = 1;
         int max_c = new_sps - 2;
-        new_center = (int)(ratio * (double)new_sps + 0.5);
+        new_center = (int)lrint(ratio * (double)new_sps);
         if (new_center < min_c) {
             new_center = min_c;
         } else if (new_center > max_c) {
@@ -1325,3 +1315,4 @@ dsd_state_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_
     state->symbolCenter = new_center;
     state->jitter = -1;
 }
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_H_H */

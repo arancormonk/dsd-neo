@@ -3,7 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_SYMBOL_LEVELS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_SYMBOL_LEVELS_H_
 
 #include <stdint.h>
 
@@ -55,3 +56,5 @@ uint8_t dsd_fsk_symbol_reliability(float symbol, int levels);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_SYMBOL_LEVELS_H_ */

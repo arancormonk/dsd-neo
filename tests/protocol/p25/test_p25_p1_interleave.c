@@ -11,8 +11,8 @@
  */
 
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
-// Local copy of the IMBE interleave schedule to validate mapping logic
 static const int IW[72] = {0, 2, 4, 1, 3, 5, 0, 2, 4, 1, 3, 6, 0, 2, 4, 1, 3, 6, 0, 2, 4, 1, 3, 6,
                            0, 2, 4, 1, 3, 6, 0, 2, 4, 1, 3, 6, 0, 2, 5, 1, 3, 6, 0, 2, 5, 1, 3, 6,
                            0, 2, 5, 1, 3, 7, 0, 2, 5, 1, 3, 7, 0, 2, 5, 1, 4, 7, 0, 3, 5, 2, 4, 7};
@@ -29,7 +29,7 @@ static const int IZ[72] = {21, 19, 1, 21, 19, 9, 19, 17, 14, 19, 17, 7,  17, 15,
 static int
 expect_ok(const char* tag, int ok) {
     if (!ok) {
-        fprintf(stderr, "%s failed\n", tag);
+        DSD_FPRINTF(stderr, "%s failed\n", tag);
         return 1;
     }
     return 0;
@@ -69,7 +69,7 @@ main(void) {
     }
     for (int j = 0; j < 72; j++) {
         if (in_dibit[j] != out_dibit[j]) {
-            fprintf(stderr, "round-trip mismatch at %d: in=%d out=%d\n", j, in_dibit[j], out_dibit[j]);
+            DSD_FPRINTF(stderr, "round-trip mismatch at %d: in=%d out=%d\n", j, in_dibit[j], out_dibit[j]);
             rc |= 1;
         }
     }

@@ -30,7 +30,7 @@ now_monotonic(void) {
  * ============================================================================ */
 
 static void
-p25_sm_on_neighbor_update_default(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+p25_sm_on_neighbor_update_default(const dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     if (count <= 0 || !state || !freqs) {
         return;
     }
@@ -89,7 +89,7 @@ p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
  * ============================================================================ */
 
 static void
-p25_sm_init_default(dsd_opts* opts, dsd_state* state) {
+p25_sm_init_default(const dsd_opts* opts, dsd_state* state) {
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
 }
 

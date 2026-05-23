@@ -6,11 +6,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
-
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fsk_modem.h>
+#include "dsd-neo/core/safe_api.h"
 
 namespace {
 
@@ -18,7 +17,7 @@ constexpr float kPi = 3.14159265358979323846f;
 
 static void
 reset_demod(demod_state* s) {
-    std::memset(s, 0, sizeof(*s));
+    DSD_MEMSET(s, 0, sizeof(*s));
     s->rate_in = 48000;
     s->rate_out = 48000;
     s->rate_out2 = 12000;
@@ -66,7 +65,7 @@ synthesize_fsk_iq(float* out_iq, const float* symbols, int symbol_count, int sps
 
 static int
 check_fsk_symbol_output_contract(demod_state* s) {
-    enum { SYMBOLS = 512, SPS = 10 };
+    enum : unsigned short { SYMBOLS = 512, SPS = 10 };
 
     static const float levels[] = {-3.0f, -1.0f, 1.0f, 3.0f, 1.0f, -1.0f};
     float expected[SYMBOLS];
@@ -92,7 +91,7 @@ check_fsk_symbol_output_contract(demod_state* s) {
     full_demod(s);
 
     if (s->result_len < SYMBOLS - 2 || s->result_len > SYMBOLS + 2) {
-        std::fprintf(stderr, "FSK symbol path result_len=%d, expected about %d symbols\n", s->result_len, SYMBOLS);
+        DSD_FPRINTF(stderr, "FSK symbol path result_len=%d, expected about %d symbols\n", s->result_len, SYMBOLS);
         return 1;
     }
 
@@ -106,8 +105,8 @@ check_fsk_symbol_output_contract(demod_state* s) {
         }
     }
     if (checked < 200 || ((double)ok / (double)checked) < 0.95) {
-        std::fprintf(stderr, "FSK symbol path accuracy %.3f (%d/%d)\n", checked ? (double)ok / (double)checked : 0.0,
-                     ok, checked);
+        DSD_FPRINTF(stderr, "FSK symbol path accuracy %.3f (%d/%d)\n", checked ? (double)ok / (double)checked : 0.0, ok,
+                    checked);
         return 1;
     }
     return 0;
@@ -131,7 +130,7 @@ synthesize_dqpsk_iq(float* out_iq, const float* differential_symbols, int symbol
 
 static int
 check_cqpsk_symbol_output_contract(demod_state* s) {
-    enum { SYMBOLS = 256 };
+    enum : unsigned short { SYMBOLS = 256 };
 
     static const float expected_cycle[] = {-3.0f, -1.0f, 1.0f, 3.0f};
     float expected[SYMBOLS];
@@ -154,12 +153,12 @@ check_cqpsk_symbol_output_contract(demod_state* s) {
     full_demod(s);
 
     if (s->result_len != SYMBOLS) {
-        std::fprintf(stderr, "CQPSK symbol path result_len=%d, expected %d\n", s->result_len, SYMBOLS);
+        DSD_FPRINTF(stderr, "CQPSK symbol path result_len=%d, expected %d\n", s->result_len, SYMBOLS);
         return 1;
     }
     for (int i = 0; i < SYMBOLS; i++) {
         if (std::fabs(s->result[i] - expected[i]) > 0.02f) {
-            std::fprintf(stderr, "CQPSK symbol[%d]=%.4f, expected %.1f\n", i, s->result[i], expected[i]);
+            DSD_FPRINTF(stderr, "CQPSK symbol[%d]=%.4f, expected %.1f\n", i, s->result[i], expected[i]);
             return 1;
         }
     }
@@ -168,7 +167,7 @@ check_cqpsk_symbol_output_contract(demod_state* s) {
 
 static int
 check_cqpsk_phase_extractor_accuracy(demod_state* s) {
-    enum { SAMPLES = 721 };
+    enum : unsigned short { SAMPLES = 721 };
 
     reset_demod(s);
     s->lowpassed = s->input_cb_buf;
@@ -183,7 +182,7 @@ check_cqpsk_phase_extractor_accuracy(demod_state* s) {
 
     qpsk_differential_demod(s);
     if (s->result_len != SAMPLES) {
-        std::fprintf(stderr, "CQPSK phase extractor result_len=%d, expected %d\n", s->result_len, SAMPLES);
+        DSD_FPRINTF(stderr, "CQPSK phase extractor result_len=%d, expected %d\n", s->result_len, SAMPLES);
         return 1;
     }
 
@@ -192,7 +191,7 @@ check_cqpsk_phase_extractor_accuracy(demod_state* s) {
         float q_sample = s->input_cb_buf[(size_t)(i << 1) + 1];
         float expected = std::atan2(q_sample, i_sample) * k4_over_pi;
         if (std::fabs(s->result[i] - expected) > 0.004f) {
-            std::fprintf(stderr, "CQPSK phase extractor[%d]=%.6f, expected %.6f\n", i, s->result[i], expected);
+            DSD_FPRINTF(stderr, "CQPSK phase extractor[%d]=%.6f, expected %.6f\n", i, s->result[i], expected);
             return 1;
         }
     }

@@ -8,7 +8,8 @@
  * @brief EDACS helper interfaces.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_EDACS_EDACS_AFS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_EDACS_EDACS_AFS_H_
 
 #include <dsd-neo/core/state_fwd.h>
 
@@ -16,9 +17,11 @@
 extern "C" {
 #endif
 
-int getAfsString(dsd_state* state, char* buffer, int a, int f, int s);
-int getAfsStringLength(dsd_state* state);
+int getAfsString(const dsd_state* state, char* buffer, int a, int f, int s);
+int getAfsStringLength(const dsd_state* state);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_EDACS_EDACS_AFS_H_ */

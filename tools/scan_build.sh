@@ -10,13 +10,17 @@ cd "$ROOT_DIR"
 
 usage() {
   cat <<'USAGE'
-Usage: tools/scan_build.sh [--strict] [--jobs N] [--build-dir DIR] [--output-dir DIR] [--cmake-arg ARG]...
+Usage: tools/scan_build.sh [--strict] [--jobs N] [--build-dir DIR] [--output-dir DIR] [--target NAME]... [--reuse-build-dir] [--reuse-output-dir] [--cmake-arg ARG]...
 
 Options:
-  --strict          Fail if scan-build reports bugs (--status-bugs).
+  --strict          Fail on analyzer bugs and enable extra security/portability checkers.
   --jobs N          Parallel build jobs (default: detected CPU count).
   --build-dir DIR   Build directory (default: build/scan-build-debug).
   --output-dir DIR  scan-build report output dir (default: .scan-build.local).
+  --target NAME     Build only the specified CMake target (repeatable).
+  --reuse-build-dir Keep existing build directory instead of deleting it first.
+  --reuse-output-dir
+                    Keep existing scan-build output directory instead of deleting it first.
   --cmake-arg ARG   Extra CMake configure argument (repeatable).
 USAGE
 }
@@ -26,6 +30,9 @@ JOBS=""
 BUILD_DIR="build/scan-build-debug"
 OUTPUT_DIR=".scan-build.local"
 CMAKE_ARGS=()
+TARGETS=()
+REUSE_BUILD_DIR=0
+REUSE_OUTPUT_DIR=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,6 +60,22 @@ while [[ $# -gt 0 ]]; do
       fi
       OUTPUT_DIR="$2"
       shift 2
+      ;;
+    --target)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --target" >&2
+        exit 2
+      fi
+      TARGETS+=("$2")
+      shift 2
+      ;;
+    --reuse-build-dir)
+      REUSE_BUILD_DIR=1
+      shift
+      ;;
+    --reuse-output-dir)
+      REUSE_OUTPUT_DIR=1
+      shift
       ;;
     --cmake-arg)
       if [[ $# -lt 2 ]]; then
@@ -106,7 +129,21 @@ SCAN_ARGS=(
   --exclude "$ROOT_DIR/src/third_party"
 )
 if [[ $STRICT -eq 1 ]]; then
-  SCAN_ARGS+=(--status-bugs)
+  SCAN_ARGS+=(
+    --status-bugs
+    -analyze-headers
+    --force-analyze-debug-code
+    -maxloop 8
+    -enable-checker security.ArrayBound
+    -enable-checker security.FloatLoopCounter
+    -enable-checker security.PointerSub
+    -enable-checker security.VAList
+    -enable-checker security.cert.env.InvalidPtr
+    -enable-checker security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+    -enable-checker security.insecureAPI.rand
+    -enable-checker security.insecureAPI.strcpy
+    -enable-checker optin.portability.UnixAPI
+  )
 fi
 
 for d in "$BUILD_DIR" "$OUTPUT_DIR"; do
@@ -116,13 +153,30 @@ for d in "$BUILD_DIR" "$OUTPUT_DIR"; do
   fi
 done
 
-rm -rf "$BUILD_DIR" "$OUTPUT_DIR"
+if [[ $REUSE_BUILD_DIR -eq 0 ]]; then
+  rm -rf "$BUILD_DIR"
+fi
+if [[ $REUSE_OUTPUT_DIR -eq 0 ]]; then
+  rm -rf "$OUTPUT_DIR"
+fi
+
+BUILD_CMD=(cmake --build "$BUILD_DIR" -j "$JOBS")
+if [[ ${#TARGETS[@]} -gt 0 ]]; then
+  BUILD_CMD+=(--target "${TARGETS[@]}")
+fi
 
 set +e
 {
   echo "scan-build version:"
   print_scan_build_version
   echo "Excluding analyzer path: $ROOT_DIR/src/third_party"
+  if [[ ${#TARGETS[@]} -gt 0 ]]; then
+    echo "Scoped build targets: ${TARGETS[*]}"
+  else
+    echo "Scoped build targets: <all>"
+  fi
+  echo "Reuse build dir: $([[ $REUSE_BUILD_DIR -eq 1 ]] && echo yes || echo no)"
+  echo "Reuse output dir: $([[ $REUSE_OUTPUT_DIR -eq 1 ]] && echo yes || echo no)"
   echo ""
   echo "Configuring analysis build in $BUILD_DIR ..."
   scan-build "${SCAN_ARGS[@]}" cmake -S . -B "$BUILD_DIR" \
@@ -131,7 +185,7 @@ set +e
     "${CMAKE_ARGS[@]}"
   echo ""
   echo "Building under scan-build ..."
-  scan-build "${SCAN_ARGS[@]}" cmake --build "$BUILD_DIR" -j "$JOBS"
+  scan-build "${SCAN_ARGS[@]}" "${BUILD_CMD[@]}"
 } 2>&1 | tee "$LOG_FILE"
 rc=${PIPESTATUS[0]}
 set -e

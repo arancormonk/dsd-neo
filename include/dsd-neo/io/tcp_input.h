@@ -13,8 +13,10 @@
  * directly from the socket using recv() and buffer samples manually.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_TCP_INPUT_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_TCP_INPUT_H_
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/platform/sockets.h>
 #include <stdint.h>
 
@@ -28,8 +30,6 @@ extern "C" {
  * On POSIX, wraps a SNDFILE* handle. On Windows native, manages a socket
  * read buffer for direct sample extraction.
  */
-typedef struct tcp_input_ctx tcp_input_ctx;
-
 /**
  * @brief Open TCP audio input on an already-connected socket.
  *
@@ -68,7 +68,7 @@ int tcp_input_read_sample(tcp_input_ctx* ctx, int16_t* out);
  * @param ctx TCP input context (may be NULL).
  * @return 1 if valid and ready, 0 otherwise.
  */
-int tcp_input_is_valid(tcp_input_ctx* ctx);
+int tcp_input_is_valid(const tcp_input_ctx* ctx);
 
 /**
  * @brief Get the underlying socket from a TCP input context.
@@ -78,8 +78,10 @@ int tcp_input_is_valid(tcp_input_ctx* ctx);
  * @param ctx TCP input context.
  * @return Socket handle, or DSD_INVALID_SOCKET if ctx is NULL.
  */
-dsd_socket_t tcp_input_get_socket(tcp_input_ctx* ctx);
+dsd_socket_t tcp_input_get_socket(const tcp_input_ctx* ctx);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_TCP_INPUT_H_ */

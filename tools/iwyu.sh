@@ -260,7 +260,24 @@ def run_iwyu(rel, entry):
     cmd[compiler_index] = "include-what-you-use"
     cmd.append("-fno-color-diagnostics")
     if strict:
-        cmd.extend(["-Xiwyu", "--error=1"])
+        cmd.extend(
+            [
+                "-Xiwyu",
+                "--error=1",
+                "-Xiwyu",
+                "--quoted_includes_first",
+                "-Xiwyu",
+                "--max_line_length=120",
+                "-Xiwyu",
+                f"--check_also={root / 'include/dsd-neo/*/*.h'}",
+                "-Xiwyu",
+                f"--check_also={root / 'include/dsd-neo/*/*.hpp'}",
+                "-Xiwyu",
+                f"--check_also={root / 'src/*/*.h'}",
+                "-Xiwyu",
+                f"--check_also={root / 'src/*/*/*.h'}",
+            ]
+        )
 
     try:
         proc = subprocess.run(

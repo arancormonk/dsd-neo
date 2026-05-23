@@ -4,10 +4,9 @@
  */
 
 #include <cstdio>
-#include <stdint.h>
-
 #include <dsd-neo/core/constants.h>
-
+#include <stdint.h>
+#include "dsd-neo/core/safe_api.h"
 #include "rtl_ppm_request.h"
 
 using dsd::io::radio::rtl_ppm_plan_apply_to_active_stream;
@@ -21,7 +20,7 @@ using dsd::io::radio::RtlPpmRejectedRequestResolution;
 static int
 expect_int_eq(const char* label, int got, int want) {
     if (got != want) {
-        std::fprintf(stderr, "FAIL: %s got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -30,7 +29,7 @@ expect_int_eq(const char* label, int got, int want) {
 static int
 expect_true(const char* label, bool cond) {
     if (!cond) {
-        std::fprintf(stderr, "FAIL: %s\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         return 1;
     }
     return 0;

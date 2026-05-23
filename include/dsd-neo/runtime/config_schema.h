@@ -23,7 +23,7 @@ extern "C" {
 /**
  * @brief Configuration value types.
  */
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSDCFG_TYPE_STRING = 0, /**< Arbitrary string value */
     DSDCFG_TYPE_INT,        /**< Integer value with optional min/max */
     DSDCFG_TYPE_BOOL,       /**< Boolean (true/false, yes/no, 1/0) */
@@ -50,7 +50,7 @@ typedef struct {
 /**
  * @brief Diagnostic severity levels.
  */
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSDCFG_DIAG_INFO = 0, /**< Informational (e.g., deprecated key usage) */
     DSDCFG_DIAG_WARNING,  /**< Warning (e.g., unknown key, out of range) */
     DSDCFG_DIAG_ERROR     /**< Error (e.g., type mismatch, parse failure) */

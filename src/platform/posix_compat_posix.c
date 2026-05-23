@@ -9,14 +9,13 @@
 #endif
 
 #include <dsd-neo/platform/posix_compat.h>
+#include <features.h>
+#include <stdlib.h>
+#include <sys/stat.h>
 #include <sys/types.h>
-
 #include "dsd-neo/platform/platform.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
-
-#include <stdlib.h>
-#include <sys/stat.h>
 
 #if defined(__APPLE__) && defined(__MACH__)
 /*

@@ -25,13 +25,11 @@
 
 /* Include ------------------------------------------------------------------*/
 
+#include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-/* Define -------------------------------------------------------------------*/
-
-/* Global variables ---------------------------------------------------------*/
 static const uint8_t CNXDNConvolution_BIT_MASK_TABLE[8] = {0x80U, 0x40U, 0x20U, 0x10U, 0x08U, 0x04U, 0x02U, 0x01U};
 
 #define WRITE_BIT1(p, i, b)                                                                                            \
@@ -47,41 +45,31 @@ static const uint32_t CNXDNConvolution_M = 4U;
 static const unsigned int CNXDNConvolution_K = 5U;
 
 //NOTE:
-uint16_t m_metrics1[16];
-uint16_t m_metrics2[16];
-uint64_t m_decisions[8 * 300];
-uint16_t* m_oldMetrics = NULL;
-uint16_t* m_newMetrics = NULL;
-uint64_t* m_dp = NULL;
+static uint16_t m_metrics1[16];
+static uint16_t m_metrics2[16];
+static uint64_t m_decisions[8 * 300];
+static uint16_t* m_oldMetrics = NULL;
+static uint16_t* m_newMetrics = NULL;
+static uint64_t* m_dp = NULL;
 
 /* Functions ----------------------------------------------------------------*/
 
 void
 CNXDNConvolution_decode(uint8_t s0, uint8_t s1) {
-    uint8_t i = 0;
-    uint8_t j = 0;
-    uint8_t decision0 = 0;
-    uint8_t decision1 = 0;
-    uint16_t metric = 0;
-    uint16_t m0 = 0;
-    uint16_t m1 = 0;
-    uint16_t* tmp = NULL;
-
     *m_dp = 0U;
 
-    for (i = 0U; i < CNXDNConvolution_NUM_OF_STATES_D2; i++) {
-        j = i * 2U;
+    for (uint8_t i = 0U; i < CNXDNConvolution_NUM_OF_STATES_D2; i++) {
+        uint8_t j = i * 2U;
+        uint16_t metric = abs(CNXDNConvolution_BRANCH_TABLE1[i] - s0) + abs(CNXDNConvolution_BRANCH_TABLE2[i] - s1);
 
-        metric = abs(CNXDNConvolution_BRANCH_TABLE1[i] - s0) + abs(CNXDNConvolution_BRANCH_TABLE2[i] - s1);
-
-        m0 = m_oldMetrics[i] + metric;
-        m1 = m_oldMetrics[i + CNXDNConvolution_NUM_OF_STATES_D2] + (CNXDNConvolution_M - metric);
-        decision0 = (m0 >= m1) ? 1U : 0U;
+        uint16_t m0 = m_oldMetrics[i] + metric;
+        uint16_t m1 = m_oldMetrics[i + CNXDNConvolution_NUM_OF_STATES_D2] + (CNXDNConvolution_M - metric);
+        uint8_t decision0 = (m0 >= m1) ? 1U : 0U;
         m_newMetrics[j + 0U] = decision0 != 0U ? m1 : m0;
 
         m0 = m_oldMetrics[i] + (CNXDNConvolution_M - metric);
         m1 = m_oldMetrics[i + CNXDNConvolution_NUM_OF_STATES_D2] + metric;
-        decision1 = (m0 >= m1) ? 1U : 0U;
+        uint8_t decision1 = (m0 >= m1) ? 1U : 0U;
         m_newMetrics[j + 1U] = decision1 != 0U ? m1 : m0;
 
         *m_dp |= ((uint64_t)(decision1) << (j + 1U)) | ((uint64_t)(decision0) << (j + 0U));
@@ -91,7 +79,7 @@ CNXDNConvolution_decode(uint8_t s0, uint8_t s1) {
 
     //assert((m_dp - m_decisions) <= 300);
 
-    tmp = m_oldMetrics;
+    uint16_t* tmp = m_oldMetrics;
     m_oldMetrics = m_newMetrics;
     m_newMetrics = tmp;
 }
@@ -101,14 +89,11 @@ CNXDNConvolution_chainback(unsigned char* out, unsigned int nBits) {
     //assert(out != 0);
 
     uint32_t state = 0U;
-    uint32_t i = 0;
-    uint8_t bit = 0;
-
     while (nBits-- > 0) {
         --m_dp;
 
-        i = state >> (9 - CNXDNConvolution_K);
-        bit = (uint8_t)(*m_dp >> i) & 1;
+        uint32_t i = state >> (9 - CNXDNConvolution_K);
+        uint8_t bit = (uint8_t)(*m_dp >> i) & 1;
         state = (bit << 7) | (state >> 1);
 
         WRITE_BIT1(out, nBits, bit != 0U);
@@ -121,21 +106,16 @@ CNXDNConvolution_encode(const unsigned char* in, unsigned char* out, unsigned in
     //assert(out != 0);
     //assert(nBits > 0U);
 
-    uint8_t g1 = 0U;
-    uint8_t g2 = 0U;
-    uint8_t d = 0U;
     uint8_t d1 = 0U;
     uint8_t d2 = 0U;
     uint8_t d3 = 0U;
     uint8_t d4 = 0U;
     uint32_t k = 0U;
-    unsigned int i = 0U;
+    for (unsigned int i = 0U; i < nBits; i++) {
+        uint8_t d = READ_BIT1(in, i) ? 1U : 0U;
 
-    for (i = 0U; i < nBits; i++) {
-        d = READ_BIT1(in, i) ? 1U : 0U;
-
-        g1 = (d + d3 + d4) & 1;
-        g2 = (d + d1 + d2 + d4) & 1;
+        uint8_t g1 = (d + d3 + d4) & 1;
+        uint8_t g2 = (d + d1 + d2 + d4) & 1;
 
         d4 = d3;
         d3 = d2;
@@ -160,9 +140,9 @@ CNXDNConvolution_start(void) {
 
 void
 CNXDNConvolution_init(void) {
-    memset(m_metrics1, 0x0, sizeof(m_metrics1));
-    memset(m_metrics2, 0x0, sizeof(m_metrics2));
-    memset(m_decisions, 0x0, sizeof(m_decisions));
+    DSD_MEMSET(m_metrics1, 0x0, sizeof(m_metrics1));
+    DSD_MEMSET(m_metrics2, 0x0, sizeof(m_metrics2));
+    DSD_MEMSET(m_decisions, 0x0, sizeof(m_decisions));
 }
 
 /*
@@ -176,28 +156,19 @@ CNXDNConvolution_init(void) {
  */
 void
 CNXDNConvolution_decode_soft(uint8_t s0, uint8_t s1, uint8_t r0, uint8_t r1) {
-    uint8_t i = 0;
-    uint8_t j = 0;
-    uint8_t decision0 = 0;
-    uint8_t decision1 = 0;
-    uint32_t metric = 0;
-    uint32_t m0 = 0;
-    uint32_t m1 = 0;
-    uint16_t* tmp = NULL;
-
     /* Scale factor: hard metric uses 0,2 range, scale reliability from 0-255 to 0-128 */
     const uint32_t scale = 128;
     const uint32_t full_metric = (CNXDNConvolution_M * 256U) / scale; /* 8 with current constants */
 
     *m_dp = 0U;
 
-    for (i = 0U; i < CNXDNConvolution_NUM_OF_STATES_D2; i++) {
-        j = i * 2U;
+    for (uint8_t i = 0U; i < CNXDNConvolution_NUM_OF_STATES_D2; i++) {
+        uint8_t j = i * 2U;
 
         /* Weighted branch metric: difference * reliability / scale */
         uint32_t diff0 = (uint32_t)abs((int)CNXDNConvolution_BRANCH_TABLE1[i] - (int)s0);
         uint32_t diff1 = (uint32_t)abs((int)CNXDNConvolution_BRANCH_TABLE2[i] - (int)s1);
-        metric = ((diff0 * r0) + (diff1 * r1)) / scale;
+        uint32_t metric = ((diff0 * r0) + (diff1 * r1)) / scale;
 
         /* Keep branch metric within the decoder's expected [0..M] domain.
          * This also prevents unsigned underflow in the complementary metric. */
@@ -205,14 +176,14 @@ CNXDNConvolution_decode_soft(uint8_t s0, uint8_t s1, uint8_t r0, uint8_t r1) {
             metric = full_metric;
         }
 
-        m0 = m_oldMetrics[i] + metric;
-        m1 = m_oldMetrics[i + CNXDNConvolution_NUM_OF_STATES_D2] + (full_metric - metric);
-        decision0 = (m0 >= m1) ? 1U : 0U;
+        uint32_t m0 = m_oldMetrics[i] + metric;
+        uint32_t m1 = m_oldMetrics[i + CNXDNConvolution_NUM_OF_STATES_D2] + (full_metric - metric);
+        uint8_t decision0 = (m0 >= m1) ? 1U : 0U;
         m_newMetrics[j + 0U] = (uint16_t)(decision0 != 0U ? m1 : m0);
 
         m0 = m_oldMetrics[i] + (full_metric - metric);
         m1 = m_oldMetrics[i + CNXDNConvolution_NUM_OF_STATES_D2] + metric;
-        decision1 = (m0 >= m1) ? 1U : 0U;
+        uint8_t decision1 = (m0 >= m1) ? 1U : 0U;
         m_newMetrics[j + 1U] = (uint16_t)(decision1 != 0U ? m1 : m0);
 
         *m_dp |= ((uint64_t)(decision1) << (j + 1U)) | ((uint64_t)(decision0) << (j + 0U));
@@ -220,7 +191,7 @@ CNXDNConvolution_decode_soft(uint8_t s0, uint8_t s1, uint8_t r0, uint8_t r1) {
 
     ++m_dp;
 
-    tmp = m_oldMetrics;
+    uint16_t* tmp = m_oldMetrics;
     m_oldMetrics = m_newMetrics;
     m_newMetrics = tmp;
 }

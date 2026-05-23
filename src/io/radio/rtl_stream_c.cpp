@@ -17,6 +17,7 @@
 #include <stdlib.h>
 
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/io/rtl_stream_fwd.h"
 
 extern "C" {
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -105,7 +106,7 @@ rtl_stream_create_impl(const dsd_opts* opts, dsd_opts* mirrored_opts, RtlSdrCont
     if (!out_ctx || !opts) {
         return -1;
     }
-    *out_ctx = (RtlSdrContext*)calloc(1, sizeof(RtlSdrContext));
+    *out_ctx = static_cast<RtlSdrContext*>(calloc(1, sizeof(RtlSdrContext)));
     if (!*out_ctx) {
         return -1;
     }
@@ -219,7 +220,7 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
 
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 extern "C" int
-rtl_stream_test_request_retune(RtlSdrContext* ctx, uint32_t freq_hz, int timeout_ms) {
+rtl_stream_test_request_retune(const RtlSdrContext* ctx, uint32_t freq_hz, int timeout_ms) {
     if (!ctx || !ctx->stream) {
         return -2;
     }
@@ -258,7 +259,7 @@ rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached
 }
 
 extern "C" int
-rtl_stream_test_get_replay_state(RtlSdrContext* ctx, rtl_stream_test_replay_state* out_state) {
+rtl_stream_test_get_replay_state(const RtlSdrContext* ctx, rtl_stream_test_replay_state* out_state) {
     if (!ctx || !ctx->stream || !out_state) {
         return -2;
     }
@@ -284,7 +285,7 @@ rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got) {
 }
 
 extern "C" int
-rtl_stream_read_monitor(RtlSdrContext* ctx, float* out, size_t count, int* out_got) {
+rtl_stream_read_monitor(const RtlSdrContext* ctx, float* out, size_t count, int* out_got) {
     if (!ctx || !ctx->stream || !out || !out_got) {
         return -1;
     }

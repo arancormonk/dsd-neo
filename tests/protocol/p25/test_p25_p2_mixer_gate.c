@@ -11,14 +11,13 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/state.h>
 #include <stdio.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_eq(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -28,7 +27,7 @@ int
 main(void) {
     int rc = 0;
     static dsd_state st;
-    memset(&st, 0, sizeof(st));
+    DSD_MEMSET(&st, 0, sizeof(st));
 
     int encL = -1, encR = -1;
 

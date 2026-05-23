@@ -7,6 +7,7 @@
 
 #include <dsd-neo/dsp/halfband.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 approx_eq(float a, float b, float tol) {
@@ -31,13 +32,13 @@ main(void) {
 
     int out_len = hb_decim2_real(in, N, out, hist);
     if (out_len != (N >> 1)) {
-        fprintf(stderr, "HB: unexpected out_len=%d (want %d)\n", out_len, N >> 1);
+        DSD_FPRINTF(stderr, "HB: unexpected out_len=%d (want %d)\n", out_len, N >> 1);
         return 1;
     }
     // Skip initial transient due to zeroed history (warm-up ~HB_TAPS)
     for (int i = HB_TAPS; i < out_len; i++) {
         if (!approx_eq(out[i], 1.0f, 1e-3f)) {
-            fprintf(stderr, "HB: output[%d]=%f not within tol of 1.0\n", i, out[i]);
+            DSD_FPRINTF(stderr, "HB: output[%d]=%f not within tol of 1.0\n", i, out[i]);
             return 1;
         }
     }
@@ -46,12 +47,12 @@ main(void) {
     float out2[N];
     int out_len2 = hb_decim2_real(in, N, out2, hist);
     if (out_len2 != (N >> 1)) {
-        fprintf(stderr, "HB: second call out_len=%d (want %d)\n", out_len2, N >> 1);
+        DSD_FPRINTF(stderr, "HB: second call out_len=%d (want %d)\n", out_len2, N >> 1);
         return 1;
     }
     for (int i = 0; i < out_len2; i++) {
         if (!approx_eq(out2[i], 1.0f, 1e-3f)) {
-            fprintf(stderr, "HB: second output[%d]=%f not within tol of 1.0\n", i, out2[i]);
+            DSD_FPRINTF(stderr, "HB: second output[%d]=%f not within tol of 1.0\n", i, out2[i]);
             return 1;
         }
     }

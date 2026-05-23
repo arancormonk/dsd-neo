@@ -17,7 +17,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #define DSD_NEO_PRAGMA(x) _Pragma(#x)
@@ -120,7 +120,7 @@ dsd_resampler_state_is_initialized(const dsd_resampler_state* state) {
         return 0;
     }
     uint64_t cookie = 0;
-    memcpy(&cookie, &state->internal_cookie, sizeof(cookie));
+    DSD_MEMCPY(&cookie, &state->internal_cookie, sizeof(cookie));
     return cookie == kResamplerStateCookie;
 }
 
@@ -137,6 +137,96 @@ dsd_resampler_required_out_len(int in_len, int L, int M, int phase) {
 
     int64_t out_len = numerator / (int64_t)M;
     return (out_len > INT_MAX) ? -1 : (int)out_len;
+}
+
+static inline void
+resampler_free_buffers(float* taps, float* hist) {
+    if (taps) {
+        dsd_neo_aligned_free(taps);
+    }
+    if (hist) {
+        dsd_neo_aligned_free(hist);
+    }
+}
+
+static int
+resampler_alloc_buffers(int total_taps, int taps_per_phase, float** out_taps, float** out_hist) {
+    float* taps = static_cast<float*>(dsd_neo_aligned_malloc((size_t)total_taps * sizeof(float)));
+    float* hist = static_cast<float*>(dsd_neo_aligned_malloc((size_t)taps_per_phase * 2U * sizeof(float)));
+    if (!taps || !hist) {
+        resampler_free_buffers(taps, hist);
+        *out_taps = NULL;
+        *out_hist = NULL;
+        return 0;
+    }
+    DSD_MEMSET(hist, 0, (size_t)taps_per_phase * 2U * sizeof(float));
+    *out_taps = taps;
+    *out_hist = hist;
+    return 1;
+}
+
+static void
+resampler_design_taps(float* taps, int L, int taps_per_phase, int total_taps, double fc) {
+    const int mid = (total_taps - 1) / 2;
+    double gain = 0.0;
+    for (int n = 0; n < total_taps; n++) {
+        const int m = n - mid;
+        const double w = 0.54 - 0.46 * cos(2.0 * kPi * (double)n / (double)(total_taps - 1));
+        const double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
+        gain += h * w;
+    }
+    if (gain == 0.0) {
+        gain = 1.0;
+    }
+
+    const double phase_gain_comp = (double)L;
+    for (int phase = 0; phase < L; phase++) {
+        float* phase_taps = taps + (size_t)phase * (size_t)taps_per_phase;
+        for (int k = 0; k < taps_per_phase; k++) {
+            const int src_index = phase + ((taps_per_phase - 1 - k) * L);
+            const int m = src_index - mid;
+            const double w = 0.54 - 0.46 * cos(2.0 * kPi * (double)src_index / (double)(total_taps - 1));
+            const double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
+            phase_taps[k] = (float)((h * w / gain) * phase_gain_comp);
+        }
+    }
+}
+
+static inline int
+resampler_passthrough(const float* DSD_NEO_RESTRICT in, int in_len, float* DSD_NEO_RESTRICT out, int out_cap) {
+    if (out_cap < in_len) {
+        return -1;
+    }
+    if (out != in) {
+        DSD_MEMCPY(out, in, (size_t)in_len * sizeof(float));
+    }
+    return in_len;
+}
+
+static inline int
+resampler_push_sample(float* DSD_NEO_RESTRICT hist, int taps_per_phase, int head, float sample) {
+    hist[head] = sample;
+    hist[head + taps_per_phase] = sample;
+    head++;
+    if (head == taps_per_phase) {
+        head = 0;
+    }
+    return head;
+}
+
+static inline void
+resampler_emit_outputs(const float* DSD_NEO_RESTRICT hist_window, const float* DSD_NEO_RESTRICT taps_al,
+                       int taps_per_phase, int L, int M, int* phase, float* DSD_NEO_RESTRICT out, int* out_len) {
+    int local_phase = *phase;
+    while (local_phase < L) {
+        const float* DSD_NEO_RESTRICT phase_taps = taps_al + (size_t)local_phase * (size_t)taps_per_phase;
+        const float acc = (taps_per_phase == kDefaultTapsPerPhase)
+                              ? resamp_dot16_contiguous(hist_window, phase_taps)
+                              : resamp_dot_contiguous(hist_window, phase_taps, taps_per_phase);
+        out[(*out_len)++] = acc;
+        local_phase += M;
+    }
+    *phase = local_phase - L;
 }
 
 void
@@ -171,7 +261,7 @@ dsd_resampler_clear_history(dsd_resampler_state* state) {
     state->phase = 0;
     state->hist_head = 0;
     if (state->hist && state->taps_per_phase > 0) {
-        memset(state->hist, 0, (size_t)state->taps_per_phase * 2U * sizeof(float));
+        DSD_MEMSET(state->hist, 0, (size_t)state->taps_per_phase * 2U * sizeof(float));
     }
 }
 
@@ -189,58 +279,22 @@ dsd_resampler_design(dsd_resampler_state* state, int L, int M) {
     float* old_taps = state_initialized ? state->taps : NULL;
     float* old_hist = state_initialized ? state->hist : NULL;
 
-    int taps_per_phase = kDefaultTapsPerPhase; /* K */
-    if (taps_per_phase < 8) {
-        taps_per_phase = 8;
-    }
+    int taps_per_phase = (kDefaultTapsPerPhase < 8) ? 8 : kDefaultTapsPerPhase; /* K */
     int total_taps = taps_per_phase * L;
     if (total_taps < L) {
         total_taps = L;
     }
 
-    double fc = 0.45 / (double)((L > M) ? L : M);
-    int N = total_taps;
-    int mid = (N - 1) / 2;
-
-    float* new_taps = (float*)dsd_neo_aligned_malloc((size_t)N * sizeof(float));
-    float* new_hist = (float*)dsd_neo_aligned_malloc((size_t)taps_per_phase * 2U * sizeof(float));
-    if (!new_taps || !new_hist) {
-        if (new_taps) {
-            dsd_neo_aligned_free(new_taps);
-        }
-        if (new_hist) {
-            dsd_neo_aligned_free(new_hist);
-        }
+    const double fc = 0.45 / (double)((L > M) ? L : M);
+    float* new_taps = NULL;
+    float* new_hist = NULL;
+    if (!resampler_alloc_buffers(total_taps, taps_per_phase, &new_taps, &new_hist)) {
         if (!state_initialized) {
             dsd_resampler_state_init_defaults(state);
         }
         return 0;
     }
-    memset(new_hist, 0, (size_t)taps_per_phase * 2U * sizeof(float));
-
-    double gain = 0.0;
-    for (int n = 0; n < N; n++) {
-        int m = n - mid;
-        double w = 0.54 - 0.46 * cos(2.0 * kPi * (double)n / (double)(N - 1));
-        double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
-        gain += h * w;
-    }
-    if (gain == 0.0) {
-        gain = 1.0;
-    }
-
-    const double phase_gain_comp = (double)L;
-    for (int phase = 0; phase < L; phase++) {
-        float* phase_taps = new_taps + (size_t)phase * (size_t)taps_per_phase;
-        for (int k = 0; k < taps_per_phase; k++) {
-            int src_index = phase + ((taps_per_phase - 1 - k) * L);
-            int m = src_index - mid;
-            double w = 0.54 - 0.46 * cos(2.0 * kPi * (double)src_index / (double)(N - 1));
-            double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
-            double t = (h * w / gain) * phase_gain_comp;
-            phase_taps[k] = (float)t;
-        }
-    }
+    resampler_design_taps(new_taps, L, taps_per_phase, total_taps, fc);
 
     dsd_resampler_state next_state;
     dsd_resampler_state_init_defaults(&next_state);
@@ -248,19 +302,14 @@ dsd_resampler_design(dsd_resampler_state* state, int L, int M) {
     next_state.L = L;
     next_state.M = M;
     next_state.phase = 0;
-    next_state.taps_len = N;
+    next_state.taps_len = total_taps;
     next_state.taps_per_phase = taps_per_phase;
     next_state.hist_head = 0;
     next_state.taps = new_taps;
     next_state.hist = new_hist;
     next_state.enabled = 1;
 
-    if (old_taps) {
-        dsd_neo_aligned_free(old_taps);
-    }
-    if (old_hist) {
-        dsd_neo_aligned_free(old_hist);
-    }
+    resampler_free_buffers(old_taps, old_hist);
 
     *state = next_state;
     return 1;
@@ -278,13 +327,7 @@ dsd_resampler_process_block(dsd_resampler_state* state, const float* DSD_NEO_RES
     }
 
     if (!state->enabled || !state->taps || !state->hist) {
-        if (out_cap < in_len) {
-            return -1;
-        }
-        if (out != in) {
-            memcpy(out, in, (size_t)in_len * sizeof(float));
-        }
-        return in_len;
+        return resampler_passthrough(in, in_len, out, out_cap);
     }
     const int L = state->L;
     const int M = state->M;
@@ -302,22 +345,9 @@ dsd_resampler_process_block(dsd_resampler_state* state, const float* DSD_NEO_RES
     }
 
     for (int n = 0; n < in_len; n++) {
-        hist[head] = in[n];
-        hist[head + K] = in[n];
-        head++;
-        if (head == K) {
-            head = 0;
-        }
-        int local_phase = phase;
+        head = resampler_push_sample(hist, K, head, in[n]);
         const float* DSD_NEO_RESTRICT hist_window = hist + head;
-        while (local_phase < L) {
-            const float* DSD_NEO_RESTRICT phase_taps = taps_al + (size_t)local_phase * (size_t)K;
-            float acc = (K == kDefaultTapsPerPhase) ? resamp_dot16_contiguous(hist_window, phase_taps)
-                                                    : resamp_dot_contiguous(hist_window, phase_taps, K);
-            out[out_len++] = acc;
-            local_phase += M;
-        }
-        phase = local_phase - L;
+        resampler_emit_outputs(hist_window, taps_al, K, L, M, &phase, out, &out_len);
     }
 
     state->phase = phase;
@@ -363,29 +393,28 @@ demod_resampler_state_copy_out(struct demod_state* demod, const dsd_resampler_st
 }
 
 void
-resamp_design(struct demod_state* demod, int L, int M) {
-    if (!demod) {
+resamp_design(struct demod_state* s, int L, int M) {
+    if (!s) {
         return;
     }
-    dsd_resampler_state state = demod_resampler_state_copy_in(demod);
+    dsd_resampler_state state = demod_resampler_state_copy_in(s);
     (void)dsd_resampler_design(&state, L, M);
-    demod_resampler_state_copy_out(demod, &state);
+    demod_resampler_state_copy_out(s, &state);
 }
 
 int
-resamp_process_block(struct demod_state* demod, const float* DSD_NEO_RESTRICT in, int in_len,
-                     float* DSD_NEO_RESTRICT out) {
-    if (!demod) {
+resamp_process_block(struct demod_state* s, const float* DSD_NEO_RESTRICT in, int in_len, float* DSD_NEO_RESTRICT out) {
+    if (!s) {
         return -1;
     }
-    dsd_resampler_state state = demod_resampler_state_copy_in(demod);
+    dsd_resampler_state state = demod_resampler_state_copy_in(s);
     int out_len = dsd_resampler_process_block(&state, in, in_len, out, MAXIMUM_BUF_LENGTH * 4);
-    demod_resampler_state_copy_out(demod, &state);
+    demod_resampler_state_copy_out(s, &state);
     if (out_len >= 0) {
         return out_len;
     }
     if (out != in && in && out && in_len > 0) {
-        memcpy(out, in, (size_t)in_len * sizeof(float));
+        DSD_MEMCPY(out, in, (size_t)in_len * sizeof(float));
     }
     return in_len;
 }

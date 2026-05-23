@@ -16,11 +16,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/runtime/mem.h>
 #include <vector>
+#include "dsd-neo/core/safe_api.h"
 
 static double
 rms(const std::vector<float>& x) {
@@ -86,7 +86,7 @@ run_once(double fs, double f) {
     if (!d) {
         return 0;
     }
-    std::memset(d, 0, sizeof(*d));
+    DSD_MEMSET(d, 0, sizeof(*d));
     d->lowpassed = d->input_cb_buf; // use internal buffer
     d->lp_len = Npairs * 2;
     for (int i = 0; i < d->lp_len; i++) {
@@ -129,7 +129,7 @@ main(void) {
     if (!d1) {
         return 1;
     }
-    std::memset(d1, 0, sizeof(*d1));
+    DSD_MEMSET(d1, 0, sizeof(*d1));
     for (int i = 0; i < N; i++) {
         d1->input_cb_buf[i] = iq_pass[(size_t)i];
     }
@@ -154,7 +154,7 @@ main(void) {
         free_demod_state(d1);
         return 1;
     }
-    std::memset(d2, 0, sizeof(*d2));
+    DSD_MEMSET(d2, 0, sizeof(*d2));
     for (int i = 0; i < N; i++) {
         d2->input_cb_buf[i] = iq_stop[(size_t)i];
     }
@@ -172,11 +172,11 @@ main(void) {
     int out_len_stop = d2->result_len;
 
     if (!(out_len_pass >= (Npairs / M) - 2 && out_len_pass <= (Npairs / M) + 2)) {
-        std::fprintf(stderr, "polydecim: unexpected length pass=%d ref=%d\n", out_len_pass, Npairs / M);
+        DSD_FPRINTF(stderr, "polydecim: unexpected length pass=%d ref=%d\n", out_len_pass, Npairs / M);
         return 1;
     }
     if (!(out_len_stop == out_len_pass)) {
-        std::fprintf(stderr, "polydecim: length mismatch stop=%d pass=%d\n", out_len_stop, out_len_pass);
+        DSD_FPRINTF(stderr, "polydecim: length mismatch stop=%d pass=%d\n", out_len_stop, out_len_pass);
         return 1;
     }
     std::vector<float> y_pass((size_t)out_len_pass);
@@ -190,14 +190,14 @@ main(void) {
     double rp = rms(y_pass);
     double rs = rms(y_stop);
     if (rp <= 1e-9 || rs <= 0.0) {
-        std::fprintf(stderr, "polydecim: degenerate RMS rp=%.3f rs=%.3f\n", rp, rs);
+        DSD_FPRINTF(stderr, "polydecim: degenerate RMS rp=%.3f rs=%.3f\n", rp, rs);
         free_demod_state(d1);
         free_demod_state(d2);
         return 1;
     }
     double att_db = 20.0 * std::log10(rs / rp);
     if (!(att_db <= -15.0)) { // conservative bound
-        std::fprintf(stderr, "polydecim: attenuation too small %.2f dB\n", att_db);
+        DSD_FPRINTF(stderr, "polydecim: attenuation too small %.2f dB\n", att_db);
         free_demod_state(d1);
         free_demod_state(d2);
         return 1;

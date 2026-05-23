@@ -5,8 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static inline uint64_t
@@ -14,7 +13,7 @@ rol64(uint64_t x, int n) {
     return ((x << n) | (x >> (63 - n) >> 1)) & 0xffffffffffffffff;
 }
 
-void
+static void
 swapbit(uint64_t* internalstate, uint8_t bit) {
     unsigned char bitB = bit & 1;
     if (bitB) {
@@ -25,17 +24,17 @@ swapbit(uint64_t* internalstate, uint8_t bit) {
 }
 
 // MD2 functions
-void
+static void
 md2_init(MD2State* state) {
     state->x1 = 0;
     state->x2 = 0;
-    memset(state->h2, 0, (size_t)n1);
-    memset(state->h1, 0, (size_t)n1 * 3);
+    DSD_MEMSET(state->h2, 0, (size_t)n1);
+    DSD_MEMSET(state->h1, 0, (size_t)n1 * 3);
 }
 
-void
-md2_hashing(MD2State* state, unsigned char t1[], size_t b6) {
-    static unsigned char s4[256] = {
+static void
+md2_hashing(MD2State* state, const unsigned char t1[], size_t b6) {
+    static const unsigned char s4[256] = {
         13,  199, 11,  67,  237, 193, 164, 77,  115, 184, 141, 222, 73,  38,  147, 36,  150, 87,  21,  104, 12,  61,
         156, 101, 111, 145, 119, 22,  207, 35,  198, 37,  171, 167, 80,  30,  219, 28,  213, 121, 86,  29,  214, 242,
         6,   4,   89,  162, 110, 175, 19,  157, 3,   88,  234, 94,  144, 118, 159, 239, 100, 17,  182, 173, 238, 68,
@@ -73,9 +72,9 @@ md2_hashing(MD2State* state, unsigned char t1[], size_t b6) {
     }
 }
 
-void
+static void
 md2_end(MD2State* state, unsigned char h4[n1]) {
-    unsigned char h3[n1];
+    unsigned char h3[n1] = {0};
     int n4 = n1 - state->x2;
     for (int i = 0; i < n4; i++) {
         h3[i] = n4;
@@ -88,7 +87,7 @@ md2_end(MD2State* state, unsigned char h4[n1]) {
 }
 
 // RC4 functions
-uint64_t
+static uint64_t
 next(RC4State* state) {
     uint64_t z = (state->x += 0x9e3779b97f4a7c15);
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
@@ -96,10 +95,8 @@ next(RC4State* state) {
     return z ^ (z >> 31);
 }
 
-void
-rc4_init(RC4State* state, unsigned char key[]) {
-    int tmp;
-
+static void
+rc4_init(RC4State* state, const unsigned char key[]) {
     for (state->i_rc4 = 0; state->i_rc4 < 256; state->i_rc4++) {
         state->array_rc4[state->i_rc4] = state->i_rc4;
     }
@@ -107,7 +104,7 @@ rc4_init(RC4State* state, unsigned char key[]) {
     state->j_rc4 = 0;
     for (state->i_rc4 = 0; state->i_rc4 < 256; state->i_rc4++) {
         state->j_rc4 = (state->j_rc4 + state->array_rc4[state->i_rc4] + key[state->i_rc4 % 256]) % 256;
-        tmp = state->array_rc4[state->i_rc4];
+        int tmp = state->array_rc4[state->i_rc4];
         state->array_rc4[state->i_rc4] = state->array_rc4[state->j_rc4];
         state->array_rc4[state->j_rc4] = tmp;
     }
@@ -115,7 +112,7 @@ rc4_init(RC4State* state, unsigned char key[]) {
     state->j_rc4 = 0;
 }
 
-unsigned char
+static unsigned char
 rc4_output(RC4State* state) {
     uint8_t rndbyte, decal;
     int tmp, t;
@@ -157,7 +154,7 @@ u64_to_bytes_be(uint64_t val, unsigned char* out) {
 }
 
 // RC2 functions
-void
+static void
 rc2_keyschedule(RC2State* state) {
     unsigned i;
     i = 63;
@@ -167,7 +164,7 @@ rc2_keyschedule(RC2State* state) {
     } while (i--);
 }
 
-void
+static void
 rc2_encrypt(RC2State* state) {
     uint16_t x76, x54, x32, x10, i;
 
@@ -209,7 +206,7 @@ rc2_encrypt(RC2State* state) {
 
 // Main cryptographic functions
 void
-create_keys_rc2(CryptoContext* ctx, unsigned char key1[], size_t size1) {
+create_keys_rc2(CryptoContext* ctx, const unsigned char key1[], size_t size1) {
     unsigned char h4[n1];
 
     // Initialize MD2 and hash the key
@@ -297,7 +294,6 @@ encryption_rc2(CryptoContext* ctx, uint8_t bits[49]) {
 
 void
 decrypt_rc2(CryptoContext* ctx, uint8_t bits[49]) {
-    uint8_t tempy;
     ctx->internal_state = ctx->internal_zero;
 
     for (int sso = 0; sso < 49; sso++) {
@@ -321,7 +317,7 @@ decrypt_rc2(CryptoContext* ctx, uint8_t bits[49]) {
         }
 
         // XOR the bit and update internal state
-        tempy = bits[48 - sso];
+        uint8_t tempy = bits[48 - sso];
         bits[48 - sso] = bits[48 - sso] ^ (ctx->internal_state & 1);
         ctx->internal_state = rol64(ctx->internal_state, 1);
         swapbit(&ctx->internal_state, tempy);
@@ -336,7 +332,7 @@ retevis_rc2_keystream_creation(dsd_state* state, char* input) {
     unsigned char key2[16] = {0};
 
     char buf[1024];
-    snprintf(buf, sizeof(buf), "%s", input);
+    DSD_SNPRINTF(buf, sizeof(buf), "%s", input);
 
     char* pEnd;
     uint64_t K1 = strtoull(buf, &pEnd, 16);
@@ -355,9 +351,9 @@ retevis_rc2_keystream_creation(dsd_state* state, char* input) {
 
     // Store context in DSD state
     state->rc2_context = malloc(sizeof(CryptoContext));
-    memcpy(state->rc2_context, &rc2_ctx, sizeof(CryptoContext));
+    DSD_MEMCPY(state->rc2_context, &rc2_ctx, sizeof(CryptoContext));
 
-    fprintf(stderr, "DMR RETEVIS AP (RC2) 128-bit Key %016llX%016llX with Forced Application\n", (unsigned long long)K1,
-            (unsigned long long)K2);
+    DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) 128-bit Key %016llX%016llX with Forced Application\n",
+                (unsigned long long)K1, (unsigned long long)K2);
     state->retevis_ap = 1;
 }

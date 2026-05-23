@@ -12,6 +12,7 @@
 #include <dsd-neo/protocol/m17/m17_tables.h>
 #include <stdint.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 const char*
 m17_packet_protocol_name(uint8_t protocol) {
@@ -33,6 +34,42 @@ m17_packet_protocol_name(uint8_t protocol) {
     return NULL;
 }
 
+static int
+m17_lsf_base40_id_is_valid(unsigned long long value) {
+    return value != 0ULL && value < 0xEE6B28000000ULL;
+}
+
+static void
+m17_decode_base40_id(unsigned long long value, char out_csd[10]) {
+    if (!m17_lsf_base40_id_is_valid(value)) {
+        return;
+    }
+
+    for (int i = 0; i < 9; i++) {
+        if (value == 0ULL) {
+            break;
+        }
+        int idx = (int)(value % 40ULL);
+        if (idx < 0) {
+            break;
+        }
+        out_csd[i] = b40[idx];
+        value /= 40ULL;
+    }
+}
+
+static uint32_t
+m17_extract_meta_bytes(const uint8_t* lsf_bits, uint8_t meta[14]) {
+    uint32_t meta_sum = 0U;
+
+    for (int i = 0; i < 14; i++) {
+        meta[i] = (uint8_t)ConvertBitIntoBytes((uint8_t*)&lsf_bits[((size_t)i * 8U) + 112U], 8U);
+        meta_sum += meta[i];
+    }
+
+    return meta_sum;
+}
+
 int
 m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* out) {
     if (out == NULL || lsf_bits == NULL) {
@@ -42,12 +79,11 @@ m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* ou
         return -2;
     }
 
-    memset(out, 0, sizeof(*out));
+    DSD_MEMSET(out, 0, sizeof(*out));
 
-    unsigned long long lsf_dst = (unsigned long long)ConvertBitIntoBytes(
-        (uint8_t*)&lsf_bits[0], 48); // NOLINT(cppcoreguidelines-pro-type-cstyle-cast)
-    unsigned long long lsf_src = (unsigned long long)ConvertBitIntoBytes((uint8_t*)&lsf_bits[48], 48); // NOLINT
-    uint16_t lsf_type = (uint16_t)ConvertBitIntoBytes((uint8_t*)&lsf_bits[96], 16);
+    unsigned long long lsf_dst = ConvertBitIntoBytes(&lsf_bits[0], 48);
+    unsigned long long lsf_src = ConvertBitIntoBytes(&lsf_bits[48], 48);
+    uint16_t lsf_type = (uint16_t)ConvertBitIntoBytes(&lsf_bits[96], 16);
 
     out->dst = lsf_dst;
     out->src = lsf_src;
@@ -59,49 +95,19 @@ m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* ou
     out->rs = (uint8_t)((lsf_type >> 11) & 0x1F);
 
     /* Decode base-40 CSD strings for destination and source. */
-    memset(out->dst_csd, 0, sizeof(out->dst_csd));
-    memset(out->src_csd, 0, sizeof(out->src_csd));
-
-    if (lsf_dst != 0 && lsf_dst != 0xFFFFFFFFFFFFULL && lsf_dst < 0xEE6B28000000ULL) {
-        for (int i = 0; i < 9; i++) {
-            if (lsf_dst == 0) {
-                break;
-            }
-            int idx = (int)(lsf_dst % 40ULL);
-            if (idx < 0) {
-                break;
-            }
-            out->dst_csd[i] = b40[idx];
-            lsf_dst /= 40ULL;
-        }
-    }
-
-    if (lsf_src != 0 && lsf_src != 0xFFFFFFFFFFFFULL && lsf_src < 0xEE6B28000000ULL) {
-        for (int i = 0; i < 9; i++) {
-            if (lsf_src == 0) {
-                break;
-            }
-            int idx = (int)(lsf_src % 40ULL);
-            if (idx < 0) {
-                break;
-            }
-            out->src_csd[i] = b40[idx];
-            lsf_src /= 40ULL;
-        }
-    }
+    DSD_MEMSET(out->dst_csd, 0, sizeof(out->dst_csd));
+    DSD_MEMSET(out->src_csd, 0, sizeof(out->src_csd));
+    m17_decode_base40_id(lsf_dst, out->dst_csd);
+    m17_decode_base40_id(lsf_src, out->src_csd);
 
     /* Extract Meta/IV bytes starting at bit 112 (14 octets). */
     uint8_t meta[14];
-    memset(meta, 0, sizeof(meta));
-    uint32_t meta_sum = 0;
-    for (int i = 0; i < 14; i++) {
-        meta[i] = (uint8_t)ConvertBitIntoBytes((uint8_t*)&lsf_bits[((size_t)i * 8U) + 112U], 8U);
-        meta_sum += meta[i];
-    }
+    DSD_MEMSET(meta, 0, sizeof(meta));
+    uint32_t meta_sum = m17_extract_meta_bytes(lsf_bits, meta);
 
     if (meta_sum != 0U) {
         out->has_meta = 1U;
-        memcpy(out->meta, meta, sizeof(meta));
+        DSD_MEMCPY(out->meta, meta, sizeof(meta));
     } else {
         out->has_meta = 0U;
     }

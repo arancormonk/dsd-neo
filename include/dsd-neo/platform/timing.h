@@ -3,14 +3,14 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_TIMING_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_TIMING_H_H
 
 /**
  * @file
  * @brief Cross-platform high-resolution timing for DSD-neo.
  */
 
-#include <dsd-neo/platform/platform.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -84,3 +84,4 @@ uint64_t dsd_time_deadline_ns(unsigned int timeout_ms);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_TIMING_H_H */

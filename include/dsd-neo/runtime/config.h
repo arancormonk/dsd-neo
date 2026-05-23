@@ -15,7 +15,6 @@
 #define DSD_NEO_RUNTIME_CONFIG_H
 
 /* Include schema types first (before extern "C" for C++ compat) */
-#include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config_schema.h>
 
 #ifdef __cplusplus
@@ -190,7 +189,7 @@ extern "C" {
  * - DSD_NEO_CACHE_DIR, DSD_NEO_CC_CACHE
  */
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSD_NEO_DEEMPH_UNSET = 0,
     DSD_NEO_DEEMPH_OFF,
     DSD_NEO_DEEMPH_50,
@@ -635,7 +634,7 @@ void dsd_neo_get_cqpsk_eq(int* enable, int* taps, float* mu, float* modulus);
  * on stable, user-facing knobs (input, output, decode mode, trunking).
  */
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSDCFG_INPUT_UNSET = 0,
     DSDCFG_INPUT_PULSE,
     DSDCFG_INPUT_RTL,
@@ -646,9 +645,13 @@ typedef enum {
     DSDCFG_INPUT_UDP
 } dsdneoUserInputSource;
 
-typedef enum { DSDCFG_OUTPUT_UNSET = 0, DSDCFG_OUTPUT_PULSE, DSDCFG_OUTPUT_NULL } dsdneoUserOutputBackend;
+typedef enum __attribute__((packed)) {
+    DSDCFG_OUTPUT_UNSET = 0,
+    DSDCFG_OUTPUT_PULSE,
+    DSDCFG_OUTPUT_NULL
+} dsdneoUserOutputBackend;
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSDCFG_MODE_UNSET = 0,
     DSDCFG_MODE_AUTO,
     DSDCFG_MODE_P25P1,
@@ -666,7 +669,7 @@ typedef enum {
     DSDCFG_MODE_ANALOG
 } dsdneoUserDecodeMode;
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSDCFG_DEMOD_UNSET = 0,
     DSDCFG_DEMOD_AUTO,
     DSDCFG_DEMOD_C4FM,

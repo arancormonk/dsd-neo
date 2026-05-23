@@ -18,20 +18,25 @@
 #include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <errno.h>
 #include <limits.h>
 #include <mutex>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+namespace {
 
 struct config_snapshot_node {
     dsdneoRuntimeConfig cfg;
     struct config_snapshot_node* next;
 };
+
+} // namespace
 
 /* Publish-side lock and append-only snapshot list.
  * Snapshots are intentionally retained for process lifetime because the API
@@ -61,8 +66,6 @@ config_scalar_equals(double lhs, double rhs) {
 
 /* Keep this in sync with dsdneoRuntimeConfig in config.h.
  * Explicit field comparison avoids struct-wide memcmp on padded objects. */
-static inline bool
-config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig& rhs) {
 #define CONFIG_EQ_FIELD(name)                                                                                          \
     do {                                                                                                               \
         if (!config_scalar_equals(lhs.name, rhs.name)) {                                                               \
@@ -75,6 +78,9 @@ config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig
             return false;                                                                                              \
         }                                                                                                              \
     } while (0)
+
+static inline bool
+config_snapshot_equals_block_a(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig& rhs) {
     CONFIG_EQ_FIELD(dmr_hangtime_s);
     CONFIG_EQ_FIELD(dmr_grant_timeout_s);
     CONFIG_EQ_FIELD(p25_hangtime_s);
@@ -121,6 +127,11 @@ config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig
     CONFIG_EQ_FIELD(cpu_dongle);
     CONFIG_EQ_FIELD(cpu_demod_is_set);
     CONFIG_EQ_FIELD(cpu_demod);
+    return true;
+}
+
+static inline bool
+config_snapshot_equals_block_b(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig& rhs) {
     CONFIG_EQ_FIELD(ftz_daz_is_set);
     CONFIG_EQ_FIELD(ftz_daz_enable);
     CONFIG_EQ_FIELD(no_bootstrap_is_set);
@@ -181,6 +192,11 @@ config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig
     CONFIG_EQ_FIELD(dmr_t3_cc_freq_is_set);
     CONFIG_EQ_FIELD(dmr_t3_cc_lcn_is_set);
     CONFIG_EQ_FIELD(dmr_t3_start_lcn_is_set);
+    return true;
+}
+
+static inline bool
+config_snapshot_equals_block_c(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig& rhs) {
     CONFIG_EQ_FIELD(dmr_t3_heur_is_set);
     CONFIG_EQ_FIELD(dmr_t3_heur_enable);
     CONFIG_EQ_FIELD(config_path_is_set);
@@ -243,6 +259,11 @@ config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig
     CONFIG_EQ_FIELD(combine_rot);
     CONFIG_EQ_FIELD(upsample_fp_is_set);
     CONFIG_EQ_FIELD(upsample_fp);
+    return true;
+}
+
+static inline bool
+config_snapshot_equals_block_d(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig& rhs) {
     CONFIG_EQ_FIELD(resamp_is_set);
     CONFIG_EQ_FIELD(resamp_disable);
     CONFIG_EQ_FIELD(resamp_target_hz);
@@ -313,10 +334,17 @@ config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig
     CONFIG_EQ_ARRAY(config_path);
     CONFIG_EQ_ARRAY(cache_dir);
     CONFIG_EQ_ARRAY(rtl_if_gains);
-#undef CONFIG_EQ_FIELD
-#undef CONFIG_EQ_ARRAY
     return true;
 }
+
+static inline bool
+config_snapshot_equals(const dsdneoRuntimeConfig& lhs, const dsdneoRuntimeConfig& rhs) {
+    return config_snapshot_equals_block_a(lhs, rhs) && config_snapshot_equals_block_b(lhs, rhs)
+           && config_snapshot_equals_block_c(lhs, rhs) && config_snapshot_equals_block_d(lhs, rhs);
+}
+
+#undef CONFIG_EQ_FIELD
+#undef CONFIG_EQ_ARRAY
 
 static inline struct config_snapshot_node*
 find_matching_snapshot_locked(const dsdneoRuntimeConfig& cfg) {
@@ -402,6 +430,21 @@ env_parse_int_range(const char* v, int min_val, int max_val, int* out) {
 }
 
 static int
+env_parse_int_strict(const char* v, int* out) {
+    if (!env_is_set(v) || !out) {
+        return 0;
+    }
+    errno = 0;
+    char* end = NULL;
+    long x = strtol(v, &end, 10);
+    if (end == v || (end && *end != '\0') || errno == ERANGE || x < INT_MIN || x > INT_MAX) {
+        return 0;
+    }
+    *out = (int)x;
+    return 1;
+}
+
+static int
 env_parse_long_range(const char* v, long min_val, long max_val, long* out) {
     if (!env_is_set(v) || !out) {
         return 0;
@@ -412,6 +455,21 @@ env_parse_long_range(const char* v, long min_val, long max_val, long* out) {
         return 0;
     }
     if (x < min_val || x > max_val) {
+        return 0;
+    }
+    *out = x;
+    return 1;
+}
+
+static int
+env_parse_double_strict(const char* v, double* out) {
+    if (!env_is_set(v) || !out) {
+        return 0;
+    }
+    errno = 0;
+    char* end = NULL;
+    double x = strtod(v, &end);
+    if (end == v || (end && *end != '\0') || errno == ERANGE) {
         return 0;
     }
     *out = x;
@@ -444,7 +502,7 @@ env_copy_str(char* dst, size_t dst_size, const char* v) {
         dst[0] = '\0';
         return;
     }
-    snprintf(dst, dst_size, "%s", v);
+    DSD_SNPRINTF(dst, dst_size, "%s", v);
     dst[dst_size - 1] = '\0';
 }
 
@@ -462,30 +520,17 @@ default_cache_dir(char* dst, size_t dst_size) {
     }
 #endif
     if (env_is_set(base)) {
-        snprintf(dst, dst_size, "%s/.cache/dsd-neo", base);
+        DSD_SNPRINTF(dst, dst_size, "%s/.cache/dsd-neo", base);
         dst[dst_size - 1] = '\0';
         return;
     }
 
-    snprintf(dst, dst_size, "%s", ".dsdneo_cache");
+    DSD_SNPRINTF(dst, dst_size, "%s", ".dsdneo_cache");
     dst[dst_size - 1] = '\0';
 }
 
-/**
- * @brief Parse environment variables and initialize the runtime configuration.
- *
- * Precedence note: future CLI/opts may override env values; currently opts
- * are not applied beyond presence for future extension.
- *
- * @param opts Decoder options for potential precedence overrides.
- * @note Safe to call multiple times; the most recent call wins.
- */
-void
-dsd_neo_config_init(const dsd_opts* opts) {
-    (void)opts; /* precedence hook reserved for future CLI/opts overrides */
-
-    dsdneoRuntimeConfig c{};
-
+static void
+config_init_defaults(dsdneoRuntimeConfig& c) {
     /* Defaults for centralized knobs (may be overridden by env parsing below). */
     c.sync_warmstart_enable = 1;
 
@@ -532,7 +577,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.auto_ppm_zerolock_ppm = 0.6;
     c.auto_ppm_zerolock_hz = 60;
     c.auto_ppm_freeze_enable = 1;
+}
 
+static void
+config_init_paths_and_cache(dsdneoRuntimeConfig& c) {
     /* User config discovery */
     const char* cfgp = getenv("DSD_NEO_CONFIG");
     c.config_path_is_set = env_is_set(cfgp);
@@ -552,7 +600,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     if (c.cc_cache_is_set) {
         c.cc_cache_enable = env_is_falsey(cc_cache) ? 0 : 1;
     }
+}
 
+static void
+config_init_realtime_and_cpu(dsdneoRuntimeConfig& c) {
     /* Realtime scheduling and CPU affinity */
     const char* rt = getenv("DSD_NEO_RT_SCHED");
     c.rt_sched_is_set = env_is_set(rt);
@@ -575,7 +626,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
 
     const char* cpum = getenv("DSD_NEO_CPU_DEMOD");
     c.cpu_demod_is_set = env_parse_int_range(cpum, 0, 4096, &c.cpu_demod);
+}
 
+static void
+config_init_bootstrap_and_debug(dsdneoRuntimeConfig& c) {
     /* Bootstrap/system toggles */
     const char* ftz = getenv("DSD_NEO_FTZ_DAZ");
     c.ftz_daz_is_set = env_is_set(ftz);
@@ -593,8 +647,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     const char* dcq = getenv("DSD_NEO_DEBUG_CQPSK");
     c.debug_cqpsk_is_set = env_is_set(dcq);
     c.debug_cqpsk_enable = c.debug_cqpsk_is_set ? (env_is_falsey(dcq) ? 0 : 1) : 0;
+}
 
-    /* CQPSK runtime toggles */
+static void
+config_init_cqpsk_toggle(dsdneoRuntimeConfig& c) {
     const char* cq = getenv("DSD_NEO_CQPSK");
     c.cqpsk_is_set = env_is_set(cq);
     if (c.cqpsk_is_set) {
@@ -606,7 +662,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
             c.cqpsk_is_set = 0; /* ignore unrecognized values */
         }
     }
+}
 
+static void
+config_init_cqpsk_sync_and_eq_toggle(dsdneoRuntimeConfig& c) {
     const char* cqi = getenv("DSD_NEO_CQPSK_SYNC_INV");
     c.cqpsk_sync_inv_is_set = env_is_set(cqi);
     c.cqpsk_sync_inv = c.cqpsk_sync_inv_is_set ? (env_is_falsey(cqi) ? 0 : 1) : 0;
@@ -618,7 +677,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     const char* cqe = getenv("DSD_NEO_CQPSK_EQ");
     c.cqpsk_eq_is_set = env_is_set(cqe);
     c.cqpsk_eq_enable = c.cqpsk_eq_is_set ? (env_is_falsey(cqe) ? 0 : 1) : 0;
+}
 
+static void
+config_init_cqpsk_eq_values(dsdneoRuntimeConfig& c) {
     const char* cqet = getenv("DSD_NEO_CQPSK_EQ_TAPS");
     c.cqpsk_eq_taps_is_set = env_parse_int_range(cqet, 3, 15, &c.cqpsk_eq_taps);
     if (c.cqpsk_eq_taps_is_set && ((c.cqpsk_eq_taps & 1) == 0)) {
@@ -641,14 +703,29 @@ dsd_neo_config_init(const dsd_opts* opts) {
         c.cqpsk_eq_modulus_is_set = env_parse_double_range(cqemod, 0.05, 4.0, &v);
         c.cqpsk_eq_modulus = c.cqpsk_eq_modulus_is_set ? (float)v : DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
     }
+}
 
+static void
+config_init_sync_warmstart(dsdneoRuntimeConfig& c) {
     /* Sync warm-start (kill-switch): DSD_NEO_SYNC_WARMSTART=0 disables. */
     const char* sw = getenv("DSD_NEO_SYNC_WARMSTART");
     c.sync_warmstart_is_set = env_is_set(sw);
     if (c.sync_warmstart_is_set && strcmp(sw, "0") == 0) {
         c.sync_warmstart_enable = 0;
     }
+}
 
+static void
+config_init_cqpsk(dsdneoRuntimeConfig& c) {
+    /* CQPSK runtime toggles */
+    config_init_cqpsk_toggle(c);
+    config_init_cqpsk_sync_and_eq_toggle(c);
+    config_init_cqpsk_eq_values(c);
+    config_init_sync_warmstart(c);
+}
+
+static void
+config_init_dmr_and_p25(dsdneoRuntimeConfig& c) {
     /* DMR timers */
     const char* dmr_hang = getenv("DSD_NEO_DMR_HANGTIME");
     c.dmr_hangtime_is_set = env_parse_double_range(dmr_hang, 0.0, 10.0, &c.dmr_hangtime_s);
@@ -721,7 +798,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     const char* p25_soft_override = getenv("DSD_NEO_P25_SOFT_HARD_OVERRIDE");
     c.p25_soft_hard_override_is_set = env_is_set(p25_soft_override);
     c.p25_soft_hard_override_enable = c.p25_soft_hard_override_is_set ? (env_is_falsey(p25_soft_override) ? 0 : 1) : 1;
+}
 
+static void
+config_init_input_and_dmr_t3(dsdneoRuntimeConfig& c) {
     /* Input processing knobs */
     const char* iv = getenv("DSD_NEO_INPUT_VOLUME");
     c.input_volume_is_set = env_parse_int_range(iv, 1, 16, &c.input_volume_multiplier);
@@ -761,7 +841,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     const char* t3h = getenv("DSD_NEO_DMR_T3_HEUR");
     c.dmr_t3_heur_is_set = env_is_set(t3h);
     c.dmr_t3_heur_enable = c.dmr_t3_heur_is_set ? (env_is_falsey(t3h) ? 0 : 1) : 0;
+}
 
+static void
+config_init_tcp_and_rigctl(dsdneoRuntimeConfig& c) {
     /* TCP/rigctl knobs */
     const char* tbs = getenv("DSD_NEO_TCP_BUFSZ");
     c.tcp_bufsz_is_set = 0;
@@ -812,8 +895,31 @@ dsd_neo_config_init(const dsd_opts* opts) {
 
     const char* tpb = getenv("DSD_NEO_TCP_PREBUF_MS");
     c.tcp_prebuf_ms_is_set = env_parse_int_range(tpb, 5, 1000, &c.tcp_prebuf_ms);
+}
 
-    /* RTL device/tuner knobs */
+static int
+config_parse_rtl_direct_mode(const char* rdir) {
+    if (!rdir || rdir[0] == '\0') {
+        return 0;
+    }
+    if (rdir[0] == '1' || rdir[0] == 'I' || rdir[0] == 'i') {
+        return 1;
+    }
+    if (rdir[0] == '2' || rdir[0] == 'Q' || rdir[0] == 'q') {
+        return 2;
+    }
+    if (rdir[0] == '0') {
+        return 0;
+    }
+    int v = 0;
+    if (env_parse_int_strict(rdir, &v) && v >= 0 && v <= 2) {
+        return v;
+    }
+    return 0;
+}
+
+static void
+config_init_rtl_agc_and_direct(dsdneoRuntimeConfig& c) {
     const char* ragc = getenv("DSD_NEO_RTL_AGC");
     c.rtl_agc_is_set = env_is_set(ragc);
     if (c.rtl_agc_is_set) {
@@ -821,29 +927,14 @@ dsd_neo_config_init(const dsd_opts* opts) {
     }
 
     const char* rdir = getenv("DSD_NEO_RTL_DIRECT");
-    c.rtl_direct_is_set = 0;
-    if (env_is_set(rdir)) {
-        int mode = 0;
-        if (rdir[0] == '1' || rdir[0] == 'I' || rdir[0] == 'i') {
-            mode = 1;
-        } else if (rdir[0] == '2' || rdir[0] == 'Q' || rdir[0] == 'q') {
-            mode = 2;
-        } else if (rdir[0] == '0') {
-            mode = 0;
-        } else {
-            int v = atoi(rdir);
-            if (v >= 0 && v <= 2) {
-                mode = v;
-            } else {
-                mode = -1;
-            }
-        }
-        if (mode >= 0 && mode <= 2) {
-            c.rtl_direct_mode = mode;
-            c.rtl_direct_is_set = 1;
-        }
+    c.rtl_direct_is_set = env_is_set(rdir);
+    if (c.rtl_direct_is_set) {
+        c.rtl_direct_mode = config_parse_rtl_direct_mode(rdir);
     }
+}
 
+static void
+config_init_rtl_offset_xtal_testmode(dsdneoRuntimeConfig& c) {
     const char* rot = getenv("DSD_NEO_RTL_OFFSET_TUNING");
     c.rtl_offset_tuning_is_set = env_is_set(rot);
     if (c.rtl_offset_tuning_is_set) {
@@ -861,7 +952,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     if (c.rtl_testmode_is_set) {
         c.rtl_testmode_enable = env_is_falsey(rtm) ? 0 : 1;
     }
+}
 
+static void
+config_init_rtl_if_gains_and_tuner_bw(dsdneoRuntimeConfig& c) {
     const char* rig = getenv("DSD_NEO_RTL_IF_GAINS");
     c.rtl_if_gains_is_set = env_is_set(rig);
     env_copy_str(c.rtl_if_gains, sizeof c.rtl_if_gains, rig);
@@ -880,7 +974,18 @@ dsd_neo_config_init(const dsd_opts* opts) {
             }
         }
     }
+}
 
+static void
+config_init_rtl_and_tuner(dsdneoRuntimeConfig& c) {
+    /* RTL device/tuner knobs */
+    config_init_rtl_agc_and_direct(c);
+    config_init_rtl_offset_xtal_testmode(c);
+    config_init_rtl_if_gains_and_tuner_bw(c);
+}
+
+static void
+config_init_tuner_autogain(dsdneoRuntimeConfig& c) {
     /* Supervisory tuner autogain knobs */
     const char* tag = getenv("DSD_NEO_TUNER_AUTOGAIN");
     c.tuner_autogain_is_set = env_is_set(tag);
@@ -903,7 +1008,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
 
     const char* tup = getenv("DSD_NEO_TUNER_AUTOGAIN_UP_PERSIST");
     c.tuner_autogain_up_persist_is_set = env_parse_int_range(tup, 1, 5, &c.tuner_autogain_up_persist);
+}
 
+static void
+config_init_auto_ppm(dsdneoRuntimeConfig& c) {
     /* Auto-PPM knobs */
     const char* appm = getenv("DSD_NEO_AUTO_PPM");
     c.auto_ppm_is_set = env_is_set(appm);
@@ -934,16 +1042,29 @@ dsd_neo_config_init(const dsd_opts* opts) {
     if (c.auto_ppm_freeze_is_set) {
         c.auto_ppm_freeze_enable = env_is_falsey(afrz) ? 0 : 1;
     }
+}
 
+static void
+config_init_rotation_and_resamp(dsdneoRuntimeConfig& c) {
     /* COMBINE_ROT */
     const char* cr = getenv("DSD_NEO_COMBINE_ROT");
     c.combine_rot_is_set = env_is_set(cr);
-    c.combine_rot = c.combine_rot_is_set ? (atoi(cr) != 0) : 1;
+    if (c.combine_rot_is_set) {
+        int v = 0;
+        c.combine_rot = env_parse_int_strict(cr, &v) ? (v != 0) : 0;
+    } else {
+        c.combine_rot = 1;
+    }
 
     /* UPSAMPLE_FP */
     const char* ufp = getenv("DSD_NEO_UPSAMPLE_FP");
     c.upsample_fp_is_set = env_is_set(ufp);
-    c.upsample_fp = c.upsample_fp_is_set ? (atoi(ufp) != 0) : 1;
+    if (c.upsample_fp_is_set) {
+        int v = 0;
+        c.upsample_fp = env_parse_int_strict(ufp, &v) ? (v != 0) : 0;
+    } else {
+        c.upsample_fp = 1;
+    }
 
     /* RESAMP */
     const char* rs = getenv("DSD_NEO_RESAMP");
@@ -954,14 +1075,16 @@ dsd_neo_config_init(const dsd_opts* opts) {
         if (dsd_strcasecmp(rs, "off") == 0 || strcmp(rs, "0") == 0) {
             c.resamp_disable = 1;
         } else {
-            int v = atoi(rs);
-            if (v > 0) {
+            int v = 0;
+            if (env_parse_int_strict(rs, &v) && v > 0) {
                 c.resamp_target_hz = v;
             }
         }
     }
+}
 
-    /* FLL */
+static void
+config_init_fll(dsdneoRuntimeConfig& c) {
     const char* fll = getenv("DSD_NEO_FLL");
     c.fll_is_set = env_is_set(fll);
     c.fll_enable = (c.fll_is_set && fll[0] == '1') ? 1 : 0; /* may be overridden by mode later */
@@ -979,19 +1102,55 @@ dsd_neo_config_init(const dsd_opts* opts) {
      * beta: integral gain (typ 0.0001-0.001)
      * deadband: minimum error threshold (typ 0.001-0.01)
      * slew_max: max freq change per sample in rad/sample */
-    c.fll_alpha = c.fll_alpha_is_set ? (float)atof(fa) : 0.005f;
-    c.fll_beta = c.fll_beta_is_set ? (float)atof(fb) : 0.0005f;
-    c.fll_deadband = c.fll_deadband_is_set ? (float)atof(fdb) : 0.003f;
-    c.fll_slew_max = c.fll_slew_is_set ? (float)atof(fsl) : 0.002f;
+    if (c.fll_alpha_is_set) {
+        double v = 0.0;
+        c.fll_alpha = env_parse_double_strict(fa, &v) ? (float)v : 0.0f;
+    } else {
+        c.fll_alpha = 0.005f;
+    }
+    if (c.fll_beta_is_set) {
+        double v = 0.0;
+        c.fll_beta = env_parse_double_strict(fb, &v) ? (float)v : 0.0f;
+    } else {
+        c.fll_beta = 0.0005f;
+    }
+    if (c.fll_deadband_is_set) {
+        double v = 0.0;
+        c.fll_deadband = env_parse_double_strict(fdb, &v) ? (float)v : 0.0f;
+    } else {
+        c.fll_deadband = 0.003f;
+    }
+    if (c.fll_slew_is_set) {
+        double v = 0.0;
+        c.fll_slew_max = env_parse_double_strict(fsl, &v) ? (float)v : 0.0f;
+    } else {
+        c.fll_slew_max = 0.002f;
+    }
+}
 
+static void
+config_init_costas(dsdneoRuntimeConfig& c) {
     /* CQPSK Costas loop (carrier recovery) using GNU Radio control loop */
     const char* cbw = getenv("DSD_NEO_COSTAS_BW");
     const char* cdp = getenv("DSD_NEO_COSTAS_DAMPING");
     c.costas_bw_is_set = env_is_set(cbw);
     c.costas_damping_is_set = env_is_set(cdp);
-    c.costas_loop_bw = c.costas_bw_is_set ? atof(cbw) : dsd_neo_costas_default_loop_bw();
-    c.costas_damping = c.costas_damping_is_set ? atof(cdp) : dsd_neo_costas_default_damping();
+    if (c.costas_bw_is_set) {
+        double v = 0.0;
+        c.costas_loop_bw = env_parse_double_strict(cbw, &v) ? v : 0.0;
+    } else {
+        c.costas_loop_bw = dsd_neo_costas_default_loop_bw();
+    }
+    if (c.costas_damping_is_set) {
+        double v = 0.0;
+        c.costas_damping = env_parse_double_strict(cdp, &v) ? v : 0.0;
+    } else {
+        c.costas_damping = dsd_neo_costas_default_damping();
+    }
+}
 
+static void
+config_init_ted(dsdneoRuntimeConfig& c) {
     /* TED - native float Gardner timing gain */
     const char* ted = getenv("DSD_NEO_TED");
     const char* tg = getenv("DSD_NEO_TED_GAIN");
@@ -999,10 +1158,25 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.ted_is_set = env_is_set(ted);
     c.ted_enable = (c.ted_is_set && ted[0] == '1') ? 1 : 0;
     c.ted_gain_is_set = env_is_set(tg);
-    c.ted_gain = c.ted_gain_is_set ? (float)atof(tg) : 0.05f;
+    if (c.ted_gain_is_set) {
+        double v = 0.0;
+        c.ted_gain = env_parse_double_strict(tg, &v) ? (float)v : 0.0f;
+    } else {
+        c.ted_gain = 0.05f;
+    }
     c.ted_force_is_set = env_is_set(tf);
     c.ted_force = (c.ted_force_is_set && tf[0] == '1') ? 1 : 0;
+}
 
+static void
+config_init_fll_costas_ted(dsdneoRuntimeConfig& c) {
+    config_init_fll(c);
+    config_init_costas(c);
+    config_init_ted(c);
+}
+
+static void
+config_init_c4fm(dsdneoRuntimeConfig& c) {
     /* C4FM clock assist */
     const char* clk = getenv("DSD_NEO_C4FM_CLK");
     const char* clk_sync = getenv("DSD_NEO_C4FM_CLK_SYNC");
@@ -1017,7 +1191,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     }
     c.c4fm_clk_sync_is_set = env_is_set(clk_sync);
     c.c4fm_clk_sync = c.c4fm_clk_sync_is_set ? ((clk_sync[0] == '1') ? 1 : 0) : 0;
+}
 
+static void
+config_init_deemph(dsdneoRuntimeConfig& c) {
     /* Deemphasis */
     const char* deemph = getenv("DSD_NEO_DEEMPH");
     c.deemph_is_set = env_is_set(deemph);
@@ -1033,7 +1210,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
             c.deemph_mode = DSD_NEO_DEEMPH_NFM;
         }
     }
+}
 
+static void
+config_init_audio_lpf(dsdneoRuntimeConfig& c) {
     /* Audio LPF */
     const char* alpf = getenv("DSD_NEO_AUDIO_LPF");
     c.audio_lpf_is_set = env_is_set(alpf);
@@ -1043,13 +1223,23 @@ dsd_neo_config_init(const dsd_opts* opts) {
         if (dsd_strcasecmp(alpf, "off") == 0 || strcmp(alpf, "0") == 0) {
             c.audio_lpf_disable = 1;
         } else {
-            int cutoff = atoi(alpf);
-            if (cutoff > 0) {
+            int cutoff = 0;
+            if (env_parse_int_strict(alpf, &cutoff) && cutoff > 0) {
                 c.audio_lpf_cutoff_hz = cutoff;
             }
         }
     }
+}
 
+static void
+config_init_c4fm_deemph_audio(dsdneoRuntimeConfig& c) {
+    config_init_c4fm(c);
+    config_init_deemph(c);
+    config_init_audio_lpf(c);
+}
+
+static void
+config_init_mt_and_retune(dsdneoRuntimeConfig& c) {
     /* MT (intra-block worker pool) */
     const char* mt = getenv("DSD_NEO_MT");
     c.mt_is_set = env_is_set(mt);
@@ -1065,26 +1255,39 @@ dsd_neo_config_init(const dsd_opts* opts) {
     const char* dms = getenv("DSD_NEO_RETUNE_DRAIN_MS");
     const char* mms = getenv("DSD_NEO_RETUNE_MUTE_MS");
     c.output_clear_on_retune_is_set = env_is_set(clr);
-    c.output_clear_on_retune = c.output_clear_on_retune_is_set ? (atoi(clr) != 0) : 0;
+    if (c.output_clear_on_retune_is_set) {
+        int v = 0;
+        c.output_clear_on_retune = env_parse_int_strict(clr, &v) ? (v != 0) : 0;
+    } else {
+        c.output_clear_on_retune = 0;
+    }
     c.retune_drain_ms_is_set = env_is_set(dms);
-    c.retune_drain_ms = c.retune_drain_ms_is_set ? atoi(dms) : 50;
+    if (c.retune_drain_ms_is_set) {
+        int v = 0;
+        c.retune_drain_ms = env_parse_int_strict(dms, &v) ? v : 0;
+    } else {
+        c.retune_drain_ms = 50;
+    }
     c.retune_mute_ms_is_set = 0;
     c.retune_mute_ms = 120;
     if (env_is_set(mms)) {
-        int v = atoi(mms);
-        if (v >= 10 && v <= 1000) {
+        int v = 0;
+        if (env_parse_int_strict(mms, &v) && v >= 10 && v <= 1000) {
             c.retune_mute_ms_is_set = 1;
             c.retune_mute_ms = v;
         }
     }
+}
 
+static void
+config_init_tcpin_window_pdu_snr(dsdneoRuntimeConfig& c) {
     /* TCP input reconnect backoff (ms) */
     const char* tb = getenv("DSD_NEO_TCPIN_BACKOFF_MS");
     c.tcpin_backoff_ms_is_set = 0;
     c.tcpin_backoff_ms = 300;
     if (env_is_set(tb)) {
-        int v = atoi(tb);
-        if (v >= 50 && v <= 5000) {
+        int v = 0;
+        if (env_parse_int_strict(tb, &v) && v >= 50 && v <= 5000) {
             c.tcpin_backoff_ms_is_set = 1;
             c.tcpin_backoff_ms = v;
         }
@@ -1093,57 +1296,157 @@ dsd_neo_config_init(const dsd_opts* opts) {
     /* Symbol window freeze for A/B testing */
     const char* wf = getenv("DSD_NEO_WINDOW_FREEZE");
     c.window_freeze_is_set = env_is_set(wf);
-    c.window_freeze = c.window_freeze_is_set ? (atoi(wf) != 0) : 0;
+    if (c.window_freeze_is_set) {
+        int v = 0;
+        c.window_freeze = env_parse_int_strict(wf, &v) ? (v != 0) : 0;
+    } else {
+        c.window_freeze = 0;
+    }
 
     /* Optional JSON emitter for P25 PDUs */
     const char* pj = getenv("DSD_NEO_PDU_JSON");
     c.pdu_json_is_set = env_is_set(pj);
-    c.pdu_json_enable = c.pdu_json_is_set ? (atoi(pj) != 0) : 0;
+    if (c.pdu_json_is_set) {
+        int v = 0;
+        c.pdu_json_enable = env_parse_int_strict(pj, &v) ? (v != 0) : 0;
+    } else {
+        c.pdu_json_enable = 0;
+    }
 
     /* Optional SNR-based digital squelch threshold (dB) */
     const char* snrsql = getenv("DSD_NEO_SNR_SQL_DB");
     c.snr_sql_is_set = env_is_set(snrsql);
-    c.snr_sql_db = c.snr_sql_is_set ? atoi(snrsql) : 0;
+    if (c.snr_sql_is_set) {
+        int v = 0;
+        c.snr_sql_db = env_parse_int_strict(snrsql, &v) ? v : 0;
+    } else {
+        c.snr_sql_db = 0;
+    }
+}
 
+static void
+config_init_fm_agc_and_limiter(dsdneoRuntimeConfig& c) {
     /* FM/C4FM amplitude AGC (pre-discriminator) */
     const char* fm_agc = getenv("DSD_NEO_FM_AGC");
     c.fm_agc_is_set = env_is_set(fm_agc);
-    c.fm_agc_enable = c.fm_agc_is_set ? (atoi(fm_agc) != 0) : 0; /* default off unless overridden */
+    if (c.fm_agc_is_set) {
+        int v = 0;
+        c.fm_agc_enable = env_parse_int_strict(fm_agc, &v) ? (v != 0) : 0;
+    } else {
+        c.fm_agc_enable = 0;
+    }
 
     const char* fm_tgt = getenv("DSD_NEO_FM_AGC_TARGET");
     c.fm_agc_target_is_set = env_is_set(fm_tgt);
-    c.fm_agc_target_rms = c.fm_agc_target_is_set ? (float)atof(fm_tgt) : 0.30f;
+    if (c.fm_agc_target_is_set) {
+        double v = 0.0;
+        c.fm_agc_target_rms = env_parse_double_strict(fm_tgt, &v) ? (float)v : 0.0f;
+    } else {
+        c.fm_agc_target_rms = 0.30f;
+    }
 
     const char* fm_min = getenv("DSD_NEO_FM_AGC_MIN");
     c.fm_agc_min_is_set = env_is_set(fm_min);
-    c.fm_agc_min_rms = c.fm_agc_min_is_set ? (float)atof(fm_min) : 0.06f;
+    if (c.fm_agc_min_is_set) {
+        double v = 0.0;
+        c.fm_agc_min_rms = env_parse_double_strict(fm_min, &v) ? (float)v : 0.0f;
+    } else {
+        c.fm_agc_min_rms = 0.06f;
+    }
 
     const char* fm_au = getenv("DSD_NEO_FM_AGC_ALPHA_UP");
     c.fm_agc_alpha_up_is_set = env_is_set(fm_au);
-    c.fm_agc_alpha_up = c.fm_agc_alpha_up_is_set ? (float)atof(fm_au) : 0.25f; /* ~0.25 */
+    if (c.fm_agc_alpha_up_is_set) {
+        double v = 0.0;
+        c.fm_agc_alpha_up = env_parse_double_strict(fm_au, &v) ? (float)v : 0.0f;
+    } else {
+        c.fm_agc_alpha_up = 0.25f; /* ~0.25 */
+    }
 
     const char* fm_ad = getenv("DSD_NEO_FM_AGC_ALPHA_DOWN");
     c.fm_agc_alpha_down_is_set = env_is_set(fm_ad);
-    c.fm_agc_alpha_down = c.fm_agc_alpha_down_is_set ? (float)atof(fm_ad) : 0.75f; /* ~0.75 */
+    if (c.fm_agc_alpha_down_is_set) {
+        double v = 0.0;
+        c.fm_agc_alpha_down = env_parse_double_strict(fm_ad, &v) ? (float)v : 0.0f;
+    } else {
+        c.fm_agc_alpha_down = 0.75f; /* ~0.75 */
+    }
 
     /* FM constant-envelope limiter */
     const char* fml = getenv("DSD_NEO_FM_LIMITER");
     c.fm_limiter_is_set = env_is_set(fml);
-    c.fm_limiter_enable = c.fm_limiter_is_set ? (atoi(fml) != 0) : 0;
+    if (c.fm_limiter_is_set) {
+        int v = 0;
+        c.fm_limiter_enable = env_parse_int_strict(fml, &v) ? (v != 0) : 0;
+    } else {
+        c.fm_limiter_enable = 0;
+    }
+}
 
+static void
+config_init_iq_and_channel_lpf(dsdneoRuntimeConfig& c) {
     /* Complex DC blocker */
     const char* dcb = getenv("DSD_NEO_IQ_DC_BLOCK");
     const char* dck = getenv("DSD_NEO_IQ_DC_SHIFT");
     c.iq_dc_block_is_set = env_is_set(dcb);
-    c.iq_dc_block_enable = c.iq_dc_block_is_set ? (atoi(dcb) != 0) : 0;
+    if (c.iq_dc_block_is_set) {
+        int v = 0;
+        c.iq_dc_block_enable = env_parse_int_strict(dcb, &v) ? (v != 0) : 0;
+    } else {
+        c.iq_dc_block_enable = 0;
+    }
     c.iq_dc_shift_is_set = env_is_set(dck);
-    c.iq_dc_shift = c.iq_dc_shift_is_set ? atoi(dck) : 11;
+    if (c.iq_dc_shift_is_set) {
+        int v = 0;
+        c.iq_dc_shift = env_parse_int_strict(dck, &v) ? v : 0;
+    } else {
+        c.iq_dc_shift = 11;
+    }
 
     /* Channel complex low-pass on RTL baseband (post-HB).
        Default: off for digital voice modes at 24 kHz; may be enabled via env. */
     const char* clpf = getenv("DSD_NEO_CHANNEL_LPF");
     c.channel_lpf_is_set = env_is_set(clpf);
-    c.channel_lpf_enable = c.channel_lpf_is_set ? atoi(clpf) : 0;
+    if (c.channel_lpf_is_set) {
+        int v = 0;
+        c.channel_lpf_enable = env_parse_int_strict(clpf, &v) ? v : 0;
+    } else {
+        c.channel_lpf_enable = 0;
+    }
+}
+
+/**
+ * @brief Parse environment variables and initialize the runtime configuration.
+ *
+ * Precedence note: future CLI/opts may override env values; currently opts
+ * are not applied beyond presence for future extension.
+ *
+ * @param opts Decoder options for potential precedence overrides.
+ * @note Safe to call multiple times; the most recent call wins.
+ */
+void
+dsd_neo_config_init(const dsd_opts* opts) {
+    (void)opts; /* precedence hook reserved for future CLI/opts overrides */
+
+    dsdneoRuntimeConfig c{};
+    config_init_defaults(c);
+    config_init_paths_and_cache(c);
+    config_init_realtime_and_cpu(c);
+    config_init_bootstrap_and_debug(c);
+    config_init_cqpsk(c);
+    config_init_dmr_and_p25(c);
+    config_init_input_and_dmr_t3(c);
+    config_init_tcp_and_rigctl(c);
+    config_init_rtl_and_tuner(c);
+    config_init_tuner_autogain(c);
+    config_init_auto_ppm(c);
+    config_init_rotation_and_resamp(c);
+    config_init_fll_costas_ted(c);
+    config_init_c4fm_deemph_audio(c);
+    config_init_mt_and_retune(c);
+    config_init_tcpin_window_pdu_snr(c);
+    config_init_fm_agc_and_limiter(c);
+    config_init_iq_and_channel_lpf(c);
 
     {
         std::lock_guard<std::mutex> lk(g_config_mu);

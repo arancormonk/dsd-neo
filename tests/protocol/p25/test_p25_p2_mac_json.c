@@ -9,13 +9,19 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "test_support.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 #define setenv dsd_test_setenv
 
@@ -34,13 +40,15 @@ void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int 
 
 // Stubs referenced by MAC VPDU path
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -49,6 +57,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -57,6 +66,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -66,6 +76,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -75,6 +86,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -82,6 +94,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -89,17 +102,40 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
     return 0;
+}
+
+static int
+parse_json_int_field(const char* line, const char* key, int* out) {
+    if (!line || !key || !out) {
+        return 0;
+    }
+    const char* p = strstr(line, key);
+    if (!p) {
+        return 0;
+    }
+    p += strlen(key);
+    errno = 0;
+    char* end = NULL;
+    long v = strtol(p, &end, 10);
+    if (end == p || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
+        return 0;
+    }
+    *out = (int)v;
+    return 1;
 }
 
 static int
@@ -126,12 +162,10 @@ extract_last_fields(const char* buf, int len, char* out_xch, size_t xch_cap, int
         }
         out_xch[i] = '\0';
     }
-    p = strstr(line, "\"lenB\":");
-    if (!p || sscanf(p, "\"lenB\":%d", &b) != 1) {
+    if (!parse_json_int_field(line, "\"lenB\":", &b)) {
         return -2;
     }
-    p = strstr(line, "\"lenC\":");
-    if (!p || sscanf(p, "\"lenC\":%d", &c) != 1) {
+    if (!parse_json_int_field(line, "\"lenC\":", &c)) {
         return -3;
     }
     p = strstr(line, "\"slot\":");
@@ -195,7 +229,7 @@ extract_first_fields(FILE* rf, char* out_xch, size_t xch_cap, char* out_summary,
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -204,7 +238,7 @@ expect_eq_int(const char* tag, int got, int want) {
 static int
 expect_eq_str(const char* tag, const char* got, const char* want) {
     if (strcmp(got, want) != 0) {
-        fprintf(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -220,14 +254,14 @@ main(void) {
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_p2_mac_json") != 0) {
-        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 101;
     }
 
     // Case A: FACCH, unknown opcode → derive len from MCO=10 (lenB=9, lenC=7), slot flip
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[0] = 1;     // header-present hint for FACCH
         mac[1] = 10;    // opcode byte with MCO=10 (low 6 bits)
         mac[2] = 0x00;  // standard MFID
@@ -238,7 +272,7 @@ main(void) {
     // Case B: SACCH, unknown opcode; MCO=15 → lenB=14, lenC=5; xch=SACCH
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 15;    // MCO=15
         mac[2] = 0x00;  // standard MFID
         mac[15] = 0xFF; // second message unknown
@@ -248,7 +282,7 @@ main(void) {
     // Case C: LCCH labeling and summary (IDLE)
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0x03; // IDLE
         mac[2] = 0x00; // standard MFID
         p25_test_process_mac_vpdu_ex(0 /*FACCH path*/, mac, 24, /*is_lcch*/ 1, /*slot*/ 0);
@@ -257,7 +291,7 @@ main(void) {
     // Case D: FACCH MCO clamp beyond capacity (opcode with MCO=63 → clamp to lenB=16)
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[0] = 1;  // header present
         mac[1] = 63; // absurd MCO
         mac[2] = 0x00;
@@ -269,7 +303,7 @@ main(void) {
     // Read entire file
     FILE* rf = fopen(cap.path, "rb");
     if (!rf) {
-        fprintf(stderr, "fopen read failed\n");
+        DSD_FPRINTF(stderr, "fopen read failed\n");
         return 102;
     }
     fseek(rf, 0, SEEK_END);
@@ -292,7 +326,7 @@ main(void) {
     int er = extract_last_fields(buf, (int)nread, xch, sizeof xch, &lenB, &lenC, &slot, summary, sizeof summary);
     free(buf);
     if (er != 0) {
-        fprintf(stderr, "parse JSON er=%d\n", er);
+        DSD_FPRINTF(stderr, "parse JSON er=%d\n", er);
         fclose(rf);
         return 103;
     }
@@ -317,7 +351,7 @@ main(void) {
         // Validate SACCH case was written correctly in the file by ensuring last record was FACCH and previous one was SACCH.
         // We already asserted FACCH clamp; here we do a weak check that first line had an xch field present.
         if (fxch[0] == '\0') {
-            fprintf(stderr, "first xch missing\n");
+            DSD_FPRINTF(stderr, "first xch missing\n");
             rc |= 1;
         }
     }
@@ -325,3 +359,7 @@ main(void) {
     (void)remove(cap.path);
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

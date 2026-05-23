@@ -7,11 +7,11 @@
  * Unit tests for config template generation.
  */
 
+#include <dsd-neo/runtime/config.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include <dsd-neo/runtime/config.h>
+#include "dsd-neo/core/safe_api.h"
 
 static char*
 read_tmpfile_contents(FILE* tmp, size_t* out_size) {
@@ -49,7 +49,7 @@ static int
 test_template_generates_output(void) {
     FILE* tmp = tmpfile();
     if (!tmp) {
-        fprintf(stderr, "FAIL: tmpfile() failed\n");
+        DSD_FPRINTF(stderr, "FAIL: tmpfile() failed\n");
         return 1;
     }
 
@@ -57,13 +57,13 @@ test_template_generates_output(void) {
 
     // Check that something was written
     if (fseek(tmp, 0, SEEK_END) != 0) {
-        fprintf(stderr, "FAIL: fseek() failed\n");
+        DSD_FPRINTF(stderr, "FAIL: fseek() failed\n");
         fclose(tmp);
         return 1;
     }
     long size = ftell(tmp);
     if (size <= 0) {
-        fprintf(stderr, "FAIL: template output is empty\n");
+        DSD_FPRINTF(stderr, "FAIL: template output is empty\n");
         fclose(tmp);
         return 1;
     }
@@ -76,7 +76,7 @@ static int
 test_template_contains_sections(void) {
     FILE* tmp = tmpfile();
     if (!tmp) {
-        fprintf(stderr, "FAIL: tmpfile() failed\n");
+        DSD_FPRINTF(stderr, "FAIL: tmpfile() failed\n");
         return 1;
     }
 
@@ -95,23 +95,23 @@ test_template_contains_sections(void) {
 
     // Check for required sections
     if (!strstr(content, "[input]")) {
-        fprintf(stderr, "FAIL: template missing [input] section\n");
+        DSD_FPRINTF(stderr, "FAIL: template missing [input] section\n");
         rc = 1;
     }
     if (!strstr(content, "[output]")) {
-        fprintf(stderr, "FAIL: template missing [output] section\n");
+        DSD_FPRINTF(stderr, "FAIL: template missing [output] section\n");
         rc = 1;
     }
     if (!strstr(content, "[mode]")) {
-        fprintf(stderr, "FAIL: template missing [mode] section\n");
+        DSD_FPRINTF(stderr, "FAIL: template missing [mode] section\n");
         rc = 1;
     }
     if (!strstr(content, "[trunking]")) {
-        fprintf(stderr, "FAIL: template missing [trunking] section\n");
+        DSD_FPRINTF(stderr, "FAIL: template missing [trunking] section\n");
         rc = 1;
     }
     if (!strstr(content, "[alerts]")) {
-        fprintf(stderr, "FAIL: template missing [alerts] section\n");
+        DSD_FPRINTF(stderr, "FAIL: template missing [alerts] section\n");
         rc = 1;
     }
 
@@ -123,7 +123,7 @@ static int
 test_template_contains_keys(void) {
     FILE* tmp = tmpfile();
     if (!tmp) {
-        fprintf(stderr, "FAIL: tmpfile() failed\n");
+        DSD_FPRINTF(stderr, "FAIL: tmpfile() failed\n");
         return 1;
     }
 
@@ -142,23 +142,23 @@ test_template_contains_keys(void) {
 
     // Check for some key configuration keys (commented out in template)
     if (!strstr(content, "# source")) {
-        fprintf(stderr, "FAIL: template missing commented source key\n");
+        DSD_FPRINTF(stderr, "FAIL: template missing commented source key\n");
         rc = 1;
     }
     if (!strstr(content, "# backend")) {
-        fprintf(stderr, "FAIL: template missing commented backend key\n");
+        DSD_FPRINTF(stderr, "FAIL: template missing commented backend key\n");
         rc = 1;
     }
     if (!strstr(content, "# decode")) {
-        fprintf(stderr, "FAIL: template missing commented decode key\n");
+        DSD_FPRINTF(stderr, "FAIL: template missing commented decode key\n");
         rc = 1;
     }
     if (!strstr(content, "# enabled")) {
-        fprintf(stderr, "FAIL: template missing commented enabled key\n");
+        DSD_FPRINTF(stderr, "FAIL: template missing commented enabled key\n");
         rc = 1;
     }
     if (!strstr(content, "# voice_start")) {
-        fprintf(stderr, "FAIL: template missing commented voice_start key\n");
+        DSD_FPRINTF(stderr, "FAIL: template missing commented voice_start key\n");
         rc = 1;
     }
 
@@ -170,7 +170,7 @@ static int
 test_template_contains_descriptions(void) {
     FILE* tmp = tmpfile();
     if (!tmp) {
-        fprintf(stderr, "FAIL: tmpfile() failed\n");
+        DSD_FPRINTF(stderr, "FAIL: tmpfile() failed\n");
         return 1;
     }
 
@@ -190,7 +190,7 @@ test_template_contains_descriptions(void) {
     // Check for descriptions (should have comment lines with descriptions)
     // These should be present based on the schema
     if (!strstr(content, "Input source type")) {
-        fprintf(stderr, "FAIL: template missing 'Input source type' description\n");
+        DSD_FPRINTF(stderr, "FAIL: template missing 'Input source type' description\n");
         rc = 1;
     }
 
@@ -202,7 +202,7 @@ static int
 test_template_is_valid_ini(void) {
     FILE* tmp = tmpfile();
     if (!tmp) {
-        fprintf(stderr, "FAIL: tmpfile() failed\n");
+        DSD_FPRINTF(stderr, "FAIL: tmpfile() failed\n");
         return 1;
     }
 
@@ -244,7 +244,7 @@ test_template_is_valid_ini(void) {
         // Section headers
         if (line[0] == '[') {
             if (!strchr(line, ']')) {
-                fprintf(stderr, "FAIL: line %d: malformed section header: %s\n", line_num, line);
+                DSD_FPRINTF(stderr, "FAIL: line %d: malformed section header: %s\n", line_num, line);
                 rc = 1;
             }
             line = strtok(NULL, "\n");
@@ -253,7 +253,7 @@ test_template_is_valid_ini(void) {
 
         // Key = value lines
         if (!strchr(line, '=')) {
-            fprintf(stderr, "FAIL: line %d: missing '=' in key-value: %s\n", line_num, line);
+            DSD_FPRINTF(stderr, "FAIL: line %d: missing '=' in key-value: %s\n", line_num, line);
             rc = 1;
         }
 

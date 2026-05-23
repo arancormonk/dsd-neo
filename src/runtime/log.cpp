@@ -16,17 +16,8 @@
 #include <cstdio>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/unicode.h>
+#include "dsd-neo/core/safe_api.h"
 
-/**
- * @brief Write a formatted log message to the logging sink.
- *
- * Currently forwards to `stderr`. The `level` parameter is reserved for future
- * runtime gating and may be used to filter messages at runtime.
- *
- * @param level  Log severity level (currently not used for filtering).
- * @param format printf-style format string.
- * @param ...    Variadic arguments corresponding to `format`.
- */
 void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     (void)level; /* Currently unused, but available for future runtime gating */
@@ -39,8 +30,7 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     va_start(args, format);
     /* Format into a temporary buffer first so we can apply ASCII fallback if needed. */
     char buf[4096];
-    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
-    vsnprintf(buf, sizeof(buf), format, args);
+    DSD_VSNPRINTF(buf, sizeof(buf), format, args);
     va_end(args);
 
     if (dsd_unicode_supported()) {

@@ -8,7 +8,8 @@
  * @brief UI command dispatch registry and handler signature.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_UI_CMD_DISPATCH_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_UI_CMD_DISPATCH_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -36,3 +37,5 @@ extern const struct UiCmdReg ui_actions_logging[];
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_UI_CMD_DISPATCH_H_ */

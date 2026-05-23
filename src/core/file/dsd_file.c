@@ -27,18 +27,18 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/platform/posix_compat.h>
-#include <dsd-neo/protocol/dmr/dmr_const.h>   //for ambe+2 fr
-#include <dsd-neo/protocol/p25/p25p1_const.h> //for imbe fr (7200)
+#include <dsd-neo/protocol/dmr/dmr_const.h>
+#include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
-#include <fcntl.h> // IWYU pragma: keep
 #include <limits.h>
 #include <mbelib.h>
 #include <sndfile.h>
@@ -48,15 +48,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 void
-saveImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
+saveImbe4400Data(dsd_opts* opts, const dsd_state* state, const char* imbe_d) {
     int i, j, k;
-    unsigned char b;
     unsigned char err;
 
     err = (unsigned char)state->errs2;
@@ -64,7 +63,7 @@ saveImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
 
     k = 0;
     for (i = 0; i < 11; i++) {
-        b = 0;
+        unsigned char b = 0;
 
         for (j = 0; j < 8; j++) {
             b = b << 1;
@@ -76,7 +75,7 @@ saveImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
 }
 
 void
-saveAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
+saveAmbe2450Data(dsd_opts* opts, const dsd_state* state, const char* ambe_d) {
     int i, j, k;
     unsigned char b;
     unsigned char err;
@@ -99,7 +98,7 @@ saveAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
 }
 
 void
-saveAmbe2450DataR(dsd_opts* opts, dsd_state* state, char* ambe_d) {
+saveAmbe2450DataR(dsd_opts* opts, const dsd_state* state, const char* ambe_d) {
     int i, j, k;
     unsigned char b;
     unsigned char err;
@@ -211,11 +210,10 @@ dsd_frame_logf(dsd_opts* opts, const char* format, ...) {
         return;
     }
 
-    char line[4096];
+    char line[4096] = {0};
     va_list args;
     va_start(args, format);
-    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
-    vsnprintf(line, sizeof(line), format, args);
+    DSD_VSNPRINTF(line, sizeof(line), format, args);
     va_end(args);
     frame_log_sanitize_line(line);
 
@@ -225,7 +223,7 @@ dsd_frame_logf(dsd_opts* opts, const char* format, ...) {
     getTimeN_buf(now, timestr);
     getDateN_buf(now, datestr);
 
-    if (fprintf(opts->frame_log_f, "%s %s %s\n", datestr, timestr, line) < 0) {
+    if (DSD_FPRINTF(opts->frame_log_f, "%s %s %s\n", datestr, timestr, line) < 0) {
         if (!opts->frame_log_write_error_reported) {
             LOG_ERROR("Failed writing frame log file: %s\n", opts->frame_log_file);
             opts->frame_log_write_error_reported = 1;
@@ -237,7 +235,7 @@ dsd_frame_logf(dsd_opts* opts, const char* format, ...) {
 }
 
 void
-PrintIMBEData(dsd_opts* opts, dsd_state* state, char* imbe_d) //for P25P1 and ProVoice
+PrintIMBEData(dsd_opts* opts, const dsd_state* state, const char* imbe_d) //for P25P1 and ProVoice
 {
     if (!opts || !state || !imbe_d) {
         return;
@@ -250,21 +248,21 @@ PrintIMBEData(dsd_opts* opts, dsd_state* state, char* imbe_d) //for P25P1 and Pr
     for (int i = 0; i < 11; i++) {
         imbe[i] = convert_bits_into_output((uint8_t*)imbe_d + ((size_t)i * 8u), 8);
         if (hex_off + 2 < sizeof(imbe_hex)) {
-            (void)snprintf(imbe_hex + hex_off, sizeof(imbe_hex) - hex_off, "%02X", imbe[i]);
+            (void)DSD_SNPRINTF(imbe_hex + hex_off, sizeof(imbe_hex) - hex_off, "%02X", imbe[i]);
             hex_off += 2;
         }
     }
     imbe_hex[sizeof(imbe_hex) - 1] = '\0';
 
     if (opts->payload == 1) {
-        fprintf(stderr, "\n IMBE %s err = [%X] [%X] ", imbe_hex, state->errs, state->errs2);
+        DSD_FPRINTF(stderr, "\n IMBE %s err = [%X] [%X] ", imbe_hex, state->errs, state->errs2);
     }
     dsd_frame_logf(opts, "FRAME IMBE slot=%d data=%s err=[%X] [%X]", state->currentslot + 1, imbe_hex, state->errs,
                    state->errs2);
 }
 
 void
-PrintAMBEData(dsd_opts* opts, dsd_state* state, char* ambe_d) {
+PrintAMBEData(dsd_opts* opts, const dsd_state* state, const char* ambe_d) {
     if (!opts || !state || !ambe_d) {
         return;
     }
@@ -289,14 +287,14 @@ PrintAMBEData(dsd_opts* opts, dsd_state* state, char* ambe_d) {
     if (opts->payload == 1) {
         //preceeding line break, if required
         if (opts->dmr_stereo == 0 && opts->dmr_mono == 0) {
-            fprintf(stderr, "\n");
+            DSD_FPRINTF(stderr, "\n");
         }
 
-        fprintf(stderr, " AMBE %014llX err = [%X] [%X] ", ambe, errs, errs2);
+        DSD_FPRINTF(stderr, " AMBE %014llX err = [%X] [%X] ", ambe, errs, errs2);
 
         //trailing line break, if required
         if (opts->dmr_stereo == 1 || opts->dmr_mono == 1) {
-            fprintf(stderr, "\n");
+            DSD_FPRINTF(stderr, "\n");
         }
     }
 
@@ -307,7 +305,7 @@ int
 readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
 
     int i, j, k;
-    unsigned char b, x;
+    unsigned char x;
     int c;
 
     c = fgetc(opts->mbe_in_f);
@@ -319,7 +317,7 @@ readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
 
     k = 0;
     if (opts->payload == 1) {
-        fprintf(stderr, "\n IMBE ");
+        DSD_FPRINTF(stderr, "\n IMBE ");
     }
     x = 0;
     for (i = 0; i < 11; i++) {
@@ -327,7 +325,7 @@ readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
         if (c == EOF) {
             return (1);
         }
-        b = (unsigned char)c;
+        unsigned char b = (unsigned char)c;
         for (j = 0; j < 8; j++) {
             imbe_d[k] = (b & 128) >> 7;
 
@@ -340,11 +338,11 @@ readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
         }
 
         if (opts->payload == 1) {
-            fprintf(stderr, "%02X", x);
+            DSD_FPRINTF(stderr, "%02X", x);
         }
     }
     if (opts->payload == 1) {
-        fprintf(stderr, " err = [%X] [%X] ", state->errs, state->errs2); //not sure that errs here are legit values
+        DSD_FPRINTF(stderr, " err = [%X] [%X] ", state->errs, state->errs2); //not sure that errs here are legit values
     }
     if (dsd_frame_log_enabled(opts)) {
         char imbe_hex[23];
@@ -353,7 +351,7 @@ readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
         for (i = 0; i < 11; i++) {
             uint8_t oct = convert_bits_into_output((uint8_t*)imbe_d + ((size_t)i * 8u), 8);
             if (hex_off + 2 < sizeof(imbe_hex)) {
-                (void)snprintf(imbe_hex + hex_off, sizeof(imbe_hex) - hex_off, "%02X", oct);
+                (void)DSD_SNPRINTF(imbe_hex + hex_off, sizeof(imbe_hex) - hex_off, "%02X", oct);
                 hex_off += 2;
             }
         }
@@ -380,7 +378,7 @@ readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
 
     k = 0;
     if (opts->payload == 1) {
-        fprintf(stderr, "\n AMBE ");
+        DSD_FPRINTF(stderr, "\n AMBE ");
     }
 
     x = 0;
@@ -402,14 +400,14 @@ readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
             k++;
         }
         if (opts->payload == 1 && i < 6) {
-            fprintf(stderr, "%02X", x);
+            DSD_FPRINTF(stderr, "%02X", x);
         }
         if (opts->payload == 1 && i == 6) {
-            fprintf(stderr, "%02X", x & 0x80);
+            DSD_FPRINTF(stderr, "%02X", x & 0x80);
         }
     }
     if (opts->payload == 1) {
-        fprintf(stderr, " err = [%X] [%X] ", state->errs, state->errs2);
+        DSD_FPRINTF(stderr, " err = [%X] [%X] ", state->errs, state->errs2);
     }
     c = fgetc(opts->mbe_in_f);
     if (c == EOF) {
@@ -441,15 +439,15 @@ openMbeInFile(dsd_opts* opts, dsd_state* state) {
 
     //this will check the last 4 characters of the opts->mbe_in_file string
     char ext[5];
-    memset(ext, 0, sizeof(ext));
+    DSD_MEMSET(ext, 0, sizeof(ext));
     size_t str_len = strlen((const char*)opts->mbe_in_file);
     if (str_len >= 4U) {
         size_t ext_ptr = str_len - 4U;
-        strncpy(ext, opts->mbe_in_file + ext_ptr, 4);
+        DSD_STRNCPY(ext, opts->mbe_in_file + ext_ptr, 4);
     }
 
     //debug
-    // fprintf (stderr, "EXT: %s;", ext);
+    // DSD_FPRINTF(stderr, "EXT: %s;", ext);
 
     // read cookie
     cookie[0] = fgetc(opts->mbe_in_f);
@@ -530,15 +528,15 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
 
     //phase 1 and provoice
     if (DSD_SYNC_IS_P25P1(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)) {
-        snprintf(ext, sizeof ext, "%s", ".imb");
+        DSD_SNPRINTF(ext, sizeof ext, "%s", ".imb");
     }
     //d-star
     else if (DSD_SYNC_IS_DSTAR(state->synctype)) {
-        snprintf(ext, sizeof ext, "%s", ".dmb"); //new dstar file extension to make it read in and process properly
+        DSD_SNPRINTF(ext, sizeof ext, "%s", ".dmb"); //new dstar file extension to make it read in and process properly
     }
     //dmr, nxdn, phase 2, x2-tdma
     else {
-        snprintf(ext, sizeof ext, "%s", ".amb");
+        DSD_SNPRINTF(ext, sizeof ext, "%s", ".amb");
     }
 
     //reset talkgroup id buffer
@@ -550,9 +548,10 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
 
     state->tgcount = 0;
 
-    snprintf(opts->mbe_out_file, sizeof opts->mbe_out_file, "%s_%s_%04X_S1%s", datestr, timestr, random_number, ext);
+    DSD_SNPRINTF(opts->mbe_out_file, sizeof opts->mbe_out_file, "%s_%s_%04X_S1%s", datestr, timestr, random_number,
+                 ext);
 
-    snprintf(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_file);
+    DSD_SNPRINTF(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_file);
 
     opts->mbe_out_f = fopen(opts->mbe_out_path, "w");
     if (opts->mbe_out_f == NULL) {
@@ -561,7 +560,7 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
         opts->mbe_out = 1;
         /* Fully buffered output to reduce syscall overhead */
         configure_file_stream_buffer(opts->mbe_out_f, _IOFBF, (size_t)64u * 1024u);
-        fprintf(opts->mbe_out_f, "%s", ext);
+        DSD_FPRINTF(opts->mbe_out_f, "%s", ext);
     }
 
     /* header write will be flushed later on close */
@@ -584,15 +583,15 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 
     //phase 1 and provoice
     if (DSD_SYNC_IS_P25P1(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)) {
-        snprintf(ext, sizeof ext, "%s", ".imb");
+        DSD_SNPRINTF(ext, sizeof ext, "%s", ".imb");
     }
     //d-star
     else if (DSD_SYNC_IS_DSTAR(state->synctype)) {
-        snprintf(ext, sizeof ext, "%s", ".dmb"); //new dstar file extension to make it read in and process properly
+        DSD_SNPRINTF(ext, sizeof ext, "%s", ".dmb"); //new dstar file extension to make it read in and process properly
     }
     //dmr, nxdn, phase 2, x2-tdma
     else {
-        snprintf(ext, sizeof ext, "%s", ".amb");
+        DSD_SNPRINTF(ext, sizeof ext, "%s", ".amb");
     }
 
     //reset talkgroup id buffer
@@ -604,9 +603,10 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 
     state->tgcount = 0;
 
-    snprintf(opts->mbe_out_fileR, sizeof opts->mbe_out_fileR, "%s_%s_%04X_S2%s", datestr, timestr, random_number, ext);
+    DSD_SNPRINTF(opts->mbe_out_fileR, sizeof opts->mbe_out_fileR, "%s_%s_%04X_S2%s", datestr, timestr, random_number,
+                 ext);
 
-    snprintf(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_fileR);
+    DSD_SNPRINTF(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_fileR);
 
     opts->mbe_out_fR = fopen(opts->mbe_out_path, "w");
     if (opts->mbe_out_fR == NULL) {
@@ -615,7 +615,7 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
         opts->mbe_outR = 1;
         /* Fully buffered output to reduce syscall overhead */
         configure_file_stream_buffer(opts->mbe_out_fR, _IOFBF, (size_t)64u * 1024u);
-        fprintf(opts->mbe_out_fR, "%s", ext);
+        DSD_FPRINTF(opts->mbe_out_fR, "%s", ext);
     }
 
     /* header write will be flushed later on close */
@@ -632,9 +632,9 @@ open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uint8_t ext)
     getTime_buf(timestr);
 
     if (ext == 0) {
-        sprintf(temp_filename, "%s/TEMP_%s_%s_%04X", dir, datestr, timestr, random_number);
+        DSD_SPRINTF(temp_filename, "%s/TEMP_%s_%s_%04X", dir, datestr, timestr, random_number);
     } else {
-        sprintf(temp_filename, "%s/TEMP_%s_%s_%04X.wav", dir, datestr, timestr, random_number);
+        DSD_SPRINTF(temp_filename, "%s/TEMP_%s_%s_%04X.wav", dir, datestr, timestr, random_number);
     }
 
     /* stack buffers; no free */
@@ -661,9 +661,99 @@ close_wav_file(SNDFILE* wav_file) {
     return wav_file;
 }
 
+typedef struct {
+    char datestr[9];
+    char timestr[7];
+    uint16_t random_number;
+    uint32_t source_id;
+    uint32_t target_id;
+    char sys_str[200];
+    char src_str[200];
+    char tgt_str[200];
+    char gi_str[10];
+    uint8_t is_string;
+} wav_rename_metadata;
+
+static const Event_History*
+wav_rename_get_event_item(const Event_History_I* event_struct) {
+    if (!event_struct) {
+        return NULL;
+    }
+    return &event_struct->Event_History_Items[0];
+}
+
+static void
+wav_rename_build_metadata(const Event_History* event_item, wav_rename_metadata* metadata) {
+    if (!metadata) {
+        return;
+    }
+
+    time_t event_time = time(NULL);
+    if (event_item && event_item->event_time > 0) {
+        event_time = event_item->event_time;
+    }
+    getDateF_buf(event_time, metadata->datestr);
+    getTimeF_buf(event_time, metadata->timestr);
+    metadata->random_number = rand();
+    metadata->source_id = event_item ? event_item->source_id : 0U;
+    metadata->target_id = event_item ? event_item->target_id : 0U;
+    DSD_MEMSET(metadata->sys_str, 0, sizeof(metadata->sys_str));
+    DSD_MEMSET(metadata->src_str, 0, sizeof(metadata->src_str));
+    DSD_MEMSET(metadata->tgt_str, 0, sizeof(metadata->tgt_str));
+    DSD_MEMSET(metadata->gi_str, 0, sizeof(metadata->gi_str));
+
+    int8_t gi = event_item ? event_item->gi : 0;
+    if (event_item) {
+        DSD_SNPRINTF(metadata->sys_str, sizeof(metadata->sys_str), "%s", event_item->sysid_string);
+        DSD_SNPRINTF(metadata->src_str, sizeof(metadata->src_str), "%s", event_item->src_str);
+        DSD_SNPRINTF(metadata->tgt_str, sizeof(metadata->tgt_str), "%s", event_item->tgt_str);
+    }
+    if (gi == 0) {
+        DSD_SNPRINTF(metadata->gi_str, sizeof(metadata->gi_str), "%s", "GROUP");
+    } else if (gi == 1) {
+        DSD_SNPRINTF(metadata->gi_str, sizeof(metadata->gi_str), "%s", "PRIVATE");
+    }
+    metadata->is_string = (metadata->src_str[0] != '\0') ? 1 : 0;
+}
+
+static void
+wav_rename_build_final_filename(char* out, size_t out_cap, const char* dir, const wav_rename_metadata* metadata) {
+    if (!out || out_cap == 0 || !dir || !metadata) {
+        return;
+    }
+    if (metadata->is_string == 1) {
+        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s_%s_TGT_%s_SRC_%s.wav", dir, metadata->datestr, metadata->timestr,
+                     metadata->random_number, metadata->sys_str, metadata->gi_str, metadata->tgt_str,
+                     metadata->src_str);
+    } else {
+        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s_%s_TGT_%d_SRC_%d.wav", dir, metadata->datestr, metadata->timestr,
+                     metadata->random_number, metadata->sys_str, metadata->gi_str, metadata->target_id,
+                     metadata->source_id);
+    }
+}
+
+static long
+wav_file_get_size_or_negative(const char* filename) {
+    if (!filename || filename[0] == '\0') {
+        return -1;
+    }
+
+    FILE* file = fopen(filename, "r");
+    if (file == NULL) {
+        return -1;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return -1;
+    }
+    long size = ftell(file);
+    fclose(file);
+    return size;
+}
+
 SNDFILE*
-close_and_rename_wav_file(SNDFILE* wav_file, dsd_opts* opts, char* wav_out_filename, char* dir,
-                          Event_History_I* event_struct) {
+close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                          const Event_History_I* event_struct) {
     if (wav_file != NULL) {
         sf_close(wav_file);
     }
@@ -672,98 +762,32 @@ close_and_rename_wav_file(SNDFILE* wav_file, dsd_opts* opts, char* wav_out_filen
         return NULL;
     }
 
-    const Event_History* event_item = NULL;
-    if (event_struct) {
-        event_item = &event_struct->Event_History_Items[0];
-    }
+    const Event_History* event_item = wav_rename_get_event_item(event_struct);
+    wav_rename_metadata metadata;
+    DSD_MEMSET(&metadata, 0, sizeof(metadata));
+    wav_rename_build_metadata(event_item, &metadata);
 
-    time_t event_time = time(NULL);
-    if (event_item && event_item->event_time > 0) {
-        event_time = event_item->event_time;
-    }
-    char datestr[9];
-    char timestr[7];
-    getDateF_buf(event_time, datestr);
-    getTimeF_buf(event_time, timestr);
-    uint16_t random_number = rand();
-
-    uint32_t source_id = event_item ? event_item->source_id : 0U;
-    uint32_t target_id = event_item ? event_item->target_id : 0U;
-    int8_t gi = event_item ? event_item->gi : 0;
-
-    char sys_str[200];
-    memset(sys_str, 0, sizeof(sys_str));
-    char src_str[200];
-    memset(src_str, 0, sizeof(src_str));
-    char tgt_str[200];
-    memset(tgt_str, 0, sizeof(tgt_str));
-    char gi_str[10];
-    memset(gi_str, 0, sizeof(gi_str));
-
-    if (event_item) {
-        snprintf(sys_str, sizeof(sys_str), "%s", event_item->sysid_string);
-        snprintf(src_str, sizeof(src_str), "%s", event_item->src_str);
-        snprintf(tgt_str, sizeof(tgt_str), "%s", event_item->tgt_str);
-    }
-
-    snprintf(gi_str, sizeof(gi_str), "%s", "");
-    if (gi == 0) {
-        snprintf(gi_str, sizeof(gi_str), "%s", "GROUP");
-    } else if (gi == 1) {
-        snprintf(gi_str, sizeof(gi_str), "%s", "PRIVATE");
-    }
-
-    uint8_t is_string = (src_str[0] != '\0') ? 1 : 0;
-
-    // Prepare final filename now, but only rename if file is not empty header-only (44 bytes)
     char new_filename[2000];
-    memset(new_filename, 0, sizeof(new_filename));
+    DSD_MEMSET(new_filename, 0, sizeof(new_filename));
+    wav_rename_build_final_filename(new_filename, sizeof(new_filename), dir, &metadata);
 
-    if (is_string == 1) {
-        snprintf(new_filename, sizeof(new_filename), "%s/%s_%s_%05d_%s_%s_TGT_%s_SRC_%s.wav", dir, datestr, timestr,
-                 random_number, sys_str, gi_str, tgt_str, src_str);
-    } else { //is a numerical value
-        snprintf(new_filename, sizeof(new_filename), "%s/%s_%s_%05d_%s_%s_TGT_%d_SRC_%d.wav", dir, datestr, timestr,
-                 random_number, sys_str, gi_str, target_id, source_id);
+    long size = wav_file_get_size_or_negative(wav_out_filename);
+    if (size == 44) {
+        remove(wav_out_filename);
+        wav_file = NULL;
+        return wav_file;
     }
 
-    /* stack buffers; no free */
-
-    // Check size of temp file before renaming; delete if only header (44 bytes)
-    FILE* file = fopen(wav_out_filename, "r");
-    if (file != NULL) {
-        fseek(file, 0, SEEK_END);
-        long size = ftell(file);
-        fseek(file, 0, SEEK_SET); // Rewind to beginning
-        fclose(file);
-
-        if (size == 44) {
-            // Remove the temp file and do not expose a .wav to watchers
-            remove(wav_out_filename);
-            wav_file = NULL;
-            return wav_file;
-        }
-    }
-
-    // Safe to rename now
     if (rename(wav_out_filename, new_filename) != 0) {
         LOG_ERROR("Error - could not rename wav file %s -> %s\n", wav_out_filename, new_filename);
         return NULL;
     }
 
-    // Optional: recheck final file size and remove if header-only, though we already checked
-    file = fopen(new_filename, "r");
-    long final_size = 0;
-    if (file != NULL) {
-        fseek(file, 0, SEEK_END);
-        final_size = ftell(file);
-        fseek(file, 0, SEEK_SET);
-        fclose(file);
-        if (final_size == 44) {
-            remove(new_filename);
-            wav_file = NULL;
-            return wav_file;
-        }
+    long final_size = wav_file_get_size_or_negative(new_filename);
+    if (final_size == 44) {
+        remove(new_filename);
+        wav_file = NULL;
+        return wav_file;
     }
 
     if (opts && final_size > 44) {
@@ -777,7 +801,7 @@ close_and_rename_wav_file(SNDFILE* wav_file, dsd_opts* opts, char* wav_out_filen
 }
 
 SNDFILE*
-close_and_delete_wav_file(SNDFILE* wav_file, char* wav_out_filename) {
+close_and_delete_wav_file(SNDFILE* wav_file, const char* wav_out_filename) {
     sf_close(wav_file);
     wav_file = NULL;
     remove(wav_out_filename);
@@ -928,14 +952,14 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
             char datestr[9];
             getTime_buf(timestr);
             getDate_buf(datestr);
-            sprintf(opts->symbol_out_file, "%s_%s_dibit_capture.bin", datestr, timestr);
+            DSD_SPRINTF(opts->symbol_out_file, "%s_%s_dibit_capture.bin", datestr, timestr);
             openSymbolOutFile(opts, state);
 
             //add a system event to echo in the event history
             state->event_history_s[0].Event_History_Items[0].color_pair = 4;
             char event_str[2000];
-            memset(event_str, 0, sizeof(event_str));
-            sprintf(event_str, "DSD-neo Dibit Capture File Rotated: %s;", opts->symbol_out_file);
+            DSD_MEMSET(event_str, 0, sizeof(event_str));
+            DSD_SPRINTF(event_str, "DSD-neo Dibit Capture File Rotated: %s;", opts->symbol_out_file);
             watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
             state->lastsrc =
                 0; //this could wipe a call, but usually on TDMA cc's, slot 1 is the control channel, so may never be set when this is run
@@ -951,7 +975,7 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
 
 //input bit array, return output as up to a 64-bit value
 uint64_t
-convert_bits_into_output(uint8_t* input, int len) {
+convert_bits_into_output(const uint8_t* input, int len) {
     int i;
     uint64_t output = 0;
     for (i = 0; i < len; i++) {
@@ -965,7 +989,7 @@ convert_bits_into_output(uint8_t* input, int len) {
  * Do not duplicate here to avoid multiple definition at link time. */
 
 void
-pack_bit_array_into_byte_array(uint8_t* input, uint8_t* output, int len) {
+pack_bit_array_into_byte_array(const uint8_t* input, uint8_t* output, int len) {
     int i;
     for (i = 0; i < len; i++) {
         output[i] = (uint8_t)convert_bits_into_output(&input[(size_t)i * 8u], 8);
@@ -974,7 +998,7 @@ pack_bit_array_into_byte_array(uint8_t* input, uint8_t* output, int len) {
 
 //take len amount of bits and pack into x amount of bytes (asymmetrical)
 void
-pack_bit_array_into_byte_array_asym(uint8_t* input, uint8_t* output, int len) {
+pack_bit_array_into_byte_array_asym(const uint8_t* input, uint8_t* output, int len) {
     int i = 0;
     int k = len % 8;
     for (i = 0; i < len; i++) {
@@ -989,7 +1013,7 @@ pack_bit_array_into_byte_array_asym(uint8_t* input, uint8_t* output, int len) {
 
 //take len amount of bytes and unpack back into a bit array
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     int i = 0, k = 0;
     for (i = 0; i < len; i++) {
         output[k++] = (input[i] >> 7) & 1;
@@ -1005,7 +1029,7 @@ unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
 
 //take len amount of bits and pack into x amount of bytes (asymmetrical)
 void
-pack_ambe(char* input, uint8_t* output, int len) {
+pack_ambe(const char* input, uint8_t* output, int len) {
     int i = 0;
     int k = len % 8;
     for (i = 0; i < len; i++) {
@@ -1020,7 +1044,7 @@ pack_ambe(char* input, uint8_t* output, int len) {
 
 //unpack byte array with ambe data into a 49-bit bitwise array
 void
-unpack_ambe(uint8_t* input, char* ambe) {
+unpack_ambe(const uint8_t* input, char* ambe) {
     int i = 0, k = 0;
     for (i = 0; i < 6; i++) {
         ambe[k++] = (input[i] >> 7) & 1;
@@ -1036,23 +1060,24 @@ unpack_ambe(uint8_t* input, char* ambe) {
 }
 
 //recover previous IV for SDRTrunk .mbe files when P25p1
-uint64_t
-reverse_lfsr_64_to_len(dsd_opts* opts, uint8_t* iv, int16_t len) {
+static uint64_t
+reverse_lfsr_64_to_len(const dsd_opts* opts, uint8_t* iv, int16_t len) {
 
-    uint64_t lfsr = 0, bit1 = 0, bit2 = 0;
+    uint64_t lfsr = 0;
+    uint64_t bit2 = 0;
 
     lfsr = ((uint64_t)iv[0] << 56ULL) + ((uint64_t)iv[1] << 48ULL) + ((uint64_t)iv[2] << 40ULL)
            + ((uint64_t)iv[3] << 32ULL) + ((uint64_t)iv[4] << 24ULL) + ((uint64_t)iv[5] << 16ULL)
            + ((uint64_t)iv[6] << 8ULL) + ((uint64_t)iv[7] << 0ULL);
 
-    memset(iv, 0, 8 * sizeof(uint8_t));
+    DSD_MEMSET(iv, 0, 8 * sizeof(uint8_t));
 
     for (int16_t cnt = 0; cnt < len; cnt++) {
         //63,61,45,37,27,14
         // Polynomial is C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1
 
         //basically, just get the taps at the +1 position on all but MSB, then check the LSB and configure bit as required
-        bit1 = ((lfsr >> 62) ^ (lfsr >> 46) ^ (lfsr >> 38) ^ (lfsr >> 27) ^ (lfsr >> 15)) & 0x1;
+        uint64_t bit1 = ((lfsr >> 62) ^ (lfsr >> 46) ^ (lfsr >> 38) ^ (lfsr >> 27) ^ (lfsr >> 15)) & 0x1;
         bit2 = lfsr & 1;
         if (bit1 == bit2) {
             bit2 = 0;
@@ -1069,11 +1094,11 @@ reverse_lfsr_64_to_len(dsd_opts* opts, uint8_t* iv, int16_t len) {
     }
 
     if (opts->payload == 1) {
-        fprintf(stderr, " RV LFSR(%02d): ", len);
+        DSD_FPRINTF(stderr, " RV LFSR(%02d): ", len);
         for (int16_t i = 0; i < 8; i++) {
-            fprintf(stderr, "%02X", iv[i]);
+            DSD_FPRINTF(stderr, "%02X", iv[i]);
         }
-        fprintf(stderr, ";");
+        DSD_FPRINTF(stderr, ";");
     }
 
     return bit2;
@@ -1082,7 +1107,6 @@ reverse_lfsr_64_to_len(dsd_opts* opts, uint8_t* iv, int16_t len) {
 static void
 sdrtrunk_lfsr_64_to_128(uint8_t* iv) {
     uint64_t lfsr = 0;
-    uint64_t bit = 0;
 
     lfsr = ((uint64_t)iv[0] << 56ULL) + ((uint64_t)iv[1] << 48ULL) + ((uint64_t)iv[2] << 40ULL)
            + ((uint64_t)iv[3] << 32ULL) + ((uint64_t)iv[4] << 24ULL) + ((uint64_t)iv[5] << 16ULL)
@@ -1092,7 +1116,7 @@ sdrtrunk_lfsr_64_to_128(uint8_t* iv) {
     uint8_t x = 64;
     for (cnt = 0; cnt < 64; cnt++) {
         // Polynomial is C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1
-        bit = ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
+        uint64_t bit = ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
         lfsr = (lfsr << 1) | bit;
         iv[x / 8] = (uint8_t)((iv[x / 8] << 1) + bit);
         x++;
@@ -1107,9 +1131,42 @@ sdrtrunk_u64_from_be8(const uint8_t* v) {
            | ((unsigned long long)v[6] << 8ULL) | ((unsigned long long)v[7] << 0ULL);
 }
 
+static int
+hex_nibble_to_u8(char c, uint8_t* out) {
+    if (!out) {
+        return 0;
+    }
+    if (c >= '0' && c <= '9') {
+        *out = (uint8_t)(c - '0');
+        return 1;
+    }
+    if (c >= 'a' && c <= 'f') {
+        *out = (uint8_t)(10 + (c - 'a'));
+        return 1;
+    }
+    if (c >= 'A' && c <= 'F') {
+        *out = (uint8_t)(10 + (c - 'A'));
+        return 1;
+    }
+    return 0;
+}
+
+static uint8_t
+hex_pair_to_u8_or_zero(const char* in) {
+    uint8_t hi = 0;
+    uint8_t lo = 0;
+    if (!in) {
+        return 0;
+    }
+    if (!hex_nibble_to_u8(in[0], &hi) || !hex_nibble_to_u8(in[1], &lo)) {
+        return 0;
+    }
+    return (uint8_t)((hi << 4) | lo);
+}
+
 //convert a user string into a uint8_t array
 uint16_t
-parse_raw_user_string(char* input, uint8_t* output, size_t out_cap) {
+parse_raw_user_string(const char* input, uint8_t* output, size_t out_cap) {
     if (!input || !output || out_cap == 0) {
         return 0;
     }
@@ -1133,10 +1190,6 @@ parse_raw_user_string(char* input, uint8_t* output, size_t out_cap) {
     size_t max_octets = out_cap;
     if (want_octets > max_octets) {
         want_octets = max_octets;
-        // If truncating, do not attempt to left-shift any octet beyond bounds
-        if (shift && want_octets == 0) {
-            shift = 0;
-        }
     }
 
     char octet_char[3];
@@ -1157,9 +1210,7 @@ parse_raw_user_string(char* input, uint8_t* output, size_t out_cap) {
             }
         }
         // Parse two nibbles into a byte
-        unsigned int val = 0;
-        (void)sscanf(octet_char, "%2X", &val);
-        output[i] = (uint8_t)val;
+        output[i] = hex_pair_to_u8_or_zero(octet_char);
         k += 2;
     }
 
@@ -1171,101 +1222,141 @@ parse_raw_user_string(char* input, uint8_t* output, size_t out_cap) {
     return (uint16_t)want_octets;
 }
 
+enum {
+    SDRTRUNK_KS_BYTES = 384,
+};
+
 static int
-sdrtrunk_build_voice_keystream_bits(dsd_state* state, uint8_t alg_id, uint16_t key_id, const uint8_t iv64[8],
+sdrtrunk_build_rc4_keystream_bytes(const dsd_state* state, uint16_t key_id, const uint8_t iv64[8], int rc4_db,
+                                   int rc4_mod, uint8_t* ks_bytes, size_t ks_cap) {
+    if (!state || !iv64 || !ks_bytes || ks_cap < SDRTRUNK_KS_BYTES) {
+        return 0;
+    }
+
+    unsigned long long int rc4_key = state->rkey_array[key_id];
+    if (rc4_key == 0ULL) {
+        rc4_key = state->R;
+    }
+    if (rc4_key == 0ULL) {
+        return 0;
+    }
+
+    uint8_t rc4_kiv[13];
+    DSD_MEMSET(rc4_kiv, 0, sizeof(rc4_kiv));
+    rc4_kiv[0] = (uint8_t)((rc4_key >> 32ULL) & 0xFFULL);
+    rc4_kiv[1] = (uint8_t)((rc4_key >> 24ULL) & 0xFFULL);
+    rc4_kiv[2] = (uint8_t)((rc4_key >> 16ULL) & 0xFFULL);
+    rc4_kiv[3] = (uint8_t)((rc4_key >> 8ULL) & 0xFFULL);
+    rc4_kiv[4] = (uint8_t)((rc4_key >> 0ULL) & 0xFFULL);
+    DSD_MEMCPY(rc4_kiv + 5, iv64, 8);
+    rc4_block_output(rc4_db, rc4_mod, SDRTRUNK_KS_BYTES, rc4_kiv, ks_bytes);
+    return 1;
+}
+
+static int
+sdrtrunk_build_des_keystream_bytes(const dsd_state* state, uint16_t key_id, const uint8_t iv64[8], int protocol,
+                                   uint8_t* ks_bytes, size_t ks_cap, size_t* skip_bytes) {
+    if (!state || !iv64 || !ks_bytes || !skip_bytes || ks_cap < SDRTRUNK_KS_BYTES) {
+        return 0;
+    }
+
+    unsigned long long int des_key = state->rkey_array[key_id];
+    if (des_key == 0ULL) {
+        des_key = state->R;
+    }
+    if (des_key == 0ULL) {
+        return 0;
+    }
+
+    unsigned long long int iv_u64 = sdrtrunk_u64_from_be8(iv64);
+    des_multi_keystream_output(iv_u64, des_key, ks_bytes, 1, SDRTRUNK_KS_BYTES / 8);
+    *skip_bytes = (protocol == 1) ? 19u : 8u;
+    return 1;
+}
+
+static int
+sdrtrunk_build_aes_keystream_bytes(const dsd_state* state, uint16_t key_id, uint8_t alg_id, const uint8_t iv64[8],
+                                   int protocol, uint8_t* ks_bytes, size_t ks_cap, size_t* skip_bytes) {
+    if (!state || !iv64 || !ks_bytes || !skip_bytes || ks_cap < SDRTRUNK_KS_BYTES) {
+        return 0;
+    }
+
+    uint8_t aes_key[32];
+    DSD_MEMSET(aes_key, 0, sizeof(aes_key));
+    unsigned long long int a1 = state->rkey_array[key_id + 0x000];
+    unsigned long long int a2 = state->rkey_array[key_id + 0x101];
+    unsigned long long int a3 = state->rkey_array[key_id + 0x201];
+    unsigned long long int a4 = state->rkey_array[key_id + 0x301];
+    if (a1 == 0ULL && a2 == 0ULL && a3 == 0ULL && a4 == 0ULL) {
+        a1 = state->K1;
+        a2 = state->K2;
+        a3 = state->K3;
+        a4 = state->K4;
+    }
+    for (int i = 0; i < 8; i++) {
+        aes_key[i + 0] = (uint8_t)((a1 >> (56 - (i * 8))) & 0xFFULL);
+        aes_key[i + 8] = (uint8_t)((a2 >> (56 - (i * 8))) & 0xFFULL);
+        aes_key[i + 16] = (uint8_t)((a3 >> (56 - (i * 8))) & 0xFFULL);
+        aes_key[i + 24] = (uint8_t)((a4 >> (56 - (i * 8))) & 0xFFULL);
+    }
+    uint8_t zeros[32];
+    DSD_MEMSET(zeros, 0, sizeof(zeros));
+    if (memcmp(aes_key, zeros, sizeof(aes_key)) == 0) {
+        return 0;
+    }
+
+    uint8_t aes_iv[16];
+    DSD_MEMSET(aes_iv, 0, sizeof(aes_iv));
+    DSD_MEMCPY(aes_iv, iv64, 8);
+    sdrtrunk_lfsr_64_to_128(aes_iv);
+    const int aes_type = (alg_id == 0x84) ? 2 : 0; // 256/128
+    aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, aes_type, SDRTRUNK_KS_BYTES / 16);
+    *skip_bytes = (protocol == 1) ? 27u : 16u;
+    return 1;
+}
+
+static int
+sdrtrunk_build_voice_keystream_bytes(const dsd_state* state, uint8_t alg_id, uint16_t key_id, const uint8_t iv64[8],
+                                     int rc4_db, int rc4_mod, int protocol, uint8_t* ks_bytes, size_t ks_cap,
+                                     size_t* skip_bytes) {
+    if (!skip_bytes) {
+        return 0;
+    }
+    *skip_bytes = 0;
+    if (alg_id == 0xAA || alg_id == 0x21) {
+        return sdrtrunk_build_rc4_keystream_bytes(state, key_id, iv64, rc4_db, rc4_mod, ks_bytes, ks_cap);
+    }
+    if (alg_id == 0x81) {
+        return sdrtrunk_build_des_keystream_bytes(state, key_id, iv64, protocol, ks_bytes, ks_cap, skip_bytes);
+    }
+    if (alg_id == 0x84 || alg_id == 0x89) {
+        return sdrtrunk_build_aes_keystream_bytes(state, key_id, alg_id, iv64, protocol, ks_bytes, ks_cap, skip_bytes);
+    }
+    return 0;
+}
+
+static int
+sdrtrunk_build_voice_keystream_bits(const dsd_state* state, uint8_t alg_id, uint16_t key_id, const uint8_t iv64[8],
                                     int rc4_db, int rc4_mod, int protocol, uint8_t* out_bits, size_t out_bits_cap) {
     if (!state || !iv64 || !out_bits || out_bits_cap < 8) {
         return 0;
     }
 
-    enum { SDRTRUNK_KS_BYTES = 384 };
-
     uint8_t ks_bytes[SDRTRUNK_KS_BYTES];
-    memset(ks_bytes, 0, sizeof(ks_bytes));
+    DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
 
-    size_t ks_valid_bytes = 0;
     size_t skip_bytes = 0;
-
-    if (alg_id == 0xAA || alg_id == 0x21) {
-        unsigned long long int rc4_key = state->rkey_array[key_id];
-        if (rc4_key == 0ULL) {
-            rc4_key = state->R;
-        }
-        if (rc4_key == 0ULL) {
-            return 0;
-        }
-
-        uint8_t rc4_kiv[13];
-        memset(rc4_kiv, 0, sizeof(rc4_kiv));
-        rc4_kiv[0] = (uint8_t)((rc4_key >> 32ULL) & 0xFFULL);
-        rc4_kiv[1] = (uint8_t)((rc4_key >> 24ULL) & 0xFFULL);
-        rc4_kiv[2] = (uint8_t)((rc4_key >> 16ULL) & 0xFFULL);
-        rc4_kiv[3] = (uint8_t)((rc4_key >> 8ULL) & 0xFFULL);
-        rc4_kiv[4] = (uint8_t)((rc4_key >> 0ULL) & 0xFFULL);
-        memcpy(rc4_kiv + 5, iv64, 8);
-
-        rc4_block_output(rc4_db, rc4_mod, SDRTRUNK_KS_BYTES, rc4_kiv, ks_bytes);
-        ks_valid_bytes = SDRTRUNK_KS_BYTES;
-    } else if (alg_id == 0x81) {
-        unsigned long long int des_key = state->rkey_array[key_id];
-        if (des_key == 0ULL) {
-            des_key = state->R;
-        }
-        if (des_key == 0ULL) {
-            return 0;
-        }
-        unsigned long long int iv_u64 = sdrtrunk_u64_from_be8(iv64);
-        des_multi_keystream_output(iv_u64, des_key, ks_bytes, 1, SDRTRUNK_KS_BYTES / 8);
-        ks_valid_bytes = SDRTRUNK_KS_BYTES;
-        // SDRTrunk P25p1 playback requires LC/reserved offset in addition to OFB discard.
-        // P25p2 uses only the OFB discard offset.
-        skip_bytes = (protocol == 1) ? 19 : 8;
-    } else if (alg_id == 0x84 || alg_id == 0x89) {
-        uint8_t aes_key[32];
-        memset(aes_key, 0, sizeof(aes_key));
-        unsigned long long int a1 = state->rkey_array[key_id + 0x000];
-        unsigned long long int a2 = state->rkey_array[key_id + 0x101];
-        unsigned long long int a3 = state->rkey_array[key_id + 0x201];
-        unsigned long long int a4 = state->rkey_array[key_id + 0x301];
-        if (a1 == 0ULL && a2 == 0ULL && a3 == 0ULL && a4 == 0ULL) {
-            a1 = state->K1;
-            a2 = state->K2;
-            a3 = state->K3;
-            a4 = state->K4;
-        }
-        for (int i = 0; i < 8; i++) {
-            aes_key[i + 0] = (uint8_t)((a1 >> (56 - (i * 8))) & 0xFFULL);
-            aes_key[i + 8] = (uint8_t)((a2 >> (56 - (i * 8))) & 0xFFULL);
-            aes_key[i + 16] = (uint8_t)((a3 >> (56 - (i * 8))) & 0xFFULL);
-            aes_key[i + 24] = (uint8_t)((a4 >> (56 - (i * 8))) & 0xFFULL);
-        }
-        uint8_t zeros[32];
-        memset(zeros, 0, sizeof(zeros));
-        if (memcmp(aes_key, zeros, sizeof(aes_key)) == 0) {
-            return 0;
-        }
-
-        uint8_t aes_iv[16];
-        memset(aes_iv, 0, sizeof(aes_iv));
-        memcpy(aes_iv, iv64, 8);
-        sdrtrunk_lfsr_64_to_128(aes_iv);
-
-        const int aes_type = (alg_id == 0x84) ? 2 : 0; // 256/128
-        aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, aes_type, SDRTRUNK_KS_BYTES / 16);
-        ks_valid_bytes = SDRTRUNK_KS_BYTES;
-        // SDRTrunk P25p1 playback requires LC/reserved offset in addition to OFB discard.
-        // P25p2 uses only the OFB discard offset.
-        skip_bytes = (protocol == 1) ? 27 : 16;
-    } else {
+    if (!sdrtrunk_build_voice_keystream_bytes(state, alg_id, key_id, iv64, rc4_db, rc4_mod, protocol, ks_bytes,
+                                              sizeof(ks_bytes), &skip_bytes)) {
         return 0;
     }
 
-    if (ks_valid_bytes <= skip_bytes) {
+    if (SDRTRUNK_KS_BYTES <= skip_bytes) {
         return 0;
     }
 
-    memset(out_bits, 0, out_bits_cap);
-    size_t unpack_bytes = ks_valid_bytes - skip_bytes;
+    DSD_MEMSET(out_bits, 0, out_bits_cap);
+    size_t unpack_bytes = SDRTRUNK_KS_BYTES - skip_bytes;
     size_t max_unpack = out_bits_cap / 8;
     if (unpack_bytes > max_unpack) {
         unpack_bytes = max_unpack;
@@ -1274,66 +1365,106 @@ sdrtrunk_build_voice_keystream_bits(dsd_state* state, uint8_t alg_id, uint16_t k
     return 1;
 }
 
-uint16_t
-ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, char* ambe_str, uint8_t* ks, uint16_t ks_idx, uint8_t dmra,
-                    uint8_t is_enc, uint8_t ks_available) {
-    UNUSED(opts);
+static void
+sdrtrunk_unpack_interleaved_voice_frame(const char* input, size_t input_nibbles, char* frame, size_t frame_stride,
+                                        const int* w_map, const int* x_map, const int* y_map, const int* z_map) {
+    const int* w = w_map;
+    const int* x = x_map;
+    const int* y = y_map;
+    const int* z = z_map;
 
-    char ambe_fr[4][24];
-    memset(ambe_fr, 0, sizeof(ambe_fr));
-    uint8_t dibit_pair = 0;
-    uint8_t dibit1 = 0, dibit2 = 0;
-    const int *w, *x, *y, *z;
-    w = rW;
-    x = rX;
-    y = rY;
-    z = rZ;
-    for (size_t i = 0; i < 18; i++) {
+    for (size_t i = 0; i < input_nibbles; i++) {
+        uint8_t nibble = 0;
+        if (!hex_nibble_to_u8(input[i], &nibble)) {
+            nibble = 0;
+        }
 
-        char octet_char[2];
-        octet_char[1] = 0;
+        uint8_t dibit1 = (nibble >> 2) & 0x3;
+        uint8_t dibit2 = (nibble >> 0) & 0x3;
 
-        strncpy(octet_char, ambe_str + i, 1);
-        sscanf(octet_char, "%hhX", &dibit_pair);
-
-        dibit1 = (dibit_pair >> 2) & 0x3;
-        dibit2 = (dibit_pair >> 0) & 0x3;
-
-        //debug
-        // fprintf (stderr, "\n dibit_pair: %X = %d, %d;", dibit_pair, dibit1, dibit2);
-
-        //load into ambe_fr
-        ambe_fr[*w][*x] = (1 & (dibit1 >> 1)); // bit 1
-        ambe_fr[*y][*z] = (1 & (dibit1 >> 0)); // bit 0
-
+        frame[((size_t)(*w) * frame_stride) + (size_t)(*x)] = (char)(1 & (dibit1 >> 1));
+        frame[((size_t)(*y) * frame_stride) + (size_t)(*z)] = (char)(1 & (dibit1 >> 0));
         w++;
         x++;
         y++;
         z++;
 
-        ambe_fr[*w][*x] = (1 & (dibit2 >> 1)); // bit 1
-        ambe_fr[*y][*z] = (1 & (dibit2 >> 0)); // bit 0
-
+        frame[((size_t)(*w) * frame_stride) + (size_t)(*x)] = (char)(1 & (dibit2 >> 1));
+        frame[((size_t)(*y) * frame_stride) + (size_t)(*z)] = (char)(1 & (dibit2 >> 0));
         w++;
         x++;
         y++;
         z++;
+    }
+}
 
-        //working now!
+static uint16_t
+sdrtrunk_apply_keystream(char* frame_bits, size_t frame_bits_len, const uint8_t* ks, uint16_t ks_idx) {
+    for (size_t i = 0; i < frame_bits_len; i++) {
+        frame_bits[i] ^= ks[(ks_idx++) % 3000];
+    }
+    return ks_idx;
+}
+
+static void
+purge_audio_buffers_if_needed(dsd_state* state) {
+    if (state->audio_out_idx2 >= 800000) {
+        state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
+        state->audio_out_buf_p = state->audio_out_buf + 100;
+        DSD_MEMSET(state->audio_out_float_buf, 0, 100 * sizeof(float));
+        DSD_MEMSET(state->audio_out_buf, 0, 100 * sizeof(short));
+        state->audio_out_idx2 = 0;
+    }
+}
+
+static void
+run_decode_audio_output_path(dsd_opts* opts, dsd_state* state) {
+    if (opts->floating_point == 0) {
+        processAudio(opts, state);
+    }
+    if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
+        writeSynthesizedVoice(opts, state);
+    }
+    if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
+        writeSynthesizedVoiceMS(opts, state);
     }
 
+    if (opts->audio_out == 1 && opts->floating_point == 0) {
+        if (opts->static_wav_file == 1 || opts->dmr_stereo_wav == 1) {
+            playSynthesizedVoice(opts, state);
+        } else {
+            playSynthesizedVoiceMS(opts, state);
+        }
+    }
+    if (opts->audio_out == 1 && opts->floating_point == 1) {
+        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
+        playSynthesizedVoiceFM(opts, state);
+    } else if (opts->audio_out == 0) {
+        purge_audio_buffers_if_needed(state);
+    }
+}
+
+static int
+decode_audio_is_allowed(uint8_t is_enc, uint8_t ks_available) {
+    return (is_enc == 0 || ks_available == 1) ? 1 : 0;
+}
+
+static uint16_t
+ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, const uint8_t* ks, uint16_t ks_idx,
+                    uint8_t dmra, uint8_t is_enc, uint8_t ks_available) {
+    char ambe_fr[4][24];
+    DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
+    sdrtrunk_unpack_interleaved_voice_frame(ambe_str, 18, &ambe_fr[0][0], 24, rW, rX, rY, rZ);
+
     char ambe_d[49];
-    memset(ambe_d, 0, sizeof(ambe_d));
+    DSD_MEMSET(ambe_d, 0, sizeof(ambe_d));
     state->errs = mbe_eccAmbe3600x2450C0(ambe_fr);
     state->errs2 = state->errs;
     mbe_demodulateAmbe3600x2450Data(ambe_fr);
     state->errs2 += mbe_eccAmbe3600x2450Data(ambe_fr, ambe_d);
     state->debug_audio_errors += state->errs2;
 
-    //keystream application
-    for (uint8_t i = 0; i < 49; i++) {
-        ambe_d[i] ^= ks[(ks_idx++) % 3000];
-    }
+    ks_idx = sdrtrunk_apply_keystream(ambe_d, 49, ks, ks_idx);
 
     //DMRA or P25 KS, skip the left over 7 bits from a byte
     if (dmra == 1) {
@@ -1347,118 +1478,32 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, char* ambe_str, uint8_t* k
         PrintAMBEData(opts, state, ambe_d);
     }
 
-    if (is_enc == 0 || ks_available == 1) {
-
-        //convert and save to .amb file if desired
+    if (decode_audio_is_allowed(is_enc, ks_available)) {
         if (opts->mbe_out_f != NULL) {
             saveAmbe2450Data(opts, state, ambe_d);
         }
-
-        //audio out stack
-        if (opts->floating_point == 0) {
-            processAudio(opts, state);
-        }
-
-        //per call wav files
-        if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
-            writeSynthesizedVoice(opts, state);
-        }
-
-        //static wav file
-        if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
-            writeSynthesizedVoiceMS(opts, state);
-        }
-
-        //to make the static wav file work, I had to write a work around
-        //to either play audio from left only when writing wav files,
-        //or to play from both speakers if not doing either per-call or static wav
-        if (opts->audio_out == 1 && opts->floating_point == 0) {
-            if (opts->static_wav_file == 1 || opts->dmr_stereo_wav == 1) {
-                playSynthesizedVoice(opts, state);
-            } else {
-                playSynthesizedVoiceMS(opts, state);
-            }
-        }
-
-        if (opts->audio_out == 1 && opts->floating_point == 1) {
-            memcpy(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-            playSynthesizedVoiceFM(opts, state);
-        }
-        //else if not floating point audio or audio out, then purge the audio buffers before they overflow and segfault
-        else if (opts->audio_out == 0) {
-            if (state->audio_out_idx2 >= 800000) {
-                state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
-                state->audio_out_buf_p = state->audio_out_buf + 100;
-                memset(state->audio_out_float_buf, 0, 100 * sizeof(float));
-                memset(state->audio_out_buf, 0, 100 * sizeof(short));
-                state->audio_out_idx2 = 0;
-            }
-        }
+        run_decode_audio_output_path(opts, state);
     }
 
     return ks_idx; //return current ks_idx
 }
 
-uint16_t
-imbe_str_to_decode(dsd_opts* opts, dsd_state* state, char* imbe_str, uint8_t* ks, uint16_t ks_idx, uint8_t is_enc,
-                   uint8_t ks_available) {
-    UNUSED(opts);
-
+static uint16_t
+imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const uint8_t* ks, uint16_t ks_idx,
+                   uint8_t is_enc, uint8_t ks_available) {
     char imbe_fr[8][23];
-    memset(imbe_fr, 0, sizeof(imbe_fr));
-    uint8_t dibit_pair = 0;
-    uint8_t dibit1 = 0, dibit2 = 0;
-    const int *w, *x, *y, *z;
-    w = iW;
-    x = iX;
-    y = iY;
-    z = iZ;
-    for (size_t i = 0; i < 36; i++) {
-
-        char octet_char[2];
-        octet_char[1] = 0;
-
-        strncpy(octet_char, imbe_str + i, 1);
-        sscanf(octet_char, "%hhX", &dibit_pair);
-
-        dibit1 = (dibit_pair >> 2) & 0x3;
-        dibit2 = (dibit_pair >> 0) & 0x3;
-
-        //debug
-        // fprintf (stderr, "\n dibit_pair: %X = %d, %d;", dibit_pair, dibit1, dibit2);
-
-        //load into imbe_fr
-        imbe_fr[*w][*x] = (1 & (dibit1 >> 1)); // bit 1
-        imbe_fr[*y][*z] = (1 & (dibit1 >> 0)); // bit 0
-
-        w++;
-        x++;
-        y++;
-        z++;
-
-        imbe_fr[*w][*x] = (1 & (dibit2 >> 1)); // bit 1
-        imbe_fr[*y][*z] = (1 & (dibit2 >> 0)); // bit 0
-
-        w++;
-        x++;
-        y++;
-        z++;
-
-        //working now!
-    }
+    DSD_MEMSET(imbe_fr, 0, sizeof(imbe_fr));
+    sdrtrunk_unpack_interleaved_voice_frame(imbe_str, 36, &imbe_fr[0][0], 23, iW, iX, iY, iZ);
 
     char imbe_d[88];
-    memset(imbe_d, 0, sizeof(imbe_d));
+    DSD_MEMSET(imbe_d, 0, sizeof(imbe_d));
     state->errs = mbe_eccImbe7200x4400C0(imbe_fr);
     state->errs2 = state->errs;
     mbe_demodulateImbe7200x4400Data(imbe_fr);
     state->errs2 += mbe_eccImbe7200x4400Data(imbe_fr, imbe_d);
     state->debug_audio_errors += state->errs2;
 
-    //keystream application
-    for (uint8_t i = 0; i < 88; i++) {
-        imbe_d[i] ^= ks[(ks_idx++) % 3000];
-    }
+    ks_idx = sdrtrunk_apply_keystream(imbe_d, 88, ks, ks_idx);
 
     mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
                              state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
@@ -1467,515 +1512,435 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, char* imbe_str, uint8_t* ks
         PrintIMBEData(opts, state, imbe_d);
     }
 
-    if (is_enc == 0 || ks_available == 1) {
-
-        //convert and save to .imb file if desired
+    if (decode_audio_is_allowed(is_enc, ks_available)) {
         if (opts->mbe_out_f != NULL) {
             saveImbe4400Data(opts, state, imbe_d);
         }
-
-        //audio out stack
-        if (opts->floating_point == 0) {
-            processAudio(opts, state);
-        }
-
-        //per call wav files
-        if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
-            writeSynthesizedVoice(opts, state);
-        }
-
-        //static wav file
-        if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
-            writeSynthesizedVoiceMS(opts, state);
-        }
-
-        //to make the static wav file work, I had to write a work around
-        //to either play audio from left only when writing wav files,
-        //or to play from both speakers if not doing either per-call or static wav
-        if (opts->audio_out == 1 && opts->floating_point == 0) {
-            if (opts->static_wav_file == 1 || opts->dmr_stereo_wav == 1) {
-                playSynthesizedVoice(opts, state);
-            } else {
-                playSynthesizedVoiceMS(opts, state);
-            }
-        }
-
-        if (opts->audio_out == 1 && opts->floating_point == 1) {
-            memcpy(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-            playSynthesizedVoiceFM(opts, state);
-        }
-        //else if not floating point audio or audio out, then purge the audio buffers before they overflow and segfault
-        else if (opts->audio_out == 0) {
-            if (state->audio_out_idx2 >= 800000) {
-                state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
-                state->audio_out_buf_p = state->audio_out_buf + 100;
-                memset(state->audio_out_float_buf, 0, 100 * sizeof(float));
-                memset(state->audio_out_buf, 0, 100 * sizeof(short));
-                state->audio_out_idx2 = 0;
-            }
-        }
+        run_decode_audio_output_path(opts, state);
     }
 
     return ks_idx; //return current ks_idx
 }
 
-void
-read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
+typedef struct {
+    int8_t protocol;
+    uint16_t version;
+    uint8_t is_enc;
+    uint8_t ks_available;
+    uint8_t is_dmra;
+    uint8_t show_time;
+    uint8_t alg_id;
+    uint16_t key_id;
+    int rc4_db;
+    int rc4_mod;
+    uint8_t ks[3000];
+    uint16_t ks_idx;
+    uint8_t ks_i[3000];
+    uint16_t ks_idx_i;
+    int imbe_counter;
+} sdrtrunk_json_context;
 
-    /* Allocate raw buffer + 1 for NUL terminator; no need to zero-fill */
-    char* source_str = (char*)malloc(0x100000 + 1);
-    if (source_str == NULL) {
-        LOG_ERROR("Failed to allocate memory for MBE file buffer\n");
-        return;
-    }
-    size_t source_size;
+static char*
+sdrtrunk_json_next_value(char** str_saveptr) {
+    return dsd_strtok_r(NULL, " : \"", str_saveptr);
+}
 
-    int8_t protocol = -1;
-    uint16_t version = 1; //any .mbe file that does not have a version field should be considered version 1
-    uint32_t source = 0;
-    uint32_t target = 0;
-    int8_t gi = -1;
-    uint8_t is_enc = 0;
-    uint8_t ks_available = 0; //if encrypted, this signals if a keystream was created for enc muting / unmuting
-    uint8_t is_dmra = 1;      //Denny, we need an MFID in the JSON file plz
-    uint8_t show_time = 1;    //if this has already ran once, don't keep showing the time
-    uint8_t alg_id = 0;
-    uint16_t key_id = 0;
-    unsigned long long int iv_hex = 0;
-    int rc4_db = 256;
-    int rc4_mod = 13;
+static void
+sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
+    ctx->protocol = -1;
+    ctx->version = 1;
+    ctx->is_enc = 0;
+    ctx->ks_available = 0;
+    ctx->is_dmra = 1;
+    ctx->show_time = 1;
+    ctx->alg_id = 0;
+    ctx->key_id = 0;
+    ctx->rc4_db = 256;
+    ctx->rc4_mod = 13;
+    DSD_MEMSET(ctx->ks, 0, sizeof(ctx->ks));
+    ctx->ks_idx = 0;
+    DSD_MEMSET(ctx->ks_i, 0, sizeof(ctx->ks_i));
+    ctx->ks_idx_i = 808;
+    ctx->imbe_counter = 0;
+}
 
-    time_t event_time = 0; // set after parsing; 0 indicates unset
-
-    //for event history items
+static void
+sdrtrunk_json_reset_event_state(dsd_state* state) {
     state->dmr_color_code = 0;
     state->lastsrc = 0;
     state->lasttg = 0;
     state->gi[0] = -1;
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
+}
 
-    //watchdog for event history
+static void
+sdrtrunk_json_set_protocol(const char* value, dsd_state* state, sdrtrunk_json_context* ctx) {
+    if (strncmp("APCO25-PHASE1", value, 13) == 0) {
+        ctx->protocol = 1;
+        ctx->rc4_db = 267;
+        ctx->rc4_mod = 13;
+        state->synctype = DSD_SYNC_P25P1_POS;
+        state->lastsynctype = DSD_SYNC_P25P1_POS;
+    }
+    if (strncmp("APCO25-PHASE2", value, 13) == 0) {
+        ctx->protocol = 2;
+        ctx->rc4_db = 256;
+        ctx->rc4_mod = 13;
+        state->synctype = DSD_SYNC_P25P2_POS;
+        state->lastsynctype = DSD_SYNC_P25P2_POS;
+    }
+    if (strncmp("DMR", value, 3) == 0) {
+        ctx->protocol = 2;
+        ctx->rc4_db = 256;
+        ctx->rc4_mod = 9;
+        state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+        state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    }
+}
+
+static int
+sdrtrunk_json_handle_version(const dsd_opts* opts, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
+    if (strncmp("version", token, 7) != 0) {
+        return 0;
+    }
+
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value) {
+        return 1;
+    }
+    ctx->version = (uint16_t)strtol(value, NULL, 10);
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n Version: %d;", ctx->version);
+    }
+    return 1;
+}
+
+static int
+sdrtrunk_json_handle_protocol(dsd_opts* opts, dsd_state* state, const char* token, char** str_saveptr,
+                              sdrtrunk_json_context* ctx) {
+    if (strncmp("protocol", token, 8) != 0) {
+        return 0;
+    }
+
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "\n Protocol: %s", value);
+    sdrtrunk_json_set_protocol(value, state, ctx);
+    if (state->synctype != DSD_SYNC_NONE && opts->mbe_out_dir[0] != 0 && opts->mbe_out_f == NULL) {
+        openMbeOutFile(opts, state);
+    }
+    return 1;
+}
+
+static int
+sdrtrunk_json_handle_call_type(dsd_state* state, const char* token, char** str_saveptr) {
+    if (strncmp("call_type", token, 9) != 0) {
+        return 0;
+    }
+
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value) {
+        return 1;
+    }
+    state->gi[0] = (strncmp("GROUP", value, 5) == 0) ? 0 : 1;
+    DSD_FPRINTF(stderr, "\n Call Type: %s", value);
+    return 1;
+}
+
+static int
+sdrtrunk_json_handle_encrypted(const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
+    if (strncmp("encrypted", token, 9) != 0) {
+        return 0;
+    }
+
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value) {
+        return 1;
+    }
+    ctx->is_enc = (strncmp("true", value, 4) == 0) ? 1 : 0;
+    ctx->alg_id = 0;
+    ctx->key_id = 0;
+    DSD_FPRINTF(stderr, "\n Encryption: %s", value);
+    return 1;
+}
+
+static int
+sdrtrunk_json_handle_to_from(dsd_state* state, const char* token, char** str_saveptr) {
+    if (strncmp("to", token, 2) == 0) {
+        char* value = sdrtrunk_json_next_value(str_saveptr);
+        if (value) {
+            state->lasttg = (uint32_t)strtol(value, NULL, 10);
+            DSD_FPRINTF(stderr, "\n To: %s", value);
+        }
+        return 1;
+    }
+    if (strncmp("from", token, 4) == 0) {
+        char* value = sdrtrunk_json_next_value(str_saveptr);
+        if (value) {
+            state->lastsrc = (uint32_t)strtol(value, NULL, 10);
+            DSD_FPRINTF(stderr, "\n From: %s", value);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static int
+sdrtrunk_json_handle_alg(const dsd_opts* opts, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
+    if (strncmp("encryption_algorithm", token, 20) != 0) {
+        return 0;
+    }
+
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value) {
+        return 1;
+    }
+    ctx->alg_id = (uint8_t)strtol(value, NULL, 10);
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n Alg ID: %02X;", ctx->alg_id);
+    }
+    ctx->is_enc = 1;
+    return 1;
+}
+
+static int
+sdrtrunk_json_handle_key_id(const dsd_opts* opts, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
+    if (strncmp("encryption_key_id", token, 17) != 0) {
+        return 0;
+    }
+
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value) {
+        return 1;
+    }
+    ctx->key_id = (uint16_t)strtol(value, NULL, 10);
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n Key ID: %04X;", ctx->key_id);
+    }
+    ctx->is_enc = 1;
+    return 1;
+}
+
+static void
+sdrtrunk_json_extract_iv(const char* value, char iv_str[20]) {
+    DSD_MEMSET(iv_str, 0, 20);
+    if (!value) {
+        return;
+    }
+
+    uint16_t iv_len = (uint16_t)strlen(value);
+    if (iv_len == 18) {
+        iv_len = 16;
+    }
+    dsd_strncpy_s(iv_str, 20U, value, iv_len);
+}
+
+static uint8_t
+sdrtrunk_json_build_keystreams(const dsd_opts* opts, const dsd_state* state, sdrtrunk_json_context* ctx,
+                               const char* iv_str) {
+    uint8_t iv64[8];
+    DSD_MEMSET(iv64, 0, sizeof(iv64));
+    (void)parse_raw_user_string(iv_str, iv64, sizeof(iv64));
+    if (ctx->is_enc != 1) {
+        return 0;
+    }
+
+    uint8_t ks_available = (uint8_t)sdrtrunk_build_voice_keystream_bits(
+        state, ctx->alg_id, ctx->key_id, iv64, ctx->rc4_db, ctx->rc4_mod, ctx->protocol, ctx->ks, sizeof(ctx->ks));
+    if (ctx->protocol == 1 && ctx->version == 1 && ks_available) {
+        uint8_t iv_prev[8];
+        DSD_MEMCPY(iv_prev, iv64, sizeof(iv_prev));
+        reverse_lfsr_64_to_len(opts, iv_prev, 64);
+        if (!sdrtrunk_build_voice_keystream_bits(state, ctx->alg_id, ctx->key_id, iv_prev, ctx->rc4_db, ctx->rc4_mod,
+                                                 ctx->protocol, ctx->ks_i, sizeof(ctx->ks_i))) {
+            DSD_MEMCPY(ctx->ks_i, ctx->ks, sizeof(ctx->ks_i));
+        }
+    }
+    return ks_available;
+}
+
+static void
+sdrtrunk_json_log_keystream_ready(const dsd_opts* opts, uint8_t ks_available, uint8_t alg_id) {
+    if (opts->payload != 1 || !ks_available) {
+        return;
+    }
+    if (alg_id == 0xAA || alg_id == 0x21) {
+        DSD_FPRINTF(stderr, " RC4 keystream ready;");
+    } else if (alg_id == 0x81) {
+        DSD_FPRINTF(stderr, " DES56 keystream ready;");
+    } else if (alg_id == 0x84 || alg_id == 0x89) {
+        DSD_FPRINTF(stderr, " AES-%s keystream ready;", (alg_id == 0x84) ? "256" : "128");
+    }
+}
+
+static int
+sdrtrunk_json_handle_mi(dsd_opts* opts, dsd_state* state, const char* token, char** str_saveptr,
+                        sdrtrunk_json_context* ctx) {
+    if (strncmp("encryption_mi", token, 13) != 0) {
+        return 0;
+    }
+
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value) {
+        return 1;
+    }
+
+    char iv_str[20];
+    sdrtrunk_json_extract_iv(value, iv_str);
+    unsigned long long int iv_hex = strtoull(iv_str, NULL, 16);
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n IV: %016llX;", iv_hex);
+    }
+
+    state->currentslot = 0;
+    state->payload_algid = ctx->alg_id;
+    state->payload_mi = iv_hex;
+    state->payload_keyid = ctx->key_id;
+    if (state->keyloader == 1) {
+        keyring(opts, state);
+    }
+
+    ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, iv_str);
+    sdrtrunk_json_log_keystream_ready(opts, ctx->ks_available, ctx->alg_id);
+    ctx->ks_idx = 0;
+    ctx->imbe_counter = 0;
+    ctx->is_enc = 1;
+    return 1;
+}
+
+static void
+sdrtrunk_json_decode_imbe_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* value) {
+    ctx->imbe_counter++;
+    if (ctx->version == 1) {
+        ctx->ks_idx_i =
+            imbe_str_to_decode(opts, state, value, ctx->ks_i, ctx->ks_idx_i, ctx->is_enc, ctx->ks_available);
+    } else {
+        ctx->ks_idx = imbe_str_to_decode(opts, state, value, ctx->ks, ctx->ks_idx, ctx->is_enc, ctx->ks_available);
+    }
+
+    if (ctx->imbe_counter == 8 || ctx->imbe_counter == 17) {
+        ctx->ks_idx_i += 16;
+    }
+    if (ctx->imbe_counter == 9 && ctx->version == 1) {
+        DSD_MEMCPY(ctx->ks_i, ctx->ks, sizeof(ctx->ks_i));
+        ctx->ks_idx_i = 0;
+    } else if (ctx->imbe_counter == 18 && ctx->version == 2) {
+        ctx->ks_idx = 0;
+    }
+}
+
+static void
+sdrtrunk_json_decode_ambe_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* value) {
+    ctx->ks_idx =
+        ambe2_str_to_decode(opts, state, value, ctx->ks, ctx->ks_idx, ctx->is_dmra, ctx->is_enc, ctx->ks_available);
+}
+
+static int
+sdrtrunk_json_handle_hex(dsd_opts* opts, dsd_state* state, const char* token, char** str_saveptr,
+                         sdrtrunk_json_context* ctx) {
+    if (strncmp("hex", token, 3) != 0) {
+        return 0;
+    }
+
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value) {
+        return 1;
+    }
+    if (ctx->protocol == 1) {
+        sdrtrunk_json_decode_imbe_hex(opts, state, ctx, value);
+    } else if (ctx->protocol == 2) {
+        sdrtrunk_json_decode_ambe_hex(opts, state, ctx, value);
+    }
+    return 1;
+}
+
+static int
+sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* state, sdrtrunk_json_context* ctx) {
+    if (strncmp("time", token, 4) != 0) {
+        return 0;
+    }
+
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value) {
+        return 1;
+    }
+
+    char time_str[20];
+    DSD_MEMSET(time_str, 0, sizeof(time_str));
+    DSD_STRNCPY(time_str, value, 10);
+    time_t event_time = (time_t)strtol(time_str, NULL, 10);
+    state->event_history_s[0].Event_History_Items[0].event_time = event_time;
+
+    char timestr[9];
+    char datestr[11];
+    getTimeN_buf(event_time, timestr);
+    getDateN_buf(event_time, datestr);
+    if (ctx->show_time == 1) {
+        DSD_FPRINTF(stderr, " Date: %s Time: %s", datestr, timestr);
+    }
+    ctx->show_time = 0;
+    return 1;
+}
+
+static void
+sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token,
+                            char** str_saveptr) {
+    (void)sdrtrunk_json_handle_version(opts, token, str_saveptr, ctx);
+    (void)sdrtrunk_json_handle_protocol(opts, state, token, str_saveptr, ctx);
+    (void)sdrtrunk_json_handle_call_type(state, token, str_saveptr);
+    (void)sdrtrunk_json_handle_encrypted(token, str_saveptr, ctx);
+    (void)sdrtrunk_json_handle_to_from(state, token, str_saveptr);
+    (void)sdrtrunk_json_handle_alg(opts, token, str_saveptr, ctx);
+    (void)sdrtrunk_json_handle_key_id(opts, token, str_saveptr, ctx);
+    (void)sdrtrunk_json_handle_mi(opts, state, token, str_saveptr, ctx);
+    (void)sdrtrunk_json_handle_hex(opts, state, token, str_saveptr, ctx);
+    (void)sdrtrunk_json_handle_time(token, str_saveptr, state, ctx);
+}
+
+void
+read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
+    char* source_str = (char*)malloc(0x100000 + 1);
+    if (source_str == NULL) {
+        LOG_ERROR("Failed to allocate memory for MBE file buffer\n");
+        return;
+    }
+
+    sdrtrunk_json_context ctx;
+    sdrtrunk_json_context_init(&ctx);
+    sdrtrunk_json_reset_event_state(state);
     watchdog_event_history(opts, state, 0);
     watchdog_event_current(opts, state, 0);
 
-    uint8_t ks[3000];
-    memset(ks, 0, sizeof(ks));
-    uint16_t ks_idx = 0; //keystream index value
-
-    //P25p1 IMBE / IV out of order execution on .mbe files (fixed in version 2 of .mbe file)
-    uint8_t ks_i[3000];
-    memset(ks_i, 0, sizeof(ks_i));
-    uint16_t ks_idx_i = 808; //keystream index value IMBE (start at 808 for out of order ESS)
-    int imbe_counter = 0;    //count IMBE frames for when to skip 2 bytes of ks and juggle keystreams
-
-    source_size = fread(source_str, 1, 0x100000, opts->mbe_in_f);
-    source_str[source_size] = '\0'; /* ensure C-string for strtok/strncmp */
-
-    //debug
-    // fprintf (stderr, " Source Size: %d.\n", source_size);
-    // fprintf (stderr, "\n");
+    size_t source_size = fread(source_str, 1, 0x100000, opts->mbe_in_f);
+    source_str[source_size] = '\0';
 
     char* str_saveptr = NULL;
-    char* str_buffer = dsd_strtok_r(source_str, "{ \"", &str_saveptr); //value after initial { open bracket
-
-    //debug print current str_buffer
-    // fprintf (stderr, "%s", str_buffer);
+    const char* str_buffer = dsd_strtok_r(source_str, "{ \"", &str_saveptr);
 
     for (size_t i = 0; i < source_size; i++) {
-
-        //debug print current str_buffer
-        // fprintf (stderr, "%s", str_buffer);
-
-        if (strncmp("version", str_buffer, 7) == 0) {
-            str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
-            version = strtol(str_buffer, NULL, 10);
-
-            //debug set value
-            if (opts->payload == 1) {
-                fprintf(stderr, "\n Version: %d;", version);
-            }
-
-            //debug print current str_buffer
-            // fprintf (stderr, "\n Version: %s", str_buffer);
-        }
-
-        //compare and set items accordingly
-        if (strncmp("protocol", str_buffer, 8) == 0) {
-            str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
-            //debug print current str_buffer
-            fprintf(stderr, "\n Protocol: %s", str_buffer);
-
-            //compare protocol and set to proper codec etc
-            if (strncmp("APCO25-PHASE1", str_buffer, 13) == 0) {
-                //set IMBE protocol here
-                protocol = 1;
-
-                //rc4 dropbyte and key len mod
-                rc4_db = 267;
-                rc4_mod = 13;
-
-                state->synctype = DSD_SYNC_P25P1_POS;
-                state->lastsynctype = DSD_SYNC_P25P1_POS;
-            }
-
-            if (strncmp("APCO25-PHASE2", str_buffer, 13) == 0) {
-                //set AMBE+2 protocol here
-                protocol = 2;
-
-                //rc4 dropbyte and key len mod
-                rc4_db = 256;
-                rc4_mod = 13;
-
-                state->synctype = DSD_SYNC_P25P2_POS;
-                state->lastsynctype = DSD_SYNC_P25P2_POS;
-            }
-
-            if (strncmp("DMR", str_buffer, 3) == 0) {
-                //set AMBE+2 protocol here
-                protocol = 2;
-
-                //rc4 dropbyte and key len mod
-                rc4_db = 256;
-                rc4_mod = 9;
-
-                state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
-                state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
-            }
-
-            //open .imb or .amb file, if desired, but only after setting a synctype
-            if (state->synctype != DSD_SYNC_NONE) {
-                //if converting to .amb or .imb, open that file format as well
-                if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
-                    openMbeOutFile(opts, state);
-                }
-            }
-        }
-
-        if (strncmp("call_type", str_buffer, 9) == 0) {
-            str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
-            //set gi value based on this
-            if (strncmp("GROUP", str_buffer, 5) == 0) {
-                gi = 0;
-            } else {
-                gi = 1;
-            }
-
-            state->gi[0] = gi;
-
-            //debug set value
-            // fprintf (stderr, " GI: %d;", gi);
-
-            //debug print current str_buffer
-            fprintf(stderr, "\n Call Type: %s", str_buffer);
-        }
-
-        if (strncmp("encrypted", str_buffer, 9) == 0) {
-            str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
-            //set enc value based on this
-            if (strncmp("true", str_buffer, 4) == 0) {
-                is_enc = 1;
-            } else {
-                is_enc = 0;
-            }
-
-            //reset other enc variables (filled in later on if available)
-            alg_id = 0;
-            key_id = 0;
-
-            //debug set value
-            // fprintf (stderr, " ENC: %d;", is_enc);
-
-            //debug print current str_buffer
-            fprintf(stderr, "\n Encryption: %s", str_buffer);
-        }
-
-        if (strncmp("to", str_buffer, 2) == 0) {
-            str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
-            target = strtol(str_buffer, NULL, 10);
-
-            state->lasttg = target;
-
-            //debug set value
-            // fprintf (stderr, " Target: %d;", target);
-
-            //debug print current str_buffer
-            fprintf(stderr, "\n To: %s", str_buffer);
-        }
-
-        if (strncmp("from", str_buffer, 4) == 0) {
-            str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
-            source = strtol(str_buffer, NULL, 10);
-
-            state->lastsrc = source;
-
-            //debug set value
-            // fprintf (stderr, " Source: %d;", source);
-
-            //debug print current str_buffer
-            fprintf(stderr, "\n From: %s", str_buffer);
-        }
-
-        if (strncmp("encryption_algorithm", str_buffer, 20) == 0) {
-            str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
-            alg_id = strtol(str_buffer, NULL, 10);
-
-            //debug set value
-            if (opts->payload == 1) {
-                fprintf(stderr, "\n Alg ID: %02X;", alg_id);
-            }
-
-            //set just in case needed
-            is_enc = 1;
-
-            //debug print current str_buffer
-            // fprintf (stderr, "\n Encryption Alg: %s", str_buffer);
-        }
-
-        if (strncmp("encryption_key_id", str_buffer, 17) == 0) {
-            str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
-            key_id = strtol(str_buffer, NULL, 10);
-
-            //debug set value
-            if (opts->payload == 1) {
-                fprintf(stderr, "\n Key ID: %04X;", key_id);
-            }
-
-            //set just in case needed
-            is_enc = 1;
-
-            //debug print current str_buffer
-            // fprintf (stderr, "\n Encryption KID: %s", str_buffer);
-        }
-
-        if (strncmp("encryption_mi", str_buffer, 13) == 0) {
-            str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
-            uint16_t iv_len = strlen((const char*)str_buffer);
-            char iv_str[20];
-            memset(iv_str, 0, sizeof(iv_str));
-
-            //debug this str_buffer len
-            // fprintf (stderr, " IV STR LEN: %d;", iv_len);
-
-            if (iv_len == 18) { //P25 MI has an extra zero byte (two zeroes) appended to MI, remove those
-                iv_len = 16;
-            }
-            strncpy(iv_str, str_buffer, iv_len); //copy out final IV value from the MI
-
-            iv_hex = strtoull(iv_str, NULL, 16); //Note: The 16 here is for base 16 (hex), not 16 chars
-
-            //debug set value
-            if (opts->payload == 1) {
-                fprintf(stderr, "\n IV: %016llX;", iv_hex); //not really needed if loaded into array
-            }
-
-            //debug print current str_buffer
-            // fprintf (stderr, "\n Encryption MI/IV: %s", str_buffer);
-
-            //WIP: This is the last field of enc, so we create a new keystream here, if needed
-            state->currentslot = 0;
-            state->payload_algid = alg_id;
-            state->payload_mi = iv_hex;
-            state->payload_keyid = key_id;
-            if (state->keyloader == 1) {
-                keyring(opts, state);
-            }
-
-            ks_available = 0;
-            uint8_t iv64[8];
-            memset(iv64, 0, sizeof(iv64));
-            (void)parse_raw_user_string(iv_str, iv64, sizeof(iv64));
-
-            if (is_enc == 1) {
-                ks_available = (uint8_t)sdrtrunk_build_voice_keystream_bits(state, alg_id, key_id, iv64, rc4_db,
-                                                                            rc4_mod, protocol, ks, sizeof(ks));
-
-                // Reverse-LFSR path for v1 P25p1 SDRTrunk files where ESS appears before the
-                // superframe it should decrypt.
-                if (protocol == 1 && version == 1 && ks_available) {
-                    uint8_t iv_prev[8];
-                    memcpy(iv_prev, iv64, sizeof(iv_prev));
-                    reverse_lfsr_64_to_len(opts, iv_prev, 64);
-                    if (!sdrtrunk_build_voice_keystream_bits(state, alg_id, key_id, iv_prev, rc4_db, rc4_mod, protocol,
-                                                             ks_i, sizeof(ks_i))) {
-                        // Fallback: avoid a zero keystream if reverse derivation fails.
-                        memcpy(ks_i, ks, sizeof(ks_i));
-                    }
-                }
-            }
-
-            if (opts->payload == 1 && ks_available) {
-                if (alg_id == 0xAA || alg_id == 0x21) {
-                    fprintf(stderr, " RC4 keystream ready;");
-                } else if (alg_id == 0x81) {
-                    fprintf(stderr, " DES56 keystream ready;");
-                } else if (alg_id == 0x84 || alg_id == 0x89) {
-                    fprintf(stderr, " AES-%s keystream ready;", (alg_id == 0x84) ? "256" : "128");
-                }
-            }
-
-            //NOTE: Regarding SDRTrunk .mbe format, the ESS Encryption Sync
-            //is in the correct location on P25p2, but for P25p1, the ESS
-            //information preceeds LDU2, but should be AFTER the LDU2 IMBE frames,
-            //so, for now, we utilize a reverse lfsr function (Crypthings coming in handy)
-            //and recover the previous LFSR and make two keystreams in order
-            //to properly decrypt the initial frame, and then juggle the
-            //keystreams in code to provide a smooth decryption session of P25p1.
-
-            //Update: There is a pull request available now, and using a version value,
-            //we will be able to do either format (ESS out of order vs ESS in correct order)
-
-            //reset ks_idx to 0
-            ks_idx = 0;
-
-            //reset frame counter
-            imbe_counter = 0;
-
-            //set just in case needed
-            is_enc = 1;
-        }
-
-        if (strncmp("hex", str_buffer, 3) == 0) {
-            str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
-            if (protocol == 1) //P25p1 IMBE
-            {
-                //debug print current str_buffer
-                // fprintf (stderr, "\n IMBE HEX: %s", str_buffer);
-
-                imbe_counter++;
-
-                //36 hex characters on 'hex' which is the IMBE interleaved C codewords
-                if (version == 1) {
-                    ks_idx_i = imbe_str_to_decode(opts, state, str_buffer, ks_i, ks_idx_i, is_enc, ks_available);
-                } else {
-                    ks_idx = imbe_str_to_decode(opts, state, str_buffer, ks, ks_idx, is_enc, ks_available);
-                }
-
-                //skip LSD bits in-between these two IMBE voice frames
-                if (imbe_counter == 8 || imbe_counter == 17) {
-                    ks_idx_i += 16;
-                }
-
-                //juggle keystreams and reset the I counter (if version 1)
-                if (imbe_counter == 9 && version == 1) {
-                    memcpy(ks_i, ks, sizeof(ks_i));
-                    ks_idx_i = 0;
-
-                    //debug
-                    // fprintf (stderr, " LDU2;");
-                }
-                //reset keystream idx after frame 18
-                else if (imbe_counter == 18 && version == 2) {
-                    ks_idx = 0;
-
-                    //debug
-                    // fprintf (stderr, " LDU2;");
-                }
-
-                //debug
-                // fprintf (stderr, " # %02d; KS_IDX_I: %04d;", imbe_counter, ks_idx_i);
-
-                //debug
-                // if (is_enc == 1 && ks_available == 0)
-                //   fprintf (stderr, " Enc Mute;");
-                // else if (is_enc == 1 && ks_available == 1)
-                //   fprintf (stderr, " Enc Play;");
-
-            } else if (protocol == 2) //P25p2 AMBE
-            {
-                //debug print current str_buffer
-                // fprintf (stderr, "\n AMBE HEX: %s", str_buffer);
-
-                //18 hex characters on 'hex' which is the AMBE interleaved C codewords
-                ks_idx = ambe2_str_to_decode(opts, state, str_buffer, ks, ks_idx, is_dmra, is_enc, ks_available);
-
-                //debug
-                // if (is_enc == 1 && ks_available == 0)
-                //   fprintf (stderr, " Enc Mute;");
-                // else if (is_enc == 1 && ks_available == 1)
-                //   fprintf (stderr, " Enc Play;");
-            }
-        }
-
-        if (strncmp("time", str_buffer, 4) == 0) {
-            str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
-            char time_str[20];
-            memset(time_str, 0, sizeof(time_str));
-            strncpy(time_str, str_buffer, 10); //full string is 13, but not copying milliseconds to match time(NULL)
-
-            event_time = strtol(time_str, NULL, 10);
-
-            //working now with tweak
-            state->event_history_s[0].Event_History_Items[0].event_time = event_time;
-
-            //debug set value
-            // fprintf (stderr, " Time: %ld;", event_time);
-
-            //what is actual time_t for time(NULL);
-            // fprintf (stderr, " Time(NULL): %ld;", time(NULL));
-
-            //convert to legible time and date format
-            char timestr[9];
-            char datestr[11];
-            getTimeN_buf(event_time, timestr);
-            getDateN_buf(event_time, datestr);
-
-            //user legible time
-            if (show_time == 1) {
-                fprintf(stderr, " Date: %s Time: %s", datestr, timestr);
-            }
-
-            /* stack buffers; no free */
-
-            show_time = 0;
-
-            //debug print current str_buffer
-            // fprintf (stderr, "\n Time: %s", str_buffer);
-        }
-
-        //reset ks_idx if this isn't encrypted (ambe only)
-        if (is_enc == 0) {
-            ks_idx = 0;
-        }
-
-        str_buffer = dsd_strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
-
         if (str_buffer == NULL) {
             break;
         }
+        sdrtrunk_json_process_token(opts, state, &ctx, str_buffer, &str_saveptr);
+        if (ctx.is_enc == 0) {
+            ctx.ks_idx = 0;
+        }
 
-        //exit loop if signal
-        if (exitflag == 1) {
+        str_buffer = sdrtrunk_json_next_value(&str_saveptr);
+        if (str_buffer == NULL || exitflag == 1) {
             break;
         }
     }
 
-    //free allocated memory from the source string
-    if (source_str != NULL) {
-        free(source_str);
-        source_str = NULL;
-    }
-
-    //watchdog for event history
+    free(source_str);
+    source_str = NULL;
     watchdog_event_history(opts, state, 0);
     watchdog_event_current(opts, state, 0);
-
-    //if .imb or .amb file open, close it now
     if (opts->mbe_out_f != NULL) {
         closeMbeOutFile(opts, state);
     }
-
-    //end line break
-    fprintf(stderr, "\n");
+    DSD_FPRINTF(stderr, "\n");
 }

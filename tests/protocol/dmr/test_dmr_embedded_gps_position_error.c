@@ -19,18 +19,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 void dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]);
 uint8_t nmea_sentence_checker(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t slot, int len_bytes);
 
 // Minimal stubs for direct link with dsd_gps.c
 uint64_t
-ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     uint64_t out = 0;
-    uint8_t* p = BufferIn;
+    const uint8_t* p = BufferIn;
     uint32_t n = BitLength;
 
     while (n--) {
@@ -57,26 +62,27 @@ getDate(void) {
 
 void
 getTime_buf(char out[7]) {
-    snprintf(out, 7, "%s", "000000");
+    DSD_SNPRINTF(out, 7, "%s", "000000");
 }
 
 void
 getTimeC_buf(char out[9]) {
-    snprintf(out, 9, "%s", "00:00:00");
+    DSD_SNPRINTF(out, 9, "%s", "00:00:00");
 }
 
 void
 getDate_buf(char out[9]) {
-    snprintf(out, 9, "%s", "00000000");
+    DSD_SNPRINTF(out, 9, "%s", "00000000");
 }
 
 void
 getDateS_buf(char out[11]) {
-    snprintf(out, 11, "%s", "0000/00/00");
+    DSD_SNPRINTF(out, 11, "%s", "0000/00/00");
 }
 
 uint64_t
-convert_bits_into_output(uint8_t* input, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+convert_bits_into_output(const uint8_t* input, int len) {
     if (len <= 0) {
         return 0;
     }
@@ -84,6 +90,7 @@ convert_bits_into_output(uint8_t* input, int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
     (void)opts;
     (void)state;
@@ -94,6 +101,7 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     (void)state;
     (void)wr;
@@ -104,7 +112,7 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
 static int
 expect_has_substr(const char* buf, const char* needle, const char* tag) {
     if (!buf || !strstr(buf, needle)) {
-        fprintf(stderr, "%s: missing '%s' in '%s'\n", tag, needle, buf ? buf : "(null)");
+        DSD_FPRINTF(stderr, "%s: missing '%s' in '%s'\n", tag, needle, buf ? buf : "(null)");
         return 1;
     }
     return 0;
@@ -113,7 +121,7 @@ expect_has_substr(const char* buf, const char* needle, const char* tag) {
 static int
 expect_u8(const char* tag, uint8_t got, uint8_t want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %u want %u\n", tag, (unsigned)got, (unsigned)want);
+        DSD_FPRINTF(stderr, "%s: got %u want %u\n", tag, (unsigned)got, (unsigned)want);
         return 1;
     }
     return 0;
@@ -122,7 +130,7 @@ expect_u8(const char* tag, uint8_t got, uint8_t want) {
 static int
 expect_i(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -131,7 +139,7 @@ expect_i(const char* tag, int got, int want) {
 static int
 expect_u32(const char* tag, uint32_t got, uint32_t want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %u want %u\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %u want %u\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -156,7 +164,7 @@ nmea_len_bits(const char* sentence) {
 
 static void
 nmea_ascii_to_bits(uint8_t* out_bits, int out_bits_len, const char* sentence) {
-    memset(out_bits, 0, (size_t)out_bits_len * sizeof(uint8_t));
+    DSD_MEMSET(out_bits, 0, (size_t)out_bits_len * sizeof(uint8_t));
     int n = nmea_len_bits(sentence);
     for (int i = 0; i < n; i++) {
         uint8_t c = (uint8_t)sentence[i];
@@ -173,8 +181,8 @@ main(void) {
 
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     opts.lrrp_file_output = 0;
     st.currentslot = 0;
 
@@ -184,11 +192,11 @@ main(void) {
     }
 
     uint8_t lc_bits[80];
-    memset(lc_bits, 0, sizeof lc_bits);
+    DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
 
     // pos_err == 5: less than 200km (200000m)
     {
-        memset(st.dmr_embedded_gps[0], 0, sizeof st.dmr_embedded_gps[0]);
+        DSD_MEMSET(st.dmr_embedded_gps[0], 0, sizeof st.dmr_embedded_gps[0]);
         set_pos_err(lc_bits, 5);
         dmr_embedded_gps(&opts, &st, lc_bits);
         rc |= expect_has_substr(st.dmr_embedded_gps[0], "Err: 200000m", "pos_err=5");
@@ -196,7 +204,7 @@ main(void) {
 
     // pos_err == 6: more than 200km
     {
-        memset(st.dmr_embedded_gps[0], 0, sizeof st.dmr_embedded_gps[0]);
+        DSD_MEMSET(st.dmr_embedded_gps[0], 0, sizeof st.dmr_embedded_gps[0]);
         set_pos_err(lc_bits, 6);
         dmr_embedded_gps(&opts, &st, lc_bits);
         rc |= expect_has_substr(st.dmr_embedded_gps[0], "Err: >200km", "pos_err=6");
@@ -204,7 +212,7 @@ main(void) {
 
     // pos_err == 7: unknown
     {
-        memset(st.dmr_embedded_gps[0], 0, sizeof st.dmr_embedded_gps[0]);
+        DSD_MEMSET(st.dmr_embedded_gps[0], 0, sizeof st.dmr_embedded_gps[0]);
         set_pos_err(lc_bits, 7);
         dmr_embedded_gps(&opts, &st, lc_bits);
         rc |= expect_has_substr(st.dmr_embedded_gps[0], "Unknown Pos Err", "pos_err=7");
@@ -219,8 +227,8 @@ main(void) {
         st.dmr_lrrp_source[0] = 111U;
         st.dmr_lrrp_target[0] = 222U;
         if (st.event_history_s != NULL) {
-            memset(st.event_history_s[0].Event_History_Items[0].text_message, 0,
-                   sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
+            DSD_MEMSET(st.event_history_s[0].Event_History_Items[0].text_message, 0,
+                       sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
         }
         uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
         rc |= expect_u8("nmea-valid", ok, 1U);
@@ -228,7 +236,7 @@ main(void) {
             rc |= expect_has_substr(st.event_history_s[0].Event_History_Items[0].text_message, "$GPRMC,TEST*71",
                                     "nmea-valid-text");
         } else {
-            fprintf(stderr, "%s\n", "nmea-valid-text: event_history_s is NULL");
+            DSD_FPRINTF(stderr, "%s\n", "nmea-valid-text: event_history_s is NULL");
             rc |= 1;
         }
         rc |= expect_u32("nmea-valid-src-reset", st.dmr_lrrp_source[0], 0U);
@@ -244,15 +252,15 @@ main(void) {
         st.dmr_lrrp_source[0] = 333U;
         st.dmr_lrrp_target[0] = 444U;
         if (st.event_history_s != NULL) {
-            memset(st.event_history_s[0].Event_History_Items[0].text_message, 0,
-                   sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
+            DSD_MEMSET(st.event_history_s[0].Event_History_Items[0].text_message, 0,
+                       sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
         }
         uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
         rc |= expect_u8("nmea-invalid", ok, 0U);
         if (st.event_history_s != NULL) {
             rc |= expect_i("nmea-invalid-text-empty", st.event_history_s[0].Event_History_Items[0].text_message[0], 0);
         } else {
-            fprintf(stderr, "%s\n", "nmea-invalid-text-empty: event_history_s is NULL");
+            DSD_FPRINTF(stderr, "%s\n", "nmea-invalid-text-empty: event_history_s is NULL");
             rc |= 1;
         }
         rc |= expect_u32("nmea-invalid-src-reset", st.dmr_lrrp_source[0], 0U);
@@ -281,3 +289,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

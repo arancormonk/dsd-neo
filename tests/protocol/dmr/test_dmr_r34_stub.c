@@ -4,18 +4,17 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/protocol/dmr/r34_viterbi.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
-#include <dsd-neo/protocol/dmr/r34_viterbi.h>
+#include "dsd-neo/core/safe_api.h"
 
 int
 main(void) {
     uint8_t dibits[98];
-    memset(dibits, 0, sizeof(dibits));
+    DSD_MEMSET(dibits, 0, sizeof(dibits));
     uint8_t out[18];
-    memset(out, 0xAA, sizeof(out));
+    DSD_MEMSET(out, 0xAA, sizeof(out));
     int rc = dmr_r34_viterbi_decode(dibits, out);
     assert(rc == 0);
     // no strong assertion on content yet; this is a smoke test for the stub

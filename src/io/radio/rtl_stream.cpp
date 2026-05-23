@@ -16,15 +16,14 @@
 #include <dsd-neo/io/rtl_stream.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 
 extern "C" {
 // Local forward declarations for legacy functions now hidden from public headers
 int dsd_rtl_stream_open(dsd_opts* opts);
 void dsd_rtl_stream_close(void);
-int dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state);
+int dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* state);
 int dsd_rtl_stream_tune(dsd_opts* opts, long int frequency);
 unsigned int dsd_rtl_stream_output_rate(void);
 int dsd_rtl_stream_soft_stop(void);
@@ -47,11 +46,11 @@ copy_opts(const dsd_opts* src) {
     if (!src) {
         return nullptr;
     }
-    dsd_opts* dst = (dsd_opts*)malloc(sizeof(dsd_opts));
+    dsd_opts* dst = static_cast<dsd_opts*>(malloc(sizeof(dsd_opts)));
     if (!dst) {
         return nullptr;
     }
-    memcpy(dst, src, sizeof(dsd_opts));
+    DSD_MEMCPY(dst, src, sizeof(dsd_opts));
     return dst;
 }
 } // namespace
@@ -197,7 +196,7 @@ RtlSdrOrchestrator::read(float* out, size_t count, int& out_got) {
         last_error_code_ = -2;
         return last_error_code_;
     }
-    int got = dsd_rtl_stream_read(out, count, opts_, (dsd_state*)nullptr);
+    int got = dsd_rtl_stream_read(out, count, opts_, nullptr);
     if (got < 0) {
         last_error_code_ = got;
         return got;
@@ -212,7 +211,7 @@ RtlSdrOrchestrator::read(float* out, size_t count, int& out_got) {
  * @return Output sample rate in Hz.
  */
 unsigned int
-RtlSdrOrchestrator::output_rate() const {
+RtlSdrOrchestrator::output_rate() {
     return dsd_rtl_stream_output_rate();
 }
 

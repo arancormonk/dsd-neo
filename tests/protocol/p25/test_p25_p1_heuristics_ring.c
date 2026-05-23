@@ -10,15 +10,15 @@
  * - index advances modulo HEURISTICS_SIZE
  */
 
+#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <math.h>
 #include <stdio.h>
-
-#include <dsd-neo/dsp/p25p1_heuristics.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -28,7 +28,7 @@ static int
 expect_float_close(const char* tag, float got, float want, float eps) {
     float diff = fabsf(got - want);
     if (diff > eps) {
-        fprintf(stderr, "%s: got %.6f want %.6f (diff=%.6f)\n", tag, got, want, diff);
+        DSD_FPRINTF(stderr, "%s: got %.6f want %.6f (diff=%.6f)\n", tag, got, want, diff);
         return 1;
     }
     return 0;

@@ -11,11 +11,11 @@
  * times on `dsd_state`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_DSD_TIME_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_DSD_TIME_H_H
 
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/timing.h>
-#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,3 +44,4 @@ void dsd_clear_vc_sync(dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_DSD_TIME_H_H */

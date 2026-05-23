@@ -16,12 +16,12 @@
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL %s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "FAIL %s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -30,7 +30,7 @@ expect_eq_int(const char* tag, int got, int want) {
 static int
 expect_eq_long(const char* tag, long got, long want) {
     if (got != want) {
-        fprintf(stderr, "FAIL %s: got %ld want %ld\n", tag, got, want);
+        DSD_FPRINTF(stderr, "FAIL %s: got %ld want %ld\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -52,7 +52,7 @@ put_base(unsigned char* mac, int pos, long base_freq) {
 static void
 build_standard_iden(unsigned char* mac, int iden, int bandwidth, int sign_bit, int tx_raw, int spacing,
                     long base_freq) {
-    memset(mac, 0, 24);
+    DSD_MEMSET(mac, 0, 24);
     mac[1] = 0x7D;
     mac[2] = (unsigned char)(((iden & 0x0F) << 4) | ((bandwidth >> 5) & 0x0F));
     mac[3] = (unsigned char)(((bandwidth & 0x1F) << 3) | ((sign_bit & 0x01) << 2) | ((tx_raw >> 6) & 0x03));
@@ -64,7 +64,7 @@ build_standard_iden(unsigned char* mac, int iden, int bandwidth, int sign_bit, i
 static void
 build_vuhf_iden(unsigned char* mac, int opcode, int iden, int low_nibble, int sign_bit, int tx_raw, int spacing,
                 long base_freq) {
-    memset(mac, 0, 24);
+    DSD_MEMSET(mac, 0, 24);
     mac[1] = (unsigned char)opcode;
     mac[2] = (unsigned char)(((iden & 0x0F) << 4) | (low_nibble & 0x0F));
     mac[3] = (unsigned char)(((sign_bit & 0x01) << 7) | ((tx_raw >> 6) & 0x7F));
@@ -102,7 +102,7 @@ test_standard_0x7d_stays_standard_on_vhf_base(void) {
     rc |= expect_eq_long("0x7D base", up.base_freq, base);
 
     if (rc == 0) {
-        fprintf(stderr, "PASS test_standard_0x7d_stays_standard_on_vhf_base\n");
+        DSD_FPRINTF(stderr, "PASS test_standard_0x7d_stays_standard_on_vhf_base\n");
     }
     return rc;
 }
@@ -135,7 +135,7 @@ test_vuhf_0x74_uses_vuhf_layout(void) {
     rc |= expect_eq_long("0x74 base", up.base_freq, base);
 
     if (rc == 0) {
-        fprintf(stderr, "PASS test_vuhf_0x74_uses_vuhf_layout\n");
+        DSD_FPRINTF(stderr, "PASS test_vuhf_0x74_uses_vuhf_layout\n");
     }
     return rc;
 }
@@ -168,7 +168,7 @@ test_tdma_0x73_uses_signed_tdma_layout(void) {
     rc |= expect_eq_long("0x73 base", up.base_freq, base);
 
     if (rc == 0) {
-        fprintf(stderr, "PASS test_tdma_0x73_uses_signed_tdma_layout\n");
+        DSD_FPRINTF(stderr, "PASS test_tdma_0x73_uses_signed_tdma_layout\n");
     }
     return rc;
 }
@@ -181,7 +181,7 @@ test_vhf_uhf_base_classifier(void) {
     rc |= expect_eq_int("700 MHz base", p25_is_vhf_uhf_base_freq(770000000L / 5L), 0);
     rc |= expect_eq_int("850 MHz base", p25_is_vhf_uhf_base_freq(851000000L / 5L), 0);
     if (rc == 0) {
-        fprintf(stderr, "PASS test_vhf_uhf_base_classifier\n");
+        DSD_FPRINTF(stderr, "PASS test_vhf_uhf_base_classifier\n");
     }
     return rc;
 }
@@ -194,14 +194,14 @@ test_channel_type_matches_sdrtrunk(void) {
 
     for (int type = 0; type < 16; type++) {
         char tag[64];
-        snprintf(tag, sizeof tag, "channel type %d slots", type);
+        DSD_SNPRINTF(tag, sizeof tag, "channel type %d slots", type);
         rc |= expect_eq_int(tag, p25_channel_type_slots_per_carrier(type), slots[type]);
-        snprintf(tag, sizeof tag, "channel type %d tdma", type);
+        DSD_SNPRINTF(tag, sizeof tag, "channel type %d tdma", type);
         rc |= expect_eq_int(tag, p25_channel_type_is_tdma(type), tdma[type]);
     }
 
     if (rc == 0) {
-        fprintf(stderr, "PASS test_channel_type_matches_sdrtrunk\n");
+        DSD_FPRINTF(stderr, "PASS test_channel_type_matches_sdrtrunk\n");
     }
     return rc;
 }
@@ -216,9 +216,9 @@ main(void) {
     rc |= test_channel_type_matches_sdrtrunk();
 
     if (rc == 0) {
-        fprintf(stderr, "\nAll test_p25_iden_vhf_uhf_fix tests PASSED\n");
+        DSD_FPRINTF(stderr, "\nAll test_p25_iden_vhf_uhf_fix tests PASSED\n");
     } else {
-        fprintf(stderr, "\nSome test_p25_iden_vhf_uhf_fix tests FAILED\n");
+        DSD_FPRINTF(stderr, "\nSome test_p25_iden_vhf_uhf_fix tests FAILED\n");
     }
     return rc;
 }

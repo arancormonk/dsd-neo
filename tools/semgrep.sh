@@ -14,7 +14,8 @@ Usage: tools/semgrep.sh [--strict] [--config <config>] [--] [paths...]
 
 Options:
   --strict          Fail on findings (--error).
-  --config CONFIG   Semgrep config/rule pack (default: p/default).
+  --config CONFIG   Semgrep config/rule pack (default: p/default; strict also
+                    adds p/c and p/security-audit). May be supplied multiple times.
 
 Arguments:
   paths...          Optional paths to scan. Default: src include apps tests tools
@@ -22,7 +23,8 @@ USAGE
 }
 
 STRICT=0
-CONFIG="p/default"
+CONFIGS=("p/default")
+CUSTOM_CONFIGS=0
 TARGETS=()
 
 while [[ $# -gt 0 ]]; do
@@ -33,7 +35,11 @@ while [[ $# -gt 0 ]]; do
         echo "Missing value for --config" >&2
         exit 2
       fi
-      CONFIG="$2"
+      if [[ $CUSTOM_CONFIGS -eq 0 ]]; then
+        CONFIGS=()
+        CUSTOM_CONFIGS=1
+      fi
+      CONFIGS+=("$2")
       shift 2
       ;;
     -h|--help) usage; exit 0 ;;
@@ -59,7 +65,6 @@ fi
 LOG_FILE=".semgrep.local.out"
 
 ARGS=(
-  --config "$CONFIG"
   --metrics=off
   --disable-version-check
   --exclude src/third_party
@@ -68,7 +73,13 @@ ARGS=(
 )
 if [[ $STRICT -eq 1 ]]; then
   ARGS+=(--error)
+  if [[ $CUSTOM_CONFIGS -eq 0 ]]; then
+    CONFIGS+=(p/c p/security-audit)
+  fi
 fi
+for config in "${CONFIGS[@]}"; do
+  ARGS+=(--config "$config")
+done
 
 set +e
 semgrep "${ARGS[@]}" "${TARGETS[@]}" 2>&1 | tee "$LOG_FILE"

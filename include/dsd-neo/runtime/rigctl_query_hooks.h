@@ -11,7 +11,8 @@
  * real hook functions at startup; the runtime provides safe wrappers and
  * fallback behavior when hooks are not installed.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RIGCTL_QUERY_HOOKS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RIGCTL_QUERY_HOOKS_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 
@@ -30,3 +31,5 @@ long int dsd_rigctl_query_hook_get_current_freq_hz(const dsd_opts* opts);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RIGCTL_QUERY_HOOKS_H_ */

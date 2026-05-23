@@ -23,7 +23,12 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "menu_internal.h"
 
-volatile uint8_t exitflag = 0;
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
+
+volatile uint8_t exitflag = 0; // NOLINT(misc-use-internal-linkage)
 
 static int g_action_calls = 0;
 static const char* g_last_action = NULL;
@@ -77,7 +82,7 @@ act_sub1(void* ctx) {
 }
 
 static bool
-item_disabled(void* ctx) {
+item_disabled(const void* ctx) {
     (void)ctx;
     return false;
 }
@@ -116,12 +121,12 @@ ui_statusf(const char* fmt, ...) {
 }
 
 const char*
-dsd_user_config_default_path(void) {
+dsd_user_config_default_path(void) { // NOLINT(misc-use-internal-linkage)
     return "";
 }
 
 void
-ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) {
+ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) { // NOLINT(misc-use-internal-linkage)
     (void)ctx;
     if (out_items) {
         *out_items = ROOT_ITEMS;
@@ -132,54 +137,57 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
 }
 
 int
-ui_prompt_active(void) {
+ui_prompt_active(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
 int
-ui_prompt_handle_key(int ch) {
+ui_prompt_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
     return 0;
 }
 
 void
-ui_prompt_render(void) {}
+ui_prompt_render(void) { // NOLINT(misc-use-internal-linkage)
+}
 
 int
-ui_help_active(void) {
+ui_help_active(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
 int
-ui_help_handle_key(int ch) {
+ui_help_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
     return 0;
 }
 
 void
-ui_help_open(const char* help) {
+ui_help_open(const char* help) { // NOLINT(misc-use-internal-linkage)
     (void)help;
 }
 
 void
-ui_help_render(void) {}
+ui_help_render(void) { // NOLINT(misc-use-internal-linkage)
+}
 
 int
-ui_chooser_active(void) {
+ui_chooser_active(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
 int
-ui_chooser_handle_key(int ch) {
+ui_chooser_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
     return 0;
 }
 
 void
-ui_chooser_render(void) {}
+ui_chooser_render(void) { // NOLINT(misc-use-internal-linkage)
+}
 
 int
-ui_submenu_has_visible(const NcMenuItem* items, size_t n, void* ctx) {
+ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
     if (!items || n == 0) {
         return 0;
     }
@@ -192,7 +200,7 @@ ui_submenu_has_visible(const NcMenuItem* items, size_t n, void* ctx) {
 }
 
 int
-ui_is_enabled(const NcMenuItem* it, void* ctx) {
+ui_is_enabled(const NcMenuItem* it, const void* ctx) {
     if (!it) {
         return 0;
     }
@@ -206,7 +214,7 @@ ui_is_enabled(const NcMenuItem* it, void* ctx) {
 }
 
 int
-ui_next_enabled(const NcMenuItem* items, size_t n, void* ctx, int from, int dir) {
+ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
     if (!items || n == 0) {
         return 0;
     }
@@ -221,7 +229,7 @@ ui_next_enabled(const NcMenuItem* items, size_t n, void* ctx, int from, int dir)
 }
 
 int
-ui_visible_index_for_item(const NcMenuItem* items, size_t n, void* ctx, int idx) {
+ui_visible_index_for_item(const NcMenuItem* items, size_t n, const void* ctx, int idx) {
     if (!items || n == 0 || idx < 0 || idx >= (int)n) {
         return 0;
     }
@@ -239,7 +247,7 @@ ui_visible_index_for_item(const NcMenuItem* items, size_t n, void* ctx, int idx)
 }
 
 int
-ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, void* ctx, int* out_maxlab) {
+ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* ctx, int* out_maxlab) {
     int vis = 0;
     int maxlab = 0;
     for (size_t i = 0; i < n; i++) {
@@ -260,7 +268,7 @@ ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, void* ctx, int* o
 }
 
 void
-ui_overlay_layout(UiMenuFrame* f, void* ctx) {
+ui_overlay_layout(UiMenuFrame* f, const void* ctx) {
     (void)ctx;
     assert(f != NULL);
     f->h = 11; // 4 visible rows -> page step of 3
@@ -280,7 +288,7 @@ ui_overlay_recreate_if_needed(UiMenuFrame* f) {
 }
 
 void
-ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title, void* ctx) {
+ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title, const void* ctx) {
     (void)win;
     (void)items;
     (void)n;
@@ -305,8 +313,10 @@ resize_term(int lines, int columns) {
 
 int
 main(void) {
-    dsd_opts* opts = (dsd_opts*)(uintptr_t)0x1;
-    dsd_state* state = (dsd_state*)(uintptr_t)0x2;
+    unsigned char opts_token = 0;
+    unsigned char state_token = 0;
+    dsd_opts* opts = (dsd_opts*)&opts_token;
+    dsd_state* state = (dsd_state*)&state_token;
 
     reset_capture();
     ui_menu_open_async(opts, state);
@@ -392,3 +402,7 @@ main(void) {
     printf("UI_MENU_NAVIGATION: OK\n");
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

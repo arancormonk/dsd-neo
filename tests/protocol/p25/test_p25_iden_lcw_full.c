@@ -19,14 +19,19 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -34,6 +39,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -41,14 +47,17 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -56,7 +65,8 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 }
 
 uint64_t
-ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     uint64_t out = 0;
     for (uint32_t i = 0; i < BitLength; i++) {
         out = (out << 1) | (uint64_t)(BufferIn[i] & 1);
@@ -65,6 +75,7 @@ ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -73,6 +84,7 @@ apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -81,6 +93,7 @@ apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -89,6 +102,7 @@ l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -98,6 +112,7 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -105,6 +120,7 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -116,7 +132,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL %s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "FAIL %s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -125,7 +141,7 @@ expect_eq_int(const char* tag, int got, int want) {
 static int
 expect_eq_long(const char* tag, long got, long want) {
     if (got != want) {
-        fprintf(stderr, "FAIL %s: got %ld want %ld\n", tag, got, want);
+        DSD_FPRINTF(stderr, "FAIL %s: got %ld want %ld\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -134,7 +150,7 @@ expect_eq_long(const char* tag, long got, long want) {
 static int
 expect_eq_u8(const char* tag, uint8_t got, uint8_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL %s: got %u want %u\n", tag, (unsigned)got, (unsigned)want);
+        DSD_FPRINTF(stderr, "FAIL %s: got %u want %u\n", tag, (unsigned)got, (unsigned)want);
         return 1;
     }
     return 0;
@@ -150,7 +166,7 @@ put_bits(uint8_t* bits, int start, int width, unsigned long long value) {
 
 static void
 build_lcw_standard(uint8_t* bits, int iden, int bandwidth, int sign, int tx_raw, int spacing, unsigned long base) {
-    memset(bits, 0, 96);
+    DSD_MEMSET(bits, 0, 96);
     put_bits(bits, 0, 8, 0x58);
     put_bits(bits, 8, 4, (unsigned)iden);
     put_bits(bits, 12, 9, (unsigned)bandwidth);
@@ -162,7 +178,7 @@ build_lcw_standard(uint8_t* bits, int iden, int bandwidth, int sign, int tx_raw,
 
 static void
 build_lcw_vuhf(uint8_t* bits, int iden, int bw_vu, int sign, int tx_raw, int spacing, unsigned long base) {
-    memset(bits, 0, 96);
+    DSD_MEMSET(bits, 0, 96);
     put_bits(bits, 0, 8, 0x59);
     put_bits(bits, 8, 4, (unsigned)iden);
     put_bits(bits, 12, 4, (unsigned)bw_vu);
@@ -178,8 +194,8 @@ test_lcw_standard_populates_fdma(void) {
     static dsd_opts opts;
     static dsd_state st;
     uint8_t bits[96];
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     int iden = 2;
     long base = 850000000L / 5L;
@@ -201,7 +217,7 @@ test_lcw_standard_populates_fdma(void) {
     rc |= expect_eq_long("standard frequency", freq, want);
 
     if (rc == 0) {
-        fprintf(stderr, "PASS test_lcw_standard_populates_fdma\n");
+        DSD_FPRINTF(stderr, "PASS test_lcw_standard_populates_fdma\n");
     }
     return rc;
 }
@@ -212,8 +228,8 @@ test_lcw_vuhf_populates_fdma(void) {
     static dsd_opts opts;
     static dsd_state st;
     uint8_t bits[96];
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     int iden = 3;
     long base = 450000000L / 5L;
@@ -235,7 +251,7 @@ test_lcw_vuhf_populates_fdma(void) {
     rc |= expect_eq_long("vuhf frequency", freq, want);
 
     if (rc == 0) {
-        fprintf(stderr, "PASS test_lcw_vuhf_populates_fdma\n");
+        DSD_FPRINTF(stderr, "PASS test_lcw_vuhf_populates_fdma\n");
     }
     return rc;
 }
@@ -246,8 +262,8 @@ test_lcw_replaces_existing_fdma(void) {
     static dsd_opts opts;
     static dsd_state st;
     uint8_t bits[96];
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     int iden = 4;
     st.p25_iden_fdma[iden].base_freq = 11111111L;
@@ -273,7 +289,7 @@ test_lcw_replaces_existing_fdma(void) {
     rc |= expect_eq_long("replace invalidates channel cache", st.trunk_chan_map[(iden << 12) | 0x000A], 0);
 
     if (rc == 0) {
-        fprintf(stderr, "PASS test_lcw_replaces_existing_fdma\n");
+        DSD_FPRINTF(stderr, "PASS test_lcw_replaces_existing_fdma\n");
     }
     return rc;
 }
@@ -282,7 +298,7 @@ static int
 test_iden_cache_invalidation_covers_last_channel(void) {
     int rc = 0;
     static dsd_state st;
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     st.trunk_chan_map[0xF000] = 12345L;
     st.trunk_chan_map[0xFFFE] = 67890L;
@@ -293,7 +309,7 @@ test_iden_cache_invalidation_covers_last_channel(void) {
     rc |= expect_eq_long("invalidate iden 15 last channel", st.trunk_chan_map[0xFFFE], 0);
 
     if (rc == 0) {
-        fprintf(stderr, "PASS test_iden_cache_invalidation_covers_last_channel\n");
+        DSD_FPRINTF(stderr, "PASS test_iden_cache_invalidation_covers_last_channel\n");
     }
     return rc;
 }
@@ -308,9 +324,13 @@ main(void) {
     rc |= test_iden_cache_invalidation_covers_last_channel();
 
     if (rc == 0) {
-        fprintf(stderr, "\nAll test_p25_iden_lcw_full tests PASSED\n");
+        DSD_FPRINTF(stderr, "\nAll test_p25_iden_lcw_full tests PASSED\n");
     } else {
-        fprintf(stderr, "\nSome test_p25_iden_lcw_full tests FAILED\n");
+        DSD_FPRINTF(stderr, "\nSome test_p25_iden_lcw_full tests FAILED\n");
     }
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

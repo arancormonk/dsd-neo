@@ -15,7 +15,8 @@
  * or printing to stderr.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_M17_M17_PARSE_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_M17_M17_PARSE_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -68,3 +69,5 @@ const char* m17_packet_protocol_name(uint8_t protocol);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_M17_M17_PARSE_H_ */

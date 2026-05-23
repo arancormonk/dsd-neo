@@ -8,7 +8,8 @@
  * @brief UDP PCM16LE input backend.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_UDP_INPUT_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_UDP_INPUT_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <stdint.h>
@@ -46,3 +47,4 @@ int udp_input_read_sample(dsd_opts* opts, int16_t* out);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_UDP_INPUT_H_H */

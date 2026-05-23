@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "telemetry_hooks_impl.h"
 
@@ -33,13 +33,13 @@ static unsigned long long g_pub_eh_seq = 0;
 static unsigned long long g_consume_eh_seq = 0;
 
 #define UI_SNAPSHOT_FIELD_END(field)            (offsetof(dsd_state, field) + sizeof(((dsd_state*)0)->field))
-#define UI_SNAPSHOT_COPY_FIELD(dst, src, field) memcpy(&(dst)->field, &(src)->field, sizeof((dst)->field))
+#define UI_SNAPSHOT_COPY_FIELD(dst, src, field) DSD_MEMCPY(&(dst)->field, &(src)->field, sizeof((dst)->field))
 #define UI_SNAPSHOT_COPY_RANGE(dst, src, first, last)                                                                  \
     ui_snapshot_copy_range((dst), (src), offsetof(dsd_state, first), UI_SNAPSHOT_FIELD_END(last))
 
 static void
 ui_snapshot_copy_range(dsd_state* dst, const dsd_state* src, size_t begin, size_t end) {
-    memcpy((char*)dst + begin, (const char*)src + begin, end - begin);
+    DSD_MEMCPY((char*)dst + begin, (const char*)src + begin, end - begin);
 }
 
 static void
@@ -47,13 +47,13 @@ ui_snapshot_copy_trunk_cc_candidates(dsd_state* dst, const dsd_state* src, dsd_t
     const dsd_trunk_cc_candidates* cc_candidates =
         (const dsd_trunk_cc_candidates*)src->state_ext[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES];
     if (cc_candidates == NULL) {
-        memset(backing, 0, sizeof(*backing));
+        DSD_MEMSET(backing, 0, sizeof(*backing));
         dst->state_ext[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = NULL;
         dst->state_ext_cleanup[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = NULL;
         return;
     }
 
-    memcpy(backing, cc_candidates, sizeof(*backing));
+    DSD_MEMCPY(backing, cc_candidates, sizeof(*backing));
     dst->state_ext[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = backing;
     dst->state_ext_cleanup[DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES] = NULL;
 }
@@ -116,10 +116,80 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
 }
 
 static int
+ui_event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
+    if (lhs == NULL || rhs == NULL) {
+        return 0;
+    }
+
+    const int scalar_checks[] = {
+        lhs->write == rhs->write,
+        lhs->color_pair == rhs->color_pair,
+        lhs->systype == rhs->systype,
+        lhs->subtype == rhs->subtype,
+        lhs->sys_id1 == rhs->sys_id1,
+        lhs->sys_id2 == rhs->sys_id2,
+        lhs->sys_id3 == rhs->sys_id3,
+        lhs->sys_id4 == rhs->sys_id4,
+        lhs->sys_id5 == rhs->sys_id5,
+        lhs->gi == rhs->gi,
+        lhs->enc == rhs->enc,
+        lhs->enc_alg == rhs->enc_alg,
+        lhs->enc_key == rhs->enc_key,
+        lhs->mi == rhs->mi,
+        lhs->svc == rhs->svc,
+        lhs->source_id == rhs->source_id,
+        lhs->target_id == rhs->target_id,
+        lhs->channel == rhs->channel,
+        lhs->event_time == rhs->event_time,
+    };
+    const size_t scalar_count = sizeof(scalar_checks) / sizeof(scalar_checks[0]);
+    for (size_t i = 0; i < scalar_count; i++) {
+        if (!scalar_checks[i]) {
+            return 0;
+        }
+    }
+
+    struct UiByteSpan {
+        const void* left;
+        const void* right;
+        size_t size;
+    };
+    const struct UiByteSpan spans[] = {
+        {lhs->src_str, rhs->src_str, sizeof(lhs->src_str)},
+        {lhs->tgt_str, rhs->tgt_str, sizeof(lhs->tgt_str)},
+        {lhs->t_name, rhs->t_name, sizeof(lhs->t_name)},
+        {lhs->s_name, rhs->s_name, sizeof(lhs->s_name)},
+        {lhs->t_mode, rhs->t_mode, sizeof(lhs->t_mode)},
+        {lhs->s_mode, rhs->s_mode, sizeof(lhs->s_mode)},
+        {lhs->pdu, rhs->pdu, sizeof(lhs->pdu)},
+        {lhs->sysid_string, rhs->sysid_string, sizeof(lhs->sysid_string)},
+        {lhs->alias, rhs->alias, sizeof(lhs->alias)},
+        {lhs->gps_s, rhs->gps_s, sizeof(lhs->gps_s)},
+        {lhs->text_message, rhs->text_message, sizeof(lhs->text_message)},
+        {lhs->event_string, rhs->event_string, sizeof(lhs->event_string)},
+        {lhs->internal_str, rhs->internal_str, sizeof(lhs->internal_str)},
+    };
+    const size_t span_count = sizeof(spans) / sizeof(spans[0]);
+    for (size_t i = 0; i < span_count; i++) {
+        if (memcmp(spans[i].left, spans[i].right, spans[i].size) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
 ui_event_history_slot_equal(const Event_History_I* lhs, const Event_History_I* rhs) {
-    // Event history storage is calloc-initialized and copied whole when changed, so padding stays stable here.
-    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison)
-    return memcmp(lhs, rhs, sizeof(*lhs)) == 0;
+    if (lhs == NULL || rhs == NULL) {
+        return 0;
+    }
+    const size_t count = sizeof(lhs->Event_History_Items) / sizeof(lhs->Event_History_Items[0]);
+    for (size_t i = 0; i < count; i++) {
+        if (!ui_event_history_item_equal(&lhs->Event_History_Items[i], &rhs->Event_History_Items[i])) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static void
@@ -144,11 +214,11 @@ ui_terminal_telemetry_publish_snapshot(const dsd_state* state) {
     if (state->event_history_s != NULL) {
         int eh_changed = 0;
         if (!g_have || !ui_event_history_slot_equal(&g_pub_eh[0], &state->event_history_s[0])) {
-            memcpy(&g_pub_eh[0], &state->event_history_s[0], sizeof(Event_History_I));
+            DSD_MEMCPY(&g_pub_eh[0], &state->event_history_s[0], sizeof(Event_History_I));
             eh_changed = 1;
         }
         if (!g_have || !ui_event_history_slot_equal(&g_pub_eh[1], &state->event_history_s[1])) {
-            memcpy(&g_pub_eh[1], &state->event_history_s[1], sizeof(Event_History_I));
+            DSD_MEMCPY(&g_pub_eh[1], &state->event_history_s[1], sizeof(Event_History_I));
             eh_changed = 1;
         }
         if (eh_changed) {
@@ -179,8 +249,8 @@ ui_get_latest_snapshot(void) {
     // Deep copy event history only when the published history changed.
     if (g_pub.event_history_s != NULL) {
         if (g_consume_eh_seq != g_pub_eh_seq) {
-            memcpy(&g_consume_eh[0], &g_pub_eh[0], sizeof(Event_History_I));
-            memcpy(&g_consume_eh[1], &g_pub_eh[1], sizeof(Event_History_I));
+            DSD_MEMCPY(&g_consume_eh[0], &g_pub_eh[0], sizeof(Event_History_I));
+            DSD_MEMCPY(&g_consume_eh[1], &g_pub_eh[1], sizeof(Event_History_I));
             g_consume_eh_seq = g_pub_eh_seq;
         }
         g_consume.event_history_s = g_consume_eh;

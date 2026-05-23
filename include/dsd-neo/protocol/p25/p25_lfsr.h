@@ -11,7 +11,8 @@
  * `src/protocol/p25/phase1/p25p1_ldu2.c`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_LFSR_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_LFSR_H_H
 
 #include <dsd-neo/core/state_fwd.h>
 
@@ -25,3 +26,4 @@ void LFSR128(dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_LFSR_H_H */

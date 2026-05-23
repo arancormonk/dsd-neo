@@ -11,7 +11,8 @@
  * so callers can use them directly.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_FEC_EZ_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_FEC_EZ_H_H
 
 #include <stdint.h>
 
@@ -33,3 +34,4 @@ int isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_FEC_EZ_H_H */

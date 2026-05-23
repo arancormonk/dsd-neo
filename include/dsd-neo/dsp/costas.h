@@ -19,7 +19,8 @@
  *   - costas = op25_repeater.costas_loop_cc (carrier tracking at symbol rate)
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_COSTAS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_COSTAS_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -282,3 +283,5 @@ void op25_fll_band_edge_cc(struct demod_state* d);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_COSTAS_H_ */

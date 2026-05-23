@@ -9,15 +9,15 @@
  *
  * This header is internal to src/ui/terminal/ and should NOT be installed.
  */
-#pragma once
+#ifndef DSD_NEO_SRC_UI_TERMINAL_MENU_INTERNAL_H_
+#define DSD_NEO_SRC_UI_TERMINAL_MENU_INTERNAL_H_
 
+#include <curses.h>
 #include <stddef.h>
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/platform/curses_compat.h>
-
-typedef struct NcMenuItem NcMenuItem;
+#include "dsd-neo/ui/menu_core.h"
 
 // Shared UI context passed to callbacks (full definition; forward-declared in menu_defs.h)
 typedef struct UiCtx {
@@ -157,16 +157,19 @@ ui_scroll_follow_selection(int total, int page_rows, int top, int sel_pos) {
 }
 
 // ---- Visibility helpers (from menu_render.c) ----
-int ui_is_enabled(const NcMenuItem* it, void* ctx);
-int ui_submenu_has_visible(const NcMenuItem* items, size_t n, void* ctx);
-int ui_next_enabled(const NcMenuItem* items, size_t n, void* ctx, int from, int dir);
-int ui_visible_index_for_item(const NcMenuItem* items, size_t n, void* ctx, int idx);
+int ui_is_enabled(const NcMenuItem* it, const void* ctx);
+int ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx);
+int ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir);
+int ui_visible_index_for_item(const NcMenuItem* items, size_t n, const void* ctx, int idx);
 
 // ---- Render helpers (from menu_render.c) ----
-void ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title, void* ctx);
-void ui_overlay_layout(UiMenuFrame* f, void* ctx);
+void ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title,
+                  const void* ctx);
+void ui_overlay_layout(UiMenuFrame* f, const void* ctx);
 void ui_overlay_ensure_window(UiMenuFrame* f);
 void ui_overlay_recreate_if_needed(UiMenuFrame* f);
-int ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, void* ctx, int* out_maxlab);
+int ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* ctx, int* out_maxlab);
 
 // Chooser helpers are declared in menu_prompts.h
+
+#endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_INTERNAL_H_ */

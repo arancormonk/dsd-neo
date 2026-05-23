@@ -8,16 +8,17 @@
  * @brief rdio-scanner export helpers (DirWatch sidecar + optional API upload).
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RDIO_EXPORT_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RDIO_EXPORT_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/state.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-enum {
+enum __attribute__((packed)) {
     DSD_RDIO_MODE_OFF = 0,
     DSD_RDIO_MODE_DIRWATCH = 1,
     DSD_RDIO_MODE_API = 2,
@@ -65,3 +66,4 @@ void dsd_rdio_upload_shutdown(void);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RDIO_EXPORT_H_H */

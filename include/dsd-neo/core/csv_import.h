@@ -10,7 +10,8 @@
  * Declares CSV import entrypoints implemented in core.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_CSV_IMPORT_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_CSV_IMPORT_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -19,14 +20,15 @@
 extern "C" {
 #endif
 
-int csvGroupImport(dsd_opts* opts, dsd_state* state);
+int csvGroupImport(const dsd_opts* opts, dsd_state* state);
 int csvGroupImportPath(const char* group_file_path, dsd_state* state);
-int csvLCNImport(dsd_opts* opts, dsd_state* state);
-int csvChanImport(dsd_opts* opts, dsd_state* state);
-int csvKeyImportDec(dsd_opts* opts, dsd_state* state);
-int csvKeyImportHex(dsd_opts* opts, dsd_state* state);
+int csvLCNImport(const dsd_opts* opts, dsd_state* state);
+int csvChanImport(const dsd_opts* opts, dsd_state* state);
+int csvKeyImportDec(const dsd_opts* opts, dsd_state* state);
+int csvKeyImportHex(const dsd_opts* opts, dsd_state* state);
 int csvVertexKsImport(dsd_state* state, const char* path);
 
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_CSV_IMPORT_H_H */

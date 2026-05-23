@@ -12,21 +12,21 @@
  * semantics and resource management.
  */
 
+#include <arpa/inet.h>
 #include <dsd-neo/io/udp_control.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/log.h>
-#if !DSD_PLATFORM_WIN_NATIVE
-#include <arpa/inet.h>
 #include <netinet/in.h>
-#include <sys/socket.h>
-#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-
+#include <sys/socket.h>
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
+
+#if !DSD_PLATFORM_WIN_NATIVE
+#endif
 
 struct udp_control {
     int port;
@@ -46,7 +46,7 @@ struct udp_control {
  * @return Parsed 32-bit value.
  */
 static unsigned int
-udp_chars_to_int(unsigned char* buf) {
+udp_chars_to_int(const unsigned char* buf) {
     int i;
     unsigned int val = 0;
     for (i = 1; i < 5; i++) {
@@ -70,7 +70,7 @@ static DSD_THREAD_RETURN_TYPE
     __stdcall
 #endif
     udp_thread_fn(void* arg) {
-    udp_control* ctrl = (udp_control*)arg;
+    udp_control* ctrl = static_cast<udp_control*>(arg);
     int n = 0;
     unsigned char buffer[5];
     struct sockaddr_in serv_addr;
@@ -81,7 +81,7 @@ static DSD_THREAD_RETURN_TYPE
         DSD_THREAD_RETURN;
     }
 
-    memset(&serv_addr, 0, sizeof(serv_addr));
+    DSD_MEMSET(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons((uint16_t)ctrl->port);
@@ -93,7 +93,7 @@ static DSD_THREAD_RETURN_TYPE
         DSD_THREAD_RETURN;
     }
 
-    memset(buffer, 0, sizeof(buffer));
+    DSD_MEMSET(buffer, 0, sizeof(buffer));
     LOG_INFO("Main socket started! :-) Tuning enabled on UDP/%d \n", ctrl->port);
 
     while (!ctrl->stop_flag && (n = dsd_socket_recv(ctrl->sockfd, buffer, 5, 0)) > 0) {
@@ -132,7 +132,7 @@ udp_control_start(int udp_port, udp_control_retune_cb cb, void* user_data) {
     if (udp_port == 0) {
         return NULL;
     }
-    udp_control* ctrl = (udp_control*)malloc(sizeof(udp_control));
+    udp_control* ctrl = static_cast<udp_control*>(malloc(sizeof(udp_control)));
     if (!ctrl) {
         return NULL;
     }

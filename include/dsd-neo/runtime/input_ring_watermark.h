@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_WATERMARK_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_WATERMARK_H_
 
 /**
  * @file
@@ -160,3 +161,5 @@ void watermark_periodic_adjust(struct input_ring_watermark* wm, uint64_t now_ns)
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_WATERMARK_H_ */

@@ -3,7 +3,8 @@
  * @file
  * @brief UI DSP runtime command opcodes for `UI_CMD_DSP_OP` payloads.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_UI_DSP_CMD_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_UI_DSP_CMD_H_
 
 /** DSP control opcodes understood by the demod thread. */
 enum UiDspOp {
@@ -40,3 +41,5 @@ typedef struct {
     int c;
     int d;
 } UiDspPayload;
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_UI_DSP_CMD_H_ */

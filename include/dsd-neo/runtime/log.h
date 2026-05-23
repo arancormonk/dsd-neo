@@ -17,7 +17,12 @@
 /**
  * @brief Log severity levels for runtime logging.
  */
-typedef enum { LOG_LEVEL_ERROR = 0, LOG_LEVEL_WARN = 1, LOG_LEVEL_INFO = 2, LOG_LEVEL_DEBUG = 3 } dsd_neo_log_level_t;
+typedef enum __attribute__((packed)) {
+    LOG_LEVEL_ERROR = 0,
+    LOG_LEVEL_WARN = 1,
+    LOG_LEVEL_INFO = 2,
+    LOG_LEVEL_DEBUG = 3
+} dsd_neo_log_level_t;
 
 /* Compile-time log level control (default to INFO) */
 #ifndef DSD_NEO_LOG_LEVEL

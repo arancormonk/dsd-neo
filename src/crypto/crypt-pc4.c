@@ -37,8 +37,7 @@ next_rng(PC4Context* ctx) {
 
 /* ARC4 initialization */
 static void
-arc4_init(PC4Context* ctx, unsigned char key[]) {
-    int tmp;
+arc4_init(PC4Context* ctx, const unsigned char key[]) {
     for (ctx->i_arc4 = 0; ctx->i_arc4 < 256; ctx->i_arc4++) {
         ctx->array_arc4[ctx->i_arc4] = (unsigned char)ctx->i_arc4;
     }
@@ -46,7 +45,7 @@ arc4_init(PC4Context* ctx, unsigned char key[]) {
     ctx->j_arc4 = 0;
     for (ctx->i_arc4 = 0; ctx->i_arc4 < 256; ctx->i_arc4++) {
         ctx->j_arc4 = (ctx->j_arc4 + ctx->array_arc4[ctx->i_arc4] + key[ctx->i_arc4 % 256]) % 256;
-        tmp = ctx->array_arc4[ctx->i_arc4];
+        int tmp = ctx->array_arc4[ctx->i_arc4];
         ctx->array_arc4[ctx->i_arc4] = ctx->array_arc4[ctx->j_arc4];
         ctx->array_arc4[ctx->j_arc4] = tmp;
     }
@@ -102,7 +101,7 @@ md2_init(PC4Context* ctx) {
 
 /* MD2-II hashing */
 static void
-md2_hashing(PC4Context* ctx, unsigned char t1[], size_t b6) {
+md2_hashing(PC4Context* ctx, const unsigned char t1[], size_t b6) {
     static const unsigned char s4[256] = {
         13,  199, 11,  67,  237, 193, 164, 77,  115, 184, 141, 222, 73,  38,  147, 36,  150, 87,  21,  104, 12,  61,
         156, 101, 111, 145, 119, 22,  207, 35,  198, 37,  171, 167, 80,  30,  219, 28,  213, 121, 86,  29,  214, 242,
@@ -117,21 +116,20 @@ md2_hashing(PC4Context* ctx, unsigned char t1[], size_t b6) {
         107, 76,  85,  95,  194, 142, 50,  49,  134, 23,  135, 169, 221, 210, 203, 63,  165, 82,  161, 202, 53,  14,
         206, 232, 103, 102, 195, 117, 250, 99,  0,   74,  160, 241, 2,   113};
 
-    int b1, b2, b3, b5;
     size_t t1_len = b6;
     size_t idx = 0;
     while (idx < t1_len) {
         for (; idx < t1_len && ctx->x2 < n1; ctx->x2++) {
-            b5 = t1[idx++];
+            int b5 = t1[idx++];
             ctx->h1[ctx->x2 + n1] = (unsigned char)b5;
             ctx->h1[ctx->x2 + (n1 * 2)] = (unsigned char)(b5 ^ ctx->h1[ctx->x2]);
             ctx->x1 = ctx->h2[ctx->x2] ^= s4[b5 ^ ctx->x1];
         }
         if (ctx->x2 == n1) {
-            b2 = 0;
+            int b2 = 0;
             ctx->x2 = 0;
-            for (b3 = 0; b3 < (n1 + 2); b3++) {
-                for (b1 = 0; b1 < (n1 * 3); b1++) {
+            for (int b3 = 0; b3 < (n1 + 2); b3++) {
+                for (int b1 = 0; b1 < (n1 * 3); b1++) {
                     b2 = ctx->h1[b1] ^= s4[b2];
                 }
                 b2 = (b2 + b3) % 256;
@@ -164,157 +162,135 @@ mixy(PC4Context* ctx, int nn2) {
 /* Fisher-Yates shuffle */
 static void
 mixer(PC4Context* ctx, uint8_t* mixu, int nn) {
-    int ii, jj, tmmp;
+    int ii;
     for (ii = nn - 1; ii > 0; ii--) {
-        jj = mixy(ctx, ii + 1);
-        tmmp = mixu[jj];
+        int jj = mixy(ctx, ii + 1);
+        uint8_t tmmp = mixu[jj];
         mixu[jj] = mixu[ii];
-        mixu[ii] = (uint8_t)tmmp;
+        mixu[ii] = tmmp;
     }
 }
 
-/* Key schedule and S-box generation */
-void
-create_keys(PC4Context* ctx, unsigned char key1[], size_t size1) {
-    int i, w, k;
-    unsigned char h4[n1];
+static void
+pc4_discard_arc4(PC4Context* ctx) {
+    int count = arc4_output(ctx) + 256;
+    for (int i = 0; i < count; i++) {
+        (void)arc4_output(ctx);
+    }
+}
 
+static void
+pc4_fill_sequence(uint8_t* numbers, int count) {
+    for (int i = 0; i < count; i++) {
+        numbers[i] = (uint8_t)i;
+    }
+}
+
+static void
+pc4_shuffle_into(PC4Context* ctx, uint8_t* numbers, uint8_t* dst, int count) {
+    pc4_fill_sequence(numbers, count);
+    mixer(ctx, numbers, count);
+    for (int i = 0; i < count; i++) {
+        dst[i] = numbers[i];
+    }
+}
+
+static void
+pc4_init_hash_state(PC4Context* ctx, const unsigned char key1[], size_t size1, unsigned char h4[n1]) {
     md2_init(ctx);
     md2_hashing(ctx, key1, size1);
     md2_end(ctx, h4);
 
-    for (i = 0; i < 16; i++) {
+    for (int i = 0; i < 16; i++) {
         ctx->keys[i] = h4[i];
     }
     arc4_init(ctx, h4);
 
     ctx->x = 0;
-    for (i = 0; i < 8; i++) {
+    for (int i = 0; i < 8; i++) {
         ctx->x = (ctx->x << 8) + (uint64_t)(h4[256 + i] & 0xffu);
     }
 
     ctx->xyz = 0;
     ctx->count = 0;
 
-    for (i = 0; i < 20000; i++) {
+    for (int i = 0; i < 20000; i++) {
         (void)arc4_output(ctx);
     }
+}
 
-    uint8_t numbers[256];
+static void
+pc4_init_round_perms(PC4Context* ctx, uint8_t* numbers) {
+    for (int w = 0; w < 16; w++) {
+        pc4_discard_arc4(ctx);
+        pc4_shuffle_into(ctx, numbers, ctx->perm[w], 256);
+    }
+}
 
-    for (w = 0; w < 16; w++) {
-        k = arc4_output(ctx) + 256;
-        for (i = 0; i < k; i++) {
-            (void)arc4_output(ctx);
-        }
-        for (i = 0; i < 256; i++) {
-            numbers[i] = (uint8_t)i;
-        }
-        mixer(ctx, numbers, 256);
-        for (i = 0; i < 256; i++) {
-            ctx->perm[w][i] = numbers[i];
-        }
-    }
-
-    k = arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)arc4_output(ctx);
-    }
-    for (i = 0; i < 256; i++) {
-        numbers[i] = (uint8_t)i;
-    }
-    mixer(ctx, numbers, 256);
-    for (i = 0; i < 256; i++) {
-        ctx->new1[i] = numbers[i];
-    }
-
-    k = arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)arc4_output(ctx);
-    }
-    for (i = 0; i < 49; i++) {
-        numbers[i] = (uint8_t)i;
-    }
-    mixer(ctx, numbers, 49);
-    for (i = 0; i < 49; i++) {
-        ctx->array[i] = numbers[i];
-    }
-
-    k = arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)arc4_output(ctx);
-    }
-    for (i = 0; i < nbround; i++) {
-        ctx->decal[i] = (uint8_t)((arc4_output(ctx) % 23) + 1);
-    }
-
-    k = arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)arc4_output(ctx);
-    }
-    for (w = 0; w < 3; w++) {
-        for (i = 0; i < nbround; i++) {
-            ctx->rngxor[i][w] = arc4_output(ctx);
-        }
-    }
-
-    k = arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)arc4_output(ctx);
-    }
-    for (i = 0; i < 49; i++) {
-        numbers[i] = (uint8_t)i;
-    }
-    mixer(ctx, numbers, 49);
-    for (i = 0; i < 49; i++) {
-        ctx->array2[i] = numbers[i];
-    }
-
-    k = arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)arc4_output(ctx);
-    }
-    for (i = 0; i < 256; i++) {
-        numbers[i] = (uint8_t)i;
-    }
-    mixer(ctx, numbers, 256);
-    for (i = 0; i < 256; i++) {
-        ctx->tab[i] = numbers[i];
-        ctx->inv[ctx->tab[i]] = (unsigned char)i;
-    }
-
-    k = arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)arc4_output(ctx);
-    }
-    for (w = 0; w < 3; w++) {
-        k = arc4_output(ctx) + 256;
-        for (i = 0; i < k; i++) {
-            (void)arc4_output(ctx);
-        }
-        for (i = 0; i < 3; i++) {
-            numbers[i] = (uint8_t)i;
-        }
-        mixer(ctx, numbers, 3);
-        for (i = 0; i < 3; i++) {
-            ctx->permut[w][i] = numbers[i];
-        }
-    }
-
-    k = arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)arc4_output(ctx);
-    }
-    for (w = 0; w < 3; w++) {
-        for (i = 0; i < nbround; i++) {
-            ctx->rngxor2[i][w] = arc4_output(ctx);
+static void
+pc4_init_round_xor(PC4Context* ctx, uint8_t dst[nbround][3]) {
+    for (int w = 0; w < 3; w++) {
+        for (int i = 0; i < nbround; i++) {
+            dst[i][w] = arc4_output(ctx);
         }
     }
 }
 
+static void
+pc4_init_tab_inverse(PC4Context* ctx, uint8_t* numbers) {
+    pc4_shuffle_into(ctx, numbers, ctx->tab, 256);
+    for (int i = 0; i < 256; i++) {
+        ctx->inv[ctx->tab[i]] = (unsigned char)i;
+    }
+}
+
+static void
+pc4_init_permutations(PC4Context* ctx, uint8_t* numbers) {
+    pc4_discard_arc4(ctx);
+    for (int w = 0; w < 3; w++) {
+        pc4_discard_arc4(ctx);
+        pc4_shuffle_into(ctx, numbers, ctx->permut[w], 3);
+    }
+}
+
+/* Key schedule and S-box generation */
+void
+create_keys(PC4Context* ctx, const unsigned char key1[], size_t size1) {
+    unsigned char h4[n1];
+    uint8_t numbers[256];
+
+    pc4_init_hash_state(ctx, key1, size1, h4);
+    pc4_init_round_perms(ctx, numbers);
+
+    pc4_discard_arc4(ctx);
+    pc4_shuffle_into(ctx, numbers, ctx->new1, 256);
+
+    pc4_discard_arc4(ctx);
+    pc4_shuffle_into(ctx, numbers, ctx->array, 49);
+
+    pc4_discard_arc4(ctx);
+    for (int i = 0; i < nbround; i++) {
+        ctx->decal[i] = (uint8_t)((arc4_output(ctx) % 23) + 1);
+    }
+
+    pc4_discard_arc4(ctx);
+    pc4_init_round_xor(ctx, ctx->rngxor);
+
+    pc4_discard_arc4(ctx);
+    pc4_shuffle_into(ctx, numbers, ctx->array2, 49);
+
+    pc4_discard_arc4(ctx);
+    pc4_init_tab_inverse(ctx, numbers);
+
+    pc4_init_permutations(ctx, numbers);
+
+    pc4_discard_arc4(ctx);
+    pc4_init_round_xor(ctx, ctx->rngxor2);
+}
+
 /* Compute round transformation */
 static void
-compute(PC4Context* ctx, uint8_t* tab1, uint8_t round) {
+compute(PC4Context* ctx, const uint8_t* tab1, uint8_t round) {
     ctx->tot[0] = (uint8_t)((ctx->perm[round][tab1[ctx->permut[0][0]]] + ctx->perm[round][tab1[ctx->permut[0][1]]])
                             ^ ctx->perm[round][tab1[ctx->permut[0][2]]]);
     ctx->tot[0] = (uint8_t)(ctx->tot[0] + ctx->new1[ctx->tot[0]]);
@@ -328,8 +304,8 @@ compute(PC4Context* ctx, uint8_t* tab1, uint8_t round) {
 
 /* Convert bits to bytes */
 void
-binhex(PC4Context* ctx, short* z, int length) {
-    short* b = (short*)z;
+binhex(PC4Context* ctx, const short* z, int length) {
+    const short* b = z;
     int i, j;
     for (i = 0; i < length; i = j) {
         uint8_t a = 0;

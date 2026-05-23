@@ -13,15 +13,8 @@
 #include <dsd-neo/dsp/ted.h>
 #include <math.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-/**
- * @brief Test TED with a specific SPS value.
- *
- * The MMSE 8-tap interpolator requires the delay line to be sized correctly
- * to avoid reading past the end. This is especially critical for low SPS
- * values (2, 3) where the naive formula `2*ceil(omega)` would be too small.
- */
 static int
 test_ted_sps(int sps) {
     const int num_symbols = 40;       /* more symbols for low SPS */
@@ -32,7 +25,7 @@ test_ted_sps(int sps) {
     float y[2 * 500];
 
     if (N0 > 500) {
-        fprintf(stderr, "TED sps=%d: buffer too small\n", sps);
+        DSD_FPRINTF(stderr, "TED sps=%d: buffer too small\n", sps);
         return 1;
     }
 
@@ -50,7 +43,7 @@ test_ted_sps(int sps) {
     int N = 2 * N0;
 
     ted_config_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     cfg.enabled = 1;
     cfg.force = 1; /* ensure it runs regardless of sps */
     cfg.sps = sps;
@@ -69,14 +62,14 @@ test_ted_sps(int sps) {
     int expected_min_symbols = num_symbols / 2; /* allow significant startup overhead */
     int output_symbols = N / 2;
     if (output_symbols < expected_min_symbols) {
-        fprintf(stderr, "TED sps=%d: output_symbols=%d expected>=%d\n", sps, output_symbols, expected_min_symbols);
+        DSD_FPRINTF(stderr, "TED sps=%d: output_symbols=%d expected>=%d\n", sps, output_symbols, expected_min_symbols);
         return 1;
     }
 
     /* omega should be near the nominal sps value (allow wider tolerance for low SPS) */
     float omega_tol = (sps <= 3) ? 0.5f : 0.1f;
     if (fabsf(st.omega - (float)sps) > omega_tol) {
-        fprintf(stderr, "TED sps=%d: omega=%f expected~%d\n", sps, st.omega, sps);
+        DSD_FPRINTF(stderr, "TED sps=%d: omega=%f expected~%d\n", sps, st.omega, sps);
         return 1;
     }
 
@@ -86,12 +79,13 @@ test_ted_sps(int sps) {
     const int kMmseNtapsPlus1 = 8 + 1; /* MMSE_NTAPS + 1 from ted.cpp */
     int min_twice_sps = (int)ceilf((float)sps / 2.0f) + kMmseNtapsPlus1;
     if (st.twice_sps < min_twice_sps) {
-        fprintf(stderr, "TED sps=%d: twice_sps=%d too small (need>=%d for MMSE)\n", sps, st.twice_sps, min_twice_sps);
+        DSD_FPRINTF(stderr, "TED sps=%d: twice_sps=%d too small (need>=%d for MMSE)\n", sps, st.twice_sps,
+                    min_twice_sps);
         return 1;
     }
 
-    fprintf(stderr, "TED sps=%d: output_symbols=%d omega=%.3f twice_sps=%d e_ema=%.4f OK\n", sps, output_symbols,
-            st.omega, st.twice_sps, st.e_ema);
+    DSD_FPRINTF(stderr, "TED sps=%d: output_symbols=%d omega=%.3f twice_sps=%d e_ema=%.4f OK\n", sps, output_symbols,
+                st.omega, st.twice_sps, st.e_ema);
 
     return 0;
 }
@@ -114,7 +108,7 @@ test_ted_reinit_on_sps_change(void) {
     float y[2 * 500];
 
     if (N0 > 500) {
-        fprintf(stderr, "TED reinit: buffer too small\n");
+        DSD_FPRINTF(stderr, "TED reinit: buffer too small\n");
         return 1;
     }
 
@@ -128,7 +122,7 @@ test_ted_reinit_on_sps_change(void) {
     ted_init_state(&st);
 
     ted_config_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     cfg.enabled = 1;
     cfg.force = 1;
     cfg.gain_mu = 0.025f;
@@ -142,7 +136,7 @@ test_ted_reinit_on_sps_change(void) {
     float omega_mid_1 = st.omega_mid;
 
     if (twice_sps_1 <= 0 || omega_mid_1 <= 0.0f) {
-        fprintf(stderr, "TED reinit: initial omega/twice_sps not initialized\n");
+        DSD_FPRINTF(stderr, "TED reinit: initial omega/twice_sps not initialized\n");
         return 1;
     }
 
@@ -153,21 +147,21 @@ test_ted_reinit_on_sps_change(void) {
     gardner_timing_adjust(&cfg, &st, x, &N, y);
 
     if (st.sps != sps2) {
-        fprintf(stderr, "TED reinit: state.sps=%d expected %d\n", st.sps, sps2);
+        DSD_FPRINTF(stderr, "TED reinit: state.sps=%d expected %d\n", st.sps, sps2);
         return 1;
     }
     if (fabsf(st.omega_mid - (float)sps2) > 0.25f) {
-        fprintf(stderr, "TED reinit: omega_mid=%f expected~%d\n", st.omega_mid, sps2);
+        DSD_FPRINTF(stderr, "TED reinit: omega_mid=%f expected~%d\n", st.omega_mid, sps2);
         return 1;
     }
     if (st.twice_sps >= twice_sps_1) {
-        fprintf(stderr, "TED reinit: twice_sps=%d did not shrink from %d after SPS decrease\n", st.twice_sps,
-                twice_sps_1);
+        DSD_FPRINTF(stderr, "TED reinit: twice_sps=%d did not shrink from %d after SPS decrease\n", st.twice_sps,
+                    twice_sps_1);
         return 1;
     }
 
-    fprintf(stderr, "TED reinit: sps1=%d -> sps2=%d omega_mid=%.3f twice_sps=%d OK\n", sps1, sps2, st.omega_mid,
-            st.twice_sps);
+    DSD_FPRINTF(stderr, "TED reinit: sps1=%d -> sps2=%d omega_mid=%.3f twice_sps=%d OK\n", sps1, sps2, st.omega_mid,
+                st.twice_sps);
 
     return 0;
 }

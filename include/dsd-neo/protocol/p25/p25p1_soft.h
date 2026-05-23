@@ -47,7 +47,7 @@ int hamming_10_6_3_soft(const char* bits, const int* reliab, char* out_bits);
  * flip list over the weakest received bits. Valid candidates are scored by
  * accumulated reliability penalty.
  */
-int check_and_fix_golay_24_6_soft(char* data, char* parity, const int* reliab, int* fixed);
+int check_and_fix_golay_24_6_soft(char* data, const char* parity, const int* reliab, int* fixed);
 
 /**
  * Soft-decision Golay(24,12) decoder using small-list Chase algorithm.
@@ -61,7 +61,7 @@ int check_and_fix_golay_24_6_soft(char* data, char* parity, const int* reliab, i
  * @param fixed     Output: number of bits corrected.
  * @return 0=success, 1=uncorrectable.
  */
-int check_and_fix_golay_24_12_soft(char* data, char* parity, const int* reliab, int* fixed);
+int check_and_fix_golay_24_12_soft(char* data, const char* parity, const int* reliab, int* fixed);
 
 /**
  * Compute a symbol reliability from contiguous per-bit LLR values.
@@ -96,11 +96,11 @@ int p25p1_build_rs_erasures(const uint8_t* data_reliab, int data_symbols, const 
 int p25p1_build_rs_ranked_erasures(const uint8_t* data_reliab, int data_symbols, const uint8_t* parity_reliab,
                                    int parity_symbols, int min_erasures, int* erasures, int max_erasures);
 
-int p25p1_rs_36_20_17_soft_reliability(char* data, char* parity, const uint8_t* data_reliab,
+int p25p1_rs_36_20_17_soft_reliability(char* data, const char* parity, const uint8_t* data_reliab,
                                        const uint8_t* parity_reliab);
-int p25p1_rs_24_12_13_soft_reliability(char* data, char* parity, const uint8_t* data_reliab,
+int p25p1_rs_24_12_13_soft_reliability(char* data, const char* parity, const uint8_t* data_reliab,
                                        const uint8_t* parity_reliab);
-int p25p1_rs_24_16_9_soft_reliability(char* data, char* parity, const uint8_t* data_reliab,
+int p25p1_rs_24_16_9_soft_reliability(char* data, const char* parity, const uint8_t* data_reliab,
                                       const uint8_t* parity_reliab);
 
 /**

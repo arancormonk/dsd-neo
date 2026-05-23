@@ -12,12 +12,24 @@
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_const.h>
+#include <dsd-neo/protocol/dstar/dstar_const.h>
+#include <dsd-neo/protocol/p25/p25p1_const.h>
+#include <dsd-neo/protocol/provoice/provoice_const.h>
+#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <sndfile.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 #define DSD_NEO_MAIN
 #include <dsd-neo/protocol/dmr/dmr_const.h>
@@ -28,16 +40,13 @@
 
 #undef DSD_NEO_MAIN
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/platform.h"
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 void
-noCarrier(dsd_opts* opts, dsd_state* state) {
+noCarrier(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
 }
@@ -74,7 +83,7 @@ test_help_returns_one_shot_and_does_not_exit(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
     initOpts(opts);
@@ -90,14 +99,14 @@ test_help_returns_one_shot_and_does_not_exit(void) {
     test_redirect_stdout_to_null();
     int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ONE_SHOT) {
-        fprintf(stderr, "expected rc=%d, got %d\n", DSD_PARSE_ONE_SHOT, rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d\n", DSD_PARSE_ONE_SHOT, rc);
         freeState(state);
         free(opts);
         free(state);
         return 1;
     }
     if (exit_rc != 0) {
-        fprintf(stderr, "expected exit_rc=0, got %d\n", exit_rc);
+        DSD_FPRINTF(stderr, "expected exit_rc=0, got %d\n", exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -116,7 +125,7 @@ test_invalid_option_returns_error_and_does_not_exit(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
     initOpts(opts);
@@ -132,14 +141,14 @@ test_invalid_option_returns_error_and_does_not_exit(void) {
 
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ERROR) {
-        fprintf(stderr, "expected rc=%d, got %d\n", DSD_PARSE_ERROR, rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d\n", DSD_PARSE_ERROR, rc);
         freeState(state);
         free(opts);
         free(state);
         return 1;
     }
     if (exit_rc != 1) {
-        fprintf(stderr, "expected exit_rc=1, got %d\n", exit_rc);
+        DSD_FPRINTF(stderr, "expected exit_rc=1, got %d\n", exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -158,7 +167,7 @@ test_unknown_option_returns_error_and_does_not_exit(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
     initOpts(opts);
@@ -174,14 +183,14 @@ test_unknown_option_returns_error_and_does_not_exit(void) {
     test_redirect_stdout_to_null();
     int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ERROR) {
-        fprintf(stderr, "expected rc=%d, got %d\n", DSD_PARSE_ERROR, rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d\n", DSD_PARSE_ERROR, rc);
         freeState(state);
         free(opts);
         free(state);
         return 1;
     }
     if (exit_rc != 1) {
-        fprintf(stderr, "expected exit_rc=1, got %d\n", exit_rc);
+        DSD_FPRINTF(stderr, "expected exit_rc=1, got %d\n", exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -200,7 +209,7 @@ test_H_loads_aes256_key_for_both_slots(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
     initOpts(opts);
@@ -215,7 +224,7 @@ test_H_loads_aes256_key_for_both_slots(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -229,12 +238,13 @@ test_H_loads_aes256_key_for_both_slots(void) {
 
     if (state->A1[0] != k1 || state->A2[0] != k2 || state->A3[0] != k3 || state->A4[0] != k4 || state->A1[1] != k1
         || state->A2[1] != k2 || state->A3[1] != k3 || state->A4[1] != k4) {
-        fprintf(stderr,
-                "expected A1..A4 to match key segments, got slot0=%016llX %016llX %016llX %016llX slot1=%016llX "
-                "%016llX %016llX %016llX\n",
-                (unsigned long long)state->A1[0], (unsigned long long)state->A2[0], (unsigned long long)state->A3[0],
-                (unsigned long long)state->A4[0], (unsigned long long)state->A1[1], (unsigned long long)state->A2[1],
-                (unsigned long long)state->A3[1], (unsigned long long)state->A4[1]);
+        DSD_FPRINTF(stderr,
+                    "expected A1..A4 to match key segments, got slot0=%016llX %016llX %016llX %016llX slot1=%016llX "
+                    "%016llX %016llX %016llX\n",
+                    (unsigned long long)state->A1[0], (unsigned long long)state->A2[0],
+                    (unsigned long long)state->A3[0], (unsigned long long)state->A4[0],
+                    (unsigned long long)state->A1[1], (unsigned long long)state->A2[1],
+                    (unsigned long long)state->A3[1], (unsigned long long)state->A4[1]);
         freeState(state);
         free(opts);
         free(state);
@@ -242,8 +252,8 @@ test_H_loads_aes256_key_for_both_slots(void) {
     }
 
     if (state->aes_key_loaded[0] != 1 || state->aes_key_loaded[1] != 1) {
-        fprintf(stderr, "expected aes_key_loaded[0..1]=1, got %d/%d\n", state->aes_key_loaded[0],
-                state->aes_key_loaded[1]);
+        DSD_FPRINTF(stderr, "expected aes_key_loaded[0..1]=1, got %d/%d\n", state->aes_key_loaded[0],
+                    state->aes_key_loaded[1]);
         freeState(state);
         free(opts);
         free(state);
@@ -255,7 +265,7 @@ test_H_loads_aes256_key_for_both_slots(void) {
         0x00, 0x5E, 0xFC, 0x58, 0xA1, 0x90, 0x51, 0x95, 0xE2, 0x8E, 0x9C, 0x78, 0x36, 0xAA, 0x2D, 0xB8,
     };
     if (memcmp(state->aes_key, expect_bytes, sizeof(expect_bytes)) != 0) {
-        fprintf(stderr, "expected aes_key bytes to match key, got mismatch\n");
+        DSD_FPRINTF(stderr, "expected aes_key bytes to match key, got mismatch\n");
         freeState(state);
         free(opts);
         free(state);
@@ -275,7 +285,7 @@ test_1_loads_rc4_key_for_both_slots_and_allows_spaces(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
     initOpts(opts);
@@ -290,7 +300,7 @@ test_1_loads_rc4_key_for_both_slots_and_allows_spaces(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -299,7 +309,7 @@ test_1_loads_rc4_key_for_both_slots_and_allows_spaces(void) {
 
     const unsigned long long expect = 0x1234567891ULL;
     if (state->R != expect || state->RR != expect) {
-        fprintf(stderr, "expected R/RR=%010llX, got %010llX/%010llX\n", expect, state->R, state->RR);
+        DSD_FPRINTF(stderr, "expected R/RR=%010llX, got %010llX/%010llX\n", expect, state->R, state->RR);
         freeState(state);
         free(opts);
         free(state);
@@ -319,7 +329,7 @@ test_1_loads_rc4_key_allows_0x_prefix(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
     initOpts(opts);
@@ -334,7 +344,7 @@ test_1_loads_rc4_key_allows_0x_prefix(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -343,7 +353,7 @@ test_1_loads_rc4_key_allows_0x_prefix(void) {
 
     const unsigned long long expect = 0x1234567891ULL;
     if (state->R != expect || state->RR != expect) {
-        fprintf(stderr, "expected R/RR=%010llX, got %010llX/%010llX\n", expect, state->R, state->RR);
+        DSD_FPRINTF(stderr, "expected R/RR=%010llX, got %010llX/%010llX\n", expect, state->R, state->RR);
         freeState(state);
         free(opts);
         free(state);
@@ -398,9 +408,9 @@ test_create_temp_ini_with_contents(const char* contents, char* out_path, size_t 
     char tmpl[1024];
     size_t tdir_len = strlen(tdir);
     if (tdir_len > 0 && (tdir[tdir_len - 1] == '/' || tdir[tdir_len - 1] == '\\')) {
-        snprintf(tmpl, sizeof tmpl, "%sdsdneo_bootstrap_XXXXXX", tdir);
+        DSD_SNPRINTF(tmpl, sizeof tmpl, "%sdsdneo_bootstrap_XXXXXX", tdir);
     } else {
-        snprintf(tmpl, sizeof tmpl, "%s%c%s", tdir, sep, "dsdneo_bootstrap_XXXXXX");
+        DSD_SNPRINTF(tmpl, sizeof tmpl, "%s%c%s", tdir, sep, "dsdneo_bootstrap_XXXXXX");
     }
 
     int fd = dsd_mkstemp(tmpl);
@@ -409,7 +419,7 @@ test_create_temp_ini_with_contents(const char* contents, char* out_path, size_t 
     }
     (void)dsd_close(fd);
 
-    if (snprintf(out_path, out_path_size, "%s.ini", tmpl) >= (int)out_path_size) {
+    if (DSD_SNPRINTF(out_path, out_path_size, "%s.ini", tmpl) >= (int)out_path_size) {
         (void)remove(tmpl);
         return -1;
     }
@@ -460,9 +470,9 @@ test_create_temp_raw_pcm_file(const char* prefix, const short* samples, size_t s
     char tmpl[1024];
     size_t tdir_len = strlen(tdir);
     if (tdir_len > 0 && (tdir[tdir_len - 1] == '/' || tdir[tdir_len - 1] == '\\')) {
-        snprintf(tmpl, sizeof tmpl, "%s%s_XXXXXX", tdir, prefix);
+        DSD_SNPRINTF(tmpl, sizeof tmpl, "%s%s_XXXXXX", tdir, prefix);
     } else {
-        snprintf(tmpl, sizeof tmpl, "%s%c%s_XXXXXX", tdir, sep, prefix);
+        DSD_SNPRINTF(tmpl, sizeof tmpl, "%s%c%s_XXXXXX", tdir, sep, prefix);
     }
 
     int fd = dsd_mkstemp(tmpl);
@@ -471,7 +481,7 @@ test_create_temp_raw_pcm_file(const char* prefix, const short* samples, size_t s
     }
     (void)dsd_close(fd);
 
-    if (snprintf(out_path, out_path_size, "%s%s", tmpl, suffix) >= (int)out_path_size) {
+    if (DSD_SNPRINTF(out_path, out_path_size, "%s%s", tmpl, suffix) >= (int)out_path_size) {
         (void)remove(tmpl);
         return -1;
     }
@@ -509,9 +519,9 @@ test_create_temp_vertex_ks_csv(char* out_path, size_t out_path_size, int malform
     char tmpl[1024];
     size_t tdir_len = strlen(tdir);
     if (tdir_len > 0 && (tdir[tdir_len - 1] == '/' || tdir[tdir_len - 1] == '\\')) {
-        snprintf(tmpl, sizeof tmpl, "%sdsdneo_vertex_ks_XXXXXX", tdir);
+        DSD_SNPRINTF(tmpl, sizeof tmpl, "%sdsdneo_vertex_ks_XXXXXX", tdir);
     } else {
-        snprintf(tmpl, sizeof tmpl, "%s%c%s", tdir, sep, "dsdneo_vertex_ks_XXXXXX");
+        DSD_SNPRINTF(tmpl, sizeof tmpl, "%s%c%s", tdir, sep, "dsdneo_vertex_ks_XXXXXX");
     }
 
     int fd = dsd_mkstemp(tmpl);
@@ -520,7 +530,7 @@ test_create_temp_vertex_ks_csv(char* out_path, size_t out_path_size, int malform
     }
     (void)dsd_close(fd);
 
-    if (snprintf(out_path, out_path_size, "%s.csv", tmpl) >= (int)out_path_size) {
+    if (DSD_SNPRINTF(out_path, out_path_size, "%s.csv", tmpl) >= (int)out_path_size) {
         (void)remove(tmpl);
         return -1;
     }
@@ -563,9 +573,9 @@ test_create_temp_iq_fixture(char* out_metadata_path, size_t out_metadata_path_si
     char tmpl[1024];
     size_t tdir_len = strlen(tdir);
     if (tdir_len > 0 && (tdir[tdir_len - 1] == '/' || tdir[tdir_len - 1] == '\\')) {
-        snprintf(tmpl, sizeof tmpl, "%sdsdneo_iq_cli_XXXXXX", tdir);
+        DSD_SNPRINTF(tmpl, sizeof tmpl, "%sdsdneo_iq_cli_XXXXXX", tdir);
     } else {
-        snprintf(tmpl, sizeof tmpl, "%s%c%s", tdir, sep, "dsdneo_iq_cli_XXXXXX");
+        DSD_SNPRINTF(tmpl, sizeof tmpl, "%s%c%s", tdir, sep, "dsdneo_iq_cli_XXXXXX");
     }
 
     int fd = dsd_mkstemp(tmpl);
@@ -575,7 +585,7 @@ test_create_temp_iq_fixture(char* out_metadata_path, size_t out_metadata_path_si
     (void)dsd_close(fd);
 
     char data_path[1024];
-    if (snprintf(data_path, sizeof data_path, "%s.iq", tmpl) >= (int)sizeof(data_path)) {
+    if (DSD_SNPRINTF(data_path, sizeof data_path, "%s.iq", tmpl) >= (int)sizeof(data_path)) {
         (void)remove(tmpl);
         return -1;
     }
@@ -599,7 +609,7 @@ test_create_temp_iq_fixture(char* out_metadata_path, size_t out_metadata_path_si
     fclose(data_fp);
 
     char metadata_path[1024];
-    if (snprintf(metadata_path, sizeof metadata_path, "%s.json", data_path) >= (int)sizeof(metadata_path)) {
+    if (DSD_SNPRINTF(metadata_path, sizeof metadata_path, "%s.json", data_path) >= (int)sizeof(metadata_path)) {
         (void)remove(data_path);
         return -1;
     }
@@ -616,40 +626,40 @@ test_create_temp_iq_fixture(char* out_metadata_path, size_t out_metadata_path_si
     }
     data_file = data_file ? (data_file + 1) : data_path;
 
-    int n = fprintf(meta_fp,
-                    "{\n"
-                    "  \"format\": \"dsd-neo-iq\",\n"
-                    "  \"version\": 1,\n"
-                    "  \"sample_format\": \"cu8\",\n"
-                    "  \"iq_order\": \"IQ\",\n"
-                    "  \"endianness\": \"none\",\n"
-                    "  \"capture_stage\": \"post_mute_pre_widen\",\n"
-                    "  \"sample_rate_hz\": 1536000,\n"
-                    "  \"center_frequency_hz\": 851375000,\n"
-                    "  \"capture_center_frequency_hz\": 851759000,\n"
-                    "  \"ppm\": 0,\n"
-                    "  \"tuner_gain_tenth_db\": 220,\n"
-                    "  \"rtl_dsp_bw_khz\": 48,\n"
-                    "  \"base_decimation\": 32,\n"
-                    "  \"post_downsample\": 1,\n"
-                    "  \"demod_rate_hz\": 48000,\n"
-                    "  \"offset_tuning_enabled\": false,\n"
-                    "  \"fs4_shift_enabled\": true,\n"
-                    "  \"combine_rotate_enabled\": true,\n"
-                    "  \"muted_bytes_excluded\": true,\n"
-                    "  \"contains_retunes\": false,\n"
-                    "  \"capture_retune_count\": 0,\n"
-                    "  \"source_backend\": \"rtl\",\n"
-                    "  \"source_args\": \"dev=0\",\n"
-                    "  \"capture_started_utc\": \"2026-01-01T00:00:00Z\",\n"
-                    "  \"data_file\": \"%s\",\n"
-                    "  \"data_bytes\": 16,\n"
-                    "  \"capture_drops\": 0,\n"
-                    "  \"capture_drop_blocks\": 0,\n"
-                    "  \"input_ring_drops\": 0,\n"
-                    "  \"notes\": \"\"\n"
-                    "}\n",
-                    data_file);
+    int n = DSD_FPRINTF(meta_fp,
+                        "{\n"
+                        "  \"format\": \"dsd-neo-iq\",\n"
+                        "  \"version\": 1,\n"
+                        "  \"sample_format\": \"cu8\",\n"
+                        "  \"iq_order\": \"IQ\",\n"
+                        "  \"endianness\": \"none\",\n"
+                        "  \"capture_stage\": \"post_mute_pre_widen\",\n"
+                        "  \"sample_rate_hz\": 1536000,\n"
+                        "  \"center_frequency_hz\": 851375000,\n"
+                        "  \"capture_center_frequency_hz\": 851759000,\n"
+                        "  \"ppm\": 0,\n"
+                        "  \"tuner_gain_tenth_db\": 220,\n"
+                        "  \"rtl_dsp_bw_khz\": 48,\n"
+                        "  \"base_decimation\": 32,\n"
+                        "  \"post_downsample\": 1,\n"
+                        "  \"demod_rate_hz\": 48000,\n"
+                        "  \"offset_tuning_enabled\": false,\n"
+                        "  \"fs4_shift_enabled\": true,\n"
+                        "  \"combine_rotate_enabled\": true,\n"
+                        "  \"muted_bytes_excluded\": true,\n"
+                        "  \"contains_retunes\": false,\n"
+                        "  \"capture_retune_count\": 0,\n"
+                        "  \"source_backend\": \"rtl\",\n"
+                        "  \"source_args\": \"dev=0\",\n"
+                        "  \"capture_started_utc\": \"2026-01-01T00:00:00Z\",\n"
+                        "  \"data_file\": \"%s\",\n"
+                        "  \"data_bytes\": 16,\n"
+                        "  \"capture_drops\": 0,\n"
+                        "  \"capture_drop_blocks\": 0,\n"
+                        "  \"input_ring_drops\": 0,\n"
+                        "  \"notes\": \"\"\n"
+                        "}\n",
+                        data_file);
     fclose(meta_fp);
     if (n <= 0) {
         (void)remove(metadata_path);
@@ -657,8 +667,8 @@ test_create_temp_iq_fixture(char* out_metadata_path, size_t out_metadata_path_si
         return -1;
     }
 
-    snprintf(out_data_path, out_data_path_size, "%s", data_path);
-    snprintf(out_metadata_path, out_metadata_path_size, "%s", metadata_path);
+    DSD_SNPRINTF(out_data_path, out_data_path_size, "%s", data_path);
+    DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s", metadata_path);
     return 0;
 }
 
@@ -669,7 +679,7 @@ test_bootstrap_treats_lone_ini_as_config(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -682,7 +692,7 @@ test_bootstrap_treats_lone_ini_as_config(void) {
 
     char cfg_path[1024];
     if (test_create_temp_ini(cfg_path, sizeof cfg_path) != 0) {
-        fprintf(stderr, "failed to create temp ini\n");
+        DSD_FPRINTF(stderr, "failed to create temp ini\n");
         freeState(state);
         free(opts);
         free(state);
@@ -697,7 +707,7 @@ test_bootstrap_treats_lone_ini_as_config(void) {
     int rc = dsd_runtime_bootstrap(2, argv, opts, state, &argc_effective, &exit_rc);
 
     if (rc != DSD_BOOTSTRAP_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -707,7 +717,7 @@ test_bootstrap_treats_lone_ini_as_config(void) {
 
     // Ensure it behaves like "--config <path>" by compacting the effective argc down to argv[0] only.
     if (argc_effective != 1) {
-        fprintf(stderr, "expected argc_effective=1, got %d\n", argc_effective);
+        DSD_FPRINTF(stderr, "expected argc_effective=1, got %d\n", argc_effective);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -716,8 +726,8 @@ test_bootstrap_treats_lone_ini_as_config(void) {
     }
 
     if (!state->config_autosave_enabled || strcmp(state->config_autosave_path, cfg_path) != 0) {
-        fprintf(stderr, "expected config_autosave_path=%s, got %s (enabled=%d)\n", cfg_path,
-                state->config_autosave_path, state->config_autosave_enabled);
+        DSD_FPRINTF(stderr, "expected config_autosave_path=%s, got %s (enabled=%d)\n", cfg_path,
+                    state->config_autosave_path, state->config_autosave_enabled);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -726,8 +736,8 @@ test_bootstrap_treats_lone_ini_as_config(void) {
     }
 
     if (opts->trunk_enable != 1 || opts->p25_trunk != 1) {
-        fprintf(stderr, "expected trunking enabled from config, got trunk_enable=%d p25_trunk=%d\n", opts->trunk_enable,
-                opts->p25_trunk);
+        DSD_FPRINTF(stderr, "expected trunking enabled from config, got trunk_enable=%d p25_trunk=%d\n",
+                    opts->trunk_enable, opts->p25_trunk);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -736,7 +746,7 @@ test_bootstrap_treats_lone_ini_as_config(void) {
     }
 
     if (strncmp(opts->audio_in_dev, "rtl:", 4) != 0) {
-        fprintf(stderr, "expected RTL input from config, got audio_in_dev=%s\n", opts->audio_in_dev);
+        DSD_FPRINTF(stderr, "expected RTL input from config, got audio_in_dev=%s\n", opts->audio_in_dev);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -758,7 +768,7 @@ test_bootstrap_print_config_normalizes_soapy_shorthand(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -780,7 +790,7 @@ test_bootstrap_print_config_normalizes_soapy_shorthand(void) {
     test_redirect_stdout_to_null();
     int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
-        fprintf(stderr, "expected rc=%d and exit_rc=0, got rc=%d exit_rc=%d\n", DSD_BOOTSTRAP_EXIT, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d and exit_rc=0, got rc=%d exit_rc=%d\n", DSD_BOOTSTRAP_EXIT, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -789,14 +799,14 @@ test_bootstrap_print_config_normalizes_soapy_shorthand(void) {
 
     int test_rc = 0;
     if (strcmp(opts->audio_in_dev, "soapy:driver=airspy,serial=ABC123") != 0) {
-        fprintf(stderr, "expected normalized soapy args, got audio_in_dev=%s\n", opts->audio_in_dev);
+        DSD_FPRINTF(stderr, "expected normalized soapy args, got audio_in_dev=%s\n", opts->audio_in_dev);
         test_rc = 1;
     }
     if (opts->rtlsdr_center_freq != 851375000U || opts->rtl_gain_value != 22 || opts->rtlsdr_ppm_error != -2
         || opts->rtl_dsp_bw_khz != 24 || opts->rtl_squelch_level != 0.0 || opts->rtl_volume_multiplier != 2) {
-        fprintf(stderr, "unexpected normalized tuning values freq=%u gain=%d ppm=%d bw=%d sql=%.6f vol=%d\n",
-                opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz,
-                opts->rtl_squelch_level, opts->rtl_volume_multiplier);
+        DSD_FPRINTF(stderr, "unexpected normalized tuning values freq=%u gain=%d ppm=%d bw=%d sql=%.6f vol=%d\n",
+                    opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz,
+                    opts->rtl_squelch_level, opts->rtl_volume_multiplier);
         test_rc = 1;
     }
 
@@ -813,7 +823,7 @@ test_bootstrap_profile_preserves_trunking_with_ncurses_cli(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -836,7 +846,7 @@ test_bootstrap_profile_preserves_trunking_with_ncurses_cli(void) {
 
     char cfg_path[1024];
     if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
-        fprintf(stderr, "failed to create temp profile ini\n");
+        DSD_FPRINTF(stderr, "failed to create temp profile ini\n");
         freeState(state);
         free(opts);
         free(state);
@@ -849,14 +859,14 @@ test_bootstrap_profile_preserves_trunking_with_ncurses_cli(void) {
     char arg3[] = "--profile";
     char arg4[] = "p25_trunk";
     char arg5[] = "-N";
-    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
     char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_runtime_bootstrap(6, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_BOOTSTRAP_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -866,16 +876,16 @@ test_bootstrap_profile_preserves_trunking_with_ncurses_cli(void) {
 
     int test_rc = 0;
     if (opts->trunk_enable != 1 || opts->p25_trunk != 1) {
-        fprintf(stderr, "expected profiled trunking to stay enabled, got trunk_enable=%d p25_trunk=%d\n",
-                opts->trunk_enable, opts->p25_trunk);
+        DSD_FPRINTF(stderr, "expected profiled trunking to stay enabled, got trunk_enable=%d p25_trunk=%d\n",
+                    opts->trunk_enable, opts->p25_trunk);
         test_rc = 1;
     }
     if (opts->use_ncurses_terminal != 1) {
-        fprintf(stderr, "expected -N to remain applied, got use_ncurses_terminal=%d\n", opts->use_ncurses_terminal);
+        DSD_FPRINTF(stderr, "expected -N to remain applied, got use_ncurses_terminal=%d\n", opts->use_ncurses_terminal);
         test_rc = 1;
     }
     if (strncmp(opts->audio_in_dev, "rtl:", 4) != 0) {
-        fprintf(stderr, "expected profile RTL input, got audio_in_dev=%s\n", opts->audio_in_dev);
+        DSD_FPRINTF(stderr, "expected profile RTL input, got audio_in_dev=%s\n", opts->audio_in_dev);
         test_rc = 1;
     }
 
@@ -893,7 +903,7 @@ test_bootstrap_profile_disables_autosave(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -913,7 +923,7 @@ test_bootstrap_profile_disables_autosave(void) {
 
     char cfg_path[1024];
     if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
-        fprintf(stderr, "failed to create temp profile ini\n");
+        DSD_FPRINTF(stderr, "failed to create temp profile ini\n");
         freeState(state);
         free(opts);
         free(state);
@@ -925,14 +935,14 @@ test_bootstrap_profile_disables_autosave(void) {
     char arg2[1024];
     char arg3[] = "--profile";
     char arg4[] = "p25_trunk";
-    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
     char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_BOOTSTRAP_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -942,13 +952,13 @@ test_bootstrap_profile_disables_autosave(void) {
 
     int test_rc = 0;
     if (state->config_autosave_enabled != 0) {
-        fprintf(stderr, "expected autosave disabled for profiled config, got enabled=%d\n",
-                state->config_autosave_enabled);
+        DSD_FPRINTF(stderr, "expected autosave disabled for profiled config, got enabled=%d\n",
+                    state->config_autosave_enabled);
         test_rc = 1;
     }
     if (strcmp(state->config_autosave_path, cfg_path) != 0) {
-        fprintf(stderr, "expected profiled config path retained as %s, got %s\n", cfg_path,
-                state->config_autosave_path);
+        DSD_FPRINTF(stderr, "expected profiled config path retained as %s, got %s\n", cfg_path,
+                    state->config_autosave_path);
         test_rc = 1;
     }
 
@@ -966,7 +976,7 @@ test_bootstrap_cli_call_alert_restores_all_config_filtered_events(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -984,7 +994,7 @@ test_bootstrap_cli_call_alert_restores_all_config_filtered_events(void) {
 
     char cfg_path[1024];
     if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
-        fprintf(stderr, "failed to create temp alerts ini\n");
+        DSD_FPRINTF(stderr, "failed to create temp alerts ini\n");
         freeState(state);
         free(opts);
         free(state);
@@ -995,14 +1005,14 @@ test_bootstrap_cli_call_alert_restores_all_config_filtered_events(void) {
     char arg1[] = "--config";
     char arg2[1024];
     char arg3[] = "-a";
-    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
     char* argv[] = {arg0, arg1, arg2, arg3, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_BOOTSTRAP_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -1012,17 +1022,17 @@ test_bootstrap_cli_call_alert_restores_all_config_filtered_events(void) {
 
     int test_rc = 0;
     if (opts->call_alert != 1) {
-        fprintf(stderr, "expected -a to enable call alerts, got %d\n", opts->call_alert);
+        DSD_FPRINTF(stderr, "expected -a to enable call alerts, got %d\n", opts->call_alert);
         test_rc = 1;
     }
     if (opts->call_alert_events != DSD_CALL_ALERT_EVENT_ALL) {
-        fprintf(stderr, "expected -a to restore all alert events, got %u\n", (unsigned)opts->call_alert_events);
+        DSD_FPRINTF(stderr, "expected -a to restore all alert events, got %u\n", (unsigned)opts->call_alert_events);
         test_rc = 1;
     }
     if (!dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)
         || !dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_END)
         || !dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_DATA)) {
-        fprintf(stderr, "expected -a to enable start, end, and data alert events\n");
+        DSD_FPRINTF(stderr, "expected -a to enable start, end, and data alert events\n");
         test_rc = 1;
     }
 
@@ -1040,11 +1050,11 @@ test_r_playback_optind_is_first_file_regardless_of_option_order(void) {
     char wav_path_b[1024];
     const char* tdir = test_tmp_dir();
     const char sep = test_path_sep();
-    if (snprintf(wav_path_a, sizeof wav_path_a, "%s%c%s", tdir, sep, "dsdneo_cli_parse_a.wav")
+    if (DSD_SNPRINTF(wav_path_a, sizeof wav_path_a, "%s%c%s", tdir, sep, "dsdneo_cli_parse_a.wav")
             >= (int)sizeof(wav_path_a)
-        || snprintf(wav_path_b, sizeof wav_path_b, "%s%c%s", tdir, sep, "dsdneo_cli_parse_b.wav")
+        || DSD_SNPRINTF(wav_path_b, sizeof wav_path_b, "%s%c%s", tdir, sep, "dsdneo_cli_parse_b.wav")
                >= (int)sizeof(wav_path_b)) {
-        fprintf(stderr, "temp path too long\n");
+        DSD_FPRINTF(stderr, "temp path too long\n");
         return 1;
     }
     (void)remove(wav_path_a);
@@ -1056,7 +1066,7 @@ test_r_playback_optind_is_first_file_regardless_of_option_order(void) {
         if (!opts || !state) {
             free(opts);
             free(state);
-            fprintf(stderr, "out of memory\n");
+            DSD_FPRINTF(stderr, "out of memory\n");
             return 1;
         }
         initOpts(opts);
@@ -1072,15 +1082,15 @@ test_r_playback_optind_is_first_file_regardless_of_option_order(void) {
         int exit_rc = -1;
         int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
         if (rc != DSD_PARSE_CONTINUE || opts->playfiles != 1) {
-            fprintf(stderr, "expected parse continue with playfiles=1, got rc=%d playfiles=%d exit_rc=%d\n", rc,
-                    opts->playfiles, exit_rc);
+            DSD_FPRINTF(stderr, "expected parse continue with playfiles=1, got rc=%d playfiles=%d exit_rc=%d\n", rc,
+                        opts->playfiles, exit_rc);
             test_rc = 1;
         } else if (state->optind < 1 || state->optind >= argc_effective) {
-            fprintf(stderr, "invalid optind for playback: optind=%d argc_effective=%d\n", state->optind,
-                    argc_effective);
+            DSD_FPRINTF(stderr, "invalid optind for playback: optind=%d argc_effective=%d\n", state->optind,
+                        argc_effective);
             test_rc = 1;
         } else if (strcmp(argv[state->optind], "play_first.amb") != 0) {
-            fprintf(stderr, "expected first playback arg to be play_first.amb, got %s\n", argv[state->optind]);
+            DSD_FPRINTF(stderr, "expected first playback arg to be play_first.amb, got %s\n", argv[state->optind]);
             test_rc = 1;
         }
 
@@ -1096,7 +1106,7 @@ test_r_playback_optind_is_first_file_regardless_of_option_order(void) {
         if (!opts || !state) {
             free(opts);
             free(state);
-            fprintf(stderr, "out of memory\n");
+            DSD_FPRINTF(stderr, "out of memory\n");
             return 1;
         }
         initOpts(opts);
@@ -1113,15 +1123,15 @@ test_r_playback_optind_is_first_file_regardless_of_option_order(void) {
         int exit_rc = -1;
         int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
         if (rc != DSD_PARSE_CONTINUE || opts->playfiles != 1) {
-            fprintf(stderr, "expected parse continue with playfiles=1, got rc=%d playfiles=%d exit_rc=%d\n", rc,
-                    opts->playfiles, exit_rc);
+            DSD_FPRINTF(stderr, "expected parse continue with playfiles=1, got rc=%d playfiles=%d exit_rc=%d\n", rc,
+                        opts->playfiles, exit_rc);
             test_rc = 1;
         } else if (state->optind < 1 || state->optind >= argc_effective) {
-            fprintf(stderr, "invalid optind for playback: optind=%d argc_effective=%d\n", state->optind,
-                    argc_effective);
+            DSD_FPRINTF(stderr, "invalid optind for playback: optind=%d argc_effective=%d\n", state->optind,
+                        argc_effective);
             test_rc = 1;
         } else if (strcmp(argv[state->optind], "play_last.amb") != 0) {
-            fprintf(stderr, "expected first playback arg to be play_last.amb, got %s\n", argv[state->optind]);
+            DSD_FPRINTF(stderr, "expected first playback arg to be play_last.amb, got %s\n", argv[state->optind]);
             test_rc = 1;
         }
 
@@ -1144,7 +1154,7 @@ test_open_mbe_missing_file_leaves_stream_null(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1154,9 +1164,9 @@ test_open_mbe_missing_file_leaves_stream_null(void) {
     char missing_path[1024];
     const char* tdir = test_tmp_dir();
     const char sep = test_path_sep();
-    if (snprintf(missing_path, sizeof missing_path, "%s%c%s", tdir, sep, "dsdneo_missing_playback_input.amb")
+    if (DSD_SNPRINTF(missing_path, sizeof missing_path, "%s%c%s", tdir, sep, "dsdneo_missing_playback_input.amb")
         >= (int)sizeof(missing_path)) {
-        fprintf(stderr, "temp path too long\n");
+        DSD_FPRINTF(stderr, "temp path too long\n");
         freeState(state);
         free(opts);
         free(state);
@@ -1164,11 +1174,11 @@ test_open_mbe_missing_file_leaves_stream_null(void) {
     }
     (void)remove(missing_path);
 
-    snprintf(opts->mbe_in_file, sizeof opts->mbe_in_file, "%s", missing_path);
+    DSD_SNPRINTF(opts->mbe_in_file, sizeof opts->mbe_in_file, "%s", missing_path);
     state->mbe_file_type = 7;
     openMbeInFile(opts, state);
     if (opts->mbe_in_f != NULL) {
-        fprintf(stderr, "expected missing input open to leave mbe_in_f NULL\n");
+        DSD_FPRINTF(stderr, "expected missing input open to leave mbe_in_f NULL\n");
         fclose(opts->mbe_in_f);
         freeState(state);
         free(opts);
@@ -1176,7 +1186,7 @@ test_open_mbe_missing_file_leaves_stream_null(void) {
         return 1;
     }
     if (state->mbe_file_type != -1) {
-        fprintf(stderr, "expected mbe_file_type=-1 on missing input, got %d\n", state->mbe_file_type);
+        DSD_FPRINTF(stderr, "expected mbe_file_type=-1 on missing input, got %d\n", state->mbe_file_type);
         freeState(state);
         free(opts);
         free(state);
@@ -1196,7 +1206,7 @@ test_rdio_long_options_parse(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1223,7 +1233,7 @@ test_rdio_long_options_parse(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(14, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -1232,31 +1242,31 @@ test_rdio_long_options_parse(void) {
 
     int test_rc = 0;
     if (opts->rdio_mode != DSD_RDIO_MODE_BOTH) {
-        fprintf(stderr, "expected rdio_mode=%d, got %d\n", DSD_RDIO_MODE_BOTH, opts->rdio_mode);
+        DSD_FPRINTF(stderr, "expected rdio_mode=%d, got %d\n", DSD_RDIO_MODE_BOTH, opts->rdio_mode);
         test_rc = 1;
     }
     if (opts->rdio_system_id != 42) {
-        fprintf(stderr, "expected rdio_system_id=42, got %d\n", opts->rdio_system_id);
+        DSD_FPRINTF(stderr, "expected rdio_system_id=42, got %d\n", opts->rdio_system_id);
         test_rc = 1;
     }
     if (strcmp(opts->rdio_api_url, "http://127.0.0.1:3000") != 0) {
-        fprintf(stderr, "unexpected rdio_api_url=%s\n", opts->rdio_api_url);
+        DSD_FPRINTF(stderr, "unexpected rdio_api_url=%s\n", opts->rdio_api_url);
         test_rc = 1;
     }
     if (strcmp(opts->rdio_api_key, "test-key") != 0) {
-        fprintf(stderr, "unexpected rdio_api_key=%s\n", opts->rdio_api_key);
+        DSD_FPRINTF(stderr, "unexpected rdio_api_key=%s\n", opts->rdio_api_key);
         test_rc = 1;
     }
     if (opts->rdio_upload_timeout_ms != 2500) {
-        fprintf(stderr, "expected timeout=2500, got %d\n", opts->rdio_upload_timeout_ms);
+        DSD_FPRINTF(stderr, "expected timeout=2500, got %d\n", opts->rdio_upload_timeout_ms);
         test_rc = 1;
     }
     if (opts->rdio_upload_retries != 4) {
-        fprintf(stderr, "expected retries=4, got %d\n", opts->rdio_upload_retries);
+        DSD_FPRINTF(stderr, "expected retries=4, got %d\n", opts->rdio_upload_retries);
         test_rc = 1;
     }
     if (opts->rdio_api_delete_after_upload != 1) {
-        fprintf(stderr, "expected rdio_api_delete_after_upload=1, got %d\n", opts->rdio_api_delete_after_upload);
+        DSD_FPRINTF(stderr, "expected rdio_api_delete_after_upload=1, got %d\n", opts->rdio_api_delete_after_upload);
         test_rc = 1;
     }
 
@@ -1273,7 +1283,7 @@ test_frame_log_long_option_parse(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1289,7 +1299,7 @@ test_frame_log_long_option_parse(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -1298,11 +1308,11 @@ test_frame_log_long_option_parse(void) {
 
     int test_rc = 0;
     if (strcmp(opts->frame_log_file, "frames.log") != 0) {
-        fprintf(stderr, "unexpected frame_log_file=%s\n", opts->frame_log_file);
+        DSD_FPRINTF(stderr, "unexpected frame_log_file=%s\n", opts->frame_log_file);
         test_rc = 1;
     }
     if (opts->payload != 0) {
-        fprintf(stderr, "expected payload to remain off, got %d\n", opts->payload);
+        DSD_FPRINTF(stderr, "expected payload to remain off, got %d\n", opts->payload);
         test_rc = 1;
     }
 
@@ -1319,7 +1329,7 @@ test_input_source_arg_roundtrip(const char* input_spec) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1329,7 +1339,7 @@ test_input_source_arg_roundtrip(const char* input_spec) {
     char arg0[] = "dsd-neo";
     char arg1[] = "-i";
     char arg2[2048];
-    snprintf(arg2, sizeof arg2, "%s", input_spec ? input_spec : "");
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", input_spec ? input_spec : "");
     arg2[sizeof arg2 - 1] = '\0';
     char* argv[] = {arg0, arg1, arg2, NULL};
 
@@ -1337,7 +1347,7 @@ test_input_source_arg_roundtrip(const char* input_spec) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d for -i %s, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, arg2, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d for -i %s, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, arg2, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -1346,7 +1356,7 @@ test_input_source_arg_roundtrip(const char* input_spec) {
 
     int test_rc = 0;
     if (strcmp(opts->audio_in_dev, arg2) != 0) {
-        fprintf(stderr, "expected audio_in_dev=%s, got %s\n", arg2, opts->audio_in_dev);
+        DSD_FPRINTF(stderr, "expected audio_in_dev=%s, got %s\n", arg2, opts->audio_in_dev);
         test_rc = 1;
     }
 
@@ -1383,7 +1393,7 @@ test_iq_capture_long_options_parse(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1402,7 +1412,7 @@ test_iq_capture_long_options_parse(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(6, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -1411,20 +1421,20 @@ test_iq_capture_long_options_parse(void) {
 
     int test_rc = 0;
     if (!opts->iq_capture_requested) {
-        fprintf(stderr, "expected iq_capture_requested=1\n");
+        DSD_FPRINTF(stderr, "expected iq_capture_requested=1\n");
         test_rc = 1;
     }
     if (strcmp(opts->iq_capture_path, "capture.iq") != 0) {
-        fprintf(stderr, "expected iq_capture_path=capture.iq, got %s\n", opts->iq_capture_path);
+        DSD_FPRINTF(stderr, "expected iq_capture_path=capture.iq, got %s\n", opts->iq_capture_path);
         test_rc = 1;
     }
     if (opts->iq_capture_format != DSD_IQ_FORMAT_CF32) {
-        fprintf(stderr, "expected iq_capture_format=CF32, got %u\n", (unsigned)opts->iq_capture_format);
+        DSD_FPRINTF(stderr, "expected iq_capture_format=CF32, got %u\n", (unsigned)opts->iq_capture_format);
         test_rc = 1;
     }
     if (opts->iq_capture_max_bytes != (8ULL * 1024ULL * 1024ULL)) {
-        fprintf(stderr, "expected iq_capture_max_bytes=%llu, got %llu\n",
-                (unsigned long long)(8ULL * 1024ULL * 1024ULL), (unsigned long long)opts->iq_capture_max_bytes);
+        DSD_FPRINTF(stderr, "expected iq_capture_max_bytes=%llu, got %llu\n",
+                    (unsigned long long)(8ULL * 1024ULL * 1024ULL), (unsigned long long)opts->iq_capture_max_bytes);
         test_rc = 1;
     }
 
@@ -1441,7 +1451,7 @@ test_iq_replay_long_options_parse(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1451,7 +1461,7 @@ test_iq_replay_long_options_parse(void) {
     char metadata_path[1024];
     char data_path[1024];
     if (test_create_temp_iq_fixture(metadata_path, sizeof metadata_path, data_path, sizeof data_path) != 0) {
-        fprintf(stderr, "failed to create temporary IQ fixture\n");
+        DSD_FPRINTF(stderr, "failed to create temporary IQ fixture\n");
         freeState(state);
         free(opts);
         free(state);
@@ -1463,7 +1473,7 @@ test_iq_replay_long_options_parse(void) {
     char arg2[1024];
     char arg3[] = "--iq-replay-rate=realtime";
     char arg4[] = "--iq-loop";
-    snprintf(arg2, sizeof arg2, "%s", metadata_path);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", metadata_path);
     char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
 
     int argc_effective = 0;
@@ -1473,53 +1483,53 @@ test_iq_replay_long_options_parse(void) {
 
 #ifdef USE_RADIO
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         test_rc = 1;
         goto out;
     }
 
     if (!opts->iq_replay_requested || !opts->iq_replay_loop) {
-        fprintf(stderr, "expected iq replay requested+loop flags to be set\n");
+        DSD_FPRINTF(stderr, "expected iq replay requested+loop flags to be set\n");
         test_rc = 1;
     }
     if (opts->iq_replay_rate_mode != DSD_IQ_REPLAY_RATE_REALTIME) {
-        fprintf(stderr, "expected iq_replay_rate_mode realtime, got %u\n", (unsigned)opts->iq_replay_rate_mode);
+        DSD_FPRINTF(stderr, "expected iq_replay_rate_mode realtime, got %u\n", (unsigned)opts->iq_replay_rate_mode);
         test_rc = 1;
     }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
-        fprintf(stderr, "expected audio_in_type=AUDIO_IN_RTL, got %d\n", opts->audio_in_type);
+        DSD_FPRINTF(stderr, "expected audio_in_type=AUDIO_IN_RTL, got %d\n", opts->audio_in_type);
         test_rc = 1;
     }
     if (!dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
-        fprintf(stderr, "expected audio_in_dev to be iqreplay spec, got %s\n", opts->audio_in_dev);
+        DSD_FPRINTF(stderr, "expected audio_in_dev to be iqreplay spec, got %s\n", opts->audio_in_dev);
         test_rc = 1;
     }
     if (opts->rtlsdr_center_freq != 851375000U) {
-        fprintf(stderr, "expected center frequency from metadata, got %u\n", opts->rtlsdr_center_freq);
+        DSD_FPRINTF(stderr, "expected center frequency from metadata, got %u\n", opts->rtlsdr_center_freq);
         test_rc = 1;
     }
     if (opts->rtl_gain_value != 22) {
-        fprintf(stderr, "expected tuner gain from metadata in dB, got %d\n", opts->rtl_gain_value);
+        DSD_FPRINTF(stderr, "expected tuner gain from metadata in dB, got %d\n", opts->rtl_gain_value);
         test_rc = 1;
     }
     if (!opts->iq_replay_requested || strcmp(opts->iq_replay_path, metadata_path) != 0) {
-        fprintf(stderr, "expected iq_replay_path=%s, got %s\n", metadata_path, opts->iq_replay_path);
+        DSD_FPRINTF(stderr, "expected iq_replay_path=%s, got %s\n", metadata_path, opts->iq_replay_path);
         test_rc = 1;
     }
     if (openAudioInDevice(opts, state) != 0) {
-        fprintf(stderr, "expected iqreplay pseudo-input to be accepted by audio input classifier\n");
+        DSD_FPRINTF(stderr, "expected iqreplay pseudo-input to be accepted by audio input classifier\n");
         test_rc = 1;
     } else if (opts->audio_in_type != AUDIO_IN_RTL) {
-        fprintf(stderr, "expected iqreplay open to keep AUDIO_IN_RTL, got %d\n", opts->audio_in_type);
+        DSD_FPRINTF(stderr, "expected iqreplay open to keep AUDIO_IN_RTL, got %d\n", opts->audio_in_type);
         test_rc = 1;
     }
 #else
     if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
-        fprintf(stderr, "expected no-radio iq replay parse error, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected no-radio iq replay parse error, got rc=%d exit_rc=%d\n", rc, exit_rc);
         test_rc = 1;
     }
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        fprintf(stderr, "expected no-radio iq replay parse to avoid AUDIO_IN_RTL\n");
+        DSD_FPRINTF(stderr, "expected no-radio iq replay parse to avoid AUDIO_IN_RTL\n");
         test_rc = 1;
     }
 #endif
@@ -1543,22 +1553,22 @@ test_iq_replay_audio_classifier_respects_radio_guard(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
     initOpts(opts);
     initState(state);
     opts->iq_replay_requested = 1;
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
 
     int test_rc = 0;
     if (openAudioInDevice(opts, state) == 0) {
-        fprintf(stderr, "expected no-radio iqreplay classifier to reject input\n");
+        DSD_FPRINTF(stderr, "expected no-radio iqreplay classifier to reject input\n");
         test_rc = 1;
     }
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        fprintf(stderr, "expected no-radio iqreplay classifier to avoid AUDIO_IN_RTL\n");
+        DSD_FPRINTF(stderr, "expected no-radio iqreplay classifier to avoid AUDIO_IN_RTL\n");
         test_rc = 1;
     }
 
@@ -1576,7 +1586,7 @@ test_iq_info_returns_one_shot(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1586,7 +1596,7 @@ test_iq_info_returns_one_shot(void) {
     char metadata_path[1024];
     char data_path[1024];
     if (test_create_temp_iq_fixture(metadata_path, sizeof metadata_path, data_path, sizeof data_path) != 0) {
-        fprintf(stderr, "failed to create temporary IQ fixture\n");
+        DSD_FPRINTF(stderr, "failed to create temporary IQ fixture\n");
         freeState(state);
         free(opts);
         free(state);
@@ -1596,7 +1606,7 @@ test_iq_info_returns_one_shot(void) {
     char arg0[] = "dsd-neo";
     char arg1[] = "--iq-info";
     char arg2[1024];
-    snprintf(arg2, sizeof arg2, "%s", metadata_path);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", metadata_path);
     char* argv[] = {arg0, arg1, arg2, NULL};
 
     int argc_effective = 0;
@@ -1604,7 +1614,7 @@ test_iq_info_returns_one_shot(void) {
     test_redirect_stdout_to_null();
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ONE_SHOT || exit_rc != 0) {
-        fprintf(stderr, "expected iq-info one-shot success, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected iq-info one-shot success, got rc=%d exit_rc=%d\n", rc, exit_rc);
         (void)remove(metadata_path);
         (void)remove(data_path);
         freeState(state);
@@ -1628,7 +1638,7 @@ test_iq_replay_capture_conflict_returns_error(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1638,7 +1648,7 @@ test_iq_replay_capture_conflict_returns_error(void) {
     char metadata_path[1024];
     char data_path[1024];
     if (test_create_temp_iq_fixture(metadata_path, sizeof metadata_path, data_path, sizeof data_path) != 0) {
-        fprintf(stderr, "failed to create temporary IQ fixture\n");
+        DSD_FPRINTF(stderr, "failed to create temporary IQ fixture\n");
         freeState(state);
         free(opts);
         free(state);
@@ -1650,14 +1660,14 @@ test_iq_replay_capture_conflict_returns_error(void) {
     char arg2[] = "capture.iq";
     char arg3[] = "--iq-replay";
     char arg4[1024];
-    snprintf(arg4, sizeof arg4, "%s", metadata_path);
+    DSD_SNPRINTF(arg4, sizeof arg4, "%s", metadata_path);
     char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
-        fprintf(stderr, "expected replay/capture conflict error, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected replay/capture conflict error, got rc=%d exit_rc=%d\n", rc, exit_rc);
         (void)remove(metadata_path);
         (void)remove(data_path);
         freeState(state);
@@ -1681,7 +1691,7 @@ test_missing_required_long_option_value_returns_error(const char* option_name) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1690,15 +1700,15 @@ test_missing_required_long_option_value_returns_error(const char* option_name) {
 
     char arg0[] = "dsd-neo";
     char arg1[64];
-    snprintf(arg1, sizeof arg1, "%s", option_name ? option_name : "");
+    DSD_SNPRINTF(arg1, sizeof arg1, "%s", option_name ? option_name : "");
     char* argv[] = {arg0, arg1, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
-        fprintf(stderr, "expected missing %s value error, got rc=%d exit_rc=%d\n", option_name ? option_name : "(null)",
-                rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected missing %s value error, got rc=%d exit_rc=%d\n",
+                    option_name ? option_name : "(null)", rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -1748,7 +1758,7 @@ test_rtl_udp_control_long_option_parse(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1764,7 +1774,7 @@ test_rtl_udp_control_long_option_parse(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -1773,7 +1783,7 @@ test_rtl_udp_control_long_option_parse(void) {
 
     int test_rc = 0;
     if (opts->rtl_udp_port != 9911) {
-        fprintf(stderr, "expected rtl_udp_port=9911, got %d\n", opts->rtl_udp_port);
+        DSD_FPRINTF(stderr, "expected rtl_udp_port=9911, got %d\n", opts->rtl_udp_port);
         test_rc = 1;
     }
 
@@ -1790,7 +1800,7 @@ test_rtl_udp_control_missing_port_returns_error(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1806,15 +1816,15 @@ test_rtl_udp_control_missing_port_returns_error(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
-        fprintf(stderr, "expected parse error for missing --rtl-udp-control value, got rc=%d exit_rc=%d\n", rc,
-                exit_rc);
+        DSD_FPRINTF(stderr, "expected parse error for missing --rtl-udp-control value, got rc=%d exit_rc=%d\n", rc,
+                    exit_rc);
         freeState(state);
         free(opts);
         free(state);
         return 1;
     }
     if (opts->rtl_auto_ppm != 0) {
-        fprintf(stderr, "expected --auto-ppm not to be consumed on parse error\n");
+        DSD_FPRINTF(stderr, "expected --auto-ppm not to be consumed on parse error\n");
         freeState(state);
         free(opts);
         free(state);
@@ -1834,7 +1844,7 @@ test_dmr_baofeng_pc5_long_option_parse(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1850,14 +1860,14 @@ test_dmr_baofeng_pc5_long_option_parse(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
         return 1;
     }
     if (state->baofeng_ap != 1) {
-        fprintf(stderr, "expected baofeng_ap=1, got %d\n", state->baofeng_ap);
+        DSD_FPRINTF(stderr, "expected baofeng_ap=1, got %d\n", state->baofeng_ap);
         freeState(state);
         free(opts);
         free(state);
@@ -1877,13 +1887,13 @@ test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
     initOpts(opts);
     initState(state);
-    memset(&ctxpc5, 0, sizeof(ctxpc5));
+    DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
 
     char arg0[] = "dsd-neo";
     char arg1[] = "--dmr-baofeng-pc5";
@@ -1894,14 +1904,14 @@ test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
         return 1;
     }
     if (state->baofeng_ap != 1) {
-        fprintf(stderr, "expected baofeng_ap=1, got %d\n", state->baofeng_ap);
+        DSD_FPRINTF(stderr, "expected baofeng_ap=1, got %d\n", state->baofeng_ap);
         freeState(state);
         free(opts);
         free(state);
@@ -1909,7 +1919,7 @@ test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes(void) {
     }
 
     PC5Context expected;
-    memset(&expected, 0, sizeof(expected));
+    DSD_MEMSET(&expected, 0, sizeof(expected));
     unsigned char key_bytes[32] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
                                    0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
                                    0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F};
@@ -1922,7 +1932,7 @@ test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes(void) {
         || memcmp(ctxpc5.rngxor, expected.rngxor, sizeof(expected.rngxor)) != 0
         || memcmp(ctxpc5.tab, expected.tab, sizeof(expected.tab)) != 0
         || memcmp(ctxpc5.inv, expected.inv, sizeof(expected.inv)) != 0) {
-        fprintf(stderr, "expected 64-hex PC5 input to decode to 32 binary key bytes\n");
+        DSD_FPRINTF(stderr, "expected 64-hex PC5 input to decode to 32 binary key bytes\n");
         freeState(state);
         free(opts);
         free(state);
@@ -1942,7 +1952,7 @@ test_dmr_csi_ee72_long_option_parse(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1958,7 +1968,7 @@ test_dmr_csi_ee72_long_option_parse(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -1966,7 +1976,7 @@ test_dmr_csi_ee72_long_option_parse(void) {
     }
     const uint8_t expected[9] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99};
     if (state->csi_ee != 1 || memcmp(state->csi_ee_key, expected, sizeof(expected)) != 0) {
-        fprintf(stderr, "expected csi_ee=1 and parsed key bytes to match\n");
+        DSD_FPRINTF(stderr, "expected csi_ee=1 and parsed key bytes to match\n");
         freeState(state);
         free(opts);
         free(state);
@@ -1986,7 +1996,7 @@ test_dmr_vertex_ks_csv_long_option_parse(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -1998,7 +2008,7 @@ test_dmr_vertex_ks_csv_long_option_parse(void) {
         freeState(state);
         free(opts);
         free(state);
-        fprintf(stderr, "failed to create temp vertex csv\n");
+        DSD_FPRINTF(stderr, "failed to create temp vertex csv\n");
         return 1;
     }
 
@@ -2010,7 +2020,7 @@ test_dmr_vertex_ks_csv_long_option_parse(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         (void)remove(csv_path);
         freeState(state);
         free(opts);
@@ -2018,7 +2028,7 @@ test_dmr_vertex_ks_csv_long_option_parse(void) {
         return 1;
     }
     if (state->vertex_ks_count != 1) {
-        fprintf(stderr, "expected vertex_ks_count=1, got %d\n", state->vertex_ks_count);
+        DSD_FPRINTF(stderr, "expected vertex_ks_count=1, got %d\n", state->vertex_ks_count);
         (void)remove(csv_path);
         freeState(state);
         free(opts);
@@ -2028,7 +2038,7 @@ test_dmr_vertex_ks_csv_long_option_parse(void) {
     if (state->vertex_ks_key[0] != 0x1234567891ULL || state->vertex_ks_mod[0] != 8
         || state->vertex_ks_frame_mode[0] != 1 || state->vertex_ks_frame_off[0] != 2
         || state->vertex_ks_frame_step[0] != 3) {
-        fprintf(stderr, "unexpected parsed vertex mapping fields\n");
+        DSD_FPRINTF(stderr, "unexpected parsed vertex mapping fields\n");
         (void)remove(csv_path);
         freeState(state);
         free(opts);
@@ -2050,7 +2060,7 @@ test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2062,7 +2072,7 @@ test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv(void) {
         freeState(state);
         free(opts);
         free(state);
-        fprintf(stderr, "failed to create malformed temp vertex csv\n");
+        DSD_FPRINTF(stderr, "failed to create malformed temp vertex csv\n");
         return 1;
     }
 
@@ -2074,7 +2084,7 @@ test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
-        fprintf(stderr, "expected parse error for malformed Vertex KS CSV, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected parse error for malformed Vertex KS CSV, got rc=%d exit_rc=%d\n", rc, exit_rc);
         (void)remove(csv_path);
         freeState(state);
         free(opts);
@@ -2082,7 +2092,7 @@ test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv(void) {
         return 1;
     }
     if (state->vertex_ks_count != 0) {
-        fprintf(stderr, "expected vertex_ks_count=0 on malformed CSV, got %d\n", state->vertex_ks_count);
+        DSD_FPRINTF(stderr, "expected vertex_ks_count=0 on malformed CSV, got %d\n", state->vertex_ks_count);
         (void)remove(csv_path);
         freeState(state);
         free(opts);
@@ -2104,7 +2114,7 @@ test_dmr_baofeng_pc5_long_option_rejects_invalid_key(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2120,7 +2130,7 @@ test_dmr_baofeng_pc5_long_option_rejects_invalid_key(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
-        fprintf(stderr, "expected parse error for invalid PC5 key, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected parse error for invalid PC5 key, got rc=%d exit_rc=%d\n", rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -2140,7 +2150,7 @@ test_f_auto_preset_applies_cli_profile(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2155,7 +2165,7 @@ test_f_auto_preset_applies_cli_profile(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -2166,16 +2176,16 @@ test_f_auto_preset_applies_cli_profile(void) {
     if (!(opts->frame_dstar && opts->frame_x2tdma && opts->frame_p25p1 && opts->frame_p25p2 && opts->frame_nxdn48
           && opts->frame_nxdn96 && opts->frame_dmr && opts->frame_dpmr && opts->frame_provoice && opts->frame_ysf
           && opts->frame_m17)) {
-        fprintf(stderr, "expected -fa to enable all digital frame types\n");
+        DSD_FPRINTF(stderr, "expected -fa to enable all digital frame types\n");
         test_rc = 1;
     }
     if (opts->pulse_digi_out_channels != 2 || opts->dmr_stereo != 1 || opts->dmr_mono != 0) {
-        fprintf(stderr, "unexpected -fa audio settings channels=%d stereo=%d mono=%d\n", opts->pulse_digi_out_channels,
-                opts->dmr_stereo, opts->dmr_mono);
+        DSD_FPRINTF(stderr, "unexpected -fa audio settings channels=%d stereo=%d mono=%d\n",
+                    opts->pulse_digi_out_channels, opts->dmr_stereo, opts->dmr_mono);
         test_rc = 1;
     }
     if (strcmp(opts->output_name, "AUTO") != 0) {
-        fprintf(stderr, "expected output_name=AUTO, got %s\n", opts->output_name);
+        DSD_FPRINTF(stderr, "expected output_name=AUTO, got %s\n", opts->output_name);
         test_rc = 1;
     }
 
@@ -2192,7 +2202,7 @@ test_f_ysf_preset_applies_cli_profile(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2207,7 +2217,7 @@ test_f_ysf_preset_applies_cli_profile(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -2217,16 +2227,16 @@ test_f_ysf_preset_applies_cli_profile(void) {
     int test_rc = 0;
     if (!(opts->frame_ysf == 1 && opts->frame_dstar == 0 && opts->frame_dmr == 0 && opts->frame_p25p1 == 0
           && opts->frame_p25p2 == 0)) {
-        fprintf(stderr, "unexpected -fy frame flags\n");
+        DSD_FPRINTF(stderr, "unexpected -fy frame flags\n");
         test_rc = 1;
     }
     if (opts->pulse_digi_out_channels != 1 || opts->dmr_stereo != 0 || opts->dmr_mono != 0 || state->dmr_stereo != 0) {
-        fprintf(stderr, "unexpected -fy audio settings channels=%d stereo=%d mono=%d state_stereo=%d\n",
-                opts->pulse_digi_out_channels, opts->dmr_stereo, opts->dmr_mono, state->dmr_stereo);
+        DSD_FPRINTF(stderr, "unexpected -fy audio settings channels=%d stereo=%d mono=%d state_stereo=%d\n",
+                    opts->pulse_digi_out_channels, opts->dmr_stereo, opts->dmr_mono, state->dmr_stereo);
         test_rc = 1;
     }
     if (strcmp(opts->output_name, "YSF") != 0) {
-        fprintf(stderr, "expected output_name=YSF, got %s\n", opts->output_name);
+        DSD_FPRINTF(stderr, "expected output_name=YSF, got %s\n", opts->output_name);
         test_rc = 1;
     }
 
@@ -2243,7 +2253,7 @@ test_f_legacy_fr_mono_still_supported(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2258,7 +2268,7 @@ test_f_legacy_fr_mono_still_supported(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -2267,18 +2277,18 @@ test_f_legacy_fr_mono_still_supported(void) {
 
     int test_rc = 0;
     if (!(opts->frame_dmr == 1 && opts->dmr_mono == 1 && opts->dmr_stereo == 0 && state->dmr_stereo == 0)) {
-        fprintf(stderr, "unexpected -fr mono settings frame_dmr=%d mono=%d stereo=%d state_stereo=%d\n",
-                opts->frame_dmr, opts->dmr_mono, opts->dmr_stereo, state->dmr_stereo);
+        DSD_FPRINTF(stderr, "unexpected -fr mono settings frame_dmr=%d mono=%d stereo=%d state_stereo=%d\n",
+                    opts->frame_dmr, opts->dmr_mono, opts->dmr_stereo, state->dmr_stereo);
         test_rc = 1;
     }
     if (opts->pulse_digi_out_channels != 2 || strcmp(opts->output_name, "DMR-Mono") != 0) {
-        fprintf(stderr, "unexpected -fr output channels/name channels=%d name=%s\n", opts->pulse_digi_out_channels,
-                opts->output_name);
+        DSD_FPRINTF(stderr, "unexpected -fr output channels/name channels=%d name=%s\n", opts->pulse_digi_out_channels,
+                    opts->output_name);
         test_rc = 1;
     }
     if (!(opts->mod_c4fm == 0 && opts->mod_qpsk == 0 && opts->mod_gfsk == 1 && state->rf_mod == 2)) {
-        fprintf(stderr, "expected -fr to select GFSK demod, got mod=%d/%d/%d rf_mod=%d\n", opts->mod_c4fm,
-                opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
+        DSD_FPRINTF(stderr, "expected -fr to select GFSK demod, got mod=%d/%d/%d rf_mod=%d\n", opts->mod_c4fm,
+                    opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
         test_rc = 1;
     }
 
@@ -2295,7 +2305,7 @@ test_f_dmr_preset_selects_gfsk(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2310,7 +2320,7 @@ test_f_dmr_preset_selects_gfsk(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -2320,12 +2330,12 @@ test_f_dmr_preset_selects_gfsk(void) {
     int test_rc = 0;
     if (!(opts->frame_dmr == 1 && opts->mod_c4fm == 0 && opts->mod_qpsk == 0 && opts->mod_gfsk == 1
           && state->rf_mod == 2)) {
-        fprintf(stderr, "expected -fs to select DMR/GFSK, got frame_dmr=%d mod=%d/%d/%d rf_mod=%d\n", opts->frame_dmr,
-                opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
+        DSD_FPRINTF(stderr, "expected -fs to select DMR/GFSK, got frame_dmr=%d mod=%d/%d/%d rf_mod=%d\n",
+                    opts->frame_dmr, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
         test_rc = 1;
     }
     if (opts->mod_cli_lock != 0) {
-        fprintf(stderr, "expected -fs alone to leave demod unlocked, got lock=%d\n", opts->mod_cli_lock);
+        DSD_FPRINTF(stderr, "expected -fs alone to leave demod unlocked, got lock=%d\n", opts->mod_cli_lock);
         test_rc = 1;
     }
 
@@ -2342,7 +2352,7 @@ test_mg_before_f_dmr_keeps_gfsk_lock(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2358,7 +2368,7 @@ test_mg_before_f_dmr_keeps_gfsk_lock(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -2368,8 +2378,8 @@ test_mg_before_f_dmr_keeps_gfsk_lock(void) {
     int test_rc = 0;
     if (!(opts->frame_dmr == 1 && opts->mod_cli_lock == 1 && opts->mod_c4fm == 0 && opts->mod_qpsk == 0
           && opts->mod_gfsk == 1 && state->rf_mod == 2)) {
-        fprintf(stderr, "expected -mg -fs to keep GFSK lock, got frame_dmr=%d lock=%d mod=%d/%d/%d rf_mod=%d\n",
-                opts->frame_dmr, opts->mod_cli_lock, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
+        DSD_FPRINTF(stderr, "expected -mg -fs to keep GFSK lock, got frame_dmr=%d lock=%d mod=%d/%d/%d rf_mod=%d\n",
+                    opts->frame_dmr, opts->mod_cli_lock, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
         test_rc = 1;
     }
 
@@ -2386,7 +2396,7 @@ test_mc_before_f_dmr_preserves_c4fm_lock(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2402,7 +2412,7 @@ test_mc_before_f_dmr_preserves_c4fm_lock(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -2412,8 +2422,8 @@ test_mc_before_f_dmr_preserves_c4fm_lock(void) {
     int test_rc = 0;
     if (!(opts->frame_dmr == 1 && opts->mod_cli_lock == 1 && opts->mod_c4fm == 1 && opts->mod_qpsk == 0
           && opts->mod_gfsk == 0 && state->rf_mod == 0)) {
-        fprintf(stderr, "expected -mc -fs to preserve C4FM lock, got frame_dmr=%d lock=%d mod=%d/%d/%d rf_mod=%d\n",
-                opts->frame_dmr, opts->mod_cli_lock, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
+        DSD_FPRINTF(stderr, "expected -mc -fs to preserve C4FM lock, got frame_dmr=%d lock=%d mod=%d/%d/%d rf_mod=%d\n",
+                    opts->frame_dmr, opts->mod_cli_lock, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, state->rf_mod);
         test_rc = 1;
     }
 
@@ -2430,7 +2440,7 @@ test_mc_before_legacy_fr_preserves_c4fm_lock(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2446,7 +2456,7 @@ test_mc_before_legacy_fr_preserves_c4fm_lock(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -2456,11 +2466,12 @@ test_mc_before_legacy_fr_preserves_c4fm_lock(void) {
     int test_rc = 0;
     if (!(opts->frame_dmr == 1 && opts->dmr_mono == 1 && opts->mod_cli_lock == 1 && opts->mod_c4fm == 1
           && opts->mod_qpsk == 0 && opts->mod_gfsk == 0 && state->rf_mod == 0)) {
-        fprintf(stderr,
-                "expected -mc -fr to preserve C4FM lock and mono DMR, got frame_dmr=%d mono=%d lock=%d mod=%d/%d/%d "
-                "rf_mod=%d\n",
-                opts->frame_dmr, opts->dmr_mono, opts->mod_cli_lock, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk,
-                state->rf_mod);
+        DSD_FPRINTF(
+            stderr,
+            "expected -mc -fr to preserve C4FM lock and mono DMR, got frame_dmr=%d mono=%d lock=%d mod=%d/%d/%d "
+            "rf_mod=%d\n",
+            opts->frame_dmr, opts->dmr_mono, opts->mod_cli_lock, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk,
+            state->rf_mod);
         test_rc = 1;
     }
 
@@ -2477,7 +2488,7 @@ test_f_nxdn48_clears_dmr_mono_after_fr(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2493,7 +2504,7 @@ test_f_nxdn48_clears_dmr_mono_after_fr(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -2502,8 +2513,8 @@ test_f_nxdn48_clears_dmr_mono_after_fr(void) {
 
     int test_rc = 0;
     if (!(opts->frame_nxdn48 == 1 && opts->frame_dmr == 0 && opts->dmr_mono == 0)) {
-        fprintf(stderr, "expected -fi to clear -fr mono mode (nxdn48=%d dmr=%d mono=%d)\n", opts->frame_nxdn48,
-                opts->frame_dmr, opts->dmr_mono);
+        DSD_FPRINTF(stderr, "expected -fi to clear -fr mono mode (nxdn48=%d dmr=%d mono=%d)\n", opts->frame_nxdn48,
+                    opts->frame_dmr, opts->dmr_mono);
         test_rc = 1;
     }
 
@@ -2520,7 +2531,7 @@ test_bootstrap_config_file_rate_survives_cli_provoice_preset(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2539,7 +2550,7 @@ test_bootstrap_config_file_rate_survives_cli_provoice_preset(void) {
 
     char cfg_path[1024];
     if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
-        fprintf(stderr, "failed to create temp file-input ini\n");
+        DSD_FPRINTF(stderr, "failed to create temp file-input ini\n");
         freeState(state);
         free(opts);
         free(state);
@@ -2550,14 +2561,14 @@ test_bootstrap_config_file_rate_survives_cli_provoice_preset(void) {
     char arg1[] = "--config";
     char arg2[1024];
     char arg3[] = "-fp";
-    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
     char* argv[] = {arg0, arg1, arg2, arg3, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_BOOTSTRAP_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -2567,17 +2578,17 @@ test_bootstrap_config_file_rate_survives_cli_provoice_preset(void) {
 
     int test_rc = 0;
     if (strcmp(opts->audio_in_dev, "/tmp/input.wav") != 0) {
-        fprintf(stderr, "expected config file input to survive bootstrap, got %s\n", opts->audio_in_dev);
+        DSD_FPRINTF(stderr, "expected config file input to survive bootstrap, got %s\n", opts->audio_in_dev);
         test_rc = 1;
     }
     if (opts->wav_sample_rate != 96000 || dsd_opts_effective_input_rate(opts) != 96000) {
-        fprintf(stderr, "expected effective file rate to stay 96000, got raw=%d effective=%d\n", opts->wav_sample_rate,
-                dsd_opts_effective_input_rate(opts));
+        DSD_FPRINTF(stderr, "expected effective file rate to stay 96000, got raw=%d effective=%d\n",
+                    opts->wav_sample_rate, dsd_opts_effective_input_rate(opts));
         test_rc = 1;
     }
     if (state->samplesPerSymbol != 10 || state->symbolCenter != 4) {
-        fprintf(stderr, "expected ProVoice timing to rescale to 10/4 at 96 kHz, got sps=%d center=%d\n",
-                state->samplesPerSymbol, state->symbolCenter);
+        DSD_FPRINTF(stderr, "expected ProVoice timing to rescale to 10/4 at 96 kHz, got sps=%d center=%d\n",
+                    state->samplesPerSymbol, state->symbolCenter);
         test_rc = 1;
     }
 
@@ -2595,7 +2606,7 @@ test_s_8000_keeps_valid_symbol_timing_for_provoice(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2612,7 +2623,7 @@ test_s_8000_keeps_valid_symbol_timing_for_provoice(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(4, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -2621,16 +2632,16 @@ test_s_8000_keeps_valid_symbol_timing_for_provoice(void) {
 
     int test_rc = 0;
     if (opts->wav_sample_rate != 8000) {
-        fprintf(stderr, "expected wav_sample_rate=8000, got %d\n", opts->wav_sample_rate);
+        DSD_FPRINTF(stderr, "expected wav_sample_rate=8000, got %d\n", opts->wav_sample_rate);
         test_rc = 1;
     }
     if (opts->wav_interpolator != 1) {
-        fprintf(stderr, "expected wav_interpolator=1 for 8 kHz input, got %d\n", opts->wav_interpolator);
+        DSD_FPRINTF(stderr, "expected wav_interpolator=1 for 8 kHz input, got %d\n", opts->wav_interpolator);
         test_rc = 1;
     }
     if (state->samplesPerSymbol != 5 || state->symbolCenter != 2) {
-        fprintf(stderr, "expected ProVoice timing to remain 5/2, got sps=%d center=%d\n", state->samplesPerSymbol,
-                state->symbolCenter);
+        DSD_FPRINTF(stderr, "expected ProVoice timing to remain 5/2, got sps=%d center=%d\n", state->samplesPerSymbol,
+                    state->symbolCenter);
         test_rc = 1;
     }
 
@@ -2647,7 +2658,7 @@ test_m3_override_survives_file_rate_rescale_after_f2(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2665,7 +2676,7 @@ test_m3_override_survives_file_rate_rescale_after_f2(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
         free(opts);
         free(state);
@@ -2674,13 +2685,13 @@ test_m3_override_survives_file_rate_rescale_after_f2(void) {
 
     int test_rc = 0;
     if (opts->wav_sample_rate != 96000 || dsd_opts_effective_input_rate(opts) != 96000) {
-        fprintf(stderr, "expected 96 kHz file rate after -s, got raw=%d effective=%d\n", opts->wav_sample_rate,
-                dsd_opts_effective_input_rate(opts));
+        DSD_FPRINTF(stderr, "expected 96 kHz file rate after -s, got raw=%d effective=%d\n", opts->wav_sample_rate,
+                    dsd_opts_effective_input_rate(opts));
         test_rc = 1;
     }
     if (state->samplesPerSymbol != 20 || state->symbolCenter != 8) {
-        fprintf(stderr, "expected -m3 timing override to rescale to 20/8 at 96 kHz, got sps=%d center=%d\n",
-                state->samplesPerSymbol, state->symbolCenter);
+        DSD_FPRINTF(stderr, "expected -m3 timing override to rescale to 20/8 at 96 kHz, got sps=%d center=%d\n",
+                    state->samplesPerSymbol, state->symbolCenter);
         test_rc = 1;
     }
 
@@ -2697,7 +2708,7 @@ test_bootstrap_config_file_rate_rescales_manual_m3_override(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2716,7 +2727,7 @@ test_bootstrap_config_file_rate_rescales_manual_m3_override(void) {
 
     char cfg_path[1024];
     if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
-        fprintf(stderr, "failed to create temp file-input ini\n");
+        DSD_FPRINTF(stderr, "failed to create temp file-input ini\n");
         freeState(state);
         free(opts);
         free(state);
@@ -2727,14 +2738,14 @@ test_bootstrap_config_file_rate_rescales_manual_m3_override(void) {
     char arg1[] = "--config";
     char arg2[1024];
     char arg3[] = "-m3";
-    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
     char* argv[] = {arg0, arg1, arg2, arg3, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_BOOTSTRAP_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -2744,17 +2755,17 @@ test_bootstrap_config_file_rate_rescales_manual_m3_override(void) {
 
     int test_rc = 0;
     if (strcmp(opts->audio_in_dev, "/tmp/input.wav") != 0) {
-        fprintf(stderr, "expected config file input to survive bootstrap, got %s\n", opts->audio_in_dev);
+        DSD_FPRINTF(stderr, "expected config file input to survive bootstrap, got %s\n", opts->audio_in_dev);
         test_rc = 1;
     }
     if (opts->wav_sample_rate != 96000 || dsd_opts_effective_input_rate(opts) != 96000) {
-        fprintf(stderr, "expected effective file rate to stay 96000, got raw=%d effective=%d\n", opts->wav_sample_rate,
-                dsd_opts_effective_input_rate(opts));
+        DSD_FPRINTF(stderr, "expected effective file rate to stay 96000, got raw=%d effective=%d\n",
+                    opts->wav_sample_rate, dsd_opts_effective_input_rate(opts));
         test_rc = 1;
     }
     if (state->samplesPerSymbol != 20 || state->symbolCenter != 8) {
-        fprintf(stderr, "expected -m3 timing override to rescale to 20/8 at 96 kHz, got sps=%d center=%d\n",
-                state->samplesPerSymbol, state->symbolCenter);
+        DSD_FPRINTF(stderr, "expected -m3 timing override to rescale to 20/8 at 96 kHz, got sps=%d center=%d\n",
+                    state->samplesPerSymbol, state->symbolCenter);
         test_rc = 1;
     }
 
@@ -2772,7 +2783,7 @@ test_bootstrap_cli_pulse_override_ignores_config_file_rate_timing(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2791,7 +2802,7 @@ test_bootstrap_cli_pulse_override_ignores_config_file_rate_timing(void) {
 
     char cfg_path[1024];
     if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
-        fprintf(stderr, "failed to create temp file-input ini\n");
+        DSD_FPRINTF(stderr, "failed to create temp file-input ini\n");
         freeState(state);
         free(opts);
         free(state);
@@ -2803,14 +2814,14 @@ test_bootstrap_cli_pulse_override_ignores_config_file_rate_timing(void) {
     char arg2[1024];
     char arg3[] = "-i";
     char arg4[] = "pulse";
-    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
     char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_BOOTSTRAP_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -2820,17 +2831,17 @@ test_bootstrap_cli_pulse_override_ignores_config_file_rate_timing(void) {
 
     int test_rc = 0;
     if (strcmp(opts->audio_in_dev, "pulse") != 0) {
-        fprintf(stderr, "expected CLI pulse override to survive bootstrap, got %s\n", opts->audio_in_dev);
+        DSD_FPRINTF(stderr, "expected CLI pulse override to survive bootstrap, got %s\n", opts->audio_in_dev);
         test_rc = 1;
     }
     if (opts->wav_sample_rate != 48000 || dsd_opts_effective_input_rate(opts) != 48000) {
-        fprintf(stderr, "expected pulse override to keep default file rate, got raw=%d effective=%d\n",
-                opts->wav_sample_rate, dsd_opts_effective_input_rate(opts));
+        DSD_FPRINTF(stderr, "expected pulse override to keep default file rate, got raw=%d effective=%d\n",
+                    opts->wav_sample_rate, dsd_opts_effective_input_rate(opts));
         test_rc = 1;
     }
     if (state->samplesPerSymbol != 10 || state->symbolCenter != 4) {
-        fprintf(stderr, "expected pulse override to keep 48 kHz timing, got sps=%d center=%d\n",
-                state->samplesPerSymbol, state->symbolCenter);
+        DSD_FPRINTF(stderr, "expected pulse override to keep 48 kHz timing, got sps=%d center=%d\n",
+                    state->samplesPerSymbol, state->symbolCenter);
         test_rc = 1;
     }
 
@@ -2848,7 +2859,7 @@ test_bootstrap_cli_file_override_ignores_config_file_rate_timing(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2867,7 +2878,7 @@ test_bootstrap_cli_file_override_ignores_config_file_rate_timing(void) {
 
     char cfg_path[1024];
     if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
-        fprintf(stderr, "failed to create temp file-input ini\n");
+        DSD_FPRINTF(stderr, "failed to create temp file-input ini\n");
         freeState(state);
         free(opts);
         free(state);
@@ -2879,14 +2890,14 @@ test_bootstrap_cli_file_override_ignores_config_file_rate_timing(void) {
     char arg2[1024];
     char arg3[] = "-i";
     char arg4[] = "/tmp/other.raw";
-    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
     char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_BOOTSTRAP_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
         (void)remove(cfg_path);
         freeState(state);
         free(opts);
@@ -2896,22 +2907,22 @@ test_bootstrap_cli_file_override_ignores_config_file_rate_timing(void) {
 
     int test_rc = 0;
     if (strcmp(opts->audio_in_dev, "/tmp/other.raw") != 0) {
-        fprintf(stderr, "expected CLI file override to survive bootstrap, got %s\n", opts->audio_in_dev);
+        DSD_FPRINTF(stderr, "expected CLI file override to survive bootstrap, got %s\n", opts->audio_in_dev);
         test_rc = 1;
     }
     if (opts->wav_sample_rate != 48000 || dsd_opts_effective_input_rate(opts) != 48000) {
-        fprintf(stderr, "expected CLI file override to keep default file rate, got raw=%d effective=%d\n",
-                opts->wav_sample_rate, dsd_opts_effective_input_rate(opts));
+        DSD_FPRINTF(stderr, "expected CLI file override to keep default file rate, got raw=%d effective=%d\n",
+                    opts->wav_sample_rate, dsd_opts_effective_input_rate(opts));
         test_rc = 1;
     }
     if (opts->staged_file_sample_rate != 0) {
-        fprintf(stderr, "expected CLI file override to clear staged file rate, got %d\n",
-                opts->staged_file_sample_rate);
+        DSD_FPRINTF(stderr, "expected CLI file override to clear staged file rate, got %d\n",
+                    opts->staged_file_sample_rate);
         test_rc = 1;
     }
     if (state->samplesPerSymbol != 10 || state->symbolCenter != 4) {
-        fprintf(stderr, "expected CLI file override to keep 48 kHz timing, got sps=%d center=%d\n",
-                state->samplesPerSymbol, state->symbolCenter);
+        DSD_FPRINTF(stderr, "expected CLI file override to keep 48 kHz timing, got sps=%d center=%d\n",
+                    state->samplesPerSymbol, state->symbolCenter);
         test_rc = 1;
     }
 
@@ -2929,7 +2940,7 @@ test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -2941,7 +2952,7 @@ test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open(void) {
     if (test_create_temp_raw_pcm_file("dsdneo_cli_override_input", samples, sizeof samples / sizeof samples[0], ".pcm",
                                       raw_path, sizeof raw_path)
         != 0) {
-        fprintf(stderr, "failed to create temp raw pcm file\n");
+        DSD_FPRINTF(stderr, "failed to create temp raw pcm file\n");
         freeState(state);
         free(opts);
         free(state);
@@ -2960,7 +2971,7 @@ test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open(void) {
 
     char cfg_path[1024];
     if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
-        fprintf(stderr, "failed to create temp file-input ini\n");
+        DSD_FPRINTF(stderr, "failed to create temp file-input ini\n");
         (void)remove(raw_path);
         freeState(state);
         free(opts);
@@ -2973,15 +2984,15 @@ test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open(void) {
     char arg2[1024];
     char arg3[] = "-i";
     char arg4[1024];
-    snprintf(arg2, sizeof arg2, "%s", cfg_path);
-    snprintf(arg4, sizeof arg4, "%s", raw_path);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    DSD_SNPRINTF(arg4, sizeof arg4, "%s", raw_path);
     char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_BOOTSTRAP_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
         (void)remove(cfg_path);
         (void)remove(raw_path);
         freeState(state);
@@ -2992,31 +3003,31 @@ test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open(void) {
 
     int test_rc = 0;
     if (opts->staged_file_sample_rate != 0) {
-        fprintf(stderr, "expected CLI file override to clear staged file rate, got %d\n",
-                opts->staged_file_sample_rate);
+        DSD_FPRINTF(stderr, "expected CLI file override to clear staged file rate, got %d\n",
+                    opts->staged_file_sample_rate);
         test_rc = 1;
     }
     if (openAudioInDevice(opts, state) != 0) {
-        fprintf(stderr, "expected headerless CLI file override to open successfully\n");
+        DSD_FPRINTF(stderr, "expected headerless CLI file override to open successfully\n");
         test_rc = 1;
     } else {
         if (opts->audio_in_type != AUDIO_IN_WAV) {
-            fprintf(stderr, "expected headerless CLI file override to open as AUDIO_IN_WAV, got %d\n",
-                    opts->audio_in_type);
+            DSD_FPRINTF(stderr, "expected headerless CLI file override to open as AUDIO_IN_WAV, got %d\n",
+                        opts->audio_in_type);
             test_rc = 1;
         }
         if (!opts->audio_in_file_info) {
-            fprintf(stderr, "expected audio_in_file_info after headerless open\n");
+            DSD_FPRINTF(stderr, "expected audio_in_file_info after headerless open\n");
             test_rc = 1;
         } else {
             if (opts->audio_in_file_info->samplerate != 48000) {
-                fprintf(stderr, "expected headerless CLI file override to open at 48000 Hz, got %d\n",
-                        opts->audio_in_file_info->samplerate);
+                DSD_FPRINTF(stderr, "expected headerless CLI file override to open at 48000 Hz, got %d\n",
+                            opts->audio_in_file_info->samplerate);
                 test_rc = 1;
             }
             if ((opts->audio_in_file_info->format & SF_FORMAT_TYPEMASK) != SF_FORMAT_RAW) {
-                fprintf(stderr, "expected headerless CLI file override to open as raw PCM, got format=0x%x\n",
-                        opts->audio_in_file_info->format);
+                DSD_FPRINTF(stderr, "expected headerless CLI file override to open as raw PCM, got format=0x%x\n",
+                            opts->audio_in_file_info->format);
                 test_rc = 1;
             }
         }
@@ -3046,7 +3057,7 @@ test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -3058,7 +3069,7 @@ test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open(void) {
     if (test_create_temp_raw_pcm_file("dsdneo_cli_rate_override", samples, sizeof samples / sizeof samples[0], ".pcm",
                                       raw_path, sizeof raw_path)
         != 0) {
-        fprintf(stderr, "failed to create temp raw pcm file\n");
+        DSD_FPRINTF(stderr, "failed to create temp raw pcm file\n");
         freeState(state);
         free(opts);
         free(state);
@@ -3069,18 +3080,18 @@ test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open(void) {
     (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     char ini[1536];
-    snprintf(ini, sizeof ini,
-             "version = 1\n"
-             "\n"
-             "[input]\n"
-             "source = \"file\"\n"
-             "file_path = \"%s\"\n"
-             "file_sample_rate = 96000\n",
-             raw_path);
+    DSD_SNPRINTF(ini, sizeof ini,
+                 "version = 1\n"
+                 "\n"
+                 "[input]\n"
+                 "source = \"file\"\n"
+                 "file_path = \"%s\"\n"
+                 "file_sample_rate = 96000\n",
+                 raw_path);
 
     char cfg_path[1024];
     if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
-        fprintf(stderr, "failed to create temp file-input ini\n");
+        DSD_FPRINTF(stderr, "failed to create temp file-input ini\n");
         (void)remove(raw_path);
         freeState(state);
         free(opts);
@@ -3093,14 +3104,14 @@ test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open(void) {
     char arg2[1024];
     char arg3[] = "-s";
     char arg4[] = "44100";
-    snprintf(arg2, sizeof arg2, "%s", cfg_path);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
     char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_BOOTSTRAP_CONTINUE) {
-        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
         (void)remove(cfg_path);
         (void)remove(raw_path);
         freeState(state);
@@ -3111,36 +3122,36 @@ test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open(void) {
 
     int test_rc = 0;
     if (opts->wav_sample_rate != 44100 || dsd_opts_effective_input_rate(opts) != 44100) {
-        fprintf(stderr, "expected CLI rate override to keep 44100 Hz, got raw=%d effective=%d\n", opts->wav_sample_rate,
-                dsd_opts_effective_input_rate(opts));
+        DSD_FPRINTF(stderr, "expected CLI rate override to keep 44100 Hz, got raw=%d effective=%d\n",
+                    opts->wav_sample_rate, dsd_opts_effective_input_rate(opts));
         test_rc = 1;
     }
     if (opts->staged_file_sample_rate != 0) {
-        fprintf(stderr, "expected CLI rate override to clear staged file rate, got %d\n",
-                opts->staged_file_sample_rate);
+        DSD_FPRINTF(stderr, "expected CLI rate override to clear staged file rate, got %d\n",
+                    opts->staged_file_sample_rate);
         test_rc = 1;
     }
     if (openAudioInDevice(opts, state) != 0) {
-        fprintf(stderr, "expected headerless CLI rate override to open successfully\n");
+        DSD_FPRINTF(stderr, "expected headerless CLI rate override to open successfully\n");
         test_rc = 1;
     } else {
         if (opts->audio_in_type != AUDIO_IN_WAV) {
-            fprintf(stderr, "expected headerless CLI rate override to open as AUDIO_IN_WAV, got %d\n",
-                    opts->audio_in_type);
+            DSD_FPRINTF(stderr, "expected headerless CLI rate override to open as AUDIO_IN_WAV, got %d\n",
+                        opts->audio_in_type);
             test_rc = 1;
         }
         if (!opts->audio_in_file_info) {
-            fprintf(stderr, "expected audio_in_file_info after headerless open\n");
+            DSD_FPRINTF(stderr, "expected audio_in_file_info after headerless open\n");
             test_rc = 1;
         } else {
             if (opts->audio_in_file_info->samplerate != 44100) {
-                fprintf(stderr, "expected headerless CLI rate override to open at 44100 Hz, got %d\n",
-                        opts->audio_in_file_info->samplerate);
+                DSD_FPRINTF(stderr, "expected headerless CLI rate override to open at 44100 Hz, got %d\n",
+                            opts->audio_in_file_info->samplerate);
                 test_rc = 1;
             }
             if ((opts->audio_in_file_info->format & SF_FORMAT_TYPEMASK) != SF_FORMAT_RAW) {
-                fprintf(stderr, "expected headerless CLI rate override to open as raw PCM, got format=0x%x\n",
-                        opts->audio_in_file_info->format);
+                DSD_FPRINTF(stderr, "expected headerless CLI rate override to open as raw PCM, got format=0x%x\n",
+                            opts->audio_in_file_info->format);
                 test_rc = 1;
             }
         }
@@ -3222,3 +3233,7 @@ main(void) {
     rc |= test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open();
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

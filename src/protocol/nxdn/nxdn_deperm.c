@@ -24,7 +24,6 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -39,23 +38,18 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);
-void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent,
-                                  size_t elements_bits);
-void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t direction);
 int load_i(const uint8_t val[], int len);
 uint8_t crc6(const uint8_t buf[], int len);
 uint16_t crc12f(const uint8_t buf[], int len);
 uint16_t crc15(const uint8_t buf[], int len);
 uint16_t crc16cac(const uint8_t buf[], int len);
-uint8_t crc7_scch(uint8_t bits[], int len);
-uint32_t nxdn_message_crc32(uint8_t* input, int len);
+uint8_t crc7_scch(const uint8_t bits[], int len);
+uint32_t nxdn_message_crc32(const uint8_t* input, int len);
 
 static const uint8_t scramble_t[182] = { //values are the position values we need to invert in the descramble
     2,   5,   6,   7,   10,  12,  14,  16,  17,  22,  23,  25,  26,  27,  28,  30,  33,  34,  36,  37,  38,  41,  45,
@@ -67,6 +61,1119 @@ static int
 nxdn_dcr_is_sb0_message_type(uint8_t message_type) {
     // SACCH2 sf_mes 0x01 identifies call (SB0) traffic; other values are PDU/End/Idle.
     return message_type == 0x01U;
+}
+
+static void
+nxdn_unpack_bytes_msb(const uint8_t* bytes, size_t byte_count, uint8_t* bits) {
+    for (size_t i = 0; i < byte_count; i++) {
+        const uint8_t value = bytes[i];
+        for (size_t bit = 0; bit < 8U; bit++) {
+            bits[(i * 8U) + bit] = (value >> (7U - bit)) & 1U;
+        }
+    }
+}
+
+static void
+nxdn_pack_bits_msb(const uint8_t* bits, size_t byte_count, uint8_t* bytes) {
+    for (size_t i = 0; i < byte_count; i++) {
+        bytes[i] = (uint8_t)ConvertBitIntoBytes(&bits[i * 8U], 8);
+    }
+}
+
+static uint16_t
+nxdn_bits_to_u16(const uint8_t* bits, int len) {
+    return (uint16_t)convert_bits_into_output(bits, len);
+}
+
+static int
+nxdn_sacch_part_of_frame(uint8_t sf) {
+    switch (sf) {
+        case 2: return 1;
+        case 1: return 2;
+        case 0: return 3;
+        default: return 0;
+    }
+}
+
+static int
+nxdn_ran_from_trellis(const uint8_t* trellis_buf) {
+    return (trellis_buf[2] << 5) | (trellis_buf[3] << 4) | (trellis_buf[4] << 3) | (trellis_buf[5] << 2)
+           | (trellis_buf[6] << 1) | trellis_buf[7];
+}
+
+static void
+nxdn_reset_payload_seed_if_forced(dsd_state* state) {
+    if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
+        state->payload_miN = state->R;
+    }
+}
+
+static void
+nxdn_advance_payload_seed_for_part(dsd_state* state, int part_of_frame) {
+    const char ambe_temp[49] = {0};
+    char ambe_d[49] = {0};
+
+    for (int start = 0; start < part_of_frame; start++) {
+        LFSRN(ambe_temp, ambe_d, state);
+        LFSRN(ambe_temp, ambe_d, state);
+        LFSRN(ambe_temp, ambe_d, state);
+        LFSRN(ambe_temp, ambe_d, state);
+    }
+}
+
+static void
+nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame) {
+    if (part_of_frame == 0) {
+        nxdn_reset_payload_seed_if_forced(state);
+    }
+    if (state->nxdn_cipher_type == 0x1) {
+        nxdn_reset_payload_seed_if_forced(state);
+        if (part_of_frame != 0) {
+            nxdn_advance_payload_seed_for_part(state, part_of_frame);
+        }
+    }
+}
+
+static void
+nxdn_depermute(const uint8_t* input, size_t len, const uint16_t* perm, uint8_t* deperm) {
+    for (size_t i = 0; i < len; i++) {
+        deperm[perm[i]] = input[i];
+    }
+}
+
+static void
+nxdn_depermute_u8(const uint8_t* input, size_t len, const uint8_t* perm, uint8_t* deperm) {
+    for (size_t i = 0; i < len; i++) {
+        deperm[perm[i]] = input[i];
+    }
+}
+
+static void
+nxdn_depermute_rel(const uint8_t* input, const uint8_t* reliab, size_t len, const uint16_t* perm, uint8_t* deperm,
+                   uint8_t* deperm_rel) {
+    for (size_t i = 0; i < len; i++) {
+        deperm[perm[i]] = input[i];
+        deperm_rel[perm[i]] = reliab[i];
+    }
+}
+
+static void
+nxdn_depermute_rel_u8(const uint8_t* input, const uint8_t* reliab, size_t len, const uint8_t* perm, uint8_t* deperm,
+                      uint8_t* deperm_rel) {
+    for (size_t i = 0; i < len; i++) {
+        deperm[perm[i]] = input[i];
+        deperm_rel[perm[i]] = reliab[i];
+    }
+}
+
+static void
+nxdn_depuncture_12_5(const uint8_t* deperm, uint8_t* depunc) {
+    size_t out = 0;
+    static const uint8_t map[] = {0, 1, 2, 3, 4, 0xFFU, 5, 6, 7, 8, 9, 0xFFU};
+
+    for (size_t p = 0; p < 60U; p += 10U) {
+        for (size_t i = 0; i < sizeof(map); i++) {
+            depunc[out++] = (map[i] == 0xFFU) ? 0U : deperm[p + map[i]];
+        }
+    }
+}
+
+static void
+nxdn_depuncture_12_5_rel(const uint8_t* deperm, const uint8_t* deperm_rel, uint8_t* depunc, uint8_t* depunc_rel) {
+    size_t out = 0;
+    static const uint8_t map[] = {0, 1, 2, 3, 4, 0xFFU, 5, 6, 7, 8, 9, 0xFFU};
+
+    for (size_t p = 0; p < 60U; p += 10U) {
+        for (size_t i = 0; i < sizeof(map); i++) {
+            if (map[i] == 0xFFU) {
+                depunc[out] = 0;
+                depunc_rel[out++] = 0;
+            } else {
+                depunc[out] = deperm[p + map[i]];
+                depunc_rel[out++] = deperm_rel[p + map[i]];
+            }
+        }
+    }
+}
+
+static void
+nxdn_depuncture_16_9(const uint8_t* deperm, uint8_t* depunc) {
+    size_t out = 0;
+
+    for (size_t i = 0; i < 144U; i += 3U) {
+        depunc[out++] = deperm[i + 0U];
+        depunc[out++] = 0;
+        depunc[out++] = deperm[i + 1U];
+        depunc[out++] = deperm[i + 2U];
+    }
+}
+
+static void
+nxdn_depuncture_16_9_rel(const uint8_t* deperm, const uint8_t* deperm_rel, uint8_t* depunc, uint8_t* depunc_rel) {
+    size_t out = 0;
+
+    for (size_t i = 0; i < 144U; i += 3U) {
+        depunc[out] = deperm[i + 0U];
+        depunc_rel[out++] = deperm_rel[i + 0U];
+        depunc[out] = 0;
+        depunc_rel[out++] = 0;
+        depunc[out] = deperm[i + 1U];
+        depunc_rel[out++] = deperm_rel[i + 1U];
+        depunc[out] = deperm[i + 2U];
+        depunc_rel[out++] = deperm_rel[i + 2U];
+    }
+}
+
+static void
+nxdn_depuncture_12_group(const uint8_t* deperm, size_t groups, uint8_t* depunc) {
+    size_t out = 0;
+    static const uint8_t map[] = {0, 1, 2, 0xFFU, 3, 4, 5, 6, 7, 8, 9, 0xFFU, 10, 11};
+
+    for (size_t group = 0; group < groups; group++) {
+        const size_t base = group * 12U;
+        for (size_t i = 0; i < sizeof(map); i++) {
+            depunc[out++] = (map[i] == 0xFFU) ? 0U : deperm[base + map[i]];
+        }
+    }
+}
+
+static void
+nxdn_depuncture_12_group_rel(const uint8_t* deperm, const uint8_t* deperm_rel, size_t groups, uint8_t* depunc,
+                             uint8_t* depunc_rel) {
+    size_t out = 0;
+    static const uint8_t map[] = {0, 1, 2, 0xFFU, 3, 4, 5, 6, 7, 8, 9, 0xFFU, 10, 11};
+
+    for (size_t group = 0; group < groups; group++) {
+        const size_t base = group * 12U;
+        for (size_t i = 0; i < sizeof(map); i++) {
+            if (map[i] == 0xFFU) {
+                depunc[out] = 0;
+                depunc_rel[out++] = 0;
+            } else {
+                depunc[out] = deperm[base + map[i]];
+                depunc_rel[out++] = deperm_rel[base + map[i]];
+            }
+        }
+    }
+}
+
+static void
+nxdn_conv_decode_hard(const uint8_t* depunc, size_t depunc_len, uint8_t* m_data, int chainback_bits) {
+    CNXDNConvolution_start();
+    for (size_t i = 0; i < depunc_len / 2U; i++) {
+        const uint8_t s0 = depunc[i * 2U] << 1;
+        const uint8_t s1 = depunc[(i * 2U) + 1U] << 1;
+        CNXDNConvolution_decode(s0, s1);
+    }
+    CNXDNConvolution_chainback(m_data, chainback_bits);
+}
+
+static void
+nxdn_conv_decode_soft(const uint8_t* depunc, const uint8_t* depunc_rel, size_t depunc_len, uint8_t* m_data,
+                      int chainback_bits) {
+    CNXDNConvolution_start();
+    for (size_t i = 0; i < depunc_len / 2U; i++) {
+        const uint8_t s0 = depunc[i * 2U] << 1;
+        const uint8_t s1 = depunc[(i * 2U) + 1U] << 1;
+        const uint8_t r0 = depunc_rel[i * 2U];
+        const uint8_t r1 = depunc_rel[(i * 2U) + 1U];
+        CNXDNConvolution_decode_soft(s0, s1, r0, r1);
+    }
+    CNXDNConvolution_chainback(m_data, chainback_bits);
+}
+
+static void
+nxdn_hard_fallback_decode(uint8_t* trellis_buf, size_t trellis_size, uint8_t* m_data, size_t m_data_bytes,
+                          const uint8_t* depunc, int chainback_bits) {
+    DSD_MEMSET(trellis_buf, 0, trellis_size);
+    DSD_MEMSET(m_data, 0, m_data_bytes);
+    trellis_decode(trellis_buf, depunc, chainback_bits);
+    nxdn_pack_bits_msb(trellis_buf, m_data_bytes, m_data);
+}
+
+static void
+nxdn_print_last_ran(const dsd_state* state) {
+    if (state->nxdn_last_ran != (unsigned int)-1) {
+        DSD_FPRINTF(stderr, " RAN %02d ", state->nxdn_last_ran);
+    } else {
+        DSD_FPRINTF(stderr, "        ");
+    }
+}
+
+static void
+nxdn_print_colored_last_ran(const dsd_state* state) {
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    nxdn_print_last_ran(state);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+nxdn_print_crc_error_colored(void) {
+    DSD_FPRINTF(stderr, "%s", KRED);
+    DSD_FPRINTF(stderr, " (CRC ERR)");
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+nxdn_print_sacch_payload(const dsd_opts* opts, const char* label, const uint8_t* m_data, uint8_t crc, uint8_t check) {
+    if (opts->payload != 1) {
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "\n%s", label);
+    for (int i = 0; i < 4; i++) {
+        DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
+    }
+    if (crc != check) {
+        nxdn_print_crc_error_colored();
+    }
+}
+
+static void
+nxdn_reset_sacch_segments(dsd_state* state) {
+    DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+    DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+}
+
+static void
+nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
+                                 uint8_t crc, uint8_t check) {
+    nxdn_print_last_ran(state);
+    state->nxdn_part_of_frame = 0;
+
+    uint8_t nsf_sacch[26];
+    DSD_MEMSET(nsf_sacch, 0, sizeof(nsf_sacch));
+    DSD_MEMCPY(nsf_sacch, trellis_buf + 8, 24U);
+
+    if (crc == check) {
+        state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
+    }
+
+    DSD_FPRINTF(stderr, "PF 1/1");
+    nxdn_reset_payload_seed_if_forced(state);
+
+    if (crc == check) {
+        NXDN_Elements_Content_decode(opts, state, 1, nsf_sacch, sizeof(nsf_sacch));
+    } else {
+        DSD_FPRINTF(stderr, " IDLE");
+    }
+
+    nxdn_print_sacch_payload(opts, " SACCH NSF ", m_data, crc, check);
+    nxdn_reset_sacch_segments(state);
+}
+
+static void
+nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
+                             uint8_t crc, uint8_t check) {
+    const uint8_t sf = (trellis_buf[0] << 1) | trellis_buf[1];
+    const int part_of_frame = nxdn_sacch_part_of_frame(sf);
+
+    state->nxdn_part_of_frame = part_of_frame;
+    nxdn_print_colored_last_ran(state);
+    DSD_FPRINTF(stderr, "PF %d/4", part_of_frame + 1);
+    nxdn_prepare_sacch_payload_seed(state, part_of_frame);
+
+    if (crc == check) {
+        const int ran = nxdn_ran_from_trellis(trellis_buf);
+        state->nxdn_ran = state->nxdn_last_ran = ran;
+        state->nxdn_sf = sf;
+        state->nxdn_part_of_frame = part_of_frame;
+        state->nxdn_sacch_frame_segcrc[part_of_frame] = 0;
+    } else {
+        state->nxdn_sacch_frame_segcrc[part_of_frame] = 1;
+    }
+
+    for (int i = 0; i < 18; i++) {
+        state->nxdn_sacch_frame_segment[part_of_frame][i] = trellis_buf[i + 8];
+    }
+
+    if (part_of_frame == 3) {
+        NXDN_SACCH_Full_decode(opts, state);
+    }
+
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n SACCH SF Segment #%d ", part_of_frame + 1);
+        for (int i = 0; i < 4; i++) {
+            DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
+        }
+        if (crc != check) {
+            DSD_FPRINTF(stderr, " CRC ERR - %02X %02X", crc, check);
+        }
+    }
+}
+
+static void
+nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint8_t crc,
+                  uint8_t check) {
+    if (state->nxdn_sacch_non_superframe == 1) {
+        nxdn_handle_sacch_non_superframe(opts, state, trellis_buf, m_data, crc, check);
+    } else if (state->nxdn_sacch_non_superframe == 0) {
+        nxdn_handle_sacch_superframe(opts, state, trellis_buf, m_data, crc, check);
+    }
+}
+
+static void
+nxdn_print_pich_tch_name(uint8_t lich) {
+    if (lich == 0x08U) {
+        DSD_FPRINTF(stderr, " PICH Payload ");
+    } else {
+        DSD_FPRINTF(stderr, " TCH Payload ");
+    }
+}
+
+static void
+nxdn_print_dcr_source_target(uint16_t source, uint16_t target, uint8_t gi) {
+    DSD_FPRINTF(stderr, "\n ");
+    DSD_FPRINTF(stderr, "Source: %d; Target: %d; ", source, target);
+    DSD_FPRINTF(stderr, "%s; ", gi ? "Private" : "Group");
+}
+
+static void
+nxdn_handle_dcr_csm_alias(const dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf) {
+    char csm_alias[32];
+    DSD_MEMSET(csm_alias, 0, sizeof(csm_alias));
+
+    if (nxdn_dcr_decode_csm_alias(trellis_buf, csm_alias, sizeof(csm_alias))) {
+        DSD_FPRINTF(stderr, "\n Call Sign Memory: %s; ", csm_alias + 4);
+        DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", csm_alias);
+        if (state->event_history_s != NULL) {
+            DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
+                         sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", csm_alias);
+        }
+    } else if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n Call Sign Memory: decode error; ");
+    }
+}
+
+static void
+nxdn_handle_dcr_opcode_payload(const uint8_t* trellis_buf, uint8_t opcode, uint8_t gi, uint16_t source,
+                               uint16_t target) {
+    if (opcode == 0x0FU) {
+        nxdn_print_dcr_source_target(source, target, gi);
+        DSD_FPRINTF(stderr, "Data Preamble; ");
+        const uint8_t countdown = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
+        DSD_FPRINTF(stderr, "Countdown: %d; ", countdown);
+    }
+
+    if (opcode == 0x32U) {
+        nxdn_print_dcr_source_target(source, target, gi);
+        DSD_FPRINTF(stderr, "Precoded Message; ");
+        const uint8_t idx = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
+        DSD_FPRINTF(stderr, "Index#: %d;", idx);
+    }
+}
+
+static void
+nxdn_handle_pich_tch_crc_ok(const dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, uint8_t lich) {
+    const uint8_t opcode = (uint8_t)ConvertBitIntoBytes(&trellis_buf[0], 8);
+    const uint8_t gi = trellis_buf[16];
+    const uint16_t source = (uint16_t)ConvertBitIntoBytes(&trellis_buf[24], 16);
+    const uint16_t target = (uint16_t)ConvertBitIntoBytes(&trellis_buf[40], 16);
+    const int is_dcr_sb0 = (lich == 0x08U) && nxdn_dcr_is_sb0_message_type(state->nxdn_dcr_sf_message_type);
+
+    if (is_dcr_sb0) {
+        nxdn_handle_dcr_csm_alias(opts, state, trellis_buf);
+    } else {
+        nxdn_handle_dcr_opcode_payload(trellis_buf, opcode, gi, source, target);
+    }
+}
+
+static void
+nxdn_print_pich_tch_crc_error(uint8_t lich) {
+    DSD_FPRINTF(stderr, "\n ");
+    DSD_FPRINTF(stderr, "%s", KRED);
+    DSD_FPRINTF(stderr, "%s", (lich == 0x08U) ? "PICH (CRC ERR)" : "TCH (CRC ERR)");
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+nxdn_print_pich_tch_payload(const dsd_opts* opts, const uint8_t* m_data, uint16_t crc, uint16_t check, uint8_t lich) {
+    if (opts->payload != 1) {
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "\n");
+    nxdn_print_pich_tch_name(lich);
+    for (int i = 0; i < 12; i++) {
+        DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
+    }
+    if (crc != check) {
+        nxdn_print_crc_error_colored();
+    }
+}
+
+static void
+nxdn_handle_pich_tch(const dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
+                     uint16_t crc, uint16_t check, uint8_t lich) {
+    if (crc == check) {
+        nxdn_handle_pich_tch_crc_ok(opts, state, trellis_buf, lich);
+    } else if (opts->payload == 0) {
+        nxdn_print_pich_tch_crc_error(lich);
+    }
+
+    nxdn_print_pich_tch_payload(opts, m_data, crc, check, lich);
+}
+
+static void
+nxdn_print_facch2_udch_name(uint8_t type) {
+    if (type == 0) {
+        DSD_FPRINTF(stderr, " UDCH");
+    }
+    if (type == 1) {
+        DSD_FPRINTF(stderr, " FACCH2");
+    }
+}
+
+static void
+nxdn_print_udch_data(const uint8_t* m_data) {
+    DSD_FPRINTF(stderr, "\n UDCH Data: ");
+    for (int i = 0; i < 24; i++) {
+        DSD_FPRINTF(stderr, "%02X", m_data[i]);
+    }
+
+    DSD_FPRINTF(stderr, "\n UDCH Data: ASCII - ");
+    for (int i = 0; i < 24; i++) {
+        if (m_data[i] <= 0x7E && m_data[i] >= 0x20) {
+            DSD_FPRINTF(stderr, "%c", m_data[i]);
+        } else {
+            DSD_FPRINTF(stderr, " ");
+        }
+    }
+}
+
+static void
+nxdn_print_facch2_udch_payload(const dsd_opts* opts, const uint8_t* m_data, uint16_t crc, uint16_t check,
+                               uint8_t type) {
+    if (opts->payload != 1) {
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "\n");
+    nxdn_print_facch2_udch_name(type);
+    DSD_FPRINTF(stderr, " Payload\n  ");
+    for (int i = 0; i < 26; i++) {
+        if (i == 13) {
+            DSD_FPRINTF(stderr, "\n  ");
+        }
+        DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
+    }
+    if (crc != check) {
+        nxdn_print_crc_error_colored();
+    }
+}
+
+static void
+nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
+                        uint16_t crc, uint16_t check, uint8_t type) {
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    nxdn_print_facch2_udch_name(type);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+
+    uint8_t f2u_message_buffer[400];
+    DSD_MEMSET(f2u_message_buffer, 0, sizeof(f2u_message_buffer));
+    for (int i = 0; i < 199 - 8 - 15; i++) {
+        f2u_message_buffer[i] = trellis_buf[i + 8];
+    }
+
+    if (crc == check) {
+        state->data_header_format[0] = 1;
+        NXDN_Elements_Content_decode(opts, state, 1, f2u_message_buffer, (size_t)(199 - 8 - 15));
+    }
+    if (type == 0 && crc == check) {
+        nxdn_print_udch_data(m_data);
+    }
+
+    nxdn_print_facch2_udch_payload(opts, m_data, crc, check, type);
+}
+
+static int cac_fail = 0;
+
+static void
+nxdn_reset_after_cac_fail(dsd_state* state) {
+    state->synctype = DSD_SYNC_P25P1_POS;
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->carrier = 0;
+    state->last_cc_sync_time = time(NULL) + 2;
+    cac_fail = 0;
+
+    state->center = 0.0f;
+    state->jitter = -1;
+    state->synctype = DSD_SYNC_NONE;
+    state->min = -4.0f;
+    state->max = 4.0f;
+    state->lmid = 0.0f;
+    state->umid = 0.0f;
+    state->minref = -3.2f;
+    state->maxref = 3.2f;
+    state->lastsample = 0.0f;
+    for (int i = 0; i < 128; i++) {
+        state->sbuf[i] = 0.0f;
+    }
+    state->sidx = 0;
+    for (int i = 0; i < 1024; i++) {
+        state->maxbuf[i] = 4.0f;
+    }
+    for (int i = 0; i < 1024; i++) {
+        state->minbuf[i] = -4.0f;
+    }
+    state->midx = 0;
+    dsd_state_invalidate_minmax_sums(state);
+    state->symbolcnt = 0;
+    state->dibit_buf_p = state->dibit_buf + 200;
+    DSD_MEMSET(state->dibit_buf, 0, sizeof(int) * 200);
+    state->offset = 0;
+
+    DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+    state->data_header_blocks[0] = 1;
+    state->data_header_padding[0] = 0;
+    state->data_header_format[0] = 0;
+    state->data_header_valid[0] = 0;
+    state->payload_algid = 0;
+    state->payload_keyid = 0;
+    state->payload_mi = 0;
+    DSD_MEMSET(state->aes_ivR, 0, sizeof(state->aes_ivR));
+}
+
+static void
+nxdn_update_cac_fail_state(dsd_state* state, uint16_t crc) {
+    if (crc != 0) {
+        nxdn_print_crc_error_colored();
+        cac_fail++;
+    } else {
+        cac_fail = 0;
+    }
+
+    if (cac_fail > 10) {
+        nxdn_reset_after_cac_fail(state);
+    }
+}
+
+static void
+nxdn_print_cac_payload(const dsd_opts* opts, const uint8_t* m_data) {
+    if (opts->payload != 1) {
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "\n");
+    DSD_FPRINTF(stderr, " CAC Payload\n  ");
+    for (int i = 0; i < 22; i++) {
+        DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
+        if (i == 10) {
+            DSD_FPRINTF(stderr, "\n  ");
+        }
+    }
+}
+
+static void
+nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint16_t crc) {
+    uint8_t cac_message_buffer[147];
+    DSD_MEMSET(cac_message_buffer, 0, sizeof(cac_message_buffer));
+    for (int i = 0; i < 147; i++) {
+        cac_message_buffer[i] = trellis_buf[i + 8];
+    }
+
+    nxdn_print_last_ran(state);
+    if (crc == 0) {
+        state->data_header_format[0] = 2;
+        state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
+    }
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, " CAC");
+    DSD_FPRINTF(stderr, "%s", KNRM);
+    nxdn_update_cac_fail_state(state, crc);
+
+    if (crc == 0) {
+        NXDN_Elements_Content_decode(opts, state, 1, cac_message_buffer, sizeof(cac_message_buffer));
+    }
+    nxdn_print_cac_payload(opts, m_data);
+    rotate_symbol_out_file(opts, state);
+}
+
+struct nxdn_sacch2_fields {
+    uint8_t sf_fb;
+    uint8_t sf_num;
+    uint8_t sf_mes;
+    uint8_t sf_pof;
+    uint8_t crc;
+    uint8_t check;
+};
+
+static int
+nxdn_sacch2_crc_ok(const struct nxdn_sacch2_fields* fields) {
+    return fields->crc == fields->check;
+}
+
+static struct nxdn_sacch2_fields
+nxdn_sacch2_fields_from_trellis(const uint8_t* trellis_buf, uint8_t crc, uint8_t check) {
+    struct nxdn_sacch2_fields fields;
+    fields.sf_fb = trellis_buf[0];
+    fields.sf_num = (uint8_t)nxdn_bits_to_u16(trellis_buf + 1, 2);
+    fields.sf_mes = (uint8_t)nxdn_bits_to_u16(trellis_buf + 3, 5);
+    fields.sf_pof = 3U - fields.sf_num;
+    fields.crc = crc;
+    fields.check = check;
+    return fields;
+}
+
+static void
+nxdn_print_sacch2_message_label(uint8_t sf_mes) {
+    if (sf_mes == 0x01) {
+        DSD_FPRINTF(stderr, "Call; ");
+    } else if (sf_mes == 0x02) {
+        DSD_FPRINTF(stderr, "PDU;  ");
+    } else if (sf_mes == 0x1E) {
+        DSD_FPRINTF(stderr, "End;  ");
+    } else if (sf_mes == 0x00) {
+        DSD_FPRINTF(stderr, "Idle; ");
+    } else {
+        DSD_FPRINTF(stderr, "Res: %02X; ", sf_mes);
+    }
+}
+
+static void
+nxdn_print_sacch2_header(dsd_state* state, const struct nxdn_sacch2_fields* fields) {
+    state->nxdn_dcr_sf_message_type = 0xFFU;
+    if (!nxdn_sacch2_crc_ok(fields)) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, "SACCH (CRC ERR)");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
+
+    state->nxdn_dcr_sf_message_type = fields->sf_mes;
+    if (fields->sf_fb && fields->sf_pof) {
+        DSD_FPRINTF(stderr, "PF: %d/1; ", fields->sf_num + 1);
+    } else {
+        DSD_FPRINTF(stderr, "PF: %d/4; ", fields->sf_pof + 1);
+    }
+    nxdn_print_sacch2_message_label(fields->sf_mes);
+}
+
+static uint8_t
+nxdn_update_sacch2_segment_crc(dsd_state* state, const struct nxdn_sacch2_fields* fields) {
+    state->nxdn_sacch_frame_segcrc[fields->sf_num] = nxdn_sacch2_crc_ok(fields) ? 0 : 1;
+
+    uint8_t crc_sf_check = 0;
+    for (int i = 0; i < 4; i++) {
+        crc_sf_check += state->nxdn_sacch_frame_segcrc[i];
+    }
+    return crc_sf_check;
+}
+
+static void
+nxdn_store_sacch2_frame(dsd_state* state, const uint8_t* trellis_buf, const struct nxdn_sacch2_fields* fields) {
+    const int sf_size = 18;
+    const int bf_idx = 8;
+    const int sf_idx = sf_size * fields->sf_pof;
+
+    if (fields->sf_fb && fields->sf_pof) {
+        DSD_MEMCPY(state->dmr_pdu_sf[0], trellis_buf + bf_idx, (size_t)sf_size * sizeof(uint8_t));
+    } else {
+        DSD_MEMCPY(state->dmr_pdu_sf[0] + sf_idx, trellis_buf + bf_idx, (size_t)sf_size * sizeof(uint8_t));
+    }
+}
+
+static void
+nxdn_update_sacch2_identity_state(dsd_state* state, const struct nxdn_sacch2_fields* fields) {
+    if (fields->sf_fb && state->M == 1) {
+        state->payload_miN = 0;
+    }
+    if (!nxdn_sacch2_crc_ok(fields)) {
+        return;
+    }
+
+    state->gi[0] = 0;
+    state->nxdn_last_ran = 7;
+    state->nxdn_last_tg = 777;
+    state->nxdn_last_rid = 777;
+    DSD_SPRINTF(state->generic_talker_alias[0], "%s", "JPN DCR");
+    DSD_SPRINTF(state->event_history_s[0].Event_History_Items[0].alias, "%s; ", "JPN DCR");
+    if (fields->sf_fb) {
+        state->payload_miN = 0;
+    }
+}
+
+static void
+nxdn_print_sacch2_complete_message(dsd_state* state, const struct nxdn_sacch2_fields* fields, uint8_t crc_sf_check) {
+    const int single_frame_ok = fields->sf_fb && fields->sf_pof && nxdn_sacch2_crc_ok(fields);
+    const int multi_frame_ok = fields->sf_num == 0 && crc_sf_check == 0;
+    if (!single_frame_ok && !multi_frame_ok) {
+        return;
+    }
+
+    const uint8_t cipher = (uint8_t)nxdn_bits_to_u16(state->dmr_pdu_sf[0], 2);
+    const uint16_t user_code = nxdn_bits_to_u16(state->dmr_pdu_sf[0] + 2, 9);
+    DSD_FPRINTF(stderr, "UC: %03d; ", user_code);
+    if (cipher == 0x01) {
+        DSD_FPRINTF(stderr, "Scrambler; ");
+        state->nxdn_cipher_type = 1;
+        if (state->R != 0) {
+            DSD_FPRINTF(stderr, "Key: %lld; ", state->R);
+        }
+    } else if (cipher != 0x00) {
+        DSD_FPRINTF(stderr, "Reserved Comms: %d; ", cipher);
+    }
+
+    state->dmr_encL = (state->nxdn_cipher_type != 0 && state->R == 0) ? 1 : 0;
+    const uint8_t mfid = (uint8_t)nxdn_bits_to_u16(state->dmr_pdu_sf[0] + 11, 7);
+    if (mfid != 0) {
+        DSD_FPRINTF(stderr, "MFID: %02X; ", mfid);
+    }
+    if (fields->sf_fb == 0 && fields->sf_num == 0) {
+        const unsigned long long mes_hex = (unsigned long long)convert_bits_into_output(state->dmr_pdu_sf[0] + 18, 54);
+        DSD_FPRINTF(stderr, "\n");
+        DSD_FPRINTF(stderr, " Message: %014llX; ", mes_hex);
+    }
+}
+
+static void
+nxdn_print_sacch2_payload(const dsd_opts* opts, const dsd_state* state, const struct nxdn_sacch2_fields* fields,
+                          const uint8_t* m_data) {
+    if (opts->payload != 1) {
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "\n DCR SACCH ");
+    for (int i = 0; i < 4; i++) {
+        DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
+    }
+    if (fields->sf_num == 0) {
+        DSD_FPRINTF(stderr, "\n DCR SFULL ");
+        for (int i = 0; i < 9; i++) {
+            DSD_FPRINTF(stderr, "[%02X]", (uint8_t)nxdn_bits_to_u16(state->dmr_pdu_sf[0] + ((size_t)i * 8U), 8));
+        }
+    }
+}
+
+static void
+nxdn_reset_sacch2_if_done(dsd_state* state, const struct nxdn_sacch2_fields* fields) {
+    if (fields->sf_num != 0) {
+        return;
+    }
+
+    DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+    DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+    DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+}
+
+static void
+nxdn_handle_sacch2(const dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
+                   uint8_t crc, uint8_t check) {
+    const struct nxdn_sacch2_fields fields = nxdn_sacch2_fields_from_trellis(trellis_buf, crc, check);
+    nxdn_print_sacch2_header(state, &fields);
+    const uint8_t crc_sf_check = nxdn_update_sacch2_segment_crc(state, &fields);
+    nxdn_store_sacch2_frame(state, trellis_buf, &fields);
+    nxdn_update_sacch2_identity_state(state, &fields);
+    nxdn_print_sacch2_complete_message(state, &fields, crc_sf_check);
+    nxdn_print_sacch2_payload(opts, state, &fields, m_data);
+    nxdn_reset_sacch2_if_done(state, &fields);
+}
+
+struct nxdn_facch3_udch2_message {
+    uint8_t bits[160];
+    uint8_t bytes[24];
+    uint16_t crc[2];
+    uint16_t check[2];
+};
+
+static int
+nxdn_facch3_udch2_crc_ok(const struct nxdn_facch3_udch2_message* message) {
+    return message->crc[0] == message->check[0] && message->crc[1] == message->check[1];
+}
+
+static int
+nxdn_facch3_udch2_crc_failed(const struct nxdn_facch3_udch2_message* message) {
+    return message->crc[0] != message->check[0] || message->crc[1] != message->check[1];
+}
+
+static void
+nxdn_store_facch3_udch2_block(struct nxdn_facch3_udch2_message* message, size_t block, const uint8_t* trellis_buf,
+                              const uint8_t* m_data) {
+    for (size_t i = 0; i < 80U; i++) {
+        message->bits[i + (block * 80U)] = trellis_buf[i];
+    }
+    for (size_t i = 0; i < 12U; i++) {
+        message->bytes[i + (block * 12U)] = m_data[i];
+    }
+}
+
+static void
+nxdn_decode_facch3_udch2_block_hard(const uint8_t* bits, size_t block, struct nxdn_facch3_udch2_message* message) {
+    uint8_t deperm[144];
+    uint8_t depunc[192];
+    uint8_t trellis_buf[96];
+    uint8_t m_data[12];
+
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
+
+    nxdn_depermute_u8(bits + (block * 144U), 144U, PERM_16_9, deperm);
+    nxdn_depuncture_16_9(deperm, depunc);
+    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 92);
+    nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
+
+    message->crc[block] = crc12f(trellis_buf, 84);
+    message->check[block] = nxdn_bits_to_u16(trellis_buf + 84, 12);
+    if (message->crc[block] != message->check[block]) {
+        message->crc[block] = 1;
+        message->check[block] = 0;
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
+        message->crc[block] = crc12f(trellis_buf, 84);
+        message->check[block] = nxdn_bits_to_u16(trellis_buf + 84, 12);
+    }
+    nxdn_store_facch3_udch2_block(message, block, trellis_buf, m_data);
+}
+
+static void
+nxdn_decode_facch3_udch2_block_soft(const uint8_t* bits, const uint8_t* reliab, size_t block,
+                                    struct nxdn_facch3_udch2_message* message) {
+    uint8_t deperm[144];
+    uint8_t deperm_rel[144];
+    uint8_t depunc[192];
+    uint8_t depunc_rel[192];
+    uint8_t trellis_buf[96];
+    uint8_t m_data[12];
+    const size_t offset = block * 144U;
+
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(deperm_rel, 255, sizeof(deperm_rel));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(depunc_rel, 255, sizeof(depunc_rel));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
+
+    nxdn_depermute_rel_u8(bits + offset, reliab + offset, 144U, PERM_16_9, deperm, deperm_rel);
+    nxdn_depuncture_16_9_rel(deperm, deperm_rel, depunc, depunc_rel);
+    nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 92);
+    nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
+
+    message->crc[block] = crc12f(trellis_buf, 84);
+    message->check[block] = nxdn_bits_to_u16(trellis_buf + 84, 12);
+    if (message->crc[block] != message->check[block]) {
+        message->crc[block] = 1;
+        message->check[block] = 0;
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
+        message->crc[block] = crc12f(trellis_buf, 84);
+        message->check[block] = nxdn_bits_to_u16(trellis_buf + 84, 12);
+    }
+    nxdn_store_facch3_udch2_block(message, block, trellis_buf, m_data);
+}
+
+static void
+nxdn_print_facch3_udch2_name(uint8_t type) {
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    if (type == 0) {
+        DSD_FPRINTF(stderr, " UDCH2");
+    }
+    if (type == 1) {
+        DSD_FPRINTF(stderr, " FACCH3");
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+nxdn_decode_facch3_udch2_content(dsd_opts* opts, dsd_state* state, const struct nxdn_facch3_udch2_message* message) {
+    if (!nxdn_facch3_udch2_crc_ok(message)) {
+        return;
+    }
+
+    state->data_header_format[0] = 1;
+    NXDN_Elements_Content_decode(opts, state, 1, message->bits, 160U);
+}
+
+static void
+nxdn_print_udch2_hex_data(const uint8_t* bytes) {
+    DSD_FPRINTF(stderr, "\n UDCH2 Data: ");
+    for (int i = 0; i < 22; i++) {
+        if (i == 10) {
+            DSD_FPRINTF(stderr, " ");
+        }
+        if (i == 10 || i == 11) {
+            continue;
+        }
+        DSD_FPRINTF(stderr, "%02X", bytes[i]);
+    }
+}
+
+static void
+nxdn_print_udch2_ascii_data(const uint8_t* bytes) {
+    DSD_FPRINTF(stderr, "\n UDCH2 Data: ASCII - ");
+    for (int i = 0; i < 22; i++) {
+        if (i == 10 || i == 11) {
+            continue;
+        }
+        if (bytes[i] <= 0x7E && bytes[i] >= 0x20) {
+            DSD_FPRINTF(stderr, "%c", bytes[i]);
+        } else {
+            DSD_FPRINTF(stderr, " ");
+        }
+    }
+}
+
+static void
+nxdn_print_udch2_hard_data(const struct nxdn_facch3_udch2_message* message) {
+    nxdn_print_udch2_hex_data(message->bytes);
+    nxdn_print_udch2_ascii_data(message->bytes);
+    if (message->crc[0] != message->check[0] && message->crc[1] != message->check[1]) {
+        nxdn_print_crc_error_colored();
+    }
+}
+
+static void
+nxdn_print_udch2_soft_data(const struct nxdn_facch3_udch2_message* message) {
+    nxdn_print_udch2_hex_data(message->bytes);
+    if (nxdn_facch3_udch2_crc_failed(message)) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        if (message->crc[0] != message->check[0]) {
+            DSD_FPRINTF(stderr, " (CRC ERR P0)");
+        }
+        if (message->crc[1] != message->check[1]) {
+            DSD_FPRINTF(stderr, " (CRC ERR P1)");
+        }
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+}
+
+static void
+nxdn_print_facch3_udch2_payload_header(uint8_t type) {
+    DSD_FPRINTF(stderr, "\n");
+    if (type == 0) {
+        DSD_FPRINTF(stderr, " UDCH2");
+    }
+    if (type == 1) {
+        DSD_FPRINTF(stderr, " FACCH3");
+    }
+}
+
+static void
+nxdn_print_facch3_udch2_payload_hard(const dsd_opts* opts, const struct nxdn_facch3_udch2_message* message,
+                                     uint8_t type) {
+    if (opts->payload != 1) {
+        return;
+    }
+
+    nxdn_print_facch3_udch2_payload_header(type);
+    DSD_FPRINTF(stderr, " Payload \n  ");
+    for (int i = 0; i < 24; i++) {
+        if (i == 12) {
+            DSD_FPRINTF(stderr, "\n  ");
+        }
+        DSD_FPRINTF(stderr, "[%02X]", message->bytes[i]);
+    }
+    if (nxdn_facch3_udch2_crc_failed(message)) {
+        nxdn_print_crc_error_colored();
+    }
+}
+
+static void
+nxdn_print_facch3_udch2_payload_soft(const dsd_opts* opts, const struct nxdn_facch3_udch2_message* message,
+                                     uint8_t type) {
+    if (opts->payload != 1) {
+        return;
+    }
+
+    nxdn_print_facch3_udch2_payload_header(type);
+    DSD_FPRINTF(stderr, " Payload\n  ");
+    for (int i = 0; i < 22; i++) {
+        if (i == 10) {
+            DSD_FPRINTF(stderr, "\n  ");
+        }
+        if (i == 10 || i == 11) {
+            continue;
+        }
+        DSD_FPRINTF(stderr, "[%02X]", message->bytes[i]);
+    }
+    if (nxdn_facch3_udch2_crc_failed(message)) {
+        nxdn_print_crc_error_colored();
+    }
+}
+
+static void
+nxdn_handle_facch3_udch2_hard(dsd_opts* opts, dsd_state* state, const struct nxdn_facch3_udch2_message* message,
+                              uint8_t type) {
+    nxdn_print_facch3_udch2_name(type);
+    nxdn_decode_facch3_udch2_content(opts, state, message);
+    if (type == 0) {
+        nxdn_print_udch2_hard_data(message);
+    }
+    nxdn_print_facch3_udch2_payload_hard(opts, message, type);
+}
+
+static void
+nxdn_handle_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, const struct nxdn_facch3_udch2_message* message,
+                              uint8_t type) {
+    nxdn_print_facch3_udch2_name(type);
+    nxdn_decode_facch3_udch2_content(opts, state, message);
+    if (type == 0) {
+        nxdn_print_udch2_soft_data(message);
+    }
+    nxdn_print_facch3_udch2_payload_soft(opts, message, type);
+}
+
+struct nxdn_message_label {
+    uint8_t type;
+    const char* label;
+};
+
+static const char*
+nxdn_message_type_label(uint8_t message_type) {
+    static const struct nxdn_message_label labels[] = {
+        {0x10, " IDLE"},
+        {0x01, " VCALL"},
+        {0x02, " VCALL_REC_REQ"},
+        {0x03, " VCALL_IV"},
+        {0x04, " VCALL_ASSGN"},
+        {0x05, " VCALL_ASSGN_DUP"},
+        {0x06, " CALL_CONN_RESP"},
+        {0x07, " TX_REL_EX"},
+        {0x08, " TX_REL"},
+        {0x09, " DCALL_HEADER"},
+        {0x0A, " DCALL_REC_REQ"},
+        {0x0B, " DCALL_DATA"},
+        {0x0C, " DCALL_ACK"},
+        {0x0D, " DCALL_ASSGN_DUP"},
+        {0x0E, " DCALL_ASSGN"},
+        {0x11, " DISC"},
+        {0x17, " DST_ID_INFO"},
+        {0x18, " SITE_INFO"},
+        {0x19, " SRV_INFO"},
+        {0x1A, " CCH_INFO"},
+        {0x1B, " ADJ_SITE_INFO"},
+        {0x1C, " FAIL_STAT_INFO"},
+        {0x20, " REG_RESP"},
+        {0x22, " REG_C_RESP"},
+        {0x24, " GRP_REG_RESP"},
+        {0x32, " STAT_REQ"},
+        {0x33, " STAT_RESP"},
+        {0x38, " SDCALL_REQ_HEADER"},
+        {0x39, " SDCALL_REQ_DATA"},
+        {0x3A, " SDCALL_IV"},
+        {0x3B, " SDCALL_RESP"},
+        {0x3F, " ALIAS"},
+        {0xE1, " VCALL (ARIB)"},
+        {0xE7, " ALIAS_ARIB"},
+        {0xE8, " TX_REL (ARIB)"},
+    };
+
+    for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++) {
+        if (labels[i].type == message_type) {
+            return labels[i].label;
+        }
+    }
+    return NULL;
+}
+
+static int
+nxdn_message_type_resets_call(uint8_t message_type) {
+    return message_type == 0x08U || message_type == 0x11U || message_type == 0xE8U;
+}
+
+static int
+nxdn_message_type_resets_gain(uint8_t message_type) {
+    return message_type == 0x07U || nxdn_message_type_resets_call(message_type);
 }
 
 //decoding functions here
@@ -87,83 +1194,35 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
     uint8_t trellis_buf[96]; //96
     uint16_t crc = 1;        //crc calculated by function
     uint16_t check = 0;      //crc from payload for comparison
-    int out;
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
 
-    for (int i = 0; i < 144; i++) {
-        deperm[PERM_16_9[i]] = bits[i];
-    }
-    out = 0;
-    for (int i = 0; i < 144; i += 3) {
-        depunc[out++] = deperm[i + 0];
-        depunc[out++] = 0;
-        depunc[out++] = deperm[i + 1];
-        depunc[out++] = deperm[i + 2];
-    }
+    nxdn_depermute_u8(bits, 144U, PERM_16_9, deperm);
+    nxdn_depuncture_16_9(deperm, depunc);
 
     //switch to the convolutional decoder
-    uint8_t temp[200];
-    uint8_t s0;
-    uint8_t s1;
     uint8_t m_data[20]; //13
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    for (int i = 0; i < 192; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 96; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-
-        CNXDNConvolution_decode(s0, s1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 92);
-
-    for (int i = 0; i < 12; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 92);
+    nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
 
     crc = crc12f(trellis_buf, 84); //80
-    for (int i = 0; i < 12; i++) {
-        check = check << 1;
-        check = check | trellis_buf[84 + i]; //80
-    }
+    check = nxdn_bits_to_u16(trellis_buf + 84, 12);
 
     //debug
     // if (crc == check)
-    // fprintf (stderr, " Pass 1 ");
+    // DSD_FPRINTF(stderr, " Pass 1 ");
 
     //if the crc fails, attempt again with the other trellis decoder
     if (crc != check) {
         //debug
-        // fprintf (stderr, " Pass 2 ");
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 92);
-        //fill m_data bytes with trellis_buf
-        for (int i = 0; i < 12; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        // DSD_FPRINTF(stderr, " Pass 2 ");
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
         crc = crc12f(trellis_buf, 84);
-        check = 0;
-        for (int i = 0; i < 12; i++) {
-            check = check << 1;
-            check = check | trellis_buf[i + 84];
-        }
+        check = nxdn_bits_to_u16(trellis_buf + 84, 12);
     }
 
     if (crc == check) {
@@ -174,15 +1233,15 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
     // sizeof(trellis_buf));
 
     if (opts->payload == 1) {
-        fprintf(stderr, "\n");
-        fprintf(stderr, " FACCH1 Payload ");
+        DSD_FPRINTF(stderr, "\n");
+        DSD_FPRINTF(stderr, " FACCH1 Payload ");
         for (int i = 0; i < 12; i++) {
-            fprintf(stderr, "[%02X]", m_data[i]);
+            DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
         }
-        if (crc != check && opts->payload == 1) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
+        if (crc != check) {
+            DSD_FPRINTF(stderr, "%s", KRED);
+            DSD_FPRINTF(stderr, " (CRC ERR)");
+            DSD_FPRINTF(stderr, "%s", KNRM);
         }
     }
 }
@@ -200,87 +1259,32 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     uint8_t trellis_buf[96];
     uint16_t crc = 1;
     uint16_t check = 0;
-    int out;
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(deperm_rel, 255, sizeof(deperm_rel));
-    memset(depunc, 0, sizeof(depunc));
-    memset(depunc_rel, 255, sizeof(depunc_rel));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(deperm_rel, 255, sizeof(deperm_rel));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(depunc_rel, 255, sizeof(depunc_rel));
 
     // Deperm: shuffle bits and reliability in parallel
-    for (int i = 0; i < 144; i++) {
-        deperm[PERM_16_9[i]] = bits[i];
-        deperm_rel[PERM_16_9[i]] = reliab[i];
-    }
-
-    // Depuncture: insert zeros with max reliability (punctured positions are unknown)
-    out = 0;
-    for (int i = 0; i < 144; i += 3) {
-        depunc[out] = deperm[i + 0];
-        depunc_rel[out++] = deperm_rel[i + 0];
-        depunc[out] = 0;
-        depunc_rel[out++] = 0; // Punctured: zero reliability (uncertain)
-        depunc[out] = deperm[i + 1];
-        depunc_rel[out++] = deperm_rel[i + 1];
-        depunc[out] = deperm[i + 2];
-        depunc_rel[out++] = deperm_rel[i + 2];
-    }
+    nxdn_depermute_rel_u8(bits, reliab, 144U, PERM_16_9, deperm, deperm_rel);
+    nxdn_depuncture_16_9_rel(deperm, deperm_rel, depunc, depunc_rel);
 
     // Soft convolution decode
-    uint8_t temp[200];
-    uint8_t s0, s1, r0, r1;
     uint8_t m_data[20];
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    for (int i = 0; i < 192; i++) {
-        temp[i] = depunc[i] << 1; // 0->0, 1->2 range
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 96; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-        r0 = depunc_rel[((size_t)2 * i)];
-        r1 = depunc_rel[((size_t)2 * i) + 1];
-
-        CNXDNConvolution_decode_soft(s0, s1, r0, r1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 92);
-
-    for (int i = 0; i < 12; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 92);
+    nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
 
     crc = crc12f(trellis_buf, 84);
-    for (int i = 0; i < 12; i++) {
-        check = check << 1;
-        check = check | trellis_buf[84 + i];
-    }
+    check = nxdn_bits_to_u16(trellis_buf + 84, 12);
 
     // Fallback to hard-decision if soft decode fails
     if (crc != check) {
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 92);
-        for (int i = 0; i < 12; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
         crc = crc12f(trellis_buf, 84);
-        check = 0;
-        for (int i = 0; i < 12; i++) {
-            check = check << 1;
-            check = check | trellis_buf[i + 84];
-        }
+        check = nxdn_bits_to_u16(trellis_buf + 84, 12);
     }
 
     if (crc == check) {
@@ -289,15 +1293,15 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     }
 
     if (opts->payload == 1) {
-        fprintf(stderr, "\n");
-        fprintf(stderr, " FACCH1 Payload ");
+        DSD_FPRINTF(stderr, "\n");
+        DSD_FPRINTF(stderr, " FACCH1 Payload ");
         for (int i = 0; i < 12; i++) {
-            fprintf(stderr, "[%02X]", m_data[i]);
+            DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
         }
         if (crc != check) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
+            DSD_FPRINTF(stderr, "%s", KRED);
+            DSD_FPRINTF(stderr, " (CRC ERR)");
+            DSD_FPRINTF(stderr, "%s", KNRM);
         }
     }
 }
@@ -310,267 +1314,43 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
     uint8_t depunc[72];      //72
     uint8_t trellis_buf[32]; //32
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(depunc, 0, sizeof(depunc));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    int o = 0;
     uint8_t crc = 1;   //value computed by crc6 on payload
     uint8_t check = 0; //value pulled from last 6 bits
-    int sf = 0;
-    int ran = 0;
-    int part_of_frame = 0;
 
-    for (int i = 0; i < 60; i++) {
-        deperm[PERM_12_5[i]] = bits[i];
-    }
-    for (int p = 0; p < 60; p += 10) {
-        depunc[o++] = deperm[p + 0];
-        depunc[o++] = deperm[p + 1];
-        depunc[o++] = deperm[p + 2];
-        depunc[o++] = deperm[p + 3];
-        depunc[o++] = deperm[p + 4];
-        depunc[o++] = 0;
-        depunc[o++] = deperm[p + 5];
-        depunc[o++] = deperm[p + 6];
-        depunc[o++] = deperm[p + 7];
-        depunc[o++] = deperm[p + 8];
-        depunc[o++] = deperm[p + 9];
-        depunc[o++] = 0;
-    }
+    nxdn_depermute_u8(bits, 60U, PERM_12_5, deperm);
+    nxdn_depuncture_12_5(deperm, depunc);
 
     //switch to the convolutional decoder
-    uint8_t temp[80];
-    uint8_t s0;
-    uint8_t s1;
     uint8_t m_data[5]; //5
 
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    for (int i = 0; i < 72; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 36; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-
-        CNXDNConvolution_decode(s0, s1);
-    }
-
-    //stored as 5 bytes, will need to convert to trellis_buf after running
-    CNXDNConvolution_chainback(m_data, 32);
-
-    for (int i = 0; i < 4; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 32);
+    nxdn_unpack_bytes_msb(m_data, 4U, trellis_buf);
 
     crc = crc6(trellis_buf, 26); //32
-    for (int i = 0; i < 6; i++) {
-        check = check << 1;
-        check = check | trellis_buf[i + 26];
-    }
+    check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
 
     //debug
     // if (crc == check)
-    // 	fprintf (stderr, " Pass 1 ");
+    // 	DSD_FPRINTF(stderr, " Pass 1 ");
 
     //if the crc fails, attempt again with the other trellis decoder
     if (crc != check) {
         //debug
-        // fprintf (stderr, " Pass 2 ");
+        // DSD_FPRINTF(stderr, " Pass 2 ");
 
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 32);
-        //fill m_data bytes with trellis_buf
-        for (int i = 0; i < 4; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
         crc = crc6(trellis_buf, 26); //32
-        for (int i = 0; i < 6; i++) {
-            check = check << 1;
-            check = check | trellis_buf[i + 26];
-        }
+        check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
     }
 
-    //FIRST! If part of a non_superframe, and CRC is good, send directly to NXDN_Elements_Content_decode
-    if (state->nxdn_sacch_non_superframe == TRUE) {
-        if (state->nxdn_last_ran != (unsigned int)-1) {
-            fprintf(stderr, " RAN %02d ", state->nxdn_last_ran);
-        } else {
-            fprintf(stderr, "        ");
-        }
-
-        //needed for DES and AES
-        state->nxdn_part_of_frame = 0;
-
-        uint8_t nsf_sacch[26];
-        memset(nsf_sacch, 0, sizeof(nsf_sacch));
-        int copy_len = (int)(sizeof(trellis_buf) - 8); // bytes available from trellis_buf starting at offset 8
-        if (copy_len > (int)sizeof(nsf_sacch)) {
-            copy_len = (int)sizeof(nsf_sacch);
-        }
-        for (int i = 0; i < copy_len; i++) {
-            nsf_sacch[i] = trellis_buf[i + 8];
-        }
-
-        if (crc == check) {
-            ran = (trellis_buf[2] << 5) | (trellis_buf[3] << 4) | (trellis_buf[4] << 3) | (trellis_buf[5] << 2)
-                  | (trellis_buf[6] << 1) | trellis_buf[7];
-            state->nxdn_last_ran = ran;
-        }
-
-        fprintf(stderr, "PF 1/1");
-        if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
-            state->payload_miN = state->R; // reset/force reset scrambler seed
-        }
-
-        if (crc == check) {
-            NXDN_Elements_Content_decode(opts, state, 1, nsf_sacch, sizeof(nsf_sacch));
-        }
-        // else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, nsf_sacch,
-        // sizeof(nsf_sacch));
-
-        //I'm placing this here, my observation is that SACCH NSF
-        //is almost always, if not always, just IDLE
-        else {
-            fprintf(stderr, " IDLE");
-        }
-
-        if (opts->payload == 1) {
-            fprintf(stderr, "\n SACCH NSF ");
-            for (int i = 0; i < 4; i++) {
-                fprintf(stderr, "[%02X]", m_data[i]);
-            }
-
-            if (crc != check) {
-
-                fprintf(stderr, "%s", KRED);
-                fprintf(stderr, " (CRC ERR)");
-                fprintf(stderr, "%s", KNRM);
-            }
-        }
-
-        //reset the sacch field -- Github Issue #118
-        memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-
-    }
-
-    //If part of superframe, collect the fragments and send to NXDN_SACCH_Full_decode instead
-    else if (state->nxdn_sacch_non_superframe == FALSE) {
-        //sf and ran together are denoted as SR in the manual (more confusing acronyms)
-        //sf (structure field) and RAN will always exist in first 8 bits of each SACCH, then the next 18 bits are the fragment of the superframe
-        sf = (trellis_buf[0] << 1) | trellis_buf[1];
-
-        part_of_frame = 0; // default
-        switch (sf) {
-            case 2: part_of_frame = 1; break;
-            case 1: part_of_frame = 2; break;
-            case 0: part_of_frame = 3; break;
-            default: break;
-        }
-
-        //needed for DES and AES
-        state->nxdn_part_of_frame = part_of_frame;
-
-        fprintf(stderr, "%s", KCYN);
-        if (state->nxdn_last_ran != (unsigned int)-1) {
-            fprintf(stderr, " RAN %02d ", state->nxdn_last_ran);
-        } else {
-            fprintf(stderr, "        ");
-        }
-        fprintf(stderr, "%s", KNRM);
-
-        fprintf(stderr, "PF %d/4", part_of_frame + 1);
-        if (part_of_frame == 0) {
-            if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
-                state->payload_miN = state->R; // reset/force reset scrambler seed
-            }
-        }
-
-        // if (crc != check)
-        // {
-        // 	fprintf (stderr, "%s", KRED);
-        // 	fprintf (stderr, " (CRC ERR)");
-        // 	fprintf (stderr, "%s", KNRM);
-        // }
-
-        //reset scrambler seed to key value on new superframe
-        // if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) state->payload_miN = 0;
-
-        //reset scrambler seed to key value on new superframe
-        if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) {
-            if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
-                state->payload_miN = state->R; // reset/force reset scrambler seed
-            }
-        }
-        //this seems to work much better now
-        else if (part_of_frame != 0 && state->nxdn_cipher_type == 0x1) {
-            if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
-                state->payload_miN = state->R; // reset/force reset scrambler seed
-            }
-
-            //advance seed by required number of turns depending on the current pf value
-            int start = 0;
-            int end = part_of_frame;
-            char ambe_temp[49] = {0};
-            char ambe_d[49] = {0};
-            for (start = 0; start < end; start++) {
-                //run 4 times
-                LFSRN(ambe_temp, ambe_d, state);
-                LFSRN(ambe_temp, ambe_d, state);
-                LFSRN(ambe_temp, ambe_d, state);
-                LFSRN(ambe_temp, ambe_d, state);
-            }
-        }
-
-        if (crc == check) {
-            ran = (trellis_buf[2] << 5) | (trellis_buf[3] << 4) | (trellis_buf[4] << 3) | (trellis_buf[5] << 2)
-                  | (trellis_buf[6] << 1) | trellis_buf[7];
-            state->nxdn_ran = state->nxdn_last_ran = ran;
-            state->nxdn_sf = sf;
-            state->nxdn_part_of_frame = part_of_frame;
-            state->nxdn_sacch_frame_segcrc[part_of_frame] = 0; //zero indicates good check
-        } else {
-            state->nxdn_sacch_frame_segcrc[part_of_frame] = 1; //1 indicates bad check
-        }
-
-        int sacch_segment = 0;
-
-        for (int i = 0; i < 18; i++) {
-            sacch_segment = sacch_segment << 1;
-            sacch_segment = sacch_segment + trellis_buf[i + 8];
-            state->nxdn_sacch_frame_segment[part_of_frame][i] = trellis_buf[i + 8];
-        }
-
-        //Hand off to LEH NXDN_SACCH_Full_decode
-        if (part_of_frame == 3) {
-            NXDN_SACCH_Full_decode(opts, state);
-        }
-
-        if (opts->payload == 1) {
-            fprintf(stderr, "\n");
-            fprintf(stderr, " SACCH SF Segment #%d ", part_of_frame + 1);
-            for (int i = 0; i < 4; i++) {
-                fprintf(stderr, "[%02X]", m_data[i]);
-            }
-            if (crc != check) {
-                fprintf(stderr, " CRC ERR - %02X %02X", crc, check);
-            }
-        }
-    }
+    nxdn_handle_sacch(opts, state, trellis_buf, m_data, crc, check);
 }
 
 /*
@@ -585,655 +1365,129 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
     uint8_t depunc_rel[72];
     uint8_t trellis_buf[32];
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(deperm_rel, 255, sizeof(deperm_rel));
-    memset(depunc, 0, sizeof(depunc));
-    memset(depunc_rel, 255, sizeof(depunc_rel));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(deperm_rel, 255, sizeof(deperm_rel));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(depunc_rel, 255, sizeof(depunc_rel));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    int o = 0;
     uint8_t crc = 1;
     uint8_t check = 0;
-    int sf = 0;
-    int ran = 0;
-    int part_of_frame = 0;
 
     // Deperm with reliability
-    for (int i = 0; i < 60; i++) {
-        deperm[PERM_12_5[i]] = bits[i];
-        deperm_rel[PERM_12_5[i]] = reliab[i];
-    }
+    nxdn_depermute_rel_u8(bits, reliab, 60U, PERM_12_5, deperm, deperm_rel);
+    nxdn_depuncture_12_5_rel(deperm, deperm_rel, depunc, depunc_rel);
 
-    // Depuncture with reliability (punctured = zero reliability)
-    for (int p = 0; p < 60; p += 10) {
-        depunc[o] = deperm[p + 0];
-        depunc_rel[o++] = deperm_rel[p + 0];
-        depunc[o] = deperm[p + 1];
-        depunc_rel[o++] = deperm_rel[p + 1];
-        depunc[o] = deperm[p + 2];
-        depunc_rel[o++] = deperm_rel[p + 2];
-        depunc[o] = deperm[p + 3];
-        depunc_rel[o++] = deperm_rel[p + 3];
-        depunc[o] = deperm[p + 4];
-        depunc_rel[o++] = deperm_rel[p + 4];
-        depunc[o] = 0;
-        depunc_rel[o++] = 0; // punctured
-        depunc[o] = deperm[p + 5];
-        depunc_rel[o++] = deperm_rel[p + 5];
-        depunc[o] = deperm[p + 6];
-        depunc_rel[o++] = deperm_rel[p + 6];
-        depunc[o] = deperm[p + 7];
-        depunc_rel[o++] = deperm_rel[p + 7];
-        depunc[o] = deperm[p + 8];
-        depunc_rel[o++] = deperm_rel[p + 8];
-        depunc[o] = deperm[p + 9];
-        depunc_rel[o++] = deperm_rel[p + 9];
-        depunc[o] = 0;
-        depunc_rel[o++] = 0; // punctured
-    }
-
-    uint8_t temp[80];
-    uint8_t s0, s1, r0, r1;
     uint8_t m_data[5];
 
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
 
-    for (int i = 0; i < 72; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 36; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-        r0 = depunc_rel[((size_t)2 * i)];
-        r1 = depunc_rel[((size_t)2 * i) + 1];
-        CNXDNConvolution_decode_soft(s0, s1, r0, r1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 32);
-
-    for (int i = 0; i < 4; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 32);
+    nxdn_unpack_bytes_msb(m_data, 4U, trellis_buf);
 
     crc = crc6(trellis_buf, 26);
-    for (int i = 0; i < 6; i++) {
-        check = check << 1;
-        check = check | trellis_buf[i + 26];
-    }
+    check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
 
     // Fallback to hard-decision if soft decode fails
     if (crc != check) {
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 32);
-        for (int i = 0; i < 4; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
         crc = crc6(trellis_buf, 26);
-        check = 0;
-        for (int i = 0; i < 6; i++) {
-            check = check << 1;
-            check = check | trellis_buf[i + 26];
-        }
+        check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
     }
 
-    // Rest of SACCH handling identical to hard version
-    if (state->nxdn_sacch_non_superframe == TRUE) {
-        if (state->nxdn_last_ran != (unsigned int)-1) {
-            fprintf(stderr, " RAN %02d ", state->nxdn_last_ran);
-        } else {
-            fprintf(stderr, "        ");
-        }
-
-        state->nxdn_part_of_frame = 0;
-
-        uint8_t nsf_sacch[26];
-        memset(nsf_sacch, 0, sizeof(nsf_sacch));
-        int copy_len = (int)(sizeof(trellis_buf) - 8);
-        if (copy_len > (int)sizeof(nsf_sacch)) {
-            copy_len = (int)sizeof(nsf_sacch);
-        }
-        for (int i = 0; i < copy_len; i++) {
-            nsf_sacch[i] = trellis_buf[i + 8];
-        }
-
-        if (crc == check) {
-            ran = (trellis_buf[2] << 5) | (trellis_buf[3] << 4) | (trellis_buf[4] << 3) | (trellis_buf[5] << 2)
-                  | (trellis_buf[6] << 1) | trellis_buf[7];
-            state->nxdn_last_ran = ran;
-        }
-
-        fprintf(stderr, "PF 1/1");
-        if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
-            state->payload_miN = state->R;
-        }
-
-        if (crc == check) {
-            NXDN_Elements_Content_decode(opts, state, 1, nsf_sacch, sizeof(nsf_sacch));
-        } else {
-            fprintf(stderr, " IDLE");
-        }
-
-        if (opts->payload == 1) {
-            fprintf(stderr, "\n SACCH NSF ");
-            for (int i = 0; i < 4; i++) {
-                fprintf(stderr, "[%02X]", m_data[i]);
-            }
-            if (crc != check) {
-                fprintf(stderr, "%s", KRED);
-                fprintf(stderr, " (CRC ERR)");
-                fprintf(stderr, "%s", KNRM);
-            }
-        }
-
-        memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-
-    } else if (state->nxdn_sacch_non_superframe == FALSE) {
-        sf = (trellis_buf[0] << 1) | trellis_buf[1];
-        part_of_frame = 0;
-        switch (sf) {
-            case 2: part_of_frame = 1; break;
-            case 1: part_of_frame = 2; break;
-            case 0: part_of_frame = 3; break;
-            default: break;
-        }
-
-        state->nxdn_part_of_frame = part_of_frame;
-
-        fprintf(stderr, "%s", KCYN);
-        if (state->nxdn_last_ran != (unsigned int)-1) {
-            fprintf(stderr, " RAN %02d ", state->nxdn_last_ran);
-        } else {
-            fprintf(stderr, "        ");
-        }
-        fprintf(stderr, "%s", KNRM);
-
-        fprintf(stderr, "PF %d/4", part_of_frame + 1);
-        if (part_of_frame == 0) {
-            if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
-                state->payload_miN = state->R;
-            }
-        }
-
-        if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) {
-            if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
-                state->payload_miN = state->R;
-            }
-        } else if (part_of_frame != 0 && state->nxdn_cipher_type == 0x1) {
-            if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
-                state->payload_miN = state->R;
-            }
-            int start = 0;
-            int end = part_of_frame;
-            char ambe_temp[49] = {0};
-            char ambe_d[49] = {0};
-            for (start = 0; start < end; start++) {
-                LFSRN(ambe_temp, ambe_d, state);
-                LFSRN(ambe_temp, ambe_d, state);
-                LFSRN(ambe_temp, ambe_d, state);
-                LFSRN(ambe_temp, ambe_d, state);
-            }
-        }
-
-        if (crc == check) {
-            ran = (trellis_buf[2] << 5) | (trellis_buf[3] << 4) | (trellis_buf[4] << 3) | (trellis_buf[5] << 2)
-                  | (trellis_buf[6] << 1) | trellis_buf[7];
-            state->nxdn_ran = state->nxdn_last_ran = ran;
-            state->nxdn_sf = sf;
-            state->nxdn_part_of_frame = part_of_frame;
-            state->nxdn_sacch_frame_segcrc[part_of_frame] = 0;
-        } else {
-            state->nxdn_sacch_frame_segcrc[part_of_frame] = 1;
-        }
-
-        for (int i = 0; i < 18; i++) {
-            state->nxdn_sacch_frame_segment[part_of_frame][i] = trellis_buf[i + 8];
-        }
-
-        if (part_of_frame == 3) {
-            NXDN_SACCH_Full_decode(opts, state);
-        }
-
-        if (opts->payload == 1) {
-            fprintf(stderr, "\n");
-            fprintf(stderr, " SACCH SF Segment #%d ", part_of_frame + 1);
-            for (int i = 0; i < 4; i++) {
-                fprintf(stderr, "[%02X]", m_data[i]);
-            }
-            if (crc != check) {
-                fprintf(stderr, " CRC ERR - %02X %02X", crc, check);
-            }
-        }
-    }
+    nxdn_handle_sacch(opts, state, trellis_buf, m_data, crc, check);
 }
 
 //sacch2 (JPN DCR)
 //SEE: https://web.archive.org/web/20150417175725/http://arib.or.jp/english/html/overview/doc/1-STD-T98v1_4.pdf
 void
-nxdn_deperm_sacch2(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
+nxdn_deperm_sacch2(const dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
     //see about initializing these variables
     uint8_t deperm[60];      //60
     uint8_t depunc[72];      //72
     uint8_t trellis_buf[32]; //32
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(depunc, 0, sizeof(depunc));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    int o = 0;
     uint8_t crc = 1;   //value computed by crc6 on payload
     uint8_t check = 0; //value pulled from last 6 bits
 
-    for (int i = 0; i < 60; i++) {
-        deperm[PERM_12_5[i]] = bits[i];
-    }
-    for (int p = 0; p < 60; p += 10) {
-        depunc[o++] = deperm[p + 0];
-        depunc[o++] = deperm[p + 1];
-        depunc[o++] = deperm[p + 2];
-        depunc[o++] = deperm[p + 3];
-        depunc[o++] = deperm[p + 4];
-        depunc[o++] = 0;
-        depunc[o++] = deperm[p + 5];
-        depunc[o++] = deperm[p + 6];
-        depunc[o++] = deperm[p + 7];
-        depunc[o++] = deperm[p + 8];
-        depunc[o++] = deperm[p + 9];
-        depunc[o++] = 0;
-    }
+    nxdn_depermute_u8(bits, 60U, PERM_12_5, deperm);
+    nxdn_depuncture_12_5(deperm, depunc);
 
     //switch to the convolutional decoder
-    uint8_t temp[80];
-    uint8_t s0;
-    uint8_t s1;
     uint8_t m_data[5]; //5
 
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    for (int i = 0; i < 72; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 36; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-
-        CNXDNConvolution_decode(s0, s1);
-    }
-
-    //stored as 4 bytes, will need to convert to trellis_buf after running
-    CNXDNConvolution_chainback(m_data, 32);
-
-    for (int i = 0; i < 4; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 32);
+    nxdn_unpack_bytes_msb(m_data, 4U, trellis_buf);
 
     crc = crc6(trellis_buf, 26);
-    check = (uint8_t)convert_bits_into_output(trellis_buf + 26, 6);
+    check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
 
     //debug
     // if (crc == check)
-    // 	fprintf (stderr, " Pass 1 ");
+    // 	DSD_FPRINTF(stderr, " Pass 1 ");
 
     //if the crc fails, attempt again with the other trellis decoder
     if (crc != check) {
         //debug
-        // fprintf (stderr, " Pass 2 ");
+        // DSD_FPRINTF(stderr, " Pass 2 ");
 
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 32);
-        //fill m_data bytes with trellis_buf
-        for (int i = 0; i < 4; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
         crc = crc6(trellis_buf, 26); //32
-        check = (uint8_t)convert_bits_into_output(trellis_buf + 26, 6);
+        check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
     }
 
-    //Configuration of Single Message or Multi Part Message
-    uint8_t sf_fb = trellis_buf[0];
-    uint8_t sf_num = (uint8_t)convert_bits_into_output(trellis_buf + 1, 2);
-    uint8_t sf_mes = (uint8_t)convert_bits_into_output(trellis_buf + 3, 5);
-    uint8_t sf_pof = 3 - sf_num;
-    state->nxdn_dcr_sf_message_type = 0xFFU;
-
-    if (crc == check) {
-        state->nxdn_dcr_sf_message_type = sf_mes;
-        if (sf_fb && sf_pof) { //single message, single unit
-            fprintf(stderr, "PF: %d/1; ", sf_num + 1);
-        } else { //multiple unit message
-            fprintf(stderr, "PF: %d/4; ", sf_pof + 1);
-        }
-
-        if (sf_mes == 0x01) {
-            fprintf(stderr, "Call; ");
-        } else if (sf_mes == 0x02) {
-            fprintf(stderr, "PDU;  ");
-        } else if (sf_mes == 0x1E) {
-            fprintf(stderr, "End;  ");
-        } else if (sf_mes == 0x00) {
-            fprintf(stderr, "Idle; ");
-        } else {
-            fprintf(stderr, "Res: %02X; ", sf_mes);
-        }
-
-    } else if (crc != check) {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, "SACCH (CRC ERR)");
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    if (crc == check) {
-        state->nxdn_sacch_frame_segcrc[sf_num] = 0;
-    } else {
-        state->nxdn_sacch_frame_segcrc[sf_num] = 1;
-    }
-
-    //entire superframe has good crc
-    uint8_t crc_sf_check = 0;
-    for (int i = 0; i < 4; i++) {
-        crc_sf_check += state->nxdn_sacch_frame_segcrc[i];
-    }
-
-    //values for storage and which parts to store
-    int sf_full = 26;               //full size of a sacch frame, minus CRC6
-    int sf_size = 18;               //size of superframe portion (18 bits)
-    int sf_end = 0;                 //end of sf
-    int sf_idx = sf_size * sf_pof;  //index position for this frame compared to super frame
-    int bf_idx = sf_full - sf_size; //index position for buffer to superframe
-
-    if (sf_fb && sf_pof) { //single unit message
-        memcpy(state->dmr_pdu_sf[0] + 0, trellis_buf + bf_idx, sf_size * sizeof(uint8_t));
-    } else { //multiple unit message
-        memcpy(state->dmr_pdu_sf[0] + sf_idx, trellis_buf + bf_idx, sf_size * sizeof(uint8_t));
-    }
-
-    //if force application of scrambler key, then let's reset, regardless of CRC check
-    if (sf_fb && state->M == 1) {
-        state->payload_miN = 0;
-    }
-
-    //currently using static values so event log will log something, and do wav files, etc
-    //disable this is random false positive for this lich code triggers this often enough
-    if (crc == check) {
-        state->gi[0] = 0;
-        state->nxdn_last_ran = 7;
-        state->nxdn_last_tg = 777;
-        state->nxdn_last_rid = 777;
-        sprintf(state->generic_talker_alias[0], "%s", "JPN DCR");
-        sprintf(state->event_history_s[0].Event_History_Items[0].alias, "%s; ", "JPN DCR");
-
-        //sf_fb is the head message in a multi part, or the only message in a single part message
-        if (sf_fb) {
-            state->payload_miN = 0;
-        }
-    }
-
-    //check for valid crc on single, or on all received
-    if ((sf_fb && sf_pof && crc == check) ||     //single frame
-        (sf_num == sf_end && crc_sf_check == 0)) //multi part frame
-    {
-        uint8_t cipher = (uint16_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 0, 2);
-        uint16_t user_code = (uint16_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 2, 9);
-        fprintf(stderr, "UC: %03d; ", user_code);
-        if (cipher == 0x01) {
-            fprintf(stderr, "Scrambler; ");
-            state->nxdn_cipher_type = 1;
-            if (state->R != 0) {
-                fprintf(stderr, "Key: %lld; ", state->R);
-            }
-        } else if (cipher != 0x00) {
-            fprintf(stderr, "Reserved Comms: %d; ", cipher);
-        }
-
-        //set enc bit here so we can tell playSynthesizedVoice whether or not to play enc traffic
-        if (state->nxdn_cipher_type != 0) {
-            state->dmr_encL = 1;
-        }
-        if (state->nxdn_cipher_type == 0 || state->R != 0) {
-            state->dmr_encL = 0;
-        }
-
-        //this always appears to be 0, but could be other values
-        uint8_t mfid = (uint16_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 11, 7);
-        if (mfid != 0) {
-            fprintf(stderr, "MFID: %02X; ", mfid);
-        }
-
-        //multi-part message, continue decoding
-        if (sf_fb == 0 && sf_num == 0) {
-
-            fprintf(stderr, "\n");
-
-            //can't find definitions for these elements, even when MT == 1 and MFID == 0
-            unsigned long long int mes_hex =
-                (unsigned long long int)convert_bits_into_output(state->dmr_pdu_sf[0] + 18, 54);
-            fprintf(stderr, " Message: %014llX; ", mes_hex << 0);
-        }
-    }
-
-    if (opts->payload == 1) {
-        fprintf(stderr, "\n DCR SACCH ");
-        for (int i = 0; i < 4; i++) {
-            fprintf(stderr, "[%02X]", m_data[i]);
-        }
-
-        if (sf_num == sf_end) {
-            fprintf(stderr, "\n DCR SFULL ");
-            for (int i = 0; i < 9; i++) {
-                fprintf(stderr, "[%02X]", (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + ((size_t)i * 8), 8));
-            }
-        }
-    }
-
-    //clear out if run, or crc error
-    if (sf_num == sf_end) {
-        memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
-        memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-    }
+    nxdn_handle_sacch2(opts, state, trellis_buf, m_data, crc, check);
 }
 
 //PICH or TCH 144 bit (JPN DCR)
 //SEE: https://web.archive.org/web/20150417175725/http://arib.or.jp/english/html/overview/doc/1-STD-T98v1_4.pdf
 void
-nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144], uint8_t lich) {
+nxdn_deperm_pich_tch(const dsd_opts* opts, dsd_state* state, uint8_t bits[144], uint8_t lich) {
     uint8_t deperm[144];     //144
     uint8_t depunc[192];     //192
     uint8_t trellis_buf[96]; //96
     uint16_t crc = 1;        //crc calculated by function
     uint16_t check = 0;      //crc from payload for comparison
-    int out;
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
 
-    for (int i = 0; i < 144; i++) {
-        deperm[PERM_16_9[i]] = bits[i];
-    }
-    out = 0;
-    for (int i = 0; i < 144; i += 3) {
-        depunc[out++] = deperm[i + 0];
-        depunc[out++] = 0;
-        depunc[out++] = deperm[i + 1];
-        depunc[out++] = deperm[i + 2];
-    }
+    nxdn_depermute_u8(bits, 144U, PERM_16_9, deperm);
+    nxdn_depuncture_16_9(deperm, depunc);
 
     //switch to the convolutional decoder
-    uint8_t temp[200];
-    uint8_t s0;
-    uint8_t s1;
     uint8_t m_data[20]; //13
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    for (int i = 0; i < 192; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 96; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-
-        CNXDNConvolution_decode(s0, s1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 92);
-
-    for (int i = 0; i < 12; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 92);
+    nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
 
     crc = crc12f(trellis_buf, 84); //80
-    for (int i = 0; i < 12; i++) {
-        check = check << 1;
-        check = check | trellis_buf[84 + i]; //80
-    }
+    check = nxdn_bits_to_u16(trellis_buf + 84, 12);
 
     //debug
     // if (crc == check)
-    // fprintf (stderr, " Pass 1 ");
+    // DSD_FPRINTF(stderr, " Pass 1 ");
 
     //if the crc fails, attempt again with the other trellis decoder
     if (crc != check) {
         //debug
-        // fprintf (stderr, " Pass 2 ");
+        // DSD_FPRINTF(stderr, " Pass 2 ");
 
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 92);
-        //fill m_data bytes with trellis_buf
-        for (int i = 0; i < 12; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
         crc = crc12f(trellis_buf, 84);
-        check = 0;
-        for (int i = 0; i < 12; i++) {
-            check = check << 1;
-            check = check | trellis_buf[i + 84];
-        }
+        check = nxdn_bits_to_u16(trellis_buf + 84, 12);
     }
 
-    //STD-T98 DCR suggests TCH1 has data, and TCH2 will be zero fill
-    //could vary by PDU, but limited data points suggests the same
-    if (crc == check) {
-        char csm_alias[32];
-        memset(csm_alias, 0, sizeof(csm_alias));
-        uint8_t opcode = (uint8_t)ConvertBitIntoBytes(&trellis_buf[0], 8);
-        uint8_t gi = trellis_buf[16];
-        uint16_t source = (uint16_t)ConvertBitIntoBytes(&trellis_buf[24], 16);
-        uint16_t target = (uint16_t)ConvertBitIntoBytes(&trellis_buf[40], 16);
-        // LICH 0x08 spans SB0/PDU/End; only SB0 (Call) may carry CSM alias digits.
-        int is_dcr_sb0 = (lich == 0x08U) && nxdn_dcr_is_sb0_message_type(state->nxdn_dcr_sf_message_type);
-
-        if (is_dcr_sb0) {
-            if (nxdn_dcr_decode_csm_alias(trellis_buf, csm_alias, sizeof(csm_alias))) {
-                fprintf(stderr, "\n Call Sign Memory: %s; ", csm_alias + 4);
-                snprintf(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", csm_alias);
-                if (state->event_history_s != NULL) {
-                    snprintf(state->event_history_s[0].Event_History_Items[0].alias,
-                             sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", csm_alias);
-                }
-            } else if (opts->payload == 1) {
-                fprintf(stderr, "\n Call Sign Memory: decode error; ");
-            }
-        } else {
-            //may only be relevant on MFID 0x30 "F.R.C." Radios
-            if (opcode == 0x0F) {
-                fprintf(stderr, "\n ");
-                fprintf(stderr, "Source: %d; Target: %d; ", source, target);
-                if (gi) {
-                    fprintf(stderr, "Private; ");
-                } else {
-                    fprintf(stderr, "Group; ");
-                }
-
-                fprintf(stderr, "Data Preamble; ");
-                uint8_t countdown = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
-                fprintf(stderr, "Countdown: %d; ", countdown);
-            }
-
-            //may only be relevant on MFID 0x30 "F.R.C." Radios
-            if (opcode == 0x32) {
-                fprintf(stderr, "\n ");
-                fprintf(stderr, "Source: %d; Target: %d; ", source, target);
-                if (gi) {
-                    fprintf(stderr, "Private; ");
-                } else {
-                    fprintf(stderr, "Group; ");
-                }
-
-                fprintf(stderr, "Precoded Message; ");
-                uint8_t idx = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
-                fprintf(stderr, "Index#: %d;", idx);
-            }
-        }
-
-        // if (opcode == 0x00)
-        // {
-        // 	fprintf (stderr, "\n NULL TCH; ");
-        // }
-
-    } else if (opts->payload == 0) {
-        fprintf(stderr, "\n ");
-        fprintf(stderr, "%s", KRED);
-        if (lich == 0x08) {
-            fprintf(stderr, "PICH (CRC ERR)");
-        } else {
-            fprintf(stderr, "TCH (CRC ERR)");
-        }
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    if (opts->payload == 1) {
-        fprintf(stderr, "\n");
-        if (lich == 0x08) {
-            fprintf(stderr, " PICH Payload ");
-        } else {
-            fprintf(stderr, " TCH Payload ");
-        }
-        for (int i = 0; i < 12; i++) {
-            fprintf(stderr, "[%02X]", m_data[i]);
-        }
-        if (crc != check && opts->payload == 1) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
-        }
-    }
-
-    UNUSED(state);
+    nxdn_handle_pich_tch(opts, state, trellis_buf, m_data, crc, check, lich);
 }
 
 void
@@ -1241,504 +1495,137 @@ nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uin
     uint8_t deperm[348];      //348
     uint8_t depunc[406];      //406
     uint8_t trellis_buf[208]; //199
-    int id = 0;
     uint16_t crc = 0;
     uint16_t check = 0;
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
 
-    for (int i = 0; i < 348; i++) {
-        deperm[PERM_12_29[i]] = bits[i];
-    }
-    for (int i = 0; i < 29; i++) {
-        depunc[id++] = deperm[((size_t)i * 12)];
-        depunc[id++] = deperm[i * 12 + 1];
-        depunc[id++] = deperm[i * 12 + 2];
-        depunc[id++] = 0;
-        depunc[id++] = deperm[i * 12 + 3];
-        depunc[id++] = deperm[i * 12 + 4];
-        depunc[id++] = deperm[i * 12 + 5];
-        depunc[id++] = deperm[i * 12 + 6];
-        depunc[id++] = deperm[i * 12 + 7];
-        depunc[id++] = deperm[i * 12 + 8];
-        depunc[id++] = deperm[i * 12 + 9];
-        depunc[id++] = 0;
-        depunc[id++] = deperm[i * 12 + 10];
-        depunc[id++] = deperm[i * 12 + 11];
-    }
+    nxdn_depermute(bits, 348U, PERM_12_29, deperm);
+    nxdn_depuncture_12_group(deperm, 29U, depunc);
 
     //switch to the convolutional decoder
-    uint8_t temp[406];
-    uint8_t s0;
-    uint8_t s1;
     uint8_t m_data[26]; //26
-    memset(trellis_buf, 0, sizeof(trellis_buf));
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
 
-    for (int i = 0; i < 406; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 203; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-
-        CNXDNConvolution_decode(s0, s1);
-    }
-
-    //numerals seem okay now
-    CNXDNConvolution_chainback(m_data, 199);
-
-    for (int i = 0; i < 26; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 199);
+    nxdn_unpack_bytes_msb(m_data, 26U, trellis_buf);
 
     crc = crc15(trellis_buf, 199);
-    for (int i = 0; i < 15; i++) {
-        check = check << 1;
-        check = check | trellis_buf[i + 184];
-    }
+    check = nxdn_bits_to_u16(trellis_buf + 184, 15);
 
     //debug
     // if (crc == check)
-    // fprintf (stderr, " Pass 1 ");
+    // DSD_FPRINTF(stderr, " Pass 1 ");
 
     //if the crc fails, attempt again with the other trellis decoder
     if (crc != check) {
         //debug
-        // fprintf (stderr, " Pass 2 ");
+        // DSD_FPRINTF(stderr, " Pass 2 ");
 
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 199);
-        //fill m_data bytes with trellis_buf
-        for (int i = 0; i < 26; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 26U, depunc, 199);
         crc = crc15(trellis_buf, 199);
-        for (int i = 0; i < 15; i++) {
-            check = check << 1;
-            check = check | trellis_buf[i + 184];
-        }
+        check = nxdn_bits_to_u16(trellis_buf + 184, 15);
     }
 
-    fprintf(stderr, "%s", KYEL);
-    if (type == 0) {
-        fprintf(stderr, " UDCH");
-    }
-    if (type == 1) {
-        fprintf(stderr, " FACCH2");
-    }
-    fprintf(stderr, "%s", KNRM);
-
-    uint8_t f2u_message_buffer[400]; //199
-    memset(f2u_message_buffer, 0, sizeof(f2u_message_buffer));
-
-    //just going to leave this all here in case its needed, like in cac,
-    //don't have any samples with f2 or udch data in it
-    for (int i = 0; i < 199 - 8 - 15; i++) {
-        f2u_message_buffer[i] = trellis_buf[i + 8];
-    }
-
-    if (crc == check) {
-        state->data_header_format[0] = 1;
-        NXDN_Elements_Content_decode(opts, state, 1, f2u_message_buffer, (size_t)(199 - 8 - 15));
-    }
-    // else if (opts->aggressive_framesync == 0)
-    // {
-    // 	if (type == 1) NXDN_Elements_Content_decode(opts, state, 0, f2u_message_buffer);
-    // 	if (type == 0) {} //need handling for user data (text messages and AVL)
-    // }
-
-    if (type == 0 && crc == check) {
-        fprintf(stderr, "\n UDCH Data: ");
-        for (int i = 0; i < 24; i++) { //all but last crc portion
-            fprintf(stderr, "%02X", m_data[i]);
-        }
-
-        fprintf(stderr, "\n UDCH Data: ASCII - ");
-        for (int i = 0; i < 24; i++) //remove crc portion
-        {
-            if (m_data[i] <= 0x7E && m_data[i] >= 0x20) {
-                fprintf(stderr, "%c", m_data[i]);
-            } else {
-                fprintf(stderr, " ");
-            }
-        }
-
-        if (crc != check) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
-        }
-    }
-
-    if (opts->payload == 1) {
-        fprintf(stderr, "\n");
-        if (type == 0) {
-            fprintf(stderr, " UDCH");
-        }
-        if (type == 1) {
-            fprintf(stderr, " FACCH2");
-        }
-        fprintf(stderr, " Payload\n  ");
-        for (int i = 0; i < 26; i++) {
-            if (i == 13) {
-                fprintf(stderr, "\n  ");
-            }
-            fprintf(stderr, "[%02X]", m_data[i]);
-        }
-
-        if (crc != check) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
-        }
-
-        // if (crc != check) fprintf (stderr, " CRC ERR ");
-
-        // if (type == 0)
-        // {
-        // 	fprintf (stderr, "\n UDCH Data: ASCII - "  );
-        // 	for (int i = 0; i < 24; i++) //remove crc portion
-        // 	{
-        // 		if (m_data[i] <= 0x7E && m_data[i] >=0x20)
-        // 		{
-        // 			fprintf (stderr, "%c", m_data[i]);
-        // 		}
-        // 		else fprintf (stderr, " ");
-        // 	}
-        // }
-    }
+    nxdn_handle_facch2_udch(opts, state, trellis_buf, m_data, crc, check, type);
 }
-
-static int cac_fail = 0;
 
 void
 nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
     uint8_t deperm[300];      //300
     uint8_t depunc[350];      //350
     uint8_t trellis_buf[176]; //176
-    int id = 0;
-    int ran = 0;
     uint16_t crc = 0;
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
 
-    for (int i = 0; i < 300; i++) {
-        deperm[PERM_12_25[i]] = bits[i];
-    }
-    for (int i = 0; i < 25; i++) {
-        depunc[id++] = deperm[((size_t)i * 12)];
-        depunc[id++] = deperm[i * 12 + 1];
-        depunc[id++] = deperm[i * 12 + 2];
-        depunc[id++] = 0;
-        depunc[id++] = deperm[i * 12 + 3];
-        depunc[id++] = deperm[i * 12 + 4];
-        depunc[id++] = deperm[i * 12 + 5];
-        depunc[id++] = deperm[i * 12 + 6];
-        depunc[id++] = deperm[i * 12 + 7];
-        depunc[id++] = deperm[i * 12 + 8];
-        depunc[id++] = deperm[i * 12 + 9];
-        depunc[id++] = 0;
-        depunc[id++] = deperm[i * 12 + 10];
-        depunc[id++] = deperm[i * 12 + 11];
-    }
+    nxdn_depermute(bits, 300U, PERM_12_25, deperm);
+    nxdn_depuncture_12_group(deperm, 25U, depunc);
 
     //switch to the convolutional decoder
-    uint8_t temp[350];
-    uint8_t s0;
-    uint8_t s1;
     uint8_t m_data[22]; //26
-    memset(trellis_buf, 0, sizeof(trellis_buf));
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
 
-    for (int i = 0; i < 350; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 175; i++) //179
-    {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-
-        CNXDNConvolution_decode(s0, s1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 171); //175
-
-    for (int i = 0; i < 22; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 171);
+    nxdn_unpack_bytes_msb(m_data, 22U, trellis_buf);
 
     crc = crc16cac(trellis_buf, 171);
 
     //debug
     // if (crc == 0)
-    // 	fprintf (stderr, " Pass 1 ");
+    // 	DSD_FPRINTF(stderr, " Pass 1 ");
 
     if (crc != 0) {
         //debug
-        // fprintf (stderr, " Pass 2 ");
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 171);
-        //fill m_data bytes with trellis_buf
-        for (int i = 0; i < 22; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        // DSD_FPRINTF(stderr, " Pass 2 ");
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 22U, depunc, 171);
         crc = crc16cac(trellis_buf, 171);
     }
 
-    uint8_t cac_message_buffer[147]; //171
-    memset(cac_message_buffer, 0, sizeof(cac_message_buffer));
-
-    //shift the cac_message into the appropriate byte arrangement for element_decoder -- skip SR field and ending crc
-    for (int i = 0; i < 147; i++) {
-        cac_message_buffer[i] = trellis_buf[i + 8];
-    }
-
-    if (state->nxdn_last_ran != 0xFFFFFFFFu) {
-        fprintf(stderr, " RAN %02d ", state->nxdn_last_ran);
-    } else {
-        fprintf(stderr, "        ");
-    }
-
-    if (crc == 0) {
-        state->data_header_format[0] = 2;
-        ran = (trellis_buf[2] << 5) | (trellis_buf[3] << 4) | (trellis_buf[4] << 3) | (trellis_buf[5] << 2)
-              | (trellis_buf[6] << 1) | trellis_buf[7];
-        state->nxdn_last_ran = ran;
-    }
-
-    fprintf(stderr, "%s", KYEL);
-    fprintf(stderr, " CAC");
-    fprintf(stderr, "%s", KNRM);
-
-    if (crc != 0) {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, " (CRC ERR)");
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    //check for accumulative cac failures and reset if multiple errors pile up
-    //(LZ issue and also issue very occasssionally noticed on remote)
-    if (crc != 0) {
-        cac_fail++;
-    } else {
-        cac_fail = 0;
-    }
-
-    //reset some parameters if CAC continues to fail
-    if (cac_fail > 10) {
-        //simple reset
-        state->synctype = DSD_SYNC_P25P1_POS;
-        state->lastsynctype = DSD_SYNC_NONE;
-        state->carrier = 0;
-        state->last_cc_sync_time = time(NULL) + 2; //probably not necesary
-        cac_fail = 0;                              //reset
-
-        //more advanced modulator reset
-        state->center = 0.0f;
-        state->jitter = -1;
-        state->synctype = DSD_SYNC_NONE;
-        state->min = -4.0f;
-        state->max = 4.0f;
-        state->lmid = 0.0f;
-        state->umid = 0.0f;
-        state->minref = -3.2f;
-        state->maxref = 3.2f;
-        state->lastsample = 0.0f;
-        for (int i = 0; i < 128; i++) {
-            state->sbuf[i] = 0.0f;
-        }
-        state->sidx = 0;
-        for (int i = 0; i < 1024; i++) {
-            state->maxbuf[i] = 4.0f;
-        }
-        for (int i = 0; i < 1024; i++) {
-            state->minbuf[i] = -4.0f;
-        }
-        state->midx = 0;
-        dsd_state_invalidate_minmax_sums(state);
-        state->symbolcnt = 0;
-
-        //reset the dibit buffer
-        state->dibit_buf_p = state->dibit_buf + 200;
-        memset(state->dibit_buf, 0, sizeof(int) * 200);
-        state->offset = 0;
-
-        memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
-        state->data_header_blocks[0] = 1;
-        state->data_header_padding[0] = 0;
-        state->data_header_format[0] = 0;
-        state->data_header_valid[0] = 0;
-        state->payload_algid = 0;
-        state->payload_keyid = 0;
-        state->payload_mi = 0;
-        memset(state->aes_ivR, 0, sizeof(state->aes_ivR));
-
-        //debug notification
-        // fprintf (stderr, " RESET CARRIER; ");
-    }
-
-    if (crc == 0) {
-        NXDN_Elements_Content_decode(opts, state, 1, cac_message_buffer, sizeof(cac_message_buffer));
-    }
-    // else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, cac_message_buffer,
-    // sizeof(cac_message_buffer));
-
-    if (opts->payload == 1) {
-        fprintf(stderr, "\n");
-        fprintf(stderr, " CAC Payload\n  ");
-        for (int i = 0; i < 22; i++) {
-            fprintf(stderr, "[%02X]", m_data[i]);
-            if (i == 10) {
-                fprintf(stderr, "\n  ");
-            }
-        }
-        // if (crc != 0) fprintf (stderr, " CRC ERR ");
-    }
-
-    //when on a CC, rotate the symbol out file every hour, if enabled
-    rotate_symbol_out_file(opts, state);
+    nxdn_handle_cac(opts, state, trellis_buf, m_data, crc);
 }
 
 //Type-D "IDAS"
 void
 nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t direction) {
-    fprintf(stderr, "%s", KYEL);
-    fprintf(stderr, " SCCH");
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, " SCCH");
 
     //see about initializing these variables
     uint8_t deperm[60];      //60
     uint8_t depunc[72];      //72
     uint8_t trellis_buf[32]; //32
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(depunc, 0, sizeof(depunc));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    int o = 0;
     uint8_t crc = 0;   //value computed by crc7 on payload
     uint8_t check = 0; //value pulled from last 7 bits
-    int sf = 0;
-    int part_of_frame = 0;
 
-    for (int i = 0; i < 60; i++) {
-        deperm[PERM_12_5[i]] = bits[i];
-    }
-    for (int p = 0; p < 60; p += 10) {
-        depunc[o++] = deperm[p + 0];
-        depunc[o++] = deperm[p + 1];
-        depunc[o++] = deperm[p + 2];
-        depunc[o++] = deperm[p + 3];
-        depunc[o++] = deperm[p + 4];
-        depunc[o++] = 0;
-        depunc[o++] = deperm[p + 5];
-        depunc[o++] = deperm[p + 6];
-        depunc[o++] = deperm[p + 7];
-        depunc[o++] = deperm[p + 8];
-        depunc[o++] = deperm[p + 9];
-        depunc[o++] = 0;
-    }
+    nxdn_depermute_u8(bits, 60U, PERM_12_5, deperm);
+    nxdn_depuncture_12_5(deperm, depunc);
 
     //switch to the convolutional decoder
-    uint8_t temp[72];
-    uint8_t s0;
-    uint8_t s1;
     uint8_t m_data[5]; //5
 
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    for (int i = 0; i < 72; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 36; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-
-        CNXDNConvolution_decode(s0, s1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 32);
-
-    for (int i = 0; i < 4; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 32);
+    nxdn_unpack_bytes_msb(m_data, 4U, trellis_buf);
 
     crc = crc7_scch(trellis_buf, 25);
     check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
 
     //debug
     // if (crc == check)
-    // fprintf (stderr, " Pass 1 ");
+    // DSD_FPRINTF(stderr, " Pass 1 ");
 
     //if the crc fails, attempt again with the other trellis decoder
     if (crc != check) {
         //debug
-        // fprintf (stderr, " Pass 2 ");
+        // DSD_FPRINTF(stderr, " Pass 2 ");
 
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 32); //32?
-        //fill m_data bytes with trellis_buf
-        for (int i = 0; i < 4; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
         crc = crc7_scch(trellis_buf, 25);
         check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
     }
 
     //check the sf early for scrambler reset, if required
-    sf = (trellis_buf[0] << 1) | trellis_buf[1];
-    part_of_frame = 0; // default
-    switch (sf) {
-        case 2: part_of_frame = 1; break;
-        case 1: part_of_frame = 2; break;
-        case 0: part_of_frame = 3; break;
-        default: break;
-    }
+    const uint8_t sf = (trellis_buf[0] << 1) | trellis_buf[1];
+    const int part_of_frame = nxdn_sacch_part_of_frame(sf);
 
     //reset scrambler seed to key value on new superframe
     // if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) state->payload_miN = 0;
 
     //reset scrambler seed to key value on new superframe
     if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) {
-        if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
-            state->payload_miN = state->R; // reset/force reset scrambler seed
-        }
+        nxdn_reset_payload_seed_if_forced(state);
     }
 
     /*
@@ -1766,304 +1653,50 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
     }
     // else if (opts->aggressive_framesync == 0) NXDN_decode_scch (opts, state, trellis_buf, direction);
 
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 
     if (opts->payload == 1) {
-        fprintf(stderr, "\n SCCH Payload ");
+        DSD_FPRINTF(stderr, "\n SCCH Payload ");
         for (int i = 0; i < 4; i++) {
-            fprintf(stderr, "[%02X]", m_data[i]);
+            DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
         }
 
         if (crc != check) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
+            DSD_FPRINTF(stderr, "%s", KRED);
+            DSD_FPRINTF(stderr, " (CRC ERR)");
+            DSD_FPRINTF(stderr, "%s", KNRM);
         }
     }
 
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
 void
 nxdn_deperm_facch3_udch2(dsd_opts* opts, dsd_state* state, uint8_t bits[288], uint8_t type) {
-    uint8_t deperm[144];        //144
-    uint8_t depunc[192];        //192
-    uint8_t trellis_buf[96];    //96
-    uint8_t f3_udch2[288];      //completed bitstream without crc and tailing bits attached
-    uint8_t f3_udch2_bytes[36]; //completed bytes - with crc and tail
-    uint16_t crc[2];            //crc calculated by function
-    uint16_t check[2];          //crc from payload for comparison
-    int out;
-
-    //switch to the convolutional decoder
-    uint8_t temp[192];
-    uint8_t s0;
-    uint8_t s1;
-    uint8_t m_data[12]; //13
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
-    memset(deperm, 0, sizeof(deperm));
-    memset(depunc, 0, sizeof(depunc));
-    memset(crc, 0, sizeof(crc));
-    memset(check, 0, sizeof(check));
-    memset(f3_udch2, 0, sizeof(f3_udch2));
-    memset(f3_udch2_bytes, 0, sizeof(f3_udch2_bytes));
-
-    for (int j = 0; j < 2; j++) {
-        for (int i = 0; i < 144; i++) {
-            deperm[PERM_16_9[i]] = bits[i + (j * 144)];
-        }
-        out = 0;
-        for (int i = 0; i < 144; i += 3) {
-            depunc[out++] = deperm[i + 0];
-            depunc[out++] = 0;
-            depunc[out++] = deperm[i + 1];
-            depunc[out++] = deperm[i + 2];
-        }
-
-        for (int i = 0; i < 192; i++) {
-            temp[i] = depunc[i] << 1;
-        }
-
-        CNXDNConvolution_start();
-        for (int i = 0; i < 96; i++) {
-            s0 = temp[((size_t)2 * i)];
-            s1 = temp[((size_t)2 * i) + 1];
-
-            CNXDNConvolution_decode(s0, s1);
-        }
-
-        CNXDNConvolution_chainback(m_data, 92);
-
-        for (int i = 0; i < 12; i++) {
-            trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-            trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-            trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-            trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-            trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-            trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-            trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-            trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-        }
-
-        crc[j] = crc12f(trellis_buf, 84); //84
-        for (int i = 0; i < 12; i++) {
-            check[j] = check[j] << 1;
-            check[j] = check[j] | trellis_buf[84 + i]; //84
-        }
-
-        //debug
-        // if (crc[j] == check[j])
-        // 	fprintf (stderr, "P:%d Pass 1 ", j);
-
-        //if the crc fails, attempt again with the other trellis decoder
-        if (crc[j] != check[j]) {
-            //debug
-            // fprintf (stderr, "P:%d Pass 2 ", j);
-            crc[j] = 1;
-            check[j] = 0;
-            memset(trellis_buf, 0, sizeof(trellis_buf));
-            memset(m_data, 0, sizeof(m_data));
-            trellis_decode(trellis_buf, depunc, 92);
-            //fill m_data bytes with trellis_buf
-            for (int i = 0; i < 12; i++) {
-                m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-            }
-            crc[j] = crc12f(trellis_buf, 84);
-            for (int i = 0; i < 12; i++) {
-                check[j] = check[j] << 1;
-                check[j] = check[j] | trellis_buf[i + 84];
-            }
-        }
-
-        //transfer to storage sans crc and tail bits
-        for (int i = 0; i < 80; i++) {
-            f3_udch2[i + (j * 80)] = trellis_buf[i];
-        }
-        for (int i = 0; i < 12; i++) {
-            f3_udch2_bytes[i + (j * 12)] = m_data[i];
-        }
+    struct nxdn_facch3_udch2_message message;
+    DSD_MEMSET(&message, 0, sizeof(message));
+    for (size_t block = 0; block < 2U; block++) {
+        nxdn_decode_facch3_udch2_block_hard(bits, block, &message);
     }
 
-    fprintf(stderr, "%s", KYEL);
-    if (type == 0) {
-        fprintf(stderr, " UDCH2");
-    }
-    if (type == 1) {
-        fprintf(stderr, " FACCH3");
-    }
-    fprintf(stderr, "%s", KNRM);
-
-    if (crc[0] == check[0] && crc[1] == check[1]) {
-        state->data_header_format[0] = 1;
-        NXDN_Elements_Content_decode(opts, state, 1, f3_udch2, (size_t)(80 * 2));
-    }
-    // else if (opts->aggressive_framesync == 0)
-    // {
-    // 	if (type == 1) NXDN_Elements_Content_decode(opts, state, 0, trellis_buf);
-    // 	if (type == 0) {} //need handling for user data (text messages and AVL)
-    // }
-
-    if (type == 0) {
-        fprintf(stderr, "\n UDCH2 Data: ");
-        for (int i = 0; i < 22; i++) //all but last crc portion
-        {
-            if (i == 10) {
-                fprintf(stderr, " "); //space seperator?
-                i = 12;               //skip first crc portion
-            }
-            fprintf(stderr, "%02X", f3_udch2_bytes[i]);
-        }
-
-        fprintf(stderr, "\n UDCH2 Data: ASCII - ");
-        for (int i = 0; i < 22; i++) //all but last crc portion
-        {
-            if (i == 10) {
-                i = 12; //skip first crc portion
-            }
-            if (f3_udch2_bytes[i] <= 0x7E && f3_udch2_bytes[i] >= 0x20) {
-                fprintf(stderr, "%c", f3_udch2_bytes[i]);
-            } else {
-                fprintf(stderr, " ");
-            }
-        }
-
-        if (crc[0] != check[0] && crc[1] != check[1]) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
-        }
-    }
-
-    if (opts->payload == 1) {
-        fprintf(stderr, "\n");
-        if (type == 0) {
-            fprintf(stderr, " UDCH2");
-        }
-        if (type == 1) {
-            fprintf(stderr, " FACCH3");
-        }
-        fprintf(stderr, " Payload \n  ");
-        for (int i = 0; i < 24; i++) {
-            if (i == 12) {
-                fprintf(stderr, "\n  ");
-            }
-            fprintf(stderr, "[%02X]", f3_udch2_bytes[i]);
-        }
-
-        if ((crc[0] != check[0] || crc[1] != check[1]) && opts->payload == 1) {
-
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
-
-            // fprintf (stderr, " - %03X %03X", check[0], crc[0]);
-            // fprintf (stderr, " - %03X %03X", check[1], crc[1]);
-        }
-
-        // if (type == 0)
-        // {
-        // 	fprintf (stderr, "\n UDCH2 Data: ASCII - "  );
-        // 	for (int i = 0; i < 22; i++) //all but last crc portion
-        // 	{
-        // 		if (i == 12) i = 14;  //skip first crc portion
-        // 		if (f3_udch2_bytes[i] <= 0x7E && f3_udch2_bytes[i] >=0x20)
-        // 		{
-        // 			fprintf (stderr, "%c", f3_udch2_bytes[i]);
-        // 		}
-        // 		else fprintf (stderr, " ");
-        // 	}
-        // }
-    }
+    nxdn_handle_facch3_udch2_hard(opts, state, &message, type);
 }
 
 void
-nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
-    UNUSED(opts);
-
+nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     //NOTE: Most Req/Resp (request and respone) share same message type but differ depending on channel type
     //RTCH Outbound will take precedent when differences may occur (except CALL_ASSGN)
-    fprintf(stderr, "%s", KYEL);
-    if (MessageType == 0x10) {
-        fprintf(stderr, " IDLE");
-    }
-    // else if (MessageType == 0x00) fprintf(stderr, " CALL_RESP");
-    else if (MessageType == 0x01) {
-        fprintf(stderr, " VCALL");
-    } else if (MessageType == 0x02) {
-        fprintf(stderr, " VCALL_REC_REQ");
-    } else if (MessageType == 0x03) {
-        fprintf(stderr, " VCALL_IV");
-    } else if (MessageType == 0x04) {
-        fprintf(stderr, " VCALL_ASSGN");
-    } else if (MessageType == 0x05) {
-        fprintf(stderr, " VCALL_ASSGN_DUP");
-    } else if (MessageType == 0x06) {
-        fprintf(stderr, " CALL_CONN_RESP");
-    } else if (MessageType == 0x07) {
-        fprintf(stderr, " TX_REL_EX");
-    } else if (MessageType == 0x08) {
-        fprintf(stderr, " TX_REL");
-    } else if (MessageType == 0x09) {
-        fprintf(stderr, " DCALL_HEADER");
-    } else if (MessageType == 0x0A) {
-        fprintf(stderr, " DCALL_REC_REQ");
-    } else if (MessageType == 0x0B) {
-        fprintf(stderr, " DCALL_DATA");
-    } else if (MessageType == 0x0C) {
-        fprintf(stderr, " DCALL_ACK");
-    } else if (MessageType == 0x0D) {
-        fprintf(stderr, " DCALL_ASSGN_DUP");
-    } else if (MessageType == 0x0E) {
-        fprintf(stderr, " DCALL_ASSGN");
-    } else if (MessageType == 0x11) {
-        fprintf(stderr, " DISC");
-    } else if (MessageType == 0x17) {
-        fprintf(stderr, " DST_ID_INFO");
-    } else if (MessageType == 0x18) {
-        fprintf(stderr, " SITE_INFO");
-    } else if (MessageType == 0x19) {
-        fprintf(stderr, " SRV_INFO");
-    } else if (MessageType == 0x1A) {
-        fprintf(stderr, " CCH_INFO");
-    } else if (MessageType == 0x1B) {
-        fprintf(stderr, " ADJ_SITE_INFO");
-    } else if (MessageType == 0x1C) {
-        fprintf(stderr, " FAIL_STAT_INFO");
-    } else if (MessageType == 0x20) {
-        fprintf(stderr, " REG_RESP");
-    } else if (MessageType == 0x22) {
-        fprintf(stderr, " REG_C_RESP");
-    } else if (MessageType == 0x24) {
-        fprintf(stderr, " GRP_REG_RESP");
-    } else if (MessageType == 0x32) {
-        fprintf(stderr, " STAT_REQ");
-    } else if (MessageType == 0x33) {
-        fprintf(stderr, " STAT_RESP");
-    } else if (MessageType == 0x38) {
-        fprintf(stderr, " SDCALL_REQ_HEADER");
-    } else if (MessageType == 0x39) {
-        fprintf(stderr, " SDCALL_REQ_DATA");
-    } else if (MessageType == 0x3A) {
-        fprintf(stderr, " SDCALL_IV");
-    } else if (MessageType == 0x3B) {
-        fprintf(stderr, " SDCALL_RESP");
-    } else if (MessageType == 0x3F) {
-        fprintf(stderr, " ALIAS");
-    } else if (MessageType == 0xE1) {
-        fprintf(stderr, " VCALL (ARIB)");
-    } else if (MessageType == 0xE7) {
-        fprintf(stderr, " ALIAS_ARIB");
-    } else if (MessageType == 0xE8) {
-        fprintf(stderr, " TX_REL (ARIB)");
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    const char* label = nxdn_message_type_label(MessageType);
+    if (label != NULL) {
+        DSD_FPRINTF(stderr, "%s", label);
     } else {
-        fprintf(stderr, " Unknown Message Type: %02X;", MessageType);
+        DSD_FPRINTF(stderr, " Unknown Message Type: %02X;", MessageType);
     }
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 
     //Zero out stale values on DISC or TX_REL only (IDLE messaages occur often on NXDN96 VCH, and randomly on Type-C FACCH1 steals for some reason)
-    if (MessageType == 0x08 || MessageType == 0x11 || MessageType == 0xE8) {
+    if (nxdn_message_type_resets_call(MessageType)) {
         nxdn_alias_reset(state);
         state->nxdn_last_rid = 0;
         state->nxdn_last_tg = 0;
@@ -2071,12 +1704,12 @@ nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
         if (state->keyloader == 1) {
             state->R = 0;
         }
-        memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-        memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        sprintf(state->nxdn_call_type, "%s", "");
+        DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+        DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+        DSD_SPRINTF(state->nxdn_call_type, "%s", "");
     }
 
-    if (MessageType == 0x07 || MessageType == 0x08 || MessageType == 0x11 || MessageType == 0xE8) {
+    if (nxdn_message_type_resets_gain(MessageType)) {
         //reset gain
         if (opts->floating_point == 1) {
             state->aout_gain = opts->audio_gain;
@@ -2086,17 +1719,15 @@ nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
 
 //voice descrambler
 void
-LFSRN(char* BufferIn, char* BufferOut, dsd_state* state) {
-    int i;
+LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
     int lfsr;
     int pN[49] = {0};
-    int bit = 0;
 
     lfsr = state->payload_miN & 0x7FFF;
 
-    for (i = 0; i < 49; i++) {
+    for (int i = 0; i < 49; i++) {
         pN[i] = lfsr & 0x1;
-        bit = ((lfsr >> 1) ^ (lfsr >> 0)) & 1;
+        const int bit = ((lfsr >> 1) ^ (lfsr >> 0)) & 1;
         lfsr = ((lfsr >> 1) | (bit << 14));
         BufferOut[i] = BufferIn[i] ^ pN[i];
     }
@@ -2116,12 +1747,11 @@ load_i(const uint8_t val[], int len) {
 uint8_t
 crc6(const uint8_t buf[], int len) {
     uint8_t s[6];
-    uint8_t a;
     for (int i = 0; i < 6; i++) {
         s[i] = 1;
     }
     for (int i = 0; i < len; i++) {
-        a = buf[i] ^ s[0];
+        const uint8_t a = buf[i] ^ s[0];
         s[0] = a ^ s[1];
         s[1] = s[2];
         s[2] = s[3];
@@ -2135,12 +1765,11 @@ crc6(const uint8_t buf[], int len) {
 uint16_t
 crc12f(const uint8_t buf[], int len) {
     uint8_t s[12];
-    uint8_t a;
     for (int i = 0; i < 12; i++) {
         s[i] = 1;
     }
     for (int i = 0; i < len; i++) {
-        a = buf[i] ^ s[0];
+        const uint8_t a = buf[i] ^ s[0];
         s[0] = a ^ s[1];
         s[1] = s[2];
         s[2] = s[3];
@@ -2160,12 +1789,11 @@ crc12f(const uint8_t buf[], int len) {
 uint16_t
 crc15(const uint8_t buf[], int len) {
     uint8_t s[15];
-    uint8_t a;
     for (int i = 0; i < 15; i++) {
         s[i] = 1;
     }
     for (int i = 0; i < len; i++) {
-        a = buf[i] ^ s[0];
+        const uint8_t a = buf[i] ^ s[0];
         s[0] = a ^ s[1];
         s[1] = s[2];
         s[2] = s[3];
@@ -2200,7 +1828,7 @@ crc16cac(const uint8_t buf[], int len) {
 }
 
 uint32_t
-nxdn_message_crc32(uint8_t* input, int len) {
+nxdn_message_crc32(const uint8_t* input, int len) {
     uint32_t crc = 0xFFFFFFFFU;
     const uint32_t poly = 0x04C11DB7U;
 
@@ -2222,14 +1850,13 @@ nxdn_message_crc32(uint8_t* input, int len) {
 }
 
 uint8_t
-crc7_scch(uint8_t bits[], int len) {
+crc7_scch(const uint8_t bits[], int len) {
     uint8_t s[7];
-    uint8_t a;
     for (int i = 0; i < 7; i++) {
         s[i] = 1;
     }
     for (int i = 0; i < len; i++) {
-        a = bits[i] ^ s[0];
+        const uint8_t a = bits[i] ^ s[0];
         s[0] = s[1];
         s[1] = s[2];
         s[2] = s[3];
@@ -2256,14 +1883,13 @@ LFSR128n(dsd_state* state) {
     state->aes_iv[6] = (lfsr >> 8) & 0xFF;
     state->aes_iv[7] = (lfsr >> 0) & 0xFF;
 
-    int cnt = 0;
     int x = 64;
-    unsigned long long int bit;
     //polynomial P(x) = 1 + X15 + X27 + X38 + X46 + X62 + X64
-    for (cnt = 0; cnt < 64; cnt++) {
+    for (int cnt = 0; cnt < 64; cnt++) {
         //63,61,45,37,27,14
         // Polynomial is C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1
-        bit = ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
+        const unsigned long long bit =
+            ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
         lfsr = (lfsr << 1) | bit;
 
         //continue packing aes_iv
@@ -2271,13 +1897,13 @@ LFSR128n(dsd_state* state) {
         x++;
     }
 
-    fprintf(stderr, "%s", KYEL);
-    fprintf(stderr, "\n");
-    fprintf(stderr, " IV(128): 0x");
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n");
+    DSD_FPRINTF(stderr, " IV(128): 0x");
     for (x = 0; x < 16; x++) {
-        fprintf(stderr, "%02X", state->aes_iv[x]);
+        DSD_FPRINTF(stderr, "%02X", state->aes_iv[x]);
     }
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
 /*
@@ -2290,192 +1916,31 @@ nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const 
     uint8_t depunc[350];
     uint8_t depunc_rel[350];
     uint8_t trellis_buf[176];
-    int id = 0;
-    int ran = 0;
     uint16_t crc = 0;
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(deperm_rel, 255, sizeof(deperm_rel));
-    memset(depunc, 0, sizeof(depunc));
-    memset(depunc_rel, 255, sizeof(depunc_rel));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(deperm_rel, 255, sizeof(deperm_rel));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(depunc_rel, 255, sizeof(depunc_rel));
 
-    for (int i = 0; i < 300; i++) {
-        deperm[PERM_12_25[i]] = bits[i];
-        deperm_rel[PERM_12_25[i]] = reliab[i];
-    }
+    nxdn_depermute_rel(bits, reliab, 300U, PERM_12_25, deperm, deperm_rel);
+    nxdn_depuncture_12_group_rel(deperm, deperm_rel, 25U, depunc, depunc_rel);
 
-    for (int i = 0; i < 25; i++) {
-        depunc[id] = deperm[((size_t)i * 12)];
-        depunc_rel[id++] = deperm_rel[((size_t)i * 12)];
-        depunc[id] = deperm[i * 12 + 1];
-        depunc_rel[id++] = deperm_rel[i * 12 + 1];
-        depunc[id] = deperm[i * 12 + 2];
-        depunc_rel[id++] = deperm_rel[i * 12 + 2];
-        depunc[id] = 0;
-        depunc_rel[id++] = 0; // punctured
-        depunc[id] = deperm[i * 12 + 3];
-        depunc_rel[id++] = deperm_rel[i * 12 + 3];
-        depunc[id] = deperm[i * 12 + 4];
-        depunc_rel[id++] = deperm_rel[i * 12 + 4];
-        depunc[id] = deperm[i * 12 + 5];
-        depunc_rel[id++] = deperm_rel[i * 12 + 5];
-        depunc[id] = deperm[i * 12 + 6];
-        depunc_rel[id++] = deperm_rel[i * 12 + 6];
-        depunc[id] = deperm[i * 12 + 7];
-        depunc_rel[id++] = deperm_rel[i * 12 + 7];
-        depunc[id] = deperm[i * 12 + 8];
-        depunc_rel[id++] = deperm_rel[i * 12 + 8];
-        depunc[id] = deperm[i * 12 + 9];
-        depunc_rel[id++] = deperm_rel[i * 12 + 9];
-        depunc[id] = 0;
-        depunc_rel[id++] = 0; // punctured
-        depunc[id] = deperm[i * 12 + 10];
-        depunc_rel[id++] = deperm_rel[i * 12 + 10];
-        depunc[id] = deperm[i * 12 + 11];
-        depunc_rel[id++] = deperm_rel[i * 12 + 11];
-    }
-
-    uint8_t temp[350];
-    uint8_t s0, s1, r0, r1;
     uint8_t m_data[22];
-    memset(trellis_buf, 0, sizeof(trellis_buf));
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
 
-    for (int i = 0; i < 350; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 175; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-        r0 = depunc_rel[((size_t)2 * i)];
-        r1 = depunc_rel[((size_t)2 * i) + 1];
-        CNXDNConvolution_decode_soft(s0, s1, r0, r1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 171);
-
-    for (int i = 0; i < 22; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 171);
+    nxdn_unpack_bytes_msb(m_data, 22U, trellis_buf);
 
     crc = crc16cac(trellis_buf, 171);
 
     if (crc != 0) {
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 171);
-        for (int i = 0; i < 22; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 22U, depunc, 171);
         crc = crc16cac(trellis_buf, 171);
     }
 
-    uint8_t cac_message_buffer[147];
-    memset(cac_message_buffer, 0, sizeof(cac_message_buffer));
-
-    for (int i = 0; i < 147; i++) {
-        cac_message_buffer[i] = trellis_buf[i + 8];
-    }
-
-    if (state->nxdn_last_ran != 0xFFFFFFFFu) {
-        fprintf(stderr, " RAN %02d ", state->nxdn_last_ran);
-    } else {
-        fprintf(stderr, "        ");
-    }
-
-    if (crc == 0) {
-        state->data_header_format[0] = 2;
-        ran = (trellis_buf[2] << 5) | (trellis_buf[3] << 4) | (trellis_buf[4] << 3) | (trellis_buf[5] << 2)
-              | (trellis_buf[6] << 1) | trellis_buf[7];
-        state->nxdn_last_ran = ran;
-    }
-
-    fprintf(stderr, "%s", KYEL);
-    fprintf(stderr, " CAC");
-    fprintf(stderr, "%s", KNRM);
-
-    if (crc != 0) {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, " (CRC ERR)");
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    if (crc != 0) {
-        cac_fail++;
-    } else {
-        cac_fail = 0;
-    }
-
-    if (cac_fail > 10) {
-        state->synctype = DSD_SYNC_P25P1_POS;
-        state->lastsynctype = DSD_SYNC_NONE;
-        state->carrier = 0;
-        state->last_cc_sync_time = time(NULL) + 2;
-        cac_fail = 0;
-        state->center = 0.0f;
-        state->jitter = -1;
-        state->synctype = DSD_SYNC_NONE;
-        state->min = -4.0f;
-        state->max = 4.0f;
-        state->lmid = 0.0f;
-        state->umid = 0.0f;
-        state->minref = -3.2f;
-        state->maxref = 3.2f;
-        state->lastsample = 0.0f;
-        for (int i = 0; i < 128; i++) {
-            state->sbuf[i] = 0.0f;
-        }
-        state->sidx = 0;
-        for (int i = 0; i < 1024; i++) {
-            state->maxbuf[i] = 4.0f;
-        }
-        for (int i = 0; i < 1024; i++) {
-            state->minbuf[i] = -4.0f;
-        }
-        state->midx = 0;
-        dsd_state_invalidate_minmax_sums(state);
-        state->symbolcnt = 0;
-        state->dibit_buf_p = state->dibit_buf + 200;
-        memset(state->dibit_buf, 0, sizeof(int) * 200);
-        state->offset = 0;
-
-        memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
-        state->data_header_blocks[0] = 1;
-        state->data_header_padding[0] = 0;
-        state->data_header_format[0] = 0;
-        state->data_header_valid[0] = 0;
-        state->payload_algid = 0;
-        state->payload_keyid = 0;
-        state->payload_mi = 0;
-        memset(state->aes_ivR, 0, sizeof(state->aes_ivR));
-    }
-
-    if (crc == 0) {
-        NXDN_Elements_Content_decode(opts, state, 1, cac_message_buffer, sizeof(cac_message_buffer));
-    }
-
-    if (opts->payload == 1) {
-        fprintf(stderr, "\n");
-        fprintf(stderr, " CAC Payload\n  ");
-        for (int i = 0; i < 22; i++) {
-            fprintf(stderr, "[%02X]", m_data[i]);
-            if (i == 10) {
-                fprintf(stderr, "\n  ");
-            }
-        }
-    }
-
-    rotate_symbol_out_file(opts, state);
+    nxdn_handle_cac(opts, state, trellis_buf, m_data, crc);
 }
 
 /*
@@ -2489,166 +1954,34 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
     uint8_t depunc[406];
     uint8_t depunc_rel[406];
     uint8_t trellis_buf[208];
-    int id = 0;
     uint16_t crc = 0;
     uint16_t check = 0;
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(deperm_rel, 255, sizeof(deperm_rel));
-    memset(depunc, 0, sizeof(depunc));
-    memset(depunc_rel, 255, sizeof(depunc_rel));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(deperm_rel, 255, sizeof(deperm_rel));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(depunc_rel, 255, sizeof(depunc_rel));
 
-    for (int i = 0; i < 348; i++) {
-        deperm[PERM_12_29[i]] = bits[i];
-        deperm_rel[PERM_12_29[i]] = reliab[i];
-    }
-    for (int i = 0; i < 29; i++) {
-        depunc[id] = deperm[((size_t)i * 12)];
-        depunc_rel[id++] = deperm_rel[((size_t)i * 12)];
-        depunc[id] = deperm[i * 12 + 1];
-        depunc_rel[id++] = deperm_rel[i * 12 + 1];
-        depunc[id] = deperm[i * 12 + 2];
-        depunc_rel[id++] = deperm_rel[i * 12 + 2];
-        depunc[id] = 0;
-        depunc_rel[id++] = 0; // punctured
-        depunc[id] = deperm[i * 12 + 3];
-        depunc_rel[id++] = deperm_rel[i * 12 + 3];
-        depunc[id] = deperm[i * 12 + 4];
-        depunc_rel[id++] = deperm_rel[i * 12 + 4];
-        depunc[id] = deperm[i * 12 + 5];
-        depunc_rel[id++] = deperm_rel[i * 12 + 5];
-        depunc[id] = deperm[i * 12 + 6];
-        depunc_rel[id++] = deperm_rel[i * 12 + 6];
-        depunc[id] = deperm[i * 12 + 7];
-        depunc_rel[id++] = deperm_rel[i * 12 + 7];
-        depunc[id] = deperm[i * 12 + 8];
-        depunc_rel[id++] = deperm_rel[i * 12 + 8];
-        depunc[id] = deperm[i * 12 + 9];
-        depunc_rel[id++] = deperm_rel[i * 12 + 9];
-        depunc[id] = 0;
-        depunc_rel[id++] = 0; // punctured
-        depunc[id] = deperm[i * 12 + 10];
-        depunc_rel[id++] = deperm_rel[i * 12 + 10];
-        depunc[id] = deperm[i * 12 + 11];
-        depunc_rel[id++] = deperm_rel[i * 12 + 11];
-    }
+    nxdn_depermute_rel(bits, reliab, 348U, PERM_12_29, deperm, deperm_rel);
+    nxdn_depuncture_12_group_rel(deperm, deperm_rel, 29U, depunc, depunc_rel);
 
-    uint8_t temp[406];
-    uint8_t s0, s1, r0, r1;
     uint8_t m_data[26];
-    memset(trellis_buf, 0, sizeof(trellis_buf));
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
 
-    for (int i = 0; i < 406; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 203; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-        r0 = depunc_rel[((size_t)2 * i)];
-        r1 = depunc_rel[((size_t)2 * i) + 1];
-        CNXDNConvolution_decode_soft(s0, s1, r0, r1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 199);
-
-    for (int i = 0; i < 26; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 199);
+    nxdn_unpack_bytes_msb(m_data, 26U, trellis_buf);
 
     crc = crc15(trellis_buf, 199);
-    for (int i = 0; i < 15; i++) {
-        check = check << 1;
-        check = check | trellis_buf[i + 184];
-    }
+    check = nxdn_bits_to_u16(trellis_buf + 184, 15);
 
     if (crc != check) {
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 199);
-        for (int i = 0; i < 26; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 26U, depunc, 199);
         crc = crc15(trellis_buf, 199);
-        check = 0;
-        for (int i = 0; i < 15; i++) {
-            check = check << 1;
-            check = check | trellis_buf[i + 184];
-        }
+        check = nxdn_bits_to_u16(trellis_buf + 184, 15);
     }
 
-    fprintf(stderr, "%s", KYEL);
-    if (type == 0) {
-        fprintf(stderr, " UDCH");
-    }
-    if (type == 1) {
-        fprintf(stderr, " FACCH2");
-    }
-    fprintf(stderr, "%s", KNRM);
-
-    uint8_t f2u_message_buffer[400];
-    memset(f2u_message_buffer, 0, sizeof(f2u_message_buffer));
-
-    for (int i = 0; i < 199 - 8 - 15; i++) {
-        f2u_message_buffer[i] = trellis_buf[i + 8];
-    }
-
-    if (crc == check) {
-        state->data_header_format[0] = 1;
-        NXDN_Elements_Content_decode(opts, state, 1, f2u_message_buffer, (size_t)(199 - 8 - 15));
-    }
-
-    if (type == 0 && crc == check) {
-        fprintf(stderr, "\n UDCH Data: ");
-        for (int i = 0; i < 24; i++) {
-            fprintf(stderr, "%02X", m_data[i]);
-        }
-        fprintf(stderr, "\n UDCH Data: ASCII - ");
-        for (int i = 0; i < 24; i++) {
-            if (m_data[i] <= 0x7E && m_data[i] >= 0x20) {
-                fprintf(stderr, "%c", m_data[i]);
-            } else {
-                fprintf(stderr, " ");
-            }
-        }
-        if (crc != check) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
-        }
-    }
-
-    if (opts->payload == 1) {
-        fprintf(stderr, "\n");
-        if (type == 0) {
-            fprintf(stderr, " UDCH");
-        }
-        if (type == 1) {
-            fprintf(stderr, " FACCH2");
-        }
-        fprintf(stderr, " Payload\n  ");
-        for (int i = 0; i < 26; i++) {
-            if (i == 13) {
-                fprintf(stderr, "\n  ");
-            }
-            fprintf(stderr, "[%02X]", m_data[i]);
-        }
-        if (crc != check) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
-        }
-    }
+    nxdn_handle_facch2_udch(opts, state, trellis_buf, m_data, crc, check, type);
 }
 
 /*
@@ -2656,8 +1989,8 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
  */
 void
 nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
-    fprintf(stderr, "%s", KYEL);
-    fprintf(stderr, " SCCH");
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, " SCCH");
 
     uint8_t deperm[60];
     uint8_t deperm_rel[60];
@@ -2665,126 +1998,56 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     uint8_t depunc_rel[72];
     uint8_t trellis_buf[32];
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(deperm_rel, 255, sizeof(deperm_rel));
-    memset(depunc, 0, sizeof(depunc));
-    memset(depunc_rel, 255, sizeof(depunc_rel));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(deperm_rel, 255, sizeof(deperm_rel));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(depunc_rel, 255, sizeof(depunc_rel));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    int o = 0;
     uint8_t crc = 0;
     uint8_t check = 0;
-    int sf = 0;
-    int part_of_frame = 0;
 
-    for (int i = 0; i < 60; i++) {
-        deperm[PERM_12_5[i]] = bits[i];
-        deperm_rel[PERM_12_5[i]] = reliab[i];
-    }
-    for (int p = 0; p < 60; p += 10) {
-        depunc[o] = deperm[p + 0];
-        depunc_rel[o++] = deperm_rel[p + 0];
-        depunc[o] = deperm[p + 1];
-        depunc_rel[o++] = deperm_rel[p + 1];
-        depunc[o] = deperm[p + 2];
-        depunc_rel[o++] = deperm_rel[p + 2];
-        depunc[o] = deperm[p + 3];
-        depunc_rel[o++] = deperm_rel[p + 3];
-        depunc[o] = deperm[p + 4];
-        depunc_rel[o++] = deperm_rel[p + 4];
-        depunc[o] = 0;
-        depunc_rel[o++] = 0;
-        depunc[o] = deperm[p + 5];
-        depunc_rel[o++] = deperm_rel[p + 5];
-        depunc[o] = deperm[p + 6];
-        depunc_rel[o++] = deperm_rel[p + 6];
-        depunc[o] = deperm[p + 7];
-        depunc_rel[o++] = deperm_rel[p + 7];
-        depunc[o] = deperm[p + 8];
-        depunc_rel[o++] = deperm_rel[p + 8];
-        depunc[o] = deperm[p + 9];
-        depunc_rel[o++] = deperm_rel[p + 9];
-        depunc[o] = 0;
-        depunc_rel[o++] = 0;
-    }
+    nxdn_depermute_rel_u8(bits, reliab, 60U, PERM_12_5, deperm, deperm_rel);
+    nxdn_depuncture_12_5_rel(deperm, deperm_rel, depunc, depunc_rel);
 
-    uint8_t temp[72];
-    uint8_t s0, s1, r0, r1;
     uint8_t m_data[5];
 
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
 
-    for (int i = 0; i < 72; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 36; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-        r0 = depunc_rel[((size_t)2 * i)];
-        r1 = depunc_rel[((size_t)2 * i) + 1];
-        CNXDNConvolution_decode_soft(s0, s1, r0, r1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 32);
-
-    for (int i = 0; i < 4; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 32);
+    nxdn_unpack_bytes_msb(m_data, 4U, trellis_buf);
 
     crc = crc7_scch(trellis_buf, 25);
     check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
 
     if (crc != check) {
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 32);
-        for (int i = 0; i < 4; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
         crc = crc7_scch(trellis_buf, 25);
         check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
     }
 
-    sf = (trellis_buf[0] << 1) | trellis_buf[1];
-    part_of_frame = 0;
-    switch (sf) {
-        case 2: part_of_frame = 1; break;
-        case 1: part_of_frame = 2; break;
-        case 0: part_of_frame = 3; break;
-        default: break;
-    }
+    const uint8_t sf = (trellis_buf[0] << 1) | trellis_buf[1];
+    const int part_of_frame = nxdn_sacch_part_of_frame(sf);
 
     if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) {
-        if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
-            state->payload_miN = state->R;
-        }
+        nxdn_reset_payload_seed_if_forced(state);
     }
 
     if (crc == check) {
         NXDN_decode_scch(opts, state, trellis_buf, direction);
     }
 
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 
     if (opts->payload == 1) {
-        fprintf(stderr, "\n SCCH Payload ");
+        DSD_FPRINTF(stderr, "\n SCCH Payload ");
         for (int i = 0; i < 4; i++) {
-            fprintf(stderr, "[%02X]", m_data[i]);
+            DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
         }
         if (crc != check) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
+            DSD_FPRINTF(stderr, "%s", KRED);
+            DSD_FPRINTF(stderr, " (CRC ERR)");
+            DSD_FPRINTF(stderr, "%s", KNRM);
         }
     }
 }
@@ -2793,160 +2056,49 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
  * Soft-decision variant of nxdn_deperm_sacch2.
  */
 void
-nxdn_deperm_sacch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
+nxdn_deperm_sacch2_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
     uint8_t deperm[60];
     uint8_t deperm_rel[60];
     uint8_t depunc[72];
     uint8_t depunc_rel[72];
     uint8_t trellis_buf[32];
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(deperm_rel, 255, sizeof(deperm_rel));
-    memset(depunc, 0, sizeof(depunc));
-    memset(depunc_rel, 255, sizeof(depunc_rel));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(deperm_rel, 255, sizeof(deperm_rel));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(depunc_rel, 255, sizeof(depunc_rel));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    int o = 0;
     uint8_t crc = 1;
     uint8_t check = 0;
 
-    for (int i = 0; i < 60; i++) {
-        deperm[PERM_12_5[i]] = bits[i];
-        deperm_rel[PERM_12_5[i]] = reliab[i];
-    }
-    for (int p = 0; p < 60; p += 10) {
-        depunc[o] = deperm[p + 0];
-        depunc_rel[o++] = deperm_rel[p + 0];
-        depunc[o] = deperm[p + 1];
-        depunc_rel[o++] = deperm_rel[p + 1];
-        depunc[o] = deperm[p + 2];
-        depunc_rel[o++] = deperm_rel[p + 2];
-        depunc[o] = deperm[p + 3];
-        depunc_rel[o++] = deperm_rel[p + 3];
-        depunc[o] = deperm[p + 4];
-        depunc_rel[o++] = deperm_rel[p + 4];
-        depunc[o] = 0;
-        depunc_rel[o++] = 0;
-        depunc[o] = deperm[p + 5];
-        depunc_rel[o++] = deperm_rel[p + 5];
-        depunc[o] = deperm[p + 6];
-        depunc_rel[o++] = deperm_rel[p + 6];
-        depunc[o] = deperm[p + 7];
-        depunc_rel[o++] = deperm_rel[p + 7];
-        depunc[o] = deperm[p + 8];
-        depunc_rel[o++] = deperm_rel[p + 8];
-        depunc[o] = deperm[p + 9];
-        depunc_rel[o++] = deperm_rel[p + 9];
-        depunc[o] = 0;
-        depunc_rel[o++] = 0;
-    }
+    nxdn_depermute_rel_u8(bits, reliab, 60U, PERM_12_5, deperm, deperm_rel);
+    nxdn_depuncture_12_5_rel(deperm, deperm_rel, depunc, depunc_rel);
 
-    uint8_t temp[80];
-    uint8_t s0, s1, r0, r1;
     uint8_t m_data[5];
 
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
 
-    for (int i = 0; i < 72; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 36; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-        r0 = depunc_rel[((size_t)2 * i)];
-        r1 = depunc_rel[((size_t)2 * i) + 1];
-        CNXDNConvolution_decode_soft(s0, s1, r0, r1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 32);
-
-    for (int i = 0; i < 4; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 32);
+    nxdn_unpack_bytes_msb(m_data, 4U, trellis_buf);
 
     crc = crc6(trellis_buf, 26);
-    check = (uint8_t)convert_bits_into_output(trellis_buf + 26, 6);
+    check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
 
     if (crc != check) {
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 32);
-        for (int i = 0; i < 4; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
         crc = crc6(trellis_buf, 26);
-        check = (uint8_t)convert_bits_into_output(trellis_buf + 26, 6);
+        check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
     }
 
-    // Simplified SACCH2 handling - call original logic
-    uint8_t sf_fb = trellis_buf[0];
-    uint8_t sf_num = (uint8_t)convert_bits_into_output(trellis_buf + 1, 2);
-    uint8_t sf_mes = (uint8_t)convert_bits_into_output(trellis_buf + 3, 5);
-    uint8_t sf_pof = 3 - sf_num;
-    state->nxdn_dcr_sf_message_type = 0xFFU;
-
-    if (crc == check) {
-        state->nxdn_dcr_sf_message_type = sf_mes;
-        if (sf_fb && sf_pof) {
-            fprintf(stderr, "PF: %d/1; ", sf_num + 1);
-        } else {
-            fprintf(stderr, "PF: %d/4; ", sf_pof + 1);
-        }
-
-        if (sf_mes == 0x01) {
-            fprintf(stderr, "Call; ");
-        } else if (sf_mes == 0x02) {
-            fprintf(stderr, "PDU;  ");
-        } else if (sf_mes == 0x1E) {
-            fprintf(stderr, "End;  ");
-        } else if (sf_mes == 0x00) {
-            fprintf(stderr, "Idle; ");
-        } else {
-            fprintf(stderr, "Res: %02X; ", sf_mes);
-        }
-    } else {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, "SACCH (CRC ERR)");
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    // Simplified - rest of SACCH2 state management
-    if (crc == check) {
-        state->nxdn_sacch_frame_segcrc[sf_num] = 0;
-        state->gi[0] = 0;
-        state->nxdn_last_ran = 7;
-        state->nxdn_last_tg = 777;
-        state->nxdn_last_rid = 777;
-        sprintf(state->generic_talker_alias[0], "%s", "JPN DCR");
-    } else {
-        state->nxdn_sacch_frame_segcrc[sf_num] = 1;
-    }
-
-    if (opts->payload == 1) {
-        fprintf(stderr, "\n DCR SACCH ");
-        for (int i = 0; i < 4; i++) {
-            fprintf(stderr, "[%02X]", m_data[i]);
-        }
-    }
-
-    UNUSED(state);
+    nxdn_handle_sacch2(opts, state, trellis_buf, m_data, crc, check);
 }
 
 /*
  * Soft-decision variant of nxdn_deperm_pich_tch.
  */
 void
-nxdn_deperm_pich_tch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
+nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
                           uint8_t lich) {
     uint8_t deperm[144];
     uint8_t deperm_rel[144];
@@ -2955,160 +2107,32 @@ nxdn_deperm_pich_tch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], c
     uint8_t trellis_buf[96];
     uint16_t crc = 1;
     uint16_t check = 0;
-    int out;
 
-    memset(deperm, 0, sizeof(deperm));
-    memset(deperm_rel, 255, sizeof(deperm_rel));
-    memset(depunc, 0, sizeof(depunc));
-    memset(depunc_rel, 255, sizeof(depunc_rel));
+    DSD_MEMSET(deperm, 0, sizeof(deperm));
+    DSD_MEMSET(deperm_rel, 255, sizeof(deperm_rel));
+    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(depunc_rel, 255, sizeof(depunc_rel));
 
-    for (int i = 0; i < 144; i++) {
-        deperm[PERM_16_9[i]] = bits[i];
-        deperm_rel[PERM_16_9[i]] = reliab[i];
-    }
-    out = 0;
-    for (int i = 0; i < 144; i += 3) {
-        depunc[out] = deperm[i + 0];
-        depunc_rel[out++] = deperm_rel[i + 0];
-        depunc[out] = 0;
-        depunc_rel[out++] = 0;
-        depunc[out] = deperm[i + 1];
-        depunc_rel[out++] = deperm_rel[i + 1];
-        depunc[out] = deperm[i + 2];
-        depunc_rel[out++] = deperm_rel[i + 2];
-    }
+    nxdn_depermute_rel_u8(bits, reliab, 144U, PERM_16_9, deperm, deperm_rel);
+    nxdn_depuncture_16_9_rel(deperm, deperm_rel, depunc, depunc_rel);
 
-    uint8_t temp[200];
-    uint8_t s0, s1, r0, r1;
     uint8_t m_data[20];
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    for (int i = 0; i < 192; i++) {
-        temp[i] = depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (int i = 0; i < 96; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-        r0 = depunc_rel[((size_t)2 * i)];
-        r1 = depunc_rel[((size_t)2 * i) + 1];
-        CNXDNConvolution_decode_soft(s0, s1, r0, r1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 92);
-
-    for (int i = 0; i < 12; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 92);
+    nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
 
     crc = crc12f(trellis_buf, 84);
-    for (int i = 0; i < 12; i++) {
-        check = check << 1;
-        check = check | trellis_buf[84 + i];
-    }
+    check = nxdn_bits_to_u16(trellis_buf + 84, 12);
 
     if (crc != check) {
-        memset(trellis_buf, 0, sizeof(trellis_buf));
-        memset(m_data, 0, sizeof(m_data));
-        trellis_decode(trellis_buf, depunc, 92);
-        for (int i = 0; i < 12; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-        }
+        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
         crc = crc12f(trellis_buf, 84);
-        check = 0;
-        for (int i = 0; i < 12; i++) {
-            check = check << 1;
-            check = check | trellis_buf[i + 84];
-        }
+        check = nxdn_bits_to_u16(trellis_buf + 84, 12);
     }
 
-    if (crc == check) {
-        char csm_alias[32];
-        memset(csm_alias, 0, sizeof(csm_alias));
-        uint8_t opcode = (uint8_t)ConvertBitIntoBytes(&trellis_buf[0], 8);
-        uint8_t gi = trellis_buf[16];
-        uint16_t source = (uint16_t)ConvertBitIntoBytes(&trellis_buf[24], 16);
-        uint16_t target = (uint16_t)ConvertBitIntoBytes(&trellis_buf[40], 16);
-        // LICH 0x08 spans SB0/PDU/End; only SB0 (Call) may carry CSM alias digits.
-        int is_dcr_sb0 = (lich == 0x08U) && nxdn_dcr_is_sb0_message_type(state->nxdn_dcr_sf_message_type);
-
-        if (is_dcr_sb0) {
-            if (nxdn_dcr_decode_csm_alias(trellis_buf, csm_alias, sizeof(csm_alias))) {
-                fprintf(stderr, "\n Call Sign Memory: %s; ", csm_alias + 4);
-                snprintf(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", csm_alias);
-                if (state->event_history_s != NULL) {
-                    snprintf(state->event_history_s[0].Event_History_Items[0].alias,
-                             sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", csm_alias);
-                }
-            } else if (opts->payload == 1) {
-                fprintf(stderr, "\n Call Sign Memory: decode error; ");
-            }
-        } else {
-            if (opcode == 0x0F) {
-                fprintf(stderr, "\n ");
-                fprintf(stderr, "Source: %d; Target: %d; ", source, target);
-                if (gi) {
-                    fprintf(stderr, "Private; ");
-                } else {
-                    fprintf(stderr, "Group; ");
-                }
-                fprintf(stderr, "Data Preamble; ");
-                uint8_t countdown = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
-                fprintf(stderr, "Countdown: %d; ", countdown);
-            }
-
-            if (opcode == 0x32) {
-                fprintf(stderr, "\n ");
-                fprintf(stderr, "Source: %d; Target: %d; ", source, target);
-                if (gi) {
-                    fprintf(stderr, "Private; ");
-                } else {
-                    fprintf(stderr, "Group; ");
-                }
-                fprintf(stderr, "Precoded Message; ");
-                uint8_t idx = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
-                fprintf(stderr, "Index#: %d;", idx);
-            }
-        }
-    } else if (opts->payload == 0) {
-        fprintf(stderr, "\n ");
-        fprintf(stderr, "%s", KRED);
-        if (lich == 0x08) {
-            fprintf(stderr, "PICH (CRC ERR)");
-        } else {
-            fprintf(stderr, "TCH (CRC ERR)");
-        }
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    if (opts->payload == 1) {
-        fprintf(stderr, "\n");
-        if (lich == 0x08) {
-            fprintf(stderr, " PICH Payload ");
-        } else {
-            fprintf(stderr, " TCH Payload ");
-        }
-        for (int i = 0; i < 12; i++) {
-            fprintf(stderr, "[%02X]", m_data[i]);
-        }
-        if (crc != check) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
-        }
-    }
-
-    UNUSED(state);
+    nxdn_handle_pich_tch(opts, state, trellis_buf, m_data, crc, check, lich);
 }
 
 /*
@@ -3118,165 +2142,11 @@ nxdn_deperm_pich_tch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], c
 void
 nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
                               uint8_t type) {
-    uint8_t deperm[144];
-    uint8_t deperm_rel[144];
-    uint8_t depunc[192];
-    uint8_t depunc_rel[192];
-    uint8_t trellis_buf[96];
-    uint8_t f3_udch2[288];
-    uint8_t f3_udch2_bytes[36];
-    uint16_t crc[2];
-    uint16_t check[2];
-    int out;
-
-    uint8_t temp[192];
-    uint8_t s0, s1, r0, r1;
-    uint8_t m_data[12];
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
-    memset(trellis_buf, 0, sizeof(trellis_buf));
-    memset(deperm, 0, sizeof(deperm));
-    memset(deperm_rel, 255, sizeof(deperm_rel));
-    memset(depunc, 0, sizeof(depunc));
-    memset(depunc_rel, 255, sizeof(depunc_rel));
-    memset(crc, 0, sizeof(crc));
-    memset(check, 0, sizeof(check));
-    memset(f3_udch2, 0, sizeof(f3_udch2));
-    memset(f3_udch2_bytes, 0, sizeof(f3_udch2_bytes));
-
-    for (int j = 0; j < 2; j++) {
-        // Deperm with reliability (144-bit block)
-        for (int i = 0; i < 144; i++) {
-            deperm[PERM_16_9[i]] = bits[i + (j * 144)];
-            deperm_rel[PERM_16_9[i]] = reliab[i + (j * 144)];
-        }
-        // Depuncture with reliability
-        out = 0;
-        for (int i = 0; i < 144; i += 3) {
-            depunc[out] = deperm[i + 0];
-            depunc_rel[out++] = deperm_rel[i + 0];
-            depunc[out] = 0;
-            depunc_rel[out++] = 0; // Punctured: zero reliability
-            depunc[out] = deperm[i + 1];
-            depunc_rel[out++] = deperm_rel[i + 1];
-            depunc[out] = deperm[i + 2];
-            depunc_rel[out++] = deperm_rel[i + 2];
-        }
-
-        for (int i = 0; i < 192; i++) {
-            temp[i] = depunc[i] << 1;
-        }
-
-        // Try soft-decision decode first
-        CNXDNConvolution_start();
-        for (int i = 0; i < 96; i++) {
-            s0 = temp[((size_t)2 * i)];
-            s1 = temp[((size_t)2 * i) + 1];
-            r0 = depunc_rel[((size_t)2 * i)];
-            r1 = depunc_rel[((size_t)2 * i) + 1];
-            CNXDNConvolution_decode_soft(s0, s1, r0, r1);
-        }
-
-        CNXDNConvolution_chainback(m_data, 92);
-
-        for (int i = 0; i < 12; i++) {
-            trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-            trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-            trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-            trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-            trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-            trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-            trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-            trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-        }
-
-        crc[j] = crc12f(trellis_buf, 84);
-        for (int i = 0; i < 12; i++) {
-            check[j] = check[j] << 1;
-            check[j] = check[j] | trellis_buf[84 + i];
-        }
-
-        // Fall back to hard-decision if soft decode fails CRC
-        if (crc[j] != check[j]) {
-            crc[j] = 1;
-            check[j] = 0;
-            memset(trellis_buf, 0, sizeof(trellis_buf));
-            memset(m_data, 0, sizeof(m_data));
-            trellis_decode(trellis_buf, depunc, 92);
-            for (int i = 0; i < 12; i++) {
-                m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
-            }
-            crc[j] = crc12f(trellis_buf, 84);
-            for (int i = 0; i < 12; i++) {
-                check[j] = check[j] << 1;
-                check[j] = check[j] | trellis_buf[i + 84];
-            }
-        }
-
-        // Transfer to storage sans crc and tail bits
-        for (int i = 0; i < 80; i++) {
-            f3_udch2[i + (j * 80)] = trellis_buf[i];
-        }
-        for (int i = 0; i < 12; i++) {
-            f3_udch2_bytes[i + (j * 12)] = m_data[i];
-        }
+    struct nxdn_facch3_udch2_message message;
+    DSD_MEMSET(&message, 0, sizeof(message));
+    for (size_t block = 0; block < 2U; block++) {
+        nxdn_decode_facch3_udch2_block_soft(bits, reliab, block, &message);
     }
 
-    fprintf(stderr, "%s", KYEL);
-    if (type == 0) {
-        fprintf(stderr, " UDCH2");
-    }
-    if (type == 1) {
-        fprintf(stderr, " FACCH3");
-    }
-    fprintf(stderr, "%s", KNRM);
-
-    if (crc[0] == check[0] && crc[1] == check[1]) {
-        state->data_header_format[0] = 1;
-        NXDN_Elements_Content_decode(opts, state, 1, f3_udch2, (size_t)(80 * 2));
-    }
-
-    if (type == 0) {
-        fprintf(stderr, "\n UDCH2 Data: ");
-        for (int i = 0; i < 22; i++) {
-            if (i == 10) {
-                fprintf(stderr, " ");
-                i = 12;
-            }
-            fprintf(stderr, "%02X", f3_udch2_bytes[i]);
-        }
-        if (crc[0] != check[0] || crc[1] != check[1]) {
-            fprintf(stderr, "%s", KRED);
-            if (crc[0] != check[0]) {
-                fprintf(stderr, " (CRC ERR P0)");
-            }
-            if (crc[1] != check[1]) {
-                fprintf(stderr, " (CRC ERR P1)");
-            }
-            fprintf(stderr, "%s", KNRM);
-        }
-    }
-
-    if (opts->payload == 1) {
-        fprintf(stderr, "\n");
-        if (type == 0) {
-            fprintf(stderr, " UDCH2");
-        }
-        if (type == 1) {
-            fprintf(stderr, " FACCH3");
-        }
-        fprintf(stderr, " Payload\n  ");
-        for (int i = 0; i < 22; i++) {
-            if (i == 10) {
-                fprintf(stderr, "\n  ");
-                i = 12;
-            }
-            fprintf(stderr, "[%02X]", f3_udch2_bytes[i]);
-        }
-        if (crc[0] != check[0] || crc[1] != check[1]) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " (CRC ERR)");
-            fprintf(stderr, "%s", KNRM);
-        }
-    }
+    nxdn_handle_facch3_udch2_soft(opts, state, &message, type);
 }

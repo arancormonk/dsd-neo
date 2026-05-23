@@ -14,7 +14,8 @@
  * puncture patterns) used by the M17 encoder/decoder.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_M17_M17_TABLES_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_M17_M17_TABLES_H_
 
 #include <stdint.h>
 
@@ -35,3 +36,5 @@ extern const uint8_t p3[62];
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_M17_M17_TABLES_H_ */

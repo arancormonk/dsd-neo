@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_TCP_QUALITY_METRICS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_TCP_QUALITY_METRICS_H_
 
 /**
  * @file
@@ -143,3 +144,5 @@ struct tcp_quality_snapshot tcp_metrics_get_snapshot(const struct tcp_quality_me
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_TCP_QUALITY_METRICS_H_ */

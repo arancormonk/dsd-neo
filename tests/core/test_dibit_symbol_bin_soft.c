@@ -10,19 +10,22 @@
 #include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/runtime/config.h>
-#include <fcntl.h> // IWYU pragma: keep
-
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 static int g_next_dibit;
 
 float
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     (void)opts;
     (void)have_sync;
@@ -38,21 +41,25 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 }
 
 uint64_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_time_monotonic_ns(void) {
     return 0;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_sleep_ms(unsigned int ms) {
     (void)ms;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_sleep_ns(uint64_t ns) {
     (void)ns;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_sleep_us(uint64_t us) {
     (void)us;
 }
@@ -120,11 +127,11 @@ static int
 test_symbol_bin_soft_matches_returned_dibit(int dibit) {
     dsd_opts opts;
     dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     if (!init_state_buffers(&state)) {
-        fprintf(stderr, "failed to allocate state buffers\n");
+        DSD_FPRINTF(stderr, "failed to allocate state buffers\n");
         return 1;
     }
 
@@ -142,30 +149,31 @@ test_symbol_bin_soft_matches_returned_dibit(int dibit) {
     g_next_dibit = dibit;
 
     dsd_dibit_soft_t soft;
-    memset(&soft, 0, sizeof(soft));
+    DSD_MEMSET(&soft, 0, sizeof(soft));
     int got = getDibitSoft(&opts, &state, &soft);
 
     int rc = 0;
     if (got != dibit) {
-        fprintf(stderr, "dibit %d: got returned dibit %d\n", dibit, got);
+        DSD_FPRINTF(stderr, "dibit %d: got returned dibit %d\n", dibit, got);
         rc = 1;
     }
     if (!llr_matches_bit(soft.llr[0], (dibit >> 1) & 1) || !llr_matches_bit(soft.llr[1], dibit & 1)) {
-        fprintf(stderr, "dibit %d: soft signs do not match returned dibit (%d,%d)\n", dibit, soft.llr[0], soft.llr[1]);
+        DSD_FPRINTF(stderr, "dibit %d: soft signs do not match returned dibit (%d,%d)\n", dibit, soft.llr[0],
+                    soft.llr[1]);
         rc = 1;
     }
     if (soft.reliability != 255) {
-        fprintf(stderr, "dibit %d: expected symbol-bin reliability 255, got %u\n", dibit, soft.reliability);
+        DSD_FPRINTF(stderr, "dibit %d: expected symbol-bin reliability 255, got %u\n", dibit, soft.reliability);
         rc = 1;
     }
     if (state.dmr_reliab_p[-1] != 255) {
-        fprintf(stderr, "dibit %d: previous reliability buffer was not rebuilt\n", dibit);
+        DSD_FPRINTF(stderr, "dibit %d: previous reliability buffer was not rebuilt\n", dibit);
         rc = 1;
     }
 
     const dsd_dibit_soft_t previous = state.dmr_soft_p[-1];
     if (previous.llr[0] != soft.llr[0] || previous.llr[1] != soft.llr[1] || previous.reliability != soft.reliability) {
-        fprintf(stderr, "dibit %d: previous soft buffer does not match returned soft metric\n", dibit);
+        DSD_FPRINTF(stderr, "dibit %d: previous soft buffer does not match returned soft metric\n", dibit);
         rc = 1;
     }
 
@@ -176,7 +184,7 @@ test_symbol_bin_soft_matches_returned_dibit(int dibit) {
 static int
 seek_start(FILE* f, const char* label) {
     if (fseek(f, 0L, SEEK_SET) != 0) {
-        fprintf(stderr, "%s seek failed\n", label);
+        DSD_FPRINTF(stderr, "%s seek failed\n", label);
         return 1;
     }
     return 0;
@@ -186,17 +194,17 @@ static int
 test_soft_symbol_capture_record(void) {
     dsd_opts opts;
     dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     if (!init_state_buffers(&state)) {
-        fprintf(stderr, "failed to allocate state buffers\n");
+        DSD_FPRINTF(stderr, "failed to allocate state buffers\n");
         return 1;
     }
 
     FILE* f = tmpfile();
     if (f == NULL) {
-        fprintf(stderr, "tmpfile failed\n");
+        DSD_FPRINTF(stderr, "tmpfile failed\n");
         free_state_buffers(&state);
         return 1;
     }
@@ -215,7 +223,7 @@ test_soft_symbol_capture_record(void) {
 
     g_next_dibit = 2;
     dsd_dibit_soft_t soft;
-    memset(&soft, 0, sizeof(soft));
+    DSD_MEMSET(&soft, 0, sizeof(soft));
     int got = getDibitSoft(&opts, &state, &soft);
 
     unsigned char rec[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
@@ -227,13 +235,13 @@ test_soft_symbol_capture_record(void) {
 
     int rc = 0;
     if (got != 2 || n != sizeof(rec)) {
-        fprintf(stderr, "soft capture record missing got=%d bytes=%zu\n", got, n);
+        DSD_FPRINTF(stderr, "soft capture record missing got=%d bytes=%zu\n", got, n);
         rc = 1;
     } else if (rec[0] != 2 || rec[1] != 255) {
-        fprintf(stderr, "soft capture record dibit/reliability mismatch %u/%u\n", rec[0], rec[1]);
+        DSD_FPRINTF(stderr, "soft capture record dibit/reliability mismatch %u/%u\n", rec[0], rec[1]);
         rc = 1;
     } else if (state.symbol_capture_soft_records != 1) {
-        fprintf(stderr, "soft capture counter mismatch %u\n", state.symbol_capture_soft_records);
+        DSD_FPRINTF(stderr, "soft capture counter mismatch %u\n", state.symbol_capture_soft_records);
         rc = 1;
     }
 
@@ -245,11 +253,11 @@ static int
 test_symbol_replay_soft_metric_overrides_fallback(void) {
     dsd_opts opts;
     dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     if (!init_state_buffers(&state)) {
-        fprintf(stderr, "failed to allocate state buffers\n");
+        DSD_FPRINTF(stderr, "failed to allocate state buffers\n");
         return 1;
     }
 
@@ -265,19 +273,19 @@ test_symbol_replay_soft_metric_overrides_fallback(void) {
     g_next_dibit = 1;
 
     dsd_dibit_soft_t soft;
-    memset(&soft, 0, sizeof(soft));
+    DSD_MEMSET(&soft, 0, sizeof(soft));
     int got = getDibitSoft(&opts, &state, &soft);
 
     int rc = 0;
     if (got != 1) {
-        fprintf(stderr, "soft replay override: got returned dibit %d\n", got);
+        DSD_FPRINTF(stderr, "soft replay override: got returned dibit %d\n", got);
         rc = 1;
     } else if (soft.reliability != 17 || soft.llr[0] != 123 || soft.llr[1] != -456) {
-        fprintf(stderr, "soft replay override mismatch rel=%u llr=(%d,%d)\n", soft.reliability, soft.llr[0],
-                soft.llr[1]);
+        DSD_FPRINTF(stderr, "soft replay override mismatch rel=%u llr=(%d,%d)\n", soft.reliability, soft.llr[0],
+                    soft.llr[1]);
         rc = 1;
     } else if (state.symbol_replay_has_soft != 0) {
-        fprintf(stderr, "soft replay override flag was not consumed\n");
+        DSD_FPRINTF(stderr, "soft replay override flag was not consumed\n");
         rc = 1;
     }
 
@@ -289,17 +297,17 @@ static int
 test_direct_symbol_capture_writer_formats(void) {
     dsd_opts opts;
     dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     if (!init_state_buffers(&state)) {
-        fprintf(stderr, "failed to allocate state buffers\n");
+        DSD_FPRINTF(stderr, "failed to allocate state buffers\n");
         return 1;
     }
 
     FILE* f = tmpfile();
     if (f == NULL) {
-        fprintf(stderr, "tmpfile failed\n");
+        DSD_FPRINTF(stderr, "tmpfile failed\n");
         free_state_buffers(&state);
         return 1;
     }
@@ -319,19 +327,19 @@ test_direct_symbol_capture_writer_formats(void) {
 
     int rc = 0;
     if (n != sizeof(rec)) {
-        fprintf(stderr, "direct soft capture record missing bytes=%zu\n", n);
+        DSD_FPRINTF(stderr, "direct soft capture record missing bytes=%zu\n", n);
         rc = 1;
     } else if (rec[0] != 3 || rec[1] != 255) {
-        fprintf(stderr, "direct soft capture record mismatch dibit=%u reliability=%u\n", rec[0], rec[1]);
+        DSD_FPRINTF(stderr, "direct soft capture record mismatch dibit=%u reliability=%u\n", rec[0], rec[1]);
         rc = 1;
     } else if (state.symbol_capture_soft_records != 1) {
-        fprintf(stderr, "direct soft capture counter mismatch %u\n", state.symbol_capture_soft_records);
+        DSD_FPRINTF(stderr, "direct soft capture counter mismatch %u\n", state.symbol_capture_soft_records);
         rc = 1;
     }
 
     f = tmpfile();
     if (f == NULL) {
-        fprintf(stderr, "tmpfile failed\n");
+        DSD_FPRINTF(stderr, "tmpfile failed\n");
         free_state_buffers(&state);
         return 1;
     }
@@ -344,10 +352,10 @@ test_direct_symbol_capture_writer_formats(void) {
     }
     fclose(f);
     if (c != 0xFF) {
-        fprintf(stderr, "legacy capture byte mismatch %d\n", c);
+        DSD_FPRINTF(stderr, "legacy capture byte mismatch %d\n", c);
         rc = 1;
     } else if (state.symbol_capture_soft_records != 1) {
-        fprintf(stderr, "legacy capture changed soft counter %u\n", state.symbol_capture_soft_records);
+        DSD_FPRINTF(stderr, "legacy capture changed soft counter %u\n", state.symbol_capture_soft_records);
         rc = 1;
     }
 
@@ -366,3 +374,7 @@ main(void) {
     rc |= test_direct_symbol_capture_writer_formats();
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

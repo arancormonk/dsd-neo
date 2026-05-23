@@ -19,9 +19,8 @@
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 enum {
@@ -115,8 +114,57 @@ p25_iden_slot_is_ambiguous(const dsd_state* state, int iden) {
     return state->p25_iden_fdma[iden].populated && state->p25_iden_tdma[iden].populated;
 }
 
+static int
+p25_chan16_valid(uint16_t chan16) {
+    return chan16 != 0U && chan16 != 0xFFFFU;
+}
+
+static int
+p25_iden_valid(int iden) {
+    return iden >= 0 && iden <= 15;
+}
+
+static int
+p25_channel_tdma_denom(const dsd_opts* opts, const dsd_state* state, int iden, int mode, int use_tdma_denom, int type,
+                       int* out_denom) {
+    int denom = 1;
+    if (use_tdma_denom) {
+        if (type < 0 || type > 15) {
+            DSD_FPRINTF(stderr, "\n  P25 FREQ: unknown iden type %d (iden %d)", type, iden);
+            return 0;
+        }
+        denom = p25_channel_type_slots_per_carrier(type);
+        if (denom <= 0) {
+            DSD_FPRINTF(stderr, "\n  P25 FREQ: invalid slots/carrier for type %d", type);
+            return 0;
+        }
+    } else if (mode == P25_FREQ_MODE_AUTO && state->p25_chan_tdma_explicit[iden] == 0 && state->p25_sys_is_tdma == 1) {
+        denom = 2;
+        if (opts && opts->verbose > 1) {
+            DSD_FPRINTF(stderr, "\n  P25 FREQ: iden %d tdma unknown; fallback denom=2 (P2 CC)", iden);
+        }
+    }
+    *out_denom = denom;
+    return 1;
+}
+
+static int
+p25_channel_cached_freq(const dsd_state* state, uint16_t chan16, int ambiguous, long int* out_freq) {
+    if (ambiguous || state->trunk_chan_map[chan16] == 0) {
+        return 0;
+    }
+    *out_freq = state->trunk_chan_map[chan16];
+    DSD_FPRINTF(stderr, "\n  P25 FREQ: map ch=0x%04X -> %.6lf MHz", chan16, (double)(*out_freq) / 1000000.0);
+    return 1;
+}
+
+static int
+p25_iden_entry_ready(const p25_iden_entry_t* entry) {
+    return entry->populated && entry->base_freq != 0 && entry->chan_spac != 0;
+}
+
 static long int
-p25_channel_to_freq_impl(dsd_opts* opts, dsd_state* state, int channel, int mode) {
+p25_channel_to_freq_impl(const dsd_opts* opts, dsd_state* state, int channel, int mode) {
 
     //RX and SU TX frequencies.
     //SU RX = (Base Frequency) + (Channel Number) x (Channel Spacing).
@@ -132,10 +180,7 @@ p25_channel_to_freq_impl(dsd_opts* opts, dsd_state* state, int channel, int mode
     uint16_t chan16 = (uint16_t)channel;
 
     //return 0 if channel value is 0 or 0xFFFF
-    if (chan16 == 0) {
-        return 0;
-    }
-    if (chan16 == 0xFFFF) {
+    if (!p25_chan16_valid(chan16)) {
         return 0;
     }
 
@@ -143,8 +188,8 @@ p25_channel_to_freq_impl(dsd_opts* opts, dsd_state* state, int channel, int mode
 
     long int freq = 0;
     int iden = (chan16 >> 12) & 0xF;
-    if (iden < 0 || iden > 15) {
-        fprintf(stderr, "\n  P25 FREQ: invalid iden %d", iden);
+    if (!p25_iden_valid(iden)) {
+        DSD_FPRINTF(stderr, "\n  P25 FREQ: invalid iden %d", iden);
         return 0;
     }
 
@@ -152,61 +197,48 @@ p25_channel_to_freq_impl(dsd_opts* opts, dsd_state* state, int channel, int mode
     const p25_iden_entry_t* entry = p25_select_iden_entry(state, iden, mode, &use_tdma_denom);
     int type = entry->chan_type & 0xF;
 
-    // Compute the denominator (slots-per-carrier) for TDMA channels.
     int denom = 1;
-    if (use_tdma_denom) {
-        if (type < 0 || type > 15) {
-            fprintf(stderr, "\n  P25 FREQ: unknown iden type %d (iden %d)", type, iden);
-            return 0;
-        }
-        denom = p25_channel_type_slots_per_carrier(type);
-        if (denom <= 0) {
-            fprintf(stderr, "\n  P25 FREQ: invalid slots/carrier for type %d", type);
-            return 0;
-        }
-    } else if (mode == P25_FREQ_MODE_AUTO && state->p25_chan_tdma_explicit[iden] == 0 && state->p25_sys_is_tdma == 1) {
-        // Fallback: if the system is known to carry Phase 2 (TDMA) voice but
-        // we have not yet seen an IDEN_UP_TDMA for this iden, assume 2
-        // slots/carrier. This avoids early mis-tunes where a TDMA grant
-        // arrives before the IDEN table is populated, which would otherwise be
-        // treated as FDMA (denom=1).
-        denom = 2;
-        if (opts && opts->verbose > 1) {
-            fprintf(stderr, "\n  P25 FREQ: iden %d tdma unknown; fallback denom=2 (P2 CC)", iden);
-        }
+    if (!p25_channel_tdma_denom(opts, state, iden, mode, use_tdma_denom, type, &denom)) {
+        return 0;
     }
     int step = (chan16 & 0xFFF) / denom;
 
-    // A mode-ambiguous IDEN slot can map the same 16-bit channel through two
-    // different formulas. Do not let the one-dimensional learned map hide the
-    // selected FDMA/TDMA entry in that case.
     int ambiguous = p25_iden_slot_is_ambiguous(state, iden);
-    if (!ambiguous && state->trunk_chan_map[chan16] != 0) {
-        freq = state->trunk_chan_map[chan16];
-        fprintf(stderr, "\n  P25 FREQ: map ch=0x%04X -> %.6lf MHz", chan16, (double)freq / 1000000.0);
+    if (p25_channel_cached_freq(state, chan16, ambiguous, &freq)) {
         return freq;
     }
 
-    if (!entry->populated || entry->base_freq == 0 || entry->chan_spac == 0) {
-        fprintf(stderr, "\n  P25 FREQ: missing iden %d params (populated=%d, base=%ld, spac=%d); refusing tune", iden,
-                entry->populated, entry->base_freq, entry->chan_spac);
+    if (!p25_iden_entry_ready(entry)) {
+        DSD_FPRINTF(stderr, "\n  P25 FREQ: missing iden %d params (populated=%d, base=%ld, spac=%d); refusing tune",
+                    iden, entry->populated, entry->base_freq, entry->chan_spac);
         return 0;
     }
 
     long base = entry->base_freq;
     long spac = entry->chan_spac;
     freq = (base * 5) + (step * spac * 125);
-    fprintf(stderr, "\n  P25 FREQ: iden=%d type=%d ch=0x%04X -> %.6lf MHz", iden, type, chan16,
-            (double)freq / 1000000.0);
+    DSD_FPRINTF(stderr, "\n  P25 FREQ: iden=%d type=%d ch=0x%04X -> %.6lf MHz", iden, type, chan16,
+                (double)freq / 1000000.0);
     if (opts && opts->verbose > 1) {
-        fprintf(stderr, " (base5=%ldHz spac125=%ldHz denom=%d step=%d)", base * 5L, spac * 125L, denom, step);
+        DSD_FPRINTF(stderr, " (base5=%ldHz spac125=%ldHz denom=%d step=%d)", base * 5L, spac * 125L, denom, step);
     }
-    // Persist learned mapping only when the 16-bit channel key is not shared
-    // by two populated modulation tables.
     if (freq != 0 && !ambiguous) {
         dsd_state_set_trunk_chan_freq(state, chan16, freq);
     }
     return freq;
+}
+
+static void
+p25_promote_iden_if_site_match(const dsd_state* state, p25_iden_entry_t* entry, unsigned long long cur_wacn,
+                               unsigned long long cur_sys) {
+    if (!entry->populated || entry->trust >= 2 || entry->wacn != cur_wacn || entry->sysid != cur_sys) {
+        return;
+    }
+    int rf_ok = (entry->rfss == 0 || entry->rfss == state->p2_rfssid);
+    int st_ok = (entry->site == 0 || entry->site == state->p2_siteid);
+    if (rf_ok && st_ok) {
+        entry->trust = 2;
+    }
 }
 
 // P25 channel -> frequency mapping
@@ -219,12 +251,12 @@ p25_channel_to_freq_impl(dsd_opts* opts, dsd_state* state, int channel, int mode
 //     step = channel_number / slots_per_carrier[type]
 // - channel types and slots-per-carrier follow sdrtrunk's ChannelType mapping.
 long int
-process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
+process_channel_to_freq(const dsd_opts* opts, dsd_state* state, int channel) {
     return p25_channel_to_freq_impl(opts, state, channel, P25_FREQ_MODE_AUTO);
 }
 
 long int
-process_channel_to_freq_with_mode(dsd_opts* opts, dsd_state* state, int channel, int prefer_tdma) {
+process_channel_to_freq_with_mode(const dsd_opts* opts, dsd_state* state, int channel, int prefer_tdma) {
     return p25_channel_to_freq_impl(opts, state, channel, prefer_tdma ? P25_FREQ_MODE_TDMA : P25_FREQ_MODE_FDMA);
 }
 
@@ -278,7 +310,7 @@ p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, cha
     // Print only the 12-bit channel index for FDMA to match the Learned list
     // (which commonly shows values like 00A4), and include slot.
     // Display slots as 1-based (S1/S2) to match UI conventions
-    snprintf(out, outsz, " (FDMA %04X S%d)", fdma & 0xFFF, slot + 1);
+    DSD_SNPRINTF(out, outsz, " (FDMA %04X S%d)", fdma & 0xFFF, slot + 1);
 }
 
 void
@@ -291,8 +323,8 @@ p25_reset_iden_tables(dsd_state* state) {
     }
 
     // Reset the dual-array IDEN storage
-    memset(state->p25_iden_fdma, 0, sizeof(state->p25_iden_fdma));
-    memset(state->p25_iden_tdma, 0, sizeof(state->p25_iden_tdma));
+    DSD_MEMSET(state->p25_iden_fdma, 0, sizeof(state->p25_iden_fdma));
+    DSD_MEMSET(state->p25_iden_tdma, 0, sizeof(state->p25_iden_tdma));
 }
 
 // Promote any IDENs whose provenance matches the current site to trusted
@@ -309,24 +341,8 @@ p25_confirm_idens_for_current_site(dsd_state* state) {
 
     // Promote trust in dual-array entries
     for (int i = 0; i < 16; i++) {
-        // Check FDMA entries
-        p25_iden_entry_t* ef = &state->p25_iden_fdma[i];
-        if (ef->populated && ef->trust < 2 && ef->wacn == cur_wacn && ef->sysid == cur_sys) {
-            int rf_ok = (ef->rfss == 0 || ef->rfss == state->p2_rfssid);
-            int st_ok = (ef->site == 0 || ef->site == state->p2_siteid);
-            if (rf_ok && st_ok) {
-                ef->trust = 2;
-            }
-        }
-        // Check TDMA entries
-        p25_iden_entry_t* et = &state->p25_iden_tdma[i];
-        if (et->populated && et->trust < 2 && et->wacn == cur_wacn && et->sysid == cur_sys) {
-            int rf_ok = (et->rfss == 0 || et->rfss == state->p2_rfssid);
-            int st_ok = (et->site == 0 || et->site == state->p2_siteid);
-            if (rf_ok && st_ok) {
-                et->trust = 2;
-            }
-        }
+        p25_promote_iden_if_site_match(state, &state->p25_iden_fdma[i], cur_wacn, cur_sys);
+        p25_promote_iden_if_site_match(state, &state->p25_iden_tdma[i], cur_wacn, cur_sys);
     }
 }
 
@@ -370,8 +386,6 @@ nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
     UNUSED(opts);
 
     long int freq;
-    long int base = 0;
-    long int step = 0;
 
     //reworked to include Direct Frequency Assignment if available
 
@@ -379,12 +393,14 @@ nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
     //unless it has 'system definable' attributes
     if (state->trunk_chan_map[channel] != 0) {
         freq = state->trunk_chan_map[channel];
-        fprintf(stderr, "\n  Frequency [%.6lf] MHz", (double)freq / 1000000);
+        DSD_FPRINTF(stderr, "\n  Frequency [%.6lf] MHz", (double)freq / 1000000);
         return (freq);
     }
 
     //then, let's see if its DFA instead -- 6.5.36
     else if (state->nxdn_rcn == 1) {
+        long int base;
+        long int step;
         //determine the base frequency in Hz
         if (state->nxdn_base_freq == 1) {
             base = 100000000; //100 MHz
@@ -411,21 +427,21 @@ nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
         //6.5.45. Outbound/Inbound Frequency Number (OFN/IFN)
         if (base && step) {
             freq = base + (channel * step);
-            fprintf(stderr, "\n  DFA Frequency [%.6lf] MHz", (double)freq / 1000000);
+            DSD_FPRINTF(stderr, "\n  DFA Frequency [%.6lf] MHz", (double)freq / 1000000);
             // Persist learned mapping for UI visibility and later reuse
             if (freq != 0) {
                 dsd_state_set_trunk_chan_freq(state, channel, freq);
             }
             return (freq);
         } else {
-            fprintf(stderr, "\n    Custom DFA Settings -- Unknown Freq;");
+            DSD_FPRINTF(stderr, "\n    Custom DFA Settings -- Unknown Freq;");
             return (0);
         }
 
     }
 
     else {
-        fprintf(stderr, "\n    Channel not found in import file");
+        DSD_FPRINTF(stderr, "\n    Channel not found in import file");
         return (0);
     }
 }

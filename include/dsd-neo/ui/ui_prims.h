@@ -11,13 +11,12 @@
  * and a gamma LUT for density visualizations.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_UI_PRIMS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_UI_PRIMS_H_
 
-#include <dsd-neo/platform/curses_compat.h>
+#include <curses.h>
 #include <stddef.h>
 #include <time.h>
-
-// `curses_compat.h` provides the `WINDOW` type.
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,3 +54,5 @@ double ui_gamma_map01(double f);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_UI_PRIMS_H_ */

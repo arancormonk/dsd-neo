@@ -57,9 +57,7 @@
  Simon Rockliff, 26th June 1991
  */
 
-#include <math.h>
 #include <stddef.h>
-#include <stdio.h>
 
 template <int TT>
 class ReedSolomon_63 {
@@ -165,8 +163,8 @@ class ReedSolomon_63 {
         return 0;
     }
 
-    int
-    polynomial_degree(const int* poly, int max_degree) const {
+    static int
+    polynomial_degree(const int* poly, int max_degree) {
         for (int i = max_degree; i >= 0; i--) {
             if (poly[i] != 0) {
                 return i;
@@ -306,8 +304,8 @@ class ReedSolomon_63 {
         return count;
     }
 
-    int
-    location_list_contains(const int* locations, int n_locations, int position) const {
+    static int
+    location_list_contains(const int* locations, int n_locations, int position) {
         for (int i = 0; i < n_locations; i++) {
             if (locations[i] == position) {
                 return 1;
@@ -316,8 +314,378 @@ class ReedSolomon_63 {
         return 0;
     }
 
+    struct LegacyDecodeState {
+        int elp[NN - KK + 2][NN - KK];
+        int d[NN - KK + 2];
+        int l[NN - KK + 2];
+        int u_lu[NN - KK + 2];
+        int s[NN - KK + 1];
+        int root[TT];
+        int loc[TT];
+        int z[TT + 1];
+        int err[NN];
+        int reg[TT + 1];
+    };
+
+    static void
+    copy_codeword(const int* src, int* dst) {
+        for (int i = 0; i < NN; i++) {
+            dst[i] = src[i];
+        }
+    }
+
     void
-    generate_gf(int* generator_polinomial)
+    convert_poly_to_index_word(const int* input, int* recd) const {
+        for (int i = 0; i < NN; i++) {
+            recd[i] = index_of[input[i]];
+        }
+    }
+
+    void
+    convert_index_to_poly_word(int* recd) const {
+        for (int i = 0; i < NN; i++) {
+            if (recd[i] != -1) {
+                recd[i] = alpha_to[recd[i]];
+            } else {
+                recd[i] = 0;
+            }
+        }
+    }
+
+    int
+    compute_index_syndromes(const int* recd, int* s) const {
+        int syn_error = 0;
+        s[0] = 0;
+        for (int i = 1; i <= NN - KK; i++) {
+            s[i] = 0;
+            for (int j = 0; j < NN; j++) {
+                if (recd[j] != -1) {
+                    s[i] ^= alpha_to[(recd[j] + i * j) % NN];
+                }
+            }
+            if (s[i] != 0) {
+                syn_error = 1;
+            }
+            s[i] = index_of[s[i]];
+        }
+        return syn_error;
+    }
+
+    static void
+    initialize_berlekamp_state(LegacyDecodeState& state) {
+        state.d[0] = 0;
+        state.d[1] = state.s[1];
+        state.elp[0][0] = 0;
+        state.elp[1][0] = 1;
+        for (int i = 1; i < NN - KK; i++) {
+            state.elp[0][i] = -1;
+            state.elp[1][i] = 0;
+        }
+        state.l[0] = 0;
+        state.l[1] = 0;
+        state.u_lu[0] = -1;
+        state.u_lu[1] = 0;
+    }
+
+    void
+    advance_berlekamp_without_discrepancy(LegacyDecodeState& state, int u) const {
+        state.l[u + 1] = state.l[u];
+        for (int i = 0; i <= state.l[u]; i++) {
+            state.elp[u + 1][i] = state.elp[u][i];
+            state.elp[u][i] = index_of[state.elp[u][i]];
+        }
+    }
+
+    static int
+    select_berlekamp_q(const LegacyDecodeState& state, int u) {
+        int q = u - 1;
+        while ((q > 0) && (state.d[q] == -1)) {
+            q--;
+        }
+        if (q > 0) {
+            for (int j = q - 1; j > 0; j--) {
+                if ((state.d[j] != -1) && (state.u_lu[q] < state.u_lu[j])) {
+                    q = j;
+                }
+            }
+        }
+        return q;
+    }
+
+    void
+    update_berlekamp_with_discrepancy(LegacyDecodeState& state, int u, int q) const {
+        if (state.l[u] > state.l[q] + u - q) {
+            state.l[u + 1] = state.l[u];
+        } else {
+            state.l[u + 1] = state.l[q] + u - q;
+        }
+
+        for (int i = 0; i < NN - KK; i++) {
+            state.elp[u + 1][i] = 0;
+        }
+        for (int i = 0; i <= state.l[q]; i++) {
+            if (state.elp[q][i] != -1) {
+                state.elp[u + 1][i + u - q] = alpha_to[(state.d[u] + NN - state.d[q] + state.elp[q][i]) % NN];
+            }
+        }
+        for (int i = 0; i <= state.l[u]; i++) {
+            state.elp[u + 1][i] ^= state.elp[u][i];
+            state.elp[u][i] = index_of[state.elp[u][i]];
+        }
+    }
+
+    void
+    compute_next_discrepancy(LegacyDecodeState& state, int u) const {
+        if (state.s[u + 1] != -1) {
+            state.d[u + 1] = alpha_to[state.s[u + 1]];
+        } else {
+            state.d[u + 1] = 0;
+        }
+        for (int i = 1; i <= state.l[u + 1]; i++) {
+            if ((state.s[u + 1 - i] != -1) && (state.elp[u + 1][i] != 0)) {
+                state.d[u + 1] ^= alpha_to[(state.s[u + 1 - i] + index_of[state.elp[u + 1][i]]) % NN];
+            }
+        }
+        state.d[u + 1] = index_of[state.d[u + 1]];
+    }
+
+    int
+    run_berlekamp_iterations(LegacyDecodeState& state) const {
+        int u = 0;
+        do {
+            u++;
+            if (state.d[u] == -1) {
+                advance_berlekamp_without_discrepancy(state, u);
+            } else {
+                int q = select_berlekamp_q(state, u);
+                update_berlekamp_with_discrepancy(state, u, q);
+            }
+            state.u_lu[u + 1] = u - state.l[u + 1];
+            if (u < NN - KK) {
+                compute_next_discrepancy(state, u);
+            }
+        } while ((u < NN - KK) && (state.l[u + 1] <= TT));
+        return u + 1;
+    }
+
+    int
+    find_decode_roots(const int* locator, int degree, int* reg, int* root, int* loc) const {
+        for (int i = 1; i <= degree; i++) {
+            reg[i] = locator[i];
+        }
+
+        int count = 0;
+        for (int i = 1; i <= NN; i++) {
+            int q = 1;
+            for (int j = 1; j <= degree; j++) {
+                if (reg[j] != -1) {
+                    reg[j] = (reg[j] + j) % NN;
+                    q ^= alpha_to[reg[j]];
+                }
+            }
+            if (!q) {
+                root[count] = i;
+                loc[count] = NN - i;
+                count++;
+            }
+        }
+        return count;
+    }
+
+    void
+    build_error_evaluator(const int* s, const int* locator, int degree, int* z) const {
+        for (int i = 1; i <= degree; i++) {
+            if ((s[i] != -1) && (locator[i] != -1)) {
+                z[i] = alpha_to[s[i]] ^ alpha_to[locator[i]];
+            } else if ((s[i] != -1) && (locator[i] == -1)) {
+                z[i] = alpha_to[s[i]];
+            } else if ((s[i] == -1) && (locator[i] != -1)) {
+                z[i] = alpha_to[locator[i]];
+            } else {
+                z[i] = 0;
+            }
+            for (int j = 1; j < i; j++) {
+                if ((s[j] != -1) && (locator[i - j] != -1)) {
+                    z[i] ^= alpha_to[(locator[i - j] + s[j]) % NN];
+                }
+            }
+            z[i] = index_of[z[i]];
+        }
+    }
+
+    void
+    prepare_decode_corrections(int* recd, int* err) const {
+        for (int i = 0; i < NN; i++) {
+            err[i] = 0;
+            if (recd[i] != -1) {
+                recd[i] = alpha_to[recd[i]];
+            } else {
+                recd[i] = 0;
+            }
+        }
+    }
+
+    int
+    compute_error_numerator(int root_value, int degree, const int* z) const {
+        int numerator = 1;
+        for (int j = 1; j <= degree; j++) {
+            if (z[j] != -1) {
+                numerator ^= alpha_to[(z[j] + j * root_value) % NN];
+            }
+        }
+        return numerator;
+    }
+
+    int
+    compute_error_denominator_exponent(int root_index, int degree, const int* root, const int* loc) const {
+        int denominator = 0;
+        for (int j = 0; j < degree; j++) {
+            if (j != root_index) {
+                denominator += index_of[1 ^ alpha_to[(loc[j] + root[root_index]) % NN]];
+            }
+        }
+        return denominator % NN;
+    }
+
+    void
+    apply_decode_corrections(int* recd, int degree, const int* root, const int* loc, const int* z, int* err) const {
+        for (int i = 0; i < degree; i++) {
+            int numerator = compute_error_numerator(root[i], degree, z);
+            err[loc[i]] = numerator;
+            if (numerator != 0) {
+                err[loc[i]] = index_of[numerator];
+                int denominator = compute_error_denominator_exponent(i, degree, root, loc);
+                err[loc[i]] = alpha_to[(err[loc[i]] - denominator + NN) % NN];
+                recd[loc[i]] ^= err[loc[i]];
+            }
+        }
+    }
+
+    int
+    run_legacy_decode(int* recd, LegacyDecodeState& state) const {
+        initialize_berlekamp_state(state);
+        int u = run_berlekamp_iterations(state);
+        if (state.l[u] > TT) {
+            return 1;
+        }
+
+        for (int i = 0; i <= state.l[u]; i++) {
+            state.elp[u][i] = index_of[state.elp[u][i]];
+        }
+        int count = find_decode_roots(state.elp[u], state.l[u], state.reg, state.root, state.loc);
+        if (count != state.l[u]) {
+            return 1;
+        }
+
+        build_error_evaluator(state.s, state.elp[u], state.l[u], state.z);
+        prepare_decode_corrections(recd, state.err);
+        apply_decode_corrections(recd, state.l[u], state.root, state.loc, state.z, state.err);
+        return 0;
+    }
+
+    static int
+    validate_erasures(const int* erasures, int n_erasures) {
+        int seen[NN];
+        for (int i = 0; i < NN; i++) {
+            seen[i] = 0;
+        }
+        for (int i = 0; i < n_erasures; i++) {
+            int pos = erasures[i];
+            if ((pos < 0) || (pos >= NN) || seen[pos]) {
+                return 1;
+            }
+            seen[pos] = 1;
+        }
+        return 0;
+    }
+
+    static void
+    clear_augmented_matrix(int matrix[NN - KK][NN - KK + 1]) {
+        for (int row = 0; row < NN - KK; row++) {
+            for (int col = 0; col < NN - KK + 1; col++) {
+                matrix[row][col] = 0;
+            }
+        }
+    }
+
+    void
+    build_erasures_matrix(const int* locations, int n_locations, const int* syndromes,
+                          int matrix[NN - KK][NN - KK + 1]) const {
+        for (int row = 0; row < n_locations; row++) {
+            int syndrome_order = row + 1;
+            for (int col = 0; col < n_locations; col++) {
+                matrix[row][col] = gf_alpha_pow(syndrome_order * locations[col]);
+            }
+            matrix[row][n_locations] = syndromes[syndrome_order];
+        }
+    }
+
+    int
+    run_decode_with_erasures(int* output, const int* erasures, int n_erasures) const {
+        int syndromes[NN - KK + 1];
+        if (!compute_syndromes(output, syndromes)) {
+            return 0;
+        }
+
+        int erasure_locator[NN - KK + 1];
+        build_erasure_locator(erasures, n_erasures, erasure_locator);
+
+        int modified_syndromes[NN - KK];
+        compute_modified_syndromes(syndromes, erasure_locator, n_erasures, modified_syndromes);
+
+        int unknown_locator[NN - KK + 1];
+        int unknown_degree = 0;
+        if (berlekamp_massey(modified_syndromes + n_erasures, (NN - KK) - n_erasures, unknown_locator, &unknown_degree)
+            != 0) {
+            return 1;
+        }
+        if ((2 * unknown_degree) + n_erasures > NN - KK) {
+            return 1;
+        }
+
+        int combined_locator[NN - KK + 1];
+        int erasure_degree = polynomial_degree(erasure_locator, NN - KK);
+        if (multiply_locator_polynomials(erasure_locator, erasure_degree, unknown_locator, unknown_degree,
+                                         combined_locator)
+            != 0) {
+            return 1;
+        }
+
+        int combined_degree = polynomial_degree(combined_locator, NN - KK);
+        int locations[NN - KK];
+        int n_locations = find_error_locations(combined_locator, combined_degree, locations);
+        if ((n_locations != combined_degree) || (n_locations > NN - KK)) {
+            return 1;
+        }
+        for (int i = 0; i < n_erasures; i++) {
+            if (!location_list_contains(locations, n_locations, erasures[i])) {
+                return 1;
+            }
+        }
+
+        int matrix[NN - KK][NN - KK + 1];
+        clear_augmented_matrix(matrix);
+        build_erasures_matrix(locations, n_locations, syndromes, matrix);
+
+        int corrections[NN - KK];
+        for (int i = 0; i < NN - KK; i++) {
+            corrections[i] = 0;
+        }
+        if (solve_gf_linear_system(matrix, n_locations, corrections) != 0) {
+            return 1;
+        }
+        for (int i = 0; i < n_locations; i++) {
+            output[locations[i]] ^= corrections[i];
+        }
+
+        if (compute_syndromes(output, syndromes)) {
+            return 1;
+        }
+        return 0;
+    }
+
+    void
+    generate_gf(const int* generator_polinomial)
     /* generate GF(2**mm) from the irreducible polynomial p(X) in pp[0]..pp[mm]
      lookup tables:  index->polynomial form   alpha_to[] contains j=alpha**i;
      polynomial form -> index form  index_of[j=alpha**i] = i
@@ -383,7 +751,7 @@ class ReedSolomon_63 {
         gg = new int[NN - KK + 1];
 
         // Polynom used in P25 is alpha**6+alpha+1
-        int generator_polinomial[] = {1, 1, 0, 0, 0, 0, 1}; /* specify irreducible polynomial coeffts */
+        const int generator_polinomial[] = {1, 1, 0, 0, 0, 0, 1}; /* specify irreducible polynomial coeffts */
 
         generate_gf(generator_polinomial);
 
@@ -401,7 +769,7 @@ class ReedSolomon_63 {
     }
 
     void
-    encode(const int* data, int* bb)
+    encode(const int* data, int* bb) const
     /* take the string of symbols in data[i], i=0..(k-1) and encode systematically
      to produce 2*tt parity symbols in bb[0]..bb[2*tt-1]
      data[] is input and bb[] is output in polynomial form.
@@ -410,13 +778,12 @@ class ReedSolomon_63 {
      Codeword is   c(X) = data(X)*X**(nn-kk)+ b(X)          */
     {
         int i, j;
-        int feedback;
 
         for (i = 0; i < NN - KK; i++) {
             bb[i] = 0;
         }
         for (i = KK - 1; i >= 0; i--) {
-            feedback = index_of[data[i] ^ bb[NN - KK - 1]];
+            int feedback = index_of[data[i] ^ bb[NN - KK - 1]];
             if (feedback != -1) {
                 for (j = NN - KK - 1; j > 0; j--) {
                     if (gg[j] != -1) {
@@ -436,7 +803,7 @@ class ReedSolomon_63 {
     }
 
     int
-    decode(const int* input, int* recd)
+    decode(const int* input, int* recd) const
     /* assume we have received bits grouped into mm-bit symbols in recd[i],
      i=0..(nn-1),  and recd[i] is polynomial form.
      We first compute the 2*tt syndromes by substituting alpha**i into rec(X) and
@@ -456,234 +823,17 @@ class ReedSolomon_63 {
      parity part of the transmitted codeword).  Of course, these insoluble cases
      can be returned as error flags to the calling routine if desired.   */
     {
-        int i, j, u, q;
-        int elp[NN - KK + 2][NN - KK], d[NN - KK + 2], l[NN - KK + 2], u_lu[NN - KK + 2], s[NN - KK + 1];
-        int count = 0, syn_error = 0, root[TT], loc[TT], z[TT + 1], err[NN], reg[TT + 1];
-
-        int irrecoverable_error = 0;
-
-        for (i = 0; i < NN; i++) {
-            recd[i] = index_of[input[i]]; /* put recd[i] into index form (ie as powers of alpha) */
+        LegacyDecodeState state;
+        convert_poly_to_index_word(input, recd);
+        if (!compute_index_syndromes(recd, state.s)) {
+            convert_index_to_poly_word(recd);
+            return 0;
         }
 
-        /* first form the syndromes */
-        for (i = 1; i <= NN - KK; i++) {
-            s[i] = 0;
-            for (j = 0; j < NN; j++) {
-                if (recd[j] != -1) {
-                    s[i] ^= alpha_to[(recd[j] + i * j) % NN]; /* recd[j] in index form */
-                }
-            }
-            /* convert syndrome from polynomial form to index form  */
-            if (s[i] != 0) {
-                syn_error = 1; /* set flag if non-zero syndrome => error */
-            }
-            s[i] = index_of[s[i]];
-        }
-
-        if (syn_error) /* if errors, try and correct */
-        {
-            /* compute the error location polynomial via the Berlekamp iterative algorithm,
-             following the terminology of Lin and Costello :   d[u] is the 'mu'th
-             discrepancy, where u='mu'+1 and 'mu' (the Greek letter!) is the step number
-             ranging from -1 to 2*tt (see L&C),  l[u] is the
-             degree of the elp at that step, and u_l[u] is the difference between the
-             step number and the degree of the elp.
-             */
-            /* initialise table entries */
-            d[0] = 0;      /* index form */
-            d[1] = s[1];   /* index form */
-            elp[0][0] = 0; /* index form */
-            elp[1][0] = 1; /* polynomial form */
-            for (i = 1; i < NN - KK; i++) {
-                elp[0][i] = -1; /* index form */
-                elp[1][i] = 0;  /* polynomial form */
-            }
-            l[0] = 0;
-            l[1] = 0;
-            u_lu[0] = -1;
-            u_lu[1] = 0;
-            u = 0;
-
-            do {
-                u++;
-                if (d[u] == -1) {
-                    l[u + 1] = l[u];
-                    for (i = 0; i <= l[u]; i++) {
-                        elp[u + 1][i] = elp[u][i];
-                        elp[u][i] = index_of[elp[u][i]];
-                    }
-                } else
-                /* search for words with greatest u_lu[q] for which d[q]!=0 */
-                {
-                    q = u - 1;
-                    while ((d[q] == -1) && (q > 0)) {
-                        q--;
-                    }
-                    /* have found first non-zero d[q]  */
-                    if (q > 0) {
-                        j = q;
-                        do {
-                            j--;
-                            if ((d[j] != -1) && (u_lu[q] < u_lu[j])) {
-                                q = j;
-                            }
-                        } while (j > 0);
-                    };
-
-                    /* have now found q such that d[u]!=0 and u_lu[q] is maximum */
-                    /* store degree of new elp polynomial */
-                    if (l[u] > l[q] + u - q) {
-                        l[u + 1] = l[u];
-                    } else {
-                        l[u + 1] = l[q] + u - q;
-                    }
-
-                    /* form new elp(x) */
-                    for (i = 0; i < NN - KK; i++) {
-                        elp[u + 1][i] = 0;
-                    }
-                    for (i = 0; i <= l[q]; i++) {
-                        if (elp[q][i] != -1) {
-                            elp[u + 1][i + u - q] = alpha_to[(d[u] + NN - d[q] + elp[q][i]) % NN];
-                        }
-                    }
-                    for (i = 0; i <= l[u]; i++) {
-                        elp[u + 1][i] ^= elp[u][i];
-                        elp[u][i] = index_of[elp[u][i]]; /*convert old elp value to index*/
-                    }
-                }
-                u_lu[u + 1] = u - l[u + 1];
-
-                /* form (u+1)th discrepancy */
-                if (u < NN - KK) /* no discrepancy computed on last iteration */
-                {
-                    if (s[u + 1] != -1) {
-                        d[u + 1] = alpha_to[s[u + 1]];
-                    } else {
-                        d[u + 1] = 0;
-                    }
-                    for (i = 1; i <= l[u + 1]; i++) {
-                        if ((s[u + 1 - i] != -1) && (elp[u + 1][i] != 0)) {
-                            d[u + 1] ^= alpha_to[(s[u + 1 - i] + index_of[elp[u + 1][i]]) % NN];
-                        }
-                    }
-                    d[u + 1] = index_of[d[u + 1]]; /* put d[u+1] into index form */
-                }
-            } while ((u < NN - KK) && (l[u + 1] <= TT));
-
-            u++;
-            if (l[u] <= TT) /* can correct error */
-            {
-                /* put elp into index form */
-                for (i = 0; i <= l[u]; i++) {
-                    elp[u][i] = index_of[elp[u][i]];
-                }
-
-                /* find roots of the error location polynomial */
-                for (i = 1; i <= l[u]; i++) {
-                    reg[i] = elp[u][i];
-                }
-                count = 0;
-                for (i = 1; i <= NN; i++) {
-                    q = 1;
-                    for (j = 1; j <= l[u]; j++) {
-                        if (reg[j] != -1) {
-                            reg[j] = (reg[j] + j) % NN;
-                            q ^= alpha_to[reg[j]];
-                        };
-                    }
-                    if (!q) /* store root and error location number indices */
-                    {
-                        root[count] = i;
-                        loc[count] = NN - i;
-                        count++;
-                    };
-                };
-
-                if (count == l[u]) /* no. roots = degree of elp hence <= tt errors */
-                {
-                    /* form polynomial z(x) */
-                    for (i = 1; i <= l[u]; i++) /* Z[0] = 1 always - do not need */
-                    {
-                        if ((s[i] != -1) && (elp[u][i] != -1)) {
-                            z[i] = alpha_to[s[i]] ^ alpha_to[elp[u][i]];
-                        } else if ((s[i] != -1) && (elp[u][i] == -1)) {
-                            z[i] = alpha_to[s[i]];
-                        } else if ((s[i] == -1) && (elp[u][i] != -1)) {
-                            z[i] = alpha_to[elp[u][i]];
-                        } else {
-                            z[i] = 0;
-                        }
-                        for (j = 1; j < i; j++) {
-                            if ((s[j] != -1) && (elp[u][i - j] != -1)) {
-                                z[i] ^= alpha_to[(elp[u][i - j] + s[j]) % NN];
-                            }
-                        }
-                        z[i] = index_of[z[i]]; /* put into index form */
-                    };
-
-                    /* evaluate errors at locations given by error location numbers loc[i] */
-                    for (i = 0; i < NN; i++) {
-                        err[i] = 0;
-                        if (recd[i] != -1) { /* convert recd[] to polynomial form */
-                            recd[i] = alpha_to[recd[i]];
-                        } else {
-                            recd[i] = 0;
-                        }
-                    }
-                    for (i = 0; i < l[u]; i++) /* compute numerator of error term first */
-                    {
-                        err[loc[i]] = 1; /* accounts for z[0] */
-                        for (j = 1; j <= l[u]; j++) {
-                            if (z[j] != -1) {
-                                err[loc[i]] ^= alpha_to[(z[j] + j * root[i]) % NN];
-                            }
-                        }
-                        if (err[loc[i]] != 0) {
-                            err[loc[i]] = index_of[err[loc[i]]];
-                            q = 0; /* form denominator of error term */
-                            for (j = 0; j < l[u]; j++) {
-                                if (j != i) {
-                                    q += index_of[1 ^ alpha_to[(loc[j] + root[i]) % NN]];
-                                }
-                            }
-                            q = q % NN;
-                            err[loc[i]] = alpha_to[(err[loc[i]] - q + NN) % NN];
-                            recd[loc[i]] ^= err[loc[i]]; /*recd[i] must be in polynomial form */
-                        }
-                    }
-                } else {
-                    /* no. roots != degree of elp => >tt errors and cannot solve */
-                    irrecoverable_error = 1;
-                }
-
-            } else {
-                /* elp has degree >tt hence cannot solve */
-                irrecoverable_error = 1;
-            }
-
-        } else {
-            /* no non-zero syndromes => no errors: output received codeword */
-            for (i = 0; i < NN; i++) {
-                if (recd[i] != -1) { /* convert recd[] to polynomial form */
-                    recd[i] = alpha_to[recd[i]];
-                } else {
-                    recd[i] = 0;
-                }
-            }
-        }
-
+        int irrecoverable_error = run_legacy_decode(recd, state);
         if (irrecoverable_error) {
-            for (i = 0; i < NN; i++) { /* could return error flag if desired */
-                if (recd[i] != -1) {   /* convert recd[] to polynomial form */
-                    recd[i] = alpha_to[recd[i]];
-                } else {
-                    recd[i] = 0; /* just output received codeword as is */
-                }
-            }
+            convert_index_to_poly_word(recd);
         }
-
         return irrecoverable_error;
     }
 
@@ -692,9 +842,7 @@ class ReedSolomon_63 {
         if (input == NULL || output == NULL || n_erasures < 0 || n_erasures > NN - KK) {
             return 1;
         }
-        for (int i = 0; i < NN; i++) {
-            output[i] = input[i];
-        }
+        copy_codeword(input, output);
         if (n_erasures == 0) {
             int syndromes[NN - KK + 1];
             return compute_syndromes(output, syndromes) ? 1 : 0;
@@ -702,117 +850,19 @@ class ReedSolomon_63 {
         if (erasures == NULL) {
             return 1;
         }
-
-        int seen[NN];
-        for (int i = 0; i < NN; i++) {
-            seen[i] = 0;
-        }
-        for (int i = 0; i < n_erasures; i++) {
-            int pos = erasures[i];
-            if (pos < 0 || pos >= NN || seen[pos]) {
-                return 1;
-            }
-            seen[pos] = 1;
-        }
-
-        int syndromes[NN - KK + 1];
-        if (!compute_syndromes(output, syndromes)) {
-            return 0;
-        }
-
-        int erasure_locator[NN - KK + 1];
-        build_erasure_locator(erasures, n_erasures, erasure_locator);
-
-        int modified_syndromes[NN - KK];
-        compute_modified_syndromes(syndromes, erasure_locator, n_erasures, modified_syndromes);
-
-        int unknown_locator[NN - KK + 1];
-        int unknown_degree = 0;
-        if (berlekamp_massey(modified_syndromes + n_erasures, (NN - KK) - n_erasures, unknown_locator, &unknown_degree)
-            != 0) {
-            for (int i = 0; i < NN; i++) {
-                output[i] = input[i];
-            }
+        if (validate_erasures(erasures, n_erasures)) {
             return 1;
         }
 
-        if ((2 * unknown_degree) + n_erasures > NN - KK) {
-            for (int i = 0; i < NN; i++) {
-                output[i] = input[i];
-            }
-            return 1;
+        int status = run_decode_with_erasures(output, erasures, n_erasures);
+        if (status != 0) {
+            copy_codeword(input, output);
         }
-
-        int combined_locator[NN - KK + 1];
-        int erasure_degree = polynomial_degree(erasure_locator, NN - KK);
-        if (multiply_locator_polynomials(erasure_locator, erasure_degree, unknown_locator, unknown_degree,
-                                         combined_locator)
-            != 0) {
-            for (int i = 0; i < NN; i++) {
-                output[i] = input[i];
-            }
-            return 1;
-        }
-
-        int combined_degree = polynomial_degree(combined_locator, NN - KK);
-        int locations[NN - KK];
-        int n_locations = find_error_locations(combined_locator, combined_degree, locations);
-        if (n_locations != combined_degree || n_locations > NN - KK) {
-            for (int i = 0; i < NN; i++) {
-                output[i] = input[i];
-            }
-            return 1;
-        }
-        for (int i = 0; i < n_erasures; i++) {
-            if (!location_list_contains(locations, n_locations, erasures[i])) {
-                for (int j = 0; j < NN; j++) {
-                    output[j] = input[j];
-                }
-                return 1;
-            }
-        }
-
-        int matrix[NN - KK][NN - KK + 1];
-        for (int row = 0; row < NN - KK; row++) {
-            for (int col = 0; col < NN - KK + 1; col++) {
-                matrix[row][col] = 0;
-            }
-        }
-
-        for (int row = 0; row < n_locations; row++) {
-            int syndrome_order = row + 1;
-            for (int col = 0; col < n_locations; col++) {
-                matrix[row][col] = gf_alpha_pow(syndrome_order * locations[col]);
-            }
-            matrix[row][n_locations] = syndromes[syndrome_order];
-        }
-
-        int corrections[NN - KK];
-        for (int i = 0; i < NN - KK; i++) {
-            corrections[i] = 0;
-        }
-        if (solve_gf_linear_system(matrix, n_locations, corrections) != 0) {
-            for (int i = 0; i < NN; i++) {
-                output[i] = input[i];
-            }
-            return 1;
-        }
-
-        for (int i = 0; i < n_locations; i++) {
-            output[locations[i]] ^= corrections[i];
-        }
-
-        if (compute_syndromes(output, syndromes)) {
-            for (int i = 0; i < NN; i++) {
-                output[i] = input[i];
-            }
-            return 1;
-        }
-        return 0;
+        return status;
     }
 
   protected:
-    int
+    static int
     bin_to_hex(const char* input) {
         int output = ((input[0] != 0) ? 32 : 0) | ((input[1] != 0) ? 16 : 0) | ((input[2] != 0) ? 8 : 0)
                      | ((input[3] != 0) ? 4 : 0) | ((input[4] != 0) ? 2 : 0) | ((input[5] != 0) ? 1 : 0);
@@ -820,7 +870,7 @@ class ReedSolomon_63 {
         return output;
     }
 
-    void
+    static void
     hex_to_bin(int input, char* output) {
         output[0] = ((input & 32) != 0) ? 1 : 0;
         output[1] = ((input & 16) != 0) ? 1 : 0;
@@ -851,7 +901,7 @@ class DSDReedSolomon_36_20_17 : public ReedSolomon_63<8> {
      * \return 1 if irrecoverable errors have been detected, 0 otherwise.
      */
     int
-    decode(char* hex_data, const char* hex_parity) {
+    decode(char* hex_data, const char* hex_parity) const {
         int input[63];
         int output[63];
 
@@ -894,7 +944,7 @@ class DSDReedSolomon_36_20_17 : public ReedSolomon_63<8> {
      * \return 1 if irrecoverable errors, 0 otherwise.
      */
     int
-    decode_soft(char* hex_data, const char* hex_parity, const int* erasures, int n_erasures) {
+    decode_soft(char* hex_data, const char* hex_parity, const int* erasures, int n_erasures) const {
         // Try hard decode first
         int result = decode(hex_data, hex_parity);
         if (result == 0) {
@@ -928,7 +978,7 @@ class DSDReedSolomon_36_20_17 : public ReedSolomon_63<8> {
     }
 
     void
-    encode(const char* hex_data, char* out_hex_parity) {
+    encode(const char* hex_data, char* out_hex_parity) const {
         int input[47];
         int output[63];
 
@@ -972,7 +1022,7 @@ class DSDReedSolomon_24_12_13 : public ReedSolomon_63<6> {
      * \return 1 if irrecoverable errors have been detected, 0 otherwise.
      */
     int
-    decode(char* hex_data, const char* hex_parity) {
+    decode(char* hex_data, const char* hex_parity) const {
         int input[63];
         int output[63];
 
@@ -1013,7 +1063,7 @@ class DSDReedSolomon_24_12_13 : public ReedSolomon_63<6> {
      * \return 1 if irrecoverable errors, 0 otherwise.
      */
     int
-    decode_soft(char* hex_data, const char* hex_parity, const int* erasures, int n_erasures) {
+    decode_soft(char* hex_data, const char* hex_parity, const int* erasures, int n_erasures) const {
         // Try hard decode first
         int result = decode(hex_data, hex_parity);
         if (result == 0) {
@@ -1047,7 +1097,7 @@ class DSDReedSolomon_24_12_13 : public ReedSolomon_63<6> {
     }
 
     void
-    encode(const char* hex_data, char* out_hex_parity) {
+    encode(const char* hex_data, char* out_hex_parity) const {
         int input[51];
         int output[63];
 
@@ -1091,7 +1141,7 @@ class DSDReedSolomon_24_16_9 : public ReedSolomon_63<4> {
      * \return 1 if irrecoverable errors have been detected, 0 otherwise.
      */
     int
-    decode(char* hex_data, const char* hex_parity) {
+    decode(char* hex_data, const char* hex_parity) const {
         int input[63];
         int output[63];
 
@@ -1132,7 +1182,7 @@ class DSDReedSolomon_24_16_9 : public ReedSolomon_63<4> {
      * \return 1 if irrecoverable errors, 0 otherwise.
      */
     int
-    decode_soft(char* hex_data, const char* hex_parity, const int* erasures, int n_erasures) {
+    decode_soft(char* hex_data, const char* hex_parity, const int* erasures, int n_erasures) const {
         // Try hard decode first
         int result = decode(hex_data, hex_parity);
         if (result == 0) {
@@ -1166,7 +1216,7 @@ class DSDReedSolomon_24_16_9 : public ReedSolomon_63<4> {
     }
 
     void
-    encode(const char* hex_data, char* out_hex_parity) {
+    encode(const char* hex_data, char* out_hex_parity) const {
         int input[55];
         int output[63];
 

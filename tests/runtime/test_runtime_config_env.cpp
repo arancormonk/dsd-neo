@@ -17,8 +17,8 @@
 #include <dsd-neo/runtime/config.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "test_support.h"
 
 #define setenv   dsd_test_setenv
@@ -27,7 +27,7 @@
 static int
 expect_int_eq(int actual, int expected, int rc, const char* name) {
     if (actual != expected) {
-        fprintf(stderr, "FAIL(%d): %s expected %d got %d\n", rc, name, expected, actual);
+        DSD_FPRINTF(stderr, "FAIL(%d): %s expected %d got %d\n", rc, name, expected, actual);
         return rc;
     }
     return 0;
@@ -36,7 +36,7 @@ expect_int_eq(int actual, int expected, int rc, const char* name) {
 static int
 expect_long_eq(long actual, long expected, int rc, const char* name) {
     if (actual != expected) {
-        fprintf(stderr, "FAIL(%d): %s expected %ld got %ld\n", rc, name, expected, actual);
+        DSD_FPRINTF(stderr, "FAIL(%d): %s expected %ld got %ld\n", rc, name, expected, actual);
         return rc;
     }
     return 0;
@@ -45,7 +45,7 @@ expect_long_eq(long actual, long expected, int rc, const char* name) {
 static int
 expect_double_close(double actual, double expected, double tol, int rc, const char* name) {
     if (std::fabs(actual - expected) > tol) {
-        fprintf(stderr, "FAIL(%d): %s expected %.9g got %.9g (tol=%.9g)\n", rc, name, expected, actual, tol);
+        DSD_FPRINTF(stderr, "FAIL(%d): %s expected %.9g got %.9g (tol=%.9g)\n", rc, name, expected, actual, tol);
         return rc;
     }
     return 0;
@@ -54,8 +54,8 @@ expect_double_close(double actual, double expected, double tol, int rc, const ch
 static int
 expect_str_eq(const char* actual, const char* expected, int rc, const char* name) {
     if (!actual || !expected || strcmp(actual, expected) != 0) {
-        fprintf(stderr, "FAIL(%d): %s expected '%s' got '%s'\n", rc, name, expected ? expected : "(null)",
-                actual ? actual : "(null)");
+        DSD_FPRINTF(stderr, "FAIL(%d): %s expected '%s' got '%s'\n", rc, name, expected ? expected : "(null)",
+                    actual ? actual : "(null)");
         return rc;
     }
     return 0;
@@ -64,7 +64,7 @@ expect_str_eq(const char* actual, const char* expected, int rc, const char* name
 static int
 expect(int cond, int rc, const char* msg) {
     if (!cond) {
-        fprintf(stderr, "FAIL(%d): %s\n", rc, msg);
+        DSD_FPRINTF(stderr, "FAIL(%d): %s\n", rc, msg);
         return rc;
     }
     return 0;
@@ -585,7 +585,7 @@ test_cache_dir_default(void) {
     char saved_home[1024];
     saved_home[0] = '\0';
     if (prev_home && *prev_home) {
-        snprintf(saved_home, sizeof saved_home, "%s", prev_home);
+        DSD_SNPRINTF(saved_home, sizeof saved_home, "%s", prev_home);
         saved_home[sizeof saved_home - 1] = '\0';
     }
 
@@ -2218,7 +2218,7 @@ test_dsp_misc_env(void) {
     return 0;
 }
 
-struct cfg_ptr_thread_ctx {
+struct cfg_ptr_thread_ctx { // NOLINT(misc-use-internal-linkage)
     const dsdneoRuntimeConfig* cfg;
 };
 

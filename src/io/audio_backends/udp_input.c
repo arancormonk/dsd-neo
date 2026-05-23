@@ -5,6 +5,7 @@
 
 /* UDP PCM16LE input backend */
 
+#include <arpa/inet.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -13,18 +14,18 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/exitflag.h>
-#if !DSD_PLATFORM_WIN_NATIVE
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#endif
 #include <errno.h>
+#include <netinet/in.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <sys/socket.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+
+#if !DSD_PLATFORM_WIN_NATIVE
+#endif
 
 /** @brief Simple single-producer/single-consumer ring for PCM16 samples. */
 typedef struct udp_input_ring {
@@ -158,7 +159,7 @@ static DSD_THREAD_RETURN_TYPE
             if (err == EINTR) {
                 continue;
             }
-            if (err == EAGAIN || err == EWOULDBLOCK) {
+            if (err == EAGAIN || (EWOULDBLOCK != EAGAIN && err == EWOULDBLOCK)) {
                 dsd_sleep_ms(1);
                 continue;
             }
@@ -217,7 +218,7 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
 
     dsd_socket_t sockfd = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sockfd == DSD_INVALID_SOCKET) {
-        fprintf(stderr, "Error creating UDP input socket\n");
+        DSD_FPRINTF(stderr, "Error creating UDP input socket\n");
         return -1;
     }
 
@@ -229,7 +230,7 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
     (void)dsd_socket_set_recv_timeout(sockfd, 200); // 200ms
 
     struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
+    DSD_MEMSET(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons((uint16_t)port);
     if (bindaddr && strlen(bindaddr) > 0) {
@@ -238,7 +239,7 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
         } else {
             /* Parse numeric address */
             if (dsd_socket_resolve(bindaddr, port, &addr) != 0) {
-                fprintf(stderr, "Invalid UDP bind address: %s\n", bindaddr);
+                DSD_FPRINTF(stderr, "Invalid UDP bind address: %s\n", bindaddr);
                 dsd_socket_close(sockfd);
                 return -1;
             }
@@ -248,7 +249,7 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
     }
 
     if (dsd_socket_bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-        fprintf(stderr, "Failed to bind UDP %s:%d\n", bindaddr ? bindaddr : "127.0.0.1", port);
+        DSD_FPRINTF(stderr, "Failed to bind UDP %s:%d\n", bindaddr ? bindaddr : "127.0.0.1", port);
         dsd_socket_close(sockfd);
         return -1;
     }

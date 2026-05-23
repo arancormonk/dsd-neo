@@ -16,15 +16,15 @@
 /* Validates: Requirements 2.2 */
 
 #include <dsd-neo/io/tcp_quality_metrics.h>
-
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_float_approx(const char* label, float got, float want, float eps) {
     if (fabsf(got - want) > eps) {
-        fprintf(stderr, "FAIL: %s: got=%f want=%f (eps=%f)\n", label, got, want, eps);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%f want=%f (eps=%f)\n", label, got, want, eps);
         return 1;
     }
     return 0;
@@ -33,7 +33,7 @@ expect_float_approx(const char* label, float got, float want, float eps) {
 static int
 expect_true(const char* label, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         return 1;
     }
     return 0;

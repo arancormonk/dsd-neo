@@ -3,7 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_FILE_COMPAT_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_FILE_COMPAT_H_H
 
 /**
  * @file
@@ -11,8 +12,8 @@
  */
 
 #include <dsd-neo/platform/platform.h>
-#include <stddef.h>
 #include <stdio.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -145,3 +146,4 @@ const char* dsd_null_device(void);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_FILE_COMPAT_H_H */

@@ -10,7 +10,8 @@
  * Declares VPDU processing entrypoints implemented in the P25 protocol code.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_VPDU_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_VPDU_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -25,3 +26,5 @@ void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_VPDU_H_ */

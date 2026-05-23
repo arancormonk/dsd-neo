@@ -19,7 +19,6 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
@@ -28,6 +27,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -40,26 +40,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/**
- * Read a dibit and retrieve both analog signal value and reliability.
- *
- * @param opts      Decoder options.
- * @param state     Decoder state.
- * @param analog    Output: analog signal value (for heuristics).
- * @param reliab    Output: reliability 0-255 (for soft decode).
- * @return The dibit value (0-3).
- *
- * Implementation note: Reliability is read from dmr_reliab_p[-1] because
- * dmr_compute_reliability() advances the pointer AFTER writing. Guard against
- * buffer wrap using the same bounds as the writer (wraps at +900000, starts
- * at +200). Only read when rp lies in [dmr_reliab_buf+200, dmr_reliab_buf+900000).
- */
 static int
 soft_abs_i16(int16_t v) {
     return v < 0 ? -(int)v : (int)v;
@@ -72,7 +57,7 @@ get_dibit_analog_and_soft(dsd_opts* opts, dsd_state* state, int* analog, dsd_dib
     if (soft != NULL) {
         int found = 0;
         if (state->dmr_soft_p != NULL && state->dmr_soft_buf != NULL) {
-            dsd_dibit_soft_t* sp = state->dmr_soft_p - 1;
+            const dsd_dibit_soft_t* sp = state->dmr_soft_p - 1;
             if (sp >= state->dmr_soft_buf + 200 && sp < state->dmr_soft_buf + 1000000) {
                 *soft = *sp;
                 found = 1;
@@ -81,7 +66,7 @@ get_dibit_analog_and_soft(dsd_opts* opts, dsd_state* state, int* analog, dsd_dib
         if (!found) {
             uint8_t r = 255;
             if (state->dmr_reliab_p != NULL && state->dmr_reliab_buf != NULL) {
-                uint8_t* rp = state->dmr_reliab_p - 1;
+                const uint8_t* rp = state->dmr_reliab_p - 1;
                 if (rp >= state->dmr_reliab_buf + 200 && rp < state->dmr_reliab_buf + 1000000) {
                     r = *rp;
                 }
@@ -148,7 +133,7 @@ read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, in
 }
 
 void
-read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* output, unsigned int count, int* status_count,
+read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* buffer, unsigned int count, int* status_count,
                               AnalogSignal* analog_signal_array, int* analog_signal_index) {
     unsigned int i;
 
@@ -160,7 +145,7 @@ read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* output, un
         int16_t llr[2];
         int dibit;
 
-        dibit = read_dibit_soft(opts, state, output + i, status_count, &analog_signal, &did_read_status, &reliab, llr);
+        dibit = read_dibit_soft(opts, state, buffer + i, status_count, &analog_signal, &did_read_status, &reliab, llr);
 
         if (analog_signal_array != NULL) {
             // Fill up the AnalogSignal struct
@@ -211,8 +196,8 @@ correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, char* parity, cons
     int irrecoverable_errors;
     char raw_hex[6];
     char raw_parity[12];
-    memcpy(raw_hex, hex, sizeof(raw_hex));
-    memcpy(raw_parity, parity, sizeof(raw_parity));
+    DSD_MEMCPY(raw_hex, hex, sizeof(raw_hex));
+    DSD_MEMCPY(raw_parity, parity, sizeof(raw_parity));
 
     irrecoverable_errors = check_and_fix_golay_24_6(hex, parity, &fixed_errors);
 
@@ -242,12 +227,12 @@ correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, char* parity, cons
         int soft_fixed = 0;
         char soft_hex[6];
         char soft_parity[12];
-        memcpy(soft_hex, raw_hex, sizeof(soft_hex));
-        memcpy(soft_parity, raw_parity, sizeof(soft_parity));
+        DSD_MEMCPY(soft_hex, raw_hex, sizeof(soft_hex));
+        DSD_MEMCPY(soft_parity, raw_parity, sizeof(soft_parity));
         int soft_result = check_and_fix_golay_24_6_soft(soft_hex, soft_parity, reliab, &soft_fixed);
         if (soft_result == 0) {
-            memcpy(hex, soft_hex, sizeof(soft_hex));
-            memcpy(parity, soft_parity, sizeof(soft_parity));
+            DSD_MEMCPY(hex, soft_hex, sizeof(soft_hex));
+            DSD_MEMCPY(parity, soft_parity, sizeof(soft_parity));
             if (irrecoverable_errors != 0) {
                 state->p25_p1_soft_golay_ok++;
                 state->debug_header_errors += soft_fixed;
@@ -317,7 +302,7 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
  * \param analog_signal_array A pointer to the AnalogSignal information for the sequence of hex words.
  */
 static void
-correct_golay_dibits_6(char* corrected_hex_data, int hex_count, AnalogSignal* analog_signal_array) {
+correct_golay_dibits_6(const char* corrected_hex_data, int hex_count, AnalogSignal* analog_signal_array) {
     int i, j;
     int analog_signal_index;
     int dibit;
@@ -335,9 +320,9 @@ correct_golay_dibits_6(char* corrected_hex_data, int hex_count, AnalogSignal* an
 
 #ifdef HEURISTICS_DEBUG
             if (analog_signal_array[analog_signal_index].dibit != dibit) {
-                fprintf(stderr, "HDU data word corrected from %i to %i, analog value %i\n",
-                        analog_signal_array[analog_signal_index].dibit, dibit,
-                        analog_signal_array[analog_signal_index].value);
+                DSD_FPRINTF(stderr, "HDU data word corrected from %i to %i, analog value %i\n",
+                            analog_signal_array[analog_signal_index].dibit, dibit,
+                            analog_signal_array[analog_signal_index].value);
             }
 #endif
 
@@ -358,15 +343,227 @@ correct_golay_dibits_6(char* corrected_hex_data, int hex_count, AnalogSignal* an
 
 #ifdef HEURISTICS_DEBUG
             if (analog_signal_array[analog_signal_index].dibit != dibit) {
-                fprintf(stderr, "HDU parity corrected from %i to %i, analog value %i\n",
-                        analog_signal_array[analog_signal_index].dibit, dibit,
-                        analog_signal_array[analog_signal_index].value);
+                DSD_FPRINTF(stderr, "HDU parity corrected from %i to %i, analog value %i\n",
+                            analog_signal_array[analog_signal_index].dibit, dibit,
+                            analog_signal_array[analog_signal_index].value);
             }
 #endif
 
             analog_signal_index++;
         }
     }
+}
+
+static void
+hdu_extract_mi_algid_kid(const char hex_data[20][6], uint8_t mi[73], char algid[9], char kid[17]) {
+    size_t mi_pos = 0;
+    for (int row = 19; row >= 8; row--) {
+        for (int bit = 0; bit < 6; bit++) {
+            mi[mi_pos++] = (uint8_t)(hex_data[row][bit] + '0');
+        }
+    }
+    mi[72] = 0;
+
+    size_t alg_pos = 0;
+    for (int bit = 2; bit < 6; bit++) {
+        algid[alg_pos++] = (char)(hex_data[6][bit] + '0');
+    }
+    for (int bit = 0; bit < 4; bit++) {
+        algid[alg_pos++] = (char)(hex_data[5][bit] + '0');
+    }
+    algid[8] = 0;
+
+    size_t kid_pos = 0;
+    kid[kid_pos++] = (char)(hex_data[5][4] + '0');
+    kid[kid_pos++] = (char)(hex_data[5][5] + '0');
+    for (int row = 4; row >= 3; row--) {
+        for (int bit = 0; bit < 6; bit++) {
+            kid[kid_pos++] = (char)(hex_data[row][bit] + '0');
+        }
+    }
+    kid[kid_pos++] = (char)(hex_data[2][0] + '0');
+    kid[kid_pos++] = (char)(hex_data[2][1] + '0');
+    kid[16] = 0;
+}
+
+static void
+hdu_consume_trailing_dibits_and_status(dsd_opts* opts, dsd_state* state) {
+    for (int i = 0; i < 5; i++) {
+        dsd_dibit_soft_t skip_soft;
+        (void)getDibitSoft(opts, state, &skip_soft);
+    }
+
+    dsd_dibit_soft_t status_soft;
+    int ss = getDibitSoft(opts, state, &status_soft);
+    p25_status_accum_add(state, ss);
+}
+
+static int
+hdu_read_and_fec(dsd_opts* opts, dsd_state* state, P25Heuristics* heur, char hex_data[20][6], char hex_parity[16][6],
+                 AnalogSignal analog_signal_array[20 * (3 + 6) + 16 * (3 + 6)], int* status_count,
+                 int* analog_signal_index) {
+    char hex[6];
+
+    for (int i = 19; i >= 0; i--) {
+        read_and_correct_hex_word(opts, state, hex, status_count, analog_signal_array, analog_signal_index);
+        for (int j = 0; j < 6; j++) {
+            hex_data[i][j] = hex[j];
+        }
+    }
+
+    for (int i = 15; i >= 0; i--) {
+        read_and_correct_hex_word(opts, state, hex, status_count, analog_signal_array, analog_signal_index);
+        for (int j = 0; j < 6; j++) {
+            hex_parity[i][j] = hex[j];
+        }
+    }
+    analog_signal_array[0].sequence_broken = 1;
+
+    int irrecoverable_errors = check_and_fix_redsolomon_36_20_17((char*)hex_data, (char*)hex_parity);
+    if (irrecoverable_errors != 0) {
+        uint8_t data_reliab[20];
+        uint8_t parity_reliab[16];
+        build_hdu_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
+        if (p25p1_rs_36_20_17_soft_reliability((char*)hex_data, (char*)hex_parity, data_reliab, parity_reliab) == 0) {
+            state->p25_p1_soft_rs_ok++;
+            irrecoverable_errors = 0;
+        }
+    }
+
+    if (irrecoverable_errors != 0) {
+        state->p25_p1_voice_fec_err++;
+        state->debug_header_critical_errors++;
+        update_error_stats(heur, 20 * 6 + 16 * 6, 9 * 4);
+        return irrecoverable_errors;
+    }
+
+    state->p25_p1_voice_fec_ok++;
+    state->last_vc_sync_time = time(NULL);
+    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+
+    char fixed_parity[16 * 6];
+    correct_golay_dibits_6((char*)hex_data, 20, analog_signal_array);
+    encode_reedsolomon_36_20_17((char*)hex_data, fixed_parity);
+    ptrdiff_t hoff = (ptrdiff_t)20 * (3 + 6);
+    correct_golay_dibits_6(fixed_parity, 16, analog_signal_array + hoff);
+    contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, 20 * (3 + 6) + 16 * (3 + 6));
+    return 0;
+}
+
+static void
+hdu_record_enc_lockout(dsd_opts* opts, dsd_state* state, int ttg) {
+    if (ttg == 0) {
+        return;
+    }
+
+    char lockout_name_buf[50];
+    const char* lockout_name = "ENC LO";
+    dsd_tg_policy_entry lockout_entry;
+    if (dsd_tg_policy_lookup_label(state, (uint32_t)ttg, NULL, 0, lockout_name_buf, sizeof(lockout_name_buf))) {
+        lockout_name = lockout_name_buf;
+    }
+    if (dsd_tg_policy_make_exact_entry((uint32_t)ttg, "DE", lockout_name, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
+                                       &lockout_entry)
+            != 0
+        || dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) != 0) {
+        return;
+    }
+
+    DSD_SPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
+                "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+    dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
+    if (opts->event_out_file[0] != 0) {
+        dsd_p25_optional_hook_write_event_to_log_file(opts, state, 0, /*swrite*/ 0,
+                                                      state->event_history_s[0].Event_History_Items[0].event_string);
+    }
+    dsd_p25_optional_hook_push_event_history(&state->event_history_s[0]);
+    dsd_p25_optional_hook_init_event_history(&state->event_history_s[0], 0, 1);
+}
+
+static void
+hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state) {
+    if (!(opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0)) {
+        return;
+    }
+
+    int alg = state->payload_algid;
+    int have_key = 0;
+    if (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0)
+        || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1)) {
+        have_key = 1;
+    }
+    int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
+    if (!enc_suspect) {
+        return;
+    }
+
+    state->payload_algid = 0;
+    state->payload_keyid = 0;
+    state->payload_miP = 0ULL;
+
+    hdu_record_enc_lockout(opts, state, state->lasttg);
+
+    DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
+    DSD_FPRINTF(stderr, " No Enc Following on P25p1 Trunking (HDU); Return to CC; \n");
+    state->p25_sm_force_release = 1;
+    p25_sm_on_release(opts, state);
+}
+
+static void
+hdu_apply_unmute_policy(dsd_opts* opts, dsd_state* state) {
+    if (state->R != 0
+        && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
+        DSD_FPRINTF(stderr, " Key: %010llX", state->R);
+        opts->unmute_encrypted_p25 = 1;
+        return;
+    }
+
+    if ((state->payload_algid == 0x84 || state->payload_algid == 0x89) && state->aes_key_loaded[0] == 1) {
+        DSD_FPRINTF(stderr, "\n ");
+        DSD_FPRINTF(stderr, "%s", KYEL);
+        DSD_FPRINTF(stderr, "Key: %016llX %016llX ", state->A1[0], state->A2[0]);
+        if (state->payload_algid == 0x84) {
+            DSD_FPRINTF(stderr, "%016llX %016llX", state->A3[0], state->A4[0]);
+        }
+        DSD_FPRINTF(stderr, "%s ", KNRM);
+        opts->unmute_encrypted_p25 = 1;
+        return;
+    }
+
+    if (state->payload_algid != 0 && state->payload_algid != 0x80) {
+        opts->unmute_encrypted_p25 = 0;
+    }
+}
+
+static void
+hdu_handle_good_decode(dsd_opts* opts, dsd_state* state, int algidhex, int kidhex, unsigned long long int mihex1,
+                       unsigned long long int mihex2, unsigned long long int mihex3) {
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, " HDU  ALG ID: 0x%02X KEY ID: 0x%04X MI: 0x%08llX%08llX", algidhex, kidhex, mihex1, mihex2);
+    state->payload_algid = algidhex;
+    state->payload_keyid = kidhex;
+    if (mihex3) {
+        DSD_FPRINTF(stderr, "-%02llX", mihex3);
+    }
+    hdu_apply_unmute_policy(opts, state);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+    state->payload_miP = (mihex1 << 32) | (mihex2);
+
+    if (state->payload_algid != 0x80 && state->payload_algid != 0x0) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " ENC");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+
+    DSD_FPRINTF(stderr, "\n");
+
+    if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
+        LFSR128(state);
+        DSD_FPRINTF(stderr, "\n");
+    }
+
+    state->xl_is_hdu = 1;
+    hdu_maybe_enc_lockout(opts, state);
 }
 
 /**
@@ -389,16 +586,12 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     state->currentslot = 0;
 
     uint8_t mi[73];
-    char mfid[9], algid[9], kid[17], tgid[17];
-    int i, j;
+    char algid[9], kid[17];
     int algidhex, kidhex;
-    char hex[6];
     int status_count;
-    int status;
     unsigned long long int mihex1, mihex2, mihex3;
     char hex_data[20][6];   // Data in hex-words (6 bit words). A total of 20 hex words.
     char hex_parity[16][6]; // Parity of the data, again in hex-word format. A total of 16 parity hex words.
-    UNUSED4(mfid, tgid, status, mihex3);
 
     int irrecoverable_errors;
 
@@ -412,237 +605,15 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     // so we start counter at 36-14-1 = 21
     status_count = 21;
 
-    // Read 20 hex words, correct them using their Golay 24 parity data.
-    for (i = 19; i >= 0; i--) {
-        read_and_correct_hex_word(opts, state, hex, &status_count, analog_signal_array, &analog_signal_index);
-        // Store the corrected hex word into the hex_data store:
-        for (j = 0; j < 6; j++) {
-            hex_data[i][j] = hex[j];
-        }
-    }
-
-    // Read the 16 parity hex word. These are used to FEC the 20 hex words using Reed-Solomon.
-    for (i = 15; i >= 0; i--) {
-        read_and_correct_hex_word(opts, state, hex, &status_count, analog_signal_array, &analog_signal_index);
-        // Store the corrected hex word into the hex_parity store:
-        for (j = 0; j < 6; j++) {
-            hex_parity[i][j] = hex[j];
-        }
-    }
-    // Don't forget to mark the first element as the start of a new sequence
-    analog_signal_array[0].sequence_broken = 1;
-
-    // Use the Reed-Solomon algorithm to correct the data. hex_data is modified in place
-    irrecoverable_errors = check_and_fix_redsolomon_36_20_17((char*)hex_data, (char*)hex_parity);
-    if (irrecoverable_errors != 0) {
-        uint8_t data_reliab[20];
-        uint8_t parity_reliab[16];
-
-        build_hdu_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
-        if (p25p1_rs_36_20_17_soft_reliability((char*)hex_data, (char*)hex_parity, data_reliab, parity_reliab) == 0) {
-            state->p25_p1_soft_rs_ok++;
-            irrecoverable_errors = 0;
-        }
-    }
-    if (irrecoverable_errors != 0) {
-        state->p25_p1_voice_fec_err++;
-        // The hex words failed the Reed-Solomon check. There were too many errors. Still we can use this
-        // information to update an estimate of the BER.
-        state->debug_header_critical_errors++;
-
-        // We can correct (17-1)/2 = 8 errors. If we failed, it means that there were more than 8 errors in
-        // these 20+16 words. But take into account that each hex word was already error corrected with
-        // Golay 24, which can correct 3 bits on each sequence of (6+12) bits. We could say that there were
-        // 9 errors of 4 bits.
-        update_error_stats(heur, 20 * 6 + 16 * 6, 9 * 4);
-    } else {
-        state->p25_p1_voice_fec_ok++;
-        // Passed FEC checks: mark recent activity for trunk hangtime tracking.
-        state->last_vc_sync_time = time(NULL);
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-        // The hex words passed the Reed-Solomon check. This means that very likely they are correct and we
-        // can trust that the digitizer did a good job with them. In other words, each analog value was
-        // correctly assigned to a dibit. This is extremely useful information for the digitizer and we are
-        // going to exploit it.
-        char fixed_parity[16 * 6];
-
-        // Correct the dibits that we did read according with the newly corrected hex_data values
-        correct_golay_dibits_6((char*)hex_data, 20, analog_signal_array);
-
-        // Generate again the Reed-Solomon parity for the corrected data
-        encode_reedsolomon_36_20_17((char*)hex_data, fixed_parity);
-
-        // Correct the dibits that we read according with the corrected parity values
-        ptrdiff_t hoff = (ptrdiff_t)20 * (3 + 6);
-        correct_golay_dibits_6(fixed_parity, 16, analog_signal_array + hoff);
-
-        // Now we have a bunch of dibits (composed of data and parity of different kinds) that we trust are all
-        // correct. We also keep a record of the analog values from where each dibit is coming from.
-        // This information is gold for the heuristics module.
-        contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, 20 * (3 + 6) + 16 * (3 + 6));
-    }
+    irrecoverable_errors = hdu_read_and_fec(opts, state, heur, hex_data, hex_parity, analog_signal_array, &status_count,
+                                            &analog_signal_index);
 
     // Now put the corrected data on the DSD structures
 
-    mi[72] = 0;
-    mfid[8] = 0;
-    algid[8] = 0;
-    kid[16] = 0;
-    tgid[16] = 0;
-
-    mi[0] = hex_data[19][0] + '0';
-    mi[1] = hex_data[19][1] + '0';
-    mi[2] = hex_data[19][2] + '0';
-    mi[3] = hex_data[19][3] + '0';
-    mi[4] = hex_data[19][4] + '0';
-    mi[5] = hex_data[19][5] + '0';
-
-    mi[6] = hex_data[18][0] + '0';
-    mi[7] = hex_data[18][1] + '0';
-    mi[8] = hex_data[18][2] + '0';
-    mi[9] = hex_data[18][3] + '0';
-    mi[10] = hex_data[18][4] + '0';
-    mi[11] = hex_data[18][5] + '0';
-
-    mi[12] = hex_data[17][0] + '0';
-    mi[13] = hex_data[17][1] + '0';
-    mi[14] = hex_data[17][2] + '0';
-    mi[15] = hex_data[17][3] + '0';
-    mi[16] = hex_data[17][4] + '0';
-    mi[17] = hex_data[17][5] + '0';
-
-    mi[18] = hex_data[16][0] + '0';
-    mi[19] = hex_data[16][1] + '0';
-    mi[20] = hex_data[16][2] + '0';
-    mi[21] = hex_data[16][3] + '0';
-    mi[22] = hex_data[16][4] + '0';
-    mi[23] = hex_data[16][5] + '0';
-
-    mi[24] = hex_data[15][0] + '0';
-    mi[25] = hex_data[15][1] + '0';
-    mi[26] = hex_data[15][2] + '0';
-    mi[27] = hex_data[15][3] + '0';
-    mi[28] = hex_data[15][4] + '0';
-    mi[29] = hex_data[15][5] + '0';
-
-    mi[30] = hex_data[14][0] + '0';
-    mi[31] = hex_data[14][1] + '0';
-    mi[32] = hex_data[14][2] + '0';
-    mi[33] = hex_data[14][3] + '0';
-    mi[34] = hex_data[14][4] + '0';
-    mi[35] = hex_data[14][5] + '0';
-
-    mi[36] = hex_data[13][0] + '0';
-    mi[37] = hex_data[13][1] + '0';
-    mi[38] = hex_data[13][2] + '0';
-    mi[39] = hex_data[13][3] + '0';
-    mi[40] = hex_data[13][4] + '0';
-    mi[41] = hex_data[13][5] + '0';
-
-    mi[42] = hex_data[12][0] + '0';
-    mi[43] = hex_data[12][1] + '0';
-    mi[44] = hex_data[12][2] + '0';
-    mi[45] = hex_data[12][3] + '0';
-    mi[46] = hex_data[12][4] + '0';
-    mi[47] = hex_data[12][5] + '0';
-
-    mi[48] = hex_data[11][0] + '0';
-    mi[49] = hex_data[11][1] + '0';
-    mi[50] = hex_data[11][2] + '0';
-    mi[51] = hex_data[11][3] + '0';
-    mi[52] = hex_data[11][4] + '0';
-    mi[53] = hex_data[11][5] + '0';
-
-    mi[54] = hex_data[10][0] + '0';
-    mi[55] = hex_data[10][1] + '0';
-    mi[56] = hex_data[10][2] + '0';
-    mi[57] = hex_data[10][3] + '0';
-    mi[58] = hex_data[10][4] + '0';
-    mi[59] = hex_data[10][5] + '0';
-
-    mi[60] = hex_data[9][0] + '0';
-    mi[61] = hex_data[9][1] + '0';
-    mi[62] = hex_data[9][2] + '0';
-    mi[63] = hex_data[9][3] + '0';
-    mi[64] = hex_data[9][4] + '0';
-    mi[65] = hex_data[9][5] + '0';
-
-    mi[66] = hex_data[8][0] + '0';
-    mi[67] = hex_data[8][1] + '0';
-    mi[68] = hex_data[8][2] + '0';
-    mi[69] = hex_data[8][3] + '0';
-    mi[70] = hex_data[8][4] + '0';
-    mi[71] = hex_data[8][5] + '0';
-
-    mfid[0] = hex_data[7][0] + '0';
-    mfid[1] = hex_data[7][1] + '0';
-    mfid[2] = hex_data[7][2] + '0';
-    mfid[3] = hex_data[7][3] + '0';
-    mfid[4] = hex_data[7][4] + '0';
-    mfid[5] = hex_data[7][5] + '0';
-
-    mfid[6] = hex_data[6][0] + '0';
-    mfid[7] = hex_data[6][1] + '0';
-    algid[0] = hex_data[6][2] + '0'; // The important algorithm ID. This indicates whether the data is
-    algid[1] = hex_data[6][3] + '0'; // encrypted and if so what is the encryption algorithm used.
-    algid[2] = hex_data[6][4] + '0'; // A code 0x80 here means that the data is unencrypted.
-    algid[3] = hex_data[6][5] + '0';
-
-    algid[4] = hex_data[5][0] + '0';
-    algid[5] = hex_data[5][1] + '0';
-    algid[6] = hex_data[5][2] + '0';
-    algid[7] = hex_data[5][3] + '0';
-    kid[0] = hex_data[5][4] + '0';
-    kid[1] = hex_data[5][5] + '0';
-
-    kid[2] = hex_data[4][0] + '0'; // The encryption key ID
-    kid[3] = hex_data[4][1] + '0';
-    kid[4] = hex_data[4][2] + '0';
-    kid[5] = hex_data[4][3] + '0';
-    kid[6] = hex_data[4][4] + '0';
-    kid[7] = hex_data[4][5] + '0';
-
-    kid[8] = hex_data[3][0] + '0';
-    kid[9] = hex_data[3][1] + '0';
-    kid[10] = hex_data[3][2] + '0';
-    kid[11] = hex_data[3][3] + '0';
-    kid[12] = hex_data[3][4] + '0';
-    kid[13] = hex_data[3][5] + '0';
-
-    kid[14] = hex_data[2][0] + '0';
-    kid[15] = hex_data[2][1] + '0';
-    tgid[0] = hex_data[2][2] + '0'; // Talk group ID
-    tgid[1] = hex_data[2][3] + '0';
-    tgid[2] = hex_data[2][4] + '0';
-    tgid[3] = hex_data[2][5] + '0';
-
-    tgid[4] = hex_data[1][0] + '0';
-    tgid[5] = hex_data[1][1] + '0';
-    tgid[6] = hex_data[1][2] + '0';
-    tgid[7] = hex_data[1][3] + '0';
-    tgid[8] = hex_data[1][4] + '0';
-    tgid[9] = hex_data[1][5] + '0';
-
-    tgid[10] = hex_data[0][0] + '0';
-    tgid[11] = hex_data[0][1] + '0';
-    tgid[12] = hex_data[0][2] + '0';
-    tgid[13] = hex_data[0][3] + '0';
-    tgid[14] = hex_data[0][4] + '0';
-    tgid[15] = hex_data[0][5] + '0';
+    hdu_extract_mi_algid_kid((const char (*)[6])hex_data, mi, algid, kid);
 
     state->p25kid = strtol(kid, NULL, 2);
-
-    for (i = 0; i < 5; i++) {
-        dsd_dibit_soft_t skip_soft;
-        (void)getDibitSoft(opts, state, &skip_soft);
-    }
-
-    // Trailing status symbol: record for advisory source classification.
-    {
-        dsd_dibit_soft_t status_soft;
-        int ss = getDibitSoft(opts, state, &status_soft);
-        p25_status_accum_add(state, ss);
-    }
+    hdu_consume_trailing_dibits_and_status(opts, state);
 
     algidhex = strtol(algid, NULL, 2);
     kidhex = strtol(kid, NULL, 2);
@@ -657,108 +628,11 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     state->p25vc = 0;
 
     if (irrecoverable_errors == 0) {
-
-        fprintf(stderr, "%s", KYEL);
-        fprintf(stderr, " HDU  ALG ID: 0x%02X KEY ID: 0x%04X MI: 0x%08llX%08llX", algidhex, kidhex, mihex1, mihex2);
-        state->payload_algid = algidhex;
-        state->payload_keyid = kidhex;
-        if (mihex3) {
-            fprintf(stderr, "-%02llX", mihex3);
-        }
-        if (state->R != 0
-            && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
-            fprintf(stderr, " Key: %010llX", state->R);
-            opts->unmute_encrypted_p25 = 1;
-        } else if ((state->payload_algid == 0x84 || state->payload_algid == 0x89) && state->aes_key_loaded[0] == 1) {
-            fprintf(stderr, "\n ");
-            fprintf(stderr, "%s", KYEL);
-            fprintf(stderr, "Key: %016llX %016llX ", state->A1[0], state->A2[0]);
-            if (state->payload_algid == 0x84) {
-                fprintf(stderr, "%016llX %016llX", state->A3[0], state->A4[0]);
-            }
-            fprintf(stderr, "%s ", KNRM);
-            opts->unmute_encrypted_p25 = 1;
-        } else if (state->payload_algid != 0 && state->payload_algid != 0x80) {
-            //may want to mute this again, or may not want to
-            opts->unmute_encrypted_p25 = 0;
-        }
-        fprintf(stderr, "%s", KNRM);
-        //only use 64 MSB, trailing 8 bits aren't used, so no mihex3
-        state->payload_miP = (mihex1 << 32) | (mihex2);
-
-        if (state->payload_algid != 0x80 && state->payload_algid != 0x0) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " ENC");
-            fprintf(stderr, "%s", KNRM);
-        }
-
-        fprintf(stderr, "\n");
-
-        //expand 64-bit MI to 128-bit for AES
-        if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
-            LFSR128(state);
-            fprintf(stderr, "\n");
-        }
-
-        //xl, we need to know if the ESS is from HDU, or LDU2
-        state->xl_is_hdu = 1;
-
-        // Early ENC lockout for P25 Phase 1: if trunking ENC lockout is
-        // enabled and the call is encrypted without a usable key, terminate
-        // immediately and return to the control channel. This avoids sitting
-        // on an encrypted VC waiting for later LDUs.
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
-            int alg = state->payload_algid;
-            int have_key = 0;
-            if (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0)
-                || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1)) {
-                have_key = 1;
-            }
-            int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
-            if (enc_suspect) {
-                // Clear V XTRA fields immediately to avoid UI stale display
-                state->payload_algid = 0;
-                state->payload_keyid = 0;
-                state->payload_miP = 0ULL;
-                // Optional: mark TG as ENC LO for visibility when known
-                int ttg = state->lasttg;
-                if (ttg != 0) {
-                    char lockout_name_buf[50];
-                    const char* lockout_name = "ENC LO";
-                    dsd_tg_policy_entry lockout_entry;
-                    if (dsd_tg_policy_lookup_label(state, (uint32_t)ttg, NULL, 0, lockout_name_buf,
-                                                   sizeof(lockout_name_buf))) {
-                        lockout_name = lockout_name_buf;
-                    }
-                    if (dsd_tg_policy_make_exact_entry((uint32_t)ttg, "DE", lockout_name,
-                                                       DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &lockout_entry)
-                            == 0
-                        && dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0) {
-                        sprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
-                                "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
-                        dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
-                        // Immediately log and push this lockout event so it is not delayed
-                        if (opts->event_out_file[0] != 0) {
-                            dsd_p25_optional_hook_write_event_to_log_file(
-                                opts, state, 0, /*swrite*/ 0,
-                                state->event_history_s[0].Event_History_Items[0].event_string);
-                        }
-                        dsd_p25_optional_hook_push_event_history(&state->event_history_s[0]);
-                        dsd_p25_optional_hook_init_event_history(&state->event_history_s[0], 0, 1);
-                    }
-                }
-                // Also clear banner to avoid stale "Group Encrypted" on UI
-                snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
-                fprintf(stderr, " No Enc Following on P25p1 Trunking (HDU); Return to CC; \n");
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
-            }
-        }
-
+        hdu_handle_good_decode(opts, state, algidhex, kidhex, mihex1, mihex2, mihex3);
     } else {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, " HDU FEC ERR \n");
-        fprintf(stderr, "%s", KNRM);
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " HDU FEC ERR \n");
+        DSD_FPRINTF(stderr, "%s", KNRM);
     }
 
     // Classify accumulated status symbols and set advisory AFC gate flag.

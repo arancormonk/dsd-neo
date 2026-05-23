@@ -13,8 +13,8 @@
 
 #include <stdio.h>
 
-void
-dsd_cli_usage(void) {
+static void
+dsd_cli_usage_section_intro(void) {
     printf("\n");
     printf("Usage: dsd-neo [options]            Decoder/Trunking Mode\n");
     printf("  or:  dsd-neo [options] -r <files> Read/Play saved mbe data from file(s)\n");
@@ -49,8 +49,11 @@ dsd_cli_usage(void) {
     printf("      --p25-force-release-margin <s> P25: Safety-net hard margin seconds beyond extra\n");
     printf("      --p25-p1-err-hold-pct <pct>   P25p1: IMBE error %% threshold to extend hang\n");
     printf("      --p25-p1-err-hold-sec <s>     P25p1: Additional seconds to hold when threshold exceeded\n");
-
     printf("\n");
+}
+
+static void
+dsd_cli_usage_section_io(void) {
     printf("Device Options:\n");
     printf("  -O            List All Pulse Audio Input Sources and Output Sinks (devices).\n");
     printf("\n");
@@ -130,6 +133,10 @@ dsd_cli_usage(void) {
     printf("  -v <hex>      Set Filtering Bitmap Options (Advanced Option)\n");
     printf("                1 1 1 1 (0xF): PBF/LPF/HPF/HPFD on\n");
     printf("\n");
+}
+
+static void
+dsd_cli_usage_section_radio_and_encoder(void) {
     printf("RTL-SDR options:\n");
     printf(" Usage: rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]\n");
     printf("  NOTE: all arguments after rtl are optional now for trunking, but user configuration is recommended\n");
@@ -169,7 +176,6 @@ dsd_cli_usage(void) {
     printf("  -fZ           M17 Stream Voice Encoder\n");
     printf("\n");
     printf("Other options:\n");
-
     printf("  --auto-ppm    Enable carrier-assisted RTL auto PPM correction\n");
     printf("  --auto-ppm-snr <dB>  Set SNR gate for auto PPM (default 6)\n");
     printf("  --rtltcp-autotune    Enable RTL-TCP adaptive networking (buffer/recv tuning)\n");
@@ -202,6 +208,10 @@ dsd_cli_usage(void) {
     printf("                  Input Rate Default is 48000; Use Multiples of 8000 up to 48000.\n");
     printf("                  VOX Enabled on 1; (Default = 0)\n");
     printf("                  Values not entered into the M17: string are set to default values.\n");
+}
+
+static void
+dsd_cli_usage_section_decode(void) {
     printf("Decoder options:\n");
     printf("  -fa           Auto Detection\n");
     printf("  -fA           Passive Analog Audio Monitor\n");
@@ -240,6 +250,10 @@ dsd_cli_usage(void) {
     printf("  NOTE: All frame types are now auto-detectable with -fa using multi-rate SPS hunting.\n");
     printf("        M17 polarity is auto-detected from preamble; use -xz only to force inverted.\n");
     printf("\n");
+}
+
+static void
+dsd_cli_usage_section_advanced(void) {
     printf("Advanced Decoder options:\n");
     printf("  -X <hex>      Manually Set P2 Parameters (WACN, SYSID, CC/NAC)\n");
     printf("                 (-X BEE00ABC123)\n");
@@ -331,6 +345,10 @@ dsd_cli_usage(void) {
     printf("  -3            Disable DMR Late Entry Encryption Identifiers (VC6 Single Burst) \n");
     printf("                  Note: Disable this if false positives on Voice ENC occur. \n");
     printf("\n");
+}
+
+static void
+dsd_cli_usage_section_trunking_and_tools(void) {
     printf(" Trunking Options:\n");
     printf("  -C <file>     Import Channel to Frequency Map (channum, freq) from csv file. (Capital C)                 "
            "  \n");
@@ -361,7 +379,6 @@ dsd_cli_usage(void) {
     printf(" Trunking Example RTL: dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N 2> "
            "log.txt\n");
     printf("\n");
-
     printf("DMR TIII Tools:\n");
     printf("  --calc-lcn <file>           Calculate LCNs from a CSV of frequencies (Hz or MHz).\n");
     printf("  --calc-cc-freq <freq>       Anchor CC frequency (Hz or MHz).\n");
@@ -370,4 +387,14 @@ dsd_cli_usage(void) {
     printf("  --calc-start-lcn <int>      Starting LCN when no anchor (default 1).\n");
     printf(" Example: dsd-neo --calc-lcn freqs.csv --calc-cc-freq 451.2375 --calc-cc-lcn 50\n");
     printf("\n");
+}
+
+void
+dsd_cli_usage(void) {
+    dsd_cli_usage_section_intro();
+    dsd_cli_usage_section_io();
+    dsd_cli_usage_section_radio_and_encoder();
+    dsd_cli_usage_section_decode();
+    dsd_cli_usage_section_advanced();
+    dsd_cli_usage_section_trunking_and_tools();
 }

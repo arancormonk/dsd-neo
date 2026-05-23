@@ -11,7 +11,7 @@
 
 static int
 dsd_state_ext_id_is_valid(dsd_state_ext_id id) {
-    return (int)id >= 0 && (int)id < DSD_STATE_EXT_MAX;
+    return (unsigned int)id < (unsigned int)DSD_STATE_EXT_MAX;
 }
 
 void*

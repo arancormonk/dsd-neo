@@ -7,328 +7,130 @@
 
 #include <string.h>
 
+static int
+compact_matches_exact(const char* arg, const char* const* options, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(arg, options[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+compact_matches_prefix(const char* arg, const char* const* options, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        size_t n = strlen(options[i]);
+        if (strncmp(arg, options[i], n) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+compact_has_next_nonnull(int i, int argc, char** argv) {
+    return (i + 1 < argc && argv[i + 1] != NULL);
+}
+
+static int
+compact_has_next_non_option(int i, int argc, char** argv) {
+    return (i + 1 < argc && argv[i + 1] != NULL && argv[i + 1][0] != '-');
+}
+
 int
 dsd_cli_compact_args(int argc, char** argv) {
     if (argc <= 0 || argv == NULL) {
         return 0;
     }
 
-    // Remove recognized long options so the short-option getopt() only
-    // sees remaining tokens; keep argv[0] as program name.
+    static const char* const k_skip_exact_no_arg[] = {
+        "--auto-ppm",          "--rtltcp-autotune",      "--iq-loop",       "--rdio-api-delete-after-upload",
+        "--enc-lockout",       "--enc-follow",           "--no-config",     "--print-config",
+        "--interactive-setup", "--dump-config-template", "--strict-config", "--list-profiles",
+    };
+
+    static const char* const k_skip_exact_next_any[] = {
+        "--input-volume",
+        "--input-level-warn-db",
+        "--frame-log",
+        "--rdio-mode",
+        "--rdio-system-id",
+        "--rdio-api-url",
+        "--rdio-api-key",
+        "--rdio-upload-timeout-ms",
+        "--rdio-upload-retries",
+        "--dmr-baofeng-pc5",
+        "--dmr-csi-ee72",
+        "--dmr-vertex-ks-csv",
+        "--auto-ppm-snr",
+        "--profile",
+        "--p25-vc-grace",
+        "--p25-min-follow-dwell",
+        "--p25-grant-voice-timeout",
+        "--p25-retune-backoff",
+        "--p25-mac-hold",
+        "--p25-ring-hold",
+        "--p25-cc-grace",
+        "--p25-force-release-extra",
+        "--p25-force-release-margin",
+        "--p25-p1-err-hold-pct",
+        "--p25-p1-err-hold-sec",
+        "--calc-lcn",
+        "--calc-step",
+        "--calc-cc-freq",
+        "--calc-cc-lcn",
+        "--calc-start-lcn",
+    };
+
+    static const char* const k_skip_exact_next_nonnull[] = {
+        "--iq-capture", "--iq-capture-format", "--iq-capture-max-mb", "--symbol-capture-format",
+        "--iq-replay",  "--iq-replay-rate",    "--iq-info",
+    };
+
+    static const char* const k_skip_exact_next_nonopt[] = {
+        "--rtl-udp-control",
+        "--config",
+        "--validate-config",
+    };
+
+    static const char* const k_skip_prefix[] = {
+        "--rtl-udp-control=",       "--iq-capture=",   "--iq-capture-format=", "--iq-capture-max-mb=",
+        "--symbol-capture-format=", "--iq-replay=",    "--iq-replay-rate=",    "--iq-info=",
+        "--dmr-baofeng-pc5=",       "--dmr-csi-ee72=", "--dmr-vertex-ks-csv=", "--config=",
+    };
+
+    // Remove recognized long options so short-option getopt() sees remaining
+    // tokens; keep argv[0] as program name.
     int w = 1;
     for (int i = 1; i < argc; i++) {
         const char* arg = argv[i];
         if (arg == NULL) {
             break;
         }
-        if (strcmp(arg, "--auto-ppm") == 0) {
+        if (compact_matches_prefix(arg, k_skip_prefix, sizeof(k_skip_prefix) / sizeof(k_skip_prefix[0]))) {
             continue;
         }
-        if (strcmp(arg, "--rtltcp-autotune") == 0) {
+        if (compact_matches_exact(arg, k_skip_exact_no_arg,
+                                  sizeof(k_skip_exact_no_arg) / sizeof(k_skip_exact_no_arg[0]))) {
             continue;
         }
-        if (strcmp(arg, "--rtl-udp-control") == 0) {
-            if (i + 1 < argc && argv[i + 1] != NULL && argv[i + 1][0] != '-') {
+        if (compact_matches_exact(arg, k_skip_exact_next_nonopt,
+                                  sizeof(k_skip_exact_next_nonopt) / sizeof(k_skip_exact_next_nonopt[0]))) {
+            if (compact_has_next_non_option(i, argc, argv)) {
                 i++;
             }
             continue;
         }
-        if (strncmp(arg, "--rtl-udp-control=", 18) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--iq-capture") == 0) {
-            if (i + 1 < argc && argv[i + 1] != NULL) {
+        if (compact_matches_exact(arg, k_skip_exact_next_nonnull,
+                                  sizeof(k_skip_exact_next_nonnull) / sizeof(k_skip_exact_next_nonnull[0]))) {
+            if (compact_has_next_nonnull(i, argc, argv)) {
                 i++;
             }
             continue;
         }
-        if (strncmp(arg, "--iq-capture=", 13) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--iq-capture-format") == 0) {
-            if (i + 1 < argc && argv[i + 1] != NULL) {
-                i++;
-            }
-            continue;
-        }
-        if (strncmp(arg, "--iq-capture-format=", 20) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--iq-capture-max-mb") == 0) {
-            if (i + 1 < argc && argv[i + 1] != NULL) {
-                i++;
-            }
-            continue;
-        }
-        if (strncmp(arg, "--iq-capture-max-mb=", 20) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--symbol-capture-format") == 0) {
-            if (i + 1 < argc && argv[i + 1] != NULL) {
-                i++;
-            }
-            continue;
-        }
-        if (strncmp(arg, "--symbol-capture-format=", 24) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--iq-replay") == 0) {
-            if (i + 1 < argc && argv[i + 1] != NULL) {
-                i++;
-            }
-            continue;
-        }
-        if (strncmp(arg, "--iq-replay=", 12) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--iq-replay-rate") == 0) {
-            if (i + 1 < argc && argv[i + 1] != NULL) {
-                i++;
-            }
-            continue;
-        }
-        if (strncmp(arg, "--iq-replay-rate=", 17) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--iq-loop") == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--iq-info") == 0) {
-            if (i + 1 < argc && argv[i + 1] != NULL) {
-                i++;
-            }
-            continue;
-        }
-        if (strncmp(arg, "--iq-info=", 10) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--input-volume") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--input-level-warn-db") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--frame-log") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--rdio-mode") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--rdio-system-id") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--rdio-api-url") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--rdio-api-key") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--rdio-upload-timeout-ms") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--rdio-upload-retries") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--rdio-api-delete-after-upload") == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--dmr-baofeng-pc5") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strncmp(arg, "--dmr-baofeng-pc5=", 18) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--dmr-csi-ee72") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strncmp(arg, "--dmr-csi-ee72=", 15) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--dmr-vertex-ks-csv") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strncmp(arg, "--dmr-vertex-ks-csv=", 20) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--auto-ppm-snr") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--enc-lockout") == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--enc-follow") == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--config") == 0) {
-            // Optional path argument (skip only if it doesn't look like another option)
-            if (i + 1 < argc && argv[i + 1] != NULL && argv[i + 1][0] != '-') {
-                i++;
-            }
-            continue;
-        }
-        if (strncmp(arg, "--config=", 9) == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--no-config") == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--print-config") == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--interactive-setup") == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--dump-config-template") == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--validate-config") == 0) {
-            if (i + 1 < argc && argv[i + 1] != NULL && argv[i + 1][0] != '-') {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--strict-config") == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--profile") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--list-profiles") == 0) {
-            continue;
-        }
-        if (strcmp(arg, "--p25-vc-grace") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--p25-min-follow-dwell") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--p25-grant-voice-timeout") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--p25-retune-backoff") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--p25-mac-hold") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--p25-ring-hold") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--p25-cc-grace") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--p25-force-release-extra") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--p25-force-release-margin") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--p25-p1-err-hold-pct") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--p25-p1-err-hold-sec") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--calc-lcn") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--calc-step") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--calc-cc-freq") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--calc-cc-lcn") == 0) {
-            if (i + 1 < argc) {
-                i++;
-            }
-            continue;
-        }
-        if (strcmp(arg, "--calc-start-lcn") == 0) {
+        if (compact_matches_exact(arg, k_skip_exact_next_any,
+                                  sizeof(k_skip_exact_next_any) / sizeof(k_skip_exact_next_any[0]))) {
             if (i + 1 < argc) {
                 i++;
             }

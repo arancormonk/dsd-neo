@@ -15,23 +15,13 @@
  * Validates: Requirements 3.3, 4.1, 4.2, 4.3, 7.1, 7.2
  */
 
-#include <dsd-neo/fec/BCH_63_16.hpp>
-#include <dsd-neo/protocol/p25/p25p1_check_nid.h>
-
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <dsd-neo/fec/BCH_63_16.hpp>
+#include <dsd-neo/protocol/p25/p25p1_check_nid.h>
+#include "dsd-neo/core/safe_api.h"
 
-/* --------------------------------------------------------------------------
- * Helpers
- * -------------------------------------------------------------------------- */
-
-/**
- * @brief Encode a NAC + DUID into a 16-bit info word (MSB first).
- *
- * Bits 0-11: NAC (12 bits, MSB first)
- * Bits 12-15: DUID (4 bits, MSB first)
- */
 static void
 make_info_word(int nac, int duid, char info[16]) {
     for (int i = 0; i < 12; i++) {
@@ -90,24 +80,24 @@ test_duid_validation_all_valid(void) {
         int result = check_NID_with_error_count(codeword, &decoded_nac, decoded_duid, parity, &error_count);
 
         if (result != NID_OK) {
-            std::fprintf(stderr,
-                         "test_duid_validation_all_valid: DUID=0x%X expected NID_OK (1), "
-                         "got %d\n",
-                         duid, result);
+            DSD_FPRINTF(stderr,
+                        "test_duid_validation_all_valid: DUID=0x%X expected NID_OK (1), "
+                        "got %d\n",
+                        duid, result);
             return 1;
         }
         if (decoded_nac != nac) {
-            std::fprintf(stderr,
-                         "test_duid_validation_all_valid: DUID=0x%X expected NAC=0x%X, "
-                         "got 0x%X\n",
-                         duid, nac, decoded_nac);
+            DSD_FPRINTF(stderr,
+                        "test_duid_validation_all_valid: DUID=0x%X expected NAC=0x%X, "
+                        "got 0x%X\n",
+                        duid, nac, decoded_nac);
             return 1;
         }
         if (error_count != 0) {
-            std::fprintf(stderr,
-                         "test_duid_validation_all_valid: DUID=0x%X expected error_count=0, "
-                         "got %d\n",
-                         duid, error_count);
+            DSD_FPRINTF(stderr,
+                        "test_duid_validation_all_valid: DUID=0x%X expected error_count=0, "
+                        "got %d\n",
+                        duid, error_count);
             return 1;
         }
     }
@@ -148,17 +138,17 @@ test_duid_validation_all_invalid(void) {
         int result = check_NID_with_error_count(codeword, &decoded_nac, decoded_duid, 0, &error_count);
 
         if (result != NID_DECODE_FAIL) {
-            std::fprintf(stderr,
-                         "test_duid_validation_all_invalid: DUID=0x%X expected "
-                         "NID_DECODE_FAIL (0), got %d\n",
-                         duid, result);
+            DSD_FPRINTF(stderr,
+                        "test_duid_validation_all_invalid: DUID=0x%X expected "
+                        "NID_DECODE_FAIL (0), got %d\n",
+                        duid, result);
             return 1;
         }
         if (error_count != 0) {
-            std::fprintf(stderr,
-                         "test_duid_validation_all_invalid: DUID=0x%X expected "
-                         "error_count=0, got %d\n",
-                         duid, error_count);
+            DSD_FPRINTF(stderr,
+                        "test_duid_validation_all_invalid: DUID=0x%X expected "
+                        "error_count=0, got %d\n",
+                        duid, error_count);
             return 1;
         }
     }
@@ -203,20 +193,20 @@ test_parity_table_values(void) {
         if (duid == 0x5 || duid == 0xA) {
             // LDU1 and LDU2 have expected parity=1, so parity=1 matches
             if (result != NID_OK) {
-                std::fprintf(stderr,
-                             "test_parity_table_values: DUID=0x%X (P=1) expected "
-                             "NID_OK (1), got %d\n",
-                             duid, result);
+                DSD_FPRINTF(stderr,
+                            "test_parity_table_values: DUID=0x%X (P=1) expected "
+                            "NID_OK (1), got %d\n",
+                            duid, result);
                 return 1;
             }
         } else {
             // All others have expected parity=0, so parity=1 is a mismatch.
             // Successful BCH decode should still report NID_PARITY_OVERRIDE.
             if (result != NID_PARITY_OVERRIDE) {
-                std::fprintf(stderr,
-                             "test_parity_table_values: DUID=0x%X (P=0) with parity=1 "
-                             "expected NID_PARITY_OVERRIDE (2), got %d\n",
-                             duid, result);
+                DSD_FPRINTF(stderr,
+                            "test_parity_table_values: DUID=0x%X (P=0) with parity=1 "
+                            "expected NID_PARITY_OVERRIDE (2), got %d\n",
+                            duid, result);
                 return 1;
             }
         }
@@ -256,7 +246,7 @@ test_parity_override_correctable_range(void) {
     for (std::size_t count_index = 0; count_index < sizeof(counts) / sizeof(counts[0]); count_index++) {
         int corrections = counts[count_index];
         char corrupted[63];
-        std::memcpy(corrupted, codeword, 63);
+        DSD_MEMCPY(corrupted, codeword, 63);
 
         // Flip distinct bit positions in the BCH parity portion to avoid
         // changing the info bits directly.
@@ -272,24 +262,24 @@ test_parity_override_correctable_range(void) {
         int result = check_NID_with_error_count(corrupted, &decoded_nac, decoded_duid, 0, &error_count);
 
         if (result != NID_PARITY_OVERRIDE) {
-            std::fprintf(stderr,
-                         "test_parity_override_correctable_range: %d errors + wrong parity "
-                         "expected NID_PARITY_OVERRIDE (2), got %d\n",
-                         corrections, result);
+            DSD_FPRINTF(stderr,
+                        "test_parity_override_correctable_range: %d errors + wrong parity "
+                        "expected NID_PARITY_OVERRIDE (2), got %d\n",
+                        corrections, result);
             return 1;
         }
         if (error_count != corrections) {
-            std::fprintf(stderr,
-                         "test_parity_override_correctable_range: %d errors expected "
-                         "error_count=%d, got %d\n",
-                         corrections, corrections, error_count);
+            DSD_FPRINTF(stderr,
+                        "test_parity_override_correctable_range: %d errors expected "
+                        "error_count=%d, got %d\n",
+                        corrections, corrections, error_count);
             return 1;
         }
         if (decoded_nac != nac) {
-            std::fprintf(stderr,
-                         "test_parity_override_correctable_range: %d errors expected "
-                         "NAC=0x%X, got 0x%X\n",
-                         corrections, nac, decoded_nac);
+            DSD_FPRINTF(stderr,
+                        "test_parity_override_correctable_range: %d errors expected "
+                        "NAC=0x%X, got 0x%X\n",
+                        corrections, nac, decoded_nac);
             return 1;
         }
     }
@@ -321,7 +311,7 @@ test_decode_failure_no_error_count(void) {
     bch.encode(info, codeword);
 
     char corrupted[63];
-    std::memcpy(corrupted, codeword, 63);
+    DSD_MEMCPY(corrupted, codeword, 63);
 
     // Flip 12 distinct positions - exceeds correction capability
     int flip_12[12] = {0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55};
@@ -336,17 +326,17 @@ test_decode_failure_no_error_count(void) {
     int result = check_NID_with_error_count(corrupted, &decoded_nac, decoded_duid, 0, &error_count);
 
     if (result != NID_DECODE_FAIL) {
-        std::fprintf(stderr,
-                     "test_decode_failure_no_error_count: expected NID_DECODE_FAIL (0), "
-                     "got %d\n",
-                     result);
+        DSD_FPRINTF(stderr,
+                    "test_decode_failure_no_error_count: expected NID_DECODE_FAIL (0), "
+                    "got %d\n",
+                    result);
         return 1;
     }
     if (error_count != 0) {
-        std::fprintf(stderr,
-                     "test_decode_failure_no_error_count: expected error_count=0, "
-                     "got %d\n",
-                     error_count);
+        DSD_FPRINTF(stderr,
+                    "test_decode_failure_no_error_count: expected error_count=0, "
+                    "got %d\n",
+                    error_count);
         return 1;
     }
 
@@ -373,7 +363,7 @@ test_observed_nac_retry_after_bch_failure(void) {
     bch.encode(info, codeword);
 
     char corrupted[63];
-    std::memcpy(corrupted, codeword, 63);
+    DSD_MEMCPY(corrupted, codeword, 63);
     for (int i = 0; i < 12; i++) {
         corrupted[i] ^= 1;
     }
@@ -383,8 +373,8 @@ test_observed_nac_retry_after_bch_failure(void) {
     int error_count = -1;
     int result = check_NID_with_error_count(corrupted, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
     if (result != NID_DECODE_FAIL) {
-        std::fprintf(stderr, "test_observed_nac_retry_after_bch_failure: expected initial decode failure, got %d\n",
-                     result);
+        DSD_FPRINTF(stderr, "test_observed_nac_retry_after_bch_failure: expected initial decode failure, got %d\n",
+                    result);
         return 1;
     }
 
@@ -394,22 +384,22 @@ test_observed_nac_retry_after_bch_failure(void) {
     result =
         check_NID_with_observed_nac(corrupted, nac, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
     if (result != NID_OK) {
-        std::fprintf(stderr, "test_observed_nac_retry_after_bch_failure: expected observed NAC retry success, got %d\n",
-                     result);
+        DSD_FPRINTF(stderr, "test_observed_nac_retry_after_bch_failure: expected observed NAC retry success, got %d\n",
+                    result);
         return 1;
     }
     if (decoded_nac != nac) {
-        std::fprintf(stderr, "test_observed_nac_retry_after_bch_failure: expected NAC=0x%X, got 0x%X\n", nac,
-                     decoded_nac);
+        DSD_FPRINTF(stderr, "test_observed_nac_retry_after_bch_failure: expected NAC=0x%X, got 0x%X\n", nac,
+                    decoded_nac);
         return 1;
     }
     if (std::strcmp(decoded_duid, "11") != 0) {
-        std::fprintf(stderr, "test_observed_nac_retry_after_bch_failure: expected DUID=11, got %s\n", decoded_duid);
+        DSD_FPRINTF(stderr, "test_observed_nac_retry_after_bch_failure: expected DUID=11, got %s\n", decoded_duid);
         return 1;
     }
     if (error_count != 0) {
-        std::fprintf(stderr, "test_observed_nac_retry_after_bch_failure: expected retry error_count=0, got %d\n",
-                     error_count);
+        DSD_FPRINTF(stderr, "test_observed_nac_retry_after_bch_failure: expected retry error_count=0, got %d\n",
+                    error_count);
         return 1;
     }
 
@@ -433,7 +423,7 @@ test_soft_nid_low_reliability_recovery(void) {
     bch.encode(info, codeword);
 
     char corrupted[63];
-    std::memcpy(corrupted, codeword, 63);
+    DSD_MEMCPY(corrupted, codeword, 63);
     int flip_12[12] = {0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55};
     for (int i = 0; i < 12; i++) {
         corrupted[flip_12[i]] ^= 1;
@@ -445,8 +435,8 @@ test_soft_nid_low_reliability_recovery(void) {
     int hard_result =
         check_NID_with_observed_nac(corrupted, 0, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
     if (hard_result != NID_DECODE_FAIL) {
-        std::fprintf(stderr, "test_soft_nid_low_reliability_recovery: expected hard decode failure, got %d\n",
-                     hard_result);
+        DSD_FPRINTF(stderr, "test_soft_nid_low_reliability_recovery: expected hard decode failure, got %d\n",
+                    hard_result);
         return 1;
     }
 
@@ -462,15 +452,15 @@ test_soft_nid_low_reliability_recovery(void) {
     int soft_result = check_NID_with_observed_nac_soft(corrupted, reliab, 0, &decoded_nac, decoded_duid,
                                                        expected_parity(duid), 220, &error_count);
     if (soft_result != NID_OK) {
-        std::fprintf(stderr, "test_soft_nid_low_reliability_recovery: expected soft decode success, got %d\n",
-                     soft_result);
+        DSD_FPRINTF(stderr, "test_soft_nid_low_reliability_recovery: expected soft decode success, got %d\n",
+                    soft_result);
         return 1;
     }
     if (decoded_nac != nac || std::strcmp(decoded_duid, "11") != 0 || error_count != 11) {
-        std::fprintf(stderr,
-                     "test_soft_nid_low_reliability_recovery: expected NAC=0x%X DUID=11 errors=11, "
-                     "got NAC=0x%X DUID=%s errors=%d\n",
-                     nac, decoded_nac, decoded_duid, error_count);
+        DSD_FPRINTF(stderr,
+                    "test_soft_nid_low_reliability_recovery: expected NAC=0x%X DUID=11 errors=11, "
+                    "got NAC=0x%X DUID=%s errors=%d\n",
+                    nac, decoded_nac, decoded_duid, error_count);
         return 1;
     }
 
@@ -494,7 +484,7 @@ test_soft_nid_high_reliability_rejected(void) {
     bch.encode(info, codeword);
 
     char corrupted[63];
-    std::memcpy(corrupted, codeword, 63);
+    DSD_MEMCPY(corrupted, codeword, 63);
     int flip_12[12] = {0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55};
     for (int i = 0; i < 12; i++) {
         corrupted[flip_12[i]] ^= 1;
@@ -511,7 +501,7 @@ test_soft_nid_high_reliability_rejected(void) {
     int result = check_NID_with_observed_nac_soft(corrupted, reliab, 0, &decoded_nac, decoded_duid,
                                                   expected_parity(duid), 220, &error_count);
     if (result != NID_DECODE_FAIL) {
-        std::fprintf(stderr, "test_soft_nid_high_reliability_rejected: expected soft decode failure, got %d\n", result);
+        DSD_FPRINTF(stderr, "test_soft_nid_high_reliability_rejected: expected soft decode failure, got %d\n", result);
         return 1;
     }
 
@@ -535,7 +525,7 @@ test_soft_observed_nac_retry_exempts_forced_nac_bits(void) {
     bch.encode(info, codeword);
 
     char corrupted[63];
-    std::memcpy(corrupted, codeword, 63);
+    DSD_MEMCPY(corrupted, codeword, 63);
     corrupted[0] ^= 1; // High-confidence NAC bit corrected by observed_nac.
 
     int parity_errors[12] = {16, 22, 28, 34, 40, 46, 52, 18, 24, 30, 36, 42};
@@ -549,9 +539,9 @@ test_soft_observed_nac_retry_exempts_forced_nac_bits(void) {
     int hard_result =
         check_NID_with_observed_nac(corrupted, nac, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
     if (hard_result != NID_DECODE_FAIL) {
-        std::fprintf(stderr,
-                     "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected hard retry failure, got %d\n",
-                     hard_result);
+        DSD_FPRINTF(stderr,
+                    "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected hard retry failure, got %d\n",
+                    hard_result);
         return 1;
     }
 
@@ -567,16 +557,16 @@ test_soft_observed_nac_retry_exempts_forced_nac_bits(void) {
     int soft_result = check_NID_with_observed_nac_soft(corrupted, reliab, nac, &decoded_nac, decoded_duid,
                                                        expected_parity(duid), 220, &error_count);
     if (soft_result != NID_OK) {
-        std::fprintf(stderr,
-                     "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected soft retry success, got %d\n",
-                     soft_result);
+        DSD_FPRINTF(stderr,
+                    "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected soft retry success, got %d\n",
+                    soft_result);
         return 1;
     }
     if (decoded_nac != nac || std::strcmp(decoded_duid, "11") != 0 || error_count != 11) {
-        std::fprintf(stderr,
-                     "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected NAC=0x%X DUID=11 errors=11, "
-                     "got NAC=0x%X DUID=%s errors=%d\n",
-                     nac, decoded_nac, decoded_duid, error_count);
+        DSD_FPRINTF(stderr,
+                    "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected NAC=0x%X DUID=11 errors=11, "
+                    "got NAC=0x%X DUID=%s errors=%d\n",
+                    nac, decoded_nac, decoded_duid, error_count);
         return 1;
     }
 

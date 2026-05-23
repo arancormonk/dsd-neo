@@ -3,13 +3,16 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_IO_RADIO_RTL_REPLAY_DEVICE_H
+#define DSD_NEO_IO_RADIO_RTL_REPLAY_DEVICE_H
 
 #include <atomic>
+#include <stdint.h>
 
 #include <dsd-neo/io/iq_replay.h>
-#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/platform/threading.h>
+
+#include "dsd-neo/io/iq_types.h"
 
 typedef void (*rtl_replay_input_drained_cb)(void* user);
 typedef void (*rtl_replay_event_cb)(const dsd_iq_event* event, void* user);
@@ -38,3 +41,5 @@ struct rtl_replay_eof_state {
 
 struct rtl_device* rtl_device_create_iq_replay(const dsd_iq_replay_config* cfg, struct input_ring_state* input_ring,
                                                const struct rtl_replay_eof_state* eof_state);
+
+#endif /* DSD_NEO_IO_RADIO_RTL_REPLAY_DEVICE_H */

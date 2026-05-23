@@ -19,9 +19,8 @@
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <stdlib.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
@@ -34,6 +33,64 @@ float_compare_asc(const void* a, const void* b) {
     if (fa > fb) {
         return 1;
     }
+    return 0;
+}
+
+static float*
+dsd_sync_prepare_sorted_syms(const dsd_state* state, int sync_len, float* stack_syms, int stack_count, int* free_syms) {
+    float* syms = stack_syms;
+    *free_syms = 0;
+
+    if (sync_len > stack_count) {
+        syms = (float*)malloc(sizeof(float) * (size_t)sync_len);
+        if (syms == NULL) {
+            return NULL;
+        }
+        *free_syms = 1;
+    }
+
+    for (int i = 0; i < sync_len; i++) {
+        syms[i] = dsd_symbol_history_get_back(state, i);
+    }
+
+    qsort(syms, (size_t)sync_len, sizeof(float), float_compare_asc);
+    return syms;
+}
+
+static int
+dsd_sync_find_split_by_largest_gap(const float* syms, int sync_len) {
+    int split = -1;
+    float max_gap = -1.0f;
+    for (int i = 0; i < (sync_len - 1); i++) {
+        float gap = syms[i + 1] - syms[i];
+        if (gap > max_gap) {
+            max_gap = gap;
+            split = i;
+        }
+    }
+    return split;
+}
+
+static int
+dsd_sync_compute_cluster_means(const float* syms, int sync_len, int split, float* mean_low, float* mean_high) {
+    int n_low = split + 1;
+    int n_high = sync_len - n_low;
+    if (n_low < 2 || n_high < 2) {
+        return -1;
+    }
+
+    float sum_low = 0.0f;
+    for (int i = 0; i < n_low; i++) {
+        sum_low += syms[i];
+    }
+
+    float sum_high = 0.0f;
+    for (int i = n_low; i < sync_len; i++) {
+        sum_high += syms[i];
+    }
+
+    *mean_low = sum_low / (float)n_low;
+    *mean_high = sum_high / (float)n_high;
     return 0;
 }
 
@@ -79,7 +136,7 @@ dsd_symbol_history_init(dsd_state* state, int symbols) {
         return -1;
     }
 
-    memset(state->dmr_sample_history, 0, sizeof(float) * (size_t)symbols);
+    DSD_MEMSET(state->dmr_sample_history, 0, sizeof(float) * (size_t)symbols);
     state->dmr_sample_history_head = 0;
     state->dmr_sample_history_count = 0;
 
@@ -107,7 +164,7 @@ dsd_symbol_history_reset(dsd_state* state) {
         return;
     }
 
-    memset(state->dmr_sample_history, 0, sizeof(float) * (size_t)state->dmr_sample_history_size);
+    DSD_MEMSET(state->dmr_sample_history, 0, sizeof(float) * (size_t)state->dmr_sample_history_size);
     state->dmr_sample_history_head = 0;
     state->dmr_sample_history_count = 0;
 }
@@ -158,7 +215,7 @@ dsd_symbol_history_count(const dsd_state* state) {
  * ───────────────────────────────────────────────────────────────────────────── */
 
 dsd_warm_start_result_t
-dsd_sync_warm_start_thresholds_outer_only(dsd_opts* opts, dsd_state* state, int sync_len) {
+dsd_sync_warm_start_thresholds_outer_only(const dsd_opts* opts, dsd_state* state, int sync_len) {
     /* Check kill-switch */
     if (!dsd_sync_warm_start_enabled()) {
         return DSD_WARM_START_DISABLED;
@@ -258,34 +315,15 @@ dsd_sync_warm_start_center_outer_only(dsd_opts* opts, dsd_state* state, int sync
     }
 
     float stack_syms[64];
-    float* syms = stack_syms;
     int free_syms = 0;
-
-    if (sync_len > (int)(sizeof(stack_syms) / sizeof(stack_syms[0]))) {
-        syms = (float*)malloc(sizeof(float) * (size_t)sync_len);
-        if (syms == NULL) {
-            return DSD_WARM_START_DEGENERATE;
-        }
-        free_syms = 1;
+    int stack_count = (int)(sizeof(stack_syms) / sizeof(stack_syms[0]));
+    float* syms = dsd_sync_prepare_sorted_syms(state, sync_len, stack_syms, stack_count, &free_syms);
+    if (syms == NULL) {
+        return DSD_WARM_START_DEGENERATE;
     }
-
-    for (int i = 0; i < sync_len; i++) {
-        syms[i] = dsd_symbol_history_get_back(state, i);
-    }
-
-    qsort(syms, (size_t)sync_len, sizeof(float), float_compare_asc);
 
     /* Split the bimodal distribution using the largest inter-sample gap. */
-    int split = -1;
-    float max_gap = -1.0f;
-    for (int i = 0; i < (sync_len - 1); i++) {
-        float gap = syms[i + 1] - syms[i];
-        if (gap > max_gap) {
-            max_gap = gap;
-            split = i;
-        }
-    }
-
+    int split = dsd_sync_find_split_by_largest_gap(syms, sync_len);
     if (split < 0 || split >= (sync_len - 1)) {
         if (free_syms) {
             free(syms);
@@ -293,26 +331,14 @@ dsd_sync_warm_start_center_outer_only(dsd_opts* opts, dsd_state* state, int sync
         return DSD_WARM_START_DEGENERATE;
     }
 
-    int n_low = split + 1;
-    int n_high = sync_len - n_low;
-    if (n_low < 2 || n_high < 2) {
+    float mean_low = 0.0f;
+    float mean_high = 0.0f;
+    if (dsd_sync_compute_cluster_means(syms, sync_len, split, &mean_low, &mean_high) != 0) {
         if (free_syms) {
             free(syms);
         }
         return DSD_WARM_START_DEGENERATE;
     }
-
-    float sum_low = 0.0f;
-    for (int i = 0; i < n_low; i++) {
-        sum_low += syms[i];
-    }
-    float sum_high = 0.0f;
-    for (int i = n_low; i < sync_len; i++) {
-        sum_high += syms[i];
-    }
-
-    float mean_low = sum_low / (float)n_low;
-    float mean_high = sum_high / (float)n_high;
 
     float span = mean_high - mean_low;
     if (fabsf(span) < DSD_WARM_START_MIN_SPAN) {

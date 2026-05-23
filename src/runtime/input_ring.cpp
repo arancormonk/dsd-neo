@@ -3,19 +3,13 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <atomic>
+#include <cstring>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/mem.h>
 #include <stdint.h>
-/**
- * @file
- * @brief Input ring buffer implementation for interleaved I/Q float samples.
- *
- * Provides producer/consumer primitives to reserve, commit, write, and
- * blockingly read samples with wrap-around handling and wakeup signaling.
- */
-#include <atomic>
-#include <cstring>
+#include "dsd-neo/core/safe_api.h"
 
 extern "C" volatile uint8_t exitflag; // defined in src/runtime/exitflag.c
 #ifdef USE_RADIO
@@ -136,10 +130,8 @@ input_ring_reserve(struct input_ring_state* r, size_t min_needed, float** p1, si
     *n1 = to_end;
 
     /* Second region: wrap around to beginning */
-    if (grant > to_end) {
-        *p2 = r->buffer;
-        *n2 = grant - to_end;
-    }
+    *p2 = r->buffer;
+    *n2 = grant - to_end;
 
     return (int)grant;
 }
@@ -195,7 +187,7 @@ input_ring_write(struct input_ring_state* r, const float* data, size_t count) {
         /* First region: from head to end of buffer */
         size_t to_end = r->capacity - h;
         if (to_end >= write_now) {
-            memcpy(r->buffer + h, data, write_now * sizeof(float));
+            DSD_MEMCPY(r->buffer + h, data, write_now * sizeof(float));
             if (!input_ring_discard_generation_matches(r, discard_generation)) {
                 r->producer_drops.fetch_add(write_now);
                 break;
@@ -212,17 +204,13 @@ input_ring_write(struct input_ring_state* r, const float* data, size_t count) {
 
         /* Handle wrap-around case: split write_now across tail and head */
         if (to_end > 0) {
-            memcpy(r->buffer + h, data, to_end * sizeof(float));
+            DSD_MEMCPY(r->buffer + h, data, to_end * sizeof(float));
             data += to_end;
         }
         size_t remaining = write_now - to_end;
-        if (remaining > 0) {
-            memcpy(r->buffer, data, remaining * sizeof(float));
-            h = remaining;
-            data += remaining;
-        } else {
-            h = 0;
-        }
+        DSD_MEMCPY(r->buffer, data, remaining * sizeof(float));
+        h = remaining;
+        data += remaining;
         if (!input_ring_discard_generation_matches(r, discard_generation)) {
             r->producer_drops.fetch_add(write_now);
             break;
@@ -237,21 +225,8 @@ input_ring_write(struct input_ring_state* r, const float* data, size_t count) {
     }
 }
 
-/**
- * @brief Read up to max_count samples from the input ring, blocking until data is available.
- *
- * Returns -1 when an exit condition is observed while waiting for data.
- *
- * @param r         Input ring buffer state.
- * @param out       Destination buffer for samples.
- * @param max_count Maximum number of samples to read.
- * @return Number of samples read (>=1), 0 if max_count is 0, or -1 on exit.
- */
-int
-input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count) {
-    if (max_count == 0) {
-        return 0;
-    }
+static int
+input_ring_wait_for_data(struct input_ring_state* r) {
     while (input_ring_is_empty(r)) {
 #ifdef USE_RADIO
         if (dsd_rtl_stream_should_exit()) {
@@ -272,9 +247,29 @@ input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count) 
 #endif
             /* Metrics: consumer timed out waiting for input */
             r->read_timeouts.fetch_add(1);
-            /* Timeout: check again */
             continue;
         }
+    }
+    return 0;
+}
+
+/**
+ * @brief Read up to max_count samples from the input ring, blocking until data is available.
+ *
+ * Returns -1 when an exit condition is observed while waiting for data.
+ *
+ * @param r         Input ring buffer state.
+ * @param out       Destination buffer for samples.
+ * @param max_count Maximum number of samples to read.
+ * @return Number of samples read (>=1), 0 if max_count is 0, or -1 on exit.
+ */
+int
+input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count) {
+    if (max_count == 0) {
+        return 0;
+    }
+    if (input_ring_wait_for_data(r) != 0) {
+        return -1;
     }
 
     size_t available = input_ring_used(r);
@@ -282,14 +277,14 @@ input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count) 
     size_t t = r->tail.load();
     size_t first = r->capacity - t;
     if (first >= read_now) {
-        memcpy(out, r->buffer + t, read_now * sizeof(float));
+        DSD_MEMCPY(out, r->buffer + t, read_now * sizeof(float));
         t += read_now;
         if (t >= r->capacity) {
             t = 0;
         }
     } else {
-        memcpy(out, r->buffer + t, first * sizeof(float));
-        memcpy(out + first, r->buffer, (read_now - first) * sizeof(float));
+        DSD_MEMCPY(out, r->buffer + t, first * sizeof(float));
+        DSD_MEMCPY(out + first, r->buffer, (read_now - first) * sizeof(float));
         t = read_now - first;
     }
     r->tail.store(t);
@@ -315,27 +310,8 @@ input_ring_read_reserve(struct input_ring_state* r, size_t max_count, float** p1
         return 0;
     }
 
-    while (input_ring_is_empty(r)) {
-#ifdef USE_RADIO
-        if (dsd_rtl_stream_should_exit()) {
-            return -1;
-        }
-#endif
-        dsd_mutex_lock(&r->ready_m);
-        int ret = dsd_cond_timedwait(&r->ready, &r->ready_m, 10); /* 10ms */
-        dsd_mutex_unlock(&r->ready_m);
-        if (ret != 0) {
-            if (exitflag) {
-                return -1;
-            }
-#ifdef USE_RADIO
-            if (dsd_rtl_stream_should_exit()) {
-                return -1;
-            }
-#endif
-            r->read_timeouts.fetch_add(1);
-            continue;
-        }
+    if (input_ring_wait_for_data(r) != 0) {
+        return -1;
     }
 
     size_t available = input_ring_used(r);

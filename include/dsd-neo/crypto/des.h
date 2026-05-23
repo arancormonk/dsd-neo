@@ -11,7 +11,8 @@
  * `src/crypto/crypt-des.c`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_DES_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_DES_H_H
 
 #include <stdint.h>
 
@@ -21,8 +22,9 @@ extern "C" {
 
 void des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
                                 int len);
-void tdea_multi_keystream_output(unsigned long long int mi, uint8_t* key, uint8_t* output, int type, int len);
+void tdea_multi_keystream_output(unsigned long long int mi, const uint8_t* key, uint8_t* output, int type, int len);
 
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_DES_H_H */

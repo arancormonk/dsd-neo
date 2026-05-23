@@ -11,7 +11,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 all_zero(const float* x, int n) {
@@ -29,7 +29,7 @@ main(void) {
     if (!s) {
         return 1;
     }
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(s, 0, sizeof(*s));
 
     const int pairs = 200;
     static float buf[(size_t)pairs * 2];
@@ -48,20 +48,20 @@ main(void) {
 
     full_demod(s);
     if (!s->channel_squelched) {
-        fprintf(stderr, "squelch: below threshold but channel_squelched not set\n");
+        DSD_FPRINTF(stderr, "squelch: below threshold but channel_squelched not set\n");
         free(s);
         return 1;
     }
     // With continuous flow model, result_len should be > 0 (pipeline continues with zeros)
     if (s->result_len <= 0) {
-        fprintf(stderr, "squelch: below threshold but result_len=%d (expected >0 for continuous flow)\n",
-                s->result_len);
+        DSD_FPRINTF(stderr, "squelch: below threshold but result_len=%d (expected >0 for continuous flow)\n",
+                    s->result_len);
         free(s);
         return 1;
     }
     // Verify output is all zeros when squelched
     if (!all_zero(s->result, s->result_len)) {
-        fprintf(stderr, "squelch: below threshold but result contains non-zero samples\n");
+        DSD_FPRINTF(stderr, "squelch: below threshold but result contains non-zero samples\n");
         free(s);
         return 1;
     }
@@ -79,8 +79,8 @@ main(void) {
     s->channel_pwr = 0.0f; // reset
     full_demod(s);
     if (s->channel_squelched) {
-        fprintf(stderr, "squelch: above threshold but channel_squelched is set (pwr=%.6f, thr=%.6f)\n", s->channel_pwr,
-                s->channel_squelch_level);
+        DSD_FPRINTF(stderr, "squelch: above threshold but channel_squelched is set (pwr=%.6f, thr=%.6f)\n",
+                    s->channel_pwr, s->channel_squelch_level);
         free(s);
         return 1;
     }

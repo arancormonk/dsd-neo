@@ -8,7 +8,8 @@
  * @brief UDP audio output helpers.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_UDP_AUDIO_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_UDP_AUDIO_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -19,9 +20,11 @@
 extern "C" {
 #endif
 
-void udp_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data);
-void udp_socket_blasterA(dsd_opts* opts, dsd_state* state, size_t nsam, void* data);
+void udp_socket_blaster(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data);
+void udp_socket_blasterA(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_UDP_AUDIO_H_ */

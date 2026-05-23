@@ -17,15 +17,15 @@
  * correspond to actual callsigns.
  */
 
+#include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <stdio.h>
 #include <string.h>
-
-#include <dsd-neo/protocol/p25/p25_callsign.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_eq_str(const char* tag, const char* got, const char* want) {
     if (strcmp(got, want) != 0) {
-        fprintf(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -60,7 +60,7 @@ main(void) {
     // Just verify it doesn't crash and produces something
     rc |= (strlen(callsign) != 6);
     if (strlen(callsign) != 6) {
-        fprintf(stderr, "Max WACN/SysID: expected 6 chars, got %zu\n", strlen(callsign));
+        DSD_FPRINTF(stderr, "Max WACN/SysID: expected 6 chars, got %zu\n", strlen(callsign));
     }
 
     // Test case: Motorola BEE00 - generic WACN, should return empty string
@@ -96,14 +96,14 @@ main(void) {
     int n = p25_format_wacn_sysid(0xBEE00, 0x001, buf, sizeof(buf));
     rc |= (n <= 0);
     if (n <= 0) {
-        fprintf(stderr, "p25_format_wacn_sysid returned %d\n", n);
+        DSD_FPRINTF(stderr, "p25_format_wacn_sysid returned %d\n", n);
     }
     // Should contain the WACN and SysID but NOT a callsign in parentheses
     rc |= (strstr(buf, "BEE00") == NULL);
     rc |= (strstr(buf, "001") == NULL);
     // Should NOT contain the meaningless "0UX" decode
     if (strstr(buf, "0UX") != NULL) {
-        fprintf(stderr, "format_wacn_sysid should not include callsign for BEE00: got '%s'\n", buf);
+        DSD_FPRINTF(stderr, "format_wacn_sysid should not include callsign for BEE00: got '%s'\n", buf);
         rc |= 1;
     }
 
@@ -111,12 +111,12 @@ main(void) {
     n = p25_format_wacn_sysid(0x92493, 0x796, buf, sizeof(buf));
     rc |= (n <= 0);
     if (n <= 0) {
-        fprintf(stderr, "p25_format_wacn_sysid returned %d\n", n);
+        DSD_FPRINTF(stderr, "p25_format_wacn_sysid returned %d\n", n);
     }
     rc |= (strstr(buf, "92493") == NULL);
     rc |= (strstr(buf, "WPIH50") == NULL);
     if (strstr(buf, "WPIH50") == NULL) {
-        fprintf(stderr, "format_wacn_sysid should include WPIH50: got '%s'\n", buf);
+        DSD_FPRINTF(stderr, "format_wacn_sysid should include WPIH50: got '%s'\n", buf);
     }
 
     return rc;

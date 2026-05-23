@@ -62,7 +62,7 @@ dsd_test_path_join(char* out, size_t out_sz, const char* dir, const char* leaf) 
             errno = ENAMETOOLONG;
             return -1;
         }
-        memcpy(out, leaf, leaf_len + 1);
+        DSD_MEMCPY(out, leaf, leaf_len + 1);
         return 0;
     }
 
@@ -76,12 +76,12 @@ dsd_test_path_join(char* out, size_t out_sz, const char* dir, const char* leaf) 
         return -1;
     }
 
-    memcpy(out, dir, dir_len);
+    DSD_MEMCPY(out, dir, dir_len);
     size_t pos = dir_len;
     if (need_sep) {
         out[pos++] = dsd_test_path_sep();
     }
-    memcpy(out + pos, leaf, leaf_len + 1);
+    DSD_MEMCPY(out + pos, leaf, leaf_len + 1);
     return 0;
 }
 
@@ -119,7 +119,7 @@ dsd_test_make_temp_template(char* out, size_t out_sz, const char* prefix) {
     }
 
     char leaf[256];
-    int n = snprintf(leaf, sizeof(leaf), "%s_XXXXXX", prefix);
+    int n = DSD_SNPRINTF(leaf, sizeof(leaf), "%s_XXXXXX", prefix);
     if (n < 0 || (size_t)n >= sizeof(leaf)) {
         errno = ENAMETOOLONG;
         return -1;
@@ -130,6 +130,11 @@ dsd_test_make_temp_template(char* out, size_t out_sz, const char* prefix) {
 
 static inline int
 dsd_test_mkstemp(char* out_path, size_t out_sz, const char* prefix) {
+    if (!out_path || out_sz == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    DSD_MEMSET(out_path, 0, out_sz);
     if (dsd_test_make_temp_template(out_path, out_sz, prefix) != 0) {
         return -1;
     }
@@ -138,6 +143,11 @@ dsd_test_mkstemp(char* out_path, size_t out_sz, const char* prefix) {
 
 static inline char*
 dsd_test_mkdtemp(char* out_path, size_t out_sz, const char* prefix) {
+    if (!out_path || out_sz == 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    DSD_MEMSET(out_path, 0, out_sz);
     if (dsd_test_make_temp_template(out_path, out_sz, prefix) != 0) {
         return NULL;
     }
@@ -167,7 +177,7 @@ dsd_test_home_dir(void) {
     const char* p = getenv("HOMEPATH");
     if (d && d[0] != '\0' && p && p[0] != '\0') {
         static char buf[DSD_TEST_PATH_MAX];
-        snprintf(buf, sizeof(buf), "%s%s", d, p);
+        DSD_SNPRINTF(buf, sizeof(buf), "%s%s", d, p);
         buf[sizeof(buf) - 1] = '\0';
         return buf;
     }

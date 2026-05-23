@@ -13,7 +13,8 @@
  * This keeps protocol libraries from expanding the core `dsd_state` struct with
  * protocol-specific fields while preserving existing candidate list behavior.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TRUNK_CC_CANDIDATES_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TRUNK_CC_CANDIDATES_H_H
 
 #include <dsd-neo/core/state_fwd.h>
 
@@ -45,3 +46,4 @@ void dsd_trunk_cc_candidates_set_cooldown(dsd_state* state, long freq_hz, double
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TRUNK_CC_CANDIDATES_H_H */

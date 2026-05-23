@@ -20,12 +20,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Rigctl/RTL and CC-return stubs to avoid external I/O and core linkage
 bool
@@ -49,9 +53,11 @@ GetCurrentFreq(dsd_socket_t sockfd) {
 }
 struct RtlSdrContext;
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -59,6 +65,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts) {
         opts->trunk_is_tuned = 0;
@@ -71,12 +78,14 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 
 // Provide local stubs to satisfy DMR SM linker deps
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)ted_sps;
     if (!opts || !state || freq <= 0) {
@@ -89,8 +98,8 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
 
 static void
 init_env(dsd_opts* opts, dsd_state* state) {
-    memset(opts, 0, sizeof(*opts));
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_enable = 1;
     opts->use_rigctl = 0;
     opts->audio_in_type = AUDIO_IN_PULSE;
@@ -201,3 +210,7 @@ main(int argc, char** argv) {
     printf("DMR_T3_SHIM: OK\n");
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

@@ -6,6 +6,8 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
+#include "engine_hooks_install.h"
+
 void
 dsd_engine_trunk_tuning_hooks_install(void) {
     dsd_trunk_tuning_hooks hooks = {0};

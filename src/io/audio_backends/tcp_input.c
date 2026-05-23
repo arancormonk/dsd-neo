@@ -15,13 +15,13 @@
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
-
+#include <sndfile.h>
 #include <stdlib.h>
-#include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 /* POSIX path: use libsndfile */
-#include <sndfile.h>
 #endif
 
 /**
@@ -75,7 +75,7 @@ tcp_input_open(dsd_socket_t sockfd, int samplerate) {
     ctx->valid = 1;
 #else
     /* POSIX: wrap socket with libsndfile */
-    memset(&ctx->sf_info, 0, sizeof(ctx->sf_info));
+    DSD_MEMSET(&ctx->sf_info, 0, sizeof(ctx->sf_info));
     ctx->sf_info.samplerate = samplerate;
     ctx->sf_info.channels = 1;
     ctx->sf_info.format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
@@ -129,7 +129,7 @@ tcp_input_read_sample(tcp_input_ctx* ctx, int16_t* out) {
         /* Not enough data in buffer, need to read more from socket */
         if (ctx->buf_pos > 0 && ctx->buf_len > ctx->buf_pos) {
             /* Move remaining partial byte(s) to start of buffer */
-            memmove(ctx->buf, ctx->buf + ctx->buf_pos, ctx->buf_len - ctx->buf_pos);
+            DSD_MEMMOVE(ctx->buf, ctx->buf + ctx->buf_pos, ctx->buf_len - ctx->buf_pos);
             ctx->buf_len -= ctx->buf_pos;
             ctx->buf_pos = 0;
         } else {
@@ -169,7 +169,7 @@ tcp_input_read_sample(tcp_input_ctx* ctx, int16_t* out) {
 }
 
 int
-tcp_input_is_valid(tcp_input_ctx* ctx) {
+tcp_input_is_valid(const tcp_input_ctx* ctx) {
     if (!ctx) {
         return 0;
     }
@@ -177,7 +177,7 @@ tcp_input_is_valid(tcp_input_ctx* ctx) {
 }
 
 dsd_socket_t
-tcp_input_get_socket(tcp_input_ctx* ctx) {
+tcp_input_get_socket(const tcp_input_ctx* ctx) {
     if (!ctx) {
         return DSD_INVALID_SOCKET;
     }

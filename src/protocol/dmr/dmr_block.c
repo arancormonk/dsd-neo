@@ -29,8 +29,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #define DMR_PDU_DECRYPTION //disable to skip attempting to decrypt DMR PDUs
@@ -38,718 +38,610 @@
 // Bounded string append helper (implemented later in file)
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
+typedef struct {
+    uint8_t a;
+    uint8_t bf;
+    uint8_t dd_format;
+    uint8_t dpf;
+    uint8_t f;
+    uint8_t fsn;
+    uint8_t gi;
+    uint8_t is_xpt;
+    uint8_t p_mfid;
+    uint8_t p_sap;
+    uint8_t poc;
+    uint8_t r_class;
+    uint8_t r_status;
+    uint8_t r_type;
+    uint8_t s;
+    uint8_t s_ab_fin;
+    uint8_t s_dest_port;
+    uint8_t s_source_port;
+    uint8_t s_status_precoded;
+    uint8_t sap;
+    uint8_t sd_bp;
+    uint8_t sd_f;
+    uint8_t sd_sarq;
+    uint8_t tg_hash;
+    uint8_t udt_format;
+    uint8_t udt_op;
+    uint8_t udt_padnib;
+    uint8_t udt_pf;
+    uint8_t udt_sf;
+    uint8_t udt_uab;
+    uint8_t ns;
+    uint32_t source;
+    uint32_t target;
+    char mfid_string[20];
+    char sap_string[20];
+    char sddd_string[20];
+    char udtf_string[20];
+} dmr_dheader_fields;
+
+static void
+dmr_clear_superframe_slot(dsd_state* state, uint8_t slot) {
+    for (int i = 0; i < 24 * 127; i++) {
+        state->dmr_pdu_sf[slot][i] = 0;
+    }
+}
+
+static uint8_t
+dmr_branding_is(const dsd_state* state, const char* value) {
+    return (uint8_t)(strcmp(state->dmr_branding_sub, value) == 0);
+}
+
+static const char*
+dmr_dpf_string(uint8_t dpf) {
+    switch (dpf) {
+        case 0: return "Unified Data Transport (UDT) ";
+        case 1: return "Response Packet ";
+        case 2: return "Unconfirmed Delivery ";
+        case 3: return "Confirmed Delivery ";
+        case 13: return "Short Data: Defined ";
+        case 14: return "Short Data: Raw or S/P ";
+        case 15: return "Extended";
+        default: return NULL;
+    }
+}
+
+static const char*
+dmr_sap_string(uint8_t sap, uint8_t p_mfid) {
+    switch (sap) {
+        case 0: return "UDT Data";
+        case 2: return "TCP Comp";
+        case 3: return "UDP Comp";
+        case 4: return "IP Based";
+        case 5: return "ARP Prot";
+        case 9: return "EXTD HDR";
+        case 10: return "Short DT";
+        case 1: return (p_mfid == 0x10) ? "Moto NET" : "Reserved";
+        default: return "Reserved";
+    }
+}
+
+static const char*
+dmr_mfid_string(uint8_t p_mfid) {
+    switch (p_mfid) {
+        case 0x10: return "Moto";
+        case 0x77: return "Vertex";
+        case 0x58: return "Tait";
+        case 0x68:
+        case 0x08: return "Hytera";
+        case 0x06: return "Trid/Mot";
+        case 0x00: return "Standard";
+        default: return "Other";
+    }
+}
+
+static const char*
+dmr_udt_format_string(uint8_t udt_format) {
+    static const char* const map[] = {"Binary",  "MS/TG Adr", "4-bit BCD", "ISO7 Char", "ISO8 Char", "NMEA LOCN",
+                                      "IP Addr", "UTF-16",    "Manu Spec", "Manu Spec", "Mixed UTF", "LIP LOCN"};
+    if (udt_format < (sizeof(map) / sizeof(map[0]))) {
+        return map[udt_format];
+    }
+    return "Reserved";
+}
+
+static const char*
+dmr_dd_format_string(uint8_t dd_format) {
+    static const char* const map[] = {"Binary",      "BCD   ",      "7-bit Char",  "IEC 8859-1",  "IEC 8859-2",
+                                      "IEC 8859-3",  "IEC 8859-4",  "IEC 8859-5",  "IEC 8859-6",  "IEC 8859-7",
+                                      "IEC 8859-8",  "IEC 8859-9",  "IEC 8859-10", "IEC 8859-11", "IEC 8859-13",
+                                      "IEC 8859-14", "IEC 8859-15", "IEC 8859-16", "UTF-8   ",    "UTF-16  ",
+                                      "UTF-16BE",    "UTF-16LE",    "UTF-32  ",    "UTF-32BE",    "UTF-32LE"};
+    if (dd_format < (sizeof(map) / sizeof(map[0]))) {
+        return map[dd_format];
+    }
+    return "Reserved";
+}
+
+static void
+dmr_dheader_parse_fields(const dsd_state* state, const uint8_t dheader_bits[], dmr_dheader_fields* f) {
+    uint8_t mpoc = dheader_bits[3];
+    uint8_t s_ab_msb = (uint8_t)ConvertBitIntoBytes(&dheader_bits[2], 2);
+    uint8_t s_ab_lsb = (uint8_t)ConvertBitIntoBytes(&dheader_bits[12], 4);
+    f->gi = dheader_bits[0];
+    f->a = dheader_bits[1];
+    f->dpf = (uint8_t)ConvertBitIntoBytes(&dheader_bits[4], 4);
+    f->sap = (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 4);
+    f->poc = (uint8_t)ConvertBitIntoBytes(&dheader_bits[12], 4) + (mpoc << 4);
+    f->target = (uint32_t)ConvertBitIntoBytes(&dheader_bits[16], 24);
+    f->source = (uint32_t)ConvertBitIntoBytes(&dheader_bits[40], 24);
+    f->is_xpt = dmr_branding_is(state, "XPT ");
+    if (f->is_xpt == 1) {
+        f->target = (uint32_t)ConvertBitIntoBytes(&dheader_bits[24], 16);
+        f->source = (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 16);
+        if (f->gi == 0) {
+            uint8_t target_hash[16];
+            for (int i = 0; i < 16; i++) {
+                target_hash[i] = dheader_bits[24 + i];
+            }
+            f->tg_hash = crc8(target_hash, 16);
+        }
+    }
+    if (dmr_branding_is(state, "Cap+ ")) {
+        if (f->gi == 0) {
+            f->target = (uint32_t)ConvertBitIntoBytes(&dheader_bits[24], 16);
+        }
+        f->source = (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 16);
+    }
+    f->f = dheader_bits[64];
+    f->bf = (uint8_t)ConvertBitIntoBytes(&dheader_bits[65], 7);
+    f->s = dheader_bits[72];
+    f->ns = (uint8_t)ConvertBitIntoBytes(&dheader_bits[73], 3);
+    f->fsn = (uint8_t)ConvertBitIntoBytes(&dheader_bits[76], 4);
+    f->r_class = (uint8_t)ConvertBitIntoBytes(&dheader_bits[72], 2);
+    f->r_type = (uint8_t)ConvertBitIntoBytes(&dheader_bits[74], 3);
+    f->r_status = (uint8_t)ConvertBitIntoBytes(&dheader_bits[77], 3);
+    f->s_ab_fin = (uint8_t)((s_ab_msb << 2) | s_ab_lsb);
+    f->s_source_port = (uint8_t)ConvertBitIntoBytes(&dheader_bits[64], 3);
+    f->s_dest_port = (uint8_t)ConvertBitIntoBytes(&dheader_bits[67], 3);
+    f->s_status_precoded = (uint8_t)ConvertBitIntoBytes(&dheader_bits[70], 10);
+    f->sd_sarq = dheader_bits[70];
+    f->sd_f = dheader_bits[71];
+    f->sd_bp = (uint8_t)ConvertBitIntoBytes(&dheader_bits[72], 8);
+    f->dd_format = (uint8_t)ConvertBitIntoBytes(&dheader_bits[64], 6);
+    f->udt_format = (uint8_t)ConvertBitIntoBytes(&dheader_bits[12], 4);
+    f->udt_padnib = (uint8_t)ConvertBitIntoBytes(&dheader_bits[64], 5);
+    f->udt_uab = (uint8_t)ConvertBitIntoBytes(&dheader_bits[70], 2);
+    f->udt_sf = dheader_bits[72];
+    f->udt_pf = dheader_bits[73];
+    f->udt_op = (uint8_t)ConvertBitIntoBytes(&dheader_bits[74], 6);
+    f->udt_uab += 1;
+    f->p_sap = (uint8_t)ConvertBitIntoBytes(&dheader_bits[0], 4);
+    f->p_mfid = (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 8);
+}
+
+static void
+dmr_dheader_init_strings(dmr_dheader_fields* f) {
+    DSD_SNPRINTF(f->sap_string, sizeof f->sap_string, "%s", "");
+    DSD_SNPRINTF(f->mfid_string, sizeof f->mfid_string, "%s", "");
+    DSD_SNPRINTF(f->udtf_string, sizeof f->udtf_string, "%s", "");
+    DSD_SNPRINTF(f->sddd_string, sizeof f->sddd_string, "%s", "");
+}
+
+static void
+dmr_dheader_set_strings(dmr_dheader_fields* f) {
+    if (f->dpf == 15) {
+        f->sap = f->p_sap;
+    }
+    DSD_SNPRINTF(f->sap_string, sizeof f->sap_string, "%s", dmr_sap_string(f->sap, f->p_mfid));
+    if (f->dpf == 15) {
+        DSD_SNPRINTF(f->mfid_string, sizeof f->mfid_string, "%s", dmr_mfid_string(f->p_mfid));
+    }
+    if (f->dpf == 0) {
+        DSD_SNPRINTF(f->udtf_string, sizeof f->udtf_string, "%s", dmr_udt_format_string(f->udt_format));
+    }
+    if (f->dpf == 13) {
+        DSD_SNPRINTF(f->sddd_string, sizeof f->sddd_string, "%s", dmr_dd_format_string(f->dd_format));
+    }
+}
+
+static void
+dmr_dheader_set_udt_reserved(dsd_state* state, uint8_t slot, const dmr_dheader_fields* f) {
+    state->udt_uab_reserved[slot] = 0;
+    if (f->dpf == 0 && f->udt_format == 0x05 && f->udt_uab == 3) {
+        state->udt_uab_reserved[slot] = 1;
+    }
+}
+
+static void
+dmr_dheader_print_banner(uint8_t slot, const dmr_dheader_fields* f) {
+    char hdr[512];
+    int off = 0;
+    off += DSD_SNPRINTF(hdr + off, sizeof(hdr) - off, "%s \n Slot %d Data Header - ", KGRN, slot + 1);
+    if (f->dpf != 15) {
+        if (f->gi == 1) {
+            off += DSD_SNPRINTF(hdr + off, sizeof(hdr) - off, "Group - ");
+        } else if (f->gi == 0) {
+            off += DSD_SNPRINTF(hdr + off, sizeof(hdr) - off, "Indiv - ");
+        }
+    }
+    const char* dpf_str = dmr_dpf_string(f->dpf);
+    if (dpf_str != NULL) {
+        off += DSD_SNPRINTF(hdr + off, sizeof(hdr) - off, "%s", dpf_str);
+    } else {
+        off += DSD_SNPRINTF(hdr + off, sizeof(hdr) - off, "Reserved/Unknown DPF %X ", f->dpf);
+    }
+    if (f->a == 1 && f->dpf != 15) {
+        off += DSD_SNPRINTF(hdr + off, sizeof(hdr) - off, "- Response Requested ");
+    }
+    if (f->dpf != 15) {
+        off += DSD_SNPRINTF(hdr + off, sizeof(hdr) - off, "- Source: %d Target: %d ", f->source, f->target);
+    }
+    if (f->dpf != 15 && f->is_xpt == 1 && f->gi == 0) {
+        (void)DSD_SNPRINTF(hdr + off, sizeof(hdr) - off, "Hash: %d ", f->tg_hash);
+    }
+    DSD_FPRINTF(stderr, "%s", hdr);
+}
+
+static void
+dmr_dheader_handle_udt(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t slot, const dmr_dheader_fields* f) {
+    if (state->udt_uab_reserved[slot]) {
+        DSD_FPRINTF(stderr,
+                    "\n  SAP %02d [%s] - FMT %d [%s] - PDn %d - BLOCKS %d (reserved/unknown) SF %d - PF %d OP %02X",
+                    f->sap, f->sap_string, f->udt_format, f->udtf_string, f->udt_padnib, f->udt_uab, f->udt_sf,
+                    f->udt_pf, f->udt_op);
+    } else {
+        DSD_FPRINTF(stderr, "\n  SAP %02d [%s] - FMT %d [%s] - PDn %d - BLOCKS %d SF %d - PF %d OP %02X", f->sap,
+                    f->sap_string, f->udt_format, f->udtf_string, f->udt_padnib, f->udt_uab, f->udt_sf, f->udt_pf,
+                    f->udt_op);
+    }
+    state->data_header_blocks[slot] = f->udt_uab;
+    state->data_header_valid[slot] = 1;
+    state->data_block_counter[slot] = 0;
+    dmr_block_assembler(opts, state, dheader, 12, 0x0B, 3);
+}
+
+static void
+dmr_dheader_handle_response(uint8_t slot, const dmr_dheader_fields* f) {
+    char rsp_string[200];
+    DSD_MEMSET(rsp_string, 0, sizeof(rsp_string));
+    DSD_SPRINTF(rsp_string, "DATA RESP TGT: %d; SRC: %d; ", f->target, f->source);
+    if (f->r_class == 0 && f->r_type == 1) {
+        dsd_append(rsp_string, sizeof rsp_string, "ACK - Success");
+    }
+    if (f->r_class == 1) {
+        dsd_append(rsp_string, sizeof rsp_string, "NACK - ");
+        if (f->r_type == 0) {
+            dsd_append(rsp_string, sizeof rsp_string, "Illegal Format");
+        }
+        if (f->r_type == 1) {
+            dsd_append(rsp_string, sizeof rsp_string, "Illegal Format");
+        }
+        if (f->r_type == 2) {
+            dsd_append(rsp_string, sizeof rsp_string, "Packet CRC ERR");
+        }
+        if (f->r_type == 3) {
+            dsd_append(rsp_string, sizeof rsp_string, "Memory Full");
+        }
+        if (f->r_type == 4) {
+            dsd_append(rsp_string, sizeof rsp_string, "FSN Out of Seq");
+        }
+        if (f->r_type == 5) {
+            dsd_append(rsp_string, sizeof rsp_string, "Undeliverable");
+        }
+        if (f->r_type == 6) {
+            dsd_append(rsp_string, sizeof rsp_string, "PKT Out of Seq");
+        }
+        if (f->r_type == 7) {
+            dsd_append(rsp_string, sizeof rsp_string, "Invalid User");
+        }
+    }
+    if (f->r_class == 2) {
+        dsd_append(rsp_string, sizeof rsp_string, "SACK - Retry");
+    }
+    UNUSED(f->r_status);
+    UNUSED(slot);
+    DSD_FPRINTF(stderr, "\n %s", rsp_string);
+}
+
+static void
+dmr_dheader_handle_unconfirmed_or_confirmed(dsd_state* state, uint8_t slot, const dmr_dheader_fields* f) {
+    if (f->dpf == 2) {
+        DSD_FPRINTF(stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - FSN %d", f->sap, f->sap_string, f->f,
+                    f->bf, f->poc, f->fsn);
+    } else {
+        DSD_FPRINTF(stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - S %d - NS %d - FSN %d", f->sap,
+                    f->sap_string, f->f, f->bf, f->poc, f->s, f->ns, f->fsn);
+    }
+    state->data_header_blocks[slot] = f->bf;
+    if (f->dpf == 3) {
+        state->data_conf_data[slot] = 1;
+    }
+}
+
+static void
+dmr_dheader_handle_short_data(dsd_state* state, uint8_t slot, const dmr_dheader_fields* f) {
+    if (f->s_ab_fin) {
+        state->data_header_blocks[slot] = f->s_ab_fin;
+    }
+    if (f->dpf == 13) {
+        DSD_FPRINTF(stderr, "\n  SD:D [DD_HEAD] - SAP %02d [%s] - BLOCKS %02d - DD %02X - PADb %d - FMT %02X [%s]",
+                    f->sap, f->sap_string, f->s_ab_fin, f->dd_format, f->sd_bp, f->dd_format, f->sddd_string);
+    }
+    if (f->dpf == 14) {
+        if (f->s_ab_fin == 0) {
+            DSD_FPRINTF(stderr, "\n  SD:S/P [SP_HEAD] - SAP %02d [%s] - SP %02d - DP %02d - S/P %02X", f->sap,
+                        f->sap_string, f->s_source_port, f->s_dest_port, f->s_status_precoded);
+        } else {
+            DSD_FPRINTF(stderr,
+                        "\n  SD:RAW [R_HEAD] - SAP %02d [%s] - BLOCKS %02d - SP %02d - DP %02d - SARQ %d - FMF %d - "
+                        "PDb %d",
+                        f->sap, f->sap_string, f->s_ab_fin, f->s_source_port, f->s_dest_port, f->sd_sarq, f->sd_f,
+                        f->sd_bp);
+        }
+    }
+    if (f->a == 1) {
+        state->data_conf_data[slot] = 1;
+        DSD_FPRINTF(stderr, " - Confirmed Data");
+    }
+}
+
+static void
+dmr_dheader_handle_moto_p_head(dsd_state* state, uint8_t slot, uint8_t dheader[], const uint8_t dheader_bits[]) {
+    size_t start = 0;
+    size_t len = 10U - start;
+    DSD_MEMCPY(state->dmr_pdu_sf[slot], dheader + start, len * sizeof(uint8_t));
+    state->data_block_counter[slot]++;
+    state->data_byte_ctr[slot] = (uint16_t)len;
+    state->data_p_head[slot] = 1;
+    uint8_t p_opcode = (uint8_t)ConvertBitIntoBytes(&dheader_bits[16], 8);
+    switch (p_opcode) {
+        case 0x02: state->data_ks_start[slot] = 3; break;
+        default: state->data_ks_start[slot] = 0; break;
+    }
+}
+
+static void
+dmr_dheader_handle_vertex_enc(dsd_state* state, uint8_t slot, uint8_t p_mfid, const uint8_t dheader_bits[]) {
+    uint8_t key_id = (uint8_t)ConvertBitIntoBytes(&dheader_bits[16], 8);
+    uint32_t mi32 = (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 32);
+    if (state->currentslot == 0) {
+        state->dmr_so = 0x100;
+        state->payload_keyid = key_id;
+        state->payload_algid = 0x07;
+        state->payload_mi = (unsigned long long int)mi32;
+    } else {
+        state->dmr_soR = 0x100;
+        state->payload_keyidR = key_id;
+        state->payload_algidR = 0x07;
+        state->payload_miR = (unsigned long long int)mi32;
+    }
+    DSD_FPRINTF(stderr, "\n Vertex PDU ENC Header:");
+    DSD_FPRINTF(stderr, " MFID: %02X;", p_mfid);
+    DSD_FPRINTF(stderr, " Key ID: %02X;", key_id);
+    DSD_FPRINTF(stderr, " ALG: 07; VTX STD;");
+    if (mi32 != 0U) {
+        DSD_FPRINTF(stderr, " MI(32): %08X", mi32);
+    }
+    state->data_ks_start[slot] = 0;
+}
+
+static void
+dmr_dheader_print_alg_label(uint8_t alg) {
+    if (alg == 0) {
+        DSD_FPRINTF(stderr, " BP;");
+    }
+    if (alg == 1) {
+        DSD_FPRINTF(stderr, " RC4;");
+    }
+    if (alg == 2) {
+        DSD_FPRINTF(stderr, " DES56;");
+    }
+    if (alg == 4) {
+        DSD_FPRINTF(stderr, " AES128;");
+    }
+    if (alg == 5) {
+        DSD_FPRINTF(stderr, " AES256;");
+    }
+}
+
+static void
+dmr_dheader_handle_moto_enc(dsd_state* state, uint8_t slot, const uint8_t dheader_bits[]) {
+    uint8_t enc = (uint8_t)ConvertBitIntoBytes(&dheader_bits[20], 4);
+    uint8_t key_id = (uint8_t)ConvertBitIntoBytes(&dheader_bits[24], 8);
+    uint8_t alg = (uint8_t)ConvertBitIntoBytes(&dheader_bits[17], 3);
+    uint32_t mi32 = (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 32);
+    if (enc == 1) {
+        if (state->currentslot == 0) {
+            state->dmr_so = 0x100;
+        } else {
+            state->dmr_soR = 0x100;
+        }
+    }
+    DSD_FPRINTF(stderr, "\n PDU ENC Header:");
+    DSD_FPRINTF(stderr, " MFID: %02X;", (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 8));
+    DSD_FPRINTF(stderr, " ENC: %X;", enc);
+    if (state->currentslot == 0) {
+        state->payload_keyid = key_id;
+        state->payload_algid = alg;
+        state->payload_mi = (unsigned long long int)mi32;
+    } else {
+        state->payload_keyidR = key_id;
+        state->payload_algidR = alg;
+        state->payload_miR = (unsigned long long int)mi32;
+    }
+    DSD_FPRINTF(stderr, " Key ID: %02X;", key_id);
+    DSD_FPRINTF(stderr, " ALG: %02X;", alg);
+    dmr_dheader_print_alg_label(alg);
+    if (mi32 != 0) {
+        DSD_FPRINTF(stderr, " MI(32): %08X", mi32);
+    }
+    state->data_ks_start[slot] = 0;
+}
+
+static void
+dmr_dheader_print_unknown_ext(const uint8_t dheader_bits[]) {
+    DSD_FPRINTF(stderr, "\n Unknown Extended Header: ");
+    for (uint8_t i = 2; i < 10; i++) {
+        DSD_FPRINTF(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&dheader_bits[((size_t)i) * 8u], 8));
+    }
+}
+
+static void
+dmr_dheader_handle_proprietary(dsd_state* state, uint8_t slot, uint8_t dheader[], const uint8_t dheader_bits[],
+                               const dmr_dheader_fields* f) {
+    DSD_FPRINTF(stderr, " - SAP %02d [%s] - MFID %02X [%s]", f->p_sap, f->sap_string, f->p_mfid, f->mfid_string);
+    if (f->p_mfid == 0x10 && f->p_sap == 1) {
+        dmr_dheader_handle_moto_p_head(state, slot, dheader, dheader_bits);
+    } else {
+        if (state->data_header_blocks[slot] > 1) {
+            state->data_header_blocks[slot]--;
+        }
+        state->data_byte_ctr[slot] = 0;
+    }
+    if (f->p_sap != 1 && f->p_mfid == 0x77) {
+        dmr_dheader_handle_vertex_enc(state, slot, f->p_mfid, dheader_bits);
+    } else if (f->p_sap != 1 && f->p_mfid == 0x10) {
+        dmr_dheader_handle_moto_enc(state, slot, dheader_bits);
+    } else if (f->p_sap == 1 && f->p_mfid == 0x10) {
+        DSD_FPRINTF(stderr, "\n Motorola Network Interface Service Header (MNIS); ");
+    } else {
+        dmr_dheader_print_unknown_ext(dheader_bits);
+    }
+}
+
+static void
+dmr_dheader_reset_non_extended(dsd_state* state, uint8_t slot) {
+    if (state->currentslot == 0) {
+        state->payload_mi = 0;
+        state->payload_algid = 0;
+        state->payload_keyid = 0;
+        state->dmr_so = 0;
+    } else {
+        state->payload_miR = 0;
+        state->payload_algidR = 0;
+        state->payload_keyidR = 0;
+        state->dmr_soR = 0;
+    }
+    state->data_byte_ctr[slot] = 0;
+}
+
+static void
+dmr_dheader_sanitize_blocks(dsd_state* state, uint8_t slot) {
+    if (state->data_header_blocks[slot] > 127) {
+        state->data_header_blocks[slot] = 127;
+    }
+    if (state->data_header_blocks[slot] < 1) {
+        state->data_header_blocks[slot] = 1;
+    }
+}
+
+static void
+dmr_dheader_reset_irrecoverable(dsd_state* state, uint8_t slot) {
+    state->data_header_valid[slot] = 0;
+    DSD_SPRINTF(state->dmr_lrrp_gps[slot], "%s", "");
+    state->data_p_head[slot] = 0;
+    state->data_conf_data[slot] = 0;
+    state->data_block_counter[slot] = 1;
+    state->data_header_blocks[slot] = 1;
+    state->data_header_format[slot] = 7;
+}
+
+static void
+dmr_dheader_handle_by_format(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[], uint8_t slot,
+                             const dmr_dheader_fields* f) {
+    switch (f->dpf) {
+        case 0: dmr_dheader_handle_udt(opts, state, dheader, slot, f); break;
+        case 1: dmr_dheader_handle_response(slot, f); break;
+        case 2:
+        case 3: dmr_dheader_handle_unconfirmed_or_confirmed(state, slot, f); break;
+        case 13:
+        case 14: dmr_dheader_handle_short_data(state, slot, f); break;
+        case 15: dmr_dheader_handle_proprietary(state, slot, dheader, dheader_bits, f); break;
+        default: break;
+    }
+
+    if (f->dpf != 15) {
+        dmr_dheader_reset_non_extended(state, slot);
+    }
+}
+
 //hopefully a more simplified (or logical) version...once you get past all the variables
 void
 dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[], uint32_t CRCCorrect,
             uint32_t IrrecoverableErrors) {
-
     uint8_t slot = state->currentslot;
-
-    //clear out unified pdu 'superframe' slot
-    for (int i = 0; i < 24 * 127; i++) {
-        state->dmr_pdu_sf[slot][i] = 0;
-    }
-
-    //reset block counter to 1
+    dmr_dheader_fields f;
+    DSD_MEMSET(&f, 0, sizeof(f));
+    dmr_clear_superframe_slot(state, slot);
     state->data_block_counter[slot] = 1;
-
-    // DMR headers: accept if CRC is good, in globally relaxed mode (-F), or when
-    // DMR default-relax is enabled. Strict callers (tests) set aggressive_framesync=1
-    // and leave dmr_crc_relaxed_default=0 to force rejection on CRC fail.
-    if (IrrecoverableErrors == 0
-        && (CRCCorrect == 1 || opts->aggressive_framesync == 0 || opts->dmr_crc_relaxed_default)) {
-        // Reset confirmed-data DBSN tracking on new header
-        state->data_dbsn_have[slot] = 0;
-        state->data_dbsn_expected[slot] = 0;
-
-        uint8_t gi = dheader_bits[0];                                    //group or individual data
-        uint8_t a = dheader_bits[1];                                     //response requested flag
-        uint8_t ab = (uint8_t)ConvertBitIntoBytes(&dheader_bits[2], 2);  //appended blocks
-        uint8_t dpf = (uint8_t)ConvertBitIntoBytes(&dheader_bits[4], 4); //data packet format
-        uint8_t sap = (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 4); //service access point
-        uint8_t mpoc = dheader_bits[3]; //most significant bit of the 5-bit Pad Octet Count
-        uint8_t poc = (uint8_t)ConvertBitIntoBytes(&dheader_bits[12], 4) + (mpoc << 4); //padding octets
-        UNUSED(ab);
-
-        uint32_t target = (uint32_t)ConvertBitIntoBytes(&dheader_bits[16], 24); //destination llid
-        uint32_t source = (uint32_t)ConvertBitIntoBytes(&dheader_bits[40], 24); //source llid
-
-        //extra tgt/src handling for XPT
-        uint8_t target_hash[24];
-        uint8_t tg_hash = 0;
-        uint8_t is_xpt = 0;
-        //set flag if XPT
-        if (strcmp(state->dmr_branding_sub, "XPT ") == 0) {
-            is_xpt = 1;
-        }
-
-        //truncate tgt/src to 16-bit values if XPT
-        if (is_xpt == 1) {
-            target = (uint32_t)ConvertBitIntoBytes(&dheader_bits[24], 16); //destination llid
-            source = (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 16); //source llid
-            if (gi == 0) {
-                for (int i = 0; i < 16; i++) {
-                    target_hash[i] = dheader_bits[24 + i];
-                }
-                tg_hash = crc8(target_hash, 16);
-            }
-        }
-
-        uint8_t is_cap = 0;
-        if (strcmp(state->dmr_branding_sub, "Cap+ ") == 0) {
-            is_cap = 1;
-        }
-
-        if (is_cap) {
-            //truncate tg on group? or just on private/individual data?
-            if (gi == 0) {
-                target = (uint32_t)ConvertBitIntoBytes(&dheader_bits[24], 16);
-            }
-            source = (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 16);
-        }
-
-        //store source and target for dmr pdu packet handling (lrrp) when not available in completed message
-        if (dpf != 15) {
-            state->dmr_lrrp_source[slot] = source;
-            state->dmr_lrrp_target[slot] = target;
-        }
-
-        //store number of padding octets in a header to be used
-        if (dpf != 15) {
-            state->data_block_poc[slot] = poc;
-        }
-
-        //set dpf to storage for later use (UDT, SD, etc)
-        state->data_header_format[slot] = dpf;
-
-        //Type Strings
-        char sap_string[20];
-        char mfid_string[20];
-        char udtf_string[20];
-        char sddd_string[20];
-        snprintf(sap_string, sizeof sap_string, "%s", "");
-        snprintf(mfid_string, sizeof mfid_string, "%s", "");
-        snprintf(udtf_string, sizeof udtf_string, "%s", "");
-        snprintf(sddd_string, sizeof sddd_string, "%s", "");
-
-        //see 9.3 - ETSI TS 102 361-1 V2.5.1 (2017-10) for more info
-        uint8_t f = dheader_bits[64];                                    //F -- Full message flag (F)
-        uint8_t bf = (uint8_t)ConvertBitIntoBytes(&dheader_bits[65], 7); //Blocks to Follow (BF)
-
-        //confirmed data header
-        uint8_t s = dheader_bits[72];                                     //S -- Re-Synchronize Flag
-        uint8_t ns = (uint8_t)ConvertBitIntoBytes(&dheader_bits[73], 3);  //N(S) -- send sequence number
-        uint8_t fsn = (uint8_t)ConvertBitIntoBytes(&dheader_bits[76], 4); //Fragment Sequence Number (FSN)
-
-        //response header
-        uint8_t r_class = (uint8_t)ConvertBitIntoBytes(&dheader_bits[72], 2);
-        uint8_t r_type = (uint8_t)ConvertBitIntoBytes(&dheader_bits[74], 3);
-        uint8_t r_status = (uint8_t)ConvertBitIntoBytes(&dheader_bits[77], 3);
-
-        //short data - status/precoded
-        uint8_t s_ab_msb = (uint8_t)ConvertBitIntoBytes(&dheader_bits[2], 2);  //appended block, msb
-        uint8_t s_ab_lsb = (uint8_t)ConvertBitIntoBytes(&dheader_bits[12], 4); //appended block, lsb
-        uint8_t s_ab_fin = (s_ab_msb << 2) | s_ab_lsb;                         //appended blocks, final value
-        uint8_t s_source_port = (uint8_t)ConvertBitIntoBytes(&dheader_bits[64], 3);
-        uint8_t s_dest_port = (uint8_t)ConvertBitIntoBytes(&dheader_bits[67], 3);
-        uint8_t s_status_precoded = (uint8_t)ConvertBitIntoBytes(&dheader_bits[70], 10);
-
-        //short data - raw
-        uint8_t sd_sarq = dheader_bits[70];                                 //Selective Automatic Repeat reQuest
-        uint8_t sd_f = dheader_bits[71];                                    //full message flag
-        uint8_t sd_bp = (uint8_t)ConvertBitIntoBytes(&dheader_bits[72], 8); //bit padding
-
-        //short data - defined
-        uint8_t dd_format = (uint8_t)ConvertBitIntoBytes(&dheader_bits[64], 6);
-
-        //Unified Data Transport (UDT)
-        uint8_t udt_format = (uint8_t)ConvertBitIntoBytes(&dheader_bits[12], 4);
-        uint8_t udt_padnib = (uint8_t)ConvertBitIntoBytes(&dheader_bits[64], 5);
-        uint8_t udt_uab = (uint8_t)ConvertBitIntoBytes(&dheader_bits[70], 2); //udt appended blocks
-        uint8_t udt_sf = dheader_bits[72];
-        uint8_t udt_pf = dheader_bits[73];
-        uint8_t udt_op = (uint8_t)ConvertBitIntoBytes(&dheader_bits[74], 6);
-
-        //ETSI TS 102 361-4 V1.12.1 (2023-07) p281
-        udt_uab += 1; //add 1 internally, up to 4 appended blocks are carried, min is 1
-
-        // Harden UDT UAB edge cases (P7):
-        // Do not coerce UAB to a different block count. For NMEA (0x05) with UAB==3,
-        // treat the block count as reserved/unknown and let the assembler detect the
-        // last block via CRC instead of block count. This avoids false-positive counts.
-        state->udt_uab_reserved[slot] = 0;
-        if (dpf == 0 && udt_format == 0x05 && udt_uab == 3) {
-            state->udt_uab_reserved[slot] = 1;
-        }
-
-        //p_head
-        uint8_t p_sap = (uint8_t)ConvertBitIntoBytes(&dheader_bits[0], 4);
-        uint8_t p_mfid = (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 8);
-
-        {
-            char hdr[512];
-            int off = 0;
-            off += snprintf(hdr + off, sizeof(hdr) - off, "%s \n Slot %d Data Header - ", KGRN, slot + 1);
-            if (dpf != 15) {
-                if (gi == 1) {
-                    off += snprintf(hdr + off, sizeof(hdr) - off, "Group - ");
-                } else if (gi == 0) {
-                    off += snprintf(hdr + off, sizeof(hdr) - off, "Indiv - ");
-                }
-            }
-            const char* dpf_str = NULL;
-            switch (dpf) {
-                case 0: dpf_str = "Unified Data Transport (UDT) "; break;
-                case 1: dpf_str = "Response Packet "; break;
-                case 2: dpf_str = "Unconfirmed Delivery "; break;
-                case 3: dpf_str = "Confirmed Delivery "; break;
-                case 13: dpf_str = "Short Data: Defined "; break;
-                case 14: dpf_str = "Short Data: Raw or S/P "; break;
-                case 15: dpf_str = "Extended"; break;
-                default: dpf_str = NULL; break;
-            }
-            if (dpf_str) {
-                off += snprintf(hdr + off, sizeof(hdr) - off, "%s", dpf_str);
-            } else {
-                off += snprintf(hdr + off, sizeof(hdr) - off, "Reserved/Unknown DPF %X ", dpf);
-            }
-            if (a == 1 && dpf != 15) {
-                off += snprintf(hdr + off, sizeof(hdr) - off, "- Response Requested ");
-            }
-            if (dpf != 15) {
-                off += snprintf(hdr + off, sizeof(hdr) - off, "- Source: %d Target: %d ", source, target);
-            }
-            if (dpf != 15 && is_xpt == 1 && gi == 0) {
-                (void)snprintf(hdr + off, sizeof(hdr) - off, "Hash: %d ", tg_hash);
-            }
-            fprintf(stderr, "%s", hdr);
-        }
-
-        //sap string handling
-        if (dpf == 15) {
-            sap = p_sap;
-        }
-
-        if (sap == 0) {
-            snprintf(sap_string, sizeof sap_string, "%s", "UDT Data"); //apparently, both dpf and sap for UDT is 0
-        } else if (sap == 2) {
-            snprintf(sap_string, sizeof sap_string, "%s", "TCP Comp"); //TCP/IP header compression
-        } else if (sap == 3) {
-            snprintf(sap_string, sizeof sap_string, "%s", "UDP Comp"); //UDP/IP header compression
-        } else if (sap == 4) {
-            snprintf(sap_string, sizeof sap_string, "%s", "IP Based"); //IP based Packet Data
-        } else if (sap == 5) {
-            snprintf(sap_string, sizeof sap_string, "%s", "ARP Prot"); //Address Resoution Protocol (ARP)
-        } else if (sap == 9) {
-            snprintf(sap_string, sizeof sap_string, "%s", "EXTD HDR"); //Extended Header (Proprietary)
-        } else if (sap == 10) {
-            snprintf(sap_string, sizeof sap_string, "%s", "Short DT"); //Short Data
-        } else if (sap == 1 && p_mfid == 0x10) {
-            snprintf(sap_string, sizeof sap_string, "%s", "Moto NET"); //motorola network interface service
-        } else {
-            snprintf(sap_string, sizeof sap_string, "%s", "Reserved"); //reserved, or err/unk
-        }
-
-        //mfid string handling
-        if (dpf == 15) {
-            if (p_mfid == 0x10) {
-                snprintf(mfid_string, sizeof mfid_string, "%s",
-                         "Moto"); //could just also be a generic catch all for DMRA
-            } else if (p_mfid == 0x77) {
-                snprintf(mfid_string, sizeof mfid_string, "%s", "Vertex");
-            } else if (p_mfid == 0x58) {
-                snprintf(mfid_string, sizeof mfid_string, "%s", "Tait");
-            } else if (p_mfid == 0x68 || p_mfid == 0x08) {
-                snprintf(mfid_string, sizeof mfid_string, "%s", "Hytera");
-            } else if (p_mfid == 0x06) {
-                snprintf(mfid_string, sizeof mfid_string, "%s", "Trid/Mot");
-            } else if (p_mfid == 0x00) {
-                snprintf(mfid_string, sizeof mfid_string, "%s", "Standard");
-            } else {
-                snprintf(mfid_string, sizeof mfid_string, "%s", "Other");
-            }
-        }
-
-        //udt format string handling
-        if (dpf == 0) {
-            if (udt_format == 0x00) {
-                snprintf(udtf_string, sizeof udtf_string, "%s", "Binary");
-            } else if (udt_format == 0x01) {
-                snprintf(udtf_string, sizeof udtf_string, "%s", "MS/TG Adr");
-            } else if (udt_format == 0x02) {
-                snprintf(udtf_string, sizeof udtf_string, "%s", "4-bit BCD");
-            } else if (udt_format == 0x03) {
-                snprintf(udtf_string, sizeof udtf_string, "%s", "ISO7 Char");
-            } else if (udt_format == 0x04) {
-                snprintf(udtf_string, sizeof udtf_string, "%s", "ISO8 Char");
-            } else if (udt_format == 0x05) {
-                snprintf(udtf_string, sizeof udtf_string, "%s", "NMEA LOCN");
-            } else if (udt_format == 0x06) {
-                snprintf(udtf_string, sizeof udtf_string, "%s", "IP Addr");
-            } else if (udt_format == 0x07) {
-                snprintf(udtf_string, sizeof udtf_string, "%s", "UTF-16"); //16-bit Unicode Chars
-            } else if (udt_format == 0x08 || udt_format == 0x09) {
-                snprintf(udtf_string, sizeof udtf_string, "%s", "Manu Spec"); //Manufacturer Specific
-            } else if (udt_format == 0x0A) {
-                snprintf(udtf_string, sizeof udtf_string, "%s",
-                         "Mixed UTF"); //Appended block contains addr and 16-bit UTF-16BE
-            } else if (udt_format == 0x0B) {
-                snprintf(udtf_string, sizeof udtf_string, "%s", "LIP LOCN");
-            } else {
-                snprintf(udtf_string, sizeof udtf_string, "%s", "Reserved");
-            }
-        }
-
-        //short data dd_head format string
-        if (dpf == 13) {
-            if (dd_format == 0x00) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "Binary");
-            } else if (dd_format == 0x01) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "BCD   ");
-            } else if (dd_format == 0x02) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "7-bit Char");
-            } else if (dd_format == 0x03) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-1");
-            } else if (dd_format == 0x04) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-2");
-            } else if (dd_format == 0x05) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-3");
-            } else if (dd_format == 0x06) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-4");
-            } else if (dd_format == 0x07) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-5");
-            } else if (dd_format == 0x08) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-6");
-            } else if (dd_format == 0x09) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-7");
-            } else if (dd_format == 0x0A) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-8");
-            } else if (dd_format == 0x0B) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-9");
-            } else if (dd_format == 0x0C) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-10");
-            } else if (dd_format == 0x0D) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-11");
-            } else if (dd_format == 0x0E) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-13"); //there is no 8059-12
-            } else if (dd_format == 0x0F) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-14");
-            } else if (dd_format == 0x10) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-15");
-            } else if (dd_format == 0x11) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-16");
-            } else if (dd_format == 0x12) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-8   ");
-            } else if (dd_format == 0x13) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-16  ");
-            } else if (dd_format == 0x14) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-16BE");
-            } else if (dd_format == 0x15) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-16LE");
-            } else if (dd_format == 0x16) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-32  ");
-            } else if (dd_format == 0x17) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-32BE");
-            } else if (dd_format == 0x18) {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-32LE");
-            } else {
-                snprintf(sddd_string, sizeof sddd_string, "%s", "Reserved");
-            }
-        }
-
-        if (dpf == 0) //UDT
-        {
-            //UDT packet info -- samples needed for testing
-            //NOTE: This format's completed message has a CRC16 - like MBC - but has number of blocks (appended blocks) like R 1/2, etc.
-            if (dpf == 0 && state->udt_uab_reserved[slot]) {
-                fprintf(stderr,
-                        "\n  SAP %02d [%s] - FMT %d [%s] - PDn %d - BLOCKS %d (reserved/unknown) SF %d - PF %d OP %02X",
-                        sap, sap_string, udt_format, udtf_string, udt_padnib, udt_uab, udt_sf, udt_pf, udt_op);
-            } else {
-                fprintf(stderr, "\n  SAP %02d [%s] - FMT %d [%s] - PDn %d - BLOCKS %d SF %d - PF %d OP %02X", sap,
-                        sap_string, udt_format, udtf_string, udt_padnib, udt_uab, udt_sf, udt_pf, udt_op);
-            }
-
-            //set number of blocks to follow (appended blocks) for block assembler
-            //When UAB is reserved/unknown, keep the raw header value but allow the
-            //assembler to end on CRC match rather than this count (see dmr_block_assembler).
-            state->data_header_blocks[slot] = udt_uab;
-
-            //set data header to valid
-            state->data_header_valid[slot] = 1;
-
-            //reset block counter to zero
-            state->data_block_counter[slot] = 0;
-
-            //send to assembler as type 3, rearrange into CSBK type PDU (to verify), and send to dmr_cspdu
-            dmr_block_assembler(opts, state, dheader, 12, 0x0B, 3);
-        }
-
-        if (dpf == 1) //response data packet header //TODO: Convert to something more similar to P25 variant
-        {
-            //mostly fleshed out response packet info
-            char rsp_string[200];
-            memset(rsp_string, 0, sizeof(rsp_string));
-            sprintf(rsp_string, "DATA RESP TGT: %d; SRC: %d; ", target, source);
-            if (r_class == 0 && r_type == 1) {
-                dsd_append(rsp_string, sizeof rsp_string, "ACK - Success");
-            }
-            if (r_class == 1) {
-                dsd_append(rsp_string, sizeof rsp_string, "NACK - ");
-                if (r_type == 0) {
-                    dsd_append(rsp_string, sizeof rsp_string, "Illegal Format");
-                }
-                if (r_type == 1) {
-                    dsd_append(rsp_string, sizeof rsp_string, "Illegal Format");
-                }
-                if (r_type == 2) {
-                    dsd_append(rsp_string, sizeof rsp_string, "Packet CRC ERR");
-                }
-                if (r_type == 3) {
-                    dsd_append(rsp_string, sizeof rsp_string, "Memory Full");
-                }
-                if (r_type == 4) {
-                    dsd_append(rsp_string, sizeof rsp_string, "FSN Out of Seq");
-                }
-                if (r_type == 5) {
-                    dsd_append(rsp_string, sizeof rsp_string, "Undeliverable");
-                }
-                if (r_type == 6) {
-                    dsd_append(rsp_string, sizeof rsp_string, "PKT Out of Seq");
-                }
-                if (r_type == 7) {
-                    dsd_append(rsp_string, sizeof rsp_string, "Invalid User");
-                }
-            }
-            if (r_class == 2) {
-                dsd_append(rsp_string, sizeof rsp_string, "SACK - Retry");
-            }
-            // if (r_status) strcat (rsp_string, " - %d", r_status);
-            UNUSED(r_status);
-
-            fprintf(stderr, "\n %s", rsp_string);
-
-            //REMUS, enable (or disable) next two lines is you want to //
-            // sprintf (state->dmr_lrrp_gps[slot], "%s; ", rsp_string);
-            // watchdog_event_datacall (opts, state, source, target, state->dmr_lrrp_gps[slot], slot);
-        }
-
-        //Confirmed or Unconfirmed Data Packets Header
-        if (dpf == 2 || dpf == 3) {
-            if (dpf == 2) {
-                fprintf(stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - FSN %d", sap, sap_string, f, bf,
-                        poc, fsn);
-            } else { /* dpf == 3 */
-                fprintf(stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - S %d - NS %d - FSN %d", sap,
-                        sap_string, f, bf, poc, s, ns, fsn);
-            }
-            state->data_header_blocks[slot] = bf;
-            if (dpf == 3) {
-                state->data_conf_data[slot] =
-                    1; //set confirmed data delivery flag for additional CRC checks, block assembly, etc.
-            }
-        }
-
-        //Short Data DD_Head (13), and R_Head or SP_Head (14)
-        if (dpf == 13 || dpf == 14) {
-            //only set if not all zeroes
-            if (s_ab_fin) {
-                state->data_header_blocks[slot] = s_ab_fin;
-            }
-
-            //Short Data: Defined
-            if (dpf == 13) {
-                fprintf(stderr, "\n  SD:D [DD_HEAD] - SAP %02d [%s] - BLOCKS %02d - DD %02X - PADb %d - FMT %02X [%s]",
-                        sap, sap_string, s_ab_fin, dd_format, sd_bp, dd_format, sddd_string);
-            }
-            //Short Data: Raw or S/P
-            if (dpf == 14) {
-                //S/P has all appended block bits set to zero -- any other way to tell difference?
-                if (s_ab_fin == 0) {
-                    fprintf(stderr, "\n  SD:S/P [SP_HEAD] - SAP %02d [%s] - SP %02d - DP %02d - S/P %02X", sap,
-                            sap_string, s_source_port, s_dest_port, s_status_precoded);
-                }
-
-                //Raw
-                else {
-                    fprintf(stderr,
-                            "\n  SD:RAW [R_HEAD] - SAP %02d [%s] - BLOCKS %02d - SP %02d - DP %02d - SARQ %d - FMF %d "
-                            "- PDb %d",
-                            sap, sap_string, s_ab_fin, s_source_port, s_dest_port, sd_sarq, sd_f, sd_bp);
-                }
-            }
-
-            //6.2.2 The Response Requested (A) information element of the header shall be set to 0
-            //for unconfirmed data and shall be set to 1 for confirmed data. DD_HEAD, R_HEAD, or SP_HEAD (double check)
-            if (a == 1) {
-                state->data_conf_data[slot] = 1;
-                fprintf(stderr, " - Confirmed Data");
-            }
-        }
-
-        //Proprietary Data Header
-        if (dpf == 15) {
-
-            //The SAP found here is the actual SAP of the message (like a P25 ndary SAP, and can chain together according to ETSI)
-            fprintf(stderr, " - SAP %02d [%s] - MFID %02X [%s]", p_sap, sap_string, p_mfid, mfid_string);
-
-            //p_sap 1 on mfid 10 (moto) has been observed as the first block of LRRP data (unique fixed format?)
-            if (p_mfid == 0x10 && p_sap == 1) {
-                //add the header to the first 10 bytes of the storage (sans this header's CRC)
-                size_t start = 0;
-                size_t len = 10U - start;
-                memcpy(state->dmr_pdu_sf[slot], dheader + start, len * sizeof(uint8_t));
-                state->data_block_counter[slot]++;
-                state->data_byte_ctr[slot] = (uint16_t)len;
-                state->data_p_head[slot] = 1;
-
-                // My observation on chained p_head is that the enc header will come first, and then
-                // a second extended header. For specific vendor opcodes, the keystream begins after
-                // the first three octets (SAP/DPF, MFID, opcode). Constrain this to known cases.
-
-                // Extract the third octet (opcode) from the proprietary header
-                uint8_t p_opcode = (uint8_t)ConvertBitIntoBytes(&dheader_bits[16], 8);
-
-                // Gate keystream start offset by (MFID, opcode)
-                // Known fixture: 0x1F 0x10 0x02 -> start after 3 bytes
-                // Note: p_mfid == 0x10 is already guaranteed by outer condition
-                switch (p_opcode) {
-                    case 0x02: // Motorola MNIS/ENC header variant (observed)
-                        state->data_ks_start[slot] = 3;
-                        break;
-                    default:
-                        // Unknown opcode: do not offset by default
-                        state->data_ks_start[slot] = 0;
-                        break;
-                }
-            }
-
-            else //if (p_sap != 1) //anything else
-            {
-                //sanity check to prevent segfault (this happened when the regular header was not received beforehand)
-                if (state->data_header_blocks[slot] > 1) {
-                    state->data_header_blocks[slot]--;
-                }
-
-                //reset the ctr
-                state->data_byte_ctr[slot] = 0;
-            }
-
-            //Start Setting DMR Data Packet Encryption Variables
-            if (p_sap != 1 && p_mfid == 0x77) {
-
-                uint8_t key_id = (uint8_t)ConvertBitIntoBytes(&dheader_bits[16], 8);
-                uint32_t mi32 = (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 32);
-
-                if (state->currentslot == 0) {
-                    state->dmr_so = 0x100;
-                    state->payload_keyid = key_id;
-                    state->payload_algid = 0x07;
-                    state->payload_mi = (unsigned long long int)mi32;
-                } else {
-                    state->dmr_soR = 0x100;
-                    state->payload_keyidR = key_id;
-                    state->payload_algidR = 0x07;
-                    state->payload_miR = (unsigned long long int)mi32;
-                }
-
-                fprintf(stderr, "\n Vertex PDU ENC Header:");
-                fprintf(stderr, " MFID: %02X;", p_mfid);
-                fprintf(stderr, " Key ID: %02X;", key_id);
-                fprintf(stderr, " ALG: 07; VTX STD;");
-                if (mi32 != 0U) {
-                    fprintf(stderr, " MI(32): %08X", mi32);
-                }
-
-                // Vertex data PDUs observed so far do not require MNIS keystream offsetting.
-                state->data_ks_start[slot] = 0;
-
-            } else if (p_sap != 1 && p_mfid == 0x10) {
-
-                //check ENC bit, assuming this is an ENC bit, or SVC OPT like thing (or could be an opcode for the rest of the extended header)
-                if ((uint8_t)ConvertBitIntoBytes(&dheader_bits[20], 4) == 1) {
-                    //set to 0x100 so it won't trigger any weird flags, but still has a non-zero value to be checked later
-                    if (state->currentslot == 0) {
-                        state->dmr_so = 0x100;
-                    } else {
-                        state->dmr_soR = 0x100;
-                    }
-                }
-
-                fprintf(stderr, "\n PDU ENC Header:");
-                fprintf(stderr, " MFID: %02X;", (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 8));
-                fprintf(stderr, " ENC: %X;", (uint8_t)ConvertBitIntoBytes(&dheader_bits[20], 4));
-
-                if (state->currentslot == 0) {
-                    state->payload_keyid = (uint8_t)ConvertBitIntoBytes(&dheader_bits[24], 8);
-                } else {
-                    state->payload_keyidR = (uint8_t)ConvertBitIntoBytes(&dheader_bits[24], 8);
-                }
-                fprintf(stderr, " Key ID: %02X;", (uint8_t)ConvertBitIntoBytes(&dheader_bits[24], 8));
-
-                //this uses the same 3 bit method found in the 'late entry' alg
-                if (state->currentslot == 0) { //could be 17,3
-                    state->payload_algid = (uint8_t)ConvertBitIntoBytes(&dheader_bits[17], 3);
-                } else {
-                    state->payload_algidR = (uint8_t)ConvertBitIntoBytes(&dheader_bits[17], 3);
-                }
-                fprintf(stderr, " ALG: %02X;", (uint8_t)ConvertBitIntoBytes(&dheader_bits[17], 3));
-                if ((uint8_t)ConvertBitIntoBytes(&dheader_bits[17], 3) == 0) {
-                    fprintf(stderr, " BP;");
-                }
-                if ((uint8_t)ConvertBitIntoBytes(&dheader_bits[17], 3) == 1) {
-                    fprintf(stderr, " RC4;");
-                }
-                if ((uint8_t)ConvertBitIntoBytes(&dheader_bits[17], 3) == 2) {
-                    fprintf(stderr, " DES56;");
-                }
-                if ((uint8_t)ConvertBitIntoBytes(&dheader_bits[17], 3) == 4) {
-                    fprintf(stderr, " AES128;");
-                }
-                if ((uint8_t)ConvertBitIntoBytes(&dheader_bits[17], 3) == 5) {
-                    fprintf(stderr, " AES256;");
-                }
-
-                if (state->currentslot == 0) {
-                    state->payload_mi = (unsigned long long int)ConvertBitIntoBytes(&dheader_bits[48], 32);
-                } else {
-                    state->payload_miR = (unsigned long long int)ConvertBitIntoBytes(&dheader_bits[48], 32);
-                }
-
-                //print MI only if this is not Moto BP (no MI on those)
-                if ((uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 32) != 0) {
-                    fprintf(stderr, " MI(32): %08X", (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 32));
-                }
-
-                //reset ks start value
-                state->data_ks_start[slot] = 0;
-
-            } else if (p_sap == 1 && p_mfid == 0x10) {
-                //This can contain various things also found in IP (UDP) protocol data
-                //LRRP and ARS observed in the Remus samples when sent in this format, and then
-                //returned in the uncompressed IPv4 / UDP Format attached to an ICMP PDU
-
-                fprintf(stderr, "\n Motorola Network Interface Service Header (MNIS); ");
-
-                //see: https://cwh050.blogspot.com/2019/08/what-does-mnis-do.html
-                //see: https://github.com/DSheirer/sdrtrunk/blob/8718d04ef534553e6165b158ebd4d10efc1178cd/src/main/java/io/github/dsheirer/module/decode/dmr/message/type/ApplicationType.java
-
-                //one issue is that this portion of the header is encrypted, if encryption is used
-                //so that can only be checked after the completed PDU assembly if decryptd properly
-
-            } else //if (p_mfid == 0x10)
-            {
-                fprintf(stderr, "\n Unknown Extended Header: ");
-                for (uint8_t i = 2; i < 10; i++) {
-                    fprintf(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&dheader_bits[0 + (i * 8)], 8));
-                }
-            }
-            //End Setting DMR Data Packet Encryption Variables
-        } else //if (dpf != 15) //normal data header, we want to reset the enc states in case of any record needle drop playback occurrences
-        {
-            //reset alg/keyid/mi
-            if (state->currentslot == 0) {
-                state->payload_mi = 0;
-                state->payload_algid = 0;
-                state->payload_keyid = 0;
-                state->dmr_so = 0;
-            } else {
-                state->payload_miR = 0;
-                state->payload_algidR = 0;
-                state->payload_keyidR = 0;
-                state->dmr_soR = 0;
-            }
-
-            //reset the ctr
-            state->data_byte_ctr[slot] = 0;
-        }
-
-        //block storage sanity
-        if (state->data_header_blocks[slot] > 127) {
-            state->data_header_blocks[slot] = 127;
-        }
-        //assuming we didn't receive the initial data header block on a p_head and then decremented it
-        //3 or 4 seems to be the average safe value
-        if (state->data_header_blocks[slot] < 1) {
-            state->data_header_blocks[slot] = 1; //
-        }
-        //set data header validity unless its a p_head (should be set prior, if received)
-        if (dpf != 15) {
-            state->data_header_valid[slot] = 1;
-        }
-
-        if (dpf != 1 && dpf != 15) {
-            sprintf(state->dmr_lrrp_gps[slot], "Data Call - %s TGT: %d SRC: %d ", sap_string, target, source);
-            if (a == 1) {
-                dsd_append(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "- RSP REQ ");
-            }
-        }
-
-        //store SAP value
-        state->data_header_sap[slot] = sap;
-
-    } //End Irrecoverable Errors
-
     if (IrrecoverableErrors != 0) {
-        state->data_header_valid[slot] = 0;
-        sprintf(state->dmr_lrrp_gps[slot], "%s", "");
-        state->data_p_head[slot] = 0;
-        state->data_conf_data[slot] = 0;
-        state->data_block_counter[slot] = 1;
-        state->data_header_blocks[slot] = 1;
-        state->data_header_format[slot] = 7;
+        dmr_dheader_reset_irrecoverable(state, slot);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
     }
 
-    fprintf(stderr, "%s", KNRM);
+    if (!(CRCCorrect == 1 || opts->aggressive_framesync == 0 || opts->dmr_crc_relaxed_default)) {
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
+
+    state->data_dbsn_have[slot] = 0;
+    state->data_dbsn_expected[slot] = 0;
+    dmr_dheader_parse_fields(state, dheader_bits, &f);
+    if (f.dpf != 15) {
+        state->dmr_lrrp_source[slot] = f.source;
+        state->dmr_lrrp_target[slot] = f.target;
+        state->data_block_poc[slot] = f.poc;
+    }
+
+    state->data_header_format[slot] = f.dpf;
+    dmr_dheader_init_strings(&f);
+    dmr_dheader_set_udt_reserved(state, slot, &f);
+    dmr_dheader_print_banner(slot, &f);
+    dmr_dheader_set_strings(&f);
+    dmr_dheader_handle_by_format(opts, state, dheader, dheader_bits, slot, &f);
+    dmr_dheader_sanitize_blocks(state, slot);
+    if (f.dpf != 15) {
+        state->data_header_valid[slot] = 1;
+    }
+    if (f.dpf != 1 && f.dpf != 15) {
+        DSD_SPRINTF(state->dmr_lrrp_gps[slot], "Data Call - %s TGT: %d SRC: %d ", f.sap_string, f.target, f.source);
+        if (f.a == 1) {
+            dsd_append(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "- RSP REQ ");
+        }
+    }
+    state->data_header_sap[slot] = f.sap;
+    DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
-void
-dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t CRCCorrect) {
-    //TODO: double check end rep values to Text Format Modes vs padnibs/uab values
-    //TODO: Make Text Format Modes seperate function to be used more generically by other things
-    //TODO: LIP Format (make seperate functions, LIP also used by USBD)
-    int i, j;
-    UNUSED(CRCCorrect);
-    UNUSED(opts);
-    int slot = state->currentslot;
+static void dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, uint32_t CRCCorrect);
 
-    uint8_t cs_bits[8 * 12 * 5]; //maximum of 1 header and 4 blocks at 96 bits
-    UNUSED(cs_bits);
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    const uint8_t* block_bytes;
+    uint8_t cs_bits[8 * 12 * 5];
+    uint8_t add_ok;
+    uint8_t add_res;
+    uint8_t slot;
+    uint8_t udt_format2;
+    uint8_t udt_uab;
+    uint32_t udt_source;
+    uint32_t udt_target;
+    int payload_bits;
+    char udt_string[500];
+} dmr_udt_ctx;
 
-    //bytes to bits
-    for (i = 0, j = 0; i < 60; i++, j += 8) {
-        cs_bits[j + 0] = (block_bytes[i] >> 7) & 0x01;
-        cs_bits[j + 1] = (block_bytes[i] >> 6) & 0x01;
-        cs_bits[j + 2] = (block_bytes[i] >> 5) & 0x01;
-        cs_bits[j + 3] = (block_bytes[i] >> 4) & 0x01;
-        cs_bits[j + 4] = (block_bytes[i] >> 3) & 0x01;
-        cs_bits[j + 5] = (block_bytes[i] >> 2) & 0x01;
-        cs_bits[j + 6] = (block_bytes[i] >> 1) & 0x01;
-        cs_bits[j + 7] = (block_bytes[i] >> 0) & 0x01;
+static void
+dmr_unpack_bytes_to_bits(const uint8_t* src, int src_len, uint8_t* dst) {
+    for (int i = 0, j = 0; i < src_len; i++, j += 8) {
+        dst[j + 0] = (src[i] >> 7) & 0x01;
+        dst[j + 1] = (src[i] >> 6) & 0x01;
+        dst[j + 2] = (src[i] >> 5) & 0x01;
+        dst[j + 3] = (src[i] >> 4) & 0x01;
+        dst[j + 4] = (src[i] >> 3) & 0x01;
+        dst[j + 5] = (src[i] >> 2) & 0x01;
+        dst[j + 6] = (src[i] >> 1) & 0x01;
+        dst[j + 7] = (src[i] >> 0) & 0x01;
     }
+}
 
-    //Unified Data Transport (UDT) -- already checked, but may need a few of these here as well
-    uint8_t udt_ig = cs_bits[0]; //group or individual data
-    uint8_t udt_a = cs_bits[1];  //response required
-    uint8_t udt_res = (uint8_t)ConvertBitIntoBytes(&cs_bits[2], 2);
-    uint8_t udt_format1 = (uint8_t)ConvertBitIntoBytes(&cs_bits[4], 4); //header format of UDT
-    uint8_t udt_sap = (uint8_t)ConvertBitIntoBytes(&cs_bits[8], 4);
-    uint8_t udt_format2 = (uint8_t)ConvertBitIntoBytes(&cs_bits[12], 4); //UDT Format referenced below
-    uint32_t udt_target = (uint32_t)ConvertBitIntoBytes(&cs_bits[16], 24);
-    uint32_t udt_source = (uint32_t)ConvertBitIntoBytes(&cs_bits[40], 24);
-    uint8_t udt_padnib = (uint8_t)ConvertBitIntoBytes(&cs_bits[64], 5);
-    uint8_t udt_zero = cs_bits[69];                                      //should always be zero?
-    uint8_t udt_uab = (uint8_t)ConvertBitIntoBytes(&cs_bits[70], 2) + 1; //udt appended blocks
-    uint8_t udt_sf = cs_bits[72];
-    uint8_t udt_pf = cs_bits[73];
-    uint8_t udt_op = (uint8_t)ConvertBitIntoBytes(&cs_bits[74], 6);
-    UNUSED4(udt_ig, udt_a, udt_res, udt_format1);
-    UNUSED4(udt_sap, udt_format2, udt_target, udt_source);
-    UNUSED4(udt_padnib, udt_zero, udt_sf, udt_pf);
-    UNUSED(udt_op);
-
-    // Compute strict payload sizing using actual assembled block count.
-    // At decode time, data_block_counter equals the number of appended blocks present (excludes header).
+static int
+dmr_udt_payload_bits(dsd_state* state, uint8_t slot, uint8_t udt_padnib) {
     int app_blocks = state->data_block_counter[slot];
     if (app_blocks < 0) {
         app_blocks = 0;
@@ -757,14 +649,10 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
     if (app_blocks > 4) {
         app_blocks = 4;
     }
-
-    // Available payload bits across appended blocks (exclude trailing CRC16)
     int payload_bits_total = (app_blocks * 96) - 16;
     if (payload_bits_total < 0) {
         payload_bits_total = 0;
     }
-
-    // Pad nibble field is in nibbles (4 bits each). Clamp to available payload.
     int pad_bits = (int)udt_padnib * 4;
     if (pad_bits > payload_bits_total) {
         pad_bits = payload_bits_total;
@@ -773,1089 +661,1093 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
     if (payload_bits < 0) {
         payload_bits = 0;
     }
+    return payload_bits;
+}
 
-    //char strings
-    uint8_t iso7c;
-    uint8_t iso8c;
-    uint16_t utf16c;
+static void
+dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes) {
+    uint8_t udt_ig;
+    uint8_t udt_a;
+    uint8_t udt_res;
+    uint8_t udt_format1;
+    uint8_t udt_sap;
+    uint8_t udt_padnib;
+    uint8_t udt_zero;
+    uint8_t udt_sf;
+    uint8_t udt_pf;
+    uint8_t udt_op;
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->opts = opts;
+    ctx->state = state;
+    ctx->block_bytes = block_bytes;
+    ctx->slot = state->currentslot;
+    dmr_unpack_bytes_to_bits(block_bytes, 60, ctx->cs_bits);
+    udt_ig = ctx->cs_bits[0];
+    udt_a = ctx->cs_bits[1];
+    udt_res = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[2], 2);
+    udt_format1 = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[4], 4);
+    udt_sap = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[8], 4);
+    ctx->udt_format2 = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[12], 4);
+    ctx->udt_target = (uint32_t)ConvertBitIntoBytes(&ctx->cs_bits[16], 24);
+    ctx->udt_source = (uint32_t)ConvertBitIntoBytes(&ctx->cs_bits[40], 24);
+    udt_padnib = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[64], 5);
+    udt_zero = ctx->cs_bits[69];
+    ctx->udt_uab = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[70], 2) + 1;
+    udt_sf = ctx->cs_bits[72];
+    udt_pf = ctx->cs_bits[73];
+    udt_op = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[74], 6);
+    UNUSED4(udt_ig, udt_a, udt_res, udt_format1);
+    UNUSED4(udt_sap, udt_zero, udt_sf, udt_pf);
+    UNUSED(udt_op);
+    ctx->payload_bits = dmr_udt_payload_bits(state, ctx->slot, udt_padnib);
+    ctx->add_res = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[96], 7);
+    ctx->add_ok = ctx->cs_bits[103];
+    DSD_MEMSET(ctx->udt_string, 0, sizeof(ctx->udt_string));
+    DSD_SPRINTF(ctx->udt_string, "UDT SRC: %d; TGT: %d; ", ctx->udt_source, ctx->udt_target);
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, "\n ");
+    DSD_FPRINTF(stderr, "Slot %d - SRC: %d; TGT: %d; UDT ", ctx->slot + 1, ctx->udt_source, ctx->udt_target);
+}
 
-    //appended addresses -- max is 15 across 4 blocks
-    uint32_t address[16];
-    memset(address, 0, sizeof(address));
-    UNUSED(address);
-    uint8_t add_res = (uint8_t)ConvertBitIntoBytes(&cs_bits[96], 7);
-    UNUSED(add_res);
-    uint8_t add_ok = cs_bits[103];
+static void
+dmr_udt_append_text_event(dsd_state* state, uint8_t slot, char c) {
+    char tmp[2];
+    tmp[0] = c;
+    tmp[1] = 0;
+    dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
+               sizeof state->event_history_s[slot].Event_History_Items[0].text_message, tmp);
+}
 
-    //BCD Format (Dialer Digits) -- max is 92 digits
-    uint8_t bcd_digits[93];
-    memset(bcd_digits, 0, sizeof(bcd_digits));
-    UNUSED(bcd_digits);
-
-    //NMEA Debug Testing (need real world samples)
-    // udt_format2 = 0x5;
-    // for (int i = 0; i < 8; i++) cs_bits[184+i] = 0; //spare bits to zero
-    // cs_bits[96] = 0; //enc bit to zero
-    // uint8_t test[96*4]; memset (test, 1, sizeof(test)); // all ones test vector
-    // nmea_iec_61162_1 (opts, state, test, udt_source, 1);
-    // nmea_iec_61162_1 (opts, state, cs_bits+96, udt_source, 2);
-
-    //LIP Debug Testing (need real world samples)
-    // udt_format2 = 0x0B;
-
-    //WIP: Add this to event history //TODO: Double check len values on Text Messages
-    char udt_string[500];
-    memset(udt_string, 0, sizeof(udt_string));
-    sprintf(udt_string, "UDT SRC: %d; TGT: %d; ", udt_source, udt_target);
-
-    //initial linebreak
-    fprintf(stderr, "%s", KCYN);
-    fprintf(stderr, "\n ");
-    fprintf(stderr, "Slot %d - SRC: %d; TGT: %d; UDT ", slot + 1, udt_source, udt_target);
-
-    if (udt_format2 == 0x00) {
-        fprintf(stderr, "Binary Data;");
-        dsd_append(udt_string, sizeof udt_string, "Binary Data; ");
-        // Heuristic: show a bounded UTF-8 view if it looks like text
-        int bytes = payload_bits / 8;
-        if (bytes > 0) {
-            int offset = 96 / 8; // first appended block starts after header
-            if (offset + bytes > 60) {
-                bytes = 60 - offset; // hard cap to on-stack buffer size used above
-                if (bytes < 0) {
-                    bytes = 0;
-                }
-            }
-            if (bytes > 0) {
-                utf8_to_text(state, 0, (uint16_t)bytes, block_bytes + offset);
-            }
-        }
-    } else if (udt_format2 == 0x01) //appended addresses
-    {
-        fprintf(stderr, "Appended Addressing;\n ");
-        dsd_append(udt_string, sizeof udt_string, "Appended Addressing; ");
-        int addr_bits = payload_bits - 8; // 7-bit reserved + 1-bit OK flag
-        if (addr_bits < 0) {
-            addr_bits = 0;
-        }
-        int end = addr_bits / 24;
-        if (add_res) {
-            fprintf(stderr, "RES: %d; ", add_res);
-        }
-        fprintf(stderr, "OK: %d; ", add_ok);
-        fprintf(stderr, "ADDR:");
-        for (i = 0; i < end; i++) {
-            fprintf(stderr, " %d;", (uint32_t)ConvertBitIntoBytes(&cs_bits[(i * 24) + 104], 24));
-        }
-    } else if (udt_format2 == 0x02) //BCD 4-bit Dialer Digits
-    {
-        int end = payload_bits / 4; // 4 bits per BCD digit (pad already removed)
-
-        fprintf(stderr, "Dialer BCD: ");
-        dsd_append(udt_string, sizeof udt_string, "Dialer Digits: ");
-        for (i = 0; i < end; i++) {
-            //dialer digits 7.2.9
-            int digit = (int)ConvertBitIntoBytes(&cs_bits[(i * 4) + 96], 4);
-            if (digit < 10) {
-                fprintf(stderr, "%d", digit); //numbers 0-9
-            } else if (digit == 10) {
-                fprintf(stderr, "*"); //asterisk/star
-            } else if (digit == 11) {
-                fprintf(stderr, "#"); //pound/hash
-            } else if (digit == 15) {
-                fprintf(stderr, " "); //null character
-            } else {
-                fprintf(stderr, "R:%X", digit); //reserved values on 12,13, and 14
-            }
-
-            char dc[2];
-            dc[1] = 0;
-            if (digit < 10) {
-                dc[0] = digit + 0x30;
-            } else if (digit == 10) {
-                dc[0] = 0x2A;
-            } else if (digit == 11) {
-                dc[0] = 0x23;
-            } else if (digit == 15) {
-                dc[0] = 0x20;
-            } else { //if 12, 13, 14, convert to its HEX letter representative C, D, or E
-                dc[0] = digit + 0x38;
-            }
-
-            dsd_append(udt_string, sizeof udt_string, dc);
-        }
-    } else if (udt_format2 == 0x03) //ISO7 format
-    {
-        int end = payload_bits / 7; // 7-bit characters (pad accounted above)
-        fprintf(stderr, "ISO7 Text: ");
-        dsd_append(udt_string, sizeof udt_string, "ISO7 Text; ");
-        sprintf(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
-        for (i = 0; i < end; i++) //max 368/7 = 52 character max?
-        {
-            iso7c = (uint8_t)ConvertBitIntoBytes(&cs_bits[(i * 7) + 96], 7);
-            char i7c[2];
-            i7c[0] = iso7c;
-            i7c[1] = 0;
-            if (iso7c >= 0x20 && iso7c <= 0x7E) //Standard ASCII Set
-            {
-                fprintf(stderr, "%c", iso7c);
-                dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
-                           sizeof state->event_history_s[slot].Event_History_Items[0].text_message, i7c);
-            } else {
-                fprintf(stderr, " ");
-            }
-        }
-    } else if (udt_format2 == 0x04) //ISO8 format
-    {
-        fprintf(stderr, "ISO8 Text: ");
-        dsd_append(udt_string, sizeof udt_string, "ISO8 Text; ");
-        sprintf(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
-        int end = payload_bits / 8; // 8-bit characters
-        for (i = 0; i < end; i++) {
-            iso8c = (uint8_t)ConvertBitIntoBytes(&cs_bits[(i * 8) + 96], 8);
-            char i8c[2];
-            i8c[0] = iso8c;
-            i8c[1] = 0;
-            if (iso8c >= 0x20 && iso8c <= 0x7E) //Standard ASCII Set
-            {
-                fprintf(stderr, "%c", iso8c);
-                dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
-                           sizeof state->event_history_s[slot].Event_History_Items[0].text_message, i8c);
-            }
-
-            // else if (iso8c >= 0x81 && iso8c <= 0xFE) //Extended ASCII Set
-            //   fprintf (stderr, "%c", iso8c);
-            else {
-                fprintf(stderr, " ");
-            }
-        }
-    } else if (udt_format2 == 0x07) //UTF-16BE format
-    {
-        int end = payload_bits / 16; // 16-bit characters
-        fprintf(stderr, "UTF16 Text: ");
-        dsd_append(udt_string, sizeof udt_string, "UTF16 Text; ");
-        sprintf(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
-        for (i = 0; i < end; i++) //368/16 = 23 character max?
-        {
-            utf16c = (uint16_t)ConvertBitIntoBytes(&cs_bits[(i * 16) + 96], 16);
-            char u16[2];
-            u16[0] = utf16c & 0xFF;
-            u16[1] = 0;
-            if (utf16c >= 0x20 && utf16c != 0x7F) //avoid control chars
-            {
-                if (dsd_unicode_supported()) {
-                    fprintf(stderr, "%lc", utf16c); // may depend on console locale
-                } else {
-                    unsigned char lo = (unsigned char)(utf16c & 0xFF);
-                    if (lo >= 0x20 && lo < 0x7F) {
-                        fputc((int)lo, stderr);
-                    } else {
-                        fputc('?', stderr);
-                    }
-                }
-                if (utf16c >= 0x20 && utf16c < 0x7F) {
-                    dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
-                               sizeof state->event_history_s[slot].Event_History_Items[0].text_message, u16);
-                }
-            }
-
-            else {
-                fprintf(stderr, " ");
-            }
-        }
-    } else if (udt_format2 == 0x06) //IP
-    {
-        if (udt_uab == 1) //IP4
-        {
-            fprintf(stderr, "IP4: ");
-            fprintf(stderr, "%d.", (uint8_t)ConvertBitIntoBytes(&cs_bits[96 + 0], 8));
-            fprintf(stderr, "%d.", (uint8_t)ConvertBitIntoBytes(&cs_bits[96 + 8], 8));
-            fprintf(stderr, "%d.", (uint8_t)ConvertBitIntoBytes(&cs_bits[96 + 16], 8));
-            fprintf(stderr, "%d", (uint8_t)ConvertBitIntoBytes(&cs_bits[96 + 24], 8));
-            dsd_append(udt_string, sizeof udt_string, "IP4; ");
-        } else //IP6
-        {
-            fprintf(stderr, "IP6: ");
-            fprintf(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&cs_bits[96 + 0], 16));
-            fprintf(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&cs_bits[96 + 16], 16));
-            fprintf(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&cs_bits[96 + 32], 16));
-            fprintf(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&cs_bits[96 + 48], 16));
-            fprintf(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&cs_bits[96 + 64], 16));
-            fprintf(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&cs_bits[96 + 80], 16));
-            fprintf(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&cs_bits[96 + 96], 16));
-            fprintf(stderr, "%04X", (uint16_t)ConvertBitIntoBytes(&cs_bits[96 + 112], 16));
-            dsd_append(udt_string, sizeof udt_string, "IP6; ");
-        }
-    } else if (udt_format2 == 0x0A) //Mixed Address/UTF-16BE
-    {
-        int text_bits = payload_bits - 32; // 8-bit spare + 24-bit address
-        if (text_bits < 0) {
-            text_bits = 0;
-        }
-        int end = text_bits / 16; // 16-bit characters
-        fprintf(stderr, "Address: %d; ", (uint32_t)ConvertBitIntoBytes(&cs_bits[96 + 8], 24));
-        fprintf(stderr, "UTF16 Text: ");
-        dsd_append(udt_string, sizeof udt_string, "Mixed Add/Text; ");
-        sprintf(state->event_history_s[slot].Event_History_Items[0].text_message, "Address: %d;",
-                (uint32_t)ConvertBitIntoBytes(&cs_bits[96 + 8], 24));
-        for (i = 0; i < end; i++) //368/16 = 21 character max
-        {
-            utf16c = (uint16_t)ConvertBitIntoBytes(&cs_bits[(i * 16) + 96 + 32], 16);
-            char u16[2];
-            u16[0] = utf16c & 0xFF;
-            u16[1] = 0;
-            if (utf16c >= 0x20 && utf16c != 0x7F) //avoid control chars
-            {
-                if (dsd_unicode_supported()) {
-                    fprintf(stderr, "%lc", utf16c);
-                } else {
-                    unsigned char lo = (unsigned char)(utf16c & 0xFF);
-                    if (lo >= 0x20 && lo < 0x7F) {
-                        fputc((int)lo, stderr);
-                    } else {
-                        fputc('?', stderr);
-                    }
-                }
-                if (utf16c >= 0x20 && utf16c < 0x7F) {
-                    dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
-                               sizeof state->event_history_s[slot].Event_History_Items[0].text_message, u16);
-                }
-            }
-
-            else {
-                fprintf(stderr, " ");
-            }
-        }
-    } else if (udt_format2 == 0x05) {
-        //Would be nice to be able to test these all out to make sure the conditions are okay, etc
-        fprintf(stderr, "NMEA");
-        dsd_append(udt_string, sizeof udt_string, "NMEA; ");
-        if (cs_bits[96] == 1) {                      //check if its encrypted first
-            fprintf(stderr, " Encrypted Format :("); //sad face
-        } else if (udt_uab == 1) {
-            nmea_iec_61162_1(opts, state, cs_bits + 96, udt_source, 1); //short format w/ 1 appended block
-        } else if (udt_uab == 2) {
-            nmea_iec_61162_1(opts, state, cs_bits + 96, udt_source, 2); //standard long format w/ 2 appended blocks
-        }
-        //check the 'spare' bits from 184 to 192 to see if this is a manufacturer specific nmea format
-        else if (udt_uab == 3) { //mfid format w/ 2 appended blocks -- format unspecified
-            fprintf(stderr, " Unspecified MFID Format: %02X;", (uint8_t)ConvertBitIntoBytes(&cs_bits[184], 8));
+static void
+dmr_udt_print_utf16_char(uint16_t utf16c) {
+    if (dsd_unicode_supported()) {
+        DSD_FPRINTF(stderr, "%lc", utf16c);
+    } else {
+        unsigned char lo = (unsigned char)(utf16c & 0xFF);
+        if (lo >= 0x20 && lo < 0x7F) {
+            fputc((int)lo, stderr);
         } else {
-            fprintf(stderr, " Reserved Format; ");
+            fputc('?', stderr);
         }
-    } else if (udt_format2 == 0x0B) {
-        //unsure of how this is structured for UDT Blocks, would assume one appended block of same format
-        //but could also be full blown LIP protocol that is also found in tetra that would require the PDU
-        //type bit to be read and then to decode accordingly, this assumes its the modified Short PDU that USBD uses
-        dsd_append(udt_string, sizeof udt_string, "LIP; ");
-        fprintf(stderr, "\n");
-        lip_protocol_decoder(opts, state, cs_bits + 96); //start on first appended block, and not header
+    }
+}
 
-    } else if (udt_format2 == 0x08 || udt_format2 == 0x09) {
-        fprintf(stderr, "MFID SPEC %02X: ", udt_format2);
-        //use -Z to expose this
-        dsd_append(udt_string, sizeof udt_string, "MFID Specific; ");
-    } else {
-        fprintf(stderr, "Reserved %02X: ", udt_format2);
-        dsd_append(udt_string, sizeof udt_string, "Reserved; ");
-        //use -Z to expose this
+static void
+dmr_udt_emit_utf16_text(dmr_udt_ctx* ctx, int bit_offset, int char_count) {
+    for (int i = 0; i < char_count; i++) {
+        uint16_t utf16c = (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[(i * 16) + bit_offset], 16);
+        if (utf16c >= 0x20 && utf16c != 0x7F) {
+            dmr_udt_print_utf16_char(utf16c);
+            if (utf16c < 0x7F) {
+                dmr_udt_append_text_event(ctx->state, ctx->slot, (char)(utf16c & 0xFF));
+            }
+        } else {
+            DSD_FPRINTF(stderr, " ");
+        }
     }
-    fprintf(stderr, "%s", KNRM);
+}
 
-    if (slot == 0) {
-        state->lastsrc = udt_source;
-        state->lasttg = udt_target;
-    } else {
-        state->lastsrcR = udt_source;
-        state->lasttgR = udt_target;
+static void
+dmr_udt_handle_binary(dmr_udt_ctx* ctx) {
+    DSD_FPRINTF(stderr, "Binary Data;");
+    dsd_append(ctx->udt_string, sizeof ctx->udt_string, "Binary Data; ");
+    int bytes = ctx->payload_bits / 8;
+    if (bytes <= 0) {
+        return;
     }
-    watchdog_event_datacall(opts, state, udt_source, udt_target, udt_string, slot);
-    if (slot == 0) {
-        state->lastsrc = 0;
-        state->lasttg = 0;
-    } else {
-        state->lastsrcR = 0;
-        state->lasttgR = 0;
+    int offset = 96 / 8;
+    if (offset + bytes > 60) {
+        bytes = 60 - offset;
+        if (bytes < 0) {
+            bytes = 0;
+        }
     }
-    watchdog_event_history(opts, state, slot);
-    watchdog_event_current(opts, state, slot);
+    if (bytes > 0) {
+        utf8_to_text(ctx->state, 0, (uint16_t)bytes, ctx->block_bytes + offset);
+    }
+}
+
+static void
+dmr_udt_handle_appended_addressing(dmr_udt_ctx* ctx) {
+    DSD_FPRINTF(stderr, "Appended Addressing;\n ");
+    dsd_append(ctx->udt_string, sizeof ctx->udt_string, "Appended Addressing; ");
+    int addr_bits = ctx->payload_bits - 8;
+    if (addr_bits < 0) {
+        addr_bits = 0;
+    }
+    int end = addr_bits / 24;
+    if (ctx->add_res) {
+        DSD_FPRINTF(stderr, "RES: %d; ", ctx->add_res);
+    }
+    DSD_FPRINTF(stderr, "OK: %d; ", ctx->add_ok);
+    DSD_FPRINTF(stderr, "ADDR:");
+    for (int i = 0; i < end; i++) {
+        DSD_FPRINTF(stderr, " %d;", (uint32_t)ConvertBitIntoBytes(&ctx->cs_bits[(i * 24) + 104], 24));
+    }
+}
+
+static char
+dmr_udt_bcd_char(int digit) {
+    if (digit < 10) {
+        return (char)(digit + 0x30);
+    }
+    if (digit == 10) {
+        return (char)0x2A;
+    }
+    if (digit == 11) {
+        return (char)0x23;
+    }
+    if (digit == 15) {
+        return (char)0x20;
+    }
+    return (char)(digit + 0x38);
+}
+
+static void
+dmr_udt_print_bcd_digit(int digit) {
+    if (digit < 10) {
+        DSD_FPRINTF(stderr, "%d", digit);
+    } else if (digit == 10) {
+        DSD_FPRINTF(stderr, "*");
+    } else if (digit == 11) {
+        DSD_FPRINTF(stderr, "#");
+    } else if (digit == 15) {
+        DSD_FPRINTF(stderr, " ");
+    } else {
+        DSD_FPRINTF(stderr, "R:%X", digit);
+    }
+}
+
+static void
+dmr_udt_handle_bcd(dmr_udt_ctx* ctx) {
+    int end = ctx->payload_bits / 4;
+    DSD_FPRINTF(stderr, "Dialer BCD: ");
+    dsd_append(ctx->udt_string, sizeof ctx->udt_string, "Dialer Digits: ");
+    for (int i = 0; i < end; i++) {
+        int digit = (int)ConvertBitIntoBytes(&ctx->cs_bits[(i * 4) + 96], 4);
+        dmr_udt_print_bcd_digit(digit);
+        dmr_udt_append_text_event(ctx->state, ctx->slot, dmr_udt_bcd_char(digit));
+    }
+}
+
+static void
+dmr_udt_handle_iso7(dmr_udt_ctx* ctx) {
+    int end = ctx->payload_bits / 7;
+    DSD_FPRINTF(stderr, "ISO7 Text: ");
+    dsd_append(ctx->udt_string, sizeof ctx->udt_string, "ISO7 Text; ");
+    DSD_SPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message, "%s", " ");
+    for (int i = 0; i < end; i++) {
+        uint8_t iso7c = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[(i * 7) + 96], 7);
+        if (iso7c >= 0x20 && iso7c <= 0x7E) {
+            DSD_FPRINTF(stderr, "%c", iso7c);
+            dmr_udt_append_text_event(ctx->state, ctx->slot, (char)iso7c);
+        } else {
+            DSD_FPRINTF(stderr, " ");
+        }
+    }
+}
+
+static void
+dmr_udt_handle_iso8(dmr_udt_ctx* ctx) {
+    int end = ctx->payload_bits / 8;
+    DSD_FPRINTF(stderr, "ISO8 Text: ");
+    dsd_append(ctx->udt_string, sizeof ctx->udt_string, "ISO8 Text; ");
+    DSD_SPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message, "%s", " ");
+    for (int i = 0; i < end; i++) {
+        uint8_t iso8c = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[(i * 8) + 96], 8);
+        if (iso8c >= 0x20 && iso8c <= 0x7E) {
+            DSD_FPRINTF(stderr, "%c", iso8c);
+            dmr_udt_append_text_event(ctx->state, ctx->slot, (char)iso8c);
+        } else {
+            DSD_FPRINTF(stderr, " ");
+        }
+    }
+}
+
+static void
+dmr_udt_handle_utf16(dmr_udt_ctx* ctx) {
+    int end = ctx->payload_bits / 16;
+    DSD_FPRINTF(stderr, "UTF16 Text: ");
+    dsd_append(ctx->udt_string, sizeof ctx->udt_string, "UTF16 Text; ");
+    DSD_SPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message, "%s", " ");
+    dmr_udt_emit_utf16_text(ctx, 96, end);
+}
+
+static void
+dmr_udt_handle_ip(dmr_udt_ctx* ctx) {
+    if (ctx->udt_uab == 1) {
+        DSD_FPRINTF(stderr, "IP4: ");
+        DSD_FPRINTF(stderr, "%d.", (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 0], 8));
+        DSD_FPRINTF(stderr, "%d.", (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 8], 8));
+        DSD_FPRINTF(stderr, "%d.", (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 16], 8));
+        DSD_FPRINTF(stderr, "%d", (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 24], 8));
+        dsd_append(ctx->udt_string, sizeof ctx->udt_string, "IP4; ");
+    } else {
+        DSD_FPRINTF(stderr, "IP6: ");
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 0], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 16], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 32], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 48], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 64], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 80], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 96], 16));
+        DSD_FPRINTF(stderr, "%04X", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 112], 16));
+        dsd_append(ctx->udt_string, sizeof ctx->udt_string, "IP6; ");
+    }
+}
+
+static void
+dmr_udt_handle_mixed_utf16(dmr_udt_ctx* ctx) {
+    int text_bits = ctx->payload_bits - 32;
+    if (text_bits < 0) {
+        text_bits = 0;
+    }
+    int end = text_bits / 16;
+    uint32_t address = (uint32_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 8], 24);
+    DSD_FPRINTF(stderr, "Address: %d; ", address);
+    DSD_FPRINTF(stderr, "UTF16 Text: ");
+    dsd_append(ctx->udt_string, sizeof ctx->udt_string, "Mixed Add/Text; ");
+    DSD_SPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message, "Address: %d;", address);
+    dmr_udt_emit_utf16_text(ctx, 96 + 32, end);
+}
+
+static void
+dmr_udt_handle_nmea(dmr_udt_ctx* ctx) {
+    DSD_FPRINTF(stderr, "NMEA");
+    dsd_append(ctx->udt_string, sizeof ctx->udt_string, "NMEA; ");
+    if (ctx->cs_bits[96] == 1) {
+        DSD_FPRINTF(stderr, " Encrypted Format :(");
+    } else if (ctx->udt_uab == 1) {
+        nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, ctx->udt_source, 1);
+    } else if (ctx->udt_uab == 2) {
+        nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, ctx->udt_source, 2);
+    } else if (ctx->udt_uab == 3) {
+        DSD_FPRINTF(stderr, " Unspecified MFID Format: %02X;", (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[184], 8));
+    } else {
+        DSD_FPRINTF(stderr, " Reserved Format; ");
+    }
+}
+
+static void
+dmr_udt_handle_lip(dmr_udt_ctx* ctx) {
+    dsd_append(ctx->udt_string, sizeof ctx->udt_string, "LIP; ");
+    DSD_FPRINTF(stderr, "\n");
+    lip_protocol_decoder(ctx->opts, ctx->state, ctx->cs_bits + 96);
+}
+
+static void
+dmr_udt_decode_format(dmr_udt_ctx* ctx) {
+    switch (ctx->udt_format2) {
+        case 0x00: dmr_udt_handle_binary(ctx); break;
+        case 0x01: dmr_udt_handle_appended_addressing(ctx); break;
+        case 0x02: dmr_udt_handle_bcd(ctx); break;
+        case 0x03: dmr_udt_handle_iso7(ctx); break;
+        case 0x04: dmr_udt_handle_iso8(ctx); break;
+        case 0x05: dmr_udt_handle_nmea(ctx); break;
+        case 0x06: dmr_udt_handle_ip(ctx); break;
+        case 0x07: dmr_udt_handle_utf16(ctx); break;
+        case 0x08:
+        case 0x09:
+            DSD_FPRINTF(stderr, "MFID SPEC %02X: ", ctx->udt_format2);
+            dsd_append(ctx->udt_string, sizeof ctx->udt_string, "MFID Specific; ");
+            break;
+        case 0x0A: dmr_udt_handle_mixed_utf16(ctx); break;
+        case 0x0B: dmr_udt_handle_lip(ctx); break;
+        default:
+            DSD_FPRINTF(stderr, "Reserved %02X: ", ctx->udt_format2);
+            dsd_append(ctx->udt_string, sizeof ctx->udt_string, "Reserved; ");
+            break;
+    }
+}
+
+static void
+dmr_udt_finalize(dmr_udt_ctx* ctx) {
+    DSD_FPRINTF(stderr, "%s", KNRM);
+    if (ctx->slot == 0) {
+        ctx->state->lastsrc = ctx->udt_source;
+        ctx->state->lasttg = ctx->udt_target;
+    } else {
+        ctx->state->lastsrcR = ctx->udt_source;
+        ctx->state->lasttgR = ctx->udt_target;
+    }
+    watchdog_event_datacall(ctx->opts, ctx->state, ctx->udt_source, ctx->udt_target, ctx->udt_string, ctx->slot);
+    if (ctx->slot == 0) {
+        ctx->state->lastsrc = 0;
+        ctx->state->lasttg = 0;
+    } else {
+        ctx->state->lastsrcR = 0;
+        ctx->state->lasttgR = 0;
+    }
+    watchdog_event_history(ctx->opts, ctx->state, ctx->slot);
+    watchdog_event_current(ctx->opts, ctx->state, ctx->slot);
+}
+
+static void
+dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, uint32_t CRCCorrect) {
+    dmr_udt_ctx ctx;
+    UNUSED(CRCCorrect);
+    dmr_udt_prepare_context(&ctx, opts, state, block_bytes);
+    dmr_udt_decode_format(&ctx);
+    dmr_udt_finalize(&ctx);
+}
+
+#ifdef DMR_PDU_DECRYPTION
+typedef struct {
+    int alg;
+    int kid;
+    int akl;
+    int start;
+    int end;
+    unsigned long long mi;
+    unsigned long long rkey;
+    uint8_t kaes[32];
+    uint8_t kiv[9];
+} dmr_block_dec_ctx;
+
+static void
+dmr_block_dec_load_ctx(dsd_state* state, uint8_t slot, int blocks, uint8_t block_len, dmr_block_dec_ctx* ctx) {
+    const uint8_t empt[32] = {0};
+
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->start = (int)state->data_ks_start[slot];
+    ctx->end = ((blocks + 1) * block_len) - 4 - (int)state->data_block_poc[slot] - ctx->start;
+    if (ctx->end < 0) {
+        ctx->end = 3096;
+    }
+
+    if (state->currentslot == 0) {
+        ctx->alg = state->payload_algid;
+        ctx->kid = state->payload_keyid;
+        ctx->mi = (unsigned long long)state->payload_mi;
+        ctx->rkey = state->rkey_array[state->payload_keyid];
+    } else {
+        ctx->alg = state->payload_algidR;
+        ctx->kid = state->payload_keyidR;
+        ctx->mi = (unsigned long long)state->payload_miR;
+        ctx->rkey = state->rkey_array[state->payload_keyidR];
+    }
+
+    for (int i = 0; i < 8; i++) {
+        ctx->kaes[i + 0] = ((state->rkey_array[ctx->kid + 0x000] >> (56 - (i * 8))) & 0xFF);
+        ctx->kaes[i + 8] = ((state->rkey_array[ctx->kid + 0x101] >> (56 - (i * 8))) & 0xFF);
+        ctx->kaes[i + 16] = ((state->rkey_array[ctx->kid + 0x201] >> (56 - (i * 8))) & 0xFF);
+        ctx->kaes[i + 24] = ((state->rkey_array[ctx->kid + 0x301] >> (56 - (i * 8))) & 0xFF);
+    }
+    if (memcmp(ctx->kaes, empt, sizeof(ctx->kaes)) != 0) {
+        ctx->akl = 1;
+    }
+    if (ctx->rkey == 0 && state->R != 0) {
+        ctx->rkey = state->R;
+    }
+
+    ctx->kiv[0] = ((ctx->rkey & 0xFF00000000) >> 32);
+    ctx->kiv[1] = ((ctx->rkey & 0xFF000000) >> 24);
+    ctx->kiv[2] = ((ctx->rkey & 0xFF0000) >> 16);
+    ctx->kiv[3] = ((ctx->rkey & 0xFF00) >> 8);
+    ctx->kiv[4] = ((ctx->rkey & 0xFF) >> 0);
+    ctx->kiv[5] = ((ctx->mi & 0xFF000000) >> 24);
+    ctx->kiv[6] = ((ctx->mi & 0xFF0000) >> 16);
+    ctx->kiv[7] = ((ctx->mi & 0xFF00) >> 8);
+    ctx->kiv[8] = ((ctx->mi & 0xFF) >> 0);
+}
+
+static void
+dmr_block_dec_print_info(const dmr_block_dec_ctx* ctx) {
+    DSD_FPRINTF(stderr, "\\n PDU ALG: %02X; Key ID: %02X;", ctx->alg, ctx->kid);
+    if (ctx->alg != 0) {
+        DSD_FPRINTF(stderr, " MI(32): %08llX;", ctx->mi);
+    }
+    if (ctx->alg == 0) {
+        DSD_FPRINTF(stderr, " Moto BP;");
+    } else if (ctx->alg == 1) {
+        DSD_FPRINTF(stderr, " RC4;");
+    } else if (ctx->alg == 2) {
+        DSD_FPRINTF(stderr, " DES;");
+    } else if (ctx->alg == 4) {
+        DSD_FPRINTF(stderr, " AES128;");
+    } else if (ctx->alg == 5) {
+        DSD_FPRINTF(stderr, " AES256;");
+    }
+    if (ctx->rkey && ctx->alg != 0) {
+        DSD_FPRINTF(stderr, " Key: %010llX;", ctx->rkey);
+    }
+}
+
+static void
+dmr_block_dec_prepare_maes(dsd_state* state, uint8_t maes[16]) {
+    LFSR128d(state);
+    if (state->currentslot == 0) {
+        DSD_MEMCPY(maes, state->aes_iv, 16);
+    } else {
+        DSD_MEMCPY(maes, state->aes_ivR, 16);
+    }
+}
+
+static void
+dmr_block_dec_generate_stream(dsd_state* state, uint8_t slot, const dmr_block_dec_ctx* ctx, uint8_t ob[129 * 24],
+                              uint8_t* decrypted_pdu) {
+    if (ctx->alg == 1 && ctx->rkey != 0) {
+        rc4_block_output(256, 9, (int)state->data_byte_ctr[slot], ctx->kiv, ob);
+        *decrypted_pdu = 1;
+    } else if (ctx->alg == 2 && ctx->rkey != 0) {
+        int nblocks = (state->data_byte_ctr[slot] / 8) + 1;
+        des_multi_keystream_output(ctx->mi, ctx->rkey, ob, 1, nblocks);
+        *decrypted_pdu = 1;
+    } else if ((ctx->alg == 4 || ctx->alg == 5) && ctx->akl == 1) {
+        uint8_t maes[16];
+        int nblocks = (state->data_byte_ctr[slot] / 16) + 1;
+        dmr_block_dec_prepare_maes(state, maes);
+        aes_ofb_keystream_output(maes, ctx->kaes, ob, (ctx->alg == 5) ? 2 : 0, nblocks);
+        *decrypted_pdu = 1;
+    }
+}
+
+static void
+dmr_block_dec_apply_stream(dsd_state* state, uint8_t slot, const dmr_block_dec_ctx* ctx, const uint8_t ob[129 * 24]) {
+    for (int i = 0; i < ctx->end; i++) {
+        state->dmr_pdu_sf[slot][i + ctx->start] ^= ob[i % 3096];
+    }
+}
+
+static void
+dmr_block_dec_apply_bp(dsd_state* state, uint8_t slot, const dmr_block_dec_ctx* ctx, uint8_t ob[129 * 24],
+                       uint8_t* decrypted_pdu) {
+    uint16_t bp_key = 0;
+
+    if (ctx->alg != 0 || state->K == 0) {
+        return;
+    }
+
+    bp_key = BPK[state->K];
+    ob[0] = (bp_key >> 8) & 0xFF;
+    ob[1] = (bp_key >> 0) & 0xFF;
+    DSD_FPRINTF(stderr, " Key: %lld : %04X;", state->K, bp_key);
+    if (bp_key == 0) {
+        return;
+    }
+    for (int i = 0; i < ctx->end; i++) {
+        state->dmr_pdu_sf[slot][i + ctx->start] ^= ob[i % 2];
+    }
+    *decrypted_pdu = 1;
+}
+#endif
+
+static void
+dmr_block_type1_decrypt_pdu(dsd_state* state, uint8_t slot, int blocks, uint8_t block_len, uint8_t* decrypted_pdu) {
+#ifdef DMR_PDU_DECRYPTION
+    dmr_block_dec_ctx ctx;
+    uint8_t ob[129 * 24];
+    uint8_t stream_ready = 0;
+
+    DSD_MEMSET(ob, 0, sizeof(ob));
+    dmr_block_dec_load_ctx(state, slot, blocks, block_len, &ctx);
+    dmr_block_dec_print_info(&ctx);
+    if (ctx.alg == 5) {
+        DSD_FPRINTF(stderr, "\\n");
+    }
+
+    dmr_block_dec_generate_stream(state, slot, &ctx, ob, decrypted_pdu);
+    stream_ready = ((ctx.alg == 1 && ctx.rkey != 0) || (ctx.alg == 2 && ctx.rkey != 0) || (ctx.alg == 4 && ctx.akl != 0)
+                    || (ctx.alg == 5 && ctx.akl != 0))
+                       ? 1
+                       : 0;
+    if (stream_ready) {
+        dmr_block_dec_apply_stream(state, slot, &ctx, ob);
+    } else {
+        dmr_block_dec_apply_bp(state, slot, &ctx, ob, decrypted_pdu);
+    }
+#else
+    UNUSED(state);
+    UNUSED(slot);
+    UNUSED(blocks);
+    UNUSED(block_len);
+    UNUSED(decrypted_pdu);
+#endif
 }
 
 //assemble the blocks as they come in, shuffle them into the unified dmr_pdu_sf
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    const uint8_t* block_bytes;
+    uint8_t block_len;
+    uint8_t type;
+    uint8_t slot;
+    uint8_t blockcounter;
+    int blocks;
+    uint8_t is_udt;
+    uint8_t lb;
+    uint8_t pf;
+    uint32_t crc_correct;
+    uint32_t crc_computed;
+    uint32_t crc_extracted;
+    uint32_t irrecoverable_errors;
+    uint8_t dmr_pdu_sf_bits[8 * 24 * 129];
+    uint8_t mbc_crc_good[2];
+} dmr_block_assembler_ctx;
+
+static void
+dmr_block_assembler_init_ctx(dmr_block_assembler_ctx* ctx, dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes,
+                             uint8_t block_len, uint8_t type) {
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->opts = opts;
+    ctx->state = state;
+    ctx->block_bytes = block_bytes;
+    ctx->block_len = block_len;
+    ctx->type = type;
+    ctx->slot = (uint8_t)(state->currentslot & 1);
+    ctx->blockcounter = state->data_block_counter[ctx->slot];
+    ctx->blocks = 1;
+
+    if (type == 1) {
+        ctx->blocks = state->data_header_blocks[ctx->slot] - 1;
+    } else if (type == 2) {
+        ctx->blocks = state->data_block_counter[ctx->slot];
+    } else if (type == 3) {
+        ctx->blocks = state->data_header_blocks[ctx->slot];
+        ctx->is_udt = 1;
+        ctx->type = 2;
+    }
+
+    if (ctx->blocks < 1) {
+        ctx->blocks = 1;
+    }
+    if (ctx->blocks > 127) {
+        ctx->blocks = 127;
+    }
+    if (ctx->block_len == 0) {
+        ctx->block_len = 18;
+    }
+    if (ctx->block_len > 24) {
+        ctx->block_len = 24;
+    }
+}
+
+static int
+dmr_block_type1_offset(const dmr_block_assembler_ctx* ctx) {
+    return (ctx->state->data_p_head[ctx->slot] == 1) ? 12 : 0;
+}
+
+static uint8_t
+dmr_block_type1_complete(const dmr_block_assembler_ctx* ctx) {
+    return (uint8_t)(ctx->state->data_block_counter[ctx->slot] == ctx->state->data_header_blocks[ctx->slot]
+                     && ctx->state->data_header_valid[ctx->slot] == 1);
+}
+
+static void
+dmr_block_type1_append_bytes(dmr_block_assembler_ctx* ctx, uint16_t* ctr_out) {
+    uint16_t ctr = ctx->state->data_byte_ctr[ctx->slot];
+    for (int i = 0; i < ctx->block_len; i++) {
+        ctx->state->dmr_pdu_sf[ctx->slot][ctr++] = ctx->block_bytes[i];
+    }
+    ctx->state->data_byte_ctr[ctx->slot] += ctx->block_len;
+    *ctr_out = ctr;
+}
+
+static uint32_t
+dmr_block_type1_extract_crc32(const dsd_state* state, uint8_t slot_idx, uint16_t ctr) {
+    if (ctr < 4) {
+        return 0u;
+    }
+    return (state->dmr_pdu_sf[slot_idx][ctr - 4] << 24) | (state->dmr_pdu_sf[slot_idx][ctr - 3] << 16)
+           | (state->dmr_pdu_sf[slot_idx][ctr - 2] << 8) | (state->dmr_pdu_sf[slot_idx][ctr - 1] << 0);
+}
+
+static void
+dmr_block_type1_pack_crc_bits(const dsd_state* state, uint8_t slot, uint8_t block_len, uint16_t ctr, int offset,
+                              uint8_t bits[]) {
+    for (int i = 0, j = 0; i < ctr; i += 2, j += 16) {
+        if ((i + 1) < ctr) {
+            bits[j + 0] = (state->dmr_pdu_sf[slot][i + 1] >> 7) & 0x01;
+            bits[j + 1] = (state->dmr_pdu_sf[slot][i + 1] >> 6) & 0x01;
+            bits[j + 2] = (state->dmr_pdu_sf[slot][i + 1] >> 5) & 0x01;
+            bits[j + 3] = (state->dmr_pdu_sf[slot][i + 1] >> 4) & 0x01;
+            bits[j + 4] = (state->dmr_pdu_sf[slot][i + 1] >> 3) & 0x01;
+            bits[j + 5] = (state->dmr_pdu_sf[slot][i + 1] >> 2) & 0x01;
+            bits[j + 6] = (state->dmr_pdu_sf[slot][i + 1] >> 1) & 0x01;
+            bits[j + 7] = (state->dmr_pdu_sf[slot][i + 1] >> 0) & 0x01;
+        }
+
+        bits[j + 8] = (state->dmr_pdu_sf[slot][i] >> 7) & 0x01;
+        bits[j + 9] = (state->dmr_pdu_sf[slot][i] >> 6) & 0x01;
+        bits[j + 10] = (state->dmr_pdu_sf[slot][i] >> 5) & 0x01;
+        bits[j + 11] = (state->dmr_pdu_sf[slot][i] >> 4) & 0x01;
+        bits[j + 12] = (state->dmr_pdu_sf[slot][i] >> 3) & 0x01;
+        bits[j + 13] = (state->dmr_pdu_sf[slot][i] >> 2) & 0x01;
+        bits[j + 14] = (state->dmr_pdu_sf[slot][i] >> 1) & 0x01;
+        bits[j + 15] = (state->dmr_pdu_sf[slot][i] >> 0) & 0x01;
+
+        if (i == (block_len - 1 + offset) && state->data_conf_data[slot] == 1) {
+            i += 2;
+        }
+    }
+}
+
+static void
+dmr_block_type1_update_crc(dmr_block_assembler_ctx* ctx, uint16_t ctr, int offset) {
+    uint8_t slot_idx = (ctx->slot >= 2) ? 1 : ctx->slot;
+
+    dmr_unpack_bytes_to_bits(ctx->state->dmr_pdu_sf[slot_idx], ctr, ctx->dmr_pdu_sf_bits);
+    ctx->crc_extracted = dmr_block_type1_extract_crc32(ctx->state, slot_idx, ctr);
+    dmr_block_type1_pack_crc_bits(ctx->state, ctx->slot, ctx->block_len, ctr, offset, ctx->dmr_pdu_sf_bits);
+    ctx->crc_computed = (uint32_t)ComputeCrc32Bit(ctx->dmr_pdu_sf_bits, (ctr * 8) - 32);
+    if (ctx->crc_computed == ctx->crc_extracted
+        || (ctx->state->data_header_format[ctx->slot] == 0xF && ctx->state->data_header_sap[ctx->slot] == 1)) {
+        ctx->crc_correct = 1;
+    }
+}
+
+static uint8_t
+dmr_block_type1_encryption_required(const dmr_block_assembler_ctx* ctx) {
+    return (uint8_t)((ctx->slot == 0 && ctx->state->dmr_so == 0x100)
+                     || (ctx->slot == 1 && ctx->state->dmr_soR == 0x100));
+}
+
+static void
+dmr_block_type1_handle_encrypted_notice(dmr_block_assembler_ctx* ctx) {
+    uint8_t alg = (ctx->slot == 0) ? ctx->state->payload_algid : ctx->state->payload_algidR;
+    uint8_t kid = (ctx->slot == 0) ? ctx->state->payload_keyid : ctx->state->payload_keyidR;
+    char enc_str[200];
+
+    DSD_FPRINTF(stderr, "%s", KRED);
+    DSD_FPRINTF(stderr, "\n Slot %d - Encrypted PDU;", ctx->slot + 1);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+    if (alg == 0x07) {
+        DSD_FPRINTF(stderr, " Vertex Std data decrypt not implemented;");
+    }
+
+    DSD_MEMSET(enc_str, 0, sizeof(enc_str));
+    DSD_SPRINTF(enc_str, "DATA TGT: %lld; SRC: %lld; ENC PDU; ALG: %02X; KID: %02X;",
+                ctx->state->dmr_lrrp_source[ctx->slot], ctx->state->dmr_lrrp_target[ctx->slot], alg, kid);
+    DSD_SPRINTF(ctx->state->dmr_lrrp_gps[ctx->slot], "%s", enc_str);
+    watchdog_event_datacall(ctx->opts, ctx->state, ctx->state->dmr_lrrp_source[ctx->slot],
+                            ctx->state->dmr_lrrp_target[ctx->slot], enc_str, ctx->slot);
+}
+
+static uint8_t
+dmr_block_type1_lrrp_crc_ok(const dsd_state* state, uint8_t slot) {
+    uint8_t pdu_crc_ok = 1;
+    if (!state->data_conf_data[slot]) {
+        return pdu_crc_ok;
+    }
+
+    int start = state->data_p_head[slot] ? 2 : 1;
+    int end = state->data_header_blocks[slot];
+    if (start < 1) {
+        start = 1;
+    }
+    if (end > 126) {
+        end = 126;
+    }
+    if (end < start) {
+        return 0;
+    }
+
+    for (int bi = start; bi <= end; bi++) {
+        if (state->data_block_crc_valid[slot][bi] != 1) {
+            pdu_crc_ok = 0;
+            break;
+        }
+    }
+    return pdu_crc_ok;
+}
+
+static void
+dmr_block_type1_print_mnis_type(uint8_t mnis_type) {
+    if (mnis_type == 0x01) {
+        DSD_FPRINTF(stderr, "MNIS LOCN; ");
+    } else if (mnis_type == 0x11) {
+        DSD_FPRINTF(stderr, "MNIS LRRP; ");
+    } else if (mnis_type == 0x33) {
+        DSD_FPRINTF(stderr, "MNIS ARS;  ");
+    } else if (mnis_type == 0x88) {
+        DSD_FPRINTF(stderr, "MNIS XCMP; ");
+    } else {
+        DSD_FPRINTF(stderr, "Unknown MNIS Type: %02X; ", mnis_type);
+    }
+}
+
+static void
+dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, uint8_t mnis_type, int offset,
+                                    uint32_t msrc, uint32_t mdst) {
+    if (mnis_type == 0x11) {
+        uint8_t pdu_crc_ok = dmr_block_type1_lrrp_crc_ok(ctx->state, ctx->slot);
+        dmr_lrrp(ctx->opts, ctx->state, len, msrc, mdst, ctx->state->dmr_pdu_sf[ctx->slot] + 7, pdu_crc_ok);
+    } else if (mnis_type == 0x33) {
+        utf8_to_text(ctx->state, 0, 15, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
+    } else if (mnis_type == 0x01) {
+        utf8_to_text(ctx->state, 0, len - offset, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
+        dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
+        DSD_SPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s, "%s",
+                    ctx->state->dmr_lrrp_gps[ctx->slot]);
+    }
+
+    if (mnis_type != 0x11 && mnis_type != 0x01) {
+        char mnis_str[200];
+        DSD_MEMSET(mnis_str, 200, sizeof(mnis_str));
+        DSD_SPRINTF(mnis_str, "MNIS TGT: %lld; SRC: %lld;", ctx->state->dmr_lrrp_source[ctx->slot],
+                    ctx->state->dmr_lrrp_target[ctx->slot]);
+        watchdog_event_datacall(ctx->opts, ctx->state, ctx->state->dmr_lrrp_source[ctx->slot],
+                                ctx->state->dmr_lrrp_target[ctx->slot], mnis_str, ctx->slot);
+    } else if (mnis_type == 0x11 || mnis_type == 0x01) {
+        watchdog_event_datacall(ctx->opts, ctx->state, ctx->state->dmr_lrrp_source[ctx->slot],
+                                ctx->state->dmr_lrrp_target[ctx->slot], ctx->state->dmr_lrrp_gps[ctx->slot], ctx->slot);
+    }
+}
+
+static void
+dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx, int offset) {
+    uint16_t byte_count = ctx->state->data_byte_ctr[ctx->slot];
+    uint8_t poc = ctx->state->data_block_poc[ctx->slot];
+    uint16_t len = byte_count - poc - 4 - 7;
+    uint32_t msrc = ctx->state->dmr_lrrp_source[ctx->slot];
+    uint32_t mdst = ctx->state->dmr_lrrp_target[ctx->slot];
+    uint8_t mnis_type = ctx->state->dmr_pdu_sf[ctx->slot][4];
+    uint16_t mnis_unk;
+
+    if (len > 150) {
+        len = 150;
+    }
+    DSD_FPRINTF(stderr, "\n SRC(MNIS): %08d; ", msrc);
+    DSD_FPRINTF(stderr, "\n DST(MNIS): %08d; ", mdst);
+    dmr_block_type1_print_mnis_type(mnis_type);
+    mnis_unk = (ctx->state->dmr_pdu_sf[ctx->slot][5] << 8) | ctx->state->dmr_pdu_sf[ctx->slot][6];
+    DSD_FPRINTF(stderr, " ???: %04X", mnis_unk);
+    DSD_SPRINTF(ctx->state->dmr_lrrp_gps[ctx->slot], "MNIS SRC: %d; DST: %d; ", msrc, mdst);
+    dmr_block_type1_handle_mnis_payload(ctx, len, mnis_type, offset, msrc, mdst);
+}
+
+static void
+dmr_block_type1_handle_unknown_pdu(dmr_block_assembler_ctx* ctx) {
+    char unk_str[200];
+    int safe_slot = (ctx->slot == 0 || ctx->slot == 1) ? ctx->slot : 0;
+    unsigned long long source = 0;
+    unsigned long long target = 0;
+    if (ctx->slot == 0 || ctx->slot == 1) {
+        source = ctx->state->dmr_lrrp_source[safe_slot];
+        target = ctx->state->dmr_lrrp_target[safe_slot];
+    }
+    DSD_MEMSET(unk_str, 200, sizeof(unk_str));
+    DSD_SPRINTF(unk_str, "DATA TGT: %lld; SRC: %lld; Unknown PDU Format;", source, target);
+    watchdog_event_datacall(ctx->opts, ctx->state, source, target, unk_str, safe_slot);
+}
+
+static void
+dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx, int offset) {
+    if (ctx->slot > 1) {
+        dmr_block_type1_handle_unknown_pdu(ctx);
+        return;
+    }
+
+    uint8_t sap = ctx->state->data_header_sap[ctx->slot];
+    uint16_t len = ((ctx->blocks + 1) * ctx->block_len) - 4;
+
+    if (sap == 4) {
+        decode_ip_pdu(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot]);
+    } else if (sap == 10) {
+        dmr_sd_pdu(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot]);
+    } else if (sap == 2 || sap == 3) {
+        dmr_udp_comp_pdu(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot]);
+    } else if (sap == 1 && ctx->state->dmr_pdu_sf[ctx->slot][1] == 0x10) {
+        dmr_block_type1_handle_mnis(ctx, offset);
+    } else {
+        dmr_block_type1_handle_unknown_pdu(ctx);
+    }
+}
+
+static void
+dmr_block_type1_process_payload(dmr_block_assembler_ctx* ctx, int offset) {
+    uint8_t enc_check = dmr_block_type1_encryption_required(ctx);
+    uint8_t decrypted_pdu = enc_check ? 0 : 1;
+
+    if (enc_check) {
+        dmr_block_type1_decrypt_pdu(ctx->state, ctx->slot, ctx->blocks, ctx->block_len, &decrypted_pdu);
+    }
+    if (enc_check == 1 && decrypted_pdu == 0) {
+        dmr_block_type1_handle_encrypted_notice(ctx);
+    } else if (ctx->opts->aggressive_framesync == 0 || ctx->opts->dmr_crc_relaxed_default) {
+        dmr_block_type1_handle_sap(ctx, offset);
+    }
+}
+
+static void
+dmr_block_type1_log_crc_and_payload(dmr_block_assembler_ctx* ctx) {
+    if (!ctx->crc_correct) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, "\n Slot %d - Multi Block PDU Message CRC32 ERR", ctx->slot + 1);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+
+    if (ctx->opts->payload == 1) {
+        DSD_FPRINTF(stderr, "%s", KGRN);
+        DSD_FPRINTF(stderr, "\n Slot %d - Multi Block PDU Message\n  ", ctx->slot + 1);
+        for (int i = 0; i < ((ctx->blocks + 1) * ctx->block_len); i++) {
+            if ((i != 0) && (i % 12 == 0)) {
+                DSD_FPRINTF(stderr, "\n  ");
+            }
+            DSD_FPRINTF(stderr, "%02X", ctx->state->dmr_pdu_sf[ctx->slot][i]);
+        }
+        DSD_FPRINTF(stderr, "%s ", KNRM);
+    }
+}
+
+static void
+dmr_block_type1_clear_header_state(dmr_block_assembler_ctx* ctx) {
+    ctx->state->data_header_format[ctx->slot] = 7;
+    ctx->state->data_header_sap[ctx->slot] = 0;
+    ctx->state->data_header_valid[ctx->slot] = 0;
+    ctx->state->data_conf_data[ctx->slot] = 0;
+    ctx->state->data_block_poc[ctx->slot] = 0;
+    ctx->state->data_byte_ctr[ctx->slot] = 0;
+    ctx->state->data_ks_start[ctx->slot] = 0;
+}
+
+static void
+dmr_block_assembler_handle_type1(dmr_block_assembler_ctx* ctx) {
+    uint16_t ctr = 0;
+    int offset = dmr_block_type1_offset(ctx);
+
+    dmr_block_type1_append_bytes(ctx, &ctr);
+    if (!dmr_block_type1_complete(ctx)) {
+        return;
+    }
+    dmr_block_type1_update_crc(ctx, ctr, offset);
+    dmr_block_type1_process_payload(ctx, offset);
+    dmr_block_type1_log_crc_and_payload(ctx);
+    dmr_block_type1_clear_header_state(ctx);
+}
+
+static uint32_t
+dmr_block_extract_crc16(const uint8_t bits[], int total_bits) {
+    uint32_t extracted = 0;
+    for (int i = 0; i < 16; i++) {
+        extracted = (extracted << 1) | (uint32_t)(bits[(total_bits - 16) + i] & 1);
+    }
+    return extracted;
+}
+
+static void
+dmr_block_type2_set_lb_pf(dmr_block_assembler_ctx* ctx) {
+    ctx->lb = ctx->block_bytes[0] >> 7;
+    ctx->pf = (ctx->block_bytes[0] >> 6) & 1;
+    if (!ctx->is_udt) {
+        return;
+    }
+
+    ctx->pf = 0;
+    if (ctx->state->udt_uab_reserved[ctx->slot]) {
+        uint8_t mbc_block_bits[12 * 8 * 6];
+        int msg_bytes = (1 + ctx->blockcounter) * ctx->block_len;
+        int mbits = (int)(ctx->blockcounter * 96);
+        ctx->lb = 0;
+
+        DSD_MEMSET(ctx->dmr_pdu_sf_bits, 0, sizeof(ctx->dmr_pdu_sf_bits));
+        dmr_unpack_bytes_to_bits(ctx->state->dmr_pdu_sf[ctx->slot], msg_bytes, ctx->dmr_pdu_sf_bits);
+        ctx->crc_extracted = dmr_block_extract_crc16(ctx->dmr_pdu_sf_bits, 96 * (1 + ctx->blockcounter));
+        DSD_MEMSET(mbc_block_bits, 0, sizeof(mbc_block_bits));
+        for (int i = 0; i < mbits; i++) {
+            mbc_block_bits[i] = ctx->dmr_pdu_sf_bits[i + 96];
+        }
+        ctx->crc_computed = ComputeCrcCCITT16d(mbc_block_bits, (uint16_t)(mbits - 16));
+        if (ctx->crc_computed == ctx->crc_extracted) {
+            ctx->lb = 1;
+            ctx->blocks = ctx->blockcounter;
+        }
+    } else {
+        ctx->lb = 0;
+        if (ctx->blocks == ctx->blockcounter) {
+            ctx->lb = 1;
+        }
+    }
+}
+
+static uint8_t
+dmr_block_type2_length_ok(dmr_block_assembler_ctx* ctx) {
+    if (ctx->is_udt || (ctx->blocks >= 1 && ctx->blocks <= 4)) {
+        return 1;
+    }
+
+    DSD_FPRINTF(stderr, "%s", KRED);
+    DSD_FPRINTF(stderr, "\n Slot %d - MBC aggregate length out of bounds: %d", ctx->slot + 1, ctx->blocks);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+    ctx->state->data_block_crc_valid[ctx->slot][0] = 0;
+    return 0;
+}
+
+static void
+dmr_block_type2_unpack_bits(dmr_block_assembler_ctx* ctx) {
+    int total_bytes = (1 + ctx->blocks) * ctx->block_len;
+    if (total_bytes > 12 * 5) {
+        total_bytes = 12 * 5;
+    }
+
+    DSD_MEMSET(ctx->dmr_pdu_sf_bits, 0, sizeof(ctx->dmr_pdu_sf_bits));
+    dmr_unpack_bytes_to_bits(ctx->state->dmr_pdu_sf[ctx->slot], total_bytes, ctx->dmr_pdu_sf_bits);
+    if (ctx->is_udt) {
+        ctx->pf = ctx->dmr_pdu_sf_bits[73];
+    }
+}
+
+static void
+dmr_block_type2_update_crc(dmr_block_assembler_ctx* ctx) {
+    uint8_t mbc_block_bits[12 * 8 * 6];
+    int limit = 12 * 8 * 3;
+
+    ctx->mbc_crc_good[0] = ctx->state->data_block_crc_valid[ctx->slot][0];
+    ctx->crc_extracted = dmr_block_extract_crc16(ctx->dmr_pdu_sf_bits, 96 * (1 + ctx->blocks));
+    DSD_MEMSET(mbc_block_bits, 0, sizeof(mbc_block_bits));
+    for (int i = 0; i < limit; i++) {
+        mbc_block_bits[i] = ctx->dmr_pdu_sf_bits[i + 96];
+    }
+    if (ctx->is_udt) {
+        DSD_MEMSET(mbc_block_bits, 0, sizeof(mbc_block_bits));
+        limit = 12 * 8 * ctx->blocks;
+        for (int i = 0; i < limit; i++) {
+            mbc_block_bits[i] = ctx->dmr_pdu_sf_bits[i + 96];
+        }
+    }
+
+    ctx->crc_computed = ComputeCrcCCITT16d(mbc_block_bits, ((ctx->blocks + 0) * 96) - 16);
+    if (ctx->crc_computed == ctx->crc_extracted) {
+        ctx->mbc_crc_good[1] = 1;
+    }
+
+    ctx->crc_correct = 0;
+    ctx->irrecoverable_errors = 1;
+    if (ctx->mbc_crc_good[0] == 1 && ctx->mbc_crc_good[1] == 1) {
+        ctx->crc_correct = 1;
+        ctx->irrecoverable_errors = 0;
+    } else {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, "\n Slot %d - Multi Block Control Message CRC16 ERR", ctx->slot + 1);
+        DSD_FPRINTF(stderr, " %X - %X", ctx->crc_extracted, ctx->crc_computed);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+}
+
+static void
+dmr_block_type2_dispatch(dmr_block_assembler_ctx* ctx) {
+    if (!ctx->is_udt && !ctx->pf) {
+        dmr_cspdu(ctx->opts, ctx->state, ctx->dmr_pdu_sf_bits, ctx->state->dmr_pdu_sf[ctx->slot], ctx->crc_correct,
+                  ctx->irrecoverable_errors);
+    }
+    if (ctx->is_udt && !ctx->pf) {
+        dmr_udt_decoder(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[ctx->slot], ctx->crc_correct);
+    }
+}
+
+static void
+dmr_block_type2_log_payload(dmr_block_assembler_ctx* ctx) {
+    if (ctx->opts->payload != 1) {
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "%s", KGRN);
+    DSD_FPRINTF(stderr, "\n Slot %d - Multi Block Control Message\n  ", ctx->slot + 1);
+    for (int i = 0; i < ((ctx->blocks + 1) * ctx->block_len); i++) {
+        DSD_FPRINTF(stderr, "%02X", ctx->state->dmr_pdu_sf[ctx->slot][i]);
+        if (i == 11 || i == 23 || i == 35 || i == 47 || i == 59 || i == 71 || i == 83 || i == 95) {
+            DSD_FPRINTF(stderr, "\n  ");
+        }
+    }
+    DSD_FPRINTF(stderr, "%s", KRED);
+    if (ctx->mbc_crc_good[0] == 0) {
+        DSD_FPRINTF(stderr, "MBC/UDT Header CRC ERR ");
+    }
+    if (ctx->mbc_crc_good[1] == 0) {
+        DSD_FPRINTF(stderr, "MBC/UDT Blocks CRC ERR ");
+    }
+    if (ctx->pf) {
+        DSD_FPRINTF(stderr, "MBC/UDT Header/Blocks Protected ");
+    }
+    DSD_FPRINTF(stderr, "%s ", KNRM);
+}
+
+static uint8_t
+dmr_block_assembler_handle_type2(dmr_block_assembler_ctx* ctx) {
+    if (ctx->state->data_block_counter[ctx->slot] > 4) {
+        ctx->state->data_block_counter[ctx->slot] = 4;
+    }
+    for (int i = 0; i < ctx->block_len; i++) {
+        ctx->state->dmr_pdu_sf[ctx->slot][i + (ctx->blockcounter * ctx->block_len)] = ctx->block_bytes[i];
+    }
+
+    dmr_block_type2_set_lb_pf(ctx);
+    if (ctx->lb != 1 || ctx->state->data_header_valid[ctx->slot] != 1) {
+        return 1;
+    }
+    if (!dmr_block_type2_length_ok(ctx)) {
+        return 0;
+    }
+
+    dmr_block_type2_unpack_bits(ctx);
+    dmr_block_type2_update_crc(ctx);
+    dmr_block_type2_dispatch(ctx);
+    dmr_block_type2_log_payload(ctx);
+    return 1;
+}
+
+static void
+dmr_block_assembler_reset_type1(dmr_block_assembler_ctx* ctx) {
+    dmr_clear_superframe_slot(ctx->state, ctx->slot);
+    ctx->state->data_block_crc_valid[ctx->slot][0] = 0;
+    ctx->state->data_block_counter[ctx->slot] = 1;
+    ctx->state->data_header_format[ctx->slot] = 7;
+    ctx->state->data_header_sap[ctx->slot] = 0;
+    ctx->state->data_header_valid[ctx->slot] = 0;
+    ctx->state->data_conf_data[ctx->slot] = 0;
+    ctx->state->data_p_head[ctx->slot] = 0;
+    ctx->state->data_block_poc[ctx->slot] = 0;
+    ctx->state->data_byte_ctr[ctx->slot] = 0;
+    ctx->state->data_ks_start[ctx->slot] = 0;
+    ctx->state->udt_uab_reserved[ctx->slot] = 0;
+}
+
+static void
+dmr_block_assembler_reset_type2(dmr_block_assembler_ctx* ctx) {
+    dmr_clear_superframe_slot(ctx->state, ctx->slot);
+    ctx->state->data_block_crc_valid[ctx->slot][0] = 0;
+    ctx->state->data_block_counter[ctx->slot] = 1;
+    ctx->state->data_header_format[ctx->slot] = 7;
+    ctx->state->data_header_sap[ctx->slot] = 0;
+    ctx->state->data_header_valid[ctx->slot] = 0;
+    ctx->state->data_conf_data[ctx->slot] = 0;
+    ctx->state->data_p_head[ctx->slot] = 0;
+    ctx->state->udt_uab_reserved[ctx->slot] = 0;
+}
+
+static void
+dmr_block_assembler_finalize(dmr_block_assembler_ctx* ctx) {
+    if (ctx->type == 1 && ctx->state->data_block_counter[ctx->slot] == ctx->state->data_header_blocks[ctx->slot]) {
+        dmr_block_assembler_reset_type1(ctx);
+    } else if (ctx->type == 2 && ctx->lb == 1) {
+        dmr_block_assembler_reset_type2(ctx);
+    } else {
+        ctx->state->data_block_counter[ctx->slot]++;
+    }
+}
+
+static void
+dmr_block_assembler_body(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uint8_t block_len, uint8_t databurst,
+                         uint8_t type) {
+    dmr_block_assembler_ctx ctx;
+
+    UNUSED(databurst);
+    dmr_block_assembler_init_ctx(&ctx, opts, state, block_bytes, block_len, type);
+    if (ctx.type == 1) {
+        dmr_block_assembler_handle_type1(&ctx);
+    } else if (ctx.type == 2) {
+        if (!dmr_block_assembler_handle_type2(&ctx)) {
+            return;
+        }
+    }
+    dmr_block_assembler_finalize(&ctx);
+}
+
 void
 dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uint8_t block_len, uint8_t databurst,
                     uint8_t type) {
-    UNUSED(databurst);
-
-    int i, j;
-    uint8_t lb = 0; //mbc last block
-    uint8_t pf = 0; //mbc protect flag
-
-    uint8_t slot = state->currentslot;
-    int blocks = 1;
-    uint8_t blockcounter = state->data_block_counter[slot];
-
-    uint32_t CRCCorrect = 0;
-    uint32_t CRCComputed = 0;
-    uint32_t CRCExtracted = 0;
-    uint32_t IrrecoverableErrors = 0;
-
-    uint8_t dmr_pdu_sf_bits[8 * 24 * 129]; //give plenty of space so we don't go oob
-
-    //MBC Header and Block CRC
-    uint8_t mbc_crc_good[2];                       //header and blocks crc pass/fail local storage
-    memset(mbc_crc_good, 0, sizeof(mbc_crc_good)); //init on 0 - bad crc
-
-    if (type == 1) {
-        blocks = state->data_header_blocks[slot] - 1;
-    }
-    if (type == 2) {
-        blocks = state->data_block_counter[slot];
-    }
-
-    //UDT Header and Block Check
-    uint8_t is_udt = 0;
-    if (type == 3) {
-        blocks = state->data_header_blocks[slot];
-        is_udt = 1;
-        type = 2;
-    }
-
-    //sanity check, setting block_len and block values to sane numbers in case of missing header, else could overload array (crash) or print out
-    if (blocks < 1) {
-        blocks = 1; //changed blocks from uint8_t to int
-    }
-    if (blocks > 127) {
-        blocks = 127;
-    }
-    if (block_len == 0) {
-        block_len = 18;
-    }
-    if (block_len > 24) {
-        block_len = 24;
-    }
-
-    if (type == 1) {
-
-        //type 1 data block, append current block_bytes to end of ctr location
-        uint16_t ctr = state->data_byte_ctr[slot];
-        for (i = 0; i < block_len; i++) {
-            state->dmr_pdu_sf[slot][ctr++] = block_bytes[i];
-        }
-
-        //debug
-        // fprintf (stderr, " CTR: %02d; ", ctr);
-
-        //add block_len to current byte counter
-        state->data_byte_ctr[slot] += block_len;
-
-        //time to send the completed 'superframe' to the DMR PDU message handler
-        if (state->data_block_counter[slot] == state->data_header_blocks[slot] && state->data_header_valid[slot] == 1) {
-            uint8_t slot_idx = (slot >= 2) ? 1 : slot;
-            //CRC32 on completed messages
-            for (i = 0, j = 0; i < ctr; i++, j += 8) {
-                dmr_pdu_sf_bits[j + 0] = (state->dmr_pdu_sf[slot_idx][i] >> 7) & 0x01;
-                dmr_pdu_sf_bits[j + 1] = (state->dmr_pdu_sf[slot_idx][i] >> 6) & 0x01;
-                dmr_pdu_sf_bits[j + 2] = (state->dmr_pdu_sf[slot_idx][i] >> 5) & 0x01;
-                dmr_pdu_sf_bits[j + 3] = (state->dmr_pdu_sf[slot_idx][i] >> 4) & 0x01;
-                dmr_pdu_sf_bits[j + 4] = (state->dmr_pdu_sf[slot_idx][i] >> 3) & 0x01;
-                dmr_pdu_sf_bits[j + 5] = (state->dmr_pdu_sf[slot_idx][i] >> 2) & 0x01;
-                dmr_pdu_sf_bits[j + 6] = (state->dmr_pdu_sf[slot_idx][i] >> 1) & 0x01;
-                dmr_pdu_sf_bits[j + 7] = (state->dmr_pdu_sf[slot_idx][i] >> 0) & 0x01;
-            }
-
-            // block_num is not used below for indexing; ensure future uses validate separately if needed
-
-            if (ctr >= 4) {
-                CRCExtracted =
-                    (state->dmr_pdu_sf[slot_idx][ctr - 4] << 24) | (state->dmr_pdu_sf[slot_idx][ctr - 3] << 16)
-                    | (state->dmr_pdu_sf[slot_idx][ctr - 2] << 8) | (state->dmr_pdu_sf[slot_idx][ctr - 1] << 0);
-            } else {
-                CRCExtracted = 0u;
-            }
-
-            int offset = 0;
-            if (state->data_p_head[slot] == 1) {
-                offset = 12;
-            }
-
-            //rearrage for ridiculously stupid CRC32 LSO/MSO ordering
-            for (i = 0, j = 0; i < ctr; i += 2, j += 16) {
-                if ((i + 1) < ctr) {
-                    dmr_pdu_sf_bits[j + 0] = (state->dmr_pdu_sf[slot][i + 1] >> 7) & 0x01;
-                    dmr_pdu_sf_bits[j + 1] = (state->dmr_pdu_sf[slot][i + 1] >> 6) & 0x01;
-                    dmr_pdu_sf_bits[j + 2] = (state->dmr_pdu_sf[slot][i + 1] >> 5) & 0x01;
-                    dmr_pdu_sf_bits[j + 3] = (state->dmr_pdu_sf[slot][i + 1] >> 4) & 0x01;
-                    dmr_pdu_sf_bits[j + 4] = (state->dmr_pdu_sf[slot][i + 1] >> 3) & 0x01;
-                    dmr_pdu_sf_bits[j + 5] = (state->dmr_pdu_sf[slot][i + 1] >> 2) & 0x01;
-                    dmr_pdu_sf_bits[j + 6] = (state->dmr_pdu_sf[slot][i + 1] >> 1) & 0x01;
-                    dmr_pdu_sf_bits[j + 7] = (state->dmr_pdu_sf[slot][i + 1] >> 0) & 0x01;
-                }
-
-                dmr_pdu_sf_bits[j + 8] = (state->dmr_pdu_sf[slot][i] >> 7) & 0x01;
-                dmr_pdu_sf_bits[j + 9] = (state->dmr_pdu_sf[slot][i] >> 6) & 0x01;
-                dmr_pdu_sf_bits[j + 10] = (state->dmr_pdu_sf[slot][i] >> 5) & 0x01;
-                dmr_pdu_sf_bits[j + 11] = (state->dmr_pdu_sf[slot][i] >> 4) & 0x01;
-                dmr_pdu_sf_bits[j + 12] = (state->dmr_pdu_sf[slot][i] >> 3) & 0x01;
-                dmr_pdu_sf_bits[j + 13] = (state->dmr_pdu_sf[slot][i] >> 2) & 0x01;
-                dmr_pdu_sf_bits[j + 14] = (state->dmr_pdu_sf[slot][i] >> 1) & 0x01;
-                dmr_pdu_sf_bits[j + 15] = (state->dmr_pdu_sf[slot][i] >> 0) & 0x01;
-
-                //increment extra 2 bytes on each nth byte (depends on data type 1/2, 3/4, 1) if conf data
-                if (i == (block_len - 1 + offset)) {
-
-                    if (state->data_conf_data[slot] == 1) {
-                        i += 2; //should this be 0, or 1?
-                    }
-                }
-            }
-
-            //confirmed working now!
-            CRCComputed = (uint32_t)ComputeCrc32Bit(dmr_pdu_sf_bits, (ctr * 8) - 32);
-
-            // Consider CRC correct when CRC matches, or for MNIS data (format 0xF, SAP 1)
-            if (CRCComputed == CRCExtracted
-                || (state->data_header_format[slot] == 0xF && state->data_header_sap[slot] == 1)) {
-                CRCCorrect = 1;
-            }
-
-            //check for encryption on PDU
-            uint8_t enc_check = 0;
-            uint8_t decrypted_pdu = 1;
-            if ((slot == 0 && state->dmr_so == 0x100) || (slot == 1 && state->dmr_soR == 0x100)) {
-                enc_check = 1;
-                decrypted_pdu = 0;
-            }
-
-//Start DMR Data PDU Decryption
-#ifdef DMR_PDU_DECRYPTION
-            if (enc_check) {
-
-                int poc = (int)state->data_block_poc[slot];
-                int start = (int)state->data_ks_start[slot];
-                int end = ((blocks + 1) * block_len) - 4 - poc - start;
-                //sanity check on end, has to be a positive value
-                if (end < 0) {
-                    end = 3096;
-                }
-                int alg = 0;
-                int kid = 0;
-                int akl = 0;
-                if (state->currentslot == 0) {
-                    alg = state->payload_algid;
-                } else {
-                    alg = state->payload_algidR;
-                }
-
-                if (state->currentslot == 0) {
-                    kid = state->payload_keyid;
-                } else {
-                    kid = state->payload_keyidR;
-                }
-
-                //start keystream creation
-                uint8_t ob[129 * 24];
-                uint8_t kiv[9];
-                unsigned long long int mi = 0;
-                unsigned long long int R = 0;
-                if (state->currentslot == 0) {
-                    mi = (unsigned long long int)state->payload_mi;
-                } else {
-                    mi = (unsigned long long int)state->payload_miR;
-                }
-
-                //key loader
-                if (state->currentslot == 0) {
-                    R = state->rkey_array[state->payload_keyid];
-                } else {
-                    R = state->rkey_array[state->payload_keyidR];
-                }
-
-                //loader for aes keys
-                uint8_t kaes[32];
-                uint8_t empt[32] = {0};
-                uint8_t maes[16];
-                for (i = 0; i < 8; i++) {
-                    kaes[i + 0] = ((state->rkey_array[kid + 0x000]) >> (56 - (i * 8))) & 0xFF;
-                    kaes[i + 8] = ((state->rkey_array[kid + 0x101]) >> (56 - (i * 8))) & 0xFF;
-                    kaes[i + 16] = ((state->rkey_array[kid + 0x201]) >> (56 - (i * 8))) & 0xFF;
-                    kaes[i + 24] = ((state->rkey_array[kid + 0x301]) >> (56 - (i * 8))) & 0xFF;
-
-                    //if kaes is loaded with a key, then flag on the key loaded variable
-                    if (memcmp(kaes, empt, sizeof(kaes)) != 0) {
-                        akl = 1;
-                    }
-                }
-
-                if (R == 0 && state->R != 0) {
-                    R = state->R;
-                }
-
-                //easier to manually load up rather than make a loop (RC4)
-                kiv[0] = ((R & 0xFF00000000) >> 32);
-                kiv[1] = ((R & 0xFF000000) >> 24);
-                kiv[2] = ((R & 0xFF0000) >> 16);
-                kiv[3] = ((R & 0xFF00) >> 8);
-                kiv[4] = ((R & 0xFF) >> 0);
-                kiv[5] = ((mi & 0xFF000000) >> 24);
-                kiv[6] = ((mi & 0xFF0000) >> 16);
-                kiv[7] = ((mi & 0xFF00) >> 8);
-                kiv[8] = ((mi & 0xFF) >> 0);
-
-                //print alg/key and value if loaded
-                fprintf(stderr, "\n PDU ALG: %02X; Key ID: %02X;", alg, kid);
-                if (alg != 0) {
-                    fprintf(stderr, " MI(32): %08llX;", mi);
-                }
-                if (alg == 0) {
-                    fprintf(stderr, " Moto BP;");
-                }
-                if (alg == 1) {
-                    fprintf(stderr, " RC4;");
-                }
-                if (alg == 2) {
-                    fprintf(stderr, " DES;");
-                }
-                if (alg == 4) {
-                    fprintf(stderr, " AES128;");
-                }
-                if (alg == 5) {
-                    fprintf(stderr, " AES256;");
-                }
-                if (R && alg != 0) {
-                    fprintf(stderr, " Key: %010llX;", R);
-                }
-
-                //generate 128-bit IV from 32-bit MI
-                //expand 32-bit MI to 128-bit IV for AES mode data decryption
-                //we only want to do this at the moment of keystream generation
-                if (alg == 5) {
-                    fprintf(stderr, "\n");
-                    LFSR128d(state);
-                    if (state->currentslot == 0) {
-                        memcpy(maes, state->aes_iv, sizeof(maes));
-                    }
-                    if (state->currentslot == 1) {
-                        memcpy(maes, state->aes_ivR, sizeof(maes));
-                    }
-                }
-
-                if (alg == 1 && R != 0) //RC4
-                {
-                    rc4_block_output(256, 9, (int)state->data_byte_ctr[slot], kiv, ob);
-                    decrypted_pdu = 1;
-                }
-
-                if (alg == 5 && akl == 1) //AES-256
-                {
-                    int nblocks = (state->data_byte_ctr[slot] / 16) + 1;
-                    aes_ofb_keystream_output(maes, kaes, ob, 2, nblocks);
-                    decrypted_pdu = 1;
-                }
-
-                //other algs available, not sure if others will be used in any DMRA offerings
-                if (alg == 2 && R != 0) //Tait DES
-                {
-                    int nblocks = (state->data_byte_ctr[slot] / 8) + 1;
-                    des_multi_keystream_output(mi, R, ob, 1, nblocks);
-                    decrypted_pdu = 1;
-                }
-
-                if (alg == 4 && akl == 1) //AES-128
-                {
-                    int nblocks = (state->data_byte_ctr[slot] / 16) + 1;
-                    aes_ofb_keystream_output(maes, kaes, ob, 0, nblocks);
-                    decrypted_pdu = 1;
-                }
-
-                //NOTE: Observed that keystream should not be applied to pad bytes or CRC
-                //apply keystream here, only if alg is 1 or 4 AND key is available!
-                if ((alg == 1 && R != 0) || (alg == 2 && R != 0) || (alg == 4 && akl != 0) || (alg == 5 && akl != 0)) {
-                    for (i = 0; i < end; i++) {
-                        state->dmr_pdu_sf[slot][i + start] ^= ob[i % 3096];
-                    }
-                }
-
-                //BP key application
-                else if (alg == 0) {
-                    uint16_t bp_key = 0;
-                    if (state->K != 0) //state->M == 1 &&
-                    {
-                        //load the BP key into the output blocks (only need two)
-                        bp_key = BPK[state->K];
-                        ob[0] = (bp_key >> 8) & 0xFF;
-                        ob[1] = (bp_key >> 0) & 0xFF;
-                        fprintf(stderr, " Key: %lld : %04X;", state->K, bp_key);
-                    }
-
-                    if (bp_key != 0) {
-                        for (i = 0; i < end; i++) {
-                            state->dmr_pdu_sf[slot][i + start] ^= ob[i % 2];
-                        }
-
-                        decrypted_pdu = 1;
-                    }
-                }
-
-            } //end enc check
-#endif
-            //End DMR Data PDU Decryption
-
-            //decode PDU
-            if (enc_check == 1 && decrypted_pdu == 0) //check for encryption and if it was decrypted first or not
-            {
-                fprintf(stderr, "%s", KRED);
-                fprintf(stderr, "\n Slot %d - Encrypted PDU;", slot + 1);
-                fprintf(stderr, "%s", KNRM);
-
-                uint8_t alg = 0;
-                uint8_t kid = 0;
-                if (slot == 0) {
-                    alg = state->payload_algid;
-                } else {
-                    alg = state->payload_algidR;
-                }
-
-                if (slot == 0) {
-                    kid = state->payload_keyid;
-                } else {
-                    kid = state->payload_keyidR;
-                }
-
-                if (alg == 0x07) {
-                    fprintf(stderr, " Vertex Std data decrypt not implemented;");
-                }
-
-                char enc_str[200];
-                memset(enc_str, 0, sizeof(enc_str));
-                sprintf(enc_str, "DATA TGT: %lld; SRC: %lld; ENC PDU; ALG: %02X; KID: %02X;",
-                        state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot], alg, kid);
-                sprintf(state->dmr_lrrp_gps[slot], "%s", enc_str);
-                watchdog_event_datacall(opts, state, state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot],
-                                        enc_str, slot);
-            } else if (opts->aggressive_framesync == 0 || opts->dmr_crc_relaxed_default) {
-                //may need to make adjustments for various compressed headers for starting point, etc?
-                if (state->data_header_sap[slot] == 4) //IP based
-                {
-                    uint16_t len = ((blocks + 1) * block_len) - 4; //total number of bytes in PDU minus 4 CRC32 bytes
-                    decode_ip_pdu(opts, state, len, state->dmr_pdu_sf[slot]);
-                } else if (state->data_header_sap[slot] == 10) //short data, may also need to check for SD:D [DD_HEAD]
-                {
-                    uint16_t len = ((blocks + 1) * block_len) - 4; //total number of bytes in PDU minus 4 CRC32 bytes
-                    dmr_sd_pdu(opts, state, len, state->dmr_pdu_sf[slot]);
-                } else if (state->data_header_sap[slot] == 2
-                           || state->data_header_sap[slot]
-                                  == 3) //TCP and UDP Compression (may only be 3 UDP compression, unknown)
-                {
-                    uint16_t len = ((blocks + 1) * block_len) - 4; //total number of bytes in PDU minus 4 CRC32 bytes
-                    dmr_udp_comp_pdu(opts, state, len, state->dmr_pdu_sf[slot]);
-                } else if (state->data_header_sap[slot] == 1
-                           && state->dmr_pdu_sf[slot][1] == 0x10) //MNIS Proprietary Header
-                {
-                    //len calc
-                    uint16_t ctr = state->data_byte_ctr[slot];
-                    uint8_t poc = state->data_block_poc[slot];
-                    // Exclude pad octets + CRC32 and the 7-byte MNIS header; keep the 3-byte packet prefix (SDRTrunk).
-                    uint16_t len = ctr - poc - 4 - 7;
-
-                    //sanity check
-                    if (len > 150) {
-                        len = 150;
-                    }
-
-                    //set src and dst from the original data header
-                    uint32_t msrc = state->dmr_lrrp_source[slot];
-                    uint32_t mdst = state->dmr_lrrp_target[slot];
-
-                    fprintf(stderr, "\n SRC(MNIS): %08d; ", msrc);
-                    fprintf(stderr, "\n DST(MNIS): %08d; ", mdst);
-
-                    //TODO: Look for samples with various types in them
-                    uint8_t mnis_type = state->dmr_pdu_sf[slot][4];
-                    if (mnis_type == 0x01) {
-                        fprintf(stderr, "MNIS LOCN; ");
-                    } else if (mnis_type == 0x11) {
-                        fprintf(stderr, "MNIS LRRP; ");
-                    } else if (mnis_type == 0x33) {
-                        fprintf(stderr, "MNIS ARS;  ");
-                    } else if (mnis_type == 0x88) {
-                        fprintf(stderr, "MNIS XCMP; ");
-                    } else {
-                        fprintf(stderr, "Unknown MNIS Type: %02X; ", mnis_type);
-                    }
-
-                    //unknown value after type field and before start of data field (at least on LRRP)
-                    uint16_t mnis_unk = (state->dmr_pdu_sf[slot][5] << 8) | state->dmr_pdu_sf[slot][6];
-                    fprintf(stderr, " ???: %04X", mnis_unk);
-
-                    sprintf(state->dmr_lrrp_gps[slot], "MNIS SRC: %d; DST: %d; ", msrc, mdst);
-
-                    if (mnis_type == 0x11) { //+7 offset
-                        uint8_t pdu_crc_ok = 1;
-                        if (state->data_conf_data[slot]) {
-                            int start = state->data_p_head[slot] ? 2 : 1;
-                            int end = state->data_header_blocks[slot];
-                            if (start < 1) {
-                                start = 1;
-                            }
-                            if (end > 126) {
-                                end = 126;
-                            }
-                            if (end < start) {
-                                pdu_crc_ok = 0;
-                            } else {
-                                for (int bi = start; bi <= end; bi++) {
-                                    if (state->data_block_crc_valid[slot][bi] != 1) {
-                                        pdu_crc_ok = 0;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        dmr_lrrp(opts, state, len, msrc, mdst, state->dmr_pdu_sf[slot] + 7, pdu_crc_ok);
-                    } else if (mnis_type == 0x33) { //check any potential texts in this message
-                        utf8_to_text(state, 0, 15,
-                                     state->dmr_pdu_sf[slot]
-                                         + 7);    //seen some ARS radio IDs in ASCII/ISO7/UTF8 format here
-                    } else if (mnis_type == 0x01) //nothing to test this with
-                    {
-                        utf8_to_text(state, 0, len - offset, state->dmr_pdu_sf[slot] + 7);
-                        dmr_locn(opts, state, len, state->dmr_pdu_sf[slot] + 7);
-                        sprintf(state->event_history_s[slot].Event_History_Items[0].gps_s, "%s",
-                                state->dmr_lrrp_gps[slot]);
-                    }
-
-                    //dump to event history
-                    if (mnis_type != 0x11 && mnis_type != 0x01) //if not LRRP or LOCN
-                    {
-                        char mnis_str[200];
-                        memset(mnis_str, 200, sizeof(mnis_str));
-                        sprintf(mnis_str, "MNIS TGT: %lld; SRC: %lld;", state->dmr_lrrp_source[slot],
-                                state->dmr_lrrp_target[slot]);
-                        watchdog_event_datacall(opts, state, state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot],
-                                                mnis_str, slot);
-                    } else if (mnis_type == 0x11 || mnis_type == 0x01) { //LRRP or LOCN
-                        watchdog_event_datacall(opts, state, state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot],
-                                                state->dmr_lrrp_gps[slot], slot);
-                    }
-
-                } else {
-                    char unk_str[200];
-                    memset(unk_str, 200, sizeof(unk_str));
-                    sprintf(unk_str, "DATA TGT: %lld; SRC: %lld; Unknown PDU Format;", state->dmr_lrrp_source[slot],
-                            state->dmr_lrrp_target[slot]);
-                    watchdog_event_datacall(opts, state, state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot],
-                                            unk_str, slot);
-                }
-            }
-
-            //debug
-            // fprintf (stderr, " CRC32: %08X / %08X", CRCExtracted, CRCComputed);
-
-            if (CRCCorrect)
-                ; //print nothing
-            else {
-                fprintf(stderr, "%s", KRED);
-                fprintf(stderr, "\n Slot %d - Multi Block PDU Message CRC32 ERR", slot + 1);
-
-                fprintf(stderr, "%s", KNRM);
-            }
-
-            //Full Super Frame Type 1 - Payload Output
-            if (opts->payload == 1) {
-                fprintf(stderr, "%s", KGRN);
-                fprintf(stderr, "\n Slot %d - Multi Block PDU Message\n  ", slot + 1);
-                for (i = 0; i < ((blocks + 1) * block_len); i++) {
-                    if ((i != 0) && (i % 12 == 0)) {
-                        fprintf(stderr, "\n  ");
-                    }
-                    fprintf(stderr, "%02X", state->dmr_pdu_sf[slot][i]);
-                }
-
-                fprintf(stderr, "%s ", KNRM);
-            }
-
-            //reset data header format storage
-            state->data_header_format[slot] = 7;
-            //reset data header sap storage
-            state->data_header_sap[slot] = 0;
-            //flag off data header validity
-            state->data_header_valid[slot] = 0;
-            //flag off conf data flag
-            state->data_conf_data[slot] = 0;
-            //reset padding
-            state->data_block_poc[slot] = 0;
-            //reset byte counter
-            state->data_byte_ctr[slot] = 0;
-            //reset ks start value
-            state->data_ks_start[slot] = 0;
-
-        } //end completed sf
-
-    } //end type 1 blocks
-
-    //type 2 - MBC and UDT header, MBC and UDT continuation blocks
-    if (type == 2) {
-        //sanity check (marginal signal, bad decodes, etc) -- may go a little lower (find out max number of MBC blocks supported)
-        if (state->data_block_counter[slot] > 4) {
-            state->data_block_counter[slot] = 4;
-        }
-
-        //Type 2 data block, additive method
-        for (i = 0; i < block_len; i++) {
-            state->dmr_pdu_sf[slot][i + (blockcounter * block_len)] = block_bytes[i];
-        }
-
-        memset(dmr_pdu_sf_bits, 0, sizeof(dmr_pdu_sf_bits));
-
-        lb = block_bytes[0] >> 7; //last block flag
-        pf = (block_bytes[0] >> 6) & 1;
-
-        if (is_udt) {
-            pf = 0; // ignore header PF for UDT in assembler
-
-            if (state->udt_uab_reserved[slot]) {
-                // UDT UAB reserved/unknown: detect end-of-message dynamically using CRC16
-                lb = 0;
-
-                // Build bits for header + current appended blocks
-                memset(dmr_pdu_sf_bits, 0, sizeof(dmr_pdu_sf_bits));
-                for (i = 0, j = 0; i < (int)((1 + blockcounter) * block_len); i++, j += 8) {
-                    dmr_pdu_sf_bits[j + 0] = (state->dmr_pdu_sf[slot][i] >> 7) & 0x01;
-                    dmr_pdu_sf_bits[j + 1] = (state->dmr_pdu_sf[slot][i] >> 6) & 0x01;
-                    dmr_pdu_sf_bits[j + 2] = (state->dmr_pdu_sf[slot][i] >> 5) & 0x01;
-                    dmr_pdu_sf_bits[j + 3] = (state->dmr_pdu_sf[slot][i] >> 4) & 0x01;
-                    dmr_pdu_sf_bits[j + 4] = (state->dmr_pdu_sf[slot][i] >> 3) & 0x01;
-                    dmr_pdu_sf_bits[j + 5] = (state->dmr_pdu_sf[slot][i] >> 2) & 0x01;
-                    dmr_pdu_sf_bits[j + 6] = (state->dmr_pdu_sf[slot][i] >> 1) & 0x01;
-                    dmr_pdu_sf_bits[j + 7] = (state->dmr_pdu_sf[slot][i] >> 0) & 0x01;
-                }
-
-                // Extract CRC from the last 16 bits of current appended block span
-                CRCExtracted = 0;
-                for (i = 0; i < 16; i++) {
-                    CRCExtracted =
-                        (CRCExtracted << 1) | (uint32_t)(dmr_pdu_sf_bits[i + 96 * (1 + blockcounter) - 16] & 1);
-                }
-
-                // Compute CRC over appended blocks only (skip header)
-                uint8_t mbc_block_bits[12 * 8 * 6]; // up to 4 blocks
-                memset(mbc_block_bits, 0, sizeof(mbc_block_bits));
-                int mbits = (int)(blockcounter * 96);
-                for (i = 0; i < mbits; i++) {
-                    mbc_block_bits[i] = dmr_pdu_sf_bits[i + 96];
-                }
-                CRCComputed = ComputeCrcCCITT16d(mbc_block_bits, (uint16_t)(mbits - 16));
-
-                if (CRCComputed == CRCExtracted) {
-                    // CRC says we have a complete UDT PDU; treat this as last block
-                    lb = 1;
-                    blocks = blockcounter;
-                }
-            } else {
-                // Header-reported UAB path
-                lb = 0; // ignore potential lb indication in byte0
-                if (blocks == blockcounter) {
-                    lb = 1;
-                }
-            }
-
-            //debug -- evaluate current block count vs the number of expected blocks
-            // fprintf (stderr, " BL: %d; BC: %d; ", blocks, blockcounter);
-        }
-
-        //last block arrived and we have a valid data header, time to send to cspdu decoder
-        if (lb == 1 && state->data_header_valid[slot] == 1) {
-            // Enforce Tier III MBC aggregate bounds: header + up to 4 continuation blocks
-            int max_blocks = 4; // appended blocks (not counting header)
-            if (!is_udt && (blocks < 1 || blocks > max_blocks)) {
-                // Reject overlong/short aggregates
-                fprintf(stderr, "%s", KRED);
-                fprintf(stderr, "\n Slot %d - MBC aggregate length out of bounds: %d", slot + 1, blocks);
-                fprintf(stderr, "%s", KNRM);
-                // Reset and bail
-                state->data_block_crc_valid[slot][0] = 0;
-                return;
-            }
-
-            // Convert assembled bytes (header + appended blocks) into bits for downstream decoders
-            int total_bytes = (1 + blocks) * block_len; // header + blocks
-            if (total_bytes > 12 * 5) {
-                total_bytes = 12 * 5; // clamp to header + 4 continuation blocks
-            }
-            for (i = 0, j = 0; i < total_bytes; i++, j += 8) {
-                dmr_pdu_sf_bits[j + 0] = (state->dmr_pdu_sf[slot][i] >> 7) & 0x01;
-                dmr_pdu_sf_bits[j + 1] = (state->dmr_pdu_sf[slot][i] >> 6) & 0x01;
-                dmr_pdu_sf_bits[j + 2] = (state->dmr_pdu_sf[slot][i] >> 5) & 0x01;
-                dmr_pdu_sf_bits[j + 3] = (state->dmr_pdu_sf[slot][i] >> 4) & 0x01;
-                dmr_pdu_sf_bits[j + 4] = (state->dmr_pdu_sf[slot][i] >> 3) & 0x01;
-                dmr_pdu_sf_bits[j + 5] = (state->dmr_pdu_sf[slot][i] >> 2) & 0x01;
-                dmr_pdu_sf_bits[j + 6] = (state->dmr_pdu_sf[slot][i] >> 1) & 0x01;
-                dmr_pdu_sf_bits[j + 7] = (state->dmr_pdu_sf[slot][i] >> 0) & 0x01;
-            }
-
-            //check UDT PF
-            if (is_udt) {
-                pf = dmr_pdu_sf_bits[73];
-            }
-
-            //CRC check on Header and full frames as appropriate (header crc already stored)
-            //The 16 bit CRC in the header shall include the data carried by the header.
-            //The 16 bit CRC in the last block shall be performed on
-            //all MBC blocks (conmbined) except the header block.
-
-            mbc_crc_good[0] = state->data_block_crc_valid[slot][0];
-
-            CRCExtracted = 0;
-            //extract crc from last block, apply to completed 'superframe' minus header
-            for (i = 0; i < 16; i++) {
-                CRCExtracted = CRCExtracted << 1;
-                CRCExtracted = CRCExtracted | (uint32_t)(dmr_pdu_sf_bits[i + 96 * (1 + blocks) - 16] & 1);
-            }
-
-            uint8_t mbc_block_bits[12 * 8 * 6]; //needed more room
-            memset(mbc_block_bits, 0, sizeof(mbc_block_bits));
-            //shift continuation blocks and last block into seperate array for crc check
-            for (i = 0; i < 12 * 8 * 3;
-                 i++) //only doing 3 blocks (4 minus the header), probably need to re-evalutate this
-            {
-                mbc_block_bits[i] = dmr_pdu_sf_bits[i + 96]; //skip mbc header
-            }
-
-            if (is_udt) {
-                memset(mbc_block_bits, 0, sizeof(mbc_block_bits));
-                for (i = 0; i < 12 * 8 * blocks; i++) {
-                    mbc_block_bits[i] = dmr_pdu_sf_bits[i + 96]; //skip udt header
-                }
-            }
-            //there was a bug built into ComputeCrcCCITT16d where len was uint8_t, so len could never exceed 255
-            CRCComputed = ComputeCrcCCITT16d(mbc_block_bits, ((blocks + 0) * 96) - 16);
-
-            if (CRCComputed == CRCExtracted) {
-                mbc_crc_good[1] = 1;
-            }
-
-            CRCCorrect = 0;
-            IrrecoverableErrors = 1;
-
-            //set good on good header and good blocks
-            if (mbc_crc_good[0] == 1 && mbc_crc_good[1] == 1) {
-                CRCCorrect = 1;
-                IrrecoverableErrors = 0;
-            } else {
-                fprintf(stderr, "%s", KRED);
-                fprintf(stderr, "\n Slot %d - Multi Block Control Message CRC16 ERR", slot + 1);
-
-                //debug print
-                fprintf(stderr, " %X - %X", CRCExtracted, CRCComputed);
-                // fprintf (stderr, " Len: %d", ((blocks+0)*96)-16);
-                fprintf(stderr, "%s", KNRM);
-            }
-
-            //cspdu will only act on any fid/opcodes if good CRC to prevent falsing on control signalling
-            if (!is_udt && !pf) {
-                dmr_cspdu(opts, state, dmr_pdu_sf_bits, state->dmr_pdu_sf[slot], CRCCorrect, IrrecoverableErrors);
-            }
-
-            //send to udt decoder for handling
-            if (is_udt && !pf) {
-                dmr_udt_decoder(opts, state, state->dmr_pdu_sf[slot], CRCCorrect);
-            }
-
-            //Full Super Frame MBC/UDT - Debug Output
-            if (opts->payload == 1) {
-                fprintf(stderr, "%s", KGRN);
-                fprintf(stderr, "\n Slot %d - Multi Block Control Message\n  ", slot + 1);
-                for (i = 0; i < ((blocks + 1) * block_len); i++) {
-                    fprintf(stderr, "%02X", state->dmr_pdu_sf[slot][i]);
-                    if (i == 11 || i == 23 || i == 35 || i == 47 || i == 59 || i == 71 || i == 83 || i == 95) {
-                        fprintf(stderr, "\n  ");
-                    }
-                }
-                fprintf(stderr, "%s", KRED);
-                if (mbc_crc_good[0] == 0) {
-                    fprintf(stderr, "MBC/UDT Header CRC ERR ");
-                }
-                if (mbc_crc_good[1] == 0) {
-                    fprintf(stderr, "MBC/UDT Blocks CRC ERR ");
-                }
-                if (pf) {
-                    fprintf(stderr, "MBC/UDT Header/Blocks Protected ");
-                }
-                fprintf(stderr, "%s ", KNRM);
-            }
-        } //end last block flag on MBC
-
-    } //end type 2 (MBC Header and Continuation)
-
-    //leave this seperate so we can reset/zero stuff in case the data header isn't valid, etc
-    //switched to an if-elseif-else so we could get the block counter increment on the end
-    //without having it in an akward position
-
-    //if the end of normal data header and blocks
-    if (type == 1 && state->data_block_counter[slot] == state->data_header_blocks[slot]) {
-
-        //clear out unified pdu 'superframe' slot
-        for (int i = 0; i < 24 * 127; i++) {
-            state->dmr_pdu_sf[slot][i] = 0;
-        }
-
-        //Zero Out MBC Header Block CRC Valid
-        state->data_block_crc_valid[slot][0] = 0;
-        //reset the block counter (data blocks)
-        state->data_block_counter[slot] = 1;
-        //reset data header format storage
-        state->data_header_format[slot] = 7;
-        //reset data header sap storage
-        state->data_header_sap[slot] = 0;
-        //flag off data header validity
-        state->data_header_valid[slot] = 0;
-        //flag off conf data flag
-        state->data_conf_data[slot] = 0;
-        //flag off p_head
-        state->data_p_head[slot] = 0;
-        //reset padding
-        state->data_block_poc[slot] = 0;
-        //reset byte counter
-        state->data_byte_ctr[slot] = 0;
-        //reset ks start value
-        state->data_ks_start[slot] = 0;
-        //reset UDT UAB reserved flag
-        state->udt_uab_reserved[slot] = 0;
-    }
-
-    //else if the end of MBC Header and Blocks
-    else if (type == 2 && lb == 1) {
-
-        //clear out unified pdu 'superframe' slot
-        for (int i = 0; i < 24 * 127; i++) {
-            state->dmr_pdu_sf[slot][i] = 0;
-        }
-
-        //Zero Out MBC Header Block CRC Valid
-        state->data_block_crc_valid[slot][0] = 0;
-        //reset the block counter (data blocks)
-        state->data_block_counter[slot] = 1;
-        //reset data header format storage
-        state->data_header_format[slot] = 7;
-        //reset data header sap storage
-        state->data_header_sap[slot] = 0;
-        //flag off data header validity
-        state->data_header_valid[slot] = 0;
-        //flag off conf data flag
-        state->data_conf_data[slot] = 0;
-        //flag off p_head
-        state->data_p_head[slot] = 0;
-        //reset UDT UAB reserved flag
-        state->udt_uab_reserved[slot] = 0;
-
-    }
-
-    //else increment block counter after sorting/shuffling blocks
-    else {
-        state->data_block_counter[slot]++;
-    }
+    dmr_block_assembler_body(opts, state, block_bytes, block_len, databurst, type);
 }
 
 //failsafe to clear old data header, block info, cach, in case of tact/emb/slottype failures
@@ -1863,32 +1755,32 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
 void
 dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
-    memset(state->gi, -1, sizeof(state->gi));
-    memset(state->data_p_head, 0, sizeof(state->data_p_head));
-    memset(state->data_conf_data, 0, sizeof(state->data_conf_data));
-    memset(state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));
-    memset(state->data_block_counter, 1, sizeof(state->data_block_counter));
-    memset(state->data_block_poc, 0, sizeof(state->data_block_poc));
-    memset(state->data_byte_ctr, 0, sizeof(state->data_byte_ctr));
-    memset(state->udt_uab_reserved, 0, sizeof(state->udt_uab_reserved));
-    memset(state->data_ks_start, 0, sizeof(state->data_ks_start));
-    memset(state->data_header_blocks, 1, sizeof(state->data_header_blocks));
-    memset(state->data_block_crc_valid, 0, sizeof(state->data_block_crc_valid));
-    memset(state->dmr_lrrp_source, 0, sizeof(state->dmr_lrrp_source));
-    memset(state->dmr_lrrp_target, 0, sizeof(state->dmr_lrrp_target));
-    memset(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
-    memset(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
-    memset(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));
-    memset(state->data_header_valid, 0, sizeof(state->data_header_valid));
-    memset(state->data_header_format, 7, sizeof(state->data_header_format));
-    memset(state->data_header_sap, 0, sizeof(state->data_header_sap));
-    memset(state->data_dbsn_expected, 0, sizeof(state->data_dbsn_expected));
-    memset(state->data_dbsn_have, 0, sizeof(state->data_dbsn_have));
+    DSD_MEMSET(state->gi, -1, sizeof(state->gi));
+    DSD_MEMSET(state->data_p_head, 0, sizeof(state->data_p_head));
+    DSD_MEMSET(state->data_conf_data, 0, sizeof(state->data_conf_data));
+    DSD_MEMSET(state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));
+    DSD_MEMSET(state->data_block_counter, 1, sizeof(state->data_block_counter));
+    DSD_MEMSET(state->data_block_poc, 0, sizeof(state->data_block_poc));
+    DSD_MEMSET(state->data_byte_ctr, 0, sizeof(state->data_byte_ctr));
+    DSD_MEMSET(state->udt_uab_reserved, 0, sizeof(state->udt_uab_reserved));
+    DSD_MEMSET(state->data_ks_start, 0, sizeof(state->data_ks_start));
+    DSD_MEMSET(state->data_header_blocks, 1, sizeof(state->data_header_blocks));
+    DSD_MEMSET(state->data_block_crc_valid, 0, sizeof(state->data_block_crc_valid));
+    DSD_MEMSET(state->dmr_lrrp_source, 0, sizeof(state->dmr_lrrp_source));
+    DSD_MEMSET(state->dmr_lrrp_target, 0, sizeof(state->dmr_lrrp_target));
+    DSD_MEMSET(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
+    DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
+    DSD_MEMSET(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));
+    DSD_MEMSET(state->data_header_valid, 0, sizeof(state->data_header_valid));
+    DSD_MEMSET(state->data_header_format, 7, sizeof(state->data_header_format));
+    DSD_MEMSET(state->data_header_sap, 0, sizeof(state->data_header_sap));
+    DSD_MEMSET(state->data_dbsn_expected, 0, sizeof(state->data_dbsn_expected));
+    DSD_MEMSET(state->data_dbsn_have, 0, sizeof(state->data_dbsn_have));
     //reset some strings -- resetting call string here causes random blink on ncurses terminal (cap+)
-    // sprintf (state->call_string[0], "%s", "                     "); //21 spaces
-    // sprintf (state->call_string[1], "%s", "                     "); //21 spaces
-    sprintf(state->dmr_lrrp_gps[0], "%s", "");
-    sprintf(state->dmr_lrrp_gps[1], "%s", "");
+    // DSD_SPRINTF(state->call_string[0], "%s", "                     "); //21 spaces
+    // DSD_SPRINTF(state->call_string[1], "%s", "                     "); //21 spaces
+    DSD_SPRINTF(state->dmr_lrrp_gps[0], "%s", "");
+    DSD_SPRINTF(state->dmr_lrrp_gps[1], "%s", "");
 }
 
 // Safe append helper for bounded concatenation
@@ -1901,5 +1793,5 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     if (len >= dstsz) {
         return;
     }
-    snprintf(dst + len, dstsz - len, "%s", src);
+    DSD_SNPRINTF(dst + len, dstsz - len, "%s", src);
 }

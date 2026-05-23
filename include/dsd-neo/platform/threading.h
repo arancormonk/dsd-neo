@@ -3,7 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_THREADING_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_THREADING_H_
 
 /**
  * @file
@@ -21,7 +22,7 @@
 #include <pthread.h>
 #endif
 
-#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -224,3 +225,5 @@ int dsd_thread_set_affinity(int cpu_index);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_THREADING_H_ */

@@ -15,29 +15,28 @@
  *   build/perf-bench/tests/dsd-neo_bench_rtl --iters 3000 --repeat 5
  */
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/ring.h>
-
-#include <algorithm>
-#include <atomic>
-// IWYU pragma: no_include <bits/chrono.h>
-#include <chrono> // IWYU pragma: keep
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <stdint.h>
 #include <vector>
+#include "dsd-neo/core/safe_api.h"
 
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 volatile float g_bench_sink = 0.0f;
 
-enum class OutputFormat { Text, Csv };
+enum class OutputFormat : uint8_t { Text, Csv };
 
 struct BenchOptions {
     int iterations = 2000;
@@ -312,7 +311,7 @@ bench_rtl_ingest(const BenchOptions& opts) {
 
     input_ring_state ring;
     if (input_ring_init(&ring, kRingCap) != 0) {
-        std::fprintf(stderr, "input_ring_init failed\n");
+        DSD_FPRINTF(stderr, "input_ring_init failed\n");
         return ran;
     }
 
@@ -370,7 +369,7 @@ bench_rtl_output(const BenchOptions& opts) {
     ring.capacity = kBlock + 1U;
     ring.buffer = (float*)std::calloc(ring.capacity, sizeof(float));
     if (!ring.buffer) {
-        std::fprintf(stderr, "output ring allocation failed\n");
+        DSD_FPRINTF(stderr, "output ring allocation failed\n");
         return ran;
     }
     dsd_cond_init(&ring.ready);
@@ -411,7 +410,7 @@ main(int argc, char** argv) {
     ran += bench_rtl_output(opts);
 
     if (!opts.list_cases && ran == 0) {
-        std::fprintf(stderr, "No benchmark case matched.\n");
+        DSD_FPRINTF(stderr, "No benchmark case matched.\n");
         return 2;
     }
     return (g_bench_sink == 1234567.0f) ? 1 : 0;

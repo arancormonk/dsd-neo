@@ -11,7 +11,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static double
 rms_mag_iq(const float* iq, int pairs) {
@@ -39,7 +39,7 @@ main(void) {
     if (!s) {
         return 1;
     }
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(s, 0, sizeof(*s));
 
     const int pairs = 256;
     static float buf[(size_t)pairs * 2];
@@ -78,12 +78,12 @@ main(void) {
         float I = s->result[(size_t)(2 * n) + 0];
         float Q = s->result[(size_t)(2 * n) + 1];
         if (!approx_eq(I, target, 0.02f)) {
-            fprintf(stderr, "Limiter: sample %d I=%f not near target %.2f\n", n, I, target);
+            DSD_FPRINTF(stderr, "Limiter: sample %d I=%f not near target %.2f\n", n, I, target);
             free(s);
             return 1;
         }
         if (!approx_eq(Q, 0.0f, 0.01f)) {
-            fprintf(stderr, "Limiter: sample %d Q=%f deviates from 0\n", n, Q);
+            DSD_FPRINTF(stderr, "Limiter: sample %d Q=%f deviates from 0\n", n, Q);
             free(s);
             return 1;
         }
@@ -101,12 +101,12 @@ main(void) {
         float I = s->result[(size_t)(2 * n) + 0];
         float Q = s->result[(size_t)(2 * n) + 1];
         if (!approx_eq(I, target * 0.7f, 0.02f)) {
-            fprintf(stderr, "Limiter in-range: sample %d I=%f changed too much\n", n, I);
+            DSD_FPRINTF(stderr, "Limiter in-range: sample %d I=%f changed too much\n", n, I);
             free(s);
             return 1;
         }
         if (!approx_eq(Q, 0.0f, 0.01f)) {
-            fprintf(stderr, "Limiter in-range: sample %d Q=%f deviates\n", n, Q);
+            DSD_FPRINTF(stderr, "Limiter in-range: sample %d Q=%f deviates\n", n, Q);
             free(s);
             return 1;
         }
@@ -127,7 +127,7 @@ main(void) {
         float Q = s->result[(size_t)(2 * n) + 1];
         double mag = std::sqrt((double)I * I + (double)Q * Q);
         if (!(mag > 0.28 && mag < 0.32)) {
-            fprintf(stderr, "Limiter mixed-phase: sample %d |z|=%.4f not near target %.2f\n", n, mag, target);
+            DSD_FPRINTF(stderr, "Limiter mixed-phase: sample %d |z|=%.4f not near target %.2f\n", n, mag, target);
             free(s);
             return 1;
         }
@@ -153,7 +153,7 @@ main(void) {
         float I = s->result[(size_t)(2 * n) + 0];
         float Q = s->result[(size_t)(2 * n) + 1];
         if (!approx_eq(I, (float)preI, 0.01f) || !approx_eq(Q, (float)preQ, 0.01f)) {
-            fprintf(stderr, "Limiter boundary in-low: sample %d changed too much\n", n);
+            DSD_FPRINTF(stderr, "Limiter boundary in-low: sample %d changed too much\n", n);
             free(s);
             return 1;
         }
@@ -169,7 +169,7 @@ main(void) {
         float Q = s->result[(size_t)(2 * n) + 1];
         double mag = std::sqrt((double)I * I + (double)Q * Q);
         if (!(mag > 0.28 && mag < 0.32)) {
-            fprintf(stderr, "Limiter boundary out-low: sample %d |z|=%.4f not clamped\n", n, mag);
+            DSD_FPRINTF(stderr, "Limiter boundary out-low: sample %d |z|=%.4f not clamped\n", n, mag);
             free(s);
             return 1;
         }
@@ -186,7 +186,7 @@ main(void) {
         float I = s->result[(size_t)(2 * n) + 0];
         float Q = s->result[(size_t)(2 * n) + 1];
         if (!approx_eq(I, (float)preI, 0.02f) || !approx_eq(Q, (float)preQ, 0.02f)) {
-            fprintf(stderr, "Limiter boundary in-high: sample %d changed too much\n", n);
+            DSD_FPRINTF(stderr, "Limiter boundary in-high: sample %d changed too much\n", n);
             free(s);
             return 1;
         }
@@ -202,7 +202,7 @@ main(void) {
         float Q = s->result[(size_t)(2 * n) + 1];
         double mag = std::sqrt((double)I * I + (double)Q * Q);
         if (!(mag > 0.28 && mag < 0.32)) {
-            fprintf(stderr, "Limiter boundary out-high: sample %d |z|=%.4f not clamped\n", n, mag);
+            DSD_FPRINTF(stderr, "Limiter boundary out-high: sample %d |z|=%.4f not clamped\n", n, mag);
             free(s);
             return 1;
         }

@@ -9,9 +9,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdio.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "protocol_dispatch_impl.h"
 
 int
 dsd_dispatch_matches_dpmr(int synctype) {
@@ -24,13 +25,13 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
     //dPMR
     if ((state->synctype == DSD_SYNC_DPMR_FS1_POS) || (state->synctype == DSD_SYNC_DPMR_FS1_NEG)) {
         /* dPMR Frame Sync 1 */
-        fprintf(stderr, "dPMR Frame Sync 1 ");
+        DSD_FPRINTF(stderr, "dPMR Frame Sync 1 ");
         if (opts->mbe_out_f != NULL) {
             closeMbeOutFile(opts, state);
         }
     } else if ((state->synctype == DSD_SYNC_DPMR_FS2_POS) || (state->synctype == DSD_SYNC_DPMR_FS2_NEG)) {
         /* dPMR Frame Sync 2 */
-        fprintf(stderr, "dPMR Frame Sync 2 ");
+        DSD_FPRINTF(stderr, "dPMR Frame Sync 2 ");
 
         state->nac = 0;
         state->lastsrc = 0;
@@ -40,20 +41,20 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
-        sprintf(state->fsubtype, " VOICE        ");
+        DSD_SPRINTF(state->fsubtype, " VOICE        ");
         processdPMRvoice(opts, state);
 
         return;
 
     } else if ((state->synctype == DSD_SYNC_DPMR_FS3_POS) || (state->synctype == DSD_SYNC_DPMR_FS3_NEG)) {
         /* dPMR Frame Sync 3 */
-        fprintf(stderr, "dPMR Frame Sync 3 ");
+        DSD_FPRINTF(stderr, "dPMR Frame Sync 3 ");
         if (opts->mbe_out_f != NULL) {
             closeMbeOutFile(opts, state);
         }
     } else if ((state->synctype == DSD_SYNC_DPMR_FS4_POS) || (state->synctype == DSD_SYNC_DPMR_FS4_NEG)) {
         /* dPMR Frame Sync 4 */
-        fprintf(stderr, "dPMR Frame Sync 4 ");
+        DSD_FPRINTF(stderr, "dPMR Frame Sync 4 ");
         if (opts->mbe_out_f != NULL) {
             closeMbeOutFile(opts, state);
         }

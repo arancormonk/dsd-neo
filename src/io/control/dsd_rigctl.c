@@ -14,38 +14,76 @@
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
-#ifdef USE_RADIO
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#endif
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
-#if !DSD_PLATFORM_WIN_NATIVE
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <sys/socket.h>
-#endif
+#include <errno.h>
 #include <limits.h>
 #include <math.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <sys/socket.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#ifdef USE_RADIO
+#endif
+#if !DSD_PLATFORM_WIN_NATIVE
+#endif
 
 #define BUFSIZE        1024
 #define FREQ_MAX       4096
 #define SAVED_FREQ_MAX 1000
 #define TAG_MAX        100
+
+#if defined(__GNUC__) || defined(__clang__)
+#define DSD_ATTR_UNUSED_FN __attribute__((unused))
+#else
+#define DSD_ATTR_UNUSED_FN
+#endif
+
+/* Forward declarations for non-static rigctl helpers exported by this TU. */
+static bool Send(dsd_socket_t sockfd, const char* buf);
+static bool Recv(dsd_socket_t sockfd, char* buf);
+static bool GetSignalLevel(dsd_socket_t sockfd, double* dB);
+static bool DSD_ATTR_UNUSED_FN GetSquelchLevel(dsd_socket_t sockfd, double* dB);
+static bool DSD_ATTR_UNUSED_FN SetSquelchLevel(dsd_socket_t sockfd, double dB);
+static bool DSD_ATTR_UNUSED_FN GetSignalLevelEx(dsd_socket_t sockfd, double* dB, int n_samp);
+static void DSD_ATTR_UNUSED_FN rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency);
+
+static bool
+parse_double_strict(const char* input, double* out) {
+    if (!input || !out) {
+        return false;
+    }
+    errno = 0;
+    char* end = NULL;
+    double value = strtod(input, &end);
+    if (end == input || errno == ERANGE) {
+        return false;
+    }
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') {
+        end++;
+    }
+    if (*end != '\0') {
+        return false;
+    }
+    *out = value;
+    return true;
+}
 
 /**
  * @brief Establish a TCP RIGCTL connection to the given host/port.
@@ -115,8 +153,8 @@ Connect(char* hostname, int portno) {
  * @param buf Command buffer (null-terminated).
  * @return true on success; false on error.
  */
-bool
-Send(dsd_socket_t sockfd, char* buf) {
+static bool
+Send(dsd_socket_t sockfd, const char* buf) {
     int n;
 
     n = dsd_socket_send(sockfd, buf, strlen(buf), 0);
@@ -137,7 +175,7 @@ Send(dsd_socket_t sockfd, char* buf) {
  * @param buf Buffer to fill (must be at least BUFSIZE+1 bytes).
  * @return true on success; false on timeout/error.
  */
-bool
+static bool
 Recv(dsd_socket_t sockfd, char* buf) {
     int n;
 
@@ -166,7 +204,7 @@ GetCurrentFreq(dsd_socket_t sockfd) {
     long int freq = 0;
     char buf[BUFSIZE];
     char* ptr;
-    char* token;
+    const char* token;
     char* saveptr = NULL;
 
     Send(sockfd, "f\n");
@@ -178,7 +216,7 @@ GetCurrentFreq(dsd_socket_t sockfd) {
 
     token = dsd_strtok_r(buf, "\n", &saveptr);
     freq = strtol(token, &ptr, 10);
-    // fprintf (stderr, "\nRIGCTL VFO Freq: [%ld]\n", freq);
+    // DSD_FPRINTF(stderr, "\nRIGCTL VFO Freq: [%ld]\n", freq);
     return freq;
 }
 
@@ -200,7 +238,7 @@ SetFreq(dsd_socket_t sockfd, long int freq) {
     }
     char buf[BUFSIZE];
 
-    snprintf(buf, sizeof buf, "F %ld\n", freq);
+    DSD_SNPRINTF(buf, sizeof buf, "F %ld\n", freq);
     Send(sockfd, buf);
     Recv(sockfd, buf);
 
@@ -232,7 +270,7 @@ SetModulation(dsd_socket_t sockfd, int bandwidth) {
     }
     char buf[BUFSIZE];
     //the bandwidth is now a user/system based configurable variable
-    snprintf(
+    DSD_SNPRINTF(
         buf, sizeof buf, "M NFM %d\n",
         bandwidth); //SDR++ has changed the token from FM to NFM, even if Ryzerth fixes it later, users may still have an older version
     Send(sockfd, buf);
@@ -241,7 +279,7 @@ SetModulation(dsd_socket_t sockfd, int bandwidth) {
     //if it fails the first time, send the other token instead
     if (strcmp(buf, "RPRT 1\n") == 0) //sdr++ has a linebreak here, is that in all versions of the protocol?
     {
-        snprintf(buf, sizeof buf, "M FM %d\n", bandwidth); //anything not SDR++
+        DSD_SNPRINTF(buf, sizeof buf, "M FM %d\n", bandwidth); //anything not SDR++
         Send(sockfd, buf);
         Recv(sockfd, buf);
     }
@@ -265,7 +303,7 @@ SetModulation(dsd_socket_t sockfd, int bandwidth) {
  * @param dB [out] Parsed signal level.
  * @return true on success; false on error or zero reading.
  */
-bool
+static bool
 GetSignalLevel(dsd_socket_t sockfd, double* dB) {
     char buf[BUFSIZE];
 
@@ -276,7 +314,9 @@ GetSignalLevel(dsd_socket_t sockfd, double* dB) {
         return false;
     }
 
-    sscanf(buf, "%lf", dB);
+    if (!parse_double_strict(buf, dB)) {
+        return false;
+    }
     *dB = round((*dB) * 10) / 10;
 
     if (*dB == 0.0) {
@@ -291,7 +331,7 @@ GetSignalLevel(dsd_socket_t sockfd, double* dB) {
  * @param dB [out] Parsed squelch level.
  * @return true on success; false on error.
  */
-bool
+static bool DSD_ATTR_UNUSED_FN
 GetSquelchLevel(dsd_socket_t sockfd, double* dB) {
     char buf[BUFSIZE];
 
@@ -302,7 +342,9 @@ GetSquelchLevel(dsd_socket_t sockfd, double* dB) {
         return false;
     }
 
-    sscanf(buf, "%lf", dB);
+    if (!parse_double_strict(buf, dB)) {
+        return false;
+    }
     *dB = round((*dB) * 10) / 10;
 
     return true;
@@ -314,11 +356,11 @@ GetSquelchLevel(dsd_socket_t sockfd, double* dB) {
  * @param dB Desired squelch level.
  * @return true on success; false on failure.
  */
-bool
+static bool DSD_ATTR_UNUSED_FN
 SetSquelchLevel(dsd_socket_t sockfd, double dB) {
     char buf[BUFSIZE];
 
-    snprintf(buf, sizeof buf, "L SQL %f\n", dB);
+    DSD_SNPRINTF(buf, sizeof buf, "L SQL %f\n", dB);
     Send(sockfd, buf);
     Recv(sockfd, buf);
 
@@ -344,7 +386,7 @@ SetSquelchLevel(dsd_socket_t sockfd, double dB) {
  * @param n_samp Number of samples to average.
  * @return true when sampling completed (errors are tolerated in the average).
  */
-bool
+static bool DSD_ATTR_UNUSED_FN
 GetSignalLevelEx(dsd_socket_t sockfd, double* dB, int n_samp) {
     double temp_level;
     *dB = 0;
@@ -372,7 +414,7 @@ GetSignalLevelEx(dsd_socket_t sockfd, double* dB, int n_samp) {
  * @param state Decoder state (unused).
  * @param frequency Desired center frequency in Hz.
  */
-void
+static void DSD_ATTR_UNUSED_FN
 rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
     UNUSED(state);
     static long int s_last_udp_freq = LONG_MIN;
@@ -398,7 +440,7 @@ rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
     data[3] = (char)((new_freq >> 16) & 0xFF);
     data[4] = (char)((new_freq >> 24) & 0xFF);
 
-    memset((char*)&tune_addr, 0, sizeof(tune_addr));
+    DSD_MEMSET((char*)&tune_addr, 0, sizeof(tune_addr));
     tune_addr.sin_family = AF_INET;
     dsd_socket_resolve("127.0.0.1", udp_port, &tune_addr); //make user configurable later
     (void)dsd_socket_sendto(handle, data, 5, 0, (const struct sockaddr*)&tune_addr, sizeof(struct sockaddr_in));

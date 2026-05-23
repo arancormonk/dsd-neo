@@ -76,17 +76,14 @@ snr_quality_color_pair(double snr_db, int mod) {
 #endif
 
 static int
-snr_unicode_backend_supported(void) {
+snr_use_unicode(int option_enabled, int unicode_supported) {
 #if defined(DSD_USE_PDCURSES) && !defined(DSD_HAS_PDCURSES_WIDE_API)
+    (void)option_enabled;
+    (void)unicode_supported;
     return 0;
 #else
-    return 1;
+    return option_enabled && unicode_supported;
 #endif
-}
-
-static int
-snr_use_unicode(int option_enabled, int unicode_supported) {
-    return option_enabled && unicode_supported && snr_unicode_backend_supported();
 }
 
 static void
@@ -185,6 +182,71 @@ snr_hist_push(int mod, double snr) {
     }
 }
 
+struct snr_hist_view {
+    const double* buf;
+    int len;
+    int head;
+};
+
+static struct snr_hist_view
+snr_hist_view_for_mod(int mod) {
+    struct snr_hist_view view = {snr_hist_gfsk, snr_hist_len_gfsk, snr_hist_head_gfsk};
+    if (mod == 0) {
+        view.buf = snr_hist_c4fm;
+        view.len = snr_hist_len_c4fm;
+        view.head = snr_hist_head_c4fm;
+    } else if (mod == 1) {
+        view.buf = snr_hist_qpsk;
+        view.len = snr_hist_len_qpsk;
+        view.head = snr_hist_head_qpsk;
+    }
+    return view;
+}
+
+static int
+snr_hist_render_count(int len, int width) {
+    return len < width ? len : width;
+}
+
+static int
+snr_hist_render_start(int head, int len, int count) {
+    int start = (head - len + SNR_HIST_N) % SNR_HIST_N;
+    return (start + (len - count)) % SNR_HIST_N;
+}
+
+static int
+snr_hist_level_index(double value, double clip_lo, double span, int levels) {
+    double t = (value - clip_lo) / span;
+    if (t < 0.0) {
+        t = 0.0;
+    } else if (t > 1.0) {
+        t = 1.0;
+    }
+    int li = (int)floor(t * (levels - 1) + 0.5);
+    if (li < 0) {
+        li = 0;
+    } else if (li >= levels) {
+        li = levels - 1;
+    }
+    return li;
+}
+
+static void
+snr_draw_level_glyph(double sample, int mod, int use_unicode, const char* ascii8, int li) {
+#ifdef PRETTY_COLORS
+    short cp = snr_quality_color_pair(sample, mod);
+    attron(COLOR_PAIR(cp));
+#endif
+    if (use_unicode) {
+        snr_add_block_level(li);
+    } else {
+        addch(ascii8[li]);
+    }
+#ifdef PRETTY_COLORS
+    attroff(COLOR_PAIR(cp));
+#endif
+}
+
 void
 print_snr_sparkline(const dsd_opts* opts, int mod) {
     /* Preserve the current color pair so our temporary colors don't clear it */
@@ -200,61 +262,21 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
     const int levels = SNR_BLOCK_LEVELS;
     const int W = 24;                             /* sparkline width */
     const double clip_lo = -15.0, clip_hi = 30.0; /* dB window (allow negatives) */
-    const double span = (clip_hi - clip_lo) > 1e-6 ? (clip_hi - clip_lo) : 1.0;
+    const double span = clip_hi - clip_lo;
 
-    const double* buf = NULL;
-    int len = 0;
-    int head = 0;
-    if (mod == 0) {
-        buf = snr_hist_c4fm;
-        len = snr_hist_len_c4fm;
-        head = snr_hist_head_c4fm;
-    } else if (mod == 1) {
-        buf = snr_hist_qpsk;
-        len = snr_hist_len_qpsk;
-        head = snr_hist_head_qpsk;
-    } else {
-        buf = snr_hist_gfsk;
-        len = snr_hist_len_gfsk;
-        head = snr_hist_head_gfsk;
-    }
-    if (len <= 0) {
+    struct snr_hist_view view = snr_hist_view_for_mod(mod);
+    if (view.len <= 0) {
         return;
     }
-    int start = (head - len + SNR_HIST_N) % SNR_HIST_N;
-    int count = len < W ? len : W;
+    int count = snr_hist_render_count(view.len, W);
     /* Map most recent to the right; older to the left */
-    int idx = (start + (len - count)) % SNR_HIST_N;
+    int idx = snr_hist_render_start(view.head, view.len, count);
 
     for (int x = 0; x < count; x++) {
-        double v = buf[idx];
+        double v = view.buf[idx];
         idx = (idx + 1) % SNR_HIST_N;
-        double t = (v - clip_lo) / span;
-        if (t < 0.0) {
-            t = 0.0;
-        }
-        if (t > 1.0) {
-            t = 1.0;
-        }
-        int li = (int)floor(t * (levels - 1) + 0.5);
-        if (li < 0) {
-            li = 0;
-        }
-        if (li >= levels) {
-            li = levels - 1;
-        }
-#ifdef PRETTY_COLORS
-        short cp = snr_quality_color_pair(v, mod);
-        attron(COLOR_PAIR(cp));
-#endif
-        if (use_unicode) {
-            snr_add_block_level(li);
-        } else {
-            addch(ascii8[li]);
-        }
-#ifdef PRETTY_COLORS
-        attroff(COLOR_PAIR(cp));
-#endif
+        int li = snr_hist_level_index(v, clip_lo, span, levels);
+        snr_draw_level_glyph(v, mod, use_unicode, ascii8, li);
     }
 #ifdef PRETTY_COLORS
     /* Restore previously active color pair (e.g., green call banner) */

@@ -10,7 +10,8 @@
  * Declares the keyring loader implemented in core.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_KEYRING_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_KEYRING_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -24,3 +25,4 @@ void keyring(dsd_opts* opts, dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_KEYRING_H_H */

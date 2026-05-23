@@ -16,16 +16,62 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 struct RtlSdrContext;
 
 // Expose the P25p2 2V handler under test
 void process_2V(dsd_opts* opts, dsd_state* state);
+
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+bool SetFreq(int sockfd, long int freq);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+bool SetModulation(int sockfd, int bandwidth);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void return_to_cc(dsd_opts* opts, dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void openMbeOutFile(dsd_opts* opts, dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void openMbeOutFileR(dsd_opts* opts, dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void getTimeC_buf(char out[9]);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void rotate_symbol_out_file(dsd_opts* opts, dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void LFSRP(dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void LFSR128(dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+double dsd_time_now_monotonic_s(void);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int ez_rs28_facch_soft(int* payload, int* parity, const int* erasures, int n_erasures);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int ez_rs28_sacch_soft(int* payload, int* parity, const int* erasures, int n_erasures);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int ez_rs28_ess(int* payload, int* parity);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int ez_rs28_ess_soft(int* payload, int* parity, const int* erasures, int n_erasures);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits);
 
 // Provide stubs to satisfy link dependencies (rigctl and return_to_cc)
 bool
@@ -42,6 +88,7 @@ SetModulation(int sockfd, int bandwidth) {
     return false;
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
@@ -70,20 +117,20 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
-void
+static void
 closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
+static void
 closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 // Misc helpers referenced by P25p2 frame path
-void
+static void
 rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta, int sacch_err_delta,
                             int aach_ok_delta) {
     (void)slot;
@@ -97,7 +144,7 @@ rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, i
 void
 getTimeC_buf(char out[9]) {
     if (out) {
-        memcpy(out, "00:00:00", 9);
+        DSD_MEMCPY(out, "00:00:00", 9);
     }
 }
 
@@ -107,7 +154,7 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
-void
+static void
 ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
@@ -133,28 +180,114 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
 }
 
 // Audio/playback stubs referenced by P25p1 LDU2 object (pulled in by LFSR helpers)
-void
+static void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
+static void
 playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
+static void
 playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
+static void
 playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+}
+
+void
+watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
+void
+p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)tg;
+    (void)svc;
+}
+
+void
+LFSRP(dsd_state* state) {
+    (void)state;
+}
+
+void
+LFSR128(dsd_state* state) {
+    (void)state;
+}
+
+double
+dsd_time_now_monotonic_s(void) {
+    return 0.0;
+}
+
+int
+ez_rs28_facch_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
+    (void)payload;
+    (void)parity;
+    (void)erasures;
+    (void)n_erasures;
+    return 0;
+}
+
+int
+ez_rs28_sacch_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
+    (void)payload;
+    (void)parity;
+    (void)erasures;
+    (void)n_erasures;
+    return 0;
+}
+
+int
+ez_rs28_ess(int* payload, int* parity) {
+    (void)payload;
+    (void)parity;
+    return 0;
+}
+
+int
+ez_rs28_ess_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
+    (void)payload;
+    (void)parity;
+    (void)erasures;
+    (void)n_erasures;
+    return 0;
+}
+
+int
+isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]) {
+    (void)isch;
+    (void)reliab40;
+    return -1;
+}
+
+void
+process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
+    (void)opts;
+    (void)state;
+    (void)bits;
+}
+
+void
+process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
+    (void)opts;
+    (void)state;
+    (void)bits;
 }
 
 // Dibit helpers referenced from Phase 1 paths (not exercised here)
@@ -205,28 +338,28 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 }
 
 // Bit conversion helper
-uint64_t
-ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+static uint64_t
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     (void)BufferIn;
     (void)BitLength;
     return 0ULL;
 }
 
 // MBE table pointers (from mbelib) referenced by Phase 1 code
-int iW[24] = {0};
-int iX[24] = {0};
-int iY[24] = {0};
-int iZ[24] = {0};
+static int iW[24] = {0};
+static int iX[24] = {0};
+static int iY[24] = {0};
+static int iZ[24] = {0};
 
 // Alias decode helpers referenced by VPDU path (not exercised here)
-void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+static void
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
-void
+static void
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -234,7 +367,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
     (void)lc_bits;
 }
 
-void
+static void
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -242,7 +375,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
     (void)lc_bits;
 }
 
-void
+static void
 l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -251,7 +384,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     (void)input;
 }
 
-void
+static void
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -292,7 +425,7 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_
 static int
 expect_eq(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -300,8 +433,8 @@ expect_eq(const char* tag, int got, int want) {
 
 static void
 reset_state(dsd_opts* opts, dsd_state* st) {
-    memset(opts, 0, sizeof *opts);
-    memset(st, 0, sizeof *st);
+    DSD_MEMSET(opts, 0, sizeof *opts);
+    DSD_MEMSET(st, 0, sizeof *st);
     // Ensure deterministic behavior
     opts->floating_point = 0;
 }

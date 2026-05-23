@@ -24,10 +24,14 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
@@ -49,9 +53,10 @@ static int g_ess_soft_last_n = 0;
 static int g_ess_soft_mutate_algid = -1;
 
 /* Stubs for external functions referenced by p25p2_frame.c */
-struct RtlSdrContext* g_rtl_ctx = 0;
+static struct RtlSdrContext* g_rtl_ctx = 0;
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -59,6 +64,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -66,12 +72,14 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -79,6 +87,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_p25p2_err_update(int slot, int a, int b, int c, int d, int e) {
     (void)slot;
     (void)a;
@@ -89,55 +98,64 @@ rtl_stream_p25p2_err_update(int slot, int a, int b, int c, int d, int e) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 getTimeC_buf(char out[9]) {
     if (out) {
-        memcpy(out, "00:00:00", 9);
+        DSD_MEMCPY(out, "00:00:00", 9);
     }
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
@@ -145,6 +163,7 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
@@ -171,6 +190,7 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc) {
     (void)opts;
     (void)state;
@@ -180,22 +200,25 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 LFSRP(dsd_state* state) {
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 LFSR128(dsd_state* state) {
     (void)state;
 }
 
-double
+static double
 dsd_time_now_monotonic_s(void) {
     return 0.0;
 }
 
 /* RS decoders */
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 ez_rs28_facch(int* payload, int* parity) {
     (void)payload;
     (void)parity;
@@ -203,6 +226,7 @@ ez_rs28_facch(int* payload, int* parity) {
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 ez_rs28_sacch(int* payload, int* parity) {
     (void)payload;
     (void)parity;
@@ -210,6 +234,7 @@ ez_rs28_sacch(int* payload, int* parity) {
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 ez_rs28_ess(int* payload, int* parity) {
     (void)payload;
     (void)parity;
@@ -217,18 +242,21 @@ ez_rs28_ess(int* payload, int* parity) {
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 isch_lookup(uint64_t isch) {
     (void)isch;
     return -1;
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]) {
     (void)reliab40;
     return isch_lookup(isch);
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 ez_rs28_facch_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
     (void)payload;
     (void)parity;
@@ -238,6 +266,7 @@ ez_rs28_facch_soft(int* payload, int* parity, const int* erasures, int n_erasure
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 ez_rs28_sacch_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
     (void)payload;
     (void)parity;
@@ -247,6 +276,7 @@ ez_rs28_sacch_soft(int* payload, int* parity, const int* erasures, int n_erasure
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 ez_rs28_ess_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
     (void)parity;
     (void)erasures;
@@ -265,6 +295,7 @@ ez_rs28_ess_soft(int* payload, int* parity, const int* erasures, int n_erasures)
 
 /* MAC PDU handlers */
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
     (void)opts;
     (void)state;
@@ -272,6 +303,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
     (void)opts;
     (void)state;
@@ -304,7 +336,7 @@ getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliabili
 static void
 set_p25p2_threshold(int threshold) {
     char value[16];
-    snprintf(value, sizeof(value), "%d", threshold);
+    DSD_SNPRINTF(value, sizeof(value), "%d", threshold);
     setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
     dsd_neo_config_init(NULL);
 }
@@ -322,7 +354,7 @@ reset_ess_stubs(void) {
 static void
 prepare_ess_soft_inputs(dsd_state* state) {
     p25_p2_frame_reset();
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     state->currentslot = 0;
     state->dmrburstL = 20;
     for (int i = 0; i < 96; i++) {
@@ -340,7 +372,7 @@ test_ess_soft_accepts_deep_erasure(void) {
     printf("Test 12: ESS accepts deep soft erasure success... ");
     dsd_opts opts;
     dsd_state state;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_ess_soft_inputs(&state);
     reset_ess_stubs();
     set_p25p2_threshold(64);
@@ -369,7 +401,7 @@ test_ess_soft_failure_counts_once(void) {
     printf("Test 13: ESS hard/soft failure counts once... ");
     dsd_opts opts;
     dsd_state state;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_ess_soft_inputs(&state);
     reset_ess_stubs();
     set_p25p2_threshold(64);
@@ -487,7 +519,7 @@ main(void) {
     }
 
     printf("Test 6: DUID soft fallback uses weakest invalid bits... ");
-    memset(duid_reliab, 200, sizeof(duid_reliab));
+    DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[6] = 5;
     duid_reliab[7] = 5; /* 0x03 -> 0x00 is the cheapest canonical candidate. */
     int recovered_decoded = p25p2_duid_lookup_soft_test(0x03U, duid_reliab);
@@ -499,7 +531,7 @@ main(void) {
     }
 
     printf("Test 7: DUID soft fallback rejects high-confidence invalid bits... ");
-    memset(duid_reliab, 200, sizeof(duid_reliab));
+    DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     int high_confidence_decoded = p25p2_duid_lookup_soft_test(0x03U, duid_reliab);
     if (high_confidence_decoded == -1) {
         printf("PASS\n");
@@ -509,7 +541,7 @@ main(void) {
     }
 
     printf("Test 8: DUID soft fallback recovers weak 0x80 MSB... ");
-    memset(duid_reliab, 200, sizeof(duid_reliab));
+    DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[0] = 5;
     int sentinel_decoded = p25p2_duid_lookup_soft_test(0x80U, duid_reliab);
     if (sentinel_decoded == 0) {
@@ -520,7 +552,7 @@ main(void) {
     }
 
     printf("Test 9: DUID soft fallback preserves high-confidence 0x80 guard... ");
-    memset(duid_reliab, 200, sizeof(duid_reliab));
+    DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     sentinel_decoded = p25p2_duid_lookup_soft_test(0x80U, duid_reliab);
     if (sentinel_decoded == -1) {
         printf("PASS\n");
@@ -530,7 +562,7 @@ main(void) {
     }
 
     printf("Test 10: DUID soft fallback rejects weak non-MSB 0x80 guard... ");
-    memset(duid_reliab, 200, sizeof(duid_reliab));
+    DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[0] = 5;
     duid_reliab[1] = 5;
     sentinel_decoded = p25p2_duid_lookup_soft_test(0x80U, duid_reliab);
@@ -542,7 +574,7 @@ main(void) {
     }
 
     printf("Test 11: DUID soft fallback rejects tied frame candidates... ");
-    memset(duid_reliab, 200, sizeof(duid_reliab));
+    DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[3] = 5; /* 0x03 -> 0x17 decodes to 1. */
     duid_reliab[5] = 5;
     duid_reliab[6] = 5; /* 0x03 -> 0x00 decodes to 0. */
@@ -561,3 +593,6 @@ main(void) {
     printf("\n%d test(s) failed\n", failures);
     return failures > 0 ? 1 : 0;
 }
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

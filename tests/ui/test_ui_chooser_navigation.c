@@ -16,6 +16,9 @@
 
 #include "menu_prompts.h"
 
+WINDOW* ui_make_window(int h, int w, int y, int x); // NOLINT(misc-use-internal-linkage)
+void ui_statusf(const char* fmt, ...);              // NOLINT(misc-use-internal-linkage)
+
 static int g_done_sel = -2;
 
 static const char* const ITEMS[] = {
@@ -30,12 +33,12 @@ capture_done(void* user, int sel) {
 }
 
 void
-ui_statusf(const char* fmt, ...) {
+ui_statusf(const char* fmt, ...) { // NOLINT(misc-use-internal-linkage)
     (void)fmt;
 }
 
 WINDOW*
-ui_make_window(int h, int w, int y, int x) {
+ui_make_window(int h, int w, int y, int x) { // NOLINT(misc-use-internal-linkage)
     (void)h;
     (void)w;
     (void)y;

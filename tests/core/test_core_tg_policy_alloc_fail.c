@@ -7,22 +7,20 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/posix_compat.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/* Test hooks provided by talkgroup_policy.c when DSD_NEO_TEST_HOOKS is defined. */
 extern void dsd_tg_policy_test_alloc_reset(void);
 extern void dsd_tg_policy_test_alloc_fail_after(long fail_after);
 
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "%s failed\n", tag);
+        DSD_FPRINTF(stderr, "%s failed\n", tag);
         return 1;
     }
     return 0;
@@ -30,11 +28,11 @@ expect_true(const char* tag, int cond) {
 
 static void
 init_entry(dsd_tg_policy_entry* e, uint32_t id, const char* mode, const char* name, uint8_t source) {
-    memset(e, 0, sizeof(*e));
+    DSD_MEMSET(e, 0, sizeof(*e));
     e->id_start = id;
     e->id_end = id;
-    snprintf(e->mode, sizeof(e->mode), "%s", mode);
-    snprintf(e->name, sizeof(e->name), "%s", name);
+    DSD_SNPRINTF(e->mode, sizeof(e->mode), "%s", mode);
+    DSD_SNPRINTF(e->name, sizeof(e->name), "%s", name);
     e->source = source;
     e->audio = (strcmp(mode, "B") == 0 || strcmp(mode, "DE") == 0) ? 0 : 1;
     e->record = e->audio;
@@ -51,7 +49,7 @@ free_test_state(dsd_state* st) {
 
 static void
 init_route(dsd_tg_policy_call_route* r, uint32_t target, uint32_t source, long freq_hz, int channel, int slot) {
-    memset(r, 0, sizeof(*r));
+    DSD_MEMSET(r, 0, sizeof(*r));
     r->target_id = target;
     r->source_id = source;
     r->freq_hz = freq_hz;
@@ -61,7 +59,7 @@ init_route(dsd_tg_policy_call_route* r, uint32_t target, uint32_t source, long f
 
 static void
 init_decision(dsd_tg_policy_decision* d, uint32_t target, uint32_t source, int priority, int preempt) {
-    memset(d, 0, sizeof(*d));
+    DSD_MEMSET(d, 0, sizeof(*d));
     d->target_id = target;
     d->source_id = source;
     d->priority = priority;

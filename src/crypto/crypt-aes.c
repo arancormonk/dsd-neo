@@ -35,28 +35,28 @@
 
 */
 
+#include <dsd-neo/crypto/aes.h>
 #include <stdint.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-#define AES_BLOCKLEN 16
-unsigned Nb = 4;
-unsigned Nk = 8;
-unsigned Nr = 14;
+#define AES_BLOCKLEN        16
+#define AES_NB              4U
+#define AES_ROUND_KEY_BYTES 240U
+
+typedef struct {
+    unsigned nk;
+    uint8_t nr;
+} aes_params_t;
 
 struct AES_ctx {
-    uint8_t RoundKey[240];
+    uint8_t RoundKey[AES_ROUND_KEY_BYTES];
     uint8_t Iv[16];
+    uint8_t Nr;
 };
 
 //internal function prototypes
-void AES_init_ctx(struct AES_ctx* ctx, const uint8_t* key);
-void AES_init_ctx_iv(struct AES_ctx* ctx, const uint8_t* key, const uint8_t* iv);
-void AES_ctx_set_iv(struct AES_ctx* ctx, const uint8_t* iv);
-void AES_ECB_encrypt(const struct AES_ctx* ctx, uint8_t* buf);
-void AES_ECB_decrypt(const struct AES_ctx* ctx, uint8_t* buf);
-void AES_CBC_encrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length);
-void AES_CBC_decrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length);
-void AES_CTR_xcrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length);
+static void AES_CTR_xcrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length);
 
 typedef uint8_t state_t[4][4];
 
@@ -97,10 +97,32 @@ static const uint8_t Rcon[11] = {0x8d, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40,
 
 #define getSBoxValue(num) (sbox[(num)])
 
+static aes_params_t
+aes_params_for_type(int type) {
+    if (type == 0) {
+        return (aes_params_t){4U, 10U};
+    }
+    if (type == 1) {
+        return (aes_params_t){6U, 12U};
+    }
+    return (aes_params_t){8U, 14U};
+}
+
+static int
+aes_key_schedule_params_valid(unsigned Nk, uint8_t Nr, unsigned round_words) {
+    return (Nk == 4U || Nk == 6U || Nk == 8U) && (Nr == 10U || Nr == 12U || Nr == 14U)
+           && round_words <= (AES_ROUND_KEY_BYTES / 4U) && Nk <= round_words;
+}
+
 static void
-KeyExpansion(uint8_t* RoundKey, const uint8_t* Key) {
-    unsigned i, j, k;
+KeyExpansion(uint8_t* RoundKey, const uint8_t* Key, unsigned Nk, uint8_t Nr) {
+    unsigned i;
     uint8_t tempa[4]; // Used for the column/row operations
+    const unsigned round_words = AES_NB * ((unsigned)Nr + 1U);
+
+    if (!RoundKey || !Key || !aes_key_schedule_params_valid(Nk, Nr, round_words)) {
+        return;
+    }
 
     // The first round key is the key itself.
     for (i = 0; i < Nk; ++i) {
@@ -111,9 +133,9 @@ KeyExpansion(uint8_t* RoundKey, const uint8_t* Key) {
     }
 
     // All other round keys are found from the previous round keys.
-    for (i = Nk; i < Nb * (Nr + 1); ++i) {
+    for (i = Nk; i < round_words; ++i) {
         {
-            k = (i - 1) * 4;
+            const unsigned k = (i - 1) * 4;
             tempa[0] = RoundKey[k + 0];
             tempa[1] = RoundKey[k + 1];
             tempa[2] = RoundKey[k + 2];
@@ -160,8 +182,8 @@ KeyExpansion(uint8_t* RoundKey, const uint8_t* Key) {
             }
         }
 
-        j = i * 4;
-        k = (i - Nk) * 4;
+        const unsigned j = i * 4;
+        const unsigned k = (i - Nk) * 4;
         RoundKey[j + 0] = RoundKey[k + 0] ^ tempa[0];
         RoundKey[j + 1] = RoundKey[k + 1] ^ tempa[1];
         RoundKey[j + 2] = RoundKey[k + 2] ^ tempa[2];
@@ -170,8 +192,8 @@ KeyExpansion(uint8_t* RoundKey, const uint8_t* Key) {
 }
 
 //input bit array, return output as up to a 64-bit value
-uint64_t
-convert_bits_into_output_ta(uint8_t* input, int len) {
+static uint64_t
+convert_bits_into_output_ta(const uint8_t* input, int len) {
     int i;
     uint64_t output = 0;
     for (i = 0; i < len; i++) {
@@ -182,8 +204,8 @@ convert_bits_into_output_ta(uint8_t* input, int len) {
 }
 
 //take x amount of bits and pack into len amount of bytes (symmetrical)
-void
-pack_bit_array_into_byte_array_ta(uint8_t* input, uint8_t* output, int len) {
+static void
+pack_bit_array_into_byte_array_ta(const uint8_t* input, uint8_t* output, int len) {
     int i;
     for (i = 0; i < len; i++) {
         output[i] = (uint8_t)convert_bits_into_output_ta(&input[(size_t)i * 8], 8);
@@ -191,8 +213,8 @@ pack_bit_array_into_byte_array_ta(uint8_t* input, uint8_t* output, int len) {
 }
 
 //take len amount of bytes and unpack back into a bit array
-void
-unpack_byte_array_into_bit_array_ta(uint8_t* input, uint8_t* output, int len) {
+static void
+unpack_byte_array_into_bit_array_ta(const uint8_t* input, uint8_t* output, int len) {
     int i = 0, k = 0;
     for (i = 0; i < len; i++) {
         output[k++] = (input[i] >> 7) & 1;
@@ -206,28 +228,12 @@ unpack_byte_array_into_bit_array_ta(uint8_t* input, uint8_t* output, int len) {
     }
 }
 
-void
-AES_init_ctx(struct AES_ctx* ctx, const uint8_t* key) {
-    KeyExpansion(ctx->RoundKey, key);
-}
-
-void
-AES_init_ctx_iv(struct AES_ctx* ctx, const uint8_t* key, const uint8_t* iv) {
-    KeyExpansion(ctx->RoundKey, key);
-    memcpy(ctx->Iv, iv, AES_BLOCKLEN);
-}
-
-void
-AES_ctx_set_iv(struct AES_ctx* ctx, const uint8_t* iv) {
-    memcpy(ctx->Iv, iv, AES_BLOCKLEN);
-}
-
 static void
 AddRoundKey(uint8_t round, state_t* state, const uint8_t* RoundKey) {
     uint8_t i, j;
     for (i = 0; i < 4; ++i) {
         for (j = 0; j < 4; ++j) {
-            (*state)[i][j] ^= RoundKey[(round * Nb * 4) + (i * Nb) + j];
+            (*state)[i][j] ^= RoundKey[(round * AES_NB * 4U) + ((unsigned)i * AES_NB) + j];
         }
     }
 }
@@ -278,11 +284,10 @@ xtime(uint8_t x) {
 static void
 MixColumns(state_t* state) {
     uint8_t i;
-    uint8_t Tmp, Tm, t;
     for (i = 0; i < 4; ++i) {
-        t = (*state)[i][0];
-        Tmp = (*state)[i][0] ^ (*state)[i][1] ^ (*state)[i][2] ^ (*state)[i][3];
-        Tm = (*state)[i][0] ^ (*state)[i][1];
+        const uint8_t t = (*state)[i][0];
+        const uint8_t Tmp = (*state)[i][0] ^ (*state)[i][1] ^ (*state)[i][2] ^ (*state)[i][3];
+        uint8_t Tm = (*state)[i][0] ^ (*state)[i][1];
         Tm = xtime(Tm);
         (*state)[i][0] ^= Tm ^ Tmp;
         Tm = (*state)[i][1] ^ (*state)[i][2];
@@ -306,12 +311,11 @@ MixColumns(state_t* state) {
 static void
 InvMixColumns(state_t* state) {
     int i;
-    uint8_t a, b, c, d;
     for (i = 0; i < 4; ++i) {
-        a = (*state)[i][0];
-        b = (*state)[i][1];
-        c = (*state)[i][2];
-        d = (*state)[i][3];
+        const uint8_t a = (*state)[i][0];
+        const uint8_t b = (*state)[i][1];
+        const uint8_t c = (*state)[i][2];
+        const uint8_t d = (*state)[i][3];
 
         (*state)[i][0] = Multiply(a, 0x0e) ^ Multiply(b, 0x0b) ^ Multiply(c, 0x0d) ^ Multiply(d, 0x09);
         (*state)[i][1] = Multiply(a, 0x09) ^ Multiply(b, 0x0e) ^ Multiply(c, 0x0b) ^ Multiply(d, 0x0d);
@@ -361,7 +365,7 @@ InvShiftRows(state_t* state) {
 // Cipher is the main function that encrypts the PlainText,
 // or produces a keystream, depending on application.
 static void
-Cipher(state_t* state, const uint8_t* RoundKey) {
+Cipher(state_t* state, const uint8_t* RoundKey, uint8_t Nr) {
     uint8_t round = 0;
 
     // Add the First round key to the state before starting the rounds.
@@ -385,7 +389,7 @@ Cipher(state_t* state, const uint8_t* RoundKey) {
 }
 
 static void
-InvCipher(state_t* state, const uint8_t* RoundKey) {
+InvCipher(state_t* state, const uint8_t* RoundKey, uint8_t Nr) {
     uint8_t round = 0;
 
     // Add the First round key to the state before starting the rounds.
@@ -406,55 +410,8 @@ InvCipher(state_t* state, const uint8_t* RoundKey) {
     }
 }
 
-void
-AES_ECB_encrypt(const struct AES_ctx* ctx, uint8_t* buf) {
-    // The next function call encrypts the PlainText with the Key using AES algorithm.
-    Cipher((state_t*)buf, ctx->RoundKey);
-}
-
-void
-AES_ECB_decrypt(const struct AES_ctx* ctx, uint8_t* buf) {
-    // The next function call decrypts the PlainText with the Key using AES algorithm.
-    InvCipher((state_t*)buf, ctx->RoundKey);
-}
-
-static void
-XorWithIv(uint8_t* buf, const uint8_t* Iv) {
-    uint8_t i;
-    for (i = 0; i < AES_BLOCKLEN; ++i) {
-        buf[i] ^= Iv[i];
-    }
-}
-
-void
-AES_CBC_encrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length) {
-    size_t i;
-    uint8_t* Iv = ctx->Iv;
-    for (i = 0; i < length; i += AES_BLOCKLEN) {
-        XorWithIv(buf, Iv);
-        Cipher((state_t*)buf, ctx->RoundKey);
-        Iv = buf;
-        buf += AES_BLOCKLEN;
-    }
-    /* store Iv in ctx for next call */
-    memcpy(ctx->Iv, Iv, AES_BLOCKLEN);
-}
-
-void
-AES_CBC_decrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length) {
-    size_t i;
-    uint8_t storeNextIv[AES_BLOCKLEN];
-    for (i = 0; i < length; i += AES_BLOCKLEN) {
-        memcpy(storeNextIv, buf, AES_BLOCKLEN);
-        InvCipher((state_t*)buf, ctx->RoundKey);
-        XorWithIv(buf, ctx->Iv);
-        memcpy(ctx->Iv, storeNextIv, AES_BLOCKLEN);
-        buf += AES_BLOCKLEN;
-    }
-}
-
 /* Symmetrical operation: same function for encrypting as for decrypting. Note any IV/nonce should never be reused with the same key */
-void
+static void
 AES_CTR_xcrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length) {
     uint8_t buffer[AES_BLOCKLEN];
 
@@ -464,8 +421,8 @@ AES_CTR_xcrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length) {
         if (bi == AES_BLOCKLEN) /* we need to regen xor compliment in buffer */
         {
 
-            memcpy(buffer, ctx->Iv, AES_BLOCKLEN);
-            Cipher((state_t*)buffer, ctx->RoundKey);
+            DSD_MEMCPY(buffer, ctx->Iv, AES_BLOCKLEN);
+            Cipher((state_t*)buffer, ctx->RoundKey, ctx->Nr);
 
             /* Increment Iv and handle overflow */
             for (bi = (AES_BLOCKLEN - 1); bi >= 0; --bi) {
@@ -491,45 +448,29 @@ AES_CTR_xcrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length) {
 //input nblocks is the number of rounds of 16-byte keystream output blocks requried
 //output is a uint8_t bytewise array, each round filled with 16-bytes from aes keystream output
 void
-aes_ofb_keystream_output(uint8_t* iv, uint8_t* key, uint8_t* output, int type, int nblocks) {
+aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks) {
 
     int i;
     uint8_t input_register[16]; //OFB Input Register
-    memset(input_register, 0, sizeof(input_register));
+    DSD_MEMSET(input_register, 0, sizeof(input_register));
 
-    //Set values specific to type (128/192/256)
-    if (type == 0) //128
-    {
-        Nb = 4;
-        Nk = 4;
-        Nr = 10;
-    } else if (type == 1) //192
-    {
-        Nb = 4;
-        Nk = 6;
-        Nr = 12;
-    } else //if (type == 2) //256
-    {
-        Nb = 4;
-        Nk = 8;
-        Nr = 14;
-    }
+    aes_params_t params = aes_params_for_type(type);
 
     struct AES_ctx ctx;
 
     //load first round of input_register with received IV (OFB First Input Register)
-    memcpy(input_register, iv, ((size_t)16) * sizeof(uint8_t));
+    DSD_MEMCPY(input_register, iv, ((size_t)16) * sizeof(uint8_t));
 
     //initialize the key variable for the Cipher function
-    memset(ctx.RoundKey, 0, ((size_t)240) * sizeof(uint8_t));
-    KeyExpansion(ctx.RoundKey, key);
+    DSD_MEMSET(ctx.RoundKey, 0, ((size_t)AES_ROUND_KEY_BYTES) * sizeof(uint8_t));
+    KeyExpansion(ctx.RoundKey, key, params.nk, params.nr);
 
     //execute the cipher function, and copy ciphered input_register to output for required number of rounds
     for (i = 0; i < nblocks; i++) {
-        Cipher((state_t*)input_register,
-               ctx.RoundKey); //input_register is returned as output, and is put back in as object feedback
-        memcpy(output + ((size_t)i * 16), input_register,
-               ((size_t)16) * sizeof(uint8_t)); //copy ciphered input_register to output
+        Cipher((state_t*)input_register, ctx.RoundKey,
+               params.nr); //input_register is returned as output, and is put back in as object feedback
+        DSD_MEMCPY(output + ((size_t)i * 16), input_register,
+                   ((size_t)16) * sizeof(uint8_t)); //copy ciphered input_register to output
     }
 }
 
@@ -542,44 +483,29 @@ aes_ofb_keystream_output(uint8_t* iv, uint8_t* key, uint8_t* output, int type, i
 //output out is a uint8_t bytewise array, each round filled with 16-bytes of cfb ciphered output (encrypted or decrypted)
 //de is a bit-flag signalling to run Cipher (encrypt) on 1, or InvCipher (decrypt) on 0
 void
-aes_cfb_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* out, int type, int nblocks, int de) {
+aes_cfb_bytewise_payload_crypt(const uint8_t* iv, const uint8_t* key, const uint8_t* in, uint8_t* out, int type,
+                               int nblocks, int de) {
 
     int i, j;
     uint8_t input_register[16]; //Input Register
-    memset(input_register, 0, sizeof(input_register));
+    DSD_MEMSET(input_register, 0, sizeof(input_register));
 
-    //Set values specific to type (128/192/256)
-    if (type == 0) //128
-    {
-        Nb = 4;
-        Nk = 4;
-        Nr = 10;
-    } else if (type == 1) //192
-    {
-        Nb = 4;
-        Nk = 6;
-        Nr = 12;
-    } else //if (type == 2) //256
-    {
-        Nb = 4;
-        Nk = 8;
-        Nr = 14;
-    }
+    aes_params_t params = aes_params_for_type(type);
 
     struct AES_ctx ctx;
 
     //load first round of input_register with received IV (CFB First Input Register)
-    memcpy(input_register, iv, ((size_t)16) * sizeof(uint8_t));
+    DSD_MEMCPY(input_register, iv, ((size_t)16) * sizeof(uint8_t));
 
     //initialize the key variable for the Cipher function
-    memset(ctx.RoundKey, 0, ((size_t)240) * sizeof(uint8_t));
-    KeyExpansion(ctx.RoundKey, key);
+    DSD_MEMSET(ctx.RoundKey, 0, ((size_t)AES_ROUND_KEY_BYTES) * sizeof(uint8_t));
+    KeyExpansion(ctx.RoundKey, key, params.nk, params.nr);
 
     //execute the cipher function, and copy ciphered input_register to output for required number of rounds
     for (i = 0; i < nblocks; i++) {
 
         //the cipher is always run in the foward, or encryption mode
-        Cipher((state_t*)input_register, ctx.RoundKey);
+        Cipher((state_t*)input_register, ctx.RoundKey, params.nr);
 
         //xor the current input 'in' to the current state of the input_register for cipher feedback
         for (j = 0; j < 16; j++) {
@@ -587,11 +513,11 @@ aes_cfb_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* 
         }
 
         //copy ciphered/xor'd input_register to output 'out'
-        memcpy(out + ((size_t)i * 16), input_register, ((size_t)16) * sizeof(uint8_t));
+        DSD_MEMCPY(out + ((size_t)i * 16), input_register, ((size_t)16) * sizeof(uint8_t));
 
         //if running in decryption mode, we feed in the next round of input
         if (!de) {
-            memcpy(input_register, in + ((size_t)i * 16), ((size_t)16) * sizeof(uint8_t));
+            DSD_MEMCPY(input_register, in + ((size_t)i * 16), ((size_t)16) * sizeof(uint8_t));
         }
     }
 }
@@ -605,42 +531,27 @@ aes_cfb_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* 
 //output out is a uint8_t bytewise array, each round filled with 16-bytes of cfb ciphered output (encrypted or decrypted)
 //de is a bit-flag signalling to run Cipher (encrypt) on 1, or InvCipher (decrypt) on 0
 void
-aes_cbc_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* out, int type, int nblocks, int de) {
+aes_cbc_bytewise_payload_crypt(const uint8_t* iv, const uint8_t* key, const uint8_t* in, uint8_t* out, int type,
+                               int nblocks, int de) {
 
     int i, j;
     uint8_t input_register[16]; //Input Register
-    memset(input_register, 0, sizeof(input_register));
+    DSD_MEMSET(input_register, 0, sizeof(input_register));
 
-    //Set values specific to type (128/192/256)
-    if (type == 0) //128
-    {
-        Nb = 4;
-        Nk = 4;
-        Nr = 10;
-    } else if (type == 1) //192
-    {
-        Nb = 4;
-        Nk = 6;
-        Nr = 12;
-    } else //if (type == 2) //256
-    {
-        Nb = 4;
-        Nk = 8;
-        Nr = 14;
-    }
+    aes_params_t params = aes_params_for_type(type);
 
     struct AES_ctx ctx;
 
     //load first round of input_register accordingly
     if (de) {
-        memcpy(input_register, iv, 16 * sizeof(uint8_t));
+        DSD_MEMCPY(input_register, iv, 16 * sizeof(uint8_t));
     } else {
-        memcpy(input_register, in, 16 * sizeof(uint8_t));
+        DSD_MEMCPY(input_register, in, 16 * sizeof(uint8_t));
     }
 
     //initialize the key variable for the Cipher function
-    memset(ctx.RoundKey, 0, ((size_t)240) * sizeof(uint8_t));
-    KeyExpansion(ctx.RoundKey, key);
+    DSD_MEMSET(ctx.RoundKey, 0, ((size_t)AES_ROUND_KEY_BYTES) * sizeof(uint8_t));
+    KeyExpansion(ctx.RoundKey, key, params.nk, params.nr);
 
     //
     for (i = 0; i < nblocks; i++) {
@@ -654,20 +565,20 @@ aes_cbc_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* 
                 input_register[j] ^= in[j + (i * 16)];
             }
 
-            Cipher((state_t*)input_register, ctx.RoundKey);
+            Cipher((state_t*)input_register, ctx.RoundKey, params.nr);
 
             //copy ciphered input_register to output 'out'
-            memcpy(out + ((size_t)i * 16), input_register, ((size_t)16) * sizeof(uint8_t));
+            DSD_MEMCPY(out + ((size_t)i * 16), input_register, ((size_t)16) * sizeof(uint8_t));
 
         }
 
         else //decrypt
         {
 
-            InvCipher((state_t*)input_register, ctx.RoundKey);
+            InvCipher((state_t*)input_register, ctx.RoundKey, params.nr);
 
             //copy ciphered input_register to output 'out'
-            memcpy(out + ((size_t)i * 16), input_register, ((size_t)16) * sizeof(uint8_t));
+            DSD_MEMCPY(out + ((size_t)i * 16), input_register, ((size_t)16) * sizeof(uint8_t));
 
             //xor the current output by IV, or by last received CT
             if (i == 0) {
@@ -681,69 +592,11 @@ aes_cbc_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* 
             }
 
             //copy in next segment for input_register (if not last)
-            if (i < nblocks) {
-                memcpy(input_register, in + ((size_t)(i + 1) * 16), ((size_t)16) * sizeof(uint8_t));
+            if ((i + 1) < nblocks) {
+                DSD_MEMCPY(input_register, in + ((size_t)(i + 1) * 16), ((size_t)16) * sizeof(uint8_t));
             }
         }
     }
-}
-
-//byte-wise AES CBC_MAC (Cipher Block Chaining Message Authentication) //This is slightly different than above, no IV is present,
-//but if iv is desireable, it will need to be pre-XOR'd with the first plaintext input block by the calling function
-//input in is a uint8_t bytewise array, is the input to be ciphered.
-//input key is up to 32-byte uint8_t array of key value
-//input type is the type/key len of AES required (0-128, 1-192, 2-256)
-//input nblocks is the number of rounds of 16-byte payload blocks requried (last block will need padding if not flush)
-//output out is a uint8_t bytewise array, with only the final round output as the MAC octets
-//NOTE: When doing a cbc_mac, you should only run it in the forward (encryption) mode to get the mac bytes
-void
-aes_cbc_mac_generator(uint8_t* key, uint8_t* in, uint8_t* out, int type, int nblocks) {
-
-    int i, j;
-    uint8_t input_register[16]; //Input Register
-    memset(input_register, 0, sizeof(input_register));
-
-    //Set values specific to type (128/192/256)
-    if (type == 0) //128
-    {
-        Nb = 4;
-        Nk = 4;
-        Nr = 10;
-    } else if (type == 1) //192
-    {
-        Nb = 4;
-        Nk = 6;
-        Nr = 12;
-    } else //if (type == 2) //256
-    {
-        Nb = 4;
-        Nk = 8;
-        Nr = 14;
-    }
-
-    struct AES_ctx ctx;
-
-    //initialize the key variable for the Cipher function
-    memset(ctx.RoundKey, 0, 240 * sizeof(uint8_t));
-    KeyExpansion(ctx.RoundKey, key);
-
-    //
-    for (i = 0; i < nblocks; i++) {
-
-        //xor the current input 'in' pt to the current state of the input_register for cbc feedback
-        //if this is the first iteration, this will load the first round plain text instead
-        for (j = 0; j < 16; j++) {
-            input_register[j] ^= in[j + ((i + 0) * 16)];
-        }
-
-        Cipher((state_t*)input_register, ctx.RoundKey);
-
-        //debug, load out all intermediate output register values
-        // memcpy (out+(i*16), input_register, 16*sizeof(uint8_t) );
-    }
-
-    //copy final ciphered input_register to output 'out', user will determine how many bytes of output they want for MAC
-    memcpy(out, input_register, 16 * sizeof(uint8_t));
 }
 
 //byte-wise output of AES ECB Ciphering/Deciphering
@@ -753,83 +606,52 @@ aes_cbc_mac_generator(uint8_t* key, uint8_t* in, uint8_t* out, int type, int nbl
 //output is a uint8_t bytewise array of ciphered or deciphered input
 //de is a bit-flag signalling to run Cipher (encrypt) on 1, or InvCipher (decrypt) on 0
 void
-aes_ecb_bytewise_payload_crypt(uint8_t* input, uint8_t* key, uint8_t* output, int type, int de) {
+aes_ecb_bytewise_payload_crypt(const uint8_t* input, const uint8_t* key, uint8_t* output, int type, int de) {
 
     uint8_t input_register[16]; //ECB Input Register
-    memset(input_register, 0, sizeof(input_register));
+    DSD_MEMSET(input_register, 0, sizeof(input_register));
 
-    //Set values specific to type (128/192/256)
-    if (type == 0) //128
-    {
-        Nb = 4;
-        Nk = 4;
-        Nr = 10;
-    } else if (type == 1) //192
-    {
-        Nb = 4;
-        Nk = 6;
-        Nr = 12;
-    } else //if (type == 2) //256
-    {
-        Nb = 4;
-        Nk = 8;
-        Nr = 14;
-    }
+    aes_params_t params = aes_params_for_type(type);
 
     struct AES_ctx ctx;
 
     //load input_register with received input (ECB Payload)
-    memcpy(input_register, input, 16 * sizeof(uint8_t));
+    DSD_MEMCPY(input_register, input, 16 * sizeof(uint8_t));
 
     //initialize the key variable for the Cipher function
-    memset(ctx.RoundKey, 0, 240 * sizeof(uint8_t));
-    KeyExpansion(ctx.RoundKey, key);
+    DSD_MEMSET(ctx.RoundKey, 0, AES_ROUND_KEY_BYTES * sizeof(uint8_t));
+    KeyExpansion(ctx.RoundKey, key, params.nk, params.nr);
 
     //run encryption or decryption depending on de value
     if (de) { //encrypt
-        Cipher((state_t*)input_register, ctx.RoundKey);
+        Cipher((state_t*)input_register, ctx.RoundKey, params.nr);
     } else { //decrypt
-        InvCipher((state_t*)input_register, ctx.RoundKey);
+        InvCipher((state_t*)input_register, ctx.RoundKey, params.nr);
     }
 
     //copy ciphered/deciphered input_register to output
-    memcpy(output, input_register, 16 * sizeof(uint8_t));
+    DSD_MEMCPY(output, input_register, 16 * sizeof(uint8_t));
 }
 
 //symmetrical ctr mode payload encryption and decryption
 void
-aes_ctr_bitwise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* payload, int type) {
+aes_ctr_bitwise_payload_crypt(const uint8_t* iv, const uint8_t* key, uint8_t* payload, int type) {
 
-    //Set values specific to type (128/192/256)
-    if (type == 0) //128
-    {
-        Nb = 4;
-        Nk = 4;
-        Nr = 10;
-    } else if (type == 1) //192
-    {
-        Nb = 4;
-        Nk = 6;
-        Nr = 12;
-    } else //if (type == 2) //256
-    {
-        Nb = 4;
-        Nk = 8;
-        Nr = 14;
-    }
+    aes_params_t params = aes_params_for_type(type);
 
     struct AES_ctx ctx;
+    ctx.Nr = params.nr;
 
     //init and set the iv and key variables
-    memset(ctx.RoundKey, 0, 240 * sizeof(uint8_t));
-    memset(ctx.Iv, 0, 16 * sizeof(uint8_t));
+    DSD_MEMSET(ctx.RoundKey, 0, AES_ROUND_KEY_BYTES * sizeof(uint8_t));
+    DSD_MEMSET(ctx.Iv, 0, 16 * sizeof(uint8_t));
 
-    KeyExpansion(ctx.RoundKey, key);
-    memcpy(ctx.Iv, iv, AES_BLOCKLEN);
+    KeyExpansion(ctx.RoundKey, key, params.nk, params.nr);
+    DSD_MEMCPY(ctx.Iv, iv, AES_BLOCKLEN);
 
     //pack input bit-wise payload to byte array
     uint8_t payload_bytes[16];
-    memset(payload_bytes, 0, sizeof(payload_bytes));
+    DSD_MEMSET(payload_bytes, 0, sizeof(payload_bytes));
     pack_bit_array_into_byte_array_ta(payload, payload_bytes, 16);
 
     //pass to internal CTR handler for payload
@@ -841,34 +663,19 @@ aes_ctr_bitwise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* payload, int t
 
 //symmetrical ctr mode payload encryption and decryption
 void
-aes_ctr_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* payload, int type) {
+aes_ctr_bytewise_payload_crypt(const uint8_t* iv, const uint8_t* key, uint8_t* payload, int type) {
 
-    //Set values specific to type (128/192/256)
-    if (type == 0) //128
-    {
-        Nb = 4;
-        Nk = 4;
-        Nr = 10;
-    } else if (type == 1) //192
-    {
-        Nb = 4;
-        Nk = 6;
-        Nr = 12;
-    } else //if (type == 2) //256
-    {
-        Nb = 4;
-        Nk = 8;
-        Nr = 14;
-    }
+    aes_params_t params = aes_params_for_type(type);
 
     struct AES_ctx ctx;
+    ctx.Nr = params.nr;
 
     //init and set the iv and key variables
-    memset(ctx.RoundKey, 0, 240 * sizeof(uint8_t));
-    memset(ctx.Iv, 0, 16 * sizeof(uint8_t));
+    DSD_MEMSET(ctx.RoundKey, 0, AES_ROUND_KEY_BYTES * sizeof(uint8_t));
+    DSD_MEMSET(ctx.Iv, 0, 16 * sizeof(uint8_t));
 
-    KeyExpansion(ctx.RoundKey, key);
-    memcpy(ctx.Iv, iv, AES_BLOCKLEN);
+    KeyExpansion(ctx.RoundKey, key, params.nk, params.nr);
+    DSD_MEMCPY(ctx.Iv, iv, AES_BLOCKLEN);
 
     //pass to internal CTR handler for payload
     AES_CTR_xcrypt_buffer(&ctx, payload, 16);

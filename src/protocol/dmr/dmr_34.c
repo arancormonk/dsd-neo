@@ -10,34 +10,31 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-uint8_t interleave[98] = {0,  1,  8,  9,  16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57, 64, 65, 72, 73,
-                          80, 81, 88, 89, 96, 97, 2,  3,  10, 11, 18, 19, 26, 27, 34, 35, 42, 43, 50, 51,
-                          58, 59, 66, 67, 74, 75, 82, 83, 90, 91, 4,  5,  12, 13, 20, 21, 28, 29, 36, 37,
-                          44, 45, 52, 53, 60, 61, 68, 69, 76, 77, 84, 85, 92, 93, 6,  7,  14, 15, 22, 23,
-                          30, 31, 38, 39, 46, 47, 54, 55, 62, 63, 70, 71, 78, 79, 86, 87, 94, 95};
+static uint8_t interleave[98] = {0,  1,  8,  9,  16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57, 64, 65, 72, 73,
+                                 80, 81, 88, 89, 96, 97, 2,  3,  10, 11, 18, 19, 26, 27, 34, 35, 42, 43, 50, 51,
+                                 58, 59, 66, 67, 74, 75, 82, 83, 90, 91, 4,  5,  12, 13, 20, 21, 28, 29, 36, 37,
+                                 44, 45, 52, 53, 60, 61, 68, 69, 76, 77, 84, 85, 92, 93, 6,  7,  14, 15, 22, 23,
+                                 30, 31, 38, 39, 46, 47, 54, 55, 62, 63, 70, 71, 78, 79, 86, 87, 94, 95};
 
 //this is a convertion table for converting the dibit pairs into constellation points
-uint8_t constellation_map[16] = {11, 12, 0, 7, 14, 9, 5, 2, 10, 13, 1, 6, 15, 8, 4, 3};
+static uint8_t constellation_map[16] = {11, 12, 0, 7, 14, 9, 5, 2, 10, 13, 1, 6, 15, 8, 4, 3};
 
 //digitized dibit to OTA symbol conversion for reference
 //0 = +1; 1 = +3;
 //2 = -1; 3 = -3;
 
 //finite state machine values
-uint8_t fsm[64] = {0, 8,  4, 12, 2, 10, 6, 14, 4, 12, 2, 10, 6, 14, 0, 8, 1, 9,  5, 13, 3, 11,
-                   7, 15, 5, 13, 3, 11, 7, 15, 1, 9,  3, 11, 7, 15, 1, 9, 5, 13, 7, 15, 1, 9,
-                   5, 13, 3, 11, 2, 10, 6, 14, 0, 8,  4, 12, 6, 14, 0, 8, 4, 12, 2, 10};
+static uint8_t fsm[64] = {0, 8,  4, 12, 2, 10, 6, 14, 4, 12, 2, 10, 6, 14, 0, 8, 1, 9,  5, 13, 3, 11,
+                          7, 15, 5, 13, 3, 11, 7, 15, 1, 9,  3, 11, 7, 15, 1, 9, 5, 13, 7, 15, 1, 9,
+                          5, 13, 3, 11, 2, 10, 6, 14, 0, 8,  4, 12, 6, 14, 0, 8, 4, 12, 2, 10};
 
 //attempt to find the surviving path, or the 'best' path available (most positions gained)
-uint8_t
-fix_34(uint8_t* p, uint8_t state, int position) {
-    int i, j, k, counter, best_p, best_v;
-    uint8_t temp_s, tri, t;
-
-    //status of surviving paths -- debug
-    int s[8];
-    memset(s, 0, 8 * sizeof(int));
+static uint8_t
+fix_34(const uint8_t* p, uint8_t state, int position) {
+    int i, j, k, best_p, best_v;
+    uint8_t t;
 
     //assign all potentially correct points to temporary storage
     uint8_t temp_p[8];
@@ -54,9 +51,9 @@ fix_34(uint8_t* p, uint8_t state, int position) {
     best_v = 0; //best path value
 
     for (k = 0; k < 8; k++) {
-        temp_s = state;
-        counter = 0;
-        tri = 0;
+        int counter = 0;
+        uint8_t temp_s = state;
+        uint8_t tri = 0;
         for (i = position; i < 49; i++) {
             //assign temp t either as our temp_p, or next point of i
             if (i == position) {
@@ -81,11 +78,6 @@ fix_34(uint8_t* p, uint8_t state, int position) {
                     best_p = counter;
                     best_v = k; //if we make it further on current path, assign as best path
                 }
-
-                // surviving path -- made it to 49
-                if (i == 48) {
-                    s[k] = 1;
-                }
             }
         }
     }
@@ -96,17 +88,17 @@ fix_34(uint8_t* p, uint8_t state, int position) {
     //multiple survivors seems common when the starting err position is very close to 49
 
     //debug
-    // fprintf (stderr, "START: %d; BEST_P: %d; BEST_V: %d; Survivors: %d; Point: %d; ", position, best_p, best_v, survivors, temp_p[best_v]);
+    // DSD_FPRINTF(stderr, "START: %d; BEST_P: %d; BEST_V: %d; Survivors: %d; Point: %d; ", position, best_p, best_v, survivors, temp_p[best_v]);
 
     return temp_p[best_v]; //return the point value of the best path's starting point value
 }
 
 uint32_t
-dmr_34(uint8_t* input, uint8_t treturn[18]) {
+dmr_34(const uint8_t* input, uint8_t treturn[18]) {
     int i, j;
 
     uint8_t deinterleaved_dibits[98];
-    memset(deinterleaved_dibits, 0, sizeof(deinterleaved_dibits));
+    DSD_MEMSET(deinterleaved_dibits, 0, sizeof(deinterleaved_dibits));
 
     //deinterleave our input dibits
     for (i = 0; i < 98; i++) {
@@ -115,7 +107,7 @@ dmr_34(uint8_t* input, uint8_t treturn[18]) {
 
     //pack the input into nibbles (dibit pairs)
     uint8_t nibs[49];
-    memset(nibs, 0, sizeof(nibs));
+    DSD_MEMSET(nibs, 0, sizeof(nibs));
 
     for (i = 0; i < 49; i++) {
         nibs[i] = (deinterleaved_dibits[((size_t)i * 2) + 0] << 2) | (deinterleaved_dibits[((size_t)i * 2) + 1] << 0);
@@ -123,21 +115,21 @@ dmr_34(uint8_t* input, uint8_t treturn[18]) {
 
     //convert our dibit pairs into constellation point values
     uint8_t point[49];
-    memset(point, 0xFF, sizeof(point));
+    DSD_MEMSET(point, 0xFF, sizeof(point));
 
     for (i = 0; i < 49; i++) {
         point[i] = constellation_map[nibs[i]];
     }
 
     //debug view points
-    // fprintf (stderr, "\n P =");
+    // DSD_FPRINTF(stderr, "\n P =");
     // for (i = 0; i < 49; i++)
-    //   fprintf (stderr, " %02d", point[i]);
+    //   DSD_FPRINTF(stderr, " %02d", point[i]);
 
     //convert constellation points into tribit values using the FSM
     uint8_t state = 0;
     uint32_t tribits[49];
-    memset(tribits, 0xF, sizeof(tribits));
+    DSD_MEMSET(tribits, 0xF, sizeof(tribits));
 
     for (i = 0; i < 49; i++) {
 
@@ -152,7 +144,7 @@ dmr_34(uint8_t* input, uint8_t treturn[18]) {
         //if tribit value is greater than 7, then we have a decoding error
         if (tribits[i] > 7) {
             //debug point, position of error, and state value
-            // fprintf (stderr, "\n P: %d, %d:%d; ", point[i], i, state);
+            // DSD_FPRINTF(stderr, "\n P: %d, %d:%d; ", point[i], i, state);
 
             //attempt to fix point by looking for the best path from here
             point[i] = fix_34(point, state, i);
@@ -166,19 +158,16 @@ dmr_34(uint8_t* input, uint8_t treturn[18]) {
     }
 
     //debug view tribits/states
-    // fprintf (stderr, "\n T =");
+    // DSD_FPRINTF(stderr, "\n T =");
     // for (i = 0; i < 49; i++)
-    //   fprintf (stderr, " %02d", tribits[i]);
-
-    //convert tribits into a return payload
-    uint32_t temp = 0;
+    //   DSD_FPRINTF(stderr, " %02d", tribits[i]);
 
     //break into chunks of 24 bit values and shuffle into 8-bit (byte) treturn values
     for (i = 0; i < 6; i++) {
-        temp = (tribits[((size_t)i * 8) + 0] << 21) + (tribits[((size_t)i * 8) + 1] << 18)
-               + (tribits[((size_t)i * 8) + 2] << 15) + (tribits[((size_t)i * 8) + 3] << 12)
-               + (tribits[((size_t)i * 8) + 4] << 9) + (tribits[((size_t)i * 8) + 5] << 6)
-               + (tribits[((size_t)i * 8) + 6] << 3) + (tribits[((size_t)i * 8) + 7] << 0);
+        uint32_t temp = (tribits[((size_t)i * 8) + 0] << 21) + (tribits[((size_t)i * 8) + 1] << 18)
+                        + (tribits[((size_t)i * 8) + 2] << 15) + (tribits[((size_t)i * 8) + 3] << 12)
+                        + (tribits[((size_t)i * 8) + 4] << 9) + (tribits[((size_t)i * 8) + 5] << 6)
+                        + (tribits[((size_t)i * 8) + 6] << 3) + (tribits[((size_t)i * 8) + 7] << 0);
 
         treturn[(i * 3) + 0] = (temp >> 16) & 0xFF;
         treturn[(i * 3) + 1] = (temp >> 8) & 0xFF;
@@ -187,7 +176,7 @@ dmr_34(uint8_t* input, uint8_t treturn[18]) {
 
     //trellis point/state err tally
     // if (irr_err != 0)
-    //   fprintf (stderr, " P_ERR = %d", irr_err);
+    //   DSD_FPRINTF(stderr, " P_ERR = %d", irr_err);
 
     return (0);
 }

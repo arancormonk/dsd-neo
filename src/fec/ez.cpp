@@ -32,58 +32,126 @@ int isch_lookup(uint64_t isch);
 int isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]);
 }
 
-std::vector<uint8_t> ESS_A(28, 0); // ESS_A and ESS_B are hexbits vectors
-std::vector<uint8_t> ESS_B(16, 0);
-ezpwd::RS<63, 35> rs28;
-std::vector<uint8_t> HB(63, 0);
-std::vector<uint8_t> HBS(63, 0);
-std::vector<uint8_t> HBL(63, 0);
+namespace {
+
 std::vector<int> Erasures;
+
+std::vector<uint8_t>*
+ess_a_instance(void) {
+    static std::vector<uint8_t>* instance = []() noexcept -> std::vector<uint8_t>* {
+        try {
+            return new std::vector<uint8_t>(28, 0);
+        } catch (...) {
+            return nullptr;
+        }
+    }();
+    return instance;
+}
+
+std::vector<uint8_t>*
+ess_b_instance(void) {
+    static std::vector<uint8_t>* instance = []() noexcept -> std::vector<uint8_t>* {
+        try {
+            return new std::vector<uint8_t>(16, 0);
+        } catch (...) {
+            return nullptr;
+        }
+    }();
+    return instance;
+}
+
+std::vector<uint8_t>*
+hb_instance(void) {
+    static std::vector<uint8_t>* instance = []() noexcept -> std::vector<uint8_t>* {
+        try {
+            return new std::vector<uint8_t>(63, 0);
+        } catch (...) {
+            return nullptr;
+        }
+    }();
+    return instance;
+}
+
+std::vector<uint8_t>*
+hbs_instance(void) {
+    static std::vector<uint8_t>* instance = []() noexcept -> std::vector<uint8_t>* {
+        try {
+            return new std::vector<uint8_t>(63, 0);
+        } catch (...) {
+            return nullptr;
+        }
+    }();
+    return instance;
+}
+
+ezpwd::RS<63, 35>*
+rs28_instance(void) {
+    static ezpwd::RS<63, 35>* instance = []() noexcept -> ezpwd::RS<63, 35>* {
+        try {
+            return new ezpwd::RS<63, 35>();
+        } catch (...) {
+            return nullptr;
+        }
+    }();
+    return instance;
+}
+
+} // namespace
 
 //Reed-Solomon Correction of ESS section
 int
 ez_rs28_ess(int payload[96], int parity[168]) {
     //do something
 
-    uint8_t a, b, i, j, k;
+    std::vector<uint8_t>* ess_a = ess_a_instance();
+    std::vector<uint8_t>* ess_b = ess_b_instance();
+    if (ess_a == nullptr || ess_b == nullptr) {
+        return -2;
+    }
+
+    uint8_t i, j, k;
     k = 0;
     for (i = 0; i < 16; i++) {
-        b = 0;
+        uint8_t b = 0;
         for (j = 0; j < 6; j++) {
             b = b << 1;
             b = b + payload[k]; //convert bits to hexbits.
             k++;
         }
-        ESS_B[i] = b;
-        // fprintf (stderr, " %X", ESS_B[i]);
+        (*ess_b)[i] = b;
+        // DSD_FPRINTF(stderr, " %X", (*ess_b)[i]);
     }
 
     k = 0;
     for (i = 0; i < 28; i++) {
-        a = 0;
+        uint8_t a = 0;
         for (j = 0; j < 6; j++) {
             a = a << 1;
             a = a + parity[k]; //convert bits to hexbits.
             k++;
         }
-        ESS_A[i] = a;
-        // fprintf (stderr, " %X ", ESS_A[i]);
+        (*ess_a)[i] = a;
+        // DSD_FPRINTF(stderr, " %X ", (*ess_a)[i]);
     }
 
     int ec;
+    ezpwd::RS<63, 35>* rs = rs28_instance();
+    if (rs == nullptr) {
+        return -2;
+    }
 
-    ec = rs28.decode(ESS_B, ESS_A);
-    // fprintf (stderr, "\n EC = %d \n", ec);
+    ec = rs->decode(*ess_b, *ess_a);
+    // DSD_FPRINTF(stderr, "\n EC = %d \n", ec);
 
     //convert ESS_B back to bits
     k = 0;
     for (i = 0; i < 16; i++) {
         for (j = 0; j < 6; j++) {
-            b = (ESS_B[i] >> (5 - j) & 0x1);
+            uint8_t b = ((*ess_b)[i] >> (5 - j) & 0x1);
             payload[k] = b;
             k++;
         }
-        // fprintf (stderr, " %X", ESS_B[i]);
+        // DSD_FPRINTF(stderr, " %X", (*ess_b)[i]);
     }
 
     return (ec);
@@ -108,7 +176,16 @@ int
 ez_rs28_ess_soft(int payload[96], int parity[168], const int* erasures, int n_erasures) {
     int ec = -2;
     int i, j, k;
-    uint8_t a, b;
+    uint8_t b;
+    std::vector<uint8_t>* ess_a = ess_a_instance();
+    std::vector<uint8_t>* ess_b = ess_b_instance();
+    if (ess_a == nullptr || ess_b == nullptr) {
+        return ec;
+    }
+    ezpwd::RS<63, 35>* rs = rs28_instance();
+    if (rs == nullptr) {
+        return ec;
+    }
 
     /* Build erasure vector from provided positions */
     std::vector<int> ErasuresDyn;
@@ -125,29 +202,29 @@ ez_rs28_ess_soft(int payload[96], int parity[168], const int* erasures, int n_er
             b = b + payload[k];
             k++;
         }
-        ESS_B[i] = b;
+        (*ess_b)[i] = b;
     }
 
     /* Convert parity bits to hexbits (28 hexbits = 168 bits) */
     k = 0;
     for (i = 0; i < 28; i++) {
-        a = 0;
+        uint8_t a = 0;
         for (j = 0; j < 6; j++) {
             a = a << 1;
             a = a + parity[k];
             k++;
         }
-        ESS_A[i] = a;
+        (*ess_a)[i] = a;
     }
 
     /* Decode with erasures */
-    ec = rs28.decode(ESS_B, ESS_A, ErasuresDyn);
+    ec = rs->decode(*ess_b, *ess_a, ErasuresDyn);
 
     /* Convert ESS_B back to bits */
     k = 0;
     for (i = 0; i < 16; i++) {
         for (j = 0; j < 6; j++) {
-            b = (ESS_B[i] >> (5 - j)) & 0x1;
+            b = ((*ess_b)[i] >> (5 - j)) & 0x1;
             payload[k] = b;
             k++;
         }
@@ -161,11 +238,19 @@ int
 ez_rs28_facch(int payload[156], int parity[114]) {
     //do something!
     int ec = -2;
-    int i, j, k, b;
+    int i, j, k;
+    std::vector<uint8_t>* hb = hb_instance();
+    if (hb == nullptr) {
+        return ec;
+    }
+    ezpwd::RS<63, 35>* rs = rs28_instance();
+    if (rs == nullptr) {
+        return ec;
+    }
 
     //init HB
-    for (i = 0; i < (int)HB.size(); i++) {
-        HB[i] = 0;
+    for (i = 0; i < (int)hb->size(); i++) {
+        (*hb)[i] = 0;
     }
 
     //Erasures for FACCH
@@ -174,28 +259,28 @@ ez_rs28_facch(int payload[156], int parity[114]) {
     //convert bits to hexbits, 156 for payload, 114 parity
     j = 9; //starting position according to OP25
     for (i = 0; i < 156; i += 6) {
-        HB[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
-                + (payload[i + 4] << 1) + payload[i + 5];
+        (*hb)[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
+                   + (payload[i + 4] << 1) + payload[i + 5];
         j++;
     }
     //j should continue from its last increment
     for (i = 0; i < 114; i += 6) {
-        HB[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
-                + (parity[i + 4] << 1) + parity[i + 5];
+        (*hb)[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
+                   + (parity[i + 4] << 1) + parity[i + 5];
         j++;
     }
 
-    ec = rs28.decode(HB, Erasures);
+    ec = rs->decode(*hb, Erasures);
 
     //convert HB back to bits
-    //fprintf (stderr, "\n");
+    //DSD_FPRINTF(stderr, "\n");
     k = 0;
     for (i = 0; i < 26; i++) //26*6=156 bits
     {
         for (j = 0; j < 6; j++) {
-            b = (HB[i + 9] >> (5 - j) & 0x1); //+9 to mach our starting position
+            int b = ((*hb)[i + 9] >> (5 - j) & 0x1); //+9 to mach our starting position
             payload[k] = b;
-            //fprintf (stderr, "%d", payload[k]);
+            //DSD_FPRINTF(stderr, "%d", payload[k]);
             k++;
         }
     }
@@ -208,11 +293,19 @@ int
 ez_rs28_sacch(int payload[180], int parity[132]) {
     //do something!
     int ec = -2;
-    int i, j, k, b;
+    int i, j, k;
+    std::vector<uint8_t>* hbs = hbs_instance();
+    if (hbs == nullptr) {
+        return ec;
+    }
+    ezpwd::RS<63, 35>* rs = rs28_instance();
+    if (rs == nullptr) {
+        return ec;
+    }
 
     //init HBS
-    for (i = 0; i < (int)HBS.size(); i++) {
-        HBS[i] = 0;
+    for (i = 0; i < (int)hbs->size(); i++) {
+        (*hbs)[i] = 0;
     }
 
     //Erasures for SACCH
@@ -221,28 +314,28 @@ ez_rs28_sacch(int payload[180], int parity[132]) {
     //convert bits to hexbits, 156 for payload, 114 parity
     j = 5; //starting position according to OP25
     for (i = 0; i < 180; i += 6) {
-        HBS[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
-                 + (payload[i + 4] << 1) + payload[i + 5];
+        (*hbs)[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
+                    + (payload[i + 4] << 1) + payload[i + 5];
         j++;
     }
     //j should continue from its last increment
     for (i = 0; i < 132; i += 6) {
-        HBS[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
-                 + (parity[i + 4] << 1) + parity[i + 5];
+        (*hbs)[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
+                    + (parity[i + 4] << 1) + parity[i + 5];
         j++;
     }
 
-    ec = rs28.decode(HBS, Erasures);
+    ec = rs->decode(*hbs, Erasures);
 
     //convert HBS back to bits
-    // fprintf (stderr, "\n");
+    // DSD_FPRINTF(stderr, "\n");
     k = 0;
     for (i = 0; i < 30; i++) //30*6=180 bits
     {
         for (j = 0; j < 6; j++) {
-            b = (HBS[i + 5] >> (5 - j) & 0x1); //+5 to mach our starting position
+            int b = ((*hbs)[i + 5] >> (5 - j) & 0x1); //+5 to mach our starting position
             payload[k] = b;
-            // fprintf (stderr, "%d", payload[k]);
+            // DSD_FPRINTF(stderr, "%d", payload[k]);
             k++;
         }
     }
@@ -261,11 +354,19 @@ ez_rs28_sacch(int payload[180], int parity[132]) {
 int
 ez_rs28_facch_soft(int payload[156], int parity[114], const int* erasures, int n_erasures) {
     int ec = -2;
-    int i, j, k, b;
+    int i, j, k;
+    std::vector<uint8_t>* hb = hb_instance();
+    if (hb == nullptr) {
+        return ec;
+    }
+    ezpwd::RS<63, 35>* rs = rs28_instance();
+    if (rs == nullptr) {
+        return ec;
+    }
 
     /* Initialize HB */
-    for (i = 0; i < (int)HB.size(); i++) {
-        HB[i] = 0;
+    for (i = 0; i < (int)hb->size(); i++) {
+        (*hb)[i] = 0;
     }
 
     /* Build erasure vector from provided positions */
@@ -277,23 +378,23 @@ ez_rs28_facch_soft(int payload[156], int parity[114], const int* erasures, int n
     /* Convert bits to hexbits (same as ez_rs28_facch) */
     j = 9;
     for (i = 0; i < 156; i += 6) {
-        HB[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
-                + (payload[i + 4] << 1) + payload[i + 5];
+        (*hb)[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
+                   + (payload[i + 4] << 1) + payload[i + 5];
         j++;
     }
     for (i = 0; i < 114; i += 6) {
-        HB[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
-                + (parity[i + 4] << 1) + parity[i + 5];
+        (*hb)[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
+                   + (parity[i + 4] << 1) + parity[i + 5];
         j++;
     }
 
-    ec = rs28.decode(HB, ErasuresDyn);
+    ec = rs->decode(*hb, ErasuresDyn);
 
     /* Convert back to bits */
     k = 0;
     for (i = 0; i < 26; i++) {
         for (j = 0; j < 6; j++) {
-            b = (HB[i + 9] >> (5 - j)) & 0x1;
+            int b = ((*hb)[i + 9] >> (5 - j)) & 0x1;
             payload[k] = b;
             k++;
         }
@@ -314,11 +415,19 @@ ez_rs28_facch_soft(int payload[156], int parity[114], const int* erasures, int n
 int
 ez_rs28_sacch_soft(int payload[180], int parity[132], const int* erasures, int n_erasures) {
     int ec = -2;
-    int i, j, k, b;
+    int i, j, k;
+    std::vector<uint8_t>* hbs = hbs_instance();
+    if (hbs == nullptr) {
+        return ec;
+    }
+    ezpwd::RS<63, 35>* rs = rs28_instance();
+    if (rs == nullptr) {
+        return ec;
+    }
 
     /* Initialize HBS */
-    for (i = 0; i < (int)HBS.size(); i++) {
-        HBS[i] = 0;
+    for (i = 0; i < (int)hbs->size(); i++) {
+        (*hbs)[i] = 0;
     }
 
     /* Build erasure vector from provided positions */
@@ -330,23 +439,23 @@ ez_rs28_sacch_soft(int payload[180], int parity[132], const int* erasures, int n
     /* Convert bits to hexbits (same as ez_rs28_sacch) */
     j = 5;
     for (i = 0; i < 180; i += 6) {
-        HBS[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
-                 + (payload[i + 4] << 1) + payload[i + 5];
+        (*hbs)[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
+                    + (payload[i + 4] << 1) + payload[i + 5];
         j++;
     }
     for (i = 0; i < 132; i += 6) {
-        HBS[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
-                 + (parity[i + 4] << 1) + parity[i + 5];
+        (*hbs)[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
+                    + (parity[i + 4] << 1) + parity[i + 5];
         j++;
     }
 
-    ec = rs28.decode(HBS, ErasuresDyn);
+    ec = rs->decode(*hbs, ErasuresDyn);
 
     /* Convert back to bits */
     k = 0;
     for (i = 0; i < 30; i++) {
         for (j = 0; j < 6; j++) {
-            b = (HBS[i + 5] >> (5 - j)) & 0x1;
+            int b = ((*hbs)[i + 5] >> (5 - j)) & 0x1;
             payload[k] = b;
             k++;
         }

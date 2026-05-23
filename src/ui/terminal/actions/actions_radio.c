@@ -7,15 +7,16 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/ui_cmd_dispatch.h>
 #include <stdint.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/ui/ui_cmd.h"
+
 #ifdef USE_RADIO
-#include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
 static int
@@ -23,7 +24,7 @@ ui_handle_ppm_delta(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     (void)state;
     int32_t d = 0;
     if (c->n >= (int)sizeof(int32_t)) {
-        memcpy(&d, c->data, sizeof(int32_t));
+        DSD_MEMCPY(&d, c->data, sizeof(int32_t));
     }
 #ifdef USE_RADIO
     rtl_stream_adjust_ppm(opts, d);

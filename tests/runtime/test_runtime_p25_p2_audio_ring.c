@@ -5,8 +5,7 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
@@ -22,10 +21,10 @@ is_all_zero_160(const float* buf) {
 int
 main(void) {
     static dsd_state state;
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     float out[160];
-    memset(out, 0xAA, sizeof(out));
+    DSD_MEMSET(out, 0xAA, sizeof(out));
 
     /* Pop on empty should return 0 and zero-fill output. */
     if (p25_p2_audio_ring_pop(&state, 0, out) != 0) {
@@ -38,7 +37,7 @@ main(void) {
     /* Push 5 frames into a depth-4 ring should drop the oldest (1). */
     float frame[160];
     for (int id = 1; id <= 5; id++) {
-        memset(frame, 0, sizeof(frame));
+        DSD_MEMSET(frame, 0, sizeof(frame));
         frame[0] = (float)id;
         if (!p25_p2_audio_ring_push(&state, 0, frame)) {
             return 3;
@@ -49,7 +48,7 @@ main(void) {
     }
 
     for (int expected = 2; expected <= 5; expected++) {
-        memset(out, 0xAA, sizeof(out));
+        DSD_MEMSET(out, 0xAA, sizeof(out));
         if (!p25_p2_audio_ring_pop(&state, 0, out)) {
             return 5;
         }
@@ -59,7 +58,7 @@ main(void) {
     }
 
     /* Now empty again. */
-    memset(out, 0xAA, sizeof(out));
+    DSD_MEMSET(out, 0xAA, sizeof(out));
     if (p25_p2_audio_ring_pop(&state, 0, out) != 0) {
         return 7;
     }

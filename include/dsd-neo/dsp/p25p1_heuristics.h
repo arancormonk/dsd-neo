@@ -2,7 +2,6 @@
 #ifndef P25P1_HEURISTICS_H_030dd3530b7546abbb56f8dd1e66a2f6
 #define P25P1_HEURISTICS_H_030dd3530b7546abbb56f8dd1e66a2f6
 
-#include <stddef.h>
 #include <stdint.h>
 
 /**
@@ -90,7 +89,7 @@ void update_error_stats(P25Heuristics* heuristics, int bits, int errors);
  * Returns the estimate for the BER (bit error rate).
  * \return The estimated BER. This is just the percentage of errors over the processed bits.
  */
-float get_P25_BER_estimate(P25Heuristics* heuristics);
+float get_P25_BER_estimate(const P25Heuristics* heuristics);
 
 #ifdef __cplusplus
 }

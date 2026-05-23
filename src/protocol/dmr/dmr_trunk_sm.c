@@ -15,9 +15,8 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
@@ -32,9 +31,9 @@ now_monotonic(void) {
 }
 
 static void
-sm_log(dsd_opts* opts, const char* tag) {
+sm_log(const dsd_opts* opts, const char* tag) {
     if (opts && opts->verbose > 1 && tag) {
-        fprintf(stderr, "\n[DMR SM] %s\n", tag);
+        DSD_FPRINTF(stderr, "\n[DMR SM] %s\n", tag);
     }
 }
 
@@ -50,7 +49,7 @@ resolve_freq(const dsd_state* state, long freq_hz, int lpcn) {
 }
 
 static int
-lpcn_is_trusted(dsd_opts* opts, dsd_state* state, int lpcn) {
+lpcn_is_trusted(const dsd_opts* opts, dsd_state* state, int lpcn) {
     if (!state || lpcn <= 0 || lpcn >= 0x1000) {
         return 1;
     }
@@ -58,7 +57,7 @@ lpcn_is_trusted(dsd_opts* opts, dsd_state* state, int lpcn) {
     int on_cc = (state->trunk_cc_freq != 0 && opts && opts->trunk_is_tuned == 0);
     if (trust < 2 && !on_cc) {
         if (opts && opts->verbose > 0) {
-            fprintf(stderr, "\n  DMR SM: block tune LPCN=%d (untrusted off-CC)\n", lpcn);
+            DSD_FPRINTF(stderr, "\n  DMR SM: block tune LPCN=%d (untrusted off-CC)\n", lpcn);
         }
         return 0;
     }
@@ -66,7 +65,7 @@ lpcn_is_trusted(dsd_opts* opts, dsd_state* state, int lpcn) {
 }
 
 static void
-set_state(dmr_sm_ctx_t* ctx, dsd_opts* opts, dmr_sm_state_e new_state, const char* reason) {
+set_state(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dmr_sm_state_e new_state, const char* reason) {
     if (!ctx || ctx->state == new_state) {
         return;
     }
@@ -74,8 +73,8 @@ set_state(dmr_sm_ctx_t* ctx, dsd_opts* opts, dmr_sm_state_e new_state, const cha
     ctx->state = new_state;
 
     if (opts && opts->verbose > 0) {
-        fprintf(stderr, "\n[DMR SM] %s -> %s (%s)\n", dmr_sm_state_name(old), dmr_sm_state_name(new_state),
-                reason ? reason : "");
+        DSD_FPRINTF(stderr, "\n[DMR SM] %s -> %s (%s)\n", dmr_sm_state_name(old), dmr_sm_state_name(new_state),
+                    reason ? reason : "");
     }
 }
 
@@ -174,14 +173,14 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     state->p25_sm_tune_count++;
 
     if (opts->verbose > 0) {
-        fprintf(stderr, "\n  DMR SM: Tune VC freq=%.6lf MHz\n", (double)freq / 1000000.0);
+        DSD_FPRINTF(stderr, "\n  DMR SM: Tune VC freq=%.6lf MHz\n", (double)freq / 1000000.0);
     }
 
     set_state(ctx, opts, DMR_SM_TUNED, "grant");
 }
 
 static void
-handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
+handle_voice_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot) {
     if (!ctx) {
         return;
     }
@@ -201,7 +200,7 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot)
 }
 
 static void
-handle_data_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
+handle_data_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot) {
     if (!ctx || !opts) {
         return;
     }
@@ -251,7 +250,7 @@ handle_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 static void
-handle_cc_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+handle_cc_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx) {
         return;
     }
@@ -261,6 +260,69 @@ handle_cc_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 
     if (ctx->state == DMR_SM_IDLE || ctx->state == DMR_SM_HUNTING) {
         set_state(ctx, opts, DMR_SM_ON_CC, "cc-sync");
+    }
+}
+
+static void
+tick_on_cc(dmr_sm_ctx_t* ctx, const dsd_opts* opts, double now_m, double cc_grace) {
+    if (ctx->t_cc_sync_m <= 0.0) {
+        return;
+    }
+    if ((now_m - ctx->t_cc_sync_m) > cc_grace) {
+        set_state(ctx, opts, DMR_SM_HUNTING, "cc-lost");
+    }
+}
+
+static void
+clear_stale_voice_slots(dmr_sm_ctx_t* ctx, double now_m) {
+    const double voice_stale_threshold = 0.2; // DMR voice frames are ~60ms; 200ms is conservative.
+
+    for (int s = 0; s < 2; s++) {
+        if (ctx->slots[s].voice_active && ctx->slots[s].last_active_m > 0.0) {
+            if ((now_m - ctx->slots[s].last_active_m) > voice_stale_threshold) {
+                ctx->slots[s].voice_active = 0;
+            }
+        }
+    }
+}
+
+static int
+has_voice_activity(const dmr_sm_ctx_t* ctx) {
+    return ctx->slots[0].voice_active || ctx->slots[1].voice_active;
+}
+
+static int
+hangtime_expired(const dmr_sm_ctx_t* ctx, double now_m, double hangtime) {
+    if (ctx->t_voice_m <= 0.0) {
+        return 0;
+    }
+    return (now_m - ctx->t_voice_m) >= hangtime;
+}
+
+static int
+grant_timeout_expired(const dmr_sm_ctx_t* ctx, double now_m, double grant_timeout) {
+    if (ctx->t_tune_m <= 0.0) {
+        return 0;
+    }
+    return (now_m - ctx->t_tune_m) >= grant_timeout;
+}
+
+static void
+tick_tuned(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double hangtime, double grant_timeout) {
+    clear_stale_voice_slots(ctx, now_m);
+
+    if (has_voice_activity(ctx)) {
+        ctx->t_voice_m = now_m;
+        return;
+    }
+
+    if (hangtime_expired(ctx, now_m, hangtime)) {
+        do_release(ctx, opts, state, "hangtime-expired");
+        return;
+    }
+
+    if (ctx->t_voice_m <= 0.0 && grant_timeout_expired(ctx, now_m, grant_timeout)) {
+        do_release(ctx, opts, state, "grant-timeout");
     }
 }
 
@@ -280,12 +342,12 @@ dmr_sm_state_name(dmr_sm_state_e state) {
 }
 
 void
-dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
     if (!ctx) {
         return;
     }
 
-    memset(ctx, 0, sizeof(*ctx));
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
 
@@ -353,47 +415,9 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     switch (ctx->state) {
         case DMR_SM_IDLE: break;
 
-        case DMR_SM_ON_CC:
-            if (ctx->t_cc_sync_m > 0.0) {
-                double dt_cc = now_m - ctx->t_cc_sync_m;
-                if (dt_cc > cc_grace) {
-                    set_state(ctx, opts, DMR_SM_HUNTING, "cc-lost");
-                }
-            }
-            break;
+        case DMR_SM_ON_CC: tick_on_cc(ctx, opts, now_m, cc_grace); break;
 
-        case DMR_SM_TUNED: {
-            // Clear voice_active for slots that haven't received sync recently.
-            // DMR voice frames arrive every ~60ms; use 200ms as a generous threshold.
-            const double voice_stale_threshold = 0.2;
-            for (int s = 0; s < 2; s++) {
-                if (ctx->slots[s].voice_active && ctx->slots[s].last_active_m > 0.0) {
-                    double dt_slot = now_m - ctx->slots[s].last_active_m;
-                    if (dt_slot > voice_stale_threshold) {
-                        ctx->slots[s].voice_active = 0;
-                    }
-                }
-            }
-
-            int has_voice = ctx->slots[0].voice_active || ctx->slots[1].voice_active;
-
-            if (has_voice) {
-                ctx->t_voice_m = now_m;
-            } else if (ctx->t_voice_m > 0.0) {
-                double dt_voice = now_m - ctx->t_voice_m;
-                if (dt_voice >= hangtime) {
-                    do_release(ctx, opts, state, "hangtime-expired");
-                }
-            } else {
-                if (ctx->t_tune_m > 0.0) {
-                    double dt_tune = now_m - ctx->t_tune_m;
-                    if (dt_tune >= grant_timeout) {
-                        do_release(ctx, opts, state, "grant-timeout");
-                    }
-                }
-            }
-            break;
-        }
+        case DMR_SM_TUNED: tick_tuned(ctx, opts, state, now_m, hangtime, grant_timeout); break;
 
         case DMR_SM_HUNTING: break;
     }
@@ -461,7 +485,7 @@ dmr_sm_emit_indiv_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn
 }
 
 void
-dmr_sm_init(dsd_opts* opts, dsd_state* state) {
+dmr_sm_init(const dsd_opts* opts, const dsd_state* state) {
     // Reset global flag to allow re-initialization with real opts/state.
     // This ensures user configuration (e.g., trunk_hangtime) is applied
     // even if the singleton was previously auto-initialized with NULLs.

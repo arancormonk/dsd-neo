@@ -8,7 +8,8 @@
  * @brief Panel renderers for the ncurses terminal UI.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_PANELS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_PANELS_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -18,10 +19,12 @@ extern "C" {
 #endif
 
 /** @brief Render the header/banner panel (tagline, version, hotkey hints). */
-void ui_panel_header_render(dsd_opts* opts, dsd_state* state);
+void ui_panel_header_render(const dsd_opts* opts, dsd_state* state);
 /** @brief Render the footer/status panel (toast messages). */
-void ui_panel_footer_status_render(dsd_opts* opts, dsd_state* state);
+void ui_panel_footer_status_render(const dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_PANELS_H_ */

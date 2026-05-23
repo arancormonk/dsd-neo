@@ -20,17 +20,21 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", tag);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", tag);
         return 1;
     }
     return 0;
@@ -45,10 +49,10 @@ free_test_state(dsd_state* st) {
 }
 
 uint64_t
-ConvertBitIntoBytes(uint8_t* bits, uint32_t n) {
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < n; i++) {
-        v = (v << 1) | (uint64_t)(bits[i] & 1U);
+    for (uint32_t i = 0; i < BitLength; i++) {
+        v = (v << 1) | (uint64_t)(BufferIn[i] & 1U);
     }
     return v;
 }
@@ -61,7 +65,7 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 void
-watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
@@ -78,6 +82,7 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
@@ -105,9 +110,10 @@ GetCurrentFreq(dsd_socket_t sockfd) {
 
 struct RtlSdrContext;
 
-struct RtlSdrContext* g_rtl_ctx = 0;
+struct RtlSdrContext* g_rtl_ctx = 0; // NOLINT(misc-use-internal-linkage)
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -115,6 +121,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)ted_sps;
     if (!opts || !state || freq <= 0) {
@@ -126,6 +133,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts) {
         opts->trunk_is_tuned = 0;
@@ -139,6 +147,7 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
@@ -152,6 +161,7 @@ crc8(uint8_t bits[], unsigned int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_drain_audio_output(dsd_opts* opts) {
     (void)opts;
 }
@@ -160,8 +170,8 @@ extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint3
 
 static void
 init_env(dsd_opts* opts, dsd_state* state) {
-    memset(opts, 0, sizeof(*opts));
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_enable = 1;
     opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_private_calls = 1;
@@ -181,8 +191,8 @@ write_bits_u32(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
 static void
 build_grant(uint8_t* bits, uint8_t* bytes, uint8_t opcode, uint16_t lpcn, uint32_t target, uint32_t source,
             uint8_t slot) {
-    memset(bits, 0, 256);
-    memset(bytes, 0, 48);
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
     bytes[0] = (uint8_t)(opcode & 0x3FU);
     write_bits_u32(bits, 16U, (uint32_t)(lpcn & 0x0FFFU), 12U);
     bits[28] = (uint8_t)(slot & 1U);
@@ -210,7 +220,7 @@ main(void) {
     const long freq = 852012500L;
 
     if (!opts || !st) {
-        fprintf(stderr, "FAIL: alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !st ? " dsd_state" : "");
+        DSD_FPRINTF(stderr, "FAIL: alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !st ? " dsd_state" : "");
         free_test_state(st);
         free(opts);
         return 1;
@@ -249,3 +259,7 @@ main(void) {
     free(opts);
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

@@ -17,13 +17,13 @@
 /* Validates: Requirements 3.3, 3.7, 7.1 */
 
 #include <dsd-neo/runtime/input_ring_watermark.h>
-
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;

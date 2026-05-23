@@ -52,14 +52,11 @@ dsd_time_realtime_ns(void) {
 
     /* FILETIME is 100-nanosecond intervals since Jan 1, 1601 */
     /* Convert to Unix epoch (Jan 1, 1970) */
-    ULARGE_INTEGER uli;
-    uli.LowPart = ft.dwLowDateTime;
-    uli.HighPart = ft.dwHighDateTime;
-
     /* Subtract Windows-to-Unix epoch difference (in 100ns intervals) */
     /* 116444736000000000 = days between 1601 and 1970 in 100ns */
     const uint64_t EPOCH_DIFF = 116444736000000000ULL;
-    uint64_t unix_100ns = uli.QuadPart - EPOCH_DIFF;
+    uint64_t filetime_100ns = ((uint64_t)ft.dwHighDateTime << 32) | (uint64_t)ft.dwLowDateTime;
+    uint64_t unix_100ns = filetime_100ns - EPOCH_DIFF;
 
     return unix_100ns * 100ULL; /* Convert 100ns to ns */
 }

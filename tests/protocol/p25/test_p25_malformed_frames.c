@@ -93,7 +93,7 @@ sm_test_api(void) {
 }
 
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
@@ -164,7 +164,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -179,7 +179,7 @@ main(void) {
     // Case 1: P1 NET_STS_BCST with missing iden params (spac=0)
     {
         uint8_t mbt[32];
-        memset(mbt, 0, sizeof mbt);
+        DSD_MEMSET(mbt, 0, sizeof mbt);
         mbt[0] = 0x17;
         mbt[2] = 0x00;
         mbt[3] = 0x01;
@@ -216,7 +216,7 @@ main(void) {
             return 21;
         }
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[0] = 1;
         mac[1] = 0;
         mac[2] = 0; // header present, MCO=0
@@ -243,8 +243,8 @@ main(void) {
             return 23;
         }
         int b = -1, c = -1;
-        sscanf(strstr(line, "\"lenB\":"), "\"lenB\":%d", &b);
-        sscanf(strstr(line, "\"lenC\":"), "\"lenC\":%d", &c);
+        DSD_SSCANF(strstr(line, "\"lenB\":"), "\"lenB\":%d", &b);
+        DSD_SSCANF(strstr(line, "\"lenC\":"), "\"lenC\":%d", &c);
         free(buf);
         rc |= expect_eq_int("FACCH mco0 lenB", b, 0);
         rc |= expect_eq_int("FACCH mco0 lenC", c, 16);
@@ -262,7 +262,7 @@ main(void) {
             return 31;
         }
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0x00;
         mac[2] = 0xFF; // unknown MFID/opcode
         p25_test_process_mac_vpdu_ex(1 /*SACCH*/, mac, 24, 0, 0);
@@ -288,8 +288,8 @@ main(void) {
             return 33;
         }
         int b = -1, c = -1;
-        sscanf(strstr(line, "\"lenB\":"), "\"lenB\":%d", &b);
-        sscanf(strstr(line, "\"lenC\":"), "\"lenC\":%d", &c);
+        DSD_SSCANF(strstr(line, "\"lenB\":"), "\"lenB\":%d", &b);
+        DSD_SSCANF(strstr(line, "\"lenC\":"), "\"lenC\":%d", &c);
         free(buf);
         rc |= expect_eq_int("SACCH unknown lenB", b, 0);
         rc |= expect_eq_int("SACCH unknown lenC", c, 19);

@@ -14,21 +14,19 @@
 // All helpers zero-fill on localtime() failure; non-allocating variants are provided.
 
 #include <dsd-neo/core/time_format.h>
-
-#include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include "dsd-neo/core/safe_api.h"
 
-//get HHmmss timestamp no colon (file operations)
 char*
 getTime(void) {
     char* curr = calloc(7, sizeof(char));
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(curr, 7, "000000");
+        DSD_SNPRINTF(curr, 7, "000000");
     } else {
-        snprintf(curr, 7, "%02d%02d%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+        DSD_SNPRINTF(curr, 7, "%02d%02d%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
     }
     return curr;
 }
@@ -39,9 +37,9 @@ getTime_buf(char out[7]) {
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(out, 7, "000000");
+        DSD_SNPRINTF(out, 7, "000000");
     } else {
-        snprintf(out, 7, "%02d%02d%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+        DSD_SNPRINTF(out, 7, "%02d%02d%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
     }
 }
 
@@ -52,9 +50,9 @@ getTimeC(void) {
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(curr, 9, "00:00:00");
+        DSD_SNPRINTF(curr, 9, "00:00:00");
     } else {
-        snprintf(curr, 9, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+        DSD_SNPRINTF(curr, 9, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
     }
     return curr;
 }
@@ -64,9 +62,9 @@ getTimeC_buf(char out[9]) {
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(out, 9, "00:00:00");
+        DSD_SNPRINTF(out, 9, "00:00:00");
     } else {
-        snprintf(out, 9, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+        DSD_SNPRINTF(out, 9, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
     }
 }
 
@@ -76,9 +74,9 @@ getTimeN(time_t t) {
     char* curr = calloc(9, sizeof(char));
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(curr, 9, "00:00:00");
+        DSD_SNPRINTF(curr, 9, "00:00:00");
     } else {
-        snprintf(curr, 9, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+        DSD_SNPRINTF(curr, 9, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
     }
     return curr;
 }
@@ -87,9 +85,9 @@ void
 getTimeN_buf(time_t t, char out[9]) {
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(out, 9, "00:00:00");
+        DSD_SNPRINTF(out, 9, "00:00:00");
     } else {
-        snprintf(out, 9, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+        DSD_SNPRINTF(out, 9, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
     }
 }
 
@@ -100,10 +98,10 @@ getDate(void) {
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(curr, 9, "00000000");
+        DSD_SNPRINTF(curr, 9, "00000000");
     } else {
-        snprintf(curr, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
-                 (unsigned)ptm->tm_mday);
+        DSD_SNPRINTF(curr, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                     (unsigned)ptm->tm_mday);
     }
     return curr;
 }
@@ -113,10 +111,10 @@ getDate_buf(char out[9]) {
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(out, 9, "00000000");
+        DSD_SNPRINTF(out, 9, "00000000");
     } else {
-        snprintf(out, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
-                 (unsigned)ptm->tm_mday);
+        DSD_SNPRINTF(out, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                     (unsigned)ptm->tm_mday);
     }
 }
 
@@ -127,10 +125,10 @@ getDateH(void) {
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(curr, 11, "0000-00-00");
+        DSD_SNPRINTF(curr, 11, "0000-00-00");
     } else {
-        snprintf(curr, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
-                 (unsigned)ptm->tm_mday);
+        DSD_SNPRINTF(curr, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                     (unsigned)ptm->tm_mday);
     }
     return curr;
 }
@@ -140,10 +138,10 @@ getDateH_buf(char out[11]) {
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(out, 11, "0000-00-00");
+        DSD_SNPRINTF(out, 11, "0000-00-00");
     } else {
-        snprintf(out, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
-                 (unsigned)ptm->tm_mday);
+        DSD_SNPRINTF(out, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                     (unsigned)ptm->tm_mday);
     }
 }
 
@@ -154,10 +152,10 @@ getDateS(void) {
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(curr, 11, "0000/00/00");
+        DSD_SNPRINTF(curr, 11, "0000/00/00");
     } else {
-        snprintf(curr, 11, "%04u/%02u/%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
-                 (unsigned)ptm->tm_mday);
+        DSD_SNPRINTF(curr, 11, "%04u/%02u/%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                     (unsigned)ptm->tm_mday);
     }
     return curr;
 }
@@ -167,10 +165,10 @@ getDateS_buf(char out[11]) {
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(out, 11, "0000/00/00");
+        DSD_SNPRINTF(out, 11, "0000/00/00");
     } else {
-        snprintf(out, 11, "%04u/%02u/%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
-                 (unsigned)ptm->tm_mday);
+        DSD_SNPRINTF(out, 11, "%04u/%02u/%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                     (unsigned)ptm->tm_mday);
     }
 }
 
@@ -180,10 +178,10 @@ getDateN(time_t t) {
     char* curr = calloc(11, sizeof(char));
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(curr, 11, "0000-00-00");
+        DSD_SNPRINTF(curr, 11, "0000-00-00");
     } else {
-        snprintf(curr, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
-                 (unsigned)ptm->tm_mday);
+        DSD_SNPRINTF(curr, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                     (unsigned)ptm->tm_mday);
     }
     return curr;
 }
@@ -192,10 +190,10 @@ void
 getDateN_buf(time_t t, char out[11]) {
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(out, 11, "0000-00-00");
+        DSD_SNPRINTF(out, 11, "0000-00-00");
     } else {
-        snprintf(out, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
-                 (unsigned)ptm->tm_mday);
+        DSD_SNPRINTF(out, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                     (unsigned)ptm->tm_mday);
     }
 }
 
@@ -205,9 +203,9 @@ getTimeF(time_t t) {
     char* curr = calloc(7, sizeof(char));
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(curr, 7, "000000");
+        DSD_SNPRINTF(curr, 7, "000000");
     } else {
-        snprintf(curr, 7, "%02d%02d%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+        DSD_SNPRINTF(curr, 7, "%02d%02d%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
     }
     return curr;
 }
@@ -216,9 +214,9 @@ void
 getTimeF_buf(time_t t, char out[7]) {
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(out, 7, "000000");
+        DSD_SNPRINTF(out, 7, "000000");
     } else {
-        snprintf(out, 7, "%02d%02d%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+        DSD_SNPRINTF(out, 7, "%02d%02d%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
     }
 }
 
@@ -228,10 +226,10 @@ getDateF(time_t t) {
     char* curr = calloc(9, sizeof(char));
     struct tm* ptm = localtime(&t);
     if (ptm == NULL) {
-        snprintf(curr, 9, "00000000");
+        DSD_SNPRINTF(curr, 9, "00000000");
     } else {
-        snprintf(curr, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
-                 (unsigned)ptm->tm_mday);
+        DSD_SNPRINTF(curr, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                     (unsigned)ptm->tm_mday);
     }
     return curr;
 }
@@ -239,6 +237,6 @@ getDateF(time_t t) {
 void
 getDateF_buf(time_t t, char out[9]) {
     struct tm* ptm = localtime(&t);
-    snprintf(out, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
-             (unsigned)ptm->tm_mday);
+    DSD_SNPRINTF(out, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                 (unsigned)ptm->tm_mday);
 }

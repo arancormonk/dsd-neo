@@ -12,10 +12,10 @@
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_test_lcw_shim.h"
 
 static void
 p25_test_invoke_lcw_impl(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq, long lastsrc) {
@@ -36,7 +36,7 @@ p25_test_invoke_lcw_impl(const unsigned char* lcw_bits, int len, int enable_retu
     state->lastsrc = lastsrc;
 
     uint8_t buf[72];
-    memset(buf, 0, sizeof(buf));
+    DSD_MEMSET(buf, 0, sizeof(buf));
     int n = len;
     if (n > 72) {
         n = 72;

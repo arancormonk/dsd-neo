@@ -6,11 +6,10 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/input_ring.h>
-
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 extern "C" int
 dsd_rtl_stream_should_exit(void) {
@@ -20,7 +19,7 @@ dsd_rtl_stream_should_exit(void) {
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -29,7 +28,7 @@ expect_int(const char* label, int got, int want) {
 static int
 expect_size(const char* label, size_t got, size_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%zu want=%zu\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%zu want=%zu\n", label, got, want);
         return 1;
     }
     return 0;
@@ -38,7 +37,7 @@ expect_size(const char* label, size_t got, size_t want) {
 static int
 expect_float(const char* label, float got, float want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%f want=%f\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%f want=%f\n", label, got, want);
         return 1;
     }
     return 0;
@@ -51,7 +50,7 @@ main(void) {
     rc |= expect_int("init(NULL, 8)", input_ring_init(NULL, 8), -1);
 
     struct input_ring_state ring;
-    memset(&ring, 0, sizeof(ring));
+    DSD_MEMSET(&ring, 0, sizeof(ring));
 
     rc |= expect_int("init(&ring, 0)", input_ring_init(&ring, 0), -1);
 

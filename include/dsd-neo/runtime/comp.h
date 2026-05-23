@@ -10,7 +10,8 @@
  * Declares the float comparator implemented in `src/runtime/comp.c`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_COMP_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_COMP_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,3 +22,5 @@ int comp(const void* a, const void* b);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_COMP_H_ */

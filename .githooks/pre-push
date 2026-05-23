@@ -10,24 +10,9 @@ remote_name="${1:-origin}"
 remote_url="${2:-}"
 
 # Controls:
-# - DSD_HOOK_RUN_SCAN_BUILD: 1|0 (default: 0)
-#   scan-build performs a full rebuild, so it is opt-in for pre-push.
 # - DSD_HOOK_FAIL_ON_MISSING_TOOLS: 1|0 (default: 0)
 #   when 1, missing analyzers make the hook fail.
-RUN_SCAN_BUILD="${DSD_HOOK_RUN_SCAN_BUILD:-0}"
 FAIL_ON_MISSING_TOOLS="${DSD_HOOK_FAIL_ON_MISSING_TOOLS:-0}"
-
-case "$RUN_SCAN_BUILD" in
-  auto)
-    echo "pre-push: DSD_HOOK_RUN_SCAN_BUILD=auto is deprecated; treating as 0 (off)." >&2
-    RUN_SCAN_BUILD="0"
-    ;;
-  0|1|true|false|yes|no) ;;
-  *)
-    echo "pre-push: invalid DSD_HOOK_RUN_SCAN_BUILD='$RUN_SCAN_BUILD'; using '0'." >&2
-    RUN_SCAN_BUILD="0"
-    ;;
-esac
 
 if [[ -n "$remote_url" ]]; then
   echo "pre-push: remote=${remote_name} url=<provided>"
@@ -370,18 +355,16 @@ if [[ ${#semgrep_targets[@]} -gt 0 ]]; then
   fi
 fi
 
-should_run_scan_build=0
-case "$RUN_SCAN_BUILD" in
-  1|true|yes) should_run_scan_build=1 ;;
-  0|false|no) should_run_scan_build=0 ;;
-esac
+if command -v lizard >/dev/null 2>&1; then
+  run_check "Lizard complexity (src/include/apps)" tools/lizard.sh --strict
+else
+  mark_missing_tool "lizard" "Lizard complexity analysis"
+fi
 
-if [[ $should_run_scan_build -eq 1 ]]; then
-  if command -v scan-build >/dev/null 2>&1; then
-    run_check "scan-build strict (full rebuild, opt-in)" tools/scan_build.sh --strict
-  else
-    mark_missing_tool "scan-build" "scan-build analysis"
-  fi
+if command -v scan-build >/dev/null 2>&1; then
+  run_check "scan-build strict (full rebuild)" tools/scan_build.sh --strict
+else
+  mark_missing_tool "scan-build" "scan-build analysis"
 fi
 
 if [[ ${#missing_tools[@]} -gt 0 ]]; then

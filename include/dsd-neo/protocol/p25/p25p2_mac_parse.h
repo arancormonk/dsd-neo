@@ -15,7 +15,8 @@
  * re-implementing table lookups and MCO fallbacks.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25P2_MAC_PARSE_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25P2_MAC_PARSE_H_
 
 #include <stdint.h>
 
@@ -65,3 +66,5 @@ int p25p2_mac_decode_iden_tdma(const unsigned long long mac[24], int pos, struct
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25P2_MAC_PARSE_H_ */

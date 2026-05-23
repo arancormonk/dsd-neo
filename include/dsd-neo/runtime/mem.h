@@ -11,7 +11,8 @@
  * default alignment of `DSD_NEO_ALIGN` for DSP-intensive buffers.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_MEM_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_MEM_H_
 
 #include <stddef.h>
 
@@ -46,3 +47,5 @@ void dsd_neo_aligned_free(void* ptr);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_MEM_H_ */

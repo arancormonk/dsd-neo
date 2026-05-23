@@ -7,7 +7,8 @@
  * P25P2 soft-decision RS erasure marking API.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25P2_SOFT_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25P2_SOFT_H_H
 
 #include <stdint.h>
 
@@ -74,3 +75,4 @@ int p25p2_ess_soft_erasures_ranked(const int16_t payload_llr[96], const int16_t 
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25P2_SOFT_H_H */

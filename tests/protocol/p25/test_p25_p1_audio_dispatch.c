@@ -8,9 +8,14 @@
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
 #include <stdio.h>
 #include <stdlib.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 static int g_ms_calls = 0;
 static int g_ss_calls = 0;
@@ -18,28 +23,28 @@ static int g_fm_calls = 0;
 static int g_fs_calls = 0;
 
 void
-playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
+playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     g_ms_calls++;
 }
 
 void
-playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
+playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     g_ss_calls++;
 }
 
 void
-playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
+playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     g_fm_calls++;
 }
 
 void
-playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
+playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     g_fs_calls++;
@@ -56,8 +61,8 @@ reset_counters(void) {
 static int
 expect_counts(int ms, int ss, int fm, int fs, const char* label) {
     if (g_ms_calls != ms || g_ss_calls != ss || g_fm_calls != fm || g_fs_calls != fs) {
-        fprintf(stderr, "FAIL %s: got ms=%d ss=%d fm=%d fs=%d expected ms=%d ss=%d fm=%d fs=%d\n", label, g_ms_calls,
-                g_ss_calls, g_fm_calls, g_fs_calls, ms, ss, fm, fs);
+        DSD_FPRINTF(stderr, "FAIL %s: got ms=%d ss=%d fm=%d fs=%d expected ms=%d ss=%d fm=%d fs=%d\n", label,
+                    g_ms_calls, g_ss_calls, g_fm_calls, g_fs_calls, ms, ss, fm, fs);
         return 1;
     }
     return 0;
@@ -70,7 +75,7 @@ main(void) {
     if (!opts || !state) {
         free(opts);
         free(state);
-        fprintf(stderr, "out of memory\n");
+        DSD_FPRINTF(stderr, "out of memory\n");
         return 1;
     }
 
@@ -109,8 +114,12 @@ main(void) {
         return 1;
     }
 
-    fprintf(stderr, "P25 P1 audio dispatch: OK\n");
+    DSD_FPRINTF(stderr, "P25 P1 audio dispatch: OK\n");
     free(opts);
     free(state);
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

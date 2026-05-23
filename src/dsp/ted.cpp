@@ -24,9 +24,8 @@
 #include <dsd-neo/dsp/ted.h>
 #include <math.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
-/* NaN check helper: isnan() may not be available in all C standards, so use
- * the x != x idiom which is true only for NaN (IEEE 754 property). */
 #define IS_NAN(x) ((x) != (x))
 
 /* OP25 default gains from p25_demodulator.py:
@@ -251,6 +250,327 @@ branchless_clip(float x, float limit) {
     return 0.5f * (fabsf(x + limit) - fabsf(x - limit));
 }
 
+namespace {
+
+typedef struct {
+    float mu;
+    float omega;
+    float last_r;
+    float last_j;
+    int dl_index;
+    int twice_sps;
+    int input_index;
+    int output_index;
+    int bounds_skip_count;
+    float gain_mu;
+    float gain_omega;
+    int buf_len;
+    int nc;
+    float* dl;
+    float* x;
+    float* y;
+} ted_runtime_t;
+
+} // namespace
+
+static inline float farrow_cubic_eval(float s_m1, float s0, float s1, float s2, float u);
+
+static int
+ted_should_run(const ted_config_t* config, const ted_state_t* state, const float* x, const int* N, const float* y) {
+    if (!config || !state || !x || !N || !y) {
+        return 0;
+    }
+    if (!config->enabled || config->sps < 2) {
+        return 0;
+    }
+    return ((*N >> 1) >= 4) ? 1 : 0;
+}
+
+static int
+ted_disable_if_oversize(int twice_sps_required, int sps, int* N) {
+    if (twice_sps_required <= TED_DL_SIZE) {
+        return 0;
+    }
+    if (!s_warned_ted_dl_oversize) {
+        DSD_FPRINTF(stderr, "[TED] disabled: required delay line %d exceeds TED_DL_SIZE=%d (sps=%d)\n",
+                    twice_sps_required, TED_DL_SIZE, sps);
+        s_warned_ted_dl_oversize = 1;
+    }
+    *N = 0;
+    return 1;
+}
+
+static int
+ted_required_twice_sps(float op25_omega, float omega_max) {
+    int twice_sps_op25 = 2 * (int)ceilf(op25_omega);
+    int twice_sps_mmse = (int)ceilf(omega_max / 2.0f) + MMSE_NTAPS + 1;
+    return (twice_sps_op25 > twice_sps_mmse) ? twice_sps_op25 : twice_sps_mmse;
+}
+
+static int
+ted_handle_sps_change(const ted_config_t* config, ted_state_t* state, float sps_f, float omega_rel, int* N) {
+    if (state->sps <= 0 || state->sps == config->sps) {
+        return 0;
+    }
+
+    state->omega = sps_f;
+    state->omega_rel = omega_rel;
+    state->omega_min = sps_f * (1.0f - omega_rel);
+    state->omega_max = sps_f * (1.0f + omega_rel);
+    state->omega_mid = 0.5f * (state->omega_min + state->omega_max);
+
+    int twice_sps_required = ted_required_twice_sps(state->omega, state->omega_max);
+    if (ted_disable_if_oversize(twice_sps_required, config->sps, N)) {
+        return -1;
+    }
+
+    state->twice_sps = twice_sps_required;
+    state->sps = config->sps;
+    state->dl[0] = 0.0f;
+    state->dl[1] = 0.0f;
+    return 0;
+}
+
+static int
+ted_init_if_needed(const ted_config_t* config, ted_state_t* state, float sps_f, float omega_rel, int* N) {
+    if (state->omega_mid != 0.0f && state->twice_sps >= 2) {
+        return 0;
+    }
+
+    state->omega = sps_f;
+    state->omega_rel = omega_rel;
+    state->omega_mid = sps_f;
+    state->omega_min = sps_f * (1.0f - omega_rel);
+    state->omega_max = sps_f * (1.0f + omega_rel);
+
+    int twice_sps_required = ted_required_twice_sps(state->omega_max, state->omega_max);
+    if (ted_disable_if_oversize(twice_sps_required, config->sps, N)) {
+        return -1;
+    }
+
+    state->twice_sps = twice_sps_required;
+    state->dl_index = 0;
+    state->sps = config->sps;
+    state->mu = (float)(twice_sps_required + 1);
+    return 0;
+}
+
+static ted_runtime_t
+ted_make_runtime(const ted_config_t* config, ted_state_t* state, float* x, float* y, int buf_len, int nc) {
+    ted_runtime_t rt = {};
+    rt.mu = state->mu;
+    rt.omega = state->omega;
+    rt.last_r = state->last_r;
+    rt.last_j = state->last_j;
+    rt.dl_index = state->dl_index;
+    rt.twice_sps = state->twice_sps;
+    rt.input_index = 0;
+    rt.output_index = 0;
+    rt.bounds_skip_count = 0;
+    rt.gain_mu = config->gain_mu > 0.0f ? config->gain_mu : kDefaultGainMu;
+    rt.gain_omega = config->gain_omega > 0.0f ? config->gain_omega : kDefaultGainOmega;
+    rt.buf_len = buf_len;
+    rt.nc = nc;
+    rt.dl = state->dl;
+    rt.x = x;
+    rt.y = y;
+    return rt;
+}
+
+static void
+ted_consume_input_samples(ted_runtime_t* rt) {
+    while (rt->mu > 1.0f && rt->input_index < rt->nc) {
+        rt->mu -= 1.0f;
+        const size_t ii = (size_t)rt->input_index;
+        float in_r = rt->x[ii * 2];
+        float in_j = rt->x[ii * 2 + 1];
+        if (IS_NAN(in_r)) {
+            in_r = 0.0f;
+        }
+        if (IS_NAN(in_j)) {
+            in_j = 0.0f;
+        }
+
+        const size_t dl_i = (size_t)rt->dl_index;
+        const size_t dl_i2 = (size_t)rt->dl_index + (size_t)rt->twice_sps;
+        rt->dl[dl_i * 2] = in_r;
+        rt->dl[dl_i * 2 + 1] = in_j;
+        rt->dl[dl_i2 * 2] = in_r;
+        rt->dl[dl_i2 * 2 + 1] = in_j;
+
+        rt->dl_index++;
+        if (rt->dl_index >= rt->twice_sps) {
+            rt->dl_index = 0;
+        }
+        rt->input_index++;
+    }
+}
+
+static void
+ted_half_symbol_params(float mu, float omega, int* half_sps, float* half_mu) {
+    float half_omega = omega / 2.0f;
+    *half_sps = (int)floorf(half_omega);
+    *half_mu = mu + half_omega - (float)(*half_sps);
+    if (*half_mu > 1.0f) {
+        *half_mu -= 1.0f;
+        (*half_sps)++;
+    }
+    if (*half_sps < 0) {
+        *half_sps = 0;
+    }
+}
+
+static int
+ted_check_interp_bounds(ted_runtime_t* rt, int half_sps) {
+    int max_mid_idx = rt->dl_index + MMSE_NTAPS - 1;
+    int max_sym_idx = rt->dl_index + half_sps + MMSE_NTAPS - 1;
+    if (max_mid_idx < 2 * rt->twice_sps && max_sym_idx < 2 * rt->twice_sps) {
+        rt->bounds_skip_count = 0;
+        return 1;
+    }
+
+    rt->bounds_skip_count++;
+    if (rt->bounds_skip_count > rt->nc) {
+        return -1;
+    }
+    rt->mu += rt->omega;
+    return 0;
+}
+
+static void
+ted_update_lock_and_error(ted_state_t* state, float symbol_error, float sym_r, float sym_j, float mid_r, float mid_j) {
+    const float kLockEps = 1e-9f;
+    float ie2 = sym_r * sym_r;
+    float io2 = mid_r * mid_r;
+    float qe2 = sym_j * sym_j;
+    float qo2 = mid_j * mid_j;
+    float yi = (ie2 + io2 > kLockEps) ? (ie2 - io2) / (ie2 + io2) : 0.0f;
+    float yq = (qe2 + qo2 > kLockEps) ? (qe2 - qo2) / (qe2 + qo2) : 0.0f;
+    float lock_contrib = yi + yq;
+
+    state->lock_accum += lock_contrib;
+    state->lock_count++;
+    if (state->lock_count >= kLockAccumWindow) {
+        state->lock_accum *= 0.5f;
+        state->lock_count = kLockAccumWindow / 2;
+    }
+
+    const float kEmaAlpha = 1.0f / 64.0f;
+    state->e_ema = state->e_ema + kEmaAlpha * (symbol_error - state->e_ema);
+}
+
+static int
+ted_process_one_symbol(ted_runtime_t* rt, ted_state_t* state) {
+    int half_sps = 0;
+    float half_mu = 0.0f;
+    ted_half_symbol_params(rt->mu, rt->omega, &half_sps, &half_mu);
+
+    int bounds = ted_check_interp_bounds(rt, half_sps);
+    if (bounds < 0) {
+        return -1;
+    }
+    if (bounds == 0) {
+        return 0;
+    }
+
+    float mid_r = 0.0f, mid_j = 0.0f;
+    mmse_interp_cc_8tap(rt->dl + (size_t)rt->dl_index * 2, rt->mu, &mid_r, &mid_j);
+
+    float sym_r = 0.0f, sym_j = 0.0f;
+    mmse_interp_cc_8tap(rt->dl + (size_t)(rt->dl_index + half_sps) * 2, half_mu, &sym_r, &sym_j);
+
+    float error_real = (rt->last_r - sym_r) * mid_r;
+    float error_imag = (rt->last_j - sym_j) * mid_j;
+    float symbol_error = error_real + error_imag;
+    if (IS_NAN(symbol_error)) {
+        symbol_error = 0.0f;
+    }
+    if (symbol_error < -1.0f) {
+        symbol_error = -1.0f;
+    }
+    if (symbol_error > 1.0f) {
+        symbol_error = 1.0f;
+    }
+
+    float sym_pow = sym_r * sym_r + sym_j * sym_j;
+    if (sym_pow < kOmegaNormEps) {
+        sym_pow = kOmegaNormEps;
+    }
+    float omega_error = branchless_clip(symbol_error / sym_pow, 1.0f);
+    rt->omega = rt->omega + rt->gain_omega * omega_error;
+    rt->omega = state->omega_mid + branchless_clip(rt->omega - state->omega_mid, state->omega_mid * state->omega_rel);
+
+    rt->last_r = sym_r;
+    rt->last_j = sym_j;
+    rt->mu += rt->omega + rt->gain_mu * symbol_error;
+
+    ted_update_lock_and_error(state, symbol_error, sym_r, sym_j, mid_r, mid_j);
+
+    rt->y[rt->output_index++] = sym_r;
+    rt->y[rt->output_index++] = sym_j;
+    return 1;
+}
+
+static void
+ted_commit_runtime_state(ted_state_t* state, const ted_runtime_t* rt) {
+    state->mu = rt->mu;
+    state->omega = rt->omega;
+    state->last_r = rt->last_r;
+    state->last_j = rt->last_j;
+    state->dl_index = rt->dl_index;
+}
+
+static void
+ted_copy_output_to_input(float* x, const float* y, int out_n, int* N) {
+    if (out_n < 2) {
+        *N = 0;
+        return;
+    }
+
+    for (int i = 0; i < out_n; i++) {
+        x[i] = y[i];
+    }
+    *N = out_n;
+}
+
+static inline int
+farrow_clamp_complex_index(int idx, int nc) {
+    if (idx < 0) {
+        return 0;
+    }
+    if (idx >= nc) {
+        return nc - 1;
+    }
+    return idx;
+}
+
+static inline void
+farrow_interp_complex(const float* x, int nc, int center_c, float u, float* out_r, float* out_j) {
+    int c_m1 = farrow_clamp_complex_index(center_c - 1, nc);
+    int c0 = farrow_clamp_complex_index(center_c, nc);
+    int c1 = farrow_clamp_complex_index(center_c + 1, nc);
+    int c2 = farrow_clamp_complex_index(center_c + 2, nc);
+
+    int i_m1 = c_m1 << 1;
+    int i0 = c0 << 1;
+    int i1 = c1 << 1;
+    int i2 = c2 << 1;
+
+    *out_r = farrow_cubic_eval(x[i_m1], x[i0], x[i1], x[i2], u);
+    *out_j = farrow_cubic_eval(x[i_m1 + 1], x[i0 + 1], x[i1 + 1], x[i2 + 1], u);
+}
+
+static inline float
+farrow_wrap_mu(float mu) {
+    while (mu >= 1.0f) {
+        mu -= 1.0f;
+    }
+    while (mu < 0.0f) {
+        mu += 1.0f;
+    }
+    return mu;
+}
+
 /**
  * @brief OP25-compatible Gardner timing recovery.
  *
@@ -271,16 +591,7 @@ branchless_clip(float x, float limit) {
  */
 void
 gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, int* N, float* y) {
-    if (!config || !state || !x || !N || !y) {
-        return;
-    }
-    if (!config->enabled || config->sps < 2) {
-        return;
-    }
-
-    const int buf_len = *N;
-    const int nc = buf_len >> 1; /* complex sample count */
-    if (nc < 4) {
+    if (!ted_should_run(config, state, x, N, y)) {
         return;
     }
 
@@ -300,291 +611,79 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
      *   d_twice_sps = 2 * (int) ceilf(d_omega);
      *   *d_dl = gr_complex(0,0);  // Only first element!
      */
+    const int buf_len = *N;
+    const int nc = buf_len >> 1;
     const float sps_f = (float)config->sps;
     float omega_rel = config->omega_rel > 0.0f ? config->omega_rel : kDefaultOmegaRel;
 
-    if (state->sps > 0 && state->sps != config->sps) {
-        /* OP25 set_omega(): update omega to new value */
-        state->omega = sps_f;
-        state->omega_rel = omega_rel; /* Store for clipping formula */
-        state->omega_min = sps_f * (1.0f - omega_rel);
-        state->omega_max = sps_f * (1.0f + omega_rel);
-        state->omega_mid = 0.5f * (state->omega_min + state->omega_max);
-
-        /* OP25: d_twice_sps = 2 * (int) ceilf(d_omega) */
-        int twice_sps_op25 = 2 * (int)ceilf(state->omega);
-        /* We also need space for MMSE interpolation */
-        int twice_sps_mmse = (int)ceilf(state->omega_max / 2.0f) + MMSE_NTAPS + 1;
-        int twice_sps_required = (twice_sps_op25 > twice_sps_mmse) ? twice_sps_op25 : twice_sps_mmse;
-
-        if (twice_sps_required > TED_DL_SIZE) {
-            if (!s_warned_ted_dl_oversize) {
-                fprintf(stderr, "[TED] disabled: required delay line %d exceeds TED_DL_SIZE=%d (sps=%d)\n",
-                        twice_sps_required, TED_DL_SIZE, config->sps);
-                s_warned_ted_dl_oversize = 1;
-            }
-            *N = 0;
-            return;
-        }
-        state->twice_sps = twice_sps_required;
-        state->sps = config->sps;
-
-        /* OP25: *d_dl = gr_complex(0,0) - ONLY first element cleared!
-         * This is critical - OP25 does NOT clear the entire delay line.
-         * The existing samples from the previous channel remain, allowing
-         * immediate symbol output without warmup delay. */
-        state->dl[0] = 0.0f;
-        state->dl[1] = 0.0f;
-
-        /* OP25: Does NOT reset dl_index, mu, or last_sample in set_omega() */
-        /* OP25: Does NOT have any mute logic */
+    if (ted_handle_sps_change(config, state, sps_f, omega_rel, N) < 0) {
+        return;
+    }
+    if (ted_init_if_needed(config, state, sps_f, omega_rel, N) < 0) {
+        return;
     }
 
-    /* Get or initialize omega parameters for first-time setup */
-    float omega = state->omega;
-
-    /* Initialize if state has never been set up (omega_mid == 0 means uninitialized).
-     * Note: We check omega_mid rather than omega because omega can legitimately
-     * drift to low values for sps=2, but omega_mid is only zero before first init. */
-    if (state->omega_mid == 0.0f || state->twice_sps < 2) {
-        /* First call - initialize omega from config */
-        omega = sps_f;
-        state->omega = omega;
-        state->omega_rel = omega_rel; /* Store for clipping formula */
-        state->omega_mid = omega;
-        state->omega_min = omega * (1.0f - omega_rel);
-        state->omega_max = omega * (1.0f + omega_rel);
-        /* Initialize delay line parameters.
-         * We need enough space for: dl_index + half_sps + MMSE_NTAPS consecutive samples.
-         * With doubled storage, the accessible range is [0, 2*twice_sps - 1].
-         * Constraint: dl_index (max = twice_sps-1) + half_sps (max ~ omega_max/2) + 8 <= 2*twice_sps
-         * Simplifies to: twice_sps >= omega_max/2 + 8
-         * OP25 uses twice_sps = 2*ceil(omega), but we need at least ceil(omega_max/2) + 8.
-         * Use max of both to be safe, and base sizing on omega_max (not omega_mid)
-         * to handle worst-case omega drift. */
-        int twice_sps_op25 = 2 * (int)ceilf(state->omega_max);
-        int twice_sps_mmse = (int)ceilf(state->omega_max / 2.0f) + MMSE_NTAPS + 1; /* +1 for safety margin */
-        int twice_sps_required = (twice_sps_op25 > twice_sps_mmse) ? twice_sps_op25 : twice_sps_mmse;
-
-        /* Guard: if required size exceeds delay line capacity, skip TED entirely.
-         * This prevents buffer overread for very large SPS values (e.g., sps > 90).
-         *
-         * Delay line sizing explanation:
-         *   - dl[] is sized as TED_DL_SIZE * 2 * 2 = 400 floats (for TED_DL_SIZE=100)
-         *   - With doubled storage (OP25 style), we write each sample at both
-         *     dl_index and dl_index + twice_sps, so valid sample indices are [0, 2*twice_sps - 1]
-         *   - Maximum float index accessed: (2*twice_sps - 1) * 2 + 1 = 4*twice_sps - 1
-         *   - For this to fit: 4*twice_sps <= TED_DL_SIZE * 4, i.e., twice_sps <= TED_DL_SIZE
-         *
-         * Set *N = 0 to indicate no output was produced. */
-        if (twice_sps_required > TED_DL_SIZE) {
-            if (!s_warned_ted_dl_oversize) {
-                fprintf(stderr, "[TED] disabled: required delay line %d exceeds TED_DL_SIZE=%d (sps=%d)\n",
-                        twice_sps_required, TED_DL_SIZE, config->sps);
-                s_warned_ted_dl_oversize = 1;
-            }
-            *N = 0;
-            return;
-        }
-        state->twice_sps = twice_sps_required;
-        state->dl_index = 0;
-        state->sps = config->sps;
-        /* CRITICAL: Initialize mu to a value > twice_sps so the inner sample-consumption
-         * loop runs first, filling the delay line with valid samples before any symbol
-         * output. Without this, the first symbols are interpolated from the zeroed delay
-         * line (cleared by ted_init_state), producing garbage.
-         *
-         * In OP25's continuous flow, the delay line is always populated with recent samples.
-         * But dsd-neo has discrete retune events with sample gaps - we must explicitly
-         * pre-fill the delay line before interpolating. */
-        state->mu = (float)(twice_sps_required + 1);
-    }
-
-    /* Get gains with OP25 defaults */
-    float gain_mu = config->gain_mu > 0.0f ? config->gain_mu : kDefaultGainMu;
-    float gain_omega = config->gain_omega > 0.0f ? config->gain_omega : kDefaultGainOmega;
-
-    float mu = state->mu;
-    float last_r = state->last_r;
-    float last_j = state->last_j;
-    int dl_index = state->dl_index;
-    int twice_sps = state->twice_sps;
-    float* dl = state->dl;
-
-    int i = 0;                 /* input index (complex samples) */
-    int o = 0;                 /* output index (interleaved floats) */
-    int bounds_skip_count = 0; /* counter for repeated bounds check failures */
-
-    /* Process samples using OP25 algorithm.
-     * Note: OP25 has NO mute logic - it processes all samples immediately. */
-    while (o < buf_len && i < nc) {
-        /* Consume samples while mu > 1, filling the delay line (OP25 style) */
-        while (mu > 1.0f && i < nc) {
-            mu -= 1.0f;
-            /* Get input sample, sanitize NaN */
-            const size_t ii = (size_t)i;
-            float in_r = x[ii * 2];
-            float in_j = x[ii * 2 + 1];
-            if (IS_NAN(in_r)) {
-                in_r = 0.0f;
-            }
-            if (IS_NAN(in_j)) {
-                in_j = 0.0f;
-            }
-            /* OP25: Write sample at both dl_index and dl_index + twice_sps
-             * This allows interpolator to read 8 consecutive samples without wrap */
-            const size_t dl_i = (size_t)dl_index;
-            const size_t dl_i2 = (size_t)dl_index + (size_t)twice_sps;
-            dl[dl_i * 2] = in_r;
-            dl[dl_i * 2 + 1] = in_j;
-            dl[dl_i2 * 2] = in_r;
-            dl[dl_i2 * 2 + 1] = in_j;
-            dl_index++;
-            if (dl_index >= twice_sps) {
-                dl_index = 0;
-            }
-            i++;
-        }
-
-        if (i >= nc) {
+    ted_runtime_t rt = ted_make_runtime(config, state, x, y, buf_len, nc);
+    while (rt.output_index < rt.buf_len && rt.input_index < rt.nc) {
+        ted_consume_input_samples(&rt);
+        if (rt.input_index >= rt.nc) {
             break;
         }
 
-        /* Compute half-omega parameters (OP25 style) */
-        float half_omega = omega / 2.0f;
-        int half_sps = (int)floorf(half_omega);
-        float half_mu = mu + half_omega - (float)half_sps;
-        if (half_mu > 1.0f) {
-            half_mu -= 1.0f;
-            half_sps += 1;
+        int rc = ted_process_one_symbol(&rt, state);
+        if (rc < 0) {
+            break;
         }
-
-        /* Defensive: half_sps must be non-negative. This should always be true
-         * since omega >= omega_min > 0, but guard against floating-point edge cases. */
-        if (half_sps < 0) {
-            half_sps = 0;
-        }
-
-        /* Bounds check: ensure MMSE interpolator won't read past delay line for BOTH
-         * the mid-symbol interpolation (at dl_index) and the symbol-point interpolation
-         * (at dl_index + half_sps). Each reads 8 consecutive samples.
-         *
-         * Mid-symbol access: indices dl_index .. dl_index + MMSE_NTAPS - 1
-         * Symbol-point access: indices dl_index + half_sps .. dl_index + half_sps + MMSE_NTAPS - 1
-         *
-         * With doubled storage, valid range is [0, 2*twice_sps - 1]. */
-        int max_mid_idx = dl_index + MMSE_NTAPS - 1;
-        int max_sym_idx = dl_index + half_sps + MMSE_NTAPS - 1;
-        if (max_mid_idx >= 2 * twice_sps || max_sym_idx >= 2 * twice_sps) {
-            /* Safety: skip this iteration if either read would be out of bounds.
-             * Track repeated failures to detect pathological cases. */
-            bounds_skip_count++;
-            if (bounds_skip_count > nc) {
-                /* Too many skips without progress - bail out to avoid CPU waste.
-                 * This indicates a sizing bug or corrupt state. */
-                break;
-            }
-            mu += omega;
-            continue;
-        }
-        bounds_skip_count = 0; /* reset on successful iteration */
-
-        /* Interpolate at mid-symbol point using 8-tap MMSE (for Gardner error) */
-        float mid_r, mid_j;
-        mmse_interp_cc_8tap(dl + (size_t)dl_index * 2, mu, &mid_r, &mid_j);
-
-        /* Interpolate at optimal symbol point (half symbol later) */
-        float sym_r, sym_j;
-        mmse_interp_cc_8tap(dl + (size_t)(dl_index + half_sps) * 2, half_mu, &sym_r, &sym_j);
-
-        /* OP25 Gardner error: (last - current) * mid
-         * Note: OP25 has NO mute logic - always compute error and update tracking. */
-        float error_real = (last_r - sym_r) * mid_r;
-        float error_imag = (last_j - sym_j) * mid_j;
-        float symbol_error = error_real + error_imag;
-
-        /* Sanitize error */
-        if (IS_NAN(symbol_error)) {
-            symbol_error = 0.0f;
-        }
-        if (symbol_error < -1.0f) {
-            symbol_error = -1.0f;
-        }
-        if (symbol_error > 1.0f) {
-            symbol_error = 1.0f;
-        }
-
-        /* Normalize omega correction by instantaneous symbol power so the loop
-         * gain does not vary with envelope level. Clamp to preserve OP25-style
-         * bounded updates even during deep fades. */
-        float sym_pow = sym_r * sym_r + sym_j * sym_j;
-        if (sym_pow < kOmegaNormEps) {
-            sym_pow = kOmegaNormEps;
-        }
-        float omega_error = branchless_clip(symbol_error / sym_pow, 1.0f);
-        omega = omega + gain_omega * omega_error;
-
-        /* Clip omega to valid range (OP25: d_omega_mid + branchless_clip(..., d_omega_rel))
-         * OP25 passes d_omega_rel directly, but the intended range is [omega_min, omega_max]
-         * which equals omega_mid ± (omega_mid * omega_rel). Scale by omega_mid for ±0.2%. */
-        omega = state->omega_mid + branchless_clip(omega - state->omega_mid, state->omega_mid * state->omega_rel);
-
-        /* Save current symbol as last for next iteration */
-        last_r = sym_r;
-        last_j = sym_j;
-
-        /* OP25: d_mu += d_omega + d_gain_mu * symbol_error */
-        mu += omega + gain_mu * symbol_error;
-
-        /* OP25 Lock detector (Yair Linn method).
-         * Use a minimum threshold to avoid division by very small numbers.
-         * 1e-9f is appropriate for single-precision float (machine eps ~1e-7). */
-        const float kLockEps = 1e-9f;
-        float ie2 = sym_r * sym_r;
-        float io2 = mid_r * mid_r;
-        float qe2 = sym_j * sym_j;
-        float qo2 = mid_j * mid_j;
-        float yi = (ie2 + io2 > kLockEps) ? (ie2 - io2) / (ie2 + io2) : 0.0f;
-        float yq = (qe2 + qo2 > kLockEps) ? (qe2 - qo2) / (qe2 + qo2) : 0.0f;
-        float lock_contrib = yi + yq;
-
-        /* OP25: d_lock_accum.add(yi + yq) */
-        state->lock_accum += lock_contrib;
-        state->lock_count++;
-
-        /* OP25 window-based accumulator decay (simplified from id_avg class) */
-        if (state->lock_count >= kLockAccumWindow) {
-            state->lock_accum *= 0.5f;
-            state->lock_count = kLockAccumWindow / 2;
-        }
-
-        /* Update EMA of error for diagnostics */
-        const float kEmaAlpha = 1.0f / 64.0f;
-        state->e_ema = state->e_ema + kEmaAlpha * (symbol_error - state->e_ema);
-
-        /* Output interpolated sample (OP25 has no mute - always output) */
-        y[o++] = sym_r;
-        y[o++] = sym_j;
     }
 
-    /* Save state for next block */
-    state->mu = mu;
-    state->omega = omega;
-    state->last_r = last_r;
-    state->last_j = last_j;
-    state->dl_index = dl_index;
+    ted_commit_runtime_state(state, &rt);
+    ted_copy_output_to_input(x, y, rt.output_index, N);
+}
 
-    /* Copy output to input buffer and update length */
-    if (o >= 2) {
-        for (int j = 0; j < o; j++) {
-            x[j] = y[j];
-        }
-        *N = o;
-    } else {
-        /* No valid output produced - signal this to caller to avoid
-         * processing stale data at the original buffer length. */
-        *N = 0;
+static void
+farrow_compute_guard_samples(const float* x, int nc, int a_c, int half, float u, float* lr, float* lj, float* rr,
+                             float* rj) {
+    int l_c = a_c - half;
+    int r_c = a_c + half;
+    if (l_c < 0) {
+        l_c = 0;
     }
+    if (r_c < 0) {
+        r_c = 0;
+    }
+    if (l_c >= nc - 1) {
+        l_c = nc - 2;
+    }
+    if (r_c >= nc - 1) {
+        r_c = nc - 2;
+    }
+
+    farrow_interp_complex(x, nc, l_c, u, lr, lj);
+    farrow_interp_complex(x, nc, r_c, u, rr, rj);
+}
+
+static float
+farrow_update_mu(float mu, float mu_nom, float gain, float e_norm) {
+    float corr = gain * e_norm;
+    float max_corr = mu_nom * 0.5f;
+    if (corr > max_corr) {
+        corr = max_corr;
+    }
+    if (corr < -max_corr) {
+        corr = -max_corr;
+    }
+    return farrow_wrap_mu(mu + mu_nom + corr);
+}
+
+static void
+farrow_copy_output(float* x, const float* y, int out_n, int* N) {
+    if (out_n < 2) {
+        return;
+    }
+    for (int i = 0; i < out_n; i++) {
+        x[i] = y[i];
+    }
+    *N = out_n;
 }
 
 /**
@@ -633,8 +732,8 @@ gardner_timing_adjust_farrow(const ted_config_t* config, ted_state_t* state, flo
         gain = 0.01f; /* conservative default for stability */
     }
 
-    const int buf_len = *N;                                 /* interleaved I/Q length */
-    const float mu_nom = 1.0f / (float)(sps > 0 ? sps : 1); /* nominal advance per sample */
+    const int buf_len = *N;                 /* interleaved I/Q length */
+    const float mu_nom = 1.0f / (float)sps; /* nominal advance per sample */
 
     if (buf_len < 6) {
         return;
@@ -646,88 +745,16 @@ gardner_timing_adjust_farrow(const ted_config_t* config, ted_state_t* state, flo
     int out_n = 0; /* interleaved I/Q index for output */
 
     for (int n_c = 0; n_c + 1 < nc; n_c++) {
-        /* Base complex sample index */
         int a_c = n_c;
-        int a = a_c << 1;
-
-        /* Interpolation fraction from mu [0.0, 1.0) */
         float u = mu - floorf(mu); /* ensure [0,1) */
 
-        /* Cubic Farrow interpolation at mid position using support [a_c-1..a_c+2] */
-        int am1_c = a_c - 1;
-        int ap1_c = a_c + 1;
-        int ap2_c = a_c + 2;
-        if (am1_c < 0) {
-            am1_c = 0;
-        }
-        /* ap1_c < nc is guaranteed by loop condition (n_c + 1 < nc) */
-        if (ap2_c >= nc) {
-            ap2_c = nc - 1;
-        }
-        int am1 = am1_c << 1;
-        int ap1 = ap1_c << 1;
-        int ap2 = ap2_c << 1;
-
-        float yr = farrow_cubic_eval(x[am1], x[a], x[ap1], x[ap2], u);
-        float yj = farrow_cubic_eval(x[am1 + 1], x[a + 1], x[ap1 + 1], x[ap2 + 1], u);
+        float yr = 0.0f, yj = 0.0f;
+        farrow_interp_complex(x, nc, a_c, u, &yr, &yj);
         y[out_n++] = yr;
         y[out_n++] = yj;
 
-        /* Sample at ±T/2 around current mid-sample using same frac (Farrow).
-           Use clamped indices to avoid boundary overruns. */
-        int l_c = a_c - half;
-        int r_c = a_c + half;
-        if (l_c < 0) {
-            l_c = 0;
-        }
-        if (l_c >= nc - 1) {
-            l_c = nc - 2;
-        }
-        if (r_c < 0) {
-            r_c = 0;
-        }
-        if (r_c >= nc - 1) {
-            r_c = nc - 2;
-        }
-
-        int lm1_c = l_c - 1;
-        int lp1_c = l_c + 1;
-        int lp2_c = l_c + 2;
-        if (lm1_c < 0) {
-            lm1_c = 0;
-        }
-        if (lp1_c >= nc) {
-            lp1_c = nc - 1;
-        }
-        if (lp2_c >= nc) {
-            lp2_c = nc - 1;
-        }
-        int rm1_c = r_c - 1;
-        int rp1_c = r_c + 1;
-        int rp2_c = r_c + 2;
-        if (rm1_c < 0) {
-            rm1_c = 0;
-        }
-        if (rp1_c >= nc) {
-            rp1_c = nc - 1;
-        }
-        if (rp2_c >= nc) {
-            rp2_c = nc - 1;
-        }
-
-        int l0 = l_c << 1;
-        int lm1 = lm1_c << 1;
-        int lp1 = lp1_c << 1;
-        int lp2 = lp2_c << 1;
-        int r0 = r_c << 1;
-        int rm1 = rm1_c << 1;
-        int rp1 = rp1_c << 1;
-        int rp2 = rp2_c << 1;
-
-        float lr = farrow_cubic_eval(x[lm1], x[l0], x[lp1], x[lp2], u);
-        float lj = farrow_cubic_eval(x[lm1 + 1], x[l0 + 1], x[lp1 + 1], x[lp2 + 1], u);
-        float rr = farrow_cubic_eval(x[rm1], x[r0], x[rp1], x[rp2], u);
-        float rj = farrow_cubic_eval(x[rm1 + 1], x[r0 + 1], x[rp1 + 1], x[rp2 + 1], u);
+        float lr = 0.0f, lj = 0.0f, rr = 0.0f, rj = 0.0f;
+        farrow_compute_guard_samples(x, nc, a_c, half, u, &lr, &lj, &rr, &rj);
 
         /* Gardner error: Re{ (x(+T/2) - x(-T/2)) * conj(y_mid) } */
         float dr = rr - lr;
@@ -740,40 +767,13 @@ gardner_timing_adjust_farrow(const ted_config_t* config, ted_state_t* state, flo
             p2 = 1e-9f;
         }
         float e_norm = e / p2;
-
-        /* Update fractional phase: nominal advance + small correction */
-        float corr = gain * e_norm;
-
-        /* Bound correction to avoid large jumps (<= ~1/2 nominal step). */
-        float max_corr = mu_nom * 0.5f;
-        if (corr > max_corr) {
-            corr = max_corr;
-        }
-        if (corr < -max_corr) {
-            corr = -max_corr;
-        }
-        mu += mu_nom + corr;
+        mu = farrow_update_mu(mu, mu_nom, gain, e_norm);
 
         /* Smooth residual using simple EMA with small weight (alpha≈1/64). */
         const float kEmaAlpha = 1.0f / 64.0f;
         state->e_ema = state->e_ema + kEmaAlpha * (e_norm - state->e_ema);
-
-        /* Wrap mu to [0, 1) */
-        while (mu >= 1.0f) {
-            mu -= 1.0f;
-        }
-        while (mu < 0.0f) {
-            mu += 1.0f;
-        }
     }
 
-    if (out_n >= 2) {
-        /* Copy timing-adjusted samples back to input buffer */
-        for (int i = 0; i < out_n; i++) {
-            x[i] = y[i];
-        }
-        *N = out_n;
-    }
-
+    farrow_copy_output(x, y, out_n, N);
     state->mu = mu;
 }

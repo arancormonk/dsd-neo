@@ -10,7 +10,8 @@
  * Provides small helpers used for console/UI timestamps and log filenames.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_TIME_FORMAT_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_TIME_FORMAT_H_H
 
 #include <time.h>
 
@@ -43,3 +44,4 @@ void getDateF_buf(time_t t, char out[9]);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_TIME_FORMAT_H_H */

@@ -12,7 +12,8 @@
  * by processing loops throughout the codebase.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_EXITFLAG_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_EXITFLAG_H_H
 
 #include <stdint.h>
 
@@ -25,3 +26,4 @@ extern volatile uint8_t exitflag;
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_EXITFLAG_H_H */

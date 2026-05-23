@@ -38,15 +38,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
 /* Stubs for external hooks referenced by the frequency module */
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -54,6 +59,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -61,14 +67,17 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -129,8 +138,8 @@ test_property_p1_fdma_formula(void) {
     for (int iter = 0; iter < PBT_ITERATIONS; iter++) {
         static dsd_opts opts;
         static dsd_state st;
-        memset(&opts, 0, sizeof opts);
-        memset(&st, 0, sizeof st);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
 
         /* Generate random parameters within valid ranges */
         uint32_t iden = prng_range(0, 15);
@@ -167,19 +176,19 @@ test_property_p1_fdma_formula(void) {
 
         if (actual != expected) {
             if (failures < 5) { /* Limit diagnostic output */
-                fprintf(stderr,
-                        "P1 FAIL iter=%d: iden=%u base=%u spac=%u type=%u chan=%u "
-                        "expected=%ld got=%ld\n",
-                        iter, iden, base_freq, chan_spac, chan_type, chan_number, expected, actual);
+                DSD_FPRINTF(stderr,
+                            "P1 FAIL iter=%d: iden=%u base=%u spac=%u type=%u chan=%u "
+                            "expected=%ld got=%ld\n",
+                            iter, iden, base_freq, chan_spac, chan_type, chan_number, expected, actual);
             }
             failures++;
         }
     }
 
     if (failures == 0) {
-        fprintf(stderr, "PASS P1: FDMA formula correctness (%d iterations)\n", PBT_ITERATIONS);
+        DSD_FPRINTF(stderr, "PASS P1: FDMA formula correctness (%d iterations)\n", PBT_ITERATIONS);
     } else {
-        fprintf(stderr, "FAIL P1: %d/%d iterations failed\n", failures, PBT_ITERATIONS);
+        DSD_FPRINTF(stderr, "FAIL P1: %d/%d iterations failed\n", failures, PBT_ITERATIONS);
     }
     return failures;
 }
@@ -200,8 +209,8 @@ test_property_p2_tdma_formula(void) {
     for (int iter = 0; iter < PBT_ITERATIONS; iter++) {
         static dsd_opts opts;
         static dsd_state st;
-        memset(&opts, 0, sizeof opts);
-        memset(&st, 0, sizeof st);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
 
         /* Generate random parameters within valid ranges */
         uint32_t iden = prng_range(0, 15);
@@ -241,19 +250,19 @@ test_property_p2_tdma_formula(void) {
 
         if (actual != expected) {
             if (failures < 5) { /* Limit diagnostic output */
-                fprintf(stderr,
-                        "P2 FAIL iter=%d: iden=%u base=%u spac=%u type=%u chan=%u "
-                        "denom=%d step=%d expected=%ld got=%ld\n",
-                        iter, iden, base_freq, chan_spac, chan_type, chan_number, denom, step, expected, actual);
+                DSD_FPRINTF(stderr,
+                            "P2 FAIL iter=%d: iden=%u base=%u spac=%u type=%u chan=%u "
+                            "denom=%d step=%d expected=%ld got=%ld\n",
+                            iter, iden, base_freq, chan_spac, chan_type, chan_number, denom, step, expected, actual);
             }
             failures++;
         }
     }
 
     if (failures == 0) {
-        fprintf(stderr, "PASS P2: TDMA formula correctness (%d iterations)\n", PBT_ITERATIONS);
+        DSD_FPRINTF(stderr, "PASS P2: TDMA formula correctness (%d iterations)\n", PBT_ITERATIONS);
     } else {
-        fprintf(stderr, "FAIL P2: %d/%d iterations failed\n", failures, PBT_ITERATIONS);
+        DSD_FPRINTF(stderr, "FAIL P2: %d/%d iterations failed\n", failures, PBT_ITERATIONS);
     }
     return failures;
 }
@@ -272,8 +281,8 @@ test_property_p3_cache_precedence(void) {
     for (int iter = 0; iter < PBT_ITERATIONS; iter++) {
         static dsd_opts opts;
         static dsd_state st;
-        memset(&opts, 0, sizeof opts);
-        memset(&st, 0, sizeof st);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
 
         /* Generate random parameters */
         uint32_t iden = prng_range(0, 15);
@@ -304,17 +313,17 @@ test_property_p3_cache_precedence(void) {
 
         if (actual != cached_freq) {
             if (failures < 5) {
-                fprintf(stderr, "P3 FAIL iter=%d: chan16=0x%04X cached=%ld got=%ld\n", iter, chan16, cached_freq,
-                        actual);
+                DSD_FPRINTF(stderr, "P3 FAIL iter=%d: chan16=0x%04X cached=%ld got=%ld\n", iter, chan16, cached_freq,
+                            actual);
             }
             failures++;
         }
     }
 
     if (failures == 0) {
-        fprintf(stderr, "PASS P3: Cache precedence (%d iterations)\n", PBT_ITERATIONS);
+        DSD_FPRINTF(stderr, "PASS P3: Cache precedence (%d iterations)\n", PBT_ITERATIONS);
     } else {
-        fprintf(stderr, "FAIL P3: %d/%d iterations failed\n", failures, PBT_ITERATIONS);
+        DSD_FPRINTF(stderr, "FAIL P3: %d/%d iterations failed\n", failures, PBT_ITERATIONS);
     }
     return failures;
 }
@@ -333,8 +342,8 @@ test_property_p4_empty_slot_returns_zero(void) {
     for (int iter = 0; iter < PBT_ITERATIONS; iter++) {
         static dsd_opts opts;
         static dsd_state st;
-        memset(&opts, 0, sizeof opts);
-        memset(&st, 0, sizeof st);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
 
         /* Generate random channel parameters */
         uint32_t iden = prng_range(0, 15);
@@ -357,17 +366,17 @@ test_property_p4_empty_slot_returns_zero(void) {
 
         if (actual != 0) {
             if (failures < 5) {
-                fprintf(stderr, "P4 FAIL iter=%d: iden=%u chan=%u hint=%u got=%ld (expected 0)\n", iter, iden,
-                        chan_number, hint, actual);
+                DSD_FPRINTF(stderr, "P4 FAIL iter=%d: iden=%u chan=%u hint=%u got=%ld (expected 0)\n", iter, iden,
+                            chan_number, hint, actual);
             }
             failures++;
         }
     }
 
     if (failures == 0) {
-        fprintf(stderr, "PASS P4: Empty slot returns 0 (%d iterations)\n", PBT_ITERATIONS);
+        DSD_FPRINTF(stderr, "PASS P4: Empty slot returns 0 (%d iterations)\n", PBT_ITERATIONS);
     } else {
-        fprintf(stderr, "FAIL P4: %d/%d iterations failed\n", failures, PBT_ITERATIONS);
+        DSD_FPRINTF(stderr, "FAIL P4: %d/%d iterations failed\n", failures, PBT_ITERATIONS);
     }
     return failures;
 }
@@ -376,19 +385,23 @@ int
 main(void) {
     int rc = 0;
 
-    fprintf(stderr, "=== P25 IDEN Preservation Property-Based Tests ===\n");
-    fprintf(stderr, "Seed: 0x%08X, Iterations per property: %d\n\n", PBT_SEED, PBT_ITERATIONS);
+    DSD_FPRINTF(stderr, "=== P25 IDEN Preservation Property-Based Tests ===\n");
+    DSD_FPRINTF(stderr, "Seed: 0x%08X, Iterations per property: %d\n\n", PBT_SEED, PBT_ITERATIONS);
 
     rc |= test_property_p1_fdma_formula();
     rc |= test_property_p2_tdma_formula();
     rc |= test_property_p3_cache_precedence();
     rc |= test_property_p4_empty_slot_returns_zero();
 
-    fprintf(stderr, "\n");
+    DSD_FPRINTF(stderr, "\n");
     if (rc == 0) {
-        fprintf(stderr, "All preservation property tests PASSED (%d total iterations)\n", PBT_ITERATIONS * 4);
+        DSD_FPRINTF(stderr, "All preservation property tests PASSED (%d total iterations)\n", PBT_ITERATIONS * 4);
     } else {
-        fprintf(stderr, "Some preservation property tests FAILED\n");
+        DSD_FPRINTF(stderr, "Some preservation property tests FAILED\n");
     }
     return rc != 0 ? 1 : 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

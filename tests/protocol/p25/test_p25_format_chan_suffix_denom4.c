@@ -12,13 +12,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_eq_str(const char* tag, const char* got, const char* want) {
     if (strcmp(got, want) != 0) {
-        fprintf(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -28,7 +28,7 @@ int
 main(void) {
     int rc = 0;
     static dsd_state st;
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&st, 0, sizeof st);
     int id = 5;
     // Populate new dual-array entry so p25_format_chan_suffix reads from it
     st.p25_iden_tdma[id].chan_type = 4;
@@ -39,7 +39,7 @@ main(void) {
     p25_format_chan_suffix(&st, ch, -1, buf, sizeof buf);
     rc |= expect_eq_str("denom4 suffix", buf, " (FDMA 0001 S4)");
     // Hint override to slot 0 -> S1
-    memset(buf, 0, sizeof buf);
+    DSD_MEMSET(buf, 0, sizeof buf);
     p25_format_chan_suffix(&st, ch, 0, buf, sizeof buf);
     rc |= expect_eq_str("denom4 hint", buf, " (FDMA 0001 S1)");
     return rc;

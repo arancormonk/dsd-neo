@@ -9,16 +9,16 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <stdarg.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <time.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #define P25_PATCH_TTL_SECONDS 20
 
 static int
-find_patch_idx(dsd_state* state, uint16_t sgid) {
+find_patch_idx(const dsd_state* state, uint16_t sgid) {
     if (!state) {
         return -1;
     }
@@ -110,30 +110,30 @@ p25_patch_update(dsd_state* state, int sgid, int is_patch, int active) {
 }
 
 int
-p25_patch_compose_summary(const dsd_state* state_in, char* out, size_t cap) {
+p25_patch_compose_summary(const dsd_state* state, char* out, size_t cap) {
     if (!out || cap == 0) {
         return 0;
     }
     out[0] = '\0';
-    if (!state_in) {
+    if (!state) {
         return 0;
     }
     // Copy to temp and sweep stale to avoid modifying caller's state
-    dsd_state* state = (dsd_state*)state_in;
-    p25_patch_sweep_stale(state);
+    dsd_state* mutable_state = (dsd_state*)state;
+    p25_patch_sweep_stale(mutable_state);
     char buf[128] = {0};
     int n = 0;
-    for (int i = 0; i < state->p25_patch_count && i < 8; i++) {
-        if (!state->p25_patch_active[i]) {
+    for (int i = 0; i < mutable_state->p25_patch_count && i < 8; i++) {
+        if (!mutable_state->p25_patch_active[i]) {
             continue;
         }
-        if (!state->p25_patch_is_patch[i]) {
+        if (!mutable_state->p25_patch_is_patch[i]) {
             continue; // show patches only (not simulselects)
         }
         if (n == 0) {
-            n += snprintf(buf + n, sizeof(buf) - n, "P: %03u", state->p25_patch_sgid[i]);
+            n += DSD_SNPRINTF(buf + n, sizeof(buf) - n, "P: %03u", mutable_state->p25_patch_sgid[i]);
         } else {
-            n += snprintf(buf + n, sizeof(buf) - n, ",%03u", state->p25_patch_sgid[i]);
+            n += DSD_SNPRINTF(buf + n, sizeof(buf) - n, ",%03u", mutable_state->p25_patch_sgid[i]);
         }
         if (n >= (int)sizeof(buf) - 8) {
             break;
@@ -143,7 +143,7 @@ p25_patch_compose_summary(const dsd_state* state_in, char* out, size_t cap) {
         return 0;
     }
     // Copy to output
-    int w = snprintf(out, cap, "%s", buf);
+    int w = DSD_SNPRINTF(out, cap, "%s", buf);
     return (w > 0) ? w : 0;
 }
 
@@ -199,58 +199,86 @@ p25_patch_add_wuid(dsd_state* state, int sgid, uint32_t wuid) {
     }
 }
 
+static void
+p25_patch_append(char* out, size_t cap, int* n, const char* fmt, ...) {
+    if (!out || !n || !fmt) {
+        return;
+    }
+    size_t rem = (cap > (size_t)(*n)) ? (cap - (size_t)(*n)) : 0U;
+    if (rem == 0U) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    int wrote = DSD_VSNPRINTF(out + *n, rem, fmt, ap);
+    va_end(ap);
+    if (wrote > 0) {
+        *n += wrote;
+    }
+}
+
+static void
+p25_patch_append_wg_summary(const dsd_state* state, int idx, int* n, char* out, size_t cap) {
+    uint8_t wgc = state->p25_patch_wgid_count[idx];
+    if (wgc == 0U) {
+        return;
+    }
+    if (wgc <= 3U) {
+        p25_patch_append(out, cap, n, " WG:");
+        for (int k = 0; k < wgc && k < 3; k++) {
+            p25_patch_append(out, cap, n, (k == 0) ? "%04u" : ",%04u", state->p25_patch_wgid[idx][k]);
+        }
+        return;
+    }
+    p25_patch_append(out, cap, n, " WG:%u(%04u,%04u+)", wgc, state->p25_patch_wgid[idx][0],
+                     state->p25_patch_wgid[idx][1]);
+}
+
+static void
+p25_patch_append_crypt_summary(const dsd_state* state, int idx, int* n, char* out, size_t cap) {
+    if (state->p25_patch_key[idx]) {
+        p25_patch_append(out, cap, n, " K:%04X", state->p25_patch_key[idx] & 0xFFFF);
+    }
+    if (state->p25_patch_alg[idx]) {
+        p25_patch_append(out, cap, n, " A:%02X", state->p25_patch_alg[idx] & 0xFF);
+    }
+    if (state->p25_patch_ssn[idx]) {
+        p25_patch_append(out, cap, n, " S:%02u", state->p25_patch_ssn[idx] & 0x1F);
+    }
+}
+
 int
-p25_patch_compose_details(const dsd_state* state_in, char* out, size_t cap) {
+p25_patch_compose_details(const dsd_state* state, char* out, size_t cap) {
     if (!out || cap == 0) {
         return 0;
     }
     out[0] = '\0';
-    if (!state_in) {
+    if (!state) {
         return 0;
     }
-    dsd_state* state = (dsd_state*)state_in;
-    p25_patch_sweep_stale(state);
+    dsd_state* mutable_state = (dsd_state*)state;
+    p25_patch_sweep_stale(mutable_state);
     int n = 0;
-    for (int i = 0; i < state->p25_patch_count && i < 8; i++) {
-        if (!state->p25_patch_active[i]) {
+    for (int i = 0; i < mutable_state->p25_patch_count && i < 8; i++) {
+        if (!mutable_state->p25_patch_active[i]) {
             continue;
         }
-        char t = state->p25_patch_is_patch[i] ? 'P' : 'S';
-        uint16_t sg = state->p25_patch_sgid[i];
+        char t = mutable_state->p25_patch_is_patch[i] ? 'P' : 'S';
+        uint16_t sg = mutable_state->p25_patch_sgid[i];
         if (n > 0) {
-            n += snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, "; ");
+            p25_patch_append(out, cap, &n, "; ");
         }
-        n += snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, "SG%03u[%c]", sg, t);
-        uint8_t wgc = state->p25_patch_wgid_count[i];
-        uint8_t wuc = state->p25_patch_wuid_count[i];
+        p25_patch_append(out, cap, &n, "SG%03u[%c]", sg, t);
+        uint8_t wgc = mutable_state->p25_patch_wgid_count[i];
+        uint8_t wuc = mutable_state->p25_patch_wuid_count[i];
         if (wgc > 0) {
-            if (wgc <= 3) {
-                n += snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, " WG:");
-                for (int k = 0; k < wgc && k < 3; k++) {
-                    n += snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, k == 0 ? "%04u" : ",%04u",
-                                  state->p25_patch_wgid[i][k]);
-                }
-            } else {
-                n += snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, " WG:%u(%04u,%04u+)", wgc,
-                              state->p25_patch_wgid[i][0], state->p25_patch_wgid[i][1]);
-            }
+            p25_patch_append_wg_summary(mutable_state, i, &n, out, cap);
         } else if (wuc > 0) {
-            n += snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, " U:%u", wuc);
+            p25_patch_append(out, cap, &n, " U:%u", wuc);
         }
         // Optional crypt context: print only fields that are present
-        if (state->p25_patch_key[i] || state->p25_patch_alg[i] || state->p25_patch_ssn[i]) {
-            if (state->p25_patch_key[i]) {
-                n += snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, " K:%04X",
-                              state->p25_patch_key[i] & 0xFFFF);
-            }
-            if (state->p25_patch_alg[i]) {
-                n +=
-                    snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, " A:%02X", state->p25_patch_alg[i] & 0xFF);
-            }
-            if (state->p25_patch_ssn[i]) {
-                n +=
-                    snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, " S:%02u", state->p25_patch_ssn[i] & 0x1F);
-            }
+        if (mutable_state->p25_patch_key[i] || mutable_state->p25_patch_alg[i] || mutable_state->p25_patch_ssn[i]) {
+            p25_patch_append_crypt_summary(mutable_state, i, &n, out, cap);
         }
         if (n >= (int)cap - 8) {
             break;

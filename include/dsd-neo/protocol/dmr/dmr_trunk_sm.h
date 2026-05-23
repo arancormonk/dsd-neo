@@ -13,11 +13,11 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_TRUNK_SM_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_TRUNK_SM_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -105,7 +105,7 @@ typedef struct {
 /**
  * @brief Initialize the DMR state machine context.
  */
-void dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state);
+void dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Process an event and update state machine.
@@ -179,7 +179,7 @@ void dmr_sm_emit_indiv_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int
 /**
  * @brief Initialize the global state machine singleton.
  */
-void dmr_sm_init(dsd_opts* opts, dsd_state* state);
+void dmr_sm_init(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Periodic tick for the global state machine singleton.
@@ -265,3 +265,4 @@ dmr_sm_ev_cc_sync(void) {
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_TRUNK_SM_H_H */

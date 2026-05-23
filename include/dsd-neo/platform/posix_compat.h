@@ -3,7 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_POSIX_COMPAT_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_POSIX_COMPAT_H_H
 
 /**
  * @file
@@ -15,8 +16,10 @@
  */
 
 #include <dsd-neo/platform/platform.h>
-#include <stddef.h>
 #include <stdint.h>
+#include <string.h>  // IWYU pragma: keep
+#include <strings.h> // IWYU pragma: keep
+struct timeval;      // IWYU pragma: keep
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,14 +52,11 @@ int dsd_unsetenv(const char* name);
  * ============================================================================ */
 
 #if DSD_PLATFORM_WIN_NATIVE
-#include <string.h>
 #define dsd_strdup                        _strdup
 #define dsd_strtok_r(str, delim, saveptr) strtok_s(str, delim, saveptr)
 #define dsd_strcasecmp                    _stricmp
 #define dsd_strncasecmp                   _strnicmp
 #else
-#include <string.h>
-#include <strings.h>
 #define dsd_strdup      strdup
 #define dsd_strtok_r    strtok_r
 #define dsd_strcasecmp  strcasecmp
@@ -216,3 +216,4 @@ dsd_gettimeofday(struct timeval* tv, void* tz) {
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_POSIX_COMPAT_H_H */

@@ -5,15 +5,14 @@
 #include <dsd-neo/fec/BCH_63_16.hpp>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
-
-#include <cstring>
 #include <stdint.h>
+#include "dsd-neo/core/safe_api.h"
 
-// Ideas taken from http://op25.osmocom.org/trac/wiki.png/browser/op25/gr-op25/lib/decoder_ff_impl.cc
-// See also p25_training_guide.pdf page 48.
-// See also tia-102-baaa-a-project_25-fdma-common_air_interface.pdf page 40.
-
-static BCH_63_16_11 bch;
+static BCH_63_16_11&
+p25p1_bch_instance(void) {
+    static BCH_63_16_11 bch;
+    return bch;
+}
 
 static int decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity,
                                int* error_count, bool* bch_decode_failed);
@@ -42,34 +41,20 @@ static const bool DUID_VALID[16] = {
     true,  false, false, true   /* C=PDU, D=inv, E=inv, F=TDULC */
 };
 
-/**
- * Convenience class to calculate the parity of the DUID values. Keeps a table with the expected outcomes
- * for fast lookup.
- */
-class ParityTable {
-  private:
-    unsigned char table[16];
+namespace {
+constexpr unsigned char k_duid_parity_table[16] = {
+    0, 0, 0, 0, // 0x0..0x3
+    0, 1, 0, 0, // 0x4..0x7
+    0, 0, 1, 0, // 0x8..0xB
+    0, 0, 0, 0  // 0xC..0xF
+};
 
-    unsigned char
-    get_index(unsigned char x, unsigned char y) {
-        return (x << 2) + y;
-    }
+inline unsigned char
+duid_parity_value(unsigned char x, unsigned char y) {
+    return k_duid_parity_table[(x << 2) + y];
+}
 
-  public:
-    ParityTable() {
-        for (unsigned int i = 0; i < sizeof(table); i++) {
-            table[i] = 0;
-        }
-        table[get_index(1, 1)] = 1;
-        table[get_index(2, 2)] = 1;
-    }
-
-    unsigned char
-    get_value(unsigned char x, unsigned char y) {
-        return table[get_index(x, y)];
-    }
-
-} parity_table;
+} // namespace
 
 static int
 received_nac(const char* bch_code) {
@@ -175,6 +160,8 @@ build_soft_nid_pool(const uint8_t* reliab, int* pool, int max_pool) {
     return count;
 }
 
+namespace {
+
 struct SoftNidCandidate {
     int found;
     int result;
@@ -184,6 +171,8 @@ struct SoftNidCandidate {
     int score;
     int changes;
 };
+
+} // namespace
 
 static void
 soft_nid_consider_candidate(const char* scoring_code, const char* candidate, const uint8_t* reliab,
@@ -234,7 +223,7 @@ soft_nid_search_from_base(const char* scoring_code, const char* base_code, const
         }
 
         char candidate[63];
-        std::memcpy(candidate, base_code, 63);
+        DSD_MEMCPY(candidate, base_code, 63);
         for (int bit = 0; bit < pool_count; bit++) {
             if ((mask & (1 << bit)) != 0) {
                 candidate[pool[bit]] ^= 1;
@@ -276,7 +265,7 @@ decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned
 
     // Decode using local BCH implementation
     char decoded[16];
-    BCH_63_16_Result bch_result = bch.decode_with_result(bch_code, decoded);
+    BCH_63_16_Result bch_result = p25p1_bch_instance().decode_with_result(bch_code, decoded);
 
     if (!bch_result.success) {
         // BCH decode failed (>11 errors or Chien search mismatch)
@@ -318,7 +307,7 @@ decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned
     // Check the parity bit against the expected value for this DUID.
     // Per TIA-102.BAAA-A Table 8-4: P=1 for LDU1 (0x5) and LDU2 (0xA),
     // P=0 for all other defined DUIDs.
-    unsigned char expected_parity = parity_table.get_value(new_duid_0, new_duid_1);
+    unsigned char expected_parity = duid_parity_value(new_duid_0, new_duid_1);
 
     if (expected_parity == parity) {
         // BCH decoded, valid DUID, parity matches - full success
@@ -332,12 +321,12 @@ decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned
 }
 
 int
-check_NID_with_error_count(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count) {
+check_NID_with_error_count(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count) {
     return decode_nid_codeword(bch_code, new_nac, new_duid, parity, error_count, 0);
 }
 
 int
-check_NID_with_observed_nac(char* bch_code, int observed_nac, int* new_nac, char* new_duid, unsigned char parity,
+check_NID_with_observed_nac(const char* bch_code, int observed_nac, int* new_nac, char* new_duid, unsigned char parity,
                             int* error_count) {
     bool bch_decode_failed = false;
     int result = decode_nid_codeword(bch_code, new_nac, new_duid, parity, error_count, &bch_decode_failed);
@@ -356,7 +345,7 @@ check_NID_with_observed_nac(char* bch_code, int observed_nac, int* new_nac, char
 }
 
 int
-check_NID_with_observed_nac_soft(char* bch_code, const uint8_t* reliab63, int observed_nac, int* new_nac,
+check_NID_with_observed_nac_soft(const char* bch_code, const uint8_t* reliab63, int observed_nac, int* new_nac,
                                  char* new_duid, unsigned char parity, uint8_t parity_reliab, int* error_count) {
     int hard_result = check_NID_with_observed_nac(bch_code, observed_nac, new_nac, new_duid, parity, error_count);
     if (hard_result > 0 || reliab63 == 0) {
@@ -374,7 +363,7 @@ check_NID_with_observed_nac_soft(char* bch_code, const uint8_t* reliab63, int ob
 
     if (valid_observed_nac(observed_nac) && received_nac(bch_code) != observed_nac) {
         char retry_code[63];
-        std::memcpy(retry_code, bch_code, 63);
+        DSD_MEMCPY(retry_code, bch_code, 63);
         set_received_nac(retry_code, observed_nac);
         // Score Chase flips against the trusted NAC rewrite, not the raw received word.
         soft_nid_search_from_base(retry_code, retry_code, reliab63, pool, pool_count, parity, parity_reliab, &best);
@@ -404,7 +393,7 @@ check_NID_with_observed_nac_soft(char* bch_code, const uint8_t* reliab63, int ob
  * @return NidResult code (same semantics as the 5-parameter version).
  */
 int
-check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity) {
+check_NID(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity) {
     int dummy_error_count;
     return check_NID_with_error_count(bch_code, new_nac, new_duid, parity, &dummy_error_count);
 }

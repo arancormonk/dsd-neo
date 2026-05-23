@@ -10,8 +10,7 @@
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static size_t
@@ -46,17 +45,41 @@ csi_collect_hex_digits(const char* input, char* out, size_t out_cap) {
 }
 
 static int
+csi_hex_nibble(char c, int* value) {
+    if (!value) {
+        return -1;
+    }
+
+    if (c >= '0' && c <= '9') {
+        *value = c - '0';
+        return 0;
+    }
+    if (c >= 'a' && c <= 'f') {
+        *value = 10 + (c - 'a');
+        return 0;
+    }
+    if (c >= 'A' && c <= 'F') {
+        *value = 10 + (c - 'A');
+        return 0;
+    }
+    return -1;
+}
+
+static int
 csi_parse_hex_bytes(const char* hex, size_t nhex, uint8_t* out, size_t out_len) {
     if (!hex || !out || (out_len * 2U) != nhex) {
         return -1;
     }
 
     for (size_t i = 0; i < out_len; i++) {
-        unsigned int v = 0;
-        if (sscanf(&hex[i * 2U], "%2X", &v) != 1) {
+        int hi = 0;
+        int lo = 0;
+        char c0 = hex[i * 2U];
+        char c1 = hex[i * 2U + 1U];
+        if (csi_hex_nibble(c0, &hi) != 0 || csi_hex_nibble(c1, &lo) != 0) {
             return -1;
         }
-        out[i] = (uint8_t)v;
+        out[i] = (uint8_t)((hi << 4) | lo);
     }
     return 0;
 }
@@ -70,20 +93,20 @@ connect_systems_ee72_key_creation(dsd_state* state, const char* input) {
     char hex[32];
     const size_t nhex = csi_collect_hex_digits(input, hex, sizeof(hex));
     if (nhex != 18U) {
-        fprintf(stderr, "DMR EE72 key parse failed: expected 18 hex characters, got %zu\n", nhex);
+        DSD_FPRINTF(stderr, "DMR EE72 key parse failed: expected 18 hex characters, got %zu\n", nhex);
         return -1;
     }
 
     uint8_t key[9];
-    memset(key, 0, sizeof(key));
+    DSD_MEMSET(key, 0, sizeof(key));
     if (csi_parse_hex_bytes(hex, nhex, key, sizeof(key)) != 0) {
-        fprintf(stderr, "DMR EE72 key parse failed: invalid hex string\n");
+        DSD_FPRINTF(stderr, "DMR EE72 key parse failed: invalid hex string\n");
         return -1;
     }
 
-    memcpy(state->csi_ee_key, key, sizeof(key));
+    DSD_MEMCPY(state->csi_ee_key, key, sizeof(key));
     state->csi_ee = 1;
-    fprintf(stderr, "DMR Connect Systems EE72 72-bit key with forced application\n");
+    DSD_FPRINTF(stderr, "DMR Connect Systems EE72 72-bit key with forced application\n");
     return 0;
 }
 
@@ -94,7 +117,7 @@ csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]) {
     }
 
     char interleaved[72];
-    memset(interleaved, 0, sizeof(interleaved));
+    DSD_MEMSET(interleaved, 0, sizeof(interleaved));
 
     const int *w = rW, *x = rX, *y = rY, *z = rZ;
     for (int8_t i = 0; i < 36; i++) {
@@ -108,8 +131,8 @@ csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]) {
 
     uint8_t ks_bytes[9];
     uint8_t ks_bits[72];
-    memset(ks_bytes, 0, sizeof(ks_bytes));
-    memset(ks_bits, 0, sizeof(ks_bits));
+    DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
+    DSD_MEMSET(ks_bits, 0, sizeof(ks_bits));
 
     for (int i = 0; i < 9; i++) {
         ks_bytes[i] = state->csi_ee_key[8 - i];

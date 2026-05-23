@@ -10,11 +10,11 @@
  * 2025-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_pdu.h>
@@ -22,17 +22,16 @@
 #include <dsd-neo/protocol/p25/p25p1_mbf34.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <dsd-neo/runtime/colors.h>
-#include <stdint.h>
-#ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#endif
-
+#include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#ifdef USE_RADIO
+#endif
 
 static int16_t
 saturating_llr_add(int acc, int value) {
@@ -46,8 +45,8 @@ saturating_llr_add(int acc, int value) {
     return (int16_t)acc;
 }
 
-uint32_t
-crc32mbf(uint8_t* buf, int len) {
+static uint32_t
+crc32mbf(const uint8_t* buf, int len) {
     uint32_t g = 0x04c11db7;
     uint64_t crc = 0;
     for (int i = 0; i < len; i++) {
@@ -61,641 +60,639 @@ crc32mbf(uint8_t* buf, int len) {
     return crc;
 }
 
-void
-processMPDU(dsd_opts* opts, dsd_state* state) {
+enum {
+    P25_MPDU_R12_BYTES = 12,
+    P25_MPDU_R34_BYTES = 18,
+    P25_MPDU_MAX_BLOCKS = 129,
+    P25_MPDU_MAX_DATA_BLOCKS = 127,
+    P25_MPDU_MAX_BYTES = P25_MPDU_R34_BYTES * P25_MPDU_MAX_BLOCKS,
+    P25_MPDU_MAX_BITS = P25_MPDU_MAX_BYTES * 8,
+    P25_MPDU_HEADER_REPS = 3,
+    P25_MPDU_HEADER_BITS = 96,
+    P25_MPDU_HEADER_LLR = 196,
+    P25_MPDU_TSBK_DIBITS = 98,
+};
+
+typedef struct {
+    uint8_t tsbk_dibit[P25_MPDU_TSBK_DIBITS];
+    int16_t tsbk_llr[P25_MPDU_HEADER_LLR];
+    uint8_t tsbk_byte[P25_MPDU_R12_BYTES];
+    uint8_t r34byte_b[P25_MPDU_R34_BYTES];
+    uint8_t r34bytes[P25_MPDU_MAX_BYTES];
+    int tsbk_decoded_bits[P25_MPDU_HEADER_BITS];
+    uint8_t hdr_rep_bits[P25_MPDU_HEADER_REPS][P25_MPDU_HEADER_BITS];
+    int16_t hdr_rep_llr[P25_MPDU_HEADER_REPS][P25_MPDU_HEADER_LLR];
+    uint8_t hdr_rep_bytes[P25_MPDU_HEADER_REPS][P25_MPDU_R12_BYTES];
+    int hdr_rep_crc[P25_MPDU_HEADER_REPS];
+    uint8_t mpdu_crc_bits[P25_MPDU_MAX_BITS];
+    uint8_t mpdu_crc9_bits[P25_MPDU_MAX_BITS];
+    uint8_t mpdu_byte[P25_MPDU_MAX_BYTES];
+    int err[2];
+    int r34;
+    int end;
+    int crc_bit_count;
+    int crc9_bit_count;
+    uint8_t io;
+    uint8_t fmt;
+    uint8_t sap;
+    uint8_t blks;
+} P25MpduContext;
+
+static void
+p25_mpdu_context_init(P25MpduContext* ctx) {
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->end = 3;
+    for (int i = 0; i < P25_MPDU_HEADER_REPS; i++) {
+        ctx->hdr_rep_crc[i] = -2;
+    }
+    ctx->err[0] = -2;
+    ctx->err[1] = -2;
+}
+
+static void
+p25_mpdu_prepare_state(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_mpdu++;
-
-    //p25p2 18v reset counters and buffers
-    state->voice_counter[0] = 0; //reset
-    state->voice_counter[1] = 0; //reset
-    memset(state->s_l4, 0, sizeof(state->s_l4));
-    memset(state->s_r4, 0, sizeof(state->s_r4));
+    state->voice_counter[0] = 0;
+    state->voice_counter[1] = 0;
+    DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
+    DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
     opts->slot_preference = 2;
-
-    //push current slot to 0, just in case swapping p2 to p1
-    //or stale slot value from p2 and then decoding a pdu
     state->currentslot = 0;
 
     p25_status_accum_ensure_started(state);
+    DSD_SPRINTF(state->call_string[0], "%s", "                     ");
+    DSD_SPRINTF(state->call_string[1], "%s", "                     ");
 
-    //reset some strings when returning from a call in case they didn't get zipped already
-    sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-    sprintf(state->call_string[1], "%s", "                     "); //21 spaces
-
-    //clear stale Active Channel messages here
     if ((time(NULL) - state->last_active_time) > 3) {
-        memset(state->active_channel, 0, sizeof(state->active_channel));
+        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
     }
+}
 
-    uint8_t tsbk_dibit[98];
-    memset(tsbk_dibit, 0, sizeof(tsbk_dibit));
-
-    int16_t tsbk_llr[196];
-    memset(tsbk_llr, 0, sizeof(tsbk_llr));
-
-    int dibit = 0;
-    int r34 = 0;
-
-    uint8_t tsbk_byte[12]; //12 byte return from p25_12
-    memset(tsbk_byte, 0, sizeof(tsbk_byte));
-
-    uint8_t r34byte_b[18];
-    memset(r34byte_b, 0, sizeof(r34byte_b));
-
-    //TODO: Expand storage to be able to hold 127 blocks + 1 header of data at 144 bits (18 octets
-    uint8_t r34bytes[18 * 129]; //18 octets at 129 blocks (a little extra padding)
-    memset(r34bytes, 0, sizeof(r34bytes));
-
-    unsigned long long int PDU[18 * 129];
-    memset(PDU, 0, sizeof(PDU));
-
-    int tsbk_decoded_bits[18 * 129 * 8]; // decoded bits from tsbk_bytes for sending to crc16_lb_bridge
-    memset(tsbk_decoded_bits, 0, sizeof(tsbk_decoded_bits));
-
-    // Header repetition buffers for majority vote (first 3 reps only)
-    uint8_t hdr_rep_bits[3][96];
-    memset(hdr_rep_bits, 0, sizeof(hdr_rep_bits));
-    int16_t hdr_rep_llr[3][196];
-    memset(hdr_rep_llr, 0, sizeof(hdr_rep_llr));
-
-    // Per-repetition decoded bytes and CRC results (mirrors TSBK approach)
-    uint8_t hdr_rep_bytes[3][12];
-    memset(hdr_rep_bytes, 0, sizeof(hdr_rep_bytes));
-    int hdr_rep_crc[3] = {-2, -2, -2};
-
-    uint8_t mpdu_decoded_bits[18 * 129 * 8];
-    memset(mpdu_decoded_bits, 0, sizeof(mpdu_decoded_bits));
-
-    uint8_t mpdu_crc_bits[18 * 129 * 8];
-    memset(mpdu_crc_bits, 0, sizeof(mpdu_crc_bits));
-
-    uint8_t mpdu_crc9_bits[18 * 129 * 8];
-    memset(mpdu_crc9_bits, 0, sizeof(mpdu_crc9_bits));
-
-    uint8_t mpdu_crc_bytes[18 * 129];
-    memset(mpdu_crc_bytes, 0, sizeof(mpdu_crc_bytes));
-
-    int i, j, k, x, z, l;
-    z = 0;
-    l = 0;
-    int ec[129]; //error value returned from p25_12 or 34 trellis decoder
-    int err[2];  //error value returned from crc16 on header and crc32 on full message
-    memset(ec, -2, sizeof(ec));
-    memset(err, -2, sizeof(err));
-
-    uint8_t mpdu_byte[18 * 129];
-    memset(mpdu_byte, 0, sizeof(mpdu_byte));
-
-    uint8_t an = 0;
-    uint8_t io = 0;
-    uint8_t fmt = 0;
-    uint8_t sap = 0;
-    uint8_t blks = 0;
-    int end = 3; //ending value for data gathering repetitions (default at 3)
-
-    //CRC32
-    uint32_t CRCComputed = 0;
-    uint32_t CRCExtracted = 0;
-
-    int stop = 101;
-    int start = 0;
-
-    //now using modulus on skipdibit values
-    int skipdibit =
-        36
-        - 14; //when we arrive here, we are at this position in the counter after reading FS, NID, DUID, and Parity dibits
-    int status_count = 1; //we have already skipped the Status 1 dibit before arriving here
-    int dibit_count = 0;  //number of gathered dibits
-    UNUSED(status_count); //debug counter
-
-    //collect x-len reps of 100 or 101 dibits (98 valid dibits with two or three status dibits sprinkled in)
-    for (j = 0; j < end; j++) {
-        k = 0;
-        dibit_count = 0;
-        for (i = start; i < stop; i++) {
-            dsd_dibit_soft_t soft;
-            dibit = getDibitSoft(opts, state, &soft);
-            if ((skipdibit / 36) == 0) {
-                dibit_count++;
-                tsbk_dibit[k] = dibit;
-                tsbk_llr[(k * 2) + 0] = soft.llr[0];
-                tsbk_llr[(k * 2) + 1] = soft.llr[1];
-                k++;
-            } else {
-                p25_status_accum_add(state, dibit);
-                skipdibit = 0;
-                status_count++;
-            }
-
-            skipdibit++; //increment
-
-            //this is used to skip gathering one dibit as well since we only will end up skipping 2 status dibits (getting 99 instead of 98, throwing alignment off)
-            if (dibit_count
-                == 98) { //this could cause an issue though if the next bit read is supposed to be a status dibit (unsure) it may not matter, should be handled as first read in next rep
-                break;
-            }
+static void
+p25_mpdu_bytes_to_int_bits(const uint8_t* bytes, int* bits, int byte_count) {
+    int bit_index = 0;
+    for (int byte_idx = 0; byte_idx < byte_count; byte_idx++) {
+        for (int bit = 0; bit < 8; bit++) {
+            bits[bit_index++] = ((bytes[byte_idx] << bit) & 0x80) >> 7;
         }
+    }
+}
 
-        if (r34 && j != 0) {
-            //debug
-            // fprintf (stderr, " J:%d;", j); //use this with the P_ERR inside of 34 rate decoder to see where the failures occur
+static uint16_t
+p25_mpdu_candidate_crc9(const uint8_t bytes[P25_MPDU_R34_BYTES]) {
+    uint8_t crc9_bits[135];
+    int bit_index = 0;
+    for (int bit = 0; bit < 7; bit++) {
+        crc9_bits[bit_index++] = ((bytes[0] << bit) & 0x80) >> 7;
+    }
+    for (int byte_idx = 2; byte_idx < P25_MPDU_R34_BYTES; byte_idx++) {
+        for (int bit = 0; bit < 8; bit++) {
+            crc9_bits[bit_index++] = ((bytes[byte_idx] << bit) & 0x80) >> 7;
+        }
+    }
+    return ComputeCrc9Bit(crc9_bits, 135);
+}
 
-            p25_mbf34_candidate_t candidates[P25_MBF34_MAX_CANDIDATES];
-            int candidate_count =
-                p25_mbf34_decode_soft_list(tsbk_dibit, tsbk_llr, candidates, P25_MBF34_MAX_CANDIDATES);
-            if (candidate_count > 0) {
-                int selected = 0;
-                for (int c = 0; c < candidate_count; c++) {
-                    uint8_t crc9_bits[135];
-                    int bit_index = 0;
-                    for (x = 0; x < 7; x++) {
-                        crc9_bits[bit_index++] = ((candidates[c].bytes[0] << x) & 0x80) >> 7;
-                    }
-                    for (i = 2; i < 18; i++) {
-                        for (x = 0; x < 8; x++) {
-                            crc9_bits[bit_index++] = ((candidates[c].bytes[i] << x) & 0x80) >> 7;
-                        }
-                    }
-                    uint16_t crc9_ext = (uint16_t)(((candidates[c].bytes[0] & 1) << 8) | candidates[c].bytes[1]);
-                    if (ComputeCrc9Bit(crc9_bits, 135) == crc9_ext) {
-                        selected = c;
-                        break;
-                    }
-                }
-                memcpy(r34byte_b, candidates[selected].bytes, sizeof(r34byte_b));
-                ec[j] = (int)(candidates[selected].metric >> 8);
-            } else {
-                ec[j] = p25_mbf34_decode_soft(tsbk_dibit, tsbk_llr, r34byte_b);
-            }
+static int
+p25_mpdu_select_mbf34_candidate(const p25_mbf34_candidate_t* candidates, int candidate_count) {
+    for (int candidate_idx = 0; candidate_idx < candidate_count; candidate_idx++) {
+        const uint8_t* bytes = candidates[candidate_idx].bytes;
+        uint16_t crc9_ext = (uint16_t)(((bytes[0] & 1) << 8) | bytes[1]);
+        if (p25_mpdu_candidate_crc9(bytes) == crc9_ext) {
+            return candidate_idx;
+        }
+    }
+    return 0;
+}
 
-            //shuffle 34 rate data into array
-            if (j != 0) { //should never happen, but just in case
-                memcpy(r34bytes + ((size_t)(j - 1) * 18), r34byte_b, sizeof(r34byte_b));
-            }
+static int
+p25_mpdu_select_crc16_candidate(const p25_12_candidate_t* candidates, int candidate_count) {
+    for (int candidate_idx = 0; candidate_idx < candidate_count; candidate_idx++) {
+        int candidate_bits[P25_MPDU_HEADER_BITS];
+        p25_mpdu_bytes_to_int_bits(candidates[candidate_idx].bytes, candidate_bits, P25_MPDU_R12_BYTES);
+        if (crc16_lb_bridge(candidate_bits, 80) == 0) {
+            return candidate_idx;
+        }
+    }
+    return 0;
+}
 
-            for (i = 2; i < 18; i++) {
-                for (x = 0; x < 8; x++) {
-                    mpdu_crc_bits[z++] = ((r34byte_b[i] << x) & 0x80) >> 7;
-                }
-            }
-
-            //arrangement for confirmed data crc9 check
-            //unlike DMR, the first 7 bits of this arrangement are the DBSN, not the last 7 bits
-            for (x = 0; x < 7; x++) {
-                mpdu_crc9_bits[l++] = ((r34byte_b[0] << x) & 0x80) >> 7;
-            }
-            for (i = 2; i < 18; i++) {
-                for (x = 0; x < 8; x++) {
-                    mpdu_crc9_bits[l++] = ((r34byte_b[i] << x) & 0x80) >> 7;
-                }
-            }
-
+static void
+p25_mpdu_read_repetition(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx, int* skipdibit) {
+    int dibit_count = 0;
+    int out_idx = 0;
+    for (int input_idx = 0; input_idx < 101; input_idx++) {
+        dsd_dibit_soft_t soft;
+        int dibit = getDibitSoft(opts, state, &soft);
+        if ((*skipdibit / 36) == 0) {
+            dibit_count++;
+            ctx->tsbk_dibit[out_idx] = (uint8_t)dibit;
+            ctx->tsbk_llr[(out_idx * 2) + 0] = soft.llr[0];
+            ctx->tsbk_llr[(out_idx * 2) + 1] = soft.llr[1];
+            out_idx++;
         } else {
-            p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
-            int candidate_count = p25_12_soft_llr_list(tsbk_dibit, tsbk_llr, candidates, P25_12_MAX_CANDIDATES);
-            if (candidate_count > 0) {
-                int selected = 0;
-                if (j == 0) {
-                    for (int c = 0; c < candidate_count; c++) {
-                        int candidate_bits[96];
-                        int bit_index = 0;
-                        for (int b = 0; b < 12; b++) {
-                            for (int bit = 0; bit < 8; bit++) {
-                                candidate_bits[bit_index++] = ((candidates[c].bytes[b] << bit) & 0x80) >> 7;
-                            }
-                        }
-                        if (crc16_lb_bridge(candidate_bits, 80) == 0) {
-                            selected = c;
-                            break;
-                        }
-                    }
-                }
-                memcpy(tsbk_byte, candidates[selected].bytes, sizeof(tsbk_byte));
-                ec[j] = (int)(candidates[selected].metric >> 8);
-            } else {
-                ec[j] = p25_12_soft_llr(tsbk_dibit, tsbk_llr, tsbk_byte);
-            }
+            p25_status_accum_add(state, dibit);
+            *skipdibit = 0;
         }
 
-        //too many bit manipulations!
-        k = 0;
-        for (i = 0; i < 12; i++) {
-            for (x = 0; x < 8; x++) {
-                tsbk_decoded_bits[k] = ((tsbk_byte[i] << x) & 0x80) >> 7;
-                k++;
-            }
+        (*skipdibit)++;
+        if (dibit_count == P25_MPDU_TSBK_DIBITS) {
+            break;
         }
+    }
+}
 
-        // Save header (first 96 bits) and bytes for repetition j (majority after loop)
-        if (j < 3) {
-            for (i = 0; i < 96; i++) {
-                hdr_rep_bits[j][i] = (uint8_t)(tsbk_decoded_bits[i] & 1);
-            }
-            memcpy(hdr_rep_llr[j], tsbk_llr, sizeof(tsbk_llr));
-            memcpy(hdr_rep_bytes[j], tsbk_byte, 12);
-            // Compute per-repetition CRC16 over first 80 bits for later
-            // best-rep selection (same approach as TSBK path).
-            hdr_rep_crc[j] = crc16_lb_bridge(tsbk_decoded_bits, 80);
-        }
+static void
+p25_mpdu_decode_r34_block(P25MpduContext* ctx, int block_idx) {
+    p25_mbf34_candidate_t candidates[P25_MBF34_MAX_CANDIDATES];
+    int candidate_count =
+        p25_mbf34_decode_soft_list(ctx->tsbk_dibit, ctx->tsbk_llr, candidates, P25_MBF34_MAX_CANDIDATES);
+    if (candidate_count > 0) {
+        int selected = p25_mpdu_select_mbf34_candidate(candidates, candidate_count);
+        DSD_MEMCPY(ctx->r34byte_b, candidates[selected].bytes, sizeof(ctx->r34byte_b));
+    } else {
+        (void)p25_mbf34_decode_soft(ctx->tsbk_dibit, ctx->tsbk_llr, ctx->r34byte_b);
+    }
 
-        //load into bit array for storage (easier decoding for future PDUs)
-        for (i = 0; i < 96; i++) {
-            mpdu_decoded_bits[i + (j * 96)] = (uint8_t)tsbk_decoded_bits[i];
-        }
+    DSD_MEMCPY(ctx->r34bytes + ((size_t)(block_idx - 1) * P25_MPDU_R34_BYTES), ctx->r34byte_b, sizeof(ctx->r34byte_b));
 
-        //shuffle corrected bits back into tsbk_byte
-        k = 0;
-        for (i = 0; i < 12; i++) {
-            int byte = 0;
-            for (x = 0; x < 8; x++) {
-                byte = byte << 1;
-                byte = byte | tsbk_decoded_bits[k];
-                k++;
-            }
-            tsbk_byte[i] = byte;
-            size_t mpdu_off = (size_t)i + ((size_t)j * 12u);
-            if (mpdu_off < sizeof(mpdu_byte)) {
-                mpdu_byte[mpdu_off] = byte; //add to completed MBF format 12 rate bytes
-            }
-        }
-
-        //check header data to see if this is a 12 rate, or 34 rate packet data unit
-        if ((j == 0 && (hdr_rep_crc[0] == 0 || opts->aggressive_framesync == 0))) {
-            an = (mpdu_byte[0] >> 6) & 0x1;
-            io = (mpdu_byte[0] >> 5) & 0x1;
-            fmt = mpdu_byte[0] & 0x1F;
-            sap = mpdu_byte[1] & 0x3F;
-            blks = mpdu_byte[6] & 0x7F;
-
-            if (an == 1 && fmt == 0x16) { // 0b10110 -> 0x16; confirmed data packet header block
-                r34 = 1;
-            }
-
-            //set end value to number of blocks + 1 header (block gathering for variable len)
-            end = blks + 1;
-
-            // Trunking MBT PDUs typically have 1-3 data blocks. BLKS > 10 for
-            // trunking SAPs is almost certainly a misaligned frame (e.g., BLKS=69
-            // observed after voice channel retune). Cap to prevent reading
-            // excessive dibits from the stream.
-            if ((sap == 61 || sap == 63) && blks > 10) {
-                end = 4; // header + 3 data blocks max for trunking
-            }
-
-            // Bound header+blocks to allocation (1+127)
-            if (end > 128) {
-                end = 128;
-            }
+    for (int byte_idx = 2; byte_idx < P25_MPDU_R34_BYTES; byte_idx++) {
+        for (int bit = 0; bit < 8; bit++) {
+            ctx->mpdu_crc_bits[ctx->crc_bit_count++] = ((ctx->r34byte_b[byte_idx] << bit) & 0x80) >> 7;
         }
     }
 
-    // Compute header CRC: prefer any individual rep that passes CRC16
-    // (same strategy as TSBK path). Majority-vote on CRC bits can produce
-    // an invalid checksum even when individual reps are correct, which is
-    // why MBT trunking PDUs were consistently failing CRC here.
-    {
-        int reps = (end < 3) ? end : 3;
-
-        // For multi-block PDUs (BLKS >= 1), only rep 0 is the actual header.
-        // Reps 1+ are data blocks with different content — majority-voting
-        // them against the header produces corrupted bits that fail CRC16.
-        int hdr_reps = (blks >= 1) ? 1 : reps;
-
-        // First, check if any single repetition passes CRC16
-        int sel_idx = -1;
-        for (j = 0; j < hdr_reps; j++) {
-            if (hdr_rep_crc[j] == 0) {
-                sel_idx = j;
-                break;
-            }
+    for (int bit = 0; bit < 7; bit++) {
+        ctx->mpdu_crc9_bits[ctx->crc9_bit_count++] = ((ctx->r34byte_b[0] << bit) & 0x80) >> 7;
+    }
+    for (int byte_idx = 2; byte_idx < P25_MPDU_R34_BYTES; byte_idx++) {
+        for (int bit = 0; bit < 8; bit++) {
+            ctx->mpdu_crc9_bits[ctx->crc9_bit_count++] = ((ctx->r34byte_b[byte_idx] << bit) & 0x80) >> 7;
         }
+    }
+}
 
-        if (sel_idx >= 0) {
-            // Use the passing repetition's bytes for the header
-            err[0] = 0;
-            memcpy(mpdu_byte, hdr_rep_bytes[sel_idx], 12);
-            state->p25_p1_fec_ok++;
-#ifdef USE_RADIO
-            dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
-#endif
+static void
+p25_mpdu_decode_r12_block(P25MpduContext* ctx, int block_idx) {
+    p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
+    int candidate_count = p25_12_soft_llr_list(ctx->tsbk_dibit, ctx->tsbk_llr, candidates, P25_12_MAX_CANDIDATES);
+    if (candidate_count > 0) {
+        int selected = (block_idx == 0) ? p25_mpdu_select_crc16_candidate(candidates, candidate_count) : 0;
+        DSD_MEMCPY(ctx->tsbk_byte, candidates[selected].bytes, sizeof(ctx->tsbk_byte));
+    } else {
+        (void)p25_12_soft_llr(ctx->tsbk_dibit, ctx->tsbk_llr, ctx->tsbk_byte);
+    }
+}
+
+static void
+p25_mpdu_unpack_tsbk_bytes(P25MpduContext* ctx) {
+    p25_mpdu_bytes_to_int_bits(ctx->tsbk_byte, ctx->tsbk_decoded_bits, P25_MPDU_R12_BYTES);
+}
+
+static void
+p25_mpdu_store_header_rep(P25MpduContext* ctx, int block_idx) {
+    if (block_idx >= P25_MPDU_HEADER_REPS) {
+        return;
+    }
+    for (int bit = 0; bit < P25_MPDU_HEADER_BITS; bit++) {
+        ctx->hdr_rep_bits[block_idx][bit] = (uint8_t)(ctx->tsbk_decoded_bits[bit] & 1);
+    }
+    DSD_MEMCPY(ctx->hdr_rep_llr[block_idx], ctx->tsbk_llr, sizeof(ctx->tsbk_llr));
+    DSD_MEMCPY(ctx->hdr_rep_bytes[block_idx], ctx->tsbk_byte, P25_MPDU_R12_BYTES);
+    ctx->hdr_rep_crc[block_idx] = crc16_lb_bridge(ctx->tsbk_decoded_bits, 80);
+}
+
+static void
+p25_mpdu_store_r12_block(P25MpduContext* ctx, int block_idx) {
+    for (int byte_idx = 0; byte_idx < P25_MPDU_R12_BYTES; byte_idx++) {
+        int byte = 0;
+        for (int bit = 0; bit < 8; bit++) {
+            byte = (byte << 1) | ctx->tsbk_decoded_bits[(byte_idx * 8) + bit];
+        }
+        ctx->tsbk_byte[byte_idx] = (uint8_t)byte;
+        size_t mpdu_off = (size_t)byte_idx + ((size_t)block_idx * P25_MPDU_R12_BYTES);
+        if (mpdu_off < sizeof(ctx->mpdu_byte)) {
+            ctx->mpdu_byte[mpdu_off] = (uint8_t)byte;
+        }
+    }
+}
+
+static void
+p25_mpdu_update_header_from_first_block(P25MpduContext* ctx, const dsd_opts* opts) {
+    if (ctx->hdr_rep_crc[0] != 0 && opts->aggressive_framesync != 0) {
+        return;
+    }
+
+    uint8_t an = (ctx->mpdu_byte[0] >> 6) & 0x1;
+    ctx->io = (ctx->mpdu_byte[0] >> 5) & 0x1;
+    ctx->fmt = ctx->mpdu_byte[0] & 0x1F;
+    ctx->sap = ctx->mpdu_byte[1] & 0x3F;
+    ctx->blks = ctx->mpdu_byte[6] & 0x7F;
+    ctx->r34 = (an == 1 && ctx->fmt == 0x16) ? 1 : ctx->r34;
+    ctx->end = ctx->blks + 1;
+
+    if ((ctx->sap == 61 || ctx->sap == 63) && ctx->blks > 10) {
+        ctx->end = 4;
+    }
+}
+
+static void
+p25_mpdu_collect_blocks(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
+    int skipdibit = 36 - 14;
+    for (int block_idx = 0; block_idx < ctx->end; block_idx++) {
+        p25_mpdu_read_repetition(opts, state, ctx, &skipdibit);
+        if (ctx->r34 && block_idx != 0) {
+            p25_mpdu_decode_r34_block(ctx, block_idx);
         } else {
-            if (hdr_reps > 1) {
-                int16_t combined_llr[196];
-                memset(combined_llr, 0, sizeof(combined_llr));
-                for (i = 0; i < 196; i++) {
-                    int acc = 0;
-                    for (j = 0; j < hdr_reps; j++) {
-                        acc = saturating_llr_add(acc, hdr_rep_llr[j][i]);
-                    }
-                    combined_llr[i] = (int16_t)acc;
-                }
-
-                p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
-                int candidate_count = p25_12_soft_llr_list(NULL, combined_llr, candidates, P25_12_MAX_CANDIDATES);
-                int selected = -1;
-                for (int c = 0; c < candidate_count; c++) {
-                    int candidate_bits[96];
-                    int bit_index = 0;
-                    for (int b = 0; b < 12; b++) {
-                        for (int bit = 0; bit < 8; bit++) {
-                            candidate_bits[bit_index++] = ((candidates[c].bytes[b] << bit) & 0x80) >> 7;
-                        }
-                    }
-                    if (crc16_lb_bridge(candidate_bits, 80) == 0) {
-                        selected = c;
-                        break;
-                    }
-                }
-                if (selected >= 0) {
-                    err[0] = 0;
-                    memcpy(mpdu_byte, candidates[selected].bytes, 12);
-                    state->p25_p1_fec_ok++;
-                    state->p25_p1_soft_combined_ok++;
-#ifdef USE_RADIO
-                    dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
-#endif
-                }
-            }
+            p25_mpdu_decode_r12_block(ctx, block_idx);
         }
 
-        if (sel_idx < 0 && err[0] != 0) {
-            // No individual rep passed; fall back to majority-voted bits
-            uint8_t hdr_maj_bits[96];
-            memset(hdr_maj_bits, 0, sizeof(hdr_maj_bits));
-            for (i = 0; i < 96; i++) {
-                int sum = 0;
-                for (j = 0; j < hdr_reps; j++) {
-                    sum += (int)hdr_rep_bits[j][i];
-                }
-                int thresh = (hdr_reps >= 2) ? ((hdr_reps + 1) / 2) : 1;
-                hdr_maj_bits[i] = (uint8_t)((sum >= thresh) ? 1 : 0);
-            }
-            int hdr_bits_int[96];
-            for (i = 0; i < 96; i++) {
-                hdr_bits_int[i] = (int)hdr_maj_bits[i];
-            }
-            err[0] = crc16_lb_bridge(hdr_bits_int, 80);
+        p25_mpdu_unpack_tsbk_bytes(ctx);
+        p25_mpdu_store_header_rep(ctx, block_idx);
+        p25_mpdu_store_r12_block(ctx, block_idx);
+        if (block_idx == 0) {
+            p25_mpdu_update_header_from_first_block(ctx, opts);
+        }
+    }
+}
 
-            // Rebuild mpdu_byte header from majority bits for downstream parsing
-            for (i = 0; i < 12; i++) {
-                int byte = 0;
-                for (x = 0; x < 8; x++) {
-                    byte = (byte << 1) | (hdr_maj_bits[(i * 8) + x] & 1);
-                }
-                mpdu_byte[i] = (uint8_t)byte;
-            }
-
-            if (err[0] == 0) {
-                state->p25_p1_fec_ok++;
+static void
+p25_mpdu_note_header_fec(dsd_state* state, int ok, int soft_combined) {
+    if (ok) {
+        state->p25_p1_fec_ok++;
+        if (soft_combined) {
+            state->p25_p1_soft_combined_ok++;
+        }
 #ifdef USE_RADIO
-                dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
+        dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
 #endif
+    } else {
+        state->p25_p1_fec_err++;
+#ifdef USE_RADIO
+        dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
+#endif
+    }
+}
+
+static int
+p25_mpdu_try_combined_header(P25MpduContext* ctx, int hdr_reps) {
+    int16_t combined_llr[P25_MPDU_HEADER_LLR];
+    DSD_MEMSET(combined_llr, 0, sizeof(combined_llr));
+    for (int bit = 0; bit < P25_MPDU_HEADER_LLR; bit++) {
+        int acc = 0;
+        for (int rep = 0; rep < hdr_reps; rep++) {
+            acc = saturating_llr_add(acc, ctx->hdr_rep_llr[rep][bit]);
+        }
+        combined_llr[bit] = (int16_t)acc;
+    }
+
+    p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
+    int candidate_count = p25_12_soft_llr_list(NULL, combined_llr, candidates, P25_12_MAX_CANDIDATES);
+    for (int candidate_idx = 0; candidate_idx < candidate_count; candidate_idx++) {
+        int candidate_bits[P25_MPDU_HEADER_BITS];
+        p25_mpdu_bytes_to_int_bits(candidates[candidate_idx].bytes, candidate_bits, P25_MPDU_R12_BYTES);
+        if (crc16_lb_bridge(candidate_bits, 80) == 0) {
+            ctx->err[0] = 0;
+            DSD_MEMCPY(ctx->mpdu_byte, candidates[candidate_idx].bytes, P25_MPDU_R12_BYTES);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+p25_mpdu_rebuild_header_from_majority(P25MpduContext* ctx, int hdr_reps) {
+    uint8_t hdr_maj_bits[P25_MPDU_HEADER_BITS];
+    DSD_MEMSET(hdr_maj_bits, 0, sizeof(hdr_maj_bits));
+    int thresh = (hdr_reps >= 2) ? ((hdr_reps + 1) / 2) : 1;
+    for (int bit = 0; bit < P25_MPDU_HEADER_BITS; bit++) {
+        int sum = 0;
+        for (int rep = 0; rep < hdr_reps; rep++) {
+            sum += (int)ctx->hdr_rep_bits[rep][bit];
+        }
+        hdr_maj_bits[bit] = (uint8_t)((sum >= thresh) ? 1 : 0);
+    }
+
+    int hdr_bits_int[P25_MPDU_HEADER_BITS];
+    for (int bit = 0; bit < P25_MPDU_HEADER_BITS; bit++) {
+        hdr_bits_int[bit] = (int)hdr_maj_bits[bit];
+    }
+    ctx->err[0] = crc16_lb_bridge(hdr_bits_int, 80);
+
+    for (int byte_idx = 0; byte_idx < P25_MPDU_R12_BYTES; byte_idx++) {
+        int byte = 0;
+        for (int bit = 0; bit < 8; bit++) {
+            byte = (byte << 1) | (hdr_maj_bits[(byte_idx * 8) + bit] & 1);
+        }
+        ctx->mpdu_byte[byte_idx] = (uint8_t)byte;
+    }
+}
+
+static void
+p25_mpdu_finalize_header(dsd_state* state, P25MpduContext* ctx) {
+    int reps = (ctx->end < P25_MPDU_HEADER_REPS) ? ctx->end : P25_MPDU_HEADER_REPS;
+    int hdr_reps = (ctx->blks >= 1) ? 1 : reps;
+    int selected_rep = -1;
+    for (int rep = 0; rep < hdr_reps; rep++) {
+        if (ctx->hdr_rep_crc[rep] == 0) {
+            selected_rep = rep;
+            break;
+        }
+    }
+
+    if (selected_rep >= 0) {
+        ctx->err[0] = 0;
+        DSD_MEMCPY(ctx->mpdu_byte, ctx->hdr_rep_bytes[selected_rep], P25_MPDU_R12_BYTES);
+        p25_mpdu_note_header_fec(state, 1, 0);
+    } else if (hdr_reps > 1 && p25_mpdu_try_combined_header(ctx, hdr_reps)) {
+        p25_mpdu_note_header_fec(state, 1, 1);
+    }
+
+    if (selected_rep < 0 && ctx->err[0] != 0) {
+        p25_mpdu_rebuild_header_from_majority(ctx, hdr_reps);
+        p25_mpdu_note_header_fec(state, ctx->err[0] == 0, 0);
+    }
+}
+
+static void
+p25_mpdu_decode_header_if_usable(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
+    if (ctx->err[0] != 0 && opts->aggressive_framesync != 0) {
+        return;
+    }
+
+    ctx->io = (ctx->mpdu_byte[0] >> 5) & 0x1;
+    ctx->fmt = ctx->mpdu_byte[0] & 0x1F;
+    ctx->sap = ctx->mpdu_byte[1] & 0x3F;
+    ctx->blks = ctx->mpdu_byte[6] & 0x7F;
+    p25_decode_pdu_header(opts, state, ctx->mpdu_byte);
+}
+
+static void
+p25_mpdu_log_header_crc_error(const P25MpduContext* ctx) {
+    if (ctx->err[0] == 0) {
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "%s", KRED);
+    DSD_FPRINTF(stderr, " P25 Data Header CRC Error");
+    DSD_FPRINTF(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, " [HDR:");
+    for (int byte_idx = 0; byte_idx < P25_MPDU_R12_BYTES; byte_idx++) {
+        DSD_FPRINTF(stderr, "%02X", ctx->mpdu_byte[byte_idx]);
+    }
+    DSD_FPRINTF(stderr, " AN=%d IO=%d FMT=0x%02X SAP=0x%02X BLKS=%d]", (ctx->mpdu_byte[0] >> 6) & 0x1,
+                (ctx->mpdu_byte[0] >> 5) & 0x1, ctx->mpdu_byte[0] & 0x1F, ctx->mpdu_byte[1] & 0x3F,
+                ctx->mpdu_byte[6] & 0x7F);
+}
+
+static void
+p25_mpdu_print_trunking_payload(const dsd_opts* opts, const P25MpduContext* ctx, uint32_t crc_extracted,
+                                uint32_t crc_computed) {
+    if (opts->payload != 1) {
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, "\n P25 MBT Payload \n  ");
+    for (int byte_idx = 0; byte_idx < ((ctx->blks + 1) * P25_MPDU_R12_BYTES); byte_idx++) {
+        if ((byte_idx != 0) && ((byte_idx % P25_MPDU_R12_BYTES) == 0)) {
+            DSD_FPRINTF(stderr, "\n  ");
+        }
+        DSD_FPRINTF(stderr, "[%02X]", ctx->mpdu_byte[byte_idx]);
+    }
+
+    DSD_FPRINTF(stderr, "\n ");
+    DSD_FPRINTF(stderr, " CRC EXT %08X CMP %08X", crc_extracted, crc_computed);
+    DSD_FPRINTF(stderr, "%s ", KNRM);
+
+    if (ctx->err[0] != 0) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " (HDR CRC16 ERR)");
+        DSD_FPRINTF(stderr, "%s", KCYN);
+    }
+    if (ctx->err[1] != 0) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " (MBT CRC32 ERR)");
+        DSD_FPRINTF(stderr, "%s", KCYN);
+    }
+}
+
+static int
+p25_mpdu_handle_trunking(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
+    if ((ctx->sap != 0x3D) || ((ctx->fmt != 0x17) && (ctx->fmt != 0x15))) {
+        return 0;
+    }
+
+    int len = P25_MPDU_R12_BYTES * (ctx->blks + 1);
+    uint32_t crc_extracted = ((uint32_t)ctx->mpdu_byte[len - 4] << 24) | ((uint32_t)ctx->mpdu_byte[len - 3] << 16)
+                             | ((uint32_t)ctx->mpdu_byte[len - 2] << 8) | ctx->mpdu_byte[len - 1];
+    uint32_t crc_computed = crc32mbf(ctx->mpdu_byte + P25_MPDU_R12_BYTES, (P25_MPDU_HEADER_BITS * ctx->blks) - 32);
+    if (crc_computed == crc_extracted) {
+        ctx->err[1] = 0;
+    }
+
+    if (ctx->err[0] == 0 && ctx->err[1] == 0 && ctx->io == 1 && ctx->fmt == 0x17) {
+        p25_decode_pdu_trunking(opts, state, ctx->mpdu_byte);
+    }
+
+    p25_mpdu_print_trunking_payload(opts, ctx, crc_extracted, crc_computed);
+    DSD_FPRINTF(stderr, "%s ", KNRM);
+    DSD_FPRINTF(stderr, "\n");
+    return 1;
+}
+
+static void
+p25_mpdu_compute_rate34_crc(P25MpduContext* ctx, uint32_t* crc_extracted, uint32_t* crc_computed) {
+    uint8_t crc_bytes[P25_MPDU_MAX_DATA_BLOCKS * P25_MPDU_R34_BYTES];
+    DSD_MEMSET(crc_bytes, 0, sizeof(crc_bytes));
+    for (int byte_idx = 0; byte_idx < 16 * (ctx->blks + 1); byte_idx++) {
+        crc_bytes[byte_idx] = (uint8_t)ConvertBitIntoBytes(&ctx->mpdu_crc_bits[(size_t)byte_idx * 8], 8);
+    }
+
+    if (ctx->blks > 0) {
+        *crc_extracted = (uint32_t)ConvertBitIntoBytes(&ctx->mpdu_crc_bits[(((size_t)128) * ctx->blks) - 32], 32);
+        *crc_computed = crc32mbf(crc_bytes, (((size_t)128) * ctx->blks) - 32);
+    } else {
+        *crc_extracted = 0;
+        *crc_computed = 0;
+    }
+    if (*crc_computed == *crc_extracted) {
+        ctx->err[1] = 0;
+    }
+}
+
+static int
+p25_mpdu_reconstruct_rate34_payload(P25MpduContext* ctx, uint8_t* dbsn, uint16_t* crc9_ext, uint16_t* crc9_cmp) {
+    DSD_MEMSET(ctx->mpdu_byte + P25_MPDU_R12_BYTES, 0, sizeof(ctx->mpdu_byte) - P25_MPDU_R12_BYTES);
+    int mpdu_idx = P25_MPDU_R12_BYTES;
+    int next = 0;
+    int block_ptr = 0;
+
+    for (int byte_idx = 2; byte_idx <= P25_MPDU_R34_BYTES * ctx->blks; byte_idx++) {
+        if ((byte_idx != 0) && ((byte_idx % P25_MPDU_R34_BYTES) == 0)) {
+            dbsn[block_ptr] = ctx->r34bytes[byte_idx - P25_MPDU_R34_BYTES] >> 1;
+            crc9_ext[block_ptr] = (uint16_t)(((ctx->r34bytes[byte_idx - P25_MPDU_R34_BYTES] & 1) << 8)
+                                             | ctx->r34bytes[byte_idx - (P25_MPDU_R34_BYTES - 1)]);
+            crc9_cmp[block_ptr] = ComputeCrc9Bit(ctx->mpdu_crc9_bits + next, 135);
+            next += 135;
+            block_ptr++;
+            if (byte_idx != P25_MPDU_R34_BYTES * ctx->blks) {
+                byte_idx += 2;
+            }
+        }
+        if ((size_t)mpdu_idx < sizeof(ctx->mpdu_byte)) {
+            ctx->mpdu_byte[mpdu_idx++] = ctx->r34bytes[byte_idx];
+        }
+    }
+    return mpdu_idx;
+}
+
+static void
+p25_mpdu_print_rate34_payload(const dsd_opts* opts, const P25MpduContext* ctx, int mpdu_idx, const uint8_t* dbsn,
+                              const uint16_t* crc9_ext, const uint16_t* crc9_cmp, uint32_t crc_extracted,
+                              uint32_t crc_computed) {
+    if (opts->payload != 1) {
+        return;
+    }
+
+    int block_ptr = 0;
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, "\n P25 MPDU Rate 34 Payload \n ");
+    for (int byte_idx = 0; byte_idx < P25_MPDU_R12_BYTES; byte_idx++) {
+        DSD_FPRINTF(stderr, "%02X", ctx->mpdu_byte[byte_idx]);
+    }
+    DSD_FPRINTF(stderr, "         Header \n ");
+
+    for (int byte_idx = P25_MPDU_R12_BYTES; byte_idx < mpdu_idx; byte_idx++) {
+        if (((byte_idx - P25_MPDU_R12_BYTES) != 0) && (((byte_idx - P25_MPDU_R12_BYTES) % 16) == 0)) {
+            if (crc9_ext[block_ptr] == crc9_cmp[block_ptr]) {
+                DSD_FPRINTF(stderr, " DBSN: %d;", dbsn[block_ptr] + 1);
             } else {
-                state->p25_p1_fec_err++;
-#ifdef USE_RADIO
-                dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
-#endif
+                DSD_FPRINTF(stderr, "%s", KRED);
+                DSD_FPRINTF(stderr, " CRC ERR;");
+                DSD_FPRINTF(stderr, "%s", KCYN);
             }
+            if (byte_idx != (mpdu_idx - 1)) {
+                DSD_FPRINTF(stderr, "\n ");
+            }
+            block_ptr++;
+        }
+        if (byte_idx != (mpdu_idx - 1)) {
+            DSD_FPRINTF(stderr, "%02X", ctx->mpdu_byte[byte_idx]);
         }
     }
 
-    if (err[0] == 0 || opts->aggressive_framesync == 0) {
-        // Re-parse header fields from mpdu_byte[] which may have been
-        // updated by the best-rep selection above.
-        io = (mpdu_byte[0] >> 5) & 0x1;
-        fmt = mpdu_byte[0] & 0x1F;
-        sap = mpdu_byte[1] & 0x3F;
-        blks = mpdu_byte[6] & 0x7F;
+    if (ctx->err[1] != 0) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, "\n (MPDU CRC32 ERR)");
+        DSD_FPRINTF(stderr, "%s", KCYN);
+        DSD_FPRINTF(stderr, " CRC EXT %08X CMP %08X", crc_extracted, crc_computed);
+    }
+}
 
-        p25_decode_pdu_header(opts, state, mpdu_byte);
+static void
+p25_mpdu_clear_last_call(dsd_state* state) {
+    state->lasttg = 0;
+    state->lastsrc = 0;
+}
+
+static void
+p25_mpdu_handle_rate34(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
+    uint32_t crc_extracted = 0;
+    uint32_t crc_computed = 0;
+    p25_mpdu_compute_rate34_crc(ctx, &crc_extracted, &crc_computed);
+
+    uint8_t dbsn[P25_MPDU_MAX_DATA_BLOCKS];
+    uint16_t crc9_ext[P25_MPDU_MAX_DATA_BLOCKS];
+    uint16_t crc9_cmp[P25_MPDU_MAX_DATA_BLOCKS];
+    DSD_MEMSET(dbsn, 0, sizeof(dbsn));
+    DSD_MEMSET(crc9_ext, 0, sizeof(crc9_ext));
+    DSD_MEMSET(crc9_cmp, 0, sizeof(crc9_cmp));
+
+    int mpdu_idx = p25_mpdu_reconstruct_rate34_payload(ctx, dbsn, crc9_ext, crc9_cmp);
+    if ((ctx->err[1] == 0 || opts->aggressive_framesync == 0) && ctx->blks != 0) {
+        p25_decode_pdu_data(opts, state, ctx->mpdu_byte, mpdu_idx - 1);
     }
 
-    if (err[0] != 0) {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, " P25 Data Header CRC Error");
-        fprintf(stderr, "%s", KNRM);
-        fprintf(stderr, " [HDR:");
-        for (i = 0; i < 12; i++) {
-            fprintf(stderr, "%02X", mpdu_byte[i]);
-        }
-        fprintf(stderr, " AN=%d IO=%d FMT=0x%02X SAP=0x%02X BLKS=%d]", (mpdu_byte[0] >> 6) & 0x1,
-                (mpdu_byte[0] >> 5) & 0x1, mpdu_byte[0] & 0x1F, mpdu_byte[1] & 0x3F, mpdu_byte[6] & 0x7F);
+    p25_mpdu_print_rate34_payload(opts, ctx, mpdu_idx, dbsn, crc9_ext, crc9_cmp, crc_extracted, crc_computed);
+    DSD_FPRINTF(stderr, "%s ", KNRM);
+    DSD_FPRINTF(stderr, "\n");
+    p25_mpdu_clear_last_call(state);
+}
+
+static void
+p25_mpdu_print_rate12_payload(const dsd_opts* opts, const P25MpduContext* ctx, int len) {
+    if (opts->payload != 1) {
+        return;
     }
 
-    //trunking blocks
-    if ((sap == 0x3D) && ((fmt == 0x17) || (fmt == 0x15))) {
-
-        //CRC32 is now working!
-        CRCExtracted = (mpdu_byte[(12 * (blks + 1)) - 4] << 24) | (mpdu_byte[(12 * (blks + 1)) - 3] << 16)
-                       | (mpdu_byte[(12 * (blks + 1)) - 2] << 8) | (mpdu_byte[(12 * (blks + 1)) - 1] << 0);
-        CRCComputed = crc32mbf(mpdu_byte + 12, (96 * blks) - 32);
-        if (CRCComputed == CRCExtracted) {
-            err[1] = 0;
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, "\n P25 MPDU Rate 12 Payload: \n  ");
+    for (int byte_idx = 0; byte_idx < len; byte_idx++) {
+        if (byte_idx == P25_MPDU_R12_BYTES) {
+            DSD_FPRINTF(stderr, " Header");
         }
-
-        //pass the PDU to p25_decode_pdu_trunking
-        // Require both header CRC16 and payload CRC32.  The payload CRC does
-        // not cover header fields such as opcode, SAP, block count, or channel.
-        if (err[0] == 0 && err[1] == 0 && io == 1 && fmt == 0x17) { //ALT Format
-            p25_decode_pdu_trunking(opts, state, mpdu_byte);
+        if ((byte_idx != 0) && ((byte_idx % P25_MPDU_R12_BYTES) == 0)) {
+            DSD_FPRINTF(stderr, "\n  ");
         }
+        DSD_FPRINTF(stderr, "%02X", ctx->mpdu_byte[byte_idx]);
+    }
+}
 
-        if (opts->payload == 1) {
-            fprintf(stderr, "%s", KCYN);
-            fprintf(stderr, "\n P25 MBT Payload \n  ");
-            for (i = 0; i < ((blks + 1) * 12); i++) {
-                if ((i != 0) && ((i % 12) == 0)) {
-                    fprintf(stderr, "\n  ");
-                }
-                fprintf(stderr, "[%02X]", mpdu_byte[i]);
-            }
-
-            fprintf(stderr, "\n ");
-            fprintf(stderr, " CRC EXT %08X CMP %08X", CRCExtracted, CRCComputed);
-            fprintf(stderr, "%s ", KNRM);
-
-            //Header
-            if (err[0] != 0) {
-                fprintf(stderr, "%s", KRED);
-                fprintf(stderr, " (HDR CRC16 ERR)");
-                fprintf(stderr, "%s", KCYN);
-            }
-
-            //Completed MBF
-            if (err[1] != 0) {
-                fprintf(stderr, "%s", KRED);
-                fprintf(stderr, " (MBT CRC32 ERR)");
-                fprintf(stderr, "%s", KCYN);
-            }
+static void
+p25_mpdu_handle_rate12(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
+    int len = P25_MPDU_R12_BYTES * (ctx->blks + 1);
+    uint32_t crc_extracted = 0;
+    uint32_t crc_computed = 0;
+    if (ctx->blks != 0) {
+        crc_extracted = ((uint32_t)ctx->mpdu_byte[len - 4] << 24) | ((uint32_t)ctx->mpdu_byte[len - 3] << 16)
+                        | ((uint32_t)ctx->mpdu_byte[len - 2] << 8) | ctx->mpdu_byte[len - 1];
+        crc_computed = crc32mbf(ctx->mpdu_byte + P25_MPDU_R12_BYTES, (P25_MPDU_HEADER_BITS * ctx->blks) - 32);
+        if (crc_computed == crc_extracted) {
+            ctx->err[1] = 0;
         }
-
-        fprintf(stderr, "%s ", KNRM);
-        fprintf(stderr, "\n");
-
-    } //end trunking block format
-
-    else if (r34 == 1) // && err[0] == 0) //start r34
-    {
-        //TODO: Cleanup and make more elegant (maybe just use the crc_bytes on the payload dump)
-        uint8_t crc_bytes[127 * 18];
-        memset(crc_bytes, 0, sizeof(crc_bytes));
-        for (i = 0; i < 16 * (blks + 1); i++) {
-            crc_bytes[i] = (uint8_t)ConvertBitIntoBytes(&mpdu_crc_bits[(size_t)i * 8], 8);
-        }
-
-        if (blks > 0 && (((size_t)128) * blks) >= 32) {
-            CRCExtracted = (uint32_t)ConvertBitIntoBytes(&mpdu_crc_bits[(((size_t)128) * blks) - 32], 32);
-            CRCComputed = crc32mbf(crc_bytes, (((size_t)128) * blks) - 32);
-        } else {
-            CRCExtracted = 0;
-            CRCComputed = 0;
-        }
-        if (CRCComputed == CRCExtracted) {
-            err[1] = 0;
-        }
-
-        //reset mpdu_byte to load only the data, and not the dbsn and crc into
-        memset(mpdu_byte + 12, 0, sizeof(mpdu_byte) - 12);
-        int mpdu_idx = 12;
-        int next = 0;
-
-        //arrays for each block
-        uint8_t block_ptr = 0; //ptr to current block
-        uint8_t dbsn[127];
-        memset(dbsn, 0, sizeof(dbsn));
-        uint16_t crc9_ext[127];
-        memset(crc9_ext, 0, sizeof(crc9_ext));
-        uint16_t crc9_cmp[127];
-        memset(crc9_cmp, 0, sizeof(crc9_cmp));
-
-        //reconstruct the message
-        for (i = 2; i <= 18 * blks; i++) {
-            if ((i != 0) && ((i % 18) == 0)) {
-                dbsn[block_ptr] = r34bytes[i - 18] >> 1; //get the previous DBSN at this point
-                crc9_ext[block_ptr] = ((r34bytes[i - 18] & 1) << 8) | r34bytes[i - 17];
-                crc9_cmp[block_ptr] = ComputeCrc9Bit(mpdu_crc9_bits + next, 135);
-                next += 135;
-                block_ptr++;
-                if (i != 18 * blks) {
-                    i += 2; //skip the next DBSN/CRC9
-                }
-            }
-            if ((size_t)mpdu_idx < sizeof(mpdu_byte)) {
-                mpdu_byte[mpdu_idx++] = r34bytes[i];
-            }
-        }
-
-        //minus 1 to offset the last rounds mpdu_idx++
-        if ((err[1] == 0 || opts->aggressive_framesync == 0) && blks != 0) {
-            p25_decode_pdu_data(opts, state, mpdu_byte, mpdu_idx - 1);
-        }
-
-        if (opts->payload == 1) {
-            block_ptr = 0;
-            fprintf(stderr, "%s", KCYN);
-            fprintf(stderr, "\n P25 MPDU Rate 34 Payload \n ");
-            for (i = 0; i < 12; i++) { //header
-                fprintf(stderr, "%02X", mpdu_byte[i]);
-            }
-            fprintf(stderr, "         Header \n ");
-
-            for (i = 12; i < mpdu_idx; i++) {
-                if (((i - 12) != 0) && (((i - 12) % 16) == 0)) {
-                    if (crc9_ext[block_ptr] == crc9_cmp[block_ptr]) {
-                        fprintf(stderr, " DBSN: %d;", dbsn[block_ptr] + 1);
-                    } else {
-                        fprintf(stderr, "%s", KRED);
-                        fprintf(stderr, " CRC ERR;");
-                        fprintf(stderr, "%s", KCYN);
-                        // fprintf (stderr, " EXT: %03X; CMP: %03X", crc9_ext[block_ptr], crc9_cmp[block_ptr]);
-                    }
-                    if (i != (mpdu_idx - 1)) {
-                        fprintf(stderr, "\n ");
-                    }
-                    block_ptr++;
-                }
-                if (i != (mpdu_idx - 1)) {
-                    fprintf(stderr, "%02X", mpdu_byte[i]);
-                }
-            }
-
-            if (err[1] != 0) {
-                fprintf(stderr, "%s", KRED);
-                fprintf(stderr, "\n (MPDU CRC32 ERR)");
-                fprintf(stderr, "%s", KCYN);
-                fprintf(stderr, " CRC EXT %08X CMP %08X", CRCExtracted, CRCComputed);
-            }
-        }
-
-        fprintf(stderr, "%s ", KNRM);
-        fprintf(stderr, "\n");
-
-        //clear these, regardless of if PDU was deocded, or attempted,
-        //so we don't create phantom voice calls in the event history
-        state->lasttg = 0;
-        state->lastsrc = 0;
-
-    } //end r34
-
-    else if (r34 == 0) //12 rate unconfirmed data //err[0] == 0
-    {
-        int len = 12 * (blks + 1);
-        if (blks != 0) {
-            if (len >= 4 && (96 * blks) >= 32) {
-                CRCExtracted = (mpdu_byte[len - 4] << 24) | (mpdu_byte[len - 3] << 16) | (mpdu_byte[len - 2] << 8)
-                               | (mpdu_byte[len - 1] << 0);
-                CRCComputed = crc32mbf(mpdu_byte + 12, (96 * blks) - 32);
-            } else {
-                CRCExtracted = 0;
-                CRCComputed = 0;
-            }
-            if (CRCComputed == CRCExtracted) {
-                err[1] = 0;
-            }
-        } else {
-            err[1] = 0; //No CRC32 on a lonely header
-        }
-
-        if ((err[1] == 0 || opts->aggressive_framesync == 0) && blks != 0) {
-            p25_decode_pdu_data(opts, state, mpdu_byte, len);
-        }
-
-        if (opts->payload == 1) {
-            fprintf(stderr, "%s", KCYN);
-            fprintf(stderr, "\n P25 MPDU Rate 12 Payload: \n  ");
-            for (i = 0; i < len; i++) //header and payload combined
-            {
-                if (i == 12) {
-                    fprintf(stderr, " Header");
-                }
-                if ((i != 0) && ((i % 12) == 0)) {
-                    fprintf(stderr, "\n  ");
-                }
-                fprintf(stderr, "%02X", mpdu_byte[i]);
-            }
-        }
-
-        if (err[1] != 0) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, "\n (MPDU CRC32 ERR)");
-            fprintf(stderr, "%s", KCYN);
-            fprintf(stderr, " CRC EXT %08X CMP %08X", CRCExtracted, CRCComputed);
-        }
-
-        fprintf(stderr, "%s", KNRM);
-        fprintf(stderr, "\n");
-
-        //clear these, regardless of if PDU was deocded, or attempted,
-        //so we don't create phantom voice calls in the event history
-        state->lasttg = 0;
-        state->lastsrc = 0;
-
-    } //end r12
-    else //crc header failure or other
-    {
-        fprintf(stderr, "%s", KNRM);
-        fprintf(stderr, "\n");
+    } else {
+        ctx->err[1] = 0;
     }
 
+    if ((ctx->err[1] == 0 || opts->aggressive_framesync == 0) && ctx->blks != 0) {
+        p25_decode_pdu_data(opts, state, ctx->mpdu_byte, len);
+    }
+
+    p25_mpdu_print_rate12_payload(opts, ctx, len);
+    if (ctx->err[1] != 0) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, "\n (MPDU CRC32 ERR)");
+        DSD_FPRINTF(stderr, "%s", KCYN);
+        DSD_FPRINTF(stderr, " CRC EXT %08X CMP %08X", crc_extracted, crc_computed);
+    }
+
+    DSD_FPRINTF(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "\n");
+    p25_mpdu_clear_last_call(state);
+}
+
+static void
+p25_mpdu_dispatch_payload(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
+    if (p25_mpdu_handle_trunking(opts, state, ctx)) {
+        return;
+    }
+    if (ctx->r34) {
+        p25_mpdu_handle_rate34(opts, state, ctx);
+    } else {
+        p25_mpdu_handle_rate12(opts, state, ctx);
+    }
+}
+
+void
+processMPDU(dsd_opts* opts, dsd_state* state) {
+    P25MpduContext ctx;
+    p25_mpdu_prepare_state(opts, state);
+    p25_mpdu_context_init(&ctx);
+    p25_mpdu_collect_blocks(opts, state, &ctx);
+    p25_mpdu_finalize_header(state, &ctx);
+    p25_mpdu_decode_header_if_usable(opts, state, &ctx);
+    p25_mpdu_log_header_crc_error(&ctx);
+    p25_mpdu_dispatch_payload(opts, state, &ctx);
     p25_status_accum_classify(state, opts);
 }

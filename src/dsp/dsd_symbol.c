@@ -28,31 +28,34 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
-#include <time.h>
-#ifdef USE_RADIO
-#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#endif
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
-#include <fcntl.h> // IWYU pragma: keep
+#include <fcntl.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
+#include <time.h>
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
 #include "pcm_input_staging.h"
+
+#ifdef USE_RADIO
+#endif
+#include <fcntl.h> // IWYU pragma: keep
 
 extern dsd_socket_t Connect(char* hostname, int portno);
 extern void cleanupAndExit(dsd_opts* opts, dsd_state* state);
@@ -120,7 +123,7 @@ read_soft_symbol_record(dsd_opts* opts, dsd_state* state, float* symbol_out) {
     state->symbol_replay_soft.llr[0] = read_le_i16(record + 2);
     state->symbol_replay_soft.llr[1] = read_le_i16(record + 4);
     uint32_t raw_symbol = read_le_u32(record + 6);
-    memcpy(symbol_out, &raw_symbol, sizeof(raw_symbol));
+    DSD_MEMCPY(symbol_out, &raw_symbol, sizeof(raw_symbol));
     state->symbol_replay_soft_symbol = *symbol_out;
     state->symbol_replay_has_soft = 1;
     state->symbol_replay_soft_records++;
@@ -199,30 +202,45 @@ slice_c4fm_level(int x, const dsd_state* s) {
 }
 
 static inline void
-maybe_c4fm_clock(dsd_opts* opts, dsd_state* state, int have_sync, int mode, int early, int mid, int late) {
-    (void)opts;
+clamp_symbol_center_to_margin(int* center, int samples_per_symbol) {
+    int min_c = 1;
+    int max_c = samples_per_symbol - 2;
+    if (*center < min_c) {
+        *center = min_c;
+    }
+    if (*center > max_c) {
+        *center = max_c;
+    }
+}
+
+static inline int
+c4fm_clock_allowed(const dsd_opts* opts, const dsd_state* state, int have_sync, int mode) {
     if (mode <= 0) {
-        return;
+        return 0;
     }
     /* Only on RTL pipeline; synced use is gated by runtime toggle to avoid
        perturbing steady-state decoders unless explicitly allowed. */
     if (opts->audio_in_type != AUDIO_IN_RTL) {
-        return;
+        return 0;
     }
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int allow_when_synced = (cfg && cfg->c4fm_clk_sync_is_set) ? (cfg->c4fm_clk_sync != 0) : 0;
     if (have_sync != 0 && !allow_when_synced) {
-        return;
+        return 0;
     }
     if (state->rf_mod != 0) {
-        return; /* C4FM only */
+        return 0; /* C4FM only */
     }
 
     /* Require valid neighborhood around center */
     if (state->symbolCenter < 1 || state->symbolCenter + 1 >= state->samplesPerSymbol) {
-        return;
+        return 0;
     }
+    return 1;
+}
 
+static inline int
+c4fm_clock_compute_error(dsd_state* state, int mode, int early, int mid, int late, long long* error_out) {
     long long e = 0;
     if (mode == 1) { /* Early-Late using energy difference */
         long long er = (long long)early;
@@ -235,16 +253,21 @@ maybe_c4fm_clock(dsd_opts* opts, dsd_state* state, int have_sync, int mode, int 
         a_k = slice_c4fm_level(mid, state);
         if (a_prev == 0) {
             state->c4fm_clk_prev_dec = a_k;
-            return; /* need one step of history */
+            return 0; /* need one step of history */
         }
         /* Use data-aided early/late difference to gate direction on symbol polarity */
         long long diff = (long long)late - (long long)early;
         e = diff * (long long)a_k;
         state->c4fm_clk_prev_dec = a_k;
     } else {
-        return;
+        return 0;
     }
+    *error_out = e;
+    return 1;
+}
 
+static inline void
+c4fm_clock_apply_nudge(dsd_state* state, long long e) {
     /* Convert to sign and apply simple persistence before nudging center */
     int dir = 0;
     if (e > 0) {
@@ -272,20 +295,304 @@ maybe_c4fm_clock(dsd_opts* opts, dsd_state* state, int have_sync, int mode, int 
     /* Nudge after brief persistence */
     if (state->c4fm_clk_run_len >= 4) {
         int c = state->symbolCenter + dir;
-        int min_c = 1;
-        int max_c = state->samplesPerSymbol - 2;
-        if (c < min_c) {
-            c = min_c;
-        }
-        if (c > max_c) {
-            c = max_c;
-        }
+        clamp_symbol_center_to_margin(&c, state->samplesPerSymbol);
         state->symbolCenter = c;
         state->c4fm_clk_cooldown = 12; /* short cooldown */
         state->c4fm_clk_run_len = 0;
     }
 }
+
+static inline void
+maybe_c4fm_clock(const dsd_opts* opts, dsd_state* state, int have_sync, int mode, int early, int mid, int late) {
+    if (!c4fm_clock_allowed(opts, state, have_sync, mode)) {
+        return;
+    }
+    long long e = 0;
+    if (!c4fm_clock_compute_error(state, mode, early, mid, late, &e)) {
+        return;
+    }
+    c4fm_clock_apply_nudge(state, e);
+}
 #endif
+
+typedef struct {
+    float sample;
+    float sum;
+    int count;
+    int symbol_span;
+    int l_edge_pre;
+    int r_edge_pre;
+    unsigned int analog_out_cap;
+#ifdef USE_RADIO
+    int rtl_output_kind;
+    int rtl_symbol_rate_output;
+    int rtl_channel_profile;
+    int rtl_symbol_rate_hz;
+    int rtl_symbol_levels;
+    uint32_t rtl_stream_generation;
+    int cqpsk_symbol_rate;
+    int clk_mode;
+    int clk_early;
+    int clk_mid;
+    int clk_late;
+#endif
+} symbol_work_ctx;
+
+static inline void
+symbol_work_ctx_init(symbol_work_ctx* work, const dsd_state* state) {
+    if (!work || !state) {
+        return;
+    }
+    work->sample = 0.0f;
+    work->sum = 0.0f;
+    work->count = 0;
+    work->symbol_span = 1;
+    work->l_edge_pre = 0;
+    work->r_edge_pre = 0;
+    work->analog_out_cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
+#ifdef USE_RADIO
+    work->rtl_output_kind = 0;
+    work->rtl_symbol_rate_output = 0;
+    work->rtl_channel_profile = 0;
+    work->rtl_symbol_rate_hz = 0;
+    work->rtl_symbol_levels = 4;
+    work->rtl_stream_generation = 0;
+    work->cqpsk_symbol_rate = 0;
+    work->clk_mode = 0;
+    work->clk_early = 0;
+    work->clk_mid = 0;
+    work->clk_late = 0;
+#endif
+}
+
+static inline int
+symbol_timing_debug_enabled(const dsd_opts* opts, const dsd_state* state, int have_sync) {
+    return opts->symboltiming == 1 && have_sync == 0 && state->lastsynctype != DSD_SYNC_NONE;
+}
+
+static inline void
+symbol_timing_debug_char(const dsd_opts* opts, const dsd_state* state, int have_sync, char c) {
+    if (symbol_timing_debug_enabled(opts, state, have_sync)) {
+        DSD_FPRINTF(stderr, "%c", c);
+    }
+}
+
+static inline int
+symbol_is_m17_sync(int lastsynctype) {
+    return lastsynctype == DSD_SYNC_M17_STR_POS || lastsynctype == DSD_SYNC_M17_STR_NEG
+           || lastsynctype == DSD_SYNC_M17_LSF_POS || lastsynctype == DSD_SYNC_M17_LSF_NEG
+           || lastsynctype == DSD_SYNC_M17_PKT_POS || lastsynctype == DSD_SYNC_M17_PKT_NEG
+           || lastsynctype == DSD_SYNC_M17_PRE_POS || lastsynctype == DSD_SYNC_M17_PRE_NEG;
+}
+
+static inline float
+symbol_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample, int rtl_symbol_rate_output,
+                            int cqpsk_symbol_rate) {
+    if (!opts->use_cosine_filter || rtl_symbol_rate_output || cqpsk_symbol_rate) {
+        return sample;
+    }
+    if (DSD_SYNC_IS_DMR_BS(state->lastsynctype) || DSD_SYNC_IS_DMR_MS(state->lastsynctype)
+        || DSD_SYNC_IS_YSF(state->lastsynctype)) {
+        return dmr_filter(sample, state->samplesPerSymbol);
+    }
+    if (symbol_is_m17_sync(state->lastsynctype)) {
+        return m17_filter(sample, state->samplesPerSymbol);
+    }
+    if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
+        return p25_filter(sample, state->samplesPerSymbol);
+    }
+    if (DSD_SYNC_IS_DPMR(state->lastsynctype) || DSD_SYNC_IS_NXDN(state->lastsynctype)) {
+        if (opts->frame_nxdn48 == 1) {
+            return nxdn_filter(sample, state->samplesPerSymbol);
+        }
+        if (opts->frame_dpmr == 1) {
+            return dpmr_filter(sample, state->samplesPerSymbol);
+        }
+        if (state->samplesPerSymbol == 8) {
+            return sample;
+        }
+        return dmr_filter(sample, state->samplesPerSymbol);
+    }
+    return sample;
+}
+
+static inline float
+symbol_apply_sync_clip(const dsd_state* state, int have_sync, float sample) {
+    if (have_sync == 1 && state->rf_mod == 0) {
+        if (sample > state->max) {
+            return state->max;
+        }
+        if (sample < state->min) {
+            return state->min;
+        }
+    }
+    return sample;
+}
+
+static inline void
+symbol_jitter_above_center(const dsd_opts* opts, dsd_state* state, int have_sync, int i, float sample) {
+    if (sample > (state->maxref * 1.25f)) {
+        if ((state->jitter < 0) && (state->rf_mod == 1)) {
+            state->jitter = i;
+        }
+        symbol_timing_debug_char(opts, state, have_sync, 'O');
+        return;
+    }
+    symbol_timing_debug_char(opts, state, have_sync, '+');
+    if ((state->jitter < 0) && (state->lastsample < state->center) && (state->rf_mod != 1)) {
+        state->jitter = i;
+    }
+}
+
+static inline void
+symbol_jitter_below_center(const dsd_opts* opts, dsd_state* state, int have_sync, int i, float sample) {
+    if (sample < (state->minref * 1.25f)) {
+        if ((state->jitter < 0) && (state->rf_mod == 1)) {
+            state->jitter = i;
+        }
+        symbol_timing_debug_char(opts, state, have_sync, 'X');
+        return;
+    }
+    symbol_timing_debug_char(opts, state, have_sync, '-');
+    if ((state->jitter < 0) && (state->lastsample > state->center) && (state->rf_mod != 1)) {
+        state->jitter = i;
+    }
+}
+
+static inline void
+symbol_update_jitter(const dsd_opts* opts, dsd_state* state, int have_sync, int i, float sample) {
+    if (sample > state->center) {
+        symbol_jitter_above_center(opts, state, have_sync, i, sample);
+    } else {
+        symbol_jitter_below_center(opts, state, have_sync, i, sample);
+    }
+}
+
+static inline void
+symbol_accumulate_add(symbol_work_ctx* work, float sample) {
+    work->sum += sample;
+    work->count++;
+}
+
+static inline int
+symbol_accumulate_nxdn_window(const dsd_state* state, int i) {
+    return state->samplesPerSymbol == 20 && i >= 7 && i <= 13;
+}
+
+static inline int
+symbol_accumulate_symbol_rate_override(const dsd_state* state, const symbol_work_ctx* work) {
+    (void)state;
+#ifdef USE_RADIO
+    return work->rtl_symbol_rate_output || work->cqpsk_symbol_rate;
+#else
+    return 0;
+#endif
+}
+
+static inline int
+symbol_accumulate_sps5_window(const dsd_state* state, int i) {
+    return state->samplesPerSymbol == 5 && i == 2;
+}
+
+static inline int
+symbol_accumulate_c4fm_window(const dsd_state* state, const symbol_work_ctx* work, int i) {
+    return i >= state->symbolCenter - work->l_edge_pre && i <= state->symbolCenter + work->r_edge_pre;
+}
+
+static inline int
+symbol_accumulate_other_window(const dsd_state* state, const symbol_work_ctx* work, int i) {
+    if (state->rf_mod == 2 && state->samplesPerSymbol <= 4) {
+        return i == state->symbolCenter;
+    }
+    return i == state->symbolCenter - work->l_edge_pre || i == state->symbolCenter + work->r_edge_pre;
+}
+
+static inline void
+symbol_accumulate_sample(const dsd_state* state, symbol_work_ctx* work, int i, float sample) {
+    if (symbol_accumulate_nxdn_window(state, i)) {
+        symbol_accumulate_add(work, sample);
+    }
+#ifdef USE_RADIO
+    if (symbol_accumulate_symbol_rate_override(state, work)) {
+        symbol_accumulate_add(work, sample);
+        return;
+    }
+#endif
+    if (symbol_accumulate_sps5_window(state, i)) {
+        symbol_accumulate_add(work, sample);
+        return;
+    }
+    if (state->rf_mod == 0) {
+        if (symbol_accumulate_c4fm_window(state, work, i)) {
+            symbol_accumulate_add(work, sample);
+        }
+#ifdef TRACE_DSD
+        if (i == state->symbolCenter - 1) {
+            state->debug_sample_left_edge = state->debug_sample_index - 1;
+        }
+        if (i == state->symbolCenter + 2) {
+            state->debug_sample_right_edge = state->debug_sample_index - 1;
+        }
+#endif
+        return;
+    }
+    if (symbol_accumulate_other_window(state, work, i)) {
+        symbol_accumulate_add(work, sample);
+    }
+}
+
+static inline void
+symbol_adjust_timing_nxdn(const dsd_state* state, int* i) {
+    if ((state->jitter >= 7) && (state->jitter <= 10)) {
+        (*i)--;
+    } else if ((state->jitter >= 11) && (state->jitter <= 14)) {
+        (*i)++;
+    }
+}
+
+static inline void
+symbol_adjust_timing_qpsk(const dsd_state* state, int* i) {
+    if ((state->jitter >= 0) && (state->jitter < state->symbolCenter)) {
+        (*i)++;
+    } else if ((state->jitter > state->symbolCenter) && (state->jitter < 10)) {
+        (*i)--;
+    }
+}
+
+static inline void
+symbol_adjust_timing_gfsk(const dsd_state* state, int* i) {
+    if ((state->jitter >= state->symbolCenter - 1) && (state->jitter <= state->symbolCenter)) {
+        (*i)--;
+    } else if ((state->jitter >= state->symbolCenter + 1) && (state->jitter <= state->symbolCenter + 2)) {
+        (*i)++;
+    }
+}
+
+static inline void
+symbol_adjust_timing_c4fm(const dsd_state* state, int* i) {
+    if ((state->jitter > 0) && (state->jitter <= state->symbolCenter)) {
+        (*i)--;
+    } else if ((state->jitter > state->symbolCenter) && (state->jitter < state->samplesPerSymbol)) {
+        (*i)++;
+    }
+}
+
+static inline void
+symbol_adjust_timing_index(dsd_state* state, int have_sync, int symbol_span, int* i) {
+    if (symbol_span <= 1 || *i != 0 || have_sync != 0) {
+        return;
+    }
+    if (state->samplesPerSymbol == 20) {
+        symbol_adjust_timing_nxdn(state, i);
+    } else if (state->rf_mod == 1) {
+        symbol_adjust_timing_qpsk(state, i);
+    } else if (state->rf_mod == 2) {
+        symbol_adjust_timing_gfsk(state, i);
+    } else if (state->rf_mod == 0) {
+        symbol_adjust_timing_c4fm(state, i);
+    }
+    state->jitter = -1;
+}
 
 #ifdef USE_RADIO
 /*
@@ -297,76 +604,81 @@ maybe_c4fm_clock(dsd_opts* opts, dsd_state* state, int have_sync, int mode, int 
  *  - Only when not currently synchronized (have_sync == 0)
  *  - Only for C4FM path (rf_mod == 0) to avoid QPSK perturbations
  */
-static inline void
-maybe_auto_center(dsd_opts* opts, dsd_state* state, int have_sync) {
+static inline int
+maybe_auto_center_allowed(const dsd_opts* opts, const dsd_state* state, int have_sync) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int freeze_window = (cfg && cfg->window_freeze_is_set) ? (cfg->window_freeze != 0) : 0;
     if (freeze_window) {
-        return; // explicit freeze requested
+        return 0; // explicit freeze requested
     }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
-        return; // only when using RTL stream/demod pipeline
+        return 0; // only when using RTL stream/demod pipeline
     }
     /* If synced, only run when explicitly allowed by runtime config. */
     if (have_sync != 0) {
-        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         int allow_when_synced = (cfg && cfg->c4fm_clk_sync_is_set) ? (cfg->c4fm_clk_sync != 0) : 0;
         if (!allow_when_synced) {
-            return;
+            return 0;
         }
     }
     if (state->rf_mod != 0) {
-        return; // limit to C4FM for now; avoid QPSK
+        return 0; // limit to C4FM for now; avoid QPSK
     }
+    return 1;
+}
 
-    /* Cooldown to avoid rapid flips */
-    static int cooldown = 0;
-    if (cooldown > 0) {
-        cooldown--;
-        return;
-    }
-
-    /* Read smoothed TED residual in Q14 units (can be 0 when TED disabled). */
-    int e_ema = dsd_rtl_stream_metrics_hook_ted_bias();
-    if (e_ema == 0) {
-        return;
-    }
-
-    /* Small deadband and persistence guard.
-     * Q14 scaling: 1024 ~= 0.0625 normalized residual. */
-    const int deadband = 1024;
-    static int run_dir = 0; /* -1, 0, +1 */
-    static int run_len = 0;
+static inline int
+maybe_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out) {
     int dir = 0;
     if (e_ema > deadband) {
         dir = +1; /* sample was early; center → right */
     } else if (e_ema < -deadband) {
         dir = -1; /* sample was late; center → left */
     } else {
-        run_dir = 0;
-        run_len = 0;
+        *run_dir = 0;
+        *run_len = 0;
+        return 0;
+    }
+    if (dir == *run_dir) {
+        (*run_len)++;
+    } else {
+        *run_dir = dir;
+        *run_len = 1;
+    }
+    *dir_out = dir;
+    return 1;
+}
+
+static inline void
+maybe_auto_center(const dsd_opts* opts, dsd_state* state, int have_sync) {
+    if (!maybe_auto_center_allowed(opts, state, have_sync)) {
         return;
     }
-
-    if (dir == run_dir) {
-        run_len++;
-    } else {
-        run_dir = dir;
-        run_len = 1;
+    /* Cooldown to avoid rapid flips */
+    static int cooldown = 0;
+    if (cooldown > 0) {
+        cooldown--;
+        return;
     }
-
+    /* Read smoothed TED residual in Q14 units (can be 0 when TED disabled). */
+    int e_ema = dsd_rtl_stream_metrics_hook_ted_bias();
+    if (e_ema == 0) {
+        return;
+    }
+    /* Small deadband and persistence guard.
+     * Q14 scaling: 1024 ~= 0.0625 normalized residual. */
+    const int deadband = 1024;
+    static int run_dir = 0; /* -1, 0, +1 */
+    static int run_len = 0;
+    int dir = 0;
+    if (!maybe_auto_center_step_direction(e_ema, deadband, &run_dir, &run_len, &dir)) {
+        return;
+    }
     /* Require brief persistence before nudging center. */
     if (run_len >= 6) {
         int c = state->symbolCenter + dir;
         /* Keep a reasonable margin within [0..samplesPerSymbol-1] */
-        int min_c = 1;
-        int max_c = state->samplesPerSymbol - 2;
-        if (c < min_c) {
-            c = min_c;
-        }
-        if (c > max_c) {
-            c = max_c;
-        }
+        clamp_symbol_center_to_margin(&c, state->samplesPerSymbol);
         state->symbolCenter = c;
         cooldown = 12; /* short cooldown after each nudge */
         run_len = 0;
@@ -381,7 +693,7 @@ maybe_auto_center(dsd_opts* opts, dsd_state* state, int have_sync) {
  * to preserve decoder timing windows. Runs cheaply with a rate-change guard.
  */
 static inline void
-maybe_adjust_sps_for_output_rate(dsd_opts* opts, dsd_state* state) {
+maybe_adjust_sps_for_output_rate(const dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return; /* only for RTL input */
     }
@@ -558,6 +870,39 @@ rtl_symbol_cache_clear(dsd_state* state) {
 }
 
 static int
+rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, int symbol_rate_hz, int levels,
+                        uint32_t* generation, uint32_t expected_generation, float* sample_out) {
+    int got = 0;
+    uint32_t read_generation = generation ? *generation : expected_generation;
+    if (dsd_rtl_stream_io_hook_read(state, state->rtl_symbol_cache, DSD_RTL_SYMBOL_CACHE_CAP, &got) < 0 || got <= 0) {
+        rtl_symbol_cache_reset_pending(state);
+        return RTL_SYMBOL_CACHE_EMPTY;
+    }
+    if (got > DSD_RTL_SYMBOL_CACHE_CAP) {
+        got = DSD_RTL_SYMBOL_CACHE_CAP;
+    }
+
+    uint32_t fill_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+    if (fill_generation != read_generation) {
+        if (generation) {
+            *generation = fill_generation;
+        }
+        rtl_symbol_cache_reset_pending(state);
+        return RTL_SYMBOL_CACHE_RETRY;
+    }
+
+    state->rtl_symbol_cache_len = got;
+    state->rtl_symbol_cache_pos = 0;
+    state->rtl_symbol_cache_output_kind = output_kind;
+    state->rtl_symbol_cache_channel_profile = channel_profile;
+    state->rtl_symbol_cache_symbol_rate_hz = symbol_rate_hz;
+    state->rtl_symbol_cache_levels = levels;
+    state->rtl_symbol_cache_generation = generation ? *generation : fill_generation;
+    rtl_symbol_cache_publish_pending(state);
+    return rtl_symbol_cache_pop(state, read_generation, sample_out);
+}
+
+static int
 rtl_symbol_cache_take(dsd_state* state, int output_kind, int channel_profile, int symbol_rate_hz, int levels,
                       uint32_t* generation, float* sample_out) {
     if (!state || !sample_out) {
@@ -577,35 +922,8 @@ rtl_symbol_cache_take(dsd_state* state, int output_kind, int channel_profile, in
     }
 
     for (;;) {
-        int got = 0;
-        uint32_t read_generation = generation ? *generation : expected_generation;
-        if (dsd_rtl_stream_io_hook_read(state, state->rtl_symbol_cache, DSD_RTL_SYMBOL_CACHE_CAP, &got) < 0
-            || got <= 0) {
-            rtl_symbol_cache_reset_pending(state);
-            return RTL_SYMBOL_CACHE_EMPTY;
-        }
-        if (got > DSD_RTL_SYMBOL_CACHE_CAP) {
-            got = DSD_RTL_SYMBOL_CACHE_CAP;
-        }
-
-        uint32_t fill_generation = dsd_rtl_stream_metrics_hook_stream_generation();
-        if (fill_generation != read_generation) {
-            if (generation) {
-                *generation = fill_generation;
-            }
-            rtl_symbol_cache_reset_pending(state);
-            return RTL_SYMBOL_CACHE_RETRY;
-        }
-
-        state->rtl_symbol_cache_len = got;
-        state->rtl_symbol_cache_pos = 0;
-        state->rtl_symbol_cache_output_kind = output_kind;
-        state->rtl_symbol_cache_channel_profile = channel_profile;
-        state->rtl_symbol_cache_symbol_rate_hz = symbol_rate_hz;
-        state->rtl_symbol_cache_levels = levels;
-        state->rtl_symbol_cache_generation = generation ? *generation : fill_generation;
-        rtl_symbol_cache_publish_pending(state);
-        pop_status = rtl_symbol_cache_pop(state, read_generation, sample_out);
+        pop_status = rtl_symbol_cache_refill(state, output_kind, channel_profile, symbol_rate_hz, levels, generation,
+                                             expected_generation, sample_out);
         if (pop_status != RTL_SYMBOL_CACHE_EMPTY) {
             return pop_status;
         }
@@ -613,889 +931,776 @@ rtl_symbol_cache_take(dsd_state* state, int output_kind, int channel_profile, in
 }
 #endif
 
-float
-getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
-    float sample;
-    int i, count;
-    float symbol;
-    float sum;
-    sf_count_t result;
-    const unsigned int analog_out_cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
+static inline short
+symbol_scale_pcm_i16(short s, int input_volume_multiplier) {
+    if (input_volume_multiplier > 1) {
+        int v = (int)s * input_volume_multiplier;
+        if (v > 32767) {
+            v = 32767;
+        } else if (v < -32768) {
+            v = -32768;
+        }
+        return (short)v;
+    }
+    return s;
+}
 
-    sum = 0.0f;
-    count = 0;
-    sample = 0.0f; //init sample with a value of 0...see if this was causing issues with raw audio monitoring
-
+static inline unsigned int
+symbol_analog_block_size(const dsd_opts* opts, const dsd_state* state, unsigned int analog_out_cap) {
+    unsigned int analog_block = analog_out_cap;
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
-    /* C4FM clock assist capture around symbol center */
-    int clk_mode = 0;
-    int clk_early = 0, clk_mid = 0, clk_late = 0;
-    if (state->rf_mod == 0) {
-        const dsdneoRuntimeConfig* cfg_clk = dsd_neo_get_config();
-        if (!cfg_clk) {
-            dsd_neo_config_init(opts);
-            cfg_clk = dsd_neo_get_config();
+        unsigned int Fs = 0;
+        if (state->rtl_ctx) {
+            Fs = dsd_rtl_stream_metrics_hook_output_rate_hz();
         }
-        if (cfg_clk && cfg_clk->c4fm_clk_is_set) {
-            clk_mode = cfg_clk->c4fm_clk_mode;
+        if (Fs > 0) {
+            analog_block = (unsigned int)(((uint64_t)Fs * 20 + 999) / 1000);
+            if (analog_block < 320) {
+                analog_block = 320;
+            } else if (analog_block > 4000) {
+                analog_block = 4000;
+            }
         }
+#endif
+    }
+#ifdef USE_RADIO
+    if (analog_block > analog_out_cap) {
+        analog_block = analog_out_cap;
     }
 #endif
+    return analog_block;
+}
+
+static inline void
+symbol_convert_analog_block_to_i16(dsd_state* state, unsigned int analog_block) {
+    for (unsigned int i = 0; i < analog_block; i++) {
+        state->analog_out[i] = float_to_int16_clip(state->analog_out_f[i]);
+    }
+}
+
+static inline void
+symbol_update_unsynced_input_power(dsd_opts* opts, const dsd_state* state, unsigned int analog_block) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        return;
+    }
+    opts->rtl_pwr = raw_pwr_f(state->analog_out_f, (int)analog_block, 1);
+    if (opts->input_warn_db < 0.0) {
+        double db = pwr_to_dB(opts->rtl_pwr);
+        time_t now = time(NULL);
+        if (db <= opts->input_warn_db
+            && (opts->last_input_warn_time == 0
+                || (int)(now - opts->last_input_warn_time) >= opts->input_warn_cooldown_sec)) {
+            LOG_WARNING("Input level low (%.1f dBFS). Consider raising sender gain or use --input-volume.\n", db);
+            opts->last_input_warn_time = now;
+        }
+    }
+}
+
+static inline void
+symbol_write_unsynced_raw_wav(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
+    if (opts->wav_out_raw != NULL && opts->frame_nxdn48 == 0 && opts->frame_nxdn96 == 0 && opts->frame_dpmr == 0
+        && opts->frame_m17 == 0) {
+        symbol_convert_analog_block_to_i16(state, analog_block);
+        sf_write_short(opts->wav_out_raw, state->analog_out, analog_block);
+        sf_write_sync(opts->wav_out_raw);
+    }
+}
+
+static inline void
+symbol_apply_unsynced_filters(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
+    if (opts->use_lpf == 1) {
+        lpf_f(state, state->analog_out_f, (int)analog_block);
+    }
+    if (opts->use_hpf == 1) {
+        hpf_f(state, state->analog_out_f, (int)analog_block);
+    }
+    if (opts->use_pbf == 1) {
+        pbf_f(state, state->analog_out_f, (int)analog_block);
+    }
+    if (opts->audio_gainA > 0.0f) {
+        analog_gain_f(opts, state, state->analog_out_f, (int)analog_block);
+    } else {
+        agsm_f(opts, state, state->analog_out_f, (int)analog_block);
+    }
+}
+
+static inline void
+symbol_output_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
+    if ((opts->rtl_pwr > opts->rtl_squelch_level) && opts->monitor_input_audio == 1 && state->carrier == 0
+        && opts->audio_out == 1) {
+        symbol_convert_analog_block_to_i16(state, analog_block);
+        size_t bytes = (size_t)analog_block * sizeof(short);
+        if (opts->audio_out_type == 0 && opts->audio_raw_out) {
+            dsd_audio_write(opts->audio_raw_out, state->analog_out, analog_block);
+        }
+        if (opts->audio_out_type == 8) {
+            dsd_udp_audio_hook_blast_analog(opts, state, bytes, state->analog_out);
+        }
+        if (opts->p25_trunk != 1) {
+            state->last_cc_sync_time = time(NULL);
+            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+        }
+        if (!(opts->p25_trunk == 1 && opts->p25_is_tuned == 1)) {
+            state->last_vc_sync_time = time(NULL);
+            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+        }
+    }
+}
+
+static inline void
+symbol_reset_analog_buffers(dsd_state* state) {
+    DSD_MEMSET(state->analog_out_f, 0, sizeof(state->analog_out_f));
+    DSD_MEMSET(state->analog_out, 0, sizeof(state->analog_out));
+    state->analog_sample_counter = 0;
+}
+
+static inline void
+symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
+    symbol_update_unsynced_input_power(opts, state, analog_block);
+    symbol_write_unsynced_raw_wav(opts, state, analog_block);
+    symbol_apply_unsynced_filters(opts, state, analog_block);
+    symbol_output_unsynced_analog(opts, state, analog_block);
+    symbol_reset_analog_buffers(state);
+}
+
+static inline void
+symbol_process_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_out_cap, float sample) {
+    unsigned int analog_block = symbol_analog_block_size(opts, state, analog_out_cap);
+    if (analog_block == 0) {
+        return;
+    }
+    if ((unsigned int)state->analog_sample_counter >= analog_block) {
+        state->analog_sample_counter = (int)analog_block - 1;
+    }
+    state->analog_out_f[state->analog_sample_counter++] = sample;
+    if ((unsigned int)state->analog_sample_counter == analog_block) {
+        symbol_finalize_unsynced_analog_block(opts, state, analog_block);
+    }
+}
+
+static inline void
+symbol_process_synced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_out_cap, float sample) {
+    int analog_max_index = (int)analog_out_cap - 1;
+    if (state->analog_sample_counter > analog_max_index) {
+        state->analog_sample_counter = analog_max_index;
+    }
+    state->analog_out_f[state->analog_sample_counter++] = sample;
+    if ((unsigned int)state->analog_sample_counter == analog_out_cap) {
+        if (opts->wav_out_raw != NULL) {
+            symbol_convert_analog_block_to_i16(state, analog_out_cap);
+            sf_write_short(opts->wav_out_raw, state->analog_out, analog_out_cap);
+            sf_write_sync(opts->wav_out_raw);
+        }
+        symbol_reset_analog_buffers(state);
+    }
+}
+
+static inline void
+symbol_process_analog_capture(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work, int have_sync) {
+#ifdef USE_RADIO
+    if (work->rtl_symbol_rate_output) {
+        return;
+    }
+#endif
+    if (have_sync == 0) {
+        symbol_process_unsynced_analog(opts, state, work->analog_out_cap, work->sample);
+    } else if (have_sync == 1) {
+        symbol_process_synced_analog(opts, state, work->analog_out_cap, work->sample);
+    }
+}
+
+static inline int
+symbol_read_sample_pulse(dsd_opts* opts, float* sample_out) {
+    short s = 0;
+    if (opts->audio_in_stream) {
+        dsd_audio_read(opts->audio_in_stream, &s, 1);
+    }
+    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
+    *sample_out = (float)s;
+    return 1;
+}
+
+static inline int
+symbol_read_sample_stdin(dsd_opts* opts, dsd_state* state, float* sample_out) {
+    short s = 0;
+    sf_count_t result = sf_read_short(opts->audio_in_file, &s, 1);
+    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
+    *sample_out = (float)s;
+    if (result == 0) {
+        if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
+            return 1;
+        }
+        sf_close(opts->audio_in_file);
+        cleanupAndExit(opts, state);
+        return 0;
+    }
+    if (dsd_pcm_input_uses_staged_resampler(opts)) {
+        dsd_pcm_input_stage_resample(opts, *sample_out);
+        *sample_out = opts->input_upsample_buf[opts->input_upsample_pos++];
+    }
+    return 1;
+}
+
+static inline int
+symbol_read_sample_wav(dsd_opts* opts, dsd_state* state, float* sample_out) {
+    short s = 0;
+    sf_count_t result = sf_read_short(opts->audio_in_file, &s, 1);
+    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
+    *sample_out = (float)s;
+    if (result == 0) {
+        if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
+            return 1;
+        }
+        sf_close(opts->audio_in_file);
+        DSD_FPRINTF(stderr, "\nEnd of %s\n", opts->audio_in_dev);
+        if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
+            opts->audio_in_type = AUDIO_IN_PULSE;
+            if (openAudioInput(opts) != 0) {
+                cleanupAndExit(opts, state);
+                return 0;
+            }
+            return 1;
+        }
+        cleanupAndExit(opts, state);
+        return 0;
+    }
+    if (dsd_pcm_input_uses_staged_resampler(opts)) {
+        dsd_pcm_input_stage_resample(opts, *sample_out);
+        *sample_out = opts->input_upsample_buf[opts->input_upsample_pos++];
+    }
+    return 1;
+}
 
 #ifdef USE_RADIO
-    int rtl_output_kind = 0;
-    int rtl_symbol_rate_output = 0;
-    int rtl_channel_profile = 0;
-    int rtl_symbol_rate_hz = 0;
-    int rtl_symbol_levels = 4;
-    uint32_t rtl_stream_generation = 0;
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        rtl_symbol_rate_output = rtl_symbol_current_profile(&rtl_output_kind, &rtl_channel_profile, &rtl_symbol_rate_hz,
-                                                            &rtl_symbol_levels, &rtl_stream_generation);
+static inline int
+symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
+    if (!state->rtl_ctx) {
+        cleanupAndExit(opts, state);
+        return 0;
     }
-    if (rtl_symbol_rate_output) {
-        rtl_symbol_cache_profile(state, rtl_output_kind, rtl_channel_profile, rtl_symbol_rate_hz, rtl_symbol_levels,
-                                 rtl_stream_generation);
+    int got = 0;
+    if (dsd_rtl_stream_io_hook_read(state, sample_out, 1, &got) < 0 || got != 1) {
+        cleanupAndExit(opts, state);
+        return 0;
+    }
+    opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
+    if (!work->rtl_symbol_rate_output && !work->cqpsk_symbol_rate) {
+        *sample_out *= opts->rtl_volume_multiplier;
+    }
+    return 1;
+}
+#endif
+
+static int
+symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out) {
+    short s = 0;
+    int tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s);
+    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
+    *sample_out = (float)s;
+    if (tcp_result == 0) {
+        int reconnected = 0;
+    TCP_RETRY:
+        if (exitflag == 1) {
+            cleanupAndExit(opts, state);
+            return 0;
+        }
+        int backoff_ms = 300;
+        const dsdneoRuntimeConfig* cfg_retry = dsd_neo_get_config();
+        if (!cfg_retry) {
+            dsd_neo_config_init(opts);
+            cfg_retry = dsd_neo_get_config();
+        }
+        if (cfg_retry && cfg_retry->tcpin_backoff_ms_is_set) {
+            backoff_ms = cfg_retry->tcpin_backoff_ms;
+        }
+        DSD_FPRINTF(stderr, "\nConnection to TCP Server Interrupted. Trying again in %d ms.\n", backoff_ms);
+        dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
+        opts->tcp_in_ctx = NULL;
+        dsd_socket_close(opts->tcp_sockfd);
+        dsd_sleep_ms((unsigned int)backoff_ms);
+
+        opts->tcp_sockfd = 0;
+        opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
+        if (opts->tcp_sockfd != 0) {
+            opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
+            if (opts->tcp_in_ctx == NULL) {
+                DSD_FPRINTF(stderr, "Error, couldn't Reconnect to TCP audio input\n");
+            } else {
+                reconnected = 1;
+                LOG_INFO("TCP Socket Reconnected Successfully.\n");
+            }
+        } else {
+            LOG_ERROR("TCP Socket Connection Error.\n");
+            if (opts->frame_m17 == 1) {
+                goto TCP_RETRY;
+            }
+        }
+
+        if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
+            return 1;
+        }
+        if (reconnected) {
+            dsd_opts_reset_pcm_input_state(opts);
+        }
+
+        short s_retry = 0;
+        tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s_retry);
+        *sample_out = (float)s_retry;
+        if (tcp_result == 0) {
+            dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
+            opts->tcp_in_ctx = NULL;
+            dsd_socket_close(opts->tcp_sockfd);
+            opts->audio_in_type = AUDIO_IN_PULSE;
+            opts->tcp_sockfd = 0;
+            if (openAudioInput(opts) != 0) {
+                cleanupAndExit(opts, state);
+                return 0;
+            }
+            *sample_out = 0;
+            DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected.\n");
+        }
+    }
+    if (opts->audio_in_type == AUDIO_IN_TCP && dsd_pcm_input_uses_staged_resampler(opts)) {
+        dsd_pcm_input_stage_resample(opts, *sample_out);
+        *sample_out = opts->input_upsample_buf[opts->input_upsample_pos++];
+    }
+    return 1;
+}
+
+static inline int
+symbol_read_sample_udp(dsd_opts* opts, dsd_state* state, float* sample_out) {
+    short s = 0;
+    if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
+        if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
+            return 1;
+        }
+        cleanupAndExit(opts, state);
+        return 0;
+    }
+    *sample_out = (float)s;
+    if (opts->input_volume_multiplier > 1) {
+        int v = (int)s * opts->input_volume_multiplier;
+        if (v > 32767) {
+            v = 32767;
+        } else if (v < -32768) {
+            v = -32768;
+        }
+        *sample_out = (float)v;
+    }
+    if (dsd_pcm_input_uses_staged_resampler(opts)) {
+        dsd_pcm_input_stage_resample(opts, *sample_out);
+        *sample_out = opts->input_upsample_buf[opts->input_upsample_pos++];
+    }
+    return 1;
+}
+
+static int
+symbol_take_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
+    if (dsd_pcm_input_uses_staged_resampler(opts) && opts->input_upsample_pos < opts->input_upsample_len) {
+        work->sample = opts->input_upsample_buf[opts->input_upsample_pos++];
+        return 1;
+    }
+    if (dsd_pcm_input_take_staged_tail_sample(opts, &work->sample, 0)) {
+        return 1;
+    }
+    if (opts->audio_in_type == AUDIO_IN_PULSE) {
+        return symbol_read_sample_pulse(opts, &work->sample);
+    }
+    if (opts->audio_in_type == AUDIO_IN_STDIN) {
+        return symbol_read_sample_stdin(opts, state, &work->sample);
+    }
+    if (opts->audio_in_type == AUDIO_IN_WAV) {
+        return symbol_read_sample_wav(opts, state, &work->sample);
+    }
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        return symbol_read_sample_rtl(opts, state, &work->sample, work);
+    }
+#endif
+    if (opts->audio_in_type == AUDIO_IN_TCP) {
+        return symbol_read_sample_tcp(opts, state, &work->sample);
+    }
+    if (opts->audio_in_type == AUDIO_IN_UDP) {
+        return symbol_read_sample_udp(opts, state, &work->sample);
+    }
+    return 1;
+}
+
+#ifdef USE_RADIO
+static inline void
+symbol_capture_clock_sample(symbol_work_ctx* work, const dsd_state* state, int i) {
+    if (!work->clk_mode || state->rf_mod != 0) {
+        return;
+    }
+    int c = state->symbolCenter;
+    if (i == c - 1) {
+        work->clk_early = (int)lrintf(work->sample);
+    } else if (i == c) {
+        work->clk_mid = (int)lrintf(work->sample);
+    } else if (i == c + 1) {
+        work->clk_late = (int)lrintf(work->sample);
+    }
+}
+
+static inline void
+symbol_init_clock_mode(const dsd_opts* opts, const dsd_state* state, symbol_work_ctx* work) {
+    if (state->rf_mod != 0) {
+        return;
+    }
+    const dsdneoRuntimeConfig* cfg_clk = dsd_neo_get_config();
+    if (!cfg_clk) {
+        dsd_neo_config_init(opts);
+        cfg_clk = dsd_neo_get_config();
+    }
+    if (cfg_clk && cfg_clk->c4fm_clk_is_set) {
+        work->clk_mode = cfg_clk->c4fm_clk_mode;
+    }
+}
+
+static inline void
+symbol_init_rtl_profile(const dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        work->rtl_symbol_rate_output =
+            rtl_symbol_current_profile(&work->rtl_output_kind, &work->rtl_channel_profile, &work->rtl_symbol_rate_hz,
+                                       &work->rtl_symbol_levels, &work->rtl_stream_generation);
+    }
+    if (work->rtl_symbol_rate_output) {
+        rtl_symbol_cache_profile(state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz,
+                                 work->rtl_symbol_levels, work->rtl_stream_generation);
     } else {
         rtl_symbol_cache_clear(state);
     }
+}
 
-    if (rtl_symbol_rate_output && opts->symboltiming != 1) {
-        if (!state->rtl_ctx) {
-            cleanupAndExit(opts, state);
-            return 0.0f;
-        }
-
-        state->samplesPerSymbol = 1;
-        state->symbolCenter = 0;
-        state->jitter = -1;
-
-        for (;;) {
-            apply_rtl_symbol_thresholds(state, rtl_symbol_levels);
-            int cache_status = rtl_symbol_cache_take(state, rtl_output_kind, rtl_channel_profile, rtl_symbol_rate_hz,
-                                                     rtl_symbol_levels, &rtl_stream_generation, &sample);
-            if (cache_status == RTL_SYMBOL_CACHE_READY) {
-                break;
-            }
-            if (cache_status != RTL_SYMBOL_CACHE_RETRY) {
-                cleanupAndExit(opts, state);
-                return 0.0f;
-            }
-
-            rtl_symbol_rate_output =
-                rtl_symbol_current_profile(&rtl_output_kind, &rtl_channel_profile, &rtl_symbol_rate_hz,
-                                           &rtl_symbol_levels, &rtl_stream_generation);
-            if (!rtl_symbol_rate_output) {
-                rtl_symbol_cache_clear(state);
-                break;
-            }
-            rtl_symbol_cache_profile(state, rtl_output_kind, rtl_channel_profile, rtl_symbol_rate_hz, rtl_symbol_levels,
-                                     rtl_stream_generation);
-        }
-
-        if (rtl_symbol_rate_output) {
-            opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
-            state->lastsample = sample;
-            dmr_sample_history_push(state, sample);
-            state->symbolcnt++;
-            return sample;
-        }
+static int
+symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
+    if (!work->rtl_symbol_rate_output || opts->symboltiming == 1) {
+        return 0;
     }
-#else
-    int rtl_symbol_rate_output = 0;
-#endif
+    if (!state->rtl_ctx) {
+        cleanupAndExit(opts, state);
+        return -1;
+    }
 
-    /* Optional auto-centering based on TED residual (RTL path only, C4FM, when not synced) */
-#ifdef USE_RADIO
-    if (!rtl_symbol_rate_output) {
+    state->samplesPerSymbol = 1;
+    state->symbolCenter = 0;
+    state->jitter = -1;
+
+    for (;;) {
+        apply_rtl_symbol_thresholds(state, work->rtl_symbol_levels);
+        int cache_status =
+            rtl_symbol_cache_take(state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz,
+                                  work->rtl_symbol_levels, &work->rtl_stream_generation, &work->sample);
+        if (cache_status == RTL_SYMBOL_CACHE_READY) {
+            break;
+        }
+        if (cache_status != RTL_SYMBOL_CACHE_RETRY) {
+            cleanupAndExit(opts, state);
+            return -1;
+        }
+
+        work->rtl_symbol_rate_output =
+            rtl_symbol_current_profile(&work->rtl_output_kind, &work->rtl_channel_profile, &work->rtl_symbol_rate_hz,
+                                       &work->rtl_symbol_levels, &work->rtl_stream_generation);
+        if (!work->rtl_symbol_rate_output) {
+            rtl_symbol_cache_clear(state);
+            break;
+        }
+        rtl_symbol_cache_profile(state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz,
+                                 work->rtl_symbol_levels, work->rtl_stream_generation);
+    }
+
+    if (!work->rtl_symbol_rate_output) {
+        return 0;
+    }
+    opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
+    state->lastsample = work->sample;
+    dmr_sample_history_push(state, work->sample);
+    state->symbolcnt++;
+    return 1;
+}
+
+static inline void
+symbol_prepare_span(const dsd_opts* opts, dsd_state* state, symbol_work_ctx* work, int have_sync) {
+    if (!work->rtl_symbol_rate_output) {
         maybe_auto_center(opts, state, have_sync);
-        /* Align SPS to current RTL output rate if not 48 kHz */
         maybe_adjust_sps_for_output_rate(opts, state);
     } else {
         state->samplesPerSymbol = 1;
         state->symbolCenter = 0;
         state->jitter = -1;
-        apply_rtl_symbol_thresholds(state, rtl_symbol_levels);
+        apply_rtl_symbol_thresholds(state, work->rtl_symbol_levels);
     }
-#endif
 
-    /* Resolve any window freeze override once per symbol to avoid inner-loop overhead */
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int freeze_window = (cfg && cfg->window_freeze_is_set) ? (cfg->window_freeze != 0) : 0;
-
-    /* Precompute left/right edges for current modulation once per symbol */
-    int l_edge_pre = 0, r_edge_pre = 0;
     if (state->rf_mod == 0) {
-        select_window_c4fm(state, &l_edge_pre, &r_edge_pre, freeze_window);
+        select_window_c4fm(state, &work->l_edge_pre, &work->r_edge_pre, freeze_window);
     } else if (state->rf_mod == 1) {
-        select_window_qpsk(&l_edge_pre, &r_edge_pre, freeze_window);
+        select_window_qpsk(&work->l_edge_pre, &work->r_edge_pre, freeze_window);
     } else {
-        select_window_gfsk(&l_edge_pre, &r_edge_pre, freeze_window);
+        select_window_gfsk(&work->l_edge_pre, &work->r_edge_pre, freeze_window);
     }
 
-    /* Effective samples-per-symbol: when the RTL CQPSK path runs a decimating TED,
-       the demodulated stream already arrives at symbol rate (1 sample/symbol). */
-    int symbol_span = state->samplesPerSymbol;
-    if (symbol_span < 1) {
-        symbol_span = 1;
+    work->symbol_span = state->samplesPerSymbol;
+    if (work->symbol_span < 1) {
+        work->symbol_span = 1;
     }
-#ifdef USE_RADIO
-    if (rtl_symbol_rate_output) {
-        symbol_span = 1;
+    if (work->rtl_symbol_rate_output) {
+        work->symbol_span = 1;
     }
-    int cqpsk_symbol_rate = 0;
-    if (!rtl_symbol_rate_output && opts->audio_in_type == AUDIO_IN_RTL && state->rf_mod == 1) {
+    if (!work->rtl_symbol_rate_output && opts->audio_in_type == AUDIO_IN_RTL && state->rf_mod == 1) {
         int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
         dsd_rtl_stream_metrics_hook_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
         if (dsp_cqpsk && dsp_ted) {
-            cqpsk_symbol_rate = 1;
-            symbol_span = 1;
+            work->cqpsk_symbol_rate = 1;
+            work->symbol_span = 1;
         }
     }
-#else
-    int cqpsk_symbol_rate = 0;
-#endif
-    if (symbol_span <= 1) {
+    if (work->symbol_span <= 1) {
         state->jitter = -1;
     }
-
-    for (i = 0; i < symbol_span; i++) {
-        int used_staged_input = 0;
-
-        // timing control
-        if (symbol_span > 1 && (i == 0) && (have_sync == 0)) {
-            if (state->samplesPerSymbol == 20) {
-                if ((state->jitter >= 7) && (state->jitter <= 10)) {
-                    i--;
-                } else if ((state->jitter >= 11) && (state->jitter <= 14)) {
-                    i++;
-                }
-            } else if (state->rf_mod == 1) {
-                if ((state->jitter >= 0) && (state->jitter < state->symbolCenter)) {
-                    i++; // fall back
-                } else if ((state->jitter > state->symbolCenter) && (state->jitter < 10)) {
-                    i--; // catch up
-                }
-            } else if (state->rf_mod == 2) {
-                if ((state->jitter >= state->symbolCenter - 1) && (state->jitter <= state->symbolCenter)) {
-                    i--;
-                } else if ((state->jitter >= state->symbolCenter + 1) && (state->jitter <= state->symbolCenter + 2)) {
-                    i++;
-                }
-            } else if (state->rf_mod == 0) {
-                if ((state->jitter > 0) && (state->jitter <= state->symbolCenter)) {
-                    i--; // catch up
-                } else if ((state->jitter > state->symbolCenter) && (state->jitter < state->samplesPerSymbol)) {
-                    i++; // fall back
-                }
-            }
-            state->jitter = -1;
-        }
-
-        // Read the new sample from the input
-        if (dsd_pcm_input_uses_staged_resampler(opts) && opts->input_upsample_pos < opts->input_upsample_len) {
-            sample = opts->input_upsample_buf[opts->input_upsample_pos++];
-            used_staged_input = 1;
-        }
-        if (!used_staged_input && dsd_pcm_input_take_staged_tail_sample(opts, &sample, 0)) {
-            used_staged_input = 1;
-        }
-
-        if (!used_staged_input && opts->audio_in_type == AUDIO_IN_PULSE) //audio stream input
-        {
-            short s = 0;
-            if (opts->audio_in_stream) {
-                dsd_audio_read(opts->audio_in_stream, &s, 1);
-            }
-            if (opts->input_volume_multiplier > 1) {
-                int v = (int)s * opts->input_volume_multiplier;
-                if (v > 32767) {
-                    v = 32767;
-                } else if (v < -32768) {
-                    v = -32768;
-                }
-                s = (short)v;
-            }
-            sample = (float)s;
-        }
-
-        //stdin only, wav files moving to new number
-        else if (!used_staged_input
-                 && opts->audio_in_type == AUDIO_IN_STDIN) //won't work in windows, needs posix pipe (mintty)
-        {
-            short s = 0;
-            result = sf_read_short(opts->audio_in_file, &s, 1);
-            if (opts->input_volume_multiplier > 1) {
-                int v = (int)s * opts->input_volume_multiplier;
-                if (v > 32767) {
-                    v = 32767;
-                } else if (v < -32768) {
-                    v = -32768;
-                }
-                s = (short)v;
-            }
-            sample = (float)s;
-            if (result == 0) {
-                if (dsd_pcm_input_take_staged_tail_sample(opts, &sample, 1)) {
-                    used_staged_input = 1;
-                } else {
-                    sf_close(opts->audio_in_file);
-                    cleanupAndExit(opts, state);
-                    return 0.0f;
-                }
-            }
-            if (!used_staged_input && dsd_pcm_input_uses_staged_resampler(opts)) {
-                dsd_pcm_input_stage_resample(opts, sample);
-                sample = opts->input_upsample_buf[opts->input_upsample_pos++];
-            }
-        }
-        //wav files, same but using seperate value so we can still manipulate ncurses menu
-        //since we can not worry about getch/stdin conflict
-        else if (!used_staged_input && opts->audio_in_type == AUDIO_IN_WAV) {
-            short s = 0;
-            result = sf_read_short(opts->audio_in_file, &s, 1);
-            if (opts->input_volume_multiplier > 1) {
-                int v = (int)s * opts->input_volume_multiplier;
-                if (v > 32767) {
-                    v = 32767;
-                } else if (v < -32768) {
-                    v = -32768;
-                }
-                s = (short)v;
-            }
-            sample = (float)s;
-            if (result == 0) {
-                if (dsd_pcm_input_take_staged_tail_sample(opts, &sample, 1)) {
-                    used_staged_input = 1;
-                } else {
-                    sf_close(opts->audio_in_file);
-                    fprintf(stderr, "\nEnd of %s\n", opts->audio_in_dev);
-                    //open pulse input if we are pulse output AND using ncurses terminal
-                    if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
-                        opts->audio_in_type = AUDIO_IN_PULSE; //set input type
-                        if (openAudioInput(opts) != 0) {
-                            cleanupAndExit(opts, state);
-                            return 0.0f;
-                        }
-                    }
-                    //else cleanup and exit
-                    else {
-                        cleanupAndExit(opts, state);
-                        return 0.0f;
-                    }
-                }
-            }
-            if (!used_staged_input && dsd_pcm_input_uses_staged_resampler(opts)) {
-                dsd_pcm_input_stage_resample(opts, sample);
-                sample = opts->input_upsample_buf[opts->input_upsample_pos++];
-            }
-        } else if (!used_staged_input && opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RADIO
-            // Read demodulated stream here
-            if (!state->rtl_ctx) {
-                cleanupAndExit(opts, state);
-                return 0.0f;
-            }
-            int got = 0;
-            if (dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) < 0 || got != 1) {
-                cleanupAndExit(opts, state);
-                return 0.0f;
-            }
-            //update root means square power level
-            opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
-            if (!rtl_symbol_rate_output && !cqpsk_symbol_rate) {
-                sample *= opts->rtl_volume_multiplier;
-            }
+}
 #endif
-        }
 
-        //tcp socket input from SDR++ -- now with 1 retry if connection is broken
-        else if (!used_staged_input && opts->audio_in_type == AUDIO_IN_TCP) {
-            short s = 0;
-            int tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s);
-            if (opts->input_volume_multiplier > 1) {
-                int v = (int)s * opts->input_volume_multiplier;
-                if (v > 32767) {
-                    v = 32767;
-                } else if (v < -32768) {
-                    v = -32768;
-                }
-                s = (short)v;
-            }
-            sample = (float)s;
-            if (tcp_result == 0) {
-                int reconnected = 0;
-            TCP_RETRY:
-                if (exitflag == 1) {
-                    cleanupAndExit(opts, state); //needed to break the loop on ctrl+c
-                    return 0.0f;
-                }
-                // shorter backoff on TCP input stall to avoid wedging decode/SM
-                int backoff_ms = 300; // default 300ms
-                const dsdneoRuntimeConfig* cfg_retry = dsd_neo_get_config();
-                if (!cfg_retry) {
-                    dsd_neo_config_init(opts);
-                    cfg_retry = dsd_neo_get_config();
-                }
-                if (cfg_retry && cfg_retry->tcpin_backoff_ms_is_set) {
-                    backoff_ms = cfg_retry->tcpin_backoff_ms;
-                }
-                fprintf(stderr, "\nConnection to TCP Server Interrupted. Trying again in %d ms.\n", backoff_ms);
-                dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx); //close current connection on this end
-                opts->tcp_in_ctx = NULL;
-                dsd_socket_close(opts->tcp_sockfd);
-                // short throttle to avoid busy loop, but keep UI/SM responsive
-                dsd_sleep_ms((unsigned int)backoff_ms);
-
-                //attempt to reconnect to socket
-                opts->tcp_sockfd = 0;
-                opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
-                if (opts->tcp_sockfd != 0) {
-                    //reset audio input stream
-                    opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
-                    if (opts->tcp_in_ctx == NULL) {
-                        fprintf(stderr, "Error, couldn't Reconnect to TCP audio input\n");
-                    } else {
-                        reconnected = 1;
-                        LOG_INFO("TCP Socket Reconnected Successfully.\n");
-                    }
-                } else {
-                    LOG_ERROR("TCP Socket Connection Error.\n");
-                    // If using M17 or other keepalive mode, keep trying quickly
-                    if (opts->frame_m17 == 1) {
-                        goto TCP_RETRY;
-                    }
-                }
-
-                if (dsd_pcm_input_take_staged_tail_sample(opts, &sample, 1)) {
-                    used_staged_input = 1;
-                } else {
-                    if (reconnected) {
-                        dsd_opts_reset_pcm_input_state(opts);
-                    }
-
-                    //now retry reading sample
-                    short s_retry = 0;
-                    tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s_retry);
-                    sample = (float)s_retry;
-                    if (tcp_result == 0) {
-                        dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
-                        opts->tcp_in_ctx = NULL;
-                        dsd_socket_close(opts->tcp_sockfd);
-                        opts->audio_in_type = AUDIO_IN_PULSE; //set input type
-                        opts->tcp_sockfd = 0;                 // track failed reconnect state for ncurses shortcut flows
-                        if (openAudioInput(opts) != 0) {
-                            cleanupAndExit(opts, state);
-                            return 0.0f;
-                        }
-                        sample = 0; //zero sample on bad result, keep the ball rolling
-                        fprintf(stderr, "Connection to TCP Server Disconnected.\n");
-                    }
-                }
-            }
-            if (!used_staged_input && opts->audio_in_type == AUDIO_IN_TCP
-                && dsd_pcm_input_uses_staged_resampler(opts)) {
-                dsd_pcm_input_stage_resample(opts, sample);
-                sample = opts->input_upsample_buf[opts->input_upsample_pos++];
-            }
-        }
-
-        // UDP direct audio input (PCM16LE over UDP)
-        else if (!used_staged_input && opts->audio_in_type == AUDIO_IN_UDP) {
-            short s = 0;
-            if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
-                if (dsd_pcm_input_take_staged_tail_sample(opts, &sample, 1)) {
-                    used_staged_input = 1;
-                } else {
-                    cleanupAndExit(opts, state);
-                    return 0.0f;
-                }
-            }
-            if (!used_staged_input) {
-                sample = (float)s;
-                if (opts->input_volume_multiplier > 1) {
-                    int v = (int)s * opts->input_volume_multiplier;
-                    if (v > 32767) {
-                        v = 32767;
-                    } else if (v < -32768) {
-                        v = -32768;
-                    }
-                    sample = (float)v;
-                }
-            }
-            if (!used_staged_input && dsd_pcm_input_uses_staged_resampler(opts)) {
-                dsd_pcm_input_stage_resample(opts, sample);
-                sample = opts->input_upsample_buf[opts->input_upsample_pos++];
-            }
-        }
-
-        //BUG REPORT: 1. DMR Simplex doesn't work with raw wav files. 2. Using the monitor w/ wav file saving may produce undecodable wav files.
-        //reworked a bit to allow raw audio wav file saving without the monitoring poriton active
-        if (!rtl_symbol_rate_output && have_sync == 0) {
-
-            //do an extra checkfor carrier signal so that random raw audio spurts don't play during decoding
-            // if ( (state->carrier == 1) && ((time(NULL) - state->last_vc_sync_time) < 2)) /This probably doesn't work correctly since we update time check when playing raw audio
-            // {
-            //   memset (state->analog_out, 0, sizeof(state->analog_out));
-            //   state->analog_sample_counter = 0;
-            // } //This is the root cause of issue listed above, will evaluate further at a later time for a more elegant solution, or determine if anything is negatively impacted by removing this
-
-            /* Collect ~20 ms of audio based on current output Fs (defaults to 48 kHz; ~960 samples). */
-            unsigned int analog_block = analog_out_cap;
-            if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RADIO
-                unsigned int Fs = 0;
-                if (state->rtl_ctx) {
-                    Fs = dsd_rtl_stream_metrics_hook_output_rate_hz();
-                }
-                if (Fs > 0) {
-                    analog_block = (unsigned int)(((uint64_t)Fs * 20 + 999) / 1000); /* ~20 ms */
-                    if (analog_block < 320) {
-                        analog_block = 320; /* floor to ~6.7 ms */
-                    } else if (analog_block > 4000) {
-                        analog_block = 4000; /* cap to ~83 ms */
-                    }
-                }
-#endif
-            }
-            if (analog_block > analog_out_cap) {
-                analog_block = analog_out_cap; /* never exceed buffer capacity */
-            }
-
-            //sanity check to prevent an overflow
-            if ((unsigned int)state->analog_sample_counter >= analog_block) {
-                state->analog_sample_counter = (int)analog_block - 1;
-            }
-
-            // Store float sample (native precision path)
-            state->analog_out_f[state->analog_sample_counter++] = sample;
-
-            if ((unsigned int)state->analog_sample_counter == analog_block) {
-                //measure input power for non-RTL inputs (use float path)
-                if (opts->audio_in_type != AUDIO_IN_RTL) {
-                    opts->rtl_pwr = raw_pwr_f(state->analog_out_f, (int)analog_block, 1);
-                    // Optional: warn on persistently low input level
-                    if (opts->input_warn_db < 0.0) {
-                        double db = pwr_to_dB(opts->rtl_pwr);
-                        time_t now = time(NULL);
-                        if (db <= opts->input_warn_db
-                            && (opts->last_input_warn_time == 0
-                                || (int)(now - opts->last_input_warn_time) >= opts->input_warn_cooldown_sec)) {
-                            LOG_WARNING(
-                                "Input level low (%.1f dBFS). Consider raising sender gain or use --input-volume.\n",
-                                db);
-                            opts->last_input_warn_time = now;
-                        }
-                    }
-                }
-
-                //raw wav file saving -- only write when not NXDN, dPMR, or M17 due to noise that can cause tons of false positives when no sync
-                // Convert to int16 for WAV file (before filtering for raw capture)
-                if (opts->wav_out_raw != NULL && opts->frame_nxdn48 == 0 && opts->frame_nxdn96 == 0
-                    && opts->frame_dpmr == 0 && opts->frame_m17 == 0) {
-                    for (unsigned int i = 0; i < analog_block; i++) {
-                        state->analog_out[i] = float_to_int16_clip(state->analog_out_f[i]);
-                    }
-                    sf_write_short(opts->wav_out_raw, state->analog_out, analog_block);
-                    sf_write_sync(opts->wav_out_raw);
-                }
-
-                //low pass filter (native float path)
-                if (opts->use_lpf == 1) {
-                    lpf_f(state, state->analog_out_f, (int)analog_block);
-                }
-
-                //high pass filter (native float path)
-                if (opts->use_hpf == 1) {
-                    hpf_f(state, state->analog_out_f, (int)analog_block);
-                }
-
-                //pass band filter (native float path)
-                if (opts->use_pbf == 1) {
-                    pbf_f(state, state->analog_out_f, (int)analog_block);
-                }
-
-                //manual gain control (native float path)
-                if (opts->audio_gainA > 0.0f) {
-                    analog_gain_f(opts, state, state->analog_out_f, (int)analog_block);
-                }
-
-                //automatic gain control (native float path)
-                else {
-                    agsm_f(opts, state, state->analog_out_f, (int)analog_block);
-                }
-
-                //Running PWR after filtering does remove the analog spike from the PWR value
-                //but noise floor noise will still produce higher values
-                // if (opts->audio_in_type != AUDIO_IN_RTL  && opts->monitor_input_audio == 1)
-                //   opts->rtl_pwr = raw_pwr_f(state->analog_out_f, 960, 1);
-
-                //seems to be working now, but PWR values are lower on actual analog signal than on no signal but noise
-                if ((opts->rtl_pwr > opts->rtl_squelch_level) && opts->monitor_input_audio == 1 && state->carrier == 0
-                    && opts->audio_out == 1) { //added carrier check here in lieu of disabling it above
-                    // Convert float to int16 for output (final conversion at output stage)
-                    for (unsigned int i = 0; i < analog_block; i++) {
-                        state->analog_out[i] = float_to_int16_clip(state->analog_out_f[i]);
-                    }
-                    size_t bytes = (size_t)analog_block * sizeof(short);
-                    if (opts->audio_out_type == 0) {
-                        if (opts->audio_raw_out) {
-                            dsd_audio_write(opts->audio_raw_out, state->analog_out, analog_block);
-                        }
-                    }
-
-                    if (opts->audio_out_type == 8) {
-                        dsd_udp_audio_hook_blast_analog(opts, state, bytes, state->analog_out);
-                    }
-
-                    // UI/scan heartbeat: avoid refreshing timers that the
-                    // trunk SM depends on for hangtime and CC hunting logic.
-                    // - Do NOT refresh last_cc_sync_time while trunking is
-                    //   enabled and we are not voice‑tuned; the SM needs that
-                    //   timer to age so CC hunting can start.
-                    // - Do NOT refresh last_vc_sync_time while voice‑tuned; it
-                    //   must reflect actual digital voice activity only.
-                    if (opts->p25_trunk != 1) {
-                        state->last_cc_sync_time = time(NULL);
-                        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-                    }
-                    if (!(opts->p25_trunk == 1 && opts->p25_is_tuned == 1)) {
-                        state->last_vc_sync_time = time(NULL);
-                        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-                    }
-                }
-
-                //raw wav file saving -- save the WAV file samples before we apply filtering to them
-                // if (opts->wav_out_raw != NULL && opts->frame_nxdn48 == 0 && opts->frame_nxdn96 == 0 && opts->frame_dpmr == 0 && opts->frame_m17 == 0)
-                // {
-                //   sf_write_short(opts->wav_out_raw, state->analog_out, 960);
-                //   sf_write_sync (opts->wav_out_raw);
-                // }
-
-                memset(state->analog_out_f, 0, sizeof(state->analog_out_f));
-                memset(state->analog_out, 0, sizeof(state->analog_out));
-                state->analog_sample_counter = 0;
-            }
-        }
-
-        if (!rtl_symbol_rate_output && have_sync == 1) {
-            //sanity check to prevent an overflow
-            int analog_max_index = (int)analog_out_cap - 1;
-            if (state->analog_sample_counter > analog_max_index) {
-                state->analog_sample_counter = analog_max_index;
-            }
-
-            // Store float sample (native precision path)
-            state->analog_out_f[state->analog_sample_counter++] = sample;
-
-            if ((unsigned int)state->analog_sample_counter == analog_out_cap) {
-                //raw wav file saving -- file size on this blimps pretty fast 1 min ~= 6 MB;  1 hour ~= 360 MB;
-                if (opts->wav_out_raw != NULL) {
-                    // Convert float to int16 for WAV file output
-                    for (unsigned int i = 0; i < analog_out_cap; i++) {
-                        state->analog_out[i] = float_to_int16_clip(state->analog_out_f[i]);
-                    }
-                    sf_write_short(opts->wav_out_raw, state->analog_out, analog_out_cap);
-                    sf_write_sync(opts->wav_out_raw);
-                }
-
-                //zero out and reset counter
-                memset(state->analog_out_f, 0, sizeof(state->analog_out_f));
-                memset(state->analog_out, 0, sizeof(state->analog_out));
-                state->analog_sample_counter = 0;
-            }
-        }
-
-        /* Skip legacy scalar matched filters when consuming symbol-rate CQPSK stream
-       from the RTL DSP path. The CQPSK pipeline already applied channel filtering
-       and timing recovery in complex baseband; additional FIRs here distort the
-       {-3,-1,+1,+3} levels and break the slicer. */
-        if (opts->use_cosine_filter && !rtl_symbol_rate_output && !cqpsk_symbol_rate) {
-            if (DSD_SYNC_IS_DMR_BS(state->lastsynctype) || DSD_SYNC_IS_DMR_MS(state->lastsynctype)
-                || DSD_SYNC_IS_YSF(state->lastsynctype)) {
-                sample = dmr_filter(sample, state->samplesPerSymbol);
-            }
-
-            else if (state->lastsynctype == DSD_SYNC_M17_STR_POS || state->lastsynctype == DSD_SYNC_M17_STR_NEG
-                     || state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_LSF_NEG
-                     || state->lastsynctype == DSD_SYNC_M17_PKT_POS || state->lastsynctype == DSD_SYNC_M17_PKT_NEG
-                     || state->lastsynctype == DSD_SYNC_M17_PRE_POS || state->lastsynctype == DSD_SYNC_M17_PRE_NEG) {
-                sample = m17_filter(sample, state->samplesPerSymbol);
-            }
-
-            // Apply matched filter to P25 Phase 1 (C4FM)
-            else if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
-                // OP25-compatible sinc de-emphasis filter
-                sample = p25_filter(sample, state->samplesPerSymbol);
-            }
-
-            else if (DSD_SYNC_IS_DPMR(state->lastsynctype) || DSD_SYNC_IS_NXDN(state->lastsynctype)) {
-                //if(state->samplesPerSymbol == 20)
-                if (opts->frame_nxdn48 == 1) {
-                    sample = nxdn_filter(sample, state->samplesPerSymbol);
-                } else if (opts->frame_dpmr == 1) {
-                    sample = dpmr_filter(sample, state->samplesPerSymbol);
-                } else if (state->samplesPerSymbol == 8) //phase 2 cqpsk
-                {
-                    //sample = dmr_filter(sample); //work on filter later
-                } else {
-                    sample = dmr_filter(sample, state->samplesPerSymbol);
-                }
-            }
-        }
-
-        if ((sample > state->max) && (have_sync == 1) && (state->rf_mod == 0)) {
-            sample = state->max;
-        } else if ((sample < state->min) && (have_sync == 1) && (state->rf_mod == 0)) {
-            sample = state->min;
-        }
-
-        if (sample > state->center) {
-            if (sample > (state->maxref * 1.25)) {
-                if ((state->jitter < 0) && (state->rf_mod == 1)) { // first spike out of place
-                    state->jitter = i;
-                }
-                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != DSD_SYNC_NONE)) {
-                    fprintf(stderr, "O");
-                }
-            } else {
-                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != DSD_SYNC_NONE)) {
-                    fprintf(stderr, "+");
-                }
-                if ((state->jitter < 0) && (state->lastsample < state->center)
-                    && (state->rf_mod != 1)) { // first transition edge
-                    state->jitter = i;
-                }
-            }
-        } else { // sample < 0
-            if (sample < (state->minref * 1.25)) {
-                if ((state->jitter < 0) && (state->rf_mod == 1)) { // first spike out of place
-                    state->jitter = i;
-                }
-                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != DSD_SYNC_NONE)) {
-                    fprintf(stderr, "X");
-                }
-            } else {
-                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != DSD_SYNC_NONE)) {
-                    fprintf(stderr, "-");
-                }
-                if ((state->jitter < 0) && (state->lastsample > state->center)
-                    && (state->rf_mod != 1)) { // first transition edge
-                    state->jitter = i;
-                }
-            }
-        }
-
-        if (state->samplesPerSymbol == 20) //nxdn 4800 baud 2400 symbol rate
-        {
-            // if ((i >= 9) && (i <= 11))
-            if ((i >= 7) && (i <= 13)) //7, 13 working good on multiple nxdn48, fewer random errors
-            {
-                sum += sample;
-                count++;
-            }
-        }
-        if (rtl_symbol_rate_output || cqpsk_symbol_rate) {
-            /* TED already decimated to symbol rate: consume one sample per symbol.
-             * This must be checked first to override modulation-specific sampling
-             * (e.g., sps==5 for P25 CQPSK at 24kHz). */
-            sum += sample;
-            count++;
-        } else if (state->samplesPerSymbol == 5) {
-            // provoice or gfsk at sps=5 (non-TED path)
-            if (i == 2) {
-                sum += sample;
-                count++;
-            }
-        } else {
-            if (state->rf_mod == 0) {
-                // 0: C4FM modulation — average a small window around the symbol center
-                // (matches dsd-fme behavior and is more tolerant to timing jitter on marginal signals).
-                if ((i >= state->symbolCenter - l_edge_pre) && (i <= state->symbolCenter + r_edge_pre)) {
-                    sum += sample;
-                    count++;
-                }
-
-#ifdef TRACE_DSD
-                if (i == state->symbolCenter - 1) {
-                    state->debug_sample_left_edge = state->debug_sample_index - 1;
-                }
-                if (i == state->symbolCenter + 2) {
-                    state->debug_sample_right_edge = state->debug_sample_index - 1;
-                }
-#endif
-            } else { // QPSK or GFSK
-                /* For very low SPS (e.g., when RTL DSP baseband is configured < 24 kHz or resampling is disabled),
-                   the edge-pair window becomes too sparse/noisy for GFSK. Prefer the center sample to avoid
-                   systematic symbol slicing bias that can corrupt data PDUs (e.g., LRRP). */
-                if (state->rf_mod == 2 && state->samplesPerSymbol <= 4) {
-                    if (i == state->symbolCenter) {
-                        sum += sample;
-                        count++;
-                    }
-                } else {
-                    // Use symmetric two-sample window (precomputed)
-                    if ((i == state->symbolCenter - l_edge_pre) || (i == state->symbolCenter + r_edge_pre)) {
-                        sum += sample;
-                        count++;
-                    }
-                }
-            }
-        }
-
-        state->lastsample = sample;
-
-#ifdef USE_RADIO
-        if (clk_mode && state->rf_mod == 0) {
-            int c = state->symbolCenter;
-            if (i == c - 1) {
-                clk_early = (int)lrintf(sample);
-            } else if (i == c) {
-                clk_mid = (int)lrintf(sample);
-            } else if (i == c + 1) {
-                clk_late = (int)lrintf(sample);
-            }
-        }
-#endif
+static inline void
+symbol_print_timing_line(const dsd_opts* opts, dsd_state* state, int have_sync) {
+    if (!symbol_timing_debug_enabled(opts, state, have_sync)) {
+        return;
     }
-
-    if (count > 0) {
-        symbol = sum / (float)count;
+    if (state->jitter >= 0) {
+        DSD_FPRINTF(stderr, " %i\n", state->jitter);
     } else {
-        symbol = 0.0f;
+        DSD_FPRINTF(stderr, "\n");
+    }
+}
+
+static inline int
+symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_out) {
+    if (opts->symbolfile == NULL) {
+        DSD_FPRINTF(stderr, "Error Opening File %s\n", opts->audio_in_dev);
+        *symbol_out = -1.0f;
+        return 1;
     }
 
+    probe_symbol_replay_format(opts, state);
+    int replay_retry_count = 0;
+    for (;;) {
+        int read_ok = 0;
+        if (state->symbol_replay_format == DSD_SYMBOL_REPLAY_FORMAT_SOFT) {
+            read_ok = read_soft_symbol_record(opts, state, symbol_out);
+        } else {
+            int c = fgetc(opts->symbolfile);
+            if (c != EOF) {
+                state->symbolc = c & 3;
+                state->symbol_replay_has_soft = 0;
+                *symbol_out = dsd_symbol_level_from_dibit((uint8_t)state->symbolc);
+                read_ok = 1;
+            }
+        }
+        if (read_ok) {
+            return 1;
+        }
+
+        fclose(opts->symbolfile);
+        opts->symbolfile = NULL;
+        DSD_FPRINTF(stderr, "\nEnd of %s\n", opts->audio_in_dev);
+        if (state->debug_mode == 1) {
+            opts->symbolfile = fopen(opts->audio_in_dev, "rb");
+            opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
+            state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+            state->symbol_replay_header_checked = 0;
+            state->symbol_replay_has_soft = 0;
+            if (opts->symbolfile == NULL) {
+                DSD_FPRINTF(stderr, "Error Opening File %s\n", opts->audio_in_dev);
+                *symbol_out = -1.0f;
+                return 1;
+            }
+            if (replay_retry_count++ == 0) {
+                probe_symbol_replay_format(opts, state);
+                continue;
+            }
+            *symbol_out = 0.0f;
+            return 1;
+        }
+        if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
+            opts->audio_in_type = AUDIO_IN_PULSE;
+            if (openAudioInput(opts) != 0) {
+                cleanupAndExit(opts, state);
+            }
+            *symbol_out = 0.0f;
+            return 1;
+        }
+        cleanupAndExit(opts, state);
+        *symbol_out = 0.0f;
+        return 1;
+    }
+}
+
+static inline int
+symbol_process_symbol_flt_input(dsd_opts* opts, float* symbol_out) {
+    float float_symbol = 0.0f;
+    size_t read_count = fread(&float_symbol, sizeof(float), 1, opts->symbolfile);
+    if (read_count != 1) {
+        exitflag = 1;
+        *symbol_out = 0.0f;
+        return 1;
+    }
+    if (feof(opts->symbolfile)) {
+        exitflag = 1;
+    }
+    *symbol_out = float_symbol * 10000.0f;
+    return 1;
+}
+
+static int
+symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, symbol_work_ctx* work) {
+    for (int i = 0; i < work->symbol_span; i++) {
+        symbol_adjust_timing_index(state, have_sync, work->symbol_span, &i);
+        if (!symbol_take_sample(opts, state, work)) {
+            return 0;
+        }
+
+        symbol_process_analog_capture(opts, state, work, have_sync);
 #ifdef USE_RADIO
-    if (rtl_symbol_rate_output) {
-        apply_rtl_symbol_thresholds(state, rtl_symbol_levels);
+        int rtl_symbol_rate_output = work->rtl_symbol_rate_output;
+        int cqpsk_symbol_rate = work->cqpsk_symbol_rate;
+#else
+        int rtl_symbol_rate_output = 0;
+        int cqpsk_symbol_rate = 0;
+#endif
+        work->sample =
+            symbol_apply_matched_filter(opts, state, work->sample, rtl_symbol_rate_output, cqpsk_symbol_rate);
+        work->sample = symbol_apply_sync_clip(state, have_sync, work->sample);
+        symbol_update_jitter(opts, state, have_sync, i, work->sample);
+        symbol_accumulate_sample(state, work, i, work->sample);
+        state->lastsample = work->sample;
+#ifdef USE_RADIO
+        symbol_capture_clock_sample(work, state, i);
+#endif
+    }
+    return 1;
+}
+
+static inline float
+symbol_finalize_live_symbol(const dsd_opts* opts, dsd_state* state, int have_sync, const symbol_work_ctx* work) {
+    float symbol = (work->count > 0) ? (work->sum / (float)work->count) : 0.0f;
+#ifdef USE_RADIO
+    if (work->rtl_symbol_rate_output) {
+        apply_rtl_symbol_thresholds(state, work->rtl_symbol_levels);
     }
 #endif
+    symbol_print_timing_line(opts, state, have_sync);
+    return symbol;
+}
 
-    if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != DSD_SYNC_NONE)) {
-        if (state->jitter >= 0) {
-            fprintf(stderr, " %i\n", state->jitter);
-        } else {
-            fprintf(stderr, "\n");
-        }
+#ifndef USE_RADIO
+static inline void
+symbol_prepare_span_no_radio(dsd_state* state, symbol_work_ctx* work) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int freeze_window = (cfg && cfg->window_freeze_is_set) ? (cfg->window_freeze != 0) : 0;
+    if (state->rf_mod == 0) {
+        select_window_c4fm(state, &work->l_edge_pre, &work->r_edge_pre, freeze_window);
+    } else if (state->rf_mod == 1) {
+        select_window_qpsk(&work->l_edge_pre, &work->r_edge_pre, freeze_window);
+    } else {
+        select_window_gfsk(&work->l_edge_pre, &work->r_edge_pre, freeze_window);
     }
+    work->symbol_span = state->samplesPerSymbol;
+    if (work->symbol_span < 1) {
+        work->symbol_span = 1;
+    }
+    if (work->symbol_span <= 1) {
+        state->jitter = -1;
+    }
+}
+#endif
+
+static inline void
+symbol_apply_replay_overrides(dsd_opts* opts, dsd_state* state, float* symbol) {
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
+        (void)symbol_process_symbol_bin_input(opts, state, symbol);
+    }
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
+        (void)symbol_process_symbol_flt_input(opts, symbol);
+    }
+}
+
+static inline float
+symbol_commit_symbol(const dsd_opts* opts, dsd_state* state, int have_sync, const symbol_work_ctx* work, float symbol) {
+#ifdef USE_RADIO
+    if (work->clk_mode && state->rf_mod == 0) {
+        maybe_c4fm_clock(opts, state, have_sync, work->clk_mode, work->clk_early, work->clk_mid, work->clk_late);
+    }
+#else
+    (void)opts;
+    (void)have_sync;
+    (void)work;
+#endif
+    dmr_sample_history_push(state, symbol);
+    state->symbolcnt++;
+    return symbol;
+}
 
 #ifdef TRACE_DSD
-    if (state->samplesPerSymbol == 10) {
-        float left, right;
-        if (state->debug_label_file == NULL) {
-            state->debug_label_file = fopen("pp_label.txt", "w");
-        }
-        left = state->debug_sample_left_edge / SAMPLE_RATE_IN;
-        right = state->debug_sample_right_edge / SAMPLE_RATE_IN;
-        if (state->debug_label_file != NULL) {
-            if (state->debug_prefix != '\0') {
-                if (state->debug_prefix == 'I') {
-                    fprintf(state->debug_label_file, "%f\t%f\t%c%c %.3f\n", left, right, state->debug_prefix,
-                            state->debug_prefix_2, symbol);
-                } else {
-                    fprintf(state->debug_label_file, "%f\t%f\t%c %.3f\n", left, right, state->debug_prefix, symbol);
-                }
-            } else {
-                fprintf(state->debug_label_file, "%f\t%f\t%.3f\n", left, right, symbol);
-            }
-        }
+static inline void
+symbol_trace_label(dsd_state* state, float symbol) {
+    if (state->samplesPerSymbol != 10) {
+        return;
     }
+    float left, right;
+    if (state->debug_label_file == NULL) {
+        state->debug_label_file = fopen("pp_label.txt", "w");
+    }
+    left = state->debug_sample_left_edge / SAMPLE_RATE_IN;
+    right = state->debug_sample_right_edge / SAMPLE_RATE_IN;
+    if (state->debug_label_file == NULL) {
+        return;
+    }
+    if (state->debug_prefix != '\0') {
+        if (state->debug_prefix == 'I') {
+            DSD_FPRINTF(state->debug_label_file, "%f\t%f\t%c%c %.3f\n", left, right, state->debug_prefix,
+                        state->debug_prefix_2, symbol);
+        } else {
+            DSD_FPRINTF(state->debug_label_file, "%f\t%f\t%c %.3f\n", left, right, state->debug_prefix, symbol);
+        }
+    } else {
+        DSD_FPRINTF(state->debug_label_file, "%f\t%f\t%.3f\n", left, right, symbol);
+    }
+}
 #endif
 
-    //read dibit capture bin files
-    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
-        if (opts->symbolfile == NULL) {
-            fprintf(stderr, "Error Opening File %s\n", opts->audio_in_dev); //double check this
-            return -1.0f;
-        }
+float
+getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
+    symbol_work_ctx work;
+    symbol_work_ctx_init(&work, state);
 
-        probe_symbol_replay_format(opts, state);
-
-        int replay_retry_count = 0;
-        for (;;) {
-            int read_ok = 0;
-            if (state->symbol_replay_format == DSD_SYMBOL_REPLAY_FORMAT_SOFT) {
-                read_ok = read_soft_symbol_record(opts, state, &symbol);
-            } else {
-                int c = fgetc(opts->symbolfile);
-                if (c != EOF) {
-                    state->symbolc = c & 3;
-                    state->symbol_replay_has_soft = 0;
-                    symbol = dsd_symbol_level_from_dibit((uint8_t)state->symbolc);
-                    read_ok = 1;
-                }
-            }
-
-            if (read_ok) {
-                break;
-            }
-
-            // opts->audio_in_type = AUDIO_IN_PULSE; //switch to pulse after playback, ncurses terminal can initiate replay if wanted
-            fclose(opts->symbolfile);
-            opts->symbolfile = NULL;
-            fprintf(stderr, "\nEnd of %s\n", opts->audio_in_dev);
-            //in debug mode, re-run .bin files over and over (look for memory leaks, etc)
-            if (state->debug_mode == 1) {
-                opts->symbolfile = fopen(opts->audio_in_dev, "rb");
-                opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; //symbol capture bin files
-                state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
-                state->symbol_replay_header_checked = 0;
-                state->symbol_replay_has_soft = 0;
-                if (opts->symbolfile == NULL) {
-                    fprintf(stderr, "Error Opening File %s\n", opts->audio_in_dev);
-                    return -1.0f;
-                }
-                if (replay_retry_count++ == 0) {
-                    probe_symbol_replay_format(opts, state);
-                    continue;
-                }
-                return 0.0f;
-            }
-            //open pulse input if we are pulse output AND using ncurses terminal
-            else if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
-                opts->audio_in_type = AUDIO_IN_PULSE; //set input type
-                if (openAudioInput(opts) != 0) {
-                    cleanupAndExit(opts, state);
-                    return 0.0f;
-                }
-                return 0.0f;
-            }
-            //else cleanup and exit
-            else {
-                cleanupAndExit(opts, state);
-                return 0.0f;
-            }
-        }
-    }
-
-    //.raw or .sym float symbol files
-    if (opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
-        float float_symbol = 0.0f;
-        size_t read_count = fread(&float_symbol, sizeof(float), 1, opts->symbolfile); //sizeof(float) is 4 (usually)
-        if (read_count != 1) {
-            exitflag = 1; // EOF or read error, exit loop cleanly
-            symbol = 0.0f;
-            return symbol;
-        }
-        if (feof(opts->symbolfile)) {
-            exitflag = 1; //end of file, exit
-        }
-        // float_symbol = -float_symbol; //inversion
-        symbol = float_symbol * 10000.0f;
-    }
-
-    /* Apply C4FM clock assist after symbol decision (unsynced only) */
 #ifdef USE_RADIO
-    if (clk_mode && state->rf_mod == 0) {
-        maybe_c4fm_clock(opts, state, have_sync, clk_mode, clk_early, clk_mid, clk_late);
+    symbol_init_clock_mode(opts, state, &work);
+    symbol_init_rtl_profile(opts, state, &work);
+    int fast_status = symbol_try_rtl_symbol_rate_fast_path(opts, state, &work);
+    if (fast_status < 0) {
+        return 0.0f;
     }
+    if (fast_status > 0) {
+        return work.sample;
+    }
+    symbol_prepare_span(opts, state, &work, have_sync);
+#else
+    symbol_prepare_span_no_radio(state, &work);
 #endif
 
-    /* Store symbol in history for resample-on-sync support.
-     * This enables threshold calibration and CACH re-digitization when
-     * DMR sync is detected. Uses the dmr_sync module's history buffer API. */
-    dmr_sample_history_push(state, symbol);
+    if (!symbol_process_live_samples(opts, state, have_sync, &work)) {
+        return 0.0f;
+    }
 
-    state->symbolcnt++;
-    return (symbol);
+    float symbol = symbol_finalize_live_symbol(opts, state, have_sync, &work);
+
+#ifdef TRACE_DSD
+    symbol_trace_label(state, symbol);
+#endif
+
+    symbol_apply_replay_overrides(opts, state, &symbol);
+    return symbol_commit_symbol(opts, state, have_sync, &work, symbol);
 }

@@ -5,8 +5,7 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 void
@@ -21,14 +20,14 @@ p25_p2_audio_ring_reset(dsd_state* state, int slot) {
             state->p25_p2_audio_ring_tail[s] = 0;
             state->p25_p2_audio_ring_count[s] = 0;
         }
-        memset(state->p25_p2_audio_ring, 0, sizeof state->p25_p2_audio_ring);
+        DSD_MEMSET(state->p25_p2_audio_ring, 0, sizeof state->p25_p2_audio_ring);
         return;
     }
 
     state->p25_p2_audio_ring_head[slot] = 0;
     state->p25_p2_audio_ring_tail[slot] = 0;
     state->p25_p2_audio_ring_count[slot] = 0;
-    memset(state->p25_p2_audio_ring[slot], 0, sizeof state->p25_p2_audio_ring[slot]);
+    DSD_MEMSET(state->p25_p2_audio_ring[slot], 0, sizeof state->p25_p2_audio_ring[slot]);
 }
 
 int
@@ -43,7 +42,7 @@ p25_p2_audio_ring_push(dsd_state* state, int slot, const float* frame160) {
     }
 
     int idx = state->p25_p2_audio_ring_tail[slot];
-    memcpy(state->p25_p2_audio_ring[slot][idx], frame160, 160U * sizeof(*frame160));
+    DSD_MEMCPY(state->p25_p2_audio_ring[slot][idx], frame160, 160U * sizeof(*frame160));
     state->p25_p2_audio_ring_tail[slot] = (state->p25_p2_audio_ring_tail[slot] + 1) % DSD_P25_P2_AUDIO_RING_DEPTH;
     state->p25_p2_audio_ring_count[slot]++;
     return 1;
@@ -56,12 +55,12 @@ p25_p2_audio_ring_pop(dsd_state* state, int slot, float* out160) {
     }
 
     if (state->p25_p2_audio_ring_count[slot] <= 0) {
-        memset(out160, 0, 160U * sizeof(*out160));
+        DSD_MEMSET(out160, 0, 160U * sizeof(*out160));
         return 0;
     }
 
     int idx = state->p25_p2_audio_ring_head[slot];
-    memcpy(out160, state->p25_p2_audio_ring[slot][idx], 160U * sizeof(*out160));
+    DSD_MEMCPY(out160, state->p25_p2_audio_ring[slot][idx], 160U * sizeof(*out160));
     state->p25_p2_audio_ring_head[slot] = (state->p25_p2_audio_ring_head[slot] + 1) % DSD_P25_P2_AUDIO_RING_DEPTH;
     state->p25_p2_audio_ring_count[slot]--;
     return 1;

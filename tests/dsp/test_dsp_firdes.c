@@ -6,12 +6,13 @@
 #include <dsd-neo/dsp/firdes.h>
 #include <math.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_close(const char* tag, float got, float want, float tol) {
     float diff = fabsf(got - want);
     if (diff > tol) {
-        fprintf(stderr, "%s: got %.6f want %.6f (diff=%.6f)\n", tag, got, want, diff);
+        DSD_FPRINTF(stderr, "%s: got %.6f want %.6f (diff=%.6f)\n", tag, got, want, diff);
         return 1;
     }
     return 0;
@@ -37,7 +38,7 @@ main(void) {
         }
     }
     if (!differs_from_rect) {
-        fprintf(stderr, "Kaiser window unexpectedly matches rectangular window\n");
+        DSD_FPRINTF(stderr, "Kaiser window unexpectedly matches rectangular window\n");
         return 1;
     }
 
@@ -47,7 +48,8 @@ main(void) {
     rc |= expect_close("kaiser center gain", kaiser[kNtaps / 2], 1.0f, 1e-5f);
 
     if (!(kaiser[0] < 0.2f && kaiser[kNtaps - 1] < 0.2f)) {
-        fprintf(stderr, "Kaiser edges are not attenuated enough: first=%f last=%f\n", kaiser[0], kaiser[kNtaps - 1]);
+        DSD_FPRINTF(stderr, "Kaiser edges are not attenuated enough: first=%f last=%f\n", kaiser[0],
+                    kaiser[kNtaps - 1]);
         rc = 1;
     }
 
@@ -59,13 +61,14 @@ main(void) {
                                          (int)(sizeof(taps_rect) / sizeof(float)));
 
     if (ntaps_kaiser <= 0 || ntaps_rect <= 0) {
-        fprintf(stderr, "firdes low_pass returned invalid tap count (kaiser=%d rect=%d)\n", ntaps_kaiser, ntaps_rect);
+        DSD_FPRINTF(stderr, "firdes low_pass returned invalid tap count (kaiser=%d rect=%d)\n", ntaps_kaiser,
+                    ntaps_rect);
         return 1;
     }
 
     if (ntaps_kaiser <= ntaps_rect) {
-        fprintf(stderr, "Kaiser should require more taps than rectangular (kaiser=%d rect=%d)\n", ntaps_kaiser,
-                ntaps_rect);
+        DSD_FPRINTF(stderr, "Kaiser should require more taps than rectangular (kaiser=%d rect=%d)\n", ntaps_kaiser,
+                    ntaps_rect);
         rc = 1;
     }
 

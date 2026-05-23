@@ -7,6 +7,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/ui/ui_history.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static atomic_int g_ui_history_mode = 1;
 
@@ -17,6 +18,36 @@ ui_history_normalize_mode(int mode) {
         m += 3;
     }
     return m;
+}
+
+static int
+ui_history_range_is_digits(const char* s, size_t begin, size_t end) {
+    for (size_t i = begin; i < end; ++i) {
+        if (!isdigit((unsigned char)s[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+ui_history_has_canonical_timestamp_prefix(const char* s) {
+    static const size_t k_digit_ranges[][2] = {
+        {0, 4},   // YYYY
+        {5, 7},   // MM
+        {8, 10},  // DD
+        {11, 13}, // HH
+        {14, 16}, // MM
+        {17, 19}, // SS
+    };
+
+    for (size_t i = 0; i < (sizeof k_digit_ranges / sizeof k_digit_ranges[0]); ++i) {
+        if (!ui_history_range_is_digits(s, k_digit_ranges[i][0], k_digit_ranges[i][1])) {
+            return 0;
+        }
+    }
+
+    return s[4] == '-' && s[7] == '-' && s[10] == ' ' && s[13] == ':' && s[16] == ':' && s[19] == ' ';
 }
 
 static int
@@ -31,13 +62,7 @@ ui_history_has_full_datetime_prefix(const char* s) {
     }
 
     // Canonical prefix check produced by watchdog_event_current/datacall.
-    return isdigit((unsigned char)s[0]) && isdigit((unsigned char)s[1]) && isdigit((unsigned char)s[2])
-           && isdigit((unsigned char)s[3]) && s[4] == '-' && isdigit((unsigned char)s[5])
-           && isdigit((unsigned char)s[6]) && s[7] == '-' && isdigit((unsigned char)s[8])
-           && isdigit((unsigned char)s[9]) && s[10] == ' ' && isdigit((unsigned char)s[11])
-           && isdigit((unsigned char)s[12]) && s[13] == ':' && isdigit((unsigned char)s[14])
-           && isdigit((unsigned char)s[15]) && s[16] == ':' && isdigit((unsigned char)s[17])
-           && isdigit((unsigned char)s[18]) && s[19] == ' ';
+    return ui_history_has_canonical_timestamp_prefix(s);
 }
 
 int
@@ -76,7 +101,7 @@ ui_history_compact_event_text(char* out, size_t out_size, const char* event_text
     if (n >= out_size) {
         n = out_size - 1;
     }
-    memcpy(out, src, n);
+    DSD_MEMCPY(out, src, n);
     out[n] = '\0';
     return n;
 }

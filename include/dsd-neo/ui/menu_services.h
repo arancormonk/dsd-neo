@@ -12,11 +12,15 @@
  * connects, RTL restarts, etc.). Unless noted, functions return 0 on success
  * and a negative value on invalid inputs or failures.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_SERVICES_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_SERVICES_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+
+#ifdef USE_RADIO
 #include <stdint.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -191,13 +195,15 @@ int svc_rtl_set_sql_db(dsd_opts* opts, double dB);
 /** @brief Set RTL monitor/non-symbol gain multiplier (clamped to 0–3). */
 int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
 /** @brief Toggle RTL bias tee (applied live when stream active). */
-int svc_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, int on);
+int svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on);
 /** @brief Toggle RTL-TCP adaptive networking and propagate to env/stream. */
-int svc_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, int on);
+int svc_rtltcp_set_autotune(dsd_opts* opts, const dsd_state* state, int on);
 /** @brief Toggle carrier/error-based auto PPM and propagate to env/stream. */
-int svc_rtl_set_auto_ppm(dsd_opts* opts, dsd_state* state, int on);
+int svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on);
 #endif
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_SERVICES_H_ */

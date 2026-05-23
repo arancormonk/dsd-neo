@@ -12,13 +12,208 @@
  * Uses FMA (fused multiply-add) for efficiency.
  */
 
-#include <cstring>
-#include <immintrin.h> /* AVX2 + FMA */
-#include <vector>
+#if defined(__clang_analyzer__)
+extern "C" void
+simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
+                            int taps_len) {
+    (void)in;
+    (void)in_len;
+    (void)out;
+    (void)hist_i;
+    (void)hist_q;
+    (void)taps;
+    (void)taps_len;
+}
 
-/* Thread-local scratch buffers to avoid per-call allocation */
+extern "C" int
+simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
+                            int taps_len) {
+    (void)in;
+    (void)in_len;
+    (void)out;
+    (void)hist_i;
+    (void)hist_q;
+    (void)taps;
+    (void)taps_len;
+    return 0;
+}
+
+extern "C" int
+simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, const float* taps, int taps_len) {
+    (void)in;
+    (void)in_len;
+    (void)out;
+    (void)hist;
+    (void)taps;
+    (void)taps_len;
+    return 0;
+}
+#else
+
+#include <cstring>
+#include <immintrin.h>
+#include <vector>
+#include "dsd-neo/core/safe_api.h"
+
+// NOLINTBEGIN(portability-simd-intrinsics)
+
 static thread_local std::vector<float> tls_scratch_iq;
 static thread_local std::vector<float> tls_scratch_real;
+
+namespace {
+
+struct ComplexIq {
+    float i;
+    float q;
+};
+
+static inline void
+copy_iq_history(float* scratch, const float* hist_i, const float* hist_q, int hist_len) {
+    for (int k = 0; k < hist_len; k++) {
+        const size_t kk = (size_t)k;
+        scratch[2 * kk] = hist_i[k];
+        scratch[2 * kk + 1] = hist_q[k];
+    }
+}
+
+static inline void
+copy_iq_input(float* scratch, int hist_len, const float* in, int sample_count) {
+    DSD_MEMCPY(scratch + (size_t)hist_len * 2, in, (size_t)sample_count * 2 * sizeof(float));
+}
+
+static inline void
+pad_iq_tail(float* scratch, int hist_len, int sample_count, int pad, float last_i, float last_q) {
+    for (int k = 0; k < pad; k++) {
+        const size_t kk = (size_t)hist_len + (size_t)sample_count + (size_t)k;
+        scratch[2 * kk] = last_i;
+        scratch[2 * kk + 1] = last_q;
+    }
+}
+
+static inline ComplexIq
+load_iq(const float* scratch, int idx) {
+    const size_t ii = (size_t)idx;
+    return {scratch[2 * ii], scratch[2 * ii + 1]};
+}
+
+static inline __m256
+pack_iq4(const float* scratch, int i0, int i1, int i2, int i3) {
+    const ComplexIq s0 = load_iq(scratch, i0);
+    const ComplexIq s1 = load_iq(scratch, i1);
+    const ComplexIq s2 = load_iq(scratch, i2);
+    const ComplexIq s3 = load_iq(scratch, i3);
+    return _mm256_set_ps(s3.q, s3.i, s2.q, s2.i, s1.q, s1.i, s0.q, s0.i);
+}
+
+static inline __m256
+fir_complex_accumulate4(const float* scratch, const float* taps, int hist_len, int center, int n) {
+    __m256 acc = _mm256_setzero_ps();
+    const __m256 tap_c = _mm256_set1_ps(taps[center]);
+    const size_t center_offset = ((size_t)(hist_len + n)) << 1;
+    const __m256 center_val = _mm256_loadu_ps(scratch + center_offset);
+    acc = _mm256_fmadd_ps(tap_c, center_val, acc);
+
+    for (int k = 0; k < center; k++) {
+        const float ce = taps[k];
+        if (ce == 0.0f) {
+            continue;
+        }
+        const int d = center - k;
+        const size_t minus_offset = ((size_t)(hist_len + n - d)) << 1;
+        const size_t plus_offset = ((size_t)(hist_len + n + d)) << 1;
+        const __m256 sum_m = _mm256_loadu_ps(scratch + minus_offset);
+        const __m256 sum_p = _mm256_loadu_ps(scratch + plus_offset);
+        const __m256 sum = _mm256_add_ps(sum_m, sum_p);
+        acc = _mm256_fmadd_ps(_mm256_set1_ps(ce), sum, acc);
+    }
+    return acc;
+}
+
+static inline ComplexIq
+fir_complex_accumulate_scalar(const float* scratch, const float* taps, int center, int center_idx) {
+    ComplexIq center_sample = load_iq(scratch, center_idx);
+    ComplexIq acc = {taps[center] * center_sample.i, taps[center] * center_sample.q};
+
+    for (int k = 0; k < center; k++) {
+        const float ce = taps[k];
+        if (ce == 0.0f) {
+            continue;
+        }
+        const int d = center - k;
+        const ComplexIq minus = load_iq(scratch, center_idx - d);
+        const ComplexIq plus = load_iq(scratch, center_idx + d);
+        acc.i += ce * (minus.i + plus.i);
+        acc.q += ce * (minus.q + plus.q);
+    }
+    return acc;
+}
+
+static inline __m256
+hb_complex_accumulate4(const float* scratch, const float* taps, int left_len, int center, int n) {
+    const int ci0 = left_len + (n << 1);
+    const int ci1 = left_len + ((n + 1) << 1);
+    const int ci2 = left_len + ((n + 2) << 1);
+    const int ci3 = left_len + ((n + 3) << 1);
+
+    __m256 acc = _mm256_setzero_ps();
+    acc = _mm256_fmadd_ps(_mm256_set1_ps(taps[center]), pack_iq4(scratch, ci0, ci1, ci2, ci3), acc);
+
+    for (int e = 0; e < center; e += 2) {
+        const float ce = taps[e];
+        if (ce == 0.0f) {
+            continue;
+        }
+        const int d = center - e;
+        const __m256 sum_m = pack_iq4(scratch, ci0 - d, ci1 - d, ci2 - d, ci3 - d);
+        const __m256 sum_p = pack_iq4(scratch, ci0 + d, ci1 + d, ci2 + d, ci3 + d);
+        const __m256 sum = _mm256_add_ps(sum_m, sum_p);
+        acc = _mm256_fmadd_ps(_mm256_set1_ps(ce), sum, acc);
+    }
+    return acc;
+}
+
+static inline ComplexIq
+hb_complex_accumulate_scalar(const float* scratch, const float* taps, int left_len, int center, int n) {
+    const int center_idx = left_len + (n << 1);
+    const ComplexIq center_sample = load_iq(scratch, center_idx);
+    ComplexIq acc = {taps[center] * center_sample.i, taps[center] * center_sample.q};
+
+    for (int e = 0; e < center; e += 2) {
+        const float ce = taps[e];
+        if (ce == 0.0f) {
+            continue;
+        }
+        const int d = center - e;
+        const ComplexIq minus = load_iq(scratch, center_idx - d);
+        const ComplexIq plus = load_iq(scratch, center_idx + d);
+        acc.i += ce * (minus.i + plus.i);
+        acc.q += ce * (minus.q + plus.q);
+    }
+    return acc;
+}
+
+static inline void
+update_iq_history(const float* in, int sample_count, float* hist_i, float* hist_q, int hist_len) {
+    if (sample_count >= hist_len) {
+        const int start = sample_count - hist_len;
+        for (int k = 0; k < hist_len; k++) {
+            const int rel = start + k;
+            hist_i[k] = in[rel << 1];
+            hist_q[k] = in[(rel << 1) + 1];
+        }
+        return;
+    }
+
+    const int keep = hist_len - sample_count;
+    DSD_MEMMOVE(hist_i, hist_i + sample_count, (size_t)keep * sizeof(float));
+    DSD_MEMMOVE(hist_q, hist_q + sample_count, (size_t)keep * sizeof(float));
+    for (int k = 0; k < sample_count; k++) {
+        hist_i[keep + k] = in[k << 1];
+        hist_q[keep + k] = in[(k << 1) + 1];
+    }
+}
+
+} // namespace
 
 /**
  * AVX2+FMA complex symmetric FIR filter (no decimation).
@@ -32,10 +227,10 @@ simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist
         return;
     }
 
-    const int N = in_len >> 1; /* complex samples */
+    const int sample_count = in_len >> 1; /* complex samples */
     const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
-    const int total_len = hist_len + N;
+    const int total_len = hist_len + sample_count;
     const int pad = center + 8;                    /* for n+7+d lookups */
     const int scratch_len = (total_len + pad) * 2; /* *2 for complex (I, Q) */
 
@@ -45,156 +240,36 @@ simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist
     }
     float* scratch = tls_scratch_iq.data();
 
-    /* Copy history (interleave from split buffers) */
-    for (int k = 0; k < hist_len; k++) {
-        const size_t kk = (size_t)k;
-        scratch[2 * kk] = hist_i[k];
-        scratch[2 * kk + 1] = hist_q[k];
-    }
-
-    /* Copy input (already interleaved) */
-    std::memcpy(scratch + (size_t)hist_len * 2, in, (size_t)N * 2 * sizeof(float));
-
-    /* Tail padding to preserve lastI/lastQ behavior */
-    float lastI = (N > 0) ? in[(N - 1) << 1] : 0.0f;
-    float lastQ = (N > 0) ? in[((N - 1) << 1) + 1] : 0.0f;
-    for (int k = 0; k < pad; k++) {
-        const size_t kk = (size_t)hist_len + (size_t)N + (size_t)k;
-        scratch[2 * kk] = lastI;
-        scratch[2 * kk + 1] = lastQ;
-    }
-
-    /* Branch-free sample access (index is always valid due to padding) */
-    auto get_iq = [&](int idx, float& xi, float& xq) {
-        const size_t ii = (size_t)idx;
-        xi = scratch[2 * ii];
-        xq = scratch[2 * ii + 1];
-    };
+    copy_iq_history(scratch, hist_i, hist_q, hist_len);
+    copy_iq_input(scratch, hist_len, in, sample_count);
+    const float last_i = in[(sample_count - 1) << 1];
+    const float last_q = in[((sample_count - 1) << 1) + 1];
+    pad_iq_tail(scratch, hist_len, sample_count, pad, last_i, last_q);
 
     /* Process 8 complex samples at a time (16 floats). */
     int n = 0;
-    for (; n + 7 < N; n += 8) {
-        __m256 acc0 = _mm256_setzero_ps(); /* [I0, Q0, I1, Q1, I2, Q2, I3, Q3] */
-        __m256 acc1 = _mm256_setzero_ps(); /* [I4, Q4, I5, Q5, I6, Q6, I7, Q7] */
-
-        const float cc = taps[center];
-        const __m256 tap_c = _mm256_set1_ps(cc);
-
-        const size_t center_offset0 = ((size_t)hist_len + (size_t)n) << 1;
-        const size_t center_offset1 = ((size_t)hist_len + (size_t)n + 4U) << 1;
-        const __m256 center_val0 = _mm256_loadu_ps(scratch + center_offset0);
-        const __m256 center_val1 = _mm256_loadu_ps(scratch + center_offset1);
-        acc0 = _mm256_fmadd_ps(tap_c, center_val0, acc0);
-        acc1 = _mm256_fmadd_ps(tap_c, center_val1, acc1);
-
-        /* Symmetric pairs */
-        for (int k = 0; k < center; k++) {
-            float ce = taps[k];
-            if (ce == 0.0f) {
-                continue;
-            }
-            int d = center - k;
-            const __m256 tap_e = _mm256_set1_ps(ce);
-
-            const size_t minus_offset0 = ((size_t)(hist_len + n - d)) << 1;
-            const size_t plus_offset0 = ((size_t)(hist_len + n + d)) << 1;
-            const __m256 sum_m0 = _mm256_loadu_ps(scratch + minus_offset0);
-            const __m256 sum_p0 = _mm256_loadu_ps(scratch + plus_offset0);
-            const __m256 sum0 = _mm256_add_ps(sum_m0, sum_p0);
-            acc0 = _mm256_fmadd_ps(tap_e, sum0, acc0);
-
-            const size_t minus_offset1 = ((size_t)(hist_len + n + 4 - d)) << 1;
-            const size_t plus_offset1 = ((size_t)(hist_len + n + 4 + d)) << 1;
-            const __m256 sum_m1 = _mm256_loadu_ps(scratch + minus_offset1);
-            const __m256 sum_p1 = _mm256_loadu_ps(scratch + plus_offset1);
-            const __m256 sum1 = _mm256_add_ps(sum_m1, sum_p1);
-            acc1 = _mm256_fmadd_ps(tap_e, sum1, acc1);
-        }
-
+    for (; n + 7 < sample_count; n += 8) {
+        const __m256 acc0 = fir_complex_accumulate4(scratch, taps, hist_len, center, n);
+        const __m256 acc1 = fir_complex_accumulate4(scratch, taps, hist_len, center, n + 4);
         _mm256_storeu_ps(out + (n << 1), acc0);
         _mm256_storeu_ps(out + ((n + 4) << 1), acc1);
     }
 
     /* Process 4 complex samples at a time (8 floats) */
-    for (; n + 3 < N; n += 4) {
-        __m256 acc = _mm256_setzero_ps(); /* [I0, Q0, I1, Q1, I2, Q2, I3, Q3] */
-
-        /* Center tap */
-        float cc = taps[center];
-        __m256 tap_c = _mm256_set1_ps(cc);
-
-        const size_t center_offset = ((size_t)hist_len + (size_t)n) << 1;
-        __m256 center_val = _mm256_loadu_ps(scratch + center_offset);
-        acc = _mm256_fmadd_ps(tap_c, center_val, acc);
-
-        /* Symmetric pairs */
-        for (int k = 0; k < center; k++) {
-            float ce = taps[k];
-            if (ce == 0.0f) {
-                continue;
-            }
-            int d = center - k;
-            __m256 tap_e = _mm256_set1_ps(ce);
-
-            const size_t minus_offset = ((size_t)(hist_len + n - d)) << 1;
-            const size_t plus_offset = ((size_t)(hist_len + n + d)) << 1;
-            __m256 sum_m = _mm256_loadu_ps(scratch + minus_offset);
-            __m256 sum_p = _mm256_loadu_ps(scratch + plus_offset);
-            __m256 sum = _mm256_add_ps(sum_m, sum_p);
-            acc = _mm256_fmadd_ps(tap_e, sum, acc);
-        }
-
+    for (; n + 3 < sample_count; n += 4) {
+        const __m256 acc = fir_complex_accumulate4(scratch, taps, hist_len, center, n);
         _mm256_storeu_ps(out + (n << 1), acc);
     }
 
     /* Scalar epilogue for remaining samples */
-    for (; n < N; n++) {
-        int center_idx = hist_len + n;
-        float accI = 0.0f;
-        float accQ = 0.0f;
-
-        float ci, cq;
-        get_iq(center_idx, ci, cq);
-        float cc = taps[center];
-        accI += cc * ci;
-        accQ += cc * cq;
-
-        for (int k = 0; k < center; k++) {
-            float ce = taps[k];
-            if (ce == 0.0f) {
-                continue;
-            }
-            int d = center - k;
-            float xmI, xmQ, xpI, xpQ;
-            get_iq(center_idx - d, xmI, xmQ);
-            get_iq(center_idx + d, xpI, xpQ);
-            accI += ce * (xmI + xpI);
-            accQ += ce * (xmQ + xpQ);
-        }
-
-        out[n << 1] = accI;
-        out[(n << 1) + 1] = accQ;
+    for (; n < sample_count; n++) {
+        const int center_idx = hist_len + n;
+        const ComplexIq acc = fir_complex_accumulate_scalar(scratch, taps, center, center_idx);
+        out[n << 1] = acc.i;
+        out[(n << 1) + 1] = acc.q;
     }
 
-    /* Update history: read from original `in` buffer, not scratch */
-    if (N >= hist_len) {
-        for (int k = 0; k < hist_len; k++) {
-            int rel = N - hist_len + k;
-            hist_i[k] = in[rel << 1];
-            hist_q[k] = in[(rel << 1) + 1];
-        }
-    } else {
-        int need = hist_len - N;
-        if (need > 0) {
-            std::memmove(hist_i, hist_i + (hist_len - need), (size_t)need * sizeof(float));
-            std::memmove(hist_q, hist_q + (hist_len - need), (size_t)need * sizeof(float));
-        }
-        for (int k = 0; k < N; k++) {
-            hist_i[need + k] = in[k << 1];
-            hist_q[need + k] = in[(k << 1) + 1];
-        }
-    }
-
+    update_iq_history(in, sample_count, hist_i, hist_q, hist_len);
     _mm256_zeroupper(); /* Avoid AVX-SSE transition penalty */
 }
 
@@ -210,11 +285,11 @@ simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist
         return 0;
     }
 
-    int ch_len = in_len >> 1;
+    const int ch_len = in_len >> 1;
     if (ch_len <= 0) {
         return 0;
     }
-    int out_ch_len = ch_len >> 1;
+    const int out_ch_len = ch_len >> 1;
 
     const int center = (taps_len - 1) >> 1;
     const int left_len = taps_len - 1;
@@ -228,132 +303,27 @@ simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist
     }
     float* scratch = tls_scratch_iq.data();
 
-    /* Copy history (interleave from split buffers) */
-    for (int k = 0; k < left_len; k++) {
-        const size_t kk = (size_t)k;
-        scratch[2 * kk] = hist_i[k];
-        scratch[2 * kk + 1] = hist_q[k];
-    }
-
-    /* Copy input (already interleaved) */
-    std::memcpy(scratch + (size_t)left_len * 2, in, (size_t)ch_len * 2 * sizeof(float));
-
-    /* Tail padding to preserve lastI/lastQ behavior */
-    float lastI = in[in_len - 2];
-    float lastQ = in[in_len - 1];
-    for (int k = 0; k < pad; k++) {
-        const size_t kk = (size_t)left_len + (size_t)ch_len + (size_t)k;
-        scratch[2 * kk] = lastI;
-        scratch[2 * kk + 1] = lastQ;
-    }
-
-    /* Branch-free sample access (index is always valid due to padding) */
-    auto get_iq = [&](int idx, float& xi, float& xq) {
-        const size_t ii = (size_t)idx;
-        xi = scratch[2 * ii];
-        xq = scratch[2 * ii + 1];
-    };
+    copy_iq_history(scratch, hist_i, hist_q, left_len);
+    copy_iq_input(scratch, left_len, in, ch_len);
+    const float last_i = in[in_len - 2];
+    const float last_q = in[in_len - 1];
+    pad_iq_tail(scratch, left_len, ch_len, pad, last_i, last_q);
 
     /* Process 4 output samples at a time */
     int n = 0;
     for (; n + 3 < out_ch_len; n += 4) {
-        __m256 acc = _mm256_setzero_ps();
-
-        float cc = taps[center];
-        __m256 tap_c = _mm256_set1_ps(cc);
-
-        /* Center indices for 4 outputs */
-        int ci0 = left_len + (n << 1);
-        int ci1 = left_len + ((n + 1) << 1);
-        int ci2 = left_len + ((n + 2) << 1);
-        int ci3 = left_len + ((n + 3) << 1);
-
-        float c0i, c0q, c1i, c1q, c2i, c2q, c3i, c3q;
-        get_iq(ci0, c0i, c0q);
-        get_iq(ci1, c1i, c1q);
-        get_iq(ci2, c2i, c2q);
-        get_iq(ci3, c3i, c3q);
-        __m256 center_val = _mm256_set_ps(c3q, c3i, c2q, c2i, c1q, c1i, c0q, c0i);
-        acc = _mm256_fmadd_ps(tap_c, center_val, acc);
-
-        /* Half-band: only even tap indices */
-        for (int e = 0; e < center; e += 2) {
-            float ce = taps[e];
-            if (ce == 0.0f) {
-                continue;
-            }
-            int d = center - e;
-            __m256 tap_e = _mm256_set1_ps(ce);
-
-            float xmI0, xmQ0, xpI0, xpQ0;
-            float xmI1, xmQ1, xpI1, xpQ1;
-            float xmI2, xmQ2, xpI2, xpQ2;
-            float xmI3, xmQ3, xpI3, xpQ3;
-
-            get_iq(ci0 - d, xmI0, xmQ0);
-            get_iq(ci0 + d, xpI0, xpQ0);
-            get_iq(ci1 - d, xmI1, xmQ1);
-            get_iq(ci1 + d, xpI1, xpQ1);
-            get_iq(ci2 - d, xmI2, xmQ2);
-            get_iq(ci2 + d, xpI2, xpQ2);
-            get_iq(ci3 - d, xmI3, xmQ3);
-            get_iq(ci3 + d, xpI3, xpQ3);
-
-            __m256 sum_m = _mm256_set_ps(xmQ3, xmI3, xmQ2, xmI2, xmQ1, xmI1, xmQ0, xmI0);
-            __m256 sum_p = _mm256_set_ps(xpQ3, xpI3, xpQ2, xpI2, xpQ1, xpI1, xpQ0, xpI0);
-            __m256 sum = _mm256_add_ps(sum_m, sum_p);
-            acc = _mm256_fmadd_ps(tap_e, sum, acc);
-        }
-
+        const __m256 acc = hb_complex_accumulate4(scratch, taps, left_len, center, n);
         _mm256_storeu_ps(out + (n << 1), acc);
     }
 
     /* Scalar epilogue */
     for (; n < out_ch_len; n++) {
-        int center_idx = left_len + (n << 1);
-        float accI = 0.0f;
-        float accQ = 0.0f;
-
-        float ci, cq;
-        get_iq(center_idx, ci, cq);
-        accI += taps[center] * ci;
-        accQ += taps[center] * cq;
-
-        for (int e = 0; e < center; e += 2) {
-            float ce = taps[e];
-            if (ce == 0.0f) {
-                continue;
-            }
-            int d = center - e;
-            float xmI, xmQ, xpI, xpQ;
-            get_iq(center_idx - d, xmI, xmQ);
-            get_iq(center_idx + d, xpI, xpQ);
-            accI += ce * (xmI + xpI);
-            accQ += ce * (xmQ + xpQ);
-        }
-
-        out[n << 1] = accI;
-        out[(n << 1) + 1] = accQ;
+        const ComplexIq acc = hb_complex_accumulate_scalar(scratch, taps, left_len, center, n);
+        out[n << 1] = acc.i;
+        out[(n << 1) + 1] = acc.q;
     }
 
-    /* Update history: read from original `in` buffer, not scratch */
-    if (ch_len >= left_len) {
-        int start = ch_len - left_len;
-        for (int k = 0; k < left_len; k++) {
-            int rel = start + k;
-            hist_i[k] = in[rel << 1];
-            hist_q[k] = in[(rel << 1) + 1];
-        }
-    } else {
-        int keep = left_len - ch_len;
-        std::memmove(hist_i, hist_i + ch_len, (size_t)keep * sizeof(float));
-        std::memmove(hist_q, hist_q + ch_len, (size_t)keep * sizeof(float));
-        for (int k = 0; k < ch_len; k++) {
-            hist_i[keep + k] = in[k << 1];
-            hist_q[keep + k] = in[(k << 1) + 1];
-        }
-    }
-
+    update_iq_history(in, ch_len, hist_i, hist_q, left_len);
     _mm256_zeroupper();
     return out_ch_len << 1;
 }
@@ -387,10 +357,10 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
     float* scratch = tls_scratch_real.data();
 
     /* Copy history */
-    std::memcpy(scratch, hist, (size_t)hist_len * sizeof(float));
+    DSD_MEMCPY(scratch, hist, (size_t)hist_len * sizeof(float));
 
     /* Copy input */
-    std::memcpy(scratch + hist_len, in, (size_t)in_len * sizeof(float));
+    DSD_MEMCPY(scratch + hist_len, in, (size_t)in_len * sizeof(float));
 
     /* Tail padding to preserve last sample behavior */
     float last = in[in_len - 1];
@@ -466,15 +436,17 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
 
     /* Update history: read from original `in` buffer, not scratch */
     if (in_len >= hist_len) {
-        std::memcpy(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
+        DSD_MEMCPY(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
     } else {
         int need = hist_len - in_len;
-        if (need > 0) {
-            std::memmove(hist, hist + in_len, (size_t)need * sizeof(float));
-        }
-        std::memcpy(hist + need, in, (size_t)in_len * sizeof(float));
+        DSD_MEMMOVE(hist, hist + in_len, (size_t)need * sizeof(float));
+        DSD_MEMCPY(hist + need, in, (size_t)in_len * sizeof(float));
     }
 
     _mm256_zeroupper();
     return out_len;
 }
+
+// NOLINTEND(portability-simd-intrinsics)
+
+#endif

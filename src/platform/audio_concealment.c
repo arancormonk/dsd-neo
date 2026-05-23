@@ -14,13 +14,8 @@
  */
 
 #include <dsd-neo/platform/audio_concealment.h>
-
 #include <stdlib.h>
-#include <string.h>
-
-/*============================================================================
- * Public API
- *============================================================================*/
+#include "dsd-neo/core/safe_api.h"
 
 int
 audio_conceal_init(struct audio_conceal_state* cs, size_t buffer_frames, int channels) {
@@ -65,10 +60,10 @@ audio_conceal_on_good_buffer(struct audio_conceal_state* cs, const int16_t* buf,
     size_t copy_frames = frames < cs->buffer_frames ? frames : cs->buffer_frames;
     size_t copy_samples = copy_frames * (size_t)cs->channels;
 
-    memcpy(cs->last_good_buffer, buf, copy_samples * sizeof(int16_t));
+    DSD_MEMCPY(cs->last_good_buffer, buf, copy_samples * sizeof(int16_t));
     if (copy_frames < cs->buffer_frames) {
         size_t tail_samples = (cs->buffer_frames - copy_frames) * (size_t)cs->channels;
-        memset(cs->last_good_buffer + copy_samples, 0, tail_samples * sizeof(int16_t));
+        DSD_MEMSET(cs->last_good_buffer + copy_samples, 0, tail_samples * sizeof(int16_t));
     }
 
     cs->repeat_count = 0;
@@ -85,7 +80,7 @@ audio_conceal_on_underrun(struct audio_conceal_state* cs, int16_t* out, size_t f
 
     /* No last-good buffer available — zero-fill. */
     if (!cs->last_good_buffer) {
-        memset(out, 0, write_samples * sizeof(int16_t));
+        DSD_MEMSET(out, 0, write_samples * sizeof(int16_t));
         cs->underrun_total++;
         return write_frames;
     }
@@ -118,7 +113,7 @@ audio_conceal_on_underrun(struct audio_conceal_state* cs, int16_t* out, size_t f
         cs->repeat_count++;
     } else {
         /* Exceeded max repeats — fade to silence. */
-        memset(out, 0, write_samples * sizeof(int16_t));
+        DSD_MEMSET(out, 0, write_samples * sizeof(int16_t));
     }
 
     cs->underrun_total++;

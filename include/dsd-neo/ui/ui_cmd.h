@@ -8,7 +8,8 @@
  * @brief UI → Demod command queue API and command IDs.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_UI_CMD_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_UI_CMD_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -221,3 +222,5 @@ struct UiCmd {
     size_t n; // payload length
     uint8_t data[UI_CMD_DATA_MAX];
 };
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_UI_CMD_H_ */
