@@ -1291,18 +1291,21 @@ dsd_state_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_
         new_sps = 64;
     }
 
-    double ratio = (old_sps > 0) ? ((double)state->symbolCenter / (double)old_sps) : 0.4;
-    if (ratio < 0.05) {
-        ratio = 0.05;
-    } else if (ratio > 0.95) {
-        ratio = 0.95;
-    }
-
     int new_center = (new_sps - 1) / 2;
     if (new_sps > 2) {
         int min_c = 1;
         int max_c = new_sps - 2;
-        new_center = (int)(ratio * (double)new_sps + 0.5);
+        long long ratio_num = state->symbolCenter;
+        long long ratio_den = old_sps;
+        if ((ratio_num * 20LL) < ratio_den) {
+            ratio_num = 1;
+            ratio_den = 20;
+        } else if ((ratio_num * 20LL) > (19LL * ratio_den)) {
+            ratio_num = 19;
+            ratio_den = 20;
+        }
+        const long long center_scaled = ratio_num * (long long)new_sps;
+        new_center = (int)((center_scaled + (ratio_den / 2LL)) / ratio_den);
         if (new_center < min_c) {
             new_center = min_c;
         } else if (new_center > max_c) {

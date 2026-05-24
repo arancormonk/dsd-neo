@@ -217,7 +217,37 @@ escape_rg() {
   printf '%s' "$1" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g'
 }
 
-MAX_TUS_PER_HEADER=5
+MAX_TUS_PER_HEADER_PER_LANGUAGE=5
+collect_header_includers() {
+  local pattern="$1"
+  local c_file=""
+  local cxx_file=""
+  local c_matches=()
+  local cxx_matches=()
+
+  mapfile -t c_matches < <(
+    rg -l --glob '!src/third_party/**' \
+      -g'*.c' \
+      "$pattern" src apps tests examples 2>/dev/null \
+      | sort \
+      | head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+  )
+  mapfile -t cxx_matches < <(
+    rg -l --glob '!src/third_party/**' \
+      -g'*.cc' -g'*.cpp' -g'*.cxx' \
+      "$pattern" src apps tests examples 2>/dev/null \
+      | sort \
+      | head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+  )
+
+  for c_file in "${c_matches[@]}"; do
+    printf '%s\n' "$c_file"
+  done
+  for cxx_file in "${cxx_matches[@]}"; do
+    printf '%s\n' "$cxx_file"
+  done
+}
+
 if [[ ${#changed_headers[@]} -gt 0 ]]; then
   if command -v rg >/dev/null 2>&1; then
     for hdr in "${changed_headers[@]}"; do
@@ -232,12 +262,7 @@ if [[ ${#changed_headers[@]} -gt 0 ]]; then
         pattern="^[[:space:]]*#[[:space:]]*include[[:space:]]*[<\\\"][^>\\\"]*${base}[>\\\"]"
       fi
 
-      mapfile -t matches < <(
-        rg -l --glob '!src/third_party/**' \
-          -g'*.c' -g'*.cc' -g'*.cpp' -g'*.cxx' \
-          "$pattern" src apps tests examples 2>/dev/null \
-          | head -n "$MAX_TUS_PER_HEADER" || true
-      )
+      mapfile -t matches < <(collect_header_includers "$pattern")
       analysis_tus+=("${matches[@]}")
     done
   else

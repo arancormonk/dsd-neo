@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Compute the changed-file target sets used by pull-request CI.
 # This mirrors the local pre-push targeting rules: changed source files are
-# analyzed directly, and changed headers expand to a small set of including TUs.
+# analyzed directly, and changed headers expand to representative C and C++ TUs.
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT_DIR"
@@ -32,7 +32,7 @@ USAGE
 BASE_REF=""
 HEAD_REF="HEAD"
 OUT_DIR=".ci/changed-files"
-MAX_TUS_PER_HEADER=5
+MAX_TUS_PER_HEADER_PER_LANGUAGE=5
 EXPAND_HEADERS=1
 
 while [[ $# -gt 0 ]]; do
@@ -113,6 +113,36 @@ escape_rg() {
   printf '%s' "$1" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g'
 }
 
+collect_header_includers() {
+  local pattern="$1"
+  local c_file=""
+  local cxx_file=""
+  local c_matches=()
+  local cxx_matches=()
+
+  mapfile -t c_matches < <(
+    rg -l --glob '!src/third_party/**' \
+      -g'*.c' \
+      "$pattern" src apps tests examples 2>/dev/null \
+      | sort \
+      | head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+  )
+  mapfile -t cxx_matches < <(
+    rg -l --glob '!src/third_party/**' \
+      -g'*.cc' -g'*.cpp' -g'*.cxx' \
+      "$pattern" src apps tests examples 2>/dev/null \
+      | sort \
+      | head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+  )
+
+  for c_file in "${c_matches[@]}"; do
+    printf '%s\n' "$c_file"
+  done
+  for cxx_file in "${cxx_matches[@]}"; do
+    printf '%s\n' "$cxx_file"
+  done
+}
+
 mkdir -p "$OUT_DIR"
 
 mapfile -t changed_paths < <(
@@ -176,12 +206,7 @@ if [[ $EXPAND_HEADERS -eq 1 && ${#changed_headers[@]} -gt 0 ]]; then
         pattern="^[[:space:]]*#[[:space:]]*include[[:space:]]*[<\\\"][^>\\\"]*${include_key}[>\\\"]"
       fi
 
-      mapfile -t matches < <(
-        rg -l --glob '!src/third_party/**' \
-          -g'*.c' -g'*.cc' -g'*.cpp' -g'*.cxx' \
-          "$pattern" src apps tests examples 2>/dev/null \
-          | head -n "$MAX_TUS_PER_HEADER" || true
-      )
+      mapfile -t matches < <(collect_header_includers "$pattern")
       analysis_tus+=("${matches[@]}")
     done
   else
