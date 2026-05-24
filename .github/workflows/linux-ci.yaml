@@ -1201,6 +1201,7 @@ jobs:
           set -euxo pipefail
           {
             echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)"
+            echo "iwyu_sha=$(git ls-remote https://github.com/include-what-you-use/include-what-you-use refs/heads/clang_22 | cut -f1)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
@@ -1208,8 +1209,9 @@ jobs:
         uses: actions/cache@v5.0.5
         with:
           path: .deps
-          key: arch-deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}
+          key: arch-deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.iwyu_sha }}
           restore-keys: |
+            arch-deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-
             arch-deps-${{ runner.os }}-
 
       - name: Restore ccache
@@ -1263,9 +1265,11 @@ jobs:
             mkdir -p "$DEPS_PREFIX"
             {
               echo "mbe_sha=$want_sha"
+              echo "iwyu_sha=${{ steps.dep-shas.outputs.iwyu_sha }}"
               echo "updated=$(date -u +%FT%TZ)"
             } > "$mf"
 
+            rm -rf build/dev-debug
             cmake --preset dev-debug
 
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
