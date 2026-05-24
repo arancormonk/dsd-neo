@@ -360,36 +360,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
 
-      - name: Install scan-build toolchain and deps
+      - name: Run scan-build under Arch toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            clang-tools cmake ninja-build pkg-config git \
-            build-essential libsndfile1-dev libpulse-dev libncurses-dev \
-            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
-
-      - name: Build and install mbelib-neo
-        run: |
-          set -euxo pipefail
-          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
-          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$HOME/.local"
-          cmake --build /tmp/mbelib-neo/build -j
-          cmake --install /tmp/mbelib-neo/build
-
-      - name: Prepare local dependency environment
-        run: |
-          {
-            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
-            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
-            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
-          } >> "$GITHUB_ENV"
-
-      - name: Run scan-build
-        run: |
-          tools/scan_build.sh --strict \
-            --cmake-arg -DDSD_REQUIRE_RTLSDR=ON \
-            --cmake-arg -DDSD_REQUIRE_SOAPYSDR=ON
+          bash tools/ci_arch_toolchain.sh bash -lc '
+            set -euxo pipefail
+            git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+            cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_SHARED_LIBS=ON \
+              -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/mbelib-neo/build -j
+            cmake --install /tmp/mbelib-neo/build
+            tools/scan_build.sh --strict \
+              --cmake-arg -DDSD_REQUIRE_RTLSDR=ON \
+              --cmake-arg -DDSD_REQUIRE_SOAPYSDR=ON
+          '
 
       - name: Upload scan-build output
         if: always()
@@ -1092,35 +1077,35 @@ jobs:
         if: github.event_name == 'pull_request' && steps.changed.outputs.format_files == '0'
         run: echo "No C/C++ files to check."
 
-      - name: Install clang-format
-        if: github.event_name != 'pull_request' || steps.changed.outputs.format_files != '0'
-        run: sudo apt-get update && sudo apt-get install -y clang-format
       - name: Check formatting
         if: github.event_name != 'pull_request' || steps.changed.outputs.format_files != '0'
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            mapfile -t files < .ci/changed-files/format_files.txt
-          else
-            mapfile -t files < <(git ls-files '*.c' '*.cc' '*.cxx' '*.cpp' '*.h' '*.hpp' ':!:build/**')
-          fi
+          bash tools/ci_arch_toolchain.sh bash -lc '
+            set -euo pipefail
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              mapfile -t files < .ci/changed-files/format_files.txt
+            else
+              mapfile -t files < <(git ls-files "*.c" "*.cc" "*.cxx" "*.cpp" "*.h" "*.hpp" ":!:build/**")
+            fi
 
-          clang-format --version
-          rc=0
-          for f in "${files[@]}"; do
-            if clang-format -n --Werror "$f" >/dev/null 2>&1; then
-              continue
+            clang-format --version
+            rc=0
+            for f in "${files[@]}"; do
+              if clang-format -n --Werror "$f" >/dev/null 2>&1; then
+                continue
+              fi
+              if ! diff -u "$f" <(clang-format "$f") >/dev/null; then
+                echo "Formatting issues found in ${f}"
+                rc=1
+              fi
+            done
+            if [[ $rc -ne 0 ]]; then
+              echo "Run tools/format.sh."
+              exit 1
             fi
-            if ! diff -u "$f" <(clang-format "$f") >/dev/null; then
-              echo "Formatting issues found in ${f}"
-              rc=1
-            fi
-          done
-          if [[ $rc -ne 0 ]]; then
-            echo "Run tools/format.sh."
-            exit 1
-          fi
-          echo "Formatting OK"
+            echo "Formatting OK"
+          '
 
   cppcheck:
     name: cppcheck
@@ -1130,14 +1115,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install cppcheck diff dependencies
-        run: |
-          sudo apt-get update
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            sudo apt-get install -y ripgrep
-          else
-            sudo apt-get install -y cppcheck ripgrep
-          fi
+      - name: Install PR diff dependencies
+        if: github.event_name == 'pull_request'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
 
       - name: Compute PR changed files
         if: github.event_name == 'pull_request'
@@ -1151,20 +1131,19 @@ jobs:
         if: github.event_name == 'pull_request' && steps.changed.outputs.cppcheck_sources == '0'
         run: echo "No changed source files for cppcheck."
 
-      - name: Install cppcheck
-        if: github.event_name == 'pull_request' && steps.changed.outputs.cppcheck_sources != '0'
-        run: sudo apt-get install -y cppcheck
-
       - name: Run cppcheck
         if: github.event_name != 'pull_request' || steps.changed.outputs.cppcheck_sources != '0'
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            mapfile -t files < .ci/changed-files/cppcheck_sources.txt
-            tools/cppcheck.sh --strict -- "${files[@]}"
-          else
-            tools/cppcheck.sh --strict
-          fi
+          bash tools/ci_arch_toolchain.sh bash -lc '
+            set -euo pipefail
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              mapfile -t files < .ci/changed-files/cppcheck_sources.txt
+              tools/cppcheck.sh --strict -- "${files[@]}"
+            else
+              tools/cppcheck.sh --strict
+            fi
+          '
 
       - name: Upload cppcheck output
         if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.cppcheck_sources != '0')
@@ -1199,6 +1178,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install PR diff dependencies
+        if: github.event_name == 'pull_request'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Compute PR changed files
         if: github.event_name == 'pull_request'
         id: changed
@@ -1211,17 +1194,6 @@ jobs:
         if: github.event_name == 'pull_request' && steps.changed.outputs.analysis_tus == '0'
         run: echo "No changed translation units for ${{ matrix.name }}."
 
-      - name: Prepare dependency environment
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        run: |
-          set -euxo pipefail
-          {
-            echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps"
-            echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
-            echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${CMAKE_PREFIX_PATH:-}"
-            echo "LD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${LD_LIBRARY_PATH:-}"
-          } >> "$GITHUB_ENV"
-
       - name: Compute dependency SHAs (for cache key)
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
         id: dep-shas
@@ -1229,180 +1201,82 @@ jobs:
           set -euxo pipefail
           {
             echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)"
-            echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)"
-            echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
         uses: actions/cache@v5.0.5
         with:
-          path: ${{ env.DEPS_PREFIX }}
-          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          path: .deps
+          key: arch-deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}
           restore-keys: |
-            deps-${{ runner.os }}-
-
-      - name: Install toolchains
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-tidy ripgrep iwyu build-essential cmake ninja-build pkg-config git ccache \
-            libsndfile1-dev libpulse-dev libncurses-dev libusb-1.0-0-dev \
-            libfftw3-dev libblas-dev liblapack-dev gfortran libcurl4-openssl-dev
-
-      - name: Prepare ccache environment
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        run: |
-          set -euxo pipefail
-          {
-            echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache"
-            echo "CC=ccache gcc"
-            echo "CXX=ccache g++"
-            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
-            echo "CCACHE_NOHASHDIR=true"
-            echo "CCACHE_SLOPPINESS=time_macros"
-          } >> "$GITHUB_ENV"
-          mkdir -p "${GITHUB_WORKSPACE}/.ccache"
-
-      - name: Compute tool versions (for ccache key)
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        id: toolver-tidy
-        run: |
-          set -euxo pipefail
-          {
-            echo "gcc_ver=$(gcc -dumpfullversion -dumpversion || gcc --version | head -n1)"
-            echo "cmake_ver=$(cmake --version | head -n1 | awk '{print $3}')"
-          } >> "$GITHUB_OUTPUT"
+            arch-deps-${{ runner.os }}-
 
       - name: Restore ccache
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
         uses: actions/cache@v5.0.5
         with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-${{ steps.toolver-tidy.outputs.gcc_ver }}-${{ steps.toolver-tidy.outputs.cmake_ver }}-${{ github.sha }}
+          path: .ccache
+          key: ccache-${{ runner.os }}-arch-${{ github.job }}-${{ matrix.name }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-${{ steps.toolver-tidy.outputs.gcc_ver }}-${{ steps.toolver-tidy.outputs.cmake_ver }}-
-            ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-
-            ccache-${{ runner.os }}-${{ github.job }}-
-            ccache-${{ runner.os }}-
+            ccache-${{ runner.os }}-arch-${{ github.job }}-${{ matrix.name }}-
+            ccache-${{ runner.os }}-arch-${{ github.job }}-
+            ccache-${{ runner.os }}-arch-
 
-      - name: Initialize ccache
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        run: |
-          ccache --version
-          ccache --zero-stats
-          ccache --set-config=max_size=500M
-          ccache --set-config=compression=true
-
-      - name: Install dependencies via APT when available (codec2, rtl-sdr)
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        run: |
-          sudo apt-get install -y --no-install-recommends \
-            libcodec2-dev librtlsdr-dev || true
-
-      - name: Build and install mbelib-neo (required, cached)
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        run: |
-          set -euxo pipefail
-          mf="$DEPS_PREFIX/.manifest"
-          want_sha='${{ steps.dep-shas.outputs.mbe_sha }}'
-          pc1="$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc"
-          pc2="$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc"
-          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
-            if [ -f "$mf" ] && grep -q "^mbe_sha=$want_sha$" "$mf"; then
-              echo "Using cached mbelib-neo in $DEPS_PREFIX"
-              exit 0
-            fi
-            echo "Cached mbelib-neo does not match desired SHA; rebuilding"
-          fi
-          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
-          git -C /tmp/mbelib-neo fetch --depth 1 origin "$want_sha"
-          git -C /tmp/mbelib-neo checkout "$want_sha"
-          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
-          cmake --build /tmp/mbelib-neo/build -j
-          cmake --install /tmp/mbelib-neo/build
-
-      - name: Ensure codec2 (cached fallback if not found)
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        run: |
-          set -euxo pipefail
-          mf="$DEPS_PREFIX/.manifest"
-          want_sha='${{ steps.dep-shas.outputs.codec2_sha }}'
-          pc1="$DEPS_PREFIX/lib/pkgconfig/codec2.pc"
-          pc2="$DEPS_PREFIX/lib64/pkgconfig/codec2.pc"
-          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
-            if [ -f "$mf" ] && grep -q "^codec2_sha=$want_sha$" "$mf"; then
-              echo "Using cached codec2 in $DEPS_PREFIX"
-              exit 0
-            fi
-            echo "Cached codec2 does not match desired SHA; rebuilding"
-          else
-            if pkg-config --exists codec2; then
-              echo "Using system codec2"
-              exit 0
-            fi
-          fi
-          git clone --depth 1 https://github.com/arancormonk/codec2 /tmp/codec2
-          git -C /tmp/codec2 fetch --depth 1 origin "$want_sha"
-          git -C /tmp/codec2 checkout "$want_sha"
-          cmake -S /tmp/codec2 -B /tmp/codec2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
-          cmake --build /tmp/codec2/build -j
-          cmake --install /tmp/codec2/build
-
-      - name: Ensure RTL-SDR (cached fallback if pkg-config not found)
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        run: |
-          set -euxo pipefail
-          mf="$DEPS_PREFIX/.manifest"
-          want_sha='${{ steps.dep-shas.outputs.rtlsdr_sha }}'
-          pc1="$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc"
-          pc2="$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc"
-          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
-            if [ -f "$mf" ] && grep -q "^rtlsdr_sha=$want_sha$" "$mf"; then
-              echo "Using cached rtl-sdr in $DEPS_PREFIX"
-              exit 0
-            fi
-            echo "Cached rtl-sdr does not match desired SHA; rebuilding"
-          else
-            if pkg-config --exists librtlsdr; then
-              echo "Using system rtl-sdr"
-              exit 0
-            fi
-          fi
-          git clone --depth 1 https://github.com/arancormonk/rtl-sdr /tmp/rtl-sdr
-          git -C /tmp/rtl-sdr fetch --depth 1 origin "$want_sha"
-          git -C /tmp/rtl-sdr checkout "$want_sha"
-          cmake -S /tmp/rtl-sdr -B /tmp/rtl-sdr/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDETACH_KERNEL_DRIVER=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
-          cmake --build /tmp/rtl-sdr/build -j
-          cmake --install /tmp/rtl-sdr/build
-
-      - name: Update deps manifest
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        run: |
-          set -euxo pipefail
-          mkdir -p "$DEPS_PREFIX"
-          mf="$DEPS_PREFIX/.manifest"
-          {
-            echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}"
-            echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}"
-            echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}"
-            echo "updated=$(date -u +%FT%TZ)"
-          } > "$mf"
-
-      - name: Configure (dev-debug)
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        run: cmake --preset dev-debug
-
-      - name: Run ${{ matrix.name }} (strict)
+      - name: Run ${{ matrix.name }} under Arch toolchain
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            mapfile -t files < .ci/changed-files/analysis_tus.txt
-            ${{ matrix.run_cmd }} -- "${files[@]}"
-          else
-            ${{ matrix.run_cmd }}
-          fi
+          bash tools/ci_arch_toolchain.sh bash -lc '
+            set -euxo pipefail
+
+            ccache --version
+            ccache --zero-stats
+            ccache --set-config=max_size=500M
+            ccache --set-config=compression=true
+            export CC="ccache gcc"
+            export CXX="ccache g++"
+
+            mf="$DEPS_PREFIX/.manifest"
+            want_sha="${{ steps.dep-shas.outputs.mbe_sha }}"
+            pc1="$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc"
+            pc2="$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc"
+            if [ -f "$pc1" ] || [ -f "$pc2" ]; then
+              if [ -f "$mf" ] && grep -q "^mbe_sha=$want_sha$" "$mf"; then
+                echo "Using cached mbelib-neo in $DEPS_PREFIX"
+              else
+                echo "Cached mbelib-neo does not match desired SHA; rebuilding"
+                rm -rf "$DEPS_PREFIX"
+              fi
+            fi
+            if [ ! -f "$pc1" ] && [ ! -f "$pc2" ]; then
+              git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+              git -C /tmp/mbelib-neo fetch --depth 1 origin "$want_sha"
+              git -C /tmp/mbelib-neo checkout "$want_sha"
+              cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=ON \
+                -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+              cmake --build /tmp/mbelib-neo/build -j
+              cmake --install /tmp/mbelib-neo/build
+            fi
+            mkdir -p "$DEPS_PREFIX"
+            {
+              echo "mbe_sha=$want_sha"
+              echo "updated=$(date -u +%FT%TZ)"
+            } > "$mf"
+
+            cmake --preset dev-debug
+
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              mapfile -t files < .ci/changed-files/analysis_tus.txt
+              ${{ matrix.run_cmd }} -- "${files[@]}"
+            else
+              ${{ matrix.run_cmd }}
+            fi
+
+            ccache -s
+          '
 
       - name: Upload ${{ matrix.name }} output
         if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0')
@@ -1412,7 +1286,3 @@ jobs:
           path: ${{ matrix.artifact_path }}
           include-hidden-files: true
           retention-days: 7
-
-      - name: Show ccache stats
-        if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0')
-        run: ccache -s

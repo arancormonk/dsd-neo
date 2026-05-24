@@ -4,6 +4,8 @@
 
 # Tool caches
 /.cache/
+/.ccache/
+/.deps/
 
 # Visual Studio
 /.vs/
