@@ -710,9 +710,18 @@ dmr_talker_alias_effective_len(const uint8_t* bits, uint8_t char_size, uint16_t 
 
 static void
 dmr_talker_alias_append_text(char* alias_string, size_t alias_size, const char* text) {
-    size_t rem = alias_size - strlen(alias_string) - 1;
+    if (alias_string == NULL || text == NULL || alias_size == 0) {
+        return;
+    }
+
+    size_t alias_len = strnlen(alias_string, alias_size);
+    if (alias_len >= alias_size) {
+        return;
+    }
+
+    size_t rem = alias_size - alias_len - 1U;
     if (rem > 0) {
-        DSD_STRNCAT(alias_string, text, rem);
+        dsd_strncat_s(alias_string, alias_size, text, rem);
     }
 }
 

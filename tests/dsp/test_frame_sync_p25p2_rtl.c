@@ -27,6 +27,7 @@
 #endif
 
 static size_t g_symbol_index;
+static const char* g_sync_pattern = P25P2_SYNC;
 
 dsd_socket_t
 Connect(char* hostname, int portno) { // NOLINT(misc-use-internal-linkage)
@@ -172,9 +173,9 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
         return -1;
     }
 
-    const size_t pattern_len = strlen(P25P2_SYNC);
+    const size_t pattern_len = strlen(g_sync_pattern);
     for (size_t i = 0; i < count; i++) {
-        char dibit = (g_symbol_index < pattern_len) ? P25P2_SYNC[g_symbol_index] : '1';
+        char dibit = (g_symbol_index < pattern_len) ? g_sync_pattern[g_symbol_index] : '1';
         out[i] = symbol_level_for_dibit(dibit);
         g_symbol_index++;
     }
@@ -256,11 +257,15 @@ init_state_buffers(dsd_state* state) {
     return 1;
 }
 
-int
-main(void) {
+static int
+run_p25p2_sync_case(const char* pattern, int expected_sync, const char* label) {
     static dsd_opts opts;
     static dsd_state state;
     static int fake_rtl_context;
+
+    g_symbol_index = 0U;
+    g_sync_pattern = pattern;
+    dsd_frame_sync_reset_mod_state();
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -298,8 +303,8 @@ main(void) {
 
     int sync = getFrameSync(&opts, &state);
     int rc = 0;
-    if (sync != DSD_SYNC_P25P2_POS) {
-        DSD_FPRINTF(stderr, "P25P2 RTL sync returned %d, expected %d\n", sync, DSD_SYNC_P25P2_POS);
+    if (sync != expected_sync) {
+        DSD_FPRINTF(stderr, "%s returned %d, expected %d\n", label, sync, expected_sync);
         rc = 1;
     }
 
@@ -307,6 +312,14 @@ main(void) {
     dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){0});
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     free_state_buffers(&state);
+    return rc;
+}
+
+int
+main(void) {
+    int rc = 0;
+    rc |= run_p25p2_sync_case(P25P2_SYNC, DSD_SYNC_P25P2_POS, "P25P2 RTL positive sync");
+    rc |= run_p25p2_sync_case(INV_P25P2_SYNC, DSD_SYNC_P25P2_NEG, "P25P2 RTL inverted sync");
     return rc;
 }
 

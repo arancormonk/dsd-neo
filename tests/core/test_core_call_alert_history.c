@@ -14,6 +14,7 @@
 #include <dsd-neo/runtime/call_alert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -114,6 +115,16 @@ expect_int(const char* label, int got, int want) {
 }
 
 static int
+expect_has_substr(const char* label, const char* haystack, const char* needle) {
+    if (haystack == NULL || needle == NULL || strstr(haystack, needle) == NULL) {
+        DSD_FPRINTF(stderr, "%s: missing '%s' in '%s'\n", label, needle ? needle : "<null>",
+                    haystack ? haystack : "<null>");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_end_only_data_call_does_not_emit_voice_end_alert(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -184,6 +195,37 @@ test_voice_end_alert_still_emits_for_voice_history(void) {
     return rc;
 }
 
+static int
+test_edacs_service_string_appends_past_pointer_size(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    opts.p25_is_tuned = 1;
+    state.lastsynctype = DSD_SYNC_EDACS_POS;
+    state.lastsrc = 1201;
+    state.lasttg = 0x0123;
+    state.edacs_tuned_lcn = 7;
+    state.edacs_site_id = 3;
+    state.edacs_area_code = 1;
+    state.edacs_sys_id = 0x2A;
+    state.edacs_vc_call_type = 0x0A;
+    state.edacs_a_shift = 7;
+    state.edacs_f_shift = 3;
+    state.edacs_a_mask = 0x0F;
+    state.edacs_f_mask = 0x0F;
+    state.edacs_s_mask = 0x07;
+
+    watchdog_event_current(&opts, &state, 0);
+
+    const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
+    int rc = 0;
+    rc |= expect_has_substr("edacs sysid service suffix", item->sysid_string, "EDACS_SITE_003_Digital_Group_Call");
+    rc |= expect_has_substr("edacs event service suffix", item->event_string, "Digital Group Call;");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -192,6 +234,7 @@ main(void) {
     rc |= test_data_only_data_call_emits_one_data_alert();
     rc |= test_source_less_data_call_does_not_suppress_next_voice_start_alert();
     rc |= test_voice_end_alert_still_emits_for_voice_history();
+    rc |= test_edacs_service_string_appends_past_pointer_size();
 
     if (rc == 0) {
         printf("CORE_CALL_ALERT_HISTORY: OK\n");

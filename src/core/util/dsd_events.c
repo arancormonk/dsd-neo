@@ -408,14 +408,18 @@ watchdog_event_set_sanitized_ascii_id(char* dst, size_t dst_sz, const char* src,
 
 static void
 watchdog_event_str_append(char* dst, size_t dst_sz, const char* src) {
-    size_t rem;
-
     if (dst == NULL || src == NULL || dst_sz == 0) {
         return;
     }
-    rem = dst_sz - strlen(dst) - 1;
+
+    size_t dst_len = strnlen(dst, dst_sz);
+    if (dst_len >= dst_sz) {
+        return;
+    }
+
+    size_t rem = dst_sz - dst_len - 1U;
     if (rem > 0) {
-        DSD_STRNCAT(dst, src, rem);
+        dsd_strncat_s(dst, dst_sz, src, rem);
     }
 }
 
