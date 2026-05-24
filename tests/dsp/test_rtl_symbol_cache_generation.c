@@ -14,7 +14,8 @@
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stdint.h>
-#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -34,6 +35,8 @@ static int g_symbol_rate_hz_after_bump = 0;
 static int g_symbol_levels_after_bump = 0;
 static int g_channel_profile_after_bump = -1;
 static int g_cleanup_calls = 0;
+static int g_fail_reads = 0;
+static int g_failed_read_calls = 0;
 
 dsd_socket_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -132,6 +135,15 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     assert(count >= 4U);
 
     g_read_calls++;
+    if (g_fail_reads) {
+        g_failed_read_calls++;
+        if (g_failed_read_calls > 4) {
+            DSD_FPRINTF(stderr, "RTL symbol cache retried failed reads instead of returning EMPTY\n");
+            exit(2);
+        }
+        *out_got = 0;
+        return -1;
+    }
     float read_base = g_read_base;
     if (g_bump_generation_during_read) {
         g_stream_generation++;
@@ -268,6 +280,12 @@ main(void) {
     assert(getSymbol(&opts, &state, 1) == 3103.0f);
     assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 0);
     assert(g_cleanup_calls == 0);
+
+    g_fail_reads = 1;
+    g_failed_read_calls = 0;
+    assert(getSymbol(&opts, &state, 1) == 0.0f);
+    assert(g_failed_read_calls == 1);
+    assert(g_cleanup_calls == 1);
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
     dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){0});

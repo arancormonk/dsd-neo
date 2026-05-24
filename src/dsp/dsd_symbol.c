@@ -921,13 +921,8 @@ rtl_symbol_cache_take(dsd_state* state, int output_kind, int channel_profile, in
         return pop_status;
     }
 
-    for (;;) {
-        pop_status = rtl_symbol_cache_refill(state, output_kind, channel_profile, symbol_rate_hz, levels, generation,
-                                             expected_generation, sample_out);
-        if (pop_status != RTL_SYMBOL_CACHE_EMPTY) {
-            return pop_status;
-        }
-    }
+    return rtl_symbol_cache_refill(state, output_kind, channel_profile, symbol_rate_hz, levels, generation,
+                                   expected_generation, sample_out);
 }
 #endif
 
