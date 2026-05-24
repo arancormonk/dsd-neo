@@ -12,18 +12,9 @@
  * u8 I/Q samples into normalized float and feeds the `input_ring_state`.
  */
 
-#include <SoapySDR/Constants.h>
-#include <SoapySDR/Device.hpp>
-#include <SoapySDR/Errors.h>
-#include <SoapySDR/Errors.hpp>
-#include <SoapySDR/Formats.h>
-#include <SoapySDR/Types.hpp>
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <cinttypes>
-#include <cmath>
-#include <complex>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/iq_capture.h>
@@ -40,28 +31,25 @@
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
-#include <exception>
 #include <iterator>
 #include <limits.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <rtl-sdr.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <string>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
-#include <vector>
+#endif
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 #include "rtl_capture_phase.h"
 #include "rtl_perf.h"
 #include "rtl_replay_device.h"
 #include "soapy_profile.h"
-
-#if !DSD_PLATFORM_WIN_NATIVE
-#endif
 
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
 #include <excpt.h>
@@ -78,6 +66,18 @@ enum : unsigned char {
 };
 
 #ifdef USE_SOAPYSDR
+#include <SoapySDR/Constants.h>
+#include <SoapySDR/Device.hpp>
+#include <SoapySDR/Errors.h>
+#include <SoapySDR/Errors.hpp>
+#include <SoapySDR/Formats.h>
+#include <SoapySDR/Types.hpp>
+#include <cctype>
+#include <cmath>
+#include <complex>
+#include <exception>
+#include <string>
+#include <vector>
 
 namespace SoapySDR {
 class Stream;
@@ -90,6 +90,7 @@ class Stream;
 #endif
 
 #ifdef USE_RTLSDR
+#include <rtl-sdr.h>
 #else
 struct rtlsdr_dev;
 typedef struct rtlsdr_dev rtlsdr_dev_t;

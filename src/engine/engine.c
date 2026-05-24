@@ -26,7 +26,6 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
-#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/audio.h>
@@ -53,7 +52,6 @@
 #include <errno.h>
 #include <limits.h>
 #include <mbelib.h>
-#include <rtl-sdr.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -72,8 +70,10 @@
 
 struct CODEC2;
 #ifdef USE_RADIO
+#include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #ifdef USE_RTLSDR
+#include <rtl-sdr.h>
 #endif
 
 #ifdef USE_CODEC2

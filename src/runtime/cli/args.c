@@ -27,7 +27,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -39,6 +38,7 @@
 #include <getopt.h>
 #include <unistd.h>
 #elif !DSD_PLATFORM_WIN_NATIVE
+#include <unistd.h>
 #endif
 
 // Local helpers --------------------------------------------------------------
@@ -150,7 +150,7 @@ cli_parse_long_base(const char* in, int base, long* out) {
     errno = 0;
     char* end = NULL;
     long v = strtol(in, &end, base);
-    if (errno != 0 || !end || *end != '\0') {
+    if (errno != 0 || end == in) {
         return 0;
     }
     *out = v;
@@ -174,7 +174,7 @@ cli_parse_u64_or_default(const char* in, int base, unsigned long long fallback) 
     errno = 0;
     char* end = NULL;
     unsigned long long value = strtoull(in, &end, base);
-    if (errno != 0 || !end || *end != '\0') {
+    if (errno != 0 || end == in) {
         return fallback;
     }
     return value;
@@ -188,7 +188,7 @@ cli_parse_double_or_default(const char* in, double fallback) {
     errno = 0;
     char* end = NULL;
     double value = strtod(in, &end);
-    if (errno != 0 || !end || *end != '\0') {
+    if (errno != 0 || end == in) {
         return fallback;
     }
     return value;

@@ -5,11 +5,15 @@
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/log.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <fcntl.h>
+#endif
 #include <stdio.h>
 #include <sys/types.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <termios.h>
 #include <unistd.h>
+#endif
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -47,13 +51,12 @@ resumeScan(dsd_opts* opts, dsd_state* state) {
     state->numtdulc = 0;
 }
 
-#else                /* POSIX */
+#else /* POSIX */
 
 // IWYU pragma: no_include <bits/termios-baud.h>
 // IWYU pragma: no_include <bits/termios-c_cc.h>
 // IWYU pragma: no_include <bits/termios-c_cflag.h>
 // IWYU pragma: no_include <bits/termios-c_iflag.h>
-#include <termios.h> // IWYU pragma: keep
 
 /**
  * @brief Open and configure the outbound serial port used for radio control.

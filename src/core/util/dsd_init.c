@@ -3,7 +3,6 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <codec2/codec2.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -28,6 +27,7 @@
 #include "dsd-neo/runtime/call_alert.h"
 
 #ifdef USE_CODEC2
+#include <codec2/codec2.h>
 #endif
 
 // Small helpers to efficiently set fixed-width strings

@@ -11,7 +11,6 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/unicode.h>
-#include <langinfo.h>
 #include <locale.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +23,7 @@
 
 #if defined(__unix__) || defined(__APPLE__)
 #define HAVE_LANGINFO 1
+#include <langinfo.h>
 #endif
 
 static int g_unicode_cached = 0;

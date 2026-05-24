@@ -5,7 +5,6 @@
 
 /* UDP PCM16LE input backend */
 
-#include <arpa/inet.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -15,17 +14,19 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <errno.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <arpa/inet.h>
 #include <netinet/in.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
+#endif
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
-
-#if !DSD_PLATFORM_WIN_NATIVE
-#endif
 
 /** @brief Simple single-producer/single-consumer ring for PCM16 samples. */
 typedef struct udp_input_ring {

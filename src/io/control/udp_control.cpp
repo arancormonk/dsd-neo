@@ -12,21 +12,22 @@
  * semantics and resource management.
  */
 
-#include <arpa/inet.h>
 #include <dsd-neo/io/udp_control.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/log.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <arpa/inet.h>
 #include <netinet/in.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
+#endif
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
-
-#if !DSD_PLATFORM_WIN_NATIVE
-#endif
 
 struct udp_control {
     int port;

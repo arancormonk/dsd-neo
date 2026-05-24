@@ -27,22 +27,21 @@
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#endif
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
+#endif
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-#ifdef USE_RADIO
-#endif
-#if !DSD_PLATFORM_WIN_NATIVE
-#endif
 
 #define BUFSIZE        1024
 #define FREQ_MAX       4096

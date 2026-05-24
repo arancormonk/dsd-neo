@@ -12,7 +12,6 @@
  * LWVMOBILE
  * 2024-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
-#include <codec2/codec2.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/cleanup.h>
@@ -56,6 +55,7 @@
 #endif
 
 #ifdef USE_CODEC2
+#include <codec2/codec2.h>
 #endif
 
 static void decodeM17PKT(const dsd_opts* opts, const dsd_state* state, const uint8_t* input, int len);

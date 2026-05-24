@@ -841,7 +841,6 @@ apply_cmd_io_and_import_network(dsd_opts* opts, dsd_state* state, const struct U
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
-#ifdef USE_RADIO
 static int
 ui_cmd_parse_i32_payload(const struct UiCmd* c, int32_t* out) {
     if (!c || !out || c->n < (int)sizeof(*out)) {
@@ -860,6 +859,7 @@ ui_cmd_parse_double_payload(const struct UiCmd* c, double* out) {
     return 1;
 }
 
+#ifdef USE_RADIO
 static int
 ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     (void)c;

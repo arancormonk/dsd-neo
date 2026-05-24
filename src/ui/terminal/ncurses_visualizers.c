@@ -11,7 +11,6 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/ui_prims.h>
@@ -23,6 +22,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
 static int
@@ -1127,6 +1127,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
 #endif
 }
 
+#ifdef USE_RTLSDR
 static int
 fsk_hist_bucket_for_value(int v, int q1, int q2, int q3) {
     if (v <= q1) {
@@ -1304,6 +1305,7 @@ print_fsk_hist_view_rtlsdr(void) {
     ui_print_hr();
     attroff(COLOR_PAIR(4));
 }
+#endif
 
 void
 print_fsk_hist_view(void) {
@@ -1316,6 +1318,7 @@ print_fsk_hist_view(void) {
 #endif
 }
 
+#ifdef USE_RTLSDR
 static int
 spectrum_nfft_clamped(void) {
     int nfft = rtl_stream_spectrum_get_size();
@@ -1528,6 +1531,7 @@ print_spectrum_view_rtlsdr(const dsd_opts* opts) {
     spectrum_draw_plot(opts, col, w, h, vmin, vmax, span, use_unicode);
     spectrum_print_legend(opts, rate, w, use_unicode, vmax, vmin);
 }
+#endif
 
 void
 print_spectrum_view(const dsd_opts* opts) {

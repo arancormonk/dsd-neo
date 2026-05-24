@@ -10,15 +10,16 @@
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
+#endif
 #include <stdio.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
+#endif
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-#if !DSD_PLATFORM_WIN_NATIVE
-#endif
 
 static struct sockaddr_in address;
 static struct sockaddr_in addressA;
