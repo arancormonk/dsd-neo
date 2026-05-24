@@ -853,7 +853,18 @@ static int
 dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char* product, char* serial) {
 #ifdef USE_RTLSDR
     int device_count = 0;
+#if defined(_MSC_VER) && defined(_WIN32)
+    __try {
+        device_count = (int)rtlsdr_get_device_count();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LOG_ERROR("RTL: libusb exception during device enumeration.\n");
+        device_count = 0;
+        exitflag = 1;
+    }
+#else
     device_count = (int)rtlsdr_get_device_count();
+#endif
+    // cppcheck-suppress knownConditionTrueFalse -- cppcheck does not model MSVC __try assignments.
     if (device_count == 0) {
         LOG_ERROR("No supported devices found.\n");
         exitflag = 1;
@@ -862,7 +873,17 @@ dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char*
 
     LOG_NOTICE("Found %d device(s):\n", device_count);
     for (int i = 0; i < device_count; i++) {
+#if defined(_MSC_VER) && defined(_WIN32)
+        __try {
+            (void)rtlsdr_get_device_usb_strings((uint32_t)i, vendor, product, serial);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DSD_SNPRINTF(vendor, 256, "%s", "unknown");
+            DSD_SNPRINTF(product, 256, "%s", "unknown");
+            DSD_SNPRINTF(serial, 256, "%s", "unknown");
+        }
+#else
         (void)rtlsdr_get_device_usb_strings((uint32_t)i, vendor, product, serial);
+#endif
         LOG_NOTICE("  %d:  %s, %s, SN: %s\n", i, vendor, product, serial);
         if (opts->rtl_dev_index == i) {
             LOG_NOTICE("Selected Device #%d with Serial Number: %s \n", i, serial);

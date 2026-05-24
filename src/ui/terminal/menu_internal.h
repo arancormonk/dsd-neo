@@ -170,6 +170,10 @@ void ui_overlay_ensure_window(UiMenuFrame* f);
 void ui_overlay_recreate_if_needed(UiMenuFrame* f);
 int ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* ctx, int* out_maxlab);
 
+#ifdef DSD_NEO_TEST_HOOKS
+const char* ui_menu_item_label_for_test(const NcMenuItem* it, const void* ctx, char* out, size_t out_size);
+#endif
+
 // Chooser helpers are declared in menu_prompts.h
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_INTERNAL_H_ */

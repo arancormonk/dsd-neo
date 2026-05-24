@@ -4,7 +4,6 @@
  */
 
 #include <dsd-neo/runtime/freq_parse.h>
-#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
@@ -35,10 +34,9 @@ freq_suffix_factor(char* buf) {
 
 static int
 parse_positive_double(const char* text, double* value) {
-    errno = 0;
     char* end = NULL;
     double parsed = strtod(text, &end);
-    if (end == text || (end && *end != '\0') || errno == ERANGE || parsed <= 0.0) {
+    if (end == text || parsed <= 0.0) {
         return 0;
     }
 

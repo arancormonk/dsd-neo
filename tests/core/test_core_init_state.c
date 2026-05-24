@@ -150,6 +150,17 @@ main(void) {
         return 8;
     }
 
+    state->samplesPerSymbol = 10;
+    state->symbolCenter = 5;
+    dsd_state_rescale_symbol_timing(state, 48000, 43200);
+    if (state->samplesPerSymbol != 9 || state->symbolCenter != 5) {
+        DSD_FPRINTF(stderr, "symbol timing half-up rounding mismatch: sps=%d center=%d\n", state->samplesPerSymbol,
+                    state->symbolCenter);
+        freeState(state);
+        free(state);
+        return 13;
+    }
+
     freeState(state);
     free(state);
     return 0;

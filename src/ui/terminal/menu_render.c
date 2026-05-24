@@ -135,20 +135,35 @@ ui_menu_item_label(const NcMenuItem* it, const void* ctx, char* out, size_t out_
         return "";
     }
     const char* lab = it->label ? it->label : it->id;
-    if (it->label_fn) {
-        char dyn[128];
-        const char* got = it->label_fn(ctx, dyn, sizeof dyn);
+    if (it->label_fn && out && out_size > 0) {
+        const char* got = it->label_fn(ctx, out, out_size);
         if (got && *got) {
             lab = got;
         }
     }
     if (it->submenu && it->submenu_len > 0 && out && out_size > 0) {
-        DSD_SNPRINTF(out, out_size, "%s >", lab);
-        out[out_size - 1] = '\0';
+        if (lab != out) {
+            DSD_SNPRINTF(out, out_size, "%s", lab);
+        }
+        size_t len = strlen(out);
+        if (len + 1U < out_size) {
+            out[len++] = ' ';
+        }
+        if (len + 1U < out_size) {
+            out[len++] = '>';
+        }
+        out[len] = '\0';
         return out;
     }
     return lab;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+const char*
+ui_menu_item_label_for_test(const NcMenuItem* it, const void* ctx, char* out, size_t out_size) {
+    return ui_menu_item_label(it, ctx, out, out_size);
+}
+#endif
 
 static void
 ui_menu_draw_item_rows(WINDOW* menu_win, const UiMenuDrawLayout* layout, const NcMenuItem* items, size_t n, int hi,
