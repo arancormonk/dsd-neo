@@ -65,7 +65,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
 
       - name: Build and install mbelib-neo
         run: |
@@ -113,7 +113,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
 
       - name: Build and install mbelib-neo
         run: |
@@ -197,7 +197,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git ccache \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev \
-            gfortran
+            gfortran libcurl4-openssl-dev
 
       - name: Prepare ccache environment
         id: prep-ccache
@@ -367,7 +367,7 @@ jobs:
             clang-tools cmake ninja-build pkg-config git \
             build-essential libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
 
       - name: Build and install mbelib-neo
         run: |
@@ -910,7 +910,7 @@ jobs:
             build-essential clang cmake ninja-build pkg-config git ccache \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev \
-            gfortran
+            gfortran libcurl4-openssl-dev
 
       - name: Prepare ccache environment
         run: |
@@ -1248,7 +1248,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-tidy ripgrep iwyu build-essential cmake ninja-build pkg-config git ccache \
             libsndfile1-dev libpulse-dev libncurses-dev libusb-1.0-0-dev \
-            libfftw3-dev libblas-dev liblapack-dev gfortran
+            libfftw3-dev libblas-dev liblapack-dev gfortran libcurl4-openssl-dev
 
       - name: Prepare ccache environment
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'

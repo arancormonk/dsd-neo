@@ -2072,6 +2072,15 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
+static void
+rtl_device_copy_cstr(char* dst, size_t dst_size, const char* src) {
+    if (!dst || dst_size == 0) {
+        return;
+    }
+    DSD_SNPRINTF(dst, dst_size, "%s", src ? src : "");
+    dst[dst_size - 1] = '\0';
+}
+
 #ifdef USE_SOAPYSDR
 template <typename Fn>
 static int
@@ -2092,15 +2101,6 @@ soapy_call_locked(struct rtl_device* dev, const char* op, Fn&& fn) {
     }
     (void)dsd_mutex_unlock(&dev->soapy_lock);
     return ret;
-}
-
-static void
-soapy_copy_cstr(char* dst, size_t dst_size, const char* src) {
-    if (!dst || dst_size == 0) {
-        return;
-    }
-    DSD_SNPRINTF(dst, dst_size, "%s", src ? src : "");
-    dst[dst_size - 1] = '\0';
 }
 
 static std::vector<dsdneo::SoapyRange>
@@ -2154,21 +2154,22 @@ soapy_cache_identity_locked(struct rtl_device* dev) {
         return;
     }
     try {
-        soapy_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), dev->soapy_dev->getDriverKey().c_str());
+        rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key),
+                             dev->soapy_dev->getDriverKey().c_str());
     } catch (const std::exception&) {
         dev->soapy_driver_key[0] = '\0';
     }
     try {
-        soapy_copy_cstr(dev->soapy_hardware_key, sizeof(dev->soapy_hardware_key),
-                        dev->soapy_dev->getHardwareKey().c_str());
+        rtl_device_copy_cstr(dev->soapy_hardware_key, sizeof(dev->soapy_hardware_key),
+                             dev->soapy_dev->getHardwareKey().c_str());
     } catch (const std::exception&) {
         dev->soapy_hardware_key[0] = '\0';
     }
     try {
         double full_scale = 0.0;
         std::string native_format = dev->soapy_dev->getNativeStreamFormat(SOAPY_SDR_RX, 0, full_scale);
-        soapy_copy_cstr(dev->soapy_native_stream_format, sizeof(dev->soapy_native_stream_format),
-                        native_format.c_str());
+        rtl_device_copy_cstr(dev->soapy_native_stream_format, sizeof(dev->soapy_native_stream_format),
+                             native_format.c_str());
     } catch (const std::exception&) {
         dev->soapy_native_stream_format[0] = '\0';
     }
@@ -3962,7 +3963,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
     std::string args_string;
     try {
         args_string = args_cstr;
-        soapy_copy_cstr(dev->soapy_args_string, sizeof(dev->soapy_args_string), args_cstr);
+        rtl_device_copy_cstr(dev->soapy_args_string, sizeof(dev->soapy_args_string), args_cstr);
         (void)SoapySDR::KwargsFromString(args_string);
     } catch (const std::exception& e) {
         DSD_FPRINTF(stderr, "SoapySDR: invalid args string '%s': %s\n", args_cstr, e.what());
@@ -4022,12 +4023,13 @@ rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_s
     if (!dev) {
         return;
     }
-    soapy_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile), cfg ? cfg->profile : NULL);
-    soapy_copy_cstr(dev->soapy_requested_antenna, sizeof(dev->soapy_requested_antenna), cfg ? cfg->antenna : NULL);
-    soapy_copy_cstr(dev->soapy_requested_clock, sizeof(dev->soapy_requested_clock), cfg ? cfg->clock_source : NULL);
-    soapy_copy_cstr(dev->soapy_requested_gains, sizeof(dev->soapy_requested_gains), cfg ? cfg->gains : NULL);
-    soapy_copy_cstr(dev->soapy_requested_stream_format, sizeof(dev->soapy_requested_stream_format),
-                    cfg ? cfg->stream_format : NULL);
+    rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile), cfg ? cfg->profile : NULL);
+    rtl_device_copy_cstr(dev->soapy_requested_antenna, sizeof(dev->soapy_requested_antenna), cfg ? cfg->antenna : NULL);
+    rtl_device_copy_cstr(dev->soapy_requested_clock, sizeof(dev->soapy_requested_clock),
+                         cfg ? cfg->clock_source : NULL);
+    rtl_device_copy_cstr(dev->soapy_requested_gains, sizeof(dev->soapy_requested_gains), cfg ? cfg->gains : NULL);
+    rtl_device_copy_cstr(dev->soapy_requested_stream_format, sizeof(dev->soapy_requested_stream_format),
+                         cfg ? cfg->stream_format : NULL);
     dev->soapy_requested_bandwidth_hz = cfg ? cfg->bandwidth_hz : -1;
 }
 
@@ -4462,6 +4464,7 @@ rtl_device_set_gain_tcp(struct rtl_device* dev, int gain) {
     return rtl_tcp_send_cmd(dev->sockfd, 0x04, (uint32_t)gain);
 }
 
+#ifdef USE_SOAPYSDR
 static int
 rtl_device_soapy_named_gain_override_active(struct rtl_device* dev) {
     if (!dev || !dev->soapy_named_gain_override) {
@@ -4475,7 +4478,6 @@ rtl_device_soapy_named_gain_override_active(struct rtl_device* dev) {
     return 1;
 }
 
-#ifdef USE_SOAPYSDR
 static int
 rtl_device_set_gain_soapy(struct rtl_device* dev, int gain) {
     if (rtl_device_soapy_named_gain_override_active(dev)) {
