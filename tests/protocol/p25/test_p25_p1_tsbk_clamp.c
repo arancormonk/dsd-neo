@@ -183,7 +183,10 @@ expect_true(const char* tag, int cond) {
 int
 main(void) {
     int rc = 0;
-    p25_sm_set_api(sm_noop_api());
+    {
+        p25_sm_api api = sm_noop_api();
+        p25_sm_set_api(&api);
+    }
     // Build a TSBK-mapped vPDU Group Voice Channel Grant with channel 0x100A (iden=1)
     unsigned char mac[24] = {0};
     mac[0] = 0x07; // TSBK marker

@@ -87,7 +87,7 @@ create_temp_raw_pcm_wav_suffix(const char* prefix, const short* samples, size_t 
         return 1;
     }
 
-    FILE* fp = fopen(out_path, "wb");
+    FILE* fp = dsd_fopen_private(out_path, "wb");
     if (!fp) {
         DSD_FPRINTF(stderr, "FAIL: fopen write failed for %s\n", out_path);
         return 1;

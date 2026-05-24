@@ -943,6 +943,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         DSD_PARSE_ARGS_IQ_REPLAY_RADIO_BLOCK();
 #endif
     }
+    // codeql[cpp/path-injection] These one-shot helpers intentionally open user-selected CSV paths.
     DSD_PARSE_ARGS_TRAILING_BLOCK();
 
     int new_argc = dsd_cli_compact_args(argc, argv);

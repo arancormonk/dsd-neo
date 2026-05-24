@@ -61,7 +61,7 @@ main(void) {
     rc |= expect_int("cond_init_monotonic", dsd_cond_init_monotonic(&cond), 0);
 
     struct cond_signal_ctx ctx = {&cond, &mutex, &fired};
-    rc |= expect_int("thread_create", dsd_thread_create(&thread, (dsd_thread_fn)signal_thread_fn, &ctx), 0);
+    rc |= expect_int("thread_create", dsd_thread_create(&thread, signal_thread_fn, &ctx), 0);
 
     uint64_t start_ns = dsd_time_monotonic_ns();
     uint64_t deadline_ns = start_ns + 2000000000ULL;

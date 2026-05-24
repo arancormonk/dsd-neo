@@ -199,7 +199,10 @@ int
 main(void) {
     int rc = 0;
 
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     // Common iden config: iden=1 FDMA, base=851.000 MHz, spacing=12.5 kHz
     const int iden = 1, type = 1, tdma = 0;

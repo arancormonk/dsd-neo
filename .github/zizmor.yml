@@ -1,8 +1,8 @@
 rules:
-  # Current policy: every external action must at least use an explicit tag,
-  # branch, or SHA. Hash-pinning remains the preferred release-workflow end
-  # state, but enabling that as a hard gate would fail the current workflows.
+  # External actions must be pinned to immutable commit SHAs.
   unpinned-uses:
     config:
       policies:
-        "*": ref-pin
+        "actions/*": ref-pin
+        "github/*": ref-pin
+        "*": hash-pin

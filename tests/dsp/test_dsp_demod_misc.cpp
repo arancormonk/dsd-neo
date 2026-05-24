@@ -151,7 +151,7 @@ main(void) {
     // dsd_fm_demod: differential phase + FLL offset
     {
         /* Three complex samples rotating +90 deg each step. */
-        float iq[6] = {0.5f, 0.0f, 0.0f, 0.5f, -0.5f, 0.0f};
+        static float iq[6] = {0.5f, 0.0f, 0.0f, 0.5f, -0.5f, 0.0f};
         s->lowpassed = iq;
         s->lp_len = 6; // 3 complex samples
         s->fll_enabled = 1;

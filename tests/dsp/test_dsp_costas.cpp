@@ -201,7 +201,7 @@ test_cfo_tracking(void) {
  */
 static int
 test_disabled_when_not_cqpsk(void) {
-    float buf[100];
+    static float buf[100];
     for (int i = 0; i < 100; i++) {
         buf[i] = 0.5f;
     }
@@ -240,7 +240,7 @@ test_disabled_when_not_cqpsk(void) {
  */
 static int
 test_diff_phasor_correctness(void) {
-    float buf[8]; /* 4 complex samples */
+    static float buf[8]; /* 4 complex samples */
 
     /* Samples at phases: 0°, 90°, 180°, -90° */
     buf[0] = 1.0f;
@@ -302,7 +302,7 @@ test_diff_phasor_correctness(void) {
  */
 static int
 test_costas_normalizes_reliable_magnitude(void) {
-    float buf[8]; /* 4 complex samples */
+    static float buf[8]; /* 4 complex samples */
 
     /* Differential phasors with large envelope swings. */
     buf[0] = 0.20f;
@@ -358,7 +358,7 @@ test_costas_normalizes_reliable_magnitude(void) {
  */
 static int
 test_costas_deep_fade_does_not_boost_or_train(void) {
-    float buf[4]; /* 2 complex samples */
+    static float buf[4]; /* 2 complex samples */
     buf[0] = 0.03f;
     buf[1] = 0.01f;
     buf[2] = 0.028f;
@@ -414,7 +414,9 @@ test_costas_deep_fade_does_not_boost_or_train(void) {
 static float
 run_single_costas_update(float mag, float* out_freq) {
     const float angle = 0.30f;
-    float buf[2] = {mag * cosf(angle), mag * sinf(angle)};
+    static float buf[2];
+    buf[0] = mag * cosf(angle);
+    buf[1] = mag * sinf(angle);
 
     demod_state* s = alloc_state();
     if (!s) {
@@ -476,7 +478,9 @@ static int
 test_costas_smooths_error_step(void) {
     const float angle = 0.30f;
     const float mag = 0.70f;
-    float buf[2] = {mag * cosf(angle), mag * sinf(angle)};
+    static float buf[2];
+    buf[0] = mag * cosf(angle);
+    buf[1] = mag * sinf(angle);
 
     demod_state* s = alloc_state();
     if (!s) {
@@ -543,7 +547,9 @@ test_costas_adapts_smoothing_for_phase_kick(void) {
     const float angle = 0.30f;
     const float mag = 0.70f;
     const float seed_error = 0.05f;
-    float buf[2] = {mag * cosf(angle), mag * sinf(angle)};
+    static float buf[2];
+    buf[0] = mag * cosf(angle);
+    buf[1] = mag * sinf(angle);
 
     demod_state* s = alloc_state();
     if (!s) {

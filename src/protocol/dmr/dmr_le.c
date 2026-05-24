@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
@@ -685,7 +686,7 @@ dmr_sbrc_handle_standard_mode(const dsd_opts* opts, dsd_state* state, const dmr_
 static void
 dmr_sbrc_write_dsp_output(const dsd_opts* opts, const dsd_state* state, uint8_t slot) {
     if (opts->use_dsp_output == 1) {
-        FILE* pFile = fopen(opts->dsp_out_file, "a");
+        FILE* pFile = dsd_fopen_private(opts->dsp_out_file, "a");
         if (pFile != NULL) {
             DSD_FPRINTF(pFile, "\n%d 99 ", slot + 1); // '99' is SB and RC designation value
             for (int i = 0; i < 12; i++)              // 48 bits (includes CC, PPI, LCSS, and QR)

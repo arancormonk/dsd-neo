@@ -555,7 +555,7 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
     DSD_SNPRINTF(tmp, sizeof tmp, "%s.tmp", path);
     tmp[sizeof tmp - 1] = '\0';
 
-    FILE* fp = fopen(tmp, "w");
+    FILE* fp = dsd_fopen_private(tmp, "w");
     if (!fp) {
         return -1;
     }

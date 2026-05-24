@@ -61,6 +61,24 @@ dsd_time_realtime_ns(void) {
     return unix_100ns * 100ULL; /* Convert 100ns to ns */
 }
 
+int
+dsd_localtime(const time_t* t, struct tm* out) {
+    if (!t || !out) {
+        return -1;
+    }
+    *out = (struct tm){0};
+    return localtime_s(out, t) == 0 ? 0 : -1;
+}
+
+int
+dsd_gmtime(const time_t* t, struct tm* out) {
+    if (!t || !out) {
+        return -1;
+    }
+    *out = (struct tm){0};
+    return gmtime_s(out, t) == 0 ? 0 : -1;
+}
+
 void
 dsd_sleep_ms(unsigned int ms) {
     Sleep(ms);

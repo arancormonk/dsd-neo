@@ -526,7 +526,7 @@ test_group_file_append_helper(void) {
     }
     (void)dsd_close(fd);
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free(opts);
@@ -549,7 +549,7 @@ test_group_file_append_helper(void) {
     }
     (void)dsd_close(fd);
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free(opts);
@@ -572,7 +572,7 @@ test_group_file_append_helper(void) {
     }
     (void)dsd_close(fd);
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free(opts);
@@ -598,7 +598,7 @@ test_group_file_append_helper(void) {
     }
     (void)dsd_close(fd);
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free(opts);
@@ -814,7 +814,7 @@ test_reload_group_file(void) {
     }
     (void)dsd_close(fd);
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free_test_state(st);
@@ -847,7 +847,7 @@ test_reload_group_file(void) {
     rc |= expect_true("failed reload keeps generation", policy_generation(st) == generation_before);
 
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free_test_state(st);

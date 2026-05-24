@@ -161,7 +161,7 @@ main(void) {
     api.on_neighbor_update = fake_on_neighbor_update;
     api.next_cc_candidate = fake_next_cc_candidate;
     api.tick = fake_tick;
-    p25_sm_set_api(api);
+    p25_sm_set_api(&api);
 
     p25_sm_init(opts, state);
     rc |= expect_eq_int("init_calls", g_init_calls, 1);

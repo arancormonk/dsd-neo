@@ -3418,6 +3418,10 @@ target_include_directories(
     SYSTEM
     PRIVATE ${_PUBLIC_INCLUDES}
 )
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_token_alignment
+    PRIVATE dsd-neo_platform
+)
 add_test(
     NAME DMR_LRRP_TOKEN_ALIGNMENT
     COMMAND dsd-neo_test_dmr_lrrp_token_alignment
@@ -3436,6 +3440,10 @@ target_include_directories(
     dsd-neo_test_dmr_lrrp_response_token_lengths
     SYSTEM
     PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_response_token_lengths
+    PRIVATE dsd-neo_platform
 )
 add_test(
     NAME DMR_LRRP_RESPONSE_TOKEN_LENGTHS
@@ -3456,6 +3464,10 @@ target_include_directories(
     SYSTEM
     PRIVATE ${_PUBLIC_INCLUDES}
 )
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_resync_prefix
+    PRIVATE dsd-neo_platform
+)
 add_test(
     NAME DMR_LRRP_RESYNC_PREFIX
     COMMAND dsd-neo_test_dmr_lrrp_resync_prefix
@@ -3474,6 +3486,10 @@ target_include_directories(
     dsd-neo_test_dmr_lrrp_position_token_precedence
     SYSTEM
     PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_position_token_precedence
+    PRIVATE dsd-neo_platform
 )
 add_test(
     NAME DMR_LRRP_POSITION_TOKEN_PRECEDENCE
@@ -3515,6 +3531,10 @@ target_include_directories(
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
     SYSTEM
     PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_ip_udp_lengths
+    PRIVATE dsd-neo_platform
 )
 add_test(
     NAME DMR_LRRP_IP_UDP_LENGTHS
@@ -3575,7 +3595,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_embedded_gps_position_error
-    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(
     NAME DMR_EMBEDDED_GPS_POSITION_ERROR
@@ -3751,6 +3771,10 @@ target_include_directories(
     dsd-neo_test_p25_p1_pdu_private_allowlist
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+target_link_libraries(
+    dsd-neo_test_p25_p1_pdu_private_allowlist
+    PRIVATE dsd-neo_platform
+)
 add_test(
     NAME P25_P1_PDU_PRIVATE_ALLOWLIST
     COMMAND dsd-neo_test_p25_p1_pdu_private_allowlist
@@ -3840,7 +3864,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dibit_symbol_bin_soft
-    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DIBIT_SYMBOL_BIN_SOFT COMMAND dsd-neo_test_dibit_symbol_bin_soft)
 

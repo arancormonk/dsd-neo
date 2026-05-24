@@ -49,7 +49,7 @@ typedef enum __attribute__((packed)) dsd_rtl_stream_channel_profile {
     DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK = 5,
 } dsd_rtl_stream_channel_profile;
 
-void dsd_rtl_stream_metrics_hooks_set(dsd_rtl_stream_metrics_hooks hooks);
+void dsd_rtl_stream_metrics_hooks_set(const dsd_rtl_stream_metrics_hooks* hooks);
 
 unsigned int dsd_rtl_stream_metrics_hook_output_rate_hz(void);
 int dsd_rtl_stream_metrics_hook_output_kind(void);

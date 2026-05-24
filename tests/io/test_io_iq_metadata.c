@@ -5,6 +5,7 @@
 
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -57,7 +58,7 @@ path_join(char* out, size_t out_size, const char* a, const char* b) {
 
 static int
 write_bytes_file(const char* path, const uint8_t* bytes, size_t len) {
-    FILE* fp = fopen(path, "wb");
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (!fp) {
         return -1;
     }
@@ -71,7 +72,7 @@ write_bytes_file(const char* path, const uint8_t* bytes, size_t len) {
 
 static int
 write_text_file(const char* path, const char* text) {
-    FILE* fp = fopen(path, "wb");
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (!fp) {
         return -1;
     }

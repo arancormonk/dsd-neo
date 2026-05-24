@@ -17,6 +17,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/pdu.h>
@@ -1108,7 +1109,7 @@ dmr_lrrp_write_file_if_needed(const dsd_opts* opts, const dmr_lrrp_parse_result*
     char datestr[11];
     getTimeC_buf(timestr);
     getDateS_buf(datestr);
-    FILE* pFile = fopen(opts->lrrp_out_file, "a");
+    FILE* pFile = dsd_fopen_private(opts->lrrp_out_file, "a");
     if (pFile == NULL) {
         return;
     }
@@ -1325,7 +1326,7 @@ dmr_locn_write_file(const dsd_opts* opts, const dsd_state* state, double latitud
     char datestr[11];
     getTimeC_buf(timestr);
     getDateS_buf(datestr);
-    FILE* pFile = fopen(opts->lrrp_out_file, "a");
+    FILE* pFile = dsd_fopen_private(opts->lrrp_out_file, "a");
     if (pFile == NULL) {
         return;
     }

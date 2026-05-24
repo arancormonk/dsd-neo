@@ -223,7 +223,10 @@ int
 main(void) {
     int rc = 0;
 
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     // Build LCW bits for format 0x44 (Group Voice Channel Update – Explicit)
     // Layout (bit indices):

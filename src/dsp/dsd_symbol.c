@@ -53,6 +53,10 @@
 #include "dsd-neo/platform/sockets.h"
 #include "pcm_input_staging.h"
 
+#ifdef TRACE_DSD
+#include <dsd-neo/platform/file_compat.h>
+#endif
+
 #ifdef USE_RADIO
 #endif
 #include <fcntl.h> // IWYU pragma: keep
@@ -1646,7 +1650,7 @@ symbol_trace_label(dsd_state* state, float symbol) {
     }
     float left, right;
     if (state->debug_label_file == NULL) {
-        state->debug_label_file = fopen("pp_label.txt", "w");
+        state->debug_label_file = dsd_fopen_private("pp_label.txt", "w");
     }
     left = state->debug_sample_left_edge / SAMPLE_RATE_IN;
     right = state->debug_sample_right_edge / SAMPLE_RATE_IN;

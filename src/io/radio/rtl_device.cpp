@@ -4921,24 +4921,24 @@ rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
             dev->thread_started = 0;
             return -1;
         }
-        r = dsd_thread_create(&dev->thread, reinterpret_cast<dsd_thread_fn>(dongle_thread_fn), dev);
+        r = dsd_thread_create(&dev->thread, dongle_thread_fn, dev);
     } else if (dev->backend == RTL_BACKEND_TCP) {
         dev->run.store(1);
-        r = dsd_thread_create(&dev->thread, reinterpret_cast<dsd_thread_fn>(tcp_thread_fn), dev);
+        r = dsd_thread_create(&dev->thread, tcp_thread_fn, dev);
     } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         if (!dev->replay_src) {
             dev->thread_started = 0;
             return -1;
         }
         dev->run.store(1, std::memory_order_release);
-        r = dsd_thread_create(&dev->thread, reinterpret_cast<dsd_thread_fn>(replay_thread_fn), dev);
+        r = dsd_thread_create(&dev->thread, replay_thread_fn, dev);
     } else if (dev->backend == RTL_BACKEND_SOAPY) {
         if (!dev->soapy_dev) {
             dev->thread_started = 0;
             return -1;
         }
         dev->run.store(1);
-        r = dsd_thread_create(&dev->thread, reinterpret_cast<dsd_thread_fn>(soapy_thread_fn), dev);
+        r = dsd_thread_create(&dev->thread, soapy_thread_fn, dev);
     } else {
         dev->thread_started = 0;
         return -1;

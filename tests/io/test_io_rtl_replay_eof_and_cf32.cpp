@@ -16,6 +16,7 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <memory>
 #include <vector>
@@ -60,7 +61,7 @@ enum : uint8_t {
 
 static int
 write_bytes_file(const char* path, const uint8_t* bytes, size_t len) {
-    FILE* fp = std::fopen(path, "wb");
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (!fp) {
         return -1;
     }
@@ -74,7 +75,7 @@ write_bytes_file(const char* path, const uint8_t* bytes, size_t len) {
 
 static int
 write_text_file(const char* path, const char* text) {
-    FILE* fp = std::fopen(path, "wb");
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (!fp) {
         return -1;
     }

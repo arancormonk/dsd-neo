@@ -18,6 +18,10 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+#ifdef TRACE_DSD
+#include <dsd-neo/platform/file_compat.h>
+#endif
+
 static int
 soft_abs_i16(int16_t v) {
     return v < 0 ? -(int)v : (int)v;
@@ -27,7 +31,7 @@ soft_abs_i16(int16_t v) {
 static void
 debug_write_label_imbe(dsd_state* state, unsigned int cc, int bitindex, char bit) {
     if (state->debug_label_imbe_file == NULL) {
-        state->debug_label_imbe_file = fopen("pp_label_imbe.txt", "w");
+        state->debug_label_imbe_file = dsd_fopen_private("pp_label_imbe.txt", "w");
     }
     if (state->debug_label_imbe_file != NULL) {
         const float left = (state->debug_sample_index - 10) / 48000.0F;

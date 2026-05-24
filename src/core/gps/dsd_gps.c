@@ -18,6 +18,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/pdu.h>
@@ -42,7 +43,7 @@ gps_write_lrrp_compact(const dsd_opts* opts, uint32_t src, double latitude, doub
     getDate_buf(datestr);
     getTime_buf(timestr);
 
-    FILE* p_file = fopen(opts->lrrp_out_file, "a");
+    FILE* p_file = dsd_fopen_private(opts->lrrp_out_file, "a");
     if (p_file == NULL) {
         return;
     }
@@ -70,7 +71,7 @@ gps_write_lrrp_slash_colon(const dsd_opts* opts, uint32_t src, double latitude, 
     getDateS_buf(datestr);
     getTimeC_buf(timestr);
 
-    FILE* p_file = fopen(opts->lrrp_out_file, "a");
+    FILE* p_file = dsd_fopen_private(opts->lrrp_out_file, "a");
     if (p_file == NULL) {
         return;
     }

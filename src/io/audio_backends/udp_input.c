@@ -278,7 +278,7 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
 
     opts->udp_in_ctx = ctx;
     opts->udp_in_sockfd = sockfd;
-    int rc = dsd_thread_create(&ctx->th, (dsd_thread_fn)udp_rx_thread, opts);
+    int rc = dsd_thread_create(&ctx->th, udp_rx_thread, opts);
     if (rc != 0) {
         ring_destroy(&ctx->ring);
         dsd_socket_close(sockfd);

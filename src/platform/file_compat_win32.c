@@ -7,7 +7,10 @@
 
 #if DSD_PLATFORM_WIN_NATIVE
 
+#include <errno.h>
+#include <fcntl.h>
 #include <io.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <windows.h>
 
@@ -53,6 +56,52 @@ dsd_fchmod(int fd, int mode) {
     (void)mode;
     /* Windows lacks descriptor-based chmod; treat as no-op */
     return 0;
+}
+
+static int
+dsd_private_open_flags(const char* mode) {
+    if (!mode || mode[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
+    int flags = _O_NOINHERIT;
+    switch (mode[0]) {
+        case 'w': flags |= _O_CREAT | _O_TRUNC; break;
+        case 'a': flags |= _O_CREAT | _O_APPEND; break;
+        default: errno = EINVAL; return -1;
+    }
+
+    flags |= (strchr(mode, '+') != NULL) ? _O_RDWR : _O_WRONLY;
+    flags |= (strchr(mode, 'b') != NULL) ? _O_BINARY : _O_TEXT;
+    return flags;
+}
+
+FILE*
+dsd_fopen_private(const char* path, const char* mode) {
+    if (!path || !mode) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (mode[0] == 'r') {
+        return fopen(path, mode);
+    }
+
+    int flags = dsd_private_open_flags(mode);
+    if (flags < 0) {
+        return NULL;
+    }
+
+    int fd = _open(path, flags, _S_IREAD | _S_IWRITE);
+    if (fd < 0) {
+        return NULL;
+    }
+
+    FILE* fp = _fdopen(fd, mode);
+    if (!fp) {
+        _close(fd);
+    }
+    return fp;
 }
 
 ssize_t

@@ -38,6 +38,10 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+#ifdef TRACE_DSD
+#include <dsd-neo/platform/file_compat.h>
+#endif
+
 #ifdef USE_RADIO
 #endif
 
@@ -1159,7 +1163,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
 #ifdef TRACE_DSD
     {
         if (state->debug_label_dibit_file == NULL) {
-            state->debug_label_dibit_file = fopen("pp_label_dibit.txt", "w");
+            state->debug_label_dibit_file = dsd_fopen_private("pp_label_dibit.txt", "w");
         }
         if (state->debug_label_dibit_file != NULL) {
             float left = l / 48000.0f;

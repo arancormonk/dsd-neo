@@ -15,6 +15,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/timing.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -789,16 +790,15 @@ test_time_date_state_stores_time_t(void) {
         rc = 1;
     }
 
-    struct tm* result = gmtime(&st.p25_sys_time);
-    if (!result) {
+    struct tm result;
+    if (dsd_gmtime(&st.p25_sys_time, &result) != 0) {
         DSD_FPRINTF(stderr, "FAIL: test_time_date_state_stores_time_t: gmtime failed\n");
         rc = 1;
-    } else if (result->tm_year + 1900 != 2025 || result->tm_mon + 1 != 3 || result->tm_mday != 15
-               || result->tm_hour != 14 || result->tm_min != 30 || result->tm_sec != 45) {
-        DSD_FPRINTF(stderr,
-                    "FAIL: test_time_date_state_stores_time_t: UTC round-trip failed: %04d-%02d-%02d %02d:%02d:%02d\n",
-                    result->tm_year + 1900, result->tm_mon + 1, result->tm_mday, result->tm_hour, result->tm_min,
-                    result->tm_sec);
+    } else if (result.tm_year + 1900 != 2025 || result.tm_mon + 1 != 3 || result.tm_mday != 15 || result.tm_hour != 14
+               || result.tm_min != 30 || result.tm_sec != 45) {
+        DSD_FPRINTF(
+            stderr, "FAIL: test_time_date_state_stores_time_t: UTC round-trip failed: %04d-%02d-%02d %02d:%02d:%02d\n",
+            result.tm_year + 1900, result.tm_mon + 1, result.tm_mday, result.tm_hour, result.tm_min, result.tm_sec);
         rc = 1;
     }
 

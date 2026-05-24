@@ -104,7 +104,7 @@ test_frame_log_write_error_reported_once(void) {
     initOpts(&opts);
 
     const char* sink_path = "/dev/full";
-    FILE* probe = fopen(sink_path, "a");
+    FILE* probe = dsd_fopen_private(sink_path, "a");
     if (!probe) {
         return 0;
     }

@@ -320,7 +320,7 @@ test_output_ring_blocking_producer_consumer(void) {
     dsd_thread_t wthread;
     dsd_thread_t rthread;
 
-    if (dsd_thread_create(&wthread, (dsd_thread_fn)output_writer_thread, &wargs) != 0) {
+    if (dsd_thread_create(&wthread, output_writer_thread, &wargs) != 0) {
         DSD_FPRINTF(stderr, "output_ring pc: failed to create writer thread\n");
         return 1;
     }
@@ -332,7 +332,7 @@ test_output_ring_blocking_producer_consumer(void) {
     }
     dsd_mutex_unlock(&barrier_mu);
 
-    if (dsd_thread_create(&rthread, (dsd_thread_fn)output_reader_thread, &rargs) != 0) {
+    if (dsd_thread_create(&rthread, output_reader_thread, &rargs) != 0) {
         DSD_FPRINTF(stderr, "output_ring pc: failed to create reader thread\n");
         return 1;
     }

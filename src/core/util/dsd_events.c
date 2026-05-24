@@ -20,6 +20,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -150,7 +151,7 @@ write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
 
     //open log file
     FILE* event_log_file;
-    event_log_file = fopen(opts->event_out_file, "a");
+    event_log_file = dsd_fopen_private(opts->event_out_file, "a");
 
     if (event_log_file != NULL) {
         DSD_FPRINTF(event_log_file, "%s ", event_string);

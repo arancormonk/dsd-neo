@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -56,7 +57,7 @@ file_exists(const char* path) {
 
 static int
 write_dummy_wav(const char* path) {
-    FILE* fp = fopen(path, "wb");
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (!fp) {
         DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
         return 1;
@@ -86,7 +87,7 @@ write_pcm16_mono_wav(const char* path, int sample_rate, int duration_s) {
         return 1;
     }
 
-    FILE* fp = fopen(path, "wb");
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (!fp) {
         DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
         return 1;
@@ -315,7 +316,7 @@ rdio_test_http_server_start(rdio_test_http_server* server, char* out_api_url, si
     }
 
     server->listen_sock = sock;
-    if (dsd_thread_create(&server->thread, (dsd_thread_fn)rdio_test_http_server_thread, server) != 0) {
+    if (dsd_thread_create(&server->thread, rdio_test_http_server_thread, server) != 0) {
         DSD_FPRINTF(stderr, "server thread create failed\n");
         (void)dsd_socket_close(sock);
         return 1;

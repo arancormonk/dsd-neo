@@ -13,6 +13,8 @@
 #include <errno.h>
 #include <time.h>
 
+struct tm;
+
 uint64_t
 dsd_time_monotonic_ns(void) {
     struct timespec ts;
@@ -30,6 +32,24 @@ dsd_time_realtime_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+int
+dsd_localtime(const time_t* t, struct tm* out) {
+    if (!t || !out) {
+        errno = EINVAL;
+        return -1;
+    }
+    return localtime_r(t, out) ? 0 : -1;
+}
+
+int
+dsd_gmtime(const time_t* t, struct tm* out) {
+    if (!t || !out) {
+        errno = EINVAL;
+        return -1;
+    }
+    return gmtime_r(t, out) ? 0 : -1;
 }
 
 void

@@ -108,7 +108,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
         // Backup current stderr FD, then redirect to null device.
         int backup_fd = dsd_dup(dsd_fileno(stderr));
         if (backup_fd >= 0) {
-            FILE* devnull = fopen(dsd_null_device(), "w");
+            FILE* devnull = dsd_fopen_private(dsd_null_device(), "w");
             if (devnull) {
                 fflush(stderr);
                 dsd_dup2(dsd_fileno(devnull), dsd_fileno(stderr));

@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -166,7 +167,7 @@ fake_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sac
 int
 main(void) {
     // Default behavior with hooks unset
-    dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){0});
+    dsd_rtl_stream_metrics_hooks_set(NULL);
 
     assert(dsd_rtl_stream_metrics_hook_output_rate_hz() == 0U);
     assert(dsd_rtl_stream_metrics_hook_output_kind() == 0);
@@ -250,7 +251,7 @@ main(void) {
     hooks.snr_qpsk_const_db = fake_snr_qpsk_const_db;
     hooks.p25p1_ber_update = fake_p25p1_ber_update;
     hooks.p25p2_err_update = fake_p25p2_err_update;
-    dsd_rtl_stream_metrics_hooks_set(hooks);
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
 
     assert(dsd_rtl_stream_metrics_hook_output_rate_hz() == 24000U);
     assert(g_output_rate_calls == 1);

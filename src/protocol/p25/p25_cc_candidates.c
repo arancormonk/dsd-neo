@@ -11,6 +11,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/config.h>
@@ -121,7 +122,7 @@ p25_cc_persist_cache(const dsd_opts* opts, const dsd_state* state) {
     if (!p25_cc_build_cache_path(state, fpath, sizeof(fpath))) {
         return;
     }
-    FILE* fp = fopen(fpath, "w");
+    FILE* fp = dsd_fopen_private(fpath, "w");
     if (!fp) {
         if (opts && opts->verbose > 1) {
             DSD_FPRINTF(stderr, "\n  P25 SM: Failed to open CC cache for write: %s (errno=%d)\n", fpath, errno);

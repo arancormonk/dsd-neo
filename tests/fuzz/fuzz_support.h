@@ -6,6 +6,7 @@
 #ifndef DSD_NEO_TESTS_FUZZ_SUPPORT_H_
 #define DSD_NEO_TESTS_FUZZ_SUPPORT_H_
 
+#include <dsd-neo/platform/file_compat.h>
 #include "dsd-neo/core/safe_api.h"
 #include "test_support.h"
 
@@ -22,7 +23,7 @@ dsd_fuzz_bounded_size(size_t size) {
 
 static inline int
 dsd_fuzz_write_file(const char* path, const uint8_t* data, size_t size) {
-    FILE* fp = fopen(path, "wb");
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (!fp) {
         return -1;
     }

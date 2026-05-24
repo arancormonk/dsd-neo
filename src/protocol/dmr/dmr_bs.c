@@ -23,6 +23,7 @@
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -488,7 +489,7 @@ process_dmr_bs_three_voice_frames(dsd_opts* opts, dsd_state* state, uint8_t inte
 
 static void
 write_dmr_bs_dsp_output(const dsd_opts* opts, const dsd_state* state, uint8_t internalslot) {
-    FILE* pFile = fopen(opts->dsp_out_file, "a");
+    FILE* pFile = dsd_fopen_private(opts->dsp_out_file, "a");
     if (pFile == NULL) {
         return;
     }

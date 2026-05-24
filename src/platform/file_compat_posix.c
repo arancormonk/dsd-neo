@@ -11,6 +11,9 @@
 
 #if !DSD_PLATFORM_WIN_NATIVE
 
+#include <errno.h>
+#include <fcntl.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -52,6 +55,51 @@ dsd_fstat(int fd, dsd_stat_t* st) {
 int
 dsd_fchmod(int fd, int mode) {
     return fchmod(fd, (mode_t)mode);
+}
+
+static int
+dsd_private_open_flags(const char* mode) {
+    if (!mode || mode[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
+    int flags = 0;
+    switch (mode[0]) {
+        case 'w': flags = O_CREAT | O_TRUNC; break;
+        case 'a': flags = O_CREAT | O_APPEND; break;
+        default: errno = EINVAL; return -1;
+    }
+
+    flags |= (strchr(mode, '+') != NULL) ? O_RDWR : O_WRONLY;
+    return flags;
+}
+
+FILE*
+dsd_fopen_private(const char* path, const char* mode) {
+    if (!path || !mode) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (mode[0] == 'r') {
+        return fopen(path, mode);
+    }
+
+    int flags = dsd_private_open_flags(mode);
+    if (flags < 0) {
+        return NULL;
+    }
+
+    int fd = open(path, flags, (mode_t)0600);
+    if (fd < 0) {
+        return NULL;
+    }
+
+    FILE* fp = fdopen(fd, mode);
+    if (!fp) {
+        close(fd);
+    }
+    return fp;
 }
 
 ssize_t

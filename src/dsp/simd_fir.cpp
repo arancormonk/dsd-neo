@@ -63,8 +63,8 @@ simd_fir_complex_apply_scalar(const float* in, int in_len, float* out, float* hi
     const int center = (taps_len - 1) >> 1;
 
     /* Get last sample for edge handling */
-    float lastI = (N > 0) ? in[(N - 1) << 1] : 0.0f;
-    float lastQ = (N > 0) ? in[((N - 1) << 1) + 1] : 0.0f;
+    float lastI = in[(N - 1) << 1];
+    float lastQ = in[((N - 1) << 1) + 1];
 
     /* Lambda to fetch sample from history or input */
     auto get_iq = [&](int src_idx, float& xi, float& xq) {

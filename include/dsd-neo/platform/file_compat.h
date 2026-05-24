@@ -102,6 +102,18 @@ int dsd_fstat(int fd, dsd_stat_t* st);
 int dsd_fchmod(int fd, int mode);
 
 /**
+ * @brief Open a file for writing/appending with owner-only permissions when created.
+ *
+ * Supports standard write/append modes such as "w", "wb", "a", "ab", "w+",
+ * and "a+". Read-only modes fall back to normal fopen semantics.
+ *
+ * @param path  File path.
+ * @param mode  fopen-compatible mode string.
+ * @return FILE stream, or NULL on error.
+ */
+FILE* dsd_fopen_private(const char* path, const char* mode);
+
+/**
  * @brief Read from a file descriptor.
  *
  * @param fd        File descriptor.

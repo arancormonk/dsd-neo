@@ -379,6 +379,7 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->iqbal_alpha_ema_i = 0.0f;
     dsd_cond_init(&s->ready);
     dsd_mutex_init(&s->ready_m);
+    // codeql[cpp/stack-address-escape] The demod state and output target share the owning stream lifetime.
     s->output_target = output;
     s->fm_agc_ema_rms = 0.0;
 }

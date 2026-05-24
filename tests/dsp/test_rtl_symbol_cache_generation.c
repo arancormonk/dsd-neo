@@ -216,11 +216,12 @@ main(void) {
         .read = fake_rtl_read,
         .return_pwr = fake_rtl_pwr,
     });
-    dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){
+    dsd_rtl_stream_metrics_hooks metrics_hooks = {
         .output_kind = fake_output_kind,
         .symbol_profile = fake_symbol_profile,
         .stream_generation = fake_stream_generation,
-    });
+    };
+    dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
 
     assert(getSymbol(&opts, &state, 1) == 1000.0f);
@@ -288,7 +289,7 @@ main(void) {
     assert(g_cleanup_calls == 1);
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
-    dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){0});
+    dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     return 0;
 }

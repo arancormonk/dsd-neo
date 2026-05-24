@@ -391,7 +391,10 @@ int
 main(void) {
     int rc = 0;
 
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     // Case 1: Retune enabled (baseline)
     build_lcw_words(0x44, 0x00, 0x00, 0x4567, 0x100A, 0x0000);

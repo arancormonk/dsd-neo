@@ -429,7 +429,7 @@ test_create_temp_ini_with_contents(const char* contents, char* out_path, size_t 
         return -1;
     }
 
-    FILE* fp = fopen(out_path, "w");
+    FILE* fp = dsd_fopen_private(out_path, "w");
     if (!fp) {
         (void)remove(out_path);
         return -1;
@@ -491,7 +491,7 @@ test_create_temp_raw_pcm_file(const char* prefix, const short* samples, size_t s
         return -1;
     }
 
-    FILE* fp = fopen(out_path, "wb");
+    FILE* fp = dsd_fopen_private(out_path, "wb");
     if (!fp) {
         (void)remove(out_path);
         return -1;
@@ -540,7 +540,7 @@ test_create_temp_vertex_ks_csv(char* out_path, size_t out_path_size, int malform
         return -1;
     }
 
-    FILE* fp = fopen(out_path, "w");
+    FILE* fp = dsd_fopen_private(out_path, "w");
     if (!fp) {
         (void)remove(out_path);
         return -1;
@@ -594,7 +594,7 @@ test_create_temp_iq_fixture(char* out_metadata_path, size_t out_metadata_path_si
         return -1;
     }
 
-    FILE* data_fp = fopen(data_path, "wb");
+    FILE* data_fp = dsd_fopen_private(data_path, "wb");
     if (!data_fp) {
         (void)remove(data_path);
         return -1;
@@ -613,7 +613,7 @@ test_create_temp_iq_fixture(char* out_metadata_path, size_t out_metadata_path_si
         (void)remove(data_path);
         return -1;
     }
-    FILE* meta_fp = fopen(metadata_path, "w");
+    FILE* meta_fp = dsd_fopen_private(metadata_path, "w");
     if (!meta_fp) {
         (void)remove(data_path);
         return -1;

@@ -159,7 +159,10 @@ int
 main(void) {
     int rc = 0;
 
-    p25_sm_set_api(sm_noop_api());
+    {
+        p25_sm_api api = sm_noop_api();
+        p25_sm_set_api(&api);
+    }
 
     // Craft a minimal ALT MBT PDU carrying Identifier Update (UHF/VHF, opcode 0x74)
     // IDEN=1, spacing=100 (12.5 kHz), base=851.000000 MHz (base field in 5 Hz units)

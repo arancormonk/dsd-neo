@@ -33,6 +33,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/rc4.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
@@ -156,7 +157,7 @@ frame_log_ensure_open(dsd_opts* opts) {
     if (opts->frame_log_f != NULL) {
         return 1;
     }
-    opts->frame_log_f = fopen(opts->frame_log_file, "a");
+    opts->frame_log_f = dsd_fopen_private(opts->frame_log_file, "a");
     if (opts->frame_log_f == NULL) {
         if (!opts->frame_log_open_error_reported) {
             LOG_ERROR("Unable to open frame log file: %s\n", opts->frame_log_file);
@@ -553,7 +554,7 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
 
     DSD_SNPRINTF(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_file);
 
-    opts->mbe_out_f = fopen(opts->mbe_out_path, "w");
+    opts->mbe_out_f = dsd_fopen_private(opts->mbe_out_path, "w");
     if (opts->mbe_out_f == NULL) {
         LOG_ERROR("\nError, couldn't open %s for slot 1\n", opts->mbe_out_path);
     } else {
@@ -608,7 +609,7 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 
     DSD_SNPRINTF(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_fileR);
 
-    opts->mbe_out_fR = fopen(opts->mbe_out_path, "w");
+    opts->mbe_out_fR = dsd_fopen_private(opts->mbe_out_path, "w");
     if (opts->mbe_out_fR == NULL) {
         LOG_ERROR("\nError, couldn't open %s for slot 2\n", opts->mbe_out_path);
     } else {
@@ -919,7 +920,7 @@ closeWavOutFileRaw(dsd_opts* opts, dsd_state* state) {
 void
 openSymbolOutFile(dsd_opts* opts, dsd_state* state) {
     closeSymbolOutFile(opts, state);
-    opts->symbol_out_f = fopen(opts->symbol_out_file, "wb");
+    opts->symbol_out_f = dsd_fopen_private(opts->symbol_out_file, "wb");
     if (opts->symbol_out_f != NULL && opts->symbol_capture_format == DSD_SYMBOL_CAPTURE_FORMAT_SOFT) {
         const unsigned char header[DSD_SYMBOL_CAPTURE_SOFT_HEADER_SIZE] = {
             'D', 'S', 'D', 'N', 'S', 'Y', 'M', '2', 2, DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE, 0, 0, 0, 0, 0, 0,
@@ -1249,6 +1250,7 @@ sdrtrunk_build_rc4_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
     rc4_kiv[3] = (uint8_t)((rc4_key >> 8ULL) & 0xFFULL);
     rc4_kiv[4] = (uint8_t)((rc4_key >> 0ULL) & 0xFFULL);
     DSD_MEMCPY(rc4_kiv + 5, iv64, 8);
+    // codeql[cpp/weak-cryptographic-algorithm] RC4 is required for legacy radio protocol interoperability.
     rc4_block_output(rc4_db, rc4_mod, SDRTRUNK_KS_BYTES, rc4_kiv, ks_bytes);
     return 1;
 }
@@ -1269,6 +1271,7 @@ sdrtrunk_build_des_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
     }
 
     unsigned long long int iv_u64 = sdrtrunk_u64_from_be8(iv64);
+    // codeql[cpp/weak-cryptographic-algorithm] DES is required for legacy radio protocol interoperability.
     des_multi_keystream_output(iv_u64, des_key, ks_bytes, 1, SDRTRUNK_KS_BYTES / 8);
     *skip_bytes = (protocol == 1) ? 19u : 8u;
     return 1;

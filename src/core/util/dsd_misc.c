@@ -500,6 +500,17 @@ lpf_f(dsd_state* state, float* input, int len) {
     }
 }
 
+static short
+clamp_float_to_short(float value) {
+    if (value > 32767.0f) {
+        return 32767;
+    }
+    if (value < -32768.0f) {
+        return -32768;
+    }
+    return (short)value;
+}
+
 //hpf (short)
 void
 hpf(dsd_state* state, short* input, int len) {
@@ -524,7 +535,7 @@ hpf_dL(dsd_state* state, short* input, int len) {
     int i;
     for (i = 0; i < len; i++) {
         // DSD_FPRINTF(stderr, "\n in: %05d", input[i]);
-        input[i] = HPFilter_Update(&state->HRCFilterL, input[i]);
+        input[i] = clamp_float_to_short(HPFilter_Update(&state->HRCFilterL, input[i]));
         // DSD_FPRINTF(stderr, "\n out: %05d", input[i]);
     }
 }
@@ -535,7 +546,7 @@ hpf_dR(dsd_state* state, short* input, int len) {
     int i;
     for (i = 0; i < len; i++) {
         // DSD_FPRINTF(stderr, "\n in: %05d", input[i]);
-        input[i] = HPFilter_Update(&state->HRCFilterR, input[i]);
+        input[i] = clamp_float_to_short(HPFilter_Update(&state->HRCFilterR, input[i]));
         // DSD_FPRINTF(stderr, "\n out: %05d", input[i]);
     }
 }

@@ -356,7 +356,9 @@ ui_menu_is_activate_key(int ch) {
 void
 ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
     // Initialize overlay context and push root menu
+    // codeql[cpp/stack-address-escape] The async menu keeps references to the active runtime objects.
     g_ctx_overlay.opts = opts;
+    // codeql[cpp/stack-address-escape] The async menu keeps references to the active runtime objects.
     g_ctx_overlay.state = state;
     const NcMenuItem* items = NULL;
     size_t n = 0;

@@ -189,7 +189,10 @@ int
 main(void) {
     int rc = 0;
 
-    p25_sm_set_api(sm_noop_api());
+    {
+        p25_sm_api api = sm_noop_api();
+        p25_sm_set_api(&api);
+    }
 
     // Build ALT MBT NET_STS_BCST with CHAN-T referencing iden=1 while we seed iden=0 only.
     uint8_t mbt[48];

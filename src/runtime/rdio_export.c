@@ -8,6 +8,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -142,7 +143,7 @@ dsd_rdio_upload_worker_init(void) {
         g_rdio_upload_depth = 0;
         g_rdio_upload_stop_requested = 0;
 
-        if (dsd_thread_create(&g_rdio_upload_worker, (dsd_thread_fn)dsd_rdio_upload_worker_thread, NULL) != 0) {
+        if (dsd_thread_create(&g_rdio_upload_worker, dsd_rdio_upload_worker_thread, NULL) != 0) {
             (void)dsd_cond_destroy(&g_rdio_upload_cond);
             (void)dsd_mutex_destroy(&g_rdio_upload_mutex);
             atomic_store(&g_rdio_upload_state, 3);
@@ -600,7 +601,7 @@ dsd_rdio_open_temp_meta_file(const char* out_meta_path, char* temp_meta_path, si
         return -1;
     }
 
-    FILE* fp = fopen(temp_meta_path, "wb");
+    FILE* fp = dsd_fopen_private(temp_meta_path, "wb");
     if (!fp) {
         LOG_ERROR("Rdio export: unable to open %s: %s\n", temp_meta_path, strerror(errno));
         return -1;

@@ -92,7 +92,8 @@ init_locked(void) {
         return;
     }
 
-    FILE* f = fopen(path, "a");
+    // codeql[cpp/path-injection] This debug CSV path is opt-in through a local environment variable.
+    FILE* f = dsd_fopen_private(path, "a");
     if (!f) {
         DSD_FPRINTF(stderr, "RTL PERF: failed to open '%s': %s\n", path, strerror(errno));
         g_perf_state.store(1, std::memory_order_release);

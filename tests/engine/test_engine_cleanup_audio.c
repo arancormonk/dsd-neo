@@ -16,6 +16,7 @@
 #include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "../../src/platform/audio_stream_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -90,10 +91,10 @@ main(void) {
         return 1;
     }
 
-    opts->audio_out_stream = (dsd_audio_stream*)calloc(1, 64);
-    opts->audio_out_streamR = (dsd_audio_stream*)calloc(1, 64);
-    opts->audio_raw_out = (dsd_audio_stream*)calloc(1, 64);
-    opts->audio_in_stream = (dsd_audio_stream*)calloc(1, 64);
+    opts->audio_out_stream = (dsd_audio_stream*)calloc(1, sizeof(*opts->audio_out_stream));
+    opts->audio_out_streamR = (dsd_audio_stream*)calloc(1, sizeof(*opts->audio_out_streamR));
+    opts->audio_raw_out = (dsd_audio_stream*)calloc(1, sizeof(*opts->audio_raw_out));
+    opts->audio_in_stream = (dsd_audio_stream*)calloc(1, sizeof(*opts->audio_in_stream));
 
     dsd_engine_cleanup(opts, state);
 

@@ -102,7 +102,7 @@ test_multithread_increment(void) {
     for (int i = 0; i < k_threads; i++) {
         args[i].counter = &counter;
         args[i].loops = k_loops;
-        int trc = dsd_thread_create(&threads[i], (dsd_thread_fn)inc_thread_fn, &args[i]);
+        int trc = dsd_thread_create(&threads[i], inc_thread_fn, &args[i]);
         rc |= expect_int("thread_create", trc, 0);
     }
     for (int i = 0; i < k_threads; i++) {
@@ -122,7 +122,7 @@ test_release_acquire_smoke(void) {
     atomic_int ready = 0;
     struct publish_args args = {&value, &ready, 0x1122334455667788ULL};
     dsd_thread_t t;
-    rc |= expect_int("publish thread create", dsd_thread_create(&t, (dsd_thread_fn)publish_thread_fn, &args), 0);
+    rc |= expect_int("publish thread create", dsd_thread_create(&t, publish_thread_fn, &args), 0);
     while (!atomic_load(&ready)) {
         dsd_sleep_ms(1);
     }

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/bptc.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/dmr/r34_viterbi.h>
@@ -231,7 +232,7 @@ dmr_dburst_print_header_and_dump(dmr_data_burst_ctx* ctx) {
     DSD_FPRINTF(stderr, "|%s", ctx->state->fsubtype);
 
     if (ctx->opts->use_dsp_output == 1) {
-        FILE* pfile = fopen(ctx->opts->dsp_out_file, "a");
+        FILE* pfile = dsd_fopen_private(ctx->opts->dsp_out_file, "a");
         if (pfile != NULL) {
             uint32_t i;
             DSD_FPRINTF(pfile, "\\n%d 98 ", ctx->slot + 1);

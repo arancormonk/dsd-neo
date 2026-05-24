@@ -203,7 +203,10 @@ test_que_rsp_field_extraction_known_payload(void) {
     DSD_MEMSET(&st, 0, sizeof st);
 
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     // SVC=0x15, Reason=0x20, Addl=0x123456, Target=0xABCDEF (11259375)
@@ -248,7 +251,10 @@ test_deny_rsp_field_extraction_known_payload(void) {
     DSD_MEMSET(&st, 0, sizeof st);
 
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     // SVC=0x3F, Reason=0xFF, Addl=0xFEDCBA, Target=0x000001
@@ -313,7 +319,10 @@ test_que_reason_code_lookup_all_known(void) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&st, 0, sizeof st);
         reset_tracking();
-        p25_sm_set_api(sm_test_api());
+        {
+            p25_sm_api api = sm_test_api();
+            p25_sm_set_api(&api);
+        }
 
         unsigned long long MAC[24];
         build_que_deny_mac(MAC, 0, 0x01, cases[i].code, 0, 12345);
@@ -387,7 +396,10 @@ test_deny_reason_code_lookup_all_known(void) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&st, 0, sizeof st);
         reset_tracking();
-        p25_sm_set_api(sm_test_api());
+        {
+            p25_sm_api api = sm_test_api();
+            p25_sm_set_api(&api);
+        }
 
         unsigned long long MAC[24];
         build_que_deny_mac(MAC, 1, 0x02, cases[i].code, 0, 54321);
@@ -425,7 +437,10 @@ test_que_rsp_user_reason_range(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 0, 0x01, 0xAB, 0, 999);
@@ -462,7 +477,10 @@ test_deny_rsp_user_reason_range(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 1, 0x02, 0x99, 0, 888);
@@ -698,7 +716,10 @@ test_active_channel_que_format(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 0, 0x01, 0x40, 0, 67890);
@@ -729,7 +750,10 @@ test_active_channel_deny_format(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 1, 0x02, 0x60, 0, 12345);
@@ -760,7 +784,10 @@ test_additional_info_indicator_controls_display(void) {
     int rc = 0;
 
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     DSD_MEMSET(&opts, 0, sizeof opts);

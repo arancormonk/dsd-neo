@@ -12,6 +12,11 @@
  */
 
 #include <stdint.h>
+#include <time.h>
+
+#ifndef __cplusplus
+struct tm;
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,6 +48,24 @@ uint64_t dsd_time_monotonic_ms(void);
  * @return Nanoseconds since Unix epoch (1970-01-01 00:00:00 UTC).
  */
 uint64_t dsd_time_realtime_ns(void);
+
+/**
+ * @brief Thread-safe localtime wrapper.
+ *
+ * @param t    Input time value.
+ * @param out  Output calendar time.
+ * @return 0 on success, -1 on error.
+ */
+int dsd_localtime(const time_t* t, struct tm* out);
+
+/**
+ * @brief Thread-safe gmtime wrapper.
+ *
+ * @param t    Input time value.
+ * @param out  Output calendar time.
+ * @return 0 on success, -1 on error.
+ */
+int dsd_gmtime(const time_t* t, struct tm* out);
 
 /**
  * @brief Sleep for specified number of milliseconds.

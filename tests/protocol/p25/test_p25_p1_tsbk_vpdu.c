@@ -197,7 +197,10 @@ int
 main(void) {
     int rc = 0;
 
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     // Build TSBK-mapped vPDU: DUID=0x07, opcode=0x40 (Group Voice)
     // svc=0x00 (clear), channel=0x100A (iden=1, ch=10), group=0x4567, source=0x00ABCDEF

@@ -25,7 +25,7 @@ typedef struct p25_sm_api {
     void (*on_deny_response)(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target);
 } p25_sm_api;
 
-void p25_sm_set_api(p25_sm_api api);
+void p25_sm_set_api(const p25_sm_api* api);
 p25_sm_api p25_sm_get_api(void);
 void p25_sm_reset_api(void);
 

@@ -5,6 +5,7 @@
 
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -565,7 +566,7 @@ metadata_write_file(const dsd_iq_capture_config* cfg, const char* capture_starte
         return DSD_IQ_ERR_INVALID_ARG;
     }
 
-    FILE* fp = fopen(tmp_path, "wb");
+    FILE* fp = dsd_fopen_private(tmp_path, "wb");
     if (!fp) {
         set_error(err_buf, err_buf_size, "failed to open metadata temp file '%s': %s", tmp_path, strerror(errno));
         return DSD_IQ_ERR_IO;
@@ -922,7 +923,7 @@ capture_open_init_files(struct dsd_iq_capture_writer* w, char* err_buf, size_t e
         set_error(err_buf, err_buf_size, "failed to build UTC capture timestamp");
         return DSD_IQ_ERR_IO;
     }
-    w->data_fp = fopen(w->cfg.data_path, "wb");
+    w->data_fp = dsd_fopen_private(w->cfg.data_path, "wb");
     if (!w->data_fp) {
         set_error(err_buf, err_buf_size, "failed to open capture data file '%s': %s", w->cfg.data_path,
                   strerror(errno));
@@ -934,7 +935,7 @@ capture_open_init_files(struct dsd_iq_capture_writer* w, char* err_buf, size_t e
 
 static int
 capture_open_start_worker(struct dsd_iq_capture_writer* w, char* err_buf, size_t err_buf_size) {
-    if (dsd_thread_create(&w->writer_thread, (dsd_thread_fn)writer_thread_fn, w) != 0) {
+    if (dsd_thread_create(&w->writer_thread, writer_thread_fn, w) != 0) {
         set_error(err_buf, err_buf_size, "capture writer thread creation failed");
         return DSD_IQ_ERR_QUEUE_INIT;
     }

@@ -148,7 +148,7 @@ test_group_import_large_exact_file(void) {
     }
     (void)dsd_close(fd);
 
-    FILE* fp = fopen(tmpl, "w");
+    FILE* fp = dsd_fopen_private(tmpl, "w");
     if (!fp) {
         (void)remove(tmpl);
         free(opts);
@@ -211,7 +211,7 @@ test_group_import_large_file_policy(void) {
     (void)dsd_close(fd);
 
     {
-        FILE* fp = fopen(tmpl, "w");
+        FILE* fp = dsd_fopen_private(tmpl, "w");
         if (!fp) {
             (void)remove(tmpl);
             free(opts);
@@ -274,7 +274,7 @@ test_group_import_large_file_policy(void) {
 
 static int
 write_text_file(const char* path, const char* text) {
-    FILE* fp = fopen(path, "w");
+    FILE* fp = dsd_fopen_private(path, "w");
     if (!fp) {
         return -1;
     }
@@ -452,7 +452,7 @@ test_group_import_range_after_many_exact_rows(void) {
     (void)dsd_close(fd);
 
     {
-        FILE* fp = fopen(tmpl, "w");
+        FILE* fp = dsd_fopen_private(tmpl, "w");
         const size_t exact_rows = 1031;
         if (!fp) {
             (void)remove(tmpl);
@@ -537,7 +537,7 @@ test_vertex_import_and_apply(void) {
     }
     (void)dsd_close(fd);
 
-    FILE* fp = fopen(tmpl, "w");
+    FILE* fp = dsd_fopen_private(tmpl, "w");
     if (!fp) {
         (void)remove(tmpl);
         free_test_state(state);

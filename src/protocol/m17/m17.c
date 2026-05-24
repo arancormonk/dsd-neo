@@ -1228,7 +1228,7 @@ m17_write_dsp_symbols_if_enabled(const dsd_opts* opts, const int* output_symbols
         return;
     }
 
-    FILE* pfile = fopen(opts->dsp_out_file, "a");
+    FILE* pfile = dsd_fopen_private(opts->dsp_out_file, "a");
     if (pfile == NULL) {
         return;
     }

@@ -5,8 +5,8 @@ DSD-neo keeps release and CI dependencies explicit so analyzer results and binar
 ## GitHub Actions
 
 - Workflow security is checked with `tools/workflow_lint.sh`, Semgrep workflow rules, CodeQL Actions analysis, Gitleaks, OpenSSF Scorecard, and `tools/zizmor.sh`.
-- The current zizmor policy in `.github/zizmor.yml` requires every `uses:` action to have an explicit ref. SHA-pinning is preferred for release/publishing workflows, but tag-pinned actions remain allowed until the existing workflows are migrated.
-- For new third-party actions in release, packaging, signing, attestation, or upload workflows, prefer a full commit SHA with a comment naming the upstream tag.
+- The current zizmor policy in `.github/zizmor.yml` requires every external `uses:` action to be pinned to a full commit SHA.
+- For new or refreshed third-party actions in release, packaging, signing, attestation, or upload workflows, resolve the upstream tag to the immutable commit and pin that SHA.
 - Workflow changes that add secrets, write permissions, artifact publication, release upload, or external actions need human review.
 
 ## vcpkg Overlay Ports

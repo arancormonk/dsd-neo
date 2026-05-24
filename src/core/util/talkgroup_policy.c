@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1184,7 +1185,7 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_en
 
     tg_policy_probe_group_file(path, &has_existing_header, &existing_policy_header, &file_missing_or_empty);
 
-    wf = fopen(path, "a");
+    wf = dsd_fopen_private(path, "a");
     if (!wf) {
         return -1;
     }

@@ -156,8 +156,7 @@ demod_mt_init(struct demod_state* s) {
     for (int i = 0; i < 2; i++) {
         args[i].ctx = ctx;
         args[i].id = i;
-        dsd_thread_create(&ctx->threads[i], reinterpret_cast<dsd_thread_fn>(demod_mt_worker),
-                          static_cast<void*>(&args[i]));
+        dsd_thread_create(&ctx->threads[i], demod_mt_worker, static_cast<void*>(&args[i]));
     }
     // Intentionally leak args array until threads exit to keep pointers valid; freed in destroy
     set_ctx(static_cast<const void*>(s), ctx);

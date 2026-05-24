@@ -282,6 +282,7 @@ p25_build_des_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16
     *ks_idx = 8; // offset for OFB discard round
     if (des_key) {
         int nblocks = (len / 8) + 1;
+        // codeql[cpp/weak-cryptographic-algorithm] DES is required for legacy P25 interoperability.
         des_multi_keystream_output(mi, des_key, ks_bytes, 1, nblocks);
     }
 
@@ -310,6 +311,7 @@ p25_build_rc4_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16
 
     *ks_idx = 0;
     if (rc4_key) {
+        // codeql[cpp/weak-cryptographic-algorithm] RC4/ADP is required for legacy P25 interoperability.
         rc4_block_output(256, 13, len, rc4_kiv, ks_bytes);
     }
 

@@ -263,6 +263,7 @@ bootstrap_load_user_config_if_requested(dsd_opts* opts, dsd_state* state, const 
     }
 
     bootstrap_enable_autosave_for_path(state, cfg_path);
+    // codeql[cpp/path-injection] Config paths are explicit local CLI/env inputs.
     int load_rc = bootstrap_load_user_config_from_path(args, cfg_path, user_cfg);
 
     if (load_rc == 0) {
@@ -340,6 +341,7 @@ bootstrap_handle_validate_config(const bootstrap_cli_args* args, const char* con
     }
 
     dsdcfg_diagnostics_t diags;
+    // codeql[cpp/path-injection] Config validation intentionally opens the user-selected config path.
     int rc = dsd_user_config_validate(vpath, &diags);
     if (diags.count > 0) {
         dsdcfg_diags_print(&diags, stderr, vpath);
@@ -373,6 +375,7 @@ bootstrap_handle_list_profiles(const bootstrap_cli_args* args, const char* confi
 
     const char* names[32];
     char names_buf[1024];
+    // codeql[cpp/path-injection] Profile listing intentionally opens the user-selected config path.
     int count = dsd_user_config_list_profiles(lpath, names, names_buf, sizeof names_buf, 32);
     if (count < 0) {
         DSD_FPRINTF(stderr, "Failed to read config file: %s\n", lpath);
@@ -405,6 +408,7 @@ bootstrap_get_config_env_path(const dsd_opts* opts) {
 static void
 bootstrap_record_effective_cli_args(dsd_state* state, char** argv, int argc_effective, int* out_argc_effective) {
     state->cli_argc_effective = argc_effective;
+    // codeql[cpp/stack-address-escape] argv is owned by the process/test harness and outlives state use.
     state->cli_argv = argv;
     if (out_argc_effective) {
         *out_argc_effective = argc_effective;

@@ -4453,14 +4453,12 @@ sync_requested_ppm_to_controller(const dsd_opts* opts) {
  */
 static void
 start_threads_and_async(void) {
-    if (dsd_thread_create(&controller.thread, reinterpret_cast<dsd_thread_fn>(controller_thread_retune_loop),
-                          &controller)
-        == 0) {
+    if (dsd_thread_create(&controller.thread, controller_thread_retune_loop, &controller) == 0) {
         if (g_stream) {
             g_stream->controller_thread_started.store(1, std::memory_order_release);
         }
     }
-    if (dsd_thread_create(&demod.thread, reinterpret_cast<dsd_thread_fn>(demod_thread_fn), &demod) == 0) {
+    if (dsd_thread_create(&demod.thread, demod_thread_fn, &demod) == 0) {
         if (g_stream) {
             g_stream->demod_thread_started.store(1, std::memory_order_release);
         }
@@ -5478,13 +5476,10 @@ stream_open_start_rtltcp_pipeline(const dsd_opts* opts) {
     stream_open_rtltcp_wait_for_prebuffer(target);
     LOG_INFO("rtltcp prebuffer filled: %zu/%zu samples in ring.\n", input_ring_used(&input_ring), target);
 
-    if (dsd_thread_create(&controller.thread, reinterpret_cast<dsd_thread_fn>(controller_thread_retune_loop),
-                          &controller)
-            == 0
-        && g_stream) {
+    if (dsd_thread_create(&controller.thread, controller_thread_retune_loop, &controller) == 0 && g_stream) {
         g_stream->controller_thread_started.store(1, std::memory_order_release);
     }
-    if (dsd_thread_create(&demod.thread, reinterpret_cast<dsd_thread_fn>(demod_thread_fn), &demod) == 0 && g_stream) {
+    if (dsd_thread_create(&demod.thread, demod_thread_fn, &demod) == 0 && g_stream) {
         g_stream->demod_thread_started.store(1, std::memory_order_release);
     }
     if (port != 0) {
@@ -5496,7 +5491,7 @@ stream_open_start_rtltcp_pipeline(const dsd_opts* opts) {
 
 static int
 stream_open_start_replay_pipeline(void) {
-    if (dsd_thread_create(&demod.thread, reinterpret_cast<dsd_thread_fn>(demod_thread_fn), &demod) != 0) {
+    if (dsd_thread_create(&demod.thread, demod_thread_fn, &demod) != 0) {
         LOG_ERROR("Failed to start replay demod thread.\n");
         return -1;
     }

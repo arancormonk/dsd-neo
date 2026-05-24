@@ -194,7 +194,10 @@ int
 main(void) {
     int rc = 0;
 
-    p25_sm_set_api(sm_noop_api());
+    {
+        p25_sm_api api = sm_noop_api();
+        p25_sm_set_api(&api);
+    }
 
     // Craft ALT MBT: NET_STS_BCST (0x3B), channelt=0x100A (iden=1, ch=10), WACN=0xABCDE, SYSID=0x123
     uint8_t mbt[48];

@@ -28,44 +28,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define DSD_NEO_AUDIO_BACKEND_PORTAUDIO 1
+#include "audio_stream_internal.h"
 
 /*============================================================================
  * Internal Types
  *============================================================================*/
-
-struct dsd_audio_stream {
-    PaStream* handle;
-    int is_input;
-    int channels;
-    int sample_rate;
-
-    /* Async output pump (playback streams only) */
-    int use_async;
-    int thread_started;
-    dsd_thread_t thread;
-    dsd_mutex_t mu;
-    dsd_cond_t cv;
-    int stop;
-    int drain_requested;
-    int drain_completed;
-    int drain_failed;
-
-    int16_t* ring;
-    size_t ring_samples_capacity;
-    size_t ring_samples_head;
-    size_t ring_samples_tail;
-    size_t ring_samples_count;
-
-    int16_t* chunk;
-    size_t chunk_frames;
-    size_t chunk_samples;
-    struct audio_conceal_state conceal;
-    int conceal_inited;
-    int conceal_has_good;
-
-    uint64_t underruns;
-    uint64_t drops;
-};
 
 /*============================================================================
  * Module State
@@ -795,7 +763,7 @@ portaudio_start_async_thread(dsd_audio_stream* stream) {
         return;
     }
 
-    if (dsd_thread_create(&stream->thread, (dsd_thread_fn)portaudio_output_pump_thread, stream) != 0) {
+    if (dsd_thread_create(&stream->thread, portaudio_output_pump_thread, stream) != 0) {
         stream->use_async = 0;
     } else {
         stream->thread_started = 1;
