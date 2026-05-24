@@ -4,11 +4,11 @@ set -euo pipefail
 # Run Lizard complexity checks for project-owned code.
 # Strict mode fails when any Lizard threshold warning is emitted.
 
-ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
 cd "$ROOT_DIR"
 
 usage() {
-  cat <<'USAGE'
+  cat << 'USAGE'
 Usage: tools/lizard.sh [--strict] [--ccn N] [--length N] [--arguments N] [--] [paths...]
 
 Options:
@@ -64,7 +64,7 @@ while [[ $# -gt 0 ]]; do
       ARGUMENTS_SET=1
       shift 2
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
@@ -93,7 +93,7 @@ if [[ $STRICT -eq 1 ]]; then
   [[ $ARGUMENTS_SET -eq 0 ]] && ARGUMENTS=13
 fi
 
-if ! command -v lizard >/dev/null 2>&1; then
+if ! command -v lizard > /dev/null 2>&1; then
   echo "lizard not found. Install with: python -m pip install lizard." >&2
   exit 1
 fi

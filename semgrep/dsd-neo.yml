@@ -1,0 +1,89 @@
+rules:
+  - id: dsd-neo.no-raw-memory-api
+    languages: [c, cpp]
+    severity: ERROR
+    message: Use the dsd-neo safe API wrapper instead of the raw C memory/string API.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+        - /tests/**
+      exclude:
+        - /include/dsd-neo/core/safe_api.h
+        - /src/third_party/**
+    pattern-either:
+      - pattern: memcpy(...)
+      - pattern: memmove(...)
+      - pattern: memset(...)
+      - pattern: strcpy(...)
+      - pattern: strncpy(...)
+      - pattern: strcat(...)
+      - pattern: strncat(...)
+      - pattern: sprintf(...)
+      - pattern: snprintf(...)
+      - pattern: fprintf(...)
+      - pattern: sscanf(...)
+
+  - id: dsd-neo.no-shell-exec
+    languages: [c, cpp]
+    severity: ERROR
+    message: Do not invoke shells or spawn processes from project-owned C/C++ code without explicit design review.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+        - /tests/**
+      exclude:
+        - /src/third_party/**
+    pattern-either:
+      - pattern: system(...)
+      - pattern: popen(...)
+      - pattern: execl(...)
+      - pattern: execle(...)
+      - pattern: execlp(...)
+      - pattern: execv(...)
+      - pattern: execve(...)
+      - pattern: execvp(...)
+      - pattern: posix_spawn(...)
+      - pattern: posix_spawnp(...)
+
+  - id: dsd-neo.no-direct-third-party-include
+    languages: [c, cpp]
+    severity: ERROR
+    message: Use a project-owned wrapper/target instead of directly including bundled third-party headers.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+        - /tests/**
+      exclude:
+        - /src/third_party/**
+        - /src/fec/ez.cpp
+        - /src/io/radio/rtl_metrics.cpp
+        - /tests/protocol/p25/test_p25_p2_rs28_limits.cpp
+        - /tests/protocol/p25/test_p25_p2_rs28_wrappers.cpp
+    pattern-either:
+      - pattern: '#include "src/third_party/..."'
+      - pattern: '#include <src/third_party/...>'
+      - pattern: '#include "ezpwd/..."'
+      - pattern: '#include <ezpwd/...>'
+      - pattern: '#include "pffft.h"'
+      - pattern: '#include <pffft.h>'
+
+  - id: dsd-neo.github-actions.no-untrusted-context-in-run
+    languages: [yaml]
+    severity: ERROR
+    message: Pass untrusted GitHub context through env or action inputs instead of interpolating it directly into a run block.
+    paths:
+      include:
+        - /.github/workflows/*.yml
+        - /.github/workflows/*.yaml
+    patterns:
+      - pattern: |
+          run: $SCRIPT
+      - metavariable-regex:
+          metavariable: $SCRIPT
+          regex: '(?s).*\$\{\{\s*github\.(?:head_ref|ref_name|event\.(?:issue\.(?:title|body)|comment\.body|pull_request\.(?:title|body)|pull_request\.head\.(?:ref|label)|pull_request\.head\.repo\.full_name)).*'

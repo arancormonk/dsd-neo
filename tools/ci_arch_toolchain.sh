@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  cat <<'USAGE'
+  cat << 'USAGE'
 Usage: tools/ci_arch_toolchain.sh <command> [args...]
 
 Run a command in an Arch Linux container with the rolling C/C++ quality
@@ -21,12 +21,12 @@ if [[ $# -eq 0 ]]; then
   exit 2
 fi
 
-if ! command -v docker >/dev/null 2>&1; then
+if ! command -v docker > /dev/null 2>&1; then
   echo "docker not found; required for Arch toolchain CI wrapper." >&2
   exit 1
 fi
 
-ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
 IMAGE="${CI_ARCH_IMAGE:-archlinux:base-devel}"
 ARCH_TOOLCHAIN_PREFIX="${CI_ARCH_TOOLCHAIN_PREFIX:-/workspace/.deps-arch-toolchain}"
 
@@ -62,7 +62,7 @@ fi
 
 NEED_IWYU="${CI_ARCH_ENABLE_IWYU:-0}"
 case " $* " in
-  *"tools/iwyu.sh"*|*"include-what-you-use"*) NEED_IWYU=1 ;;
+  *"tools/iwyu.sh"* | *"include-what-you-use"*) NEED_IWYU=1 ;;
 esac
 
 ENV_ARGS=(

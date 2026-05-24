@@ -9,8 +9,16 @@ if(NOT DEFINED CMAKE_SCRIPT_MODE_FILE)
     message(FATAL_ERROR "ARCH_RULES: must be run via 'cmake -P <script>'")
 endif()
 
-get_filename_component(_ARCH_RULES_SCRIPT_DIR "${CMAKE_SCRIPT_MODE_FILE}" DIRECTORY)
-get_filename_component(_ARCH_RULES_ROOT_DIR "${_ARCH_RULES_SCRIPT_DIR}" DIRECTORY)
+get_filename_component(
+    _ARCH_RULES_SCRIPT_DIR
+    "${CMAKE_SCRIPT_MODE_FILE}"
+    DIRECTORY
+)
+get_filename_component(
+    _ARCH_RULES_ROOT_DIR
+    "${_ARCH_RULES_SCRIPT_DIR}"
+    DIRECTORY
+)
 
 set(_ARCH_RULES_GLOBS
     "${_ARCH_RULES_ROOT_DIR}/src/*.c"
@@ -39,13 +47,23 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
     set(_ARCH_RULES_ABS "${_ARCH_RULES_ROOT_DIR}/${_ARCH_RULES_REL}")
 
     file(
-        STRINGS "${_ARCH_RULES_ABS}" _ARCH_RULES_ALTERNATENAME_LINES
-        REGEX "^[ \t]*#[ \t]*pragma[ \t]+comment[ \t]*\\([ \t]*linker[ \t]*,[ \t]*\"/alternatename:"
+        STRINGS "${_ARCH_RULES_ABS}"
+        _ARCH_RULES_ALTERNATENAME_LINES
+        REGEX
+            "^[ \t]*#[ \t]*pragma[ \t]+comment[ \t]*\\([ \t]*linker[ \t]*,[ \t]*\"/alternatename:"
     )
 
-    foreach(_ARCH_RULES_ALTERNATENAME_LINE IN LISTS _ARCH_RULES_ALTERNATENAME_LINES)
-        string(STRIP "${_ARCH_RULES_ALTERNATENAME_LINE}" _ARCH_RULES_ALTERNATENAME_LINE_STRIPPED)
-        message(SEND_ERROR
+    foreach(
+        _ARCH_RULES_ALTERNATENAME_LINE
+        IN
+        LISTS _ARCH_RULES_ALTERNATENAME_LINES
+    )
+        string(
+            STRIP "${_ARCH_RULES_ALTERNATENAME_LINE}"
+            _ARCH_RULES_ALTERNATENAME_LINE_STRIPPED
+        )
+        message(
+            SEND_ERROR
             "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden /alternatename pragma '${_ARCH_RULES_ALTERNATENAME_LINE_STRIPPED}'"
         )
         math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
@@ -53,7 +71,8 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
 
     if(_ARCH_RULES_REL MATCHES "^src/")
         file(
-            STRINGS "${_ARCH_RULES_ABS}" _ARCH_RULES_WEAK_LINES
+            STRINGS "${_ARCH_RULES_ABS}"
+            _ARCH_RULES_WEAK_LINES
             REGEX "__attribute__\\s*\\(\\(weak\\)\\)"
         )
 
@@ -62,8 +81,12 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
                 continue()
             endif()
 
-            string(STRIP "${_ARCH_RULES_WEAK_LINE}" _ARCH_RULES_WEAK_LINE_STRIPPED)
-            message(SEND_ERROR
+            string(
+                STRIP "${_ARCH_RULES_WEAK_LINE}"
+                _ARCH_RULES_WEAK_LINE_STRIPPED
+            )
+            message(
+                SEND_ERROR
                 "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden weak symbol usage '${_ARCH_RULES_WEAK_LINE_STRIPPED}'"
             )
             math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
@@ -71,17 +94,26 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
     endif()
 
     set(_ARCH_RULES_UI_FORBIDDEN_AREA OFF)
-    if(_ARCH_RULES_REL MATCHES "^(src/dsp/|src/protocol/|include/dsd-neo/dsp/|include/dsd-neo/protocol/)")
+    if(
+        _ARCH_RULES_REL
+            MATCHES
+            "^(src/dsp/|src/protocol/|include/dsd-neo/dsp/|include/dsd-neo/protocol/)"
+    )
         set(_ARCH_RULES_UI_FORBIDDEN_AREA ON)
     endif()
 
     set(_ARCH_RULES_IO_FORBIDDEN_AREA OFF)
-    if(_ARCH_RULES_REL MATCHES "^(src/core/|src/dsp/|src/protocol/|include/dsd-neo/core/|include/dsd-neo/dsp/|include/dsd-neo/protocol/)")
+    if(
+        _ARCH_RULES_REL
+            MATCHES
+            "^(src/core/|src/dsp/|src/protocol/|include/dsd-neo/core/|include/dsd-neo/dsp/|include/dsd-neo/protocol/)"
+    )
         set(_ARCH_RULES_IO_FORBIDDEN_AREA ON)
     endif()
 
     file(
-        STRINGS "${_ARCH_RULES_ABS}" _ARCH_RULES_EXIT_LINES
+        STRINGS "${_ARCH_RULES_ABS}"
+        _ARCH_RULES_EXIT_LINES
         REGEX "(^|[^A-Za-z0-9_])exit[ \t]*\\("
     )
 
@@ -95,14 +127,16 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         endif()
 
         string(STRIP "${_ARCH_RULES_EXIT_LINE}" _ARCH_RULES_EXIT_LINE_STRIPPED)
-        message(SEND_ERROR
+        message(
+            SEND_ERROR
             "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden exit() usage '${_ARCH_RULES_EXIT_LINE_STRIPPED}'"
         )
         math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
     endforeach()
 
     file(
-        STRINGS "${_ARCH_RULES_ABS}" _ARCH_RULES_INCLUDE_LINES
+        STRINGS "${_ARCH_RULES_ABS}"
+        _ARCH_RULES_INCLUDE_LINES
         REGEX "^[ \t]*#[ \t]*include[ \t]*[<\"][^>\"]+[>\"]"
     )
 
@@ -112,44 +146,86 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
 
     foreach(_ARCH_RULES_LINE IN LISTS _ARCH_RULES_INCLUDE_LINES)
         string(
-            REGEX REPLACE "^[ \t]*#[ \t]*include[ \t]*[<\"]([^>\"]+)[>\"][ \t]*.*" "\\1"
-            _ARCH_RULES_HEADER "${_ARCH_RULES_LINE}"
+            REGEX REPLACE
+                "^[ \t]*#[ \t]*include[ \t]*[<\"]([^>\"]+)[>\"][ \t]*.*"
+            "\\1"
+            _ARCH_RULES_HEADER
+            "${_ARCH_RULES_LINE}"
         )
 
-        if(_ARCH_RULES_UI_FORBIDDEN_AREA AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/")
-            message(SEND_ERROR "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden UI include '${_ARCH_RULES_HEADER}'")
+        if(
+            _ARCH_RULES_UI_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden UI include '${_ARCH_RULES_HEADER}'"
+            )
             math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
             continue()
         endif()
 
-        if(_ARCH_RULES_UI_FORBIDDEN_AREA AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/engine/")
-            message(SEND_ERROR "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden engine include '${_ARCH_RULES_HEADER}'")
+        if(
+            _ARCH_RULES_UI_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/engine/"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden engine include '${_ARCH_RULES_HEADER}'"
+            )
             math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
             continue()
         endif()
 
-        if(_ARCH_RULES_IO_FORBIDDEN_AREA AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/io/")
-            message(SEND_ERROR "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden IO include '${_ARCH_RULES_HEADER}'")
+        if(
+            _ARCH_RULES_IO_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/io/"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden IO include '${_ARCH_RULES_HEADER}'"
+            )
             math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
             continue()
         endif()
 
         if(_ARCH_RULES_HEADER STREQUAL "dsd-neo/platform/curses_compat.h")
             if(NOT _ARCH_RULES_REL MATCHES "^(src/ui/|include/dsd-neo/ui/)")
-                message(SEND_ERROR
+                message(
+                    SEND_ERROR
                     "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden curses wrapper include '${_ARCH_RULES_HEADER}'"
                 )
-                math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+                math(
+                    EXPR
+                    _ARCH_RULES_VIOLATIONS
+                    "${_ARCH_RULES_VIOLATIONS} + 1"
+                )
             endif()
             continue()
         endif()
 
-        if(NOT _ARCH_RULES_HEADER MATCHES "^dsd-neo/"
+        if(
+            NOT _ARCH_RULES_HEADER MATCHES "^dsd-neo/"
             AND _ARCH_RULES_HEADER MATCHES "(^|.*/)(curses|ncurses)\\.h$"
         )
-            if(NOT (_ARCH_RULES_REL STREQUAL "include/dsd-neo/platform/curses_compat.h" OR _ARCH_RULES_REL MATCHES "^src/ui/" OR _ARCH_RULES_REL MATCHES "^include/dsd-neo/ui/"))
-                message(SEND_ERROR "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden curses include '${_ARCH_RULES_HEADER}'")
-                math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            if(
+                NOT (
+                    _ARCH_RULES_REL
+                        STREQUAL
+                        "include/dsd-neo/platform/curses_compat.h"
+                    OR _ARCH_RULES_REL MATCHES "^src/ui/"
+                    OR _ARCH_RULES_REL MATCHES "^include/dsd-neo/ui/"
+                )
+            )
+                message(
+                    SEND_ERROR
+                    "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden curses include '${_ARCH_RULES_HEADER}'"
+                )
+                math(
+                    EXPR
+                    _ARCH_RULES_VIOLATIONS
+                    "${_ARCH_RULES_VIOLATIONS} + 1"
+                )
             endif()
             continue()
         endif()
@@ -157,7 +233,10 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
 endforeach()
 
 if(_ARCH_RULES_VIOLATIONS GREATER 0)
-    message(FATAL_ERROR "ARCH_RULES: ${_ARCH_RULES_VIOLATIONS} violation(s) found")
+    message(
+        FATAL_ERROR
+        "ARCH_RULES: ${_ARCH_RULES_VIOLATIONS} violation(s) found"
+    )
 endif()
 
 message(STATUS "ARCH_RULES: OK")

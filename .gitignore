@@ -21,6 +21,7 @@ Thumbs.db
 # Ignore all markdown files in root directory with exceptions
 /*.md
 !/README.md
+!/SECURITY.md
 !/THIRD_PARTY.md
 
 # GDB files
@@ -30,6 +31,13 @@ Thumbs.db
 /logs/
 *.log
 *.out
+/.cmake-format.local.out
+/.gitleaks.sarif
+/.osv-scanner.local.out
+/.osv-scanner.sarif
+/.zizmor.local.out
+/.zizmor.sarif
+/.zizmor-pedantic.sarif
 /.strict-analysis/
 /.strict-checkpoints/
 /.preflight-baseline*/

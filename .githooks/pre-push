@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Pre-push hook: run local CI-style analysis on files changed in the push.
 
-repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+repo_root=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
 cd "$repo_root"
 
 remote_name="${1:-origin}"
@@ -12,7 +12,10 @@ remote_url="${2:-}"
 # Controls:
 # - DSD_HOOK_FAIL_ON_MISSING_TOOLS: 1|0 (default: 0)
 #   when 1, missing analyzers make the hook fail.
+# - DSD_HOOK_RUN_SCAN_BUILD: 1|0 (default: 0)
+#   when 1, also runs the heavier full scan-build pass.
 FAIL_ON_MISSING_TOOLS="${DSD_HOOK_FAIL_ON_MISSING_TOOLS:-0}"
+RUN_SCAN_BUILD="${DSD_HOOK_RUN_SCAN_BUILD:-0}"
 
 if [[ -n "$remote_url" ]]; then
   echo "pre-push: remote=${remote_name} url=<provided>"
@@ -22,7 +25,7 @@ fi
 
 zeros="0000000000000000000000000000000000000000"
 
-remote_head_ref=$(git symbolic-ref -q "refs/remotes/${remote_name}/HEAD" 2>/dev/null || true)
+remote_head_ref=$(git symbolic-ref -q "refs/remotes/${remote_name}/HEAD" 2> /dev/null || true)
 if [[ -z "$remote_head_ref" ]]; then
   if git show-ref --verify --quiet "refs/remotes/${remote_name}/main"; then
     remote_head_ref="refs/remotes/${remote_name}/main"
@@ -47,7 +50,7 @@ resolve_new_ref_base() {
 
 remote_tracking_refs=()
 mapfile -t remote_tracking_refs < <(
-  git for-each-ref --format='%(refname)' "refs/remotes/${remote_name}" 2>/dev/null || true
+  git for-each-ref --format='%(refname)' "refs/remotes/${remote_name}" 2> /dev/null || true
 )
 
 select_best_remote_merge_base() {
@@ -59,11 +62,11 @@ select_best_remote_merge_base() {
   local best_distance=""
 
   for ref in "${remote_tracking_refs[@]}"; do
-    merge_base=$(git merge-base "$local_sha" "$ref" 2>/dev/null || true)
+    merge_base=$(git merge-base "$local_sha" "$ref" 2> /dev/null || true)
     if [[ -z "$merge_base" ]]; then
       continue
     fi
-    distance=$(git rev-list --count "${merge_base}..${local_sha}" 2>/dev/null || true)
+    distance=$(git rev-list --count "${merge_base}..${local_sha}" 2> /dev/null || true)
     if [[ -z "$distance" ]]; then
       continue
     fi
@@ -98,7 +101,7 @@ new_ref_diff_files_fallback() {
   git diff --name-only --diff-filter=ACMR "${empty_tree}" "${local_sha}^{tree}" || true
 }
 
-head_sha=$(git rev-parse -q --verify HEAD 2>/dev/null || true)
+head_sha=$(git rev-parse -q --verify HEAD 2> /dev/null || true)
 
 changed_paths=()
 head_changed_paths=()
@@ -147,22 +150,52 @@ done
 changed_sources=()
 changed_headers=()
 format_files=()
+cmake_format_files=()
 semgrep_targets=()
+shell_lint_targets=()
+workflow_lint_targets=()
+workflow_security_targets=()
+dependency_scan_targets=()
 missing_worktree_paths=()
 skipped_missing_paths=()
 for p in "${changed_paths[@]}"; do
   case "$p" in
-    build/*|src/third_party/*) continue ;;
+    build/* | src/third_party/*) continue ;;
   esac
 
   track_semgrep=0
   case "$p" in
-    src/*|include/*|apps/*|tests/*|tools/*) track_semgrep=1 ;;
+    src/* | include/* | apps/* | tests/* | tools/* | .github/workflows/*.yml | .github/workflows/*.yaml)
+      track_semgrep=1
+      ;;
+  esac
+
+  case "$p" in
+    *.sh | .githooks/*) shell_lint_targets+=("$p") ;;
+    .github/workflows/*.yml | .github/workflows/*.yaml) workflow_lint_targets+=("$p") ;;
+  esac
+
+  case "$p" in
+    CMakeLists.txt | */CMakeLists.txt | CMakeLists.txt.in | */CMakeLists.txt.in | *.cmake | *.cmake.in)
+      cmake_format_files+=("$p")
+      ;;
+  esac
+
+  case "$p" in
+    .github/workflows/*.yml | .github/workflows/*.yaml | .github/dependabot.yml | .github/zizmor.yml)
+      workflow_security_targets+=("$p")
+      ;;
+  esac
+
+  case "$p" in
+    vcpkg.json | vcpkg-configuration.json | vcpkg-ports/* | vcpkg-triplets/* | tools/osv_scan.sh)
+      dependency_scan_targets+=("$p")
+      ;;
   esac
 
   track_c_family=0
   case "$p" in
-    *.c|*.cc|*.cpp|*.cxx|*.h|*.hh|*.hpp|*.hxx) track_c_family=1 ;;
+    *.c | *.cc | *.cpp | *.cxx | *.h | *.hh | *.hpp | *.hxx) track_c_family=1 ;;
   esac
 
   if [[ ! -e "$p" && ! -L "$p" ]]; then
@@ -181,11 +214,11 @@ for p in "${changed_paths[@]}"; do
   fi
 
   case "$p" in
-    *.c|*.cc|*.cpp|*.cxx)
+    *.c | *.cc | *.cpp | *.cxx)
       changed_sources+=("$p")
       format_files+=("$p")
       ;;
-    *.h|*.hh|*.hpp|*.hxx)
+    *.h | *.hh | *.hpp | *.hxx)
       changed_headers+=("$p")
       format_files+=("$p")
       ;;
@@ -197,6 +230,21 @@ if [[ ${#format_files[@]} -gt 0 ]]; then
 fi
 if [[ ${#semgrep_targets[@]} -gt 0 ]]; then
   mapfile -t semgrep_targets < <(printf '%s\n' "${semgrep_targets[@]}" | sort -u)
+fi
+if [[ ${#cmake_format_files[@]} -gt 0 ]]; then
+  mapfile -t cmake_format_files < <(printf '%s\n' "${cmake_format_files[@]}" | sort -u)
+fi
+if [[ ${#shell_lint_targets[@]} -gt 0 ]]; then
+  mapfile -t shell_lint_targets < <(printf '%s\n' "${shell_lint_targets[@]}" | sort -u)
+fi
+if [[ ${#workflow_lint_targets[@]} -gt 0 ]]; then
+  mapfile -t workflow_lint_targets < <(printf '%s\n' "${workflow_lint_targets[@]}" | sort -u)
+fi
+if [[ ${#workflow_security_targets[@]} -gt 0 ]]; then
+  mapfile -t workflow_security_targets < <(printf '%s\n' "${workflow_security_targets[@]}" | sort -u)
+fi
+if [[ ${#dependency_scan_targets[@]} -gt 0 ]]; then
+  mapfile -t dependency_scan_targets < <(printf '%s\n' "${dependency_scan_targets[@]}" | sort -u)
 fi
 if [[ ${#skipped_missing_paths[@]} -gt 0 ]]; then
   mapfile -t skipped_missing_paths < <(printf '%s\n' "${skipped_missing_paths[@]}" | sort -u)
@@ -228,16 +276,16 @@ collect_header_includers() {
   mapfile -t c_matches < <(
     rg -l --glob '!src/third_party/**' \
       -g'*.c' \
-      "$pattern" src apps tests examples 2>/dev/null \
-      | sort \
-      | head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+      "$pattern" src apps tests examples 2> /dev/null |
+      sort |
+      head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
   )
   mapfile -t cxx_matches < <(
     rg -l --glob '!src/third_party/**' \
       -g'*.cc' -g'*.cpp' -g'*.cxx' \
-      "$pattern" src apps tests examples 2>/dev/null \
-      | sort \
-      | head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+      "$pattern" src apps tests examples 2> /dev/null |
+      sort |
+      head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
   )
 
   for c_file in "${c_matches[@]}"; do
@@ -249,7 +297,7 @@ collect_header_includers() {
 }
 
 if [[ ${#changed_headers[@]} -gt 0 ]]; then
-  if command -v rg >/dev/null 2>&1; then
+  if command -v rg > /dev/null 2>&1; then
     for hdr in "${changed_headers[@]}"; do
       include_key=""
       if [[ "$hdr" == include/* ]]; then
@@ -321,10 +369,10 @@ run_clang_format_check() {
   local rc=0
   local f=""
   for f in "$@"; do
-    if clang-format -n --Werror "$f" >/dev/null 2>&1; then
+    if clang-format -n --Werror "$f" > /dev/null 2>&1; then
       continue
     fi
-    if ! diff -u "$f" <(clang-format "$f") >/dev/null; then
+    if ! diff -u "$f" <(clang-format "$f") > /dev/null; then
       echo "pre-push: formatting issues found in ${f}" >&2
       rc=1
     fi
@@ -333,15 +381,23 @@ run_clang_format_check() {
 }
 
 if [[ ${#format_files[@]} -gt 0 ]]; then
-  if command -v clang-format >/dev/null 2>&1; then
+  if command -v clang-format > /dev/null 2>&1; then
     run_check "clang-format check (${#format_files[@]} file(s))" run_clang_format_check "${format_files[@]}"
   else
     mark_missing_tool "clang-format" "format check"
   fi
 fi
 
+if [[ ${#cmake_format_files[@]} -gt 0 ]]; then
+  if command -v gersemi > /dev/null 2>&1; then
+    run_check "gersemi check (${#cmake_format_files[@]} file(s))" tools/cmake_format_check.sh -- "${cmake_format_files[@]}"
+  else
+    mark_missing_tool "gersemi" "CMake format check"
+  fi
+fi
+
 if [[ ${#analysis_tus[@]} -gt 0 ]]; then
-  if command -v clang-tidy >/dev/null 2>&1; then
+  if command -v clang-tidy > /dev/null 2>&1; then
     run_check "clang-tidy strict (${#analysis_tus[@]} TU(s))" tools/clang_tidy.sh --strict -- "${analysis_tus[@]}"
   else
     mark_missing_tool "clang-tidy" "clang-tidy analysis"
@@ -349,7 +405,7 @@ if [[ ${#analysis_tus[@]} -gt 0 ]]; then
 fi
 
 if [[ ${#cppcheck_sources[@]} -gt 0 ]]; then
-  if command -v cppcheck >/dev/null 2>&1; then
+  if command -v cppcheck > /dev/null 2>&1; then
     run_check "cppcheck strict (${#cppcheck_sources[@]} TU(s))" tools/cppcheck.sh --strict -- "${cppcheck_sources[@]}"
   else
     mark_missing_tool "cppcheck" "cppcheck analysis"
@@ -357,7 +413,7 @@ if [[ ${#cppcheck_sources[@]} -gt 0 ]]; then
 fi
 
 if [[ ${#analysis_tus[@]} -gt 0 ]]; then
-  if command -v include-what-you-use >/dev/null 2>&1; then
+  if command -v include-what-you-use > /dev/null 2>&1; then
     run_check "IWYU strict (${#analysis_tus[@]} TU(s))" tools/iwyu.sh --strict -- "${analysis_tus[@]}"
   else
     mark_missing_tool "include-what-you-use" "IWYU analysis"
@@ -365,7 +421,7 @@ if [[ ${#analysis_tus[@]} -gt 0 ]]; then
 fi
 
 if [[ ${#analysis_tus[@]} -gt 0 ]]; then
-  if command -v gcc >/dev/null 2>&1 && command -v g++ >/dev/null 2>&1; then
+  if command -v gcc > /dev/null 2>&1 && command -v g++ > /dev/null 2>&1; then
     run_check "GCC fanalyzer strict (${#analysis_tus[@]} TU(s))" tools/gcc_fanalyzer.sh --strict -- "${analysis_tus[@]}"
   else
     mark_missing_tool "gcc/g++" "GCC fanalyzer analysis"
@@ -373,23 +429,59 @@ if [[ ${#analysis_tus[@]} -gt 0 ]]; then
 fi
 
 if [[ ${#semgrep_targets[@]} -gt 0 ]]; then
-  if command -v semgrep >/dev/null 2>&1; then
+  if command -v semgrep > /dev/null 2>&1; then
     run_check "Semgrep strict (${#semgrep_targets[@]} path(s))" tools/semgrep.sh --strict -- "${semgrep_targets[@]}"
   else
     mark_missing_tool "semgrep" "Semgrep analysis"
   fi
 fi
 
-if command -v lizard >/dev/null 2>&1; then
+if [[ ${#shell_lint_targets[@]} -gt 0 ]]; then
+  if command -v shellcheck > /dev/null 2>&1 && command -v shfmt > /dev/null 2>&1; then
+    run_check "shell lint (${#shell_lint_targets[@]} file(s))" tools/shell_lint.sh -- "${shell_lint_targets[@]}"
+  else
+    mark_missing_tool "shellcheck/shfmt" "shell lint"
+  fi
+fi
+
+if [[ ${#workflow_lint_targets[@]} -gt 0 ]]; then
+  if command -v actionlint > /dev/null 2>&1; then
+    run_check "workflow lint (${#workflow_lint_targets[@]} file(s))" tools/workflow_lint.sh -- "${workflow_lint_targets[@]}"
+  else
+    mark_missing_tool "actionlint" "workflow lint"
+  fi
+fi
+
+if [[ ${#workflow_security_targets[@]} -gt 0 ]]; then
+  if command -v zizmor > /dev/null 2>&1; then
+    run_check "zizmor workflow security" tools/zizmor.sh
+  else
+    mark_missing_tool "zizmor" "workflow security analysis"
+  fi
+fi
+
+if [[ ${#dependency_scan_targets[@]} -gt 0 ]]; then
+  if command -v osv-scanner > /dev/null 2>&1 || command -v docker > /dev/null 2>&1; then
+    run_check "OSV dependency scan" tools/osv_scan.sh
+  else
+    mark_missing_tool "osv-scanner/docker" "OSV dependency scan"
+  fi
+fi
+
+if command -v lizard > /dev/null 2>&1; then
   run_check "Lizard complexity (src/include/apps)" tools/lizard.sh --strict
 else
   mark_missing_tool "lizard" "Lizard complexity analysis"
 fi
 
-if command -v scan-build >/dev/null 2>&1; then
-  run_check "scan-build strict (full rebuild)" tools/scan_build.sh --strict
+if [[ "$RUN_SCAN_BUILD" == "1" ]]; then
+  if command -v scan-build > /dev/null 2>&1; then
+    run_check "scan-build strict (full rebuild)" tools/scan_build.sh --strict
+  else
+    mark_missing_tool "scan-build" "scan-build analysis"
+  fi
 else
-  mark_missing_tool "scan-build" "scan-build analysis"
+  echo "pre-push: skipping scan-build full rebuild (set DSD_HOOK_RUN_SCAN_BUILD=1 to enable)."
 fi
 
 if [[ ${#missing_tools[@]} -gt 0 ]]; then

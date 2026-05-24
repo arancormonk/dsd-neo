@@ -368,6 +368,7 @@ Quick examples
 - Terminal UI hotkeys and menus: `docs/ui-terminal.md`
 - RTL UDP retune control protocol: `docs/udp-control.md`
 - Module overview and build targets: `docs/code_map.md`
+- Code quality and review guardrails: `docs/code-quality-guardrails.md`
 
 ## Project Layout
 
@@ -392,10 +393,20 @@ Quick examples
   - `tools/iwyu.sh` (include hygiene via include-what-you-use; excludes `src/third_party`).
   - `tools/gcc_fanalyzer.sh` (GCC `-fanalyzer` path-sensitive diagnostics; excludes `src/third_party`).
   - `tools/scan_build.sh` (Clang Static Analyzer via `scan-build`, heavier full-build pass; excludes `src/third_party`; supports repeatable `--cmake-arg` passthrough).
-  - `tools/semgrep.sh` (additional SAST rules; use `--strict` to fail on findings; excludes `src/third_party`).
-- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass (clang-format, clang-tidy, cppcheck, IWYU, GCC fanalyzer, Semgrep) on changed paths.
+  - `tools/semgrep.sh` (additional SAST and project guardrail rules; use `--strict` to fail on findings; excludes `src/third_party`).
+  - `tools/shell_lint.sh` (ShellCheck plus `shfmt -d` for shell scripts and hooks).
+  - `tools/workflow_lint.sh` (actionlint for GitHub Actions workflows).
+  - `tools/zizmor.sh` (GitHub Actions security analysis with SARIF support).
+  - `tools/osv_scan.sh` (OSV dependency and vendored C/C++ vulnerability scanning).
+  - `tools/cmake_format_check.sh` (CMake formatting with gersemi; use `--fix` to rewrite).
+  - `tools/gitleaks.sh` (secret scanning with SARIF output for GitHub code scanning).
+- Fuzzing: `tools/fuzz_smoke.sh` configures/builds the `fuzz-asan-debug` preset and runs bounded libFuzzer smoke passes.
+- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass (clang-format, CMake format, clang-tidy, cppcheck, IWYU, GCC fanalyzer, Semgrep, zizmor, OSV scan, shell/workflow lint) on changed paths.
 - Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`.
 - Manual preflight runner: `tools/preflight_ci.sh` runs the same CI-aligned checks as `pre-push` without pushing.
+- Full quality preflight: `tools/quality_preflight.sh` enables missing-tool failures, includes scan-build, and runs the full local guardrail set.
+- Review expectations and high-risk change checklist: `docs/code-quality-guardrails.md`.
+- Supply-chain update policy: `docs/supply-chain-guardrails.md`.
 
 ## Contributing
 

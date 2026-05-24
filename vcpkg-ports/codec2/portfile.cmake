@@ -1,9 +1,10 @@
-# Always track the arancormonk/codec2 main branch for Windows builds.
-set(VCPKG_USE_HEAD_VERSION ON)
+# Pinned for reproducible Windows/vcpkg builds. See docs/supply-chain-guardrails.md
+# for the refresh process.
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO arancormonk/codec2
-    HEAD_REF main
+    REF ad5e23bfdf93896a7344e06a5ff65aa76bcc5a44
+    SHA512 57ccdacb2f6b7716fab642b3a401399f84b982b4a5edbd644931a4db6588e1f1ba2ea033537eebd5938a163c6c98522213ab6a987a1c3ed5c3c36fdab87773a7
 )
 
 vcpkg_cmake_configure(

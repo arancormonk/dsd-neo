@@ -9,7 +9,7 @@ mapfile -t staged_paths < <(git diff --cached --name-only --diff-filter=ACMR | g
 files=()
 for p in "${staged_paths[@]}"; do
   case "$p" in
-    build/*|src/third_party/*) continue ;;
+    build/* | src/third_party/*) continue ;;
   esac
   files+=("$p")
 done
@@ -18,7 +18,7 @@ if [[ ${#files[@]} -eq 0 ]]; then
   exit 0
 fi
 
-if ! command -v clang-format >/dev/null 2>&1; then
+if ! command -v clang-format > /dev/null 2>&1; then
   echo "clang-format not found in PATH. Install it to proceed." >&2
   exit 1
 fi

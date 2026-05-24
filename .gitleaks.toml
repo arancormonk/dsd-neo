@@ -1,0 +1,15 @@
+title = "DSD-neo Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Repository public keys and documented example radio-key fixtures"
+paths = [
+  '''^DSD_Author\.pgp$''',
+  '''^examples/.*\.csv$''',
+]
+regexes = [
+  '''byte_offset''',
+  '''fs4_shift_enabled''',
+]

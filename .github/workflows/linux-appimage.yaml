@@ -22,7 +22,11 @@ jobs:
   build-appimage:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
       contents: write
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -409,6 +413,26 @@ jobs:
           name: ${{ steps.names.outputs.ART }}
           path: ${{ steps.names.outputs.OUT }}
           retention-days: 7
+      - name: Generate artifact SBOM
+        uses: anchore/sbom-action@v0.24.0
+        with:
+          file: ${{ steps.names.outputs.OUT }}
+          format: spdx-json
+          output-file: ${{ steps.names.outputs.OUT }}.spdx.json
+          artifact-name: ${{ steps.names.outputs.ART }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+      - name: Attest artifact provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4.1.0
+        with:
+          subject-path: ${{ steps.names.outputs.OUT }}
+      - name: Attest artifact SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4.1.0
+        with:
+          subject-path: ${{ steps.names.outputs.OUT }}
+          sbom-path: ${{ steps.names.outputs.OUT }}.spdx.json
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3.0.0

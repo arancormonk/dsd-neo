@@ -7,4 +7,3 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 export DYLD_FALLBACK_LIBRARY_PATH="$DIR/lib:${DYLD_FALLBACK_LIBRARY_PATH:-}"
 
 exec "$DIR/bin/dsd-neo" "$@"
-

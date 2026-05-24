@@ -1,0 +1,16 @@
+* @arancormonk
+
+/CMakeLists.txt @arancormonk
+/CMakePresets.json @arancormonk
+/.github/ @arancormonk
+/cmake/ @arancormonk
+/tools/ @arancormonk
+
+/include/dsd-neo/crypto/ @arancormonk
+/src/crypto/ @arancormonk
+/include/dsd-neo/dsp/ @arancormonk
+/src/dsp/ @arancormonk
+/include/dsd-neo/protocol/ @arancormonk
+/src/protocol/ @arancormonk
+/include/dsd-neo/runtime/ @arancormonk
+/src/runtime/ @arancormonk

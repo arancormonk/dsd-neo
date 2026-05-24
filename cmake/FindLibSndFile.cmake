@@ -14,8 +14,17 @@ find_library(LIBSNDFILE_LIBRARY NAMES ${LIBSNDFILE_NAMES})
 
 if(LIBSNDFILE_LIBRARY)
     # On MinGW, prefer the import library (`*.dll.a`) for dynamic linking.
-    if(MINGW AND LIBSNDFILE_LIBRARY MATCHES "\\.a$" AND NOT LIBSNDFILE_LIBRARY MATCHES "\\.dll\\.a$")
-        string(REGEX REPLACE "\\.a$" ".dll.a" _libsndfile_dll_a_candidate "${LIBSNDFILE_LIBRARY}")
+    if(
+        MINGW
+        AND LIBSNDFILE_LIBRARY MATCHES "\\.a$"
+        AND NOT LIBSNDFILE_LIBRARY MATCHES "\\.dll\\.a$"
+    )
+        string(
+            REGEX REPLACE "\\.a$"
+            ".dll.a"
+            _libsndfile_dll_a_candidate
+            "${LIBSNDFILE_LIBRARY}"
+        )
         if(EXISTS "${_libsndfile_dll_a_candidate}")
             set(LIBSNDFILE_LIBRARY "${_libsndfile_dll_a_candidate}")
         endif()
@@ -29,5 +38,9 @@ if(NOT LIBSNDFILE_LIBRARIES)
 endif()
 
 include(FindPackageHandleStandardArgs)
-find_package_handle_standard_args(LibSndFile DEFAULT_MSG LIBSNDFILE_LIBRARY
-                                    LIBSNDFILE_INCLUDE_DIR)
+find_package_handle_standard_args(
+    LibSndFile
+    DEFAULT_MSG
+    LIBSNDFILE_LIBRARY
+    LIBSNDFILE_INCLUDE_DIR
+)

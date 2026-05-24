@@ -39,6 +39,10 @@
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
       },
+      "environment": {
+        "CC": "clang",
+        "CXX": "clang++"
+      },
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
@@ -80,6 +84,26 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "DSD_ENABLE_ASAN": "ON",
         "DSD_ENABLE_UBSAN": "ON"
+      }
+    },
+    {
+      "name": "fuzz-asan-debug",
+      "displayName": "Debug + libFuzzer + ASan/UBSan",
+      "description": "Debug build with libFuzzer targets and sanitizer instrumentation",
+      "binaryDir": "${sourceDir}/build/fuzz-asan-debug",
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "DSD_ENABLE_ASAN": "ON",
+        "DSD_ENABLE_UBSAN": "ON",
+        "DSD_ENABLE_FUZZING": "ON"
       }
     },
     {
@@ -243,6 +267,17 @@
       "configuration": "Debug"
     },
     {
+      "name": "fuzz-asan-debug",
+      "configurePreset": "fuzz-asan-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "fuzz-asan-debug-clean",
+      "configurePreset": "fuzz-asan-debug",
+      "configuration": "Debug",
+      "cleanFirst": true
+    },
+    {
       "name": "asan-ubsan-debug-clean",
       "configurePreset": "asan-ubsan-debug",
       "configuration": "Debug",
@@ -305,6 +340,11 @@
     {
       "name": "asan-ubsan-debug",
       "configurePreset": "asan-ubsan-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "fuzz-asan-debug",
+      "configurePreset": "fuzz-asan-debug",
       "configuration": "Debug"
     },
     {

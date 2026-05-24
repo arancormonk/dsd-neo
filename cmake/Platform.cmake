@@ -37,8 +37,33 @@ elseif(APPLE)
 endif()
 
 # Export for use in subdirectories (cache so available everywhere)
-set(DSD_PLATFORM_WINDOWS ${DSD_PLATFORM_WINDOWS} CACHE BOOL "Windows platform detected" FORCE)
-set(DSD_PLATFORM_LINUX ${DSD_PLATFORM_LINUX} CACHE BOOL "Linux platform detected" FORCE)
-set(DSD_PLATFORM_MACOS ${DSD_PLATFORM_MACOS} CACHE BOOL "macOS platform detected" FORCE)
-set(DSD_PLATFORM_LIBS ${DSD_PLATFORM_LIBS} CACHE STRING "Platform-specific libraries" FORCE)
-mark_as_advanced(DSD_PLATFORM_WINDOWS DSD_PLATFORM_LINUX DSD_PLATFORM_MACOS DSD_PLATFORM_LIBS)
+set(DSD_PLATFORM_WINDOWS
+    ${DSD_PLATFORM_WINDOWS}
+    CACHE BOOL
+    "Windows platform detected"
+    FORCE
+)
+set(DSD_PLATFORM_LINUX
+    ${DSD_PLATFORM_LINUX}
+    CACHE BOOL
+    "Linux platform detected"
+    FORCE
+)
+set(DSD_PLATFORM_MACOS
+    ${DSD_PLATFORM_MACOS}
+    CACHE BOOL
+    "macOS platform detected"
+    FORCE
+)
+set(DSD_PLATFORM_LIBS
+    ${DSD_PLATFORM_LIBS}
+    CACHE STRING
+    "Platform-specific libraries"
+    FORCE
+)
+mark_as_advanced(
+    DSD_PLATFORM_WINDOWS
+    DSD_PLATFORM_LINUX
+    DSD_PLATFORM_MACOS
+    DSD_PLATFORM_LIBS
+)

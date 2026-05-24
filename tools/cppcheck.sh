@@ -6,17 +6,17 @@ set -euo pipefail
 # - Complements clang-tidy with different analysis techniques
 # - Fails on error-level issues; warnings are informational.
 
-ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
 cd "$ROOT_DIR"
 
-if ! command -v cppcheck >/dev/null 2>&1; then
+if ! command -v cppcheck > /dev/null 2>&1; then
   echo "cppcheck not found. Please install it (e.g., apt-get install cppcheck)." >&2
   exit 1
 fi
 
 # Parse arguments
 usage() {
-  cat <<'USAGE'
+  cat << 'USAGE'
 Usage: tools/cppcheck.sh [--strict] [--verbose|-v] [--] [files...]
 
 Options:
@@ -43,11 +43,11 @@ while [[ $# -gt 0 ]]; do
       STRICT=1
       shift
       ;;
-    --verbose|-v)
+    --verbose | -v)
       VERBOSE=1
       shift
       ;;
-    --help|-h)
+    --help | -h)
       usage
       exit 0
       ;;
@@ -72,7 +72,7 @@ echo "cppcheck version:"
 cppcheck --version
 
 # Detect number of CPU cores for parallel analysis
-NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+NPROC=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
 CPPCHECK_BUILD_DIR="${CPPCHECK_BUILD_DIR:-.cppcheck-build}"
 mkdir -p "$CPPCHECK_BUILD_DIR"
 
@@ -149,10 +149,10 @@ if [[ ${#REQUESTED_FILES[@]} -gt 0 ]]; then
   for f in "${REQUESTED_FILES[@]}"; do
     f="${f#./}"
     case "$f" in
-      build/*|src/third_party/*) continue ;;
+      build/* | src/third_party/*) continue ;;
     esac
     case "$f" in
-      *.c|*.cc|*.cpp|*.cxx) FILES+=("$f") ;;
+      *.c | *.cc | *.cpp | *.cxx) FILES+=("$f") ;;
     esac
   done
 
@@ -189,9 +189,9 @@ else
   # Print summary by severity
   echo ""
   echo "Summary by severity:" >&2
-  grep -E ': (error|warning|style|performance|portability):' "$LOG_FILE" 2>/dev/null \
-    | sed -E 's/.*: (error|warning|style|performance|portability):.*/\1/' \
-    | sort | uniq -c | sort -rn >&2 || true
+  grep -E ': (error|warning|style|performance|portability):' "$LOG_FILE" 2> /dev/null |
+    sed -E 's/.*: (error|warning|style|performance|portability):.*/\1/' |
+    sort | uniq -c | sort -rn >&2 || true
 
   exit $EXIT_CODE
 fi

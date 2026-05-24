@@ -11,11 +11,7 @@
 ##
 
 # Find mbelib-neo header (PATH_SUFFIXES returns the directory containing mbelib.h)
-find_path(
-  MBE_INCLUDE_DIR
-  NAMES mbelib.h
-  PATH_SUFFIXES mbelib-neo
-)
+find_path(MBE_INCLUDE_DIR NAMES mbelib.h PATH_SUFFIXES mbelib-neo)
 
 # Find mbelib-neo library only
 find_library(MBE_LIBRARY NAMES mbe-neo)

@@ -6,11 +6,11 @@ set -euo pipefail
 # - Excludes build/ and src/third_party/
 # - By default, fails on analyzer diagnostics or compiler errors
 
-ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
 cd "$ROOT_DIR"
 
 usage() {
-  cat <<'USAGE'
+  cat << 'USAGE'
 Usage: tools/gcc_fanalyzer.sh [--strict] [--all-commands] [--jobs N] [--] [files...]
 
 Options:
@@ -32,8 +32,14 @@ REQUESTED_FILES=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --strict) STRICT=1; shift ;;
-    --all-commands) ALL_COMMANDS=1; shift ;;
+    --strict)
+      STRICT=1
+      shift
+      ;;
+    --all-commands)
+      ALL_COMMANDS=1
+      shift
+      ;;
     --jobs)
       if [[ $# -lt 2 ]]; then
         echo "Missing value for --jobs" >&2
@@ -42,26 +48,36 @@ while [[ $# -gt 0 ]]; do
       JOBS="$2"
       shift 2
       ;;
-    -h|--help) usage; exit 0 ;;
-    --) shift; REQUESTED_FILES+=("$@"); break ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      REQUESTED_FILES+=("$@")
+      break
+      ;;
     -*)
       echo "Unknown option: $1" >&2
       usage >&2
       exit 2
       ;;
-    *) REQUESTED_FILES+=("$1"); shift ;;
+    *)
+      REQUESTED_FILES+=("$1")
+      shift
+      ;;
   esac
 done
 
-if ! command -v gcc >/dev/null 2>&1; then
+if ! command -v gcc > /dev/null 2>&1; then
   echo "gcc not found. Please install GCC." >&2
   exit 1
 fi
-if ! command -v g++ >/dev/null 2>&1; then
+if ! command -v g++ > /dev/null 2>&1; then
   echo "g++ not found. Please install G++." >&2
   exit 1
 fi
-if ! command -v python3 >/dev/null 2>&1; then
+if ! command -v python3 > /dev/null 2>&1; then
   echo "python3 not found. Please install python3." >&2
   exit 1
 fi
@@ -75,19 +91,19 @@ if [[ ! -f "$PDB_FILE" ]]; then
     PDB_FILE="compile_commands.json"
   else
     echo "Configuring CMake preset 'dev-debug' to generate compile_commands.json..."
-    cmake --preset dev-debug >/dev/null
+    cmake --preset dev-debug > /dev/null
     PDB_FILE="$PDB_DIR/compile_commands.json"
   fi
 fi
 
 if [[ -z "$JOBS" ]]; then
-  JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+  JOBS=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
 fi
 
 LOG_FILE=".gcc-fanalyzer.local.out"
 
 set +e
-python3 - "$PDB_FILE" "$ROOT_DIR" "$STRICT" "$ALL_COMMANDS" "$JOBS" "${REQUESTED_FILES[@]}" <<'PY' 2>&1 | tee "$LOG_FILE"
+python3 - "$PDB_FILE" "$ROOT_DIR" "$STRICT" "$ALL_COMMANDS" "$JOBS" "${REQUESTED_FILES[@]}" << 'PY' 2>&1 | tee "$LOG_FILE"
 import concurrent.futures
 import json
 import os

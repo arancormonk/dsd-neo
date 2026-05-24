@@ -22,7 +22,11 @@ jobs:
   build-native-msvc:
     runs-on: windows-latest
     permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
       contents: write
+      id-token: write
     env:
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
       VCPKG_DEFAULT_TRIPLET: x64-windows-dynamic-release
@@ -175,6 +179,29 @@ jobs:
           path: ${{ steps.zip.outputs.ZIP_PATH }}
           retention-days: 7
 
+      - name: Generate native MSVC SBOM
+        uses: anchore/sbom-action@v0.24.0
+        with:
+          file: ${{ steps.zip.outputs.ZIP_PATH }}
+          format: spdx-json
+          output-file: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
+          artifact-name: ${{ steps.zip.outputs.ART_NAME }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Attest native MSVC provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4.1.0
+        with:
+          subject-path: ${{ steps.zip.outputs.ZIP_PATH }}
+
+      - name: Attest native MSVC SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4.1.0
+        with:
+          subject-path: ${{ steps.zip.outputs.ZIP_PATH }}
+          sbom-path: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
+
       - name: Upload native MSVC release asset
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3.0.0
@@ -197,7 +224,11 @@ jobs:
   build-native-mingw:
     runs-on: windows-latest
     permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
       contents: write
+      id-token: write
     env:
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
       VCPKG_DEFAULT_TRIPLET: x64-mingw-dynamic-release
@@ -380,6 +411,29 @@ jobs:
           name: ${{ steps.zip.outputs.ART_NAME }}
           path: ${{ steps.zip.outputs.ZIP_PATH }}
           retention-days: 7
+
+      - name: Generate native MinGW SBOM
+        uses: anchore/sbom-action@v0.24.0
+        with:
+          file: ${{ steps.zip.outputs.ZIP_PATH }}
+          format: spdx-json
+          output-file: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
+          artifact-name: ${{ steps.zip.outputs.ART_NAME }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Attest native MinGW provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4.1.0
+        with:
+          subject-path: ${{ steps.zip.outputs.ZIP_PATH }}
+
+      - name: Attest native MinGW SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4.1.0
+        with:
+          subject-path: ${{ steps.zip.outputs.ZIP_PATH }}
+          sbom-path: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
 
       - name: Upload native MinGW release asset
         if: startsWith(github.ref, 'refs/tags/')

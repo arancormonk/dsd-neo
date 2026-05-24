@@ -390,6 +390,9 @@ jobs:
   semgrep:
     name: semgrep
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v6.0.2
         with:
@@ -421,6 +424,8 @@ jobs:
       - name: Run Semgrep
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
         shell: bash
+        env:
+          DSD_SEMGREP_SARIF_OUT: .semgrep.sarif
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             mapfile -t targets < .ci/changed-files/semgrep_targets.txt
@@ -429,12 +434,21 @@ jobs:
             tools/semgrep.sh --strict
           fi
 
+      - name: Upload Semgrep SARIF
+        if: always() && hashFiles('.semgrep.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: .semgrep.sarif
+
       - name: Upload Semgrep output
         if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0')
         uses: actions/upload-artifact@v7.0.1
         with:
           name: semgrep-report
-          path: .semgrep.local.out
+          path: |
+            .semgrep.local.out
+            .semgrep.sarif
           include-hidden-files: true
           retention-days: 7
 

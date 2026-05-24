@@ -13,34 +13,43 @@
 #
 #   PDCurses::PDCurses   - The PDCurses library
 
-find_path(PDCURSES_INCLUDE_DIR
+find_path(
+    PDCURSES_INCLUDE_DIR
     NAMES curses.h
-    HINTS
-        ${PDCURSES_ROOT}
-        ENV PDCURSES_ROOT
+    HINTS ${PDCURSES_ROOT}
+    ENV PDCURSES_ROOT
     PATH_SUFFIXES include
 )
 
-find_library(PDCURSES_LIBRARY
+find_library(
+    PDCURSES_LIBRARY
     NAMES pdcurses pdcurses_x64 pdcurses_x86
-    HINTS
-        ${PDCURSES_ROOT}
-        ENV PDCURSES_ROOT
+    HINTS ${PDCURSES_ROOT}
+    ENV PDCURSES_ROOT
     PATH_SUFFIXES lib lib64
 )
 
 # Try to find version from header if available
 if(PDCURSES_INCLUDE_DIR AND EXISTS "${PDCURSES_INCLUDE_DIR}/curses.h")
-    file(STRINGS "${PDCURSES_INCLUDE_DIR}/curses.h" _pdc_version_line
-         REGEX "^#define[\t ]+PDC_BUILD[\t ]+[0-9]+")
+    file(
+        STRINGS "${PDCURSES_INCLUDE_DIR}/curses.h"
+        _pdc_version_line
+        REGEX "^#define[\t ]+PDC_BUILD[\t ]+[0-9]+"
+    )
     if(_pdc_version_line)
-        string(REGEX REPLACE "^#define[\t ]+PDC_BUILD[\t ]+([0-9]+).*" "\\1" PDCURSES_VERSION_STRING "${_pdc_version_line}")
+        string(
+            REGEX REPLACE "^#define[\t ]+PDC_BUILD[\t ]+([0-9]+).*"
+            "\\1"
+            PDCURSES_VERSION_STRING
+            "${_pdc_version_line}"
+        )
     endif()
     unset(_pdc_version_line)
 endif()
 
 include(FindPackageHandleStandardArgs)
-find_package_handle_standard_args(PDCurses
+find_package_handle_standard_args(
+    PDCurses
     REQUIRED_VARS PDCURSES_LIBRARY PDCURSES_INCLUDE_DIR
     VERSION_VAR PDCURSES_VERSION_STRING
 )
@@ -51,15 +60,19 @@ if(PDCurses_FOUND)
 
     if(NOT TARGET PDCurses::PDCurses)
         add_library(PDCurses::PDCurses UNKNOWN IMPORTED)
-        set_target_properties(PDCurses::PDCurses PROPERTIES
-            IMPORTED_LOCATION "${PDCURSES_LIBRARY}"
-            INTERFACE_INCLUDE_DIRECTORIES "${PDCURSES_INCLUDE_DIR}"
+        set_target_properties(
+            PDCurses::PDCurses
+            PROPERTIES
+                IMPORTED_LOCATION "${PDCURSES_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${PDCURSES_INCLUDE_DIR}"
         )
 
         # PDCurses may need Windows user32 library
         if(WIN32)
-            set_property(TARGET PDCurses::PDCurses APPEND PROPERTY
-                INTERFACE_LINK_LIBRARIES user32 advapi32
+            set_property(
+                TARGET PDCurses::PDCurses
+                APPEND
+                PROPERTY INTERFACE_LINK_LIBRARIES user32 advapi32
             )
         endif()
     endif()
