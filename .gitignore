@@ -6,6 +6,7 @@
 /.cache/
 /.ccache/
 /.deps/
+/.deps-arch-toolchain/
 
 # Visual Studio
 /.vs/

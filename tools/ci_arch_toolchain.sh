@@ -9,8 +9,10 @@ Run a command in an Arch Linux container with the rolling C/C++ quality
 toolchain used by local preflight checks.
 
 Environment:
-  CI_ARCH_IMAGE            Container image to use (default: archlinux:base-devel).
-  CI_ARCH_EXTRA_PACKAGES   Extra pacman packages to install before running.
+  CI_ARCH_IMAGE              Container image to use (default: archlinux:base-devel).
+  CI_ARCH_EXTRA_PACKAGES     Extra pacman packages to install before running.
+  CI_ARCH_IWYU_SHA           Expected include-what-you-use commit SHA.
+  CI_ARCH_TOOLCHAIN_PREFIX   Container path for cached Arch-only tools.
 USAGE
 }
 
@@ -26,6 +28,7 @@ fi
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 IMAGE="${CI_ARCH_IMAGE:-archlinux:base-devel}"
+ARCH_TOOLCHAIN_PREFIX="${CI_ARCH_TOOLCHAIN_PREFIX:-/workspace/.deps-arch-toolchain}"
 
 ARCH_PACKAGES=(
   git
@@ -66,6 +69,8 @@ ENV_ARGS=(
   --env "CI_HOST_UID=$(id -u)"
   --env "CI_HOST_GID=$(id -g)"
   --env "CI_ARCH_ENABLE_IWYU=$NEED_IWYU"
+  --env "CI_ARCH_IWYU_SHA=${CI_ARCH_IWYU_SHA:-}"
+  --env "CI_ARCH_TOOLCHAIN_PREFIX=$ARCH_TOOLCHAIN_PREFIX"
   --env "HOME=/home/ci"
   --env "GITHUB_WORKSPACE=/workspace"
   --env "DEPS_PREFIX=/workspace/.deps"
@@ -106,27 +111,50 @@ docker run --rm \
       useradd --uid "$CI_HOST_UID" --gid "$CI_HOST_GID" --create-home --shell /bin/bash ci
     fi
 
-    mkdir -p /workspace/.deps /workspace/.ccache
-    chown -R "$CI_HOST_UID:$CI_HOST_GID" /workspace/.deps /workspace/.ccache
+    mkdir -p /workspace/.deps /workspace/.ccache "$CI_ARCH_TOOLCHAIN_PREFIX"
+    chown -R "$CI_HOST_UID:$CI_HOST_GID" /workspace/.deps /workspace/.ccache "$CI_ARCH_TOOLCHAIN_PREFIX"
 
     runuser --user ci --preserve-environment -- git config --global --add safe.directory /workspace
 
-    export PATH="/workspace/.deps/arch-toolchain/bin:$PATH"
-    if [[ "${CI_ARCH_ENABLE_IWYU:-0}" == "1" ]] && ! command -v include-what-you-use >/dev/null 2>&1; then
-      runuser --user ci --preserve-environment -- bash -lc "
-        set -euxo pipefail
-        export PATH=/workspace/.deps/arch-toolchain/bin:\$PATH
-        if ! command -v include-what-you-use >/dev/null 2>&1; then
-          rm -rf /tmp/include-what-you-use
-          git clone --depth 1 --branch clang_22 https://github.com/include-what-you-use/include-what-you-use /tmp/include-what-you-use
-          cmake -S /tmp/include-what-you-use -B /tmp/include-what-you-use/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=/usr/lib/cmake/llvm \
-            -DCMAKE_INSTALL_PREFIX=/workspace/.deps/arch-toolchain
-          cmake --build /tmp/include-what-you-use/build -j \"\$(nproc)\"
-          cmake --install /tmp/include-what-you-use/build
+    export PATH="$CI_ARCH_TOOLCHAIN_PREFIX/bin:$PATH"
+    if [[ "${CI_ARCH_ENABLE_IWYU:-0}" == "1" ]]; then
+      iwyu_manifest="$CI_ARCH_TOOLCHAIN_PREFIX/.iwyu-manifest"
+      rebuild_iwyu=0
+      if [[ ! -x "$CI_ARCH_TOOLCHAIN_PREFIX/bin/include-what-you-use" ]]; then
+        rebuild_iwyu=1
+      elif [[ -n "${CI_ARCH_IWYU_SHA:-}" ]]; then
+        if [[ ! -f "$iwyu_manifest" ]] || ! grep -q "^iwyu_sha=${CI_ARCH_IWYU_SHA}$" "$iwyu_manifest"; then
+          echo "Cached include-what-you-use does not match desired SHA; rebuilding"
+          rebuild_iwyu=1
         fi
+      fi
+
+      if [[ "$rebuild_iwyu" == "1" ]]; then
+        runuser --user ci --preserve-environment -- bash -lc "
+        set -euxo pipefail
+        rm -rf \"\$CI_ARCH_TOOLCHAIN_PREFIX\" /tmp/include-what-you-use
+        mkdir -p \"\$CI_ARCH_TOOLCHAIN_PREFIX\"
+        export PATH=\"\$CI_ARCH_TOOLCHAIN_PREFIX/bin:\$PATH\"
+
+        git clone --depth 1 --branch clang_22 https://github.com/include-what-you-use/include-what-you-use /tmp/include-what-you-use
+        if [[ -n \"\${CI_ARCH_IWYU_SHA:-}\" ]]; then
+          git -C /tmp/include-what-you-use fetch --depth 1 origin \"\$CI_ARCH_IWYU_SHA\"
+          git -C /tmp/include-what-you-use checkout \"\$CI_ARCH_IWYU_SHA\"
+        fi
+        cmake -S /tmp/include-what-you-use -B /tmp/include-what-you-use/build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_PREFIX_PATH=/usr/lib/cmake/llvm \
+          -DCMAKE_INSTALL_PREFIX=\"\$CI_ARCH_TOOLCHAIN_PREFIX\"
+        cmake --build /tmp/include-what-you-use/build -j \"\$(nproc)\"
+        cmake --install /tmp/include-what-you-use/build
+
+        installed_sha=\$(git -C /tmp/include-what-you-use rev-parse HEAD)
+        {
+          echo \"iwyu_sha=\$installed_sha\"
+          echo \"updated=\$(date -u +%FT%TZ)\"
+        } > \"\$CI_ARCH_TOOLCHAIN_PREFIX/.iwyu-manifest\"
       "
+      fi
     fi
 
     echo "Arch toolchain versions:"

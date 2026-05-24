@@ -1209,10 +1209,18 @@ jobs:
         uses: actions/cache@v5.0.5
         with:
           path: .deps
-          key: arch-deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.iwyu_sha }}
+          key: arch-deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}
           restore-keys: |
-            arch-deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-
             arch-deps-${{ runner.os }}-
+
+      - name: Restore IWYU toolchain cache
+        if: (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0') && matrix.name == 'iwyu'
+        uses: actions/cache@v5.0.5
+        with:
+          path: .deps-arch-toolchain
+          key: arch-iwyu-${{ runner.os }}-${{ steps.dep-shas.outputs.iwyu_sha }}
+          restore-keys: |
+            arch-iwyu-${{ runner.os }}-
 
       - name: Restore ccache
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
@@ -1228,6 +1236,8 @@ jobs:
       - name: Run ${{ matrix.name }} under Arch toolchain
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
         shell: bash
+        env:
+          CI_ARCH_IWYU_SHA: ${{ steps.dep-shas.outputs.iwyu_sha }}
         run: |
           bash tools/ci_arch_toolchain.sh bash -lc '
             set -euxo pipefail
