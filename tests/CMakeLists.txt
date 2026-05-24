@@ -1654,6 +1654,13 @@ if(DSD_HAS_RADIO)
     ${DSD_NEO_TEST_MATH_LIB}
     ${LIBSNDFILE_LIBRARIES})
   add_test(NAME RTL_SYMBOL_CACHE_GENERATION COMMAND dsd-neo_test_rtl_symbol_cache_generation)
+
+  add_executable(dsd-neo_test_frame_sync_p25p2_rtl dsp/test_frame_sync_p25p2_rtl.c)
+  target_include_directories(dsd-neo_test_frame_sync_p25p2_rtl PRIVATE ${PROJECT_SOURCE_DIR}/include)
+  dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_p25p2_rtl
+    ${DSD_NEO_TEST_MATH_LIB}
+    ${LIBSNDFILE_LIBRARIES})
+  add_test(NAME FRAME_SYNC_P25P2_RTL COMMAND dsd-neo_test_frame_sync_p25p2_rtl)
 endif()
 
 # Costas loop (CQPSK carrier recovery)

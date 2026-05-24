@@ -510,7 +510,7 @@ static int
 frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    DSD_STRNCPY(ctx->synctest20, (ctx->synctest_p - 19), 20);
+    dsd_strncpy_s(ctx->synctest20, 21, (ctx->synctest_p - 19), 20);
     if (opts->frame_ysf != 1 || dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
         return DSD_SYNC_NONE;
     }
@@ -540,7 +540,7 @@ static int
 frame_sync_try_p25p2(frame_sync_match_ctx* ctx) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    DSD_STRNCPY(ctx->synctest20, (ctx->synctest_p - 19), 20);
+    dsd_strncpy_s(ctx->synctest20, 21, (ctx->synctest_p - 19), 20);
     if (opts->frame_p25p2 != 1) {
         return DSD_SYNC_NONE;
     }
@@ -594,8 +594,8 @@ static int
 frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    DSD_STRNCPY(ctx->synctest, (ctx->synctest_p - 23), 24);
-    DSD_STRNCPY(ctx->synctest12, (ctx->synctest_p - 11), 12);
+    dsd_strncpy_s(ctx->synctest, 25, (ctx->synctest_p - 23), 24);
+    dsd_strncpy_s(ctx->synctest12, 13, (ctx->synctest_p - 11), 12);
     if (opts->frame_dpmr != 1) {
         return DSD_SYNC_NONE;
     }
@@ -760,8 +760,8 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
 
-    DSD_STRNCPY(ctx->synctest16, (ctx->synctest_p - 15), 16);
-    DSD_STRNCPY(ctx->synctest8, (ctx->synctest_p - 7), 8);
+    dsd_strncpy_s(ctx->synctest16, 17, (ctx->synctest_p - 15), 16);
+    dsd_strncpy_s(ctx->synctest8, 9, (ctx->synctest_p - 7), 8);
     int ham_pre = dsd_sync_hamming_distance(ctx->synctest8, M17_PRE, 8);
     int ham_piv = dsd_sync_hamming_distance(ctx->synctest8, M17_PIV, 8);
     int ham_lsf = dsd_sync_hamming_distance(ctx->synctest8, M17_LSF, 8);
@@ -1049,8 +1049,8 @@ frame_sync_try_provoice(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
 
-    DSD_STRNCPY(ctx->synctest32, (ctx->synctest_p - 31), 32);
-    DSD_STRNCPY(ctx->synctest48, (ctx->synctest_p - 47), 48);
+    dsd_strncpy_s(ctx->synctest32, 33, (ctx->synctest_p - 31), 32);
+    dsd_strncpy_s(ctx->synctest48, 49, (ctx->synctest_p - 47), 48);
     if ((strcmp(ctx->synctest32, PROVOICE_SYNC) == 0) || (strcmp(ctx->synctest32, PROVOICE_EA_SYNC) == 0)) {
         frame_sync_note_cc_sync(ctx);
         frame_sync_set_basic_lock(ctx);
@@ -1164,7 +1164,7 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
 
-    DSD_STRNCPY(ctx->synctest10, (ctx->synctest_p - 9), 10);
+    dsd_strncpy_s(ctx->synctest10, 11, (ctx->synctest_p - 9), 10);
     if ((strcmp(ctx->synctest10, "3131331131") == 0) || (strcmp(ctx->synctest10, "3331331131") == 0)
         || (strcmp(ctx->synctest10, "3131331111") == 0) || (strcmp(ctx->synctest10, "3331331111") == 0)
         || (strcmp(ctx->synctest10, "3131311131") == 0)) {
@@ -1223,7 +1223,7 @@ frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
     }
 
     DSD_MEMSET(ctx->synctest32, 0, 33);
-    DSD_STRNCPY(ctx->synctest32, (ctx->synctest_p - 31), 16);
+    dsd_strncpy_s(ctx->synctest32, 33, (ctx->synctest_p - 31), 16);
     if (strcmp(ctx->synctest32, INV_PROVOICE_CONV_SHORT) == 0) {
         if (state->lastsynctype == DSD_SYNC_PROVOICE_NEG) {
             frame_sync_set_basic_lock(ctx);
