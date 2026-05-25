@@ -19,7 +19,10 @@
 #include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
 
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(__clang__)
+#define DSD_NEO_PRAGMA(x) _Pragma(#x)
+#define DSD_NEO_IVDEP     DSD_NEO_PRAGMA(clang loop vectorize(enable))
+#elif defined(__GNUC__)
 #define DSD_NEO_PRAGMA(x) _Pragma(#x)
 #define DSD_NEO_IVDEP     DSD_NEO_PRAGMA(GCC ivdep)
 #else

@@ -98,7 +98,10 @@ static int ACTUAL_BUF_LENGTH;
 
 static const double kPi = 3.14159265358979323846;
 
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(__clang__)
+#define DSD_NEO_PRAGMA(x) _Pragma(#x)
+#define DSD_NEO_IVDEP     DSD_NEO_PRAGMA(clang loop vectorize(enable))
+#elif defined(__GNUC__)
 #define DSD_NEO_PRAGMA(x) _Pragma(#x)
 #define DSD_NEO_IVDEP     DSD_NEO_PRAGMA(GCC ivdep)
 
