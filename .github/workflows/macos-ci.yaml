@@ -18,6 +18,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build-portable-dmg:
     runs-on: macos-latest
@@ -25,9 +28,10 @@ jobs:
       actions: read
       attestations: write
       artifact-metadata: write
-      contents: write
+      contents: read
       id-token: write
     env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
       HOMEBREW_NO_ANALYTICS: "1"
@@ -425,7 +429,7 @@ jobs:
           output-file: ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
           artifact-name: ${{ steps.dmg.outputs.ART_NAME }}.spdx.json
           upload-artifact: true
-          upload-release-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+          upload-release-assets: false
 
       - name: Attest artifact provenance
         if: startsWith(github.ref, 'refs/tags/')
@@ -441,18 +445,21 @@ jobs:
           sbom-path: ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
 
       - name: Upload release asset
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != ''
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
-          files: ${{ steps.dmg.outputs.DMG_PATH }}
+          files: |
+            ${{ steps.dmg.outputs.DMG_PATH }}
+            ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
           name: ${{ steps.release.outputs.release_title }}
           generate_release_notes: true
+          token: ${{ env.RELEASE_TOKEN }}
 
       - name: Upload nightly asset (overwrite)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != '' }}
         uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          repo_token: ${{ env.RELEASE_TOKEN }}
           tag: nightly
           prerelease: true
           file: ${{ steps.dmg.outputs.DMG_PATH }}

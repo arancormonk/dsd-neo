@@ -18,6 +18,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build-native-msvc:
     runs-on: windows-latest
@@ -25,9 +28,10 @@ jobs:
       actions: read
       attestations: write
       artifact-metadata: write
-      contents: write
+      contents: read
       id-token: write
     env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
       VCPKG_DEFAULT_TRIPLET: x64-windows-dynamic-release
       VCPKG_TARGET_TRIPLET: x64-windows-dynamic-release
@@ -187,7 +191,7 @@ jobs:
           output-file: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
           artifact-name: ${{ steps.zip.outputs.ART_NAME }}.spdx.json
           upload-artifact: true
-          upload-release-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+          upload-release-assets: false
 
       - name: Attest native MSVC provenance
         if: startsWith(github.ref, 'refs/tags/')
@@ -203,18 +207,21 @@ jobs:
           sbom-path: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
 
       - name: Upload native MSVC release asset
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != ''
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
-          files: ${{ steps.zip.outputs.ZIP_PATH }}
+          files: |
+            ${{ steps.zip.outputs.ZIP_PATH }}
+            ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
           name: ${{ steps.release.outputs.release_title }}
           generate_release_notes: true
+          token: ${{ env.RELEASE_TOKEN }}
 
       - name: Upload native MSVC nightly asset (overwrite)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != '' }}
         uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          repo_token: ${{ env.RELEASE_TOKEN }}
           tag: nightly
           prerelease: true
           file: ${{ steps.zip.outputs.ZIP_PATH }}
@@ -227,9 +234,10 @@ jobs:
       actions: read
       attestations: write
       artifact-metadata: write
-      contents: write
+      contents: read
       id-token: write
     env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
       VCPKG_DEFAULT_TRIPLET: x64-mingw-dynamic-release
       VCPKG_TARGET_TRIPLET: x64-mingw-dynamic-release
@@ -420,7 +428,7 @@ jobs:
           output-file: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
           artifact-name: ${{ steps.zip.outputs.ART_NAME }}.spdx.json
           upload-artifact: true
-          upload-release-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+          upload-release-assets: false
 
       - name: Attest native MinGW provenance
         if: startsWith(github.ref, 'refs/tags/')
@@ -436,18 +444,21 @@ jobs:
           sbom-path: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
 
       - name: Upload native MinGW release asset
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != ''
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
-          files: ${{ steps.zip.outputs.ZIP_PATH }}
+          files: |
+            ${{ steps.zip.outputs.ZIP_PATH }}
+            ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
           name: ${{ steps.release.outputs.release_title }}
           generate_release_notes: true
+          token: ${{ env.RELEASE_TOKEN }}
 
       - name: Upload native MinGW nightly asset (overwrite)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != '' }}
         uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          repo_token: ${{ env.RELEASE_TOKEN }}
           tag: nightly
           prerelease: true
           file: ${{ steps.zip.outputs.ZIP_PATH }}

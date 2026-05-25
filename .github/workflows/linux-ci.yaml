@@ -497,15 +497,24 @@ jobs:
     needs: [build-linux]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
     permissions:
-      contents: write
+      contents: read
     steps:
+      - name: Skip nightly tag update
+        if: env.RELEASE_TOKEN == ''
+        run: echo "RELEASE_TOKEN is not configured; skipping nightly tag update."
+
       - name: Checkout repository
+        if: env.RELEASE_TOKEN != ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          token: ${{ env.RELEASE_TOKEN }}
 
       - name: Move nightly tag to current commit
+        if: env.RELEASE_TOKEN != ''
         run: |
           set -euxo pipefail
           git config user.name "github-actions[bot]"

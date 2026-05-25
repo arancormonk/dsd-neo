@@ -9,8 +9,9 @@ https://github.com/arancormonk/dsd-neo/releases
 Release tags use the form `vX.Y.Z`. The tag must match the project version
 declared by CMake, or the release workflow fails before packaging.
 
-Nightly assets are published from the moving `nightly` tag and are intended for
-testing rather than stable deployment.
+Nightly assets are published from the moving `nightly` tag when the maintainer
+publication token is configured. They are intended for testing rather than
+stable deployment.
 
 ## Source Tag Verification
 
@@ -39,6 +40,9 @@ git tag -v vX.Y.Z
 Release assets are distributed over GitHub HTTPS. Tag release workflows generate
 SBOMs and GitHub artifact attestations for packaged Linux AppImage, macOS DMG,
 and Windows ZIP assets when the corresponding workflow completes successfully.
+The workflows keep `GITHUB_TOKEN` read-only; uploading assets to GitHub Releases
+uses the maintainer-scoped `RELEASE_TOKEN` secret when it is configured. If that
+secret is not configured, publish reviewed workflow artifacts manually.
 
 Download assets from the release page, then verify an artifact attestation with
 GitHub CLI when available:
