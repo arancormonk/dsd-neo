@@ -39,6 +39,21 @@ enum { SNR_METER_BARS = 5, SNR_METER_WIDTH = (SNR_METER_BARS * 2) - 1 };
 
 enum { SNR_BLOCK_LEVELS = 8 };
 
+#if defined(DSD_USE_PDCURSES) && !defined(DSD_HAS_PDCURSES_WIDE_API)
+#define SNR_USE_UNICODE(option_enabled, unicode_supported) ((void)(option_enabled), (void)(unicode_supported), 0)
+#else
+#define SNR_USE_UNICODE(option_enabled, unicode_supported) ((option_enabled) && (unicode_supported))
+#endif
+
+#if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
+static const wchar_t snr_block_glyphs[SNR_BLOCK_LEVELS][2] = {
+    {(wchar_t)0x2581, 0}, {(wchar_t)0x2582, 0}, {(wchar_t)0x2583, 0}, {(wchar_t)0x2584, 0},
+    {(wchar_t)0x2585, 0}, {(wchar_t)0x2586, 0}, {(wchar_t)0x2587, 0}, {(wchar_t)0x2588, 0},
+};
+#else
+static const char* const snr_block_glyphs[SNR_BLOCK_LEVELS] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
+#endif
+
 static int
 snr_meter_bar_count(double snr_db) {
     if (!isfinite(snr_db) || snr_db <= -50.0) {
@@ -74,38 +89,6 @@ snr_quality_color_pair(double snr_db, int mod) {
     return (snr_db < thr1) ? C_POOR : (snr_db < thr2) ? C_MOD : C_GOOD;
 }
 #endif
-
-static int
-snr_use_unicode(int option_enabled, int unicode_supported) {
-#if defined(DSD_USE_PDCURSES) && !defined(DSD_HAS_PDCURSES_WIDE_API)
-    (void)option_enabled;
-    (void)unicode_supported;
-    return 0;
-#else
-    return option_enabled && unicode_supported;
-#endif
-}
-
-static void
-snr_add_block_level(int level) {
-    if (level < 0) {
-        level = 0;
-    }
-    if (level >= SNR_BLOCK_LEVELS) {
-        level = SNR_BLOCK_LEVELS - 1;
-    }
-
-#if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
-    static const wchar_t glyphs[SNR_BLOCK_LEVELS][2] = {
-        {(wchar_t)0x2581, 0}, {(wchar_t)0x2582, 0}, {(wchar_t)0x2583, 0}, {(wchar_t)0x2584, 0},
-        {(wchar_t)0x2585, 0}, {(wchar_t)0x2586, 0}, {(wchar_t)0x2587, 0}, {(wchar_t)0x2588, 0},
-    };
-    addwstr(glyphs[level]);
-#else
-    static const char* glyphs[SNR_BLOCK_LEVELS] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
-    addstr(glyphs[level]);
-#endif
-}
 
 #ifdef DSD_NEO_TEST_HOOKS
 static void
@@ -145,7 +128,7 @@ dsd_ncurses_snr_meter_ascii_for_test(double snr_db, char* out, size_t out_size) 
 
 int
 dsd_ncurses_snr_use_unicode_for_test(int option_enabled, int unicode_supported) {
-    return snr_use_unicode(option_enabled, unicode_supported);
+    return SNR_USE_UNICODE(option_enabled, unicode_supported);
 }
 #endif
 
@@ -238,7 +221,11 @@ snr_draw_level_glyph(double sample, int mod, int use_unicode, const char* ascii8
     attron(COLOR_PAIR(cp));
 #endif
     if (use_unicode) {
-        snr_add_block_level(li);
+#if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
+        addwstr(snr_block_glyphs[li]);
+#else
+        addstr(snr_block_glyphs[li]);
+#endif
     } else {
         addch(ascii8[li]);
     }
@@ -258,7 +245,7 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
     /* Make the lowest ASCII level visible (no leading space) */
     static const char ascii8[] = ".:;-=+*#"; /* 8 levels */
     /* Respect the UI toggle: only use Unicode blocks when enabled and locale supports it */
-    int use_unicode = snr_use_unicode(opts && opts->eye_unicode, ui_unicode_supported());
+    int use_unicode = SNR_USE_UNICODE(opts && opts->eye_unicode, ui_unicode_supported());
     const int levels = SNR_BLOCK_LEVELS;
     const int W = 24;                             /* sparkline width */
     const double clip_lo = -15.0, clip_hi = 30.0; /* dB window (allow negatives) */
@@ -294,7 +281,7 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     attr_get(&saved_attrs, &saved_pair, NULL);
 #endif
     const int bars = snr_meter_bar_count(snr_db);
-    int use_unicode = snr_use_unicode(opts && opts->eye_unicode, ui_unicode_supported());
+    int use_unicode = SNR_USE_UNICODE(opts && opts->eye_unicode, ui_unicode_supported());
 #ifdef PRETTY_COLORS
     short cp = snr_quality_color_pair(snr_db, mod);
 #endif
@@ -310,7 +297,11 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
         attron(COLOR_PAIR(cp));
 #endif
         if (use_unicode) {
-            snr_add_block_level(i);
+#if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
+            addwstr(snr_block_glyphs[i]);
+#else
+            addstr(snr_block_glyphs[i]);
+#endif
         } else {
             addch('|');
         }

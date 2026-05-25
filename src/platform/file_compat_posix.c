@@ -127,18 +127,38 @@ dsd_open_resolved_local_entry(const char* name, char* out, size_t out_size, int*
         return NULL;
     }
 
-    dsd_stat_t st;
-    if (lstat(out, &st) != 0) {
+    int flags = O_RDONLY;
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    int fd = open(out, flags);
+    if (fd < 0) {
         *saved_errno = errno ? errno : EINVAL;
+        return NULL;
+    }
+
+    dsd_stat_t st;
+    if (fstat(fd, &st) != 0) {
+        *saved_errno = errno ? errno : EINVAL;
+        close(fd);
         return NULL;
     }
     if (!S_ISREG(st.st_mode)) {
         *saved_errno = EINVAL;
+        close(fd);
         return NULL;
     }
 
-    FILE* result = fopen(out, "r");
-    *saved_errno = result ? 0 : (errno ? errno : EINVAL);
+    FILE* result = fdopen(fd, "r");
+    if (!result) {
+        *saved_errno = errno ? errno : EINVAL;
+        close(fd);
+        return NULL;
+    }
+    *saved_errno = 0;
     return result;
 }
 

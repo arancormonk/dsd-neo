@@ -5,9 +5,14 @@
 
 #include <dsd-neo/platform/file_compat.h>
 
+#include "dsd-neo/platform/platform.h"
+
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <unistd.h>
+#endif
 
 static int
 write_probe_file(const char* path) {
@@ -96,6 +101,33 @@ expect_rejects_small_buffer(void) {
     return rc == -1 && errno == ENAMETOOLONG ? 0 : 1;
 }
 
+#if !DSD_PLATFORM_WIN_NATIVE
+static int
+expect_rejects_symlink(void) {
+    const char* target = "dsd_neo_resolve_symlink_target.tmp";
+    const char* link_name = "dsd_neo_resolve_symlink_local_test.tmp";
+    (void)remove(link_name);
+    (void)remove(target);
+    if (write_probe_file(target) != 0) {
+        return 1;
+    }
+    if (symlink(target, link_name) != 0) {
+        (void)remove(target);
+        return 1;
+    }
+
+    char resolved[1024];
+    errno = 0;
+    FILE* fp = dsd_fopen_existing_local_file(link_name, resolved, sizeof resolved);
+    if (fp) {
+        fclose(fp);
+    }
+    (void)remove(link_name);
+    (void)remove(target);
+    return fp == NULL && errno != 0 ? 0 : 1;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -107,5 +139,8 @@ main(void) {
     rc |= expect_rejects_unsafe_name("config..ini");
     rc |= expect_rejects_missing_file();
     rc |= expect_rejects_small_buffer();
+#if !DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_rejects_symlink();
+#endif
     return rc;
 }
