@@ -65,15 +65,17 @@ typedef void* (*dsd_thread_fn)(void*);
 /**
  * @brief Create and start a new thread.
  *
- * On POSIX builds this expands to pthread_create at the call site so static
- * analysis can preserve the concrete thread entry/argument pairing.
+ * On POSIX C builds this expands to pthread_create at the call site so static
+ * analysis can preserve the concrete thread entry/argument pairing. C++ builds
+ * use the wrapper function to avoid -Waddress when passing named thread entry
+ * functions.
  *
  * @param thread    Pointer to thread handle (output).
  * @param func      Thread entry function.
  * @param arg       Argument passed to thread function.
  * @return 0 on success, non-zero error code on failure.
  */
-#if !DSD_PLATFORM_WIN_NATIVE && !defined(DSD_NEO_THREADING_NO_INLINE_CREATE)
+#if !DSD_PLATFORM_WIN_NATIVE && !defined(DSD_NEO_THREADING_NO_INLINE_CREATE) && !defined(__cplusplus)
 #define dsd_thread_create(thread, func, arg)                                                                           \
     (((thread) == NULL || (func) == NULL) ? EINVAL : pthread_create((thread), NULL, (func), (arg)))
 #else
