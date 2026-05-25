@@ -8,6 +8,7 @@
 - [ ] Behavior, ownership boundaries, and failure modes were reviewed by a human.
 - [ ] Risky or broad changes have a second reviewer.
 - [ ] Copied, generated, or bulk-written code has been read, understood, and adapted to DSD-neo conventions.
+- [ ] Non-trivial commits include a DCO sign-off, or the exception is explained.
 
 ## Quality Review
 

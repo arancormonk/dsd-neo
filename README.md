@@ -368,7 +368,15 @@ Quick examples
 - Terminal UI hotkeys and menus: `docs/ui-terminal.md`
 - RTL UDP retune control protocol: `docs/udp-control.md`
 - Module overview and build targets: `docs/code_map.md`
+- Build and installation policy: `docs/build-installation.md`
+- Testing policy: `docs/testing.md`
+- Defect reporting: `docs/issue-reporting.md`
+- Dependency management: `docs/dependencies.md`
+- Security requirements: `docs/security-requirements.md`
+- Release verification: `docs/release-verification.md`
 - Code quality and review guardrails: `docs/code-quality-guardrails.md`
+- Supply-chain guardrails: `docs/supply-chain-guardrails.md`
+- OpenSSF OSPS Baseline evidence: `docs/openssf-baseline.md`
 
 ## Project Layout
 
@@ -410,6 +418,7 @@ Quick examples
 
 ## Contributing
 
+- Contribution process and review requirements are in `CONTRIBUTING.md`.
 - Languages: C (C11) and C++ (C++14). Indent width 4 spaces; no tabs; brace all control statements; line length ≤ 120.
 - Use project‑prefixed includes only: `#include <dsd-neo/...>`.
 - Prefer small, testable helpers and add focused tests under `tests/<area>`.

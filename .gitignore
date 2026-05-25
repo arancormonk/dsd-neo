@@ -23,6 +23,7 @@ Thumbs.db
 /*.md
 !/README.md
 !/SECURITY.md
+!/CONTRIBUTING.md
 !/THIRD_PARTY.md
 
 # GDB files
