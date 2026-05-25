@@ -36,8 +36,6 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
-#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <fcntl.h>
 #include <math.h>
@@ -58,6 +56,8 @@
 #endif
 
 #ifdef USE_RADIO
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <fcntl.h> // IWYU pragma: keep
 
@@ -483,15 +483,13 @@ symbol_accumulate_nxdn_window(const dsd_state* state, int i) {
     return state->samplesPerSymbol == 20 && i >= 7 && i <= 13;
 }
 
+#ifdef USE_RADIO
 static inline int
 symbol_accumulate_symbol_rate_override(const dsd_state* state, const symbol_work_ctx* work) {
     (void)state;
-#ifdef USE_RADIO
     return work->rtl_symbol_rate_output || work->cqpsk_symbol_rate;
-#else
-    return 0;
-#endif
 }
+#endif
 
 static inline int
 symbol_accumulate_sps5_window(const dsd_state* state, int i) {
@@ -947,6 +945,9 @@ symbol_scale_pcm_i16(short s, int input_volume_multiplier) {
 static inline unsigned int
 symbol_analog_block_size(const dsd_opts* opts, const dsd_state* state, unsigned int analog_out_cap) {
     unsigned int analog_block = analog_out_cap;
+#ifndef USE_RADIO
+    (void)state;
+#endif
     if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
         unsigned int Fs = 0;

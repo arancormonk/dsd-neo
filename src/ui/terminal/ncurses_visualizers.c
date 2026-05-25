@@ -9,22 +9,23 @@
 
 #include <curses.h>
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <math.h>
-#include <stdint.h>
-#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RTLSDR
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/ui/ncurses_internal.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include "dsd-neo/core/safe_api.h"
 #endif
 
+#ifdef USE_RTLSDR
 static int
 clamp_int_local(int value, int lo, int hi) {
     if (value < lo) {
@@ -972,6 +973,7 @@ eye_estimate_snr_fallback(const float* buf, int n, int sps, int two_sps, int q1,
     }
     return snr_db;
 }
+#endif
 
 void
 print_constellation_view(dsd_opts* opts, dsd_state* state) {

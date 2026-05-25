@@ -23,25 +23,20 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/telemetry.h>
-#include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_p25_display.h>
-#include <dsd-neo/ui/ncurses_snr.h>
 #include <dsd-neo/ui/ncurses_trunk_display.h>
-#include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_history.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
@@ -51,6 +46,11 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RADIO
+#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/ui/keymap.h>
+#include <dsd-neo/ui/ncurses_snr.h>
+#include <dsd-neo/ui/ncurses_visualizers.h>
+#include <math.h>
 #endif
 
 static int
@@ -850,6 +850,7 @@ ui_render_input_output_section(dsd_opts* opts, dsd_state* state) {
     ui_print_hr();
 }
 
+#ifdef USE_RADIO
 static void
 ui_print_rtl_visual_aids_controls(dsd_opts* opts, int nfft) {
     /* Controls/status line: only show controls relevant to active views */
@@ -888,6 +889,7 @@ ui_render_rtl_visual_aid_panels(dsd_opts* opts, dsd_state* state) {
         print_spectrum_view(opts);
     }
 }
+#endif
 
 static void
 ui_render_rtl_visual_aids(dsd_opts* opts, dsd_state* state) {
@@ -899,6 +901,9 @@ ui_render_rtl_visual_aids(dsd_opts* opts, dsd_state* state) {
         ui_print_rtl_visual_aids_controls(opts, nfft);
         ui_render_rtl_visual_aid_panels(opts, state);
     }
+#else
+    (void)opts;
+    (void)state;
 #endif
     /* Ensure our primary UI color remains active after visual aids */
     attron(COLOR_PAIR(4));

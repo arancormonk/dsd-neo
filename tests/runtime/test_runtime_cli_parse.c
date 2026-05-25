@@ -1777,7 +1777,9 @@ test_iq_replay_long_options_parse(void) {
     }
 #endif
 
+#ifdef USE_RADIO
 out:
+#endif
     (void)remove(metadata_path);
     (void)remove(data_path);
     freeState(state);

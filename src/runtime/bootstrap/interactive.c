@@ -154,6 +154,7 @@ interactive_configure_rtl_input(dsd_opts* opts, int* src) {
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d:%s:%d:%d:%d:%d:%d", dev, freq, gain, ppm, bw,
                  sql, vol);
 #else
+    (void)opts;
     LOG_WARNING("RTL-SDR support not enabled in this build.\n");
     *src = 1;
 #endif
