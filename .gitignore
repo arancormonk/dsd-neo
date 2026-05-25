@@ -5,6 +5,7 @@
 # Tool caches
 /.cache/
 /.ccache/
+/.ci/
 /.deps/
 /.deps-arch-toolchain/
 
