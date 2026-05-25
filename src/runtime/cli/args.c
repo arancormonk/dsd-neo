@@ -14,13 +14,13 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/audio.h>
-#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -209,15 +209,15 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     return 0;
 }
 
-#define DSD_CLI_LOCAL_PATH_MAX 1024
+#define DSD_CLI_LOCAL_PATH_MAX 2048
 
 static int
 cli_resolve_existing_local_file_option(const char* option_name, const char* requested, char* resolved,
                                        size_t resolved_size, int* out_exit_rc) {
-    if (dsd_resolve_existing_local_file(requested, resolved, resolved_size) == 0) {
+    if (dsd_path_resolve_user_read_file(requested, resolved, resolved_size) == 0) {
         return 1;
     }
-    LOG_ERROR("%s must name an existing local file without path separators or '..'\n", option_name);
+    LOG_ERROR("%s must name an existing regular file\n", option_name);
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
 }

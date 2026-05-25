@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/freq_parse.h>
+#include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
 #include <limits.h>
@@ -530,15 +531,18 @@ dsd_user_config_default_path(void) {
 
 // INI writer ------------------------------------------------------------------
 
-int
-dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
-    if (!path || !*path || !cfg) {
+static int
+config_parent_dir(const char* save_path, char* dir, size_t dir_size) {
+    if (!save_path || !dir || dir_size == 0) {
         return -1;
     }
 
-    char dir[1024];
-    DSD_SNPRINTF(dir, sizeof dir, "%s", path);
-    dir[sizeof dir - 1] = '\0';
+    int n = DSD_SNPRINTF(dir, dir_size, "%s", save_path);
+    if (n < 0 || n >= (int)dir_size) {
+        return -1;
+    }
+    dir[dir_size - 1] = '\0';
+
     char* last_sep = strrchr(dir, '/');
 #if defined(_WIN32)
     char* last_sep2 = strrchr(dir, '\\');
@@ -546,15 +550,31 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
         last_sep = last_sep2;
     }
 #endif
-    if (last_sep) {
-        *last_sep = '\0';
-        ensure_dir_exists(dir);
+    if (!last_sep) {
+        dir[0] = '\0';
+        return 0;
     }
 
-    char tmp[1024];
-    DSD_SNPRINTF(tmp, sizeof tmp, "%s.tmp", path);
-    tmp[sizeof tmp - 1] = '\0';
+    *last_sep = '\0';
+    return 1;
+}
 
+static int
+config_temp_path(const char* save_path, char* tmp, size_t tmp_size) {
+    if (!save_path || !tmp || tmp_size == 0) {
+        return -1;
+    }
+
+    int n = DSD_SNPRINTF(tmp, tmp_size, "%s.tmp", save_path);
+    if (n < 0 || n >= (int)tmp_size) {
+        return -1;
+    }
+    tmp[tmp_size - 1] = '\0';
+    return 0;
+}
+
+static int
+config_write_temp_file(const char* tmp, const dsdneoUserConfig* cfg) {
     FILE* fp = dsd_fopen_private(tmp, "w");
     if (!fp) {
         return -1;
@@ -563,7 +583,9 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
     dsd_user_config_render_ini(cfg, fp);
 
     if (fflush(fp) != 0) {
+        int saved_errno = errno;
         fclose(fp);
+        errno = saved_errno;
         return -1;
     }
 
@@ -574,20 +596,55 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
     }
 
     fclose(fp);
+    return 0;
+}
 
+static int
+config_replace_temp_file(const char* tmp, const char* save_path) {
 #if defined(_WIN32)
-    if (!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
+    if (!MoveFileExA(tmp, save_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
         (void)remove(tmp);
         return -1;
     }
 #else
-    if (rename(tmp, path) != 0) {
+    if (rename(tmp, save_path) != 0) {
         (void)remove(tmp);
         return -1;
     }
 #endif
-
     return 0;
+}
+
+int
+dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
+    if (!path || !*path || !cfg) {
+        return -1;
+    }
+
+    char save_path[2048];
+    if (dsd_path_expand_user(path, save_path, sizeof save_path) != 0) {
+        return -1;
+    }
+
+    char dir[2048];
+    int has_dir = config_parent_dir(save_path, dir, sizeof dir);
+    if (has_dir < 0) {
+        return -1;
+    }
+    if (has_dir) {
+        ensure_dir_exists(dir);
+    }
+
+    char tmp[2048];
+    if (config_temp_path(save_path, tmp, sizeof tmp) != 0) {
+        return -1;
+    }
+
+    if (config_write_temp_file(tmp, cfg) != 0) {
+        return -1;
+    }
+
+    return config_replace_temp_file(tmp, save_path);
 }
 
 static const char*

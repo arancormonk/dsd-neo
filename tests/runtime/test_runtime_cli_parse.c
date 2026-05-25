@@ -25,6 +25,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -419,6 +420,44 @@ test_create_temp_ini_with_contents(const char* contents, char* out_path, size_t 
 }
 
 static int
+test_create_temp_ini_in_tmpdir_with_contents(const char* contents, char* out_path, size_t out_path_size) {
+    if (!contents || !out_path || out_path_size == 0) {
+        return -1;
+    }
+
+    char tmpl[1024];
+    if (dsd_test_path_join(tmpl, sizeof tmpl, test_tmp_dir(), "dsdneo_bootstrap_abs_XXXXXX") != 0) {
+        return -1;
+    }
+
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        return -1;
+    }
+    (void)dsd_close(fd);
+
+    if (DSD_SNPRINTF(out_path, out_path_size, "%s.ini", tmpl) >= (int)out_path_size) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    if (rename(tmpl, out_path) != 0) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    FILE* fp = dsd_fopen_private(out_path, "w");
+    if (!fp) {
+        (void)remove(out_path);
+        return -1;
+    }
+
+    fputs(contents, fp);
+    fclose(fp);
+    return 0;
+}
+
+static int
 test_create_temp_ini(char* out_path, size_t out_path_size) {
     if (!out_path || out_path_size == 0) {
         return -1;
@@ -735,6 +774,229 @@ test_bootstrap_treats_lone_ini_as_config(void) {
     free(opts);
     free(state);
     return 0;
+}
+
+static int
+test_bootstrap_accepts_explicit_config_path_outside_cwd(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_in_tmpdir_with_contents("version = 1\n"
+                                                     "\n"
+                                                     "[input]\n"
+                                                     "source = \"rtl\"\n"
+                                                     "rtl_device = 0\n"
+                                                     "rtl_freq = \"100000000\"\n"
+                                                     "\n"
+                                                     "[trunking]\n"
+                                                     "enabled = true\n",
+                                                     cfg_path, sizeof cfg_path)
+        != 0) {
+        DSD_FPRINTF(stderr, "failed to create external temp ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(3, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected external config rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc,
+                    exit_rc);
+        test_rc = 1;
+    }
+    if (!state->config_autosave_enabled || strcmp(state->config_autosave_path, cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "expected external config_autosave_path=%s, got %s (enabled=%d)\n", cfg_path,
+                    state->config_autosave_path, state->config_autosave_enabled);
+        test_rc = 1;
+    }
+    if (opts->trunk_enable != 1 || opts->p25_trunk != 1) {
+        DSD_FPRINTF(stderr, "expected trunking from external config, got trunk_enable=%d p25_trunk=%d\n",
+                    opts->trunk_enable, opts->p25_trunk);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_missing_explicit_config_keeps_autosave_path(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_in_tmpdir_with_contents("version = 1\n", cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp ini for missing-path test\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    (void)remove(cfg_path);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(3, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected missing explicit config to continue, got rc=%d (exit_rc=%d)\n", rc, exit_rc);
+        test_rc = 1;
+    }
+    if (!state->config_autosave_enabled || strcmp(state->config_autosave_path, cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "expected missing config_autosave_path=%s, got %s (enabled=%d)\n", cfg_path,
+                    state->config_autosave_path, state->config_autosave_enabled);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_validate_config_accepts_external_path(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_in_tmpdir_with_contents("version = 1\n"
+                                                     "\n"
+                                                     "[input]\n"
+                                                     "source = \"pulse\"\n",
+                                                     cfg_path, sizeof cfg_path)
+        != 0) {
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--validate-config";
+    char arg2[1024];
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(3, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "expected external validate to exit 0, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_list_profiles_accepts_external_config_path(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_in_tmpdir_with_contents("version = 1\n"
+                                                     "\n"
+                                                     "[profile.demo]\n"
+                                                     "mode.decode = \"dmr\"\n",
+                                                     cfg_path, sizeof cfg_path)
+        != 0) {
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "--list-profiles";
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "expected external list-profiles to exit 0, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
 }
 
 static int
@@ -3177,6 +3439,10 @@ main(void) {
     rc |= test_1_loads_rc4_key_for_both_slots_and_allows_spaces();
     rc |= test_1_loads_rc4_key_allows_0x_prefix();
     rc |= test_bootstrap_treats_lone_ini_as_config();
+    rc |= test_bootstrap_accepts_explicit_config_path_outside_cwd();
+    rc |= test_bootstrap_missing_explicit_config_keeps_autosave_path();
+    rc |= test_bootstrap_validate_config_accepts_external_path();
+    rc |= test_bootstrap_list_profiles_accepts_external_config_path();
     rc |= test_bootstrap_print_config_normalizes_soapy_shorthand();
     rc |= test_bootstrap_profile_preserves_trunking_with_ncurses_cli();
     rc |= test_bootstrap_profile_disables_autosave();

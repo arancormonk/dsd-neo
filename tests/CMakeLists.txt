@@ -198,6 +198,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_path_policy
+  HEADERS_PUBLIC_RUNTIME_PATH_POLICY
+  dsd-neo/runtime/path_policy.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_p25_optional_hooks
   HEADERS_PUBLIC_RUNTIME_P25_OPTIONAL_HOOKS
   dsd-neo/runtime/p25_optional_hooks.h

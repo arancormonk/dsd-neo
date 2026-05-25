@@ -6,7 +6,6 @@
 #include <ctype.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
@@ -14,6 +13,7 @@
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/path_policy.h>
 #include <mbelib.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,36 +30,30 @@ bootstrap_set_exit_rc(int* out_exit_rc, int rc) {
     }
 }
 
-#define DSD_BOOTSTRAP_LOCAL_PATH_MAX 1024
+#define DSD_BOOTSTRAP_PATH_MAX 2048
 
 static int
-bootstrap_open_local_config_path(const char* cfg_path, char* resolved, size_t resolved_size, int* out_exit_rc,
-                                 FILE** out_stream) {
-    if (!out_stream) {
-        bootstrap_set_exit_rc(out_exit_rc, 1);
-        return 0;
-    }
-    *out_stream = dsd_fopen_existing_local_file(cfg_path, resolved, resolved_size);
-    if (*out_stream) {
+bootstrap_expand_user_config_path(const char* cfg_path, char* resolved, size_t resolved_size, int* out_exit_rc) {
+    if (dsd_path_expand_user(cfg_path, resolved, resolved_size) == 0) {
         return 1;
     }
-    LOG_ERROR("Config path must name an existing local file without path separators or '..'\n");
+    LOG_ERROR("Config path is empty, invalid, or too long\n");
     bootstrap_set_exit_rc(out_exit_rc, 1);
     return 0;
 }
 
 static int
-bootstrap_open_local_config_path_for_stderr(const char* cfg_path, char* resolved, size_t resolved_size,
-                                            int* out_exit_rc, FILE** out_stream) {
+bootstrap_open_existing_config_path_for_stderr(const char* cfg_path, char* resolved, size_t resolved_size,
+                                               int* out_exit_rc, FILE** out_stream) {
     if (!out_stream) {
         bootstrap_set_exit_rc(out_exit_rc, 1);
         return 0;
     }
-    *out_stream = dsd_fopen_existing_local_file(cfg_path, resolved, resolved_size);
+    *out_stream = dsd_path_fopen_user_read_file(cfg_path, resolved, resolved_size);
     if (*out_stream) {
         return 1;
     }
-    DSD_FPRINTF(stderr, "Config path must name an existing local file without path separators or '..'\n");
+    DSD_FPRINTF(stderr, "Config path must name an existing regular file: %s\n", cfg_path ? cfg_path : "(null)");
     bootstrap_set_exit_rc(out_exit_rc, 1);
     return 0;
 }
@@ -238,15 +232,6 @@ bootstrap_load_user_config_from_path(const bootstrap_cli_args* args, const char*
     return dsd_user_config_load(cfg_path, user_cfg);
 }
 
-static int
-bootstrap_load_user_config_from_stream(const bootstrap_cli_args* args, FILE* cfg_stream, const char* cfg_path,
-                                       dsdneoUserConfig* user_cfg) {
-    if (args->profile_cli && *args->profile_cli) {
-        return dsd_user_config_load_profile_stream(cfg_stream, cfg_path, args->profile_cli, user_cfg);
-    }
-    return dsd_user_config_load_stream(cfg_stream, cfg_path, user_cfg);
-}
-
 static void
 bootstrap_handle_loaded_user_config(dsd_opts* opts, dsd_state* state, const bootstrap_cli_args* args,
                                     int explicit_profile_selected, const dsdneoUserConfig* user_cfg,
@@ -288,20 +273,18 @@ bootstrap_load_user_config_if_requested(dsd_opts* opts, dsd_state* state, const 
         return DSD_BOOTSTRAP_CONTINUE;
     }
 
-    char resolved_cfg_path[DSD_BOOTSTRAP_LOCAL_PATH_MAX];
-    FILE* cfg_stream = NULL;
+    char resolved_cfg_path[DSD_BOOTSTRAP_PATH_MAX];
     int load_rc = -1;
     const char* explicit_cfg_path = bootstrap_explicit_config_path_for_load(args, config_env);
     const char* cfg_path = NULL;
     if (explicit_cfg_path) {
-        if (!bootstrap_open_local_config_path(explicit_cfg_path, resolved_cfg_path, sizeof resolved_cfg_path,
-                                              out_exit_rc, &cfg_stream)) {
+        if (!bootstrap_expand_user_config_path(explicit_cfg_path, resolved_cfg_path, sizeof resolved_cfg_path,
+                                               out_exit_rc)) {
             return DSD_BOOTSTRAP_ERROR;
         }
         cfg_path = resolved_cfg_path;
         bootstrap_enable_autosave_for_path(state, cfg_path);
-        load_rc = bootstrap_load_user_config_from_stream(args, cfg_stream, cfg_path, user_cfg);
-        fclose(cfg_stream);
+        load_rc = bootstrap_load_user_config_from_path(args, cfg_path, user_cfg);
     } else {
         const char* default_cfg_path = dsd_user_config_default_path();
         if (!default_cfg_path || !*default_cfg_path) {
@@ -379,14 +362,14 @@ bootstrap_handle_validate_config(const bootstrap_cli_args* args, const char* con
     const char* explicit_vpath = args->validate_path_cli && *args->validate_path_cli
                                      ? args->validate_path_cli
                                      : bootstrap_explicit_config_path_for_load(args, config_env);
-    char resolved_vpath[DSD_BOOTSTRAP_LOCAL_PATH_MAX];
+    char resolved_vpath[DSD_BOOTSTRAP_PATH_MAX];
     const char* vpath = NULL;
     FILE* validate_stream = NULL;
     dsdcfg_diagnostics_t diags;
     int rc = -1;
     if (explicit_vpath) {
-        if (!bootstrap_open_local_config_path_for_stderr(explicit_vpath, resolved_vpath, sizeof resolved_vpath,
-                                                         out_exit_rc, &validate_stream)) {
+        if (!bootstrap_open_existing_config_path_for_stderr(explicit_vpath, resolved_vpath, sizeof resolved_vpath,
+                                                            out_exit_rc, &validate_stream)) {
             return DSD_BOOTSTRAP_ERROR;
         }
         vpath = resolved_vpath;
@@ -427,15 +410,15 @@ bootstrap_handle_list_profiles(const bootstrap_cli_args* args, const char* confi
         return DSD_BOOTSTRAP_CONTINUE;
     }
     const char* explicit_lpath = bootstrap_explicit_config_path_for_load(args, config_env);
-    char resolved_lpath[DSD_BOOTSTRAP_LOCAL_PATH_MAX];
+    char resolved_lpath[DSD_BOOTSTRAP_PATH_MAX];
     const char* lpath = NULL;
     const char* names[32];
     char names_buf[1024];
     int count = -1;
     if (explicit_lpath) {
         FILE* list_stream = NULL;
-        if (!bootstrap_open_local_config_path_for_stderr(explicit_lpath, resolved_lpath, sizeof resolved_lpath,
-                                                         out_exit_rc, &list_stream)) {
+        if (!bootstrap_open_existing_config_path_for_stderr(explicit_lpath, resolved_lpath, sizeof resolved_lpath,
+                                                            out_exit_rc, &list_stream)) {
             return DSD_BOOTSTRAP_EXIT;
         }
         lpath = resolved_lpath;

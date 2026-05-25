@@ -12,6 +12,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
+#include <dsd-neo/runtime/path_policy.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -388,7 +389,8 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
         return -1;
     }
 
-    FILE* fp = fopen(path, "r");
+    char opened_path[2048];
+    FILE* fp = dsd_path_fopen_user_read_file(path, opened_path, sizeof opened_path);
     if (!fp) {
         char msg[256];
         DSD_SNPRINTF(msg, sizeof msg, "Cannot open file: %s", strerror(errno));

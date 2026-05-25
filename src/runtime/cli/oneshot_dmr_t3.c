@@ -12,6 +12,7 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/path_policy.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -232,7 +233,8 @@ int
 dsd_cli_calc_dmr_t3_lcn_from_csv(const char* path) {
     const dsdneoRuntimeConfig* cfg = resolve_runtime_config();
 
-    FILE* fp = fopen(path, "r");
+    char opened_path[2048];
+    FILE* fp = dsd_path_fopen_user_read_file(path, opened_path, sizeof opened_path);
     if (!fp) {
         LOG_ERROR("LCN calc: unable to open '%s'\n", path);
         return 1;

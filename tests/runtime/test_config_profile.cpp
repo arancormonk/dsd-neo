@@ -7,11 +7,17 @@
  * Unit tests for config profile support.
  */
 
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/config.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
+#if DSD_PLATFORM_WIN_NATIVE
+#include <direct.h>
+#else
+#include <unistd.h>
+#endif
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "test_support.h"
@@ -36,6 +42,30 @@ write_temp_config(const char* contents, char* out_path, size_t out_sz) {
     DSD_SNPRINTF(out_path, out_sz, "%s", tmpl);
     out_path[out_sz - 1] = '\0';
     return 0;
+}
+
+static int
+write_config_file(const char* path, const char* contents) {
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
+        return 1;
+    }
+    if (fputs(contents, fp) < 0) {
+        DSD_FPRINTF(stderr, "write(%s) failed: %s\n", path, strerror(errno));
+        fclose(fp);
+        return 1;
+    }
+    return fclose(fp) == 0 ? 0 : 1;
+}
+
+static void
+remove_dir(const char* path) {
+#if DSD_PLATFORM_WIN_NATIVE
+    (void)_rmdir(path);
+#else
+    (void)rmdir(path);
+#endif
 }
 
 static int
@@ -715,6 +745,63 @@ test_include_override(void) {
     return result;
 }
 
+static int
+test_relative_include_resolves_from_config_directory(void) {
+    char config_dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(config_dir, sizeof config_dir, "dsdneo_config_prof_dir")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char included_path[DSD_TEST_PATH_MAX];
+    char main_path[DSD_TEST_PATH_MAX];
+    int result = 0;
+    if (dsd_test_path_join(included_path, sizeof included_path, config_dir, "base.ini") != 0
+        || dsd_test_path_join(main_path, sizeof main_path, config_dir, "main.ini") != 0) {
+        remove_dir(config_dir);
+        return 1;
+    }
+
+    static const char* included_ini = "version = 1\n"
+                                      "\n"
+                                      "[input]\n"
+                                      "source = \"rtl\"\n"
+                                      "rtl_device = 3\n";
+    static const char* main_ini = "include = \"base.ini\"\n"
+                                  "version = 1\n"
+                                  "\n"
+                                  "[mode]\n"
+                                  "decode = \"dmr\"\n";
+
+    if (write_config_file(included_path, included_ini) != 0 || write_config_file(main_path, main_ini) != 0) {
+        (void)remove(main_path);
+        (void)remove(included_path);
+        remove_dir(config_dir);
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    int rc = dsd_user_config_load_profile(main_path, NULL, &cfg);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: relative include load failed (rc=%d)\n", rc);
+        result = 1;
+    }
+    if (cfg.input_source != DSDCFG_INPUT_RTL || cfg.rtl_device != 3) {
+        DSD_FPRINTF(stderr, "FAIL: relative include did not apply input source/device\n");
+        result = 1;
+    }
+    if (cfg.decode_mode != DSDCFG_MODE_DMR) {
+        DSD_FPRINTF(stderr, "FAIL: relative include main config decode mode missing\n");
+        result = 1;
+    }
+
+    (void)remove(main_path);
+    (void)remove(included_path);
+    remove_dir(config_dir);
+    return result;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -732,6 +819,7 @@ main(void) {
     rc |= test_profile_soapy_settings();
     rc |= test_include_directive();
     rc |= test_include_override();
+    rc |= test_relative_include_resolves_from_config_directory();
 
     if (rc == 0) {
         printf("All config_profile tests passed\n");

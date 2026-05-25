@@ -94,6 +94,8 @@ Configuration values of type `PATH` support shell-like expansion:
 - Missing variables expand to empty string (no error).
 
 Path expansion is applied to:
+- Explicit config paths passed through `--config`, a single positional
+  `*.ini`, `DSD_NEO_CONFIG`, and interactive config load/save prompts
 - `[input] file_path`
 - `[trunking] chan_csv`
 - `[trunking] group_csv`
@@ -177,6 +179,7 @@ Config files can include other files using the `include` directive:
 # Main config file
 include = "/etc/dsd-neo/system.ini"
 include = "~/.config/dsd-neo/local.ini"
+include = "site-overrides.ini"  # relative to this config file's directory
 
 version = 1
 
@@ -206,6 +209,7 @@ explicitly requested.
 - CLI: `--config` (uses default path) or `--config /path/to/config.ini`
 - Convenience: `dsd-neo /path/to/config.ini` (single positional `*.ini`) is treated as `--config /path/to/config.ini`.
 - Environment: `DSD_NEO_CONFIG=/path/to/config.ini`
+- Explicit paths may be absolute, relative to the current working directory, or use `~`/environment expansion.
 
 When both are present, CLI wins:
 

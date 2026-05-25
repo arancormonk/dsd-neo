@@ -10,6 +10,7 @@
 #include <ctype.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -674,7 +675,8 @@ user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
         return -1;
     }
 
-    FILE* fp = fopen(path, "r");
+    char opened_path[2048];
+    FILE* fp = dsd_path_fopen_user_read_file(path, opened_path, sizeof opened_path);
     if (!fp) {
         return -1;
     }
@@ -691,7 +693,12 @@ dsd_user_config_load_stream(FILE* stream, const char* source_name, dsdneoUserCon
     }
 
     user_cfg_reset(cfg);
+    char source_buf[2048];
     const char* stack_name = (source_name && *source_name) ? source_name : "<stream>";
+    if (source_name && *source_name && source_name[0] != '<'
+        && dsd_path_expand_user(source_name, source_buf, sizeof source_buf) == 0) {
+        stack_name = source_buf;
+    }
 
     /* Process includes first (they provide base values that can be overridden) */
     const char* stack[1] = {stack_name};
@@ -714,13 +721,17 @@ dsd_user_config_load(const char* path, dsdneoUserConfig* cfg) {
     }
 
     user_cfg_reset(cfg);
+    char root_path[2048];
+    if (dsd_path_expand_user(path, root_path, sizeof root_path) != 0) {
+        return -1;
+    }
 
     /* Process includes first (they provide base values that can be overridden) */
-    const char* stack[1] = {path};
-    process_includes(path, cfg, 0, stack, 1);
+    const char* stack[1] = {root_path};
+    process_includes(root_path, cfg, 0, stack, 1);
 
     /* Now load the main config (which overrides included values) */
-    return user_config_load_no_reset(path, cfg);
+    return user_config_load_no_reset(root_path, cfg);
 }
 
 // Profile support -------------------------------------------------------------
@@ -818,18 +829,6 @@ parse_include_directive_line(char* line, char* out_inc_path, size_t out_inc_path
     return 1;
 }
 
-static void
-expand_config_path_inplace(char* path, size_t path_size) {
-    if (!path || path_size == 0) {
-        return;
-    }
-    char expanded[1024];
-    if (dsd_config_expand_path(path, expanded, sizeof expanded) == 0) {
-        DSD_SNPRINTF(path, path_size, "%s", expanded);
-        path[path_size - 1] = '\0';
-    }
-}
-
 static int
 include_stack_contains_path(const char** include_stack, int include_stack_size, const char* path) {
     if (!include_stack || !path || path[0] == '\0') {
@@ -875,7 +874,14 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
         if (parse_rc == 0) {
             continue;
         }
-        expand_config_path_inplace(inc_path, sizeof inc_path);
+        char resolved_inc_path[1024];
+        const char* including_path = include_stack_size > 0 ? include_stack[include_stack_size - 1] : NULL;
+        if (dsd_path_resolve_relative_to_file(including_path, inc_path, resolved_inc_path, sizeof resolved_inc_path)
+            != 0) {
+            continue;
+        }
+        DSD_SNPRINTF(inc_path, sizeof inc_path, "%s", resolved_inc_path);
+        inc_path[sizeof inc_path - 1] = '\0';
         if (include_stack_contains_path(include_stack, include_stack_size, inc_path)) {
             continue; /* skip circular include */
         }
@@ -892,7 +898,8 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
 static int
 process_includes(const char* path, dsdneoUserConfig* cfg, int depth, const char** include_stack,
                  int include_stack_size) {
-    FILE* fp = fopen(path, "r");
+    char opened_path[2048];
+    FILE* fp = dsd_path_fopen_user_read_file(path, opened_path, sizeof opened_path);
     if (!fp) {
         return -1;
     }
@@ -1015,7 +1022,8 @@ load_config_internal(const char* path, const char* profile_name, dsdneoUserConfi
         return -1;
     }
 
-    FILE* fp = fopen(path, "r");
+    char opened_path[2048];
+    FILE* fp = dsd_path_fopen_user_read_file(path, opened_path, sizeof opened_path);
     if (!fp) {
         return -1;
     }
@@ -1033,13 +1041,17 @@ dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoU
 
     /* Reset config once at start */
     user_cfg_reset(cfg);
+    char root_path[2048];
+    if (dsd_path_expand_user(path, root_path, sizeof root_path) != 0) {
+        return -1;
+    }
 
     /* Process includes first (they provide base values that can be overridden) */
-    const char* stack[1] = {path};
-    process_includes(path, cfg, 0, stack, 1);
+    const char* stack[1] = {root_path};
+    process_includes(root_path, cfg, 0, stack, 1);
 
     /* Now load the main config (which overrides included values) */
-    int rc = user_config_load_no_reset(path, cfg);
+    int rc = user_config_load_no_reset(root_path, cfg);
     if (rc != 0) {
         return rc;
     }
@@ -1050,7 +1062,7 @@ dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoU
     }
 
     /* Now overlay profile settings */
-    return load_config_internal(path, profile_name, cfg, 0, stack, 1);
+    return load_config_internal(root_path, profile_name, cfg, 0, stack, 1);
 }
 
 int
@@ -1061,7 +1073,12 @@ dsd_user_config_load_profile_stream(FILE* stream, const char* source_name, const
     }
 
     user_cfg_reset(cfg);
+    char source_buf[2048];
     const char* stack_name = (source_name && *source_name) ? source_name : "<stream>";
+    if (source_name && *source_name && source_name[0] != '<'
+        && dsd_path_expand_user(source_name, source_buf, sizeof source_buf) == 0) {
+        stack_name = source_buf;
+    }
 
     const char* stack[1] = {stack_name};
     if (seek_config_stream_to_start(stream) != 0) {
@@ -1166,7 +1183,8 @@ dsd_user_config_list_profiles(const char* path, const char** names, char* names_
         return -1;
     }
 
-    FILE* fp = fopen(path, "r");
+    char opened_path[2048];
+    FILE* fp = dsd_path_fopen_user_read_file(path, opened_path, sizeof opened_path);
     if (!fp) {
         return -1;
     }
