@@ -57,7 +57,8 @@ ui_statusf(const char* fmt, ...) { // NOLINT(misc-use-internal-linkage)
 static int
 start_curses_render_test(void) {
 #ifndef _WIN32
-    if (!getenv("TERM") || getenv("TERM")[0] == '\0') {
+    const char* term = getenv("TERM");
+    if (term == NULL || term[0] == '\0') {
         (void)setenv("TERM", "xterm-256color", 1);
     }
     (void)setenv("LINES", "24", 1);
