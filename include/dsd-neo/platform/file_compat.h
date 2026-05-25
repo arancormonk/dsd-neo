@@ -114,6 +114,20 @@ int dsd_fchmod(int fd, int mode);
 FILE* dsd_fopen_private(const char* path, const char* mode);
 
 /**
+ * @brief Resolve a user-supplied local file name to an existing file in the current directory.
+ *
+ * The requested name must be a bare file name: no path separators, absolute
+ * paths, empty names, or ".." segments. On success, @p out receives the
+ * directory entry name for the existing regular file.
+ *
+ * @param requested  User-supplied bare file name.
+ * @param out        Output buffer.
+ * @param out_size   Output buffer size.
+ * @return 0 on success, -1 on error with errno set.
+ */
+int dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_size);
+
+/**
  * @brief Read from a file descriptor.
  *
  * @param fd        File descriptor.

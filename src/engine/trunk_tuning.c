@@ -11,6 +11,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
@@ -27,7 +28,7 @@
 #ifdef USE_RADIO
 #endif
 
-static int
+static int DSD_ATTR_USED
 dsd_engine_rtl_demod_rate(const dsd_state* state) {
     int demod_rate = 0;
 #ifdef USE_RADIO
@@ -38,7 +39,7 @@ dsd_engine_rtl_demod_rate(const dsd_state* state) {
     return demod_rate;
 }
 
-static long int
+static long int DSD_ATTR_USED
 dsd_engine_resolve_cc_freq(const dsd_state* state) {
     if (!state) {
         return 0;
@@ -46,7 +47,7 @@ dsd_engine_resolve_cc_freq(const dsd_state* state) {
     return (state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq;
 }
 
-static int
+static int DSD_ATTR_USED
 dsd_engine_compute_cc_sps(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || state->p25_cc_freq == 0) {
         return 0;
@@ -55,7 +56,7 @@ dsd_engine_compute_cc_sps(const dsd_opts* opts, const dsd_state* state) {
     return dsd_opts_compute_sps_rate(opts, sym_rate, dsd_engine_rtl_demod_rate(state));
 }
 
-static void
+static void DSD_ATTR_USED
 dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || state->p25_cc_freq == 0) {
         return;
@@ -66,7 +67,7 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     state->rf_mod = (state->p25_cc_is_tdma == 1) ? 1 : ((opts->mod_qpsk == 1) ? 1 : 0);
 }
 
-static void
+static void DSD_ATTR_USED
 dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));

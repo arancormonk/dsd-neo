@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/pdu.h>
@@ -59,7 +60,7 @@ gps_write_lrrp_compact(const dsd_opts* opts, uint32_t src, double latitude, doub
     fclose(p_file);
 }
 
-static void
+static void DSD_ATTR_USED
 gps_write_lrrp_slash_colon(const dsd_opts* opts, uint32_t src, double latitude, double longitude, int speed_kph,
                            int azimuth) {
     if (opts == NULL || opts->lrrp_file_output != 1) {
@@ -128,7 +129,7 @@ nmea_harris_print_src_prefix(uint16_t header, uint32_t src, int slot) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 lip_store_state_strings(dsd_state* state, int slot, uint8_t add_hash, double latitude, double longitude,
                         unsigned int position_error, uint8_t pos_err, int speed_kph, int direction_deg,
                         const char* deg_glyph, const char* latstr, const char* lonstr) {

@@ -13,6 +13,7 @@
 #include <curses.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -54,7 +55,7 @@ ncurses_post_delta_f32(int cmd, float value) {
     ui_post_cmd(cmd, &delta, sizeof delta);
 }
 
-static uint32_t
+static uint32_t DSD_ATTR_USED
 ncurses_resolve_tg_hold_target(const dsd_opts* opts, const dsd_state* state, int right_slot) {
     uint32_t tg = 0;
     if (state->tg_hold != 0) {
@@ -138,7 +139,7 @@ ncurses_try_post_simple_cmd(int c) {
     return 0;
 }
 
-static int
+static int DSD_ATTR_USED
 ncurses_handle_escape_or_history(dsd_opts* opts, dsd_state* state, int c) {
     (void)opts;
     (void)state;
@@ -154,7 +155,7 @@ ncurses_handle_escape_or_history(dsd_opts* opts, dsd_state* state, int c) {
     return 0;
 }
 
-static int
+static int DSD_ATTR_USED
 ncurses_handle_delta_keys(int c) {
     switch (c) {
         case DSD_KEY_GAIN_PLUS: ncurses_post_delta_i32(UI_CMD_GAIN_DELTA, +1); return 1;
@@ -177,7 +178,7 @@ ncurses_handle_delta_keys(int c) {
     }
 }
 
-static int
+static int DSD_ATTR_USED
 ncurses_handle_tg_hold_keys(const dsd_opts* opts, const dsd_state* state, int c) {
     if (c != DSD_KEY_TG_HOLD1 && c != DSD_KEY_TG_HOLD2) {
         return 0;
@@ -187,7 +188,7 @@ ncurses_handle_tg_hold_keys(const dsd_opts* opts, const dsd_state* state, int c)
     return 1;
 }
 
-static int
+static int DSD_ATTR_USED
 ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c) {
     if (c == DSD_KEY_EH_TOGGLE) {
         ui_post_cmd(opts->m17encoder == 1 ? UI_CMD_M17_TX_TOGGLE : UI_CMD_EH_TOGGLE_SLOT, NULL, 0);

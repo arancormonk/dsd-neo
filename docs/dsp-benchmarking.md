@@ -119,16 +119,16 @@ Live RTL runs can emit coarse pipeline timing windows without changing the
 normal runtime path unless explicitly enabled:
 
 ```sh
-DSD_NEO_RTL_PERF_CSV=/tmp/dsd-rtl-live.csv \
+DSD_NEO_RTL_PERF_CSV=1 \
 DSD_NEO_RTL_PERF_INTERVAL_MS=1000 \
 build/perf-bench/apps/dsd-cli/dsd-neo -i rtl:0:769.76875M:3:-2:48:0:2:bias -mq -T --enc-lockout
 ```
 
-`DSD_NEO_RTL_PERF_CSV` enables logging. `DSD_NEO_RTL_PERF_INTERVAL_MS` controls
-the aggregation window and is clamped to 100-60000 ms. CSV rows include ring
-fill, cumulative input drops, ingest timing, `full_demod()` timing, post-demod
-metrics timing, output-write timing, consumer-read timing, SNR, CFO, and carrier
-lock snapshots.
+`DSD_NEO_RTL_PERF_CSV` enables logging to `dsd-neo-rtl-perf.csv` in the current
+working directory. `DSD_NEO_RTL_PERF_INTERVAL_MS` controls the aggregation
+window and is clamped to 100-60000 ms. CSV rows include ring fill, cumulative
+input drops, ingest timing, `full_demod()` timing, post-demod metrics timing,
+output-write timing, consumer-read timing, SNR, CFO, and carrier lock snapshots.
 
 Use live CSV to decide which synthetic cases deserve focused before/after runs.
 For example, high `post_metrics_ns` points at `rtl_metrics_spectrum_*`, while

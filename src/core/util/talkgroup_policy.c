@@ -11,6 +11,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -69,7 +70,7 @@ tg_policy_alloc_should_fail(void) {
 }
 #endif
 
-static void*
+static void* DSD_ATTR_USED
 tg_policy_calloc(size_t n, size_t size) {
 #ifdef DSD_NEO_TEST_HOOKS
     if (tg_policy_alloc_should_fail()) {
@@ -80,7 +81,7 @@ tg_policy_calloc(size_t n, size_t size) {
     return calloc(n, size);
 }
 
-static void*
+static void* DSD_ATTR_USED
 tg_policy_realloc(void* ptr, size_t size) {
 #ifdef DSD_NEO_TEST_HOOKS
     if (tg_policy_alloc_should_fail()) {
@@ -264,7 +265,7 @@ tg_policy_context_free(void* ptr) {
     free(ctx);
 }
 
-static dsd_tg_policy_context*
+static dsd_tg_policy_context* DSD_ATTR_USED
 tg_policy_ctx_get_mut(dsd_state* state, int create_if_missing) {
     dsd_tg_policy_context* ctx = NULL;
     if (!state) {
@@ -287,7 +288,7 @@ tg_policy_ctx_get_mut(dsd_state* state, int create_if_missing) {
     return ctx;
 }
 
-static const dsd_tg_policy_context*
+static const dsd_tg_policy_context* DSD_ATTR_USED
 tg_policy_ctx_get_const(const dsd_state* state) {
     if (!state) {
         return NULL;
@@ -334,7 +335,7 @@ tg_policy_find_policy_exact_idx_first(const dsd_tg_policy_context* ctx, uint32_t
     return -1;
 }
 
-static int
+static int DSD_ATTR_USED
 tg_policy_lookup_exact_only(const dsd_state* state, uint32_t id, dsd_tg_policy_entry* out) {
     dsd_tg_policy_lookup lookup;
     if (!out) {
@@ -757,7 +758,7 @@ tg_policy_apply_explicit_media_blocks(dsd_tg_policy_decision* out, int explicit_
     }
 }
 
-static void
+static void DSD_ATTR_USED
 tg_policy_group_apply_lookup(const dsd_state* state, uint32_t tg, dsd_tg_policy_decision* out, int* mode_blocking,
                              int* explicit_audio_block, int* explicit_record_block, int* explicit_stream_block) {
     dsd_tg_policy_lookup lookup;
@@ -788,7 +789,7 @@ tg_policy_group_apply_lookup(const dsd_state* state, uint32_t tg, dsd_tg_policy_
     }
 }
 
-static void
+static void DSD_ATTR_USED
 tg_policy_group_set_hold_state(const dsd_state* state, uint32_t tg, dsd_tg_policy_decision* out, int* hold_mismatch) {
     int local_hold_mismatch = 0;
 
@@ -808,7 +809,7 @@ tg_policy_group_set_hold_state(const dsd_state* state, uint32_t tg, dsd_tg_polic
     }
 }
 
-static void
+static void DSD_ATTR_USED
 tg_policy_private_set_hold_state(const dsd_state* state, uint32_t src, uint32_t dst, dsd_tg_policy_decision* out,
                                  int* hold_mismatch) {
     int local_hold_mismatch = 0;
@@ -829,7 +830,7 @@ tg_policy_private_set_hold_state(const dsd_state* state, uint32_t src, uint32_t 
     }
 }
 
-static void
+static void DSD_ATTR_USED
 tg_policy_apply_group_tune_blocks(const dsd_opts* opts, int encrypted, int data_call, dsd_tg_policy_decision* out) {
     if (!out) {
         return;
@@ -852,7 +853,7 @@ tg_policy_apply_group_tune_blocks(const dsd_opts* opts, int encrypted, int data_
     }
 }
 
-static void
+static void DSD_ATTR_USED
 tg_policy_apply_private_tune_blocks(const dsd_opts* opts, int encrypted, int data_call,
                                     dsd_tg_policy_private_allowlist_mode allowlist_mode, int src_match, int dst_match,
                                     dsd_tg_policy_decision* out) {
@@ -1469,7 +1470,7 @@ tg_policy_is_terminated_cstr(const char* s, size_t cap) {
     return (s != NULL) && (memchr(s, '\0', cap) != NULL);
 }
 
-static int
+static int DSD_ATTR_USED
 tg_policy_reload_validate_candidate(const dsd_state* imported) {
     const dsd_tg_policy_context* ctx = NULL;
 

@@ -20,6 +20,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/rc4.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -637,7 +638,7 @@ dmr_unpack_bytes_to_bits(const uint8_t* src, int src_len, uint8_t* dst) {
     }
 }
 
-static int
+static int DSD_ATTR_USED
 dmr_udt_payload_bits(dsd_state* state, uint8_t slot, uint8_t udt_padnib) {
     int app_blocks = state->data_block_counter[slot];
     if (app_blocks < 0) {
@@ -661,7 +662,7 @@ dmr_udt_payload_bits(dsd_state* state, uint8_t slot, uint8_t udt_padnib) {
     return payload_bits;
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes) {
     uint8_t udt_ig;
     uint8_t udt_a;
@@ -706,7 +707,7 @@ dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, cons
     DSD_FPRINTF(stderr, "Slot %d - SRC: %d; TGT: %d; UDT ", ctx->slot + 1, ctx->udt_source, ctx->udt_target);
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_udt_append_text_event(dsd_state* state, uint8_t slot, char c) {
     char tmp[2];
     tmp[0] = c;
@@ -756,9 +757,7 @@ dmr_udt_handle_binary(dmr_udt_ctx* ctx) {
     if (offset + bytes > 60) {
         bytes = 60 - offset;
     }
-    if (bytes > 0) {
-        utf8_to_text(ctx->state, 0, (uint16_t)bytes, ctx->block_bytes + offset);
-    }
+    utf8_to_text(ctx->state, 0, (uint16_t)bytes, ctx->block_bytes + offset);
 }
 
 static void
@@ -954,7 +953,7 @@ dmr_udt_decode_format(dmr_udt_ctx* ctx) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_udt_finalize(dmr_udt_ctx* ctx) {
     DSD_FPRINTF(stderr, "%s", KNRM);
     if (ctx->slot == 0) {
@@ -976,7 +975,7 @@ dmr_udt_finalize(dmr_udt_ctx* ctx) {
     watchdog_event_current(ctx->opts, ctx->state, ctx->slot);
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, uint32_t CRCCorrect) {
     dmr_udt_ctx ctx;
     UNUSED(CRCCorrect);
@@ -998,7 +997,7 @@ typedef struct {
     uint8_t kiv[9];
 } dmr_block_dec_ctx;
 
-static void
+static void DSD_ATTR_USED
 dmr_block_dec_load_ctx(dsd_state* state, uint8_t slot, int blocks, uint8_t block_len, dmr_block_dec_ctx* ctx) {
     const uint8_t empt[32] = {0};
 
@@ -1067,7 +1066,7 @@ dmr_block_dec_print_info(const dmr_block_dec_ctx* ctx) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_block_dec_prepare_maes(dsd_state* state, uint8_t maes[16]) {
     LFSR128d(state);
     if (state->currentslot == 0) {
@@ -1077,7 +1076,7 @@ dmr_block_dec_prepare_maes(dsd_state* state, uint8_t maes[16]) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_block_dec_generate_stream(dsd_state* state, uint8_t slot, const dmr_block_dec_ctx* ctx, uint8_t ob[129 * 24],
                               uint8_t* decrypted_pdu) {
     if (ctx->alg == 1 && ctx->rkey != 0) {
@@ -1096,14 +1095,14 @@ dmr_block_dec_generate_stream(dsd_state* state, uint8_t slot, const dmr_block_de
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_block_dec_apply_stream(dsd_state* state, uint8_t slot, const dmr_block_dec_ctx* ctx, const uint8_t ob[129 * 24]) {
     for (int i = 0; i < ctx->end; i++) {
         state->dmr_pdu_sf[slot][i + ctx->start] ^= ob[i % 3096];
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_block_dec_apply_bp(dsd_state* state, uint8_t slot, const dmr_block_dec_ctx* ctx, uint8_t ob[129 * 24],
                        uint8_t* decrypted_pdu) {
     uint16_t bp_key = 0;
@@ -1126,7 +1125,7 @@ dmr_block_dec_apply_bp(dsd_state* state, uint8_t slot, const dmr_block_dec_ctx* 
 }
 #endif
 
-static void
+static void DSD_ATTR_USED
 dmr_block_type1_decrypt_pdu(dsd_state* state, uint8_t slot, int blocks, uint8_t block_len, uint8_t* decrypted_pdu) {
 #ifdef DMR_PDU_DECRYPTION
     dmr_block_dec_ctx ctx;
@@ -1180,7 +1179,7 @@ typedef struct {
     uint8_t mbc_crc_good[2];
 } dmr_block_assembler_ctx;
 
-static void
+static void DSD_ATTR_USED
 dmr_block_assembler_init_ctx(dmr_block_assembler_ctx* ctx, dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes,
                              uint8_t block_len, uint8_t type) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
@@ -1238,7 +1237,7 @@ dmr_block_type1_append_bytes(dmr_block_assembler_ctx* ctx, uint16_t* ctr_out) {
     *ctr_out = ctr;
 }
 
-static uint32_t
+static uint32_t DSD_ATTR_USED
 dmr_block_type1_extract_crc32(const dsd_state* state, uint8_t slot_idx, uint16_t ctr) {
     if (ctr < 4) {
         return 0u;
@@ -1247,7 +1246,7 @@ dmr_block_type1_extract_crc32(const dsd_state* state, uint8_t slot_idx, uint16_t
            | (state->dmr_pdu_sf[slot_idx][ctr - 2] << 8) | (state->dmr_pdu_sf[slot_idx][ctr - 1] << 0);
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_block_type1_pack_crc_bits(const dsd_state* state, uint8_t slot, uint8_t block_len, uint16_t ctr, int offset,
                               uint8_t bits[]) {
     for (int i = 0, j = 0; i < ctr; i += 2, j += 16) {
@@ -1297,7 +1296,7 @@ dmr_block_type1_encryption_required(const dmr_block_assembler_ctx* ctx) {
                      || (ctx->slot == 1 && ctx->state->dmr_soR == 0x100));
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_block_type1_handle_encrypted_notice(dmr_block_assembler_ctx* ctx) {
     uint8_t alg = (ctx->slot == 0) ? ctx->state->payload_algid : ctx->state->payload_algidR;
     uint8_t kid = (ctx->slot == 0) ? ctx->state->payload_keyid : ctx->state->payload_keyidR;
@@ -1318,7 +1317,7 @@ dmr_block_type1_handle_encrypted_notice(dmr_block_assembler_ctx* ctx) {
                             ctx->state->dmr_lrrp_target[ctx->slot], enc_str, ctx->slot);
 }
 
-static uint8_t
+static uint8_t DSD_ATTR_USED
 dmr_block_type1_lrrp_crc_ok(const dsd_state* state, uint8_t slot) {
     uint8_t pdu_crc_ok = 1;
     if (!state->data_conf_data[slot]) {
@@ -1461,7 +1460,7 @@ dmr_block_type1_process_payload(dmr_block_assembler_ctx* ctx, int offset) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_block_type1_log_crc_and_payload(dmr_block_assembler_ctx* ctx) {
     if (!ctx->crc_correct) {
         DSD_FPRINTF(stderr, "%s", KRED);
@@ -1552,7 +1551,7 @@ dmr_block_type2_set_lb_pf(dmr_block_assembler_ctx* ctx) {
     }
 }
 
-static uint8_t
+static uint8_t DSD_ATTR_USED
 dmr_block_type2_length_ok(dmr_block_assembler_ctx* ctx) {
     if (ctx->is_udt || (ctx->blocks >= 1 && ctx->blocks <= 4)) {
         return 1;
@@ -1579,7 +1578,7 @@ dmr_block_type2_unpack_bits(dmr_block_assembler_ctx* ctx) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_block_type2_update_crc(dmr_block_assembler_ctx* ctx) {
     uint8_t mbc_block_bits[12 * 8 * 6];
     int limit = 12 * 8 * 3;
@@ -1627,7 +1626,7 @@ dmr_block_type2_dispatch(dmr_block_assembler_ctx* ctx) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_block_type2_log_payload(dmr_block_assembler_ctx* ctx) {
     if (ctx->opts->payload != 1) {
         return;
@@ -1718,7 +1717,7 @@ dmr_block_assembler_finalize(dmr_block_assembler_ctx* ctx) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_block_assembler_body(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uint8_t block_len, uint8_t databurst,
                          uint8_t type) {
     dmr_block_assembler_ctx ctx;

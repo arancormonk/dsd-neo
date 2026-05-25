@@ -148,10 +148,6 @@ hytera_enhanced_rc4_setup(dsd_opts* opts, dsd_state* state, unsigned long long i
         ks_octets[i] = kiv[i % 5] ^ ks[i];
     }
 
-    //debug
-    // {
-    // }
-
     //NULL pointer to ks_octets
     ks_octets = NULL;
 

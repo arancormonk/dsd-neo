@@ -4186,6 +4186,20 @@ target_link_libraries(dsd-neo_test_platform_atomic_u64 PRIVATE dsd-neo_platform)
 add_test(NAME PLATFORM_ATOMIC_U64 COMMAND dsd-neo_test_platform_atomic_u64)
 
 add_executable(
+    dsd-neo_test_platform_file_compat
+    platform/test_platform_file_compat.c
+)
+target_include_directories(
+    dsd-neo_test_platform_file_compat
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_file_compat
+    PRIVATE dsd-neo_platform
+)
+add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
+
+add_executable(
     dsd-neo_test_platform_monotonic_cond
     platform/test_platform_monotonic_cond.c
 )

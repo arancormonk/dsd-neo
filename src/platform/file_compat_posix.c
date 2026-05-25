@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <stdio.h>
 #include <sys/types.h>
@@ -11,6 +12,7 @@
 
 #if !DSD_PLATFORM_WIN_NATIVE
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -100,6 +102,72 @@ dsd_fopen_private(const char* path, const char* mode) {
         close(fd);
     }
     return fp;
+}
+
+static int
+dsd_local_file_name_is_unsafe(const char* requested) {
+    return requested == NULL || requested[0] == '\0' || requested[0] == '/' || strchr(requested, '/') != NULL
+           || strchr(requested, '\\') != NULL || strstr(requested, "..") != NULL;
+}
+
+static int
+dsd_copy_resolved_local_name(const char* name, char* out, size_t out_size) {
+    int n = DSD_SNPRINTF(out, out_size, "%s", name);
+    if (n < 0 || (size_t)n >= out_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
+int
+dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_size) {
+    if (!out || out_size == 0 || dsd_local_file_name_is_unsafe(requested)) {
+        errno = EINVAL;
+        return -1;
+    }
+    out[0] = '\0';
+
+    DIR* dir = opendir(".");
+    if (!dir) {
+        return -1;
+    }
+
+    int rc = -1;
+    int saved_errno = ENOENT;
+    int found = 0;
+    errno = 0;
+    const struct dirent* ent = NULL;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, requested) != 0) {
+            continue;
+        }
+        found = 1;
+        if (dsd_copy_resolved_local_name(ent->d_name, out, out_size) == 0) {
+            dsd_stat_t st;
+            if (stat(out, &st) == 0) {
+                if (S_ISREG(st.st_mode)) {
+                    rc = 0;
+                    saved_errno = 0;
+                } else {
+                    saved_errno = EINVAL;
+                }
+            } else {
+                saved_errno = errno ? errno : EINVAL;
+            }
+        } else {
+            saved_errno = errno;
+        }
+        break;
+    }
+    if (!found && errno != 0) {
+        saved_errno = errno;
+    }
+    if (closedir(dir) != 0 && rc == 0) {
+        return -1;
+    }
+    errno = saved_errno;
+    return rc;
 }
 
 ssize_t

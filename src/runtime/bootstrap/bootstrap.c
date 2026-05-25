@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
@@ -29,9 +30,28 @@ bootstrap_set_exit_rc(int* out_exit_rc, int rc) {
     }
 }
 
-#define DSD_BOOTSTRAP_PATH_IS_UNSAFE_LOCAL_FILE(path_)                                                                 \
-    ((path_) == NULL || (path_)[0] == '\0' || (path_)[0] == '/' || strchr((path_), '/') != NULL                        \
-     || strchr((path_), '\\') != NULL || strstr((path_), "..") != NULL)
+#define DSD_BOOTSTRAP_LOCAL_PATH_MAX 1024
+
+static int
+bootstrap_resolve_local_config_path(const char* cfg_path, char* resolved, size_t resolved_size, int* out_exit_rc) {
+    if (dsd_resolve_existing_local_file(cfg_path, resolved, resolved_size) == 0) {
+        return 1;
+    }
+    LOG_ERROR("Config path must name an existing local file without path separators or '..'\n");
+    bootstrap_set_exit_rc(out_exit_rc, 1);
+    return 0;
+}
+
+static int
+bootstrap_resolve_local_config_path_for_stderr(const char* cfg_path, char* resolved, size_t resolved_size,
+                                               int* out_exit_rc) {
+    if (dsd_resolve_existing_local_file(cfg_path, resolved, resolved_size) == 0) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "Config path must name an existing local file without path separators or '..'\n");
+    bootstrap_set_exit_rc(out_exit_rc, 1);
+    return 0;
+}
 
 static const char*
 bootstrap_default_or_env_config_path(const char* cli_path, const char* env_path) {
@@ -266,10 +286,13 @@ bootstrap_load_user_config_if_requested(dsd_opts* opts, dsd_state* state, const 
     if (!cfg_path || !*cfg_path) {
         return DSD_BOOTSTRAP_CONTINUE;
     }
-    if ((args->config_path_cli || config_env) && DSD_BOOTSTRAP_PATH_IS_UNSAFE_LOCAL_FILE(cfg_path)) {
-        LOG_ERROR("Config path must be a local filename without path separators or '..'\n");
-        bootstrap_set_exit_rc(out_exit_rc, 1);
-        return DSD_BOOTSTRAP_ERROR;
+
+    char resolved_cfg_path[DSD_BOOTSTRAP_LOCAL_PATH_MAX];
+    if (args->config_path_cli || config_env) {
+        if (!bootstrap_resolve_local_config_path(cfg_path, resolved_cfg_path, sizeof resolved_cfg_path, out_exit_rc)) {
+            return DSD_BOOTSTRAP_ERROR;
+        }
+        cfg_path = resolved_cfg_path;
     }
 
     bootstrap_enable_autosave_for_path(state, cfg_path);
@@ -348,11 +371,14 @@ bootstrap_handle_validate_config(const bootstrap_cli_args* args, const char* con
         bootstrap_set_exit_rc(out_exit_rc, 1);
         return DSD_BOOTSTRAP_ERROR;
     }
-    if ((args->validate_path_cli || args->config_path_cli || config_env)
-        && DSD_BOOTSTRAP_PATH_IS_UNSAFE_LOCAL_FILE(vpath)) {
-        DSD_FPRINTF(stderr, "Config path must be a local filename without path separators or '..'\n");
-        bootstrap_set_exit_rc(out_exit_rc, 1);
-        return DSD_BOOTSTRAP_ERROR;
+
+    char resolved_vpath[DSD_BOOTSTRAP_LOCAL_PATH_MAX];
+    if (args->validate_path_cli || args->config_path_cli || config_env) {
+        if (!bootstrap_resolve_local_config_path_for_stderr(vpath, resolved_vpath, sizeof resolved_vpath,
+                                                            out_exit_rc)) {
+            return DSD_BOOTSTRAP_ERROR;
+        }
+        vpath = resolved_vpath;
     }
 
     dsdcfg_diagnostics_t diags;
@@ -386,10 +412,14 @@ bootstrap_handle_list_profiles(const bootstrap_cli_args* args, const char* confi
         bootstrap_set_exit_rc(out_exit_rc, 1);
         return DSD_BOOTSTRAP_EXIT;
     }
-    if ((args->config_path_cli || config_env) && DSD_BOOTSTRAP_PATH_IS_UNSAFE_LOCAL_FILE(lpath)) {
-        DSD_FPRINTF(stderr, "Config path must be a local filename without path separators or '..'\n");
-        bootstrap_set_exit_rc(out_exit_rc, 1);
-        return DSD_BOOTSTRAP_EXIT;
+
+    char resolved_lpath[DSD_BOOTSTRAP_LOCAL_PATH_MAX];
+    if (args->config_path_cli || config_env) {
+        if (!bootstrap_resolve_local_config_path_for_stderr(lpath, resolved_lpath, sizeof resolved_lpath,
+                                                            out_exit_rc)) {
+            return DSD_BOOTSTRAP_EXIT;
+        }
+        lpath = resolved_lpath;
     }
 
     const char* names[32];

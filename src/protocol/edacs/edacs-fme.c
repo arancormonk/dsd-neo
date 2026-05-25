@@ -623,7 +623,7 @@ static void
 edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     const time_t now = time(NULL);
     const double nowm = dsd_time_now_monotonic_s();
-    int count = 5; //PWR has a 5 count (5 * 180ms) now before cutting off;
+    int count = 5;
     short analog1[960];
     short analog2[960];
     short analog3[960];

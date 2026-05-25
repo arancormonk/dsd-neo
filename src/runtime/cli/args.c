@@ -14,6 +14,7 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
@@ -205,6 +206,19 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     }
     DSD_MEMCPY(opts->audio_in_dev, "iqreplay:", strlen("iqreplay:"));
     DSD_MEMCPY(opts->audio_in_dev + strlen("iqreplay:"), path, path_len + 1);
+    return 0;
+}
+
+#define DSD_CLI_LOCAL_PATH_MAX 1024
+
+static int
+cli_resolve_existing_local_file_option(const char* option_name, const char* requested, char* resolved,
+                                       size_t resolved_size, int* out_exit_rc) {
+    if (dsd_resolve_existing_local_file(requested, resolved, resolved_size) == 0) {
+        return 1;
+    }
+    LOG_ERROR("%s must name an existing local file without path separators or '..'\n", option_name);
+    cli_set_exit_rc(out_exit_rc, 1);
     return 0;
 }
 
@@ -734,19 +748,15 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     }                                                                                                                  \
     dsd_iq_replay_config_clear(&replay_cfg);
 
-#define DSD_CLI_PATH_IS_UNSAFE_LOCAL_FILE(path_)                                                                       \
-    ((path_) == NULL || (path_)[0] == '\0' || (path_)[0] == '/' || strchr((path_), '/') != NULL                        \
-     || strchr((path_), '\\') != NULL || strstr((path_), "..") != NULL)
-
 #define DSD_PARSE_ARGS_TRAILING_BLOCK()                                                                                \
     /* If CLI present, set env vars and maybe run calculator */                                                        \
     if (calc_csv_cli) {                                                                                                \
-        if (DSD_CLI_PATH_IS_UNSAFE_LOCAL_FILE(calc_csv_cli)) {                                                         \
-            LOG_ERROR("--dmr-t3-calc-csv must be a local filename without path separators or '..'\n");                 \
-            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+        char calc_csv_path[DSD_CLI_LOCAL_PATH_MAX];                                                                    \
+        if (!cli_resolve_existing_local_file_option("--dmr-t3-calc-csv", calc_csv_cli, calc_csv_path,                  \
+                                                    sizeof calc_csv_path, out_exit_rc)) {                              \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        dsd_setenv("DSD_NEO_DMR_T3_CALC_CSV", calc_csv_cli, 1);                                                        \
+        dsd_setenv("DSD_NEO_DMR_T3_CALC_CSV", calc_csv_path, 1);                                                       \
         if (calc_step_cli) {                                                                                           \
             dsd_setenv("DSD_NEO_DMR_T3_STEP_HZ", calc_step_cli, 1);                                                    \
         }                                                                                                              \
@@ -761,19 +771,19 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
         }                                                                                                              \
         /* Refresh typed env config after CLI writes. */                                                               \
         dsd_neo_config_init(opts);                                                                                     \
-        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_cli);                                                       \
+        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_path);                                                      \
         cli_set_exit_rc(out_exit_rc, rc);                                                                              \
         return DSD_PARSE_ONE_SHOT;                                                                                     \
     }                                                                                                                  \
                                                                                                                        \
     /* Environment fallback */                                                                                         \
     if (cfg && cfg->dmr_t3_calc_csv_is_set && cfg->dmr_t3_calc_csv[0] != '\0') {                                       \
-        if (DSD_CLI_PATH_IS_UNSAFE_LOCAL_FILE(cfg->dmr_t3_calc_csv)) {                                                 \
-            LOG_ERROR("DSD_NEO_DMR_T3_CALC_CSV must be a local filename without path separators or '..'\n");           \
-            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+        char calc_csv_env_path[DSD_CLI_LOCAL_PATH_MAX];                                                                \
+        if (!cli_resolve_existing_local_file_option("DSD_NEO_DMR_T3_CALC_CSV", cfg->dmr_t3_calc_csv,                   \
+                                                    calc_csv_env_path, sizeof calc_csv_env_path, out_exit_rc)) {       \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(cfg->dmr_t3_calc_csv);                                               \
+        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_env_path);                                                  \
         cli_set_exit_rc(out_exit_rc, rc);                                                                              \
         return DSD_PARSE_ONE_SHOT;                                                                                     \
     }                                                                                                                  \
@@ -905,12 +915,12 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
         }                                                                                                              \
     }                                                                                                                  \
     if (dmr_vertex_ks_csv_cli) {                                                                                       \
-        if (DSD_CLI_PATH_IS_UNSAFE_LOCAL_FILE(dmr_vertex_ks_csv_cli)) {                                                \
-            LOG_ERROR("--dmr-vertex-ks-csv must be a local filename without path separators or '..'\n");               \
-            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+        char vertex_ks_path[DSD_CLI_LOCAL_PATH_MAX];                                                                   \
+        if (!cli_resolve_existing_local_file_option("--dmr-vertex-ks-csv", dmr_vertex_ks_csv_cli, vertex_ks_path,      \
+                                                    sizeof vertex_ks_path, out_exit_rc)) {                             \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        if (csvVertexKsImport(state, dmr_vertex_ks_csv_cli) != 0) {                                                    \
+        if (csvVertexKsImport(state, vertex_ks_path) != 0) {                                                           \
             LOG_ERROR("Invalid --dmr-vertex-ks-csv value\n");                                                          \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \

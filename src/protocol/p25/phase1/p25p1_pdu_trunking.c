@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -34,7 +35,7 @@ p25_signed_offset_units(int sign_bit, int raw_offset) {
     return sign_bit ? raw_offset : -raw_offset;
 }
 
-static void
+static void DSD_ATTR_USED
 p25p1_pdu_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
     if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
@@ -82,7 +83,7 @@ p25_print_mbt_payload_hex(const uint8_t* mpdu_byte, int blks) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
                                 const p25p1_mbt_fields* fields) {
     if (!((fields->opcode == 0x74 || fields->opcode == 0x7D || fields->opcode == 0x73 || fields->opcode == 0xF3
@@ -113,7 +114,7 @@ p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t*
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
-static void
+static void DSD_ATTR_USED
 p25_print_voice_svc_common(const dsd_opts* opts, dsd_state* state, int svc) {
     if (svc & 0x80) {
         DSD_FPRINTF(stderr, " Emergency");
@@ -145,7 +146,7 @@ p25_print_voice_svc_common(const dsd_opts* opts, dsd_state* state, int svc) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     int lra = mpdu_byte[3];
     int sysid = ((mpdu_byte[4] & 0xF) << 8) | mpdu_byte[5];
@@ -193,7 +194,7 @@ p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t
     }
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_rfss_status_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     int lra = mpdu_byte[3];
     int lsysid = ((mpdu_byte[4] & 0xF) << 8) | mpdu_byte[5];
@@ -224,7 +225,7 @@ p25_handle_mbt_rfss_status_broadcast(dsd_opts* opts, dsd_state* state, const uin
     p25_confirm_idens_for_current_site(state);
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_adjacent_status_broadcast(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     int lra = mpdu_byte[3];
     int cfva = mpdu_byte[4] >> 4;
@@ -265,13 +266,13 @@ p25_handle_mbt_adjacent_status_broadcast(const dsd_opts* opts, dsd_state* state,
     }
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_protection_parameter_broadcast(void) {
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n Protection Parameter Broadcast MBT - trunking state unchanged");
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_tdma_iden_foreign_system(const uint8_t* mpdu_byte) {
     int iden = (mpdu_byte[3] >> 4) & 0x0F;
     int chan_type = mpdu_byte[3] & 0x0F;
@@ -291,7 +292,7 @@ p25_handle_mbt_tdma_iden_foreign_system(const uint8_t* mpdu_byte) {
     DSD_FPRINTF(stderr, "\n  Foreign WACN [%05lX] SYSID [%03X] - ignored for current IDEN tables", lwacn, lsysid);
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     int svc = mpdu_byte[8];
     int channelt = (mpdu_byte[14] << 8) | mpdu_byte[15];
@@ -341,7 +342,7 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
     }
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     int svc = mpdu_byte[8];
     int channelt = (mpdu_byte[22] << 8) | mpdu_byte[23];
@@ -388,7 +389,7 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
     }
 }
 
-static int
+static int DSD_ATTR_USED
 p25_telephone_call_policy_allows(const dsd_opts* opts, const dsd_state* state, uint32_t target, int svc) {
     dsd_tg_policy_decision decision;
     return dsd_tg_policy_evaluate_private_call(opts, state, 0, target, (svc & 0x40) ? 1 : 0, (svc & 0x10) ? 1 : 0,
@@ -398,7 +399,7 @@ p25_telephone_call_policy_allows(const dsd_opts* opts, const dsd_state* state, u
            && decision.tune_allowed;
 }
 
-static void
+static void DSD_ATTR_USED
 p25_telephone_update_nontrunk_vc_freq(const dsd_opts* opts, dsd_state* state, uint32_t target, long int freq) {
     if (opts->p25_trunk != 0) {
         return;
@@ -415,7 +416,7 @@ p25_telephone_update_nontrunk_vc_freq(const dsd_opts* opts, dsd_state* state, ui
     }
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
                                             uint8_t opcode) {
     int svc = mpdu_byte[8];
@@ -454,7 +455,7 @@ p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, co
     p25_telephone_update_nontrunk_vc_freq(opts, state, target, freq);
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_mfid_a4(const uint8_t* mpdu_byte, int blks, uint8_t opcode) {
     DSD_FPRINTF(stderr, "%s", KCYN);
     DSD_FPRINTF(stderr, "\n MFID A4 (Harris); Opcode: %02X; ", opcode);
@@ -462,7 +463,7 @@ p25_handle_mbt_mfid_a4(const uint8_t* mpdu_byte, int blks, uint8_t opcode) {
     DSD_FPRINTF(stderr, " %s", KNRM);
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     int svc = mpdu_byte[8];
     int channelt = (mpdu_byte[12] << 8) | mpdu_byte[13];
@@ -513,7 +514,7 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
     }
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_mfid90_unknown(const uint8_t* mpdu_byte, int blks) {
     DSD_FPRINTF(stderr, "%s", KCYN);
     DSD_FPRINTF(stderr, "\n MFID 90 (Moto); Opcode: %02X; ", mpdu_byte[0] & 0x3F);
@@ -521,7 +522,7 @@ p25_handle_mbt_mfid90_unknown(const uint8_t* mpdu_byte, int blks) {
     DSD_FPRINTF(stderr, " %s", KNRM);
 }
 
-static void
+static void DSD_ATTR_USED
 p25_handle_mbt_unknown_mfid(const uint8_t* mpdu_byte, int blks, uint8_t mfid, uint8_t opcode) {
     DSD_FPRINTF(stderr, "%s", KCYN);
     DSD_FPRINTF(stderr, "\n MFID %02X (Unknown); Opcode: %02X; ", mfid, opcode);

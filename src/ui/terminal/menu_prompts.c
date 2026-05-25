@@ -16,6 +16,7 @@
 #include <curses.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdlib.h>
@@ -228,7 +229,7 @@ ui_chooser_keep_selection_visible(void) {
     g_chooser.top = ui_scroll_follow_selection(g_chooser.count, g_chooser.page_rows, g_chooser.top, g_chooser.sel);
 }
 
-static int
+static int DSD_ATTR_USED
 ui_prompt_curs_set(int visibility) {
 #ifdef DSD_NEO_TEST_HOOKS
     (void)visibility;

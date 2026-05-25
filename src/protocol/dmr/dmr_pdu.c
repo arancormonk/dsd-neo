@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/pdu.h>
@@ -51,7 +52,7 @@ convert_hex_to_dec(uint16_t input) {
     return (uint16_t)value;
 }
 
-static void
+static void DSD_ATTR_USED
 utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     uint8_t slot = state->currentslot;
     if (wr == 1) {
@@ -229,7 +230,7 @@ dmr_udp_comp_resolve_port_ptr(const uint8_t* pdu, uint16_t* spid, uint16_t* dpid
     return ptr;
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t spid, uint16_t dpid, uint16_t len,
                             uint16_t ptr, const uint8_t* pdu) {
     if (len <= ptr) {
@@ -283,7 +284,7 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     watchdog_event_datacall(opts, state, said, daid, comp_string, slot);
 }
 
-static void
+static void DSD_ATTR_USED
 decode_ip_pdu_handle_icmp(dsd_opts* opts, dsd_state* state, size_t effective_len, size_t ip_header_len,
                           uint8_t* input) {
     if (effective_len < ip_header_len + 4u) {
@@ -317,7 +318,7 @@ decode_ip_pdu_handle_icmp(dsd_opts* opts, dsd_state* state, size_t effective_len
     }
 }
 
-static void
+static void DSD_ATTR_USED
 decode_ip_pdu_handle_udp_tms(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
                              uint16_t payload_len, uint8_t* payload) {
     int tms_len = 0;
@@ -382,7 +383,7 @@ decode_ip_pdu_handle_udp_tms(const dsd_opts* opts, dsd_state* state, uint8_t slo
     payload[tms_ptr] = temp;
 }
 
-static void
+static void DSD_ATTR_USED
 decode_ip_pdu_handle_udp_vtx_tms(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
                                  uint16_t payload_len, const uint8_t* payload) {
     const size_t vtx_text_off = 21u;
@@ -416,7 +417,7 @@ decode_ip_pdu_handle_udp_vtx_tms(const dsd_opts* opts, dsd_state* state, uint8_t
     }
 }
 
-static int
+static int DSD_ATTR_USED
 decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
                                       uint16_t port, uint16_t payload_len, uint8_t* payload) {
     switch (port) {
@@ -470,7 +471,7 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
     return 0;
 }
 
-static int
+static int DSD_ATTR_USED
 decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24,
                                      uint32_t dst24, uint16_t port, uint16_t payload_len, const uint8_t* payload,
                                      const uint8_t* input) {
@@ -499,7 +500,7 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
     return 0;
 }
 
-static void
+static void DSD_ATTR_USED
 decode_ip_pdu_handle_udp_service(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
                                  uint16_t port, uint16_t payload_len, uint8_t* payload, const uint8_t* input) {
     if (decode_ip_pdu_handle_udp_service_core(opts, state, slot, src24, dst24, port, payload_len, payload)) {
@@ -513,7 +514,7 @@ decode_ip_pdu_handle_udp_service(dsd_opts* opts, dsd_state* state, uint8_t slot,
     DSD_FPRINTF(stderr, "Unknown UDP Port;");
 }
 
-static void
+static void DSD_ATTR_USED
 decode_ip_pdu_handle_udp(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
                          size_t effective_len, size_t ip_header_len, uint8_t* input) {
     if (effective_len < ip_header_len + 8u) {
@@ -538,7 +539,7 @@ decode_ip_pdu_handle_udp(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_
     decode_ip_pdu_handle_udp_service(opts, state, slot, src24, dst24, dst_port, payload_len, payload, input);
 }
 
-static void
+static void DSD_ATTR_USED
 decode_ip_pdu_print_header(const dsd_opts* opts, uint8_t version, uint8_t ihl, uint8_t tos, uint16_t tlen,
                            uint16_t iden, uint8_t ipf, uint16_t offset, uint8_t ttl, uint8_t prot, uint16_t hsum,
                            uint16_t len) {
@@ -567,7 +568,7 @@ decode_ip_pdu_print_endpoints(uint8_t prot, uint32_t src24, uint32_t dst24, uint
     }
 }
 
-static void
+static void DSD_ATTR_USED
 decode_ip_pdu_dispatch(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t prot, uint32_t src24, uint32_t dst24,
                        size_t effective_len, size_t ip_header_len, uint8_t* input) {
     if (prot == 0x01) {
@@ -1312,7 +1313,7 @@ dmr_locn_compute_lat_lon(dmr_locn_data* d, double* latitude, double* longitude) 
         (double)d->lon_sign * ((double)d->lon_deg + ((double)d->lon_min / 60.0) + ((double)d->lon_sec / 600000.0));
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_locn_write_file(const dsd_opts* opts, const dsd_state* state, double latitude, double longitude) {
     if (opts->lrrp_file_output != 1) {
         return;
@@ -1335,7 +1336,7 @@ dmr_locn_write_file(const dsd_opts* opts, const dsd_state* state, double latitud
     fclose(pFile);
 }
 
-static void
+static void DSD_ATTR_USED
 dmr_locn_emit(dsd_state* state, uint8_t slot, uint8_t source, const dmr_locn_data* d, double latitude,
               double longitude) {
     const char* deg_glyph = dsd_degrees_glyph();

@@ -1158,9 +1158,6 @@ QR_16_7_6_decode(unsigned char* rxBits) {
         }
     }
 
-    //disabling again for now
-    // {
-    // }
     (void)corrections;
 
     return true;

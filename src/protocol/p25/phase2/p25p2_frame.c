@@ -23,6 +23,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/ez.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -68,7 +69,7 @@ p25_p2_s16_frames_have_audio(short frames[18][160]) {
     return 0;
 }
 
-static int
+static int DSD_ATTR_USED
 p25p2_frame_slot_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg) {
 #if defined(DSD_NEO_P25P2_TEST_STUB)
     unsigned long long key = 0;
@@ -792,7 +793,7 @@ process_ISCH(dsd_opts* opts, dsd_state* state) {
     isch_decoded = -1; //reset to bad value after running
 }
 
-static void
+static void DSD_ATTR_USED
 p25p2_emit_active_if_allowed(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
@@ -1190,7 +1191,7 @@ p25p2_ess_other_slot_active(dsd_state* state, int other) {
     return state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0 || other_recent;
 }
 
-static void
+static void DSD_ATTR_USED
 p25p2_ess_release_or_defer_cc(dsd_opts* opts, dsd_state* state) {
     DSD_FPRINTF(stderr, " No Enc Following on P25p2 Trunking; ");
     double vc_grace = p25p2_frame_vc_grace_s(state, 0.75);
@@ -1482,7 +1483,7 @@ p25p2_duid_refresh_recent_voice(const dsd_opts* opts, dsd_state* state, time_t n
     }
 }
 
-static void
+static void DSD_ATTR_USED
 p25p2_duid_dispatch(dsd_opts* opts, dsd_state* state, time_t now, int p2_pending_release, int* err_counter) {
     int valid_site = p25p2_duid_has_valid_site(state);
     switch (duid_decoded) {
@@ -1552,7 +1553,7 @@ p25p2_duid_should_abort(dsd_state* state, int err_counter) {
 }
 
 static void
-p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch) {
+p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch_status) {
     if (opts->use_ncurses_terminal == 1) {
         ui_publish_both_and_redraw(opts, state);
     }
@@ -1564,7 +1565,7 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch) {
 
     vc_counter = vc_counter + 360;
 
-    if (sacch == 0 && ts_counter & 1 && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000) {
+    if (sacch_status == 0 && ts_counter & 1 && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000) {
         playSynthesizedVoiceFS4(opts, state);
     }
     if ((state->voice_counter[0] >= 18 || state->voice_counter[1] >= 18) && opts->floating_point == 0
@@ -1584,7 +1585,7 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 p25p2_duid_fallback_release(dsd_opts* opts, dsd_state* state) {
     if (opts->p25_trunk != 1 || opts->p25_is_tuned != 1) {
         return;

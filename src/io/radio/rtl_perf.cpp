@@ -46,6 +46,7 @@ FILE* g_perf_file = nullptr;
 uint64_t g_perf_interval_ns = 1000000000ULL;
 uint64_t g_perf_next_log_ns = 0;
 RtlPerfCounters g_perf;
+const char* kRtlPerfCsvPath = "dsd-neo-rtl-perf.csv";
 
 uint64_t
 exchange_counter(std::atomic<uint64_t>& counter) {
@@ -91,17 +92,10 @@ init_locked(void) {
         g_perf_state.store(1, std::memory_order_release);
         return;
     }
-    if (path[0] == '/' || strchr(path, '/') != nullptr || strchr(path, '\\') != nullptr
-        || strstr(path, "..") != nullptr) {
-        DSD_FPRINTF(stderr,
-                    "RTL PERF: DSD_NEO_RTL_PERF_CSV must be a local filename without path separators or '..'\n");
-        g_perf_state.store(1, std::memory_order_release);
-        return;
-    }
 
-    FILE* f = dsd_fopen_private(path, "a");
+    FILE* f = dsd_fopen_private(kRtlPerfCsvPath, "a");
     if (!f) {
-        DSD_FPRINTF(stderr, "RTL PERF: failed to open '%s': %s\n", path, strerror(errno));
+        DSD_FPRINTF(stderr, "RTL PERF: failed to open '%s': %s\n", kRtlPerfCsvPath, strerror(errno));
         g_perf_state.store(1, std::memory_order_release);
         return;
     }
