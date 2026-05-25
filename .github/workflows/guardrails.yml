@@ -22,7 +22,7 @@ jobs:
     name: shell/workflow lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Run shell and workflow lint
         env:
@@ -36,7 +36,7 @@ jobs:
 
       - name: Upload lint output
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: script-lint-report
           path: |
@@ -49,7 +49,7 @@ jobs:
     name: cmake format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -68,7 +68,7 @@ jobs:
 
       - name: Set up Python
         if: github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0'
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.x"
 
@@ -89,7 +89,7 @@ jobs:
 
       - name: Upload CMake format output
         if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0')
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cmake-format-report
           path: .cmake-format.local.out
@@ -103,7 +103,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -113,13 +113,13 @@ jobs:
       - name: Upload Gitleaks SARIF
         if: always() && hashFiles('.gitleaks.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
         with:
           sarif_file: .gitleaks.sarif
 
       - name: Upload Gitleaks output
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gitleaks-report
           path: |
@@ -135,7 +135,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -154,7 +154,7 @@ jobs:
 
       - name: Set up Python
         if: github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0'
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.x"
 
@@ -178,13 +178,13 @@ jobs:
       - name: Upload zizmor SARIF
         if: always() && hashFiles('.zizmor.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
         with:
           sarif_file: .zizmor.sarif
 
       - name: Upload zizmor output
         if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0')
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: zizmor-report
           path: |
@@ -201,7 +201,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -227,13 +227,13 @@ jobs:
       - name: Upload OSV SARIF
         if: always() && hashFiles('.osv-scanner.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
         with:
           sarif_file: .osv-scanner.sarif
 
       - name: Upload OSV output
         if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.dependency_scan_targets != '0')
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: osv-scan-report
           path: |
@@ -247,9 +247,9 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Review dependency changes
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
         with:
           fail-on-severity: moderate
           comment-summary-in-pr: always
@@ -258,7 +258,7 @@ jobs:
     name: warnings as errors
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install build dependencies
         run: |
@@ -308,7 +308,7 @@ jobs:
       ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install build dependencies
         run: |
@@ -342,7 +342,7 @@ jobs:
 
       - name: Upload fuzz output
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fuzz-smoke-report
           path: .fuzz-smoke.local.out

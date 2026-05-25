@@ -56,7 +56,7 @@ jobs:
             radio_available: OFF
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install build dependencies
         run: |
@@ -104,7 +104,7 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install build dependencies
         run: |
@@ -159,7 +159,7 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Prepare dependency environment
         id: prep-env
@@ -183,7 +183,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.DEPS_PREFIX }}
           key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
@@ -223,7 +223,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.job }}-${{ steps.toolver.outputs.gcc_ver }}-${{ steps.toolver.outputs.cmake_ver }}-${{ github.sha }}
@@ -358,7 +358,7 @@ jobs:
     name: scan-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Run scan-build under Arch toolchain
         run: |
@@ -378,7 +378,7 @@ jobs:
 
       - name: Upload scan-build output
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scan-build-report
           path: |
@@ -394,7 +394,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -413,7 +413,7 @@ jobs:
 
       - name: Set up Python
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.x"
 
@@ -437,13 +437,13 @@ jobs:
       - name: Upload Semgrep SARIF
         if: always() && hashFiles('.semgrep.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
         with:
           sarif_file: .semgrep.sarif
 
       - name: Upload Semgrep output
         if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0')
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: semgrep-report
           path: |
@@ -457,9 +457,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up Python
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.x"
       - name: Install Lizard
@@ -468,7 +468,7 @@ jobs:
         run: tools/lizard.sh --strict
       - name: Upload Lizard output
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: lizard-report
           path: .lizard.local.out
@@ -484,7 +484,7 @@ jobs:
       archive_prefix: ${{ steps.verify.outputs.archive_prefix }}
       release_title: ${{ steps.verify.outputs.release_title }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Verify tag matches project version
         id: verify
         shell: bash
@@ -501,7 +501,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -567,7 +567,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.aur_key.outputs.has_key == 'true'
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -718,7 +718,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.aur_key.outputs.has_key == 'true'
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -872,7 +872,7 @@ jobs:
             cxx: clang++
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Prepare dependency environment
         run: |
@@ -895,7 +895,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.DEPS_PREFIX }}
           key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
@@ -934,7 +934,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-${{ steps.toolver-sanitize.outputs.compiler_ver }}-${{ steps.toolver-sanitize.outputs.cmake_ver }}-${{ github.sha }}
@@ -1066,7 +1066,7 @@ jobs:
     name: cmake install rules
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Check install(TARGETS) runtime destinations
         run: tools/check_install_runtime_destinations.sh
 
@@ -1074,7 +1074,7 @@ jobs:
     name: clang-format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -1125,7 +1125,7 @@ jobs:
     name: cppcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -1161,7 +1161,7 @@ jobs:
 
       - name: Upload cppcheck output
         if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.cppcheck_sources != '0')
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cppcheck-report
           path: .cppcheck.local.out
@@ -1188,7 +1188,7 @@ jobs:
             artifact_name: gcc-fanalyzer-report
             artifact_path: .gcc-fanalyzer.local.out
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -1220,7 +1220,7 @@ jobs:
 
       - name: Restore dependency cache
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .deps
           key: arch-deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}
@@ -1229,7 +1229,7 @@ jobs:
 
       - name: Restore IWYU toolchain cache
         if: (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0') && matrix.name == 'iwyu'
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .deps-arch-toolchain
           key: arch-iwyu-${{ runner.os }}-${{ steps.dep-shas.outputs.iwyu_sha }}
@@ -1238,7 +1238,7 @@ jobs:
 
       - name: Restore ccache
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .ccache
           key: ccache-${{ runner.os }}-arch-${{ github.job }}-${{ matrix.name }}-${{ github.sha }}
@@ -1308,7 +1308,7 @@ jobs:
 
       - name: Upload ${{ matrix.name }} output
         if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0')
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_path }}
