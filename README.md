@@ -7,6 +7,8 @@ Project homepage: https://github.com/arancormonk/dsd-neo
 [![linux-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/linux-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/linux-ci.yaml)
 [![windows-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/windows-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/windows-ci.yaml)
 [![macos-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/macos-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/macos-ci.yaml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12978/badge)](https://www.bestpractices.dev/projects/12978)
+[![OpenSSF Baseline](https://www.bestpractices.dev/projects/12978/baseline)](https://www.bestpractices.dev/projects/12978)
 
 ![DSD-neo](images/dsd-neo_const_view.png)
 
