@@ -9,7 +9,6 @@
 #endif
 
 #include <dsd-neo/platform/posix_compat.h>
-#include <features.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -44,15 +43,9 @@ dsd_mkdir(const char* path, int mode) {
 void*
 dsd_aligned_alloc(size_t alignment, size_t size) {
     void* ptr = NULL;
-#if defined(_ISOC11_SOURCE) || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L)
-    /* C11 aligned_alloc requires size to be multiple of alignment */
-    size_t aligned_size = (size + alignment - 1) & ~(alignment - 1);
-    ptr = aligned_alloc(alignment, aligned_size);
-#else
     if (posix_memalign(&ptr, alignment, size) != 0) {
         ptr = NULL;
     }
-#endif
     return ptr;
 }
 
