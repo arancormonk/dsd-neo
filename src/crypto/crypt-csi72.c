@@ -119,7 +119,8 @@ csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]) {
     char interleaved[72];
     DSD_MEMSET(interleaved, 0, sizeof(interleaved));
 
-    const int *w = rW, *x = rX, *y = rY, *z = rZ;
+    const int *w = dmr_ambe_interleave_w, *x = dmr_ambe_interleave_x, *y = dmr_ambe_interleave_y,
+              *z = dmr_ambe_interleave_z;
     for (int8_t i = 0; i < 36; i++) {
         interleaved[(i * 2) + 0] = ambe_fr[*w][*x];
         interleaved[(i * 2) + 1] = ambe_fr[*y][*z];
@@ -143,10 +144,10 @@ csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]) {
         interleaved[i] ^= (char)ks_bits[71 - i];
     }
 
-    w = rW;
-    x = rX;
-    y = rY;
-    z = rZ;
+    w = dmr_ambe_interleave_w;
+    x = dmr_ambe_interleave_x;
+    y = dmr_ambe_interleave_y;
+    z = dmr_ambe_interleave_z;
     int k = 0;
     for (int8_t i = 0; i < 36; i++) {
         ambe_fr[*w][*x] = interleaved[k++];

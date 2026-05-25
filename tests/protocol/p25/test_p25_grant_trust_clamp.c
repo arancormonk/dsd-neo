@@ -56,15 +56,6 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) { // NOLINT(
 }
 
 static int
-expect_eq_int(const char* tag, int got, int want) {
-    if (got != want) {
-        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
-        return 1;
-    }
-    return 0;
-}
-
-static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
         DSD_FPRINTF(stderr, "%s: expected true\n", tag);

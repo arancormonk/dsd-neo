@@ -56,16 +56,6 @@ dstar_header_decode(dsd_state* state, int radioheaderbuffer[DSD_DSTAR_HEADER_COD
     str3[8] = '\0';
     str4[12] = '\0';
 
-    //TODO: Add fcs_calc to header as well
-    // uint16_t crc_ext = (radioheader[39] << 8) + radioheader[40];
-    // uint16_t crc_cmp = calc_fcs(radioheader, 39);
-
-    //debug
-    // DSD_FPRINTF(stderr, "\n HD: ");
-    // for (int i = 0; i < 40; i++)
-    // 	DSD_FPRINTF(stderr, "%02X ", radioheader[i]);
-    // DSD_FPRINTF(stderr, "\n");
-
     DSD_FPRINTF(stderr, " RPT 2: %s", str1);
     DSD_FPRINTF(stderr, " RPT 1: %s", str2);
     DSD_FPRINTF(stderr, " DST: %s", str3);

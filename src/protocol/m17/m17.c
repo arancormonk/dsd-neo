@@ -127,7 +127,7 @@ M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long in
             if (dst == 0) {
                 break;
             }
-            c = b40[dst % 40];
+            c = m17_base40_alphabet[dst % 40];
             state->m17_dst_csd[i] = c;
             DSD_FPRINTF(stderr, "%c", c);
             dst = dst / 40;
@@ -138,7 +138,6 @@ M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long in
                      state->m17_dst_csd[5], state->m17_dst_csd[6], state->m17_dst_csd[7], state->m17_dst_csd[8]);
 
         //debug
-        // DSD_FPRINTF(stderr, "DT: %s", state->m17_dst_str);
     }
 
     if (src == 0xFFFFFFFFFFFF) {
@@ -151,7 +150,7 @@ M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long in
             if (src == 0) {
                 break;
             }
-            c = b40[src % 40];
+            c = m17_base40_alphabet[src % 40];
             state->m17_src_csd[i] = c;
             DSD_FPRINTF(stderr, "%c", c);
             src = src / 40;
@@ -162,11 +161,9 @@ M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long in
                      state->m17_src_csd[5], state->m17_src_csd[6], state->m17_src_csd[7], state->m17_src_csd[8]);
 
         //debug
-        // DSD_FPRINTF(stderr, "ST: %s", state->m17_src_str);
     }
 
     //debug
-    // DSD_FPRINTF(stderr, " DST: %012llX SRC: %012llX", state->m17_dst, state->m17_src);
 }
 
 static uint16_t
@@ -235,7 +232,7 @@ M17printIpSource(unsigned long long int src) {
         DSD_FPRINTF(stderr, "RESERVED %012llx", src);
     } else {
         for (int i = 0; i < 9; i++) {
-            const char c = b40[src % 40];
+            const char c = m17_base40_alphabet[src % 40];
             DSD_FPRINTF(stderr, "%c", c);
             src = src / 40;
         }
@@ -311,10 +308,6 @@ M17decodeLSF(dsd_state* state) {
     /* Preserve legacy log formatting while routing through LOG_* macros. */
     LOG_INFO("\n");
 
-    //packet or stream
-    // if (lsf_ps == 0) DSD_FPRINTF(stderr, " P-");
-    // if (lsf_ps == 1) DSD_FPRINTF(stderr, " S-");
-
     LOG_INFO(" CAN: %d", res.cn);
     M17decodeCSD(state, res.dst, res.src);
 
@@ -341,10 +334,8 @@ M17decodeLSF(dsd_state* state) {
     // uint32_t tsn = ( (time(NULL)-epoch) & 0xFFFFFFFF); //current LSB 32-bit value
     // uint32_t tsi = (uint32_t)ConvertBitIntoBytes(&state->m17_lsf[112], 32); //OTA LSB 32-bit value
     // uint32_t dif = abs(tsn-tsi);
-    // if (lsf_et == 2 && dif > 3600) DSD_FPRINTF(stderr, " \n Warning! Time Difference > %d secs; Potential NONCE/IV Replay!\n", dif);
 
     //debug
-    // DSD_FPRINTF(stderr, "TSN: %ld; TSI: %ld; DIF: %ld;", tsn, tsi, dif);
 
     //pack meta bits into 14 bytes
     if (res.has_meta != 0U) {
@@ -365,9 +356,7 @@ M17decodeLSF(dsd_state* state) {
         decodeM17PKT(NULL, state, meta, 15); //decode META
     }
 
-    //if no Meta (debug)
-    // if (lsf_et == 0 && meta_sum == 0)
-    //   DSD_FPRINTF(stderr, " Meta Null; ");
+    // If no Meta (debug)
 
     if (res.et == 2) {
         LOG_INFO(" IV: ");
@@ -399,15 +388,6 @@ M17processLICH(dsd_state* state, const dsd_opts* opts, const uint8_t* lich_bits)
     } else {
         DSD_FPRINTF(stderr, "LICH G24 ERR");
     }
-
-    // if (err == 0 && lich_reserve != 0) DSD_FPRINTF(stderr, " LRS: %d", lich_reserve);
-
-    //This is not M17 standard, but use the LICH reserved bits to signal data type and CAN value
-    // if (err == 0 && opts->m17encoder == 1) //only use when using built in encoder
-    // {
-    //   state->m17_str_dt = lich_reserve & 0x3;
-    //   state->m17_can = (lich_reserve >> 2) & 0x7;
-    // }
 
     //transfer to storage
     for (int i = 0; i < 40; i++) {
@@ -566,11 +546,7 @@ M17processCodec2_1600(M17_CODEC2_OPTS_PARAM opts, M17_CODEC2_STATE_PARAM state, 
     unsigned char voice2[8];
     m17_unpack_voice_octets(payload, voice1, voice2);
 
-    //TODO: Add some decryption methods
-    if (state->m17_enc != 0) {
-        //process scrambler or AES-CTR decryption
-        //(no AES-CTR right now, Scrambler should be easy enough)
-    }
+    (void)state->m17_enc;
 
     if (opts->payload == 1) {
         m17_print_codec_line("\n CODEC2: ", voice1);
@@ -613,11 +589,7 @@ M17processCodec2_3200(M17_CODEC2_OPTS_PARAM opts, M17_CODEC2_STATE_PARAM state, 
     unsigned char voice2[8];
     m17_unpack_voice_octets(payload, voice1, voice2);
 
-    //TODO: Add some decryption methods
-    if (state->m17_enc != 0) {
-        //process scrambler or AES-CTR decryption
-        //(no AES-CTR right now, Scrambler should be easy enough)
-    }
+    (void)state->m17_enc;
 
     if (opts->payload == 1) {
         m17_print_codec_line("\n CODEC2: ", voice1);
@@ -851,7 +823,7 @@ static void
 m17_soft_depuncture_p1(const uint16_t* soft_bits, uint16_t* depunc) {
     int bit_index = 0;
     for (int i = 0; i < 488; i++) {
-        if (p1[i % 61] == 1) {
+        if (m17_puncture_pattern_1[i % 61] == 1) {
             depunc[i] = soft_bits[bit_index++];
         } else {
             depunc[i] = 0x7FFF;
@@ -920,7 +892,7 @@ m17_depuncture_lsf_debug(const uint8_t* m17_bits, uint8_t* m17_depunc) {
 
     for (int i = 0; i < 488; i++) {
         const int use_history_guess = (i < 48 || i > 96);
-        if (p1[pattern++] == 1) {
+        if (m17_puncture_pattern_1[pattern++] == 1) {
             m17_depunc[out++] = m17_bits[bit_in++];
         } else if (use_history_guess && out >= 2 && m17_depunc[out - 2] == 1) {
             m17_depunc[out++] = 1;
@@ -1456,7 +1428,7 @@ m17_encode_b40_callsign(unsigned long long int value, const char* csd) {
     }
     for (int i = (int)strlen(csd) - 1; i >= 0; i--) {
         for (int j = 0; j < 40; j++) {
-            if (csd[i] == b40[j]) {
+            if (csd[i] == m17_base40_alphabet[j]) {
                 value = value * 40 + (unsigned long long int)j;
                 break;
             }
@@ -1549,7 +1521,7 @@ m17_encode_lsf_for_rf(const uint8_t* m17_lsf, uint8_t* m17_lsfs) {
     simple_conv_encoder(m17_lsf, m17_lsfc, 244);
     int x = 0;
     for (int i = 0; i < 488; i++) {
-        if (p1[i % 61] == 1) {
+        if (m17_puncture_pattern_1[i % 61] == 1) {
             m17_lsfp[x++] = m17_lsfc[i];
         }
     }
@@ -2561,7 +2533,7 @@ m17_pkt_send_data_frame(m17_pkt_ctx* ctx) {
     simple_conv_encoder(m17_p1, m17_p2c, 210);
     int x = 0;
     for (int i = 0; i < 420; i++) {
-        if (p3[i % 8] == 1) {
+        if (m17_puncture_pattern_3[i % 8] == 1) {
             m17_p3p[x++] = m17_p2c[i];
         }
     }
@@ -2611,7 +2583,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
 static void
 m17_decode_pkt_print_callsign9(unsigned long long int v) {
     for (int i = 0; i < 9; i++) {
-        const char c = b40[v % 40];
+        const char c = m17_base40_alphabet[v % 40];
         DSD_FPRINTF(stderr, "%c", c);
         v = v / 40;
     }
@@ -2755,7 +2727,7 @@ static void
 m17_soft_depuncture_p3(const uint16_t* soft_bits, uint16_t* depunc) {
     int bit_index = 0;
     for (int i = 0; i < 420; i++) {
-        if (p3[i % 8] == 1) {
+        if (m17_puncture_pattern_3[i % 8] == 1) {
             depunc[i] = soft_bits[bit_index++];
         } else {
             depunc[i] = 0x7FFF;

@@ -52,46 +52,46 @@ typedef struct {
 } PC4Context;
 
 /* Global context accessible from all .c files */
-extern PC4Context ctx;
+extern PC4Context g_pc4_context;
 
 /* Public API */
 /** @brief Derive PC4 key material from provided seed. */
-void create_keys(PC4Context* ctx, const unsigned char key1[], size_t size1);
+void create_keys(PC4Context* pc4_ctx, const unsigned char key1[], size_t size1);
 /** @brief Encrypt the current context buffer using PC4. */
-void pc4encrypt(PC4Context* ctx);
+void pc4encrypt(PC4Context* pc4_ctx);
 /** @brief Decrypt the current context buffer using PC4. */
-void pc4decrypt(PC4Context* ctx);
+void pc4decrypt(PC4Context* pc4_ctx);
 /** @brief Convert binary bits to hexadecimal representation. */
-void binhex(PC4Context* ctx, const short* z, int length);
+void binhex(PC4Context* pc4_ctx, const short* z, int length);
 /** @brief Convert hexadecimal representation to binary bits. */
-void hexbin(PC4Context* ctx, short* q, uint8_t w, uint8_t hex);
+void hexbin(PC4Context* pc4_ctx, short* q, uint8_t w, uint8_t hex);
 static PC4_ATTR_UNUSED void u64_to_bytes_be(uint64_t val, unsigned char* out);
 
 /* Encrypt a 49-bit frame (original flow) */
 static PC4_ATTR_UNUSED void
 encrypt_frame_49(short frame_bits_in[49]) {
     for (int i = 0; i < 49; i++) {
-        ctx.bits[i] = frame_bits_in[i];
+        g_pc4_context.bits[i] = frame_bits_in[i];
     }
     for (int i = 0; i < 49; i++) {
-        ctx.temp[i] = ctx.bits[ctx.array[i]];
+        g_pc4_context.temp[i] = g_pc4_context.bits[g_pc4_context.array[i]];
     }
     for (int i = 0; i < 49; i++) {
-        ctx.bits[i] = ctx.temp[i];
+        g_pc4_context.bits[i] = g_pc4_context.temp[i];
     }
-    ctx.ptconvert = 0;
-    binhex(&ctx, ctx.bits, 48);
-    pc4encrypt(&ctx);
+    g_pc4_context.ptconvert = 0;
+    binhex(&g_pc4_context, g_pc4_context.bits, 48);
+    pc4encrypt(&g_pc4_context);
     for (int q = 0; q < 6; q++) {
         uint8_t w = (uint8_t)(q * 8);
-        hexbin(&ctx, ctx.bits, w, ctx.convert[q]);
+        hexbin(&g_pc4_context, g_pc4_context.bits, w, g_pc4_context.convert[q]);
     }
-    ctx.bits[48] = (short)(ctx.bits[48] ^ ctx.totb);
+    g_pc4_context.bits[48] = (short)(g_pc4_context.bits[48] ^ g_pc4_context.totb);
     for (int i = 0; i < 49; i++) {
-        ctx.temp[ctx.array2[i]] = ctx.bits[i];
+        g_pc4_context.temp[g_pc4_context.array2[i]] = g_pc4_context.bits[i];
     }
     for (int i = 0; i < 49; i++) {
-        ctx.bits[i] = ctx.temp[i];
+        g_pc4_context.bits[i] = g_pc4_context.temp[i];
     }
 }
 
@@ -99,27 +99,27 @@ encrypt_frame_49(short frame_bits_in[49]) {
 static PC4_ATTR_UNUSED void
 decrypt_frame_49(short frame_bits_in[49]) {
     for (int i = 0; i < 49; i++) {
-        ctx.bits[i] = frame_bits_in[i];
+        g_pc4_context.bits[i] = frame_bits_in[i];
     }
     for (int i = 0; i < 49; i++) {
-        ctx.temp[i] = ctx.bits[ctx.array2[i]];
+        g_pc4_context.temp[i] = g_pc4_context.bits[g_pc4_context.array2[i]];
     }
     for (int i = 0; i < 49; i++) {
-        ctx.bits[i] = ctx.temp[i];
+        g_pc4_context.bits[i] = g_pc4_context.temp[i];
     }
-    ctx.ptconvert = 0;
-    binhex(&ctx, ctx.bits, 48);
-    pc4decrypt(&ctx);
+    g_pc4_context.ptconvert = 0;
+    binhex(&g_pc4_context, g_pc4_context.bits, 48);
+    pc4decrypt(&g_pc4_context);
     for (int q = 0; q < 6; q++) {
         uint8_t w = (uint8_t)(q * 8);
-        hexbin(&ctx, ctx.bits, w, ctx.convert[q]);
+        hexbin(&g_pc4_context, g_pc4_context.bits, w, g_pc4_context.convert[q]);
     }
-    ctx.bits[48] = (short)(ctx.bits[48] ^ ctx.totb);
+    g_pc4_context.bits[48] = (short)(g_pc4_context.bits[48] ^ g_pc4_context.totb);
     for (int i = 0; i < 49; i++) {
-        ctx.temp[ctx.array[i]] = ctx.bits[i];
+        g_pc4_context.temp[g_pc4_context.array[i]] = g_pc4_context.bits[i];
     }
     for (int i = 0; i < 49; i++) {
-        ctx.bits[i] = ctx.temp[i];
+        g_pc4_context.bits[i] = g_pc4_context.temp[i];
     }
 }
 

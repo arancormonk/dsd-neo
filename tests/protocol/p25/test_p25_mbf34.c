@@ -12,7 +12,6 @@
 #include "dsd-neo/core/safe_api.h"
 
 static uint16_t test_crc9(const uint8_t* bits, unsigned int len);
-static uint32_t test_crc32(const uint8_t* bits, unsigned int len);
 
 // Must match mapping used in src/protocol/p25/phase1/p25p1_mbf34.c
 static const uint8_t interleave[98] = {0,  1,  8,  9,  16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57, 64, 65, 72, 73,
@@ -135,26 +134,6 @@ test_crc9(const uint8_t* bits, unsigned int len) {
     }
     crc &= 0x01FF;
     crc ^= 0x01FF;
-    return crc;
-}
-
-static uint32_t
-test_crc32(const uint8_t* bits, unsigned int len) {
-    uint32_t crc = 0;
-    const uint32_t poly = 0x04C11DB7;
-    for (unsigned int i = 0; i < len; i++) {
-        if (((crc >> 31) & 1) ^ (bits[i] & 1)) {
-            crc = (crc << 1) ^ poly;
-        } else {
-            crc <<= 1;
-        }
-    }
-    // reverse byte order to match mbf_bytes form
-    uint32_t a = (crc & 0xFF) << 24;
-    uint32_t b = ((crc & 0xFF00) >> 8) << 16;
-    uint32_t c = ((crc & 0xFF0000) >> 16) << 8;
-    uint32_t d = ((crc & 0xFF000000) >> 24);
-    crc = a | b | c | d;
     return crc;
 }
 

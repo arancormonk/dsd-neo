@@ -67,9 +67,7 @@ ring_init(udp_input_ring* r, size_t cap_samples) {
  */
 static void
 ring_destroy(udp_input_ring* r) {
-    if (r->buf) {
-        free(r->buf);
-    }
+    free(r->buf);
     r->buf = NULL;
     r->cap = r->head = r->tail = 0;
     dsd_mutex_destroy(&r->m);

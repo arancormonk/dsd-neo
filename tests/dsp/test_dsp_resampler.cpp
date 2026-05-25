@@ -270,6 +270,11 @@ test_generic_state_api(void) {
     int warm = 0;
     int rc = 1;
 
+    /*
+     * Exercise the generic state API with aligned and intentionally unaligned
+     * buffers. Matching outputs prove the scalar fallback path obeys the same
+     * history and phase rules as the aligned path.
+     */
     if (!dsd_resampler_design(&s_aligned, L, M) || !dsd_resampler_design(&s_unaligned, L, M)) {
         DSD_FPRINTF(stderr, "generic dsd_resampler_design failed\n");
         goto cleanup;
@@ -316,6 +321,7 @@ test_generic_state_api(void) {
         goto cleanup;
     }
 
+    // Skip FIR warmup samples before checking the steady-state unity input.
     warm = s_unaligned.taps_per_phase * 2;
     if (warm < 0) {
         warm = 0;

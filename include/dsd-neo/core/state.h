@@ -41,12 +41,12 @@ enum __attribute__((packed)) {
 // readability/maintainability without measurable benefit. Suppress the padding
 // warning for this aggregate while keeping all other clang-tidy checks active.
 typedef struct {
-    uint8_t write;      //if this event needs to be written to a log file
+    uint8_t write;      // If this event needs to be written to a log file
     uint8_t color_pair; //this value corresponds to which color pair the line should be in ncurses
     int8_t systype;     //indentifier of which decoded system type this is from (P25, DMR, etc)
     int8_t subtype;     //subtype of systpe (VLC, TLC, PDU data, System Event, etc)
     uint32_t sys_id1;   //sys_id1 through 5 will be a hierarchy of system identifiers
-    uint32_t sys_id2;   //for example, trunked P25 has WACN:SYS:CC:SITE_ID:RFSS_ID
+    uint32_t sys_id2;   // For example, trunked P25 has WACN:SYS:CC:SITE_ID:RFSS_ID
     uint32_t sys_id3;   //conventional may only use NAC, RAN, or Color Codes
     uint32_t sys_id4;   //
     uint32_t sys_id5;   //
@@ -64,14 +64,14 @@ typedef struct {
     char s_name[200];   //same as above, but if loaded from a src value and not tg value
     char t_mode[200];   //mode, or A,B,D,DE from csv group import file
     char s_mode[200];   //mode, or A,B,D,DE from csv group import file
-    uint32_t channel;   //if this occurs on a trunking channel, which channel
+    uint32_t channel;   // If this occurs on a trunking channel, which channel
     time_t event_time;  //time event occurred
 
     uint8_t pdu[128 * 24];   //relevant link control, or full PDU if data call (in bytes)
     char sysid_string[200];  //string comprised of system unique identifiers
-    char alias[2000];        //if this event has a source radio talker alias or similar
+    char alias[2000];        // If this event has a source radio talker alias or similar
     char gps_s[2000];        //gps, if returned, expressed as a string
-    char text_message[2000]; //if this event is a decoded text message, then it goes here
+    char text_message[2000]; // If this event is a decoded text message, then it goes here
     char event_string[2000]; //user legible and printable string for the event that happened
     char internal_str[2000]; //string that relates to a DSD-neo generated event (ENC LO, error notices, etc)
 } Event_History;
@@ -575,8 +575,6 @@ struct dsd_state {
 
     dPMRVoiceFS2Frame_t dPMRVoiceFS2Frame;
 
-    /* Event_History_I* event_history_s; */
-
     //new audio filter structs
     LPFilter RCFilter;
     HPFilter HRCFilter;
@@ -675,8 +673,8 @@ struct dsd_state {
 
     //iden freq storage for frequency calculations
     // Bitmask per IDEN slot indicating which modulation classes have been seen:
-    //   bit0 (0x01) = has FDMA/non-TDMA entry
-    //   bit1 (0x02) = has TDMA entry (channel types 3, 4, or 5)
+    //   bit 0x01 marks an FDMA/non-TDMA entry
+    //   bit 0x02 marks a TDMA entry for channel types 3, 4, or 5
     // Values: 0=unknown, 1=FDMA only, 2=TDMA only, 3=both FDMA and TDMA
     uint8_t p25_chan_tdma_explicit[16];
     uint8_t p25_lcw_retune_disabled_warned; // 1 once "LCW retune disabled" warning emitted
@@ -1019,7 +1017,7 @@ struct dsd_state {
     uint8_t m17_meta[16]; //packed meta
     uint8_t m17_enc;      //enc type
     uint8_t m17_enc_st;   //scrambler or data subtye
-    int m17encoder_tx;    //if TX (encode + decode) M17 Stream is enabled
+    int m17encoder_tx;    // If TX (encode + decode) M17 Stream is enabled
     int m17encoder_eot;   //signal if we need to send the EOT frame
 
     //misc str storage
@@ -1029,7 +1027,7 @@ struct dsd_state {
     char m17dat[50];  //user supplied m17 data input string
     char m17sms[800]; //user supplied sms text string
 
-    //tyt_ap=1 active
+    // tyt_ap value 1 means active
     int tyt_ap;
     int tyt_bp;
     int tyt_ep;

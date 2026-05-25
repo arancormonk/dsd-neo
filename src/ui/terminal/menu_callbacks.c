@@ -45,16 +45,19 @@ clamp_int_with_notice(const char* label, int value, int min_v, int max_v, int* a
 static double
 clamp_double_with_notice(const char* label, double value, double min_v, double max_v, int* adjusted) {
     double out = value;
+    int was_adjusted = 0;
     if (out < min_v) {
         out = min_v;
+        was_adjusted = 1;
     }
     if (out > max_v) {
         out = max_v;
+        was_adjusted = 1;
     }
     if (adjusted) {
-        *adjusted = (out != value) ? 1 : 0;
+        *adjusted = was_adjusted;
     }
-    if (out != value) {
+    if (was_adjusted) {
         ui_statusf("%s adjusted to %.3f (range %.3f..%.3f)", label ? label : "Value", out, min_v, max_v);
     }
     return out;
@@ -1175,23 +1178,19 @@ cb_m17_user_data(void* u, const char* text) {
 
 static void
 chooser_free_lists(const char** names, char** bufs, int n, const char** labels) {
-    for (int i = 0; i < n; i++) {
-        if (names) {
+    if (names) {
+        for (int i = 0; i < n; i++) {
             free((void*)names[i]);
         }
-        if (bufs) {
+    }
+    if (bufs) {
+        for (int i = 0; i < n; i++) {
             free(bufs[i]);
         }
     }
-    if (labels) {
-        free((void*)labels);
-    }
-    if (names) {
-        free((void*)names);
-    }
-    if (bufs) {
-        free((void*)bufs);
-    }
+    free((void*)labels);
+    free((void*)names);
+    free((void*)bufs);
 }
 
 void

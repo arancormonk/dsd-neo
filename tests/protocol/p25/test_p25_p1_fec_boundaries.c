@@ -23,15 +23,6 @@ bits_from_u(int value, int n_bits, char* out_bits) {
     }
 }
 
-static int
-u_from_bits(const char* bits, int n_bits) {
-    int v = 0;
-    for (int i = 0; i < n_bits; i++) {
-        v = (v << 1) | (bits[i] & 1);
-    }
-    return v;
-}
-
 static void
 flip_bit(char* arr, int idx) {
     arr[idx] = (char)(arr[idx] ? 0 : 1);

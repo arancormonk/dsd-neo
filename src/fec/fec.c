@@ -252,19 +252,10 @@ Hamming_7_4_decode(unsigned char* rxBits) // corrects in place
     }
 
     if (syndromeI > 0) {
-        int correction = 0;
-
         if (Hamming_7_4_m_corr[syndromeI] == 0xFF) {
             return false;
-        } else {
-            rxBits[Hamming_7_4_m_corr[syndromeI]] ^= 1; // flip bit
-            correction++;
         }
-        //not sure of upper limit on what hamming can correct (if any),
-        //but will test with 0 and 1 to see how those perform
-        if (correction > 1) {
-            return false;
-        }
+        rxBits[Hamming_7_4_m_corr[syndromeI]] ^= 1; // flip bit
     }
 
     return true;
@@ -760,7 +751,6 @@ Golay_20_8_decode(unsigned char* rxBits) {
             return false;
         }
 
-        //return false due to exceeding the number of allowed corrected bits
         //being stingy and only allowing 1 error, may wreck some good data decodes,
         //decided to play it safe with 2
         if (correction > 2) {
@@ -1021,10 +1011,8 @@ Golay_24_12_encode(const unsigned char* origBits, unsigned char* encodedBits) {
             encodedBits[j] += origBits[i] * Golay_24_12_m_G[24 * i + j];
         }
     }
-    // DSD_FPRINTF(stderr, "\n Inside Golay - Encoded Bits = "); //disable later on
     for (int i = 0; i < 24; i++) {
         encodedBits[i] %= 2;
-        //     DSD_FPRINTF(stderr, "%b", encodedBits[i]); //disable later on
     }
 }
 
@@ -1171,19 +1159,13 @@ QR_16_7_6_decode(unsigned char* rxBits) {
     }
 
     //disabling again for now
-    // if (corrections > 1) //no more than 1-bit error, else consider failure?
     // {
-    //     return false;
     // }
     (void)corrections;
 
     return true;
 }
 
-// ========================================================================================
-
-/* This function init all FEC functions
- * it must be called once at startup */
 void
 InitAllFecFunction(void) {
     Hamming_7_4_init();

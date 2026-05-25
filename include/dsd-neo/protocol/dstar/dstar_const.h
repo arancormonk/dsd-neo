@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DSTAR_DSTAR_CONST_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DSTAR_DSTAR_CONST_H_
+
 /**
  * @file
  * @brief D-STAR protocol constants and sync patterns.
@@ -24,13 +27,7 @@
  *  dstar interleave experiments
  */
 
-#ifndef DSD_NEO_MAIN
-
-extern const int dW[72];
-extern const int dX[72];
-
-#else
-const int dW[72] = {
+static const int dstar_interleave_w[72] = {
 
     // 0-11
     0,
@@ -116,7 +113,7 @@ const int dW[72] = {
     3,
     3,
 };
-const int dX[72] = {
+static const int dstar_interleave_x[72] = {
 
     // 0-11
     10,
@@ -203,4 +200,4 @@ const int dX[72] = {
     13,
 };
 
-#endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DSTAR_DSTAR_CONST_H_ */

@@ -21,10 +21,6 @@ static uint8_t interleave[98] = {0,  1,  8,  9,  16, 17, 24, 25, 32, 33, 40, 41,
 //this is a convertion table for converting the dibit pairs into constellation points
 static uint8_t constellation_map[16] = {11, 12, 0, 7, 14, 9, 5, 2, 10, 13, 1, 6, 15, 8, 4, 3};
 
-//digitized dibit to OTA symbol conversion for reference
-//0 = +1; 1 = +3;
-//2 = -1; 3 = -3;
-
 //finite state machine values
 static uint8_t fsm[64] = {0, 8,  4, 12, 2, 10, 6, 14, 4, 12, 2, 10, 6, 14, 0, 8, 1, 9,  5, 13, 3, 11,
                           7, 15, 5, 13, 3, 11, 7, 15, 1, 9,  3, 11, 7, 15, 1, 9, 5, 13, 7, 15, 1, 9,
@@ -67,7 +63,6 @@ fix_34(const uint8_t* p, uint8_t state, int position) {
                 tri = 0xFF;
                 for (j = 0; j < 8; j++) {
                     if (fsm[((size_t)temp_s * 8) + j] == t) {
-                        //return our tribit value and state for the next point
                         tri = temp_s = (uint8_t)j;
                         counter++;
                         break;
@@ -76,7 +71,7 @@ fix_34(const uint8_t* p, uint8_t state, int position) {
 
                 if (counter > best_p) {
                     best_p = counter;
-                    best_v = k; //if we make it further on current path, assign as best path
+                    best_v = k; // If we make it further on current path, assign as best path
                 }
             }
         }
@@ -88,7 +83,6 @@ fix_34(const uint8_t* p, uint8_t state, int position) {
     //multiple survivors seems common when the starting err position is very close to 49
 
     //debug
-    // DSD_FPRINTF(stderr, "START: %d; BEST_P: %d; BEST_V: %d; Survivors: %d; Point: %d; ", position, best_p, best_v, survivors, temp_p[best_v]);
 
     return temp_p[best_v]; //return the point value of the best path's starting point value
 }
@@ -122,47 +116,38 @@ dmr_34(const uint8_t* input, uint8_t treturn[18]) {
     }
 
     //debug view points
-    // DSD_FPRINTF(stderr, "\n P =");
-    // for (i = 0; i < 49; i++)
-    //   DSD_FPRINTF(stderr, " %02d", point[i]);
 
     //convert constellation points into tribit values using the FSM
     uint8_t state = 0;
     uint32_t tribits[49];
     DSD_MEMSET(tribits, 0xF, sizeof(tribits));
 
-    for (i = 0; i < 49; i++) {
+    i = 0;
+    while (i < 49) {
 
         for (j = 0; j < 8; j++) {
             if (fsm[((size_t)state * 8) + j] == point[i]) {
-                //return our tribit value and state for the next point
                 tribits[i] = state = (uint8_t)j;
                 break;
             }
         }
 
-        //if tribit value is greater than 7, then we have a decoding error
+        // If tribit value is greater than 7, then we have a decoding error
         if (tribits[i] > 7) {
             //debug point, position of error, and state value
-            // DSD_FPRINTF(stderr, "\n P: %d, %d:%d; ", point[i], i, state);
 
             //attempt to fix point by looking for the best path from here
             point[i] = fix_34(point, state, i);
 
             //Make a hard decision and flip point to fit in current state
             // point[i] ^= 7; //lucky number 7 (0111) //fallback
-
-            //decrement one and resume decoding
-            i--;
+            continue;
         }
+        i++;
     }
 
     //debug view tribits/states
-    // DSD_FPRINTF(stderr, "\n T =");
-    // for (i = 0; i < 49; i++)
-    //   DSD_FPRINTF(stderr, " %02d", tribits[i]);
 
-    //break into chunks of 24 bit values and shuffle into 8-bit (byte) treturn values
     for (i = 0; i < 6; i++) {
         uint32_t temp = (tribits[((size_t)i * 8) + 0] << 21) + (tribits[((size_t)i * 8) + 1] << 18)
                         + (tribits[((size_t)i * 8) + 2] << 15) + (tribits[((size_t)i * 8) + 3] << 12)
@@ -175,8 +160,6 @@ dmr_34(const uint8_t* input, uint8_t treturn[18]) {
     }
 
     //trellis point/state err tally
-    // if (irr_err != 0)
-    //   DSD_FPRINTF(stderr, " P_ERR = %d", irr_err);
 
     return (0);
 }

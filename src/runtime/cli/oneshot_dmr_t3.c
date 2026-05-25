@@ -154,16 +154,10 @@ emit_lcn_frequency_rows(const long* freqs, int count, long base_freq, long base_
         return 3;
     }
 
-    double denom = (double)step;
-    if (denom == 0.0) {
-        LOG_ERROR("LCN calc: invalid step (0) during mapping.\n");
-        return 3;
-    }
-
     printf("lcn,freq\n");
     for (int i = 0; i < count; i++) {
         long delta = freqs[i] - base_freq;
-        long idx = (long)llround((double)delta / denom);
+        long idx = (long)llround((double)delta / (double)step);
         long lcn = base_lcn + idx;
         printf("%ld,%ld\n", lcn, freqs[i]);
     }
@@ -223,13 +217,8 @@ resolve_base_lcn_with_anchor(const dsdneoRuntimeConfig* cfg, long base_freq, lon
     long cc_lcn = (cfg && cfg->dmr_t3_cc_lcn_is_set) ? cfg->dmr_t3_cc_lcn : 0;
 
     if (cc_freq > 0 && cc_lcn > 0) {
-        double denom = (double)step;
-        if (denom == 0.0) {
-            LOG_ERROR("LCN calc: invalid step (0) during anchor alignment.\n");
-            return 3;
-        }
         long delta = cc_freq - base_freq;
-        long idx = (long)llround((double)delta / denom);
+        long idx = (long)llround((double)delta / (double)step);
         base_lcn = cc_lcn - idx;
     }
 

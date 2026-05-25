@@ -79,18 +79,6 @@ init_basic(dsd_opts* o, dsd_state* s) {
     p25_sm_init(o, s);
 }
 
-static void
-setup_iden_simple(dsd_state* s, int iden) {
-    s->p25_chan_iden = iden;
-    // Populate new dual-array
-    s->p25_iden_fdma[iden].base_freq = 851000000 / 5;
-    s->p25_iden_fdma[iden].chan_type = 1;
-    s->p25_iden_fdma[iden].chan_spac = 100;
-    s->p25_iden_fdma[iden].trust = 2;
-    s->p25_iden_fdma[iden].populated = 1;
-    s->p25_chan_tdma_explicit[iden] = 1; // FDMA known
-}
-
 int
 main(void) {
     static dsd_opts opts;

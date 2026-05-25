@@ -91,8 +91,14 @@ init_locked(void) {
         g_perf_state.store(1, std::memory_order_release);
         return;
     }
+    if (path[0] == '/' || strchr(path, '/') != nullptr || strchr(path, '\\') != nullptr
+        || strstr(path, "..") != nullptr) {
+        DSD_FPRINTF(stderr,
+                    "RTL PERF: DSD_NEO_RTL_PERF_CSV must be a local filename without path separators or '..'\n");
+        g_perf_state.store(1, std::memory_order_release);
+        return;
+    }
 
-    // codeql[cpp/path-injection] This debug CSV path is opt-in through a local environment variable.
     FILE* f = dsd_fopen_private(path, "a");
     if (!f) {
         DSD_FPRINTF(stderr, "RTL PERF: failed to open '%s': %s\n", path, strerror(errno));

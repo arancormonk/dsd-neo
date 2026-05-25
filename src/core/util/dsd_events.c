@@ -996,7 +996,6 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
     state->event_history_s[slot].Event_History_Items[0].channel = 0;
     state->event_history_s[slot].Event_History_Items[0].event_time = time(NULL);
 
-    //date and time strings //getTimeN(time(NULL)); //getDateN(time(NULL));
     char timestr[9];
     char datestr[11];
     getTimeN_buf(time(NULL), timestr);

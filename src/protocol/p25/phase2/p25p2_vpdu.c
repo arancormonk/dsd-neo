@@ -1049,7 +1049,7 @@ p25p2_vpdu_iter_block_01(p25p2_vpdu_ctx* ctx) {
             p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0, policy_encrypted,
                              /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
         }
-        //if playing back files, and we still want to see what freqs are in use in the ncurses terminal
+        // If playing back files, and we still want to see what freqs are in use in the ncurses terminal
         //might only want to do these on a grant update, and not a grant by itself?
         p25_set_playback_vc_freq(opts, state, freq);
     }
@@ -1100,7 +1100,7 @@ p25p2_vpdu_iter_block_02(p25p2_vpdu_ctx* ctx) {
             p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0, policy_encrypted,
                              /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
         }
-        //if playing back files, and we still want to see what freqs are in use in the ncurses terminal
+        // If playing back files, and we still want to see what freqs are in use in the ncurses terminal
         //might only want to do these on a grant update, and not a grant by itself?
         if (opts->p25_trunk == 0) {
             if (sgroup == state->lasttg || sgroup == state->lasttgR) {
@@ -2154,7 +2154,6 @@ p25p2_vpdu_iter_block_24(p25p2_vpdu_ctx* ctx) {
 
         //Harris "Talker" Alias
         if (MAC[1 + len_a] == 0xA8) {
-            // DSD_FPRINTF(stderr, "\n MFID A4 (Harris); VCH %d; TG: %d; SRC: %d; Talker Alias: ", slot, ttg, tsrc);
             DSD_FPRINTF(stderr, "\n MFID A4 (Harris); VCH %d;", slot);
             uint8_t bytes[24];
             DSD_MEMSET(bytes, 0, sizeof(bytes));
@@ -2239,12 +2238,7 @@ p25p2_vpdu_iter_block_25(p25p2_vpdu_ctx* ctx) {
             tsrc = state->lastsrcR;
         }
 
-        // harris_gps (opts, state, slot, mac_bits); //fallback
         nmea_harris(opts, state, mac_bits + 0, tsrc, slot); //new
-
-        //debug - just dump payload
-        // for (i = 0; i < 24; i++)
-        // 		DSD_FPRINTF(stderr, " %02llX", MAC[i]);
 
         len_b = 17;
     }
@@ -2400,7 +2394,7 @@ p25p2_vpdu_iter_block_28(p25p2_vpdu_ctx* ctx) {
             seconds = 59; //sanity check for rounding error
         }
 
-        if (year != 0) //if time is synced in this PDU
+        if (year != 0) // If time is synced in this PDU
         {
             int hour = MAC[7 + len_a] >> 3;
             DSD_FPRINTF(stderr, "\n  Date: 20%02d.%02d.%02d Time: %02d:%02d:%02d UTC", year, month, day, hour, min,
@@ -2900,7 +2894,6 @@ p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
         int ssn = MAC[4 + len_a] & 0x1F;     //5 bit SSN from from GRG_Options
 
         DSD_FPRINTF(stderr, "\n MFID A4 (Harris) Group Regroup Explicit Encryption Command\n");
-        // if (len_grg) DSD_FPRINTF(stderr, " Len: %02d", len_grg); //debug
         if ((tga & 4) == 4) {
             DSD_FPRINTF(stderr, " Simulselect"); //one-way regroup
         } else {
@@ -2911,9 +2904,6 @@ p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
         } else {
             DSD_FPRINTF(stderr, " Inactive;"); //deactivated
         }
-
-        //debug
-        // DSD_FPRINTF(stderr, " T:%d G:%d A:%d;", (tga >> 2) & 1, (tga >> 1) & 1, tga & 1);
 
         DSD_FPRINTF(stderr, " SSN: %02d;", ssn);
 
@@ -2930,9 +2920,6 @@ p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
             DSD_FPRINTF(stderr, " SG: %d; KEY: %04X; ALG: %02X;\n  ", sg, key, alg);
             int a = 0;
             int wgid = 0;
-
-            //sanity check
-            // if ((len_grg + len_a > 20)) len_grg = 20 - len_a;
 
             for (int wi = 10; wi <= len_grg;) {
                 //failsafe to prevent oob array

@@ -762,47 +762,8 @@ dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) {
 //TODO: WAV File saving (works fine on shorts, but on float, writing short to wav is not auto-gained,
 //so super quiet, either convert to float wav files, or run processAudio AFTER memcpy of the temp_buf)
 
-//simple method -- produces cleaner results, but can be muted (or very loud) at times
-//has manual control only, no auto gain
-// void agf (dsd_opts * opts, dsd_state * state, float samp[160], int slot)
-// {
-//   int i;
-//   float mmax = 0.75f;
-//   float mmin = -0.75f;
-//   float df = 3276.7f;
-
-//   //Default gain value of 1.0f on audio_gain == 0
-//   float gain = 1.0f;
-
-//   //make it so that gain is 1.0f on 25.0f aout, and 2.0f on 50 aout
-//   if (opts->audio_gain != 0 && slot == 0)
-//     gain = state->aout_gain / 25.0f;
-
-//   if (opts->audio_gain != 0 && slot == 1)
-//     gain = state->aout_gainR / 25.0f;
-
-//   //mono output handles slightly different, need to further decimate
-//   if (opts->pulse_digi_out_channels == 1)
-//     df *= 4.0f;
-
-//   for (i = 0; i < 160; i++)
-//   {
-//     //simple decimation
-//     samp[i] /= df;
-//     samp[i] *= 0.65f;
-
-//     //simple clipping
-//     if (samp[i] > mmax)
-//       samp[i] = mmax;
-//     if (samp[i] < mmin)
-//       samp[i] = mmin;
-
 //     //user gain factor
 //     samp[i] *= gain;
-
-//   }
-
-// }
 
 //float stereo mix 3v2 DMR
 void
@@ -1200,7 +1161,6 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     int encL, encR;
 
     short stereo_sf[18][320]; //8k 2-channel stereo interleave mix for full superframe
-    // DSD_MEMSET(stereo_sf, 1, 18*sizeof(short)); //I don't think 18*sizeof(short) was large enough, should probably be 18*320*sizeof(short)
     DSD_MEMSET(stereo_sf, 0, sizeof(stereo_sf));
 
     // Per-slot audio gating (P25p2): start from per-slot allowed flags,
@@ -1211,44 +1171,6 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     unsigned long TGR = (unsigned long)state->lasttgR;
 
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
-
-    //check to see if we need to enable slot and toggle slot preference here
-    //this method will always favor slot 2 (this is a patch anyways, so....meh)
-    // if (strcmp(modeL, "A") == 0)
-    // {
-    //   opts->slot1_on = 1;
-    //   opts->slot_preference = 0;
-    // }
-    // if (strcmp(modeR, "A") == 0)
-    // {
-    //   opts->slot2_on = 1;
-    //   opts->slot_preference = 1;
-    // }
-
-    //check to see if we need to enable slot and toggle slot preference here
-    //if both groups allowed, then give no preference to either one (not sure this is needed now)
-    // if ( (strcmp(modeL, "A") == 0) && (strcmp(modeR, "A") == 0) )
-    // {
-    //   opts->slot1_on = 1;
-    //   opts->slot2_on = 1;
-    //   opts->slot_preference = 2;
-    // }
-    // else if (strcmp(modeL, "A") == 0)
-    // {
-    //   opts->slot1_on = 1;
-    //   opts->slot_preference = 0;
-    // }
-    // else if (strcmp(modeR, "A") == 0)
-    // {
-    //   opts->slot2_on = 1;
-    //   opts->slot_preference = 1;
-    // }
-    // else //if any other condition, then give no preference to either one
-    // {
-    //   opts->slot1_on = 1;
-    //   opts->slot2_on = 1;
-    //   opts->slot_preference = 2;
-    // }
 
     dsd_p25p2_apply_slot_preference_ss18(opts, state, TGL, TGR);
     dsd_hpf_short_18_if_enabled(opts, state);
@@ -1281,10 +1203,6 @@ soft_tonef(float samp[160], int n, int ID, int AD) {
     double step1, step2, amplitude, freq1, freq2;
 
     float gain = 1.0f;
-
-    //needs opts and state to work....don't feel like doing the changes
-    // if (opts->audio_gain != 0 && slot == 0)
-    //   gain = state->aout_gain / 25.0f;
 
     // Synthesize tones
     freq1 = 31.25 * (double)ID;
@@ -1356,7 +1274,6 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
             }
         }
 
-        //load returned tone sample into appropriate channel -- left = +0; right = +1;
         for (i = 0; i < 160; i++) {
             samp_fs[(i * 2) + lr] = samp_f[i];
         }

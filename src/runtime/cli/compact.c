@@ -44,6 +44,11 @@ dsd_cli_compact_args(int argc, char** argv) {
         return 0;
     }
 
+    /*
+     * These buckets mirror the long-option parser by operand shape.
+     * The compact pass strips only options that getopt() cannot process later.
+     * Each list keeps the skip rule explicit so optional operands stay visible.
+     */
     static const char* const k_skip_exact_no_arg[] = {
         "--auto-ppm",          "--rtltcp-autotune",      "--iq-loop",       "--rdio-api-delete-after-upload",
         "--enc-lockout",       "--enc-follow",           "--no-config",     "--print-config",
@@ -100,10 +105,11 @@ dsd_cli_compact_args(int argc, char** argv) {
         "--dmr-baofeng-pc5=",       "--dmr-csi-ee72=", "--dmr-vertex-ks-csv=", "--config=",
     };
 
-    // Remove recognized long options so short-option getopt() sees remaining
-    // tokens; keep argv[0] as program name.
+    // Remove recognized long options so short-option getopt() sees remaining tokens.
+    // Keep argv[0] as the program name and compact in place for legacy callers.
     int w = 1;
-    for (int i = 1; i < argc; i++) {
+    for (int i = 1, advance = 1; i < argc; i += advance) {
+        advance = 1;
         const char* arg = argv[i];
         if (arg == NULL) {
             break;
@@ -118,21 +124,21 @@ dsd_cli_compact_args(int argc, char** argv) {
         if (compact_matches_exact(arg, k_skip_exact_next_nonopt,
                                   sizeof(k_skip_exact_next_nonopt) / sizeof(k_skip_exact_next_nonopt[0]))) {
             if (compact_has_next_non_option(i, argc, argv)) {
-                i++;
+                advance = 2;
             }
             continue;
         }
         if (compact_matches_exact(arg, k_skip_exact_next_nonnull,
                                   sizeof(k_skip_exact_next_nonnull) / sizeof(k_skip_exact_next_nonnull[0]))) {
             if (compact_has_next_nonnull(i, argc, argv)) {
-                i++;
+                advance = 2;
             }
             continue;
         }
         if (compact_matches_exact(arg, k_skip_exact_next_any,
                                   sizeof(k_skip_exact_next_any) / sizeof(k_skip_exact_next_any[0]))) {
             if (i + 1 < argc) {
-                i++;
+                advance = 2;
             }
             continue;
         }

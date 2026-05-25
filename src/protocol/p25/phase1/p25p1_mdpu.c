@@ -528,8 +528,10 @@ p25_mpdu_reconstruct_rate34_payload(P25MpduContext* ctx, uint8_t* dbsn, uint16_t
     int next = 0;
     int block_ptr = 0;
 
-    for (int byte_idx = 2; byte_idx <= P25_MPDU_R34_BYTES * ctx->blks; byte_idx++) {
-        if ((byte_idx != 0) && ((byte_idx % P25_MPDU_R34_BYTES) == 0)) {
+    for (int byte_idx = 2, advance = 1; byte_idx <= P25_MPDU_R34_BYTES * ctx->blks; byte_idx += advance) {
+        advance = 1;
+        int read_idx = byte_idx;
+        if ((byte_idx % P25_MPDU_R34_BYTES) == 0) {
             dbsn[block_ptr] = ctx->r34bytes[byte_idx - P25_MPDU_R34_BYTES] >> 1;
             crc9_ext[block_ptr] = (uint16_t)(((ctx->r34bytes[byte_idx - P25_MPDU_R34_BYTES] & 1) << 8)
                                              | ctx->r34bytes[byte_idx - (P25_MPDU_R34_BYTES - 1)]);
@@ -537,11 +539,12 @@ p25_mpdu_reconstruct_rate34_payload(P25MpduContext* ctx, uint8_t* dbsn, uint16_t
             next += 135;
             block_ptr++;
             if (byte_idx != P25_MPDU_R34_BYTES * ctx->blks) {
-                byte_idx += 2;
+                read_idx = byte_idx + 2;
+                advance = 3;
             }
         }
         if ((size_t)mpdu_idx < sizeof(ctx->mpdu_byte)) {
-            ctx->mpdu_byte[mpdu_idx++] = ctx->r34bytes[byte_idx];
+            ctx->mpdu_byte[mpdu_idx++] = ctx->r34bytes[read_idx];
         }
     }
     return mpdu_idx;

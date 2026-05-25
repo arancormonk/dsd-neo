@@ -195,7 +195,6 @@ BPTC_128x77_Extract_Data(uint8_t InputDataMatrix[8][16], uint8_t DMRDataExtracte
     /* Init the Hamming (16,11,4) library
    * Not needed because it has already been done
    * in the "InitAllFecFunction()" function */
-    //Hamming_16_11_4_init();
 
     /* Process the the Hamming (16,11,4) code
    * check on each line.
@@ -333,16 +332,6 @@ BPTC_16x2_Extract_Data(uint8_t InputInterleavedData[32], uint8_t DMRDataExtracte
             ParityCheckEvenErrorNb++;
         }
     }
-
-    //DSD_FPRINTF(stderr, "Hamming ERR=%u ; Parity odd ERR=%u, Parity even ERR=%u, ", HammingIrrecoverableErrorNb, ParityCheckOddErrorNb, ParityCheckEvenErrorNb);
-
-    //DSD_FPRINTF(stderr, "Content =\n");
-    //for(i = 0; i < 32; i++)
-    //{
-    //  DSD_FPRINTF(stderr, "%u", DMRDataExtracted[i] & 1);
-    //  if((i == 15) || (i == 31)) DSD_FPRINTF(stderr, "\n");
-    //  else DSD_FPRINTF(stderr, "-");
-    //}
 
     /* Return the number of irrecoverable Hamming errors +
    * the number of parity check error */

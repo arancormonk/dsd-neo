@@ -529,6 +529,11 @@ test_vertex_import_and_apply(void) {
         return 1;
     }
 
+    /*
+     * Build a minimal Vertex keystream CSV on disk.
+     * The rows exercise frame-stepped, repeating, and zero-key mappings.
+     * Applying the rows below verifies import state and frame output together.
+     */
     char tmpl[] = "dsd-neo-test-vertex-ks-XXXXXX";
     int fd = dsd_mkstemp(tmpl);
     if (fd < 0) {
@@ -574,6 +579,7 @@ test_vertex_import_and_apply(void) {
     DSD_MEMSET(frame2, 0, sizeof(frame2));
     DSD_MEMSET(frame_zero_key, 0, sizeof(frame_zero_key));
 
+    // Repeated application advances only the configured frame-stepped mapping.
     if (vertex_key_map_apply_frame49(state, 0, 0x1234567891ULL, frame0) != 1) {
         (void)remove(tmpl);
         free_test_state(state);
@@ -619,6 +625,7 @@ test_vertex_import_and_apply(void) {
 
     char unknown[49];
     DSD_MEMSET(unknown, 0, sizeof(unknown));
+    // Unknown keys must leave the destination frame untouched.
     if (vertex_key_map_apply_frame49(state, 0, 0x999999ULL, unknown) != 0) {
         (void)remove(tmpl);
         free_test_state(state);

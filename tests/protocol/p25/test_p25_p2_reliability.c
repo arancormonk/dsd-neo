@@ -52,9 +52,6 @@ static int g_ess_soft_calls = 0;
 static int g_ess_soft_last_n = 0;
 static int g_ess_soft_mutate_algid = -1;
 
-/* Stubs for external functions referenced by p25p2_frame.c */
-static struct RtlSdrContext* g_rtl_ctx = 0;
-
 bool
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
@@ -209,11 +206,6 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 LFSR128(dsd_state* state) {
     (void)state;
-}
-
-static double
-dsd_time_now_monotonic_s(void) {
-    return 0.0;
 }
 
 /* RS decoders */

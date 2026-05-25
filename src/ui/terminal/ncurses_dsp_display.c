@@ -141,14 +141,6 @@ dsp_status_print_cqpsk_eq(void) {
 
 static void
 dsp_status_print_cqpsk_metrics(void) {
-    extern double rtl_stream_get_cfo_hz(void);
-    extern int rtl_stream_get_carrier_lock(void);
-    extern int rtl_stream_get_costas_err_q14(void);
-    extern int rtl_stream_get_costas_metrics(rtl_stream_costas_metrics * out);
-    extern int rtl_stream_get_nco_q15(void);
-    extern int rtl_stream_get_demod_rate_hz(void);
-    extern double rtl_stream_get_fll_band_edge_freq_hz(void);
-
     double cfo = rtl_stream_get_cfo_hz();
     int clk = rtl_stream_get_carrier_lock();
     rtl_stream_costas_metrics cm;

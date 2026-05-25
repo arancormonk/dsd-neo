@@ -135,7 +135,6 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->rdio_api_delete_after_upload = 0;
     opts->rdio_api_key[0] = 0;
     DSD_SNPRINTF(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", "http://127.0.0.1:3000");
-    //opts->wav_out_fd = -1;
     opts->serial_baud = 115200;
     opts->serial_fd = -1;
     DSD_SNPRINTF(opts->serial_dev, sizeof opts->serial_dev, "%s", "/dev/ttyUSB0");
@@ -277,7 +276,7 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     DSD_SNPRINTF(opts->udp_hostname, sizeof opts->udp_hostname, "%s", "127.0.0.1");
 
     // M17 UDP Port and hostname
-    opts->m17_use_ip = 0;                    //if enabled, open UDP and broadcast IP frame
+    opts->m17_use_ip = 0;                    // If enabled, open UDP and broadcast IP frame
     opts->m17_portno = 17000;                //default is 17000
     opts->m17_udp_sock = DSD_INVALID_SOCKET; //actual UDP socket for M17 to send to
     DSD_SNPRINTF(opts->m17_hostname, sizeof opts->m17_hostname, "%s", "127.0.0.1");
@@ -688,7 +687,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->K2 = 0;
     state->K3 = 0;
     state->K4 = 0;
-    state->M = 0; //force key priority over settings from fid/so
+    state->M = 0; // Force key priority over settings from fid/so
 
     state->dmr_stereo = 0; //1, or 0?
     state->dmrburstL = 17; //initialize at higher value than possible
@@ -1043,7 +1042,6 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->m17_str_dt = 9;
 
     //misc str storage
-    //  DSD_SPRINTF(state->str50a, "%s", "");
     DSD_MEMSET(state->str50b, 0, 50 * sizeof(char));
     DSD_MEMSET(state->str50c, 0, 50 * sizeof(char));
     DSD_MEMSET(state->m17sms, 0, 800 * sizeof(char));
@@ -1083,7 +1081,6 @@ init_state_codec2_and_events(dsd_state* state) {
     state->event_history_s = calloc(2, sizeof(Event_History_I));
 
     //debug
-    //  DSD_FPRINTF(stderr, "allocated size of event history struct: %ld bytes; \n", 600 * sizeof(Event_History));
 
     if (state->event_history_s == NULL) {
         LOG_ERROR("memory allocation failure! \n");
@@ -1101,7 +1098,6 @@ init_state_codec2_and_events(dsd_state* state) {
 
 void
 initState(dsd_state* state) {
-    // state->testcounter = 0;
     state->last_dibit = 0;
     init_state_extension_slots(state);
     init_state_core_buffers(state);
@@ -1154,6 +1150,15 @@ freeState(dsd_state* state) {
 
     free(state->event_history_s);
     state->event_history_s = NULL;
+
+    if (state->cli_argv) {
+        for (int i = 0; i < state->cli_argc_effective; i++) {
+            free(state->cli_argv[i]);
+        }
+        free((void*)state->cli_argv);
+        state->cli_argv = NULL;
+    }
+    state->cli_argc_effective = 0;
 
     dsd_aligned_free(state->audio_out_buf);
     state->audio_out_buf = NULL;

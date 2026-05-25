@@ -695,7 +695,7 @@ LFSR128(dsd_state* state) {
             ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
         lfsr = (lfsr << 1) | bit;
 
-        //continue packing aes_iv
+        // Continue packing aes_iv
         if (slot == 0) {
             state->aes_iv[x / 8] = (state->aes_iv[x / 8] << 1) + bit;
         }
@@ -707,7 +707,7 @@ LFSR128(dsd_state* state) {
 
     if (state->currentslot == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        if (state->dmrburstL != 27) { //if not LDU2
+        if (state->dmrburstL != 27) { // If not LDU2
             DSD_FPRINTF(stderr, "\n");
         }
         DSD_FPRINTF(stderr, "     ");
@@ -716,12 +716,11 @@ LFSR128(dsd_state* state) {
             DSD_FPRINTF(stderr, "%02X", state->aes_iv[x]);
         }
         DSD_FPRINTF(stderr, "%s", KNRM);
-        // DSD_FPRINTF(stderr, "\n");
     }
 
     if (state->currentslot == 1) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        if (state->dmrburstL != 27) { //if not LDU2, shouldn't matter on P25p2 for the second slot
+        if (state->dmrburstL != 27) { // If not LDU2, shouldn't matter on P25p2 for the second slot
             DSD_FPRINTF(stderr, "\n");
         }
         DSD_FPRINTF(stderr, "     ");
@@ -730,6 +729,5 @@ LFSR128(dsd_state* state) {
             DSD_FPRINTF(stderr, "%02X", state->aes_ivR[x]);
         }
         DSD_FPRINTF(stderr, "%s", KNRM);
-        // DSD_FPRINTF(stderr, "\n");
     }
 }

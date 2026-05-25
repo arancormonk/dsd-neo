@@ -692,6 +692,12 @@ writer_remaining_budget(const struct dsd_iq_capture_writer* w) {
 }
 
 static int
+writer_has_budget_for(const struct dsd_iq_capture_writer* w, uint64_t needed) {
+    uint64_t budget = writer_remaining_budget(w);
+    return budget == UINT64_MAX || budget >= needed;
+}
+
+static int
 writer_queue_init(struct dsd_iq_capture_writer* w) {
     if (!w || w->block_bytes == 0 || w->block_count == 0) {
         return DSD_IQ_ERR_QUEUE_INIT;
@@ -1112,10 +1118,9 @@ writer_submit_cu8(struct dsd_iq_capture_writer* w, const uint8_t* in, size_t byt
     if (w->cu8_carry_valid) {
         if (bytes > 0) {
             uint8_t pair[2];
-            uint64_t budget = writer_remaining_budget(w);
             pair[0] = w->cu8_carry;
             pair[1] = in[0];
-            if (budget >= 2 || budget == UINT64_MAX) {
+            if (writer_has_budget_for(w, 2)) {
                 int rc = writer_submit_bytes(w, pair, 2);
                 if (rc != DSD_IQ_OK) {
                     return rc;
@@ -1160,8 +1165,7 @@ writer_submit_cu8(struct dsd_iq_capture_writer* w, const uint8_t* in, size_t byt
     }
 
     if (consumed < bytes) {
-        uint64_t budget = writer_remaining_budget(w);
-        if (budget >= 2 || budget == UINT64_MAX) {
+        if (writer_has_budget_for(w, 2)) {
             w->cu8_carry = in[consumed];
             w->cu8_carry_valid = 1;
         } else {

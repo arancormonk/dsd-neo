@@ -221,7 +221,7 @@ resolve_data_path(const char* metadata_path, const char* data_file, char* out_da
 
 typedef enum {
     JTOK_ERROR = -1,
-    JTOK_EOF = 0,
+    JTOK_EOF,
     JTOK_LBRACE,
     JTOK_RBRACE,
     JTOK_LBRACKET,

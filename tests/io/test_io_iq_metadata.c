@@ -599,6 +599,11 @@ test_json_unescape_and_control_rejection(void) {
         return 1;
     }
 
+    /*
+     * Use a metadata file beside a nested data file so unescaping and relative
+     * path resolution are covered in the same parse. The rejection cases below
+     * then prove decoded control bytes cannot reach operational string fields.
+     */
     char subdir[512];
     path_join(subdir, sizeof(subdir), dir, "sub");
     if (dsd_mkdir(subdir, 0700) != 0) {
@@ -699,6 +704,7 @@ test_json_unescape_and_control_rejection(void) {
     prc = dsd_iq_replay_read_metadata(bad1, &cfg, err, sizeof(err));
     rc |= expect_int("operational control-byte reject", prc, DSD_IQ_ERR_INVALID_META);
 
+    // Embedded NULs in paths must be rejected after JSON unescape, not truncated.
     char bad2[512];
     path_join(bad2, sizeof(bad2), dir, "bad_nul.iq.json");
     const char* bad_nul = "{\n"
@@ -750,6 +756,11 @@ test_invalid_json_shapes_and_number_types(void) {
         return 1;
     }
 
+    /*
+     * Metadata rejects syntax errors, nested values where strings are required,
+     * and floating-point numbers in integer-only fields. These cases protect the
+     * replay loader from silently coercing malformed capture descriptors.
+     */
     char data[512];
     path_join(data, sizeof(data), dir, "x.iq");
     uint8_t b[2] = {1, 2};
@@ -853,6 +864,11 @@ test_event_timeline_validation(void) {
         return 1;
     }
 
+    /*
+     * Event metadata is parsed before replay open, so this test separates schema
+     * validation from replay compatibility checks. Invalid timelines reject at
+     * metadata load time; retune summaries reject later when replay is opened.
+     */
     char data[512];
     path_join(data, sizeof(data), dir, "events_bad.iq");
     uint8_t bytes[8] = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -893,6 +909,7 @@ test_event_timeline_validation(void) {
         dsd_iq_replay_config_clear(&cfg);
     }
 
+    // Version 1 files cannot opt into event arrays after a successful parse.
     {
         char meta[512];
         path_join(meta, sizeof(meta), dir, "events_on_v1.iq.json");
@@ -978,6 +995,7 @@ test_event_timeline_validation(void) {
     rc |= expect_true("retuned v1 rejected source null", src == NULL);
     dsd_iq_replay_config_clear(&cfg);
 
+    // Replay open rejects retune-bearing captures even when metadata reads cleanly.
     char retuned_mute_only[512];
     path_join(retuned_mute_only, sizeof(retuned_mute_only), dir, "retuned_mute_only.iq.json");
     if (write_v2_metadata_with_events(retuned_mute_only, "events_bad.iq",
@@ -1104,6 +1122,11 @@ test_relative_data_resolution_info_and_open_validation(void) {
         return 1;
     }
 
+    /*
+     * Relative data paths are resolved from the metadata directory, then reused
+     * by the info printer and replay opener. Later cases keep the path valid but
+     * vary byte counts and retune flags to exercise open-time rejection paths.
+     */
     char subdir[512];
     path_join(subdir, sizeof(subdir), dir, "meta");
     if (dsd_mkdir(subdir, 0700) != 0) {
@@ -1146,6 +1169,7 @@ test_relative_data_resolution_info_and_open_validation(void) {
     rc |= expect_true("info has header", strstr(out_buf, "IQ Capture Info:") != NULL);
     rc |= expect_true("info has replay compatibility", strstr(out_buf, "Replay compatible:") != NULL);
 
+    // Warnings are written to the warning stream while the info output remains usable.
     fflush(warn);
     fseek(warn, 0, SEEK_SET);
     char warn_buf[1024];

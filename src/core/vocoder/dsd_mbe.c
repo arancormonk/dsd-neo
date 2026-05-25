@@ -478,6 +478,18 @@ mbe_apply_p25p1_rc4(dsd_state* state, char imbe_d[88]) {
     }
 }
 
+static int
+mbe_p25p1_multicrypt_enabled(const dsd_state* state) {
+    switch (state->payload_algid) {
+        case 0x81:
+        case 0x9F: return state->R != 0;
+        case 0x83:
+        case 0x84:
+        case 0x89: return state->aes_key_loaded[0] == 1;
+        default: return 0;
+    }
+}
+
 static void
 mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_vocoder_soft_bit imbe_soft_fr[8][23],
                   mbe_frame_ctx_t* frame_ctx) {
@@ -485,10 +497,7 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
     int have_imbe_result = decode_imbe7200_frame(state, imbe_fr, imbe_soft_fr, frame_ctx->imbe_d, &imbe_result);
 
     //P25p1 Multi Crypt Handler (DES1, DES3, DES-XL and AES)
-    if ((state->payload_algid == 0x81 && state->R != 0) || (state->payload_algid == 0x9F && state->R != 0)
-        || (state->payload_algid == 0x84 && state->aes_key_loaded[0] == 1)
-        || (state->payload_algid == 0x89 && state->aes_key_loaded[0] == 1)
-        || (state->payload_algid == 0x83 && state->aes_key_loaded[0] == 1)) {
+    if (mbe_p25p1_multicrypt_enabled(state)) {
         mbe_apply_p25p1_multicrypt(state, frame_ctx->imbe_d);
     }
 
@@ -629,7 +638,7 @@ mbe_apply_vendor_tyt_ap(const dsd_state* state, char ambe_d[49]) {
         decrypt_frame_49(frame1_cipher);
         DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
         for (int i = 0; i < 49; i++) {
-            ambe_d[i] = ctx.bits[i];
+            ambe_d[i] = g_pc4_context.bits[i];
         }
     }
 }
@@ -653,7 +662,7 @@ static void
 mbe_apply_vendor_tyt_ep(const dsd_state* state, char ambe_d[49]) {
     if (state->tyt_ep == 1) {
         for (int i = 0; i < 49; i++) {
-            ambe_d[i] ^= (uint8_t)(ctx.bits[i] & 1);
+            ambe_d[i] ^= (uint8_t)(g_pc4_context.bits[i] & 1);
         }
     }
 }
@@ -949,24 +958,30 @@ mbeslot_right_apply_des(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
 
 static int
 mbeslot_left_aes_enabled(const dsd_state* state) {
-    return (state->payload_algid == 0x24 && state->aes_key_loaded[0] == 1)
-           || (state->payload_algid == 0x25 && state->aes_key_loaded[0] == 1)
-           || (state->payload_algid == 0x89 && state->aes_key_loaded[0] == 1)
-           || (state->payload_algid == 0x84 && state->aes_key_loaded[0] == 1)
-           || (state->payload_algid == 0x36 && state->aes_key_loaded[0] == 1)
-           || (state->payload_algid == 0x37 && state->aes_key_loaded[0] == 1)
-           || (state->payload_algid == 0x02 && state->R != 0);
+    switch (state->payload_algid) {
+        case 0x02: return state->R != 0;
+        case 0x24:
+        case 0x25:
+        case 0x36:
+        case 0x37:
+        case 0x84:
+        case 0x89: return state->aes_key_loaded[0] == 1;
+        default: return 0;
+    }
 }
 
 static int
 mbeslot_right_aes_enabled(const dsd_state* state) {
-    return (state->payload_algidR == 0x24 && state->aes_key_loaded[1] == 1)
-           || (state->payload_algidR == 0x25 && state->aes_key_loaded[1] == 1)
-           || (state->payload_algidR == 0x89 && state->aes_key_loaded[1] == 1)
-           || (state->payload_algidR == 0x84 && state->aes_key_loaded[1] == 1)
-           || (state->payload_algidR == 0x36 && state->aes_key_loaded[1] == 1)
-           || (state->payload_algidR == 0x37 && state->aes_key_loaded[1] == 1)
-           || (state->payload_algidR == 0x02 && state->RR != 0);
+    switch (state->payload_algidR) {
+        case 0x02: return state->RR != 0;
+        case 0x24:
+        case 0x25:
+        case 0x36:
+        case 0x37:
+        case 0x84:
+        case 0x89: return state->aes_key_loaded[1] == 1;
+        default: return 0;
+    }
 }
 
 static void

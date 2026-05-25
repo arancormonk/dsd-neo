@@ -1201,7 +1201,7 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
     nxdn_depermute_u8(bits, 144U, PERM_16_9, deperm);
     nxdn_depuncture_16_9(deperm, depunc);
 
-    //switch to the convolutional decoder
+    // Switch to the convolutional decoder
     uint8_t m_data[20]; //13
     DSD_MEMSET(m_data, 0, sizeof(m_data));
     DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
@@ -1213,13 +1213,10 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
     check = nxdn_bits_to_u16(trellis_buf + 84, 12);
 
     //debug
-    // if (crc == check)
-    // DSD_FPRINTF(stderr, " Pass 1 ");
 
-    //if the crc fails, attempt again with the other trellis decoder
+    // Retry with the alternate trellis decoder after a CRC mismatch.
     if (crc != check) {
         //debug
-        // DSD_FPRINTF(stderr, " Pass 2 ");
         nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
         crc = crc12f(trellis_buf, 84);
         check = nxdn_bits_to_u16(trellis_buf + 84, 12);
@@ -1229,9 +1226,6 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
         state->data_header_format[0] = 3;
         NXDN_Elements_Content_decode(opts, state, 1, trellis_buf, sizeof(trellis_buf));
     }
-    // else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, trellis_buf,
-    // sizeof(trellis_buf));
-
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n");
         DSD_FPRINTF(stderr, " FACCH1 Payload ");
@@ -1324,7 +1318,7 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
     nxdn_depermute_u8(bits, 60U, PERM_12_5, deperm);
     nxdn_depuncture_12_5(deperm, depunc);
 
-    //switch to the convolutional decoder
+    // Decode through the convolutional decoder.
     uint8_t m_data[5]; //5
 
     DSD_MEMSET(m_data, 0, sizeof(m_data));
@@ -1337,13 +1331,10 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
     check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
 
     //debug
-    // if (crc == check)
-    // 	DSD_FPRINTF(stderr, " Pass 1 ");
 
-    //if the crc fails, attempt again with the other trellis decoder
+    // Retry with the alternate trellis decoder after a CRC mismatch.
     if (crc != check) {
         //debug
-        // DSD_FPRINTF(stderr, " Pass 2 ");
 
         nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
         crc = crc6(trellis_buf, 26); //32
@@ -1398,7 +1389,7 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
     nxdn_handle_sacch(opts, state, trellis_buf, m_data, crc, check);
 }
 
-//sacch2 (JPN DCR)
+// SACCH2 for JPN DCR
 //SEE: https://web.archive.org/web/20150417175725/http://arib.or.jp/english/html/overview/doc/1-STD-T98v1_4.pdf
 void
 nxdn_deperm_sacch2(const dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
@@ -1417,7 +1408,7 @@ nxdn_deperm_sacch2(const dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
     nxdn_depermute_u8(bits, 60U, PERM_12_5, deperm);
     nxdn_depuncture_12_5(deperm, depunc);
 
-    //switch to the convolutional decoder
+    // Switch to the convolutional decoder
     uint8_t m_data[5]; //5
 
     DSD_MEMSET(m_data, 0, sizeof(m_data));
@@ -1430,13 +1421,10 @@ nxdn_deperm_sacch2(const dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
     check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
 
     //debug
-    // if (crc == check)
-    // 	DSD_FPRINTF(stderr, " Pass 1 ");
 
-    //if the crc fails, attempt again with the other trellis decoder
+    // If the crc fails, attempt again with the other trellis decoder
     if (crc != check) {
         //debug
-        // DSD_FPRINTF(stderr, " Pass 2 ");
 
         nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
         crc = crc6(trellis_buf, 26); //32
@@ -1462,7 +1450,7 @@ nxdn_deperm_pich_tch(const dsd_opts* opts, dsd_state* state, uint8_t bits[144], 
     nxdn_depermute_u8(bits, 144U, PERM_16_9, deperm);
     nxdn_depuncture_16_9(deperm, depunc);
 
-    //switch to the convolutional decoder
+    // Switch to the convolutional decoder
     uint8_t m_data[20]; //13
     DSD_MEMSET(m_data, 0, sizeof(m_data));
     DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
@@ -1474,13 +1462,10 @@ nxdn_deperm_pich_tch(const dsd_opts* opts, dsd_state* state, uint8_t bits[144], 
     check = nxdn_bits_to_u16(trellis_buf + 84, 12);
 
     //debug
-    // if (crc == check)
-    // DSD_FPRINTF(stderr, " Pass 1 ");
 
-    //if the crc fails, attempt again with the other trellis decoder
+    // If the crc fails, attempt again with the other trellis decoder
     if (crc != check) {
         //debug
-        // DSD_FPRINTF(stderr, " Pass 2 ");
 
         nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
         crc = crc12f(trellis_buf, 84);
@@ -1504,7 +1489,7 @@ nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uin
     nxdn_depermute(bits, 348U, PERM_12_29, deperm);
     nxdn_depuncture_12_group(deperm, 29U, depunc);
 
-    //switch to the convolutional decoder
+    // Switch to the convolutional decoder
     uint8_t m_data[26]; //26
     DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
     DSD_MEMSET(m_data, 0, sizeof(m_data));
@@ -1516,13 +1501,10 @@ nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uin
     check = nxdn_bits_to_u16(trellis_buf + 184, 15);
 
     //debug
-    // if (crc == check)
-    // DSD_FPRINTF(stderr, " Pass 1 ");
 
-    //if the crc fails, attempt again with the other trellis decoder
+    // If the crc fails, attempt again with the other trellis decoder
     if (crc != check) {
         //debug
-        // DSD_FPRINTF(stderr, " Pass 2 ");
 
         nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 26U, depunc, 199);
         crc = crc15(trellis_buf, 199);
@@ -1545,7 +1527,7 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
     nxdn_depermute(bits, 300U, PERM_12_25, deperm);
     nxdn_depuncture_12_group(deperm, 25U, depunc);
 
-    //switch to the convolutional decoder
+    // Switch to the convolutional decoder
     uint8_t m_data[22]; //26
     DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
     DSD_MEMSET(m_data, 0, sizeof(m_data));
@@ -1556,12 +1538,9 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
     crc = crc16cac(trellis_buf, 171);
 
     //debug
-    // if (crc == 0)
-    // 	DSD_FPRINTF(stderr, " Pass 1 ");
 
     if (crc != 0) {
         //debug
-        // DSD_FPRINTF(stderr, " Pass 2 ");
         nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 22U, depunc, 171);
         crc = crc16cac(trellis_buf, 171);
     }
@@ -1590,7 +1569,7 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
     nxdn_depermute_u8(bits, 60U, PERM_12_5, deperm);
     nxdn_depuncture_12_5(deperm, depunc);
 
-    //switch to the convolutional decoder
+    // Switch to the convolutional decoder
     uint8_t m_data[5]; //5
 
     DSD_MEMSET(m_data, 0, sizeof(m_data));
@@ -1603,13 +1582,10 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
     check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
 
     //debug
-    // if (crc == check)
-    // DSD_FPRINTF(stderr, " Pass 1 ");
 
-    //if the crc fails, attempt again with the other trellis decoder
+    // If the crc fails, attempt again with the other trellis decoder
     if (crc != check) {
         //debug
-        // DSD_FPRINTF(stderr, " Pass 2 ");
 
         nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
         crc = crc7_scch(trellis_buf, 25);
@@ -1621,7 +1597,6 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
     const int part_of_frame = nxdn_sacch_part_of_frame(sf);
 
     //reset scrambler seed to key value on new superframe
-    // if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) state->payload_miN = 0;
 
     //reset scrambler seed to key value on new superframe
     if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) {
@@ -1651,7 +1626,6 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
     if (crc == check) {
         NXDN_decode_scch(opts, state, trellis_buf, direction);
     }
-    // else if (opts->aggressive_framesync == 0) NXDN_decode_scch (opts, state, trellis_buf, direction);
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 
@@ -1700,7 +1674,7 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
         nxdn_alias_reset(state);
         state->nxdn_last_rid = 0;
         state->nxdn_last_tg = 0;
-        state->nxdn_cipher_type = 0; //force will reactivate it if needed during voice tx
+        state->nxdn_cipher_type = 0; // Force will reactivate it if needed during voice tx
         if (state->keyloader == 1) {
             state->R = 0;
         }
@@ -1892,7 +1866,7 @@ LFSR128n(dsd_state* state) {
             ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
         lfsr = (lfsr << 1) | bit;
 
-        //continue packing aes_iv
+        // Continue packing aes_iv
         state->aes_iv[x / 8] = (state->aes_iv[x / 8] << 1) + bit;
         x++;
     }

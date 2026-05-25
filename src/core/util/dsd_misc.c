@@ -69,7 +69,6 @@ trellis_decode(uint8_t result[], const uint8_t source[], int result_len) {
     }
 
     //debug output
-    // DSD_FPRINTF(stderr, "\n stats\t%d %d %d %d\n", dstats[0], dstats[1], dstats[2], dstats[3]);
 }
 
 //Original Copyright/License
@@ -133,9 +132,6 @@ viterbi_decode(uint8_t* out, const uint16_t* in, const uint16_t len) {
     uint32_t err = viterbi_chainback(out, pos, len / 2);
 
     //debug
-    // DSD_FPRINTF(stderr, "\n vcb: \n");
-    // for (size_t i = 0; i < len; i++)
-    // 	DSD_FPRINTF(stderr, "%02X", out[i]);
 
     return err;
 }
@@ -176,7 +172,6 @@ viterbi_decode_punctured(uint8_t* out, const uint16_t* in, const uint8_t* punct,
     }
 
     //debug
-    // DSD_FPRINTF(stderr, " p: %d, u: %d; p_len: %d; len: %d;", p, u, p_len, (u-in_len)*0x7FFF);
 
     return viterbi_decode(out, umsg, u) - (u - in_len) * 0x7FFF;
 }
@@ -262,9 +257,6 @@ viterbi_chainback(uint8_t* out, size_t pos, uint16_t len) {
     }
 
     //debug
-    // DSD_FPRINTF(stderr, "\n cb: \n");
-    // for (size_t i = 0; i < len; i++)
-    // 	DSD_FPRINTF(stderr, "%02X", out[i]);
 
     uint32_t best_cost = prevMetrics[0];
     for (size_t i = 1; i < NUM_STATES; i++) {
@@ -323,15 +315,6 @@ q_abs_diff(const uint16_t v1, const uint16_t v2) {
 //audio filter stuff sourced from: https://github.com/NedSimao/FilteringLibrary
 //no license / information provided in source code
 #define PI 3.141592653
-
-//do we need this for test input sthit?
-// #define PLOT_POINTS     100
-// #define SAMPLE_TIME_S   0.001
-// #define CUTOFFFREQ_HZ   50
-// #define sine_freq       40
-// #define sine_freq_1     500
-// #define HFC 50
-// #define LFC 100
 
 static void
 LPFilter_Init(LPFilter* filter, float cutoffFreqHz, float sampleTimeS) {
@@ -465,9 +448,6 @@ init_audio_filters(dsd_state* state, int sample_rate_hz) {
     LPFilter_Init(&state->RCFilterR, 960.0f, digital_Ts);
     HPFilter_Init(&state->HRCFilterR, 960.0f, digital_Ts);
 
-    //PBFilter_Init(PBFilter *filter, float HPF_cutoffFreqHz, float LPF_cutoffFreqHz, float sampleTimeS);
-    //NOTCHFilter_Init(NOTCHFilter *filter, float centerFreqHz, float notchWidthHz, float sampleTimeS);
-
     //NOTE: PBFilter_init also inits a LPF and HPF, but on another set of filters, might be worth
     //testing just using the PBFilter by itself and see how it does without the hpf used
 
@@ -482,7 +462,7 @@ init_audio_filters(dsd_state* state, int sample_rate_hz) {
 
 //FUNCTIONS for handing use of above filters
 
-//lpf (short)
+// LPF short path
 void
 lpf(dsd_state* state, short* input, int len) {
     int i;
@@ -491,7 +471,7 @@ lpf(dsd_state* state, short* input, int len) {
     }
 }
 
-//lpf (float) - native float path for analog monitor
+// LPF float path for analog monitor
 void
 lpf_f(dsd_state* state, float* input, int len) {
     int i;
@@ -511,7 +491,7 @@ clamp_float_to_short(float value) {
     return (short)value;
 }
 
-//hpf (short)
+// HPF short path
 void
 hpf(dsd_state* state, short* input, int len) {
     int i;
@@ -520,7 +500,7 @@ hpf(dsd_state* state, short* input, int len) {
     }
 }
 
-//hpf (float) - native float path for analog monitor
+// HPF float path for analog monitor
 void
 hpf_f(dsd_state* state, float* input, int len) {
     int i;
@@ -534,9 +514,7 @@ void
 hpf_dL(dsd_state* state, short* input, int len) {
     int i;
     for (i = 0; i < len; i++) {
-        // DSD_FPRINTF(stderr, "\n in: %05d", input[i]);
         input[i] = clamp_float_to_short(HPFilter_Update(&state->HRCFilterL, input[i]));
-        // DSD_FPRINTF(stderr, "\n out: %05d", input[i]);
     }
 }
 
@@ -545,13 +523,11 @@ void
 hpf_dR(dsd_state* state, short* input, int len) {
     int i;
     for (i = 0; i < len; i++) {
-        // DSD_FPRINTF(stderr, "\n in: %05d", input[i]);
         input[i] = clamp_float_to_short(HPFilter_Update(&state->HRCFilterR, input[i]));
-        // DSD_FPRINTF(stderr, "\n out: %05d", input[i]);
     }
 }
 
-//pbf (short)
+// PBF short path
 void
 pbf(dsd_state* state, short* input, int len) {
     int i;
@@ -560,7 +536,7 @@ pbf(dsd_state* state, short* input, int len) {
     }
 }
 
-//pbf (float) - native float path for analog monitor
+// PBF float path for analog monitor
 void
 pbf_f(dsd_state* state, float* input, int len) {
     int i;

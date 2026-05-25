@@ -352,10 +352,6 @@ lfsr_64_to_len_ca(uint8_t* iv, int16_t len) {
         iv[i] = (lfsr >> (56 - (i * 8))) & 0xFF;
     }
 
-    // DSD_FPRINTF(stderr, "\n IV(%02d): ", len);
-    // for (int16_t i = 0; i < 8; i++)
-    //   DSD_FPRINTF(stderr, "%02X", iv[i]);
-
     return bit;
 }
 
@@ -392,10 +388,6 @@ des56_ca_keystream_output(const uint8_t* main_key, const uint8_t* iv, uint8_t* k
         //reset output register
         DSD_MEMSET(output_register, 0, sizeof(output_register));
     }
-
-    // DSD_FPRINTF(stderr, "\n  IR: ");
-    // for (int16_t i = 0; i < 8; i++)
-    //   DSD_FPRINTF(stderr, "%02X", input_register[i]);
 }
 
 //transitional function mainly to load key and iv into an array
@@ -416,14 +408,6 @@ des_multi_keystream_output(unsigned long long int mi, unsigned long long int key
     for (i = 7; i >= 0; i--) {
         key[7 - i] = (key_ulli >> (8 * i)) & 0xFF;
     }
-
-    //debug
-    // DSD_FPRINTF(stderr, "\n  IV: ");
-    // for (i = 0; i < 8; i++)
-    //   DSD_FPRINTF(stderr, "%02X", iv[i]);
-    // DSD_FPRINTF(stderr, "\n Key: ");
-    // for (i = 0; i < 8; i++)
-    //   DSD_FPRINTF(stderr, "%02X", key[i]);
 
     //types: 1 = DES56 OFB; 2 = DES56 CA (XL)
     if (type == 2) {
@@ -450,9 +434,6 @@ tdea_multi_keystream_output(unsigned long long int mi, const uint8_t* key, uint8
     }
 
     //debug
-    // DSD_FPRINTF(stderr, "\n  IV: ");
-    // for (i = 0; i < 8; i++)
-    //   DSD_FPRINTF(stderr, "%02X", iv[i]);
 
     //type 1 = TDEA TOFB //TODO: Add more types like 2DES?
     (void)type; // currently only TOFB supported

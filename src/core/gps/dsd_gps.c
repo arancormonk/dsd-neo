@@ -193,7 +193,8 @@ nmea_validate_checksum(const uint8_t* input, int len_bytes, uint8_t* end_value, 
 static void
 nmea_copy_printable_sentence(const uint8_t* input, int len_bytes, char* out, size_t out_cap) {
     size_t w = 0U;
-    for (int i = 0; i < len_bytes && w + 1U < out_cap; i++) {
+    int i = 0;
+    while (i < len_bytes && w + 1U < out_cap) {
         uint8_t ascii = (uint8_t)ConvertBitIntoBytes(input + ((size_t)i * 8U), 8);
         uint16_t crlf = 0xFFFFU;
         if ((i + 1) < len_bytes) {
@@ -202,9 +203,10 @@ nmea_copy_printable_sentence(const uint8_t* input, int len_bytes, char* out, siz
 
         if (ascii >= 0x20U && ascii < 0x7FU) {
             out[w++] = (char)ascii;
+            i++;
         } else if (crlf == 0x0D0AU) {
             out[w++] = ' ';
-            i++; // consume LF
+            i += 2;
         } else {
             break;
         }
@@ -226,13 +228,6 @@ nmea_print_invalid_reason(uint8_t start_value, uint8_t end_value, uint8_t checks
 void
 lip_protocol_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* input) {
     //NOTE: This is defined in ETSI TS 102 361-4 V1.12.1 (2023-07) p208
-    //6.6.11.3.2 USBD Polling Service Poll Response PDU for LIP (That's a mouthful)
-
-    //May need to set this in the UDT header, or pass it into this function to be sure
-    // uint32_t src = 0;
-    // if (slot == 0)
-    //   src = state->lastsrc;
-    // else src = state->lastsrcR;
 
     //NOTE: This format is pretty much the same as DMR EMB GPS, but has a few extra elements,
     //so I got lazy and just lifted most of the code from there, also assuming same lat/lon calcs
@@ -564,7 +559,7 @@ harris_gps(const dsd_opts* opts, dsd_state* state, int slot, const uint8_t* inpu
     uint8_t quality = (uint16_t)ConvertBitIntoBytes(&input[148], 3);
     UNUSED(quality);
 
-    //timestamp (16-bit value w/ appended 17th bit to MSB)
+    // Timestamp has a 16-bit value with an appended 17th MSB.
     uint32_t rtime = (uint32_t)ConvertBitIntoBytes(
         &input[104], 16); //seconds since midnight since last GPS fix (whatever the radio has as internal time)
     rtime |=
@@ -616,21 +611,10 @@ harris_gps(const dsd_opts* opts, dsd_state* state, int slot, const uint8_t* inpu
     DSD_FPRINTF(stderr, " GPS: %f%s, %f%s;", lat_dec, deg_glyph, lon_dec, deg_glyph);
 
     //gps fix time
-    // DSD_FPRINTF(stderr, " RT: %05X;", rtime); //debug
     DSD_FPRINTF(stderr, " LTS: %02d:%02d:%02d UTC;", thour, tmin, tsec); //last time synced to GPS
 
     //speed and direction
-    // DSD_FPRINTF(stderr, " RSPD: %04X;", rspeed); //debug
-    // DSD_FPRINTF(stderr, " RANG: %02X;", rangle); //debug
-    // DSD_FPRINTF(stderr, " MPS: %06.02f;", fspeed);
-    // DSD_FPRINTF(stderr, " KPH: %06.02f;", fspeed * 3.6f);
-    // DSD_FPRINTF(stderr, " MPH: %06.02f;", fspeed * 2.2369f);
     DSD_FPRINTF(stderr, " DIR: %03d%s;", a, deg_glyph);
-
-    // DSD_FPRINTF(stderr, " FIX: %d", fix);
-    // DSD_FPRINTF(stderr, " QLT: %02d", quality);
-
-    // DSD_FPRINTF(stderr, " SRC: %08d;", src);
 
     //save to array for ncurses (guard slot index)
     {

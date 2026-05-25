@@ -1797,9 +1797,7 @@ apply_cfg_file_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserCon
     if (opts->audio_in_file) {
         sf_close(opts->audio_in_file);
     }
-    if (opts->audio_in_file_info) {
-        free(opts->audio_in_file_info);
-    }
+    free(opts->audio_in_file_info);
 
     opts->audio_in_file = new_audio_in_file;
     opts->audio_in_file_info = new_audio_in_file_info;

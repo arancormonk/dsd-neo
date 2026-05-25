@@ -6,13 +6,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
-#include <dsd-neo/protocol/provoice/provoice_const.h>
-#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -21,19 +15,7 @@
 #include "dsd-neo/platform/file_compat.h"
 #include "test_support.h"
 
-#define DSD_NEO_MAIN
-#include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
-#include <dsd-neo/protocol/provoice/provoice_const.h>
-#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
-
-#undef DSD_NEO_MAIN
-
 #include <fcntl.h> // IWYU pragma: keep
-
-#if !defined(_WIN32)
-#endif
 
 static int
 count_occurrences(const char* haystack, const char* needle) {
@@ -110,6 +92,11 @@ test_frame_log_write_error_reported_once(void) {
     }
     fclose(probe);
 
+    /*
+     * /dev/full gives a deterministic write failure while still opening normally.
+     * stderr is redirected only around the two writes so the test can assert that
+     * the guard suppresses duplicate diagnostics from the same failing sink.
+     */
     DSD_SNPRINTF(opts.frame_log_file, sizeof opts.frame_log_file, "%s", sink_path);
     opts.frame_log_file[sizeof opts.frame_log_file - 1] = '\0';
 
@@ -151,6 +138,7 @@ test_frame_log_write_error_reported_once(void) {
     }
     stderr_redirected = 1;
 
+    // The first write reports the failure and the second write should stay quiet.
     dsd_frame_logf(&opts, "frame=%d", 1);
     dsd_frame_logf(&opts, "frame=%d", 2);
 

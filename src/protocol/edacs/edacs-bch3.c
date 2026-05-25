@@ -256,7 +256,6 @@ generate_cycle_sets(int cycle[1024][21], int size[1024], int* nocycles) {
     cycle[1][0] = 1;
     size[1] = 1;
 
-    if (m > 9) {}
     do {
         generate_cycle_set(cycle, size, jj);
         ll = find_next_cycle_representative(cycle, size, jj, &found_new);

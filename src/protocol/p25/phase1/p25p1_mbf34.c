@@ -306,7 +306,8 @@ p25_mbf34_decode(const uint8_t dibits[98], uint8_t out[18]) {
     uint32_t tribits[49];
     DSD_MEMSET(tribits, 0xF, sizeof(tribits));
 
-    for (int i = 0; i < 49; i++) {
+    int i = 0;
+    while (i < 49) {
         for (int j = 0; j < 8; j++) {
             if (p25_fsm[(state * 8) + j] == point[i]) {
                 tribits[i] = state = (uint8_t)j;
@@ -316,18 +317,20 @@ p25_mbf34_decode(const uint8_t dibits[98], uint8_t out[18]) {
         if (tribits[i] > 7) {
             irr_err++;
             point[i] = p25_fix34(point, state, i);
-            i--;
+            continue;
         }
+        i++;
     }
 
     // Pack first 48 tribits into 18 bytes (24 bits per 8-tribit group)
-    for (int i = 0; i < 6; i++) {
-        uint32_t tmp = (tribits[(i * 8) + 0] << 21) | (tribits[(i * 8) + 1] << 18) | (tribits[(i * 8) + 2] << 15)
-                       | (tribits[(i * 8) + 3] << 12) | (tribits[(i * 8) + 4] << 9) | (tribits[(i * 8) + 5] << 6)
-                       | (tribits[(i * 8) + 6] << 3) | (tribits[(i * 8) + 7] << 0);
-        out[(i * 3) + 0] = (uint8_t)((tmp >> 16) & 0xFF);
-        out[(i * 3) + 1] = (uint8_t)((tmp >> 8) & 0xFF);
-        out[(i * 3) + 2] = (uint8_t)((tmp >> 0) & 0xFF);
+    for (int group = 0; group < 6; group++) {
+        uint32_t tmp = (tribits[(group * 8) + 0] << 21) | (tribits[(group * 8) + 1] << 18)
+                       | (tribits[(group * 8) + 2] << 15) | (tribits[(group * 8) + 3] << 12)
+                       | (tribits[(group * 8) + 4] << 9) | (tribits[(group * 8) + 5] << 6)
+                       | (tribits[(group * 8) + 6] << 3) | (tribits[(group * 8) + 7] << 0);
+        out[(group * 3) + 0] = (uint8_t)((tmp >> 16) & 0xFF);
+        out[(group * 3) + 1] = (uint8_t)((tmp >> 8) & 0xFF);
+        out[(group * 3) + 2] = (uint8_t)((tmp >> 0) & 0xFF);
     }
 
     (void)irr_err; // could be used for telemetry
@@ -389,12 +392,10 @@ p25_mbf34_decode_soft(const uint8_t dibits[98], const int16_t bit_llr[196], uint
     }
 
     uint8_t tribits[P25_MBF34_N_SYMS];
-    for (int i = P25_MBF34_N_SYMS - 1; i >= 0; i--) {
+    for (int i = P25_MBF34_N_SYMS; i > 0;) {
+        i--;
         tribits[i] = (uint8_t)st;
         st = backptr[i][st];
-        if (i == 0) {
-            break;
-        }
     }
 
     p25_mbf34_pack_path_bytes(tribits, out);

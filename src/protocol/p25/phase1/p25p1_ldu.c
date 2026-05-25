@@ -163,10 +163,10 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
     DSD_MEMSET(imbe_fr, 0, sizeof(imbe_fr));
     DSD_MEMSET(imbe_soft_fr, 0, sizeof(imbe_soft_fr));
 
-    w = iW;
-    x = iX;
-    y = iY;
-    z = iZ;
+    w = p25p1_imbe_interleave_w;
+    x = p25p1_imbe_interleave_x;
+    y = p25p1_imbe_interleave_y;
+    z = p25p1_imbe_interleave_z;
 
 #ifdef TRACE_DSD
     state->debug_prefix = 'I';

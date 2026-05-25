@@ -104,7 +104,7 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
-// MBE file close stubs referenced by XCCH path
+// MBE file stubs referenced by XCCH path
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)opts;
@@ -117,30 +117,6 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
-static void
-closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-// Misc helpers referenced by P25p2 frame path
-static void
-rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta, int sacch_err_delta,
-                            int aach_ok_delta) {
-    (void)slot;
-    (void)facch_ok_delta;
-    (void)facch_err_delta;
-    (void)sacch_ok_delta;
-    (void)sacch_err_delta;
-    (void)aach_ok_delta;
-}
-
 void
 getTimeC_buf(char out[9]) {
     if (out) {
@@ -150,12 +126,6 @@ getTimeC_buf(char out[9]) {
 
 void
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
@@ -175,31 +145,6 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
 void
 playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-// Audio/playback stubs referenced by P25p1 LDU2 object (pulled in by LFSR helpers)
-static void
-playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
@@ -335,62 +280,6 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
     (void)opts;
     (void)state;
     (void)count;
-}
-
-// Bit conversion helper
-static uint64_t
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    (void)BufferIn;
-    (void)BitLength;
-    return 0ULL;
-}
-
-// MBE table pointers (from mbelib) referenced by Phase 1 code
-static int iW[24] = {0};
-static int iX[24] = {0};
-static int iY[24] = {0};
-static int iZ[24] = {0};
-
-// Alias decode helpers referenced by VPDU path (not exercised here)
-static void
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
-static void
-apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
-    (void)opts;
-    (void)state;
-    (void)slot;
-    (void)lc_bits;
-}
-
-static void
-apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
-    (void)opts;
-    (void)state;
-    (void)slot;
-    (void)lc_bits;
-}
-
-static void
-l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
-    (void)opts;
-    (void)state;
-    (void)slot;
-    (void)len;
-    (void)input;
-}
-
-static void
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
-    (void)opts;
-    (void)state;
-    (void)input;
-    (void)src;
-    (void)slot;
 }
 
 // Interpose the MBE frame decoder to count invocations without pulling in the

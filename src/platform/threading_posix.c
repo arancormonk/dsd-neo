@@ -9,6 +9,8 @@
 #define _GNU_SOURCE
 #endif
 
+#define DSD_NEO_THREADING_NO_INLINE_CREATE
+
 /* Include sched.h early:
  * - Linux: CPU_* affinity macros (requires _GNU_SOURCE)
  * - macOS: struct sched_param/SCHED_* constants for pthread scheduling */

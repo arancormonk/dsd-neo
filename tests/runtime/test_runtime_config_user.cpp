@@ -132,6 +132,11 @@ test_apply_file_input_rescales_symbol_timing(void) {
 
 static int
 test_load_and_apply_basic(void) {
+    /*
+     * Load one representative user config that touches every public section.
+     * The first half verifies parsed config fields; the second half applies the
+     * snapshot to opts/state and checks the runtime-facing values.
+     */
     static const char* ini = "version = 1\n"
                              "\n"
                              "[input]\n"
@@ -220,6 +225,7 @@ test_load_and_apply_basic(void) {
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
+    // Input, output, and mode fields are applied before trunking and logging.
     if (strcmp(opts.audio_in_dev, "rtl:1:851.375M:30:5:16:-50:2") != 0) {
         DSD_FPRINTF(stderr, "audio_in_dev mismatch: \"%s\"\n", opts.audio_in_dev);
         rc |= 1;
@@ -493,6 +499,11 @@ test_snapshot_roundtrip_soapy_args(void) {
     static dsd_state state;
     reset_opts_and_state(opts, state);
 
+    /*
+     * Snapshot a configured Soapy source, render it to INI, reload it, and apply
+     * it back to opts. This protects both shared RTL tuning fields and the
+     * Soapy-only extended fields.
+     */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=sdrplay,serial=RSP1A");
     opts.audio_in_dev[sizeof opts.audio_in_dev - 1] = '\0';
     opts.rtlsdr_center_freq = 935012500U;
@@ -511,6 +522,7 @@ test_snapshot_roundtrip_soapy_args(void) {
     dsdneoUserConfig snap;
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
 
+    // Snapshot fields should preserve the Soapy args without the input prefix.
     int rc = 0;
     if (!snap.has_input || snap.input_source != DSDCFG_INPUT_SOAPY) {
         DSD_FPRINTF(stderr, "snapshot input_source mismatch for soapy\n");

@@ -66,8 +66,8 @@ fir_complex_scalar_ref(const float* in, int in_len, float* out, float* hist_i, f
     const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
 
-    float lastI = (N > 0) ? in[(N - 1) << 1] : 0.0f;
-    float lastQ = (N > 0) ? in[((N - 1) << 1) + 1] : 0.0f;
+    float lastI = in[(N - 1) << 1];
+    float lastQ = in[((N - 1) << 1) + 1];
 
     auto get_iq = [&](int src_idx, float& xi, float& xq) {
         if (src_idx < hist_len) {

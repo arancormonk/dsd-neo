@@ -84,10 +84,10 @@ dpmr_read_first_cch(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx) {
 static void
 dpmr_read_tch_group(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx, uint32_t frame_base) {
     for (uint32_t j = 0; j < 4; j++) {
-        const int* w = dPmrW;
-        const int* x = dPmrX;
-        const int* y = dPmrY;
-        const int* z = dPmrZ;
+        const int* w = dpmr_ambe_interleave_w;
+        const int* x = dpmr_ambe_interleave_x;
+        const int* y = dpmr_ambe_interleave_y;
+        const int* z = dpmr_ambe_interleave_z;
         uint32_t k = 0;
         for (uint32_t i = 0; i < 36; i++) {
             uint32_t dibit = dpmr_read_dibit(opts, state);

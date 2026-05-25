@@ -199,6 +199,13 @@ test_rotate_widen_backend(const char* name, widen_backend_fn fn) {
 
 int
 main(void) {
+    /*
+     * Cover the widening helpers in the order used by capture replay:
+     * bias conversion, full-buffer rotation, chunked phase carry, odd-byte carry,
+     * and dropped-span phase advancement. Backend-specific tests then reuse the
+     * same reference rotation logic.
+     */
+
     // 4 complex samples (8 bytes)
     const unsigned char src[8] = {127, 127, 130, 130, 255, 0, 0, 255};
     float dst[8] = {0};
@@ -231,6 +238,7 @@ main(void) {
     }
 
     {
+        // Split processing must match a single pass and return the same phase.
         const unsigned char src_phase[10] = {127, 127, 130, 130, 255, 0, 0, 255, 64, 192};
         float dst_full[10] = {0};
         float dst_split[10] = {0};
@@ -261,6 +269,7 @@ main(void) {
     }
 
     {
+        // Legacy byte rotation keeps capture compatibility with bias-128 widening.
         unsigned char legacy[8] = {10, 11, 20, 21, 30, 31, 40, 41};
         unsigned char legacy_ref[8] = {0};
         float legacy_wide[8] = {0};
@@ -306,6 +315,7 @@ main(void) {
     }
 
     {
+        // Odd chunks carry one input byte across calls before emitting a pair.
         const unsigned char src_odd_split[10] = {127, 127, 130, 130, 255, 0, 0, 255, 64, 192};
         float dst_full[10] = {0};
         float dst_split[10] = {0};
@@ -356,6 +366,7 @@ main(void) {
     }
 
     {
+        // Dropped muted spans still advance the quarter-cycle rotation phase.
         const unsigned char src_gap[14] = {127, 127, 130, 130, 255, 0, 0, 255, 64, 192, 10, 240, 200, 40};
         const unsigned int start_phase = 1U;
         const size_t lead_bytes = 4;

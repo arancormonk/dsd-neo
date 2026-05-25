@@ -166,18 +166,21 @@ nxdn_alias_try_append_ascii(char* out, size_t out_sz, size_t* pos, char c) {
 static size_t
 nxdn_alias_decode_shift_jis_fallback(const uint8_t* in, size_t in_len, size_t eff_len, char* out, size_t out_sz) {
     size_t pos = 0U;
-    for (size_t i = 0U; i < eff_len; i++) {
+    size_t i = 0U;
+    while (i < eff_len) {
         uint8_t b = in[i];
         if (b >= 0x20U && b <= 0x7EU) {
             if (!nxdn_alias_try_append_ascii(out, out_sz, &pos, (char)b)) {
                 break;
             }
+            i++;
             continue;
         }
 
         if (b >= 0xA1U && b <= 0xDFU) {
             uint32_t cp = 0xFF61U + (uint32_t)(b - 0xA1U);
             pos = nxdn_alias_append_utf8_cp(out, out_sz, pos, cp);
+            i++;
             continue;
         }
 
@@ -185,13 +188,14 @@ nxdn_alias_decode_shift_jis_fallback(const uint8_t* in, size_t in_len, size_t ef
             // Full table-based Shift-JIS decode is intentionally not embedded here.
             // Emit replacement for unsupported multibyte pairs.
             pos = nxdn_alias_append_utf8_cp(out, out_sz, pos, 0xFFFDU);
-            i++;
+            i += 2U;
             continue;
         }
 
         if (!nxdn_alias_try_append_ascii(out, out_sz, &pos, '?')) {
             break;
         }
+        i++;
     }
     return pos;
 }

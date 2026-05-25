@@ -18,10 +18,6 @@ static const uint8_t p25_interleave[98] = {
     4,  5,  12, 13, 20, 21, 28, 29, 36, 37, 44, 45, 52, 53, 60, 61, 68, 69, 76, 77, 84, 85, 92, 93, 6,
     7,  14, 15, 22, 23, 30, 31, 38, 39, 46, 47, 54, 55, 62, 63, 70, 71, 78, 79, 86, 87, 94, 95};
 
-//digitized dibit to OTA symbol conversion for reference
-//0 = +1; 1 = +3;
-//2 = -1; 3 = -3;
-
 //this is a dibit-pair to trellis dibit transition matrix (SDRTrunk and Ossmann)
 //when evaluating hamming distance, we want to use this xor the dibit-pair nib,
 //and not the fsm xor the constellation point
@@ -114,12 +110,10 @@ p25_12(const uint8_t* input, uint8_t treturn[12]) {
 
     /* Traceback to recover tdibits (next states) */
     uint8_t tdibits[N_SYMS];
-    for (i = N_SYMS - 1; i >= 0; i--) {
+    for (i = N_SYMS; i > 0;) {
+        i--;
         tdibits[i] = (uint8_t)st;
         st = backptr[i][st];
-        if (i == 0) {
-            break; /* avoid i underflow for unsigned loop */
-        }
     }
 
     /* Pack first 48 tdibits into 12 bytes (MSB-first as before) */
@@ -350,12 +344,10 @@ p25_12_soft_llr(const uint8_t* input, const int16_t* bit_llr196, uint8_t treturn
 
     /* Traceback to recover tdibits (next states) */
     uint8_t tdibits[N_SYMS];
-    for (i = N_SYMS - 1; i >= 0; i--) {
+    for (i = N_SYMS; i > 0;) {
+        i--;
         tdibits[i] = (uint8_t)st;
         st = backptr[i][st];
-        if (i == 0) {
-            break;
-        }
     }
 
     /* Pack first 48 tdibits into 12 bytes (MSB-first) */

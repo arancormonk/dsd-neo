@@ -84,13 +84,89 @@ static const int vd2Interleave[104] = {
     71, 97, 20, 46, 72, 98, 21, 47, 73, 99, 22, 48, 74, 100, 23, 49, 75, 101, 24, 50, 76, 102, 25, 51, 77, 103};
 
 static void
+ysf_dch_decode_csd1(dsd_state* state, const char dch_bytes[20], uint8_t cm) {
+    char string2[11];
+
+    if (cm != 1) {
+        char string1[11];
+        DSD_MEMCPY(string1, dch_bytes, 10);
+        string1[10] = '\0';
+        DSD_FPRINTF(stderr, "DST: ");
+        DSD_FPRINTF(stderr, "%s ", string1);
+    } else {
+        char rem1[6];
+        char rem2[6];
+        DSD_MEMCPY(rem1, dch_bytes, 5);
+        rem1[5] = '\0';
+        DSD_FPRINTF(stderr, "DST RID: ");
+        DSD_FPRINTF(stderr, "%s ", rem1);
+
+        DSD_MEMCPY(rem2, dch_bytes + 5, 5);
+        rem2[5] = '\0';
+        DSD_FPRINTF(stderr, "SRC RID: ");
+        DSD_FPRINTF(stderr, "%s ", rem2);
+    }
+
+    DSD_MEMCPY(string2, dch_bytes + 10, 10);
+    string2[10] = '\0';
+    DSD_FPRINTF(stderr, "SRC: ");
+    DSD_FPRINTF(stderr, "%s ", string2);
+
+    DSD_MEMSET(state->ysf_tgt, 0, sizeof(state->ysf_tgt));
+    DSD_MEMCPY(state->ysf_tgt, dch_bytes, 10);
+    state->ysf_tgt[10] = '\0';
+
+    DSD_MEMSET(state->ysf_src, 0, sizeof(state->ysf_src));
+    DSD_MEMCPY(state->ysf_src, dch_bytes + 10, 10);
+    state->ysf_src[10] = '\0';
+}
+
+static void
+ysf_dch_decode_csd2(dsd_state* state, const char dch_bytes[20]) {
+    char string1[11];
+    char string2[11];
+
+    DSD_MEMCPY(string1, dch_bytes, 10);
+    string1[10] = '\0';
+    DSD_FPRINTF(stderr, "U/L: ");
+    DSD_FPRINTF(stderr, "%s ", string1);
+
+    DSD_MEMCPY(string2, dch_bytes + 10, 10);
+    string2[10] = '\0';
+    DSD_FPRINTF(stderr, "D/L: ");
+    DSD_FPRINTF(stderr, "%s ", string2);
+
+    DSD_MEMCPY(state->ysf_upl, dch_bytes, 10);
+    state->ysf_upl[10] = '\0';
+
+    state->ysf_dnl[10] = '\0';
+    DSD_MEMCPY(state->ysf_dnl, dch_bytes + 10, 10);
+}
+
+static void
+ysf_dch_decode_text(dsd_state* state, const char dch_bytes[20], uint8_t fn, uint8_t ft) {
+    if (fn == 0) {
+        DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
+    }
+
+    if (fn < 20) {
+        for (int i = 0; i < 20; i++) {
+            char C = dch_bytes[i];
+            state->ysf_txt[fn][i] = (C > 0x19 && C < 0x7F) ? C : 0x20;
+        }
+    }
+
+    if (fn == ft) {
+        DSD_FPRINTF(stderr, " %s", state->event_history_s[0].Event_History_Items[0].text_message);
+    }
+}
+
+static void
 ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, uint8_t input[]) {
     //TODO: Per Call WAV files using these strings
     int i;
     char dch_bytes[20];
     DSD_MEMSET(dch_bytes, 0, sizeof(dch_bytes));
-    char string1[11];
-    char string2[11];
 
     UNUSED(bt);
 
@@ -99,91 +175,9 @@ ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft,
     }
 
     switch (bn) { //using bn here so we can use the frame number for sorting the text messages found in here
-        case 0:   //CSD1
-
-            //Destination / Target
-            if (cm != 1) {
-                DSD_MEMCPY(string1, dch_bytes, 10);
-                string1[10] = '\0';
-                DSD_FPRINTF(stderr, "DST: ");
-                DSD_FPRINTF(stderr, "%s ", string1);
-            } else //Radio ID Mode -- updated in the 1V02 spec manual
-            {
-                char rem1[6];
-                char rem2[6];
-                DSD_MEMCPY(rem1, dch_bytes, 5);
-                rem1[5] = '\0';
-                DSD_FPRINTF(stderr, "DST RID: ");
-                DSD_FPRINTF(stderr, "%s ", rem1);
-
-                DSD_MEMCPY(rem2, dch_bytes + 5, 5);
-                rem2[5] = '\0';
-                DSD_FPRINTF(stderr, "SRC RID: ");
-                DSD_FPRINTF(stderr, "%s ", rem2);
-            }
-
-            //Source
-            DSD_MEMCPY(string2, dch_bytes + 10, 10);
-            string2[10] = '\0';
-            DSD_FPRINTF(stderr, "SRC: ");
-            DSD_FPRINTF(stderr, "%s ", string2);
-
-            //Copy both to Ncurses Call String
-            DSD_MEMSET(state->ysf_tgt, 0, sizeof(state->ysf_tgt));
-            DSD_MEMCPY(state->ysf_tgt, dch_bytes, 10);
-            state->ysf_tgt[10] = '\0';
-
-            DSD_MEMSET(state->ysf_src, 0, sizeof(state->ysf_src));
-            DSD_MEMCPY(state->ysf_src, dch_bytes + 10, 10);
-            state->ysf_src[10] = '\0';
-
-            break;
-        case 1: //CSD2
-
-            //Uplink
-            DSD_MEMCPY(string1, dch_bytes, 10);
-            string1[10] = '\0';
-            DSD_FPRINTF(stderr, "U/L: ");
-            DSD_FPRINTF(stderr, "%s ", string1);
-
-            //Downlink
-            DSD_MEMCPY(string2, dch_bytes + 10, 10);
-            string2[10] = '\0';
-            DSD_FPRINTF(stderr, "D/L: ");
-            DSD_FPRINTF(stderr, "%s ", string2);
-
-            //Copy both to Ncurses Call String
-            DSD_MEMCPY(state->ysf_upl, dch_bytes, 10);
-            state->ysf_upl[10] = '\0';
-
-            state->ysf_dnl[10] = '\0';
-            DSD_MEMCPY(state->ysf_dnl, dch_bytes + 10, 10);
-
-            break;
-        case 2:
-
-            if (fn == 0) {
-                DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
-            }
-
-            if (fn < 20) {
-                //load ascii set characters only
-                for (i = 0; i < 20; i++) {
-                    char C = dch_bytes[i];
-                    if (C > 0x19 && C < 0x7F) {
-                        state->ysf_txt[fn][i] = C;
-                    } else {
-                        state->ysf_txt[fn][i] = 0x20; //Space
-                    }
-                }
-            }
-
-            if (fn == ft) { //last frame
-                DSD_FPRINTF(stderr, " %s", state->event_history_s[0].Event_History_Items[0].text_message);
-            }
-
-            break;
-
+        case 0: ysf_dch_decode_csd1(state, dch_bytes, cm); break;
+        case 1: ysf_dch_decode_csd2(state, dch_bytes); break;
+        case 2: ysf_dch_decode_text(state, dch_bytes, fn, ft); break;
         default: break;
     }
 }

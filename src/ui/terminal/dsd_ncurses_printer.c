@@ -286,7 +286,6 @@ ui_render_basic_input_sources(dsd_opts* opts) {
 
     if (opts->audio_in_type == AUDIO_IN_STDIN) {
         printw("| STDIN Standard Input: - Menu Disabled when using STDIN!\n");
-        // printw ("| NCURSES Menu Disabled when using STDIN! - Use CTRL + C to Close. \n");
     }
 }
 
@@ -304,8 +303,6 @@ ui_print_rtl_gain_field(dsd_opts* opts) {
        otherwise fall back to requested value. */
     int g10 = 0, is_auto = 1;
     int have = 0;
-    /* Header is already included indirectly via other UI modules. */
-    extern int rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
     if (rtl_stream_get_gain(&g10, &is_auto) == 0) {
         have = 1;
     }
@@ -345,14 +342,12 @@ ui_print_rtl_auto_ppm_status(void) {
     /* Show carrier/error-based auto PPM status snapshot */
     int ap_en = 0, ap_dir = 0, ap_locked = 0;
     double ap_snr = -100.0, ap_df = 0.0;
-    extern int rtl_stream_auto_ppm_get_status(int*, double*, double*, double*, int*, int*, int*);
     (void)rtl_stream_auto_ppm_get_status(&ap_en, &ap_snr, &ap_df, NULL, &ap_dir, NULL, &ap_locked);
     if (!ap_en) {
         printw("\n| Auto PPM: Off");
     } else if (ap_locked) {
         int lppm = 0;
         double lsnr = -100.0, ldf = 0.0;
-        extern int rtl_stream_auto_ppm_get_lock(int*, double*, double*);
         (void)rtl_stream_auto_ppm_get_lock(&lppm, &lsnr, &ldf);
         (void)lsnr;
         (void)ldf;
@@ -804,7 +799,6 @@ ui_render_forced_key_status(const dsd_state* state) {
         return;
     }
 
-    // if (opts->aggressive_framesync == 0) printw ("| Selective CRC ERR Bypass Enabled (RAS) \n");
     if (state->M != 1 && state->H != 0 && state->tyt_bp == 0) {
         ui_render_hytera_loaded_key_status(state);
     }
@@ -833,7 +827,6 @@ ui_render_scanner_and_reverse_status(dsd_opts* opts, dsd_state* state) {
     if (opts->reverse_mute == 1) {
         printw("| Reverse Mute - Muting Unencrypted Voice\n");
     }
-    // if (opts->call_alert == 1)   printw ("| Call Alert Tone Enabled\n");
 }
 
 static void
@@ -934,9 +927,6 @@ ui_compute_input_level_and_color(const dsd_opts* opts, const dsd_state* state) {
             int level_div = 164; /* baseline scaling for C4FM/GFSK symbol magnitudes */
             if (opts->mod_qpsk == 1 || state->rf_mod == 1) {
                 level_div = 82; /* CQPSK phase deltas peak near pi/4 (~4k), so use tighter scale */
-            }
-            if (level_div < 1) {
-                level_div = 1;
             }
             level = (int)state->max / level_div; //only update on carrier present
         }
@@ -1884,7 +1874,6 @@ static void
 ui_render_call_info_ysf(dsd_state* state) {
     //YSF
     if (DSD_SYNC_IS_YSF(lls)) {
-        // printw ("\n");
         printw("| ");
         printw("Fusion - ");
         //insert data type and frame information
@@ -1944,23 +1933,6 @@ ui_render_call_info_ysf(dsd_state* state) {
         printw("| ");
         printw("RM3: %s ", state->ysf_rm3);
         printw("RM4: %s ", state->ysf_rm4);
-
-        //these texts can get pretty long and out of sorts, and lots of 0x20 spaces
-        //just going to leave these to only be in the console output
-
-        // printw ("\n");
-        // printw ("| ");
-        // printw ("TXT: ");
-        // for (i = 4; i < 8; i++)
-        // {
-        //   for (int j = 0; j < 20; j++)
-        //   {
-        //     //no spaces and no asterisks
-        //     if (state->ysf_txt[i][j] != 0x2A)
-        //       printw ("%c", state->ysf_txt[i][j]);
-        //   }
-        //   // printw (" "); //just a single space between each 'block'
-        // }
 
         printw("\n");
     }
@@ -2183,7 +2155,6 @@ ui_render_call_info_dpmr(dsd_state* state) {
             if (state->R != 0) {
                 attron(COLOR_PAIR(1));
                 printw("KEY VALUE: [%05lld] ", state->R);
-                //printw ("SEED: [%04llX]", state->payload_miN);
                 attron(COLOR_PAIR(3));
             }
         }

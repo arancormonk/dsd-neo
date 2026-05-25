@@ -200,7 +200,7 @@ lfsr_64_to_128(uint8_t* iv) {
         uint64_t bit = ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
         lfsr = (lfsr << 1) | bit;
 
-        //continue packing iv
+        // Continue packing iv
         iv[x / 8] = (iv[x / 8] << 1) + bit;
 
         x++;
@@ -340,13 +340,6 @@ p25_decrypt_pdu(const dsd_opts* opts, const dsd_state* state, uint8_t* input, ui
     }
 
     //debug input offset
-    // DSD_FPRINTF(stderr, "\n INPUT: ");
-    // for (i = 0; i < 16; i++)
-    //   DSD_FPRINTF(stderr, "%02X", input[i]);
-
-    // DSD_FPRINTF(stderr, "\n    KS: ");
-    // for (i = 0; i < 16; i++)
-    //   DSD_FPRINTF(stderr, "%02X", ks_bytes[i]);
 
     //apply keystream
     for (int i = 0; i < len; i++) { //need to subtract pad bytes and crc bytes from keystream application
@@ -656,12 +649,8 @@ p25_store_lrrp_text_for_history(dsd_state* state) {
 
     const char* src = (const char*)state->event_history_s[0].Event_History_Items[0].text_message;
     size_t cap = sizeof(state->dmr_lrrp_gps[0]);
-    if (cap > 7) {
-        size_t maxcpy = cap - 7 - 1; /* prefix "LRRP: " + N + NUL */
-        DSD_SNPRINTF(state->dmr_lrrp_gps[0], cap, "LRRP: %.*s", (int)maxcpy, src);
-    } else {
-        state->dmr_lrrp_gps[0][0] = '\0';
-    }
+    size_t maxcpy = cap - 7 - 1; /* prefix "LRRP: " + N + NUL */
+    DSD_SNPRINTF(state->dmr_lrrp_gps[0], cap, "LRRP: %.*s", (int)maxcpy, src);
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
                  sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[0]);
 }

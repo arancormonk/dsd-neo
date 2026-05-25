@@ -304,6 +304,11 @@ test_evaluator_behaviors(void) {
         return 1;
     }
 
+    /*
+     * Keep all evaluator toggles enabled up front, then flip one switch at a
+     * time. That makes each block-reason assertion isolate the intended gate.
+     * Hold and private-call cases reuse the same policy table to cover overrides.
+     */
     opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_private_calls = 1;
     opts->trunk_tune_data_calls = 1;
@@ -388,6 +393,7 @@ test_evaluator_behaviors(void) {
     opts->trunk_tune_private_calls = 1;
     opts->trunk_use_allow_list = 1;
     st->tg_hold = 0;
+    // Private allowlist behavior can match either endpoint before mode gates run.
     rc |= expect_true("private unknown block", dsd_tg_policy_evaluate_private_call(
                                                    opts, st, 1, 2, 0, 0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
                                                    DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
@@ -479,6 +485,11 @@ test_group_file_append_helper(void) {
         return 1;
     }
 
+    /*
+     * Each file shape models a user-maintained CSV encountered during append.
+     * Missing and empty files need new headers; existing headers decide whether
+     * metadata is appended in the short schema or full policy schema.
+     */
     init_entry(&e, 100, "D", "Alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
     e.priority = 7;
     e.preempt = 1;
@@ -564,6 +575,7 @@ test_group_file_append_helper(void) {
     rc |= expect_true("policy row full schema", strstr(l2, "100,D,Alias,7,true,on,off,on,hello  world") == l2);
     (void)remove(path_template);
 
+    // A policy-looking header with odd ordering still writes the full schema.
     DSD_SNPRINTF(path_template, sizeof(path_template), "%s", path_seed);
     fd = dsd_mkstemp(path_template);
     if (fd < 0) {
@@ -659,6 +671,11 @@ test_preemption_helpers(void) {
         return 1;
     }
 
+    /*
+     * Preemption depends on active-route state, candidate policy, dwell time,
+     * and cooldowns. This test walks those inputs in sequence so a failure points
+     * to the exact condition that changed.
+     */
     (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "500", 1);
     (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
     opts->trunk_tune_group_calls = 1;
@@ -727,6 +744,7 @@ test_preemption_helpers(void) {
     rc |= expect_true("note active for hold-preempt cases",
                       dsd_tg_policy_note_active_call(st, &active0, &active_dec, 10.0) == 0);
 
+    // Hold overrides can only preempt when they also make the candidate tunable.
     init_entry(&e, 5001, "B", "HOLD-CAND", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.priority = 90;
     e.preempt = 1;

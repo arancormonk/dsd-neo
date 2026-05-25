@@ -221,7 +221,7 @@ test_disabled_when_not_cqpsk(void) {
 
     /* Buffer should be unchanged when disabled */
     for (int i = 0; i < 100; i++) {
-        if (buf[i] != ref[i]) {
+        if (buf[i] < ref[i] || ref[i] < buf[i]) {
             DSD_FPRINTF(stderr, "DISABLED: buffer modified when cqpsk_enable=0\n");
             free(s);
             return 1;

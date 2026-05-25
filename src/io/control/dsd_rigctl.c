@@ -215,7 +215,6 @@ GetCurrentFreq(dsd_socket_t sockfd) {
 
     token = dsd_strtok_r(buf, "\n", &saveptr);
     freq = strtol(token, &ptr, 10);
-    // DSD_FPRINTF(stderr, "\nRIGCTL VFO Freq: [%ld]\n", freq);
     return freq;
 }
 
@@ -275,7 +274,7 @@ SetModulation(dsd_socket_t sockfd, int bandwidth) {
     Send(sockfd, buf);
     Recv(sockfd, buf);
 
-    //if it fails the first time, send the other token instead
+    // If it fails the first time, send the other token instead
     if (strcmp(buf, "RPRT 1\n") == 0) //sdr++ has a linebreak here, is that in all versions of the protocol?
     {
         DSD_SNPRINTF(buf, sizeof buf, "M FM %d\n", bandwidth); //anything not SDR++
@@ -426,7 +425,7 @@ rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
     struct sockaddr_in tune_addr;
 
     uint32_t new_freq = (uint32_t)frequency;
-    opts->rtlsdr_center_freq = new_freq; //for ncurses terminal display after rtl is started up
+    opts->rtlsdr_center_freq = new_freq; // For ncurses terminal display after rtl is started up
 
     handle = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (handle == DSD_INVALID_SOCKET) {

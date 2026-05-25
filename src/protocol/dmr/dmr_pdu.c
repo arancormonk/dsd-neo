@@ -57,14 +57,12 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) 
     if (wr == 1) {
         DSD_SPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", ""); //full text string
     }
-    // DSD_FPRINTF(stderr, "\n UTF16 Text: ");
     for (uint16_t i = 0; i < len; i += 2) {
         uint16_t ch16 = (uint16_t)input[i + 0];
         ch16 <<= 8;
         ch16 |= (uint16_t)input[i + 1];
-        // DSD_FPRINTF(stderr, " %04X; ", ch16); //debug for raw values to check grouping for offset
 
-        if (ch16 >= 0x20 && ch16 != 0x040D) { //if not a linebreak or terminal commmands
+        if (ch16 >= 0x20 && ch16 != 0x040D) { // If not a linebreak or terminal commmands
             if (dsd_unicode_supported()) {
                 DSD_FPRINTF(stderr, "%lc", ch16);
             } else {
@@ -76,7 +74,7 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) 
                     fputc('?', stderr);
                 }
             }
-        } else if (ch16 == 0) { //if padding (0 could also indicate end of text terminator?)
+        } else if (ch16 == 0) { // If padding (0 could also indicate end of text terminator?)
             DSD_FPRINTF(stderr, "_");
         } else if (ch16 == 0x040D) { //Ѝ or 0x040D may be ETLF
             DSD_FPRINTF(stderr, " / ");
@@ -90,8 +88,6 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) 
         c[1] = 0;
 
         //short version (disabled)
-        // if (wr == 1 && i < 76 && input[i] == 0 && input[i+1] < 0x7F && input[i+1] >= 0x20)
-        //   strcat (state->dmr_lrrp_gps[slot], c);
 
         //this is the long version, complete message for logging purposes
         if (wr == 1 && input[i] == 0 && input[i + 1] < 0x7F && input[i + 1] >= 0x20) {
@@ -101,12 +97,8 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) 
     }
 
     //add elipses to indicate this is possibly truncated
-    // if (wr == 1)
-    //   strcat (state->dmr_lrrp_gps[slot], "...");
 
     //debug
-    // if (wr == 1)
-    //   DSD_FPRINTF(stderr, "%s", state->dmr_lrrp_gps[slot]);
 }
 
 void
@@ -119,23 +111,18 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     }
 
     for (uint16_t i = 0; i < len; i++) {
-        if (input[i] >= 0x20 && input[i] < 0x7F) { //if not a linebreak or terminal commmands
+        if (input[i] >= 0x20 && input[i] < 0x7F) { // If not a linebreak or terminal commmands
             DSD_FPRINTF(stderr, "%c", input[i]);
-        } else if (input[i] == 0) { //if padding (0 could also indicate end of text terminator?)
+        } else if (input[i] == 0) { // If padding (0 could also indicate end of text terminator?)
             DSD_FPRINTF(stderr, "_");
-        }
-        // else if (input[i] == 0x03) //ASCII end of text (observed on the NMEA LOCN ones anyways)
-        //   break;
-        else {
+        } else {
             DSD_FPRINTF(stderr, "-");
         }
 
         char c = input[i];
 
-        //for now, just rip the first 40 or so chars lower byte value
+        // For now, just rip the first 40 or so chars lower byte value
         //in the ASCII Range (should be alright for a quick visual)
-        // if (wr == 1 && i < 38 && c < 0x7F && c >= 0x20)
-        //   strcat (state->dmr_lrrp_gps[slot], &c);
 
         //this is the long version, complete message for logging purposes
         if (wr == 1 && c < 0x7F && c >= 0x20) {
@@ -145,8 +132,6 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     }
 
     //add elipses to indicate this is possibly truncated
-    // if (wr == 1)
-    //   strcat (state->dmr_lrrp_gps[slot], "...");
 }
 
 void
@@ -158,7 +143,6 @@ dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PD
         offset = 23;
     }
 
-    // if (DMR_PDU[0] == 0x01) //found some on another system that is 00 here, and not a Loction
     if (state->data_header_format[state->currentslot] == 13) //only short data: defined format (testing)
     {
         utf8_to_text(state, 0, len - offset, DMR_PDU + offset);
@@ -171,7 +155,6 @@ dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PD
             len = 127 * 18; //sanity check of sorts, prevent extra long line print outs in the console
         }
         utf8_to_text(state, 0, len, DMR_PDU); //generic catch-all to see if anything relevant is there
-        // utf16_to_text(state, 0, len, DMR_PDU); //generic catch-all to see if anything relevant is there
     }
 
     //dump to event history
@@ -549,7 +532,7 @@ decode_ip_pdu_handle_udp(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_
     if (udp_payload_len > max_payload_len) {
         udp_payload_len = max_payload_len;
     }
-    uint16_t payload_len = (udp_payload_len > UINT16_MAX) ? UINT16_MAX : (uint16_t)udp_payload_len;
+    uint16_t payload_len = (uint16_t)udp_payload_len;
     uint8_t* payload = input + udp_payload_off;
 
     decode_ip_pdu_handle_udp_service(opts, state, slot, src24, dst24, dst_port, payload_len, payload, input);
@@ -1262,9 +1245,14 @@ dmr_locn_validate_time(dmr_locn_data* d) {
 
 static void
 dmr_locn_parse_fields(const uint8_t* pdu, uint16_t len, dmr_locn_data* d) {
-    for (uint16_t i = 0; i < len; i++) {
+    uint16_t i = 0;
+    while (i < len) {
+        uint16_t advance = 1;
         switch (pdu[i]) {
             case 0x41:
+                if ((uint16_t)(i + 12U) >= len) {
+                    return;
+                }
                 d->time = 1;
                 d->hour = ((pdu[i + 1] - 0x30) << 4) | (pdu[i + 2] - 0x30);
                 d->minute = ((pdu[i + 3] - 0x30) << 4) | (pdu[i + 4] - 0x30);
@@ -1273,32 +1261,39 @@ dmr_locn_parse_fields(const uint8_t* pdu, uint16_t len, dmr_locn_data* d) {
                 d->month = ((pdu[i + 9] - 0x30) << 4) | (pdu[i + 10] - 0x30);
                 d->year = ((pdu[i + 11] - 0x30) << 4) | (pdu[i + 12] - 0x30);
                 dmr_locn_validate_time(d);
-                i += 12;
+                advance = 13;
                 break;
             case 0x53:
                 d->lat_sign = -1;
                 /* fall through */
             case 0x4E:
+                if ((uint16_t)(i + 9U) >= len) {
+                    return;
+                }
                 d->lat = 1;
                 d->lat_deg = ((pdu[i + 1] - 0x30) << 4) | (pdu[i + 2] - 0x30);
                 d->lat_min = ((pdu[i + 3] - 0x30) << 4) | (pdu[i + 4] - 0x30);
                 d->lat_sec = ((pdu[i + 6] - 0x30) << 12) | ((pdu[i + 7] - 0x30) << 8) | ((pdu[i + 8] - 0x30) << 4)
                              | ((pdu[i + 9] - 0x30) << 0);
-                i += 8;
+                advance = 9;
                 break;
             case 0x57:
                 d->lon_sign = -1;
                 /* fall through */
             case 0x45:
+                if ((uint16_t)(i + 10U) >= len) {
+                    return;
+                }
                 d->lon = 1;
                 d->lon_deg = ((pdu[i + 1] - 0x30) << 8) | ((pdu[i + 2] - 0x30) << 4) | ((pdu[i + 3] - 0x30) << 0);
                 d->lon_min = ((pdu[i + 4] - 0x30) << 4) | (pdu[i + 5] - 0x30);
                 d->lon_sec = ((pdu[i + 7] - 0x30) << 12) | ((pdu[i + 8] - 0x30) << 8) | ((pdu[i + 9] - 0x30) << 4)
                              | ((pdu[i + 10] - 0x30) << 0);
-                i += 8;
+                advance = 9;
                 break;
             default: break;
         }
+        i = (uint16_t)(i + advance);
     }
 }
 

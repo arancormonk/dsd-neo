@@ -28,7 +28,8 @@ expect_size(const char* label, size_t got, size_t want) {
 
 static int
 expect_float(const char* label, float got, float want) {
-    if (got != want) {
+    float diff = got - want;
+    if (diff < -1.0e-6f || diff > 1.0e-6f) {
         DSD_FPRINTF(stderr, "FAIL: %s: got=%f want=%f\n", label, got, want);
         return 1;
     }

@@ -39,15 +39,6 @@ expect_int(const char* label, int got, int want) {
     return 0;
 }
 
-static int
-expect_i16(const char* label, int16_t got, int16_t want) {
-    if (got != want) {
-        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, (int)got, (int)want);
-        return 1;
-    }
-    return 0;
-}
-
 /**
  * @brief Fill a buffer with a specific pattern.
  *

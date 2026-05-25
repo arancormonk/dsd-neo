@@ -84,6 +84,7 @@ int dsd_rtl_stream_get_rtltcp_autotune(void);
 #endif
 
 /* Forward declaration for eye ring append used in demod loop */
+static void constellation_ring_append(const float* iq, int len, int sps_hint);
 static inline void eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved);
 
 #define DEFAULT_SAMPLE_RATE 48000
@@ -2486,7 +2487,6 @@ demod_metrics_capture_views(const struct demod_state* d) {
     if (!d) {
         return;
     }
-    extern void constellation_ring_append(const float* iq, int len, int sps_hint);
     constellation_ring_append(d->lowpassed, d->lp_len, d->cqpsk_enable ? 1 : d->ted_sps);
     eye_ring_append_i_chan(d->lowpassed, d->lp_len);
     rtl_metrics_update_spectrum_from_iq(d->lowpassed, d->lp_len, d->rate_out);
@@ -3073,7 +3073,7 @@ static DSD_THREAD_RETURN_TYPE
 #endif
     demod_thread_fn(void* arg) {
     struct demod_state* d = static_cast<demod_state*>(arg);
-    struct output_state* o = d->output_target;
+    struct output_state* o = &output;
     maybe_set_thread_realtime_and_affinity("DEMOD");
     const int is_rtltcp_input = (g_stream && radio_source_is_rtltcp(g_stream->opts)) ? 1 : 0;
     while (!demod_should_exit_requested()) {
@@ -3792,16 +3792,13 @@ constellation_ring_clear(void) {
 static inline void eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved);
 
 /* Append decimated I/Q samples from lowpassed[] after DSP. */
-void
+static void
 constellation_ring_append(const float* iq, int len, int sps_hint) {
     if (!iq || len < 2) {
         return;
     }
     int N = len >> 1;                                              /* complex samples */
     int stride = (sps_hint >= 1 && sps_hint <= 64) ? sps_hint : 4; /* rough decimation */
-    if (stride < 1) {
-        stride = 1;
-    }
     for (int n = 0; n < N; n += stride) {
         float i = iq[(size_t)(n << 1) + 0];
         float q = iq[(size_t)(n << 1) + 1];
@@ -5335,7 +5332,7 @@ stream_open_configure_resampler_chain(void) {
     if (M < 1) {
         M = 1;
     }
-    int scale = (M > 0) ? ((L + M - 1) / M) : 1;
+    int scale = (L + M - 1) / M;
     if (scale > 12) {
         LOG_WARNING("Resampler ratio too large (L=%d,M=%d). Disabling resampler.\n", L, M);
         demod.resamp_enabled = 0;
@@ -6726,7 +6723,6 @@ rtl_stream_enable_cqpsk_mode(void) {
     demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
     demod.symbol_levels = 4;
     demod.ted_enabled = 1;
-    extern void qpsk_differential_demod(struct demod_state*);
     demod.mode_demod = &qpsk_differential_demod;
     demod.cqpsk_diff_prev_r = 1.0f;
     demod.cqpsk_diff_prev_j = 0.0f;
@@ -6747,7 +6743,6 @@ rtl_stream_enable_cqpsk_mode(void) {
 
 static void
 rtl_stream_disable_cqpsk_mode(void) {
-    extern void dsd_fm_demod(struct demod_state*);
     demod.mode_demod = &dsd_fm_demod;
     demod.cqpsk_eq_enable = 0;
     if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_P25_CQPSK) {

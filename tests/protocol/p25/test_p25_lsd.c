@@ -17,15 +17,6 @@ byte_to_bits_msbf(uint8_t b, uint8_t out8[8]) {
     }
 }
 
-static uint8_t
-bits_to_byte_msbf(const uint8_t in8[8]) {
-    uint8_t b = 0;
-    for (int i = 0; i < 8; i++) {
-        b = (uint8_t)((b << 1) | (in8[i] & 1));
-    }
-    return b;
-}
-
 static void
 make_codeword(uint8_t data, uint8_t out_bits16[16]) {
     uint8_t p = lsd_parity[data];

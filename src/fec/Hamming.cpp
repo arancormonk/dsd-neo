@@ -42,14 +42,12 @@ Hamming_10_6_3::decode(std::bitset<10>& input) {
     int parity = s0 | s1 | s2 | s3;
 
     if (parity == 0) {
-        //std::cout << input << " is OK" << std::endl;
         error_count = 0;
     } else {
         // Error detected, attempt to fix it
         int bad_bit_index = state->bad_bit_table[parity];
 
         if (bad_bit_index < 0) {
-            //std::cout << "Irrecoverable error: " << std::bitset<6>(input.to_string()) << std::endl;
             error_count = 2;
         } else {
             // Error in a data bit, or more than one error
@@ -60,12 +58,10 @@ Hamming_10_6_3::decode(std::bitset<10>& input) {
                 error_count = 1;
             } else {
                 input.flip(bad_bit_index);
-                //std::cout << "Error on data bit " << bad_bit_index << ", hopefully fixed: " << std::bitset<6>(input.to_string()) << std::endl;
                 error_count = 1;
             }
         }
     }
-    //std::cout << std::endl;
 
     return error_count;
 }

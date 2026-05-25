@@ -92,7 +92,6 @@ struct demod_state {
     float* resamp_hist; /* mirrored history window, length = 2*K */
     int (*discriminator)(int, int, int, int);
     void (*mode_demod)(struct demod_state*);
-    struct output_state* output_target;
     double fm_agc_ema_rms;      /* normalized RMS estimator (0..~1.0) */
     float* post_polydecim_taps; /* normalized taps length K */
     float* post_polydecim_hist; /* circular history length K */

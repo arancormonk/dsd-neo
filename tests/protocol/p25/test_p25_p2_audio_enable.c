@@ -130,45 +130,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)slot;
 }
 
-static unsigned short
-crc12_bits(const uint8_t bits[], unsigned int len) {
-    uint16_t crc = 0;
-    static const unsigned int K = 12;
-    static const uint8_t poly[13] = {1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1};
-    uint8_t buf[256];
-    if (len + K > sizeof(buf)) {
-        return 0;
-    }
-    DSD_MEMSET(buf, 0, sizeof(buf));
-    for (unsigned int i = 0; i < len; i++) {
-        buf[i] = bits[i] & 1;
-    }
-    for (unsigned int i = 0; i < len; i++) {
-        if (buf[i]) {
-            for (unsigned int j = 0; j < K + 1; j++) {
-                buf[i + j] ^= poly[j];
-            }
-        }
-    }
-    for (unsigned int i = 0; i < K; i++) {
-        crc = (uint16_t)((crc << 1) + buf[len + i]);
-    }
-    return crc ^ 0xFFF;
-}
-
-static void
-set_crc12_on_payload(int payload[180]) {
-    uint8_t tmp[180];
-    for (int i = 0; i < 168; i++) {
-        tmp[i] = (uint8_t)(payload[i] & 1);
-    }
-    unsigned short c = crc12_bits(tmp, 168);
-    for (int i = 0; i < 12; i++) {
-        int bit = (c >> (11 - i)) & 1;
-        payload[168 + i] = bit;
-    }
-}
-
 static int
 expect_eq(const char* tag, int got, int want) {
     if (got != want) {

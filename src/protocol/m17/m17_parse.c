@@ -50,10 +50,7 @@ m17_decode_base40_id(unsigned long long value, char out_csd[10]) {
             break;
         }
         int idx = (int)(value % 40ULL);
-        if (idx < 0) {
-            break;
-        }
-        out_csd[i] = b40[idx];
+        out_csd[i] = m17_base40_alphabet[idx];
         value /= 40ULL;
     }
 }

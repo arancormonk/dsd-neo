@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
+#include <cmath>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/iq_capture.h>
@@ -73,7 +74,6 @@ enum : unsigned char {
 #include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
 #include <cctype>
-#include <cmath>
 #include <complex>
 #include <exception>
 #include <string>
@@ -3838,6 +3838,11 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
         return NULL;
     }
     rtl_device_init_common_state(dev);
+    /*
+     * Seed the common RTL-shaped fields before entering the Soapy-specific path.
+     * The rest of the capture stack expects these defaults regardless of backend.
+     * Cleanup can therefore use the normal rtl_device teardown on every failure.
+     */
     dev->dev = NULL;
     dev->dev_index = -1;
     dev->input_ring = input_ring;
@@ -3951,6 +3956,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
     free(dev);
     return NULL;
 #else
+    // The Soapy device handle and cached capabilities are protected by one mutex.
     if (dsd_mutex_init(&dev->soapy_lock) != 0) {
         DSD_FPRINTF(stderr, "SoapySDR: failed to initialize mutex.\n");
         rtl_device_cleanup_common_state(dev);
@@ -3961,6 +3967,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
 
     const char* args_cstr = soapy_args ? soapy_args : "";
     std::string args_string;
+    // Validate the args string before it is copied into the device state.
     try {
         args_string = args_cstr;
         rtl_device_copy_cstr(dev->soapy_args_string, sizeof(dev->soapy_args_string), args_cstr);
@@ -3974,6 +3981,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
         return NULL;
     }
 
+    // Create the device while holding the lock so later configuration paths share ordering.
     if (dsd_mutex_lock(&dev->soapy_lock) != 0) {
         DSD_FPRINTF(stderr, "SoapySDR: failed to lock mutex during creation.\n");
         (void)dsd_mutex_destroy(&dev->soapy_lock);
@@ -4003,6 +4011,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
         return NULL;
     }
 
+    // Prime the UI/config caches; failures here leave a usable device with defaults.
     if (dsd_mutex_lock(&dev->soapy_lock) == 0) {
         try {
             soapy_cache_identity_locked(dev);
@@ -4258,7 +4267,7 @@ rtl_device_close_backend_resources(struct rtl_device* dev) {
 
 static void
 rtl_device_release_tcp_pending(struct rtl_device* dev) {
-    if (!dev || !dev->tcp_pending) {
+    if (!dev) {
         return;
     }
     free(dev->tcp_pending);
@@ -4588,7 +4597,7 @@ rtl_device_set_gain_nearest_soapy(struct rtl_device* dev, int target_tenth_db) {
     int rc = soapy_call_locked(dev, "setGain(nearest)", [&]() -> int {
         std::vector<std::string> names = dev->soapy_dev->listGains(SOAPY_SDR_RX, 0);
         SoapySDR::Range range = dev->soapy_dev->getGainRange(SOAPY_SDR_RX, 0);
-        if (names.empty() && (range.minimum() == range.maximum())) {
+        if (names.empty() && std::fabs(range.minimum() - range.maximum()) <= 1.0e-9) {
             return DSD_ERR_NOT_SUPPORTED;
         }
         if (applied_db < range.minimum()) {
@@ -4660,7 +4669,7 @@ rtl_device_get_tuner_gain(struct rtl_device* dev) {
         int rc = soapy_call_locked(dev, "getGain", [&]() -> int {
             std::vector<std::string> names = dev->soapy_dev->listGains(SOAPY_SDR_RX, 0);
             SoapySDR::Range range = dev->soapy_dev->getGainRange(SOAPY_SDR_RX, 0);
-            if (names.empty() && (range.minimum() == range.maximum())) {
+            if (names.empty() && std::fabs(range.minimum() - range.maximum()) <= 1.0e-9) {
                 return DSD_ERR_NOT_SUPPORTED;
             }
             gain_db = dev->soapy_dev->getGain(SOAPY_SDR_RX, 0);

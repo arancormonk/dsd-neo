@@ -179,33 +179,6 @@ dsd_sincosf(float phase, float* out_sin, float* out_cos) {
 }
 
 static inline void
-dsd_sincosf_half_pi(float phase, float* out_sin, float* out_cos) {
-    if (phase < (-kPi / 2.0f) || phase > (kPi / 2.0f)) {
-        dsd_sincosf(phase, out_sin, out_cos);
-        return;
-    }
-
-    float x2 = phase * phase;
-    *out_sin = phase
-               * (1.0f
-                  + x2
-                        * (-0.16666666666666666667f
-                           + x2
-                                 * (0.00833333333333333333f
-                                    + x2
-                                          * (-0.00019841269841269841f
-                                             + x2 * (0.00000275573192239859f + x2 * -0.00000002505210838544f)))));
-    *out_cos = 1.0f
-               + x2
-                     * (-0.5f
-                        + x2
-                              * (0.04166666666666666667f
-                                 + x2
-                                       * (-0.00138888888888888889f
-                                          + x2 * (0.00002480158730158730f + x2 * -0.00000027557319223986f))));
-}
-
-static inline void
 dsd_sincosf_clamped_half_pi(float phase, float* out_sin, float* out_cos) {
     float x2 = phase * phase;
     *out_sin = phase

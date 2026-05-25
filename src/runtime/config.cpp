@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <errno.h>
 #include <limits.h>
+#include <limits>
 #include <mutex>
 #include <stdint.h>
 #include <stdio.h>
@@ -56,12 +57,12 @@ config_scalar_equals(const T& lhs, const T& rhs) {
 
 static inline bool
 config_scalar_equals(float lhs, float rhs) {
-    return lhs == rhs || (std::isnan(lhs) && std::isnan(rhs));
+    return std::fabs(lhs - rhs) <= std::numeric_limits<float>::epsilon() || (std::isnan(lhs) && std::isnan(rhs));
 }
 
 static inline bool
 config_scalar_equals(double lhs, double rhs) {
-    return lhs == rhs || (std::isnan(lhs) && std::isnan(rhs));
+    return std::fabs(lhs - rhs) <= std::numeric_limits<double>::epsilon() || (std::isnan(lhs) && std::isnan(rhs));
 }
 
 /* Keep this in sync with dsdneoRuntimeConfig in config.h.

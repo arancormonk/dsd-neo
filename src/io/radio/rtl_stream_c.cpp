@@ -78,6 +78,9 @@ int dsd_rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out);
 int dsd_rtl_stream_get_decode_health(rtl_stream_decode_health* out);
 void dsd_rtl_stream_set_cqpsk_eq(int enable, int taps, float mu, float modulus);
 void dsd_rtl_stream_reset_cqpsk_eq(void);
+void dsd_rtl_stream_set_channel_squelch(float level);
+void dsd_rtl_stream_toggle_iq_balance(int onoff);
+int dsd_rtl_stream_get_iq_balance(void);
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 int dsd_rtl_stream_test_request_retune(long int frequency, int timeout_ms);
 int dsd_rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
@@ -378,7 +381,6 @@ rtl_stream_return_pwr(const RtlSdrContext* /*ctx*/) {
 
 extern "C" void
 rtl_stream_set_channel_squelch(float level) {
-    extern void dsd_rtl_stream_set_channel_squelch(float);
     dsd_rtl_stream_set_channel_squelch(level);
 }
 
@@ -711,15 +713,11 @@ rtl_stream_get_c4fm_clk_sync(void) {
 /* IQ balance prefilter toggle/get */
 extern "C" void
 rtl_stream_toggle_iq_balance(int onoff) {
-    /* implemented in rtl_sdr_fm.cpp */
-    extern void dsd_rtl_stream_toggle_iq_balance(int onoff);
     dsd_rtl_stream_toggle_iq_balance(onoff);
 }
 
 extern "C" int
 rtl_stream_get_iq_balance(void) {
-    /* implemented in rtl_sdr_fm.cpp as dsd_rtl_stream_get_iq_balance */
-    extern int dsd_rtl_stream_get_iq_balance(void);
     return dsd_rtl_stream_get_iq_balance();
 }
 

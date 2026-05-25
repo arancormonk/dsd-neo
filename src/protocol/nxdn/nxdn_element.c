@@ -179,7 +179,6 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
     if (CrcCorrect == 1) {
         NXDN_Elements_Content_decode(opts, state, CrcCorrect, SACCH, sizeof(SACCH));
     }
-    // else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, SACCH, sizeof(SACCH));
 
     //reset the sacch field -- Github Issue #118
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
@@ -1185,7 +1184,6 @@ nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info) {
     } else if (rst_info & 0x400000) {
         DSD_FPRINTF(stderr, " Maintenance Restriction;");
     }
-    // else                          DSD_FPRINTF(stderr, " No Restriction;");
 
     //Access cycle interval (Octet 0, Bits 3 to 0)
     DSD_FPRINTF(stderr, " ACI:");
@@ -1193,7 +1191,6 @@ nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info) {
     if (frames) {
         DSD_FPRINTF(stderr, " %d Frame Restriction;", frames * 20);
     }
-    // else        DSD_FPRINTF(stderr, " No Restriction;");
 
     //Restriction group specification (Octet 1, Bits 7 to 4)
     DSD_FPRINTF(stderr, " RGS:");
@@ -1209,7 +1206,6 @@ nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info) {
     } else if (rst_info & 0x200) {
         DSD_FPRINTF(stderr, " Short Data Restriction;");
     }
-    // else                        DSD_FPRINTF(stderr, " No Restriction;");
 
     //Restriction group ratio specification (Octet 2, Bits 7 to 6)
     DSD_FPRINTF(stderr, " RT:");
@@ -1221,7 +1217,6 @@ nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info) {
     } else if (ratio == 3) {
         DSD_FPRINTF(stderr, " 87.5 Restriction;");
     }
-    // else                 DSD_FPRINTF(stderr, " No Restriction;");
 
     //Delay time extension specification (Octet 2, Bits 5 to 4)
     DSD_FPRINTF(stderr, " DT:");
@@ -1857,21 +1852,10 @@ NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
         const uint32_t adj3_site = (uint32_t)ConvertBitIntoBytes(&Message[88], 24);
         const uint8_t adj3_opt = (uint8_t)ConvertBitIntoBytes(&Message[112], 6);
         const uint16_t adj3_chan = (uint16_t)ConvertBitIntoBytes(&Message[118], 10);
-        //4 -- facch2 only
-        // adj4_site = (uint32_t)ConvertBitIntoBytes(&Message[128], 24);
-        // adj4_opt = (uint8_t)ConvertBitIntoBytes(&Message[152], 6);
-        // adj4_chan = (uint16_t)ConvertBitIntoBytes(&Message[158], 10);
 
         nxdn_adj_site_channel_entry(opts, state, adj1_site, adj1_opt, adj1_chan);
         nxdn_adj_site_channel_entry(opts, state, adj2_site, adj2_opt, adj2_chan);
         nxdn_adj_site_channel_entry(opts, state, adj3_site, adj3_opt, adj3_chan);
-        // if (adj4_opt & 0xF) //facch2 only
-        // {
-        //   DSD_FPRINTF(stderr, "\n Adjacent Site %d: ", adj4_opt & 0xF);
-        //   DSD_FPRINTF(stderr, "Channel [%03X] [%04d]", adj4_chan, adj4_chan);
-        //   nxdn_location_id_handler(state, adj4_site, 1);
-        //   nxdn_channel_to_frequency (opts, state, adj4_chan);
-        // }
     }
 
     //DFA Version
@@ -1891,24 +1875,9 @@ NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
         const uint8_t adj2_opt = (uint8_t)ConvertBitIntoBytes(&Message[80], 6);
         const uint8_t adj2_bw = (uint8_t)ConvertBitIntoBytes(&Message[86], 2);
         const uint16_t adj2_chan = (uint16_t)ConvertBitIntoBytes(&Message[88], 16);
-        //3 -- facch2 only
-        // adj3_site = (uint32_t)ConvertBitIntoBytes(&Message[104], 24);
-        // adj3_opt = (uint8_t)ConvertBitIntoBytes(&Message[128], 6);
-        // adj3_bw = (uint8_t)ConvertBitIntoBytes(&Message[134], 2);
-        // adj3_chan = (uint16_t)ConvertBitIntoBytes(&Message[136], 16);
 
         nxdn_adj_site_dfa_entry(opts, state, adj1_site, adj1_opt, adj1_bw, adj1_chan);
         nxdn_adj_site_dfa_entry(opts, state, adj2_site, adj2_opt, adj2_bw, adj2_chan);
-        // if (adj3_opt & 0xF) //facch2 only
-        // {
-        //   DSD_FPRINTF(stderr, "\n Adjacent Site %d: ", adj3_opt & 0xF);
-        //   DSD_FPRINTF(stderr, "Channel [%04X] [%05d] ", adj3_chan, adj3_chan);
-        //   if (adj3_bw == 0) DSD_FPRINTF(stderr, "BW: 6.25 kHz - 4800 bps");
-        //   else if (adj3_bw == 1) DSD_FPRINTF(stderr, "BW: 12.5 kHz - 9600 bps");
-        //   else DSD_FPRINTF(stderr, "BW: %d Reserved Value", adj3_bw);
-        //   nxdn_location_id_handler(state, adj3_site, 1);
-        //   nxdn_channel_to_frequency (opts, state, adj3_chan);
-        // }
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);

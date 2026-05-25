@@ -28,7 +28,8 @@ dsd_rtl_stream_should_exit(void) { // NOLINT(misc-use-internal-linkage)
 static int
 float_arrays_equal(const float* a, const float* b, size_t count) {
     for (size_t i = 0; i < count; i++) {
-        if (a[i] != b[i]) {
+        float diff = a[i] - b[i];
+        if (diff < -1.0e-6f || diff > 1.0e-6f) {
             return 0;
         }
     }
@@ -350,12 +351,16 @@ test_output_ring_blocking_producer_consumer(void) {
     }
 
     /* First three samples must be the prefilled values (FIFO), remainder the bulk sequence */
-    if (all[0] != 100 || all[1] != 101 || all[2] != 102) {
+    float d0 = all[0] - 100.0f;
+    float d1 = all[1] - 101.0f;
+    float d2 = all[2] - 102.0f;
+    if (d0 < -1.0e-6f || d0 > 1.0e-6f || d1 < -1.0e-6f || d1 > 1.0e-6f || d2 < -1.0e-6f || d2 > 1.0e-6f) {
         DSD_FPRINTF(stderr, "output_ring pc: prefilled samples out of order\n");
         return 1;
     }
     for (int i = 0; i < 10; i++) {
-        if (all[3 + i] != (float)(200 + i)) {
+        float diff = all[3 + i] - (float)(200 + i);
+        if (diff < -1.0e-6f || diff > 1.0e-6f) {
             DSD_FPRINTF(stderr, "output_ring pc: bulk sample mismatch at index %d (got %.1f, expected %d)\n", i,
                         all[3 + i], 200 + i);
             return 1;

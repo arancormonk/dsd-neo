@@ -3,25 +3,17 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#define DSD_NEO_MAIN
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/audio.h>
-#include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
-#include <dsd-neo/protocol/provoice/provoice_const.h>
-#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "../../src/platform/audio_stream_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-#undef DSD_NEO_MAIN
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push

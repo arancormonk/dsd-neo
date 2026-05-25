@@ -909,9 +909,6 @@ ui_help_compute_window_rect(int* h, int* w, int* hy, int* hx) {
     if (local_h > max_h) {
         local_h = max_h;
     }
-    if (local_h < 6) {
-        local_h = 6;
-    }
     int local_hy = (scr_h - local_h) / 2;
     int local_hx = (scr_w - local_w) / 2;
     if (local_hy < 0) {
@@ -1002,9 +999,6 @@ ui_help_render(void) {
     box(hw, 0, 0);
     int body_w = (w > 4) ? (w - 4) : 1;
     int page_rows = (h > 4) ? (h - 4) : 1;
-    if (page_rows < 1) {
-        return;
-    }
 
     const char* text = g_help.text ? g_help.text : "";
     char lines[UI_HELP_MAX_LINES][UI_HELP_MAX_LINE_CHARS];

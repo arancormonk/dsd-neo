@@ -236,7 +236,7 @@ dsd_frame_logf(dsd_opts* opts, const char* format, ...) {
 }
 
 void
-PrintIMBEData(dsd_opts* opts, const dsd_state* state, const char* imbe_d) //for P25P1 and ProVoice
+PrintIMBEData(dsd_opts* opts, const dsd_state* state, const char* imbe_d) // For P25P1 and ProVoice
 {
     if (!opts || !state || !imbe_d) {
         return;
@@ -400,11 +400,8 @@ readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
             b = b & 255;
             k++;
         }
-        if (opts->payload == 1 && i < 6) {
+        if (opts->payload == 1) {
             DSD_FPRINTF(stderr, "%02X", x);
-        }
-        if (opts->payload == 1 && i == 6) {
-            DSD_FPRINTF(stderr, "%02X", x & 0x80);
         }
     }
     if (opts->payload == 1) {
@@ -448,7 +445,6 @@ openMbeInFile(dsd_opts* opts, dsd_state* state) {
     }
 
     //debug
-    // DSD_FPRINTF(stderr, "EXT: %s;", ext);
 
     // read cookie
     cookie[0] = fgetc(opts->mbe_in_f);
@@ -948,7 +944,6 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
         if ((time(NULL) - opts->symbol_out_file_creation_time) >= 3600) //3600 is one hour in seconds
         {
             //basically just lift the close and open from ncurses handler for 'r' and then 'R'
-            // closeSymbolOutFile (opts, state); //open also does this, so don't need to do it twice
             char timestr[7];
             char datestr[9];
             getTime_buf(timestr);
@@ -967,9 +962,7 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
             watchdog_event_history(opts, state, 0);
             watchdog_event_current(opts, state, 0);
 
-            // stack buffers; no free needed
             opts->symbol_out_file_creation_time = time(NULL);
-            // opts->symbol_out_file_is_auto = 1;
         }
     }
 }
@@ -1006,7 +999,7 @@ pack_bit_array_into_byte_array_asym(const uint8_t* input, uint8_t* output, int l
         output[i / 8] <<= 1;
         output[i / 8] |= input[i];
     }
-    //if any leftover bits that don't flush the last byte fully packed, shift them over left
+    // If any leftover bits that don't flush the last byte fully packed, shift them over left
     if (k) {
         output[i / 8] <<= 8 - k;
     }
@@ -1037,7 +1030,7 @@ pack_ambe(const char* input, uint8_t* output, int len) {
         output[i / 8] <<= 1;
         output[i / 8] |= (uint8_t)input[i];
     }
-    //if any leftover bits that don't flush the last byte fully packed, shift them over left
+    // If any leftover bits that don't flush the last byte fully packed, shift them over left
     if (k) {
         output[i / 8] <<= 8 - k;
     }
@@ -1457,7 +1450,8 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
                     uint8_t dmra, uint8_t is_enc, uint8_t ks_available) {
     char ambe_fr[4][24];
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
-    sdrtrunk_unpack_interleaved_voice_frame(ambe_str, 18, &ambe_fr[0][0], 24, rW, rX, rY, rZ);
+    sdrtrunk_unpack_interleaved_voice_frame(ambe_str, 18, &ambe_fr[0][0], 24, dmr_ambe_interleave_w,
+                                            dmr_ambe_interleave_x, dmr_ambe_interleave_y, dmr_ambe_interleave_z);
 
     char ambe_d[49];
     DSD_MEMSET(ambe_d, 0, sizeof(ambe_d));
@@ -1496,7 +1490,8 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
                    uint8_t is_enc, uint8_t ks_available) {
     char imbe_fr[8][23];
     DSD_MEMSET(imbe_fr, 0, sizeof(imbe_fr));
-    sdrtrunk_unpack_interleaved_voice_frame(imbe_str, 36, &imbe_fr[0][0], 23, iW, iX, iY, iZ);
+    sdrtrunk_unpack_interleaved_voice_frame(imbe_str, 36, &imbe_fr[0][0], 23, p25p1_imbe_interleave_w,
+                                            p25p1_imbe_interleave_x, p25p1_imbe_interleave_y, p25p1_imbe_interleave_z);
 
     char imbe_d[88];
     DSD_MEMSET(imbe_d, 0, sizeof(imbe_d));

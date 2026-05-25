@@ -28,10 +28,10 @@ ambe2_codeword_print_i(const dsd_opts* opts, char ambe_fr[4][24]) {
 
     //reinterleave the frame
     const int *w, *x, *y, *z;
-    w = rW;
-    x = rX;
-    y = rY;
-    z = rZ;
+    w = dmr_ambe_interleave_w;
+    x = dmr_ambe_interleave_x;
+    y = dmr_ambe_interleave_y;
+    z = dmr_ambe_interleave_z;
 
     for (int8_t i = 0; i < 36; i++) {
         interleaved[(i * 2) + 0] = (uint8_t)ambe_fr[*w][*x];
@@ -131,10 +131,10 @@ tyt16_ambe2_codeword_keystream(const dsd_state* state, char ambe_fr[4][24], int 
 
     //interleave the frame
     const int *w, *x, *y, *z;
-    w = rW;
-    x = rX;
-    y = rY;
-    z = rZ;
+    w = dmr_ambe_interleave_w;
+    x = dmr_ambe_interleave_x;
+    y = dmr_ambe_interleave_y;
+    z = dmr_ambe_interleave_z;
 
     for (int8_t i = 0; i < 36; i++) {
         interleaved[(i * 2) + 0] = ambe_fr[*w][*x];
@@ -176,10 +176,10 @@ tyt16_ambe2_codeword_keystream(const dsd_state* state, char ambe_fr[4][24], int 
     }
 
     //deinterleave back into ambe_fr frame
-    w = rW;
-    x = rX;
-    y = rY;
-    z = rZ;
+    w = dmr_ambe_interleave_w;
+    x = dmr_ambe_interleave_x;
+    y = dmr_ambe_interleave_y;
+    z = dmr_ambe_interleave_z;
     int k = 0;
     for (int8_t i = 0; i < 36; i++) {
         ambe_fr[*w][*x] = interleaved[k++];
@@ -212,8 +212,8 @@ tyt_ap_pc4_keystream_creation(dsd_state* state, char* input) {
     }
 
     /* Create key schedule */
-    create_keys(&ctx, key2, sizeof(key2));
-    ctx.rounds = nbround;
+    create_keys(&g_pc4_context, key2, sizeof(key2));
+    g_pc4_context.rounds = nbround;
 
     DSD_FPRINTF(stderr, "DMR TYT AP (PC4) 128-bit Key %016llX%016llX with Forced Application\n",
                 (unsigned long long int)K1, (unsigned long long int)K2);
@@ -278,9 +278,9 @@ tyt_ep_aes_keystream_creation(dsd_state* state, char* input) {
     DSD_MEMSET(ks_bits, 0, sizeof(ks_bits));
     unpack_byte_array_into_bit_array(ks_bytes, ks_bits, 16);
 
-    //load static keystream into ctx.bits since that isn't ever zeroed out
+    //load static keystream into g_pc4_context.bits since that isn't ever zeroed out
     for (int i = 0; i < 49; i++) {
-        ctx.bits[i] = ks_bits[i];
+        g_pc4_context.bits[i] = ks_bits[i];
     }
 
     DSD_FPRINTF(stderr, "DMR TYT EP (AES-128) Key %016llX%016llX with Forced Application\n", K1, K2);

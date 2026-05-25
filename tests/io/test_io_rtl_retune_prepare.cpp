@@ -66,6 +66,11 @@ main(void) {
     uint32_t generation_before = 0U;
     uint32_t generation_after = 0U;
 
+    /*
+     * Retune preparation is split between output drain state, cached symbols,
+     * and replay event boundaries. The helper calls below cover each state
+     * transition without starting a live RTL worker thread.
+     */
     int rc = rtl_stream_test_prepare_reconfigure_input(8U, &used_after, &generation_before, &generation_after);
 
     int failed = 0;
@@ -122,6 +127,7 @@ main(void) {
     failed |= expect_size_eq("inactive fsk reacquire leaves queued ring", used_after, 9U);
     failed |= expect_int_eq("inactive fsk reacquire leaves cached symbols", cache_pending, 4);
 
+    // Fragmented mute spans are coalesced so capture metadata stays IQ-pair aligned.
     uint64_t pending_mute = 0U;
     uint64_t emitted = rtl_device_test_coalesce_capture_mute_duration(&pending_mute, 1U, 2U);
     failed |= expect_size_eq("odd mute fragment held", (size_t)emitted, 0U);
@@ -153,6 +159,7 @@ main(void) {
     failed |= expect_int_eq("end reconfigure schedules odd carry mute byte", mute, 1);
     failed |= expect_int_eq("end reconfigure preserves carry until scheduled mute drains", mute_byte_phase, 1);
 
+    // Replay RESET events clear phase/carry state only after pending output drains.
     int replay_phase = 3;
     int replay_have_carry = 1;
     uint8_t replay_carry_byte = 42U;

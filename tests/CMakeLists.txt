@@ -1543,28 +1543,42 @@ file(
     "[mode]\n"
     "decode = \"dmr\"\n"
 )
+set(_DSD_BOOTSTRAP_CLI_CONFIG
+    "${_DSD_BOOTSTRAP_FIXTURE_DIR}/default_config.ini"
+)
+file(
+    WRITE "${_DSD_BOOTSTRAP_CLI_CONFIG}"
+    "version = 1\n"
+    "\n"
+    "[input]\n"
+    "source = \"pulse\"\n"
+    "\n"
+    "[mode]\n"
+    "decode = \"dmr\"\n"
+)
 
 add_test(
     NAME RUNTIME_BOOTSTRAP_ENV_CONFIG
     COMMAND $<TARGET_FILE:dsd-neo> --print-config
 )
 set(_DSD_BOOTSTRAP_ENV_ONLY_ENV
-    "DSD_NEO_CONFIG=${_DSD_BOOTSTRAP_ENV_CONFIG}"
+    "DSD_NEO_CONFIG=env_config.ini"
     "DSD_NEO_NO_BOOTSTRAP=1"
 )
 set_tests_properties(
     RUNTIME_BOOTSTRAP_ENV_CONFIG
     PROPERTIES
         ENVIRONMENT "${_DSD_BOOTSTRAP_ENV_ONLY_ENV}"
+        WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
         PASS_REGULAR_EXPRESSION [=[decode = "p25p1"]=]
 )
 
 add_test(
     NAME RUNTIME_BOOTSTRAP_CLI_CONFIG_OVERRIDES_ENV
-    COMMAND $<TARGET_FILE:dsd-neo> --config --print-config
+    COMMAND $<TARGET_FILE:dsd-neo> --config "default_config.ini" --print-config
 )
 set(_DSD_BOOTSTRAP_CLI_OVERRIDE_ENV
-    "DSD_NEO_CONFIG=${_DSD_BOOTSTRAP_ENV_CONFIG}"
+    "DSD_NEO_CONFIG=env_config.ini"
     "DSD_NEO_NO_BOOTSTRAP=1"
     "${_DSD_BOOTSTRAP_DEFAULT_CFG_ENV}=${_DSD_BOOTSTRAP_DEFAULT_CFG_ROOT}"
 )
@@ -1572,29 +1586,30 @@ set_tests_properties(
     RUNTIME_BOOTSTRAP_CLI_CONFIG_OVERRIDES_ENV
     PROPERTIES
         ENVIRONMENT "${_DSD_BOOTSTRAP_CLI_OVERRIDE_ENV}"
+        WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
         PASS_REGULAR_EXPRESSION [=[decode = "dmr"]=]
 )
 
 add_test(
     NAME RUNTIME_BOOTSTRAP_LIST_PROFILES
-    COMMAND
-        $<TARGET_FILE:dsd-neo> --config "${_DSD_BOOTSTRAP_PROFILE_CONFIG}"
-        --list-profiles
+    COMMAND $<TARGET_FILE:dsd-neo> --config "profiles.ini" --list-profiles
 )
 set_tests_properties(
     RUNTIME_BOOTSTRAP_LIST_PROFILES
-    PROPERTIES PASS_REGULAR_EXPRESSION "Profiles in"
+    PROPERTIES
+        WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+        PASS_REGULAR_EXPRESSION "Profiles in"
 )
 
 add_test(
     NAME RUNTIME_BOOTSTRAP_MISSING_PROFILE
     COMMAND
-        $<TARGET_FILE:dsd-neo> --config "${_DSD_BOOTSTRAP_PROFILE_CONFIG}"
-        --profile missing --print-config
+        $<TARGET_FILE:dsd-neo> --config "profiles.ini" --profile missing
+        --print-config
 )
 set_tests_properties(
     RUNTIME_BOOTSTRAP_MISSING_PROFILE
-    PROPERTIES WILL_FAIL TRUE
+    PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}" WILL_FAIL TRUE
 )
 
 # P25 scaffolding tests

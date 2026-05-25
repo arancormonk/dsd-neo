@@ -70,8 +70,8 @@ provoice_load_interleave_segment(provoice_reader* reader, char frame[7][24], con
 static void
 provoice_load_imbe_frame_pair(provoice_reader* reader, char frame1[7][24], char frame2[7][24]) {
     int i;
-    const int* w = pW;
-    const int* x = pX;
+    const int* w = provoice_interleave_w;
+    const int* x = provoice_interleave_x;
 
     for (i = 0; i < 11; i++) {
         provoice_load_interleave_segment(reader, frame1, &w, &x, 6);

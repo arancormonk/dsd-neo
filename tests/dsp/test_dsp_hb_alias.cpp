@@ -102,9 +102,6 @@ main(void) {
     // Choose tones: pass ~ 2 kHz; stop near 0.45*Fs (just below Nyquist)
     double f_pass = 2000.0;
     double f_stop = 0.45 * (Fs / 2.0) * 2.0; // 0.45*Fs
-    if (f_stop >= (Fs / 2.0)) {
-        f_stop = (Fs / 2.0) * 0.9;
-    }
 
     // One stage: expect at least ~18 dB attenuation (conservative)
     double a1 = stage_atten_db(1, Fs, f_pass, f_stop);

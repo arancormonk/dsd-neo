@@ -24,8 +24,6 @@
 // Berlekamp-Peterson and Berlekamp-Massey Algorithms for error-location are
 // from Cain, Clark, "Error-Correction Coding For Digital Communications", pp. 205.
 
-//#include DEFAULTCONFIG
-
 #include <dsd-neo/fec/rs_12_9.h>
 #include <stdint.h>
 #include <string.h>
@@ -315,7 +313,6 @@ rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, const rs_12_9_poly_t* syndr
             }
 
             uint8_t err = rs_12_9_galois_multiplication(num, rs_12_9_galois_inv(denom));
-            //console_log(LOGLEVEL_CODING LOGLEVEL_DEBUG "    rs (12,9): error magnitude %#x at byte loc. %u\n", err, sizeof(rs_12_9_codeword_t)-i);
 
             codeword->data[sizeof(rs_12_9_codeword_t) - i - 1] ^= err;
         }

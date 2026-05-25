@@ -120,10 +120,10 @@ x2tdma_fill_ambe_from_slot(dsd_opts* opts, dsd_state* state, int j, int** dibit_
                            int count) {
     int i;
     int dibit;
-    const int* w = aW + start;
-    const int* x = aX + start;
-    const int* y = aY + start;
-    const int* z = aZ + start;
+    const int* w = x2tdma_ambe_interleave_w + start;
+    const int* x = x2tdma_ambe_interleave_x + start;
+    const int* y = x2tdma_ambe_interleave_y + start;
+    const int* z = x2tdma_ambe_interleave_z + start;
 
     for (i = 0; i < count; i++) {
         dibit = x2tdma_read_slot_dibit(opts, state, j, dibit_p);
@@ -140,10 +140,10 @@ static void
 x2tdma_fill_ambe_from_stream(dsd_opts* opts, dsd_state* state, char frame[4][24], int start, int count) {
     int i;
     int dibit;
-    const int* w = aW + start;
-    const int* x = aX + start;
-    const int* y = aY + start;
-    const int* z = aZ + start;
+    const int* w = x2tdma_ambe_interleave_w + start;
+    const int* x = x2tdma_ambe_interleave_x + start;
+    const int* y = x2tdma_ambe_interleave_y + start;
+    const int* z = x2tdma_ambe_interleave_z + start;
 
     for (i = 0; i < count; i++) {
         dibit = getDibit(opts, state);
@@ -547,9 +547,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
     }
 
     if (ctx.mutecurrentslot == 0) {
-        if ((ctx.eeei == 0) && (ctx.aiei == 0)) {
-            // processP25lcw (opts, state, lcformat, mfid, lcinfo);
-        }
         if (opts->p25enc == 1) {
             int algidhex = strtol(state->algid, NULL, 2);
             int kidhex = strtol(state->keyid, NULL, 2);

@@ -48,7 +48,6 @@ rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, const uint
         t = S[i];
         S[i] = S[j];
         S[j] = t;
-        //return mbe payload byte here
         if (count >= (unsigned int)drop) {
             uint8_t b = S[(S[i] + S[j]) % 256];
             plain[count - drop] = b ^ cipher[count - drop];
@@ -85,7 +84,6 @@ rc4_block_output(int drop, int keylen, int meslen, const uint8_t* key, uint8_t* 
     i = 0;
     j = 0;
     x = 0;
-    // DSD_FPRINTF(stderr, " Keystream Octets = ");
     unsigned int total = messagelength + (unsigned int)drop;
     for (count = 0; count < total; count++) {
         i = (i + 1) % 256;
@@ -151,17 +149,11 @@ hytera_enhanced_rc4_setup(dsd_opts* opts, dsd_state* state, unsigned long long i
     }
 
     //debug
-    // DSD_FPRINTF(stderr, " KS: ");
-    // for (int i = 0; i < 135; i++)
     // {
-    //   if ((i != 0) && ((i%7) == 0))
-    //     DSD_FPRINTF(stderr, " ");
-    //   DSD_FPRINTF(stderr, "%02X", ks[i]); //ks_octets
     // }
 
     //NULL pointer to ks_octets
     ks_octets = NULL;
 
     //end line break
-    // DSD_FPRINTF(stderr, "\n");
 }

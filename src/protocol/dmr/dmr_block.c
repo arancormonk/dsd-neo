@@ -388,10 +388,7 @@ dmr_dheader_handle_moto_p_head(dsd_state* state, uint8_t slot, uint8_t dheader[]
     state->data_byte_ctr[slot] = (uint16_t)len;
     state->data_p_head[slot] = 1;
     uint8_t p_opcode = (uint8_t)ConvertBitIntoBytes(&dheader_bits[16], 8);
-    switch (p_opcode) {
-        case 0x02: state->data_ks_start[slot] = 3; break;
-        default: state->data_ks_start[slot] = 0; break;
-    }
+    state->data_ks_start[slot] = (p_opcode == 0x02) ? 3 : 0;
 }
 
 static void
@@ -758,9 +755,6 @@ dmr_udt_handle_binary(dmr_udt_ctx* ctx) {
     int offset = 96 / 8;
     if (offset + bytes > 60) {
         bytes = 60 - offset;
-        if (bytes < 0) {
-            bytes = 0;
-        }
     }
     if (bytes > 0) {
         utf8_to_text(ctx->state, 0, (uint16_t)bytes, ctx->block_bytes + offset);
@@ -1333,9 +1327,6 @@ dmr_block_type1_lrrp_crc_ok(const dsd_state* state, uint8_t slot) {
 
     int start = state->data_p_head[slot] ? 2 : 1;
     int end = state->data_header_blocks[slot];
-    if (start < 1) {
-        start = 1;
-    }
     if (end > 126) {
         end = 126;
     }

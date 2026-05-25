@@ -28,6 +28,8 @@
 
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
+#else
+extern int rtl_stream_get_auto_ppm(void);
 #endif
 
 // ---- Visibility/predicate functions ----
@@ -1153,7 +1155,6 @@ lbl_rtl_auto_ppm(const void* v, char* b, size_t n) {
     int on = c->opts->rtl_auto_ppm ? 1 : 0;
     /* If stream active, reflect runtime state */
     if (c->state && c->state->rtl_ctx) {
-        extern int rtl_stream_get_auto_ppm(void);
         on = rtl_stream_get_auto_ppm();
     }
     DSD_SNPRINTF(b, n, "Auto-PPM (Spectrum): %s", on ? "On" : "Off");

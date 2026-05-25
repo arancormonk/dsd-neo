@@ -29,7 +29,8 @@ expect_int(const char* tag, int got, int want) {
 static int
 expect_frame(const char* tag, const float* got, const float* want) {
     for (int i = 0; i < 160; i++) {
-        if (got[i] != want[i]) {
+        float diff = got[i] - want[i];
+        if (diff < -1.0e-6f || diff > 1.0e-6f) {
             DSD_FPRINTF(stderr, "%s: sample %d mismatch (got %.3f want %.3f)\n", tag, i, got[i], want[i]);
             return 1;
         }

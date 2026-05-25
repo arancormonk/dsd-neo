@@ -320,7 +320,7 @@ int16_t p2xllr[1400] = {0}; /* bit LLRs after descramble */
 static int dibit = 0;
 static int vc_counter = 0;
 static int framing_counter = 0;
-static int voice = 0; //if voice in vch 0 or vch 1
+static int voice = 0; // If voice in vch 0 or vch 1
 
 static uint64_t isch = 0;
 static int isch_decoded = -1;
@@ -764,10 +764,7 @@ process_ISCH(dsd_opts* opts, dsd_state* state) {
         isch_reliab[i] = p25p2_reliability_for_abs_bit(abs_bit);
     }
 
-    if (isch == 0x575D57F7FF) //S-ISCH frame sync, pass;
-    {
-        //do nothing
-    } else {
+    if (isch != 0x575D57F7FF) {
         isch_decoded = isch_lookup_soft(isch, isch_reliab);
 
         if (isch_decoded > -1) {
@@ -788,7 +785,7 @@ process_ISCH(dsd_opts* opts, dsd_state* state) {
             }
 
         } else {
-            //if -2(no return value) or -1(fec error)
+            // If -2(no return value) or -1(fec error)
         }
     }
 

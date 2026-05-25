@@ -1808,14 +1808,16 @@ live_scanner_emit_start_log_if_enabled(const dsd_opts* opts, dsd_state* state) {
 
 static void
 live_scanner_update_thresholds(dsd_state* state, int* last_max, int* last_min) {
-    if (state->max == *last_max && state->min == *last_min) {
+    int current_max = (int)state->max;
+    int current_min = (int)state->min;
+    if (current_max == *last_max && current_min == *last_min) {
         return;
     }
     state->center = ((state->max) + (state->min)) / 2;
     state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
     state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
-    *last_max = state->max;
-    *last_min = state->min;
+    *last_max = current_max;
+    *last_min = current_min;
 }
 
 static void

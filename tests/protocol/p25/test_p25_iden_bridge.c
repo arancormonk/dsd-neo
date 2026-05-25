@@ -232,9 +232,9 @@ main(void) {
         type = -1;
         tdma = -1;
         freq = -1;
-        int sh = p25_test_mbt_iden_bridge(tdma_mbt, (int)sizeof(tdma_mbt), &base, &spac, &type, &tdma, &freq);
-        if (sh != 0) {
-            DSD_FPRINTF(stderr, "tdma shim invocation failed (%d)\n", sh);
+        int tdma_shim_rc = p25_test_mbt_iden_bridge(tdma_mbt, (int)sizeof(tdma_mbt), &base, &spac, &type, &tdma, &freq);
+        if (tdma_shim_rc != 0) {
+            DSD_FPRINTF(stderr, "tdma shim invocation failed (%d)\n", tdma_shim_rc);
             return 98;
         }
 

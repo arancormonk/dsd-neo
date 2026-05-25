@@ -98,7 +98,6 @@ crc8(uint8_t bits[], unsigned int len) {
     const uint8_t poly[9] = {1, 0, 0, 0, 0, 0, 1, 1, 1}; // crc8 poly
     uint8_t buf[256];
     if (len + K > sizeof(buf)) {
-        //DSD_FPRINTF(stderr, "crc8: buffer length %u exceeds maximum %lu\n", len+K, sizeof(buf));
         return 0;
     }
     DSD_MEMSET(buf, 0, sizeof(buf));
@@ -131,11 +130,10 @@ uint8_t
 crc7(uint8_t bits[], unsigned int len) {
     uint8_t crc = 0;
     unsigned int K = 7;
-    //G7(x) = x7 + x5 + x2 + x + 1   check poly below for correct (dmr rc crc7)
+    // CRC7 polynomial: x7 + x5 + x2 + x + 1   check poly below for correct (dmr rc crc7)
     const uint8_t poly[8] = {1, 0, 1, 0, 0, 1, 1, 1}; // crc7 poly
     uint8_t buf[256];
     if (len + K > sizeof(buf)) {
-        // DSD_FPRINTF(stderr, "crc8: buffer length %u exceeds maximum %lu\n", len+K, sizeof(buf));
         return 0;
     }
     DSD_MEMSET(buf, 0, sizeof(buf));
@@ -241,7 +239,6 @@ ComputeAndCorrectFullLinkControlCrc(uint8_t* FullLinkControlDataBytes, uint32_t*
 
     if ((result == RS_12_9_CORRECT_ERRORS_RESULT_NO_ERRORS_FOUND)
         || (result == RS_12_9_CORRECT_ERRORS_RESULT_ERRORS_CORRECTED)) {
-        //DSD_FPRINTF(stderr, "CRC OK : 0x%06X\n", *CRCComputed);
         CrcIsCorrect = 1;
 
         /* Reconstitue full link control data after FEC correction */
@@ -261,7 +258,6 @@ ComputeAndCorrectFullLinkControlCrc(uint8_t* FullLinkControlDataBytes, uint32_t*
             }
         }
     } else {
-        //DSD_FPRINTF(stderr, "CRC ERROR : 0x%06X\n", *CRCComputed);
         CrcIsCorrect = 0;
     }
 
@@ -412,7 +408,7 @@ ComputeCrc32Bit(const uint8_t* DMRData, uint32_t NbData) {
         }
     }
 
-    //for whatever reason, we get the CRC returned in a reversed byte order (MSO LSO b***s***)
+    // For whatever reason, we get the CRC returned in a reversed byte order (MSO LSO b***s***)
     uint32_t a, b, c, d;
     a = (CRC & 0xFF) << 24;
     b = (CRC & 0xFF00) >> 8;

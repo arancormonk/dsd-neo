@@ -12,11 +12,6 @@
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
-#include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
-#include <dsd-neo/protocol/provoice/provoice_const.h>
-#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/cli.h>
@@ -30,15 +25,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
-
-#define DSD_NEO_MAIN
-#include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
-#include <dsd-neo/protocol/provoice/provoice_const.h>
-#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
-
-#undef DSD_NEO_MAIN
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -402,16 +388,8 @@ test_create_temp_ini_with_contents(const char* contents, char* out_path, size_t 
         return -1;
     }
 
-    const char sep = test_path_sep();
-    const char* tdir = test_tmp_dir();
-
     char tmpl[1024];
-    size_t tdir_len = strlen(tdir);
-    if (tdir_len > 0 && (tdir[tdir_len - 1] == '/' || tdir[tdir_len - 1] == '\\')) {
-        DSD_SNPRINTF(tmpl, sizeof tmpl, "%sdsdneo_bootstrap_XXXXXX", tdir);
-    } else {
-        DSD_SNPRINTF(tmpl, sizeof tmpl, "%s%c%s", tdir, sep, "dsdneo_bootstrap_XXXXXX");
-    }
+    DSD_SNPRINTF(tmpl, sizeof tmpl, "%s", "dsdneo_bootstrap_XXXXXX");
 
     int fd = dsd_mkstemp(tmpl);
     if (fd < 0) {
@@ -513,16 +491,8 @@ test_create_temp_vertex_ks_csv(char* out_path, size_t out_path_size, int malform
         return -1;
     }
 
-    const char sep = test_path_sep();
-    const char* tdir = test_tmp_dir();
-
     char tmpl[1024];
-    size_t tdir_len = strlen(tdir);
-    if (tdir_len > 0 && (tdir[tdir_len - 1] == '/' || tdir[tdir_len - 1] == '\\')) {
-        DSD_SNPRINTF(tmpl, sizeof tmpl, "%sdsdneo_vertex_ks_XXXXXX", tdir);
-    } else {
-        DSD_SNPRINTF(tmpl, sizeof tmpl, "%s%c%s", tdir, sep, "dsdneo_vertex_ks_XXXXXX");
-    }
+    DSD_SNPRINTF(tmpl, sizeof tmpl, "%s", "dsdneo_vertex_ks_XXXXXX");
 
     int fd = dsd_mkstemp(tmpl);
     if (fd < 0) {
@@ -567,6 +537,11 @@ test_create_temp_iq_fixture(char* out_metadata_path, size_t out_metadata_path_si
         return -1;
     }
 
+    /*
+     * Create the binary IQ payload first, then write metadata that references it
+     * by basename. This keeps fixture paths portable while still exercising the
+     * replay loader's relative-path resolution.
+     */
     const char sep = test_path_sep();
     const char* tdir = test_tmp_dir();
 
@@ -626,6 +601,7 @@ test_create_temp_iq_fixture(char* out_metadata_path, size_t out_metadata_path_si
     }
     data_file = data_file ? (data_file + 1) : data_path;
 
+    // The bootstrap tests only need a small valid v1 capture descriptor.
     int n = DSD_FPRINTF(meta_fp,
                         "{\n"
                         "  \"format\": \"dsd-neo-iq\",\n"
@@ -1060,6 +1036,11 @@ test_r_playback_optind_is_first_file_regardless_of_option_order(void) {
     (void)remove(wav_path_a);
     (void)remove(wav_path_b);
 
+    /*
+     * Exercise both orderings around -w because the compacted argv seen by
+     * short-option parsing must leave optind on the playback filename. Each
+     * block owns a fresh opts/state pair so parser side effects cannot leak.
+     */
     {
         dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
         dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -2947,6 +2928,11 @@ test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open(void) {
     initOpts(opts);
     initState(state);
 
+    /*
+     * A CLI file path should override the configured file source completely.
+     * The staged config rate is cleared so the headerless raw file opens using
+     * the normal default input rate.
+     */
     const short samples[] = {1234, -2345, 3456, -4567};
     char raw_path[1024];
     if (test_create_temp_raw_pcm_file("dsdneo_cli_override_input", samples, sizeof samples / sizeof samples[0], ".pcm",
@@ -3002,6 +2988,7 @@ test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open(void) {
     }
 
     int test_rc = 0;
+    // Bootstrap should preserve the CLI file source while removing staged rate.
     if (opts->staged_file_sample_rate != 0) {
         DSD_FPRINTF(stderr, "expected CLI file override to clear staged file rate, got %d\n",
                     opts->staged_file_sample_rate);
@@ -3064,6 +3051,11 @@ test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open(void) {
     initOpts(opts);
     initState(state);
 
+    /*
+     * A CLI sample-rate override wins over the configured file sample rate.
+     * Opening the headerless raw file after bootstrap verifies the effective
+     * rate passed through to libsndfile.
+     */
     const short samples[] = {4321, -3210, 2109, -1098};
     char raw_path[1024];
     if (test_create_temp_raw_pcm_file("dsdneo_cli_rate_override", samples, sizeof samples / sizeof samples[0], ".pcm",
@@ -3121,6 +3113,7 @@ test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open(void) {
     }
 
     int test_rc = 0;
+    // The config file source remains, but its staged rate must not override -s.
     if (opts->wav_sample_rate != 44100 || dsd_opts_effective_input_rate(opts) != 44100) {
         DSD_FPRINTF(stderr, "expected CLI rate override to keep 44100 Hz, got raw=%d effective=%d\n",
                     opts->wav_sample_rate, dsd_opts_effective_input_rate(opts));

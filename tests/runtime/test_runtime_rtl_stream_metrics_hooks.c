@@ -166,7 +166,13 @@ fake_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sac
 
 int
 main(void) {
-    // Default behavior with hooks unset
+    /*
+     * First verify wrapper defaults with no hook table installed, including the
+     * built-in symbol-cache counter. Then install a full fake hook table and
+     * assert that every wrapper forwards calls, return values, and out-params.
+     */
+
+    // Default behavior with hooks unset.
     dsd_rtl_stream_metrics_hooks_set(NULL);
 
     assert(dsd_rtl_stream_metrics_hook_output_rate_hz() == 0U);
@@ -213,7 +219,7 @@ main(void) {
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(-5);
     assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 0);
 
-    // Installed hooks should be invoked through wrappers
+    // Installed hooks should be invoked through wrappers.
     g_output_rate_calls = 0;
     g_output_kind_calls = 0;
     g_symbol_profile_calls = 0;
@@ -277,6 +283,7 @@ main(void) {
     assert(g_set_symbol_levels == 4);
     assert(g_set_symbol_channel_profile == 5);
 
+    // Out-parameter hooks must report both call counts and returned values.
     cqpsk = fll = ted = 0;
     assert(dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted) == -7);
     assert(g_dsp_get_calls == 1);

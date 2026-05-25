@@ -77,8 +77,6 @@ CNXDNConvolution_decode(uint8_t s0, uint8_t s1) {
 
     ++m_dp;
 
-    //assert((m_dp - m_decisions) <= 300);
-
     uint16_t* tmp = m_oldMetrics;
     m_oldMetrics = m_newMetrics;
     m_newMetrics = tmp;
@@ -86,7 +84,6 @@ CNXDNConvolution_decode(uint8_t s0, uint8_t s1) {
 
 void
 CNXDNConvolution_chainback(unsigned char* out, unsigned int nBits) {
-    //assert(out != 0);
 
     uint32_t state = 0U;
     while (nBits-- > 0) {
@@ -102,9 +99,6 @@ CNXDNConvolution_chainback(unsigned char* out, unsigned int nBits) {
 
 void
 CNXDNConvolution_encode(const unsigned char* in, unsigned char* out, unsigned int nBits) {
-    //assert(in != 0);
-    //assert(out != 0);
-    //assert(nBits > 0U);
 
     uint8_t d1 = 0U;
     uint8_t d2 = 0U;

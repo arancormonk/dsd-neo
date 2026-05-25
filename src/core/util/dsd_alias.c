@@ -200,9 +200,6 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
     int16_t alias_st = 136; //start of the encoded alias (the copied size of this header, basically)
 
     //debug, dump header arranged at this end
-    // DSD_FPRINTF(stderr, " Header: ");
-    // for (int16_t i = 0; i < alias_st/8; i++) //double check and adjust
-    //   DSD_FPRINTF(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&bits[0+(i*8)], 8));
 
     //use dmr_pdu_sf for storage, store entire header (will be used to verify complete reception of full alias)
     DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot])); //reset storage for header and blocks
@@ -253,9 +250,6 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
                    rel_bits * sizeof(uint8_t)); //Fix this value when samples arrive
 
         //debug, dump accumulated data at this end
-        // DSD_FPRINTF(stderr, " Accumulated: ");
-        // for (int16_t i = 0; i < (alias_st+(rel_bits*bn))/8; i++) //double check and adjust
-        //   DSD_FPRINTF(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][0+(i*8)], 8));
 
         if (ta_len == bn) //this is the last block, proceed to decoding
         {
@@ -291,9 +285,6 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     UNUSED(slot);
 
     //debug, dump completed data set
-    // DSD_FPRINTF(stderr, "\n Full: ");
-    // for (int16_t i = 0; i < (72+num_bits)/4; i++)
-    //   DSD_FPRINTF(stderr, "%X", (uint8_t)ConvertBitIntoBytes(&input[0+(i*4)], 4));
 
     //extract CRC
     uint16_t crc_ext = (uint16_t)ConvertBitIntoBytes(&input[(72 + num_bits - 16)], 16);
@@ -302,11 +293,9 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     uint16_t crc_cmp = ComputeCrcCCITT16d(&input[72], num_bits - 16);
 
     //print comparison
-    // DSD_FPRINTF(stderr, " CRC EXT: %04X CMP: %04X;", crc_ext, crc_cmp);
     if (crc_ext != crc_cmp) {
         DSD_FPRINTF(stderr, " Alias CRC Error;");
     }
-    // else DSD_FPRINTF(stderr, " Alias Okay;");
 
     //start decoding the alias
     if (crc_ext == crc_cmp) {
@@ -354,7 +343,6 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
             uint8_t increment = shortstop << 1;
 
             //clang warning -- warning: result of comparison of constant -1 with expression of type 'uint8_t' (aka 'unsigned char') is always true [-Wtautological-constant-out-of-range-compare]
-            // while(mult2 != -1 && shortstop != 1) //clang warning can't be -1 if uint8_t (set to 255 instead?)
             while (shortstop != 1) //this one tests out okay, so may use it instead
             {
                 shortstop += increment;
@@ -637,11 +625,6 @@ dmr_talker_alias_lc_blocks(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
     //Note: The Joann sample only carries block 5, and no header on block 4
     //another radio on that ham setup also has a broken alias similar, but
     //the other talkers have the 04 and the sample has a good decode otherwise
-    //debug broken aliasing on ham radio
-
-    // if (char_size == 0) //Enable this is you need to check alias even with missing header (set 7, 8, or 16)
-    //   char_size = 8;
-
     /*
     22:54:51 Sync: +DMR   slot1  [SLOT2] | Color Code=01 | VC6 
     Slot 1 - Talker Alias Block Num: 1; Valid Block; Talker Alias:       Joann  

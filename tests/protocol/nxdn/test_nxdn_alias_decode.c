@@ -142,6 +142,11 @@ main(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(bits, 0, sizeof(bits));
 
+    /*
+     * The proprietary and ARIB assemblers both receive out-of-order and invalid
+     * fragments here. The expected alias stays stable until a complete coherent
+     * sequence arrives, which catches stale-fragment mixing regressions.
+     */
     build_prop_msg(bits, 2U, 2U, "NAME");
     nxdn_alias_decode_prop(&opts, &state, bits, 1U);
     rc |= expect_str("prop-partial", state.generic_talker_alias[0], "NAME");
@@ -207,6 +212,7 @@ main(void) {
     rc |= expect_u8("arib-total-mismatch-mask", state.nxdn_alias_arib_seen_mask, 0x02U);
     rc |= expect_u8("arib-total-mismatch-total", state.nxdn_alias_arib_total_segments, 2U);
 
+    // A mid-sequence restart must discard the old second segment before assembly.
     DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "HOLD");
     nxdn_alias_reset(&state);
     {
@@ -235,6 +241,7 @@ main(void) {
     rc |= expect_str("arib-midseq-clean-assembled", state.generic_talker_alias[0], "FRESH222");
 
     {
+        // Shift-JIS decoding is normalized whether full multibyte support exists.
         char out[32];
         static const uint8_t sjis_ascii[] = {'A', 'B', ' ', ' ', 0x00};
         static const uint8_t sjis_halfwidth[] = {0xA1, 0x00};

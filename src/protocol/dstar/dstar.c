@@ -37,8 +37,8 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
     for (j = 0; j < 21; j++) {
 
         DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
-        const int* w = dW;
-        const int* x = dX;
+        const int* w = dstar_interleave_w;
+        const int* x = dstar_interleave_x;
 
         for (i = 0; i < 72; i++) {
             int dibit = getDibit(opts, state);
@@ -264,8 +264,8 @@ static void
 dstar_sd_emit_truncated_ascii(const uint8_t* sd_bytes, char* out, int capture) {
     int i;
     for (i = 1; i < 59; i++) {
-        if (i % 6 == 0) {
-            i++;
+        if (i > 1 && (i % 6 == 0 || i % 6 == 1)) {
+            continue;
         }
         if (dstar_sd_is_printable(sd_bytes[i])) {
             DSD_FPRINTF(stderr, "%c", sd_bytes[i]);
@@ -284,8 +284,8 @@ dstar_sd_collect_aprs_bytes(const uint8_t* sd_bytes, uint8_t* aprs) {
     int i;
     int k;
     for (i = 1, k = 0; i < 59; i++) {
-        if (i % 6 == 0) {
-            i++;
+        if (i > 1 && (i % 6 == 0 || i % 6 == 1)) {
+            continue;
         }
         aprs[k] = sd_bytes[i];
         if ((aprs[k] > 0x19) && (aprs[k] < 0x7F)) {

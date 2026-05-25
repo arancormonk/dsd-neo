@@ -212,8 +212,11 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
 // one-shot LCN calculator. Short-option parsing has been migrated here
 // to centralize all CLI handling in runtime.
 
+#define DSD_PARSE_ARGS_NEXT_ARG() (arg_advance = 2, argv[i + 1])
+
 #define DSD_PARSE_ARGS_PRESCAN_BLOCK()                                                                                 \
-    for (int i = 1; i < argc; i++) {                                                                                   \
+    for (int i = 1, arg_advance = 1; i < argc; i += arg_advance) {                                                     \
+        arg_advance = 1;                                                                                               \
         if (strcmp(argv[i], "--rtltcp-autotune") == 0) {                                                               \
             opts->rtltcp_autotune = 1;                                                                                 \
             dsd_setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);                                                                \
@@ -225,7 +228,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            const char* port_arg = argv[i + 1];                                                                        \
+            const char* port_arg = DSD_PARSE_ARGS_NEXT_ARG();                                                          \
             unsigned long parsed_port = 0;                                                                             \
             if (!cli_parse_decimal_u32(port_arg, &parsed_port)) {                                                      \
                 LOG_ERROR("Invalid --rtl-udp-control value \"%s\" (expected decimal port)\n", port_arg);               \
@@ -234,7 +237,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             }                                                                                                          \
             rtl_udp_control_cli_seen = 1;                                                                              \
             rtl_udp_control_cli_port = parsed_port;                                                                    \
-            i++;                                                                                                       \
+            arg_advance = 2;                                                                                           \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--rtl-udp-control=", 18) == 0) {                                                         \
@@ -255,7 +258,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            iq_capture_cli = argv[++i];                                                                                \
+            iq_capture_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--iq-capture=", 13) == 0) {                                                              \
@@ -268,7 +271,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            iq_capture_format_cli = argv[++i];                                                                         \
+            iq_capture_format_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                         \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--iq-capture-format=", 20) == 0) {                                                       \
@@ -281,7 +284,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            iq_capture_max_mb_cli = argv[++i];                                                                         \
+            iq_capture_max_mb_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                         \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--iq-capture-max-mb=", 20) == 0) {                                                       \
@@ -294,7 +297,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            symbol_capture_format_cli = argv[++i];                                                                     \
+            symbol_capture_format_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                     \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--symbol-capture-format=", 24) == 0) {                                                   \
@@ -307,7 +310,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            iq_replay_cli = argv[++i];                                                                                 \
+            iq_replay_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--iq-replay=", 12) == 0) {                                                               \
@@ -320,7 +323,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            iq_replay_rate_cli = argv[++i];                                                                            \
+            iq_replay_rate_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                            \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--iq-replay-rate=", 17) == 0) {                                                          \
@@ -337,7 +340,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            iq_info_cli = argv[++i];                                                                                   \
+            iq_info_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                   \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--iq-info=", 10) == 0) {                                                                 \
@@ -345,7 +348,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-vc-grace") == 0 && i + 1 < argc) {                                                  \
-            opts->p25_vc_grace_s = cli_parse_double_or_default(argv[++i], 0.0);                                        \
+            opts->p25_vc_grace_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                        \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_vc_grace_s);                                               \
             dsd_setenv("DSD_NEO_P25_VC_GRACE", buf, 1);                                                                \
@@ -353,7 +356,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-min-follow-dwell") == 0 && i + 1 < argc) {                                          \
-            opts->p25_min_follow_dwell_s = cli_parse_double_or_default(argv[++i], 0.0);                                \
+            opts->p25_min_follow_dwell_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_min_follow_dwell_s);                                       \
             dsd_setenv("DSD_NEO_P25_MIN_FOLLOW_DWELL", buf, 1);                                                        \
@@ -361,7 +364,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-grant-voice-timeout") == 0 && i + 1 < argc) {                                       \
-            opts->p25_grant_voice_to_s = cli_parse_double_or_default(argv[++i], 0.0);                                  \
+            opts->p25_grant_voice_to_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                  \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_grant_voice_to_s);                                         \
             dsd_setenv("DSD_NEO_P25_GRANT_VOICE_TO", buf, 1);                                                          \
@@ -369,7 +372,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-retune-backoff") == 0 && i + 1 < argc) {                                            \
-            opts->p25_retune_backoff_s = cli_parse_double_or_default(argv[++i], 0.0);                                  \
+            opts->p25_retune_backoff_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                  \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_retune_backoff_s);                                         \
             dsd_setenv("DSD_NEO_P25_RETUNE_BACKOFF", buf, 1);                                                          \
@@ -377,7 +380,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-mac-hold") == 0 && i + 1 < argc) {                                                  \
-            double v = cli_parse_double_or_default(argv[++i], 0.0);                                                    \
+            double v = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                                    \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", v);                                                                  \
             dsd_setenv("DSD_NEO_P25_MAC_HOLD", buf, 1);                                                                \
@@ -385,7 +388,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-ring-hold") == 0 && i + 1 < argc) {                                                 \
-            double v = cli_parse_double_or_default(argv[++i], 0.0);                                                    \
+            double v = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                                    \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", v);                                                                  \
             dsd_setenv("DSD_NEO_P25_RING_HOLD", buf, 1);                                                               \
@@ -393,7 +396,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-cc-grace") == 0 && i + 1 < argc) {                                                  \
-            double v = cli_parse_double_or_default(argv[++i], 0.0);                                                    \
+            double v = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                                    \
             if (v < 0) {                                                                                               \
                 v = 0;                                                                                                 \
             }                                                                                                          \
@@ -407,7 +410,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-force-release-extra") == 0 && i + 1 < argc) {                                       \
-            opts->p25_force_release_extra_s = cli_parse_double_or_default(argv[++i], 0.0);                             \
+            opts->p25_force_release_extra_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);             \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_force_release_extra_s);                                    \
             dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA", buf, 1);                                                     \
@@ -415,7 +418,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-force-release-margin") == 0 && i + 1 < argc) {                                      \
-            opts->p25_force_release_margin_s = cli_parse_double_or_default(argv[++i], 0.0);                            \
+            opts->p25_force_release_margin_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);            \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_force_release_margin_s);                                   \
             dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", buf, 1);                                                    \
@@ -423,7 +426,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-p1-err-hold-pct") == 0 && i + 1 < argc) {                                           \
-            opts->p25_p1_err_hold_pct = cli_parse_double_or_default(argv[++i], 0.0);                                   \
+            opts->p25_p1_err_hold_pct = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                   \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.1f", opts->p25_p1_err_hold_pct);                                          \
             dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", buf, 1);                                                          \
@@ -431,7 +434,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-p1-err-hold-sec") == 0 && i + 1 < argc) {                                           \
-            opts->p25_p1_err_hold_s = cli_parse_double_or_default(argv[++i], 0.0);                                     \
+            opts->p25_p1_err_hold_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                     \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_p1_err_hold_s);                                            \
             dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_S", buf, 1);                                                            \
@@ -439,23 +442,23 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--calc-lcn") == 0 && i + 1 < argc) {                                                      \
-            calc_csv_cli = argv[++i];                                                                                  \
+            calc_csv_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--calc-step") == 0 && i + 1 < argc) {                                                     \
-            calc_step_cli = argv[++i];                                                                                 \
+            calc_step_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--calc-cc-freq") == 0 && i + 1 < argc) {                                                  \
-            calc_ccf_cli = argv[++i];                                                                                  \
+            calc_ccf_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--calc-cc-lcn") == 0 && i + 1 < argc) {                                                   \
-            calc_ccl_cli = argv[++i];                                                                                  \
+            calc_ccl_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--calc-start-lcn") == 0 && i + 1 < argc) {                                                \
-            calc_start_cli = argv[++i];                                                                                \
+            calc_start_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm") == 0) {                                                                      \
@@ -464,39 +467,39 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--input-volume") == 0 && i + 1 < argc) {                                                  \
-            input_vol_cli = argv[++i];                                                                                 \
+            input_vol_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--input-level-warn-db") == 0 && i + 1 < argc) {                                           \
-            input_warn_db_cli = argv[++i];                                                                             \
+            input_warn_db_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                             \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--frame-log") == 0 && i + 1 < argc) {                                                     \
-            frame_log_cli = argv[++i];                                                                                 \
+            frame_log_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-mode") == 0 && i + 1 < argc) {                                                     \
-            rdio_mode_cli = argv[++i];                                                                                 \
+            rdio_mode_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-system-id") == 0 && i + 1 < argc) {                                                \
-            rdio_system_id_cli = argv[++i];                                                                            \
+            rdio_system_id_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                            \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-api-url") == 0 && i + 1 < argc) {                                                  \
-            rdio_api_url_cli = argv[++i];                                                                              \
+            rdio_api_url_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-api-key") == 0 && i + 1 < argc) {                                                  \
-            rdio_api_key_cli = argv[++i];                                                                              \
+            rdio_api_key_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-upload-timeout-ms") == 0 && i + 1 < argc) {                                        \
-            rdio_upload_timeout_cli = argv[++i];                                                                       \
+            rdio_upload_timeout_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                       \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-upload-retries") == 0 && i + 1 < argc) {                                           \
-            rdio_upload_retries_cli = argv[++i];                                                                       \
+            rdio_upload_retries_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                       \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-api-delete-after-upload") == 0) {                                                  \
@@ -509,7 +512,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            dmr_baofeng_pc5_cli = argv[++i];                                                                           \
+            dmr_baofeng_pc5_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                           \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--dmr-baofeng-pc5=", 18) == 0) {                                                         \
@@ -522,7 +525,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            dmr_csi_ee72_cli = argv[++i];                                                                              \
+            dmr_csi_ee72_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--dmr-csi-ee72=", 15) == 0) {                                                            \
@@ -535,7 +538,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            dmr_vertex_ks_csv_cli = argv[++i];                                                                         \
+            dmr_vertex_ks_csv_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                         \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--dmr-vertex-ks-csv=", 20) == 0) {                                                       \
@@ -543,7 +546,7 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {                                                  \
-            const char* sv = argv[++i];                                                                                \
+            const char* sv = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             if (sv && *sv) {                                                                                           \
                 opts->rtl_auto_ppm_snr_db = (float)cli_parse_double_or_default(sv, 0.0);                               \
                 char buf[32];                                                                                          \
@@ -731,9 +734,18 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     }                                                                                                                  \
     dsd_iq_replay_config_clear(&replay_cfg);
 
+#define DSD_CLI_PATH_IS_UNSAFE_LOCAL_FILE(path_)                                                                       \
+    ((path_) == NULL || (path_)[0] == '\0' || (path_)[0] == '/' || strchr((path_), '/') != NULL                        \
+     || strchr((path_), '\\') != NULL || strstr((path_), "..") != NULL)
+
 #define DSD_PARSE_ARGS_TRAILING_BLOCK()                                                                                \
     /* If CLI present, set env vars and maybe run calculator */                                                        \
     if (calc_csv_cli) {                                                                                                \
+        if (DSD_CLI_PATH_IS_UNSAFE_LOCAL_FILE(calc_csv_cli)) {                                                         \
+            LOG_ERROR("--dmr-t3-calc-csv must be a local filename without path separators or '..'\n");                 \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
         dsd_setenv("DSD_NEO_DMR_T3_CALC_CSV", calc_csv_cli, 1);                                                        \
         if (calc_step_cli) {                                                                                           \
             dsd_setenv("DSD_NEO_DMR_T3_STEP_HZ", calc_step_cli, 1);                                                    \
@@ -756,6 +768,11 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
                                                                                                                        \
     /* Environment fallback */                                                                                         \
     if (cfg && cfg->dmr_t3_calc_csv_is_set && cfg->dmr_t3_calc_csv[0] != '\0') {                                       \
+        if (DSD_CLI_PATH_IS_UNSAFE_LOCAL_FILE(cfg->dmr_t3_calc_csv)) {                                                 \
+            LOG_ERROR("DSD_NEO_DMR_T3_CALC_CSV must be a local filename without path separators or '..'\n");           \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
         int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(cfg->dmr_t3_calc_csv);                                               \
         cli_set_exit_rc(out_exit_rc, rc);                                                                              \
         return DSD_PARSE_ONE_SHOT;                                                                                     \
@@ -888,6 +905,11 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
         }                                                                                                              \
     }                                                                                                                  \
     if (dmr_vertex_ks_csv_cli) {                                                                                       \
+        if (DSD_CLI_PATH_IS_UNSAFE_LOCAL_FILE(dmr_vertex_ks_csv_cli)) {                                                \
+            LOG_ERROR("--dmr-vertex-ks-csv must be a local filename without path separators or '..'\n");               \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
         if (csvVertexKsImport(state, dmr_vertex_ks_csv_cli) != 0) {                                                    \
             LOG_ERROR("Invalid --dmr-vertex-ks-csv value\n");                                                          \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
@@ -943,7 +965,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         DSD_PARSE_ARGS_IQ_REPLAY_RADIO_BLOCK();
 #endif
     }
-    // codeql[cpp/path-injection] These one-shot helpers intentionally open user-selected CSV paths.
     DSD_PARSE_ARGS_TRAILING_BLOCK();
 
     int new_argc = dsd_cli_compact_args(argc, argv);

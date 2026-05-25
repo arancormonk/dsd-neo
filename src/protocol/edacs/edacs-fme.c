@@ -628,8 +628,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     short analog2[960];
     short analog3[960];
 
-    // #define DEBUG_ANALOG //enable to digitize analog if 'data' bursts heard
-
 #ifdef DEBUG_ANALOG
     uint8_t d1[192];
     uint8_t d2[192];
@@ -2064,7 +2062,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
     int edacs_bit[241] = {0}; //zero out bit array and collect bits into it.
     edacs_collect_bits(opts, state, edacs_bit);
 
-    //if we have executed a tune to a channel, then we will forego decoding any more edacs until we return from the voice channel
+    // If we have executed a tune to a channel, then we will forego decoding any more edacs until we return from the voice channel
     //this is a simple quick and dirty solution to fix setting the lastsrc value to something that we don't want in event history
     if (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1) {
         goto EDACS_END;

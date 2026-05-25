@@ -61,9 +61,7 @@ main(void) {
     DSD_MEMSET(parity, 0, sizeof(parity));
     for (int s = 0; s < 16; s++) {
         int bit = s * 6; // first bit of each symbol
-        if (bit < 156) {
-            payload[bit] ^= 1;
-        }
+        payload[bit] ^= 1;
     }
     rc = ez_rs28_facch(payload, parity);
     if (rc >= 0) {

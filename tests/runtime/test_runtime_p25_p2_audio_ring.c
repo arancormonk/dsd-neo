@@ -11,7 +11,7 @@
 static int
 is_all_zero_160(const float* buf) {
     for (int i = 0; i < 160; i++) {
-        if (buf[i] != 0.0f) {
+        if (buf[i] < -1.0e-6f || buf[i] > 1.0e-6f) {
             return 0;
         }
     }
@@ -52,7 +52,8 @@ main(void) {
         if (!p25_p2_audio_ring_pop(&state, 0, out)) {
             return 5;
         }
-        if (out[0] != (float)expected) {
+        float diff = out[0] - (float)expected;
+        if (diff < -1.0e-6f || diff > 1.0e-6f) {
             return 6;
         }
     }

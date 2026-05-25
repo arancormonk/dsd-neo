@@ -287,18 +287,6 @@ debug_print_symbol_heuristics(int previous_dibit, int dibit, SymbolHeuristics* s
         sd = sqrtf(sh->var_sum / ((float)n));
     }
     DSD_FPRINTF(stderr, "%i%i: count: %2i mean: % 10.2f sd: % 10.2f", previous_dibit, dibit, sh->count, mean, sd);
-    /*
-    DSD_FPRINTF(stderr, "(");
-    for (k=0; k<n; k++)
-      {
-        if (k != 0)
-          {
-            DSD_FPRINTF(stderr, ", ");
-          }
-        DSD_FPRINTF(stderr, "%i", sh->values[k]);
-      }
-    DSD_FPRINTF(stderr, ")");
-    */
     DSD_FPRINTF(stderr, "\n");
 }
 

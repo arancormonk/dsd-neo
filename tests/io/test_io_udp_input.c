@@ -161,6 +161,11 @@ main(void) {
         goto cleanup;
     }
 
+    /*
+     * Start on an ephemeral loopback port, send real PCM frames, and prove the
+     * UDP path resets staged file/resampler state before samples are consumed.
+     * The reader-thread section then verifies the no-data path blocks cleanly.
+     */
     if (udp_input_start(&opts, "127.0.0.1", 0, opts.wav_sample_rate) != 0) {
         DSD_FPRINTF(stderr, "udp_input_start failed\n");
         goto cleanup;
@@ -201,7 +206,7 @@ main(void) {
         }
     }
 
-    // With no new packets, udp_input_read_sample should block (not synthesize silence).
+    // With no new packets, udp_input_read_sample should block rather than emit silence.
     reader_state rs;
     DSD_MEMSET(&rs, 0, sizeof(rs));
     rs.opts = &opts;

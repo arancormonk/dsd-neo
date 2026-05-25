@@ -45,7 +45,8 @@ expect_u64(const char* label, uint64_t got, uint64_t want) {
 
 static int
 expect_float(const char* label, float got, float want) {
-    if (got != want) {
+    float diff = got - want;
+    if (diff < -1.0e-6f || diff > 1.0e-6f) {
         DSD_FPRINTF(stderr, "FAIL: %s: got=%f want=%f\n", label, got, want);
         return 1;
     }

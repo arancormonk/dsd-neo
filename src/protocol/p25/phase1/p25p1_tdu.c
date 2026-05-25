@@ -73,10 +73,6 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     state->payload_algid = 0; // unknown → treated as encrypted by IMBE path
     state->payload_keyid = 0;
 
-    // state->lasttg = 0;
-    // state->lastsrc = 0;
-    // state->gi[0] = -1;
-
     // Classify accumulated status symbols and set advisory AFC gate flag.
     p25_status_accum_classify(state, opts);
 

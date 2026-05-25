@@ -418,9 +418,8 @@ test_diags_have_line_numbers(void) {
             found_line_num = 1;
             // The bad_key should be on line 5
             if (strstr(diags.items[i].key, "bad_key") && diags.items[i].line_number == 5) {
-                // Perfect
+                break;
             }
-            break;
         }
     }
     if (diags.count > 0 && !found_line_num) {

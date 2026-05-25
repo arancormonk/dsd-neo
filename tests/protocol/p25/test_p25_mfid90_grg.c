@@ -114,16 +114,9 @@ main(void) {
         int sg = 100;
         int ga1 = 200, ga2 = 300, ga3 = 400;
 
-        // Add non-zero group addresses (matching handler logic)
-        if (ga1 != 0) {
-            p25_patch_add_wgid(&st, sg, ga1);
-        }
-        if (ga2 != 0) {
-            p25_patch_add_wgid(&st, sg, ga2);
-        }
-        if (ga3 != 0) {
-            p25_patch_add_wgid(&st, sg, ga3);
-        }
+        p25_patch_add_wgid(&st, sg, ga1);
+        p25_patch_add_wgid(&st, sg, ga2);
+        p25_patch_add_wgid(&st, sg, ga3);
         p25_patch_update(&st, sg, /*is_patch*/ 1, /*active*/ 1);
 
         int idx = find_sg_idx(&st, (uint16_t)sg);
@@ -142,17 +135,9 @@ main(void) {
     // Simulates the field extraction from p25p1_tsbk.c opcode 0x01 handler
     {
         int sg = 100;
-        int ga1 = 0, ga2 = 300, ga3 = 0; // Only ga2 non-zero
+        int ga2 = 300;
 
-        if (ga1 != 0) {
-            p25_patch_remove_wgid(&st, sg, ga1);
-        }
-        if (ga2 != 0) {
-            p25_patch_remove_wgid(&st, sg, ga2);
-        }
-        if (ga3 != 0) {
-            p25_patch_remove_wgid(&st, sg, ga3);
-        }
+        p25_patch_remove_wgid(&st, sg, ga2);
 
         int idx = find_sg_idx(&st, (uint16_t)sg);
         rc |= expect_true("GRG Del: SG 100 still exists", idx >= 0);

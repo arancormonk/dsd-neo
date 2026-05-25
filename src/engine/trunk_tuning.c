@@ -158,7 +158,9 @@ static void
 dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int freq) {
     if (opts->use_rigctl == 1) {
         if (opts->setmod_bw != 0) {
-            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+            if (!SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
+                DSD_FPRINTF(stderr, "Rigctl modulation update failed for bandwidth %d.\n", opts->setmod_bw);
+            }
         }
         SetFreq(opts->rigctl_sockfd, freq);
         return;
@@ -381,7 +383,9 @@ dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int
     dsd_engine_maybe_drain_audio(opts);
     if (opts->use_rigctl == 1) {
         if (opts->setmod_bw != 0) {
-            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+            if (!SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
+                DSD_FPRINTF(stderr, "Rigctl modulation update failed for bandwidth %d.\n", opts->setmod_bw);
+            }
         }
         SetFreq(opts->rigctl_sockfd, freq);
     } else if (opts->audio_in_type == AUDIO_IN_RTL) {

@@ -41,15 +41,6 @@ check_int(const char* name, int expected, int actual) {
     }
 }
 
-static void
-check_float_range(const char* name, float min, float max, float actual) {
-    g_test_count++;
-    if (actual < min || actual > max) {
-        printf("FAIL: %s: expected [%.4f, %.4f], got %.4f\n", name, (double)min, (double)max, (double)actual);
-        g_fail_count++;
-    }
-}
-
 /**
  * @brief Test symbol history initialization and basic operations.
  */

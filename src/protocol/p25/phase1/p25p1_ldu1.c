@@ -486,12 +486,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     ldu1_decode_ctx_t ctx;
     p25p1_ldu1_init_decode_ctx(state, &ctx);
 
-    if (opts->errorbars == 1) {
-        // DSD_FPRINTF(stderr, "e:");
-    }
-
     p25p1_ldu1_collect_voice_and_data(opts, state, &ctx);
-
     if (opts->errorbars == 1) {
         DSD_FPRINTF(stderr, "\n");
     }

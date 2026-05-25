@@ -74,42 +74,6 @@ free_demod_state(demod_state* d) {
     free(d);
 }
 
-static int
-run_once(double fs, double f) {
-    const int M = 4;
-    const double amp = 0.8;
-    int Npairs = 4096;
-    std::vector<float> iq((size_t)Npairs * 2);
-    gen_tone_iq(iq, fs, f, amp);
-
-    demod_state* d = (demod_state*)malloc(sizeof(demod_state));
-    if (!d) {
-        return 0;
-    }
-    DSD_MEMSET(d, 0, sizeof(*d));
-    d->lowpassed = d->input_cb_buf; // use internal buffer
-    d->lp_len = Npairs * 2;
-    for (int i = 0; i < d->lp_len; i++) {
-        d->input_cb_buf[i] = iq[(size_t)i];
-    }
-    d->downsample_passes = 0;
-    d->post_downsample = M;
-    d->mode_demod = &copy_i_to_audio_demod;
-    d->rate_out = (int)fs;
-    d->deemph = 0;
-    d->audio_lpf_enable = 0;
-    d->iq_dc_block_enable = 0;
-    d->squelch_gate_open = 1;
-    d->squelch_env = 1.0f;
-    d->squelch_env_attack = 0.125f;
-    d->squelch_env_release = 0.03125f;
-
-    full_demod(d);
-    int rv = d->result_len;
-    free_demod_state(d);
-    return rv;
-}
-
 int
 main(void) {
     const double Fs = 48000.0;

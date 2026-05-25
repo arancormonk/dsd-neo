@@ -15,6 +15,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <mbelib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -27,6 +28,10 @@ bootstrap_set_exit_rc(int* out_exit_rc, int rc) {
         *out_exit_rc = rc;
     }
 }
+
+#define DSD_BOOTSTRAP_PATH_IS_UNSAFE_LOCAL_FILE(path_)                                                                 \
+    ((path_) == NULL || (path_)[0] == '\0' || (path_)[0] == '/' || strchr((path_), '/') != NULL                        \
+     || strchr((path_), '\\') != NULL || strstr((path_), "..") != NULL)
 
 static const char*
 bootstrap_default_or_env_config_path(const char* cli_path, const char* env_path) {
@@ -261,9 +266,13 @@ bootstrap_load_user_config_if_requested(dsd_opts* opts, dsd_state* state, const 
     if (!cfg_path || !*cfg_path) {
         return DSD_BOOTSTRAP_CONTINUE;
     }
+    if ((args->config_path_cli || config_env) && DSD_BOOTSTRAP_PATH_IS_UNSAFE_LOCAL_FILE(cfg_path)) {
+        LOG_ERROR("Config path must be a local filename without path separators or '..'\n");
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return DSD_BOOTSTRAP_ERROR;
+    }
 
     bootstrap_enable_autosave_for_path(state, cfg_path);
-    // codeql[cpp/path-injection] Config paths are explicit local CLI/env inputs.
     int load_rc = bootstrap_load_user_config_from_path(args, cfg_path, user_cfg);
 
     if (load_rc == 0) {
@@ -339,9 +348,14 @@ bootstrap_handle_validate_config(const bootstrap_cli_args* args, const char* con
         bootstrap_set_exit_rc(out_exit_rc, 1);
         return DSD_BOOTSTRAP_ERROR;
     }
+    if ((args->validate_path_cli || args->config_path_cli || config_env)
+        && DSD_BOOTSTRAP_PATH_IS_UNSAFE_LOCAL_FILE(vpath)) {
+        DSD_FPRINTF(stderr, "Config path must be a local filename without path separators or '..'\n");
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return DSD_BOOTSTRAP_ERROR;
+    }
 
     dsdcfg_diagnostics_t diags;
-    // codeql[cpp/path-injection] Config validation intentionally opens the user-selected config path.
     int rc = dsd_user_config_validate(vpath, &diags);
     if (diags.count > 0) {
         dsdcfg_diags_print(&diags, stderr, vpath);
@@ -372,10 +386,14 @@ bootstrap_handle_list_profiles(const bootstrap_cli_args* args, const char* confi
         bootstrap_set_exit_rc(out_exit_rc, 1);
         return DSD_BOOTSTRAP_EXIT;
     }
+    if ((args->config_path_cli || config_env) && DSD_BOOTSTRAP_PATH_IS_UNSAFE_LOCAL_FILE(lpath)) {
+        DSD_FPRINTF(stderr, "Config path must be a local filename without path separators or '..'\n");
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return DSD_BOOTSTRAP_EXIT;
+    }
 
     const char* names[32];
     char names_buf[1024];
-    // codeql[cpp/path-injection] Profile listing intentionally opens the user-selected config path.
     int count = dsd_user_config_list_profiles(lpath, names, names_buf, sizeof names_buf, 32);
     if (count < 0) {
         DSD_FPRINTF(stderr, "Failed to read config file: %s\n", lpath);
@@ -406,13 +424,40 @@ bootstrap_get_config_env_path(const dsd_opts* opts) {
 }
 
 static void
+bootstrap_free_argv_copy(char** argv_copy, int argc) {
+    if (!argv_copy) {
+        return;
+    }
+    for (int i = 0; i < argc; i++) {
+        free(argv_copy[i]);
+    }
+    free((void*)argv_copy);
+}
+
+static int
 bootstrap_record_effective_cli_args(dsd_state* state, char** argv, int argc_effective, int* out_argc_effective) {
+    if (!state || argc_effective < 0) {
+        return DSD_BOOTSTRAP_ERROR;
+    }
+    char** argv_copy = (char**)calloc((size_t)argc_effective + 1U, sizeof(*argv_copy));
+    if (!argv_copy) {
+        return DSD_BOOTSTRAP_ERROR;
+    }
+    for (int i = 0; i < argc_effective; i++) {
+        argv_copy[i] = dsd_strdup(argv[i] ? argv[i] : "");
+        if (!argv_copy[i]) {
+            bootstrap_free_argv_copy(argv_copy, i);
+            return DSD_BOOTSTRAP_ERROR;
+        }
+    }
+
+    bootstrap_free_argv_copy(state->cli_argv, state->cli_argc_effective);
     state->cli_argc_effective = argc_effective;
-    // codeql[cpp/stack-address-escape] argv is owned by the process/test harness and outlives state use.
-    state->cli_argv = argv;
+    state->cli_argv = argv_copy;
     if (out_argc_effective) {
         *out_argc_effective = argc_effective;
     }
+    return DSD_BOOTSTRAP_CONTINUE;
 }
 
 static void
@@ -509,7 +554,11 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
         return boot_rc;
     }
 
-    bootstrap_record_effective_cli_args(state, argv, argc_effective, out_argc_effective);
+    boot_rc = bootstrap_record_effective_cli_args(state, argv, argc_effective, out_argc_effective);
+    if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return boot_rc;
+    }
     bootstrap_apply_runtime_config_after_cli(opts, state);
     bootstrap_apply_trunk_cli_gating(opts, argc_effective, user_cfg_loaded, explicit_profile_selected);
 

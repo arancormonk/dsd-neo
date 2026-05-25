@@ -38,7 +38,6 @@ ComputeCrcCCITT16b(const uint8_t buf[], unsigned int len) {
 static uint16_t
 crc16_ok(const uint8_t bits[], unsigned int len, unsigned int cap) {
     uint16_t crc = 0;
-    // DSD_FPRINTF(stderr, "\n  LEN = %d", len);
     if ((unsigned int)16 > cap || len > cap || (len + 16) > cap) {
         return (uint16_t)-1;
     }
@@ -49,10 +48,8 @@ crc16_ok(const uint8_t bits[], unsigned int len, unsigned int cap) {
     uint16_t check = ComputeCrcCCITT16b(bits, len);
 
     if (crc == check) {
-        //DSD_FPRINTF(stderr, " CRC = %04X %04X", crc, check);
         return (0);
     } else {
-        //DSD_FPRINTF(stderr, " CRC = %04X %04X", crc, check);
         return (-1);
     }
 }
@@ -83,11 +80,10 @@ static uint16_t
 crc12(const uint8_t bits[], unsigned int len) {
     uint16_t crc = 0;
     static const unsigned int K = 12;
-    //g12(x) = x12 + x11 + x7 + x4 + x2 + x + 1
+    // CRC12 polynomial: x12 + x11 + x7 + x4 + x2 + x + 1
     static const uint8_t poly[13] = {1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1}; // p25 p2 crc 12 poly
     uint8_t buf[256];
     if (len + K > sizeof(buf)) {
-        //DSD_FPRINTF(stderr, "crc12: buffer length %u exceeds maximum %u\n", len+K, sizeof(buf));
         return 0;
     }
     DSD_MEMSET(buf, 0, sizeof(buf));
@@ -121,10 +117,8 @@ crc12_ok(const uint8_t bits[], unsigned int len, unsigned int cap) {
     uint16_t check = crc12(bits, len);
 
     if (crc == check) {
-        //DSD_FPRINTF(stderr, " CRC = %03X %03X", crc, check);
         return (0);
     } else {
-        //DSD_FPRINTF(stderr, " CRC = %03X %03X", crc, check);
         return (-1);
     }
 }

@@ -70,8 +70,8 @@ dmr_ms_read_dibit(dsd_opts* opts, dsd_state* state, int mask_after_xor) {
 
 static void
 dmr_ms_store_ambe_dibit(char ambe_fr[4][24], int index, int dibit) {
-    ambe_fr[rW[index]][rX[index]] = (1 & (dibit >> 1)); // bit 1
-    ambe_fr[rY[index]][rZ[index]] = (1 & dibit);        // bit 0
+    ambe_fr[dmr_ambe_interleave_w[index]][dmr_ambe_interleave_x[index]] = (1 & (dibit >> 1)); // bit 1
+    ambe_fr[dmr_ambe_interleave_y[index]][dmr_ambe_interleave_z[index]] = (1 & dibit);        // bit 0
 }
 
 static void
@@ -337,9 +337,7 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
 
         dmr_ms_init_voice_frames(&frames);
         dmr_ms_read_cach(opts, state, cachdata);
-        if (dmr_ms_decode_tact(cachdata, tact_bits) != 1) {
-            // do nothing since we are not loop locked forever
-        }
+        (void)dmr_ms_decode_tact(cachdata, tact_bits);
 
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr, 12, 36);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 48, 18);

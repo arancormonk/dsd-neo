@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#define DSD_NEO_THREADING_NO_INLINE_CREATE
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 

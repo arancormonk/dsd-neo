@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_CONST_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_CONST_H_
+
 /**
  * @file
  * @brief DMR-specific constants and lookup tables.
@@ -20,26 +23,19 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef DSD_NEO_MAIN
-extern const int rW[36];
-extern const int rX[36];
-extern const int rY[36];
-extern const int rZ[36];
-
-#else
 /*
  * DMR AMBE interleave schedule
  */
-const int rW[36] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
-                    0, 1, 0, 1, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2};
+static const int dmr_ambe_interleave_w[36] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+                                              0, 1, 0, 1, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2};
 
-const int rX[36] = {23, 10, 22, 9, 21, 8,  20, 7, 19, 6, 18, 5, 17, 4, 16, 3, 15, 2,
-                    14, 1,  13, 0, 12, 10, 11, 9, 10, 8, 9,  7, 8,  6, 7,  5, 6,  4};
+static const int dmr_ambe_interleave_x[36] = {23, 10, 22, 9, 21, 8,  20, 7, 19, 6, 18, 5, 17, 4, 16, 3, 15, 2,
+                                              14, 1,  13, 0, 12, 10, 11, 9, 10, 8, 9,  7, 8,  6, 7,  5, 6,  4};
 
-const int rY[36] = {0, 2, 0, 2, 0, 2, 0, 2, 0, 3, 0, 3, 1, 3, 1, 3, 1, 3,
-                    1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3};
+static const int dmr_ambe_interleave_y[36] = {0, 2, 0, 2, 0, 2, 0, 2, 0, 3, 0, 3, 1, 3, 1, 3, 1, 3,
+                                              1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3};
 
-const int rZ[36] = {5,  3, 4,  2, 3,  1, 2,  0, 1,  13, 0,  12, 22, 11, 21, 10, 20, 9,
-                    19, 8, 18, 7, 17, 6, 16, 5, 15, 4,  14, 3,  13, 2,  12, 1,  11, 0};
+static const int dmr_ambe_interleave_z[36] = {5,  3, 4,  2, 3,  1, 2,  0, 1,  13, 0,  12, 22, 11, 21, 10, 20, 9,
+                                              19, 8, 18, 7, 17, 6, 16, 5, 15, 4,  14, 3,  13, 2,  12, 1,  11, 0};
 
-#endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_CONST_H_ */

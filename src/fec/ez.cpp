@@ -119,7 +119,6 @@ ez_rs28_ess(int payload[96], int parity[168]) {
             k++;
         }
         (*ess_b)[i] = b;
-        // DSD_FPRINTF(stderr, " %X", (*ess_b)[i]);
     }
 
     k = 0;
@@ -131,7 +130,6 @@ ez_rs28_ess(int payload[96], int parity[168]) {
             k++;
         }
         (*ess_a)[i] = a;
-        // DSD_FPRINTF(stderr, " %X ", (*ess_a)[i]);
     }
 
     int ec;
@@ -141,7 +139,6 @@ ez_rs28_ess(int payload[96], int parity[168]) {
     }
 
     ec = rs->decode(*ess_b, *ess_a);
-    // DSD_FPRINTF(stderr, "\n EC = %d \n", ec);
 
     //convert ESS_B back to bits
     k = 0;
@@ -151,7 +148,6 @@ ez_rs28_ess(int payload[96], int parity[168]) {
             payload[k] = b;
             k++;
         }
-        // DSD_FPRINTF(stderr, " %X", (*ess_b)[i]);
     }
 
     return (ec);
@@ -273,14 +269,12 @@ ez_rs28_facch(int payload[156], int parity[114]) {
     ec = rs->decode(*hb, Erasures);
 
     //convert HB back to bits
-    //DSD_FPRINTF(stderr, "\n");
     k = 0;
     for (i = 0; i < 26; i++) //26*6=156 bits
     {
         for (j = 0; j < 6; j++) {
             int b = ((*hb)[i + 9] >> (5 - j) & 0x1); //+9 to mach our starting position
             payload[k] = b;
-            //DSD_FPRINTF(stderr, "%d", payload[k]);
             k++;
         }
     }
@@ -328,14 +322,12 @@ ez_rs28_sacch(int payload[180], int parity[132]) {
     ec = rs->decode(*hbs, Erasures);
 
     //convert HBS back to bits
-    // DSD_FPRINTF(stderr, "\n");
     k = 0;
     for (i = 0; i < 30; i++) //30*6=180 bits
     {
         for (j = 0; j < 6; j++) {
             int b = ((*hbs)[i + 5] >> (5 - j) & 0x1); //+5 to mach our starting position
             payload[k] = b;
-            // DSD_FPRINTF(stderr, "%d", payload[k]);
             k++;
         }
     }

@@ -159,15 +159,6 @@ extract_fields(const char* buf, int len, char* out_xch, size_t xch_cap, int* out
 }
 
 static int
-expect_eq_int(const char* tag, int got, int want) {
-    if (got != want) {
-        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
-        return 1;
-    }
-    return 0;
-}
-
-static int
 expect_eq_str(const char* tag, const char* got, const char* want) {
     if (strcmp(got, want) != 0) {
         DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);

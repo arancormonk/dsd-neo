@@ -5,18 +5,10 @@
 
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-#define DSD_NEO_MAIN
-#include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
-
-#undef DSD_NEO_MAIN
 
 int
 main(void) {
@@ -26,7 +18,11 @@ main(void) {
         return 1;
     }
 
-    // Ensure initState explicitly resets fields even if caller pre-seeded them.
+    /*
+     * Pre-seed fields that have regressed before so initState must prove it owns
+     * both pointer members and sparse runtime caches. The assertions are grouped
+     * by subsystem to keep each failure diagnostic narrow.
+     */
     state->rc2_context = state;
     state->nid_corrections_total = 12;
     state->nid_failures_total = 34;
@@ -95,6 +91,7 @@ main(void) {
         return 12;
     }
 
+    // Sparse trunk map bookkeeping must reset before any first live grant arrives.
     if (state->trunk_chan_map_used_count != 0U || state->trunk_chan_map[0x0123] != 0
         || state->trunk_chan_map_seq != 0U) {
         DSD_FPRINTF(stderr, "initState did not clear trunk channel-map sparse state\n");
@@ -114,6 +111,7 @@ main(void) {
         return 5;
     }
 
+    // Rolling min/max helpers are initialized state consumers, not raw fields.
     for (int i = 0; i < 4; i++) {
         state->minbuf[i] = (float)(-10 - i);
         state->maxbuf[i] = (float)(10 + i);
@@ -129,6 +127,7 @@ main(void) {
         return 6;
     }
 
+    // Sparse channel-map insertion and removal keep the used-index set compact.
     dsd_state_set_trunk_chan_freq(state, 0x1234U, 851500000L);
     dsd_state_set_trunk_chan_freq(state, 0x0123U, 851000000L);
     dsd_state_set_trunk_chan_freq(state, 0U, 769006250L);

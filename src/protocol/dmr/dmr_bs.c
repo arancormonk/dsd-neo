@@ -117,7 +117,8 @@ reset_dmr_bs_loop_buffers(dmr_bs_ctx* ctx) {
 static void
 read_dmr_bs_ambe_segment_stream(dsd_opts* opts, dsd_state* state, char frame[4][24], int payload_offset,
                                 int dibit_count, char* redundancy_out) {
-    const int *w = rW, *x = rX, *y = rY, *z = rZ;
+    const int *w = dmr_ambe_interleave_w, *x = dmr_ambe_interleave_x, *y = dmr_ambe_interleave_y,
+              *z = dmr_ambe_interleave_z;
     for (int i = 0; i < dibit_count; i++) {
         int dibit = getDibit(opts, state);
         state->dmr_stereo_payload[payload_offset + i] = dibit;
@@ -136,7 +137,8 @@ read_dmr_bs_ambe_segment_stream(dsd_opts* opts, dsd_state* state, char frame[4][
 static void
 unpack_dmr_bs_ambe_segment_from_payload(const dsd_state* state, char frame[4][24], int payload_offset,
                                         int dibit_count) {
-    const int *w = rW, *x = rX, *y = rY, *z = rZ;
+    const int *w = dmr_ambe_interleave_w, *x = dmr_ambe_interleave_x, *y = dmr_ambe_interleave_y,
+              *z = dmr_ambe_interleave_z;
     for (int i = 0; i < dibit_count; i++) {
         int dibit = state->dmr_stereo_payload[payload_offset + i];
         frame[*w][*x] = (1 & (dibit >> 1));

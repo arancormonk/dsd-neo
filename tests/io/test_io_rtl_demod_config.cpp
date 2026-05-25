@@ -309,6 +309,11 @@ int
 main(void) {
     int rc = 0;
 
+    /*
+     * Walk protocol families through the same demod configuration helper.
+     * The assertions check symbol rate, output kind, and channel filter profile
+     * so a mode-specific regression is visible without needing live SDR input.
+     */
     dsd_opts p25p2_qpsk;
     DSD_MEMSET(&p25p2_qpsk, 0, sizeof(p25p2_qpsk));
     p25p2_qpsk.frame_p25p2 = 1;
@@ -350,6 +355,7 @@ main(void) {
     rc |= expect_configured_mode("P25P2 QPSK keeps 6 ksps CQPSK LPF at 24 kHz", p25p2_qpsk, 24000,
                                  DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 6000, 4, DSD_CH_LPF_PROFILE_P25_CQPSK);
 
+    // Narrowband and wideband FSK modes choose different channel LPF profiles.
     dsd_opts nxdn48;
     DSD_MEMSET(&nxdn48, 0, sizeof(nxdn48));
     nxdn48.frame_nxdn48 = 1;
@@ -440,6 +446,7 @@ main(void) {
     rc |= expect_configured_mode("AUTO starts on 4.8 ksps wide 4FSK profile", auto_all, 48000,
                                  DSD_DEMOD_OUTPUT_SYMBOL_FSK, 4800, 4, DSD_CH_LPF_PROFILE_12K5);
 
+    // Soapy inputs share tuning fields but must preserve the selected digital mode.
     dsd_opts soapy_p25_c4fm = p25_c4fm;
     DSD_SNPRINTF(soapy_p25_c4fm.audio_in_dev, sizeof(soapy_p25_c4fm.audio_in_dev), "%s", "soapy");
     rc |=
