@@ -40,6 +40,30 @@ expect_resolves_existing_file(void) {
 }
 
 static int
+expect_opens_existing_file(void) {
+    const char* name = "dsd_neo_open_existing_local_test.tmp";
+    (void)remove(name);
+    if (write_probe_file(name) != 0) {
+        return 1;
+    }
+
+    char resolved[1024];
+    FILE* fp = dsd_fopen_existing_local_file(name, resolved, sizeof resolved);
+    if (!fp) {
+        (void)remove(name);
+        return 1;
+    }
+
+    char line[16];
+    int ok = fgets(line, sizeof line, fp) != NULL && strcmp(line, "probe\n") == 0 && strcmp(resolved, name) == 0;
+    if (fclose(fp) != 0) {
+        ok = 0;
+    }
+    (void)remove(name);
+    return ok ? 0 : 1;
+}
+
+static int
 expect_rejects_unsafe_name(const char* name) {
     char resolved[1024];
     errno = 0;
@@ -76,6 +100,7 @@ int
 main(void) {
     int rc = 0;
     rc |= expect_resolves_existing_file();
+    rc |= expect_opens_existing_file();
     rc |= expect_rejects_unsafe_name("");
     rc |= expect_rejects_unsafe_name("../config.ini");
     rc |= expect_rejects_unsafe_name("dir/config.ini");

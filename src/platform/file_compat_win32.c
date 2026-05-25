@@ -121,44 +121,68 @@ dsd_copy_resolved_local_name(const char* name, char* out, size_t out_size) {
     return 0;
 }
 
-int
-dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_size) {
+static FILE*
+dsd_open_resolved_local_entry(const struct _finddata_t* data, char* out, size_t out_size, int* saved_errno) {
+    if ((data->attrib & _A_SUBDIR) != 0) {
+        *saved_errno = EINVAL;
+        return NULL;
+    }
+    DWORD attrs = GetFileAttributesA(data->name);
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        *saved_errno = EINVAL;
+        return NULL;
+    }
+    if (dsd_copy_resolved_local_name(data->name, out, out_size) != 0) {
+        *saved_errno = errno;
+        return NULL;
+    }
+
+    FILE* result = fopen(out, "r");
+    *saved_errno = result ? 0 : (errno ? errno : EINVAL);
+    return result;
+}
+
+FILE*
+dsd_fopen_existing_local_file(const char* requested, char* out, size_t out_size) {
     if (!out || out_size == 0 || dsd_local_file_name_is_unsafe(requested)) {
         errno = EINVAL;
-        return -1;
+        return NULL;
     }
     out[0] = '\0';
 
     struct _finddata_t data;
     intptr_t handle = _findfirst("*", &data);
     if (handle == -1) {
-        return -1;
+        return NULL;
     }
 
-    int rc = -1;
+    FILE* result = NULL;
     int saved_errno = ENOENT;
     do {
         if (strcmp(data.name, requested) != 0) {
             continue;
         }
-        if ((data.attrib & _A_SUBDIR) != 0) {
-            saved_errno = EINVAL;
-            break;
-        }
-        if (dsd_copy_resolved_local_name(data.name, out, out_size) == 0) {
-            rc = 0;
-            saved_errno = 0;
-        } else {
-            saved_errno = errno;
-        }
+        result = dsd_open_resolved_local_entry(&data, out, out_size, &saved_errno);
         break;
     } while (_findnext(handle, &data) == 0);
 
-    if (_findclose(handle) != 0 && rc == 0) {
-        return -1;
+    if (_findclose(handle) != 0 && result) {
+        int close_errno = errno;
+        fclose(result);
+        errno = close_errno;
+        return NULL;
     }
     errno = saved_errno;
-    return rc;
+    return result;
+}
+
+int
+dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_size) {
+    FILE* fp = dsd_fopen_existing_local_file(requested, out, out_size);
+    if (!fp) {
+        return -1;
+    }
+    return fclose(fp);
 }
 
 ssize_t

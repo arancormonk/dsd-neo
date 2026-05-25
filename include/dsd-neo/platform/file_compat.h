@@ -128,6 +128,20 @@ FILE* dsd_fopen_private(const char* path, const char* mode);
 int dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_size);
 
 /**
+ * @brief Open an existing regular file from the current directory by bare local file name.
+ *
+ * The requested name must be a bare file name: no path separators, absolute
+ * paths, empty names, or ".." segments. On success, @p out receives the
+ * directory entry name used to open the file.
+ *
+ * @param requested  User-supplied bare file name.
+ * @param out        Output buffer.
+ * @param out_size   Output buffer size.
+ * @return Read stream for the existing regular file, or NULL with errno set.
+ */
+FILE* dsd_fopen_existing_local_file(const char* requested, char* out, size_t out_size);
+
+/**
  * @brief Read from a file descriptor.
  *
  * @param fd        File descriptor.

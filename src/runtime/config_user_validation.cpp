@@ -332,6 +332,50 @@ validate_config_line(char* p, int line_num, const char* current_section, int is_
 }
 
 int
+dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
+    if (!diags) {
+        return -1;
+    }
+
+    dsdcfg_diags_init(diags);
+
+    if (!stream) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, "", "", "No config stream provided");
+        return -1;
+    }
+
+    if (fseek(stream, 0L, SEEK_SET) != 0) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, "", "", "Cannot seek config stream");
+        return -1;
+    }
+
+    char line[1024];
+    char current_section[64];
+    current_section[0] = '\0';
+    int line_num = 0;
+    int is_profile_section = 0;
+
+    while (fgets(line, sizeof line, stream)) {
+        line_num++;
+
+        char* p = trim_ascii_ws(line);
+
+        if (p[0] == '\0' || p[0] == '#' || p[0] == ';') {
+            continue;
+        }
+
+        if (p[0] == '[') {
+            handle_section_header(p, line_num, current_section, sizeof current_section, &is_profile_section, diags);
+            continue;
+        }
+
+        validate_config_line(p, line_num, current_section, is_profile_section, diags);
+    }
+
+    return diags->error_count > 0 ? -1 : 0;
+}
+
+int
 dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
     if (!diags) {
         return -1;
@@ -352,31 +396,9 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
         return -1;
     }
 
-    char line[1024];
-    char current_section[64];
-    current_section[0] = '\0';
-    int line_num = 0;
-    int is_profile_section = 0;
-
-    while (fgets(line, sizeof line, fp)) {
-        line_num++;
-
-        char* p = trim_ascii_ws(line);
-
-        if (p[0] == '\0' || p[0] == '#' || p[0] == ';') {
-            continue;
-        }
-
-        if (p[0] == '[') {
-            handle_section_header(p, line_num, current_section, sizeof current_section, &is_profile_section, diags);
-            continue;
-        }
-
-        validate_config_line(p, line_num, current_section, is_profile_section, diags);
-    }
-
+    int rc = dsd_user_config_validate_stream(fp, diags);
     fclose(fp);
-    return diags->error_count > 0 ? -1 : 0;
+    return rc;
 }
 
 void

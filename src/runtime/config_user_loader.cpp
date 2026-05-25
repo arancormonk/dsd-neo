@@ -48,6 +48,14 @@ strip_inline_comment(char* s) {
     }
 }
 
+static int
+seek_config_stream_to_start(FILE* stream) {
+    if (!stream) {
+        return -1;
+    }
+    return fseek(stream, 0L, SEEK_SET);
+}
+
 static void
 unquote(char* s) {
     size_t n = strlen(s);
@@ -605,17 +613,14 @@ apply_section_key(dsdneoUserConfig* cfg, const char* section, const char* key_lc
 /* Forward declarations for include processing */
 static int process_includes(const char* path, dsdneoUserConfig* cfg, int depth, const char** include_stack,
                             int include_stack_size);
+static int process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char** include_stack,
+                                   int include_stack_size);
 
 /* Internal loader that does NOT reset the config struct.
  * Used for accumulating values from multiple files (includes). */
 static int
-user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
-    if (!cfg || !path || !*path) {
-        return -1;
-    }
-
-    FILE* fp = fopen(path, "r");
-    if (!fp) {
+user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
+    if (!cfg || !fp) {
         return -1;
     }
 
@@ -660,8 +665,46 @@ user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
         apply_section_key(cfg, current_section, key_lc, val, USER_CFG_PARSE_MODE_BASE);
     }
 
-    fclose(fp);
     return 0;
+}
+
+static int
+user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
+    if (!cfg || !path || !*path) {
+        return -1;
+    }
+
+    FILE* fp = fopen(path, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    int rc = user_config_load_no_reset_stream(fp, cfg);
+    fclose(fp);
+    return rc;
+}
+
+int
+dsd_user_config_load_stream(FILE* stream, const char* source_name, dsdneoUserConfig* cfg) {
+    if (!cfg || !stream) {
+        return -1;
+    }
+
+    user_cfg_reset(cfg);
+    const char* stack_name = (source_name && *source_name) ? source_name : "<stream>";
+
+    /* Process includes first (they provide base values that can be overridden) */
+    const char* stack[1] = {stack_name};
+    if (seek_config_stream_to_start(stream) != 0) {
+        return -1;
+    }
+    process_includes_stream(stream, cfg, 0, stack, 1);
+
+    /* Now load the main config (which overrides included values) */
+    if (seek_config_stream_to_start(stream) != 0) {
+        return -1;
+    }
+    return user_config_load_no_reset_stream(stream, cfg);
 }
 
 int
@@ -813,13 +856,11 @@ process_nested_includes(const char* inc_path, dsdneoUserConfig* cfg, int depth, 
 }
 
 static int
-process_includes(const char* path, dsdneoUserConfig* cfg, int depth, const char** include_stack,
-                 int include_stack_size) {
+process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char** include_stack,
+                        int include_stack_size) {
     if (depth >= 3) {
         return 0; /* max depth reached */
     }
-
-    FILE* fp = fopen(path, "r");
     if (!fp) {
         return -1;
     }
@@ -845,8 +886,20 @@ process_includes(const char* path, dsdneoUserConfig* cfg, int depth, const char*
         user_config_load_no_reset(inc_path, cfg);
     }
 
-    fclose(fp);
     return 0;
+}
+
+static int
+process_includes(const char* path, dsdneoUserConfig* cfg, int depth, const char** include_stack,
+                 int include_stack_size) {
+    FILE* fp = fopen(path, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    int rc = process_includes_stream(fp, cfg, depth, include_stack, include_stack_size);
+    fclose(fp);
+    return rc;
 }
 
 static int
@@ -901,23 +954,13 @@ handle_profile_overlay_key(dsdneoUserConfig* cfg, const char* current_section, i
 }
 
 static int
-load_config_internal(const char* path, const char* profile_name, dsdneoUserConfig* cfg, int depth,
-                     const char** include_stack, int include_stack_size) {
-    (void)depth;
-    (void)include_stack;
-    (void)include_stack_size;
-
-    if (!path || !cfg) {
+load_config_internal_stream(FILE* fp, const char* profile_name, dsdneoUserConfig* cfg) {
+    if (!fp || !cfg) {
         return -1;
     }
 
     /* Includes are already processed by dsd_user_config_load_profile() before
      * calling this function. This function only extracts profile overlay keys. */
-
-    FILE* fp = fopen(path, "r");
-    if (!fp) {
-        return -1;
-    }
 
     char line[1024];
     char current_section[64];
@@ -953,14 +996,33 @@ load_config_internal(const char* path, const char* profile_name, dsdneoUserConfi
         }
     }
 
-    fclose(fp);
-
     /* If a profile was requested but not found, return error */
     if (profile_name && *profile_name && !profile_found) {
         return -1;
     }
 
     return 0;
+}
+
+static int
+load_config_internal(const char* path, const char* profile_name, dsdneoUserConfig* cfg, int depth,
+                     const char** include_stack, int include_stack_size) {
+    (void)depth;
+    (void)include_stack;
+    (void)include_stack_size;
+
+    if (!path || !cfg) {
+        return -1;
+    }
+
+    FILE* fp = fopen(path, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    int rc = load_config_internal_stream(fp, profile_name, cfg);
+    fclose(fp);
+    return rc;
 }
 
 int
@@ -989,6 +1051,40 @@ dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoU
 
     /* Now overlay profile settings */
     return load_config_internal(path, profile_name, cfg, 0, stack, 1);
+}
+
+int
+dsd_user_config_load_profile_stream(FILE* stream, const char* source_name, const char* profile_name,
+                                    dsdneoUserConfig* cfg) {
+    if (!cfg || !stream) {
+        return -1;
+    }
+
+    user_cfg_reset(cfg);
+    const char* stack_name = (source_name && *source_name) ? source_name : "<stream>";
+
+    const char* stack[1] = {stack_name};
+    if (seek_config_stream_to_start(stream) != 0) {
+        return -1;
+    }
+    process_includes_stream(stream, cfg, 0, stack, 1);
+
+    if (seek_config_stream_to_start(stream) != 0) {
+        return -1;
+    }
+    int rc = user_config_load_no_reset_stream(stream, cfg);
+    if (rc != 0) {
+        return rc;
+    }
+
+    if (!profile_name || !*profile_name) {
+        return 0;
+    }
+
+    if (seek_config_stream_to_start(stream) != 0) {
+        return -1;
+    }
+    return load_config_internal_stream(stream, profile_name, cfg);
 }
 
 static int
@@ -1035,6 +1131,35 @@ append_profile_name_to_buffer(const char* profile_name, const char** names, int*
 }
 
 int
+dsd_user_config_list_profiles_stream(FILE* stream, const char** names, char* names_buf, size_t names_buf_size,
+                                     int max_names) {
+    if (!stream || !names || !names_buf || names_buf_size == 0 || max_names <= 0) {
+        return -1;
+    }
+
+    if (seek_config_stream_to_start(stream) != 0) {
+        return -1;
+    }
+
+    int count = 0;
+    size_t buf_used = 0;
+    char line[1024];
+
+    while (fgets(line, sizeof line, stream) && count < max_names) {
+        const char* profile_name = NULL;
+        if (!extract_profile_section_name(line, &profile_name)) {
+            continue;
+        }
+        if (!append_profile_name_to_buffer(profile_name, names, &count, max_names, names_buf, names_buf_size,
+                                           &buf_used)) {
+            break; /* buffer full */
+        }
+    }
+
+    return count;
+}
+
+int
 dsd_user_config_list_profiles(const char* path, const char** names, char* names_buf, size_t names_buf_size,
                               int max_names) {
     if (!path || !names || !names_buf || names_buf_size == 0 || max_names <= 0) {
@@ -1046,21 +1171,7 @@ dsd_user_config_list_profiles(const char* path, const char** names, char* names_
         return -1;
     }
 
-    int count = 0;
-    size_t buf_used = 0;
-    char line[1024];
-
-    while (fgets(line, sizeof line, fp) && count < max_names) {
-        const char* profile_name = NULL;
-        if (!extract_profile_section_name(line, &profile_name)) {
-            continue;
-        }
-        if (!append_profile_name_to_buffer(profile_name, names, &count, max_names, names_buf, names_buf_size,
-                                           &buf_used)) {
-            break; /* buffer full */
-        }
-    }
-
+    int count = dsd_user_config_list_profiles_stream(fp, names, names_buf, names_buf_size, max_names);
     fclose(fp);
     return count;
 }

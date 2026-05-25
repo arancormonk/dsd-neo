@@ -753,7 +753,7 @@ write_dibit_soft_metric(dsd_state* state, const dsd_dibit_soft_t* soft) {
     state->dmr_soft_p++;
 }
 
-static int
+static int DSD_ATTR_USED
 read_previous_dibit_soft(const dsd_state* state, dsd_dibit_soft_t* out) {
     if (!state || !out || !state->dmr_soft_buf || !state->dmr_soft_p) {
         return 0;

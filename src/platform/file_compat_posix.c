@@ -120,20 +120,42 @@ dsd_copy_resolved_local_name(const char* name, char* out, size_t out_size) {
     return 0;
 }
 
-int
-dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_size) {
+static FILE*
+dsd_open_resolved_local_entry(const char* name, char* out, size_t out_size, int* saved_errno) {
+    if (dsd_copy_resolved_local_name(name, out, out_size) != 0) {
+        *saved_errno = errno;
+        return NULL;
+    }
+
+    dsd_stat_t st;
+    if (lstat(out, &st) != 0) {
+        *saved_errno = errno ? errno : EINVAL;
+        return NULL;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        *saved_errno = EINVAL;
+        return NULL;
+    }
+
+    FILE* result = fopen(out, "r");
+    *saved_errno = result ? 0 : (errno ? errno : EINVAL);
+    return result;
+}
+
+FILE*
+dsd_fopen_existing_local_file(const char* requested, char* out, size_t out_size) {
     if (!out || out_size == 0 || dsd_local_file_name_is_unsafe(requested)) {
         errno = EINVAL;
-        return -1;
+        return NULL;
     }
     out[0] = '\0';
 
     DIR* dir = opendir(".");
     if (!dir) {
-        return -1;
+        return NULL;
     }
 
-    int rc = -1;
+    FILE* result = NULL;
     int saved_errno = ENOENT;
     int found = 0;
     errno = 0;
@@ -143,31 +165,29 @@ dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_siz
             continue;
         }
         found = 1;
-        if (dsd_copy_resolved_local_name(ent->d_name, out, out_size) == 0) {
-            dsd_stat_t st;
-            if (stat(out, &st) == 0) {
-                if (S_ISREG(st.st_mode)) {
-                    rc = 0;
-                    saved_errno = 0;
-                } else {
-                    saved_errno = EINVAL;
-                }
-            } else {
-                saved_errno = errno ? errno : EINVAL;
-            }
-        } else {
-            saved_errno = errno;
-        }
+        result = dsd_open_resolved_local_entry(ent->d_name, out, out_size, &saved_errno);
         break;
     }
     if (!found && errno != 0) {
         saved_errno = errno;
     }
-    if (closedir(dir) != 0 && rc == 0) {
-        return -1;
+    if (closedir(dir) != 0 && result) {
+        int close_errno = errno;
+        fclose(result);
+        errno = close_errno;
+        return NULL;
     }
     errno = saved_errno;
-    return rc;
+    return result;
+}
+
+int
+dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_size) {
+    FILE* fp = dsd_fopen_existing_local_file(requested, out, out_size);
+    if (!fp) {
+        return -1;
+    }
+    return fclose(fp);
 }
 
 ssize_t

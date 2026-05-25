@@ -33,8 +33,14 @@ bootstrap_set_exit_rc(int* out_exit_rc, int rc) {
 #define DSD_BOOTSTRAP_LOCAL_PATH_MAX 1024
 
 static int
-bootstrap_resolve_local_config_path(const char* cfg_path, char* resolved, size_t resolved_size, int* out_exit_rc) {
-    if (dsd_resolve_existing_local_file(cfg_path, resolved, resolved_size) == 0) {
+bootstrap_open_local_config_path(const char* cfg_path, char* resolved, size_t resolved_size, int* out_exit_rc,
+                                 FILE** out_stream) {
+    if (!out_stream) {
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    *out_stream = dsd_fopen_existing_local_file(cfg_path, resolved, resolved_size);
+    if (*out_stream) {
         return 1;
     }
     LOG_ERROR("Config path must name an existing local file without path separators or '..'\n");
@@ -43,25 +49,19 @@ bootstrap_resolve_local_config_path(const char* cfg_path, char* resolved, size_t
 }
 
 static int
-bootstrap_resolve_local_config_path_for_stderr(const char* cfg_path, char* resolved, size_t resolved_size,
-                                               int* out_exit_rc) {
-    if (dsd_resolve_existing_local_file(cfg_path, resolved, resolved_size) == 0) {
+bootstrap_open_local_config_path_for_stderr(const char* cfg_path, char* resolved, size_t resolved_size,
+                                            int* out_exit_rc, FILE** out_stream) {
+    if (!out_stream) {
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    *out_stream = dsd_fopen_existing_local_file(cfg_path, resolved, resolved_size);
+    if (*out_stream) {
         return 1;
     }
     DSD_FPRINTF(stderr, "Config path must name an existing local file without path separators or '..'\n");
     bootstrap_set_exit_rc(out_exit_rc, 1);
     return 0;
-}
-
-static const char*
-bootstrap_default_or_env_config_path(const char* cli_path, const char* env_path) {
-    if (cli_path && *cli_path) {
-        return cli_path;
-    }
-    if (env_path && *env_path) {
-        return env_path;
-    }
-    return dsd_user_config_default_path();
 }
 
 static int
@@ -220,12 +220,9 @@ bootstrap_config_load_requested(const bootstrap_cli_args* args, const char* conf
 }
 
 static const char*
-bootstrap_config_path_for_load(const bootstrap_cli_args* args, const char* config_env) {
+bootstrap_explicit_config_path_for_load(const bootstrap_cli_args* args, const char* config_env) {
     if (args->config_path_cli && *args->config_path_cli) {
         return args->config_path_cli;
-    }
-    if (args->enable_config_cli) {
-        return dsd_user_config_default_path();
     }
     if (config_env && *config_env) {
         return config_env;
@@ -239,6 +236,15 @@ bootstrap_load_user_config_from_path(const bootstrap_cli_args* args, const char*
         return dsd_user_config_load_profile(cfg_path, args->profile_cli, user_cfg);
     }
     return dsd_user_config_load(cfg_path, user_cfg);
+}
+
+static int
+bootstrap_load_user_config_from_stream(const bootstrap_cli_args* args, FILE* cfg_stream, const char* cfg_path,
+                                       dsdneoUserConfig* user_cfg) {
+    if (args->profile_cli && *args->profile_cli) {
+        return dsd_user_config_load_profile_stream(cfg_stream, cfg_path, args->profile_cli, user_cfg);
+    }
+    return dsd_user_config_load_stream(cfg_stream, cfg_path, user_cfg);
 }
 
 static void
@@ -282,21 +288,29 @@ bootstrap_load_user_config_if_requested(dsd_opts* opts, dsd_state* state, const 
         return DSD_BOOTSTRAP_CONTINUE;
     }
 
-    const char* cfg_path = bootstrap_config_path_for_load(args, config_env);
-    if (!cfg_path || !*cfg_path) {
-        return DSD_BOOTSTRAP_CONTINUE;
-    }
-
     char resolved_cfg_path[DSD_BOOTSTRAP_LOCAL_PATH_MAX];
-    if (args->config_path_cli || config_env) {
-        if (!bootstrap_resolve_local_config_path(cfg_path, resolved_cfg_path, sizeof resolved_cfg_path, out_exit_rc)) {
+    FILE* cfg_stream = NULL;
+    int load_rc = -1;
+    const char* explicit_cfg_path = bootstrap_explicit_config_path_for_load(args, config_env);
+    const char* cfg_path = NULL;
+    if (explicit_cfg_path) {
+        if (!bootstrap_open_local_config_path(explicit_cfg_path, resolved_cfg_path, sizeof resolved_cfg_path,
+                                              out_exit_rc, &cfg_stream)) {
             return DSD_BOOTSTRAP_ERROR;
         }
         cfg_path = resolved_cfg_path;
+        bootstrap_enable_autosave_for_path(state, cfg_path);
+        load_rc = bootstrap_load_user_config_from_stream(args, cfg_stream, cfg_path, user_cfg);
+        fclose(cfg_stream);
+    } else {
+        const char* default_cfg_path = dsd_user_config_default_path();
+        if (!default_cfg_path || !*default_cfg_path) {
+            return DSD_BOOTSTRAP_CONTINUE;
+        }
+        cfg_path = default_cfg_path;
+        bootstrap_enable_autosave_for_path(state, cfg_path);
+        load_rc = bootstrap_load_user_config_from_path(args, default_cfg_path, user_cfg);
     }
-
-    bootstrap_enable_autosave_for_path(state, cfg_path);
-    int load_rc = bootstrap_load_user_config_from_path(args, cfg_path, user_cfg);
 
     if (load_rc == 0) {
         bootstrap_handle_loaded_user_config(opts, state, args, explicit_profile_selected, user_cfg, user_cfg_loaded,
@@ -362,27 +376,33 @@ bootstrap_handle_validate_config(const bootstrap_cli_args* args, const char* con
     if (!args->validate_config_cli) {
         return DSD_BOOTSTRAP_CONTINUE;
     }
-    const char* vpath = args->validate_path_cli;
-    if (!vpath || !*vpath) {
-        vpath = bootstrap_default_or_env_config_path(args->config_path_cli, config_env);
-    }
-    if (!vpath || !*vpath) {
-        DSD_FPRINTF(stderr, "No config file path specified or found.\n");
-        bootstrap_set_exit_rc(out_exit_rc, 1);
-        return DSD_BOOTSTRAP_ERROR;
-    }
-
+    const char* explicit_vpath = args->validate_path_cli && *args->validate_path_cli
+                                     ? args->validate_path_cli
+                                     : bootstrap_explicit_config_path_for_load(args, config_env);
     char resolved_vpath[DSD_BOOTSTRAP_LOCAL_PATH_MAX];
-    if (args->validate_path_cli || args->config_path_cli || config_env) {
-        if (!bootstrap_resolve_local_config_path_for_stderr(vpath, resolved_vpath, sizeof resolved_vpath,
-                                                            out_exit_rc)) {
+    const char* vpath = NULL;
+    FILE* validate_stream = NULL;
+    dsdcfg_diagnostics_t diags;
+    int rc = -1;
+    if (explicit_vpath) {
+        if (!bootstrap_open_local_config_path_for_stderr(explicit_vpath, resolved_vpath, sizeof resolved_vpath,
+                                                         out_exit_rc, &validate_stream)) {
             return DSD_BOOTSTRAP_ERROR;
         }
         vpath = resolved_vpath;
+        rc = dsd_user_config_validate_stream(validate_stream, &diags);
+        fclose(validate_stream);
+    } else {
+        const char* default_vpath = dsd_user_config_default_path();
+        if (!default_vpath || !*default_vpath) {
+            DSD_FPRINTF(stderr, "No config file path specified or found.\n");
+            bootstrap_set_exit_rc(out_exit_rc, 1);
+            return DSD_BOOTSTRAP_ERROR;
+        }
+        vpath = default_vpath;
+        rc = dsd_user_config_validate(default_vpath, &diags);
     }
 
-    dsdcfg_diagnostics_t diags;
-    int rc = dsd_user_config_validate(vpath, &diags);
     if (diags.count > 0) {
         dsdcfg_diags_print(&diags, stderr, vpath);
     } else {
@@ -406,25 +426,32 @@ bootstrap_handle_list_profiles(const bootstrap_cli_args* args, const char* confi
     if (!args->list_profiles_cli) {
         return DSD_BOOTSTRAP_CONTINUE;
     }
-    const char* lpath = bootstrap_default_or_env_config_path(args->config_path_cli, config_env);
-    if (!lpath || !*lpath) {
-        DSD_FPRINTF(stderr, "No config file path specified or found.\n");
-        bootstrap_set_exit_rc(out_exit_rc, 1);
-        return DSD_BOOTSTRAP_EXIT;
-    }
-
+    const char* explicit_lpath = bootstrap_explicit_config_path_for_load(args, config_env);
     char resolved_lpath[DSD_BOOTSTRAP_LOCAL_PATH_MAX];
-    if (args->config_path_cli || config_env) {
-        if (!bootstrap_resolve_local_config_path_for_stderr(lpath, resolved_lpath, sizeof resolved_lpath,
-                                                            out_exit_rc)) {
+    const char* lpath = NULL;
+    const char* names[32];
+    char names_buf[1024];
+    int count = -1;
+    if (explicit_lpath) {
+        FILE* list_stream = NULL;
+        if (!bootstrap_open_local_config_path_for_stderr(explicit_lpath, resolved_lpath, sizeof resolved_lpath,
+                                                         out_exit_rc, &list_stream)) {
             return DSD_BOOTSTRAP_EXIT;
         }
         lpath = resolved_lpath;
+        count = dsd_user_config_list_profiles_stream(list_stream, names, names_buf, sizeof names_buf, 32);
+        fclose(list_stream);
+    } else {
+        const char* default_lpath = dsd_user_config_default_path();
+        if (!default_lpath || !*default_lpath) {
+            DSD_FPRINTF(stderr, "No config file path specified or found.\n");
+            bootstrap_set_exit_rc(out_exit_rc, 1);
+            return DSD_BOOTSTRAP_EXIT;
+        }
+        lpath = default_lpath;
+        count = dsd_user_config_list_profiles(default_lpath, names, names_buf, sizeof names_buf, 32);
     }
 
-    const char* names[32];
-    char names_buf[1024];
-    int count = dsd_user_config_list_profiles(lpath, names, names_buf, sizeof names_buf, 32);
     if (count < 0) {
         DSD_FPRINTF(stderr, "Failed to read config file: %s\n", lpath);
         bootstrap_set_exit_rc(out_exit_rc, 1);
