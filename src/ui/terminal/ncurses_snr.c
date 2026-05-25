@@ -219,6 +219,9 @@ snr_draw_level_glyph(double sample, int mod, int use_unicode, const char* ascii8
 #ifdef PRETTY_COLORS
     short cp = snr_quality_color_pair(sample, mod);
     attron(COLOR_PAIR(cp));
+#else
+    (void)sample;
+    (void)mod;
 #endif
     if (use_unicode) {
 #if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
@@ -284,6 +287,8 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     int use_unicode = SNR_USE_UNICODE(opts && opts->eye_unicode, ui_unicode_supported());
 #ifdef PRETTY_COLORS
     short cp = snr_quality_color_pair(snr_db, mod);
+#else
+    (void)mod;
 #endif
     for (int i = 0; i < SNR_METER_BARS; i++) {
         if (i > 0) {

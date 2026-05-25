@@ -59,7 +59,7 @@ endif()
 
 # Modern build options (aligned with mbelib-neo style)
 option(DSD_ENABLE_WARNINGS "Enable common warning flags" ON)
-option(DSD_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
+option(DSD_WARNINGS_AS_ERRORS "Treat warnings as errors" ON)
 option(
     DSD_ENABLE_FAST_MATH
     "Enable fast-math optimizations (may relax IEEE semantics)"

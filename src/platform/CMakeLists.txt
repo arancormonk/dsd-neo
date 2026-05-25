@@ -62,7 +62,7 @@ target_include_directories(
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
 
-target_link_libraries(dsd-neo_platform PRIVATE dsd-neo_sanitizers)
+target_link_libraries(dsd-neo_platform PRIVATE dsd-neo_warnings)
 
 install(
     TARGETS dsd-neo_platform

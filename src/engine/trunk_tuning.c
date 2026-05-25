@@ -35,6 +35,8 @@ dsd_engine_rtl_demod_rate(const dsd_state* state) {
     if (state && state->rtl_ctx) {
         demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
     }
+#else
+    (void)state;
 #endif
     return demod_rate;
 }
@@ -185,6 +187,8 @@ dsd_engine_maybe_reset_p25p2_state(const dsd_opts* opts, const dsd_state* state,
     if (state->rtl_ctx) {
         p25p2_demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
     }
+#else
+    (void)state;
 #endif
     int p25p2_sps = dsd_opts_compute_sps_rate(opts, 6000, p25p2_demod_rate);
     if (ted_sps == p25p2_sps) {

@@ -1,6 +1,6 @@
 set(DSD_NEO_TEST_MATH_LIB $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
 
-link_libraries(dsd-neo_sanitizers)
+link_libraries(dsd-neo_warnings)
 
 add_library(dsd-neo_test_support INTERFACE)
 target_include_directories(

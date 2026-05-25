@@ -53,8 +53,8 @@ extern int ess_a[2][168];
 extern int16_t ess_a_llr[2][168];
 
 #if defined(DSD_NEO_P25P2_TEST_STUB)
-#define p25_sm_emit_active(opts, state, slot) ((void)0)
-#define p25_sm_on_release(opts, state)        ((void)0)
+#define p25_sm_emit_active(opts, state, slot) ((void)(opts), (void)(state), (void)(slot))
+#define p25_sm_on_release(opts, state)        ((void)(opts), (void)(state))
 #endif
 
 static int

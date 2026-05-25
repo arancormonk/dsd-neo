@@ -7,7 +7,15 @@
   },
   "configurePresets": [
     {
+      "name": "warnings-as-errors",
+      "hidden": true,
+      "cacheVariables": {
+        "DSD_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
       "name": "dev-debug",
+      "inherits": "warnings-as-errors",
       "displayName": "Dev Debug",
       "description": "Debug build (export compile_commands.json)",
       "binaryDir": "${sourceDir}/build/dev-debug",
@@ -18,6 +26,7 @@
     },
     {
       "name": "dev-release",
+      "inherits": "warnings-as-errors",
       "displayName": "Dev Release",
       "description": "Release build (LTO/fast-math enabled)",
       "binaryDir": "${sourceDir}/build/dev-release",
@@ -31,6 +40,7 @@
     },
     {
       "name": "perf-profile",
+      "inherits": "warnings-as-errors",
       "displayName": "Perf Profile",
       "description": "Optimized profiling build with debug symbols and frame pointers",
       "binaryDir": "${sourceDir}/build/perf-profile",
@@ -55,6 +65,7 @@
     },
     {
       "name": "perf-bench",
+      "inherits": "warnings-as-errors",
       "displayName": "Perf Bench",
       "description": "Optimized benchmark build with tests, debug symbols, and frame pointers",
       "binaryDir": "${sourceDir}/build/perf-bench",
@@ -76,6 +87,7 @@
     },
     {
       "name": "asan-ubsan-debug",
+      "inherits": "warnings-as-errors",
       "displayName": "Debug + ASan/UBSan",
       "description": "Debug build with sanitizers enabled",
       "binaryDir": "${sourceDir}/build/asan-ubsan-debug",
@@ -88,6 +100,7 @@
     },
     {
       "name": "fuzz-asan-debug",
+      "inherits": "warnings-as-errors",
       "displayName": "Debug + libFuzzer + ASan/UBSan",
       "description": "Debug build with libFuzzer targets and sanitizer instrumentation",
       "binaryDir": "${sourceDir}/build/fuzz-asan-debug",
@@ -108,6 +121,7 @@
     },
     {
       "name": "tsan-debug",
+      "inherits": "warnings-as-errors",
       "displayName": "Debug + TSan",
       "description": "Debug build with ThreadSanitizer enabled",
       "binaryDir": "${sourceDir}/build/tsan-debug",
@@ -119,6 +133,7 @@
     },
     {
       "name": "coverage-debug",
+      "inherits": "warnings-as-errors",
       "displayName": "Debug + Coverage",
       "description": "Debug build with GCC/Clang coverage instrumentation",
       "binaryDir": "${sourceDir}/build/coverage-debug",
@@ -133,6 +148,7 @@
     },
     {
       "name": "win-msvc-debug",
+      "inherits": "warnings-as-errors",
       "displayName": "Windows MSVC Debug",
       "description": "Windows Debug build with MSVC via vcpkg",
       "generator": "Visual Studio 17 2022",
@@ -152,6 +168,7 @@
     },
     {
       "name": "win-msvc-release",
+      "inherits": "warnings-as-errors",
       "displayName": "Windows MSVC Release",
       "description": "Windows Release build with MSVC via vcpkg",
       "generator": "Visual Studio 17 2022",
@@ -174,6 +191,7 @@
     },
     {
       "name": "win-mingw-debug",
+      "inherits": "warnings-as-errors",
       "displayName": "Windows MinGW Debug",
       "description": "Windows Debug build with MinGW-w64",
       "generator": "MinGW Makefiles",
@@ -194,6 +212,7 @@
     },
     {
       "name": "win-mingw-release",
+      "inherits": "warnings-as-errors",
       "displayName": "Windows MinGW Release",
       "description": "Windows Release build with MinGW-w64",
       "generator": "MinGW Makefiles",

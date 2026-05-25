@@ -12,7 +12,7 @@ function(dsd_neo_add_fuzzer target_name test_name source_file corpus_dir)
     )
     target_link_libraries(
         ${target_name}
-        PRIVATE dsd-neo_sanitizers dsd-neo_test_support ${ARGN}
+        PRIVATE dsd-neo_warnings dsd-neo_test_support ${ARGN}
     )
     target_compile_options(
         ${target_name}
