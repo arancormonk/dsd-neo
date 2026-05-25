@@ -14,6 +14,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_DIBIT_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_DIBIT_H_H
 
+#include <dsd-neo/platform/platform.h>
+
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -24,12 +26,12 @@ typedef struct {
     int16_t llr[2];      /* [0]=MSB, [1]=LSB. Positive values favor bit 1. */
 } dsd_dibit_soft_t;
 
-enum __attribute__((packed)) {
+enum DSD_ATTR_PACKED {
     DSD_SYMBOL_CAPTURE_FORMAT_LEGACY = 0,
     DSD_SYMBOL_CAPTURE_FORMAT_SOFT = 1,
 };
 
-enum __attribute__((packed)) {
+enum DSD_ATTR_PACKED {
     DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN = 0,
     DSD_SYMBOL_REPLAY_FORMAT_LEGACY = 1,
     DSD_SYMBOL_REPLAY_FORMAT_SOFT = 2,

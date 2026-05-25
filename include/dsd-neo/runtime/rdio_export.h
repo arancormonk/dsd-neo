@@ -11,6 +11,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RDIO_EXPORT_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RDIO_EXPORT_H_H
 
+#include <dsd-neo/platform/platform.h>
+
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 
@@ -18,7 +20,7 @@
 extern "C" {
 #endif
 
-enum __attribute__((packed)) {
+enum DSD_ATTR_PACKED {
     DSD_RDIO_MODE_OFF = 0,
     DSD_RDIO_MODE_DIRWATCH = 1,
     DSD_RDIO_MODE_API = 2,

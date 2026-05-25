@@ -14,6 +14,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_STREAM_C_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_STREAM_C_H_H
 
+#include <dsd-neo/platform/platform.h>
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -24,13 +26,13 @@
 extern "C" {
 #endif
 
-typedef enum __attribute__((packed)) rtl_stream_output_kind {
+typedef enum DSD_ATTR_PACKED rtl_stream_output_kind {
     RTL_STREAM_OUTPUT_AUDIO_MONITOR = 0,
     RTL_STREAM_OUTPUT_SYMBOL_FSK = 1,
     RTL_STREAM_OUTPUT_SYMBOL_CQPSK = 2,
 } rtl_stream_output_kind;
 
-typedef enum __attribute__((packed)) rtl_stream_channel_profile {
+typedef enum DSD_ATTR_PACKED rtl_stream_channel_profile {
     RTL_STREAM_CHANNEL_PROFILE_WIDE = 0,
     RTL_STREAM_CHANNEL_PROFILE_6K25 = 1,
     RTL_STREAM_CHANNEL_PROFILE_12K5 = 2,

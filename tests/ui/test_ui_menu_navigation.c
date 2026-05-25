@@ -28,6 +28,12 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
+#if defined(_MSC_VER) && defined(PDCURSES)
+#define DSD_TEST_CURSES_EXPORT __declspec(dllexport)
+#else
+#define DSD_TEST_CURSES_EXPORT
+#endif
+
 volatile uint8_t exitflag = 0; // NOLINT(misc-use-internal-linkage)
 
 static int g_action_calls = 0;
@@ -298,13 +304,13 @@ ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io
     (void)ctx;
 }
 
-int
+DSD_TEST_CURSES_EXPORT int
 delwin(WINDOW* win) {
     (void)win;
     return OK;
 }
 
-int
+DSD_TEST_CURSES_EXPORT int
 resize_term(int lines, int columns) {
     (void)lines;
     (void)columns;

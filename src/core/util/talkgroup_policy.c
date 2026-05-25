@@ -11,7 +11,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>

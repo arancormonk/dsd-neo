@@ -14,6 +14,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_EXT_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_EXT_H_H
 
+#include <dsd-neo/platform/platform.h>
+
 #include <dsd-neo/core/state_fwd.h>
 
 #ifdef __cplusplus
@@ -25,7 +27,7 @@ extern "C" {
  *
  * Keep this value stable: increasing it changes the size/layout of `dsd_state`.
  */
-enum __attribute__((packed)) { DSD_STATE_EXT_MAX = 32 };
+enum DSD_ATTR_PACKED { DSD_STATE_EXT_MAX = 32 };
 
 /**
  * @brief Stable IDs for extension slots.
@@ -43,7 +45,7 @@ enum __attribute__((packed)) { DSD_STATE_EXT_MAX = 32 };
  * - Never renumber existing IDs.
  * - Keep within your module's reserved range and < DSD_STATE_EXT_MAX.
  */
-typedef enum __attribute__((packed)) dsd_state_ext_id {
+typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     DSD_STATE_EXT_ENGINE_START_MS = 0,
     DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES = 1,
     /*

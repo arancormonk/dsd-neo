@@ -647,7 +647,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_ui_tcp_audio_connect
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES}
 )
 add_test(NAME UI_TCP_AUDIO_CONNECT COMMAND dsd-neo_test_ui_tcp_audio_connect)
 
@@ -722,6 +722,12 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/ui/terminal
         ${CURSES_INCLUDE_DIRS}
 )
+if(MSVC)
+    target_compile_definitions(
+        dsd-neo_test_ui_menu_navigation
+        PRIVATE CURSES_LIBRARY
+    )
+endif()
 add_test(NAME UI_MENU_NAVIGATION COMMAND dsd-neo_test_ui_menu_navigation)
 
 add_executable(
@@ -736,6 +742,12 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/ui/terminal
         ${CURSES_INCLUDE_DIRS}
 )
+if(MSVC)
+    target_compile_definitions(
+        dsd-neo_test_ui_menu_paging_viewport
+        PRIVATE CURSES_LIBRARY
+    )
+endif()
 add_test(
     NAME UI_MENU_PAGING_VIEWPORT
     COMMAND dsd-neo_test_ui_menu_paging_viewport

@@ -15,6 +15,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_DEMOD_STATE_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_DSP_DEMOD_STATE_H_
 
+#include <dsd-neo/platform/platform.h>
+
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/fll.h>
@@ -45,7 +47,7 @@
 #endif
 
 /* Channel LPF profile ids */
-enum __attribute__((packed)) {
+enum DSD_ATTR_PACKED {
     DSD_CH_LPF_PROFILE_WIDE = 0,
     DSD_CH_LPF_PROFILE_6K25 = 1,      /* 6.25 kHz modes: protects the 3125 Hz channel edge */
     DSD_CH_LPF_PROFILE_12K5 = 2,      /* 12.5 kHz 4FSK modes: protects the 6250 Hz channel edge */
@@ -54,7 +56,7 @@ enum __attribute__((packed)) {
     DSD_CH_LPF_PROFILE_P25_CQPSK = 5, /* P25 CQPSK/LSM: 12.5 kHz edge plus guard */
 };
 
-enum __attribute__((packed)) dsd_demod_output_kind {
+enum DSD_ATTR_PACKED dsd_demod_output_kind {
     DSD_DEMOD_OUTPUT_AUDIO_MONITOR = 0,
     DSD_DEMOD_OUTPUT_SYMBOL_FSK = 1,
     DSD_DEMOD_OUTPUT_SYMBOL_CQPSK = 2,

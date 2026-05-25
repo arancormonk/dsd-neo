@@ -11,6 +11,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_IQ_TYPES_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_IQ_TYPES_H_
 
+#include <dsd-neo/platform/platform.h>
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -18,7 +20,7 @@
 extern "C" {
 #endif
 
-typedef enum __attribute__((packed)) {
+typedef enum DSD_ATTR_PACKED {
     DSD_IQ_OK = 0,
     DSD_IQ_ERR_IO = -1,
     DSD_IQ_ERR_INVALID_META = -2,
@@ -32,14 +34,14 @@ typedef enum __attribute__((packed)) {
     DSD_IQ_ERR_INVALID_ARG = -10,
 } dsd_iq_error;
 
-typedef enum __attribute__((packed)) {
+typedef enum DSD_ATTR_PACKED {
     DSD_IQ_FORMAT_UNKNOWN = 0,
     DSD_IQ_FORMAT_CU8 = 1,
     DSD_IQ_FORMAT_CF32 = 2,
     DSD_IQ_FORMAT_CS16 = 3,
 } dsd_iq_sample_format;
 
-typedef enum __attribute__((packed)) {
+typedef enum DSD_ATTR_PACKED {
     DSD_IQ_EVENT_RETUNE = 1,
     DSD_IQ_EVENT_MUTE = 2,
     DSD_IQ_EVENT_RESET = 3,

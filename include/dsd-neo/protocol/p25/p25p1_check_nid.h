@@ -11,6 +11,8 @@
 #ifndef P25P1_CHECK_NID_H_3af071e917ea43fdb51326e2cbfbde0a
 #define P25P1_CHECK_NID_H_3af071e917ea43fdb51326e2cbfbde0a
 
+#include <dsd-neo/platform/platform.h>
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -28,7 +30,7 @@ extern "C" {
  *   - Positive values (NID_OK, NID_PARITY_OVERRIDE) indicate an accepted frame.
  *   - Zero or negative values (NID_DECODE_FAIL, NID_PARITY_MISMATCH) indicate rejection.
  */
-enum __attribute__((packed)) NidResult {
+enum DSD_ATTR_PACKED NidResult {
     NID_PARITY_MISMATCH = -1, /**< BCH decoded, valid DUID, but parity disagrees (rejected).
                                    Reserved for callers that choose to enforce the final
                                    parity bit; the default decoder accepts parity-bit

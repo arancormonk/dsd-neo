@@ -11,9 +11,11 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_CALL_ALERT_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_CALL_ALERT_H_H
 
+#include <dsd-neo/platform/platform.h>
+
 #include <stdint.h>
 
-typedef enum __attribute__((packed)) {
+typedef enum DSD_ATTR_PACKED {
     DSD_CALL_ALERT_EVENT_VOICE_START = 1u << 0,
     DSD_CALL_ALERT_EVENT_VOICE_END = 1u << 1,
     DSD_CALL_ALERT_EVENT_DATA = 1u << 2,

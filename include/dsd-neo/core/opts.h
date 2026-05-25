@@ -14,6 +14,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 
+#include <dsd-neo/platform/platform.h>
+
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/platform/audio.h>
@@ -30,7 +32,7 @@
  *
  * These values identify how audio samples are acquired by the decoder.
  */
-typedef enum __attribute__((packed)) {
+typedef enum DSD_ATTR_PACKED {
     AUDIO_IN_PULSE = 0,      ///< PulseAudio input
     AUDIO_IN_STDIN = 1,      ///< Standard input (pipe)
     AUDIO_IN_WAV = 2,        ///< WAV/audio file via libsndfile
@@ -343,12 +345,12 @@ struct dsd_opts {
     char dsp_out_file[2048];
 };
 
-enum __attribute__((packed)) {
+enum DSD_ATTR_PACKED {
     DSD_IQ_REPLAY_RATE_FAST = 0,
     DSD_IQ_REPLAY_RATE_REALTIME = 1,
 };
 
-enum __attribute__((packed)) {
+enum DSD_ATTR_PACKED {
     DSD_OPTS_INPUT_UPSAMPLE_STAGING_CAP =
         (int)(sizeof(((dsd_opts*)0)->input_upsample_buf) / sizeof(((dsd_opts*)0)->input_upsample_buf[0])),
 };
