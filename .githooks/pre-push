@@ -188,7 +188,7 @@ for p in "${changed_paths[@]}"; do
   esac
 
   case "$p" in
-    vcpkg.json | vcpkg-configuration.json | vcpkg-ports/* | vcpkg-triplets/* | tools/osv_scan.sh)
+    .github/dependabot.yml | .github/requirements/* | vcpkg.json | vcpkg-configuration.json | vcpkg-ports/* | vcpkg-triplets/* | tools/osv_scan.sh)
       dependency_scan_targets+=("$p")
       ;;
   esac

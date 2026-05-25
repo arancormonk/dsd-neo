@@ -70,11 +70,11 @@ jobs:
         if: github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.x"
+          python-version: "3.14"
 
       - name: Install gersemi
         if: github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0'
-        run: python -m pip install --upgrade gersemi
+        run: python -m pip install --require-hashes -r .github/requirements/gersemi.txt
 
       - name: Check CMake formatting
         if: github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0'
@@ -156,11 +156,11 @@ jobs:
         if: github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.x"
+          python-version: "3.14"
 
       - name: Install zizmor
         if: github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0'
-        run: python -m pip install --upgrade zizmor
+        run: python -m pip install --require-hashes -r .github/requirements/zizmor.txt
 
       - name: Run zizmor
         if: github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0'

@@ -106,18 +106,24 @@ if [[ $NO_CONFIG -eq 1 ]]; then
 fi
 
 LOG_FILE=".zizmor.local.out"
+ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/dsd-neo-zizmor-sarif.XXXXXX")"
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+cleanup() {
+  rm -f "$ERR_FILE"
+}
+trap cleanup EXIT
+
 set +e
 zizmor "${COMMON_ARGS[@]}" --format=plain "${INPUTS[@]}" 2>&1 | tee "$LOG_FILE"
 plain_rc=${PIPESTATUS[0]}
 
 sarif_rc=0
 if [[ -n "$SARIF_OUT" ]]; then
-  zizmor "${COMMON_ARGS[@]}" --format=sarif "${INPUTS[@]}" > "$SARIF_OUT" 2> /tmp/dsd-neo-zizmor-sarif.err
+  zizmor "${COMMON_ARGS[@]}" --format=sarif "${INPUTS[@]}" > "$SARIF_OUT" 2> "$ERR_FILE"
   sarif_rc=$?
-  if [[ -s /tmp/dsd-neo-zizmor-sarif.err ]]; then
-    cat /tmp/dsd-neo-zizmor-sarif.err >> "$LOG_FILE"
+  if [[ -s "$ERR_FILE" ]]; then
+    cat "$ERR_FILE" >> "$LOG_FILE"
   fi
-  rm -f /tmp/dsd-neo-zizmor-sarif.err
 fi
 set -e
 

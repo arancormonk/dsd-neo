@@ -415,11 +415,11 @@ jobs:
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.x"
+          python-version: "3.14"
 
       - name: Install Semgrep
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
-        run: python -m pip install --upgrade semgrep
+        run: python -m pip install --require-hashes -r .github/requirements/semgrep.txt
 
       - name: Run Semgrep
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
@@ -461,9 +461,9 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.x"
+          python-version: "3.14"
       - name: Install Lizard
-        run: python -m pip install --upgrade lizard
+        run: python -m pip install --require-hashes -r .github/requirements/lizard.txt
       - name: Run Lizard
         run: tools/lizard.sh --strict
       - name: Upload Lizard output
