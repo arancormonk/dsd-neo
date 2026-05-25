@@ -8,7 +8,8 @@
  * @brief PC5 context and helpers for Baofeng-style DMR AP.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_PC5_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_PC5_H_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -57,10 +58,10 @@ typedef struct {
 
 extern PC5Context ctxpc5;
 
-void create_keys_pc5(PC5Context* ctx, unsigned char key1[], size_t size1);
+void create_keys_pc5(PC5Context* ctx, const unsigned char key1[], size_t size1);
 void pc5encrypt(PC5Context* ctx);
 void pc5decrypt(PC5Context* ctx);
-void binhexpc5(PC5Context* ctx, short* z, int length);
+void binhexpc5(PC5Context* ctx, const short* z, int length);
 void hexbinpc5(PC5Context* ctx, short* q, uint8_t w, uint8_t hex);
 
 static PC5_ATTR_UNUSED void
@@ -103,3 +104,4 @@ decrypt_frame_49_pc5(short frame_bits_in[49]) {
         ctxpc5.bits[i] = frame_bits_in[i];
     }
 }
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_PC5_H_H */

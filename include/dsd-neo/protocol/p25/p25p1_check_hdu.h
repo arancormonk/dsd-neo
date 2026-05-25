@@ -17,7 +17,7 @@ extern "C" {
  * \param fixed_error Output. Filled with the number of errors fixed in the input.
  * \return 1 if there were uncorrectable errors in the input, 0 otherwise.
  */
-int check_and_fix_golay_24_6(char* hex, char* parity, int* fixed_errors);
+int check_and_fix_golay_24_6(char* hex, const char* parity, int* fixed_errors);
 
 /**
  * Attempts to correct a 12-bit word using the Golay(24,12,8) FEC.
@@ -26,21 +26,21 @@ int check_and_fix_golay_24_6(char* hex, char* parity, int* fixed_errors);
  * \param fixed_error Output. Filled with the number of errors fixed in the input.
  * \return 1 if there were uncorrectable errors in the input, 0 otherwise.
  */
-int check_and_fix_golay_24_12(char* dodeca, char* parity, int* fixed_errors);
+int check_and_fix_golay_24_12(char* dodeca, const char* parity, int* fixed_errors);
 
 /**
  * Encodes an hex word using the Golay(24,12,8) FEC.
  * \param hex A 6-bit word to encode.
  * \param out_parity The address to be filled with the calculated Golay parity.
  */
-void encode_golay_24_6(char* hex, char* out_parity);
+void encode_golay_24_6(const char* hex, char* out_parity);
 
 /**
  * Encodes an 12-bitword using the Golay(24,12,8) FEC.
  * \param dodeca A 12-bit word to encode.
  * \param out_parity The address to be filled with the calculated Golay parity.
  */
-void encode_golay_24_12(char* dodeca, char* out_parity);
+void encode_golay_24_12(const char* dodeca, char* out_parity);
 
 /**
  * Attempts to correct 20 hex words using the Reed-Solomon(36,20,17) FEC.
@@ -48,7 +48,7 @@ void encode_golay_24_12(char* dodeca, char* out_parity);
  * \param parity The corresponding 16 hex words with the parity information.
  * \return 1 if irrecoverable errors have been detected, 0 otherwise.
  */
-int check_and_fix_redsolomon_36_20_17(char* data, char* parity);
+int check_and_fix_redsolomon_36_20_17(char* data, const char* parity);
 
 /**
  * Attempts to correct 20 hex words using Reed-Solomon(36,20,17) plus erasure positions.
@@ -58,14 +58,14 @@ int check_and_fix_redsolomon_36_20_17(char* data, char* parity);
  * \param n_erasures Number of erasure positions, max 16.
  * \return 1 if irrecoverable errors have been detected, 0 otherwise.
  */
-int check_and_fix_redsolomon_36_20_17_soft(char* data, char* parity, const int* erasures, int n_erasures);
+int check_and_fix_redsolomon_36_20_17_soft(char* data, const char* parity, const int* erasures, int n_erasures);
 
 /**
  * Calculates the Reed-Solomon parity of 20 words of 6 bits each.
  * \param hex_data The address with the words whose parity we want to calculate.
  * \param fixed_parity The address to be filled with the calculated parity. 16 words of 6 bits are produced.
  */
-void encode_reedsolomon_36_20_17(char* hex_data, char* fixed_parity);
+void encode_reedsolomon_36_20_17(const char* hex_data, char* fixed_parity);
 
 #ifdef __cplusplus
 }

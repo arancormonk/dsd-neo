@@ -8,13 +8,19 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "test_support.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 #define setenv dsd_test_setenv
 
@@ -31,13 +37,15 @@ typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
 
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -46,6 +54,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -54,6 +63,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -63,6 +73,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -72,6 +83,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -79,6 +91,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bw) {
     (void)sockfd;
     (void)bw;
@@ -86,13 +99,16 @@ SetModulation(int sockfd, int bw) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -106,8 +122,17 @@ parse_len_fields(const char* s, int* lenB, int* lenC) {
     if (!p || !q) {
         return -1;
     }
-    *lenB = atoi(p + 7);
-    *lenC = atoi(q + 7);
+    errno = 0;
+    char* end_b = NULL;
+    char* end_c = NULL;
+    long vb = strtol(p + 7, &end_b, 10);
+    long vc = strtol(q + 7, &end_c, 10);
+    if (end_b == (p + 7) || end_c == (q + 7) || errno == ERANGE || vb < INT_MIN || vb > INT_MAX || vc < INT_MIN
+        || vc > INT_MAX) {
+        return -1;
+    }
+    *lenB = (int)vb;
+    *lenC = (int)vc;
     return 0;
 }
 
@@ -119,12 +144,12 @@ run_case(int type, uint8_t opcode, int expectB, int expectC) {
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_mac_segment") != 0) {
-        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 100;
     }
 
     unsigned char mac[24];
-    memset(mac, 0, sizeof(mac));
+    DSD_MEMSET(mac, 0, sizeof(mac));
     mac[0] = 1;      // mark header present so MCO heuristic applies on FACCH
     mac[1] = opcode; // opcode with low 6 bits interpreted as MCO
     p25_test_process_mac_vpdu(type, mac, 24);
@@ -134,7 +159,7 @@ run_case(int type, uint8_t opcode, int expectB, int expectC) {
     // Read file back
     FILE* f = fopen(cap.path, "r");
     if (!f) {
-        fprintf(stderr, "Failed to open %s\n", cap.path);
+        DSD_FPRINTF(stderr, "Failed to open %s\n", cap.path);
         return 101;
     }
     char buf[512];
@@ -144,15 +169,16 @@ run_case(int type, uint8_t opcode, int expectB, int expectC) {
 
     int lenB = -1, lenC = -1;
     if (parse_len_fields(buf, &lenB, &lenC) != 0) {
-        fprintf(stderr, "JSON parse failed: %s\n", buf);
+        DSD_FPRINTF(stderr, "JSON parse failed: %s\n", buf);
         return 102;
     }
     if (lenB != expectB) {
-        fprintf(stderr, "lenB mismatch type=%d op=%02X got B=%d want B=%d (C=%d)\n", type, opcode, lenB, expectB, lenC);
+        DSD_FPRINTF(stderr, "lenB mismatch type=%d op=%02X got B=%d want B=%d (C=%d)\n", type, opcode, lenB, expectB,
+                    lenC);
         return 103;
     }
     if (lenC != expectC) {
-        fprintf(stderr, "lenC mismatch type=%d op=%02X got C=%d want C=%d\n", type, opcode, lenC, expectC);
+        DSD_FPRINTF(stderr, "lenC mismatch type=%d op=%02X got C=%d want C=%d\n", type, opcode, lenC, expectC);
         return 104;
     }
     (void)remove(cap.path);
@@ -166,6 +192,10 @@ main(void) {
     if (rc != 0) {
         return rc;
     }
-    fprintf(stderr, "P25p2 MAC MCO->length inference (FACCH) passed\n");
+    DSD_FPRINTF(stderr, "P25p2 MAC MCO->length inference (FACCH) passed\n");
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

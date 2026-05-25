@@ -11,7 +11,8 @@
  * installs real hook functions at startup; the runtime provides safe wrappers
  * with defaults when hooks are not installed.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_NET_AUDIO_INPUT_HOOKS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_NET_AUDIO_INPUT_HOOKS_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/platform/sockets.h>
@@ -22,14 +23,12 @@
 extern "C" {
 #endif
 
-typedef struct tcp_input_ctx tcp_input_ctx;
-
 typedef struct {
     tcp_input_ctx* (*tcp_open)(dsd_socket_t sockfd, int samplerate);
     void (*tcp_close)(tcp_input_ctx* ctx);
     int (*tcp_read_sample)(tcp_input_ctx* ctx, int16_t* out);
-    int (*tcp_is_valid)(tcp_input_ctx* ctx);
-    dsd_socket_t (*tcp_get_socket)(tcp_input_ctx* ctx);
+    int (*tcp_is_valid)(const tcp_input_ctx* ctx);
+    dsd_socket_t (*tcp_get_socket)(const tcp_input_ctx* ctx);
 
     int (*udp_start)(dsd_opts* opts, const char* bindaddr, int port, int samplerate);
     void (*udp_stop)(dsd_opts* opts);
@@ -51,3 +50,5 @@ int dsd_net_audio_input_hook_udp_read_sample(dsd_opts* opts, int16_t* out);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_NET_AUDIO_INPUT_HOOKS_H_ */

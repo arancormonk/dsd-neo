@@ -6,7 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <stdint.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "rtl_auto_ppm.h"
 #include "rtl_ppm_request.h"
 
@@ -27,7 +27,7 @@ select_estimate(const RtlAutoPpmSignalMetrics& metrics) {
 static int
 expect_true(const char* label, bool cond) {
     if (!cond) {
-        std::fprintf(stderr, "FAIL: %s\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         return 1;
     }
     return 0;
@@ -36,7 +36,7 @@ expect_true(const char* label, bool cond) {
 static int
 expect_int_eq(const char* label, int got, int want) {
     if (got != want) {
-        std::fprintf(stderr, "FAIL: %s got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -45,7 +45,7 @@ expect_int_eq(const char* label, int got, int want) {
 static int
 expect_double_close(const char* label, double got, double want, double tol) {
     if (std::fabs(got - want) > tol) {
-        std::fprintf(stderr, "FAIL: %s got=%.6f want=%.6f tol=%.6f\n", label, got, want, tol);
+        DSD_FPRINTF(stderr, "FAIL: %s got=%.6f want=%.6f tol=%.6f\n", label, got, want, tol);
         return 1;
     }
     return 0;

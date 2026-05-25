@@ -9,6 +9,8 @@
 #define _GNU_SOURCE
 #endif
 
+#define DSD_NEO_THREADING_NO_INLINE_CREATE
+
 /* Include sched.h early:
  * - Linux: CPU_* affinity macros (requires _GNU_SOURCE)
  * - macOS: struct sched_param/SCHED_* constants for pthread scheduling */
@@ -16,20 +18,22 @@
 // IWYU can incorrectly suggest libc-internal bits headers for sched_param.
 // Keep the portable public header explicitly.
 // IWYU pragma: no_include <bits/types/struct_sched_param.h>
-#include <sched.h> // IWYU pragma: keep
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
+#include <errno.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdint.h>
+#include <time.h>
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/platform/platform.h"
+
 #endif
 
-#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h> // IWYU pragma: keep (macOS monotonic/realtime time declarations)
-#include <pthread.h>
-
-#include "dsd-neo/platform/platform.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 
-#include <errno.h>
-#include <stdint.h>
-#include <time.h>
 struct timespec;
 
 static void
@@ -265,7 +269,7 @@ int
 dsd_thread_set_affinity(int cpu_index) {
 #if DSD_PLATFORM_LINUX
     cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
+    DSD_MEMSET(&cpuset, 0, sizeof(cpuset));
     CPU_SET((unsigned)cpu_index, &cpuset);
     return pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
 #else

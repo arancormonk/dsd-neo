@@ -8,12 +8,13 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
@@ -154,7 +155,7 @@ dsd_unicode_supported(void) {
         return g_unicode_supported;
     }
 #endif
-    strncpy(g_cached_locale, loc, sizeof(g_cached_locale) - 1);
+    DSD_STRNCPY(g_cached_locale, loc, sizeof(g_cached_locale) - 1);
     g_cached_locale[sizeof(g_cached_locale) - 1] = '\0';
 
     g_unicode_supported = locale_is_utf8() ? 1 : 0;
@@ -169,8 +170,94 @@ dsd_unicode_supported(void) {
 }
 
 const char*
+dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) {
+    return dsd_unicode_supported() ? unicode_str : ascii_str;
+}
+
+const char*
 dsd_degrees_glyph(void) {
     return dsd_unicode_supported() ? "\xC2\xB0" : " deg";
+}
+
+static void
+append_ascii_text(char* out, size_t out_sz, size_t* oi, const char* rep) {
+    for (size_t k = 0; rep[k] && *oi + 1 < out_sz; ++k) {
+        out[(*oi)++] = rep[k];
+    }
+}
+
+static size_t
+utf8_sequence_advance(unsigned char c) {
+    if ((c & 0xE0) == 0xC0) {
+        return 2;
+    }
+    if ((c & 0xF0) == 0xE0) {
+        return 3;
+    }
+    if ((c & 0xF8) == 0xF0) {
+        return 4;
+    }
+    return 1;
+}
+
+static int
+replace_known_utf8_sequence(const char* in, size_t* i, char* out, size_t out_sz, size_t* oi) {
+    if ((unsigned char)in[*i] == 0xE2) {
+        if ((unsigned char)in[*i + 1] == 0x89 && (unsigned char)in[*i + 2] == 0x88) {
+            out[(*oi)++] = '~';
+            *i += 3;
+            return 1;
+        }
+        if ((unsigned char)in[*i + 1] == 0x80
+            && ((unsigned char)in[*i + 2] == 0x93 || (unsigned char)in[*i + 2] == 0x94)) {
+            out[(*oi)++] = '-';
+            *i += 3;
+            return 1;
+        }
+        if ((unsigned char)in[*i + 1] == 0x80 && (unsigned char)in[*i + 2] == 0xA6) {
+            if (*oi + 3 < out_sz) {
+                out[(*oi)++] = '.';
+                out[(*oi)++] = '.';
+                out[(*oi)++] = '.';
+            }
+            *i += 3;
+            return 1;
+        }
+        return 0;
+    }
+
+    if ((unsigned char)in[*i] == 0xC2) {
+        if ((unsigned char)in[*i + 1] == 0xB0) {
+            append_ascii_text(out, out_sz, oi, " deg");
+            *i += 2;
+            return 1;
+        }
+        if ((unsigned char)in[*i + 1] == 0xB5) {
+            out[(*oi)++] = 'u';
+            *i += 2;
+            return 1;
+        }
+        return 0;
+    }
+
+    if ((unsigned char)in[*i] == 0xC3 && (unsigned char)in[*i + 1] == 0x97) {
+        out[(*oi)++] = 'x';
+        *i += 2;
+        return 1;
+    }
+
+    return 0;
+}
+
+static char*
+copy_unicode_or_truncate(const char* in, char* out, size_t out_sz) {
+    size_t n = strlen(in);
+    if (n >= out_sz) {
+        n = out_sz - 1;
+    }
+    DSD_MEMCPY(out, in, n);
+    out[n] = '\0';
+    return out;
 }
 
 char*
@@ -179,15 +266,9 @@ dsd_ascii_fallback(const char* in, char* out, size_t out_sz) {
         return out;
     }
     if (dsd_unicode_supported()) {
-        /* Copy with truncation */
-        size_t n = strlen(in);
-        if (n >= out_sz) {
-            n = out_sz - 1;
-        }
-        memcpy(out, in, n);
-        out[n] = '\0';
-        return out;
+        return copy_unicode_or_truncate(in, out, out_sz);
     }
+
     /* Replace a small set of common glyphs with ASCII */
     size_t oi = 0;
     for (size_t i = 0; in[i] && oi + 1 < out_sz;) {
@@ -197,68 +278,13 @@ dsd_ascii_fallback(const char* in, char* out, size_t out_sz) {
             i++;
             continue;
         }
-        /* Multi-byte sequences we recognize */
-        if ((unsigned char)in[i] == 0xE2) {
-            /* E2 89 88: ≈  | E2 80 93: – | E2 80 94: — | E2 80 A6: … */
-            if ((unsigned char)in[i + 1] == 0x89 && (unsigned char)in[i + 2] == 0x88) {
-                out[oi++] = '~';
-                i += 3;
-                continue;
-            }
-            if ((unsigned char)in[i + 1] == 0x80 && (unsigned char)in[i + 2] == 0x93) {
-                out[oi++] = '-';
-                i += 3;
-                continue;
-            }
-            if ((unsigned char)in[i + 1] == 0x80 && (unsigned char)in[i + 2] == 0x94) {
-                out[oi++] = '-';
-                i += 3;
-                continue;
-            }
-            if ((unsigned char)in[i + 1] == 0x80 && (unsigned char)in[i + 2] == 0xA6) {
-                if (oi + 3 < out_sz) {
-                    out[oi++] = '.';
-                    out[oi++] = '.';
-                    out[oi++] = '.';
-                }
-                i += 3;
-                continue;
-            }
-        } else if ((unsigned char)in[i] == 0xC2) {
-            /* C2 B0: ° | C2 B5: µ */
-            if ((unsigned char)in[i + 1] == 0xB0) {
-                const char* rep = " deg";
-                for (size_t k = 0; rep[k] && oi + 1 < out_sz; ++k) {
-                    out[oi++] = rep[k];
-                }
-                i += 2;
-                continue;
-            }
-            if ((unsigned char)in[i + 1] == 0xB5) {
-                out[oi++] = 'u';
-                i += 2;
-                continue;
-            }
-        } else if ((unsigned char)in[i] == 0xC3) {
-            /* C3 97: × */
-            if ((unsigned char)in[i + 1] == 0x97) {
-                out[oi++] = 'x';
-                i += 2;
-                continue;
-            }
+        if (replace_known_utf8_sequence(in, &i, out, out_sz, &oi)) {
+            continue;
         }
+
         /* Unknown non-ASCII: replace with '?' */
         out[oi++] = '?';
-        /* Skip continuation bytes */
-        if ((c & 0xE0) == 0xC0) {
-            i += 2;
-        } else if ((c & 0xF0) == 0xE0) {
-            i += 3;
-        } else if ((c & 0xF8) == 0xF0) {
-            i += 4;
-        } else {
-            i++;
-        }
+        i += utf8_sequence_advance(c);
     }
     out[oi] = '\0';
     return out;

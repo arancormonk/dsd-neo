@@ -11,28 +11,26 @@
  * fields can include it directly.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/platform/audio.h>
-#include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/sndfile_fwd.h>
 #include <dsd-neo/platform/sockets.h>
 
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
-typedef struct tcp_input_ctx tcp_input_ctx;
 
 /**
  * @brief Audio input source types.
  *
  * These values identify how audio samples are acquired by the decoder.
  */
-typedef enum {
+typedef enum __attribute__((packed)) {
     AUDIO_IN_PULSE = 0,      ///< PulseAudio input
     AUDIO_IN_STDIN = 1,      ///< Standard input (pipe)
     AUDIO_IN_WAV = 2,        ///< WAV/audio file via libsndfile
@@ -345,12 +343,12 @@ struct dsd_opts {
     char dsp_out_file[2048];
 };
 
-enum {
+enum __attribute__((packed)) {
     DSD_IQ_REPLAY_RATE_FAST = 0,
     DSD_IQ_REPLAY_RATE_REALTIME = 1,
 };
 
-enum {
+enum __attribute__((packed)) {
     DSD_OPTS_INPUT_UPSAMPLE_STAGING_CAP =
         (int)(sizeof(((dsd_opts*)0)->input_upsample_buf) / sizeof(((dsd_opts*)0)->input_upsample_buf[0])),
 };
@@ -696,3 +694,4 @@ static inline int
 dsd_opts_symbol_center(int sps) {
     return (sps - 1) / 2;
 }
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H */

@@ -39,45 +39,114 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
+typedef void (*nxdn_element_handler_fn)(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                        size_t elements_bits);
+
+struct nxdn_element_dispatch_entry {
+    uint8_t message_type;
+    nxdn_element_handler_fn handler;
+};
+
 static uint8_t nxdn_alias_crc_ok(const dsd_state* state);
 static void nxdn_reset_data_call_state(dsd_state* state);
 static void nxdn_data_call_option_to_str(uint8_t data_call_option, char* duplex, size_t duplex_sz, char* mode,
                                          size_t mode_sz);
 static void nxdn_print_group_label(const dsd_state* state, uint32_t id);
+static void nxdn_anchor_control_channel_from_current_tuner(const dsd_opts* opts, dsd_state* state, int only_if_missing);
+static nxdn_element_handler_fn nxdn_element_dispatch_handler(uint8_t message_type);
+static void nxdn_element_handle_idle(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits);
+static void nxdn_element_handle_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                              size_t elements_bits);
+static void nxdn_element_handle_sdcall_data(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                            size_t elements_bits);
+static void nxdn_element_handle_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                          size_t elements_bits);
+static void nxdn_element_handle_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                             size_t elements_bits);
+static void nxdn_element_handle_dcall_data(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                           size_t elements_bits);
+static void nxdn_element_handle_call_assignment(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                                size_t elements_bits);
+static void nxdn_element_handle_alias(const dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                      size_t elements_bits);
+static void nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                         size_t elements_bits);
+static void nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                         size_t elements_bits);
+static void nxdn_element_handle_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                          size_t elements_bits);
+static void nxdn_element_handle_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                         size_t elements_bits);
+static void nxdn_element_handle_tx_release(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                           size_t elements_bits);
+static void nxdn_element_handle_vcall(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits);
+static void nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits);
+static void nxdn_element_handle_vcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                         size_t elements_bits);
 static void nxdn_pdu_scrambler_keystream_creation(uint8_t* ks, int lfsr, int len_bits);
 static void nxdn_lfsr128_expand_iv_from_mi64(uint64_t mi, uint8_t out[16]);
 static int nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[32], uint64_t* key_stub);
-static void nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-static void nxdn_dcall_header(dsd_opts* opts, dsd_state* state, uint8_t* Message, size_t message_bits);
-static void nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-static int nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, uint8_t* Message, size_t message_bits);
-
-void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent,
-                                  size_t elements_bits);
-void NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-void NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-void NXDN_decode_Alias(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-void NXDN_decode_ALIAS_ARIB(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-void NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-void NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-void NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-void NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, uint8_t* Message);
-void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t direction);
-char* NXDN_Call_Type_To_Str(uint8_t CallType);
-void NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t* TransmissionMode);
-char* NXDN_Cipher_Type_To_Str(uint8_t CipherType);
+static void nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+static void nxdn_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
+static void nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+static int nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, const uint8_t* Message, size_t message_bits);
+static void NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+static void NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+static void NXDN_decode_Alias(const dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+static void NXDN_decode_ALIAS_ARIB(const dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+static void nxdn_print_dfa_bandwidth(uint8_t bw);
+static void nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t channel1sts,
+                                          uint16_t channel1, uint16_t channel2);
+static int nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits,
+                                     uint32_t location_id, uint8_t channel1sts);
+static void nxdn_adj_site_channel_entry(dsd_opts* opts, dsd_state* state, uint32_t site, uint8_t opt, uint16_t chan);
+static void nxdn_adj_site_dfa_entry(dsd_opts* opts, dsd_state* state, uint32_t site, uint8_t opt, uint8_t bw,
+                                    uint16_t chan);
+static void NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
+static void NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+static void NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
+static void NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
+static char* NXDN_Call_Type_To_Str(uint8_t CallType);
+static void NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t* TransmissionMode);
+static char* NXDN_Cipher_Type_To_Str(uint8_t CipherType);
+static void nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type);
+static void nxdn_srv_info_handler(dsd_state* state, uint16_t svc_info);
+static void nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info);
+static void nxdn_ca_info_handler(dsd_state* state, uint32_t ca_info);
 
 static void
 nxdn_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
     if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
-        fprintf(stderr, " [%s]", name);
+        DSD_FPRINTF(stderr, " [%s]", name);
+    }
+}
+
+static void
+nxdn_anchor_control_channel_from_current_tuner(const dsd_opts* opts, dsd_state* state, int only_if_missing) {
+    if ((opts->trunk_enable != 1 && opts->p25_trunk != 1) || opts->trunk_is_tuned != 0
+        || (only_if_missing && state->p25_cc_freq != 0)) {
+        return;
+    }
+
+    long int ccfreq = 0;
+    if (opts->use_rigctl == 1) {
+        ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
+    } else if (opts->audio_in_type == AUDIO_IN_RTL) {
+#ifdef USE_RADIO
+        ccfreq = (long int)opts->rtlsdr_center_freq;
+#endif
+    }
+
+    if (ccfreq != 0) {
+        state->p25_cc_freq = ccfreq;
+        state->trunk_cc_freq = ccfreq;
     }
 }
 
@@ -89,15 +158,15 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
     uint32_t i;
     uint8_t CrcCorrect = 1;
 
-    memset(SACCH, 0, sizeof(SACCH));
-    memset(sacch_bytes, 0, sizeof(sacch_bytes));
+    DSD_MEMSET(SACCH, 0, sizeof(SACCH));
+    DSD_MEMSET(sacch_bytes, 0, sizeof(sacch_bytes));
 
     /* Consider all SACCH CRC parts as correct */
     CrcCorrect = 1;
 
     /* Reconstitute the full 72 bits SACCH */
     for (i = 0; i < 4; i++) {
-        memcpy(&SACCH[(size_t)i * 18], state->nxdn_sacch_frame_segment[i], 18);
+        DSD_MEMCPY(&SACCH[(size_t)i * 18], state->nxdn_sacch_frame_segment[i], 18);
 
         /* Check CRC */
         if (state->nxdn_sacch_frame_segcrc[i] != 0) {
@@ -110,32 +179,193 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
     if (CrcCorrect == 1) {
         NXDN_Elements_Content_decode(opts, state, CrcCorrect, SACCH, sizeof(SACCH));
     }
-    // else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, SACCH, sizeof(SACCH));
 
     //reset the sacch field -- Github Issue #118
-    memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-    memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+    DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+    DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
 
     if (opts->payload == 1) {
-        fprintf(stderr, "\n");
-        fprintf(stderr, " Full SACCH Payload ");
+        DSD_FPRINTF(stderr, "\n");
+        DSD_FPRINTF(stderr, " Full SACCH Payload ");
         for (i = 0; i < 9; i++) {
             sacch_bytes[i] = (uint8_t)ConvertBitIntoBytes(&SACCH[(size_t)i * 8], 8);
-            fprintf(stderr, "[%02X]", sacch_bytes[i]);
+            DSD_FPRINTF(stderr, "[%02X]", sacch_bytes[i]);
         }
     }
 
 } /* End NXDN_SACCH_Full_decode() */
 
-void
-NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent,
-                             size_t elements_bits) {
-    enum {
-        NXDN_ELEMENTS_MIN_MESSAGE_TYPE_BITS = 8U,
-        NXDN_SDCALL_HEADER_MIN_BITS = 79U,
-        NXDN_SDCALL_IV_TYPE_C_MIN_BITS = 72U,
-        NXDN_SDCALL_IV_TYPE_D_MIN_BITS = 30U,
+static void
+nxdn_element_handle_idle(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    UNUSED4(opts, state, elements, elements_bits);
+}
+
+static void
+nxdn_element_handle_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    if (elements_bits < 79U) {
+        DSD_FPRINTF(stderr, " SDCALL Header Too Short (%zu bits); ", elements_bits);
+        return;
+    }
+    nxdn_sdcall_header(opts, state, elements);
+}
+
+static void
+nxdn_element_handle_sdcall_data(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    nxdn_dcall_data(opts, state, state->data_header_format[0], elements, elements_bits);
+}
+
+static void
+nxdn_element_handle_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    size_t sdcall_iv_min_bits = 72U;
+    if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
+        sdcall_iv_min_bits = 30U;
+    }
+    if (elements_bits < sdcall_iv_min_bits) {
+        DSD_FPRINTF(stderr, " SDCALL IV Too Short (%zu bits); ", elements_bits);
+        return;
+    }
+    nxdn_sdcall_iv(opts, state, elements);
+}
+
+static void
+nxdn_element_handle_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    nxdn_dcall_header(opts, state, elements, elements_bits);
+}
+
+static void
+nxdn_element_handle_dcall_data(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    nxdn_dcall_data(opts, state, state->data_header_format[0], elements, elements_bits);
+}
+
+static void
+nxdn_element_handle_call_assignment(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    UNUSED(elements_bits);
+    NXDN_decode_VCALL_ASSGN(opts, state, elements);
+}
+
+static void
+nxdn_element_handle_alias(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    UNUSED(elements_bits);
+    NXDN_decode_Alias(opts, state, elements);
+}
+
+static void
+nxdn_element_mark_control_sync(const dsd_opts* opts, dsd_state* state) {
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    nxdn_anchor_control_channel_from_current_tuner(opts, state, 1);
+}
+
+static void
+nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    UNUSED(elements_bits);
+    state->nxdn_last_rid = 0;
+    state->nxdn_last_tg = 0;
+    NXDN_decode_srv_info(opts, state, elements);
+    nxdn_element_mark_control_sync(opts, state);
+}
+
+static void
+nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    NXDN_decode_cch_info(opts, state, elements, elements_bits);
+    nxdn_element_mark_control_sync(opts, state);
+}
+
+static void
+nxdn_element_handle_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    NXDN_decode_site_info(opts, state, elements, elements_bits);
+    nxdn_element_mark_control_sync(opts, state);
+}
+
+static void
+nxdn_element_handle_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    NXDN_decode_adj_site(opts, state, elements, elements_bits);
+    nxdn_element_mark_control_sync(opts, state);
+}
+
+static void
+nxdn_element_handle_tx_release(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    UNUSED(elements_bits);
+    DSD_SPRINTF(state->call_string[0], "%s", "");
+    DSD_SPRINTF(state->nxdn_call_type, "%s", "");
+    nxdn_reset_data_call_state(state);
+    NXDN_decode_VCALL(opts, state, elements);
+}
+
+static void
+nxdn_element_handle_vcall(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    UNUSED(elements_bits);
+    NXDN_decode_VCALL(opts, state, elements);
+}
+
+static void
+nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    UNUSED(elements_bits);
+    nxdn_reset_data_call_state(state);
+    NXDN_decode_VCALL(opts, state, elements);
+    nxdn_alias_reset(state);
+    DSD_SPRINTF(state->call_string[0], "%s", "");
+    DSD_SPRINTF(state->nxdn_call_type, "%s", "");
+
+    if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && state->p25_cc_freq != 0
+        && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
+        dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->p25_cc_freq, 0);
+        opts->p25_is_tuned = 0;
+        opts->trunk_is_tuned = 0;
+
+        DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+        DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+        state->nxdn_last_rid = 0;
+        state->nxdn_last_tg = 0;
+        if (state->M == 0) {
+            state->nxdn_cipher_type = 0;
+        }
+        DSD_SPRINTF(state->nxdn_call_type, "%s", "");
+    }
+}
+
+static void
+nxdn_element_handle_vcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    UNUSED(elements_bits);
+    NXDN_decode_VCALL_IV(opts, state, elements);
+}
+
+static nxdn_element_handler_fn
+nxdn_element_dispatch_handler(uint8_t message_type) {
+    static const struct nxdn_element_dispatch_entry dispatch[] = {
+        {0x38, nxdn_element_handle_sdcall_header},
+        {0x39, nxdn_element_handle_sdcall_data},
+        {0x3A, nxdn_element_handle_sdcall_iv},
+        {0x09, nxdn_element_handle_dcall_header},
+        {0x0B, nxdn_element_handle_dcall_data},
+        {0x05, nxdn_element_handle_call_assignment},
+        {0x0D, nxdn_element_handle_call_assignment},
+        {0x04, nxdn_element_handle_call_assignment},
+        {0x0E, nxdn_element_handle_call_assignment},
+        {0x1A, nxdn_element_handle_cch_info},
+        {0x18, nxdn_element_handle_site_info},
+        {0x1B, nxdn_element_handle_adj_site},
+        {0x07, nxdn_element_handle_tx_release},
+        {0x08, nxdn_element_handle_tx_release},
+        {0x01, nxdn_element_handle_vcall},
+        {0x11, nxdn_element_handle_disc},
+        {0x10, nxdn_element_handle_idle},
+        {0x03, nxdn_element_handle_vcall_iv},
     };
+
+    for (size_t i = 0; i < sizeof(dispatch) / sizeof(dispatch[0]); i++) {
+        if (dispatch[i].message_type == message_type) {
+            return dispatch[i].handler;
+        }
+    }
+
+    return NULL;
+}
+
+void
+NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, const uint8_t* ElementsContent,
+                             size_t elements_bits) {
+    enum { NXDN_ELEMENTS_MIN_MESSAGE_TYPE_BITS = 8U };
 
     if (opts == NULL || state == NULL || ElementsContent == NULL) {
         return;
@@ -183,214 +413,21 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
         MessageTypeDispatch = 0x08U;
     }
 
-    /* Decode the right "Message Type" */
-    switch (MessageTypeDispatch) {
+    if (MessageTypeDispatch == 0x19U) {
+        nxdn_element_handle_srv_info(opts, state, ElementsContent, elements_bits);
+        return;
+    }
 
-        /*
-    //Note: CAC Message with same Message Type -- This is a private call request and rejection (TODO: Seperate handling depending on CAC, FACCH< Sacch, etc)
-    20:56:15 Sync: NXDN96  RCCH  Data   RAN 01  CAC VCALL (VCALL_REQ)
-      Private Call - Half Duplex 9600bps/EHR (02) - Src=211 - Dst/TG=1603
-    20:56:15 Sync: NXDN96  RCCH  Data   RAN 01  CAC DISC (VCALL_REJECTION)
-      Private Call -        Disconnect       - Src=1603 - Dst/TG=211
+    if (MessageTypeDispatch == 0x3FU) {
+        nxdn_element_handle_alias(opts, state, ElementsContent, elements_bits);
+        return;
+    }
 
-    */
-        //Debug: Disable DUP messages if they cause random issues with Type-C trunking (i.e. changing SRC ang TGT IDs, hopping in the middle of calls, etc)
-
-        //SDCALL Header
-        case 0x38:
-            if (elements_bits < NXDN_SDCALL_HEADER_MIN_BITS) {
-                fprintf(stderr, " SDCALL Header Too Short (%zu bits); ", elements_bits);
-                break;
-            }
-            nxdn_sdcall_header(opts, state, ElementsContent);
-            break;
-
-        //SDCALL Data
-        case 0x39: nxdn_dcall_data(opts, state, state->data_header_format[0], ElementsContent, elements_bits); break;
-
-        //SDCALL IV
-        case 0x3A: {
-            size_t sdcall_iv_min_bits = NXDN_SDCALL_IV_TYPE_C_MIN_BITS;
-            if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
-                sdcall_iv_min_bits = NXDN_SDCALL_IV_TYPE_D_MIN_BITS;
-            }
-            if (elements_bits < sdcall_iv_min_bits) {
-                fprintf(stderr, " SDCALL IV Too Short (%zu bits); ", elements_bits);
-                break;
-            }
-            nxdn_sdcall_iv(opts, state, ElementsContent);
-            break;
-        }
-
-        //DCALL Header
-        case 0x09: nxdn_dcall_header(opts, state, ElementsContent, elements_bits); break;
-
-        //DCALL Data
-        case 0x0B: nxdn_dcall_data(opts, state, state->data_header_format[0], ElementsContent, elements_bits); break;
-
-        //VCALL_ASSGN_DUP
-        case 0x05:
-
-        //DCALL_ASSGN_DUP
-        case 0x0D:
-
-        //VCALL_ASSGN
-        case 0x04:
-
-        //DCALL_ASSGN
-        case 0x0E: NXDN_decode_VCALL_ASSGN(opts, state, ElementsContent); break;
-
-        //Alias 0x3F
-        case 0x3F: NXDN_decode_Alias(opts, state, ElementsContent); break;
-
-        //SRV_INFO
-        case 0x19:
-            state->nxdn_last_rid = 0;
-            state->nxdn_last_tg = 0;
-            NXDN_decode_srv_info(opts, state, ElementsContent);
-            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-            // Early CC anchor: if trunking and not voice-tuned and CC unknown,
-            // set CC from current tuner so follower has a target.
-            if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && opts->trunk_is_tuned == 0
-                && state->p25_cc_freq == 0) {
-                long int ccfreq = 0;
-                if (opts->use_rigctl == 1) {
-                    ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-                } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RADIO
-                    ccfreq = (long int)opts->rtlsdr_center_freq;
-#endif
-                }
-                if (ccfreq != 0) {
-                    state->p25_cc_freq = ccfreq;
-                    state->trunk_cc_freq = ccfreq;
-                }
-            }
-            break;
-
-        //CCH_INFO
-        case 0x1A:
-            NXDN_decode_cch_info(opts, state, ElementsContent);
-            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-            if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && opts->trunk_is_tuned == 0
-                && state->p25_cc_freq == 0) {
-                long int ccfreq = 0;
-                if (opts->use_rigctl == 1) {
-                    ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-                } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RADIO
-                    ccfreq = (long int)opts->rtlsdr_center_freq;
-#endif
-                }
-                if (ccfreq != 0) {
-                    state->p25_cc_freq = ccfreq;
-                    state->trunk_cc_freq = ccfreq;
-                }
-            }
-            break;
-
-        //SITE_INFO
-        case 0x18:
-            NXDN_decode_site_info(opts, state, ElementsContent);
-            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-            if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && opts->trunk_is_tuned == 0
-                && state->p25_cc_freq == 0) {
-                long int ccfreq = 0;
-                if (opts->use_rigctl == 1) {
-                    ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-                } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RADIO
-                    ccfreq = (long int)opts->rtlsdr_center_freq;
-#endif
-                }
-                if (ccfreq != 0) {
-                    state->p25_cc_freq = ccfreq;
-                    state->trunk_cc_freq = ccfreq;
-                }
-            }
-            break;
-
-        //ADJ_SITE_INFO
-        case 0x1B:
-            NXDN_decode_adj_site(opts, state, ElementsContent);
-            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-            // Adjacent site info often originates from CC. Apply the same anchor.
-            if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && opts->trunk_is_tuned == 0
-                && state->p25_cc_freq == 0) {
-                long int ccfreq = 0;
-                if (opts->use_rigctl == 1) {
-                    ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-                } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RADIO
-                    ccfreq = (long int)opts->rtlsdr_center_freq;
-#endif
-                }
-                if (ccfreq != 0) {
-                    state->p25_cc_freq = ccfreq;
-                    state->trunk_cc_freq = ccfreq;
-                }
-            }
-            break;
-
-        //VCALL, TX_REL_EXT and TX_REL
-        case 0x07: //TX_REL_EXT
-        case 0x08: //TX_REL
-            sprintf(state->call_string[0], "%s", "");
-            sprintf(state->nxdn_call_type, "%s", "");
-            nxdn_reset_data_call_state(state);
-            /* fall through */
-        case 0x01: //VCALL
-            NXDN_decode_VCALL(opts, state, ElementsContent);
-            break;
-
-        //DISC
-        case 0x11:
-            nxdn_reset_data_call_state(state);
-            NXDN_decode_VCALL(opts, state, ElementsContent);
-            nxdn_alias_reset(state);
-            sprintf(state->call_string[0], "%s", "");
-            sprintf(state->nxdn_call_type, "%s", "");
-
-            // #ifdef LIMAZULUTWEAKS
-            // ; //do nothing -- testing errors on CAC messages when returning quickly from RTCH
-            // #else
-
-            //tune back to CC here - save about 1-2 seconds
-            if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && state->p25_cc_freq != 0
-                && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
-                // Use centralized io/control tuning API
-                dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->p25_cc_freq, 0);
-                opts->p25_is_tuned = 0;
-                opts->trunk_is_tuned = 0;
-
-                // NXDN-specific state cleanup
-                memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-                memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                memset(state->active_channel, 0, sizeof(state->active_channel));
-                state->nxdn_last_rid = 0;
-                state->nxdn_last_tg = 0;
-                if (state->M == 0) {
-                    state->nxdn_cipher_type = 0;
-                }
-                sprintf(state->nxdn_call_type, "%s", "");
-            }
-
-            // #endif
-            break;
-
-        //Idle
-        case 0x10: break;
-
-        //VCALL_IV
-        case 0x03: NXDN_decode_VCALL_IV(opts, state, ElementsContent); break;
-
-        /* Unknown Message Type */
-        default: {
-            break;
-        }
-    } /* End switch(MessageTypeDispatch) */
-
-} /* End NXDN_Elements_Content_decode() */
+    nxdn_element_handler_fn handler = nxdn_element_dispatch_handler(MessageTypeDispatch);
+    if (handler != NULL) {
+        handler(opts, state, ElementsContent, elements_bits);
+    }
+}
 
 static void
 nxdn_reset_data_call_state(dsd_state* state) {
@@ -398,7 +435,7 @@ nxdn_reset_data_call_state(dsd_state* state) {
         return;
     }
 
-    memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+    DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
     state->data_header_blocks[0] = 1;
     state->data_header_padding[0] = 0;
     state->data_header_format[0] = 0;
@@ -407,7 +444,7 @@ nxdn_reset_data_call_state(dsd_state* state) {
     state->payload_algid = 0;
     state->payload_keyid = 0;
     state->payload_mi = 0;
-    memset(state->aes_ivR, 0, sizeof(state->aes_ivR));
+    DSD_MEMSET(state->aes_ivR, 0, sizeof(state->aes_ivR));
 
     state->dmr_lrrp_source[0] = 0;
     state->dmr_lrrp_target[0] = 0;
@@ -415,34 +452,18 @@ nxdn_reset_data_call_state(dsd_state* state) {
 
 static void
 nxdn_data_call_option_to_str(uint8_t data_call_option, char* duplex, size_t duplex_sz, char* mode, size_t mode_sz) {
-    const char* mode_str = "Unknown";
-
+    static const char* const modes[16] = {
+        "4800bps",        "Reserved 1",     "9600bps",        "Reserved 3",     "Reserved 4",  "Reserved 5",
+        "Reserved 6",     "Reserved 7",     "4800bps S:1",    "Reserved 9 S:1", "9600bps S:1", "Reserved B S:1",
+        "Reserved C S:1", "Reserved D S:1", "Reserved E S:1", "Reserved F S:1",
+    };
     if (duplex != NULL && duplex_sz > 0U) {
-        snprintf(duplex, duplex_sz, "%s", (data_call_option & 0x10U) ? "Duplex" : "Half Duplex");
-    }
-
-    switch (data_call_option & 0x0FU) {
-        case 0x0: mode_str = "4800bps"; break;
-        case 0x1: mode_str = "Reserved 1"; break;
-        case 0x2: mode_str = "9600bps"; break;
-        case 0x3: mode_str = "Reserved 3"; break;
-        case 0x4: mode_str = "Reserved 4"; break;
-        case 0x5: mode_str = "Reserved 5"; break;
-        case 0x6: mode_str = "Reserved 6"; break;
-        case 0x7: mode_str = "Reserved 7"; break;
-        case 0x8: mode_str = "4800bps S:1"; break;
-        case 0x9: mode_str = "Reserved 9 S:1"; break;
-        case 0xA: mode_str = "9600bps S:1"; break;
-        case 0xB: mode_str = "Reserved B S:1"; break;
-        case 0xC: mode_str = "Reserved C S:1"; break;
-        case 0xD: mode_str = "Reserved D S:1"; break;
-        case 0xE: mode_str = "Reserved E S:1"; break;
-        case 0xF: mode_str = "Reserved F S:1"; break;
-        default: break;
+        DSD_SNPRINTF(duplex, duplex_sz, "%s", (data_call_option & 0x10U) ? "Duplex" : "Half Duplex");
     }
 
     if (mode != NULL && mode_sz > 0U) {
-        snprintf(mode, mode_sz, "%s", mode_str);
+        const char* mode_str = modes[data_call_option & 0x0FU];
+        DSD_SNPRINTF(mode, mode_sz, "%s", mode_str);
     }
 }
 
@@ -452,10 +473,9 @@ nxdn_pdu_scrambler_keystream_creation(uint8_t* ks, int lfsr, int len_bits) {
         return;
     }
 
-    int bit = 0;
     for (int i = 0; i < len_bits; i++) {
         ks[i] = (uint8_t)(lfsr & 0x1);
-        bit = ((lfsr >> 1) ^ (lfsr >> 0)) & 1;
+        const int bit = ((lfsr >> 1) ^ (lfsr >> 0)) & 1;
         lfsr = (lfsr >> 1) | (bit << 14);
     }
 }
@@ -466,7 +486,7 @@ nxdn_lfsr128_expand_iv_from_mi64(uint64_t mi, uint8_t out[16]) {
         return;
     }
 
-    memset(out, 0, 16U);
+    DSD_MEMSET(out, 0, 16U);
     uint64_t lfsr = mi;
     for (int i = 0; i < 8; i++) {
         out[i] = (uint8_t)((lfsr >> (56 - (i * 8))) & 0xFFU);
@@ -487,7 +507,7 @@ nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[3
         return 0;
     }
 
-    memset(out_key, 0, 32U);
+    DSD_MEMSET(out_key, 0, 32U);
     if (key_stub != NULL) {
         *key_stub = 0ULL;
     }
@@ -515,12 +535,12 @@ nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[3
     }
 
     uint8_t zero[32];
-    memset(zero, 0, sizeof(zero));
+    DSD_MEMSET(zero, 0, sizeof(zero));
     return memcmp(out_key, zero, sizeof(zero)) != 0;
 }
 
 static void
-nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
+nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     UNUSED(opts);
 
     if (state == NULL || Message == NULL) {
@@ -537,13 +557,13 @@ nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         }
     }
 
-    fprintf(stderr, "%s", KYEL);
-    fprintf(stderr, "\n  SDCALL_IV: %016llX", state->payload_mi);
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n  SDCALL_IV: %016llX", state->payload_mi);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
 static void
-nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
+nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     UNUSED(opts);
 
     if (state == NULL || Message == NULL) {
@@ -551,7 +571,7 @@ nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     }
 
     state->payload_mi = 0ULL;
-    memset(state->aes_ivR, 0, sizeof(state->aes_ivR));
+    DSD_MEMSET(state->aes_ivR, 0, sizeof(state->aes_ivR));
 
     uint8_t idas = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
     uint8_t cc_option = (uint8_t)ConvertBitIntoBytes(Message + 8, 8);
@@ -583,45 +603,45 @@ nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
 
     char duplex[32];
     char mode[32];
-    memset(duplex, 0, sizeof(duplex));
-    memset(mode, 0, sizeof(mode));
+    DSD_MEMSET(duplex, 0, sizeof(duplex));
+    DSD_MEMSET(mode, 0, sizeof(mode));
     nxdn_data_call_option_to_str(dcall_opt, duplex, sizeof(duplex), mode, sizeof(mode));
 
-    fprintf(stderr, "\n %sSD Data Call Header (%04X) ", KCYN, pkt_info);
+    DSD_FPRINTF(stderr, "\n %sSD Data Call Header (%04X) ", KCYN, pkt_info);
     if (idas == 0U) {
-        fprintf(stderr, "Source: %u; Target: %u; ", source, target);
+        DSD_FPRINTF(stderr, "Source: %u; Target: %u; ", source, target);
     } else {
-        fprintf(stderr, "Source: %u-%u; Target: %u-%u; ", source_ch, source, target_ch, target);
+        DSD_FPRINTF(stderr, "Source: %u-%u; Target: %u-%u; ", source_ch, source, target_ch, target);
     }
-    fprintf(stderr, "%s %s %s ", NXDN_Call_Type_To_Str(call_type), mode, duplex);
+    DSD_FPRINTF(stderr, "%s %s %s ", NXDN_Call_Type_To_Str(call_type), mode, duplex);
     if (cc_option != 0U) {
-        fprintf(stderr, "CCOPT: %02X; ", cc_option);
+        DSD_FPRINTF(stderr, "CCOPT: %02X; ", cc_option);
     }
-    fprintf(stderr, "\n Blocks: %u; Padding: %u; ", block_count, pad_bytes);
+    DSD_FPRINTF(stderr, "\n Blocks: %u; Padding: %u; ", block_count, pad_bytes);
     if (cipher != 0U) {
-        fprintf(stderr, "ENC; Cipher: %u; Key ID: %02X; ", (unsigned)cipher, (unsigned)key_id);
+        DSD_FPRINTF(stderr, "ENC; Cipher: %u; Key ID: %02X; ", (unsigned)cipher, (unsigned)key_id);
     }
     if (spare1 != 0U) {
-        fprintf(stderr, "S1; ");
+        DSD_FPRINTF(stderr, "S1; ");
     }
     if (spare2 != 0U) {
-        fprintf(stderr, "S2; ");
+        DSD_FPRINTF(stderr, "S2; ");
     }
     if (start_frag != 0U) {
-        fprintf(stderr, "Starting Fragment; ");
+        DSD_FPRINTF(stderr, "Starting Fragment; ");
     }
     if (circulate != 0U) {
-        fprintf(stderr, "Circulate; ");
+        DSD_FPRINTF(stderr, "Circulate; ");
     }
     if (confirmed_delivery != 0U) {
-        fprintf(stderr, "Confirmed Delivery; ");
+        DSD_FPRINTF(stderr, "Confirmed Delivery; ");
     }
     if (selective_retry != 0U) {
-        fprintf(stderr, "Selective Retry; ");
+        DSD_FPRINTF(stderr, "Selective Retry; ");
     }
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 
-    memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+    DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
     state->data_header_blocks[0] = (block_count > 0U) ? (int)block_count : 1;
     state->data_header_padding[0] = pad_bytes;
     state->data_header_valid[0] = 1U;
@@ -631,8 +651,144 @@ nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     state->dmr_lrrp_target[0] = target;
 }
 
+struct nxdn_dcall_header_info {
+    uint8_t idas;
+    uint8_t cc_option;
+    uint8_t call_type;
+    uint8_t dcall_opt;
+    uint8_t cipher;
+    uint8_t key_id;
+    uint8_t confirmed_delivery;
+    uint8_t spare1;
+    uint8_t selective_retry;
+    uint8_t spare2;
+    uint8_t block_count;
+    uint8_t pad_bytes;
+    uint8_t start_frag;
+    uint8_t circulate;
+    uint8_t iv_available;
+    uint16_t source;
+    uint16_t target;
+    uint16_t source_ch;
+    uint16_t target_ch;
+    uint16_t tx_frag_count;
+    uint32_t pkt_info;
+};
+
 static void
-nxdn_dcall_header(dsd_opts* opts, dsd_state* state, uint8_t* Message, size_t message_bits) {
+nxdn_dcall_header_parse(struct nxdn_dcall_header_info* info, dsd_state* state, const uint8_t* Message,
+                        size_t message_bits) {
+    enum {
+        NXDN_DCALL_IV_OFFSET_BITS = 88U,
+        NXDN_DCALL_IV_PRESENCE_BITS = 8U,
+        NXDN_DCALL_IDAS_IV_BITS = 22U,
+        NXDN_DCALL_WIDE_IV_BITS = 64U,
+    };
+
+    DSD_MEMSET(info, 0, sizeof(*info));
+    info->idas = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
+    info->cc_option = (uint8_t)ConvertBitIntoBytes(Message + 8, 8);
+    info->call_type = (uint8_t)ConvertBitIntoBytes(Message + 16, 3);
+    info->dcall_opt = (uint8_t)ConvertBitIntoBytes(Message + 19, 5);
+    info->source = (uint16_t)ConvertBitIntoBytes(Message + 24, 16);
+    info->target = (uint16_t)ConvertBitIntoBytes(Message + 40, 16);
+    info->cipher = (uint8_t)ConvertBitIntoBytes(Message + 56, 2);
+    info->key_id = (uint8_t)ConvertBitIntoBytes(Message + 58, 6);
+    info->pkt_info = (uint32_t)ConvertBitIntoBytes(Message + 64, 24);
+    info->confirmed_delivery = Message[64];
+    info->spare1 = Message[65];
+    info->selective_retry = Message[66];
+    info->spare2 = Message[67];
+    info->block_count = (uint8_t)ConvertBitIntoBytes(Message + 68, 4);
+    info->pad_bytes = (uint8_t)ConvertBitIntoBytes(Message + 72, 5);
+    info->start_frag = Message[77];
+    info->circulate = Message[78];
+    info->tx_frag_count = (uint16_t)ConvertBitIntoBytes(Message + 79, 9);
+
+    if (info->idas != 0U) {
+        info->source_ch = (uint16_t)((info->source >> 11) & 0x1FU);
+        info->target_ch = (uint16_t)((info->target >> 11) & 0x1FU);
+        info->source &= 0x7FFU;
+        info->target &= 0x7FFU;
+    }
+
+    if (info->cipher > 1U && message_bits >= (NXDN_DCALL_IV_OFFSET_BITS + NXDN_DCALL_IV_PRESENCE_BITS)) {
+        const uint8_t iv_presence =
+            (uint8_t)ConvertBitIntoBytes(Message + NXDN_DCALL_IV_OFFSET_BITS, NXDN_DCALL_IV_PRESENCE_BITS);
+        const size_t iv_bits = (info->idas != 0U) ? NXDN_DCALL_IDAS_IV_BITS : NXDN_DCALL_WIDE_IV_BITS;
+        if (iv_presence != 0U && message_bits >= (NXDN_DCALL_IV_OFFSET_BITS + iv_bits)) {
+            info->iv_available = 1U;
+            state->payload_mi =
+                (unsigned long long int)ConvertBitIntoBytes(Message + NXDN_DCALL_IV_OFFSET_BITS, (uint32_t)iv_bits);
+            if (info->idas == 0U && info->cipher == 3U) {
+                nxdn_lfsr128_expand_iv_from_mi64((uint64_t)state->payload_mi, state->aes_ivR);
+            }
+        }
+    }
+}
+
+static void
+nxdn_dcall_header_print(const struct nxdn_dcall_header_info* info, const dsd_state* state) {
+    char duplex[32];
+    char mode[32];
+    DSD_MEMSET(duplex, 0, sizeof(duplex));
+    DSD_MEMSET(mode, 0, sizeof(mode));
+    nxdn_data_call_option_to_str(info->dcall_opt, duplex, sizeof(duplex), mode, sizeof(mode));
+
+    DSD_FPRINTF(stderr, "\n %sData Call Header (%06X) ", KCYN, info->pkt_info);
+    if (info->idas == 0U) {
+        DSD_FPRINTF(stderr, "Source: %u; Target: %u; ", info->source, info->target);
+    } else {
+        DSD_FPRINTF(stderr, "Source: %u-%u; Target: %u-%u; ", info->source_ch, info->source, info->target_ch,
+                    info->target);
+    }
+    DSD_FPRINTF(stderr, "%s %s %s ", NXDN_Call_Type_To_Str(info->call_type), mode, duplex);
+    if (info->cc_option != 0U) {
+        DSD_FPRINTF(stderr, "CCOPT: %02X; ", info->cc_option);
+    }
+    DSD_FPRINTF(stderr, "\n Blocks: %u; Padding: %u; TX Frag: %u; ", info->block_count, info->pad_bytes,
+                info->tx_frag_count);
+    if (info->cipher != 0U) {
+        DSD_FPRINTF(stderr, "ENC; Cipher: %u; Key ID: %02X; ", (unsigned)info->cipher, (unsigned)info->key_id);
+        if (info->iv_available != 0U) {
+            DSD_FPRINTF(stderr, "IV: %016llX; ", state->payload_mi);
+        }
+    }
+    if (info->spare1 != 0U) {
+        DSD_FPRINTF(stderr, "S1; ");
+    }
+    if (info->spare2 != 0U) {
+        DSD_FPRINTF(stderr, "S2; ");
+    }
+    if (info->start_frag != 0U) {
+        DSD_FPRINTF(stderr, "Starting Fragment; ");
+    }
+    if (info->circulate != 0U) {
+        DSD_FPRINTF(stderr, "Circulate; ");
+    }
+    if (info->confirmed_delivery != 0U) {
+        DSD_FPRINTF(stderr, "Confirmed Delivery; ");
+    }
+    if (info->selective_retry != 0U) {
+        DSD_FPRINTF(stderr, "Selective Retry; ");
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+nxdn_dcall_header_apply(dsd_state* state, const struct nxdn_dcall_header_info* info) {
+    DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+    state->data_header_blocks[0] = (info->block_count > 0U) ? (int)info->block_count : 1;
+    state->data_header_padding[0] = info->pad_bytes;
+    state->data_header_valid[0] = 1U;
+    state->payload_algid = info->cipher;
+    state->payload_keyid = info->key_id;
+    state->dmr_lrrp_source[0] = info->source;
+    state->dmr_lrrp_target[0] = info->target;
+}
+
+static void
+nxdn_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
     UNUSED(opts);
 
     if (state == NULL || Message == NULL) {
@@ -644,212 +800,126 @@ nxdn_dcall_header(dsd_opts* opts, dsd_state* state, uint8_t* Message, size_t mes
     }
 
     state->payload_mi = 0ULL;
-    memset(state->aes_ivR, 0, sizeof(state->aes_ivR));
+    DSD_MEMSET(state->aes_ivR, 0, sizeof(state->aes_ivR));
 
-    uint8_t idas = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
-    uint8_t cc_option = (uint8_t)ConvertBitIntoBytes(Message + 8, 8);
-    uint8_t call_type = (uint8_t)ConvertBitIntoBytes(Message + 16, 3);
-    uint8_t dcall_opt = (uint8_t)ConvertBitIntoBytes(Message + 19, 5);
-    uint16_t source = (uint16_t)ConvertBitIntoBytes(Message + 24, 16);
-    uint16_t target = (uint16_t)ConvertBitIntoBytes(Message + 40, 16);
-    uint8_t cipher = (uint8_t)ConvertBitIntoBytes(Message + 56, 2);
-    uint8_t key_id = (uint8_t)ConvertBitIntoBytes(Message + 58, 6);
-    uint32_t pkt_info = (uint32_t)ConvertBitIntoBytes(Message + 64, 24);
+    struct nxdn_dcall_header_info info;
+    nxdn_dcall_header_parse(&info, state, Message, message_bits);
+    nxdn_dcall_header_print(&info, state);
+    nxdn_dcall_header_apply(state, &info);
+}
 
-    uint8_t confirmed_delivery = Message[64];
-    uint8_t spare1 = Message[65];
-    uint8_t selective_retry = Message[66];
-    uint8_t spare2 = Message[67];
-    uint8_t block_count = (uint8_t)ConvertBitIntoBytes(Message + 68, 4);
-    uint8_t pad_bytes = (uint8_t)ConvertBitIntoBytes(Message + 72, 5);
-    uint8_t start_frag = Message[77];
-    uint8_t circulate = Message[78];
-    uint16_t tx_frag_count = (uint16_t)ConvertBitIntoBytes(Message + 79, 9);
+enum { NXDN_DCALL_MAX_BITS = 24 * 128, NXDN_DCALL_MAX_BYTES = NXDN_DCALL_MAX_BITS / 8 };
 
-    uint16_t source_ch = 0U;
-    uint16_t target_ch = 0U;
-    if (idas != 0U) {
-        source_ch = (uint16_t)((source >> 11) & 0x1FU);
-        target_ch = (uint16_t)((target >> 11) & 0x1FU);
-        source &= 0x7FFU;
-        target &= 0x7FFU;
-    }
+struct nxdn_dcall_data_context {
+    int have_events;
+    int byte_len;
+    int header_blocks;
+    int ptr_bits;
+    int total_bytes;
+    int total_bits;
+    int block_bits;
+    uint8_t pf_num;
+    uint8_t blk_num;
+};
 
-    enum {
-        NXDN_DCALL_IV_OFFSET_BITS = 88U,
-        NXDN_DCALL_IV_PRESENCE_BITS = 8U,
-        NXDN_DCALL_IDAS_IV_BITS = 22U,
-        NXDN_DCALL_WIDE_IV_BITS = 64U,
-    };
-
-    uint8_t iv_presence = 0U;
-    uint8_t iv_available = 0U;
-    if (cipher > 1U && message_bits >= (NXDN_DCALL_IV_OFFSET_BITS + NXDN_DCALL_IV_PRESENCE_BITS)) {
-        iv_presence = (uint8_t)ConvertBitIntoBytes(Message + NXDN_DCALL_IV_OFFSET_BITS, NXDN_DCALL_IV_PRESENCE_BITS);
-        if (iv_presence != 0U) {
-            size_t iv_bits = (idas != 0U) ? NXDN_DCALL_IDAS_IV_BITS : NXDN_DCALL_WIDE_IV_BITS;
-            if (message_bits >= (NXDN_DCALL_IV_OFFSET_BITS + iv_bits)) {
-                iv_available = 1U;
-                state->payload_mi =
-                    (unsigned long long int)ConvertBitIntoBytes(Message + NXDN_DCALL_IV_OFFSET_BITS, (uint32_t)iv_bits);
-                if (idas == 0U && cipher == 3U) {
-                    nxdn_lfsr128_expand_iv_from_mi64((uint64_t)state->payload_mi, state->aes_ivR);
-                }
-            }
-        }
-    }
-
-    char duplex[32];
-    char mode[32];
-    memset(duplex, 0, sizeof(duplex));
-    memset(mode, 0, sizeof(mode));
-    nxdn_data_call_option_to_str(dcall_opt, duplex, sizeof(duplex), mode, sizeof(mode));
-
-    fprintf(stderr, "\n %sData Call Header (%06X) ", KCYN, pkt_info);
-    if (idas == 0U) {
-        fprintf(stderr, "Source: %u; Target: %u; ", source, target);
-    } else {
-        fprintf(stderr, "Source: %u-%u; Target: %u-%u; ", source_ch, source, target_ch, target);
-    }
-    fprintf(stderr, "%s %s %s ", NXDN_Call_Type_To_Str(call_type), mode, duplex);
-    if (cc_option != 0U) {
-        fprintf(stderr, "CCOPT: %02X; ", cc_option);
-    }
-    fprintf(stderr, "\n Blocks: %u; Padding: %u; TX Frag: %u; ", block_count, pad_bytes, tx_frag_count);
-    if (cipher != 0U) {
-        fprintf(stderr, "ENC; Cipher: %u; Key ID: %02X; ", (unsigned)cipher, (unsigned)key_id);
-        if (iv_available != 0U) {
-            fprintf(stderr, "IV: %016llX; ", state->payload_mi);
-        }
-    }
-    if (spare1 != 0U) {
-        fprintf(stderr, "S1; ");
-    }
-    if (spare2 != 0U) {
-        fprintf(stderr, "S2; ");
-    }
-    if (start_frag != 0U) {
-        fprintf(stderr, "Starting Fragment; ");
-    }
-    if (circulate != 0U) {
-        fprintf(stderr, "Circulate; ");
-    }
-    if (confirmed_delivery != 0U) {
-        fprintf(stderr, "Confirmed Delivery; ");
-    }
-    if (selective_retry != 0U) {
-        fprintf(stderr, "Selective Retry; ");
-    }
-    fprintf(stderr, "%s", KNRM);
-
-    memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
-    state->data_header_blocks[0] = (block_count > 0U) ? (int)block_count : 1;
-    state->data_header_padding[0] = pad_bytes;
-    state->data_header_valid[0] = 1U;
-    state->payload_algid = cipher;
-    state->payload_keyid = key_id;
-    state->dmr_lrrp_source[0] = source;
-    state->dmr_lrrp_target[0] = target;
+static void
+nxdn_dcall_invalidate(dsd_state* state) {
+    state->data_header_valid[0] = 0U;
 }
 
 static int
-nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, uint8_t* Message, size_t message_bits) {
-    if (opts == NULL || state == NULL || Message == NULL) {
-        return -1;
-    }
-
-    enum { NXDN_DCALL_MAX_BITS = 24 * 128, NXDN_DCALL_MAX_BYTES = NXDN_DCALL_MAX_BITS / 8 };
-
-    if (message_bits < 16U) {
-        fprintf(stderr, "Data Call Frame Too Short (%zu bits); ", message_bits);
-        state->data_header_valid[0] = 0U;
-        return -1;
-    }
-
-    const int have_events = (state->event_history_s != NULL);
-
-    uint8_t pf_num = (uint8_t)ConvertBitIntoBytes(Message + 8, 4);
-    uint8_t blk_num = (uint8_t)ConvertBitIntoBytes(Message + 12, 4);
-
-    fprintf(stderr, "\n %sData Call (%u/%u); %s", KCYN, (unsigned)pf_num, (unsigned)blk_num, KNRM);
-
-    int byte_len = 20;
-    uint8_t idas = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
-    if (idas != 0U) {
-        byte_len = 18;
-    }
+nxdn_dcall_byte_len(const dsd_state* state, int type) {
+    int byte_len = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 18 : 20;
     if (type == 2) {
         byte_len = 14;
     }
     if (type == 3) {
         byte_len = 8;
     }
+    return byte_len;
+}
 
-    int header_blocks = state->data_header_blocks[0];
-    if (header_blocks < 1) {
-        header_blocks = 1;
+static int
+nxdn_dcall_prepare(dsd_state* state, const uint8_t* Message, size_t message_bits, int type,
+                   struct nxdn_dcall_data_context* ctx) {
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    if (message_bits < 16U) {
+        DSD_FPRINTF(stderr, "Data Call Frame Too Short (%zu bits); ", message_bits);
+        nxdn_dcall_invalidate(state);
+        return -1;
+    }
+
+    ctx->have_events = (state->event_history_s != NULL);
+    ctx->pf_num = (uint8_t)ConvertBitIntoBytes(Message + 8, 4);
+    ctx->blk_num = (uint8_t)ConvertBitIntoBytes(Message + 12, 4);
+    DSD_FPRINTF(stderr, "\n %sData Call (%u/%u); %s", KCYN, (unsigned)ctx->pf_num, (unsigned)ctx->blk_num, KNRM);
+
+    ctx->byte_len = nxdn_dcall_byte_len(state, type);
+    ctx->header_blocks = state->data_header_blocks[0];
+    if (ctx->header_blocks < 1) {
+        ctx->header_blocks = 1;
     }
 
     if (state->data_header_valid[0] == 0U) {
-        fprintf(stderr, "Missing or Invalid Header; ");
+        DSD_FPRINTF(stderr, "Missing or Invalid Header; ");
+        return -1;
+    }
+    if ((int)ctx->blk_num > ctx->header_blocks) {
+        DSD_FPRINTF(stderr, "Block Num Exceeds Header Reported (%d/%u); ", ctx->header_blocks, (unsigned)ctx->blk_num);
+        nxdn_dcall_invalidate(state);
+        return -1;
+    }
+    if (ctx->pf_num != ctx->blk_num) {
+        DSD_FPRINTF(stderr, "Partial Selective Retry, Previous Delivery Not Retained in Memory; ");
+        nxdn_dcall_invalidate(state);
         return -1;
     }
 
-    if ((int)blk_num > header_blocks) {
-        fprintf(stderr, "Block Num Exceeds Header Reported (%d/%u); ", header_blocks, (unsigned)blk_num);
-        state->data_header_valid[0] = 0U;
+    ctx->ptr_bits = ctx->byte_len * 8 * (ctx->header_blocks - (int)ctx->blk_num);
+    ctx->total_bytes = (ctx->header_blocks + 1) * ctx->byte_len;
+    if ((int)state->data_header_padding[0] > ctx->total_bytes) {
+        DSD_FPRINTF(stderr, "Invalid Header Padding (%u > %d); ", (unsigned)state->data_header_padding[0],
+                    ctx->total_bytes);
+        nxdn_dcall_invalidate(state);
+        return -1;
+    }
+    ctx->total_bytes -= (int)state->data_header_padding[0];
+
+    if (ctx->total_bytes < 4 || ctx->total_bytes > NXDN_DCALL_MAX_BYTES) {
+        DSD_FPRINTF(stderr, "Total Bytes Out of Range (%d); ", ctx->total_bytes);
+        nxdn_dcall_invalidate(state);
         return -1;
     }
 
-    if (pf_num != blk_num) {
-        fprintf(stderr, "Partial Selective Retry, Previous Delivery Not Retained in Memory; ");
-        state->data_header_valid[0] = 0U;
+    ctx->block_bits = ctx->byte_len * 8;
+    if (ctx->ptr_bits < 0 || (ctx->ptr_bits + ctx->block_bits) > NXDN_DCALL_MAX_BITS) {
+        DSD_FPRINTF(stderr, "PDU Assembly Pointer Out of Range (ptr=%d bits=%d); ", ctx->ptr_bits, ctx->block_bits);
+        nxdn_dcall_invalidate(state);
         return -1;
     }
 
-    int ptr_bits = byte_len * 8 * (header_blocks - (int)blk_num);
-    int total_bytes = (header_blocks + 1) * byte_len;
-    if ((int)state->data_header_padding[0] > total_bytes) {
-        fprintf(stderr, "Invalid Header Padding (%u > %d); ", (unsigned)state->data_header_padding[0], total_bytes);
-        state->data_header_valid[0] = 0U;
-        return -1;
-    }
-    total_bytes -= (int)state->data_header_padding[0];
-
-    if (total_bytes < 4 || total_bytes > NXDN_DCALL_MAX_BYTES) {
-        fprintf(stderr, "Total Bytes Out of Range (%d); ", total_bytes);
-        state->data_header_valid[0] = 0U;
-        return -1;
-    }
-
-    int block_bits = byte_len * 8;
-    if (ptr_bits < 0 || (ptr_bits + block_bits) > NXDN_DCALL_MAX_BITS) {
-        fprintf(stderr, "PDU Assembly Pointer Out of Range (ptr=%d bits=%d); ", ptr_bits, block_bits);
-        state->data_header_valid[0] = 0U;
-        return -1;
-    }
-
-    size_t required_bits = 16U + (size_t)block_bits;
+    const size_t required_bits = 16U + (size_t)ctx->block_bits;
     if (message_bits < required_bits) {
-        fprintf(stderr, "Data Call Frame Too Short (%zu < %zu bits); ", message_bits, required_bits);
-        state->data_header_valid[0] = 0U;
+        DSD_FPRINTF(stderr, "Data Call Frame Too Short (%zu < %zu bits); ", message_bits, required_bits);
+        nxdn_dcall_invalidate(state);
         return -1;
     }
 
-    memcpy(state->dmr_pdu_sf[0] + ptr_bits, Message + 16, (size_t)block_bits * sizeof(uint8_t));
+    DSD_MEMCPY(state->dmr_pdu_sf[0] + ctx->ptr_bits, Message + 16, (size_t)ctx->block_bits * sizeof(uint8_t));
+    ctx->total_bits = ctx->total_bytes * 8;
+    return 0;
+}
 
-    if (pf_num != 0U) {
-        return 0;
-    }
-
+static void
+nxdn_dcall_apply_decryption(dsd_state* state, const struct nxdn_dcall_data_context* ctx) {
     uint8_t ks[NXDN_DCALL_MAX_BITS];
-    memset(ks, 0, sizeof(ks));
+    uint8_t aes_key[32];
+    DSD_MEMSET(ks, 0, sizeof(ks));
+    DSD_MEMSET(aes_key, 0, sizeof(aes_key));
 
     uint64_t key = 0ULL;
-    uint8_t aes_key[32];
     uint64_t aes_key_stub = 0ULL;
     int aes_key_loaded = 0;
-
     if (state->payload_algid != 0) {
         if (state->payload_algid == 3) {
             aes_key_loaded = nxdn_load_data_aes_key(state, (uint8_t)state->payload_keyid, aes_key, &aes_key_stub);
@@ -859,111 +929,144 @@ nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, uint8_t* Message, si
             key = state->R;
         }
 
-        fprintf(stderr, "\n Encrypted Data; Cipher: %d; Key ID: %02X;", state->payload_algid, state->payload_keyid);
+        DSD_FPRINTF(stderr, "\n Encrypted Data; Cipher: %d; Key ID: %02X;", state->payload_algid, state->payload_keyid);
         if (state->payload_algid > 1) {
-            fprintf(stderr, " IV: %016llX;", state->payload_mi);
+            DSD_FPRINTF(stderr, " IV: %016llX;", state->payload_mi);
         }
     }
 
-    int total_bits = total_bytes * 8;
     if (state->payload_algid == 1 && key != 0ULL) {
-        fprintf(stderr, " Key: %05llu;", (unsigned long long)key);
-        nxdn_pdu_scrambler_keystream_creation(ks, (int)(key & 0x7FFFU), total_bits);
+        DSD_FPRINTF(stderr, " Key: %05llu;", (unsigned long long)key);
+        nxdn_pdu_scrambler_keystream_creation(ks, (int)(key & 0x7FFFU), ctx->total_bits);
     } else if (state->payload_algid == 2 && key != 0ULL) {
-        fprintf(stderr, " Key: %016llX;", (unsigned long long)key);
-        int nblocks = (total_bytes + 7) / 8;
+        DSD_FPRINTF(stderr, " Key: %016llX;", (unsigned long long)key);
+        const int nblocks = (ctx->total_bytes + 7) / 8;
         uint8_t ks_bytes[NXDN_DCALL_MAX_BYTES];
-        memset(ks_bytes, 0, sizeof(ks_bytes));
+        DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
         des_multi_keystream_output(state->payload_mi, key, ks_bytes, 1, nblocks);
         unpack_byte_array_into_bit_array(ks_bytes, ks, nblocks * 8);
     } else if (state->payload_algid == 3 && aes_key_loaded == 1) {
         if (state->payload_mi != 0ULL) {
             nxdn_lfsr128_expand_iv_from_mi64((uint64_t)state->payload_mi, state->aes_ivR);
         }
-        fprintf(stderr, " KS: %016llX;", (unsigned long long)aes_key_stub);
-        int nblocks = (total_bytes + 15) / 16;
+        DSD_FPRINTF(stderr, " KS: %016llX;", (unsigned long long)aes_key_stub);
+        const int nblocks = (ctx->total_bytes + 15) / 16;
         uint8_t ks_bytes[NXDN_DCALL_MAX_BYTES];
-        memset(ks_bytes, 0, sizeof(ks_bytes));
+        DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
         aes_ofb_keystream_output(state->aes_ivR, aes_key, ks_bytes, 2, nblocks);
         unpack_byte_array_into_bit_array(ks_bytes, ks, nblocks * 16);
     }
 
-    for (int i = 0; i < total_bits; i++) {
+    for (int i = 0; i < ctx->total_bits; i++) {
         state->dmr_pdu_sf[0][i] ^= ks[i];
     }
+}
 
-    int crc_offset_bits = total_bits - 32;
-    uint32_t crc_ext = (uint32_t)convert_bits_into_output(state->dmr_pdu_sf[0] + crc_offset_bits, 32);
-    uint32_t crc_chk = nxdn_message_crc32(state->dmr_pdu_sf[0], crc_offset_bits);
+static void
+nxdn_dcall_print_payload(const dsd_opts* opts, const dsd_state* state, const struct nxdn_dcall_data_context* ctx) {
+    if (opts->payload != 1) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "\n DATA: ");
+    for (int i = 0; i < ctx->total_bytes; i++) {
+        DSD_FPRINTF(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(state->dmr_pdu_sf[0] + ((size_t)i * 8U), 8));
+    }
+}
+
+static void
+nxdn_dcall_watchdog(dsd_opts* opts, dsd_state* state, const char* event_text) {
+    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].text_message,
+                 sizeof(state->event_history_s[0].Event_History_Items[0].text_message), "%s", event_text);
+    const uint32_t source = (uint32_t)state->dmr_lrrp_source[0];
+    const uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
+    char comp_string[128];
+    DSD_SNPRINTF(comp_string, sizeof(comp_string), "DATA CALL SRC: %u; TGT: %u;", source, target);
+    watchdog_event_datacall(opts, state, source, target, comp_string, 0);
+}
+
+static void
+nxdn_dcall_handle_reverse_gps(const dsd_opts* opts, dsd_state* state, const struct nxdn_dcall_data_context* ctx) {
+    uint8_t reverse_bytes[NXDN_DCALL_MAX_BYTES];
+    DSD_MEMSET(reverse_bytes, 0, sizeof(reverse_bytes));
+
+    const int reverse_len = ctx->total_bytes - 4;
+    int src_idx = ctx->total_bytes - 5;
+    for (int i = 0; i < reverse_len; i++, src_idx--) {
+        reverse_bytes[i] = (uint8_t)ConvertBitIntoBytes(state->dmr_pdu_sf[0] + ((size_t)src_idx * 8U), 8);
+    }
 
     if (opts->payload == 1) {
-        fprintf(stderr, "\n DATA: ");
-        for (int i = 0; i < total_bytes; i++) {
-            fprintf(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(state->dmr_pdu_sf[0] + ((size_t)i * 8U), 8));
+        DSD_FPRINTF(stderr, "\n  REV: ");
+        for (int i = 0; i < reverse_len; i++) {
+            DSD_FPRINTF(stderr, "%02X", reverse_bytes[i]);
         }
     }
 
+    const int core_len = reverse_len - 4;
+    uint8_t reverse_bits[NXDN_DCALL_MAX_BITS];
+    DSD_MEMSET(reverse_bits, 0, sizeof(reverse_bits));
+    unpack_byte_array_into_bit_array(reverse_bytes, reverse_bits, core_len);
+    if (core_len >= 2 && (uint16_t)convert_bits_into_output(reverse_bits, 16) == 0xFFFCU) {
+        nxdn_gps_report(opts, state, reverse_bits + 16, (uint32_t)state->dmr_lrrp_source[0]);
+    }
+}
+
+static void
+nxdn_dcall_handle_crc_ok(dsd_opts* opts, dsd_state* state, const struct nxdn_dcall_data_context* ctx) {
+    const uint8_t opcode = (uint8_t)ConvertBitIntoBytes(state->dmr_pdu_sf[0], 8);
+    const uint8_t nmea = (uint8_t)ConvertBitIntoBytes(state->dmr_pdu_sf[0] + 8, 8);
+    const uint32_t reverse = (uint32_t)convert_bits_into_output(state->dmr_pdu_sf[0], 24);
+
+    if (opcode == 0x06U && (nmea == (uint8_t)'$' || nmea == (uint8_t)'!')) {
+        if (ctx->total_bytes > 1) {
+            DSD_FPRINTF(stderr, "\n ");
+            nmea_sentence_checker(opts, state, state->dmr_pdu_sf[0] + 8, 0, ctx->total_bytes - 1);
+        }
+    } else if (reverse == 0U && ctx->total_bytes > 8) {
+        nxdn_dcall_handle_reverse_gps(opts, state, ctx);
+    } else if (ctx->have_events) {
+        const uint16_t fmt = (uint16_t)ConvertBitIntoBytes(state->dmr_pdu_sf[0], 16);
+        char event_text[64];
+        DSD_SNPRINTF(event_text, sizeof(event_text), "Unknown Data Call Format: %04X;", fmt);
+        nxdn_dcall_watchdog(opts, state, event_text);
+    }
+}
+
+static void
+nxdn_dcall_handle_crc_error(dsd_opts* opts, dsd_state* state, const struct nxdn_dcall_data_context* ctx,
+                            uint32_t crc_ext, uint32_t crc_chk) {
+    DSD_FPRINTF(stderr, " CRC: %08X / %08X; (CRC ERR) ", crc_ext, crc_chk);
+    if (state->payload_algid != 0 && ctx->have_events) {
+        char event_text[64];
+        DSD_SNPRINTF(event_text, sizeof(event_text), "Encrypted PDU; Cipher: %d; KID: %02X;", state->payload_algid,
+                     state->payload_keyid);
+        nxdn_dcall_watchdog(opts, state, event_text);
+    }
+}
+
+static int
+nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, const uint8_t* Message, size_t message_bits) {
+    if (opts == NULL || state == NULL || Message == NULL) {
+        return -1;
+    }
+
+    struct nxdn_dcall_data_context ctx;
+    if (nxdn_dcall_prepare(state, Message, message_bits, type, &ctx) != 0) {
+        return -1;
+    }
+    if (ctx.pf_num != 0U) {
+        return 0;
+    }
+
+    nxdn_dcall_apply_decryption(state, &ctx);
+    const int crc_offset_bits = ctx.total_bits - 32;
+    const uint32_t crc_ext = (uint32_t)convert_bits_into_output(state->dmr_pdu_sf[0] + crc_offset_bits, 32);
+    const uint32_t crc_chk = nxdn_message_crc32(state->dmr_pdu_sf[0], crc_offset_bits);
+    nxdn_dcall_print_payload(opts, state, &ctx);
     if (crc_ext == crc_chk) {
-        uint8_t opcode = (uint8_t)ConvertBitIntoBytes(state->dmr_pdu_sf[0], 8);
-        uint8_t nmea = (uint8_t)ConvertBitIntoBytes(state->dmr_pdu_sf[0] + 8, 8);
-        uint32_t reverse = (uint32_t)convert_bits_into_output(state->dmr_pdu_sf[0], 24);
-
-        if (opcode == 0x06U && (nmea == (uint8_t)'$' || nmea == (uint8_t)'!')) {
-            if (total_bytes > 1) {
-                fprintf(stderr, "\n ");
-                nmea_sentence_checker(opts, state, state->dmr_pdu_sf[0] + 8, 0, total_bytes - 1);
-            }
-        } else if (reverse == 0U && total_bytes > 8) {
-            uint8_t reverse_bytes[NXDN_DCALL_MAX_BYTES];
-            memset(reverse_bytes, 0, sizeof(reverse_bytes));
-
-            int reverse_len = total_bytes - 4; // strip CRC32
-            int src_idx = total_bytes - 5;
-            for (int i = 0; i < reverse_len; i++, src_idx--) {
-                reverse_bytes[i] = (uint8_t)ConvertBitIntoBytes(state->dmr_pdu_sf[0] + ((size_t)src_idx * 8U), 8);
-            }
-
-            if (opts->payload == 1) {
-                fprintf(stderr, "\n  REV: ");
-                for (int i = 0; i < reverse_len; i++) {
-                    fprintf(stderr, "%02X", reverse_bytes[i]);
-                }
-            }
-
-            if (reverse_len > 4) {
-                int core_len = reverse_len - 4;
-                uint8_t reverse_bits[NXDN_DCALL_MAX_BITS];
-                memset(reverse_bits, 0, sizeof(reverse_bits));
-                unpack_byte_array_into_bit_array(reverse_bytes, reverse_bits, core_len);
-                if (core_len >= 2 && (uint16_t)convert_bits_into_output(reverse_bits, 16) == 0xFFFCU) {
-                    nxdn_gps_report(opts, state, reverse_bits + 16, (uint32_t)state->dmr_lrrp_source[0]);
-                }
-            }
-        } else {
-            if (have_events) {
-                uint16_t fmt = (uint16_t)ConvertBitIntoBytes(state->dmr_pdu_sf[0], 16);
-                snprintf(state->event_history_s[0].Event_History_Items[0].text_message,
-                         sizeof(state->event_history_s[0].Event_History_Items[0].text_message),
-                         "Unknown Data Call Format: %04X;", fmt);
-                uint32_t source = (uint32_t)state->dmr_lrrp_source[0];
-                uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
-                char comp_string[128];
-                snprintf(comp_string, sizeof(comp_string), "DATA CALL SRC: %u; TGT: %u;", source, target);
-                watchdog_event_datacall(opts, state, source, target, comp_string, 0);
-            }
-        }
+        nxdn_dcall_handle_crc_ok(opts, state, &ctx);
     } else {
-        fprintf(stderr, " CRC: %08X / %08X; (CRC ERR) ", crc_ext, crc_chk);
-        if (state->payload_algid != 0 && have_events) {
-            snprintf(state->event_history_s[0].Event_History_Items[0].text_message,
-                     sizeof(state->event_history_s[0].Event_History_Items[0].text_message),
-                     "Encrypted PDU; Cipher: %d; KID: %02X;", state->payload_algid, state->payload_keyid);
-            uint32_t source = (uint32_t)state->dmr_lrrp_source[0];
-            uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
-            char comp_string[128];
-            snprintf(comp_string, sizeof(comp_string), "DATA CALL SRC: %u; TGT: %u;", source, target);
-            watchdog_event_datacall(opts, state, source, target, comp_string, 0);
-        }
+        nxdn_dcall_handle_crc_error(opts, state, &ctx, crc_ext, crc_chk);
     }
 
     nxdn_reset_data_call_state(state);
@@ -971,7 +1074,7 @@ nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, uint8_t* Message, si
 }
 
 //externalize multiple sub-element handlers
-void
+static void
 nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
     //6.5.2 Location ID
     uint8_t category_bit = location_id >> 22;
@@ -983,18 +1086,18 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
     if (category_bit == 0) {
         sys_code = ((location_id & 0x3FFFFF) >> 12); //10 bits
         site_code = location_id & 0x3FF;             //12 bits
-        sprintf(category, "%s", "Global");
+        DSD_SPRINTF(category, "%s", "Global");
     } else if (category_bit == 2) {
         sys_code = ((location_id & 0x3FFFFF) >> 8); //14 bits
         site_code = location_id & 0xFF;             //8 bits
-        sprintf(category, "%s", "Regional");
+        DSD_SPRINTF(category, "%s", "Regional");
     } else if (category_bit == 1) {
         sys_code = ((location_id & 0x3FFFFF) >> 5); //17 bits
         site_code = location_id & 0x1F;             //5 bits
-        sprintf(category, "%s", "Local");
+        DSD_SPRINTF(category, "%s", "Local");
     } else {
         //err, or we shouldn't ever get here
-        sprintf(category, "%s", "Reserved/Err");
+        DSD_SPRINTF(category, "%s", "Reserved/Err");
     }
 
     //type 0 is for current site, type 1 is for adjacent sites
@@ -1006,144 +1109,137 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
         if (sys_code != 0) {
             state->nxdn_location_sys_code = sys_code;
         }
-        sprintf(state->nxdn_location_category, "%s", category);
-    }
-
-    if (type == 0) {
-        fprintf(stderr, "\n Location Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
-                site_code);
+        DSD_SPRINTF(state->nxdn_location_category, "%s", category);
+        DSD_FPRINTF(stderr, "\n Location Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
+                    site_code);
     } else {
-        fprintf(stderr, "\n Adjacent Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
-                site_code);
+        DSD_FPRINTF(stderr, "\n Adjacent Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
+                    site_code);
     }
 }
 
-void
+static void
 nxdn_srv_info_handler(dsd_state* state, uint16_t svc_info) {
     UNUSED(state);
     //handle the service information elements
     //Part 1-A Common Air Interface Ver.2.0
     //6.5.33. Service Information
-    fprintf(stderr, "\n Services:");
+    DSD_FPRINTF(stderr, "\n Services:");
     //check each SIF 1-bit element
     if (svc_info & 0x8000) {
-        fprintf(stderr, " Multi-Site;");
+        DSD_FPRINTF(stderr, " Multi-Site;");
     }
     if (svc_info & 0x4000) {
-        fprintf(stderr, " Multi-System;");
+        DSD_FPRINTF(stderr, " Multi-System;");
     }
     if (svc_info & 0x2000) {
-        fprintf(stderr, " Location Registration;");
+        DSD_FPRINTF(stderr, " Location Registration;");
     }
     if (svc_info & 0x1000) {
-        fprintf(stderr, " Group Registration;");
+        DSD_FPRINTF(stderr, " Group Registration;");
     }
 
     if (svc_info & 0x800) {
-        fprintf(stderr, " Authentication;");
+        DSD_FPRINTF(stderr, " Authentication;");
     }
     if (svc_info & 0x400) {
-        fprintf(stderr, " Composite Control Channel;");
+        DSD_FPRINTF(stderr, " Composite Control Channel;");
     }
     if (svc_info & 0x200) {
-        fprintf(stderr, " Voice Call;");
+        DSD_FPRINTF(stderr, " Voice Call;");
     }
     if (svc_info & 0x100) {
-        fprintf(stderr, " Data Call;");
+        DSD_FPRINTF(stderr, " Data Call;");
     }
 
     if (svc_info & 0x80) {
-        fprintf(stderr, " Short Data Call;");
+        DSD_FPRINTF(stderr, " Short Data Call;");
     }
     if (svc_info & 0x40) {
-        fprintf(stderr, " Status Call & Remote Control;");
+        DSD_FPRINTF(stderr, " Status Call & Remote Control;");
     }
     if (svc_info & 0x20) {
-        fprintf(stderr, " PSTN Network Connection;");
+        DSD_FPRINTF(stderr, " PSTN Network Connection;");
     }
     if (svc_info & 0x10) {
-        fprintf(stderr, " IP Network Connection;");
+        DSD_FPRINTF(stderr, " IP Network Connection;");
     }
 
     //last 4-bits are spares
 }
 
-void
+static void
 nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info) {
     UNUSED(state);
 
     //handle the restriction information elements
     //Part 1-A Common Air Interface Ver.2.0
     //6.5.34. Restriction Information
-    fprintf(stderr, "\n RST -");
+    DSD_FPRINTF(stderr, "\n RST -");
 
     //Mobile station operation information (Octet 0, Bits 7 to 4)
-    fprintf(stderr, " MS:");
+    DSD_FPRINTF(stderr, " MS:");
     if (rst_info & 0x800000) {
-        fprintf(stderr, " Access Restriction;");
+        DSD_FPRINTF(stderr, " Access Restriction;");
     } else if (rst_info & 0x400000) {
-        fprintf(stderr, " Maintenance Restriction;");
+        DSD_FPRINTF(stderr, " Maintenance Restriction;");
     }
-    // else                          fprintf (stderr, " No Restriction;");
 
     //Access cycle interval (Octet 0, Bits 3 to 0)
-    fprintf(stderr, " ACI:");
+    DSD_FPRINTF(stderr, " ACI:");
     uint8_t frames = (rst_info >> 16) & 0xF;
     if (frames) {
-        fprintf(stderr, " %d Frame Restriction;", frames * 20);
+        DSD_FPRINTF(stderr, " %d Frame Restriction;", frames * 20);
     }
-    // else        fprintf (stderr, " No Restriction;");
 
     //Restriction group specification (Octet 1, Bits 7 to 4)
-    fprintf(stderr, " RGS:");
+    DSD_FPRINTF(stderr, " RGS:");
     uint8_t uid = (rst_info >> 12) & 0x7; //MSB is a spare, so only evaluate 3-bits
-    fprintf(stderr, " Lower 3 bits of Unit ID = %d %d %d", uid & 1, (uid >> 1) & 1, (uid >> 2) & 1);
+    DSD_FPRINTF(stderr, " Lower 3 bits of Unit ID = %d %d %d", uid & 1, (uid >> 1) & 1, (uid >> 2) & 1);
 
     //Restriction Information (Octet 1, Bits 3 to 0)
-    fprintf(stderr, " RI:");
+    DSD_FPRINTF(stderr, " RI:");
     if (rst_info & 0x800) {
-        fprintf(stderr, " Location Restriction;");
+        DSD_FPRINTF(stderr, " Location Restriction;");
     } else if (rst_info & 0x400) {
-        fprintf(stderr, " Call Restriction;");
+        DSD_FPRINTF(stderr, " Call Restriction;");
     } else if (rst_info & 0x200) {
-        fprintf(stderr, " Short Data Restriction;");
+        DSD_FPRINTF(stderr, " Short Data Restriction;");
     }
-    // else                        fprintf (stderr, " No Restriction;");
 
     //Restriction group ratio specification (Octet 2, Bits 7 to 6)
-    fprintf(stderr, " RT:");
+    DSD_FPRINTF(stderr, " RT:");
     uint8_t ratio = (rst_info >> 22) & 0x3;
     if (ratio == 1) {
-        fprintf(stderr, " 50 Restriction;");
+        DSD_FPRINTF(stderr, " 50 Restriction;");
     } else if (ratio == 2) {
-        fprintf(stderr, " 75 Restriction;");
+        DSD_FPRINTF(stderr, " 75 Restriction;");
     } else if (ratio == 3) {
-        fprintf(stderr, " 87.5 Restriction;");
+        DSD_FPRINTF(stderr, " 87.5 Restriction;");
     }
-    // else                 fprintf (stderr, " No Restriction;");
 
     //Delay time extension specification (Octet 2, Bits 5 to 4)
-    fprintf(stderr, " DT:");
+    DSD_FPRINTF(stderr, " DT:");
     uint8_t dt = (rst_info >> 20) & 0x3;
     if (dt == 0) {
-        fprintf(stderr, " Timer T2 max x 1;");
+        DSD_FPRINTF(stderr, " Timer T2 max x 1;");
     } else if (dt == 1) {
-        fprintf(stderr, " Timer T2 max x 2;");
+        DSD_FPRINTF(stderr, " Timer T2 max x 2;");
     } else if (dt == 2) {
-        fprintf(stderr, " Timer T2 max x 3;");
+        DSD_FPRINTF(stderr, " Timer T2 max x 3;");
     } else {
-        fprintf(stderr, " Timer T2 max x 4;");
+        DSD_FPRINTF(stderr, " Timer T2 max x 4;");
     }
 
     //ISO Temporary Isolation Site -- This is valid only if the SIF 1 of Service Information is set to 1.
     if (rst_info & 0x0001) {
-        fprintf(stderr, " - Site Isolation;");
+        DSD_FPRINTF(stderr, " - Site Isolation;");
     }
 
     //what a pain...
 }
 
-void
+static void
 nxdn_ca_info_handler(dsd_state* state, uint32_t ca_info) {
     //handle the channel access info for channel or dfa
     //Part 1-A Common Air Interface Ver.2.0
@@ -1166,11 +1262,12 @@ nxdn_ca_info_handler(dsd_state* state, uint32_t ca_info) {
 //end sub-element handlers
 
 static int
-nxdn_policy_tune_allowed(dsd_opts* opts, dsd_state* state, uint32_t target, uint32_t source, int is_private_call,
-                         int data_call, int allow_source_fallback, dsd_tg_policy_decision* out_decision) {
+nxdn_policy_tune_allowed(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
+                         int is_private_call, int data_call, int allow_source_fallback,
+                         dsd_tg_policy_decision* out_decision) {
     dsd_tg_policy_decision decision;
     int rc = 0;
-    memset(&decision, 0, sizeof(decision));
+    DSD_MEMSET(&decision, 0, sizeof(decision));
 
     if (is_private_call) {
         rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, data_call,
@@ -1241,433 +1338,383 @@ nxdn_policy_log_block(const dsd_opts* opts, int is_private_call, uint32_t target
     if (decision->block_reasons == DSD_TG_POLICY_BLOCK_NONE) {
         return;
     }
-    fprintf(stderr, " [NXDN %s blocked:%s tgt=%u src=%u]", is_private_call ? "private" : "group",
-            nxdn_policy_block_reason_label(decision->block_reasons), target, source);
+    DSD_FPRINTF(stderr, " [NXDN %s blocked:%s tgt=%u src=%u]", is_private_call ? "private" : "group",
+                nxdn_policy_block_reason_label(decision->block_reasons), target, source);
 }
 
-void
-NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
-    const time_t now = time(NULL);
-    //just using 'short form' M only data, not the optional data
-    uint8_t CCOption = 0;
-    uint8_t CallType = 0;
-    uint8_t VoiceCallOption = 0;
-    uint16_t SourceUnitID = 0;
-    uint16_t DestinationID = 0;
-    // uint8_t CallTimer = 0; // unused
-    uint16_t Channel = 0;
+static uint8_t
+nxdn_message_type_from_bits(const uint8_t* Message) {
+    uint8_t message_type = (Message[2] & 1U) << 5U;
+    message_type |= (Message[3] & 1U) << 4U;
+    message_type |= (Message[4] & 1U) << 3U;
+    message_type |= (Message[5] & 1U) << 2U;
+    message_type |= (Message[6] & 1U) << 1U;
+    message_type |= (Message[7] & 1U);
+    return message_type;
+}
 
-    uint8_t DuplexMode[32] = {0};
-    uint8_t TransmissionMode[32] = {0};
+struct nxdn_vcall_assgn_info {
+    uint8_t message_type;
+    uint8_t cc_option;
+    uint8_t call_type;
+    uint8_t voice_call_option;
+    uint16_t source_unit_id;
+    uint16_t destination_id;
+    uint16_t channel;
+    uint16_t ofn;
+};
 
-    uint8_t MessageType;
-    /* Get the "Message Type" field */
-    MessageType = (Message[2] & 1) << 5;
-    MessageType |= (Message[3] & 1) << 4;
-    MessageType |= (Message[4] & 1) << 3;
-    MessageType |= (Message[5] & 1) << 2;
-    MessageType |= (Message[6] & 1) << 1;
-    MessageType |= (Message[7] & 1) << 0;
+static void
+nxdn_vcall_assgn_parse(dsd_state* state, const uint8_t* Message, struct nxdn_vcall_assgn_info* info) {
+    DSD_MEMSET(info, 0, sizeof(*info));
+    info->message_type = nxdn_message_type_from_bits(Message);
+    info->cc_option = (uint8_t)ConvertBitIntoBytes(&Message[8], 8);
+    info->call_type = (uint8_t)ConvertBitIntoBytes(&Message[16], 3);
+    info->voice_call_option = (uint8_t)ConvertBitIntoBytes(&Message[19], 5);
+    info->source_unit_id = (uint16_t)ConvertBitIntoBytes(&Message[24], 16);
+    info->destination_id = (uint16_t)ConvertBitIntoBytes(&Message[40], 16);
+    info->channel = (uint16_t)ConvertBitIntoBytes(&Message[62], 10);
 
-    if (MessageType == 0x04 || MessageType == 0x05) {
-        fprintf(stderr, "%s", KGRN); // VCALL_ASSGN / VCALL_ASSGN_DUP
-    } else if (MessageType == 0x0E || MessageType == 0x0D) {
-        fprintf(stderr, "%s", KCYN); // DCALL_ASSGN / DCALL_ASSGN_DUP
-    }
+    state->NxdnElementsContent.CCOption = info->cc_option;
+    state->NxdnElementsContent.CallType = info->call_type;
+    state->NxdnElementsContent.VoiceCallOption = info->voice_call_option;
+    state->NxdnElementsContent.SourceUnitID = info->source_unit_id;
+    state->NxdnElementsContent.DestinationID = info->destination_id;
 
-    //DFA specific variables
-    uint8_t bw = 0;
-    uint16_t OFN = 0;
-    uint16_t IFN = 0;
-    UNUSED2(bw, IFN);
-
-    /* Decode "CC Option" */
-    CCOption = (uint8_t)ConvertBitIntoBytes(&Message[8], 8);
-    state->NxdnElementsContent.CCOption = CCOption;
-
-    /* Decode "Call Type" */
-    CallType = (uint8_t)ConvertBitIntoBytes(&Message[16], 3);
-    state->NxdnElementsContent.CallType = CallType;
-
-    /* Decode "Voice Call Option" */
-    VoiceCallOption = (uint8_t)ConvertBitIntoBytes(&Message[19], 5);
-    state->NxdnElementsContent.VoiceCallOption = VoiceCallOption;
-
-    /* Decode "Source Unit ID" */
-    SourceUnitID = (uint16_t)ConvertBitIntoBytes(&Message[24], 16);
-    state->NxdnElementsContent.SourceUnitID = SourceUnitID;
-
-    /* Decode "Destination ID" */
-    DestinationID = (uint16_t)ConvertBitIntoBytes(&Message[40], 16);
-    state->NxdnElementsContent.DestinationID = DestinationID;
-
-    /* Decode "Call Timer" */ // not used
-
-    /* Decode "Channel" */
-    Channel = (uint16_t)ConvertBitIntoBytes(&Message[62], 10);
-
-    /* Decode DFA-only variables*/
     if (state->nxdn_rcn == 1) {
-        // bw unused
-        OFN = (uint16_t)ConvertBitIntoBytes(&Message[64], 16);
-        // IFN unused
+        info->ofn = (uint16_t)ConvertBitIntoBytes(&Message[64], 16);
+    }
+}
+
+static void
+nxdn_vcall_assgn_print(const dsd_state* state, const struct nxdn_vcall_assgn_info* info) {
+    uint8_t duplex_mode[32] = {0};
+    uint8_t transmission_mode[32] = {0};
+    const int voice_grant = (info->message_type == 0x04U || info->message_type == 0x05U);
+
+    DSD_FPRINTF(stderr, "%s", voice_grant ? KGRN : KCYN);
+    DSD_FPRINTF(stderr, "\n ");
+    if (info->cc_option & 0x80U) {
+        DSD_FPRINTF(stderr, "Emergency ");
+    }
+    if (info->cc_option & 0x40U) {
+        DSD_FPRINTF(stderr, "Visitor ");
+    }
+    if (info->cc_option & 0x20U) {
+        DSD_FPRINTF(stderr, "Priority Paging ");
     }
 
-    //Part 1-E Common Air Interface Ver.1.3 - 6.4.1.23. Voice Call Assignment (VCALL_ASSGN)
-    //While I've only seen Busy Repeater Message on the SCCH message (different format)
-    //The manual suggests this message exists on Type-D systems with this configuration
-
-    //On Type-D systems, need to truncate to an 11-bit value
-    //other 5-bits are repeater or prefix value
-    // uint8_t idas = 0;
-    // uint8_t rep1 = 0;
-    // uint8_t rep2 = 0;
-    // if (strcmp (state->nxdn_location_category, "Type-D") == 0) idas = 1;
-    // if (idas)
-    // {
-    //   rep1 = (SourceUnitID >> 11) & 0x1F;
-    //   rep2 = (DestinationID >> 11) & 0x1F;
-    //   SourceUnitID = SourceUnitID & 0x7FF;
-    //   DestinationID = DestinationID & 0x7FF;
-    //   //assign source prefix/rep1 as the tune to channel?
-    //   //In normal VCALL, both prefix/rep values are the same on the Type-D samples I have
-    //   Channel = rep1;
-    // }
-
-    if (MessageType == 0x4 || MessageType == 0x5) {
-        fprintf(stderr, "%s", KGRN); //VCALL_ASSGN
+    DSD_FPRINTF(stderr, "%s - ", NXDN_Call_Type_To_Str(info->call_type));
+    if (voice_grant) {
+        NXDN_Voice_Call_Option_To_Str(info->voice_call_option, duplex_mode, transmission_mode);
+        DSD_FPRINTF(stderr, "%s %s (%02X) - ", duplex_mode, transmission_mode, info->voice_call_option);
     } else {
-        fprintf(stderr, "%s", KCYN); //DCALL_ASSGN
+        DSD_FPRINTF(stderr, "   Data Call Assignment (%02X) - ", info->voice_call_option);
     }
 
-    fprintf(stderr, "\n ");
-
-    /* Print the "CC Option" */
-    if (CCOption & 0x80) {
-        fprintf(stderr, "Emergency ");
-    }
-    if (CCOption & 0x40) {
-        fprintf(stderr, "Visitor ");
-    }
-    if (CCOption & 0x20) {
-        fprintf(stderr, "Priority Paging ");
-    }
-
-    /* Print the "Call Type" */
-    fprintf(stderr, "%s - ", NXDN_Call_Type_To_Str(CallType));
-
-    /* Print the "Voice Call Option" */
-    if (MessageType == 0x4 || MessageType == 0x5) {
-        NXDN_Voice_Call_Option_To_Str(VoiceCallOption, DuplexMode, TransmissionMode);
-    }
-    if (MessageType == 0x4 || MessageType == 0x5) {
-        fprintf(stderr, "%s %s (%02X) - ", DuplexMode, TransmissionMode, VoiceCallOption);
-    } else {
-        fprintf(stderr, "   Data Call Assignment (%02X) - ", VoiceCallOption); //DCALL_ASSGN or DCALL_ASSGN_DUP
-    }
-
-    /* Print Source ID and Destination ID (Talk Group or Unit ID) */
-    fprintf(stderr, "Src=%u - Dst/TG=%u ", SourceUnitID & 0xFFFF, DestinationID & 0xFFFF);
-
-    //Channel here appears to be the prefix or home channel of the caller, not necessarily the channel the call is occuring on
-    // if (idas) fprintf (stderr, "- Prefix Ch: %d ", rep1);
-
-    /* Print Channel */
+    DSD_FPRINTF(stderr, "Src=%u - Dst/TG=%u ", info->source_unit_id & 0xFFFF, info->destination_id & 0xFFFF);
     if (state->nxdn_rcn == 0) {
-        fprintf(stderr, "- Channel [%03X][%04d] ", Channel & 0x3FF, Channel & 0x3FF);
+        DSD_FPRINTF(stderr, "- Channel [%03X][%04d] ", info->channel & 0x3FFU, info->channel & 0x3FFU);
     }
     if (state->nxdn_rcn == 1) {
-        fprintf(stderr, "- DFA Channel [%04X][%05d] ", OFN, OFN);
+        DSD_FPRINTF(stderr, "- DFA Channel [%04X][%05d] ", info->ofn, info->ofn);
     }
+}
 
-    //test VCALL_ASSGN_DUP, if no voice sync activity (by trunk_hangtime), then convert to assgn and allow tuning
-    //VCALL_ASSGN_DUP has been seen in the middle of calls, but also on the tail end instead of a TX_REL or DISC
-    if (MessageType == 0x5 && opts->p25_is_tuned == 1 && opts->p25_trunk == 1) {
-        if ((now - state->last_vc_sync_time) > opts->trunk_hangtime) {
-            MessageType = 0x04;     //convert to VCALL
-            opts->p25_is_tuned = 0; //open tuning back up to tune
-        }
+static void
+nxdn_vcall_assgn_adjust_duplicate(dsd_opts* opts, const dsd_state* state, time_t now,
+                                  struct nxdn_vcall_assgn_info* info) {
+    if (info->message_type == 0x05U && opts->p25_is_tuned == 1 && opts->p25_trunk == 1
+        && (now - state->last_vc_sync_time) > opts->trunk_hangtime) {
+        info->message_type = 0x04U;
+        opts->p25_is_tuned = 0;
     }
-
-    //TG Hold during VCALL_ASSGN_DUP, allow tuning to TG hold channel assignment
-    if (MessageType == 0x5 && opts->p25_is_tuned == 1 && opts->p25_trunk == 1) {
-        if (state->tg_hold != 0 && state->tg_hold == DestinationID) {
-            MessageType = 0x04; //convert to VCALL
-                                // opts->p25_is_tuned = 0; //open tuning back up to tune
-        }
+    if (info->message_type == 0x05U && opts->p25_is_tuned == 1 && opts->p25_trunk == 1 && state->tg_hold != 0
+        && state->tg_hold == info->destination_id) {
+        info->message_type = 0x04U;
     }
+}
 
-    //use DUP to display any other rolling active channels while on a call (from the dup message)
-    int dup = 0;
-    if (MessageType == 0x5) {
-        dup = 1;
-    }
-
-    // Track + display last observed grant channel -> frequency mapping.
-    uint16_t grant_chan = (state->nxdn_rcn == 1) ? (uint16_t)OFN : (uint16_t)(Channel & 0x3FF);
-    long int grant_freq = nxdn_channel_to_frequency_quiet(state, grant_chan);
+static void
+nxdn_vcall_assgn_track_active_channel(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info,
+                                      time_t now) {
+    const int dup = (info->message_type == 0x05U) ? 1 : 0;
+    const uint16_t grant_chan = (state->nxdn_rcn == 1) ? info->ofn : (uint16_t)(info->channel & 0x3FFU);
+    const long int grant_freq = nxdn_channel_to_frequency_quiet(state, grant_chan);
     state->nxdn_grant_chan = grant_chan;
     state->nxdn_grant_freq = grant_freq;
 
     if (grant_freq != 0) {
-        snprintf(state->active_channel[dup], sizeof state->active_channel[dup],
-                 "Active Ch: %d (%.6lf MHz) TG: %d SRC: %d; ", grant_chan, (double)grant_freq / 1000000.0,
-                 DestinationID, SourceUnitID);
+        DSD_SNPRINTF(state->active_channel[dup], sizeof state->active_channel[dup],
+                     "Active Ch: %d (%.6lf MHz) TG: %d SRC: %d; ", grant_chan, (double)grant_freq / 1000000.0,
+                     info->destination_id, info->source_unit_id);
+    } else if (opts && opts->chan_in_file[0] != '\0') {
+        nxdn_trunk_diag_log_missing_channel_once(opts, state, grant_chan, "grant");
+        DSD_SNPRINTF(state->active_channel[dup], sizeof state->active_channel[dup],
+                     "Active Ch: %d (no chan_csv freq) TG: %d SRC: %d; ", grant_chan, info->destination_id,
+                     info->source_unit_id);
     } else {
         nxdn_trunk_diag_log_missing_channel_once(opts, state, grant_chan, "grant");
-        if (opts && opts->chan_in_file[0] != '\0') {
-            snprintf(state->active_channel[dup], sizeof state->active_channel[dup],
-                     "Active Ch: %d (no chan_csv freq) TG: %d SRC: %d; ", grant_chan, DestinationID, SourceUnitID);
-        } else {
-            snprintf(state->active_channel[dup], sizeof state->active_channel[dup], "Active Ch: %d TG: %d SRC: %d; ",
-                     grant_chan, DestinationID, SourceUnitID);
-        }
+        DSD_SNPRINTF(state->active_channel[dup], sizeof state->active_channel[dup], "Active Ch: %d TG: %d SRC: %d; ",
+                     grant_chan, info->destination_id, info->source_unit_id);
     }
-
     state->last_active_time = now;
+}
 
-    //Add support for tuning data and group/private calls on trunking systems
-    uint8_t tune = 0;
-
-    //DCALL_ASSGN and DCALL_ASSGN_DUP
-    if (MessageType == 0x0D || MessageType == 0x0E) {
-        if (opts->trunk_tune_data_calls == 1) {
-            tune = 1;
-        }
-    } else if (MessageType == 0x04) //VCALL_ASSGN and converted VCALL_ASSGN_DUP
-    {
-        if (CallType == 4) //individual/private call
-        {
-            if (opts->trunk_tune_private_calls) {
-                tune = 1;
-            }
-        } else if (opts->trunk_tune_group_calls) {
-            tune = 1;
-        }
+static int
+nxdn_vcall_assgn_should_tune(const dsd_opts* opts, const struct nxdn_vcall_assgn_info* info) {
+    if (info->message_type == 0x0DU || info->message_type == 0x0EU) {
+        return (opts->trunk_tune_data_calls == 1) ? 1 : 0;
     }
-
-    if (tune == 0) {
-        goto END_ASSGN;
+    if (info->message_type != 0x04U) {
+        return 0;
     }
+    if (info->call_type == 4U) {
+        return opts->trunk_tune_private_calls ? 1 : 0;
+    }
+    return opts->trunk_tune_group_calls ? 1 : 0;
+}
 
-    //run process to figure out frequency value from the channel import or from DFA
-    long int freq = 0;
+static long int
+nxdn_vcall_assgn_frequency(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info) {
     if (state->nxdn_rcn == 0) {
-        freq = nxdn_channel_to_frequency(opts, state, Channel);
+        return nxdn_channel_to_frequency(opts, state, info->channel);
     }
     if (state->nxdn_rcn == 1) {
-        freq = nxdn_channel_to_frequency(opts, state, OFN);
+        return nxdn_channel_to_frequency(opts, state, info->ofn);
+    }
+    return 0;
+}
+
+static void
+nxdn_vcall_assgn_setup_tuned_call(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info,
+                                  long int freq) {
+    dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
+    DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+    DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+    state->lastsynctype = DSD_SYNC_NONE;
+    DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", NXDN_Call_Type_To_Str(info->call_type));
+    DSD_SPRINTF(state->call_string[0], "%s", NXDN_Call_Type_To_Str(info->call_type));
+    if (info->cc_option & 0x80U) {
+        dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
+    }
+}
+
+static void
+nxdn_vcall_assgn_load_scrambler_key(dsd_state* state, const struct nxdn_vcall_assgn_info* info) {
+    if (state->rkey_array[info->destination_id] != 0) {
+        state->R = state->rkey_array[info->destination_id];
+        DSD_FPRINTF(stderr, " %s", KYEL);
+        DSD_FPRINTF(stderr, " Key Loaded: %lld", state->rkey_array[info->destination_id]);
+        state->payload_miN = state->R;
+    }
+    if (state->M == 1) {
+        state->nxdn_cipher_type = 0x1;
+    }
+}
+
+static void
+nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info, long int freq) {
+    nxdn_print_group_label(state, info->destination_id != 0U ? info->destination_id : info->source_unit_id);
+    if (info->destination_id != 0U) {
+        nxdn_print_group_label(state, info->source_unit_id);
+    }
+    if (state->tg_hold != 0 && state->tg_hold == info->destination_id) {
+        opts->p25_is_tuned = 0;
     }
 
-    //check for control channel frequency in the channel map if not available
-    if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && state->p25_cc_freq == 0 && opts->trunk_is_tuned == 0) {
-        long int ccfreq = 0;
-
-        //if not available, then poll rigctl if its available
-        if (opts->use_rigctl == 1) {
-            ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-            if (ccfreq != 0) {
-                state->p25_cc_freq = ccfreq;
-                state->trunk_cc_freq = ccfreq;
-            }
-        }
-        //if using rtl input, we can ask for the current frequency tuned
-        else if (opts->audio_in_type == AUDIO_IN_RTL) {
-            ccfreq = (long int)opts->rtlsdr_center_freq;
-            if (ccfreq != 0) {
-                state->p25_cc_freq = ccfreq;
-                state->trunk_cc_freq = ccfreq;
-            }
-        }
+    const int is_private_call = (info->call_type == 4U) ? 1 : 0;
+    const int data_call = (info->message_type == 0x0DU || info->message_type == 0x0EU) ? 1 : 0;
+    dsd_tg_policy_decision policy_decision;
+    const int policy_allowed = nxdn_policy_tune_allowed(opts, state, info->destination_id, info->source_unit_id,
+                                                        is_private_call, data_call, 1, &policy_decision);
+    if (opts->p25_trunk == 1 && policy_allowed && state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+        nxdn_vcall_assgn_setup_tuned_call(opts, state, info, freq);
+        nxdn_vcall_assgn_load_scrambler_key(state, info);
+    } else if (opts->p25_trunk == 1) {
+        nxdn_policy_log_block(opts, is_private_call, info->destination_id, info->source_unit_id, &policy_decision);
     }
-
-    //run target/source analysis for labeling and tune if available/desired
-    nxdn_print_group_label(state, DestinationID != 0 ? DestinationID : SourceUnitID);
-
-    //check purely by SourceUnitID as last resort -- this is a bugfix to block individual radios on selected systems
-    if (DestinationID != 0) {
-        nxdn_print_group_label(state, SourceUnitID);
-    }
-
-    //TG hold on NXDN -- allow matching DestinationID to break out of current VC.
-    if (state->tg_hold != 0 && state->tg_hold == DestinationID) {
-        opts->p25_is_tuned = 0; //unlock tuner at this stage and not above check
-    }
-
-    //check to see if the source/target candidate is blocked first
-    {
-        const int is_private_call = (CallType == 4) ? 1 : 0;
-        const int data_call = (MessageType == 0x0D || MessageType == 0x0E) ? 1 : 0;
-        dsd_tg_policy_decision policy_decision;
-        int policy_allowed = nxdn_policy_tune_allowed(opts, state, DestinationID, SourceUnitID, is_private_call,
-                                                      data_call, 1, &policy_decision);
-        if (opts->p25_trunk == 1 && policy_allowed) {
-            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-                && freq != 0) //if we aren't already on a VC and have a valid frequency
-            {
-                // Use centralized io/control tuning API
-                dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
-
-                // NXDN-specific state setup
-                memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-                memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                state->lastsynctype = DSD_SYNC_NONE;
-
-                // RID/TG and GI are assigned from decoded VCALL payloads.
-                // Avoid pre-assignment on grants to reduce duplicate/stale event entries.
-                snprintf(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", NXDN_Call_Type_To_Str(CallType));
-
-                //Call String for Per Call WAV File
-                sprintf(state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
-                if (CCOption & 0x80) {
-                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
-                }
-
-                //check the rkey array for a scrambler key value
-                //TGT ID and Key ID could clash though if csv or system has both with different keys
-                if (state->rkey_array[DestinationID] != 0) {
-                    state->R = state->rkey_array[DestinationID];
-                    fprintf(stderr, " %s", KYEL);
-                    fprintf(stderr, " Key Loaded: %lld", state->rkey_array[DestinationID]);
-                    state->payload_miN = state->R; //should be okay to load here, will test
-                }
-                if (state->M == 1) {
-                    state->nxdn_cipher_type = 0x1;
-                }
-            }
-        } else if (opts->p25_trunk == 1) {
-            nxdn_policy_log_block(opts, is_private_call, DestinationID, SourceUnitID, &policy_decision);
-        }
-    }
-
-END_ASSGN:; //do nothing
-    fprintf(stderr, "%s", KNRM);
-
-} /* End NXDN_decode_VCALL_ASSGN() */
+}
 
 void
-NXDN_decode_Alias(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
+NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
+    const time_t now = time(NULL);
+    struct nxdn_vcall_assgn_info info;
+    nxdn_vcall_assgn_parse(state, Message, &info);
+    nxdn_vcall_assgn_print(state, &info);
+    nxdn_vcall_assgn_adjust_duplicate(opts, state, now, &info);
+    nxdn_vcall_assgn_track_active_channel(opts, state, &info, now);
+    if (nxdn_vcall_assgn_should_tune(opts, &info)) {
+        const long int freq = nxdn_vcall_assgn_frequency(opts, state, &info);
+        nxdn_anchor_control_channel_from_current_tuner(opts, state, 1);
+        nxdn_vcall_assgn_apply_tune(opts, state, &info, freq);
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+NXDN_decode_Alias(const dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     nxdn_alias_decode_prop(opts, state, Message, nxdn_alias_crc_ok(state));
 }
 
-void
-NXDN_decode_ALIAS_ARIB(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
+static void
+NXDN_decode_ALIAS_ARIB(const dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     nxdn_alias_decode_arib(opts, state, Message, nxdn_alias_crc_ok(state));
 }
 
-void
-NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
-    //6.4.3.3. Control Channel Information (CCH_INFO) for more information
-    uint32_t location_id = 0;
-    uint8_t channel1sts = 0;
-    uint16_t channel1 = 0;
-    uint8_t channel2sts = 0;
-    uint16_t channel2 = 0;
-    long int freq1 = 0;
-    long int freq2 = 0;
-    UNUSED2(channel2sts, freq2);
+static void
+nxdn_print_dfa_bandwidth(uint8_t bw) {
+    if (bw == 0U) {
+        DSD_FPRINTF(stderr, "BW: 6.25 kHz - 4800 bps");
+    } else if (bw == 1U) {
+        DSD_FPRINTF(stderr, "BW: 12.5 kHz - 9600 bps");
+    } else {
+        DSD_FPRINTF(stderr, "BW: %d Reserved Value", bw);
+    }
+}
 
-    //DFA
-    uint8_t bw1 = 0;
-    uint16_t OFN1 = 0;
-    uint16_t IFN1 = 0;
-    uint8_t bw2 = 0;
-    uint16_t OFN2 = 0;
-    uint16_t IFN2 = 0;
-    UNUSED(bw2);
-
-    location_id = (uint32_t)ConvertBitIntoBytes(&Message[8], 24);
-    channel1sts = (uint8_t)ConvertBitIntoBytes(&Message[32], 6);
-    channel1 = (uint16_t)ConvertBitIntoBytes(&Message[38], 10);
-    // channel2sts unused
-    channel2 = (uint16_t)ConvertBitIntoBytes(&Message[54], 10);
-
-    fprintf(stderr, "%s", KYEL);
-    nxdn_location_id_handler(state, location_id, 0);
-
-    fprintf(stderr, "\n Control Channel Information \n");
-
-    //Channel version
-    if (state->nxdn_rcn == 0) {
-        fprintf(stderr, "  Location ID [%06X] CC1 [%03X][%04d] CC2 [%03X][%04d] Status: ", location_id, channel1,
+static void
+nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t channel1sts, uint16_t channel1,
+                              uint16_t channel2) {
+    DSD_FPRINTF(stderr, "  Location ID [%06X] CC1 [%03X][%04d] CC2 [%03X][%04d] Status: ", location_id, channel1,
                 channel1, channel2, channel2);
-        //check the sts bits to determine if current, new, add, or delete
-        if (channel1sts & 0x20) {
-            fprintf(stderr, "Current ");
-        }
-        if (channel1sts & 0x10) {
-            fprintf(stderr, "New ");
-        }
-        if (channel1sts & 0x08) {
-            fprintf(stderr, "Candidate Added ");
-        }
-        if (channel1sts & 0x04) {
-            fprintf(stderr, "Candidate Deleted ");
-        }
-        // frequencies not used here
+    if (channel1sts & 0x20U) {
+        DSD_FPRINTF(stderr, "Current ");
+    }
+    if (channel1sts & 0x10U) {
+        DSD_FPRINTF(stderr, "New ");
+    }
+    if (channel1sts & 0x08U) {
+        DSD_FPRINTF(stderr, "Candidate Added ");
+    }
+    if (channel1sts & 0x04U) {
+        DSD_FPRINTF(stderr, "Candidate Deleted ");
+    }
+    UNUSED(state);
+}
+
+static int
+nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits,
+                          uint32_t location_id, uint8_t channel1sts) {
+    enum {
+        NXDN_CCH_INFO_DFA_MIN_BITS = 72U,
+        NXDN_CCH_INFO_DFA_SECONDARY_MIN_BITS = 112U,
+    };
+
+    if (message_bits < NXDN_CCH_INFO_DFA_MIN_BITS) {
+        DSD_FPRINTF(stderr, " CCH_INFO DFA Too Short (%zu bits); ", message_bits);
+        return 0;
     }
 
-    //DFA version
-    if (state->nxdn_rcn == 1) {
-        bw1 = (uint8_t)ConvertBitIntoBytes(&Message[38], 2);
-        OFN1 = (uint16_t)ConvertBitIntoBytes(&Message[40], 16);
-        IFN1 = (uint16_t)ConvertBitIntoBytes(&Message[56], 16);
+    const uint8_t bw1 = (uint8_t)ConvertBitIntoBytes(&Message[38], 2);
+    const uint16_t OFN1 = (uint16_t)ConvertBitIntoBytes(&Message[40], 16);
+    const uint16_t IFN1 = (uint16_t)ConvertBitIntoBytes(&Message[56], 16);
 
-        fprintf(stderr, "  Location ID [%06X] OFN1 [%04X][%05d] IFN1 [%04X][%05d] ", location_id, OFN1, OFN1, IFN1,
+    DSD_FPRINTF(stderr, "  Location ID [%06X] OFN1 [%04X][%05d] IFN1 [%04X][%05d] ", location_id, OFN1, OFN1, IFN1,
                 IFN1);
 
-        //facch1 will not have the below items -- should be NULL or 0 if not available
-        // bw2 unused
-        OFN2 = (uint16_t)ConvertBitIntoBytes(&Message[80], 16);
-        IFN2 = (uint16_t)ConvertBitIntoBytes(&Message[96], 16);
-
+    if (message_bits >= NXDN_CCH_INFO_DFA_SECONDARY_MIN_BITS) {
+        const uint16_t OFN2 = (uint16_t)ConvertBitIntoBytes(&Message[80], 16);
+        const uint16_t IFN2 = (uint16_t)ConvertBitIntoBytes(&Message[96], 16);
         if (OFN2 && IFN2) {
-            fprintf(stderr, "OFN2 [%04X][%05d] IFN2 [%04X][%05d]", OFN2, OFN2, IFN2, IFN2);
+            DSD_FPRINTF(stderr, "OFN2 [%04X][%05d] IFN2 [%04X][%05d]", OFN2, OFN2, IFN2, IFN2);
         }
-
-        fprintf(stderr, "Status: ");
-        if (channel1sts & 0x10) {
-            fprintf(stderr, "New ");
-        }
-        if (channel1sts & 0x02) {
-            fprintf(stderr, "Current 1 ");
-        }
-        if (channel1sts & 0x01) {
-            fprintf(stderr, "Current 2 ");
-        }
-
-        //willing to assume that bw1 and bw2 would both be the same value
-        if (bw1 == 0) {
-            fprintf(stderr, "BW: 6.25 kHz - 4800 bps");
-        } else if (bw1 == 1) {
-            fprintf(stderr, "BW: 12.5 kHz - 9600 bps");
-        } else {
-            fprintf(stderr, "BW: %d Reserved Value", bw1);
-        }
-
-        freq1 = nxdn_channel_to_frequency(opts, state, OFN1);
-        nxdn_channel_to_frequency(opts, state, IFN1);
-
-        //run second -- if available and not equal to first
         if (OFN2 && IFN2 && OFN2 != OFN1) {
             nxdn_channel_to_frequency(opts, state, OFN2);
             nxdn_channel_to_frequency(opts, state, IFN2);
         }
-
-        //add to lcn freq for hunting -- only when using pure DFA and not importing
-        if (state->trunk_lcn_freq[0] == 0 && freq1 != 0) {
-            state->trunk_lcn_freq[0] = freq1;
-            state->p25_cc_freq = freq1;
-            state->trunk_cc_freq = freq1;
-            state->lcn_freq_count = 1;
-        }
     }
 
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "Status: ");
+    if (channel1sts & 0x10U) {
+        DSD_FPRINTF(stderr, "New ");
+    }
+    if (channel1sts & 0x02U) {
+        DSD_FPRINTF(stderr, "Current 1 ");
+    }
+    if (channel1sts & 0x01U) {
+        DSD_FPRINTF(stderr, "Current 2 ");
+    }
+
+    nxdn_print_dfa_bandwidth(bw1);
+
+    const long int freq1 = nxdn_channel_to_frequency(opts, state, OFN1);
+    nxdn_channel_to_frequency(opts, state, IFN1);
+    if (state->trunk_lcn_freq[0] == 0 && freq1 != 0) {
+        state->trunk_lcn_freq[0] = freq1;
+        state->p25_cc_freq = freq1;
+        state->trunk_cc_freq = freq1;
+        state->lcn_freq_count = 1;
+    }
+
+    return 1;
 }
 
-void
-NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
+static void
+nxdn_adj_site_channel_entry(dsd_opts* opts, dsd_state* state, uint32_t site, uint8_t opt, uint16_t chan) {
+    if ((opt & 0x0FU) == 0U) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "\n Adjacent Site %d ", opt & 0x0F);
+    DSD_FPRINTF(stderr, "Channel [%03X] [%04d]", chan, chan);
+    nxdn_location_id_handler(state, site, 1);
+    nxdn_channel_to_frequency(opts, state, chan);
+}
+
+static void
+nxdn_adj_site_dfa_entry(dsd_opts* opts, dsd_state* state, uint32_t site, uint8_t opt, uint8_t bw, uint16_t chan) {
+    if ((opt & 0x0FU) == 0U) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "\n Adjacent Site %d ", opt & 0x0F);
+    DSD_FPRINTF(stderr, "Channel [%04X] [%05d] ", chan, chan);
+    nxdn_print_dfa_bandwidth(bw);
+    nxdn_location_id_handler(state, site, 1);
+    nxdn_channel_to_frequency(opts, state, chan);
+}
+
+static void
+NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
+    enum {
+        NXDN_CCH_INFO_MIN_BITS = 64U,
+    };
+
+    if (message_bits < NXDN_CCH_INFO_MIN_BITS) {
+        DSD_FPRINTF(stderr, " CCH_INFO Too Short (%zu bits); ", message_bits);
+        return;
+    }
+
+    //6.4.3.3. Control Channel Information (CCH_INFO) for more information
+    uint32_t location_id = 0;
+    uint8_t channel1sts = 0;
+    uint16_t channel1 = 0;
+    uint16_t channel2 = 0;
+
+    location_id = (uint32_t)ConvertBitIntoBytes(&Message[8], 24);
+    channel1sts = (uint8_t)ConvertBitIntoBytes(&Message[32], 6);
+    channel1 = (uint16_t)ConvertBitIntoBytes(&Message[38], 10);
+    channel2 = (uint16_t)ConvertBitIntoBytes(&Message[54], 10);
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    nxdn_location_id_handler(state, location_id, 0);
+
+    DSD_FPRINTF(stderr, "\n Control Channel Information \n");
+
+    if (state->nxdn_rcn == 0) {
+        nxdn_cch_info_channel_version(state, location_id, channel1sts, channel1, channel2);
+    }
+
+    if (state->nxdn_rcn == 1
+        && !nxdn_cch_info_dfa_version(opts, state, Message, message_bits, location_id, channel1sts)) {
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     const time_t now = time(NULL);
     uint32_t location_id = 0;
     uint16_t svc_info = 0; //service information
@@ -1677,9 +1724,9 @@ NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     svc_info = (uint16_t)ConvertBitIntoBytes(&Message[32], 16);
     rst_info = (uint32_t)ConvertBitIntoBytes(&Message[48], 24);
 
-    fprintf(stderr, "%s", KYEL);
-    fprintf(stderr, "\n Service Information - ");
-    fprintf(stderr, "Location ID [%06X] SVC [%04X] RST [%06X] ", location_id, svc_info, rst_info);
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Service Information - ");
+    DSD_FPRINTF(stderr, "Location ID [%06X] SVC [%04X] RST [%06X] ", location_id, svc_info, rst_info);
     nxdn_location_id_handler(state, location_id, 0);
 
     //run the srv info
@@ -1690,46 +1737,31 @@ NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         nxdn_rst_info_handler(state, rst_info);
     }
 
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 
-    //poll for current frequency, will always be the control channel
-    //this PDU is constantly pumped out on the CC CAC Message
-    if ((opts->trunk_enable == 1 || opts->p25_trunk == 1)
-        && opts->trunk_is_tuned
-               == 0) //changed this so the rtl tuning lag doesn't set RTCH frequency after tuning but before landing
-    {
-        long int ccfreq = 0;
-        //if using rigctl, we can poll for the current frequency
-        if (opts->use_rigctl == 1) {
-            ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-            if (ccfreq != 0) {
-                state->p25_cc_freq = ccfreq;
-                state->trunk_cc_freq = ccfreq;
-            }
-        }
-        //if using rtl input, we can ask for the current frequency tuned
-        else if (opts->audio_in_type
-                 == 3) //after changing to rtl_dev_tune, this may lag a bit due to delay in sample delivery?
-        {
-            ccfreq = (long int)opts->rtlsdr_center_freq;
-            if (ccfreq != 0) {
-                state->p25_cc_freq = ccfreq;
-                state->trunk_cc_freq = ccfreq;
-            }
-        }
-    }
+    nxdn_anchor_control_channel_from_current_tuner(opts, state, 0);
 
     //clear stale active channel listing -- consider best placement for this (NXDN Type C Trunking -- inside SRV_INFO)
     if ((now - state->last_active_time) > 3) {
-        memset(state->active_channel, 0, sizeof(state->active_channel));
+        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
         state->nxdn_grant_chan = 0;
         state->nxdn_grant_freq = 0;
     }
 }
 
-void
-NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
+static void
+NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
     UNUSED(opts);
+
+    enum {
+        NXDN_SITE_INFO_MIN_BITS = 144U,
+    };
+
+    if (message_bits < NXDN_SITE_INFO_MIN_BITS) {
+        DSD_FPRINTF(stderr, " SITE_INFO Too Short (%zu bits); ", message_bits);
+        return;
+    }
+
     uint32_t location_id = 0;
     uint16_t cs_info = 0;  //channel structure information
     uint16_t svc_info = 0; //service information
@@ -1757,9 +1789,10 @@ NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     //check the channel access information first
     nxdn_ca_info_handler(state, ca_info);
 
-    fprintf(stderr, "%s", KYEL);
-    fprintf(stderr, "\n Location ID [%06X] CSC [%04X] SVC [%04X] RST [%06X] \n          CA [%06X] V[%X] ADJ [%01X] ",
-            location_id, cs_info, svc_info, rst_info, ca_info, version_num, adj_alloc);
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr,
+                "\n Location ID [%06X] CSC [%04X] SVC [%04X] RST [%06X] \n          CA [%06X] V[%X] ADJ [%01X] ",
+                location_id, cs_info, svc_info, rst_info, ca_info, version_num, adj_alloc);
     nxdn_location_id_handler(state, location_id, 0);
 
     //run the srv info
@@ -1773,841 +1806,724 @@ NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     //only get frequencies if using channel version of message and not dfa
     if (state->nxdn_rcn == 0) {
         if (channel1 != 0) {
-            fprintf(stderr, "\n Control Channel 1 [%03X][%04d] ", channel1, channel1);
+            DSD_FPRINTF(stderr, "\n Control Channel 1 [%03X][%04d] ", channel1, channel1);
             // freq1 not used
         }
         if (channel2 != 0) {
-            fprintf(stderr, "\n Control Channel 2 [%03X][%04d] ", channel2, channel2);
+            DSD_FPRINTF(stderr, "\n Control Channel 2 [%03X][%04d] ", channel2, channel2);
             // freq2 not used
         }
     } else {
         ; //DFA version does not carry an OFN/IFN value, so no freqs
     }
 
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
-void
-NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
+static void
+NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
+    enum {
+        NXDN_ADJ_SITE_CH_MIN_BITS = 128U,
+        NXDN_ADJ_SITE_DFA_MIN_BITS = 104U,
+    };
+
     //the size of this PDU can vary, but the adj_site_location_id and/or channel will be NULL or 0 if not enough space to fill it
     //will want to monitor this PDU for potential overflow related issues with the Message or ElementContent size
 
     //up to four adj_site_location_ids can be conveyed -- see 6.4.3.4 for more information
-    uint32_t adj1_site = 0;
-    uint32_t adj2_site = 0;
-    uint32_t adj3_site = 0;
-    //options -- 6.5.38. Adjacent Site Option -- 4 LSB are Site Number, 2 MSB are spares
-    uint8_t adj1_opt = 0;
-    uint8_t adj2_opt = 0;
-    uint8_t adj3_opt = 0;
-    //channel or OFN
-    uint16_t adj1_chan = 0;
-    uint16_t adj2_chan = 0;
-    uint16_t adj3_chan = 0;
-    //DFA only BW value
-    uint8_t adj1_bw = 0;
-    uint8_t adj2_bw = 0;
-
-    fprintf(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "%s", KYEL);
 
     //Channel Version
     if (state->nxdn_rcn == 0) {
+        if (message_bits < NXDN_ADJ_SITE_CH_MIN_BITS) {
+            DSD_FPRINTF(stderr, " ADJ_SITE(CH) Too Short (%zu bits); ", message_bits);
+            DSD_FPRINTF(stderr, "%s", KNRM);
+            return;
+        }
         //1
-        adj1_site = (uint32_t)ConvertBitIntoBytes(&Message[8], 24);
-        adj1_opt = (uint8_t)ConvertBitIntoBytes(&Message[32], 6);
-        adj1_chan = (uint16_t)ConvertBitIntoBytes(&Message[38], 10);
+        const uint32_t adj1_site = (uint32_t)ConvertBitIntoBytes(&Message[8], 24);
+        const uint8_t adj1_opt = (uint8_t)ConvertBitIntoBytes(&Message[32], 6);
+        const uint16_t adj1_chan = (uint16_t)ConvertBitIntoBytes(&Message[38], 10);
         //2
-        adj2_site = (uint32_t)ConvertBitIntoBytes(&Message[48], 24);
-        adj2_opt = (uint8_t)ConvertBitIntoBytes(&Message[72], 6);
-        adj2_chan = (uint16_t)ConvertBitIntoBytes(&Message[78], 10);
+        const uint32_t adj2_site = (uint32_t)ConvertBitIntoBytes(&Message[48], 24);
+        const uint8_t adj2_opt = (uint8_t)ConvertBitIntoBytes(&Message[72], 6);
+        const uint16_t adj2_chan = (uint16_t)ConvertBitIntoBytes(&Message[78], 10);
         //3
-        adj3_site = (uint32_t)ConvertBitIntoBytes(&Message[88], 24);
-        adj3_opt = (uint8_t)ConvertBitIntoBytes(&Message[112], 6);
-        adj3_chan = (uint16_t)ConvertBitIntoBytes(&Message[118], 10);
-        //4 -- facch2 only
-        // adj4_site = (uint32_t)ConvertBitIntoBytes(&Message[128], 24);
-        // adj4_opt = (uint8_t)ConvertBitIntoBytes(&Message[152], 6);
-        // adj4_chan = (uint16_t)ConvertBitIntoBytes(&Message[158], 10);
+        const uint32_t adj3_site = (uint32_t)ConvertBitIntoBytes(&Message[88], 24);
+        const uint8_t adj3_opt = (uint8_t)ConvertBitIntoBytes(&Message[112], 6);
+        const uint16_t adj3_chan = (uint16_t)ConvertBitIntoBytes(&Message[118], 10);
 
-        if (adj1_opt & 0xF) {
-            fprintf(stderr, "\n Adjacent Site %d ", adj1_opt & 0xF);
-            fprintf(stderr, "Channel [%03X] [%04d]", adj1_chan, adj1_chan);
-            nxdn_location_id_handler(state, adj1_site, 1);
-            nxdn_channel_to_frequency(opts, state, adj1_chan);
-        }
-        if (adj2_opt & 0xF) {
-            fprintf(stderr, "\n Adjacent Site %d ", adj2_opt & 0xF);
-            fprintf(stderr, "Channel [%03X] [%04d]", adj2_chan, adj2_chan);
-            nxdn_location_id_handler(state, adj2_site, 1);
-            nxdn_channel_to_frequency(opts, state, adj2_chan);
-        }
-        if (adj3_opt & 0xF) {
-            fprintf(stderr, "\n Adjacent Site %d ", adj3_opt & 0xF);
-            fprintf(stderr, "Channel [%03X] [%04d]", adj3_chan, adj3_chan);
-            nxdn_location_id_handler(state, adj3_site, 1);
-            nxdn_channel_to_frequency(opts, state, adj3_chan);
-        }
-        // if (adj4_opt & 0xF) //facch2 only
-        // {
-        //   fprintf (stderr, "\n Adjacent Site %d: ", adj4_opt & 0xF);
-        //   fprintf (stderr, "Channel [%03X] [%04d]", adj4_chan, adj4_chan);
-        //   nxdn_location_id_handler(state, adj4_site, 1);
-        //   nxdn_channel_to_frequency (opts, state, adj4_chan);
-        // }
+        nxdn_adj_site_channel_entry(opts, state, adj1_site, adj1_opt, adj1_chan);
+        nxdn_adj_site_channel_entry(opts, state, adj2_site, adj2_opt, adj2_chan);
+        nxdn_adj_site_channel_entry(opts, state, adj3_site, adj3_opt, adj3_chan);
     }
 
     //DFA Version
     if (state->nxdn_rcn == 1) {
+        if (message_bits < NXDN_ADJ_SITE_DFA_MIN_BITS) {
+            DSD_FPRINTF(stderr, " ADJ_SITE(DFA) Too Short (%zu bits); ", message_bits);
+            DSD_FPRINTF(stderr, "%s", KNRM);
+            return;
+        }
         //1
-        adj1_site = (uint32_t)ConvertBitIntoBytes(&Message[8], 24);
-        adj1_opt = (uint8_t)ConvertBitIntoBytes(&Message[32], 6);
-        adj1_bw = (uint8_t)ConvertBitIntoBytes(&Message[38], 2);
-        adj1_chan = (uint16_t)ConvertBitIntoBytes(&Message[40], 16);
+        const uint32_t adj1_site = (uint32_t)ConvertBitIntoBytes(&Message[8], 24);
+        const uint8_t adj1_opt = (uint8_t)ConvertBitIntoBytes(&Message[32], 6);
+        const uint8_t adj1_bw = (uint8_t)ConvertBitIntoBytes(&Message[38], 2);
+        const uint16_t adj1_chan = (uint16_t)ConvertBitIntoBytes(&Message[40], 16);
         //2
-        adj2_site = (uint32_t)ConvertBitIntoBytes(&Message[56], 24);
-        adj2_opt = (uint8_t)ConvertBitIntoBytes(&Message[80], 6);
-        adj2_bw = (uint8_t)ConvertBitIntoBytes(&Message[86], 2);
-        adj2_chan = (uint16_t)ConvertBitIntoBytes(&Message[88], 16);
-        //3 -- facch2 only
-        // adj3_site = (uint32_t)ConvertBitIntoBytes(&Message[104], 24);
-        // adj3_opt = (uint8_t)ConvertBitIntoBytes(&Message[128], 6);
-        // adj3_bw = (uint8_t)ConvertBitIntoBytes(&Message[134], 2);
-        // adj3_chan = (uint16_t)ConvertBitIntoBytes(&Message[136], 16);
+        const uint32_t adj2_site = (uint32_t)ConvertBitIntoBytes(&Message[56], 24);
+        const uint8_t adj2_opt = (uint8_t)ConvertBitIntoBytes(&Message[80], 6);
+        const uint8_t adj2_bw = (uint8_t)ConvertBitIntoBytes(&Message[86], 2);
+        const uint16_t adj2_chan = (uint16_t)ConvertBitIntoBytes(&Message[88], 16);
 
-        if (adj1_opt & 0xF) {
-            fprintf(stderr, "\n Adjacent Site %d ", adj1_opt & 0xF);
-            fprintf(stderr, "Channel [%04X] [%05d] ", adj1_chan, adj1_chan);
-            if (adj1_bw == 0) {
-                fprintf(stderr, "BW: 6.25 kHz - 4800 bps");
-            } else if (adj1_bw == 1) {
-                fprintf(stderr, "BW: 12.5 kHz - 9600 bps");
-            } else {
-                fprintf(stderr, "BW: %d Reserved Value", adj1_bw);
-            }
-            nxdn_location_id_handler(state, adj1_site, 1);
-            nxdn_channel_to_frequency(opts, state, adj1_chan);
-        }
-        if (adj2_opt & 0xF) {
-            fprintf(stderr, "\n Adjacent Site %d ", adj2_opt & 0xF);
-            fprintf(stderr, "Channel [%04X] [%05d] ", adj2_chan, adj2_chan);
-            if (adj2_bw == 0) {
-                fprintf(stderr, "BW: 6.25 kHz - 4800 bps");
-            } else if (adj2_bw == 1) {
-                fprintf(stderr, "BW: 12.5 kHz - 9600 bps");
-            } else {
-                fprintf(stderr, "BW: %d Reserved Value", adj2_bw);
-            }
-            nxdn_location_id_handler(state, adj2_site, 1);
-            nxdn_channel_to_frequency(opts, state, adj2_chan);
-        }
-        // if (adj3_opt & 0xF) //facch2 only
-        // {
-        //   fprintf (stderr, "\n Adjacent Site %d: ", adj3_opt & 0xF);
-        //   fprintf (stderr, "Channel [%04X] [%05d] ", adj3_chan, adj3_chan);
-        //   if (adj3_bw == 0) fprintf (stderr, "BW: 6.25 kHz - 4800 bps");
-        //   else if (adj3_bw == 1) fprintf (stderr, "BW: 12.5 kHz - 9600 bps");
-        //   else fprintf (stderr, "BW: %d Reserved Value", adj3_bw);
-        //   nxdn_location_id_handler(state, adj3_site, 1);
-        //   nxdn_channel_to_frequency (opts, state, adj3_chan);
-        // }
+        nxdn_adj_site_dfa_entry(opts, state, adj1_site, adj1_opt, adj1_bw, adj1_chan);
+        nxdn_adj_site_dfa_entry(opts, state, adj2_site, adj2_opt, adj2_bw, adj2_chan);
     }
 
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
-void
-NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
-    UNUSED(opts);
+struct nxdn_vcall_info {
+    uint8_t message_type;
+    uint8_t cc_option;
+    uint8_t call_type;
+    uint8_t voice_call_option;
+    uint8_t cipher_type;
+    uint8_t key_id;
+    uint8_t idas;
+    uint8_t rep1;
+    uint16_t source_unit_id;
+    uint16_t destination_id;
+};
 
-    uint8_t CCOption = 0;
-    uint8_t CallType = 0;
-    uint8_t VoiceCallOption = 0;
-    uint16_t SourceUnitID = 0;
-    uint16_t DestinationID = 0;
-    uint8_t CipherType = 0;
-    uint8_t KeyID = 0;
-    uint8_t DuplexMode[32] = {0};
-    uint8_t TransmissionMode[32] = {0};
+static void
+nxdn_vcall_parse(dsd_state* state, const uint8_t* Message, struct nxdn_vcall_info* info) {
+    DSD_MEMSET(info, 0, sizeof(*info));
+    info->message_type = nxdn_message_type_from_bits(Message);
+    info->cc_option = (uint8_t)ConvertBitIntoBytes(&Message[8], 8);
+    info->call_type = (uint8_t)ConvertBitIntoBytes(&Message[16], 3);
+    info->voice_call_option = (uint8_t)ConvertBitIntoBytes(&Message[19], 5);
+    info->source_unit_id = (uint16_t)ConvertBitIntoBytes(&Message[24], 16);
+    info->destination_id = (uint16_t)ConvertBitIntoBytes(&Message[40], 16);
+    info->cipher_type = (uint8_t)ConvertBitIntoBytes(&Message[56], 2);
+    info->key_id = (uint8_t)ConvertBitIntoBytes(&Message[58], 6);
 
-    uint8_t MessageType;
-    /* Get the "Message Type" field */
-    MessageType = (Message[2] & 1) << 5;
-    MessageType |= (Message[3] & 1) << 4;
-    MessageType |= (Message[4] & 1) << 3;
-    MessageType |= (Message[5] & 1) << 2;
-    MessageType |= (Message[6] & 1) << 1;
-    MessageType |= (Message[7] & 1) << 0;
+    state->NxdnElementsContent.CCOption = info->cc_option;
+    state->NxdnElementsContent.CallType = info->call_type;
+    state->NxdnElementsContent.VoiceCallOption = info->voice_call_option;
+    state->NxdnElementsContent.SourceUnitID = info->source_unit_id;
+    state->NxdnElementsContent.DestinationID = info->destination_id;
+    state->NxdnElementsContent.CipherType = info->cipher_type;
+    state->NxdnElementsContent.KeyID = info->key_id;
 
-    if (MessageType == 0x01) {
-        fprintf(stderr, "%s", KGRN); // VCALL
-    } else if (MessageType == 0x07 || MessageType == 0x08) {
-        fprintf(stderr, "%s", KYEL); // TX_REL_EXT / TX_REL
-    } else if (MessageType == 0x11) {
-        fprintf(stderr, "%s", KRED); // DISC
+    info->idas = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
+    if (info->idas != 0U) {
+        info->rep1 = (uint8_t)((info->source_unit_id >> 11) & 0x1FU);
+        info->source_unit_id &= 0x7FFU;
+        info->destination_id &= 0x7FFU;
     }
+}
 
-    /* Decode "CC Option" */
-    CCOption = (uint8_t)ConvertBitIntoBytes(&Message[8], 8);
-    state->NxdnElementsContent.CCOption = CCOption;
-
-    /* Decode "Call Type" */
-    CallType = (uint8_t)ConvertBitIntoBytes(&Message[16], 3);
-    state->NxdnElementsContent.CallType = CallType;
-
-    /* Decode "Voice Call Option" */
-    VoiceCallOption = (uint8_t)ConvertBitIntoBytes(&Message[19], 5);
-    state->NxdnElementsContent.VoiceCallOption = VoiceCallOption;
-
-    /* Decode "Source Unit ID" */
-    SourceUnitID = (uint16_t)ConvertBitIntoBytes(&Message[24], 16);
-    state->NxdnElementsContent.SourceUnitID = SourceUnitID;
-
-    /* Decode "Destination ID" */
-    DestinationID = (uint16_t)ConvertBitIntoBytes(&Message[40], 16);
-    state->NxdnElementsContent.DestinationID = DestinationID;
-
-    //On Type-D systems, need to truncate to an 11-bit value
-    //other 5-bits are repeater or prefix value
-    uint8_t idas = 0;
-    uint8_t rep1 = 0;
-    uint8_t rep2 = 0;
-    UNUSED(rep2);
-    if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
-        idas = 1;
+static void
+nxdn_vcall_print_color(uint8_t message_type) {
+    if (message_type == 0x01U) {
+        DSD_FPRINTF(stderr, "%s", KGRN);
+    } else if (message_type == 0x07U || message_type == 0x08U) {
+        DSD_FPRINTF(stderr, "%s", KYEL);
+    } else if (message_type == 0x11U) {
+        DSD_FPRINTF(stderr, "%s", KRED);
     }
-    if (idas) {
-        rep1 = (SourceUnitID >> 11) & 0x1F;
-        // rep2 not used
-        SourceUnitID = SourceUnitID & 0x7FF;
-        DestinationID = DestinationID & 0x7FF;
-    }
+}
 
-    /* Decode the "Cipher Type" */
-    CipherType = (uint8_t)ConvertBitIntoBytes(&Message[56], 2);
-    state->NxdnElementsContent.CipherType = CipherType;
-
-    /* Decode the "Key ID" */
-    KeyID = (uint8_t)ConvertBitIntoBytes(&Message[58], 6);
-    state->NxdnElementsContent.KeyID = KeyID;
-
-    fprintf(stderr, "\n ");
-
-    /* Print the "CC Option" */
-    if (CCOption & 0x80) {
-        fprintf(stderr, "Emergency ");
-    }
-    if (CCOption & 0x40) {
-        fprintf(stderr, "Visitor ");
-    }
-    if (CCOption & 0x20) {
-        fprintf(stderr, "Priority Paging ");
-    }
-
-    //Call String for Per Call WAV File
-    sprintf(state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
-    if (CCOption & 0x80) {
+static void
+nxdn_vcall_update_call_string(dsd_state* state, const struct nxdn_vcall_info* info) {
+    DSD_SPRINTF(state->call_string[0], "%s", NXDN_Call_Type_To_Str(info->call_type));
+    if (info->cc_option & 0x80U) {
         dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
     }
-    if (CipherType) {
+    if (info->cipher_type) {
         dsd_append(state->call_string[0], sizeof state->call_string[0], " Enc");
     }
-
-    if ((CipherType == 2) || (CipherType == 3)) {
+    if (info->cipher_type == 2U || info->cipher_type == 3U) {
         state->NxdnElementsContent.PartOfCurrentEncryptedFrame = 1;
         state->NxdnElementsContent.PartOfNextEncryptedFrame = 2;
     } else {
         state->NxdnElementsContent.PartOfCurrentEncryptedFrame = 1;
         state->NxdnElementsContent.PartOfNextEncryptedFrame = 1;
     }
+}
 
-    /* Print the "Call Type" */
-    fprintf(stderr, "%s - ", NXDN_Call_Type_To_Str(CallType));
-    sprintf(state->nxdn_call_type, "%s", NXDN_Call_Type_To_Str(CallType));
-
-    /* Print the "Voice Call Option" */
-    if (MessageType == 0x1) {
-        NXDN_Voice_Call_Option_To_Str(VoiceCallOption, DuplexMode, TransmissionMode);
+static void
+nxdn_vcall_print_voice_option(const struct nxdn_vcall_info* info) {
+    uint8_t duplex_mode[32] = {0};
+    uint8_t transmission_mode[32] = {0};
+    if (info->message_type == 0x01U) {
+        NXDN_Voice_Call_Option_To_Str(info->voice_call_option, duplex_mode, transmission_mode);
+        DSD_FPRINTF(stderr, "%s %s (%02X) - ", duplex_mode, transmission_mode, info->voice_call_option);
+    } else if (info->message_type == 0x07U) {
+        DSD_FPRINTF(stderr, "Transmission Release Ex - ");
+    } else if (info->message_type == 0x08U) {
+        DSD_FPRINTF(stderr, "  Transmission Release  - ");
+    } else if (info->message_type == 0x11U) {
+        DSD_FPRINTF(stderr, "       Disconnect       - ");
     }
-    if (MessageType == 0x1) {
-        fprintf(stderr, "%s %s (%02X) - ", DuplexMode, TransmissionMode, VoiceCallOption);
-    } else if (MessageType == 0x07) {
-        fprintf(stderr, "Transmission Release Ex - "); //TX_REL_EX
-    } else if (MessageType == 0x08) {
-        fprintf(stderr, "  Transmission Release  - "); //TX_REL
-    } else if (MessageType == 0x11) {
-        fprintf(stderr, "       Disconnect       - "); //DISC
+}
+
+static void
+nxdn_vcall_print_summary(dsd_state* state, const struct nxdn_vcall_info* info) {
+    nxdn_vcall_print_color(info->message_type);
+    DSD_FPRINTF(stderr, "\n ");
+    if (info->cc_option & 0x80U) {
+        DSD_FPRINTF(stderr, "Emergency ");
+    }
+    if (info->cc_option & 0x40U) {
+        DSD_FPRINTF(stderr, "Visitor ");
+    }
+    if (info->cc_option & 0x20U) {
+        DSD_FPRINTF(stderr, "Priority Paging ");
     }
 
-    /* Print Source ID and Destination ID (Talk Group or Unit ID) */
-    fprintf(stderr, "Src=%u - Dst/TG=%u ", SourceUnitID & 0xFFFF, DestinationID & 0xFFFF);
-
-    //Channel here appears to be the prefix or home channel of the caller, not necessarily the channel the call is occuring on
-    if (idas) {
-        fprintf(stderr, "- Prefix Ch: %d ", rep1);
+    nxdn_vcall_update_call_string(state, info);
+    DSD_FPRINTF(stderr, "%s - ", NXDN_Call_Type_To_Str(info->call_type));
+    DSD_SPRINTF(state->nxdn_call_type, "%s", NXDN_Call_Type_To_Str(info->call_type));
+    nxdn_vcall_print_voice_option(info);
+    DSD_FPRINTF(stderr, "Src=%u - Dst/TG=%u ", info->source_unit_id & 0xFFFF, info->destination_id & 0xFFFF);
+    if (info->idas) {
+        DSD_FPRINTF(stderr, "- Prefix Ch: %d ", info->rep1);
     }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
 
-    fprintf(stderr, "%s", KNRM);
+static void
+nxdn_vcall_load_aes_key(dsd_state* state, uint32_t key_index) {
+    state->A1[0] = state->rkey_array[key_index + 0x000];
+    state->A2[0] = state->rkey_array[key_index + 0x101];
+    state->A3[0] = state->rkey_array[key_index + 0x201];
+    state->A4[0] = state->rkey_array[key_index + 0x301];
+    state->aes_key_loaded[0] =
+        (state->A1[0] == 0 && state->A2[0] == 0 && state->A3[0] == 0 && state->A4[0] == 0) ? 0 : 1;
 
-    //if using the keyloader, then check for a key value first by the key id,
-    //and then if not available, check by the destination (TG) id value
-    //also, for DES and AES, set the nxdn_key varialbe to the DestID for IV and KS gen
-    if (state->keyloader == 1) {
-        //if Scrambler Key (and not running NXDN96 since that has VCALL in the non-voice frames)
-        //NOTE: The scrambler seed carries on the state->R variable so that will reset incorrectly on NXDN96
-        //NOTE: Observed on system with scrambler and AES keys on same TG, disabling loading DES and AES key by DestID
-        if (CipherType == 1 && opts->frame_nxdn48 == 1 && opts->frame_nxdn96 == 0) {
-            if (state->rkey_array[KeyID] != 0) {
-                state->R = state->rkey_array[KeyID];
-            } else if (state->rkey_array[DestinationID] != 0) {
-                state->R = state->rkey_array[DestinationID];
-            }
+    for (int i = 0; i < 8; i++) {
+        state->aes_key[i + 0] = (state->A1[0] >> (56 - (i * 8))) & 0xFF;
+        state->aes_key[i + 8] = (state->A2[0] >> (56 - (i * 8))) & 0xFF;
+        state->aes_key[i + 16] = (state->A3[0] >> (56 - (i * 8))) & 0xFF;
+        state->aes_key[i + 24] = (state->A4[0] >> (56 - (i * 8))) & 0xFF;
+    }
+    state->R = state->A1[0];
+}
+
+static void
+nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
+    if (state->keyloader != 1) {
+        return;
+    }
+    if (info->cipher_type == 1U && opts->frame_nxdn48 == 1 && opts->frame_nxdn96 == 0) {
+        if (state->rkey_array[info->key_id] != 0) {
+            state->R = state->rkey_array[info->key_id];
+        } else if (state->rkey_array[info->destination_id] != 0) {
+            state->R = state->rkey_array[info->destination_id];
         }
-
-        //if DES Key
-        else if (CipherType == 2) {
-            if (state->rkey_array[KeyID] != 0) {
-                state->R = state->rkey_array[KeyID];
-            }
-            // else if (state->rkey_array[DestinationID] != 0)
-            // {
-            //   state->R = state->rkey_array[DestinationID];
-            //   state->nxdn_key = DestinationID;
-            // }
+    } else if (info->cipher_type == 2U && state->rkey_array[info->key_id] != 0) {
+        state->R = state->rkey_array[info->key_id];
+    } else if (info->cipher_type == 3U) {
+        uint32_t key_index = 0;
+        if (state->rkey_array[info->key_id] != 0) {
+            key_index = info->key_id;
         }
+        nxdn_vcall_load_aes_key(state, key_index);
+    }
+}
 
-        //if AES Key
-        else if (CipherType == 3) {
-            uint32_t kidx = 0;
-            if (state->rkey_array[KeyID] != 0) {
-                kidx = KeyID;
-            }
-            // else if (state->rkey_array[DestinationID] != 0)
-            // {
-            //   kidx = DestinationID;
-            //   state->nxdn_key = DestinationID;
-            // }
+static void
+nxdn_vcall_print_cipher(const dsd_state* state, const struct nxdn_vcall_info* info) {
+    if (info->cipher_type != 0U && info->message_type == 0x01U) {
+        DSD_FPRINTF(stderr, "\n  %s", KYEL);
+        DSD_FPRINTF(stderr, "%s - ", NXDN_Cipher_Type_To_Str(info->cipher_type));
+        DSD_FPRINTF(stderr, "Key ID %u - ", info->key_id & 0xFFU);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+    if (info->cipher_type == 0x01U && state->R > 0) {
+        DSD_FPRINTF(stderr, "%s", KYEL);
+        DSD_FPRINTF(stderr, "Value: %05lld", state->R);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+    if (info->cipher_type == 0x02U && state->R > 0) {
+        DSD_FPRINTF(stderr, "%s", KYEL);
+        DSD_FPRINTF(stderr, "Value: %016llX", state->R);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+    if (info->cipher_type == 0x03U && state->R > 0) {
+        DSD_FPRINTF(stderr, "%s", KYEL);
+        DSD_FPRINTF(stderr, "KS: %016llX", state->R);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+}
 
-            state->A1[0] = state->rkey_array[kidx + 0x000];
-            state->A2[0] = state->rkey_array[kidx + 0x101];
-            state->A3[0] = state->rkey_array[kidx + 0x201];
-            state->A4[0] = state->rkey_array[kidx + 0x301];
+static int
+nxdn_vcall_gi(uint8_t call_type) {
+    if (call_type == 0U || call_type == 1U) {
+        return 0;
+    }
+    if (call_type == 4U) {
+        return 1;
+    }
+    return -1;
+}
 
-            //check to see if there is a value loaded or not
-            if (state->A1[0] == 0 && state->A2[0] == 0 && state->A3[0] == 0 && state->A4[0] == 0) {
-                state->aes_key_loaded[0] = 0;
-            } else {
-                state->aes_key_loaded[0] = 1;
-            }
-
-            for (int i = 0; i < 8; i++) {
-                state->aes_key[i + 0] = (state->A1[0] >> (56 - (i * 8))) & 0xFF;
-                state->aes_key[i + 8] = (state->A2[0] >> (56 - (i * 8))) & 0xFF;
-                state->aes_key[i + 16] = (state->A3[0] >> (56 - (i * 8))) & 0xFF;
-                state->aes_key[i + 24] = (state->A4[0] >> (56 - (i * 8))) & 0xFF;
-            }
-
-            state->R = state->A1[0]; //display KS stub
+static void
+nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
+    if (info->message_type == 0x01U) {
+        if ((info->voice_call_option & 0x0FU) < 4U) {
+            state->nxdn_last_rid = info->source_unit_id;
         }
-
-    } //end state->keyloader == 1
-
-    /* Print the "Cipher Type" */
-    if (CipherType != 0 && MessageType == 0x1) {
-        fprintf(stderr, "\n  %s", KYEL);
-        fprintf(stderr, "%s - ", NXDN_Cipher_Type_To_Str(CipherType));
-    }
-
-    /* Print the Key ID */
-    if (CipherType != 0 && MessageType == 0x1) {
-        fprintf(stderr, "Key ID %u - ", KeyID & 0xFF);
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    if (CipherType == 0x01 && state->R > 0) //scrambler key value
-    {
-        fprintf(stderr, "%s", KYEL);
-        fprintf(stderr, "Value: %05lld", state->R);
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    if (CipherType == 0x02 && state->R > 0) //DES key value
-    {
-        fprintf(stderr, "%s", KYEL);
-        fprintf(stderr, "Value: %016llX", state->R);
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    if (CipherType == 0x03 && state->R > 0) //AES key stub
-    {
-        fprintf(stderr, "%s", KYEL);
-        fprintf(stderr, "KS: %016llX", state->R);
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    //only grab if VCALL
-    if (MessageType == 0x1) {
-        //only assign rid if not spare and not reserved (happens on private calls, unsure of its significance)
-        if ((VoiceCallOption & 0xF) < 4) { //ideally, only want 0, 1, 2, 3, or 4 (or 6, 7 on telephone calls)
-            state->nxdn_last_rid = SourceUnitID;
-        }
-        state->nxdn_last_tg = DestinationID;
-        state->nxdn_key = KeyID;
-        if (CallType == 0 || CallType == 1) { //broadcast and group
-            state->gi[0] = 0;
-        } else if (CallType == 4) { //private
-            state->gi[0] = 1;
-        } else {
-            state->gi[0] = -1; //unassigned on any other values
-        }
-        state->nxdn_cipher_type = CipherType;
+        state->nxdn_last_tg = info->destination_id;
+        state->nxdn_key = info->key_id;
+        state->gi[0] = nxdn_vcall_gi(info->call_type);
+        state->nxdn_cipher_type = info->cipher_type;
     } else {
         state->nxdn_last_rid = 0;
         state->nxdn_last_tg = 0;
         state->gi[0] = -1;
-        sprintf(state->generic_talker_alias[0], "%s", "");
+        DSD_SPRINTF(state->generic_talker_alias[0], "%s", "");
         nxdn_alias_reset(state);
     }
 
-    //set enc bit here so we can tell playSynthesizedVoice whether or not to play enc traffic
-    if (state->nxdn_cipher_type != 0) {
-        state->dmr_encL = 1;
-    }
+    state->dmr_encL = (state->nxdn_cipher_type != 0) ? 1 : 0;
     if (state->nxdn_cipher_type == 0 || state->R != 0) {
         state->dmr_encL = 0;
     }
+}
 
-    //TG ENC LO/B if ENC trunked following disabled #121 -- was locking out everything
-    if (opts->p25_trunk == 1 && opts->trunk_tune_enc_calls == 0 && MessageType == 0x1 && state->dmr_encL == 1) {
-        int lo = 0;
-        char gm[8] = {0};
-        char gn[50] = {0};
-        dsd_tg_policy_entry lockout_entry;
+static int
+nxdn_vcall_lockout_label(dsd_state* state, uint16_t destination_id, char gm[8], char gn[50]) {
+    dsd_tg_policy_entry lockout_entry;
+    if (destination_id != 0 && dsd_tg_policy_lookup_label(state, destination_id, gm, 8, gn, 50)) {
+        return 1;
+    }
+    if (dsd_tg_policy_make_exact_entry(destination_id, "DE", "ENC LO", DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &lockout_entry)
+            == 0
+        && dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0) {
+        DSD_SNPRINTF(gm, 8, "%s", "DE");
+        DSD_SNPRINTF(gn, 50, "%s", "ENC LO");
+        return 0;
+    }
+    return 1;
+}
 
-        //check to see if this group already exists, or has already been locked out, or is allowed
-        if (DestinationID != 0 && dsd_tg_policy_lookup_label(state, DestinationID, gm, sizeof(gm), gn, sizeof(gn))) {
-            lo = 1;
-        }
-
-        //if group doesn't exist, or isn't locked out, then do so now.
-        if (lo == 0) {
-            if (dsd_tg_policy_make_exact_entry(DestinationID, "DE", "ENC LO", DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
-                                               &lockout_entry)
-                    == 0
-                && dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0) {
-                snprintf(gm, sizeof(gm), "%s", "DE");
-                snprintf(gn, sizeof(gn), "%s", "ENC LO");
-            } else {
-                lo = 1;
-            }
-        }
-
-        //run a watchdog here so we can update this with the crypto variables and ENC LO
-        if (DestinationID != 0 && lo == 0) {
-            sprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
-                    "Target: %d; has been locked out; Encryption Lock Out Enabled.", DestinationID);
-            watchdog_event_current(opts, state, 0);
-        }
-
-        //Craft a fake DISC Message send it to return to CC
-        uint8_t dbits[96];
-        memset(dbits, 0, sizeof(dbits));
-        dbits[3] = 1;
-        dbits[7] = 1; //DISC = 0x11;
-        if ((strcmp(gm, "DE") == 0) && (strcmp(gn, "ENC LO") == 0)) {
-            NXDN_Elements_Content_decode(opts, state, 1, dbits, sizeof(dbits));
-        }
+static void
+nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
+    if (opts->p25_trunk != 1 || opts->trunk_tune_enc_calls != 0 || info->message_type != 0x01U
+        || state->dmr_encL != 1) {
+        return;
     }
 
-} /* End NXDN_decode_VCALL() */
+    char gm[8] = {0};
+    char gn[50] = {0};
+    const int locked = nxdn_vcall_lockout_label(state, info->destination_id, gm, gn);
+    if (info->destination_id != 0 && locked == 0) {
+        DSD_SPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
+                    "Target: %d; has been locked out; Encryption Lock Out Enabled.", info->destination_id);
+        watchdog_event_current(opts, state, 0);
+    }
 
-void
-NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
+    uint8_t dbits[96];
+    DSD_MEMSET(dbits, 0, sizeof(dbits));
+    dbits[3] = 1;
+    dbits[7] = 1;
+    if ((strcmp(gm, "DE") == 0) && (strcmp(gn, "ENC LO") == 0)) {
+        NXDN_Elements_Content_decode(opts, state, 1, dbits, sizeof(dbits));
+    }
+}
+
+static void
+NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
+    struct nxdn_vcall_info info;
+    nxdn_vcall_parse(state, Message, &info);
+    nxdn_vcall_print_summary(state, &info);
+    nxdn_vcall_load_key(opts, state, &info);
+    nxdn_vcall_print_cipher(state, &info);
+    nxdn_vcall_apply_state(state, &info);
+    nxdn_vcall_run_enc_lockout(opts, state, &info);
+}
+
+static unsigned long long int
+nxdn_vcall_iv_extract(const dsd_state* state, const uint8_t* Message) {
+    if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
+        return (unsigned long long int)ConvertBitIntoBytes(&Message[8], 22);
+    }
+    return (unsigned long long int)ConvertBitIntoBytes(&Message[8], 64);
+}
+
+static void
+nxdn_vcall_iv_load_aes_key(dsd_state* state) {
+    state->A1[0] = state->rkey_array[state->nxdn_key + 0x000];
+    state->A2[0] = state->rkey_array[state->nxdn_key + 0x101];
+    state->A3[0] = state->rkey_array[state->nxdn_key + 0x201];
+    state->A4[0] = state->rkey_array[state->nxdn_key + 0x301];
+    state->aes_key_loaded[0] =
+        (state->A1[0] == 0 && state->A2[0] == 0 && state->A3[0] == 0 && state->A4[0] == 0) ? 0 : 1;
+
+    for (int i = 0; i < 8; i++) {
+        state->aes_key[i + 0] = (state->A1[0] >> (56 - (i * 8))) & 0xFF;
+        state->aes_key[i + 8] = (state->A2[0] >> (56 - (i * 8))) & 0xFF;
+        state->aes_key[i + 16] = (state->A3[0] >> (56 - (i * 8))) & 0xFF;
+        state->aes_key[i + 24] = (state->A4[0] >> (56 - (i * 8))) & 0xFF;
+    }
+
+    state->R = state->A1[0];
+}
+
+static void
+nxdn_vcall_iv_prepare_cipher(dsd_state* state) {
+    if (state->nxdn_cipher_type == 0x03 && state->keyloader == 1) {
+        nxdn_vcall_iv_load_aes_key(state);
+    }
+    if (state->nxdn_cipher_type == 0x03) {
+        LFSR128n(state);
+    }
+    if (state->nxdn_cipher_type == 0x02 && state->keyloader == 1 && state->rkey_array[state->nxdn_key] != 0) {
+        state->R = state->rkey_array[state->nxdn_key];
+    }
+    if (state->nxdn_cipher_type == 0x02 && state->R != 0) {
+        state->nxdn_new_iv = 1;
+    }
+    if (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1) {
+        state->nxdn_new_iv = 1;
+    }
+}
+
+static void
+NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     UNUSED(opts);
 
-    state->payload_miN = 0; //zero out
-    unsigned long long int IV = 0;
-
-    //NOTE: On Type-D systems, the FACCH1 version of message only carries a 4-octet payload and also only carries a 22-bit IV
-    //which makes no sense since you still have the full 80-bits of FACCH1 to use
-    uint8_t idas = 0;
-    if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
-        idas = 1;
+    state->payload_miN = nxdn_vcall_iv_extract(state, Message);
+    DSD_FPRINTF(stderr, "\n  VCALL_IV: %016llX", state->payload_miN);
+    if (state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03) {
+        nxdn_vcall_iv_prepare_cipher(state);
     }
-    if (!idas) {
-        IV = (unsigned long long int)ConvertBitIntoBytes(&Message[8], 64);
+}
+
+struct nxdn_scch_info {
+    time_t now;
+    uint8_t direction;
+    uint8_t sf;
+    uint8_t opcode;
+    uint8_t area;
+    uint8_t rep1;
+    uint8_t rep2;
+    uint8_t sitet;
+    uint8_t gu;
+    uint8_t iv_type;
+    uint8_t call_opt;
+    uint8_t key_id;
+    uint8_t cipher;
+    uint16_t id;
+    unsigned long long int iv_a;
+    unsigned long long int iv_b;
+    unsigned long long int iv_c;
+};
+
+static void
+nxdn_scch_parse(const uint8_t* Message, uint8_t direction, time_t now, struct nxdn_scch_info* info) {
+    DSD_MEMSET(info, 0, sizeof(*info));
+    info->now = now;
+    info->direction = direction;
+    info->sf = (uint8_t)ConvertBitIntoBytes(&Message[0], 2);
+    info->opcode = (uint8_t)(direction << 2 | info->sf);
+    info->area = Message[2];
+    info->rep1 = (uint8_t)ConvertBitIntoBytes(&Message[3], 5);
+    info->rep2 = (uint8_t)ConvertBitIntoBytes(&Message[8], 5);
+    info->id = (uint16_t)ConvertBitIntoBytes(&Message[13], 11);
+    info->sitet = (uint8_t)ConvertBitIntoBytes(&Message[3], 5);
+    info->gu = Message[24];
+    info->iv_a = (uint64_t)ConvertBitIntoBytes(&Message[13], 12);
+    info->iv_b = (uint64_t)ConvertBitIntoBytes(&Message[18], 6);
+    info->iv_c = (uint64_t)ConvertBitIntoBytes(&Message[8], 5);
+    info->iv_type = Message[24];
+    info->call_opt = (uint8_t)ConvertBitIntoBytes(&Message[13], 3);
+    info->key_id = (uint8_t)ConvertBitIntoBytes(&Message[18], 6);
+    info->cipher = (uint8_t)ConvertBitIntoBytes(&Message[16], 2);
+}
+
+static void
+nxdn_scch_print_payload_label(const dsd_opts* opts, const struct nxdn_scch_info* info) {
+    if (opts->payload != 1) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "%s ", info->direction == 0U ? "ISM" : "OSM");
+    if (info->sf == 0U) {
+        DSD_FPRINTF(stderr, "INFO4 ");
+    } else if (info->sf == 1U) {
+        DSD_FPRINTF(stderr, "INFO3 ");
+    } else if (info->sf == 2U) {
+        DSD_FPRINTF(stderr, "INFO2 ");
     } else {
-        IV = (unsigned long long int)ConvertBitIntoBytes(&Message[8], 22);
+        DSD_FPRINTF(stderr, "INFO1 ");
     }
-    //At this point, I would assume an LFSR function is needed to expand the 22-bit IV collected here into a 64-bit IV, or 128-bit IV
+    DSD_FPRINTF(stderr, "- ");
+    DSD_FPRINTF(stderr, "%02X ", info->opcode);
+}
 
-    state->payload_miN = IV;
-    fprintf(stderr, "\n  VCALL_IV: %016llX", state->payload_miN);
-
-    if (((state->nxdn_cipher_type == 0x02) || (state->nxdn_cipher_type == 0x03))) {
-
-        if (state->nxdn_cipher_type == 0x03 && state->keyloader == 1) {
-            state->A1[0] = state->rkey_array[state->nxdn_key + 0x000];
-            state->A2[0] = state->rkey_array[state->nxdn_key + 0x101];
-            state->A3[0] = state->rkey_array[state->nxdn_key + 0x201];
-            state->A4[0] = state->rkey_array[state->nxdn_key + 0x301];
-
-            //check to see if there is a value loaded or not
-            if (state->A1[0] == 0 && state->A2[0] == 0 && state->A3[0] == 0 && state->A4[0] == 0) {
-                state->aes_key_loaded[0] = 0;
-            } else {
-                state->aes_key_loaded[0] = 1;
-            }
-
-            for (int i = 0; i < 8; i++) {
-                state->aes_key[i + 0] = (state->A1[0] >> (56 - (i * 8))) & 0xFF;
-                state->aes_key[i + 8] = (state->A2[0] >> (56 - (i * 8))) & 0xFF;
-                state->aes_key[i + 16] = (state->A3[0] >> (56 - (i * 8))) & 0xFF;
-                state->aes_key[i + 24] = (state->A4[0] >> (56 - (i * 8))) & 0xFF;
-            }
-
-            state->R = state->A1[0]; //display KS stub
-        }
-
-        //expand the IV into 128-bit
-        if (state->nxdn_cipher_type == 0x03) {
-            LFSR128n(state);
-        }
-
-        if (state->nxdn_cipher_type == 0x02 && state->keyloader == 1) {
-            if (state->rkey_array[state->nxdn_key] != 0) {
-                state->R = state->rkey_array[state->nxdn_key];
-            }
-        }
-
-        //signal a new IV is available, but only when the other checks pass
-        if (state->nxdn_cipher_type == 0x02 && state->R != 0) {
-            state->nxdn_new_iv = 1;
-        }
-
-        if (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1) {
-            state->nxdn_new_iv = 1;
-        }
-    }
-
-} /* End NXDN_decode_VCALL_IV() */
-
-//SCCH messages have a unique format that can be used in a super frame, but each 'unit'
-//can also (mostly) be decoded seperately, except an enc IV
-void
-NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t direction) {
-    const time_t now = time(NULL);
-    uint8_t sf = (uint8_t)ConvertBitIntoBytes(&Message[0], 2);
-    uint8_t opcode = (direction << 2 | sf);
-
-    fprintf(stderr, "\n "); //initial line break
-
-    if (opts->payload == 1) {
-        if (direction == 0) {
-            fprintf(stderr, "ISM ");
-        } else {
-            fprintf(stderr, "OSM ");
-        }
-
-        if (sf == 0) {
-            fprintf(stderr, "INFO4 ");
-        } else if (sf == 1) {
-            fprintf(stderr, "INFO3 ");
-        } else if (sf == 2) {
-            fprintf(stderr, "INFO2 ");
-        } else {
-            fprintf(stderr, "INFO1 ");
-        }
-        fprintf(stderr, "- ");
-        fprintf(stderr, "%02X ", opcode);
-    }
-
-    //elements used will be determined by other elements in the ISM/OSM messages
-
-    //OSM 4 elements
-    uint8_t area = Message[2];
-    uint8_t rep1 = (uint8_t)ConvertBitIntoBytes(&Message[3], 5);   //repeater 1 value
-    uint8_t rep2 = (uint8_t)ConvertBitIntoBytes(&Message[8], 5);   //repeater 2 value
-    uint16_t id = (uint16_t)ConvertBitIntoBytes(&Message[13], 11); //id is context dependent
-    uint8_t sitet = (uint8_t)ConvertBitIntoBytes(&Message[3], 5);  //site type on id=2041 only
-    uint8_t gu = Message[24];                                      //group or unit bit
-
-    //OSM 2 and 3 elements -- unique only
-    unsigned long long int iv_a = (uint64_t)ConvertBitIntoBytes(&Message[13], 12); //initialization vector (0-11)
-
-    //OSM 1 elements -- unique only -- DOUBLE CHECK ALL OF THESE!
-    unsigned long long int iv_b = (uint64_t)ConvertBitIntoBytes(&Message[18], 6); //initialization vector (b12-17)
-    unsigned long long int iv_c = (uint64_t)ConvertBitIntoBytes(&Message[8], 5);  //initialization vector (b18-22)
-    uint8_t iv_type = Message[24]; //0 or 1 tells us whether or not this is for IV, or for cipher/key
-    uint8_t call_opt = (uint8_t)ConvertBitIntoBytes(&Message[13], 3); //Call Options
-    uint8_t key_id = (uint8_t)ConvertBitIntoBytes(&Message[18], 6);   //Key ID
-    uint8_t cipher = (uint8_t)ConvertBitIntoBytes(&Message[16], 2);   //Cipher Type
-    uint8_t DuplexMode[32] = {0};
-    uint8_t TransmissionMode[32] = {0};
-
-    //ISM messages are seemingly exactly the same info as OSM, so just going to use OSM versions
-    //(manual doesn't specify other than that ISM 4 is the same as ISM2, but probably doesn't have IDLE/HALT/SITE ID messages)
-
-    //set category to "Type-D" to alert users this is an a Distributed Trunking System
-    sprintf(state->nxdn_location_category, "Type-D");
-
-    //placeholder numbers, using 99 if these aren't set by the Site ID Message (single sites)
-    // if (state->nxdn_location_site_code == 0) state->nxdn_location_site_code = 99;
-    // if (state->nxdn_location_sys_code == 0)  state->nxdn_location_sys_code = 99;
-    // if (state->nxdn_last_ran == -1)          state->nxdn_last_ran = 99;
-
-    state->nxdn_last_ran = area;
-
-    state->last_cc_sync_time = now;
+static void
+nxdn_scch_prepare_type_d(dsd_state* state, const struct nxdn_scch_info* info) {
+    DSD_SPRINTF(state->nxdn_location_category, "Type-D");
+    state->nxdn_last_ran = info->area;
+    state->last_cc_sync_time = info->now;
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+}
 
-    //OSM messages
-    if (opcode == 0x4 || opcode == 0x0) //INFO 4
-    {
-        //clear stale active channel listing -- consider best placement for this (NXDN Type D Trunking -- inside a particular OSM Message?)
-        //may not be entirely necessary here in this context
-        if ((now - state->last_active_time) > 3) {
-            memset(state->active_channel, 0, sizeof(state->active_channel));
-        }
+static void
+nxdn_scch_print_site_type(uint8_t sitet) {
+    DSD_FPRINTF(stderr, "Site Type: %d ", sitet);
+    if (sitet == 0U) {
+        DSD_FPRINTF(stderr, "Reserved; ");
+    } else if (sitet == 1U) {
+        DSD_FPRINTF(stderr, "Wide; ");
+    } else if (sitet == 2U) {
+        DSD_FPRINTF(stderr, "Middle; ");
+    } else {
+        DSD_FPRINTF(stderr, "Narrow; ");
+    }
+}
 
-        if (id == 2046) {
-            fprintf(stderr, "Idle Repeater Message - ");
-            fprintf(stderr, "Area: %d; ", area);
-            fprintf(stderr, "Repeater 1: %d; ", rep1);
-            fprintf(stderr, "Repeater 2: %d; ", rep2);
-            sprintf(state->active_channel[rep1], "%s", "");
-            sprintf(state->active_channel[rep2], "%s", "");
+static void
+nxdn_scch_handle_site_id(dsd_state* state, const struct nxdn_scch_info* info) {
+    DSD_FPRINTF(stderr, "Site ID Message - ");
+    DSD_FPRINTF(stderr, "Area: %d; ", info->area);
+    nxdn_scch_print_site_type(info->sitet);
+    DSD_FPRINTF(stderr, "Site Code: %d ", info->rep2);
+    if (info->rep2 == 0U || info->rep2 >= 251U) {
+        DSD_FPRINTF(stderr, "Reserved; ");
+    } else {
+        DSD_FPRINTF(stderr, "Open Access; ");
+    }
+    state->nxdn_location_site_code = info->sitet;
+    state->nxdn_location_sys_code = info->sitet;
+    state->nxdn_last_ran = info->sitet;
+}
 
-        } else if (id == 2045) {
-            fprintf(stderr, "Halt Repeater Message - ");
-            fprintf(stderr, "Area: %d; ", area);
-            fprintf(stderr, "Repeater 1: %d; ", rep1);
-            fprintf(stderr, "Repeater 2: %d; ", rep2);
+static int
+nxdn_scch_should_tune(const dsd_opts* opts, const struct nxdn_scch_info* info) {
+    if (info->rep1 == 31U) {
+        return 1;
+    }
+    if (info->gu == 0U) {
+        return (opts->trunk_tune_group_calls == 1) ? 1 : 0;
+    }
+    return (opts->trunk_tune_private_calls == 1) ? 1 : 0;
+}
 
-        } else if (id == 2044) {
-            fprintf(stderr, "Free Repeater Message - ");
-            fprintf(stderr, "Area: %d; ", area);
-            fprintf(stderr, "Free Repeater 1: %d; ", rep1);
-            fprintf(stderr, "Free Repeater 2: %d; ", rep2);
+static void
+nxdn_scch_update_control_channel_from_map(dsd_state* state, const struct nxdn_scch_info* info) {
+    if (state->trunk_chan_map[31] != 0) {
+        state->p25_cc_freq = state->trunk_chan_map[31];
+        state->trunk_cc_freq = state->p25_cc_freq;
+    } else if (state->trunk_chan_map[info->rep2] != 0) {
+        state->p25_cc_freq = state->trunk_chan_map[info->rep2];
+        state->trunk_cc_freq = state->p25_cc_freq;
+    }
+}
 
-        } else if (id == 2041) {
-            fprintf(stderr, "Site ID Message - ");
-            fprintf(stderr, "Area: %d; ", area);
-            fprintf(stderr, "Site Type: %d ", sitet); //Roaming Algorithm by SU; See below;
-            if (sitet == 0) {
-                fprintf(stderr, "Reserved; ");
-            } else if (sitet == 1) {
-                fprintf(stderr, "Wide; ");
-            } else if (sitet == 2) {
-                fprintf(stderr, "Middle; ");
-            } else {
-                fprintf(stderr, "Narrow; ");
-            }
-            fprintf(stderr, "Site Code: %d ", rep2);
-            if (rep2 == 0 || rep2 >= 251) {
-                fprintf(stderr, "Reserved; ");
-            } else {                              // rep2 < 251
-                fprintf(stderr, "Open Access; "); // Usable voluntary every TRS...?
-            }
-            state->nxdn_location_site_code = sitet;
-            state->nxdn_location_sys_code = sitet;
-            state->nxdn_last_ran = sitet;
-
-        } else //Busy Repeater Message is essentially our 'call in progess' message for a repeater
-        {
-            if (gu && rep1 == 0) {
-                fprintf(stderr, "REG_COMM; ");
-            } else {
-                fprintf(stderr, "Busy Repeater Message - ");
-            }
-            fprintf(stderr, "Area: %d; ", area);
-            fprintf(stderr, "Go to Repeater: %d; ", rep1);
-            fprintf(stderr, "Home Repeater: %d; ", rep2);
-
-            if (rep1 == 31) {
-                fprintf(stderr, "\n%s ", KRED);
-                state->nxdn_last_tg = 0;
-                state->nxdn_last_rid = 0;
-            } else {
-                fprintf(stderr, "\n%s ", KGRN);
-                //only set this is during a voice tx, and not a data tx
-                if (time(NULL) - state->last_vc_sync_time < 1) {
-                    state->nxdn_last_tg = id;
-                }
-            }
-
-            fprintf(stderr, " Channel Update - CH: %d - TGT: %d ", rep1, id);
-            if (gu == 0) {
-                fprintf(stderr, "Group Call ");
-            } else {
-                fprintf(stderr, "Private Call ");
-            }
-
-            if (rep1 == 31) {
-                fprintf(stderr, "Termination ");
-            }
-
-            //add current active to display string -- may need tweaking on if to use rep1 (active ch), or rep2 (home prefix)
-            if (rep1 != 0 && rep1 != 31) {
-                if (gu == 0) {
-                    sprintf(state->active_channel[rep1], "Active Group Ch: %d TG: %d-%d; ", rep1, rep2, id); //Group TG
-                } else {
-                    sprintf(state->active_channel[rep1], "Active Private Ch: %d TGT: %d-%d; ", rep1, rep2,
-                            id); //Private TGT
-                }
-                state->last_active_time = time(NULL);
-            }
-
-            //start tuning section here
-            uint8_t tune = 0; //use this to check to see if okay to tune
-
-            //only tune group calls if user set
-            if (gu == 0 && opts->trunk_tune_group_calls == 1) {
-                tune = 1;
-            }
-
-            //only tune private calls if user set
-            if (gu == 1 && opts->trunk_tune_private_calls == 1) {
-                tune = 1;
-            }
-
-            //tune back to 'channel 31' on termination, will be user provided 'default' listening channel
-            if (rep1 == 31) {
-                tune = 1;
-            }
-
-            //begin tuning
-            if (tune == 1 && rep1 != 0) {
-                //check for control channel frequency in the channel map if not available
-                if (state->trunk_chan_map[31] != 0) {
-                    state->p25_cc_freq =
-                        state->trunk_chan_map[31]; //user provided channel to go to for '31' -- may change to 0 later?
-                    state->trunk_cc_freq = state->p25_cc_freq;
-                } else if (state->trunk_chan_map[rep2] != 0) {
-                    state->p25_cc_freq = state->trunk_chan_map[rep2]; //rep2 is home repeater under this message
-                    state->trunk_cc_freq = state->p25_cc_freq;
-                }
-
-                //run group/tgt analysis and tune if available/desired
-                nxdn_print_group_label(state, id);
-
-                //TG hold on IDAS -- allow matching target to break out of current VC.
-                if (state->tg_hold != 0 && state->tg_hold == id) {
-                    opts->p25_is_tuned = 0; //unlock tuner at this stage and not above check
-                }
-
-                long int freq = 0;
-                freq = nxdn_channel_to_frequency(opts, state, rep1);
-                if (freq == 0) {
-                    nxdn_trunk_diag_log_missing_channel_once(opts, state, rep1, "tune");
-                }
-
-                //check to see if the source/target candidate is blocked first
-                dsd_tg_policy_decision policy_decision;
-                int is_private_call = (gu == 1) ? 1 : 0;
-                int policy_allowed =
-                    nxdn_policy_tune_allowed(opts, state, id, 0, is_private_call, 0, 0, &policy_decision);
-                if (opts->p25_trunk == 1 && policy_allowed) {
-                    //will need to monitor, 1 second may be too long on idas, may need to try 0 or manipulate another way
-                    if (state->p25_cc_freq != 0 && ((time(NULL) - state->last_vc_sync_time) > 1) && freq != 0) {
-                        // Use centralized io/control tuning API
-                        dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
-
-                        // NXDN-specific state setup
-                        memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-                        memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                        state->lastsynctype = DSD_SYNC_NONE;
-
-                        //check the rkey array for a scrambler key value
-                        //TGT ID and Key ID could clash though if csv or system has both with different keys
-                        if (state->rkey_array[id] != 0) {
-                            state->R = state->rkey_array[id];
-                        }
-                        if (state->M == 1) {
-                            state->nxdn_cipher_type = 0x1;
-                        }
-                    }
-                } else if (opts->p25_trunk == 1) {
-                    nxdn_policy_log_block(opts, is_private_call, id, 0, &policy_decision);
-                }
-            } //end tuning -- NOTE: since we are only going by last time voice sync detected, tuning here is always 'unlocked'
-
-        } //end 'busy' repeater
+static void
+nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
+    if (!nxdn_scch_should_tune(opts, info) || info->rep1 == 0U) {
+        return;
     }
 
-    if (opcode == 0x5 || opcode == 0x1) //INFO 3
-    {
-        fprintf(stderr, "Source Message - ");
-        fprintf(stderr, "Area: %d; ", area);
-        fprintf(stderr, "Free Repeater 1: %d; ", rep1);
+    nxdn_scch_update_control_channel_from_map(state, info);
+    nxdn_print_group_label(state, info->id);
+    if (state->tg_hold != 0 && state->tg_hold == info->id) {
+        opts->p25_is_tuned = 0;
+    }
 
-        if (id == 31) {
-            fprintf(stderr, "\n%s ", KYEL);
-            fprintf(stderr, " Call IV A: %04llX", iv_a);
-        } else {
-            //rep2 is the home repeater/source prefix in this instance
-            fprintf(stderr, "\n%s ", KGRN);
-            fprintf(stderr, " Source Update - Prefix CH: %d SRC: %d - (%d-%d) ", rep2, id, rep2, id); //rep2
-            //only set this is during a voice tx, and not a data tx
-            if (time(NULL) - state->last_vc_sync_time < 1) {
-                state->nxdn_last_rid = id;
-            }
+    const long int freq = nxdn_channel_to_frequency(opts, state, info->rep1);
+    if (freq == 0) {
+        nxdn_trunk_diag_log_missing_channel_once(opts, state, info->rep1, "tune");
+    }
+
+    dsd_tg_policy_decision policy_decision;
+    const int is_private_call = (info->gu == 1U) ? 1 : 0;
+    const int policy_allowed =
+        nxdn_policy_tune_allowed(opts, state, info->id, 0, is_private_call, 0, 0, &policy_decision);
+    if (opts->p25_trunk == 1 && policy_allowed && state->p25_cc_freq != 0
+        && ((info->now - state->last_vc_sync_time) > 1) && freq != 0) {
+        dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
+        DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+        DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+        state->lastsynctype = DSD_SYNC_NONE;
+        if (state->rkey_array[info->id] != 0) {
+            state->R = state->rkey_array[info->id];
+        }
+        if (state->M == 1) {
+            state->nxdn_cipher_type = 0x1;
+        }
+    } else if (opts->p25_trunk == 1) {
+        nxdn_policy_log_block(opts, is_private_call, info->id, 0, &policy_decision);
+    }
+}
+
+static void
+nxdn_scch_update_busy_display(dsd_state* state, const struct nxdn_scch_info* info) {
+    if (info->rep1 == 31U) {
+        DSD_FPRINTF(stderr, "\n%s ", KRED);
+        state->nxdn_last_tg = 0;
+        state->nxdn_last_rid = 0;
+    } else {
+        DSD_FPRINTF(stderr, "\n%s ", KGRN);
+        if (info->now - state->last_vc_sync_time < 1) {
+            state->nxdn_last_tg = info->id;
         }
     }
 
-    if (opcode == 0x6 || opcode == 0x2) //OSM INFO 2 -- same as 4
-    {
-        fprintf(stderr, "Target Message - ");
-        fprintf(stderr, "Area: %d; ", area);
-        fprintf(stderr, "Go to Repeater: %d; ", rep1);
-        if (id == 31) {
-            fprintf(stderr, "\n%s ", KYEL);
-            fprintf(stderr, " Call IV A: %04llX; ", iv_a); //MSB 0-11
-            //zero out IV storage and append this chunk to MSB position
-            state->payload_miN = 0;
-            state->payload_miN = state->payload_miN | (iv_a << 11); //MSB 11, so shift 11 (22 total bits).
+    DSD_FPRINTF(stderr, " Channel Update - CH: %d - TGT: %d ", info->rep1, info->id);
+    DSD_FPRINTF(stderr, "%s ", info->gu == 0U ? "Group Call" : "Private Call");
+    if (info->rep1 == 31U) {
+        DSD_FPRINTF(stderr, "Termination ");
+    }
+    if (info->rep1 != 0U && info->rep1 != 31U) {
+        if (info->gu == 0U) {
+            DSD_SPRINTF(state->active_channel[info->rep1], "Active Group Ch: %d TG: %d-%d; ", info->rep1, info->rep2,
+                        info->id);
         } else {
-            //rep2 is the home repeater/source prefix in this instance
-            fprintf(stderr, "\n%s ", KGRN);
-            fprintf(stderr, " Target Update - Prefix CH: %d SRC: %d - (%d-%d) ", rep2, id, rep2, id); //rep2
-            //only set this is during a voice tx, and not a data tx
-            if (time(NULL) - state->last_vc_sync_time < 1) {
-                state->nxdn_last_tg = id;
-            }
+            DSD_SPRINTF(state->active_channel[info->rep1], "Active Private Ch: %d TGT: %d-%d; ", info->rep1, info->rep2,
+                        info->id);
         }
+        state->last_active_time = info->now;
+    }
+}
+
+static void
+nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
+    DSD_FPRINTF(stderr, "%s", (info->gu && info->rep1 == 0U) ? "REG_COMM; " : "Busy Repeater Message - ");
+    DSD_FPRINTF(stderr, "Area: %d; ", info->area);
+    DSD_FPRINTF(stderr, "Go to Repeater: %d; ", info->rep1);
+    DSD_FPRINTF(stderr, "Home Repeater: %d; ", info->rep2);
+    nxdn_scch_update_busy_display(state, info);
+    nxdn_scch_apply_busy_tune(opts, state, info);
+}
+
+static void
+nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
+    if ((info->now - state->last_active_time) > 3) {
+        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
     }
 
-    if (opcode == 0x7 || opcode == 0x3) //INFO 1 - Call Option/Encryption Parms
-    {
-        fprintf(stderr, "Call Option - ");
-        fprintf(stderr, "Area: %d; ", area);
-        fprintf(stderr, "Free Repeater 1: %d; ", rep1);
-        if (iv_type == 0) {
-            fprintf(stderr, "Free Repeater 2: %d; ", rep2); //or Pass Character (31) on ISM
-            fprintf(stderr, "\n%s ", KYEL);
-            NXDN_Voice_Call_Option_To_Str(call_opt, DuplexMode, TransmissionMode);
-            fprintf(stderr, " %s %s ", DuplexMode, TransmissionMode);
-            if (cipher) {
-                fprintf(stderr, "- %s - ", NXDN_Cipher_Type_To_Str(cipher));
-                fprintf(stderr, "Key ID: %d; ", key_id);
-                state->nxdn_cipher_type = cipher;
-                state->nxdn_key = key_id;
-            }
+    if (info->id == 2046U) {
+        DSD_FPRINTF(stderr, "Idle Repeater Message - ");
+        DSD_FPRINTF(stderr, "Area: %d; ", info->area);
+        DSD_FPRINTF(stderr, "Repeater 1: %d; ", info->rep1);
+        DSD_FPRINTF(stderr, "Repeater 2: %d; ", info->rep2);
+        DSD_SPRINTF(state->active_channel[info->rep1], "%s", "");
+        DSD_SPRINTF(state->active_channel[info->rep2], "%s", "");
+    } else if (info->id == 2045U) {
+        DSD_FPRINTF(stderr, "Halt Repeater Message - ");
+        DSD_FPRINTF(stderr, "Area: %d; ", info->area);
+        DSD_FPRINTF(stderr, "Repeater 1: %d; ", info->rep1);
+        DSD_FPRINTF(stderr, "Repeater 2: %d; ", info->rep2);
+    } else if (info->id == 2044U) {
+        DSD_FPRINTF(stderr, "Free Repeater Message - ");
+        DSD_FPRINTF(stderr, "Area: %d; ", info->area);
+        DSD_FPRINTF(stderr, "Free Repeater 1: %d; ", info->rep1);
+        DSD_FPRINTF(stderr, "Free Repeater 2: %d; ", info->rep2);
+    } else if (info->id == 2041U) {
+        nxdn_scch_handle_site_id(state, info);
+    } else {
+        nxdn_scch_handle_busy(opts, state, info);
+    }
+}
 
-        } else {
-            fprintf(stderr, "\n%s ", KYEL);
-            fprintf(stderr, "Call IV B: %04llX; ", iv_b);
-            fprintf(stderr, "Call IV C: %04llX; ", iv_c);
-            //Append to Call IV storage
-            state->payload_miN =
-                state->payload_miN | (iv_c << 6); //middle 5 bits..shifts 6 to accomodate last 6 bits below
-            state->payload_miN = state->payload_miN | (iv_b << 0); //last 6 bits...no shift needed
-            //At this point, I would assume an LFSR function is needed to expand the 22-bit IV collected here into a 64-bit IV, or 128-bit IV
-            fprintf(stderr, "Completed IV: %016llX", state->payload_miN);
+static void
+nxdn_scch_handle_info3(dsd_state* state, const struct nxdn_scch_info* info) {
+    DSD_FPRINTF(stderr, "Source Message - ");
+    DSD_FPRINTF(stderr, "Area: %d; ", info->area);
+    DSD_FPRINTF(stderr, "Free Repeater 1: %d; ", info->rep1);
+    if (info->id == 31U) {
+        DSD_FPRINTF(stderr, "\n%s ", KYEL);
+        DSD_FPRINTF(stderr, " Call IV A: %04llX", info->iv_a);
+    } else {
+        DSD_FPRINTF(stderr, "\n%s ", KGRN);
+        DSD_FPRINTF(stderr, " Source Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
+                    info->id);
+        if (info->now - state->last_vc_sync_time < 1) {
+            state->nxdn_last_rid = info->id;
         }
     }
 }
 
-char*
+static void
+nxdn_scch_handle_info2(dsd_state* state, const struct nxdn_scch_info* info) {
+    DSD_FPRINTF(stderr, "Target Message - ");
+    DSD_FPRINTF(stderr, "Area: %d; ", info->area);
+    DSD_FPRINTF(stderr, "Go to Repeater: %d; ", info->rep1);
+    if (info->id == 31U) {
+        DSD_FPRINTF(stderr, "\n%s ", KYEL);
+        DSD_FPRINTF(stderr, " Call IV A: %04llX; ", info->iv_a);
+        state->payload_miN = info->iv_a << 11;
+    } else {
+        DSD_FPRINTF(stderr, "\n%s ", KGRN);
+        DSD_FPRINTF(stderr, " Target Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
+                    info->id);
+        if (info->now - state->last_vc_sync_time < 1) {
+            state->nxdn_last_tg = info->id;
+        }
+    }
+}
+
+static void
+nxdn_scch_handle_info1(dsd_state* state, const struct nxdn_scch_info* info) {
+    uint8_t duplex_mode[32] = {0};
+    uint8_t transmission_mode[32] = {0};
+    DSD_FPRINTF(stderr, "Call Option - ");
+    DSD_FPRINTF(stderr, "Area: %d; ", info->area);
+    DSD_FPRINTF(stderr, "Free Repeater 1: %d; ", info->rep1);
+    if (info->iv_type == 0U) {
+        DSD_FPRINTF(stderr, "Free Repeater 2: %d; ", info->rep2);
+        DSD_FPRINTF(stderr, "\n%s ", KYEL);
+        NXDN_Voice_Call_Option_To_Str(info->call_opt, duplex_mode, transmission_mode);
+        DSD_FPRINTF(stderr, " %s %s ", duplex_mode, transmission_mode);
+        if (info->cipher) {
+            DSD_FPRINTF(stderr, "- %s - ", NXDN_Cipher_Type_To_Str(info->cipher));
+            DSD_FPRINTF(stderr, "Key ID: %d; ", info->key_id);
+            state->nxdn_cipher_type = info->cipher;
+            state->nxdn_key = info->key_id;
+        }
+    } else {
+        DSD_FPRINTF(stderr, "\n%s ", KYEL);
+        DSD_FPRINTF(stderr, "Call IV B: %04llX; ", info->iv_b);
+        DSD_FPRINTF(stderr, "Call IV C: %04llX; ", info->iv_c);
+        state->payload_miN = state->payload_miN | (info->iv_c << 6);
+        state->payload_miN = state->payload_miN | info->iv_b;
+        DSD_FPRINTF(stderr, "Completed IV: %016llX", state->payload_miN);
+    }
+}
+
+//SCCH messages have a unique format that can be used in a super frame, but each 'unit'
+//can also (mostly) be decoded seperately, except an enc IV
+void
+NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction) {
+    const time_t now = time(NULL);
+    struct nxdn_scch_info info;
+    nxdn_scch_parse(Message, direction, now, &info);
+
+    DSD_FPRINTF(stderr, "\n "); //initial line break
+    nxdn_scch_print_payload_label(opts, &info);
+    nxdn_scch_prepare_type_d(state, &info);
+
+    if (info.opcode == 0x04U || info.opcode == 0x00U) {
+        nxdn_scch_handle_info4(opts, state, &info);
+    }
+    if (info.opcode == 0x05U || info.opcode == 0x01U) {
+        nxdn_scch_handle_info3(state, &info);
+    }
+    if (info.opcode == 0x06U || info.opcode == 0x02U) {
+        nxdn_scch_handle_info2(state, &info);
+    }
+    if (info.opcode == 0x07U || info.opcode == 0x03U) {
+        nxdn_scch_handle_info1(state, &info);
+    }
+}
+
+static char*
 NXDN_Call_Type_To_Str(uint8_t CallType) {
     char* Ptr = NULL;
 
@@ -2626,44 +2542,27 @@ NXDN_Call_Type_To_Str(uint8_t CallType) {
     return Ptr;
 } /* End NXDN_Call_Type_To_Str() */
 
-void
+static void
 NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t* TransmissionMode) {
-    char* Ptr = NULL;
+    static const char* const modes[16] = {
+        "4800bps/EHR",     "Reserved 1",     "9600bps/EHR",     "9600bps/EFR",     "Reserved 4",      "Reserved 5",
+        "Reserved 6",      "Reserved 7",     "4800bps/EHR S:1", "Reserved 9; S:1", "9600bps/EHR S:1", "9600bps/EFR S:1",
+        "Reserved C; S1;", "Reserved D; S1", "Reserved E; S1",  "Reserved F: S1",
+    };
 
     Duplex[0] = 0;
     TransmissionMode[0] = 0;
 
     if (VoiceCallOption & 0x10) {
-        snprintf((char*)Duplex, 32, "%s", "Duplex");
+        DSD_SNPRINTF((char*)Duplex, 32, "%s", "Duplex");
     } else {
-        snprintf((char*)Duplex, 32, "%s", "Half Duplex");
+        DSD_SNPRINTF((char*)Duplex, 32, "%s", "Half Duplex");
     }
 
-    switch (VoiceCallOption
-            & 0xF) { //added all options, getting a random one on an NXDN96 System, need to know what it is
-        case 0: Ptr = "4800bps/EHR"; break;
-        case 1: Ptr = "Reserved 1"; break;
-        case 2: Ptr = "9600bps/EHR"; break;
-        case 3: Ptr = "9600bps/EFR"; break;
-        case 4: Ptr = "Reserved 4"; break;
-        case 5: Ptr = "Reserved 5"; break;
-        case 6: Ptr = "Reserved 6"; break;
-        case 7: Ptr = "Reserved 7"; break;
-        case 8: Ptr = "4800bps/EHR S:1"; break;  //spare bit enabled
-        case 9: Ptr = "Reserved 9; S:1"; break;  //spare bit enabled
-        case 10: Ptr = "9600bps/EHR S:1"; break; //spare bit enabled
-        case 11: Ptr = "9600bps/EFR S:1"; break; //spare bit enabled
-        case 12: Ptr = "Reserved C; S1;"; break; //spare bit enabled
-        case 13: Ptr = "Reserved D; S1"; break;  //spare bit enabled
-        case 14: Ptr = "Reserved E; S1"; break;  //spare bit enabled
-        case 15: Ptr = "Reserved F: S1"; break;  //spare bit enabled
-        default: Ptr = "Unk;"; break;            //should never get here
-    }
-
-    snprintf((char*)TransmissionMode, 32, "%s", Ptr);
+    DSD_SNPRINTF((char*)TransmissionMode, 32, "%s", modes[VoiceCallOption & 0x0FU]);
 } /* End NXDN_Voice_Call_Option_To_Str() */
 
-char*
+static char*
 NXDN_Cipher_Type_To_Str(uint8_t CipherType) {
     char* Ptr = NULL;
 
@@ -2702,5 +2601,5 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     if (len >= dstsz) {
         return;
     }
-    snprintf(dst + len, dstsz - len, "%s", src);
+    DSD_SNPRINTF(dst + len, dstsz - len, "%s", src);
 }

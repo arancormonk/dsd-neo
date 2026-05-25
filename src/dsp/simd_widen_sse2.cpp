@@ -4,9 +4,12 @@
  */
 
 #include <cstdint>
-#include <cstring>
 #include <emmintrin.h>
+#include <mmintrin.h>
 #include <xmmintrin.h>
+#include "dsd-neo/core/safe_api.h"
+
+// NOLINTBEGIN(portability-simd-intrinsics)
 
 namespace {
 
@@ -18,7 +21,7 @@ alignas(16) static const uint32_t kPhase3SignMask[4] = {0u, 0x80000000u, 0u, 0u}
 static inline __m128
 widen4_u8_to_f32_bias127_sse2(const unsigned char* src) {
     uint32_t packed = 0;
-    std::memcpy(&packed, src, sizeof(packed));
+    DSD_MEMCPY(&packed, src, sizeof(packed));
 
     __m128i bytes = _mm_cvtsi32_si128((int)packed);
     __m128i zero = _mm_setzero_si128();
@@ -109,3 +112,5 @@ widen_rotate90_u8_to_f32_bias127_phase_sse2(const unsigned char* src, float* dst
 
     return cur_phase;
 }
+
+// NOLINTEND(portability-simd-intrinsics)

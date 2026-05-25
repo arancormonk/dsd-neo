@@ -8,7 +8,8 @@
  * @brief Common lightweight math utilities used across DSP modules.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_MATH_UTILS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_MATH_UTILS_H_
 
 #include <math.h>
 #include <stdint.h>
@@ -76,3 +77,5 @@ dsd_neo_sinc(double x) {
     const double kPiLocal = 3.14159265358979323846;
     return sin(kPiLocal * x) / (kPiLocal * x);
 }
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_MATH_UTILS_H_ */

@@ -13,11 +13,11 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static void
 slc17_build(uint8_t slc[17], uint8_t slco, uint8_t ts1_act, uint8_t ts2_act) {
-    memset(slc, 0, 17);
+    DSD_MEMSET(slc, 0, 17);
     for (int i = 0; i < 4; i++) {
         slc[i] = (uint8_t)((slco >> (3 - i)) & 1U);
     }
@@ -47,7 +47,7 @@ main(int argc, char** argv) {
 
     // All-zero NULL codeword
     uint8_t slc[17];
-    memset(slc, 0, sizeof(slc));
+    DSD_MEMSET(slc, 0, sizeof(slc));
     assert(Hamming17123(slc) == true);
 
     // Activity Update: opcode=1, ts1=0x8 (Group Voice), ts2=0x0

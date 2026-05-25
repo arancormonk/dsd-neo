@@ -3,19 +3,19 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <cstdio>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/rtl_stream.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-
-#include <cstdio>
 #include <memory>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/io/rtl_stream_fwd.h"
 
 static int
 expect_int_eq(const char* label, int got, int want) {
     if (got != want) {
-        std::fprintf(stderr, "FAIL: %s got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -93,7 +93,7 @@ test_c_api_create_mirrored_updates_live_caller_opts(void) {
     int rc = 0;
     rc |= expect_int_eq("c api mirrored create rc", rtl_stream_create_mirrored(caller_opts.get(), &ctx), 0);
     if (!ctx) {
-        std::fprintf(stderr, "FAIL: c api mirrored create returned null ctx\n");
+        DSD_FPRINTF(stderr, "FAIL: c api mirrored create returned null ctx\n");
         return 1;
     }
 
@@ -120,7 +120,7 @@ test_c_api_create_preserves_const_source_snapshot(void) {
     int rc = 0;
     rc |= expect_int_eq("c api create rc", rtl_stream_create(const_source_opts.get(), &ctx), 0);
     if (!ctx) {
-        std::fprintf(stderr, "FAIL: c api create returned null ctx\n");
+        DSD_FPRINTF(stderr, "FAIL: c api create returned null ctx\n");
         return 1;
     }
 

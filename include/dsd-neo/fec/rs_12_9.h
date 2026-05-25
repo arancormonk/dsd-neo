@@ -8,7 +8,8 @@
  * @brief Reed-Solomon (12,9) helper types and APIs (DMR AI).
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_FEC_RS_12_9_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_FEC_RS_12_9_H_H
 
 #include <stdint.h>
 
@@ -42,11 +43,12 @@ extern "C" {
 #endif
 
 void rs_12_9_calc_syndrome(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome);
-uint8_t rs_12_9_check_syndrome(rs_12_9_poly_t* syndrome);
-rs_12_9_correct_errors_result_t rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome,
+uint8_t rs_12_9_check_syndrome(const rs_12_9_poly_t* syndrome);
+rs_12_9_correct_errors_result_t rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, const rs_12_9_poly_t* syndrome,
                                                        uint8_t* errors_found);
 rs_12_9_checksum_t* rs_12_9_calc_checksum(rs_12_9_codeword_t* codeword);
 
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_FEC_RS_12_9_H_H */

@@ -13,7 +13,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
 
@@ -22,7 +22,7 @@
 static int
 expect_eq_str(const char* tag, const char* a, const char* b) {
     if (strcmp(a ? a : "", b ? b : "") != 0) {
-        fprintf(stderr, "%s: got '%s' want '%s'\n", tag, a ? a : "(null)", b ? b : "(null)");
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, a ? a : "(null)", b ? b : "(null)");
         return 1;
     }
     return 0;
@@ -31,7 +31,7 @@ expect_eq_str(const char* tag, const char* a, const char* b) {
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -42,14 +42,14 @@ main(void) {
     int rc = 0;
     char dir[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_cc_path")) {
-        fprintf(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
         return 100;
     }
     setenv("DSD_NEO_CACHE_DIR", dir, 1);
     dsd_neo_config_init(NULL);
 
     static dsd_state st;
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     // No identity -> no path
     char out[1024];
@@ -62,8 +62,8 @@ main(void) {
     ok = p25_cc_build_cache_path(&st, out, sizeof out);
     rc |= expect_eq_int("iden only ok", ok, 1);
     char want1[1024];
-    snprintf(want1, sizeof want1, "%s/p25_cc_%05lX_%03lX.txt", dir, (unsigned long)st.p2_wacn,
-             (unsigned long)st.p2_sysid);
+    DSD_SNPRINTF(want1, sizeof want1, "%s/p25_cc_%05lX_%03lX.txt", dir, (unsigned long)st.p2_wacn,
+                 (unsigned long)st.p2_sysid);
     rc |= expect_eq_str("iden only path", out, want1);
 
     // With RFSS/SITE
@@ -72,8 +72,8 @@ main(void) {
     ok = p25_cc_build_cache_path(&st, out, sizeof out);
     rc |= expect_eq_int("rfss/site ok", ok, 1);
     char want2[1024];
-    snprintf(want2, sizeof want2, "%s/p25_cc_%05lX_%03lX_R%03llu_S%03llu.txt", dir, (unsigned long)st.p2_wacn,
-             (unsigned long)st.p2_sysid, st.p2_rfssid, st.p2_siteid);
+    DSD_SNPRINTF(want2, sizeof want2, "%s/p25_cc_%05lX_%03lX_R%03llu_S%03llu.txt", dir, (unsigned long)st.p2_wacn,
+                 (unsigned long)st.p2_sysid, st.p2_rfssid, st.p2_siteid);
     rc |= expect_eq_str("rfss/site path", out, want2);
 
     return rc;

@@ -16,22 +16,39 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/protocol/dpmr/dpmr_data.h>
 #include <stdint.h>
+
+typedef struct {
+    uint32_t code;
+    int32_t color;
+} dpmr_color_code_entry;
+
+static const dpmr_color_code_entry k_dpmr_color_code_map[] = {
+    {0x575F77u, 0},  {0x577577u, 1},  {0x57DD75u, 2},  {0x57F775u, 3},  {0x55577Du, 4},  {0x557D7Du, 5},
+    {0x55D57Fu, 6},  {0x55FF7Fu, 7},  {0x5F555Fu, 8},  {0x5F7F5Fu, 9},  {0x5FD75Du, 10}, {0x5FFD5Du, 11},
+    {0x5D5D55u, 12}, {0x5D7755u, 13}, {0x5DDF57u, 14}, {0x5DF557u, 15}, {0x775DD7u, 16}, {0x7777D7u, 17},
+    {0x77DFD5u, 18}, {0x77F5D5u, 19}, {0x7555DDu, 20}, {0x757FDDu, 21}, {0x75D7DFu, 22}, {0x75FDDFu, 23},
+    {0x7F57FFu, 24}, {0x7F7DFFu, 25}, {0x7FD5FDu, 26}, {0x7FFFFDu, 27}, {0x7D5FF5u, 28}, {0x7D75F5u, 29},
+    {0x7DDDF7u, 30}, {0x7DF7F7u, 31}, {0xD755F7u, 32}, {0xD77FF7u, 33}, {0xD7D7F5u, 34}, {0xD7FDF5u, 35},
+    {0xD55DFDu, 36}, {0xD577FDu, 37}, {0xD5DFFFu, 38}, {0xD5F5FFu, 39}, {0xDF5FDFu, 40}, {0xDF75DFu, 41},
+    {0xDFDDDDu, 42}, {0xDFF7DDu, 43}, {0xDD57D5u, 44}, {0xDD7DD5u, 45}, {0xDDD5D7u, 46}, {0xDDFFD7u, 47},
+    {0xF75757u, 48}, {0xF77D57u, 49}, {0xF7D555u, 50}, {0xF7FF55u, 51}, {0xF55F5Du, 52}, {0xF5755Du, 53},
+    {0xF5DD5Fu, 54}, {0xF5F75Fu, 55}, {0xFF5D7Fu, 56}, {0xFF777Fu, 57}, {0xFFDF7Du, 58}, {0xFFF57Du, 59},
+    {0xFD5575u, 60}, {0xFD7F75u, 61}, {0xFDD777u, 62}, {0xFDFD77u, 63},
+};
 
 /* Convert the Channel code (24 bit) into a valid
  * dPMR color code [0..63]
  * Return -1 on error */
 int32_t
 GetdPmrColorCode(uint8_t ChannelCodeBit[24]) {
-    uint32_t ChannelCodeByte;
-    int32_t ColorCode;
-    uint32_t i;
+    uint32_t channel_code = 0;
 
     /* Reconstitute the 24 bit channel code into a 3 bytes integer */
-    ChannelCodeByte = 0;
-    for (i = 0; i < 24; i++) {
-        ChannelCodeByte <<= 1;
-        ChannelCodeByte |= (ChannelCodeBit[i] & 1);
+    for (uint32_t i = 0; i < 24; i++) {
+        channel_code <<= 1;
+        channel_code |= (uint32_t)(ChannelCodeBit[i] & 1u);
     }
 
     /* By analyzing all channel code on the
@@ -48,434 +65,14 @@ GetdPmrColorCode(uint8_t ChannelCodeBit[24]) {
    * 0x555555 = 0b010101010101010101010101 => All dibit's LSB
    * are equal to "1".
    */
-    ChannelCodeByte |= 0x555555;
+    channel_code |= 0x555555u;
 
-    /* Switch to the right color code */
-    switch (ChannelCodeByte & 0xFF0000) {
-        case 0x570000: {
-            switch (ChannelCodeByte) {
-                case 0x575F77: {
-                    ColorCode = 0;
-                    break;
-                }
-                case 0x577577: {
-                    ColorCode = 1;
-                    break;
-                }
-                case 0x57DD75: {
-                    ColorCode = 2;
-                    break;
-                }
-                case 0x57F775: {
-                    ColorCode = 3;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0x570000 */
-
-        case 0x550000: {
-            switch (ChannelCodeByte) {
-                case 0x55577D: {
-                    ColorCode = 4;
-                    break;
-                }
-                case 0x557D7D: {
-                    ColorCode = 5;
-                    break;
-                }
-                case 0x55D57F: {
-                    ColorCode = 6;
-                    break;
-                }
-                case 0x55FF7F: {
-                    ColorCode = 7;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0x550000 */
-
-        case 0x5F0000: {
-            switch (ChannelCodeByte) {
-                case 0x5F555F: {
-                    ColorCode = 8;
-                    break;
-                }
-                case 0x5F7F5F: {
-                    ColorCode = 9;
-                    break;
-                }
-                case 0x5FD75D: {
-                    ColorCode = 10;
-                    break;
-                }
-                case 0x5FFD5D: {
-                    ColorCode = 11;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0x5F0000 */
-
-        case 0x5D0000: {
-            switch (ChannelCodeByte) {
-                case 0x5D5D55: {
-                    ColorCode = 12;
-                    break;
-                }
-                case 0x5D7755: {
-                    ColorCode = 13;
-                    break;
-                }
-                case 0x5DDF57: {
-                    ColorCode = 14;
-                    break;
-                }
-                case 0x5DF557: {
-                    ColorCode = 15;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0x5D0000 */
-
-        case 0x770000: {
-            switch (ChannelCodeByte) {
-                case 0x775DD7: {
-                    ColorCode = 16;
-                    break;
-                }
-                case 0x7777D7: {
-                    ColorCode = 17;
-                    break;
-                }
-                case 0x77DFD5: {
-                    ColorCode = 18;
-                    break;
-                }
-                case 0x77F5D5: {
-                    ColorCode = 19;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0x770000 */
-
-        case 0x750000: {
-            switch (ChannelCodeByte) {
-                case 0x7555DD: {
-                    ColorCode = 20;
-                    break;
-                }
-                case 0x757FDD: {
-                    ColorCode = 21;
-                    break;
-                }
-                case 0x75D7DF: {
-                    ColorCode = 22;
-                    break;
-                }
-                case 0x75FDDF: {
-                    ColorCode = 23;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0x750000 */
-
-        case 0x7F0000: {
-            switch (ChannelCodeByte) {
-                case 0x7F57FF: {
-                    ColorCode = 24;
-                    break;
-                }
-                case 0x7F7DFF: {
-                    ColorCode = 25;
-                    break;
-                }
-                case 0x7FD5FD: {
-                    ColorCode = 26;
-                    break;
-                }
-                case 0x7FFFFD: {
-                    ColorCode = 27;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0x7F0000 */
-
-        case 0x7D0000: {
-            switch (ChannelCodeByte) {
-                case 0x7D5FF5: {
-                    ColorCode = 28;
-                    break;
-                }
-                case 0x7D75F5: {
-                    ColorCode = 29;
-                    break;
-                }
-                case 0x7DDDF7: {
-                    ColorCode = 30;
-                    break;
-                }
-                case 0x7DF7F7: {
-                    ColorCode = 31;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0x7D0000 */
-
-        case 0xD70000: {
-            switch (ChannelCodeByte) {
-                case 0xD755F7: {
-                    ColorCode = 32;
-                    break;
-                }
-                case 0xD77FF7: {
-                    ColorCode = 33;
-                    break;
-                }
-                case 0xD7D7F5: {
-                    ColorCode = 34;
-                    break;
-                }
-                case 0xD7FDF5: {
-                    ColorCode = 35;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0xD70000 */
-
-        case 0xD50000: {
-            switch (ChannelCodeByte) {
-                case 0xD55DFD: {
-                    ColorCode = 36;
-                    break;
-                }
-                case 0xD577FD: {
-                    ColorCode = 37;
-                    break;
-                }
-                case 0xD5DFFF: {
-                    ColorCode = 38;
-                    break;
-                }
-                case 0xD5F5FF: {
-                    ColorCode = 39;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0xD50000 */
-
-        case 0xDF0000: {
-            switch (ChannelCodeByte) {
-                case 0xDF5FDF: {
-                    ColorCode = 40;
-                    break;
-                }
-                case 0xDF75DF: {
-                    ColorCode = 41;
-                    break;
-                }
-                case 0xDFDDDD: {
-                    ColorCode = 42;
-                    break;
-                }
-                case 0xDFF7DD: {
-                    ColorCode = 43;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0xDF0000 */
-
-        case 0xDD0000: {
-            switch (ChannelCodeByte) {
-                case 0xDD57D5: {
-                    ColorCode = 44;
-                    break;
-                }
-                case 0xDD7DD5: {
-                    ColorCode = 45;
-                    break;
-                }
-                case 0xDDD5D7: {
-                    ColorCode = 46;
-                    break;
-                }
-                case 0xDDFFD7: {
-                    ColorCode = 47;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0xDD0000 */
-
-        case 0xF70000: {
-            switch (ChannelCodeByte) {
-                case 0xF75757: {
-                    ColorCode = 48;
-                    break;
-                }
-                case 0xF77D57: {
-                    ColorCode = 49;
-                    break;
-                }
-                case 0xF7D555: {
-                    ColorCode = 50;
-                    break;
-                }
-                case 0xF7FF55: {
-                    ColorCode = 51;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0xF70000 */
-
-        case 0xF50000: {
-            switch (ChannelCodeByte) {
-                case 0xF55F5D: {
-                    ColorCode = 52;
-                    break;
-                }
-                case 0xF5755D: {
-                    ColorCode = 53;
-                    break;
-                }
-                case 0xF5DD5F: {
-                    ColorCode = 54;
-                    break;
-                }
-                case 0xF5F75F: {
-                    ColorCode = 55;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0xF50000 */
-
-        case 0xFF0000: {
-            switch (ChannelCodeByte) {
-                case 0xFF5D7F: {
-                    ColorCode = 56;
-                    break;
-                }
-                case 0xFF777F: {
-                    ColorCode = 57;
-                    break;
-                }
-                case 0xFFDF7D: {
-                    ColorCode = 58;
-                    break;
-                }
-                case 0xFFF57D: {
-                    ColorCode = 59;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0xFF0000 */
-
-        case 0xFD0000: {
-            switch (ChannelCodeByte) {
-                case 0xFD5575: {
-                    ColorCode = 60;
-                    break;
-                }
-                case 0xFD7F75: {
-                    ColorCode = 61;
-                    break;
-                }
-                case 0xFDD777: {
-                    ColorCode = 62;
-                    break;
-                }
-                case 0xFDFD77: {
-                    ColorCode = 63;
-                    break;
-                }
-                default: {
-                    ColorCode = -1;
-                    break;
-                }
-            } /* End switch(ChannelCodeByte) */
-            break;
-        } /* End case 0xFD0000 */
-
-        default: {
-            ColorCode = -1;
-            break;
+    for (uint32_t i = 0; i < (uint32_t)(sizeof(k_dpmr_color_code_map) / sizeof(k_dpmr_color_code_map[0])); i++) {
+        if (k_dpmr_color_code_map[i].code == channel_code) {
+            return k_dpmr_color_code_map[i].color;
         }
-    } /* End switch(ChannelCodeByte & 0xFF0000) */
-
-    /* Return the colour code */
-    return ColorCode;
+    }
+    return -1;
 }
 
 /* End of file */

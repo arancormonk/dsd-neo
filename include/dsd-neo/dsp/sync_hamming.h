@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_SYNC_HAMMING_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_SYNC_HAMMING_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,3 +40,5 @@ int dsd_qpsk_sync_hamming_with_remaps(const char* buf, const char* pat_norm, con
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_SYNC_HAMMING_H_ */

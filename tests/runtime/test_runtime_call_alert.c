@@ -6,11 +6,12 @@
 #include <dsd-neo/runtime/call_alert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", label, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", label, got, want);
         return 1;
     }
     return 0;

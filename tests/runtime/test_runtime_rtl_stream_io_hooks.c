@@ -48,7 +48,7 @@ main(void) {
     assert(got == 0);
     assert(dsd_rtl_stream_io_hook_return_pwr(state) == 0.0);
 
-    int dummy = 0;
+    static int dummy = 0;
     state->rtl_ctx = (struct RtlSdrContext*)&dummy;
 
     got = 123;

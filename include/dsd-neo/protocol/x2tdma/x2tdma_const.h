@@ -20,28 +20,22 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_X2TDMA_X2TDMA_CONST_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_X2TDMA_X2TDMA_CONST_H_
+
 /*
  * X2TDMA AMBE interleave schedule
  */
+static const int x2tdma_ambe_interleave_w[36] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+                                                 0, 1, 0, 1, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2};
 
-#ifndef DSD_NEO_MAIN
-extern const int aW[36];
-extern const int aX[36];
-extern const int aY[36];
-extern const int aZ[36];
+static const int x2tdma_ambe_interleave_x[36] = {23, 10, 22, 9, 21, 8,  20, 7, 19, 6, 18, 5, 17, 4, 16, 3, 15, 2,
+                                                 14, 1,  13, 0, 12, 10, 11, 9, 10, 8, 9,  7, 8,  6, 7,  5, 6,  4};
 
-#else
+static const int x2tdma_ambe_interleave_y[36] = {0, 2, 0, 2, 0, 2, 0, 2, 0, 3, 0, 3, 1, 3, 1, 3, 1, 3,
+                                                 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3};
 
-const int aW[36] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
-                    0, 1, 0, 1, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2};
+static const int x2tdma_ambe_interleave_z[36] = {5,  3, 4,  2, 3,  1, 2,  0, 1,  13, 0,  12, 22, 11, 21, 10, 20, 9,
+                                                 19, 8, 18, 7, 17, 6, 16, 5, 15, 4,  14, 3,  13, 2,  12, 1,  11, 0};
 
-const int aX[36] = {23, 10, 22, 9, 21, 8,  20, 7, 19, 6, 18, 5, 17, 4, 16, 3, 15, 2,
-                    14, 1,  13, 0, 12, 10, 11, 9, 10, 8, 9,  7, 8,  6, 7,  5, 6,  4};
-
-const int aY[36] = {0, 2, 0, 2, 0, 2, 0, 2, 0, 3, 0, 3, 1, 3, 1, 3, 1, 3,
-                    1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3};
-
-const int aZ[36] = {5,  3, 4,  2, 3,  1, 2,  0, 1,  13, 0,  12, 22, 11, 21, 10, 20, 9,
-                    19, 8, 18, 7, 17, 6, 16, 5, 15, 4,  14, 3,  13, 2,  12, 1,  11, 0};
-
-#endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_X2TDMA_X2TDMA_CONST_H_ */

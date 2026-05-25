@@ -11,27 +11,26 @@
  * of the C++ `RtlSdrOrchestrator`, for consumption by C translation units.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_STREAM_C_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_STREAM_C_H_H
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/io/rtl_stream_fwd.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Opaque stream context */
-typedef struct RtlSdrContext RtlSdrContext;
-
-typedef enum rtl_stream_output_kind {
+typedef enum __attribute__((packed)) rtl_stream_output_kind {
     RTL_STREAM_OUTPUT_AUDIO_MONITOR = 0,
     RTL_STREAM_OUTPUT_SYMBOL_FSK = 1,
     RTL_STREAM_OUTPUT_SYMBOL_CQPSK = 2,
 } rtl_stream_output_kind;
 
-typedef enum rtl_stream_channel_profile {
+typedef enum __attribute__((packed)) rtl_stream_channel_profile {
     RTL_STREAM_CHANNEL_PROFILE_WIDE = 0,
     RTL_STREAM_CHANNEL_PROFILE_6K25 = 1,
     RTL_STREAM_CHANNEL_PROFILE_12K5 = 2,
@@ -148,7 +147,7 @@ int rtl_stream_get_requested_ppm(const dsd_opts* opts);
  * @return 0 on success; otherwise <0 on error (e.g., shutdown).
  */
 int rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got);
-int rtl_stream_read_monitor(RtlSdrContext* ctx, float* out, size_t count, int* out_got);
+int rtl_stream_read_monitor(const RtlSdrContext* ctx, float* out, size_t count, int* out_got);
 /**
  * @brief Get the current output sample rate in Hz.
  * @param ctx Stream context.
@@ -275,7 +274,7 @@ int rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz);
  * Returns 0 on success, -1 when the request is rejected (for example replay),
  * and -2 on timeout.
  */
-int rtl_stream_test_request_retune(RtlSdrContext* ctx, uint32_t freq_hz, int timeout_ms);
+int rtl_stream_test_request_retune(const RtlSdrContext* ctx, uint32_t freq_hz, int timeout_ms);
 
 /**
  * @brief Seed queued output, run reconfigure input preparation, and report the result.
@@ -337,7 +336,7 @@ typedef struct rtl_stream_test_replay_state {
  * Returns 0 on success and fills @p out_state, or a negative value if the
  * stream/context is unavailable.
  */
-int rtl_stream_test_get_replay_state(RtlSdrContext* ctx, rtl_stream_test_replay_state* out_state);
+int rtl_stream_test_get_replay_state(const RtlSdrContext* ctx, rtl_stream_test_replay_state* out_state);
 #endif
 
 /**
@@ -871,3 +870,4 @@ void rtl_stream_set_iq_dc(int enable, int shift_k);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_STREAM_C_H_H */

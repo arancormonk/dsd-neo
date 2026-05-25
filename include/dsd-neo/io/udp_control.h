@@ -11,7 +11,8 @@
  * listener that accepts retune commands and invokes a user-supplied callback.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_UDP_CONTROL_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_UDP_CONTROL_H_
 
 #include <stdint.h>
 
@@ -54,3 +55,5 @@ void udp_control_stop(struct udp_control* ctrl);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_UDP_CONTROL_H_ */

@@ -4,17 +4,11 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/protocol/dmr/r34_viterbi.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-// Test now validates that the Viterbi decoder is no worse than
-// the legacy trellis search in terms of cumulative branch metric.
-// It no longer requires byte-for-byte output equivalence.
-
-#include <dsd-neo/protocol/dmr/r34_viterbi.h>
-
-// Forward-declare legacy decoder to avoid including broad headers.
 uint32_t dmr_34(uint8_t* input, uint8_t treturn[18]);
 
 // Local copies of mapping tables used by both decoders, for metric computation.
@@ -97,8 +91,8 @@ run_case(unsigned seed) {
     uint8_t in[98];
     uint8_t a[18], b[18];
     gen_pattern(in, 98, seed);
-    memset(a, 0, sizeof(a));
-    memset(b, 0, sizeof(b));
+    DSD_MEMSET(a, 0, sizeof(a));
+    DSD_MEMSET(b, 0, sizeof(b));
     // Legacy
     uint8_t in_copy[98];
     for (int i = 0; i < 98; i++) {

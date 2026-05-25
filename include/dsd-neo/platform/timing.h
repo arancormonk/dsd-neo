@@ -3,15 +3,20 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_TIMING_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_TIMING_H_H
 
 /**
  * @file
  * @brief Cross-platform high-resolution timing for DSD-neo.
  */
 
-#include <dsd-neo/platform/platform.h>
 #include <stdint.h>
+#include <time.h>
+
+#ifndef __cplusplus
+struct tm;
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,6 +48,24 @@ uint64_t dsd_time_monotonic_ms(void);
  * @return Nanoseconds since Unix epoch (1970-01-01 00:00:00 UTC).
  */
 uint64_t dsd_time_realtime_ns(void);
+
+/**
+ * @brief Thread-safe localtime wrapper.
+ *
+ * @param t    Input time value.
+ * @param out  Output calendar time.
+ * @return 0 on success, -1 on error.
+ */
+int dsd_localtime(const time_t* t, struct tm* out);
+
+/**
+ * @brief Thread-safe gmtime wrapper.
+ *
+ * @param t    Input time value.
+ * @param out  Output calendar time.
+ * @return 0 on success, -1 on error.
+ */
+int dsd_gmtime(const time_t* t, struct tm* out);
 
 /**
  * @brief Sleep for specified number of milliseconds.
@@ -84,3 +107,4 @@ uint64_t dsd_time_deadline_ns(unsigned int timeout_ms);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_TIMING_H_H */

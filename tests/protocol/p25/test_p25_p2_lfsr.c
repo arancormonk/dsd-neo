@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static void
 gen_lfsr_keystream(uint32_t wacn, uint16_t sysid, uint16_t nac, uint8_t* out_bits, int nbits) {
@@ -52,7 +53,7 @@ main(void) {
     enum { TOTAL_BITS = 20 + 8 * 360 + 128 };
 
     uint8_t lbits[TOTAL_BITS];
-    memset(lbits, 0, sizeof lbits);
+    DSD_MEMSET(lbits, 0, sizeof lbits);
     gen_lfsr_keystream(WACN, SYSID, NAC, lbits, TOTAL_BITS);
 
     // Expected 128-bit segments packed MSB-first
@@ -77,60 +78,60 @@ main(void) {
 
     int rc = 0;
     if (memcmp(out0, exp0, sizeof exp0) != 0) {
-        fprintf(stderr, "P25p2 LFSR mismatch at offset 0 (start+20)\n");
-        fprintf(stderr, " got: ");
+        DSD_FPRINTF(stderr, "P25p2 LFSR mismatch at offset 0 (start+20)\n");
+        DSD_FPRINTF(stderr, " got: ");
         for (int i = 0; i < 16; i++) {
-            fprintf(stderr, "%02X", out0[i]);
+            DSD_FPRINTF(stderr, "%02X", out0[i]);
         }
-        fprintf(stderr, "\n exp: ");
+        DSD_FPRINTF(stderr, "\n exp: ");
         for (int i = 0; i < 16; i++) {
-            fprintf(stderr, "%02X", exp0[i]);
+            DSD_FPRINTF(stderr, "%02X", exp0[i]);
         }
-        fprintf(stderr, "\n");
+        DSD_FPRINTF(stderr, "\n");
         rc = 1;
     }
     if (memcmp(out1, exp1, sizeof exp1) != 0) {
-        fprintf(stderr, "P25p2 LFSR mismatch at offset 1 (start+20+360)\n");
-        fprintf(stderr, " got: ");
+        DSD_FPRINTF(stderr, "P25p2 LFSR mismatch at offset 1 (start+20+360)\n");
+        DSD_FPRINTF(stderr, " got: ");
         for (int i = 0; i < 16; i++) {
-            fprintf(stderr, "%02X", out1[i]);
+            DSD_FPRINTF(stderr, "%02X", out1[i]);
         }
-        fprintf(stderr, "\n exp: ");
+        DSD_FPRINTF(stderr, "\n exp: ");
         for (int i = 0; i < 16; i++) {
-            fprintf(stderr, "%02X", exp1[i]);
+            DSD_FPRINTF(stderr, "%02X", exp1[i]);
         }
-        fprintf(stderr, "\n");
+        DSD_FPRINTF(stderr, "\n");
         rc = 1;
     }
     if (memcmp(out4, exp4, sizeof exp4) != 0) {
-        fprintf(stderr, "P25p2 LFSR mismatch at offset 4 (start+20+4*360)\n");
-        fprintf(stderr, " got: ");
+        DSD_FPRINTF(stderr, "P25p2 LFSR mismatch at offset 4 (start+20+4*360)\n");
+        DSD_FPRINTF(stderr, " got: ");
         for (int i = 0; i < 16; i++) {
-            fprintf(stderr, "%02X", out4[i]);
+            DSD_FPRINTF(stderr, "%02X", out4[i]);
         }
-        fprintf(stderr, "\n exp: ");
+        DSD_FPRINTF(stderr, "\n exp: ");
         for (int i = 0; i < 16; i++) {
-            fprintf(stderr, "%02X", exp4[i]);
+            DSD_FPRINTF(stderr, "%02X", exp4[i]);
         }
-        fprintf(stderr, "\n");
+        DSD_FPRINTF(stderr, "\n");
         rc = 1;
     }
     if (memcmp(out8, exp8, sizeof exp8) != 0) {
-        fprintf(stderr, "P25p2 LFSR mismatch at offset 8 (start+20+8*360)\n");
-        fprintf(stderr, " got: ");
+        DSD_FPRINTF(stderr, "P25p2 LFSR mismatch at offset 8 (start+20+8*360)\n");
+        DSD_FPRINTF(stderr, " got: ");
         for (int i = 0; i < 16; i++) {
-            fprintf(stderr, "%02X", out8[i]);
+            DSD_FPRINTF(stderr, "%02X", out8[i]);
         }
-        fprintf(stderr, "\n exp: ");
+        DSD_FPRINTF(stderr, "\n exp: ");
         for (int i = 0; i < 16; i++) {
-            fprintf(stderr, "%02X", exp8[i]);
+            DSD_FPRINTF(stderr, "%02X", exp8[i]);
         }
-        fprintf(stderr, "\n");
+        DSD_FPRINTF(stderr, "\n");
         rc = 1;
     }
 
     if (rc == 0) {
-        fprintf(stderr, "P25p2 LFSR taps/sequence verified (4 vectors)\n");
+        DSD_FPRINTF(stderr, "P25p2 LFSR taps/sequence verified (4 vectors)\n");
     }
     return rc;
 }

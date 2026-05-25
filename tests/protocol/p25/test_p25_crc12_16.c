@@ -9,9 +9,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-// Bridges from src/protocol/p25/p25_crc.c
 int crc12_xb_bridge(const int* payload, int len);
 int crc16_lb_bridge(const int* payload, int len);
 
@@ -25,7 +24,7 @@ crc12_bits(const uint8_t bits[], unsigned int len) {
     if (len + K > sizeof(buf)) {
         return 0;
     }
-    memset(buf, 0, sizeof(buf));
+    DSD_MEMSET(buf, 0, sizeof(buf));
     for (unsigned int i = 0; i < len; i++) {
         buf[i] = bits[i];
     }
@@ -89,28 +88,28 @@ main(void) {
     // CRC16 (LCCH-like span): two vectors and a tamper check
     {
         int bits[190];
-        memset(bits, 0, sizeof(bits));
+        DSD_MEMSET(bits, 0, sizeof(bits));
         set_crc16_on_frame(bits, 164);
         if (crc16_lb_bridge(bits, 164) != 0) {
-            fprintf(stderr, "CRC16 all-zero failed\n");
+            DSD_FPRINTF(stderr, "CRC16 all-zero failed\n");
             return 1;
         }
     }
     {
         int bits[190];
-        memset(bits, 0, sizeof(bits));
+        DSD_MEMSET(bits, 0, sizeof(bits));
         int p = 0;
         for (; p < 164; p++) {
             bits[p] = (p & 1);
         }
         set_crc16_on_frame(bits, 164);
         if (crc16_lb_bridge(bits, 164) != 0) {
-            fprintf(stderr, "CRC16 patterned failed\n");
+            DSD_FPRINTF(stderr, "CRC16 patterned failed\n");
             return 2;
         }
         bits[17] ^= 1; // tamper
         if (crc16_lb_bridge(bits, 164) == 0) {
-            fprintf(stderr, "CRC16 tamper unexpectedly passed\n");
+            DSD_FPRINTF(stderr, "CRC16 tamper unexpectedly passed\n");
             return 3;
         }
     }
@@ -118,34 +117,34 @@ main(void) {
     // CRC12 (xCCH-like span): two vectors and a tamper check
     {
         int bits[190];
-        memset(bits, 0, sizeof(bits));
+        DSD_MEMSET(bits, 0, sizeof(bits));
         // keep within bridge buffer (len+12 <= 190)
         const int len12 = 176;
         set_crc12_on_frame(bits, len12);
         if (crc12_xb_bridge(bits, len12) != 0) {
-            fprintf(stderr, "CRC12 all-zero failed\n");
+            DSD_FPRINTF(stderr, "CRC12 all-zero failed\n");
             return 4;
         }
     }
     {
         int bits[190];
-        memset(bits, 0, sizeof(bits));
+        DSD_MEMSET(bits, 0, sizeof(bits));
         const int len12 = 176;
         for (int i = 0; i < len12; i++) {
             bits[i] = ((i * 3) ^ (i >> 1)) & 1;
         }
         set_crc12_on_frame(bits, len12);
         if (crc12_xb_bridge(bits, len12) != 0) {
-            fprintf(stderr, "CRC12 patterned failed\n");
+            DSD_FPRINTF(stderr, "CRC12 patterned failed\n");
             return 5;
         }
         bits[77] ^= 1; // tamper
         if (crc12_xb_bridge(bits, len12) == 0) {
-            fprintf(stderr, "CRC12 tamper unexpectedly passed\n");
+            DSD_FPRINTF(stderr, "CRC12 tamper unexpectedly passed\n");
             return 6;
         }
     }
 
-    fprintf(stderr, "CRC12/16 smoke passed\n");
+    DSD_FPRINTF(stderr, "CRC12/16 smoke passed\n");
     return 0;
 }

@@ -8,6 +8,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "protocol_dispatch_impl.h"
 
 int
 dsd_dispatch_matches_ysf(int synctype) {

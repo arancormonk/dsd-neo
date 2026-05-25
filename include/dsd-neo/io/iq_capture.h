@@ -8,7 +8,8 @@
  * @brief IQ capture writer API.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_IQ_CAPTURE_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_IQ_CAPTURE_H_
 
 #include <dsd-neo/io/iq_types.h>
 #include <stddef.h>
@@ -73,3 +74,5 @@ void dsd_iq_capture_abort(dsd_iq_capture_writer* writer);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_IQ_CAPTURE_H_ */

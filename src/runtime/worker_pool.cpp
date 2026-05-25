@@ -19,8 +19,10 @@
 #include <stdlib.h>
 #include <unordered_map>
 #include <utility>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
+
+namespace {
 
 /* Opaque handle keyed off demod_state* to avoid depending on its layout here */
 struct WorkerCtx {
@@ -45,8 +47,10 @@ struct WorkerArg {
     int id;
 };
 
-static std::unordered_map<const void*, WorkerCtx*> g_ctx_map;
-static std::mutex g_ctx_mu;
+std::unordered_map<const void*, WorkerCtx*> g_ctx_map;
+std::mutex g_ctx_mu;
+
+} // namespace
 
 static WorkerCtx*
 get_ctx(const void* key) {
@@ -70,7 +74,7 @@ static DSD_THREAD_RETURN_TYPE
     __stdcall
 #endif
     demod_mt_worker(void* arg) {
-    WorkerArg* wa = (WorkerArg*)arg;
+    WorkerArg* wa = static_cast<WorkerArg*>(arg);
     WorkerCtx* ctx = wa->ctx;
     const int id = wa->id;
     int local_epoch = 0;
@@ -121,14 +125,14 @@ demod_mt_init(struct demod_state* s) {
     bool enable = (cfg && cfg->mt_is_set && cfg->mt_enable) ? true : false;
     if (!enable) {
         // No context needed if disabled
-        set_ctx((const void*)s, nullptr);
+        set_ctx(static_cast<const void*>(s), nullptr);
         return;
     }
-    WorkerCtx* ctx = get_ctx((const void*)s);
+    WorkerCtx* ctx = get_ctx(static_cast<const void*>(s));
     if (ctx) {
         return; // already initialized
     }
-    ctx = (WorkerCtx*)calloc(1, sizeof(WorkerCtx));
+    ctx = static_cast<WorkerCtx*>(calloc(1, sizeof(WorkerCtx)));
     if (!ctx) {
         return;
     }
@@ -140,9 +144,9 @@ demod_mt_init(struct demod_state* s) {
     dsd_mutex_init(&ctx->lock);
     dsd_cond_init(&ctx->cv);
     dsd_cond_init(&ctx->done_cv);
-    WorkerArg* args = (WorkerArg*)calloc(2, sizeof(WorkerArg));
+    WorkerArg* args = static_cast<WorkerArg*>(calloc(2, sizeof(WorkerArg)));
     if (args == NULL) {
-        fprintf(stderr, "Failed to allocate worker thread arguments\n");
+        DSD_FPRINTF(stderr, "Failed to allocate worker thread arguments\n");
         dsd_mutex_destroy(&ctx->lock);
         dsd_cond_destroy(&ctx->cv);
         dsd_cond_destroy(&ctx->done_cv);
@@ -152,11 +156,11 @@ demod_mt_init(struct demod_state* s) {
     for (int i = 0; i < 2; i++) {
         args[i].ctx = ctx;
         args[i].id = i;
-        dsd_thread_create(&ctx->threads[i], (dsd_thread_fn)demod_mt_worker, (void*)&args[i]);
+        dsd_thread_create(&ctx->threads[i], demod_mt_worker, static_cast<void*>(&args[i]));
     }
     // Intentionally leak args array until threads exit to keep pointers valid; freed in destroy
-    set_ctx((const void*)s, ctx);
-    fprintf(stderr, "Intra-block multithreading enabled (DSD_NEO_MT=1), workers: 2.\n");
+    set_ctx(static_cast<const void*>(s), ctx);
+    DSD_FPRINTF(stderr, "Intra-block multithreading enabled (DSD_NEO_MT=1), workers: 2.\n");
 }
 
 /**
@@ -167,9 +171,9 @@ demod_mt_init(struct demod_state* s) {
  */
 void
 demod_mt_destroy(struct demod_state* s) {
-    WorkerCtx* ctx = get_ctx((const void*)s);
+    WorkerCtx* ctx = get_ctx(static_cast<const void*>(s));
     if (!ctx || !ctx->enabled) {
-        set_ctx((const void*)s, nullptr);
+        set_ctx(static_cast<const void*>(s), nullptr);
         return;
     }
     dsd_mutex_lock(&ctx->lock);
@@ -185,7 +189,7 @@ demod_mt_destroy(struct demod_state* s) {
     // Free leaked WorkerArg array: not tracked; threads have exited so it's safe to free if we had kept pointer.
     // Since we didn't keep it, allow small leak to be reclaimed on process exit. Not critical during normal teardown.
     free(ctx);
-    set_ctx((const void*)s, nullptr);
+    set_ctx(static_cast<const void*>(s), nullptr);
 }
 
 /**
@@ -200,7 +204,7 @@ demod_mt_destroy(struct demod_state* s) {
  */
 void
 demod_mt_run_two(struct demod_state* s, void (*f0)(void*), void* a0, void (*f1)(void*), void* a1) {
-    WorkerCtx* ctx = get_ctx((const void*)s);
+    WorkerCtx* ctx = get_ctx(static_cast<const void*>(s));
     if (!ctx || !ctx->enabled) {
         if (f0) {
             f0(a0);

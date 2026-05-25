@@ -28,7 +28,7 @@ void p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac
 
 // Stubs required by MAC VPDU path (alias decode helpers)
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
@@ -114,11 +114,11 @@ extract_last_fields_from_json(const char* buf, int len, int* out_b, int* out_c, 
     const char* p;
 
     p = strstr(line, "\"lenB\":");
-    if (!p || sscanf(p, "\"lenB\":%d", &b) != 1) {
+    if (!p || DSD_SSCANF(p, "\"lenB\":%d", &b) != 1) {
         return -2;
     }
     p = strstr(line, "\"lenC\":");
-    if (!p || sscanf(p, "\"lenC\":%d", &c) != 1) {
+    if (!p || DSD_SSCANF(p, "\"lenC\":%d", &c) != 1) {
         return -3;
     }
     p = strstr(line, "\"slot\":");
@@ -153,7 +153,7 @@ extract_last_fields_from_json(const char* buf, int len, int* out_b, int* out_c, 
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -171,16 +171,16 @@ main(void) {
     char tmpl[] = "/tmp/p25_mac_json_XXXXXX";
     int fd = mkstemp(tmpl);
     if (fd < 0) {
-        fprintf(stderr, "mkstemp failed: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "mkstemp failed: %s\n", strerror(errno));
         return 100;
     }
     FILE* fp = fdopen(fd, "w+");
     if (!fp) {
-        fprintf(stderr, "fdopen failed: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "fdopen failed: %s\n", strerror(errno));
         return 101;
     }
     if (!freopen(tmpl, "w+", stderr)) {
-        fprintf(stderr, "freopen stderr failed\n");
+        DSD_FPRINTF(stderr, "freopen stderr failed\n");
         fclose(fp);
         return 102;
     } else {
@@ -191,7 +191,7 @@ main(void) {
     // Case 1: FACCH, unknown opcode → derive from MCO; expect lenB=9 (mco=10), lenC=(16-9)=7
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof(mac));
+        DSD_MEMSET(mac, 0, sizeof(mac));
         mac[0] = 1;     // header-present hint for FACCH MCO fallback
         mac[1] = 10;    // opcode byte with MCO=10 (low 6 bits)
         mac[2] = 0x00;  // MFID (standard)
@@ -202,7 +202,7 @@ main(void) {
     // Case 2: SACCH, unknown opcode, MCO=15 → lenB=14, lenC=(19-14)=5 (no header hint needed)
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof(mac));
+        DSD_MEMSET(mac, 0, sizeof(mac));
         mac[0] = 0;     // SACCH path allows MCO use without header hint
         mac[1] = 15;    // MCO=15
         mac[2] = 0x00;  // MFID (standard)
@@ -214,13 +214,13 @@ main(void) {
     fflush(stderr);
     FILE* rf = fopen(tmpl, "rb");
     if (!rf) {
-        fprintf(stderr, "fopen read failed\n");
+        DSD_FPRINTF(stderr, "fopen read failed\n");
         return 103;
     }
     fseek(rf, 0, SEEK_END);
     long sz = ftell(rf);
     if (sz < 0) {
-        fprintf(stderr, "ftell failed\n");
+        DSD_FPRINTF(stderr, "ftell failed\n");
         fclose(rf);
         return 104;
     }
@@ -228,7 +228,7 @@ main(void) {
     size_t alloc = (size_t)sz + 1;
     char* buf = (char*)calloc(alloc, 1);
     if (!buf) {
-        fprintf(stderr, "malloc failed\n");
+        DSD_FPRINTF(stderr, "malloc failed\n");
         fclose(rf);
         return 104;
     }
@@ -243,7 +243,7 @@ main(void) {
     int er = extract_last_fields_from_json(buf, (int)nread, &lenB, &lenC, &slot, xch, sizeof(xch));
     free(buf);
     if (er != 0) {
-        fprintf(stderr, "failed to parse JSON len fields (er=%d)\n", er);
+        DSD_FPRINTF(stderr, "failed to parse JSON len fields (er=%d)\n", er);
         return 105;
     }
 
@@ -252,7 +252,7 @@ main(void) {
     rc |= expect_eq_int("SACCH lenC", lenC, 5);
     rc |= expect_eq_int("SACCH slot flip", slot, 1);
     if (strcmp(xch, "SACCH") != 0) {
-        fprintf(stderr, "xch: got %s want SACCH\n", xch);
+        DSD_FPRINTF(stderr, "xch: got %s want SACCH\n", xch);
         rc |= 1;
     }
 

@@ -12,8 +12,8 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 int
@@ -22,7 +22,7 @@ dmr_csbk_parse(const uint8_t* cs_pdu_bits, const uint8_t* cs_pdu, struct dmr_csb
         return -1;
     }
 
-    memset(out, 0, sizeof(*out));
+    DSD_MEMSET(out, 0, sizeof(*out));
     out->bits = cs_pdu_bits;
     out->bytes = cs_pdu;
 

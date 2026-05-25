@@ -21,10 +21,9 @@
  */
 
 #include <dsd-neo/platform/audio_concealment.h>
-
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 #define FRAMES   256
 #define CHANNELS 1
@@ -37,7 +36,7 @@
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -46,7 +45,7 @@ expect_int(const char* label, int got, int want) {
 static int
 expect_i16(const char* label, int16_t got, int16_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, (int)got, (int)want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, (int)got, (int)want);
         return 1;
     }
     return 0;
@@ -55,7 +54,7 @@ expect_i16(const char* label, int16_t got, int16_t want) {
 static int
 expect_u64(const char* label, uint64_t got, uint64_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%llu want=%llu\n", label, (unsigned long long)got, (unsigned long long)want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%llu want=%llu\n", label, (unsigned long long)got, (unsigned long long)want);
         return 1;
     }
     return 0;
@@ -87,7 +86,7 @@ static int
 verify_buffer_constant(const char* label, const int16_t* buf, int16_t want) {
     for (int i = 0; i < SAMPLES; i++) {
         if (buf[i] != want) {
-            fprintf(stderr, "FAIL: %s sample[%d]: got=%d want=%d\n", label, i, (int)buf[i], (int)want);
+            DSD_FPRINTF(stderr, "FAIL: %s sample[%d]: got=%d want=%d\n", label, i, (int)buf[i], (int)want);
             return 1;
         }
     }
@@ -108,7 +107,7 @@ main(void) {
 
     /* --- Step 1: Init concealment --- */
     struct audio_conceal_state cs;
-    memset(&cs, 0, sizeof(cs));
+    DSD_MEMSET(&cs, 0, sizeof(cs));
     rc |= expect_int("step1: init", audio_conceal_init(&cs, FRAMES, CHANNELS), 0);
 
     /* Use a constant value for easy verification. */
@@ -127,27 +126,24 @@ main(void) {
     }
 
     /* --- Step 3: Trigger 4 underruns → progressive attenuation --- */
-    /* Expected gains: k=1 → 0.5, k=2 → 0.25, k=3 → 0.125, k=4 → 0.0625 */
-    float expected_gains[4] = {0.5f, 0.25f, 0.125f, 0.0625f};
-
     for (int k = 1; k <= 4; k++) {
-        memset(out, 0xAA, sizeof(out));
+        DSD_MEMSET(out, 0xAA, sizeof(out));
         audio_conceal_on_underrun(&cs, out, FRAMES);
 
         int16_t want = expected_sample(GOOD_VAL, k);
         char label[64];
-        snprintf(label, sizeof(label), "step3: underrun k=%d sample[0]", k);
+        DSD_SNPRINTF(label, sizeof(label), "step3: underrun k=%d sample[0]", k);
         rc |= expect_i16(label, out[0], want);
 
         /* Spot-check a middle sample too. */
-        snprintf(label, sizeof(label), "step3: underrun k=%d sample[128]", k);
+        DSD_SNPRINTF(label, sizeof(label), "step3: underrun k=%d sample[128]", k);
         rc |= expect_i16(label, out[128], want);
     }
 
     rc |= expect_int("step3: repeat_count after 4 underruns", cs.repeat_count, 4);
 
     /* --- Step 4: 1 more underrun (past max) → silence --- */
-    memset(out, 0xAA, sizeof(out));
+    DSD_MEMSET(out, 0xAA, sizeof(out));
     audio_conceal_on_underrun(&cs, out, FRAMES);
     rc |= verify_silence("step4: silence after max", out);
 
@@ -163,7 +159,7 @@ main(void) {
     rc |= expect_int("step5: repeat_count after good_buffer", cs.repeat_count, 0);
 
     /* --- Step 6: 1 underrun → fresh attenuation at 0.5 on new buffer --- */
-    memset(out, 0xAA, sizeof(out));
+    DSD_MEMSET(out, 0xAA, sizeof(out));
     audio_conceal_on_underrun(&cs, out, FRAMES);
 
     int16_t want_fresh = expected_sample(GOOD_VAL2, 1);

@@ -4,11 +4,9 @@
  */
 
 #include "dmr_confidence.h"
-
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #define DMR_CONFIDENCE_UNKNOWN_CC     16U
@@ -22,9 +20,9 @@ dmr_confidence_valid_cc(unsigned int color_code) {
 
 static void
 dmr_confidence_clear_voice(dsd_state* state) {
-    memset(state->dmr_confidence_voice_sync_seen, 0, sizeof(state->dmr_confidence_voice_sync_seen));
-    memset(state->dmr_confidence_voice_open, 0, sizeof(state->dmr_confidence_voice_open));
-    memset(state->dmr_confidence_voice_count, 0, sizeof(state->dmr_confidence_voice_count));
+    DSD_MEMSET(state->dmr_confidence_voice_sync_seen, 0, sizeof(state->dmr_confidence_voice_sync_seen));
+    DSD_MEMSET(state->dmr_confidence_voice_open, 0, sizeof(state->dmr_confidence_voice_open));
+    DSD_MEMSET(state->dmr_confidence_voice_count, 0, sizeof(state->dmr_confidence_voice_count));
 }
 
 void

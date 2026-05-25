@@ -9,11 +9,10 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include "dsd-neo/core/safe_api.h"
 
 static void
 append_bits(uint8_t* dst, unsigned start, uint32_t val, unsigned k) {
@@ -29,11 +28,11 @@ test_rc_crc7_mask(void) {
     // bits[0..3]  = 4-bit opcode payload
     // bits[4..10] = 7-bit CRC masked on-air (crc ^ 0x7A), MSB-first
     uint8_t sbrc_return[32];
-    memset(sbrc_return, 0, sizeof(sbrc_return));
+    DSD_MEMSET(sbrc_return, 0, sizeof(sbrc_return));
 
     // Example 4-bit opcode
     uint8_t opcode_bits[4] = {1, 0, 1, 1};
-    memcpy(&sbrc_return[0], opcode_bits, 4);
+    DSD_MEMCPY(&sbrc_return[0], opcode_bits, 4);
 
     // Compute CRC-7 over the 4 opcode bits
     uint8_t crc = crc7(sbrc_return, 4);

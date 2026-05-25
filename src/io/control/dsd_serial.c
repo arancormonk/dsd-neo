@@ -2,12 +2,20 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/io/control.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/log.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <fcntl.h>
+#endif
 #include <stdio.h>
-#include <sys/types.h> // IWYU pragma: keep
-
+#include <sys/types.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <termios.h>
+#include <unistd.h>
+#endif
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
@@ -45,13 +53,10 @@ resumeScan(dsd_opts* opts, dsd_state* state) {
 
 #else /* POSIX */
 
-#include <fcntl.h>
 // IWYU pragma: no_include <bits/termios-baud.h>
 // IWYU pragma: no_include <bits/termios-c_cc.h>
 // IWYU pragma: no_include <bits/termios-c_cflag.h>
 // IWYU pragma: no_include <bits/termios-c_iflag.h>
-#include <termios.h> // IWYU pragma: keep
-#include <unistd.h>
 
 /**
  * @brief Open and configure the outbound serial port used for radio control.
@@ -70,7 +75,7 @@ openSerial(dsd_opts* opts, dsd_state* state) {
     struct termios tty;
     speed_t baud;
 
-    fprintf(stderr, "Opening serial port %s and setting baud to %i\n", opts->serial_dev, opts->serial_baud);
+    DSD_FPRINTF(stderr, "Opening serial port %s and setting baud to %i\n", opts->serial_dev, opts->serial_baud);
     opts->serial_fd = -1;
     int fd = open(opts->serial_dev, O_WRONLY);
     if (fd == -1) {
@@ -128,11 +133,9 @@ openSerial(dsd_opts* opts, dsd_state* state) {
  */
 void
 resumeScan(dsd_opts* opts, dsd_state* state) {
-
-    char cmd[16];
-
     if (opts->serial_fd > 0) {
-        snprintf(cmd, sizeof cmd, "\rKEY00\r");
+        char cmd[16];
+        DSD_SNPRINTF(cmd, sizeof cmd, "\rKEY00\r");
         ssize_t written = write(opts->serial_fd, cmd, 7);
         if (written != 7) {
             LOG_WARN("resumeScan: sent %zd/7 bytes on serial FD", written);

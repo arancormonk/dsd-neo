@@ -13,17 +13,14 @@
 
 #include <curses.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <stdio.h>
 #include <string.h>
 #include <time.h>
-
-#include "dsd-neo/ui/menu_core.h" // IWYU pragma: keep
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/ui/menu_core.h"
 #include "menu_internal.h"
 
-// ---- Visibility helpers ----
-
 int
-ui_is_enabled(const NcMenuItem* it, void* ctx) {
+ui_is_enabled(const NcMenuItem* it, const void* ctx) {
     if (!it) {
         return 0;
     }
@@ -38,7 +35,7 @@ ui_is_enabled(const NcMenuItem* it, void* ctx) {
 }
 
 int
-ui_submenu_has_visible(const NcMenuItem* items, size_t n, void* ctx) {
+ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
     if (!items || n == 0) {
         return 0;
     }
@@ -51,7 +48,7 @@ ui_submenu_has_visible(const NcMenuItem* items, size_t n, void* ctx) {
 }
 
 int
-ui_next_enabled(const NcMenuItem* items, size_t n, void* ctx, int from, int dir) {
+ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
     if (!items || n == 0) {
         return 0;
     }
@@ -66,7 +63,7 @@ ui_next_enabled(const NcMenuItem* items, size_t n, void* ctx, int from, int dir)
 }
 
 int
-ui_visible_index_for_item(const NcMenuItem* items, size_t n, void* ctx, int idx) {
+ui_visible_index_for_item(const NcMenuItem* items, size_t n, const void* ctx, int idx) {
     if (!items || n == 0 || idx < 0 || idx >= (int)n) {
         return 0;
     }
@@ -85,134 +82,198 @@ ui_visible_index_for_item(const NcMenuItem* items, size_t n, void* ctx, int idx)
 
 // ---- Render helpers ----
 
-void
-ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title, void* ctx) {
-    int x = 2;
-    werase(menu_win);
-    box(menu_win, 0, 0);
-    int mh = 0, mw = 0;
-    getmaxyx(menu_win, mh, mw);
-    int items_top = 2;     // row 1 is reserved for breadcrumb/title
-    int spacer_y = mh - 5; // blank line above footer
-    int items_bottom = spacer_y - 1;
-    int items_rows = items_bottom - items_top + 1;
-    if (items_rows < 1) {
-        items_rows = 1;
-    }
-    int items_last_row = items_top + items_rows - 1;
-    int footer_min_y = items_last_row + 1;
+typedef struct {
+    int x;
+    int mh;
+    int mw;
+    int text_w;
+    int items_top;
+    int spacer_y;
+    int items_bottom;
+    int items_rows;
+    int items_last_row;
+    int footer_min_y;
+} UiMenuDrawLayout;
 
-    // Top-line breadcrumb/title for context in nested menus.
-    if (title && *title) {
-        mvwhline(menu_win, 1, 1, ' ', mw - 2);
-        mvwaddnstr(menu_win, 1, x, title, (mw > 4) ? (mw - 4) : 1);
-    }
+static int
+ui_menu_text_width(int mw) {
+    return (mw > 4) ? (mw - 4) : 1;
+}
 
-    int vis_total = 0;
-    int hi_pos = 0;
-    for (size_t i = 0; i < n; i++) {
-        if (!ui_is_enabled(&items[i], ctx)) {
-            continue;
+static void
+ui_menu_draw_layout_init(WINDOW* menu_win, UiMenuDrawLayout* layout) {
+    if (!menu_win || !layout) {
+        return;
+    }
+    DSD_MEMSET(layout, 0, sizeof(*layout));
+    layout->x = 2;
+    getmaxyx(menu_win, layout->mh, layout->mw);
+    layout->text_w = ui_menu_text_width(layout->mw);
+    layout->items_top = 2; // row 1 is reserved for breadcrumb/title
+    layout->spacer_y = layout->mh - 5;
+    layout->items_bottom = layout->spacer_y - 1;
+    layout->items_rows = layout->items_bottom - layout->items_top + 1;
+    if (layout->items_rows < 1) {
+        layout->items_rows = 1;
+    }
+    layout->items_last_row = layout->items_top + layout->items_rows - 1;
+    layout->footer_min_y = layout->items_last_row + 1;
+}
+
+static void
+ui_menu_draw_title_line(WINDOW* menu_win, const UiMenuDrawLayout* layout, const char* title) {
+    if (!menu_win || !layout || !title || !*title) {
+        return;
+    }
+    mvwhline(menu_win, 1, 1, ' ', layout->mw - 2);
+    mvwaddnstr(menu_win, 1, layout->x, title, layout->text_w);
+}
+
+static const char*
+ui_menu_item_label(const NcMenuItem* it, const void* ctx, char* out, size_t out_size) {
+    if (!it) {
+        return "";
+    }
+    const char* lab = it->label ? it->label : it->id;
+    if (it->label_fn && out && out_size > 0) {
+        const char* got = it->label_fn(ctx, out, out_size);
+        if (got && *got) {
+            lab = got;
         }
-        if ((int)i == hi) {
-            hi_pos = vis_total;
+    }
+    if (it->submenu && it->submenu_len > 0 && out && out_size > 0) {
+        if (lab != out) {
+            DSD_SNPRINTF(out, out_size, "%s", lab);
         }
-        vis_total++;
+        size_t len = strlen(out);
+        if (len + 1U < out_size) {
+            out[len++] = ' ';
+        }
+        if (len + 1U < out_size) {
+            out[len++] = '>';
+        }
+        out[len] = '\0';
+        return out;
     }
+    return lab;
+}
 
-    int top = top_io ? *top_io : 0;
-    top = ui_scroll_follow_selection(vis_total, items_rows, top, hi_pos);
-    if (top_io) {
-        *top_io = top;
+#ifdef DSD_NEO_TEST_HOOKS
+const char*
+ui_menu_item_label_for_test(const NcMenuItem* it, const void* ctx, char* out, size_t out_size) {
+    return ui_menu_item_label(it, ctx, out, out_size);
+}
+#endif
+
+static void
+ui_menu_draw_item_rows(WINDOW* menu_win, const UiMenuDrawLayout* layout, const NcMenuItem* items, size_t n, int hi,
+                       int top, const void* ctx) {
+    if (!menu_win || !layout || !items || n == 0) {
+        return;
     }
-
     int vis_pos = 0;
     int drawn = 0;
     for (size_t i = 0; i < n; i++) {
         if (!ui_is_enabled(&items[i], ctx)) {
             continue;
         }
-        if (vis_pos < top) {
-            vis_pos++;
+        if (vis_pos++ < top) {
             continue;
         }
-        if (drawn >= items_rows) {
+        if (drawn >= layout->items_rows) {
             break;
         }
-        int y = items_top + drawn;
-        mvwhline(menu_win, y, 1, ' ', mw - 2);
+        int y = layout->items_top + drawn++;
+        mvwhline(menu_win, y, 1, ' ', layout->mw - 2);
         if ((int)i == hi) {
             wattron(menu_win, A_REVERSE);
         }
-        const char* lab = items[i].label ? items[i].label : items[i].id;
         char labfmt[140];
-        if (items[i].label_fn) {
-            char dyn[128];
-            const char* got = items[i].label_fn(ctx, dyn, sizeof dyn);
-            if (got && *got) {
-                lab = got;
-            }
+        const char* lab = ui_menu_item_label(&items[i], ctx, labfmt, sizeof labfmt);
+        mvwaddnstr(menu_win, y, layout->x, lab, layout->text_w);
+        if ((int)i == hi) {
+            wattroff(menu_win, A_REVERSE);
         }
-        if (items[i].submenu && items[i].submenu_len > 0) {
-            snprintf(labfmt, sizeof labfmt, "%s >", lab);
-            lab = labfmt;
-        }
-        mvwaddnstr(menu_win, y, x, lab, (mw > 4) ? (mw - 4) : 1);
-        wattroff(menu_win, A_REVERSE);
-        vis_pos++;
+    }
+    while (drawn < layout->items_rows) {
+        mvwhline(menu_win, layout->items_top + drawn, 1, ' ', layout->mw - 2);
         drawn++;
     }
-    // Clear remaining rows in item viewport when visible item count shrinks.
-    while (drawn < items_rows) {
-        mvwhline(menu_win, items_top + drawn, 1, ' ', mw - 2);
-        drawn++;
-    }
+}
 
-    // Ensure a blank spacer line above footer, but never erase visible item rows.
-    if (spacer_y >= footer_min_y && spacer_y <= mh - 2) {
-        mvwhline(menu_win, spacer_y, 1, ' ', mw - 2);
+static void
+ui_menu_draw_footer_lines(WINDOW* menu_win, const UiMenuDrawLayout* layout, int hi_pos, int vis_total) {
+    if (!menu_win || !layout) {
+        return;
     }
-
-    // Footer includes a position indicator so long menus remain navigable.
+    if (layout->spacer_y >= layout->footer_min_y && layout->spacer_y <= layout->mh - 2) {
+        mvwhline(menu_win, layout->spacer_y, 1, ' ', layout->mw - 2);
+    }
     char navline[96];
     if (vis_total > 0) {
-        snprintf(navline, sizeof navline, "Arrows/PgUp/PgDn/Home/End  (%d/%d)", hi_pos + 1, vis_total);
+        DSD_SNPRINTF(navline, sizeof navline, "Arrows/PgUp/PgDn/Home/End  (%d/%d)", hi_pos + 1, vis_total);
     } else {
-        snprintf(navline, sizeof navline, "Arrows/PgUp/PgDn/Home/End");
+        DSD_SNPRINTF(navline, sizeof navline, "Arrows/PgUp/PgDn/Home/End");
     }
-    int nav_y = mh - 4;
-    if (nav_y >= footer_min_y && nav_y <= mh - 2) {
-        mvwhline(menu_win, nav_y, 1, ' ', mw - 2);
-        mvwaddnstr(menu_win, nav_y, x, navline, (mw > 4) ? (mw - 4) : 1);
+    int nav_y = layout->mh - 4;
+    if (nav_y >= layout->footer_min_y && nav_y <= layout->mh - 2) {
+        mvwhline(menu_win, nav_y, 1, ' ', layout->mw - 2);
+        mvwaddnstr(menu_win, nav_y, layout->x, navline, layout->text_w);
     }
-    int help_y = mh - 3;
-    if (help_y >= footer_min_y && help_y <= mh - 2) {
-        mvwhline(menu_win, help_y, 1, ' ', mw - 2);
-        mvwaddnstr(menu_win, help_y, x, "Enter/Right: select  h: help  Esc/q/Left: back", (mw > 4) ? (mw - 4) : 1);
+    int help_y = layout->mh - 3;
+    if (help_y >= layout->footer_min_y && help_y <= layout->mh - 2) {
+        mvwhline(menu_win, help_y, 1, ' ', layout->mw - 2);
+        mvwaddnstr(menu_win, help_y, layout->x, "Enter/Right: select  h: help  Esc/q/Left: back", layout->text_w);
     }
+}
 
-    // transient status
-    time_t now = time(NULL);
+static void
+ui_menu_draw_status_line(WINDOW* menu_win, const UiMenuDrawLayout* layout, time_t now) {
+    if (!menu_win || !layout) {
+        return;
+    }
     char sline[256];
     if (ui_status_peek(sline, sizeof sline, now)) {
-        int status_y = mh - 2;
-        if (status_y >= footer_min_y) {
-            // clear line then print
-            mvwhline(menu_win, status_y, 1, ' ', mw - 2);
-            if (x <= mw - 2) {
+        int status_y = layout->mh - 2;
+        if (status_y >= layout->footer_min_y) {
+            mvwhline(menu_win, status_y, 1, ' ', layout->mw - 2);
+            if (layout->x <= layout->mw - 2) {
                 char status_line[288];
-                snprintf(status_line, sizeof status_line, "Status: %s", sline);
-                mvwaddnstr(menu_win, status_y, x, status_line, mw - x - 1);
+                DSD_SNPRINTF(status_line, sizeof status_line, "Status: %s", sline);
+                mvwaddnstr(menu_win, status_y, layout->x, status_line, layout->mw - layout->x - 1);
             }
         }
-    } else {
-        ui_status_clear_if_expired(now);
+        return;
     }
-    wnoutrefresh(menu_win);
+    ui_status_clear_if_expired(now);
+}
+
+void
+ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title, const void* ctx) {
+    if (!win) {
+        return;
+    }
+    werase(win);
+    box(win, 0, 0);
+    UiMenuDrawLayout layout = {0};
+    ui_menu_draw_layout_init(win, &layout);
+    ui_menu_draw_title_line(win, &layout, title);
+    int vis_total = ui_visible_count_and_maxlab(items, n, ctx, NULL);
+    int hi_pos = ui_visible_index_for_item(items, n, ctx, hi);
+    int top = top_io ? *top_io : 0;
+    top = ui_scroll_follow_selection(vis_total, layout.items_rows, top, hi_pos);
+    if (top_io) {
+        *top_io = top;
+    }
+    time_t now = time(NULL);
+    ui_menu_draw_item_rows(win, &layout, items, n, hi, top, ctx);
+    ui_menu_draw_footer_lines(win, &layout, hi_pos, vis_total);
+    ui_menu_draw_status_line(win, &layout, now);
+    wnoutrefresh(win);
 }
 
 int
-ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, void* ctx, int* out_maxlab) {
+ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* ctx, int* out_maxlab) {
     int vis = 0;
     int maxlab = 0;
     for (size_t i = 0; i < n; i++) {
@@ -242,62 +303,66 @@ ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, void* ctx, int* o
     return vis;
 }
 
+static int
+ui_max_int(int a, int b) {
+    return (a > b) ? a : b;
+}
+
+static int
+ui_overlay_cap_then_floor(int value, int max_value, int min_value) {
+    if (value > max_value) {
+        value = max_value;
+    }
+    if (value < min_value) {
+        value = min_value;
+    }
+    return value;
+}
+
+static int
+ui_overlay_center_axis(int outer, int inner) {
+    int pos = (outer - inner) / 2;
+    return (pos < 0) ? 0 : pos;
+}
+
+static int
+ui_overlay_compute_width(const UiMenuFrame* f, int maxlab) {
+    const char* footer_keys = "Arrows/PgUp/PgDn/Home/End  (000/000)";
+    const char* footer_help = "Enter/Right: select  h: help  Esc/q/Left: back";
+    const int pad_x = 2;
+    int width = pad_x + ((maxlab > 0) ? maxlab : 1);
+    width = ui_max_int(width, pad_x + (int)strlen(footer_keys));
+    width = ui_max_int(width, pad_x + (int)strlen(footer_help));
+    if (f && f->title && *f->title) {
+        width = ui_max_int(width, pad_x + (int)strlen(f->title));
+    }
+    return width + 2; // borders
+}
+
+static int
+ui_overlay_compute_height(int visible_items) {
+    int height = visible_items + 7;
+    return (height < 9) ? 9 : height;
+}
+
 void
-ui_overlay_layout(UiMenuFrame* f, void* ctx) {
+ui_overlay_layout(UiMenuFrame* f, const void* ctx) {
     if (!f || !f->items || f->n == 0) {
         return;
     }
-    const char* f1 = "Arrows/PgUp/PgDn/Home/End  (000/000)";
-    const char* f2 = "Enter/Right: select  h: help  Esc/q/Left: back";
-    int pad_x = 2;
     int maxlab = 0;
     int vis = ui_visible_count_and_maxlab(f->items, f->n, ctx, &maxlab);
-    int width = pad_x + ((maxlab > 0) ? maxlab : 1);
-    int f1w = pad_x + (int)strlen(f1);
-    int f2w = pad_x + (int)strlen(f2);
-    if (f1w > width) {
-        width = f1w;
-    }
-    if (f2w > width) {
-        width = f2w;
-    }
-    if (f->title && *f->title) {
-        int tw = pad_x + (int)strlen(f->title);
-        if (tw > width) {
-            width = tw;
-        }
-    }
-    width += 2; // borders
-    int height = vis + 7;
-    if (height < 9) {
-        height = 9;
-    }
-    int term_h = 24, term_w = 80;
+    int width = ui_overlay_compute_width(f, maxlab);
+    int height = ui_overlay_compute_height(vis);
+    int term_h = 24;
+    int term_w = 80;
     getmaxyx(stdscr, term_h, term_w);
-    if (width > term_w - 2) {
-        width = term_w - 2;
-        if (width < 10) {
-            width = 10;
-        }
-    }
-    if (height > term_h - 2) {
-        height = term_h - 2;
-        if (height < 6) {
-            height = 6;
-        }
-    }
-    int my = (term_h - height) / 2;
-    int mx = (term_w - width) / 2;
-    if (my < 0) {
-        my = 0;
-    }
-    if (mx < 0) {
-        mx = 0;
-    }
+    width = ui_overlay_cap_then_floor(width, term_w - 2, 10);
+    height = ui_overlay_cap_then_floor(height, term_h - 2, 6);
     f->h = height;
     f->w = width;
-    f->y = my;
-    f->x = mx;
+    f->y = ui_overlay_center_axis(term_h, height);
+    f->x = ui_overlay_center_axis(term_w, width);
 }
 
 void

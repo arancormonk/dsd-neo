@@ -5,13 +5,13 @@
 
 #include <limits.h>
 #include <stdio.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "rtl_capture_phase.h"
 
 static int
 expect_eq(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got %d want %d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got %d want %d\n", label, got, want);
         return 1;
     }
     return 0;

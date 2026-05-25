@@ -23,11 +23,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/p25p1_heuristics.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
@@ -35,6 +39,7 @@ void processTDULC(dsd_opts* opts, dsd_state* state);
 
 // Strong stubs for I/O hooks to keep tests hermetic
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -42,15 +47,18 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
     return true;
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -60,6 +68,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int g_return_to_cc_called = 0;
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     g_return_to_cc_called++;
     if (opts) {
@@ -81,7 +90,8 @@ install_trunk_tuning_hooks(void) {
 
 // Minimal utility used by TDULC path (MSB-first)
 uint64_t
-ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     uint64_t v = 0;
     for (uint32_t i = 0; i < BitLength; i++) {
         v = (v << 1) | (uint64_t)(BufferIn[i] & 1);
@@ -91,6 +101,7 @@ ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
 
 // LCW path external helpers (not exercised by this test; provide no-op stubs for link)
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -99,6 +110,7 @@ apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -107,6 +119,7 @@ apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -115,6 +128,7 @@ l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -122,6 +136,7 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -131,6 +146,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -141,6 +157,7 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 
 // FEC stubs: force Reed-Solomon failure so processTDULC does not dispatch LCW
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 check_and_fix_golay_24_12(char* dodeca, char* parity, int* fixed_errors) {
     (void)dodeca;
     (void)parity;
@@ -151,12 +168,14 @@ check_and_fix_golay_24_12(char* dodeca, char* parity, int* fixed_errors) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 encode_golay_24_12(char* data, char* parity) {
     (void)data;
     (void)parity;
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 check_and_fix_reedsolomon_24_12_13(char* data, char* parity) {
     (void)data;
     (void)parity;
@@ -164,6 +183,7 @@ check_and_fix_reedsolomon_24_12_13(char* data, char* parity) {
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 check_and_fix_reedsolomon_24_12_13_soft(char* data, char* parity, const int* erasures, int n_erasures) {
     (void)data;
     (void)parity;
@@ -173,6 +193,7 @@ check_and_fix_reedsolomon_24_12_13_soft(char* data, char* parity, const int* era
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 encode_reedsolomon_24_12_13(char* data, char* parity) {
     (void)data;
     (void)parity;
@@ -180,6 +201,7 @@ encode_reedsolomon_24_12_13(char* data, char* parity) {
 
 // Analog/sample reader stubs
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* output, unsigned int count, int* status_count,
                               AnalogSignal* analog_signal_array, int* analog_signal_index) {
     (void)opts;
@@ -187,7 +209,7 @@ read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* output, un
     (void)status_count;
     (void)analog_signal_array;
     (void)analog_signal_index;
-    memset(output, 0, count);
+    DSD_MEMSET(output, 0, count);
 }
 
 int
@@ -226,6 +248,7 @@ update_error_stats(P25Heuristics* heuristics, int bits, int errors) {
 
 // TDULC word reader stubs (all zeros)
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 read_word(dsd_opts* opts, dsd_state* state, char* word, unsigned int length, int* status_count,
           AnalogSignal* analog_signal_array, int* analog_signal_index) {
     (void)opts;
@@ -233,10 +256,11 @@ read_word(dsd_opts* opts, dsd_state* state, char* word, unsigned int length, int
     (void)status_count;
     (void)analog_signal_array;
     (void)analog_signal_index;
-    memset(word, 0, length);
+    DSD_MEMSET(word, 0, length);
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 read_golay24_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count,
                     AnalogSignal* analog_signal_array, int* analog_signal_index) {
     (void)opts;
@@ -244,13 +268,13 @@ read_golay24_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_
     (void)status_count;
     (void)analog_signal_array;
     (void)analog_signal_index;
-    memset(parity, 0, 12);
+    DSD_MEMSET(parity, 0, 12);
 }
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -263,8 +287,8 @@ main(void) {
     static dsd_opts opts;
     static dsd_state state;
     install_trunk_tuning_hooks();
-    memset(&opts, 0, sizeof opts);
-    memset(&state, 0, sizeof state);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
 
     // Enable trunking and allow group-call tuning
     opts.p25_trunk = 1;
@@ -299,3 +323,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

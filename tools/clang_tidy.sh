@@ -6,11 +6,11 @@ set -euo pipefail
 # - Analyzes translation units in the compilation database using the repo's .clang-tidy
 # - Fails if any diagnostics are emitted as errors (WarningsAsErrors), or if clang-tidy can't process a file
 
-ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
 cd "$ROOT_DIR"
 
 usage() {
-  cat <<'USAGE'
+  cat << 'USAGE'
 Usage: tools/clang_tidy.sh [--strict] [--all-commands] [--] [files...]
 
 Options:
@@ -32,24 +32,40 @@ ALL_COMMANDS=0
 REQUESTED_FILES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --strict) STRICT=1; shift ;;
-    --all-commands) ALL_COMMANDS=1; shift ;;
-    -h|--help) usage; exit 0 ;;
-    --) shift; REQUESTED_FILES+=("$@"); break ;;
+    --strict)
+      STRICT=1
+      shift
+      ;;
+    --all-commands)
+      ALL_COMMANDS=1
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      REQUESTED_FILES+=("$@")
+      break
+      ;;
     -*)
       echo "Unknown option: $1" >&2
       usage >&2
       exit 2
       ;;
-    *) REQUESTED_FILES+=("$1"); shift ;;
+    *)
+      REQUESTED_FILES+=("$1")
+      shift
+      ;;
   esac
 done
 
-if ! command -v clang-tidy >/dev/null 2>&1; then
+if ! command -v clang-tidy > /dev/null 2>&1; then
   echo "clang-tidy not found. Please install it (e.g., apt-get install clang-tidy)." >&2
   exit 1
 fi
-if ! command -v rg >/dev/null 2>&1; then
+if ! command -v rg > /dev/null 2>&1; then
   echo "ripgrep (rg) not found. Please install it (e.g., apt-get install ripgrep)." >&2
   exit 1
 fi
@@ -62,7 +78,7 @@ if [ ! -f "$PDB_FILE" ]; then
     PDB_DIR="."
   else
     echo "Configuring CMake preset 'dev-debug' to generate compile_commands.json..."
-    cmake --preset dev-debug >/dev/null
+    cmake --preset dev-debug > /dev/null
   fi
 fi
 
@@ -71,14 +87,15 @@ fi
 PDB_FILE="$PDB_DIR/compile_commands.json"
 TIDY_PDB_DIR="$PDB_DIR"
 TIDY_PDB_TEMP_DIR=""
-if command -v python3 >/dev/null 2>&1; then
+if command -v python3 > /dev/null 2>&1; then
   if [[ $ALL_COMMANDS -eq 0 ]]; then
-    TIDY_PDB_TEMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t dsd-neo-clang-tidy)
+    TIDY_PDB_TEMP_DIR=$(mktemp -d 2> /dev/null || mktemp -d -t dsd-neo-clang-tidy)
     trap 'rm -rf "$TIDY_PDB_TEMP_DIR" 2>/dev/null || true' EXIT
     TIDY_PDB_DIR="$TIDY_PDB_TEMP_DIR"
   fi
 
-  mapfile -t FILES < <(python3 - "$PDB_FILE" "$ROOT_DIR" "$TIDY_PDB_DIR" "$ALL_COMMANDS" "${REQUESTED_FILES[@]}" <<'PY'
+  mapfile -t FILES < <(
+    python3 - "$PDB_FILE" "$ROOT_DIR" "$TIDY_PDB_DIR" "$ALL_COMMANDS" "${REQUESTED_FILES[@]}" << 'PY'
 import json
 import pathlib
 import shlex
@@ -244,10 +261,10 @@ else
     for f in "${REQUESTED_FILES[@]}"; do
       f="${f#./}"
       case "$f" in
-        build/*|src/third_party/*) continue ;;
+        build/* | src/third_party/*) continue ;;
       esac
       case "$f" in
-        *.c|*.cc|*.cpp|*.cxx) FILES+=("$f") ;;
+        *.c | *.cc | *.cpp | *.cxx) FILES+=("$f") ;;
       esac
     done
   else
@@ -284,22 +301,22 @@ if [[ $STRICT -eq 1 ]]; then
 fi
 
 if [[ -f "$CONFIG_FILE" ]]; then
-  CFG_PATH=$(readlink -f "$CONFIG_FILE" 2>/dev/null || echo "$CONFIG_FILE")
+  CFG_PATH=$(readlink -f "$CONFIG_FILE" 2> /dev/null || echo "$CONFIG_FILE")
   echo "Using config file: $CFG_PATH"
 else
   echo "Config file not found: $CONFIG_FILE (clang-tidy will use built-in defaults)"
 fi
 
-clang-tidy -p "$TIDY_PDB_DIR" --config-file "$CONFIG_FILE" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" >/dev/null || true
+clang-tidy -p "$TIDY_PDB_DIR" --config-file "$CONFIG_FILE" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" > /dev/null || true
 
 # Fail on error diagnostics (WarningsAsErrors) and on clang-tidy processing failures.
-if rg -n "error:" "$LOG_FILE" >/dev/null; then
+if rg -n "error:" "$LOG_FILE" > /dev/null; then
   echo "clang-tidy emitted diagnostics treated as errors. See $LOG_FILE for details." >&2
   echo "Summary (errors by check):" >&2
   rg -n "error:.*\\[[^]]+\\]$" "$LOG_FILE" | sed -E 's/.*\[([^]]+)\]$/\1/' | awk -F',' '{print $1}' | sort | uniq -c | sort -nr >&2
   exit 1
 fi
-if rg -n "^Error while processing " "$LOG_FILE" >/dev/null; then
+if rg -n "^Error while processing " "$LOG_FILE" > /dev/null; then
   echo "clang-tidy failed to process one or more files. See $LOG_FILE for details." >&2
   rg -n "^Error while processing " "$LOG_FILE" >&2 || true
   exit 1

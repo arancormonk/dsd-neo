@@ -14,15 +14,18 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/runtime/unicode.h>
-#include <fcntl.h> // IWYU pragma: keep
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "test_support.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Minimal stubs for direct link with dmr_pdu.c
 const char*
@@ -36,13 +39,15 @@ dsd_unicode_supported(void) {
 }
 
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -50,6 +55,7 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     (void)opts;
     (void)state;
@@ -70,12 +76,12 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
 // Provide deterministic system time stubs for LRRP output (when enabled).
 void
 getTimeC_buf(char out[9]) {
-    snprintf(out, 9, "%s", "11:22:33");
+    DSD_SNPRINTF(out, 9, "%s", "11:22:33");
 }
 
 void
 getDateS_buf(char out[11]) {
-    snprintf(out, 11, "%s", "1999/01/02");
+    DSD_SNPRINTF(out, 11, "%s", "1999/01/02");
 }
 
 // Under test
@@ -98,8 +104,8 @@ int
 main(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     st.currentslot = 0;
 
     char outtmpl[DSD_TEST_PATH_MAX];
@@ -108,13 +114,13 @@ main(void) {
         return 100;
     }
     (void)dsd_close(ofd);
-    snprintf(opts.lrrp_out_file, sizeof opts.lrrp_out_file, "%s", outtmpl);
+    DSD_SNPRINTF(opts.lrrp_out_file, sizeof opts.lrrp_out_file, "%s", outtmpl);
     opts.lrrp_file_output = 1;
 
     // Minimal LRRP response with a POINT_2D token.
     uint8_t pdu[32];
     int i = 0;
-    memset(pdu, 0, sizeof pdu);
+    DSD_MEMSET(pdu, 0, sizeof pdu);
     pdu[i++] = 0x07; // response
     pdu[i++] = 12;   // payload length (clamped by decoder anyway)
     pdu[i++] = 0x22; // pattern
@@ -135,7 +141,7 @@ main(void) {
     dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 111, /*dst*/ 222, pdu, /*pdu_crc_ok*/ 0);
     int nz = file_size_nonzero(outtmpl);
     if (nz != 0) {
-        fprintf(stderr, "Expected empty LRRP file on CRC fail; got non-empty\n");
+        DSD_FPRINTF(stderr, "Expected empty LRRP file on CRC fail; got non-empty\n");
         remove(outtmpl);
         return 1;
     }
@@ -144,7 +150,7 @@ main(void) {
     dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 111, /*dst*/ 222, pdu, /*pdu_crc_ok*/ 1);
     nz = file_size_nonzero(outtmpl);
     if (nz != 1) {
-        fprintf(stderr, "Expected non-empty LRRP file on CRC ok; got empty\n");
+        DSD_FPRINTF(stderr, "Expected non-empty LRRP file on CRC ok; got empty\n");
         remove(outtmpl);
         return 2;
     }
@@ -152,3 +158,7 @@ main(void) {
     remove(outtmpl);
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

@@ -12,12 +12,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Minimal stubs needed to link `src/core/util/dsd_alias.c` in isolation.
 uint16_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
     (void)buf;
     (void)len;
@@ -25,9 +31,10 @@ ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
 }
 
 uint64_t
-ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     uint64_t out = 0;
-    uint8_t* p = BufferIn;
+    const uint8_t* p = BufferIn;
     uint32_t n = BitLength;
 
     while (n--) {
@@ -37,11 +44,13 @@ ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_unicode_supported(void) {
     return 0;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
     (void)opts;
     (void)state;
@@ -53,7 +62,7 @@ static void
 bytes_to_bits_msb(uint8_t* bits_out, size_t bits_out_sz, const uint8_t* in, size_t in_sz) {
     const size_t need = in_sz * 8u;
     if (bits_out_sz < need) {
-        fprintf(stderr, "bytes_to_bits_msb: need=%zu have=%zu\n", need, bits_out_sz);
+        DSD_FPRINTF(stderr, "bytes_to_bits_msb: need=%zu have=%zu\n", need, bits_out_sz);
         exit(2);
     }
 
@@ -67,7 +76,7 @@ bytes_to_bits_msb(uint8_t* bits_out, size_t bits_out_sz, const uint8_t* in, size
 static int
 expect_has_substr(const char* buf, const char* needle, const char* tag) {
     if (!buf || !strstr(buf, needle)) {
-        fprintf(stderr, "%s: missing '%s' in '%s'\n", tag, needle, buf ? buf : "(null)");
+        DSD_FPRINTF(stderr, "%s: missing '%s' in '%s'\n", tag, needle, buf ? buf : "(null)");
         return 1;
     }
     return 0;
@@ -97,7 +106,7 @@ main(void) {
     st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
 
     uint8_t lc_bits[80];
-    memset(lc_bits, 0, sizeof lc_bits);
+    DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
 
     // FLCO=0x04 (talker alias header), FID=0, SO byte=0x84 (format=2, bad len=2),
     // alias payload bytes are ASCII "KE8NAX".
@@ -112,16 +121,16 @@ main(void) {
     st->late_entry_mi_fragment[0][0][0] = 0x1122334455667788ULL;
 
     uint8_t tait_bits[64];
-    memset(tait_bits, 0, sizeof tait_bits);
+    DSD_MEMSET(tait_bits, 0, sizeof tait_bits);
     tait_iso7_embedded_alias_decode(opts, st, 0, 1, tait_bits);
 
     dsd_tg_policy_lookup lookup;
     if (dsd_tg_policy_lookup_id(st, st->lastsrc, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT) {
-        fprintf(stderr, "runtime alias policy insert failed\n");
+        DSD_FPRINTF(stderr, "runtime alias policy insert failed\n");
         rc = 1;
     }
     if (st->late_entry_mi_fragment[0][0][0] != 0x1122334455667788ULL) {
-        fprintf(stderr, "runtime alias handling changed sentinel\n");
+        DSD_FPRINTF(stderr, "runtime alias handling changed sentinel\n");
         rc = 1;
     }
 
@@ -133,3 +142,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

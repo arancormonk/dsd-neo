@@ -21,15 +21,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
 // Minimal IO stubs (avoid actual tuning/audio devices in unit tests)
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -37,6 +42,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -46,6 +52,7 @@ SetModulation(int sockfd, int bandwidth) {
 static int g_return_to_cc_called = 0;
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
@@ -62,6 +69,7 @@ install_trunk_tuning_hooks(void) {
 static int g_p25p2_flush_called = 0;
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     g_p25p2_flush_called++;
@@ -70,8 +78,8 @@ dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) {
     }
     state->voice_counter[0] = 0;
     state->voice_counter[1] = 0;
-    memset(state->s_l4, 0, sizeof(state->s_l4));
-    memset(state->s_r4, 0, sizeof(state->s_r4));
+    DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
+    DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
 }
 
 static void
@@ -81,9 +89,11 @@ install_p25_optional_hooks(void) {
     dsd_p25_optional_hooks_set(hooks);
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -93,7 +103,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -106,8 +116,8 @@ main(void) {
     static dsd_state st;
     install_trunk_tuning_hooks();
     install_p25_optional_hooks();
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     opts.p25_trunk = 1;
     opts.trunk_tune_group_calls = 1;
@@ -155,3 +165,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

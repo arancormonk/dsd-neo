@@ -13,10 +13,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
@@ -25,6 +29,7 @@ int p25_test_p2_gate(int algid, unsigned long long key, int aes_loaded);
 
 // Stubs to satisfy linked references from P25 Phase 2 XCCH path
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
@@ -32,18 +37,21 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -51,14 +59,17 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
     return false;
 }
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -66,6 +77,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
@@ -73,13 +85,15 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 
 // Stubs for alias helpers referenced by MAC VPDU path (pulled in via test shim TU)
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -88,6 +102,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -96,6 +111,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -105,6 +121,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -113,49 +130,10 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)slot;
 }
 
-static unsigned short
-crc12_bits(const uint8_t bits[], unsigned int len) {
-    uint16_t crc = 0;
-    static const unsigned int K = 12;
-    static const uint8_t poly[13] = {1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1};
-    uint8_t buf[256];
-    if (len + K > sizeof(buf)) {
-        return 0;
-    }
-    memset(buf, 0, sizeof(buf));
-    for (unsigned int i = 0; i < len; i++) {
-        buf[i] = bits[i] & 1;
-    }
-    for (unsigned int i = 0; i < len; i++) {
-        if (buf[i]) {
-            for (unsigned int j = 0; j < K + 1; j++) {
-                buf[i + j] ^= poly[j];
-            }
-        }
-    }
-    for (unsigned int i = 0; i < K; i++) {
-        crc = (uint16_t)((crc << 1) + buf[len + i]);
-    }
-    return crc ^ 0xFFF;
-}
-
-static void
-set_crc12_on_payload(int payload[180]) {
-    uint8_t tmp[180];
-    for (int i = 0; i < 168; i++) {
-        tmp[i] = (uint8_t)(payload[i] & 1);
-    }
-    unsigned short c = crc12_bits(tmp, 168);
-    for (int i = 0; i < 12; i++) {
-        int bit = (c >> (11 - i)) & 1;
-        payload[168 + i] = bit;
-    }
-}
-
 static int
 expect_eq(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -175,3 +153,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

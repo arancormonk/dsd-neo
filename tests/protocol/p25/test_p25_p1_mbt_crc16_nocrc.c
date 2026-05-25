@@ -26,9 +26,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-/* Bridge to the CRC16 implementation in p25_crc.c */
 int crc16_lb_bridge(const int* payload, int len);
 
 /*
@@ -63,7 +62,7 @@ is_mbt_trunking(const uint8_t hdr[12]) {
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL %s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "FAIL %s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -100,7 +99,7 @@ main(void) {
      * --------------------------------------------------------------- */
     for (int i = 0; i < num_captured; i++) {
         char tag[64];
-        snprintf(tag, sizeof(tag), "mbt_detect[%d]", i);
+        DSD_SNPRINTF(tag, sizeof(tag), "mbt_detect[%d]", i);
         rc |= expect_eq_int(tag, is_mbt_trunking(captured_hdrs[i]), 1);
     }
 
@@ -115,7 +114,7 @@ main(void) {
      * --------------------------------------------------------------- */
     for (int i = 0; i < num_captured; i++) {
         char tag[64];
-        snprintf(tag, sizeof(tag), "crc16_raw_valid[%d]", i);
+        DSD_SNPRINTF(tag, sizeof(tag), "crc16_raw_valid[%d]", i);
         int crc_result = check_crc16_on_header(captured_hdrs[i]);
         rc |= expect_eq_int(tag, crc_result, 0);
     }
@@ -128,34 +127,34 @@ main(void) {
         char tag[64];
 
         /* AN=0 */
-        snprintf(tag, sizeof(tag), "an[%d]", i);
+        DSD_SNPRINTF(tag, sizeof(tag), "an[%d]", i);
         rc |= expect_eq_int(tag, (h[0] >> 6) & 0x1, 0);
 
         /* IO=1 (outbound) */
-        snprintf(tag, sizeof(tag), "io[%d]", i);
+        DSD_SNPRINTF(tag, sizeof(tag), "io[%d]", i);
         rc |= expect_eq_int(tag, (h[0] >> 5) & 0x1, 1);
 
         /* FMT=0x17 (Alternate MBT) */
-        snprintf(tag, sizeof(tag), "fmt[%d]", i);
+        DSD_SNPRINTF(tag, sizeof(tag), "fmt[%d]", i);
         rc |= expect_eq_int(tag, h[0] & 0x1F, 0x17);
 
         /* SAP=0x3D (Trunking) */
-        snprintf(tag, sizeof(tag), "sap[%d]", i);
+        DSD_SNPRINTF(tag, sizeof(tag), "sap[%d]", i);
         rc |= expect_eq_int(tag, h[1] & 0x3F, 0x3D);
 
         /* MFID=0x00 (standard) */
-        snprintf(tag, sizeof(tag), "mfid[%d]", i);
+        DSD_SNPRINTF(tag, sizeof(tag), "mfid[%d]", i);
         rc |= expect_eq_int(tag, h[2], 0x00);
 
         /* BLKS=1 (bit 7 is set too, so byte is 0x81) */
-        snprintf(tag, sizeof(tag), "blks[%d]", i);
+        DSD_SNPRINTF(tag, sizeof(tag), "blks[%d]", i);
         rc |= expect_eq_int(tag, h[6] & 0x7F, 1);
     }
 
     /* Verify opcodes: first 5 are OP=0x33, last is OP=0x3E */
     for (int i = 0; i < 5; i++) {
         char tag[64];
-        snprintf(tag, sizeof(tag), "opcode_0x33[%d]", i);
+        DSD_SNPRINTF(tag, sizeof(tag), "opcode_0x33[%d]", i);
         rc |= expect_eq_int(tag, captured_hdrs[i][7] & 0x3F, 0x33);
     }
     rc |= expect_eq_int("opcode_0x3E", captured_hdrs[5][7] & 0x3F, 0x3E);
@@ -194,7 +193,7 @@ main(void) {
     {
         /* All-zero 80-bit payload; compute CRC16 and append */
         int bits[96];
-        memset(bits, 0, sizeof(bits));
+        DSD_MEMSET(bits, 0, sizeof(bits));
         /* Use the local CRC16 CCITT to compute expected CRC */
         unsigned short crc = 0x0000;
         const unsigned short poly = 0x1021;
@@ -214,7 +213,7 @@ main(void) {
     }
 
     if (rc == 0) {
-        fprintf(stderr, "P25 MBT CRC16 no-CRC handling: all tests passed\n");
+        DSD_FPRINTF(stderr, "P25 MBT CRC16 no-CRC handling: all tests passed\n");
     }
     return rc;
 }

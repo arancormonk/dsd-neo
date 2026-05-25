@@ -17,8 +17,8 @@
 #include <dsd-neo/runtime/config.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "test_support.h"
 
 #define setenv   dsd_test_setenv
@@ -27,7 +27,7 @@
 static int
 expect_int_eq(int actual, int expected, int rc, const char* name) {
     if (actual != expected) {
-        fprintf(stderr, "FAIL(%d): %s expected %d got %d\n", rc, name, expected, actual);
+        DSD_FPRINTF(stderr, "FAIL(%d): %s expected %d got %d\n", rc, name, expected, actual);
         return rc;
     }
     return 0;
@@ -36,7 +36,7 @@ expect_int_eq(int actual, int expected, int rc, const char* name) {
 static int
 expect_long_eq(long actual, long expected, int rc, const char* name) {
     if (actual != expected) {
-        fprintf(stderr, "FAIL(%d): %s expected %ld got %ld\n", rc, name, expected, actual);
+        DSD_FPRINTF(stderr, "FAIL(%d): %s expected %ld got %ld\n", rc, name, expected, actual);
         return rc;
     }
     return 0;
@@ -45,7 +45,7 @@ expect_long_eq(long actual, long expected, int rc, const char* name) {
 static int
 expect_double_close(double actual, double expected, double tol, int rc, const char* name) {
     if (std::fabs(actual - expected) > tol) {
-        fprintf(stderr, "FAIL(%d): %s expected %.9g got %.9g (tol=%.9g)\n", rc, name, expected, actual, tol);
+        DSD_FPRINTF(stderr, "FAIL(%d): %s expected %.9g got %.9g (tol=%.9g)\n", rc, name, expected, actual, tol);
         return rc;
     }
     return 0;
@@ -54,8 +54,8 @@ expect_double_close(double actual, double expected, double tol, int rc, const ch
 static int
 expect_str_eq(const char* actual, const char* expected, int rc, const char* name) {
     if (!actual || !expected || strcmp(actual, expected) != 0) {
-        fprintf(stderr, "FAIL(%d): %s expected '%s' got '%s'\n", rc, name, expected ? expected : "(null)",
-                actual ? actual : "(null)");
+        DSD_FPRINTF(stderr, "FAIL(%d): %s expected '%s' got '%s'\n", rc, name, expected ? expected : "(null)",
+                    actual ? actual : "(null)");
         return rc;
     }
     return 0;
@@ -64,7 +64,7 @@ expect_str_eq(const char* actual, const char* expected, int rc, const char* name
 static int
 expect(int cond, int rc, const char* msg) {
     if (!cond) {
-        fprintf(stderr, "FAIL(%d): %s\n", rc, msg);
+        DSD_FPRINTF(stderr, "FAIL(%d): %s\n", rc, msg);
         return rc;
     }
     return 0;
@@ -72,6 +72,11 @@ expect(int cond, int rc, const char* msg) {
 
 static void
 unset_all_runtime_env(void) {
+    /*
+     * Keep this list exhaustive so each test starts from the same environment.
+     * Runtime config uses process-wide state, so stale variables would make later
+     * assertions depend on execution order.
+     */
     const char* vars[] = {
         "DSD_NEO_AUDIO_LPF",
         "DSD_NEO_AUTO_PPM",
@@ -585,7 +590,7 @@ test_cache_dir_default(void) {
     char saved_home[1024];
     saved_home[0] = '\0';
     if (prev_home && *prev_home) {
-        snprintf(saved_home, sizeof saved_home, "%s", prev_home);
+        DSD_SNPRINTF(saved_home, sizeof saved_home, "%s", prev_home);
         saved_home[sizeof saved_home - 1] = '\0';
     }
 
@@ -715,6 +720,11 @@ test_cc_cache_env(void) {
 
 static int
 test_rt_sched_affinity_env(void) {
+    /*
+     * Real-time scheduling and CPU affinity use paired enable/value fields.
+     * The first pass verifies accepted values; the later passes prove disabled
+     * priority and CPU sentinel values clear their is_set flags.
+     */
     setenv("DSD_NEO_RT_SCHED", "1", 1);
     setenv("DSD_NEO_RT_PRIO_USB", "80", 1);
     setenv("DSD_NEO_RT_PRIO_DONGLE", "81", 1);
@@ -1018,6 +1028,11 @@ test_sync_warmstart_env(void) {
 
 static int
 test_protocol_env_knobs(void) {
+    /*
+     * Protocol timing, soft-decision thresholds, and input gain knobs share the
+     * same environment parser but have different ranges. This single pass loads
+     * representative valid values before the invalid-range checks below.
+     */
     setenv("DSD_NEO_DMR_HANGTIME", "3.5", 1);
     setenv("DSD_NEO_DMR_GRANT_TIMEOUT", "5.5", 1);
 
@@ -1257,7 +1272,10 @@ test_protocol_env_knobs(void) {
     unsetenv("DSD_NEO_INPUT_VOLUME");
     unsetenv("DSD_NEO_INPUT_WARN_DB");
 
-    /* Invalid ranges are ignored (retain defaults) */
+    /*
+     * Invalid ranges are ignored and defaults remain visible in the active
+     * runtime snapshot.
+     */
     setenv("DSD_NEO_DMR_HANGTIME", "10.1", 1);
     dsd_neo_config_init(NULL);
     cfg = dsd_neo_get_config();
@@ -1376,6 +1394,11 @@ test_dmr_t3_tools_env(void) {
 
 static int
 test_tcp_misc_env(void) {
+    /*
+     * TCP and rigctl settings cover buffer sizes, wait modes, timeout counts,
+     * and prebuffer timing. Valid settings are asserted first, then low boundary
+     * values confirm parser rejection and default preservation.
+     */
     setenv("DSD_NEO_TCP_BUFSZ", "8192", 1);
     setenv("DSD_NEO_TCP_WAITALL", "1", 1);
     setenv("DSD_NEO_TCP_STATS", "1", 1);
@@ -1571,6 +1594,11 @@ test_rtl_misc_env(void) {
 
 static int
 test_tuner_autogain_env(void) {
+    /*
+     * Tuner auto-gain has an enable bit plus timing, seed, SNR, ratio, and step
+     * thresholds. The valid pass verifies every field; the second pass probes
+     * lower-bound rejection for the range-limited controls.
+     */
     setenv("DSD_NEO_TUNER_AUTOGAIN", "1", 1);
     setenv("DSD_NEO_TUNER_AUTOGAIN_PROBE_MS", "5000", 1);
     setenv("DSD_NEO_TUNER_AUTOGAIN_SEED_DB", "20.0", 1);
@@ -1785,6 +1813,14 @@ test_auto_ppm_env(void) {
 
 static int
 test_dsp_misc_env(void) {
+    /*
+     * This covers DSP and demodulator environment knobs that interact during RTL
+     * startup: resampling, FLL, Costas, timing recovery, equalizer, clocking,
+     * audio filters, retune handling, squelch, FM AGC, limiter, and channel LPF.
+     * Values are loaded in one config snapshot to catch field overlap in the
+     * runtime parser. The invalid-value section later reloads a fresh snapshot so
+     * each rejected knob can be checked against its documented default.
+     */
     setenv("DSD_NEO_COMBINE_ROT", "0", 1);
     setenv("DSD_NEO_UPSAMPLE_FP", "0", 1);
     setenv("DSD_NEO_RESAMP", "96000", 1);
@@ -2157,6 +2193,11 @@ test_dsp_misc_env(void) {
         return rc;
     }
 
+    /*
+     * Clear the accepted knobs before probing invalid values.
+     * Each second-pass assertion should see parser defaults, not leftovers from
+     * the valid snapshot above.
+     */
     unsetenv("DSD_NEO_COMBINE_ROT");
     unsetenv("DSD_NEO_UPSAMPLE_FP");
     unsetenv("DSD_NEO_RESAMP");
@@ -2192,6 +2233,11 @@ test_dsp_misc_env(void) {
     unsetenv("DSD_NEO_IQ_DC_SHIFT");
     unsetenv("DSD_NEO_CHANNEL_LPF");
 
+    /*
+     * Re-read a fresh snapshot with boundary and malformed values.
+     * The expected result for these cases is either a disabled override or the
+     * documented default value in the runtime config.
+     */
     setenv("DSD_NEO_RESAMP", "off", 1);
     setenv("DSD_NEO_AUDIO_LPF", "off", 1);
     dsd_neo_config_init(NULL);
@@ -2218,7 +2264,7 @@ test_dsp_misc_env(void) {
     return 0;
 }
 
-struct cfg_ptr_thread_ctx {
+struct cfg_ptr_thread_ctx { // NOLINT(misc-use-internal-linkage)
     const dsdneoRuntimeConfig* cfg;
 };
 

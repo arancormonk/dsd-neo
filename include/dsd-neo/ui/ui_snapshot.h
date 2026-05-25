@@ -12,7 +12,8 @@
  * intentionally omitted from these snapshots.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_UI_SNAPSHOT_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_UI_SNAPSHOT_H_
 
 #include <dsd-neo/core/state_fwd.h>
 
@@ -31,3 +32,5 @@ const dsd_state* ui_get_latest_snapshot(void);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_UI_SNAPSHOT_H_ */

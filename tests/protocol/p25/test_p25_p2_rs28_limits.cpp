@@ -15,7 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <vector>
-
+#include "dsd-neo/core/safe_api.h"
 #include "ezpwd/rs"
 
 extern "C" {
@@ -33,7 +33,7 @@ sym_to_bits6(uint8_t s, int* out6) {
 static int
 expect_ge(const char* tag, int got, int minv) {
     if (got < minv) {
-        fprintf(stderr, "%s: got %d < %d\n", tag, got, minv);
+        DSD_FPRINTF(stderr, "%s: got %d < %d\n", tag, got, minv);
         return 1;
     }
     return 0;
@@ -42,7 +42,7 @@ expect_ge(const char* tag, int got, int minv) {
 static int
 expect_lt(const char* tag, int got, int maxv) {
     if (got >= maxv) {
-        fprintf(stderr, "%s: got %d >= %d\n", tag, got, maxv);
+        DSD_FPRINTF(stderr, "%s: got %d >= %d\n", tag, got, maxv);
         return 1;
     }
     return 0;
@@ -129,9 +129,9 @@ main(void) try {
     return rc;
 } catch (const std::exception& e) {
 
-    fprintf(stderr, "Unhandled exception: %s\n", e.what());
+    DSD_FPRINTF(stderr, "Unhandled exception: %s\n", e.what());
     return 1;
 } catch (...) {
-    fprintf(stderr, "Unhandled exception\n");
+    DSD_FPRINTF(stderr, "Unhandled exception\n");
     return 1;
 }

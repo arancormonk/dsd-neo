@@ -12,7 +12,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/cleanup.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
@@ -24,7 +23,7 @@
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/fec/block_codes.h>
-#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -33,748 +32,691 @@
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
 #include "dmr_confidence.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-// #define PRINT_AMBE72 //enable to view 72-bit AMBE codewords
+typedef enum {
+    DMR_BS_ACTION_CONTINUE = 0,
+    DMR_BS_ACTION_SKIP,
+    DMR_BS_ACTION_END,
+} dmr_bs_action;
 
-//A subroutine for processing each TDMA frame individually to allow for
-//processing voice and/or data on both BS slots (channels) simultaneously
-void
-dmrBS(dsd_opts* opts, dsd_state* state) {
-    char* timestr = NULL;
+static const int dmr_bs_cach_interleave[24] = {
+    0, 7, 8, 9, 1, 10, 11, 12, 2, 13, 14, 15, 3, 16, 4, 17, 18, 19, 5, 20, 21, 22, 6, 23,
+};
 
-    int i, dibit;
+typedef struct {
     char ambe_fr[4][24];
     char ambe_fr2[4][24];
     char ambe_fr3[4][24];
-
-    //redundancy check (carrier signal loss event)
     char redundancyA[36];
-    char redundancyB[36] = {0};
-
-    //memcpy of ambe_fr for late entry
+    char redundancyB[36];
     uint8_t m1[4][24];
     uint8_t m2[4][24];
     uint8_t m3[4][24];
-
-    const int *w, *x, *y, *z;
     char sync[25];
     uint8_t syncdata[48];
-    memset(syncdata, 0, sizeof(syncdata));
-
     uint8_t emb_pdu[16];
-    memset(emb_pdu, 0, sizeof(emb_pdu));
-
-    uint8_t emb_ok = 0;
-    uint8_t tact_okay = 0;
-
+    uint8_t dummy_bits[196];
+    uint8_t cachdata[25];
+    uint8_t tact_bits[7];
+    uint8_t tact_okay;
+    uint8_t emb_ok;
     uint8_t internalslot;
     uint8_t vc1;
     uint8_t vc2;
+    uint8_t cc;
+    uint8_t power;
+    short skipcount;
+    char timestr[9];
+} dmr_bs_ctx;
 
-    //assign as nonsensical numbers
-    uint8_t cc = 25;
-    uint8_t power = 9; //power and pre-emption indicator
-
-    //would be ideal to grab all dibits and break them into bits to pass to new data handler?
-    uint8_t dummy_bits[196];
-    memset(dummy_bits, 0, sizeof(dummy_bits));
-
-    //Init slot lights
-    sprintf(state->slot1light, " slot1 ");
-    sprintf(state->slot2light, " slot2 ");
-
-    //Init the color code status
-    state->color_code_ok = 0;
-    // Reset EMB error hysteresis per slot at start of BS voice loop
-    state->dmr_emb_err[0] = 0;
-    state->dmr_emb_err[1] = 0;
-
-    //if coming from the bootsrap, then the slot will still be assigned the last value
-    //we want to set only that vc value to 2, the other to 7
-    if (state->currentslot == 0) {
-        vc1 = 2;
-        vc2 = 7;
-    }
-    if (state->currentslot == 1) {
-        vc1 = 7;
-        vc2 = 2;
-    }
-
-    short int loop = 1;
-    short int skipcount = 0;
-
-    //cach
+typedef struct {
+    char ambe_fr[4][24];
+    char ambe_fr2[4][24];
+    char ambe_fr3[4][24];
+    uint8_t m1[4][24];
+    uint8_t m2[4][24];
+    uint8_t m3[4][24];
     uint8_t cachdata[25];
-    int cachInterleave[24] = {0, 7, 8, 9, 1, 10, 11, 12, 2, 13, 14, 15, 3, 16, 4, 17, 18, 19, 5, 20, 21, 22, 6, 23};
-
-    //cach tact bits
     uint8_t tact_bits[7];
+    char sync[25];
+    uint8_t tact_okay;
+    uint8_t sync_okay;
+    uint8_t internalslot;
+    char timestr[9];
+} dmr_bs_bootstrap_ctx;
 
-    //Run Loop while the getting is good
-    while (loop == 1) {
+static void
+init_dmr_bs_ctx(const dsd_state* state, dmr_bs_ctx* ctx) {
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->cc = 25;
+    ctx->power = 9;
+    ctx->vc1 = 7;
+    ctx->vc2 = 7;
+    if (state->currentslot == 0) {
+        ctx->vc1 = 2;
+    } else if (state->currentslot == 1) {
+        ctx->vc2 = 2;
+    }
+}
 
-        if (exitflag == 1) {
-            cleanupAndExit(opts, state);
-            break;
+static void
+reset_dmr_bs_loop_buffers(dmr_bs_ctx* ctx) {
+    DSD_MEMSET(ctx->ambe_fr, 0, sizeof(ctx->ambe_fr));
+    DSD_MEMSET(ctx->ambe_fr2, 0, sizeof(ctx->ambe_fr2));
+    DSD_MEMSET(ctx->ambe_fr3, 0, sizeof(ctx->ambe_fr3));
+    DSD_MEMSET(ctx->emb_pdu, 0, sizeof(ctx->emb_pdu));
+    DSD_MEMSET(ctx->syncdata, 0, sizeof(ctx->syncdata));
+}
+
+static void
+read_dmr_bs_ambe_segment_stream(dsd_opts* opts, dsd_state* state, char frame[4][24], int payload_offset,
+                                int dibit_count, char* redundancy_out) {
+    const int *w = dmr_ambe_interleave_w, *x = dmr_ambe_interleave_x, *y = dmr_ambe_interleave_y,
+              *z = dmr_ambe_interleave_z;
+    for (int i = 0; i < dibit_count; i++) {
+        int dibit = getDibit(opts, state);
+        state->dmr_stereo_payload[payload_offset + i] = dibit;
+        if (redundancy_out != NULL) {
+            redundancy_out[i] = (char)dibit;
+        }
+        frame[*w][*x] = (1 & (dibit >> 1));
+        frame[*y][*z] = (1 & dibit);
+        w++;
+        x++;
+        y++;
+        z++;
+    }
+}
+
+static void
+unpack_dmr_bs_ambe_segment_from_payload(const dsd_state* state, char frame[4][24], int payload_offset,
+                                        int dibit_count) {
+    const int *w = dmr_ambe_interleave_w, *x = dmr_ambe_interleave_x, *y = dmr_ambe_interleave_y,
+              *z = dmr_ambe_interleave_z;
+    for (int i = 0; i < dibit_count; i++) {
+        int dibit = state->dmr_stereo_payload[payload_offset + i];
+        frame[*w][*x] = (1 & (dibit >> 1));
+        frame[*y][*z] = (1 & dibit);
+        w++;
+        x++;
+        y++;
+        z++;
+    }
+}
+
+static void
+read_dmr_bs_sync_segment(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
+    for (int i = 0; i < 24; i++) {
+        int dibit = getDibit(opts, state);
+        state->dmr_stereo_payload[i + 66] = dibit;
+        ctx->sync[i] = (dibit | 1) + 48;
+        ctx->syncdata[((size_t)2 * i)] = (1 & (dibit >> 1));
+        ctx->syncdata[((size_t)2 * i) + 1] = (1 & dibit);
+
+        if (ctx->internalslot == 0 && ctx->vc1 > 1 && ctx->vc1 < 7) {
+            state->dmr_embedded_signalling[ctx->internalslot][ctx->vc1 - 1][((size_t)i * 2)] = (1 & (dibit >> 1));
+            state->dmr_embedded_signalling[ctx->internalslot][ctx->vc1 - 1][((size_t)i * 2) + 1] = (1 & dibit);
         }
 
-        {
-            char tbuf[9];
-            getTimeC_buf(tbuf);
-            timestr = dsd_strdup(tbuf);
+        if (ctx->internalslot == 1 && ctx->vc2 > 1 && ctx->vc2 < 7) {
+            state->dmr_embedded_signalling[ctx->internalslot][ctx->vc2 - 1][((size_t)i * 2)] = (1 & (dibit >> 1));
+            state->dmr_embedded_signalling[ctx->internalslot][ctx->vc2 - 1][((size_t)i * 2) + 1] = (1 & dibit);
         }
+    }
+    ctx->sync[24] = 0;
+}
 
-        memset(ambe_fr, 0, sizeof(ambe_fr));
-        memset(ambe_fr2, 0, sizeof(ambe_fr2));
-        memset(ambe_fr3, 0, sizeof(ambe_fr3));
-        memset(emb_pdu, 0, sizeof(emb_pdu));
-        memset(syncdata, 0, sizeof(syncdata));
+static void
+extract_dmr_bs_sync_from_payload(const dsd_state* state, int payload_offset, char sync[25]) {
+    for (int i = 0; i < 24; i++) {
+        int dibit = state->dmr_stereo_payload[payload_offset + i];
+        sync[i] = (dibit | 1) + 48;
+    }
+    sync[24] = 0;
+}
 
-        // internalslot is set from tact bits before use
-        for (i = 0; i < 12; i++) {
-            dibit = getDibit(opts, state);
-            state->dmr_stereo_payload[i] = dibit;
+static int
+collect_dmr_bs_cach_and_tact(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
+    for (int i = 0; i < 12; i++) {
+        int dibit = getDibit(opts, state);
+        state->dmr_stereo_payload[i] = dibit;
+        ctx->cachdata[dmr_bs_cach_interleave[((size_t)i * 2)]] = (1 & (dibit >> 1));
+        ctx->cachdata[dmr_bs_cach_interleave[((size_t)i * 2) + 1]] = (1 & dibit);
+    }
 
-            cachdata[cachInterleave[((size_t)i * 2)]] = (1 & (dibit >> 1)); // bit 1
-            cachdata[cachInterleave[((size_t)i * 2) + 1]] = (1 & dibit);    // bit 0
+    for (int i = 0; i < 7; i++) {
+        ctx->tact_bits[i] = ctx->cachdata[i];
+    }
+
+    ctx->tact_okay = 0;
+    if (Hamming_7_4_decode(ctx->tact_bits)) {
+        ctx->tact_okay = 1;
+    }
+    if (ctx->tact_okay != 1) {
+        return 0;
+    }
+
+    ctx->internalslot = ctx->tact_bits[1];
+    state->currentslot = ctx->internalslot;
+    return 1;
+}
+
+static void
+build_dmr_bs_emb_pdu(dmr_bs_ctx* ctx) {
+    for (int i = 0; i < 8; i++) {
+        ctx->emb_pdu[i] = ctx->syncdata[i];
+        ctx->emb_pdu[i + 8] = ctx->syncdata[i + 40];
+    }
+}
+
+static int
+is_dmr_bs_redundant_carrier(const dmr_bs_ctx* ctx) {
+    return ctx->redundancyA[16] == ctx->redundancyB[16] && ctx->redundancyA[27] == ctx->redundancyB[27]
+           && ctx->redundancyA[1] == ctx->redundancyB[1] && ctx->redundancyA[32] == ctx->redundancyB[32]
+           && ctx->redundancyA[3] == ctx->redundancyB[3] && ctx->redundancyA[33] == ctx->redundancyB[33]
+           && ctx->redundancyA[13] == ctx->redundancyB[13] && ctx->redundancyA[7] == ctx->redundancyB[7];
+}
+
+static void
+note_dmr_bs_voice_sync(dsd_state* state, dmr_bs_ctx* ctx) {
+    if (strcmp(ctx->sync, DMR_BS_VOICE_SYNC) != 0) {
+        return;
+    }
+
+    if (ctx->internalslot == 0) {
+        ctx->vc1 = 1;
+        state->dmr_emb_err[0] = 0;
+    }
+    if (ctx->internalslot == 1) {
+        ctx->vc2 = 1;
+        state->dmr_emb_err[1] = 0;
+    }
+    dmr_confidence_note_voice_sync(state, ctx->internalslot);
+}
+
+static void
+print_dmr_sync_polarity(const dsd_opts* opts) {
+    if (opts->inverted_dmr == 0) {
+        DSD_FPRINTF(stderr, "Sync: +DMR  ");
+    } else {
+        DSD_FPRINTF(stderr, "Sync: -DMR  ");
+    }
+}
+
+static uint8_t
+current_dmr_bs_vc(const dmr_bs_ctx* ctx) {
+    if (ctx->internalslot == 0) {
+        return ctx->vc1;
+    }
+    if (ctx->internalslot == 1) {
+        return ctx->vc2;
+    }
+    return 0;
+}
+
+static int
+is_dmr_bs_slot_vc6(const dmr_bs_ctx* ctx) {
+    return current_dmr_bs_vc(ctx) == 6;
+}
+
+static void
+increment_dmr_bs_slot_vc(dmr_bs_ctx* ctx) {
+    if (ctx->internalslot == 0) {
+        ctx->vc1++;
+    }
+    if (ctx->internalslot == 1) {
+        ctx->vc2++;
+    }
+}
+
+static dmr_bs_action
+handle_dmr_bs_data_sync(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
+    if (strcmp(ctx->sync, DMR_BS_DATA_SYNC) != 0) {
+        return DMR_BS_ACTION_CONTINUE;
+    }
+
+    DSD_FPRINTF(stderr, "%s ", ctx->timestr);
+    print_dmr_sync_polarity(opts);
+
+    if (ctx->internalslot == 0) {
+        ctx->vc1 = 7;
+        if (opts->mbe_out_f != NULL) {
+            closeMbeOutFile(opts, state);
         }
-
-        for (i = 0; i < 7; i++) {
-            tact_bits[i] = cachdata[i];
+    }
+    if (ctx->internalslot == 1) {
+        ctx->vc2 = 7;
+        if (opts->mbe_out_fR != NULL) {
+            closeMbeOutFileR(opts, state);
         }
+    }
 
-        //disabled for dmr_cach testing
-        tact_okay = 0;
-        if (Hamming_7_4_decode(tact_bits)) {
-            tact_okay = 1;
+    dmr_data_sync(opts, state);
+    ctx->skipcount++;
+    return DMR_BS_ACTION_SKIP;
+}
+
+static dmr_bs_action
+handle_dmr_bs_frame_sync_miss(const dmr_bs_ctx* ctx, uint8_t* vc1, uint8_t* vc2) {
+    if (strcmp(ctx->sync, DMR_BS_DATA_SYNC) == 0) {
+        return DMR_BS_ACTION_CONTINUE;
+    }
+
+    if (ctx->internalslot == 0 && *vc1 > 6) {
+        char light[18];
+        DSD_FPRINTF(stderr, "%s ", ctx->timestr);
+        DSD_SPRINTF(light, "%s", " [SLOT1]  slot2  ");
+        DSD_FPRINTF(stderr, "Sync:  DMR %s", light);
+        DSD_FPRINTF(stderr, "%s", KCYN);
+        DSD_FPRINTF(stderr, "| Frame Sync Err: %d", *vc1);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        DSD_FPRINTF(stderr, "\n");
+        (*vc1)++;
+        return (*vc1 > 13) ? DMR_BS_ACTION_END : DMR_BS_ACTION_SKIP;
+    }
+
+    if (ctx->internalslot == 1 && *vc2 > 6) {
+        char light[18];
+        DSD_FPRINTF(stderr, "%s ", ctx->timestr);
+        DSD_SPRINTF(light, "%s", "  slot1  [SLOT2] ");
+        DSD_FPRINTF(stderr, "Sync:  DMR %s", light);
+        DSD_FPRINTF(stderr, "%s", KCYN);
+        DSD_FPRINTF(stderr, "| Frame Sync Err: %d", *vc2);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        DSD_FPRINTF(stderr, "\n");
+        (*vc2)++;
+        return (*vc2 > 13) ? DMR_BS_ACTION_END : DMR_BS_ACTION_SKIP;
+    }
+
+    return DMR_BS_ACTION_CONTINUE;
+}
+
+static dmr_bs_action
+check_dmr_bs_emb_and_confidence(dsd_state* state, dmr_bs_ctx* ctx) {
+    ctx->emb_ok = QR_16_7_6_decode(ctx->emb_pdu) ? 1 : 0;
+
+    if (ctx->emb_ok == 1) {
+        state->dmr_emb_err[ctx->internalslot] = 0;
+        ctx->cc = (uint8_t)((ctx->emb_pdu[0] << 3) + (ctx->emb_pdu[1] << 2) + (ctx->emb_pdu[2] << 1) + ctx->emb_pdu[3]);
+        ctx->power = ctx->emb_pdu[4];
+        state->color_code = ctx->cc;
+    } else {
+        if (strcmp(ctx->sync, DMR_BS_VOICE_SYNC) != 0) {
+            uint8_t* miss = &state->dmr_emb_err[ctx->internalslot];
+            if (*miss < 0xFF) {
+                (*miss)++;
+            }
+            if (*miss >= 2) {
+                return DMR_BS_ACTION_END;
+            }
+        } else {
+            state->dmr_emb_err[ctx->internalslot] = 0;
         }
-        if (tact_okay != 1) {
-            goto END;
+    }
+
+    int voice_gate_open = dmr_confidence_voice_slot_open(state, ctx->internalslot);
+    if (ctx->emb_ok == 1) {
+        dmr_confidence_result confidence = dmr_confidence_note_voice_burst(state, ctx->internalslot, ctx->cc);
+        if (confidence == DMR_CONFIDENCE_REJECT) {
+            ctx->emb_ok = 0;
+            dmr_confidence_reset_slot(state, ctx->internalslot);
+            return DMR_BS_ACTION_END;
         }
+        voice_gate_open = dmr_confidence_voice_slot_open(state, ctx->internalslot);
+    }
 
-        internalslot = state->currentslot = tact_bits[1];
-
-        //Setup for first AMBE Frame
-        //Interleave Schedule
-        w = rW;
-        x = rX;
-        y = rY;
-        z = rZ;
-
-        //First AMBE Frame, Full 36
-        for (i = 0; i < 36; i++) {
-            dibit = getDibit(opts, state);
-            state->dmr_stereo_payload[i + 12] = dibit;
-            redundancyA[i] = dibit;
-
-            ambe_fr[*w][*x] = (1 & (dibit >> 1)); // bit 1
-            ambe_fr[*y][*z] = (1 & dibit);        // bit 0
-
-            w++;
-            x++;
-            y++;
-            z++;
+    if (voice_gate_open == 0) {
+        if (ctx->emb_ok != 1 && strcmp(ctx->sync, DMR_BS_VOICE_SYNC) != 0) {
+            dmr_confidence_reset_slot(state, ctx->internalslot);
+            return DMR_BS_ACTION_END;
         }
-
-        //check for repetitive data if caught in a 'no carrier' loop? Just picking random values.
-        //this will test for no carrier (input signal) and return us to no sync state if necessary
-        if (redundancyA[16] == redundancyB[16] && redundancyA[27] == redundancyB[27]
-            && redundancyA[01] == redundancyB[01] && redundancyA[32] == redundancyB[32]
-            && redundancyA[03] == redundancyB[03] && redundancyA[33] == redundancyB[33]
-            && redundancyA[13] == redundancyB[13] && redundancyA[07] == redundancyB[07]) {
-            goto END;
+        increment_dmr_bs_slot_vc(ctx);
+        ctx->tact_okay = 0;
+        ctx->emb_ok = 0;
+        if (ctx->vc1 > 14 || ctx->vc2 > 14) {
+            return DMR_BS_ACTION_END;
         }
+        return DMR_BS_ACTION_SKIP;
+    }
 
-        //end redundancy test, set B to A
-        memcpy(redundancyB, redundancyA, sizeof(redundancyA));
+    return DMR_BS_ACTION_CONTINUE;
+}
 
-        //Setup for Second AMBE Frame
-        //Interleave Schedule
-        w = rW;
-        x = rX;
-        y = rY;
-        z = rZ;
+static uint8_t
+prepare_dmr_bs_voice_slot(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx, char light[18], char polarity[3]) {
+    uint8_t vc = 0;
 
-        //Second AMBE Frame, First Half 18 dibits just before Sync or EmbeddedSignalling
-        for (i = 0; i < 18; i++) {
-            dibit = getDibit(opts, state);
-            state->dmr_stereo_payload[i + 48] = dibit;
-            ambe_fr2[*w][*x] = (1 & (dibit >> 1)); // bit 1
-            ambe_fr2[*y][*z] = (1 & dibit);        // bit 0
-
-            w++;
-            x++;
-            y++;
-            z++;
+    if (ctx->internalslot == 0) {
+        state->dmrburstL = 16;
+        vc = ctx->vc1;
+        DSD_SPRINTF(light, "%s", " [SLOT1]  slot2  ");
+        if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
+            openMbeOutFile(opts, state);
         }
-
-        //signaling data or sync
-        for (i = 0; i < 24; i++) {
-            dibit = getDibit(opts, state);
-            state->dmr_stereo_payload[i + 66] = dibit;
-            sync[i] = (dibit | 1) + 48; //Sync Burst String as ones and threes
-
-            syncdata[((size_t)2 * i)] = (1 & (dibit >> 1)); // bit 1
-            syncdata[((size_t)2 * i) + 1] = (1 & dibit);    // bit 0
-
-            //embedded link control
-            if (internalslot == 0 && vc1 > 1 && vc1 < 7) //grab on vc1 values 2-5 B C D E, and F
-            {
-                state->dmr_embedded_signalling[internalslot][vc1 - 1][((size_t)i * 2)] = (1 & (dibit >> 1)); // bit 1
-                state->dmr_embedded_signalling[internalslot][vc1 - 1][((size_t)i * 2) + 1] = (1 & dibit);    // bit 0
-            }
-
-            if (internalslot == 1 && vc2 > 1 && vc2 < 7) //grab on vc2 values 2-5 B C D E, and F
-            {
-                state->dmr_embedded_signalling[internalslot][vc2 - 1][((size_t)i * 2)] = (1 & (dibit >> 1)); // bit 1
-                state->dmr_embedded_signalling[internalslot][vc2 - 1][((size_t)i * 2) + 1] = (1 & dibit);    // bit 0
-            }
+        dmr_sm_emit_voice_sync(opts, state, 0);
+    } else {
+        state->dmrburstR = 16;
+        vc = ctx->vc2;
+        DSD_SPRINTF(light, "%s", "  slot1  [SLOT2] ");
+        if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
+            openMbeOutFileR(opts, state);
         }
-        sync[24] = 0;
+        dmr_sm_emit_voice_sync(opts, state, 1);
+    }
 
-        for (i = 0; i < 8; i++) {
-            emb_pdu[i + 0] = syncdata[i];
+    if (opts->inverted_dmr == 0) {
+        DSD_SPRINTF(polarity, "%s", "+");
+    } else {
+        DSD_SPRINTF(polarity, "%s", "-");
+    }
+
+    return vc;
+}
+
+static void
+handle_dmr_bs_slot_vc6_pre_link(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
+    if (ctx->internalslot == 0 && ctx->vc1 == 6) {
+        if (state->payload_algid == 0x02) {
+            hytera_enhanced_alg_refresh(state);
         }
-        for (i = 0; i < 8; i++) {
-            emb_pdu[i + 8] = syncdata[i + 40];
+        DSD_FPRINTF(stderr, "\n");
+        dmr_data_burst_handler(opts, state, (uint8_t*)ctx->dummy_bits, 0xEB);
+    }
+
+    if (ctx->internalslot == 1 && ctx->vc2 == 6) {
+        if (state->payload_algidR == 0x02) {
+            hytera_enhanced_alg_refresh(state);
         }
+        DSD_FPRINTF(stderr, "\n");
+        dmr_data_burst_handler(opts, state, (uint8_t*)ctx->dummy_bits, 0xEB);
+    }
+}
 
-        //Continue Second AMBE Frame, 18 after Sync or EmbeddedSignalling
-        for (i = 0; i < 18; i++) {
-            dibit = getDibit(opts, state);
-            state->dmr_stereo_payload[i + 90] = dibit;
-            ambe_fr2[*w][*x] = (1 & (dibit >> 1)); // bit 1
-            ambe_fr2[*y][*z] = (1 & dibit);        // bit 0
+static void
+copy_dmr_bs_voice_frames(uint8_t m1[4][24], uint8_t m2[4][24], uint8_t m3[4][24], char ambe_fr[4][24],
+                         char ambe_fr2[4][24], char ambe_fr3[4][24]) {
+    DSD_MEMCPY(m1, ambe_fr, sizeof(uint8_t[4][24]));
+    DSD_MEMCPY(m2, ambe_fr2, sizeof(uint8_t[4][24]));
+    DSD_MEMCPY(m3, ambe_fr3, sizeof(uint8_t[4][24]));
+}
 
-            w++;
-            x++;
-            y++;
-            z++;
-        }
+static void
+apply_dmr_bs_voice_keystream(dsd_state* state, char ambe_fr[4][24], char ambe_fr2[4][24], char ambe_fr3[4][24]) {
+    if (state->tyt_bp == 1) {
+        tyt16_ambe2_codeword_keystream(state, ambe_fr, 0);
+        tyt16_ambe2_codeword_keystream(state, ambe_fr2, 1);
+        tyt16_ambe2_codeword_keystream(state, ambe_fr3, 0);
+    }
 
-        //Setup for Third AMBE Frame
-        //Interleave Schedule
-        w = rW;
-        x = rX;
-        y = rY;
-        z = rZ;
+    if (state->csi_ee == 1) {
+        csi72_ambe2_codeword_keystream(state, ambe_fr);
+        csi72_ambe2_codeword_keystream(state, ambe_fr2);
+        csi72_ambe2_codeword_keystream(state, ambe_fr3);
+    }
+}
 
-        //Third AMBE Frame, Full 36
-        for (i = 0; i < 36; i++) {
-            dibit = getDibit(opts, state);
-            state->dmr_stereo_payload[i + 108] = dibit;
-            ambe_fr3[*w][*x] = (1 & (dibit >> 1)); // bit 1
-            ambe_fr3[*y][*z] = (1 & dibit);        // bit 0
+static void
+store_dmr_bs_processed_audio(dsd_state* state, uint8_t internalslot, uint8_t frame_index) {
+    if (internalslot == 0) {
+        DSD_MEMCPY(state->f_l4[frame_index], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
+        DSD_MEMCPY(state->s_l4[frame_index], state->s_l, sizeof(state->s_l));
+        DSD_MEMCPY(state->s_l4u[frame_index], state->s_lu, sizeof(state->s_lu));
+    } else {
+        DSD_MEMCPY(state->f_r4[frame_index], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
+        DSD_MEMCPY(state->s_r4[frame_index], state->s_r, sizeof(state->s_r));
+        DSD_MEMCPY(state->s_r4u[frame_index], state->s_ru, sizeof(state->s_ru));
+    }
+}
 
-            w++;
-            x++;
-            y++;
-            z++;
-        }
+static void
+process_dmr_bs_voice_frame(dsd_opts* opts, dsd_state* state, uint8_t internalslot, char frame[4][24],
+                           uint8_t frame_index) {
+    processMbeFrame(opts, state, NULL, frame, NULL);
+    store_dmr_bs_processed_audio(state, internalslot, frame_index);
+}
 
-        //reset vc counters to 1 if new voice sync frame on each slot
-        if (strcmp(sync, DMR_BS_VOICE_SYNC) == 0) {
-            if (internalslot == 0) {
-                vc1 = 1;
-                state->dmr_emb_err[0] = 0; // reset EMB miss counter on fresh voice sync
-            }
-            if (internalslot == 1) {
-                vc2 = 1;
-                state->dmr_emb_err[1] = 0; // reset EMB miss counter on fresh voice sync
-            }
-            dmr_confidence_note_voice_sync(state, internalslot);
-        }
+static void
+process_dmr_bs_three_voice_frames(dsd_opts* opts, dsd_state* state, uint8_t internalslot, char ambe_fr[4][24],
+                                  char ambe_fr2[4][24], char ambe_fr3[4][24]) {
+    process_dmr_bs_voice_frame(opts, state, internalslot, ambe_fr, 0);
+    process_dmr_bs_voice_frame(opts, state, internalslot, ambe_fr2, 1);
+    process_dmr_bs_voice_frame(opts, state, internalslot, ambe_fr3, 2);
+}
 
-        //check for sync pattern here after collected the rest of the payload, decide what to do with it
-        if (strcmp(sync, DMR_BS_DATA_SYNC) == 0) {
+static void
+write_dmr_bs_dsp_output(const dsd_opts* opts, const dsd_state* state, uint8_t internalslot) {
+    FILE* pFile = dsd_fopen_private(opts->dsp_out_file, "a");
+    if (pFile == NULL) {
+        return;
+    }
 
-            fprintf(stderr, "%s ", timestr);
-            if (internalslot == 0) {
-                if (opts->inverted_dmr == 0) {
-                    fprintf(stderr, "Sync: +DMR  ");
-                } else {
-                    fprintf(stderr, "Sync: -DMR  ");
-                }
+    DSD_FPRINTF(pFile, "\n%d 98 ", internalslot + 1);
+    for (int i = 0; i < 6; i++) {
+        int cach_byte =
+            (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
+        DSD_FPRINTF(pFile, "%X", cach_byte);
+    }
 
-                vc1 = 7; //set to 7 so we can see that we should not be on a VC unless a framesync comes in for it first
+    DSD_FPRINTF(pFile, "\n%d 10 ", internalslot + 1);
+    for (int i = 6; i < 72; i++) {
+        int dsp_byte =
+            (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
+        DSD_FPRINTF(pFile, "%X", dsp_byte);
+    }
 
-                //close MBEout file - slot 1
-                if (opts->mbe_out_f != NULL) {
-                    closeMbeOutFile(opts, state);
-                }
-            }
-            if (internalslot == 1) {
-                if (opts->inverted_dmr == 0) {
-                    fprintf(stderr, "Sync: +DMR  ");
-                } else {
-                    fprintf(stderr, "Sync: -DMR  ");
-                }
+    fclose(pFile);
+}
 
-                vc2 = 7; //set to 7 so we can see that we should not be on a VC unless a framesync comes in for it first
+static void
+reset_dmr_bs_slot_keystream_counters(dsd_state* state, uint8_t internalslot) {
+    state->static_ks_counter[internalslot] = 0;
+    state->vertex_ks_counter[internalslot] = 0;
+    state->vertex_ks_active_idx[internalslot] = -1;
+    state->vertex_ks_warned[internalslot] = 0;
+}
 
-                //close MBEout file - slot 2
-                if (opts->mbe_out_fR != NULL) {
-                    closeMbeOutFileR(opts, state);
-                }
-            }
-            dmr_data_sync(opts, state);
-            skipcount++;
-            goto SKIP;
-        }
+static void
+run_dmr_bs_slot_vc6_sbrc(const dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
+    if (is_dmr_bs_slot_vc6(ctx)) {
+        dmr_sbrc(opts, state, ctx->power);
+    }
+}
 
-//ETSI TS 102 361-1 V2.6.1 Table E.2 and E.4
-//check for a rc burst with bptc or 34 rate data in it (testing only)
-// #define RC_TESTING //disable if not in use
-#ifdef RC_TESTING
+static void
+run_dmr_bs_slot_vc6_post_voice(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
+    if (is_dmr_bs_slot_vc6(ctx)) {
+        dmr_alg_refresh(opts, state);
+        reset_dmr_bs_slot_keystream_counters(state, ctx->internalslot);
+    }
+}
 
-        //skip the vc counter, just look at the QR and P/Pi if not voice or data sync pattern
-        if ((strcmp(sync, DMR_BS_DATA_SYNC) != 0) && (strcmp(sync, DMR_BS_VOICE_SYNC) != 0)) {
+static void
+update_dmr_bs_sync_times_if_tuned(const dsd_opts* opts, dsd_state* state) {
+    if (opts->p25_is_tuned == 1) {
+        time_t now = time(NULL);
+        double nowm = dsd_time_now_monotonic_s();
+        state->last_vc_sync_time = now;
+        state->last_vc_sync_time_m = nowm;
+        state->last_cc_sync_time = now;
+        state->last_cc_sync_time_m = nowm;
+    }
+}
 
-            //Golay_20_8_decode FEC for the burst type (SlotType)
-            unsigned char SlotType[20];
-            memset(SlotType, 0, sizeof(SlotType));
-            uint8_t k = 61;
-            for (uint8_t i = 0; i < 5; i++) {
-                SlotType[(i * 2) + 0] = (state->dmr_stereo_payload[k + 0] >> 1) & 1;
-                SlotType[(i * 2) + 1] = (state->dmr_stereo_payload[k++] >> 0) & 1;
-            }
-            k = 90;
-            for (uint8_t i = 0; i < 5; i++) {
-                SlotType[(i * 2) + 10] = (state->dmr_stereo_payload[k + 0] >> 1) & 1;
-                SlotType[(i * 2) + 11] = (state->dmr_stereo_payload[k++] >> 0) & 1;
-            }
+static void
+collect_dmr_bs_late_entry_if_needed(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
+    if (opts->dmr_le != 2) {
+        dmr_late_entry_mi_fragment(opts, state, current_dmr_bs_vc(ctx) % 7, ctx->m1, ctx->m2, ctx->m3);
+    }
+}
 
-            //if the QR FEC is good, tact/cach FEC is good, and slot type burst FEC is good, and the P/PI bit is on for RC
-            //NOTE: This can still trigger on bad signal when it should be a data sync pattern but signal drops out or
-            //occassionally on p_clear with trunking tuner logic active and partial stale dibits in the buffer
-            if (QR_16_7_6_decode(emb_pdu) && emb_pdu[4] && tact_okay == 1) //during voice test
-            {
+static dmr_bs_action
+process_dmr_bs_voice_burst(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
+    dmr_bs_action action = check_dmr_bs_emb_and_confidence(state, ctx);
+    if (action != DMR_BS_ACTION_CONTINUE) {
+        return action;
+    }
 
-                if (Golay_20_8_decode(SlotType)) {
-                    fprintf(stderr, "%s ", timestr);
-                    if (opts->inverted_dmr == 0) {
-                        fprintf(stderr, "Sync: +RC   ");
-                    } else {
-                        fprintf(stderr, "Sync: -RC   ");
-                    }
+    ctx->skipcount = 0;
+    DSD_FPRINTF(stderr, "%s ", ctx->timestr);
 
-                    dmr_data_sync(opts, state);
-                }
+    char polarity[3];
+    char light[18];
+    uint8_t vc = prepare_dmr_bs_voice_slot(opts, state, ctx, light, polarity);
 
-                for (i = 0; i < 48; i++) {
-                    state->dmr_embedded_signalling[internalslot][5][i] = syncdata[i];
-                }
+    if (state->dmr_color_code != 16) {
+        DSD_FPRINTF(stderr, "Sync: %sDMR %s| Color Code=%02d | VC%d ", polarity, light, state->dmr_color_code, vc);
+    } else {
+        DSD_FPRINTF(stderr, "Sync: %sDMR %s| Color Code=XX | VC%d ", polarity, light, vc);
+    }
 
-                dmr_sbrc(opts, state, emb_pdu[4]);
+    handle_dmr_bs_slot_vc6_pre_link(opts, state, ctx);
 
-                emb_ok = 1;
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n");
+    }
 
-                //give an audio cue when this happens (low, high)
-                beeper(opts, state, internalslot, 40, 86, 3);
-                beeper(opts, state, internalslot, 80, 86, 3);
-
-                //put into Event History
-                state->event_history_s[0].Event_History_Items[internalslot].color_pair = 4;
-                watchdog_event_datacall(opts, state, 0, 0, "DMR Reverse Channel P/PI Indicator On (FEC Okay);",
-                                        internalslot);
-                push_event_history(&state->event_history_s[internalslot]);
-                init_event_history(&state->event_history_s[internalslot], 0, 1);
-
-                if (Golay_20_8_decode(SlotType)) {
-                    skipcount++;
-                    goto SKIP;
-                }
-            }
-        }
-#endif //RC_TESTING
-
-        //check to see if we are expecting a VC at this point vc > 7
-        if (strcmp(sync, DMR_BS_DATA_SYNC) != 0 && internalslot == 0 && vc1 > 6) {
-            fprintf(stderr, "%s ", timestr);
-
-            //simplifying things
-            // char polarity[3];
-            char light[18];
-
-            sprintf(light, "%s", " [SLOT1]  slot2  ");
-            fprintf(stderr, "Sync:  DMR %s", light);
-            fprintf(stderr, "%s", KCYN);
-            fprintf(stderr, "| Frame Sync Err: %d", vc1);
-            fprintf(stderr, "%s", KNRM);
-            fprintf(stderr, "\n");
-            vc1++;
-            //this should give it enough time to find the next frame sync pattern, if it exists, if not, then trigger a resync
-            if (vc1 > 13) {
-                goto END;
-            } else {
-                goto SKIP;
-            }
-        }
-
-        //check to see if we are expecting a VC at this point vc > 7
-        if (strcmp(sync, DMR_BS_DATA_SYNC) != 0 && internalslot == 1 && vc2 > 6) {
-            fprintf(stderr, "%s ", timestr);
-
-            //simplifying things
-            // char polarity[3];
-            char light[18];
-
-            sprintf(light, "%s", "  slot1  [SLOT2] ");
-            fprintf(stderr, "Sync:  DMR %s", light);
-            fprintf(stderr, "%s", KCYN);
-            fprintf(stderr, "| Frame Sync Err: %d", vc2);
-            fprintf(stderr, "%s", KNRM);
-            fprintf(stderr, "\n");
-            vc2++;
-            //this should give it enough time to find the next frame sync pattern, if it exists, if not, then trigger a resync
-            if (vc2 > 13) {
-                goto END;
-            } else {
-                goto SKIP;
-            }
-        }
-
-        //only play voice on no data sync, and VC values are within expected values 1-6
-        if (strcmp(sync, DMR_BS_DATA_SYNC)
-            != 0) //we already have a tact ecc check, so we won't get here without that, see if there is any other eccs we can run just to make sure
-        {
-
-            // Check the embedded signalling (EMB). ETSI allows voice continuation on transient
-            // EMB errors; add simple hysteresis to avoid premature aborts on marginal signals.
-            emb_ok = QR_16_7_6_decode(emb_pdu) ? 1 : 0;
-
-            if (emb_ok == 1) {
-                // On valid EMB, reset miss counter and update CC/Power
-                state->dmr_emb_err[internalslot] = 0;
-                cc = ((emb_pdu[0] << 3) + (emb_pdu[1] << 2) + (emb_pdu[2] << 1) + emb_pdu[3]);
-                power = emb_pdu[4];
-                state->color_code = cc;
-            } else {
-                // If not a voice sync frame and EMB is invalid, increment miss counter.
-                // Abort only after 2 consecutive failures to improve robustness.
-                if (strcmp(sync, DMR_BS_VOICE_SYNC) != 0) {
-                    uint8_t* miss = &state->dmr_emb_err[internalslot];
-                    if (*miss < 0xFF) {
-                        (*miss)++;
-                    }
-                    if (*miss >= 2) {
-                        goto END; // persistent EMB failures → resync
-                    }
-                } else {
-                    // On voice sync frames, do not penalize; clear any transient miss.
-                    state->dmr_emb_err[internalslot] = 0;
-                }
-            }
-
-            int voice_gate_open = dmr_confidence_voice_slot_open(state, internalslot);
-            if (emb_ok == 1) {
-                dmr_confidence_result confidence = dmr_confidence_note_voice_burst(state, internalslot, cc);
-                if (confidence == DMR_CONFIDENCE_REJECT) {
-                    emb_ok = 0;
-                    dmr_confidence_reset_slot(state, internalslot);
-                    goto END;
-                }
-                voice_gate_open = dmr_confidence_voice_slot_open(state, internalslot);
-            }
-
-            if (voice_gate_open == 0) {
-                if (emb_ok != 1 && strcmp(sync, DMR_BS_VOICE_SYNC) != 0) {
-                    dmr_confidence_reset_slot(state, internalslot);
-                    goto END;
-                }
-
-                if (internalslot == 0) {
-                    vc1++;
-                }
-                if (internalslot == 1) {
-                    vc2++;
-                }
-                tact_okay = 0;
-                emb_ok = 0;
-                if ((vc1 > 14 || vc2 > 14)) {
-                    goto END;
-                }
-                goto SKIP;
-            }
-
-            skipcount = 0; //reset skip count if processing voice frames
-            fprintf(stderr, "%s ", timestr);
-
-            //simplifying things
-            char polarity[3];
-            char light[18];
-            uint8_t vc;
-            if (internalslot == 0) {
-                state->dmrburstL = 16;
-                vc = vc1;
-                sprintf(light, "%s", " [SLOT1]  slot2  ");
-                //open MBEout file - slot 1
-                if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
-                    openMbeOutFile(opts, state);
-                }
-                // Emit voice sync to SM
-                dmr_sm_emit_voice_sync(opts, state, 0);
-            } else {
-                state->dmrburstR = 16;
-                vc = vc2;
-                sprintf(light, "%s", "  slot1  [SLOT2] ");
-                //open MBEout file - slot 2
-                if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
-                    openMbeOutFileR(opts, state);
-                }
-                // Emit voice sync to SM
-                dmr_sm_emit_voice_sync(opts, state, 1);
-            }
-            if (opts->inverted_dmr == 0) {
-                sprintf(polarity, "%s", "+");
-            } else {
-                sprintf(polarity, "%s", "-");
-            }
-            if (state->dmr_color_code != 16) {
-                fprintf(stderr, "Sync: %sDMR %s| Color Code=%02d | VC%d ", polarity, light, state->dmr_color_code, vc);
-            } else {
-                fprintf(stderr, "Sync: %sDMR %s| Color Code=XX | VC%d ", polarity, light, vc);
-            }
-
-            if (internalslot == 0 && vc1 == 6) {
-                //this needs to run prior to embedded link control
-                if (state->payload_algid == 0x02) {
-                    hytera_enhanced_alg_refresh(state);
-                }
-                //process embedded link control
-                fprintf(stderr, "\n");
-                dmr_data_burst_handler(opts, state, (uint8_t*)dummy_bits, 0xEB);
-            }
-
-            if (internalslot == 1 && vc2 == 6) {
-                //this needs to run prior to embedded link control
-                if (state->payload_algidR == 0x02) {
-                    hytera_enhanced_alg_refresh(state);
-                }
-                //process embedded link control
-                fprintf(stderr, "\n");
-                dmr_data_burst_handler(opts, state, (uint8_t*)dummy_bits, 0xEB);
-            }
-
-            if (opts->payload == 1) {
-                fprintf(stderr, "\n"); //extra line break necessary here
-            }
-
-            //copy ambe_fr frames first, running process mbe will correct them,
-            //but this also leads to issues extracting good le mi values when
-            //we go to do correction on them there too
-            memcpy(m1, ambe_fr, sizeof(m1));
-            memcpy(m2, ambe_fr2, sizeof(m2));
-            memcpy(m3, ambe_fr3, sizeof(m3));
-
-            if (state->tyt_bp == 1) {
-                tyt16_ambe2_codeword_keystream(state, ambe_fr, 0);
-                tyt16_ambe2_codeword_keystream(state, ambe_fr2, 1);
-                tyt16_ambe2_codeword_keystream(state, ambe_fr3, 0);
-            }
-            if (state->csi_ee == 1) {
-                csi72_ambe2_codeword_keystream(state, ambe_fr);
-                csi72_ambe2_codeword_keystream(state, ambe_fr2);
-                csi72_ambe2_codeword_keystream(state, ambe_fr3);
-            }
+    copy_dmr_bs_voice_frames(ctx->m1, ctx->m2, ctx->m3, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
+    apply_dmr_bs_voice_keystream(state, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
 
 #ifdef PRINT_AMBE72
-            ambe2_codeword_print_i(opts, ambe_fr);
-            ambe2_codeword_print_i(opts, ambe_fr2);
-            ambe2_codeword_print_i(opts, ambe_fr3);
+    ambe2_codeword_print_i(opts, ctx->ambe_fr);
+    ambe2_codeword_print_i(opts, ctx->ambe_fr2);
+    ambe2_codeword_print_i(opts, ctx->ambe_fr3);
 #endif
 
-            processMbeFrame(opts, state, NULL, ambe_fr, NULL);
-            if (internalslot == 0) {
-                memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-                memcpy(state->s_l4[0], state->s_l, sizeof(state->s_l));
-                memcpy(state->s_l4u[0], state->s_lu, sizeof(state->s_lu));
-            }
+    process_dmr_bs_three_voice_frames(opts, state, ctx->internalslot, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
 
-            else {
-                memcpy(state->f_r4[0], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-                memcpy(state->s_r4[0], state->s_r, sizeof(state->s_r));
-                memcpy(state->s_r4u[0], state->s_ru, sizeof(state->s_ru));
-            }
+    if (opts->use_dsp_output == 1) {
+        write_dmr_bs_dsp_output(opts, state, ctx->internalslot);
+    }
 
-            processMbeFrame(opts, state, NULL, ambe_fr2, NULL);
-            if (internalslot == 0) {
-                memcpy(state->f_l4[1], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-                memcpy(state->s_l4[1], state->s_l, sizeof(state->s_l));
-                memcpy(state->s_l4u[1], state->s_lu, sizeof(state->s_lu));
-            }
+    run_dmr_bs_slot_vc6_sbrc(opts, state, ctx);
+    (void)dmr_cach(opts, state, ctx->cachdata);
 
-            else {
-                memcpy(state->f_r4[1], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-                memcpy(state->s_r4[1], state->s_r, sizeof(state->s_r));
-                memcpy(state->s_r4u[1], state->s_ru, sizeof(state->s_ru));
-            }
+    if (opts->payload == 0) {
+        DSD_FPRINTF(stderr, "\n");
+    }
 
-            processMbeFrame(opts, state, NULL, ambe_fr3, NULL);
-            if (internalslot == 0) {
-                memcpy(state->f_l4[2], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-                memcpy(state->s_l4[2], state->s_l, sizeof(state->s_l));
-                memcpy(state->s_l4u[2], state->s_lu, sizeof(state->s_lu));
-            }
+    run_dmr_bs_slot_vc6_post_voice(opts, state, ctx);
+    collect_dmr_bs_late_entry_if_needed(opts, state, ctx);
+    increment_dmr_bs_slot_vc(ctx);
+    update_dmr_bs_sync_times_if_tuned(opts, state);
 
-            else {
-                memcpy(state->f_r4[2], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-                memcpy(state->s_r4[2], state->s_r, sizeof(state->s_r));
-                memcpy(state->s_r4u[2], state->s_ru, sizeof(state->s_ru));
-            }
+    ctx->tact_okay = 0;
+    ctx->emb_ok = 0;
+    if (ctx->vc1 > 14 || ctx->vc2 > 14) {
+        return DMR_BS_ACTION_END;
+    }
 
-            //'DSP' output to file -- run before sbrc
-            if (opts->use_dsp_output == 1) {
-                FILE* pFile; //file pointer
-                pFile = fopen(opts->dsp_out_file, "a");
-                if (pFile != NULL) {
-                    fprintf(pFile, "\n%d 98 ", internalslot + 1); //'98' is CACH designation value
-                    for (i = 0; i < 6; i++)                       //3 byte CACH
-                    {
-                        int cach_byte = (state->dmr_stereo_payload[((size_t)i * 2)] << 2)
-                                        | state->dmr_stereo_payload[((size_t)i * 2) + 1];
-                        fprintf(pFile, "%X", cach_byte);
-                    }
-                    fprintf(pFile, "\n%d 10 ", internalslot + 1); //0x10 for voice burst
-                    for (i = 6; i < 72; i++)                      //33 bytes, no CACH
-                    {
-                        int dsp_byte = (state->dmr_stereo_payload[((size_t)i * 2)] << 2)
-                                       | state->dmr_stereo_payload[((size_t)i * 2) + 1];
-                        fprintf(pFile, "%X", dsp_byte);
-                    }
-                    fclose(pFile);
-                }
-            }
+    return DMR_BS_ACTION_SKIP;
+}
 
-            //run sbrc here to look for the late entry key and alg after we observe potential errors in VC6
-            if (internalslot == 0 && vc1 == 6) {
-                dmr_sbrc(opts, state, power);
-            }
-            if (internalslot == 1 && vc2 == 6) {
-                dmr_sbrc(opts, state, power);
-            }
+#ifdef RC_TESTING
+static dmr_bs_action
+handle_dmr_bs_reverse_channel_testing(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
+    if ((strcmp(ctx->sync, DMR_BS_DATA_SYNC) == 0) || (strcmp(ctx->sync, DMR_BS_VOICE_SYNC) == 0)) {
+        return DMR_BS_ACTION_CONTINUE;
+    }
 
-            (void)dmr_cach(opts, state, cachdata);
-            if (opts->payload == 0) {
-                fprintf(stderr, "\n");
-            }
+    unsigned char SlotType[20];
+    DSD_MEMSET(SlotType, 0, sizeof(SlotType));
 
-            // run alg refresh after vc6 ambe processing
-            if (internalslot == 0 && vc1 == 6) {
-                dmr_alg_refresh(opts, state);
-            }
-            if (internalslot == 1 && vc2 == 6) {
-                dmr_alg_refresh(opts, state);
-            }
+    uint8_t k = 61;
+    for (uint8_t i = 0; i < 5; i++) {
+        SlotType[(i * 2) + 0] = (state->dmr_stereo_payload[k + 0] >> 1) & 1;
+        SlotType[(i * 2) + 1] = (state->dmr_stereo_payload[k++] >> 0) & 1;
+    }
 
-            if (internalslot == 0 && vc1 == 6) {
-                state->static_ks_counter[0] = 0;
-                state->vertex_ks_counter[0] = 0;
-                state->vertex_ks_active_idx[0] = -1;
-                state->vertex_ks_warned[0] = 0;
-            }
-            if (internalslot == 1 && vc2 == 6) {
-                state->static_ks_counter[1] = 0;
-                state->vertex_ks_counter[1] = 0;
-                state->vertex_ks_active_idx[1] = -1;
-                state->vertex_ks_warned[1] = 0;
-            }
+    k = 90;
+    for (uint8_t i = 0; i < 5; i++) {
+        SlotType[(i * 2) + 10] = (state->dmr_stereo_payload[k + 0] >> 1) & 1;
+        SlotType[(i * 2) + 11] = (state->dmr_stereo_payload[k++] >> 0) & 1;
+    }
 
-            if (opts->dmr_le != 2) { //if not Hytera Enhanced
-                dmr_late_entry_mi_fragment(opts, state, vc % 7, m1, m2, m3);
-            }
+    if (!(QR_16_7_6_decode(ctx->emb_pdu) && ctx->emb_pdu[4] && ctx->tact_okay == 1)) {
+        return DMR_BS_ACTION_CONTINUE;
+    }
 
-            //increment the vc counters
-            if (internalslot == 0) {
-                vc1++;
-            }
-            if (internalslot == 1) {
-                vc2++;
-            }
-
-            //update cc amd vc sync time for trunking purposes (particularly Con+)
-            if (opts->p25_is_tuned == 1) {
-                time_t now = time(NULL);
-                double nowm = dsd_time_now_monotonic_s();
-                state->last_vc_sync_time = now;
-                state->last_vc_sync_time_m = nowm;
-                state->last_cc_sync_time = now;
-                state->last_cc_sync_time_m = nowm;
-            }
-
-            //reset err checks
-            tact_okay = 0;
-            emb_ok = 0;
-
-            //reset emb components not needed here; next frames will set
-
-            //Extra safeguards to break loop
-            // if ( (vc1 > 7 && vc2 > 7) ) goto END;
-            if ((vc1 > 14 || vc2 > 14)) {
-                goto END;
-            }
+    int slot_type_ok = Golay_20_8_decode(SlotType);
+    if (slot_type_ok) {
+        DSD_FPRINTF(stderr, "%s ", ctx->timestr);
+        if (opts->inverted_dmr == 0) {
+            DSD_FPRINTF(stderr, "Sync: +RC   ");
+        } else {
+            DSD_FPRINTF(stderr, "Sync: -RC   ");
         }
+        dmr_data_sync(opts, state);
+    }
 
-    SKIP:
+    for (int i = 0; i < 48; i++) {
+        state->dmr_embedded_signalling[ctx->internalslot][5][i] = ctx->syncdata[i];
+    }
 
-        //both working now, will need support added for ENC audio and no key
-        //NOTE: We want this to play regardless of whether the slot is voice or data, to play silence in one slot and voice in the second, or voices in both
-        if (dmr_confidence_any_voice_open(state) && internalslot == 1 && opts->floating_point == 1
-            && opts->pulse_digi_rate_out == 8000) {
-            playSynthesizedVoiceFS3(opts, state); //Float Stereo Mix 3v2
-        }
-        if (dmr_confidence_any_voice_open(state) && internalslot == 1 && opts->floating_point == 0
-            && opts->pulse_digi_rate_out == 8000) {
-            playSynthesizedVoiceSS3(opts, state); //Short Stereo Mix 3v2
-        }
+    dmr_sbrc(opts, state, ctx->emb_pdu[4]);
+    ctx->emb_ok = 1;
 
-        if (skipcount
-            > 3) //after 3 onsecutive data frames, drop back to getFrameSync and process with dmr_data_sync (need one more in order to push last voice on slot 2 only voice)
-        {
-            //set tests to good so we don't get a bogus/redundant voice error
-            tact_okay = 1;
-            emb_ok = 1;
-            goto END;
-        }
+    beeper(opts, state, ctx->internalslot, 40, 86, 3);
+    beeper(opts, state, ctx->internalslot, 80, 86, 3);
 
-        //since we are in a while loop, run ncursesPrinter here.
-        if (opts->use_ncurses_terminal == 1) {
-            ui_publish_both_and_redraw(opts, state);
-        }
+    state->event_history_s[0].Event_History_Items[ctx->internalslot].color_pair = 4;
+    watchdog_event_datacall(opts, state, 0, 0, "DMR Reverse Channel P/PI Indicator On (FEC Okay);", ctx->internalslot);
+    push_event_history(&state->event_history_s[ctx->internalslot]);
+    init_event_history(&state->event_history_s[ctx->internalslot], 0, 1);
 
-        //slot 1
-        watchdog_event_history(opts, state, 0);
-        watchdog_event_current(opts, state, 0);
+    if (slot_type_ok) {
+        ctx->skipcount++;
+        return DMR_BS_ACTION_SKIP;
+    }
 
-        //slot 2 for TDMA systems
-        watchdog_event_history(opts, state, 1);
-        watchdog_event_current(opts, state, 1);
+    return DMR_BS_ACTION_CONTINUE;
+}
+#endif
 
-        // Tick the trunking state machine to handle hangtime/release logic
-        dmr_sm_tick(opts, state);
+static dmr_bs_action
+run_dmr_bs_post_skip(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
+    if (dmr_confidence_any_voice_open(state) && ctx->internalslot == 1 && opts->floating_point == 1
+        && opts->pulse_digi_rate_out == 8000) {
+        playSynthesizedVoiceFS3(opts, state);
+    }
 
-        if (timestr != NULL) {
-            free(timestr);
-            timestr = NULL;
-        }
+    if (dmr_confidence_any_voice_open(state) && ctx->internalslot == 1 && opts->floating_point == 0
+        && opts->pulse_digi_rate_out == 8000) {
+        playSynthesizedVoiceSS3(opts, state);
+    }
 
-    } // while loop
+    if (ctx->skipcount > 3) {
+        ctx->tact_okay = 1;
+        ctx->emb_ok = 1;
+        return DMR_BS_ACTION_END;
+    }
 
-END:
+    if (opts->use_ncurses_terminal == 1) {
+        ui_publish_both_and_redraw(opts, state);
+    }
+
+    watchdog_event_history(opts, state, 0);
+    watchdog_event_current(opts, state, 0);
+    watchdog_event_history(opts, state, 1);
+    watchdog_event_current(opts, state, 1);
+    dmr_sm_tick(opts, state);
+
+    return DMR_BS_ACTION_CONTINUE;
+}
+
+static void
+finalize_dmr_bs(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
     state->dmr_stereo = 0;
     state->errs = 0;
     state->errs2 = 0;
     state->errs2R = 0;
     state->errs2 = 0;
 
-    //close any open MBEout files
     if (opts->mbe_out_f != NULL) {
         closeMbeOutFile(opts, state);
     }
@@ -782,29 +724,22 @@ END:
         closeMbeOutFileR(opts, state);
     }
 
-    //clear out any stale audio storage buffers
-    memset(state->f_l4, 0.0f, sizeof(state->f_l4));
-    memset(state->f_r4, 0.0f, sizeof(state->f_r4));
-    memset(state->s_l4, 0, sizeof(state->s_l4));
-    memset(state->s_r4, 0, sizeof(state->s_r4));
+    DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
+    DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
+    DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
+    DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
 
-    //if we have a tact or emb err, then produce sync pattern/err message
-    if (tact_okay != 1 || emb_ok != 1) {
-
-        fprintf(stderr, "%s ", timestr);
-        fprintf(stderr, "Sync:  DMR                  ");
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, "| VOICE CACH/EMB ERR");
-        fprintf(stderr, "%s", KNRM);
-        fprintf(stderr, "\n");
-        //run refresh if either slot had an active MI in it.
+    if (ctx->tact_okay != 1 || ctx->emb_ok != 1) {
+        DSD_FPRINTF(stderr, "%s ", ctx->timestr);
+        DSD_FPRINTF(stderr, "Sync:  DMR                  ");
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, "| VOICE CACH/EMB ERR");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        DSD_FPRINTF(stderr, "\n");
         dmr_refresh_algids_on_error(opts, state);
-
-        //failsafe to reset all data header and blocks when bad tact or emb
         dmr_reset_blocks(opts, state);
     }
 
-    //reset static ks counter
     state->static_ks_counter[0] = 0;
     state->static_ks_counter[1] = 0;
     state->vertex_ks_counter[0] = 0;
@@ -813,339 +748,272 @@ END:
     state->vertex_ks_active_idx[1] = -1;
     state->vertex_ks_warned[0] = 0;
     state->vertex_ks_warned[1] = 0;
-    // reset EMB miss counters on exit
     state->dmr_emb_err[0] = 0;
     state->dmr_emb_err[1] = 0;
     dmr_confidence_reset(state);
 }
 
-//Process buffered half frame and 2nd half and then jump to full BS decoding
-void
-dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
-    int i, dibit;
-    int* dibit_p;
-    char ambe_fr[4][24];
-    char ambe_fr2[4][24];
-    char ambe_fr3[4][24];
+static void
+init_dmr_bs_bootstrap_ctx(dmr_bs_bootstrap_ctx* ctx) {
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->sync_okay = 1;
+    getTimeC_buf(ctx->timestr);
+}
 
-    memset(ambe_fr, 0, sizeof(ambe_fr));
-    memset(ambe_fr2, 0, sizeof(ambe_fr2));
-    memset(ambe_fr3, 0, sizeof(ambe_fr3));
+static void
+seed_dmr_bs_bootstrap_payload(const dsd_opts* opts, dsd_state* state) {
+    const int* dibit_p = state->dmr_payload_p - 90;
 
-    //memcpy of ambe_fr for late entry
-    uint8_t m1[4][24];
-    uint8_t m2[4][24];
-    uint8_t m3[4][24];
-
-    const int *w, *x, *y, *z;
-    char sync[25];
-    uint8_t tact_okay = 0;
-    uint8_t cach_err = 0;
-    uint8_t sync_okay = 1;
-    UNUSED(cach_err);
-
-    uint8_t internalslot;
-
-    uint8_t cachdata[25];
-    int cachInterleave[24] = {0, 7, 8, 9, 1, 10, 11, 12, 2, 13, 14, 15, 3, 16, 4, 17, 18, 19, 5, 20, 21, 22, 6, 23};
-
-    char timestr[9];
-    getTimeC_buf(timestr);
-
-    //payload buffer
-    //CACH + First Half Payload + Sync = 12 + 54 + 24
-    dibit_p = state->dmr_payload_p - 90;
-    for (i = 0; i < 90; i++) //90
-    {
-        dibit = *dibit_p;
+    for (int i = 0; i < 90; i++) {
+        int dibit = *dibit_p;
         dibit_p++;
         if (opts->inverted_dmr == 1) {
             dibit = (dibit ^ 2) & 3;
         }
         state->dmr_stereo_payload[i] = dibit;
     }
+}
 
-    for (i = 0; i < 12; i++) {
-        dibit = state->dmr_stereo_payload[i];
-        cachdata[cachInterleave[((size_t)i * 2)]] = (1 & (dibit >> 1)); // bit 1
-        cachdata[cachInterleave[((size_t)i * 2) + 1]] = (1 & dibit);    // bit 0
+static int
+decode_dmr_bs_bootstrap_cach_and_tact(dsd_state* state, dmr_bs_bootstrap_ctx* ctx) {
+    for (int i = 0; i < 12; i++) {
+        int dibit = state->dmr_stereo_payload[i];
+        ctx->cachdata[dmr_bs_cach_interleave[((size_t)i * 2)]] = (1 & (dibit >> 1));
+        ctx->cachdata[dmr_bs_cach_interleave[((size_t)i * 2) + 1]] = (1 & dibit);
     }
 
-    //cach tact bits
-    uint8_t tact_bits[7];
-    for (i = 0; i < 7; i++) {
-        tact_bits[i] = cachdata[i];
+    for (int i = 0; i < 7; i++) {
+        ctx->tact_bits[i] = ctx->cachdata[i];
     }
 
-    //decode and correct tact and compare
-    if (Hamming_7_4_decode(tact_bits)) {
-        tact_okay = 1;
+    ctx->tact_okay = 0;
+    if (Hamming_7_4_decode(ctx->tact_bits)) {
+        ctx->tact_okay = 1;
     }
-    if (tact_okay != 1) {
-        goto END;
-    }
-
-    internalslot = state->currentslot = tact_bits[1];
-    dmr_confidence_note_voice_sync(state, internalslot);
-
-    //reset static ks counter
-    state->static_ks_counter[internalslot] = 0;
-    state->vertex_ks_counter[internalslot] = 0;
-    state->vertex_ks_active_idx[internalslot] = -1;
-    state->vertex_ks_warned[internalslot] = 0;
-
-    //Setup for first AMBE Frame
-
-    //Interleave Schedule
-    w = rW;
-    x = rX;
-    y = rY;
-    z = rZ;
-
-    //First AMBE Frame, Full 36
-    for (i = 0; i < 36; i++) {
-        dibit = state->dmr_stereo_payload[i + 12];
-        ambe_fr[*w][*x] = (1 & (dibit >> 1)); // bit 1
-        ambe_fr[*y][*z] = (1 & dibit);        // bit 0
-
-        w++;
-        x++;
-        y++;
-        z++;
+    if (ctx->tact_okay != 1) {
+        return 0;
     }
 
-    //Setup for Second AMBE Frame
+    ctx->internalslot = ctx->tact_bits[1];
+    state->currentslot = ctx->internalslot;
+    dmr_confidence_note_voice_sync(state, ctx->internalslot);
+    reset_dmr_bs_slot_keystream_counters(state, ctx->internalslot);
+    return 1;
+}
 
-    //Interleave Schedule
-    w = rW;
-    x = rX;
-    y = rY;
-    z = rZ;
+static int
+collect_dmr_bs_bootstrap_prefetched_voice(const dsd_state* state, dmr_bs_bootstrap_ctx* ctx) {
+    unpack_dmr_bs_ambe_segment_from_payload(state, ctx->ambe_fr, 12, 36);
+    unpack_dmr_bs_ambe_segment_from_payload(state, ctx->ambe_fr2, 48, 18);
+    extract_dmr_bs_sync_from_payload(state, 66, ctx->sync);
 
-    //Second AMBE Frame, First Half 18 dibits just before Sync or EmbeddedSignalling
-    for (i = 0; i < 18; i++) {
-        dibit = state->dmr_stereo_payload[i + 48];
-        ambe_fr2[*w][*x] = (1 & (dibit >> 1)); // bit 1
-        ambe_fr2[*y][*z] = (1 & dibit);        // bit 0
-
-        w++;
-        x++;
-        y++;
-        z++;
+    if (strcmp(ctx->sync, DMR_BS_VOICE_SYNC) != 0) {
+        ctx->sync_okay = 0;
+        return 0;
     }
 
-    // signaling data or sync, just redo it
-    for (i = 0; i < 24; i++) {
-        dibit = state->dmr_stereo_payload[i + 66];
-        sync[i] = (dibit | 1) + 48;
-    }
-    sync[24] = 0;
+    return 1;
+}
 
-    if (strcmp(sync, DMR_BS_VOICE_SYNC) != 0) {
-        sync_okay = 0;
-        goto END;
-    }
-
-    //Continue Second AMBE Frame, 18 after Sync or EmbeddedSignalling
-    for (i = 0; i < 18; i++) {
-        dibit = getDibit(opts, state);
-        state->dmr_stereo_payload[i + 90] = dibit;
-        ambe_fr2[*w][*x] = (1 & (dibit >> 1)); // bit 1
-        ambe_fr2[*y][*z] = (1 & dibit);        // bit 0
-
-        w++;
-        x++;
-        y++;
-        z++;
-    }
-
-    //Setup for Third AMBE Frame
-
-    //Interleave Schedule
-    w = rW;
-    x = rX;
-    y = rY;
-    z = rZ;
-
-    //Third AMBE Frame, Full 36
-    for (i = 0; i < 36; i++) {
-        dibit = getDibit(opts, state);
-        state->dmr_stereo_payload[i + 108] = dibit;
-        ambe_fr3[*w][*x] = (1 & (dibit >> 1)); // bit 1
-        ambe_fr3[*y][*z] = (1 & dibit);        // bit 0
-
-        w++;
-        x++;
-        y++;
-        z++;
-    }
-
-    //'DSP' output to file
-    if (opts->use_dsp_output == 1) {
-        FILE* pFile; //file pointer
-        pFile = fopen(opts->dsp_out_file, "a");
-        if (pFile != NULL) {
-            fprintf(pFile, "\n%d 98 ", internalslot + 1); //'98' is CACH designation value
-            for (i = 0; i < 6; i++)                       //3 byte CACH
-            {
-                int cach_byte =
-                    (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
-                fprintf(pFile, "%X", cach_byte);
-            }
-            fprintf(pFile, "\n%d 10 ", internalslot + 1); //0x10 for "voice burst"
-            for (i = 6; i < 72; i++)                      //33 bytes, no CACH
-            {
-                int dsp_byte =
-                    (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
-                fprintf(pFile, "%X", dsp_byte);
-            }
-            fclose(pFile);
-        }
-    }
-
-    char polarity[3];
-    char light[18];
-
-    if (state->currentslot == 0) {
-        sprintf(light, "%s", " [SLOT1]  slot2  ");
-        //open MBEout file - slot 1
+static void
+prepare_dmr_bs_bootstrap_slot_output(dsd_opts* opts, dsd_state* state, uint8_t internalslot, char light[18],
+                                     char polarity[3]) {
+    if (internalslot == 0) {
+        DSD_SPRINTF(light, "%s", " [SLOT1]  slot2  ");
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
     } else {
-        sprintf(light, "%s", "  slot1  [SLOT2] ");
-        //open MBEout file - slot 2
+        DSD_SPRINTF(light, "%s", "  slot1  [SLOT2] ");
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
             openMbeOutFileR(opts, state);
         }
     }
+
     if (opts->inverted_dmr == 0) {
-        sprintf(polarity, "%s", "+");
+        DSD_SPRINTF(polarity, "%s", "+");
     } else {
-        sprintf(polarity, "%s", "-");
+        DSD_SPRINTF(polarity, "%s", "-");
     }
+}
+
+static void
+process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_bootstrap_ctx* ctx) {
     dmr_alg_reset(opts, state);
-    int bootstrap_gate_open = dmr_confidence_voice_slot_open(state, internalslot);
-    if (bootstrap_gate_open) {
-        fprintf(stderr, "%s ", timestr);
-        if (state->dmr_color_code != 16) {
-            fprintf(stderr, "Sync: %sDMR %s| Color Code=%02d | VC1*", polarity, light, state->dmr_color_code);
-        } else {
-            fprintf(stderr, "Sync: %sDMR %s| Color Code=XX | VC1*", polarity, light);
-        }
+    if (!dmr_confidence_voice_slot_open(state, ctx->internalslot)) {
+        return;
+    }
 
-        //copy ambe_fr frames first, running process mbe will correct them,
-        //but this also leads to issues extracting good le mi values when
-        //we go to do correction on them there too
-        memcpy(m1, ambe_fr, sizeof(m1));
-        memcpy(m2, ambe_fr2, sizeof(m2));
-        memcpy(m3, ambe_fr3, sizeof(m3));
+    char polarity[3];
+    char light[18];
+    prepare_dmr_bs_bootstrap_slot_output(opts, state, ctx->internalslot, light, polarity);
 
-        if (state->tyt_bp == 1) {
-            tyt16_ambe2_codeword_keystream(state, ambe_fr, 0);
-            tyt16_ambe2_codeword_keystream(state, ambe_fr2, 1);
-            tyt16_ambe2_codeword_keystream(state, ambe_fr3, 0);
-        }
-        if (state->csi_ee == 1) {
-            csi72_ambe2_codeword_keystream(state, ambe_fr);
-            csi72_ambe2_codeword_keystream(state, ambe_fr2);
-            csi72_ambe2_codeword_keystream(state, ambe_fr3);
-        }
+    DSD_FPRINTF(stderr, "%s ", ctx->timestr);
+    if (state->dmr_color_code != 16) {
+        DSD_FPRINTF(stderr, "Sync: %sDMR %s| Color Code=%02d | VC1*", polarity, light, state->dmr_color_code);
+    } else {
+        DSD_FPRINTF(stderr, "Sync: %sDMR %s| Color Code=XX | VC1*", polarity, light);
+    }
+
+    copy_dmr_bs_voice_frames(ctx->m1, ctx->m2, ctx->m3, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
+    apply_dmr_bs_voice_keystream(state, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
 
 #ifdef PRINT_AMBE72
-        ambe2_codeword_print_i(opts, ambe_fr);
-        ambe2_codeword_print_i(opts, ambe_fr2);
-        ambe2_codeword_print_i(opts, ambe_fr3);
+    ambe2_codeword_print_i(opts, ctx->ambe_fr);
+    ambe2_codeword_print_i(opts, ctx->ambe_fr2);
+    ambe2_codeword_print_i(opts, ctx->ambe_fr3);
 #endif
 
-        if (opts->payload == 1) {
-            fprintf(stderr, "\n"); //extra line break necessary here
-        }
-        // processMbeFrame (opts, state, NULL, ambe_fr, NULL);
-        // processMbeFrame (opts, state, NULL, ambe_fr2, NULL);
-        // processMbeFrame (opts, state, NULL, ambe_fr3, NULL);
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n");
+    }
 
-        processMbeFrame(opts, state, NULL, ambe_fr, NULL);
-        if (internalslot == 0) {
-            memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-            memcpy(state->s_l4[0], state->s_l, sizeof(state->s_l));
-            memcpy(state->s_l4u[0], state->s_lu, sizeof(state->s_lu));
-        }
+    process_dmr_bs_three_voice_frames(opts, state, ctx->internalslot, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
 
-        else {
-            memcpy(state->f_r4[0], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-            memcpy(state->s_r4[0], state->s_r, sizeof(state->s_r));
-            memcpy(state->s_r4u[0], state->s_ru, sizeof(state->s_ru));
-        }
+    if (opts->dmr_le != 2) {
+        dmr_late_entry_mi_fragment(opts, state, 1, ctx->m1, ctx->m2, ctx->m3);
+    }
 
-        processMbeFrame(opts, state, NULL, ambe_fr2, NULL);
-        if (internalslot == 0) {
-            memcpy(state->f_l4[1], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-            memcpy(state->s_l4[1], state->s_l, sizeof(state->s_l));
-            memcpy(state->s_l4u[1], state->s_lu, sizeof(state->s_lu));
-        }
+    (void)dmr_cach(opts, state, ctx->cachdata);
+    if (opts->payload == 0) {
+        DSD_FPRINTF(stderr, "\n");
+    }
 
-        else {
-            memcpy(state->f_r4[1], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-            memcpy(state->s_r4[1], state->s_r, sizeof(state->s_r));
-            memcpy(state->s_r4u[1], state->s_ru, sizeof(state->s_ru));
-        }
+    if (opts->p25_is_tuned == 1) {
+        state->last_vc_sync_time = time(NULL);
+        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+    }
 
-        processMbeFrame(opts, state, NULL, ambe_fr3, NULL);
-        if (internalslot == 0) {
-            memcpy(state->f_l4[2], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-            memcpy(state->s_l4[2], state->s_l, sizeof(state->s_l));
-            memcpy(state->s_l4u[2], state->s_lu, sizeof(state->s_lu));
-        }
+    if (ctx->internalslot == 1 && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000) {
+        playSynthesizedVoiceFS3(opts, state);
+    }
 
-        else {
-            memcpy(state->f_r4[2], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-            memcpy(state->s_r4[2], state->s_r, sizeof(state->s_r));
-            memcpy(state->s_r4u[2], state->s_ru, sizeof(state->s_ru));
-        }
+    if (ctx->internalslot == 1 && opts->floating_point == 0 && opts->pulse_digi_rate_out == 8000) {
+        playSynthesizedVoiceSS3(opts, state);
+    }
+}
 
-        //collect the mi fragment
-        if (opts->dmr_le != 2) { //if not Hytera Enhanced
-            dmr_late_entry_mi_fragment(opts, state, 1, m1, m2, m3);
-        }
+static dmr_bs_action
+process_dmr_bs_iteration(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
+    getTimeC_buf(ctx->timestr);
+    reset_dmr_bs_loop_buffers(ctx);
 
-        (void)dmr_cach(opts, state, cachdata);
-        if (opts->payload == 0) {
-            fprintf(stderr, "\n");
-        }
+    if (!collect_dmr_bs_cach_and_tact(opts, state, ctx)) {
+        return DMR_BS_ACTION_END;
+    }
 
-        //update voice sync time for trunking purposes (particularly Con+)
-        if (opts->p25_is_tuned == 1) {
-            state->last_vc_sync_time = time(NULL);
-            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-        }
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr, 12, 36, ctx->redundancyA);
+    if (is_dmr_bs_redundant_carrier(ctx)) {
+        return DMR_BS_ACTION_END;
+    }
+    DSD_MEMCPY(ctx->redundancyB, ctx->redundancyA, sizeof(ctx->redundancyA));
 
-        //NOTE: Only play on slot 1, if slot 0, then it'll play after the next TDMA frame in the BS loop instead
-        if (internalslot == 1 && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000) {
-            playSynthesizedVoiceFS3(opts, state); //Float Stereo Mix 3v2
-        }
-        if (internalslot == 1 && opts->floating_point == 0 && opts->pulse_digi_rate_out == 8000) {
-            playSynthesizedVoiceSS3(opts, state); //Short Stereo Mix 3v2
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 48, 18, NULL);
+    read_dmr_bs_sync_segment(opts, state, ctx);
+    build_dmr_bs_emb_pdu(ctx);
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 90, 18, NULL);
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr3, 108, 36, NULL);
+
+    note_dmr_bs_voice_sync(state, ctx);
+
+    dmr_bs_action action = handle_dmr_bs_data_sync(opts, state, ctx);
+    if (action != DMR_BS_ACTION_CONTINUE) {
+        goto HANDLE_ACTION;
+    }
+
+#ifdef RC_TESTING
+    action = handle_dmr_bs_reverse_channel_testing(opts, state, ctx);
+    if (action != DMR_BS_ACTION_CONTINUE) {
+        goto HANDLE_ACTION;
+    }
+#endif
+
+    action = handle_dmr_bs_frame_sync_miss(ctx, &ctx->vc1, &ctx->vc2);
+    if (action != DMR_BS_ACTION_CONTINUE) {
+        goto HANDLE_ACTION;
+    }
+
+    if (strcmp(ctx->sync, DMR_BS_DATA_SYNC) != 0) {
+        action = process_dmr_bs_voice_burst(opts, state, ctx);
+        if (action != DMR_BS_ACTION_CONTINUE) {
+            goto HANDLE_ACTION;
         }
     }
 
-    dmrBS(opts, state); //bootstrap into full TDMA frame for BS mode
-END:
-    //if we have a tact err, then produce sync pattern/err message
-    if (tact_okay != 1 || sync_okay != 1) {
-        dmr_confidence_reset(state);
-        fprintf(stderr, "%s ", timestr);
-        fprintf(stderr, "Sync:  DMR                  ");
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, "| VOICE CACH/SYNC ERR");
-        fprintf(stderr, "%s", KNRM);
-        fprintf(stderr, "\n");
-        //run refresh if either slot had an active MI in it.
-        dmr_refresh_algids_on_error(opts, state);
+    action = DMR_BS_ACTION_SKIP;
 
-        //failsafe to reset all data header and blocks when bad tact or emb
+HANDLE_ACTION:
+    if (action == DMR_BS_ACTION_SKIP) {
+        return run_dmr_bs_post_skip(opts, state, ctx);
+    }
+    if (action == DMR_BS_ACTION_END) {
+        return DMR_BS_ACTION_END;
+    }
+
+    return DMR_BS_ACTION_CONTINUE;
+}
+
+void
+dmrBS(dsd_opts* opts, dsd_state* state) {
+    dmr_bs_ctx ctx;
+    init_dmr_bs_ctx(state, &ctx);
+
+    DSD_SPRINTF(state->slot1light, " slot1 ");
+    DSD_SPRINTF(state->slot2light, " slot2 ");
+
+    state->color_code_ok = 0;
+    state->dmr_emb_err[0] = 0;
+    state->dmr_emb_err[1] = 0;
+
+    while (1) {
+        if (exitflag == 1) {
+            cleanupAndExit(opts, state);
+            break;
+        }
+        if (process_dmr_bs_iteration(opts, state, &ctx) == DMR_BS_ACTION_END) {
+            break;
+        }
+    }
+
+    finalize_dmr_bs(opts, state, &ctx);
+}
+
+//Process buffered half frame and 2nd half and then jump to full BS decoding
+void
+dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
+    dmr_bs_bootstrap_ctx ctx;
+    init_dmr_bs_bootstrap_ctx(&ctx);
+
+    seed_dmr_bs_bootstrap_payload(opts, state);
+
+    if (!decode_dmr_bs_bootstrap_cach_and_tact(state, &ctx)) {
+        goto END;
+    }
+
+    if (!collect_dmr_bs_bootstrap_prefetched_voice(state, &ctx)) {
+        goto END;
+    }
+
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr2, 90, 18, NULL);
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr3, 108, 36, NULL);
+
+    if (opts->use_dsp_output == 1) {
+        write_dmr_bs_dsp_output(opts, state, ctx.internalslot);
+    }
+
+    process_dmr_bs_bootstrap_voice_if_open(opts, state, &ctx);
+    dmrBS(opts, state);
+
+END:
+    if (ctx.tact_okay != 1 || ctx.sync_okay != 1) {
+        dmr_confidence_reset(state);
+        DSD_FPRINTF(stderr, "%s ", ctx.timestr);
+        DSD_FPRINTF(stderr, "Sync:  DMR                  ");
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, "| VOICE CACH/SYNC ERR");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        DSD_FPRINTF(stderr, "\n");
+        dmr_refresh_algids_on_error(opts, state);
         dmr_reset_blocks(opts, state);
     }
-
-    /* stack buffer; no free */
 }

@@ -11,30 +11,34 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
 bool
-SetFreq(int sockfd, long int freq) {
+SetFreq(int sockfd, long int freq) { // NOLINT(misc-use-internal-linkage)
     (void)sockfd;
     (void)freq;
     return false;
 }
 
 bool
-SetModulation(int sockfd, int bandwidth) {
+SetModulation(int sockfd, int bandwidth) { // NOLINT(misc-use-internal-linkage)
     (void)sockfd;
     (void)bandwidth;
     return false;
 }
-struct RtlSdrContext* g_rtl_ctx = 0;
+struct RtlSdrContext* g_rtl_ctx = 0; // NOLINT(misc-use-internal-linkage)
 
 int
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
+rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) { // NOLINT(misc-use-internal-linkage)
     (void)ctx;
     (void)center_freq_hz;
     return 0;
@@ -43,7 +47,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "%s: expected true\n", tag);
+        DSD_FPRINTF(stderr, "%s: expected true\n", tag);
         return 1;
     }
     return 0;
@@ -54,8 +58,8 @@ main(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     opts.p25_trunk = 1;
     st.p25_cc_freq = 851000000;
     // FDMA IDEN
@@ -100,3 +104,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

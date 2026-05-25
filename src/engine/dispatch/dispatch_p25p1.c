@@ -3,7 +3,6 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frame.h>
@@ -19,9 +18,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "protocol_dispatch_impl.h"
 
 static int
 p25p1_valid_observed_nac(unsigned long long nac) {
@@ -54,6 +54,379 @@ p25p1_llr_reliability(int16_t llr) {
     return (uint8_t)v;
 }
 
+static int
+p25p1_valid_decoded_nac(int nac) {
+    return nac != 0 && nac != 0xFFF;
+}
+
+static void
+p25p1_append_bch_bits(char bch_code[63], uint8_t bch_reliab[63], int* index_bch_code, int dibit,
+                      const dsd_dibit_soft_t* soft) {
+    bch_code[*index_bch_code] = 1 & (dibit >> 1);
+    bch_reliab[*index_bch_code] = p25p1_llr_reliability(soft->llr[0]);
+    (*index_bch_code)++;
+
+    bch_code[*index_bch_code] = 1 & dibit;
+    bch_reliab[*index_bch_code] = p25p1_llr_reliability(soft->llr[1]);
+    (*index_bch_code)++;
+}
+
+static void
+p25p1_read_nac_bits(dsd_opts* opts, dsd_state* state, char bch_code[63], uint8_t bch_reliab[63], int* index_bch_code) {
+    int i;
+    dsd_dibit_soft_t soft;
+
+    for (i = 0; i < 6; i++) {
+        int dibit = getDibitSoft(opts, state, &soft);
+        p25p1_append_bch_bits(bch_code, bch_reliab, index_bch_code, dibit, &soft);
+    }
+}
+
+static void
+p25p1_read_duid_bits(dsd_opts* opts, dsd_state* state, char duid[3], char bch_code[63], uint8_t bch_reliab[63],
+                     int* index_bch_code) {
+    int i;
+    dsd_dibit_soft_t soft;
+
+    for (i = 0; i < 2; i++) {
+        int dibit = getDibitSoft(opts, state, &soft);
+        duid[i] = (char)(dibit + '0');
+        p25p1_append_bch_bits(bch_code, bch_reliab, index_bch_code, dibit, &soft);
+    }
+}
+
+static void
+p25p1_read_bch_soft_dibits(dsd_opts* opts, dsd_state* state, char bch_code[63], uint8_t bch_reliab[63],
+                           int* index_bch_code, int dibit_count) {
+    int i;
+    dsd_dibit_soft_t soft;
+
+    for (i = 0; i < dibit_count; i++) {
+        int dibit = getDibitSoft(opts, state, &soft);
+        p25p1_append_bch_bits(bch_code, bch_reliab, index_bch_code, dibit, &soft);
+    }
+}
+
+static void
+p25p1_read_nid_fields(dsd_opts* opts, dsd_state* state, char duid[3], char bch_code[63], uint8_t bch_reliab[63],
+                      unsigned char* parity, uint8_t* parity_reliab) {
+    int index_bch_code = 0;
+    int dibit;
+    uint8_t rel;
+    dsd_dibit_soft_t soft;
+
+    p25p1_read_nac_bits(opts, state, bch_code, bch_reliab, &index_bch_code);
+    p25p1_read_duid_bits(opts, state, duid, bch_code, bch_reliab, &index_bch_code);
+    p25p1_read_bch_soft_dibits(opts, state, bch_code, bch_reliab, &index_bch_code, 3);
+
+    dibit = getDibitWithReliability(opts, state, &rel);
+    p25_status_accum_add(state, dibit);
+
+    p25p1_read_bch_soft_dibits(opts, state, bch_code, bch_reliab, &index_bch_code, 20);
+
+    dibit = getDibitSoft(opts, state, &soft);
+    bch_code[index_bch_code] = 1 & (dibit >> 1);
+    bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[0]);
+    *parity = (unsigned char)(1 & dibit);
+    *parity_reliab = p25p1_llr_reliability(soft.llr[1]);
+}
+
+static void
+p25p1_apply_nac_update(dsd_state* state, int new_nac) {
+    int valid_nac = p25p1_valid_decoded_nac(new_nac);
+
+    if (new_nac != state->nac) {
+        if (valid_nac) {
+            state->nac = new_nac;
+        }
+        if (state->p2_hardset == 0 && valid_nac) {
+            state->p2_cc = (unsigned long long)new_nac;
+        }
+        state->debug_header_errors++;
+    }
+}
+
+static void
+p25p1_apply_duid_update(dsd_state* state, char duid[3], const char new_duid[3]) {
+    if (strcmp(new_duid, duid) != 0) {
+        duid[0] = new_duid[0];
+        duid[1] = new_duid[1];
+        state->debug_header_errors++;
+    }
+}
+
+static void
+p25p1_handle_nid_decode_success(const dsd_opts* opts, dsd_state* state, char duid[3], int check_result, int error_count,
+                                int new_nac, const char new_duid[3]) {
+    if (error_count > 0) {
+        state->nid_corrections_total += (unsigned int)error_count;
+    }
+    if (check_result == NID_PARITY_OVERRIDE) {
+        state->nid_parity_overrides++;
+        if (opts->verbose > 1) {
+            DSD_FPRINTF(stderr, " [NID parity override, %d corrections]", error_count);
+        }
+    }
+
+    p25p1_apply_nac_update(state, new_nac);
+    p25p1_apply_duid_update(state, duid, new_duid);
+}
+
+static void
+p25p1_handle_nid_decode_failure(const dsd_opts* opts, dsd_state* state, char duid[3], int check_result) {
+    state->nid_failures_total++;
+
+    if (check_result == NID_PARITY_MISMATCH && opts->verbose > 0) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " NID PARITY MISMATCH ");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+
+    duid[0] = 'E';
+    duid[1] = 'E';
+    state->debug_header_critical_errors++;
+}
+
+static void
+p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state, char duid[3]) {
+    char bch_code[63];
+    uint8_t bch_reliab[63];
+    unsigned char parity;
+    uint8_t parity_reliab;
+    int new_nac;
+    char new_duid[3];
+    int check_result;
+    int error_count = 0;
+    int observed_nac;
+
+    duid[2] = 0;
+    p25p1_read_nid_fields(opts, state, duid, bch_code, bch_reliab, &parity, &parity_reliab);
+
+    observed_nac = p25p1_observed_nac(state);
+    check_result = check_NID_with_observed_nac_soft(bch_code, bch_reliab, observed_nac, &new_nac, new_duid, parity,
+                                                    parity_reliab, &error_count);
+    if (check_result > 0) {
+        p25p1_handle_nid_decode_success(opts, state, duid, check_result, error_count, new_nac, new_duid);
+    } else {
+        p25p1_handle_nid_decode_failure(opts, state, duid, check_result);
+    }
+}
+
+static void
+p25p1_open_mbe_out_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (opts->mbe_out_f == NULL) {
+        openMbeOutFile(opts, state);
+    }
+}
+
+static void
+p25p1_close_mbe_out_if_open(dsd_opts* opts, dsd_state* state) {
+    if (opts->mbe_out_f != NULL) {
+        closeMbeOutFile(opts, state);
+    }
+}
+
+static void
+p25p1_close_mbe_out_pair_if_open(dsd_opts* opts, dsd_state* state) {
+    if (opts->mbe_out_f != NULL) {
+        closeMbeOutFile(opts, state);
+    }
+    if (opts->mbe_out_fR != NULL) {
+        closeMbeOutFileR(opts, state);
+    }
+}
+
+static void
+p25p1_clear_call_termination_gps(dsd_state* state) {
+    state->dmr_embedded_gps[0][0] = '\0';
+    state->dmr_lrrp_gps[0][0] = '\0';
+}
+
+static void
+p25p1_handle_hdu(dsd_opts* opts, dsd_state* state) {
+    if (opts->errorbars == 1) {
+        printFrameInfo(opts, state);
+        DSD_FPRINTF(stderr, " HDU\n");
+    }
+    if (opts->mbe_out_dir[0] != 0) {
+        p25p1_close_mbe_out_if_open(opts, state);
+        p25p1_open_mbe_out_if_needed(opts, state);
+    }
+
+    mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
+    state->lastp25type = 2;
+    state->dmrburstL = 25;
+    state->currentslot = 0;
+    DSD_SPRINTF(state->fsubtype, " HDU          ");
+    processHDU(opts, state);
+}
+
+static void
+p25p1_handle_ldu1(dsd_opts* opts, dsd_state* state) {
+    if (opts->errorbars == 1) {
+        printFrameInfo(opts, state);
+        DSD_FPRINTF(stderr, " LDU1  ");
+    }
+    if (opts->mbe_out_dir[0] != 0) {
+        p25p1_open_mbe_out_if_needed(opts, state);
+    }
+
+    state->lastp25type = 1;
+    state->dmrburstL = 26;
+    state->currentslot = 0;
+    DSD_SPRINTF(state->fsubtype, " LDU1         ");
+    state->numtdulc = 0;
+    processLDU1(opts, state);
+}
+
+static void
+p25p1_handle_ldu2(dsd_opts* opts, dsd_state* state) {
+    state->dmrburstL = 27;
+    state->currentslot = 0;
+
+    if (opts->errorbars == 1) {
+        printFrameInfo(opts, state);
+        if (state->lastp25type != 1) {
+            DSD_FPRINTF(stderr, " LDU2 (late entry)  ");
+        } else {
+            DSD_FPRINTF(stderr, " LDU2  ");
+        }
+    }
+    if (opts->mbe_out_dir[0] != 0) {
+        p25p1_open_mbe_out_if_needed(opts, state);
+    }
+
+    state->lastp25type = 2;
+    DSD_SPRINTF(state->fsubtype, " LDU2         ");
+    state->numtdulc = 0;
+    processLDU2(opts, state);
+}
+
+static void
+p25p1_handle_tdulc(dsd_opts* opts, dsd_state* state) {
+    state->dmrburstL = 28;
+
+    if (opts->errorbars == 1) {
+        printFrameInfo(opts, state);
+        DSD_FPRINTF(stderr, " TDULC\n");
+    }
+    if (opts->mbe_out_dir[0] != 0) {
+        p25p1_close_mbe_out_if_open(opts, state);
+    }
+
+    mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
+    state->lastp25type = 0;
+    state->err_str[0] = 0;
+    DSD_SPRINTF(state->fsubtype, " TDULC        ");
+    p25p1_clear_call_termination_gps(state);
+    state->numtdulc++;
+
+    if ((opts->resume > 0) && (state->numtdulc > opts->resume)) {
+        resumeScan(opts, state);
+    }
+    processTDULC(opts, state);
+    state->err_str[0] = 0;
+}
+
+static void
+p25p1_handle_tdu(dsd_opts* opts, dsd_state* state) {
+    state->dmrburstL = 28;
+
+    if (opts->errorbars == 1) {
+        printFrameInfo(opts, state);
+        DSD_FPRINTF(stderr, " TDU\n");
+    }
+    if (opts->mbe_out_dir[0] != 0) {
+        p25p1_close_mbe_out_if_open(opts, state);
+    }
+
+    mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
+    state->lasttg = 0;
+    state->lastsrc = 0;
+    state->lastp25type = 0;
+    state->err_str[0] = 0;
+    DSD_SPRINTF(state->fsubtype, " TDU          ");
+    p25p1_clear_call_termination_gps(state);
+    processTDU(opts, state);
+}
+
+static void
+p25p1_handle_tsbk(dsd_opts* opts, dsd_state* state) {
+    state->dmrburstL = 29;
+
+    if (opts->errorbars == 1) {
+        printFrameInfo(opts, state);
+        DSD_FPRINTF(stderr, " TSBK");
+    }
+    if (opts->mbe_out_dir[0] != 0) {
+        p25p1_close_mbe_out_pair_if_open(opts, state);
+    }
+    if (opts->resume > 0) {
+        resumeScan(opts, state);
+    }
+
+    state->lasttg = 0;
+    state->lastsrc = 0;
+    state->lastp25type = 3;
+    DSD_SPRINTF(state->fsubtype, " TSBK         ");
+    processTSBK(opts, state);
+}
+
+static void
+p25p1_handle_mpdu(dsd_opts* opts, dsd_state* state) {
+    state->dmrburstL = 29;
+
+    if (opts->errorbars == 1) {
+        printFrameInfo(opts, state);
+        DSD_FPRINTF(stderr, " MPDU\n");
+    }
+    if (opts->mbe_out_dir[0] != 0) {
+        p25p1_close_mbe_out_pair_if_open(opts, state);
+    }
+    if (opts->resume > 0) {
+        resumeScan(opts, state);
+    }
+
+    state->lastp25type = 4;
+    DSD_SPRINTF(state->fsubtype, " MPDU         ");
+    processMPDU(opts, state);
+}
+
+static void
+p25p1_handle_unknown_duid(dsd_opts* opts, dsd_state* state, const char duid[3]) {
+    state->lastp25type = 0;
+    DSD_SPRINTF(state->fsubtype, "              ");
+
+    if (opts->errorbars == 1) {
+        printFrameInfo(opts, state);
+        DSD_FPRINTF(stderr, " duid:%s \n", duid);
+    }
+
+    p25_status_accum_reset(state);
+    p25_status_accum_classify(state, opts);
+}
+
+static void
+p25p1_dispatch_by_duid(dsd_opts* opts, dsd_state* state, const char duid[3]) {
+    if (strcmp(duid, "00") == 0) {
+        p25p1_handle_hdu(opts, state);
+    } else if (strcmp(duid, "11") == 0) {
+        p25p1_handle_ldu1(opts, state);
+    } else if (strcmp(duid, "22") == 0) {
+        p25p1_handle_ldu2(opts, state);
+    } else if (strcmp(duid, "33") == 0) {
+        p25p1_handle_tdulc(opts, state);
+    } else if (strcmp(duid, "03") == 0) {
+        p25p1_handle_tdu(opts, state);
+    } else if (strcmp(duid, "13") == 0) {
+        p25p1_handle_tsbk(opts, state);
+    } else if (strcmp(duid, "30") == 0) {
+        p25p1_handle_mpdu(opts, state);
+    } else {
+        p25p1_handle_unknown_duid(opts, state, duid);
+    }
+}
+
 int
 dsd_dispatch_matches_p25p1(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype);
@@ -61,331 +434,9 @@ dsd_dispatch_matches_p25p1(int synctype) {
 
 void
 dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
-
-    int i, j, dibit;
     char duid[3];
-    char nac[13];
-    UNUSED(nac);
-
-    char bch_code[63];
-    uint8_t bch_reliab[63];
-    int index_bch_code;
-    unsigned char parity;
-    uint8_t rel;
-    uint8_t parity_reliab;
-    char v;
-    int new_nac;
-    char new_duid[3];
-    int check_result;
-    int error_count = 0;
-    int observed_nac;
-    dsd_dibit_soft_t soft;
-
-    nac[12] = 0;
-    duid[2] = 0;
 
     p25_status_accum_reset(state);
-
-    // Read the NAC, 12 bits
-    j = 0;
-    index_bch_code = 0;
-    for (i = 0; i < 6; i++) {
-        dibit = getDibitSoft(opts, state, &soft);
-
-        v = 1 & (dibit >> 1); // bit 1
-        nac[j] = v + '0';
-        j++;
-        bch_code[index_bch_code] = v;
-        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[0]);
-        index_bch_code++;
-
-        v = 1 & dibit; // bit 0
-        nac[j] = v + '0';
-        j++;
-        bch_code[index_bch_code] = v;
-        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[1]);
-        index_bch_code++;
-    }
-    //this one setting bogus nac data
-    // state->nac = strtol (nac, NULL, 2);
-
-    // Read the DUID, 4 bits
-    for (i = 0; i < 2; i++) {
-        dibit = getDibitSoft(opts, state, &soft);
-        duid[i] = dibit + '0';
-
-        bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
-        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[0]);
-        index_bch_code++;
-        bch_code[index_bch_code] = 1 & dibit; // bit 0
-        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[1]);
-        index_bch_code++;
-    }
-
-    // Read the BCH data for error correction of NAC and DUID
-    for (i = 0; i < 3; i++) {
-        dibit = getDibitSoft(opts, state, &soft);
-
-        bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
-        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[0]);
-        index_bch_code++;
-        bch_code[index_bch_code] = 1 & dibit; // bit 0
-        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[1]);
-        index_bch_code++;
-    }
-    // Intermission: read and record the status dibit embedded in the NID.
-    dibit = getDibitWithReliability(opts, state, &rel);
-    p25_status_accum_add(state, dibit);
-    // ... continue reading the BCH error correction data
-    for (i = 0; i < 20; i++) {
-        dibit = getDibitSoft(opts, state, &soft);
-
-        bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
-        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[0]);
-        index_bch_code++;
-        bch_code[index_bch_code] = 1 & dibit; // bit 0
-        bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[1]);
-        index_bch_code++;
-    }
-
-    // Read the parity bit
-    dibit = getDibitSoft(opts, state, &soft);
-    bch_code[index_bch_code] = 1 & (dibit >> 1); // bit 1
-    bch_reliab[index_bch_code] = p25p1_llr_reliability(soft.llr[0]);
-    parity = (1 & dibit); // bit 0
-    parity_reliab = p25p1_llr_reliability(soft.llr[1]);
-
-    // Decode and validate the NID using full BCH(63,16,23) correction.
-    // check_NID_with_observed_nac returns NID_OK (1) or NID_PARITY_OVERRIDE (2)
-    // on success, NID_DECODE_FAIL (0) on failure.
-    // error_count receives the number of BCH bit errors corrected (0-11).
-    observed_nac = p25p1_observed_nac(state);
-    check_result = check_NID_with_observed_nac_soft(bch_code, bch_reliab, observed_nac, &new_nac, new_duid, parity,
-                                                    parity_reliab, &error_count);
-    if (check_result > 0) {
-        // NID_OK (1) or NID_PARITY_OVERRIDE (2) - frame accepted
-
-        // Track cumulative BCH corrections for diagnostics
-        if (error_count > 0) {
-            state->nid_corrections_total += (unsigned int)error_count;
-        }
-
-        // Track parity overrides - these indicate that the final parity bit
-        // disagreed even though the BCH-protected NID decoded cleanly.
-        if (check_result == NID_PARITY_OVERRIDE) {
-            state->nid_parity_overrides++;
-            if (opts->verbose > 1) {
-                fprintf(stderr, " [NID parity override, %d corrections]", error_count);
-            }
-        }
-
-        if (new_nac != state->nac) {
-            // Guard against BCH artifacts: 0x0 and 0xFFF are known-invalid NAC
-            // values produced during signal drops or HDU FEC errors. Don't
-            // overwrite a known-good NAC with these transient values — the next
-            // valid frame (typically LDU2) will carry the correct NAC.
-            if (new_nac != 0 && new_nac != 0xFFF) {
-                state->nac = new_nac;
-            }
-            //apparently, both 0 and 0xFFF can the BCH code on signal drop
-            if (state->p2_hardset == 0 && new_nac != 0 && new_nac != 0xFFF) {
-                state->p2_cc = new_nac;
-            }
-            state->debug_header_errors++;
-        }
-        if (strcmp(new_duid, duid) != 0) {
-            // DUID fixed by error correction
-            //fprintf (stderr,"Fixing DUID %s -> %s\n", duid, new_duid);
-            duid[0] = new_duid[0];
-            duid[1] = new_duid[1];
-            state->debug_header_errors++;
-        }
-    } else {
-        // NID_DECODE_FAIL (0) or NID_PARITY_MISMATCH (-1) - frame rejected
-        state->nid_failures_total++;
-
-        if (check_result == NID_PARITY_MISMATCH && opts->verbose > 0) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " NID PARITY MISMATCH ");
-            fprintf(stderr, "%s", KNRM);
-        }
-        // Unable to recover NID - mark DUID as error
-        duid[0] = 'E';
-        duid[1] = 'E';
-        state->debug_header_critical_errors++;
-    }
-
-    if (strcmp(duid, "00") == 0) {
-        // Header Data Unit
-        if (opts->errorbars == 1) {
-            printFrameInfo(opts, state);
-            fprintf(stderr, " HDU\n");
-        }
-        if (opts->mbe_out_dir[0] != 0) {
-            if (opts->mbe_out_f != NULL) {
-                closeMbeOutFile(opts, state);
-            }
-            if (opts->mbe_out_f == NULL) {
-                openMbeOutFile(opts, state);
-            }
-        }
-        mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
-        state->lastp25type = 2;
-        state->dmrburstL = 25;
-        state->currentslot = 0;
-        sprintf(state->fsubtype, " HDU          ");
-        processHDU(opts, state);
-    } else if (strcmp(duid, "11") == 0) {
-        // Logical Link Data Unit 1
-        if (opts->errorbars == 1) {
-            printFrameInfo(opts, state);
-            fprintf(stderr, " LDU1  ");
-        }
-        if (opts->mbe_out_dir[0] != 0) {
-            if (opts->mbe_out_f == NULL) {
-                openMbeOutFile(opts, state);
-            }
-        }
-        state->lastp25type = 1;
-        state->dmrburstL = 26;
-        state->currentslot = 0;
-        sprintf(state->fsubtype, " LDU1         ");
-        state->numtdulc = 0;
-
-        processLDU1(opts, state);
-    } else if (strcmp(duid, "22") == 0) {
-        // Logical Link Data Unit 2
-        state->dmrburstL = 27;
-        state->currentslot = 0;
-        if (opts->errorbars == 1) {
-            printFrameInfo(opts, state);
-            if (state->lastp25type != 1) {
-                // Late entry: short calls or mid-call tuning can land on an
-                // LDU2 first. Decode it anyway so voice isn't lost.
-                fprintf(stderr, " LDU2 (late entry)  ");
-            } else {
-                fprintf(stderr, " LDU2  ");
-            }
-        }
-        if (opts->mbe_out_dir[0] != 0) {
-            if (opts->mbe_out_f == NULL) {
-                openMbeOutFile(opts, state);
-            }
-        }
-        state->lastp25type = 2;
-        sprintf(state->fsubtype, " LDU2         ");
-        state->numtdulc = 0;
-        processLDU2(opts, state);
-    } else if (strcmp(duid, "33") == 0) {
-        // Terminator with subsequent Link Control
-        state->dmrburstL = 28;
-        if (opts->errorbars == 1) {
-            printFrameInfo(opts, state);
-            fprintf(stderr, " TDULC\n");
-        }
-        if (opts->mbe_out_dir[0] != 0) {
-            if (opts->mbe_out_f != NULL) {
-                closeMbeOutFile(opts, state);
-            }
-        }
-        mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
-        // state->lasttg = 0;
-        // state->lastsrc = 0;
-        state->lastp25type = 0;
-        state->err_str[0] = 0;
-        sprintf(state->fsubtype, " TDULC        ");
-        // Clear GPS data on call termination
-        state->dmr_embedded_gps[0][0] = '\0';
-        state->dmr_lrrp_gps[0][0] = '\0';
-        state->numtdulc++;
-        if ((opts->resume > 0) && (state->numtdulc > opts->resume)) {
-            resumeScan(opts, state);
-        }
-        processTDULC(opts, state);
-        state->err_str[0] = 0;
-    } else if (strcmp(duid, "03") == 0) {
-        // Terminator without subsequent Link Control
-        state->dmrburstL = 28;
-        if (opts->errorbars == 1) {
-            printFrameInfo(opts, state);
-            fprintf(stderr, " TDU\n");
-        }
-        if (opts->mbe_out_dir[0] != 0) {
-            if (opts->mbe_out_f != NULL) {
-                closeMbeOutFile(opts, state);
-            }
-        }
-        mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
-        state->lasttg = 0;
-        state->lastsrc = 0;
-        state->lastp25type = 0;
-        state->err_str[0] = 0;
-        sprintf(state->fsubtype, " TDU          ");
-        // Clear GPS data on call termination
-        state->dmr_embedded_gps[0][0] = '\0';
-        state->dmr_lrrp_gps[0][0] = '\0';
-
-        processTDU(opts, state);
-    } else if (strcmp(duid, "13") == 0) {
-        state->dmrburstL = 29;
-        if (opts->errorbars == 1) {
-            printFrameInfo(opts, state);
-            fprintf(stderr, " TSBK");
-        }
-        if (opts->mbe_out_dir[0] != 0) {
-            if (opts->mbe_out_f != NULL) {
-                closeMbeOutFile(opts, state);
-            }
-            if (opts->mbe_out_fR != NULL) {
-                closeMbeOutFileR(opts, state);
-            }
-        }
-        if (opts->resume > 0) {
-            resumeScan(opts, state);
-        }
-        state->lasttg = 0;
-        state->lastsrc = 0;
-        state->lastp25type = 3;
-        sprintf(state->fsubtype, " TSBK         ");
-
-        processTSBK(opts, state);
-
-    } else if (strcmp(duid, "30") == 0) {
-        state->dmrburstL = 29;
-        if (opts->errorbars == 1) {
-            printFrameInfo(opts, state);
-            fprintf(stderr, " MPDU\n"); //multi block format PDU
-        }
-        if (opts->mbe_out_dir[0] != 0) {
-            if (opts->mbe_out_f != NULL) {
-                closeMbeOutFile(opts, state);
-            }
-            if (opts->mbe_out_fR != NULL) {
-                closeMbeOutFileR(opts, state);
-            }
-        }
-        if (opts->resume > 0) {
-            resumeScan(opts, state);
-        }
-        state->lastp25type = 4;
-        sprintf(state->fsubtype, " MPDU         ");
-
-        processMPDU(opts, state);
-    }
-
-    else {
-        state->lastp25type = 0;
-        sprintf(state->fsubtype, "              ");
-        if (opts->errorbars == 1) {
-            printFrameInfo(opts, state);
-            // fprintf (stderr," duid:%s *Unknown DUID*\n", duid);
-            fprintf(stderr, " duid:%s \n", duid); //DUID ERR
-        }
-        /*
-         * The DUID was not actionable, so do not let a possibly false or
-         * unsupported P25 frame leave the opt-in AFC gate open by omission.
-         */
-        p25_status_accum_reset(state);
-        p25_status_accum_classify(state, opts);
-    }
+    p25p1_decode_nid_and_duid(opts, state, duid);
+    p25p1_dispatch_by_duid(opts, state, duid);
 }

@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_SNDFILE_FWD_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_SNDFILE_FWD_H_H
 
 /**
  * @file
@@ -24,3 +25,5 @@ typedef struct SF_INFO SF_INFO;
 typedef struct sf_private_tag SNDFILE;
 typedef struct SF_INFO SF_INFO;
 #endif /* defined(__has_include) */
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_SNDFILE_FWD_H_H */

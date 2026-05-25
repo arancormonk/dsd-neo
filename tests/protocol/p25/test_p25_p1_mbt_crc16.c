@@ -12,9 +12,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-/* Bridge to the CRC16 implementation in p25_crc.c */
 int crc16_lb_bridge(const int* payload, int len);
 
 /*
@@ -71,7 +70,7 @@ bytes_to_bits(const uint8_t* bytes, int nbytes, int* bits) {
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL %s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "FAIL %s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -93,13 +92,13 @@ main(void) {
 
             make_valid_vector(seeds[s], bits);
 
-            snprintf(tag, sizeof(tag), "crc16_valid_seed_%04X", (unsigned)seeds[s]);
+            DSD_SNPRINTF(tag, sizeof(tag), "crc16_valid_seed_%04X", (unsigned)seeds[s]);
             rc |= expect_eq_int(tag, crc16_lb_bridge(bits, 80), 0);
 
             int tamper_pos = (s * 7) % 80;
             bits[tamper_pos] ^= 1;
 
-            snprintf(tag, sizeof(tag), "crc16_tamper_seed_%04X_bit%d", (unsigned)seeds[s], tamper_pos);
+            DSD_SNPRINTF(tag, sizeof(tag), "crc16_tamper_seed_%04X_bit%d", (unsigned)seeds[s], tamper_pos);
             rc |= expect_eq_int(tag, (crc16_lb_bridge(bits, 80) != 0) ? 1 : 0, 1);
         }
     }
@@ -112,9 +111,9 @@ main(void) {
         make_valid_vector(0xBEEF, original);
 
         int rep0[96], rep1[96], rep2[96], voted[96];
-        memcpy(rep0, original, sizeof(original));
-        memcpy(rep1, original, sizeof(original));
-        memcpy(rep2, original, sizeof(original));
+        DSD_MEMCPY(rep0, original, sizeof(original));
+        DSD_MEMCPY(rep1, original, sizeof(original));
+        DSD_MEMCPY(rep2, original, sizeof(original));
 
         majority_vote_3(rep0, rep1, rep2, voted);
         rc |= expect_eq_int("tsbk_3rep_identical_crc16", crc16_lb_bridge(voted, 80), 0);
@@ -128,9 +127,9 @@ main(void) {
         make_valid_vector(0xCAFE, original);
 
         int rep0[96], rep1[96], rep2[96], voted[96];
-        memcpy(rep0, original, sizeof(original));
-        memcpy(rep1, original, sizeof(original));
-        memcpy(rep2, original, sizeof(original));
+        DSD_MEMCPY(rep0, original, sizeof(original));
+        DSD_MEMCPY(rep1, original, sizeof(original));
+        DSD_MEMCPY(rep2, original, sizeof(original));
 
         rep2[10] ^= 1;
         rep2[25] ^= 1;
@@ -168,7 +167,7 @@ main(void) {
             }
 
             char tag[64];
-            snprintf(tag, sizeof(tag), "end_calc_%s", cases[c].label);
+            DSD_SNPRINTF(tag, sizeof(tag), "end_calc_%s", cases[c].label);
             rc |= expect_eq_int(tag, end, cases[c].expected_end);
         }
     }
@@ -196,12 +195,12 @@ main(void) {
             uint8_t fmt = mbt_hdr_vectors[v][0] & 0x1F;
             uint8_t opcode = mbt_hdr_vectors[v][7] & 0x3F;
 
-            fprintf(stderr, "field_vector_%d: FMT=0x%02X OP=0x%02X CRC16=%s\n", v, fmt, opcode,
-                    (crc_result == 0) ? "PASS" : "FAIL");
+            DSD_FPRINTF(stderr, "field_vector_%d: FMT=0x%02X OP=0x%02X CRC16=%s\n", v, fmt, opcode,
+                        (crc_result == 0) ? "PASS" : "FAIL");
 
             /* Hypothesis: try 64-bit CRC field range */
             int crc_64 = crc16_lb_bridge(bits, 64);
-            fprintf(stderr, "  64-bit range: %s\n", (crc_64 == 0) ? "PASS" : "FAIL");
+            DSD_FPRINTF(stderr, "  64-bit range: %s\n", (crc_64 == 0) ? "PASS" : "FAIL");
 
             /* Hypothesis: try reversed bit order within each byte */
             int rbits[96];
@@ -216,12 +215,12 @@ main(void) {
                 }
             }
             int crc_rev = crc16_lb_bridge(rbits, 80);
-            fprintf(stderr, "  reversed bits: %s\n", (crc_rev == 0) ? "PASS" : "FAIL");
+            DSD_FPRINTF(stderr, "  reversed bits: %s\n", (crc_rev == 0) ? "PASS" : "FAIL");
         }
     }
 
     if (rc == 0) {
-        fprintf(stderr, "P25 MBT CRC16: all tests passed\n");
+        DSD_FPRINTF(stderr, "P25 MBT CRC16: all tests passed\n");
     }
     return rc;
 }

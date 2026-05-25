@@ -23,16 +23,20 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_p25_display.h>
+#include <dsd-neo/ui/ncurses_snr.h>
 #include <dsd-neo/ui/ncurses_trunk_display.h>
+#include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_history.h>
@@ -40,20 +44,14 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#ifdef USE_RADIO
-#include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/ui/keymap.h>
-#include <dsd-neo/ui/ncurses_snr.h>
-#include <dsd-neo/ui/ncurses_visualizers.h>
-#endif
 
-extern unsigned long long int edacs_channel_tree[33][6];
+#ifdef USE_RADIO
+#endif
 
 static int
 ui_lookup_group_label(const dsd_state* state, unsigned long id, char* mode, size_t mode_sz, char* name,
@@ -136,7 +134,7 @@ ui_audio_in_is_soapy(const dsd_opts* opts) {
 
 static int
 ui_demod_symbol_rate_hz(const dsd_opts* opts, const dsd_state* state) {
-    int sample_rate_hz = 0;
+    int sample_rate_hz = dsd_opts_current_input_timing_rate(opts);
 
 #ifdef USE_RADIO
     if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
@@ -154,9 +152,6 @@ ui_demod_symbol_rate_hz(const dsd_opts* opts, const dsd_state* state) {
 #endif
 
     if (sample_rate_hz <= 0) {
-        sample_rate_hz = dsd_opts_current_input_timing_rate(opts);
-    }
-    if (sample_rate_hz <= 0) {
         sample_rate_hz = 48000;
     }
 
@@ -166,7 +161,7 @@ ui_demod_symbol_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     return (sample_rate_hz + (state->samplesPerSymbol / 2)) / state->samplesPerSymbol;
 }
 
-char* DMRBusrtTypes[32] = {
+static const char* DMRBusrtTypes[32] = {
     "PI       ", "VLC      ", "TLC      ", "CSBK     ", "MBCH     ", "MBCC     ", "DATA     ",
     "R12D     ", "R34D     ", "IDLE     ", "R1_D     ", "ERR      ", "DUID ERR ", "R-S ERR  ",
     "CRC ERR  ", "NULL     ", "VOICE",     "         ", "INIT     ", "INIT     ",
@@ -197,26 +192,11 @@ ui_draw_frame(dsd_opts* opts, dsd_state* state) {
        moved here in a follow-up to keep behavior identical. */
 }
 
-void
-ncursesPrinter(dsd_opts* opts, dsd_state* state) {
-    /* Guard against null opts. Without opts we cannot render safely. */
-    if (!opts) {
+static void
+ui_update_sync_and_edacs_tree(const dsd_state* state) {
+    if (state == NULL) {
         return;
     }
-    /* Demod path must not touch ncurses. Allow calls only from the UI thread
-       context; otherwise publish snapshots and request a redraw. */
-    if (!ui_is_thread_context()) {
-        // Publish snapshots for the UI thread to consume and request a redraw
-        ui_publish_both_and_redraw(opts, state);
-        return;
-    }
-    uint8_t idas = 0;
-    int level = 0;
-    int i = 0;
-
-    // Defer overlay drawing to the end so it stays on top.
-
-    //Variable reset/set section
 
     //set lls sync types
     if (state->synctype != DSD_SYNC_NONE) {
@@ -248,16 +228,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             edacs_channel_tree[state->edacs_vc_lcn][5] = time(NULL);
         }
     }
+}
 
-    //Start Printing Section (render factored function placeholder)
-    ui_draw_frame(opts, state);
-    erase();
-    ui_panel_header_render(opts, state);
-    if (state) {
-        ui_panel_footer_status_render(opts, state);
-    }
-
-    ui_print_header("Input Output");
+static void
+ui_render_basic_input_sources(dsd_opts* opts) {
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
         printw("| Pulse Signal Input:  %i kHz; %i Ch; ", opts->pulse_digi_rate_in / 1000, opts->pulse_digi_in_channels);
         if (opts->pa_input_idx[0] != 0) {
@@ -312,9 +286,83 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     if (opts->audio_in_type == AUDIO_IN_STDIN) {
         printw("| STDIN Standard Input: - Menu Disabled when using STDIN!\n");
-        // printw ("| NCURSES Menu Disabled when using STDIN! - Use CTRL + C to Close. \n");
     }
+}
 
+static void
+ui_print_rtl_gain_field(dsd_opts* opts) {
+#ifndef USE_RADIO
+    if (opts->rtl_gain_value == 0) {
+        printw(" G: AGC;");
+    } else {
+        printw(" G: %idB;", opts->rtl_gain_value);
+    }
+    return;
+#else
+    /* Show applied tuner gain when available (actual driver value),
+       otherwise fall back to requested value. */
+    int g10 = 0, is_auto = 1;
+    int have = 0;
+    if (rtl_stream_get_gain(&g10, &is_auto) == 0) {
+        have = 1;
+    }
+    if (have) {
+        if (is_auto) {
+            printw(" G: AGC;");
+        } else {
+            int gdB = (g10 >= 0) ? (g10 + 5) / 10 : (g10 - 5) / 10;
+            printw(" G: %idB;", gdB);
+        }
+    } else {
+        if (opts->rtl_gain_value == 0) {
+            printw(" G: AGC;");
+        } else {
+            printw(" G: %idB;", opts->rtl_gain_value);
+        }
+    }
+#endif
+}
+
+static void
+ui_print_rtl_ppm_field(const dsd_opts* opts) {
+    int requested_ppm = 0;
+#ifdef USE_RADIO
+    requested_ppm = rtl_stream_get_requested_ppm(opts);
+#else
+    requested_ppm = opts->rtlsdr_ppm_error;
+#endif
+    printw(" PPM: %i;", requested_ppm); //Adjust manually now with { and }
+}
+
+static void
+ui_print_rtl_auto_ppm_status(void) {
+#ifndef USE_RADIO
+    printw("\n| Auto PPM: Off");
+#else
+    /* Show carrier/error-based auto PPM status snapshot */
+    int ap_en = 0, ap_dir = 0, ap_locked = 0;
+    double ap_snr = -100.0, ap_df = 0.0;
+    (void)rtl_stream_auto_ppm_get_status(&ap_en, &ap_snr, &ap_df, NULL, &ap_dir, NULL, &ap_locked);
+    if (!ap_en) {
+        printw("\n| Auto PPM: Off");
+    } else if (ap_locked) {
+        int lppm = 0;
+        double lsnr = -100.0, ldf = 0.0;
+        (void)rtl_stream_auto_ppm_get_lock(&lppm, &lsnr, &ldf);
+        (void)lsnr;
+        (void)ldf;
+        printw("\n| Auto PPM: Locked (PPM: %d)", lppm);
+    } else {
+        printw("\n| Auto PPM: On; SNR: %.1f dB; df: %.1f Hz; step: %s;", ap_snr, ap_df,
+               (ap_dir > 0)   ? "+1"
+               : (ap_dir < 0) ? "-1"
+                              : "hold");
+    }
+#endif
+}
+
+static void
+ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         int soapy_input = ui_audio_in_is_soapy(opts);
         if (soapy_input) {
@@ -326,74 +374,14 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw("| RTL: %d;", opts->rtl_dev_index);
         }
-        /* Show applied tuner gain when available (actual driver value),
-           otherwise fall back to requested value. */
-        {
-            int g10 = 0, is_auto = 1;
-            int have = 0;
-#ifdef USE_RADIO
-            /* Header is already included indirectly via other UI modules. */
-            extern int rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
-            if (rtl_stream_get_gain(&g10, &is_auto) == 0) {
-                have = 1;
-            }
-#endif
-            if (have) {
-                if (is_auto) {
-                    printw(" G: AGC;");
-                } else {
-                    int gdB = (g10 >= 0) ? (g10 + 5) / 10 : (g10 - 5) / 10;
-                    printw(" G: %idB;", gdB);
-                }
-            } else {
-                if (opts->rtl_gain_value == 0) {
-                    printw(" G: AGC;");
-                } else {
-                    printw(" G: %idB;", opts->rtl_gain_value);
-                }
-            }
-        }
+        ui_print_rtl_gain_field(opts);
         printw(" Mon: %iX;", opts->rtl_volume_multiplier);
-        {
-            int requested_ppm = 0;
-#ifdef USE_RADIO
-            requested_ppm = rtl_stream_get_requested_ppm(opts);
-#else
-            requested_ppm = opts->rtlsdr_ppm_error;
-#endif
-            printw(" PPM: %i;", requested_ppm); //Adjust manually now with { and }
-        }
+        ui_print_rtl_ppm_field(opts);
         printw(" SQL: %.1f dB;", pwr_to_dB(opts->rtl_squelch_level));
         printw(" PWR: %.1f dB;", pwr_to_dB(opts->rtl_pwr));
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
-        /* Show carrier/error-based auto PPM status snapshot */
-        {
-            int ap_en = 0, ap_dir = 0, ap_locked = 0;
-            double ap_snr = -100.0, ap_df = 0.0;
-#ifdef USE_RADIO
-            extern int rtl_stream_auto_ppm_get_status(int*, double*, double*, double*, int*, int*, int*);
-            (void)rtl_stream_auto_ppm_get_status(&ap_en, &ap_snr, &ap_df, NULL, &ap_dir, NULL, &ap_locked);
-#endif
-            if (!ap_en) {
-                printw("\n| Auto PPM: Off");
-            } else if (ap_locked) {
-                int lppm = 0;
-                double lsnr = -100.0, ldf = 0.0;
-#ifdef USE_RADIO
-                extern int rtl_stream_auto_ppm_get_lock(int*, double*, double*);
-                (void)rtl_stream_auto_ppm_get_lock(&lppm, &lsnr, &ldf);
-#endif
-                (void)lsnr;
-                (void)ldf;
-                printw("\n| Auto PPM: Locked (PPM: %d)", lppm);
-            } else {
-                printw("\n| Auto PPM: On; SNR: %.1f dB; df: %.1f Hz; step: %s;", ap_snr, ap_df,
-                       (ap_dir > 0)   ? "+1"
-                       : (ap_dir < 0) ? "-1"
-                                      : "hold");
-            }
-        }
+        ui_print_rtl_auto_ppm_status();
         if (!soapy_input && opts->rtl_udp_port != 0) {
             printw("\n| External RTL Tuning on UDP Port: %i", opts->rtl_udp_port);
         }
@@ -404,7 +392,16 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         /* Signal quality is shown inline above; no duplicate line here. */
     }
+}
 
+static void
+ui_render_input_sources_block(dsd_opts* opts, dsd_state* state) {
+    ui_render_basic_input_sources(opts);
+    ui_render_rtl_input_source(opts, state);
+}
+
+static void
+ui_render_pulse_digital_output(const dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_out_type == 0 && opts->analog_only == 0) {
         printw("| Pulse Digital Output: %i kHz; %i Ch; G: %02.0f%%", opts->pulse_digi_rate_out / 1000,
                opts->pulse_digi_out_channels, state->aout_gain * 2);
@@ -432,7 +429,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
         printw(" \n");
     }
+}
 
+static void
+ui_render_pulse_analog_output(const dsd_opts* opts) {
     if (opts->audio_out_type == 0 && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
         printw("| Pulse Analog Output: %i kHz; %i Ch; G: %02.0f%% (/|*) ", opts->pulse_raw_rate_out / 1000,
                opts->pulse_raw_out_channels, opts->audio_gainA);
@@ -464,7 +464,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         printw(" \n");
     }
+}
 
+static void
+ui_render_udp_output(const dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_out_type == 8) {
         printw("| UDP Digital Output: %s:%d; %d kHz %d Ch; %02.0f%%", opts->udp_hostname, opts->udp_portno,
                opts->pulse_digi_rate_out / 1000, opts->pulse_digi_out_channels, state->aout_gain * 2);
@@ -514,7 +517,17 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw(" \n");
         }
     }
+}
 
+static void
+ui_render_audio_output_block(const dsd_opts* opts, const dsd_state* state) {
+    ui_render_pulse_digital_output(opts, state);
+    ui_render_pulse_analog_output(opts);
+    ui_render_udp_output(opts, state);
+}
+
+static void
+ui_render_m17_encoder_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->m17encoder == 1) {
         printw("| M17 Encoder:");
         if (state->m17encoder_tx == 1 && state->m17_vox == 0) {
@@ -548,7 +561,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         printw("\n");
     }
+}
 
+static void
+ui_render_file_output_status(const dsd_opts* opts) {
     if (opts->m17_use_ip == 1) {
         printw("| M17 UDP IP Frame Output: %s:%d \n", opts->m17_hostname, opts->m17_portno);
     }
@@ -575,192 +591,230 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (opts->dmr_stereo_wav == 1) {
         printw("| Per Call Wav File Enabled to Directory: %s \n", opts->wav_out_dir);
     }
+}
+
+static void
+ui_render_encoder_and_file_outputs(const dsd_opts* opts, const dsd_state* state) {
+    ui_render_m17_encoder_status(opts, state);
+    ui_render_file_output_status(opts);
+}
+
+static void
+ui_render_trunking_call_filters_pretty(const dsd_opts* opts) {
+    printw("| Trunking -");
+    if (opts->trunk_tune_group_calls == 0) {
+        attron(COLOR_PAIR(2));
+    }
+    printw(" Group(g)");
+    attron(COLOR_PAIR(4));
+    if (opts->trunk_tune_private_calls == 0) {
+        attron(COLOR_PAIR(2));
+    }
+    printw(" Private(u)");
+    attron(COLOR_PAIR(4));
+    if (opts->trunk_tune_data_calls == 0) {
+        attron(COLOR_PAIR(2));
+    }
+    printw(" Data(d)");
+    attron(COLOR_PAIR(4));
+    if (opts->trunk_tune_enc_calls == 0) {
+        attron(COLOR_PAIR(2));
+    }
+    printw(" Encrypted(e)");
+    attron(COLOR_PAIR(4));
+    printw(" Calls");
+    if (opts->trunk_use_allow_list == 1) {
+        printw(" - White List Mode\n");
+    } else {
+        printw(" - Black List Mode\n");
+    }
+}
+
+#ifndef PRETTY_COLORS
+static void
+ui_render_trunking_call_filters_plain(const dsd_opts* opts) {
+    printw("| Trunking -");
+    printw((opts->trunk_tune_group_calls == 0) ? " group(g)" : " GROUP(g)");
+    printw((opts->trunk_tune_private_calls == 0) ? " private(u)" : " PRIVATE(u)");
+    printw((opts->trunk_tune_data_calls == 0) ? " data(d)" : " DATA(d)");
+    printw((opts->trunk_tune_enc_calls == 0) ? " encrypted(e)" : " ENCRYPTED(e)");
+    printw(" Calls");
+    if (opts->trunk_use_allow_list == 1) {
+        printw(" - White List Mode\n");
+    } else {
+        printw(" - Black List Mode\n");
+    }
+}
+#endif
+
+static void
+ui_render_trunking_call_filters(const dsd_opts* opts) {
+    if (!(opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL))) {
+        return;
+    }
+#ifdef PRETTY_COLORS
+    ui_render_trunking_call_filters_pretty(opts);
+#else
+    ui_render_trunking_call_filters_plain(opts);
+#endif
+}
+
+static void
+ui_render_edacs_tg_hold(dsd_state* state) {
+    if (state->tg_hold == 0) {
+        return;
+    }
+
+    int a = (state->tg_hold >> state->edacs_a_shift) & state->edacs_a_mask;
+    int f = (state->tg_hold >> state->edacs_f_shift) & state->edacs_f_mask;
+    int s = state->tg_hold & state->edacs_s_mask;
+    if (state->ea_mode == 1) {
+        printw("\n|  \\TG HOLD: %d; ", state->tg_hold);
+        return;
+    }
+
+    char afs_str[8];
+    getAfsString(state, afs_str, a, f, s);
+    printw("\n|  \\TG HOLD: %d [%s]; ", state->tg_hold, afs_str);
+}
 
 #ifdef PRETTY_COLORS
-    if (opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
-        printw("| Trunking -");
-        if (opts->trunk_tune_group_calls == 0) {
-            attron(COLOR_PAIR(2));
-        }
-        printw(" Group(g)");
+static void
+ui_render_edacs_mode_toggles_pretty(dsd_state* state) {
+    printw("| \\--EDACS -");
+    if (state->ea_mode == -1) {
+        attron(COLOR_PAIR(2));
+        printw(" Standard/Network");
+        printw(" Extended Address");
         attron(COLOR_PAIR(4));
-        if (opts->trunk_tune_private_calls == 0) {
-            attron(COLOR_PAIR(2));
-        }
-        printw(" Private(u)");
+    } else if (state->ea_mode == 0) {
+        printw(" Standard/Network");
+        attron(COLOR_PAIR(2));
+        printw(" Extended Address");
         attron(COLOR_PAIR(4));
-        if (opts->trunk_tune_data_calls == 0) {
-            attron(COLOR_PAIR(2));
-        }
-        printw(" Data(d)");
+    } else if (state->ea_mode == 1) {
+        attron(COLOR_PAIR(2));
+        printw(" Standard/Network");
         attron(COLOR_PAIR(4));
-        if (opts->trunk_tune_enc_calls == 0) {
-            attron(COLOR_PAIR(2));
-        }
-        printw(" Encrypted(e)");
-        attron(COLOR_PAIR(4));
-        printw(" Calls");
-        if (opts->trunk_use_allow_list == 1) {
-            printw(" - White List Mode\n");
-        } else {
-            printw(" - Black List Mode\n");
-        }
+        printw(" Extended Address");
     }
-#else //set on to UPPER CASE, off to lower case
-    if (opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
-        printw("| Trunking -");
-        if (opts->trunk_tune_group_calls == 0) {
-            printw(" group(g)");
-        } else {
-            printw(" GROUP(g)");
-        }
-        if (opts->trunk_tune_private_calls == 0) {
-            printw(" private(u)");
-        } else {
-            printw(" PRIVATE(u)");
-        }
-        if (opts->trunk_tune_data_calls == 0) {
-            printw(" data(d)");
-        } else {
-            printw(" DATA(d)");
-        }
-        if (opts->trunk_tune_enc_calls == 0) {
-            printw(" encrypted(e)");
-        } else {
-            printw(" ENCRYPTED(e)");
-        }
-        printw(" Calls");
-        if (opts->trunk_use_allow_list == 1) {
-            printw(" - White List Mode\n");
-        } else {
-            printw(" - Black List Mode\n");
-        }
+    printw(" Mode (S);");
+    printw(" ESK: %02X", state->esk_mask);
+    printw(" (A);");
+    if (state->ea_mode == 0) {
+        printw(" AFS: %d:%d:%d;", state->edacs_a_bits, state->edacs_f_bits, state->edacs_s_bits);
     }
+    ui_render_edacs_tg_hold(state);
+    attron(COLOR_PAIR(4));
+    printw("\n");
+}
+#else
+static void
+ui_render_edacs_mode_toggles_plain(dsd_state* state) {
+    printw("| \\--EDACS -");
+    if (state->ea_mode == -1) {
+        printw(" standard/network");
+        printw(" extended address");
+    } else if (state->ea_mode == 0) {
+        printw(" STANDARD/NETWORK");
+        printw(" extended address");
+    } else if (state->ea_mode == 1) {
+        printw(" standard/network");
+        printw(" EXTENDED ADDRESS");
+    }
+    printw(" Mode (S);");
+    printw(" ESK: %02X", state->esk_mask);
+    printw(" (A) Toggle; ");
+    if (state->ea_mode == 0) {
+        printw(" AFS: %d:%d:%d;", state->edacs_a_bits, state->edacs_f_bits, state->edacs_s_bits);
+    }
+    ui_render_edacs_tg_hold(state);
+    printw("\n");
+}
 #endif
-//print additional information for EDACS modes and toggles
+
+static void
+ui_render_edacs_mode_toggles(const dsd_opts* opts, dsd_state* state) {
+    //print additional information for EDACS modes and toggles
+    if (!(opts->p25_trunk == 1 && opts->frame_provoice == 1)) {
+        return;
+    }
 #ifdef PRETTY_COLORS
-    if (opts->p25_trunk == 1 && opts->frame_provoice == 1) {
-        printw("| \\--EDACS -");
-        if (state->ea_mode == -1) {
-            attron(COLOR_PAIR(2));
-            printw(" Standard/Network");
-            printw(" Extended Address");
-            attron(COLOR_PAIR(4));
-        } else if (state->ea_mode == 0) {
-            printw(" Standard/Network");
-            attron(COLOR_PAIR(2));
-            printw(" Extended Address");
-            attron(COLOR_PAIR(4));
-        } else if (state->ea_mode == 1) {
-            attron(COLOR_PAIR(2));
-            printw(" Standard/Network");
-            attron(COLOR_PAIR(4));
-            printw(" Extended Address");
-        }
-        printw(" Mode (S);");
-
-        printw(" ESK: %02X", state->esk_mask);
-        printw(" (A);");
-
-        if (state->ea_mode == 0) {
-            printw(" AFS: %d:%d:%d;", state->edacs_a_bits, state->edacs_f_bits, state->edacs_s_bits);
-        }
-
-        //TG Hold on EDACS, if specified by user
-        if (state->tg_hold != 0) {
-            // Compute AFS for display purposes only
-            int a = (state->tg_hold >> state->edacs_a_shift) & state->edacs_a_mask;
-            int f = (state->tg_hold >> state->edacs_f_shift) & state->edacs_f_mask;
-            int s = state->tg_hold & state->edacs_s_mask;
-            if (state->ea_mode == 1) {
-                printw("\n|  \\TG HOLD: %d; ", state->tg_hold);
-            } else {
-                char afs_str[8];
-                getAfsString(state, afs_str, a, f, s);
-                printw("\n|  \\TG HOLD: %d [%s]; ", state->tg_hold, afs_str);
-            }
-        }
-
-        attron(COLOR_PAIR(4));
-        printw("\n");
-    }
+    ui_render_edacs_mode_toggles_pretty(state);
 #else //set on to UPPER CASE, off to lower case
-    if (opts->p25_trunk == 1 && opts->frame_provoice == 1) {
-        printw("| \\--EDACS -");
-        if (state->ea_mode == -1) {
-            printw(" standard/network");
-            printw(" extended address");
-        } else if (state->ea_mode == 0) {
-            printw(" STANDARD/NETWORK");
-            printw(" extended address");
-        } else if (state->ea_mode == 1) {
-            printw(" standard/network");
-            printw(" EXTENDED ADDRESS");
-        }
-        printw(" Mode (S);");
-
-        printw(" ESK: %02X", state->esk_mask);
-        printw(" (A) Toggle; ");
-
-        if (state->ea_mode == 0) {
-            printw(" AFS: %d:%d:%d;", state->edacs_a_bits, state->edacs_f_bits, state->edacs_s_bits);
-        }
-
-        //TG Hold on EDACS, if specified by user
-        if (state->tg_hold != 0) {
-            // Compute AFS for display purposes only
-            int a = (state->tg_hold >> state->edacs_a_shift) & state->edacs_a_mask;
-            int f = (state->tg_hold >> state->edacs_f_shift) & state->edacs_f_mask;
-            int s = state->tg_hold & state->edacs_s_mask;
-            if (state->ea_mode == 1) {
-                printw("\n|  \\TG HOLD: %d; ", state->tg_hold);
-            } else {
-                char afs_str[8];
-                getAfsString(state, afs_str, a, f, s);
-                printw("\n|  \\TG HOLD: %d [%s]; ", state->tg_hold, afs_str);
-            }
-        }
-
-        printw("\n");
-    }
+    ui_render_edacs_mode_toggles_plain(state);
 #endif
-    // if (opts->aggressive_framesync == 0) printw ("| Selective CRC ERR Bypass Enabled (RAS) \n");
+}
+
+static void
+ui_render_trunking_and_edacs_toggles(const dsd_opts* opts, dsd_state* state) {
+    ui_render_trunking_call_filters(opts);
+    ui_render_edacs_mode_toggles(opts, state);
+}
+
+static void
+ui_render_hytera_loaded_key_status(const dsd_state* state) {
+    if (state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL) {
+        printw("| Hytera BP Key Loaded (not forced): %010llX \n", (unsigned long long)(state->K1 & 0xFFFFFFFFFFULL));
+    } else if (state->K3 == 0ULL && state->K4 == 0ULL) {
+        printw("| Hytera Key Loaded (not forced): %016llX %016llX \n", (unsigned long long)state->K1,
+               (unsigned long long)state->K2);
+    } else {
+        printw("| Hytera Key Loaded (not forced): %016llX %016llX %016llX %016llX \n", (unsigned long long)state->K1,
+               (unsigned long long)state->K2, (unsigned long long)state->K3, (unsigned long long)state->K4);
+    }
+}
+
+static void
+ui_render_forced_key_status_dmr(const dsd_state* state) {
+    if (state->R != 0) {
+        printw("| Forcing Key Priority -- NXDN Sc Key: %05lld \n", state->R);
+    }
+    if (state->K != 0) {
+        printw("| Forcing Key Priority -- Moto BP Key: %03lld \n", state->K);
+    }
+    if (state->K1 != 0) {
+        printw("| Forcing Key Priority -- Hytera BP Key: %016llX \n", state->K1);
+    }
+    if (state->K != 0 && state->K1 != 0) {
+        printw("| Warning! Multiple DMR Key Types Loaded! \n"); //warning may not be required
+    }
+}
+
+static void
+ui_render_forced_key_status_rc4(const dsd_state* state) {
+    if (state->R != 0) {
+        printw("| Forcing Key Priority -- RC4 Key: %010llX \n", state->R);
+    }
+}
+
+static void
+ui_render_forced_key_status_tyt(const dsd_state* state) {
+    printw("| Forcing Key Priority -- TYT 16-bit Key: %04llX \n", state->H);
+}
+
+static void
+ui_render_forced_key_status(const dsd_state* state) {
+    if (state == NULL) {
+        return;
+    }
+
     if (state->M != 1 && state->H != 0 && state->tyt_bp == 0) {
-        if (state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL) {
-            printw("| Hytera BP Key Loaded (not forced): %010llX \n",
-                   (unsigned long long)(state->K1 & 0xFFFFFFFFFFULL));
-        } else if (state->K3 == 0ULL && state->K4 == 0ULL) {
-            printw("| Hytera Key Loaded (not forced): %016llX %016llX \n", (unsigned long long)state->K1,
-                   (unsigned long long)state->K2);
-        } else {
-            printw("| Hytera Key Loaded (not forced): %016llX %016llX %016llX %016llX \n",
-                   (unsigned long long)state->K1, (unsigned long long)state->K2, (unsigned long long)state->K3,
-                   (unsigned long long)state->K4);
-        }
+        ui_render_hytera_loaded_key_status(state);
     }
     if (state->M == 1) {
-        if (state->R != 0) {
-            printw("| Forcing Key Priority -- NXDN Sc Key: %05lld \n", state->R);
-        }
-        if (state->K != 0) {
-            printw("| Forcing Key Priority -- Moto BP Key: %03lld \n", state->K);
-        }
-        if (state->K1 != 0) {
-            printw("| Forcing Key Priority -- Hytera BP Key: %016llX \n", state->K1);
-        }
-        if (state->K != 0 && state->K1 != 0) {
-            printw("| Warning! Multiple DMR Key Types Loaded! \n"); //warning may not be required
-        }
+        ui_render_forced_key_status_dmr(state);
     }
     if (state->M == 0x21) {
-        if (state->R != 0) {
-            printw("| Forcing Key Priority -- RC4 Key: %010llX \n", state->R);
-        }
+        ui_render_forced_key_status_rc4(state);
     }
     if (state->M == 0x16) {
-        printw("| Forcing Key Priority -- TYT 16-bit Key: %04llX \n", state->H);
+        ui_render_forced_key_status_tyt(state);
     }
+}
 
+static void
+ui_render_scanner_and_reverse_status(dsd_opts* opts, dsd_state* state) {
     if (opts->scanner_mode == 1) {
         printw("| Scan Mode: ");
         if (state->lcn_freq_roll != 0) {
@@ -773,50 +827,90 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (opts->reverse_mute == 1) {
         printw("| Reverse Mute - Muting Unencrypted Voice\n");
     }
-    // if (opts->call_alert == 1)   printw ("| Call Alert Tone Enabled\n");
+}
+
+static void
+ui_render_crypto_key_and_scanner_status(dsd_opts* opts, dsd_state* state) {
+    ui_render_forced_key_status(state);
+    ui_render_scanner_and_reverse_status(opts, state);
+}
+
+static void
+ui_render_input_output_section(dsd_opts* opts, dsd_state* state) {
+    ui_print_header("Input Output");
+    ui_render_input_sources_block(opts, state);
+
+    ui_render_audio_output_block(opts, state);
+
+    ui_render_encoder_and_file_outputs(opts, state);
+
+    ui_render_trunking_and_edacs_toggles(opts, state);
+    ui_render_crypto_key_and_scanner_status(opts, state);
 
     ui_print_hr();
+}
+
+static void
+ui_print_rtl_visual_aids_controls(dsd_opts* opts, int nfft) {
+    /* Controls/status line: only show controls relevant to active views */
+    printw("| Const View:  %s (%c)", opts->constellation ? "On" : "Off", DSD_KEY_CONST_VIEW_UPPER);
+    if (opts->constellation == 1) {
+        printw("  Gate: %.02f (</>)  Norm: %s (%c)",
+               (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
+               opts->const_norm_mode ? "unit" : "radial", DSD_KEY_CONST_NORM);
+    }
+    printw("  Eye: %s (%c)", opts->eye_view ? "On" : "Off", DSD_KEY_EYE_VIEW);
+    if (opts->eye_view == 1) {
+        printw("  Uni: %s (%c) Col: %s (%c)", opts->eye_unicode ? "On" : "off", DSD_KEY_EYE_UNICODE,
+               opts->eye_color ? "On" : "Off", DSD_KEY_EYE_COLOR);
+    }
+    printw("  Hist: %s (%c)", opts->fsk_hist_view ? "On" : "Off", DSD_KEY_FSK_HIST);
+    printw("  Spec: %s (%c)", opts->spectrum_view ? "On" : "Off", DSD_KEY_SPECTRUM);
+    if (opts->spectrum_view == 1) {
+        printw("  FFT:%d (%c/%c)", nfft, DSD_KEY_SPEC_DEC, DSD_KEY_SPEC_INC);
+    }
+    addch('\n');
+    ui_print_hr();
+}
+
+static void
+ui_render_rtl_visual_aid_panels(dsd_opts* opts, dsd_state* state) {
+    if (opts->constellation == 1) {
+        print_constellation_view(opts, state);
+    }
+    if (opts->eye_view == 1) {
+        print_eye_view(opts, state);
+    }
+    if (opts->fsk_hist_view == 1) {
+        print_fsk_hist_view();
+    }
+    if (opts->spectrum_view == 1) {
+        print_spectrum_view(opts);
+    }
+}
+
+static void
+ui_render_rtl_visual_aids(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
     /* Only show RTL-SDR section and render visualizers when RTL input is active */
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         ui_print_header(ui_audio_in_is_soapy(opts) ? "SoapySDR Visual Aids" : "RTL-SDR Visual Aids");
         int nfft = rtl_stream_spectrum_get_size();
-        /* Controls/status line: only show controls relevant to active views */
-        printw("| Const View:  %s (%c)", opts->constellation ? "On" : "Off", DSD_KEY_CONST_VIEW_UPPER);
-        if (opts->constellation == 1) {
-            printw("  Gate: %.02f (</>)  Norm: %s (%c)",
-                   (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
-                   opts->const_norm_mode ? "unit" : "radial", DSD_KEY_CONST_NORM);
-        }
-        printw("  Eye: %s (%c)", opts->eye_view ? "On" : "Off", DSD_KEY_EYE_VIEW);
-        if (opts->eye_view == 1) {
-            printw("  Uni: %s (%c) Col: %s (%c)", opts->eye_unicode ? "On" : "off", DSD_KEY_EYE_UNICODE,
-                   opts->eye_color ? "On" : "Off", DSD_KEY_EYE_COLOR);
-        }
-        printw("  Hist: %s (%c)", opts->fsk_hist_view ? "On" : "Off", DSD_KEY_FSK_HIST);
-        printw("  Spec: %s (%c)", opts->spectrum_view ? "On" : "Off", DSD_KEY_SPECTRUM);
-        if (opts->spectrum_view == 1) {
-            printw("  FFT:%d (%c/%c)", nfft, DSD_KEY_SPEC_DEC, DSD_KEY_SPEC_INC);
-        }
-        addch('\n');
-        ui_print_hr();
-
-        if (opts->constellation == 1) {
-            print_constellation_view(opts, state);
-        }
-        if (opts->eye_view == 1) {
-            print_eye_view(opts, state);
-        }
-        if (opts->fsk_hist_view == 1) {
-            print_fsk_hist_view();
-        }
-        if (opts->spectrum_view == 1) {
-            print_spectrum_view(opts);
-        }
+        ui_print_rtl_visual_aids_controls(opts, nfft);
+        ui_render_rtl_visual_aid_panels(opts, state);
     }
 #endif
     /* Ensure our primary UI color remains active after visual aids */
     attron(COLOR_PAIR(4));
+}
+
+static int
+ui_compute_input_level_and_color(const dsd_opts* opts, const dsd_state* state) {
+    if (opts == NULL || state == NULL) {
+        return 0;
+    }
+
+    int level = 0;
 
     if (state->carrier == 1) {
         attron(COLOR_PAIR(3));
@@ -834,9 +928,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             if (opts->mod_qpsk == 1 || state->rf_mod == 1) {
                 level_div = 82; /* CQPSK phase deltas peak near pi/4 (~4k), so use tighter scale */
             }
-            if (level_div < 1) {
-                level_div = 1;
-            }
             level = (int)state->max / level_div; //only update on carrier present
         }
         if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
@@ -847,6 +938,14 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
     } else {
         level = 0;
+    }
+    return level;
+}
+
+static void
+ui_render_audio_decode_header_fields(dsd_opts* opts, const dsd_state* state) {
+    if (opts == NULL || state == NULL) {
+        return;
     }
 
     ui_print_header("Audio Decode");
@@ -869,105 +968,154 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (opts->aggressive_framesync == 0) {
         printw("CRC/(RAS) ");
     }
+}
+
+#ifdef USE_RADIO
+enum {
+    UI_SNR_INVALID_DB = -50,
+    UI_SNR_STALE_THRESHOLD_CDB = 5, /* 0.05 dB in centi-dB */
+    UI_SNR_STALE_LIMIT = 40
+};
+
+static double
+ui_snr_get_c4fm_value(void) {
+    static double last_c4_snr = -999.0;
+    static int last_c4_stable = 0;
+
+    double snr = rtl_stream_get_snr_c4fm();
+    if (snr <= (double)UI_SNR_INVALID_DB) {
+        double fb = rtl_stream_estimate_snr_c4fm_eye();
+        if (fb > (double)UI_SNR_INVALID_DB) {
+            snr = fb;
+            last_c4_stable = 0;
+        }
+        return snr;
+    }
+
+    int delta_cdb = (int)(fabs(snr - last_c4_snr) * 100.0);
+    if (delta_cdb < UI_SNR_STALE_THRESHOLD_CDB) {
+        if (++last_c4_stable >= UI_SNR_STALE_LIMIT) {
+            double fb = rtl_stream_estimate_snr_c4fm_eye();
+            if (fb > (double)UI_SNR_INVALID_DB) {
+                snr = fb;
+            }
+            last_c4_stable = 0;
+        }
+    } else {
+        last_c4_stable = 0;
+    }
+    last_c4_snr = snr;
+    return snr;
+}
+
+static double
+ui_snr_get_qpsk_value(void) {
+    static double last_qp_snr = -999.0;
+    static int last_qp_stable = 0;
+
+    double snr = rtl_stream_get_snr_cqpsk();
+    if (snr <= (double)UI_SNR_INVALID_DB) {
+        double fb = rtl_stream_estimate_snr_qpsk_const();
+        if (fb > (double)UI_SNR_INVALID_DB) {
+            snr = fb;
+            last_qp_stable = 0;
+        } else {
+            double snr_c = rtl_stream_get_snr_c4fm();
+            double snr_g = rtl_stream_get_snr_gfsk();
+            double snr_fb = (snr_c > snr_g) ? snr_c : snr_g;
+            if (snr_fb > (double)UI_SNR_INVALID_DB) {
+                snr = snr_fb;
+            }
+        }
+        return snr;
+    }
+
+    int delta_cdb = (int)(fabs(snr - last_qp_snr) * 100.0);
+    if (delta_cdb < UI_SNR_STALE_THRESHOLD_CDB) {
+        if (++last_qp_stable >= UI_SNR_STALE_LIMIT) {
+            double fb = rtl_stream_estimate_snr_qpsk_const();
+            if (fb > (double)UI_SNR_INVALID_DB) {
+                snr = fb;
+            }
+            last_qp_stable = 0;
+        }
+    } else {
+        last_qp_stable = 0;
+    }
+    last_qp_snr = snr;
+    return snr;
+}
+
+static double
+ui_snr_get_gfsk_value(void) {
+    static double last_gf_snr = -999.0;
+    static int last_gf_stable = 0;
+
+    double snr = rtl_stream_get_snr_gfsk();
+    if (snr <= (double)UI_SNR_INVALID_DB) {
+        double fb = rtl_stream_estimate_snr_gfsk_eye();
+        if (fb > (double)UI_SNR_INVALID_DB) {
+            snr = fb;
+            last_gf_stable = 0;
+        }
+        return snr;
+    }
+
+    int delta_cdb = (int)(fabs(snr - last_gf_snr) * 100.0);
+    if (delta_cdb < UI_SNR_STALE_THRESHOLD_CDB) {
+        if (++last_gf_stable >= UI_SNR_STALE_LIMIT) {
+            double fb = rtl_stream_estimate_snr_gfsk_eye();
+            if (fb > (double)UI_SNR_INVALID_DB) {
+                snr = fb;
+            }
+            last_gf_stable = 0;
+        }
+    } else {
+        last_gf_stable = 0;
+    }
+    last_gf_snr = snr;
+    return snr;
+}
+
+static const char*
+ui_snr_mod_label(int rf_mod) {
+    if (rf_mod == 1) {
+        return "QPSK";
+    }
+    if (rf_mod == 2) {
+        return "GFSK";
+    }
+    return "C4FM";
+}
+
+static double
+ui_snr_value_for_mod(int rf_mod) {
+    if (rf_mod == 1) {
+        return ui_snr_get_qpsk_value();
+    }
+    if (rf_mod == 2) {
+        return ui_snr_get_gfsk_value();
+    }
+    return ui_snr_get_c4fm_value();
+}
+#endif
+
+static void
+ui_render_demod_snr_line(const dsd_opts* opts, const dsd_state* state) {
+    if (opts == NULL || state == NULL) {
+        printw("\n");
+        return;
+    }
+
     /* Demod SNR (per modulation) */
 #ifdef USE_RADIO
     {
-        double snr = -100.0;
-        const char* m = "";
-        /* Simple stale detection for cases where SNR stops updating */
-        static double last_c4_snr = -999.0; /* C4FM */
-        static int last_c4_stable = 0;
-        if (state->rf_mod == 0) {
-            snr = rtl_stream_get_snr_c4fm();
-            m = "C4FM";
-            /* If missing or appears stale, compute a quick fallback from the eye buffer */
-            if (snr <= -50.0) {
-                double fb = rtl_stream_estimate_snr_c4fm_eye();
-                if (fb > -50.0) {
-                    snr = fb;
-                    last_c4_stable = 0;
-                }
-            } else {
-                double delta = fabs(snr - last_c4_snr);
-                if (delta < 0.05) {
-                    if (++last_c4_stable >= 40) { /* ~couple seconds of no change */
-                        double fb = rtl_stream_estimate_snr_c4fm_eye();
-                        if (fb > -50.0) {
-                            snr = fb;
-                        }
-                        last_c4_stable = 0;
-                    }
-                } else {
-                    last_c4_stable = 0;
-                }
-                last_c4_snr = snr;
-            }
-        } else if (state->rf_mod == 1) {
-            snr = rtl_stream_get_snr_cqpsk();
-            m = "QPSK";
-            /* Fallback: prefer constellation-based QPSK estimator; else use best of C4FM/GFSK */
-            static double last_qp_snr = -999.0;
-            static int last_qp_stable = 0;
-            if (snr <= -50.0) {
-                double fb = rtl_stream_estimate_snr_qpsk_const();
-                if (fb > -50.0) {
-                    snr = fb;
-                    last_qp_stable = 0;
-                } else {
-                    double snr_c = rtl_stream_get_snr_c4fm();
-                    double snr_g = rtl_stream_get_snr_gfsk();
-                    double snr_fb = (snr_c > snr_g) ? snr_c : snr_g;
-                    if (snr_fb > -50.0) {
-                        snr = snr_fb;
-                    }
-                }
-            } else {
-                double delta = fabs(snr - last_qp_snr);
-                if (delta < 0.05) {
-                    if (++last_qp_stable >= 40) {
-                        double fb = rtl_stream_estimate_snr_qpsk_const();
-                        if (fb > -50.0) {
-                            snr = fb;
-                        }
-                        last_qp_stable = 0;
-                    }
-                } else {
-                    last_qp_stable = 0;
-                }
-                last_qp_snr = snr;
-            }
-        } else if (state->rf_mod == 2) {
-            snr = rtl_stream_get_snr_gfsk();
-            m = "GFSK";
-            /* Stale/NA fallback: estimate from eye buffer (2-level) */
-            static double last_gf_snr = -999.0;
-            static int last_gf_stable = 0;
-            if (snr <= -50.0) {
-                double fb = rtl_stream_estimate_snr_gfsk_eye();
-                if (fb > -50.0) {
-                    snr = fb;
-                    last_gf_stable = 0;
-                }
-            } else {
-                double delta = fabs(snr - last_gf_snr);
-                if (delta < 0.05) {
-                    if (++last_gf_stable >= 40) {
-                        double fb = rtl_stream_estimate_snr_gfsk_eye();
-                        if (fb > -50.0) {
-                            snr = fb;
-                        }
-                        last_gf_stable = 0;
-                    }
-                } else {
-                    last_gf_stable = 0;
-                }
-                last_gf_snr = snr;
-            }
-        }
-        if (snr > -50.0) {
+        double snr = ui_snr_value_for_mod(state->rf_mod);
+        const char* m = ui_snr_mod_label(state->rf_mod);
+        if (snr > (double)UI_SNR_INVALID_DB) {
             /* Show current SNR as a compact, colorized meter */
             char snr_value[16];
-            if (snprintf(snr_value, sizeof(snr_value), "%.1f", snr) < 0) {
+            if (DSD_SNPRINTF(snr_value, sizeof(snr_value), "%.1f", snr) < 0) {
                 snr_value[0] = '\0';
             }
             ui_print_snr_db_field(snr_value);
@@ -988,6 +1136,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     printw("     ");
 #endif
     printw("\n");
+}
+
+static void
+ui_render_audio_decode_levels(const dsd_opts* opts, const dsd_state* state, int level) {
     /* In Level is meaningful for non-RTL inputs and RTL C4FM/GFSK modes.
        Hide only for RTL QPSK where symbols are fixed ±1/±3 from differential demod. */
     if (opts->audio_in_type != AUDIO_IN_RTL || state->rf_mod != 1) {
@@ -995,6 +1147,81 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
     /* Quick hint for output mute toggle */
     ui_print_kv_line("Output (x)", "[%s]", (opts->audio_out == 0) ? "Muted" : "On");
+}
+
+static void
+ui_render_voice_error_single_slot(const dsd_opts* opts, const dsd_state* state, int is_p25_active) {
+    if (!is_p25_active) {
+        ui_print_label_pad("Voice Error");
+        printw("[%X][%X]", state->errs & 0xF, state->errs2 & 0xF);
+        double avgv = 0.0;
+        if (compute_p25p1_voice_avg_err(state, &avgv)) {
+            printw(" Avg:%4.1f%%", avgv);
+        }
+        /* Keep slot toggle state at the end, as before */
+        if (opts->slot1_on == 0) {
+            printw(" Off");
+        }
+        if (opts->slot1_on == 1) {
+            printw(" On");
+        }
+        printw("\n");
+    } else {
+        /* P25 active: show only slot toggle state, no error counters */
+        ui_print_kv_line("Slot 1 (1)", "[%s]", (opts->slot1_on == 1) ? "On" : "Off");
+    }
+}
+
+static void
+ui_render_voice_error_dual_slot(const dsd_opts* opts, const dsd_state* state, int is_p25_active) {
+    if (!is_p25_active) {
+        ui_print_label_pad("Voice Error");
+        printw("[%X][%X] Slot 1 (1)", state->errs & 0xF, state->errs2 & 0xF);
+    } else {
+        ui_print_label_pad("Slot 1 (1)");
+        addch('[');
+    }
+    if (opts->slot1_on == 0) {
+        printw(is_p25_active ? "Off" : " Off");
+    }
+    if (opts->slot1_on == 1) {
+        printw(is_p25_active ? "On" : " On");
+    }
+    if (is_p25_active) {
+        printw("]");
+    }
+    if (opts->slot_preference == 0) {
+        printw(" *Preferred (3)");
+    }
+    printw("\n");
+
+    if (!is_p25_active) {
+        ui_print_label_pad("Voice Error");
+        printw("[%X][%X] Slot 2 (2)", state->errsR & 0xF, state->errs2R & 0xF);
+    } else {
+        ui_print_label_pad("Slot 2 (2)");
+        addch('[');
+    }
+    if (opts->slot2_on == 0) {
+        printw(is_p25_active ? "Off" : " Off");
+    }
+    if (opts->slot2_on == 1) {
+        printw(is_p25_active ? "On" : " On");
+    }
+    if (is_p25_active) {
+        printw("]");
+    }
+    if (opts->slot_preference == 1) {
+        printw(" *Preferred (3)");
+    }
+    printw("\n");
+}
+
+static void
+ui_render_audio_decode_section(dsd_opts* opts, const dsd_state* state, int level) {
+    ui_render_audio_decode_header_fields(opts, state);
+    ui_render_demod_snr_line(opts, state);
+    ui_render_audio_decode_levels(opts, state, level);
 
     /* Hide generic Voice Error line when P25 is active, but keep slot toggles */
     int is_p25p1_active = DSD_SYNC_IS_P25P1(lls);
@@ -1002,263 +1229,550 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     int is_p25_active = is_p25p1_active || is_p25p2_active;
 
     if (opts->dmr_stereo == 0) {
-        if (!is_p25_active) {
-            ui_print_label_pad("Voice Error");
-            printw("[%X][%X]", state->errs & 0xF, state->errs2 & 0xF);
-            double avgv = 0.0;
-            if (compute_p25p1_voice_avg_err(state, &avgv)) {
-                printw(" Avg:%4.1f%%", avgv);
-            }
-            /* Keep slot toggle state at the end, as before */
-            if (opts->slot1_on == 0) {
-                printw(" Off");
-            }
-            if (opts->slot1_on == 1) {
-                printw(" On");
-            }
-            printw("\n");
-        } else {
-            /* P25 active: show only slot toggle state, no error counters */
-            ui_print_kv_line("Slot 1 (1)", "[%s]", (opts->slot1_on == 1) ? "On" : "Off");
-        }
+        ui_render_voice_error_single_slot(opts, state, is_p25_active);
     }
 
     if (opts->dmr_stereo == 1) {
-        if (!is_p25_active) {
-            ui_print_label_pad("Voice Error");
-            printw("[%X][%X] Slot 1 (1)", state->errs & 0xF, state->errs2 & 0xF);
-        } else {
-            ui_print_label_pad("Slot 1 (1)");
-            addch('[');
-        }
-        if (opts->slot1_on == 0) {
-            printw(is_p25_active ? "Off" : " Off");
-        }
-        if (opts->slot1_on == 1) {
-            printw(is_p25_active ? "On" : " On");
-        }
-        if (is_p25_active) {
-            printw("]");
-        }
-        if (opts->slot_preference == 0) {
-            printw(" *Preferred (3)");
-        }
-        printw("\n");
-
-        if (!is_p25_active) {
-            ui_print_label_pad("Voice Error");
-            printw("[%X][%X] Slot 2 (2)", state->errsR & 0xF, state->errs2R & 0xF);
-        } else {
-            ui_print_label_pad("Slot 2 (2)");
-            addch('[');
-        }
-        if (opts->slot2_on == 0) {
-            printw(is_p25_active ? "Off" : " Off");
-        }
-        if (opts->slot2_on == 1) {
-            printw(is_p25_active ? "On" : " On");
-        }
-        if (is_p25_active) {
-            printw("]");
-        }
-        if (opts->slot_preference == 1) {
-            printw(" *Preferred (3)");
-        }
-        printw("\n");
+        ui_render_voice_error_dual_slot(opts, state, is_p25_active);
     }
     ui_print_hr();
+}
 
-    /* Dedicated P25 metrics section (toggle in menu) */
-    {
-        int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
-        int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
-        if (opts->show_p25_metrics == 1 && (is_p25p1 || is_p25p2)) {
-            ui_print_header("P25 Metrics");
-            (void)ui_print_p25_metrics(opts, state);
-            ui_print_hr();
-        }
-        /* CC Candidates (toggle) */
-        if (opts->show_p25_cc_candidates == 1 && (is_p25p1 || is_p25p2)) {
-            if (opts->p25_trunk == 1) {
-                ui_print_header("P25 CC Candidates");
-                ui_print_p25_cc_candidates(opts, state);
-                ui_print_hr();
+static void
+ui_sort_indices_by_last_seen(const time_t* last_seen, int* idxs, int n) {
+    for (int i = 0; i < n; i++) {
+        int best = i;
+        for (int j = i + 1; j < n; j++) {
+            if (last_seen[idxs[j]] > last_seen[idxs[best]]) {
+                best = j;
             }
         }
-        /* Neighbors (toggle) */
-        if (opts->show_p25_neighbors == 1 && (is_p25p1 || is_p25p2)) {
-            ui_print_header("P25 Neighbors");
-            ui_print_p25_neighbors(opts, state);
-            ui_print_hr();
+        if (best != i) {
+            int tmp = idxs[i];
+            idxs[i] = idxs[best];
+            idxs[best] = tmp;
         }
-        /* IDEN Plan (toggle) */
-        if (opts->show_p25_iden_plan == 1 && (is_p25p1 || is_p25p2)) {
-            ui_print_header("P25 IDEN Plan");
-            ui_print_p25_iden_plan(opts, state);
-            ui_print_hr();
+    }
+}
+
+static int
+ui_get_panel_cols(void) {
+    int rows = 0, cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    (void)rows;
+    if (cols < 1) {
+        cols = 80;
+    }
+    return cols;
+}
+
+static void
+ui_print_wrapped_panel_item(const char* buf, int len, int cols, int* line_used) {
+    int sep = (*line_used == 0) ? 0 : 4;
+    int left_border = (*line_used == 0) ? 2 : 0;
+    if ((left_border + *line_used + sep + len) > cols) {
+        if (*line_used > 0) {
+            addch('\n');
+        }
+        *line_used = 0;
+    }
+    if (*line_used == 0) {
+        ui_print_lborder_green();
+        addch(' ');
+    } else {
+        addstr("    ");
+    }
+    addnstr(buf, len);
+    *line_used += ((*line_used == 0) ? 0 : sep) + len;
+}
+
+static void
+ui_render_p25_metric_toggles(const dsd_opts* opts, const dsd_state* state) {
+    int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
+    int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
+    if (!(is_p25p1 || is_p25p2)) {
+        return;
+    }
+
+    if (opts->show_p25_metrics == 1) {
+        ui_print_header("P25 Metrics");
+        (void)ui_print_p25_metrics(opts, state);
+        ui_print_hr();
+    }
+    if (opts->show_p25_cc_candidates == 1 && opts->p25_trunk == 1) {
+        ui_print_header("P25 CC Candidates");
+        ui_print_p25_cc_candidates(opts, state);
+        ui_print_hr();
+    }
+    if (opts->show_p25_neighbors == 1) {
+        ui_print_header("P25 Neighbors");
+        ui_print_p25_neighbors(opts, state);
+        ui_print_hr();
+    }
+    if (opts->show_p25_iden_plan == 1) {
+        ui_print_header("P25 IDEN Plan");
+        ui_print_p25_iden_plan(opts, state);
+        ui_print_hr();
+    }
+}
+
+static void
+ui_render_p25_affiliations_panel(const dsd_opts* opts, dsd_state* state) {
+    int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
+    int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
+    if (!(opts->show_p25_affiliations == 1 && (is_p25p1 || is_p25p2))) {
+        return;
+    }
+
+    ui_print_header("P25 Affiliations");
+    // Compose a recent-first list of up to 20 RIDs
+    int idxs[256];
+    int n = 0;
+    time_t now = time(NULL);
+    for (int i = 0; i < 256; i++) {
+        if (state->p25_aff_rid[i] != 0) {
+            idxs[n++] = i;
+        }
+    }
+    // Selection sort by last_seen desc (n is typically small)
+    ui_sort_indices_by_last_seen(state->p25_aff_last_seen, idxs, n);
+    int shown = 0;
+    int cols = ui_get_panel_cols();
+    // Track the current line width after the left border
+    int line_used = 0;
+    for (int i = 0; i < n && shown < 20; i++) {
+        int k = idxs[i];
+        uint32_t rid = state->p25_aff_rid[k];
+        long age = (long)((state->p25_aff_last_seen[k] != 0) ? (now - state->p25_aff_last_seen[k]) : 0);
+        if (age < 0) {
+            age = 0;
+        }
+        char buf[64];
+        int m = DSD_SNPRINTF(buf, sizeof buf, "RID:%u age:%lds", (unsigned)rid, age);
+        if (m < 0) {
+            m = 0;
+        }
+        ui_print_wrapped_panel_item(buf, m, cols, &line_used);
+        shown++;
+    }
+    if (shown > 0 && line_used > 0) {
+        addch('\n');
+    }
+    if (shown == 0) {
+        ui_print_lborder_green();
+        addstr(" (none)\n");
+    }
+    ui_print_hr();
+}
+
+static void
+ui_render_p25_group_affiliations_panel(const dsd_opts* opts, dsd_state* state) {
+    int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
+    int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
+    if (!(opts->show_p25_group_affiliations == 1 && (is_p25p1 || is_p25p2))) {
+        return;
+    }
+
+    ui_print_header("P25 Group Affiliation");
+    int idxs[512];
+    int n = 0;
+    time_t now = time(NULL);
+    for (int i = 0; i < 512; i++) {
+        if (state->p25_ga_rid[i] != 0 && state->p25_ga_tg[i] != 0) {
+            idxs[n++] = i;
+        }
+    }
+    ui_sort_indices_by_last_seen(state->p25_ga_last_seen, idxs, n);
+    int shown = 0;
+    int cols = ui_get_panel_cols();
+    int line_used = 0;
+    for (int i = 0; i < n && shown < 20; i++) {
+        int k = idxs[i];
+        uint32_t rid = state->p25_ga_rid[k];
+        uint16_t tg = state->p25_ga_tg[k];
+        long age = (long)((state->p25_ga_last_seen[k] != 0) ? (now - state->p25_ga_last_seen[k]) : 0);
+        if (age < 0) {
+            age = 0;
+        }
+        char buf[80];
+        int m = DSD_SNPRINTF(buf, sizeof buf, "RID:%u TG:%u age:%lds", (unsigned)rid, (unsigned)tg, age);
+        if (m < 0) {
+            m = 0;
+        }
+        ui_print_wrapped_panel_item(buf, m, cols, &line_used);
+        shown++;
+    }
+    if (shown > 0 && line_used > 0) {
+        addch('\n');
+    }
+    if (shown == 0) {
+        ui_print_lborder_green();
+        addstr(" (none)\n");
+    }
+    ui_print_hr();
+}
+
+static void
+ui_render_p25_optional_sections(const dsd_opts* opts, dsd_state* state) {
+    ui_render_p25_metric_toggles(opts, state);
+    ui_render_p25_affiliations_panel(opts, state);
+    ui_render_p25_group_affiliations_panel(opts, state);
+}
+
+typedef struct {
+    int history_mode;
+    int rows;
+    int cols;
+    int history_stop_y;
+    int events_to_show;
+    uint16_t string_size;
+} ui_history_render_ctx;
+
+static void
+ui_history_render_header(const dsd_state* state, int history_mode) {
+    int rows = 0;
+    int cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    if (cols < 4) {
+        cols = 80;
+    }
+    int y = 0;
+    int x0 = 0;
+    getyx(stdscr, y, x0);
+    (void)x0;
+
+    addstr("--");
+    if (state->eh_slot < 2) {
+        printw("Latest Event History ([|])  Slot %d (\\)  Cycle (h): ", state->eh_slot + 1);
+    } else {
+        printw("Latest Event History ([|])  Slots 1+2 (\\)  Cycle (h): ");
+    }
+
+    if (history_mode == 1) {
+        attron(A_BOLD);
+    }
+    addstr("Short");
+    if (history_mode == 1) {
+        attroff(A_BOLD);
+    }
+
+    addch('/');
+
+    if (history_mode == 2) {
+        attron(A_BOLD);
+    }
+    addstr("Long");
+    if (history_mode == 2) {
+        attroff(A_BOLD);
+    }
+
+    addch('/');
+
+    if (history_mode == 0) {
+        attron(A_BOLD);
+    }
+    addstr("Off");
+    if (history_mode == 0) {
+        attroff(A_BOLD);
+    }
+
+    if (history_mode != 0) {
+        int room_hint = rows - (y + 1) - 2;
+        if (room_hint < 1) {
+            addstr(" [No room]");
         }
     }
 
-    /* P25 affiliations (RIDs registered on the system) */
-    {
-        int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
-        int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
-        if (opts->show_p25_affiliations == 1 && (is_p25p1 || is_p25p2)) {
-            ui_print_header("P25 Affiliations");
-            // Compose a recent-first list of up to 20 RIDs
-            int idxs[256];
-            int n = 0;
-            time_t now = time(NULL);
-            for (int i = 0; i < 256; i++) {
-                if (state->p25_aff_rid[i] != 0) {
-                    idxs[n++] = i;
-                }
+    int used_y = 0;
+    int used = 0;
+    getyx(stdscr, used_y, used);
+    (void)used_y;
+    if (used < cols) {
+        mvhline(y, used, '-', cols - used);
+    }
+    if (y + 1 < rows) {
+        move(y + 1, 0);
+    } else {
+        addch('\n');
+    }
+}
+
+static void
+ui_history_setup_render_ctx(int history_mode, int* history_draw_footer, ui_history_render_ctx* ctx) {
+    int start_y = 0;
+    int start_x = 0;
+    getmaxyx(stdscr, ctx->rows, ctx->cols);
+    getyx(stdscr, start_y, start_x);
+    (void)start_x;
+
+    int avail_lines = ctx->rows - start_y - 2;
+    if (avail_lines < 1) {
+        avail_lines = ctx->rows - start_y - 1;
+        *history_draw_footer = 0;
+    }
+    if (avail_lines < 0) {
+        avail_lines = 0;
+    }
+
+    ctx->history_mode = history_mode;
+    ctx->events_to_show = avail_lines;
+    if (ctx->events_to_show > 50) {
+        ctx->events_to_show = 50;
+    }
+
+    ctx->history_stop_y = ctx->rows - (*history_draw_footer ? 2 : 1);
+    if (ctx->history_stop_y < 0) {
+        ctx->history_stop_y = 0;
+    }
+
+    ctx->string_size = 71;
+    if (history_mode == 2) {
+        ctx->string_size = 1999;
+    } else if (ctx->cols > 0) {
+        int max_text = ctx->cols - 4;
+        if (max_text < 0) {
+            max_text = 0;
+        }
+        if (max_text < (int)ctx->string_size) {
+            ctx->string_size = (uint16_t)max_text;
+        }
+    }
+}
+
+static int
+ui_history_has_room_for_line(int history_stop_y) {
+    int y = 0;
+    int x = 0;
+    getyx(stdscr, y, x);
+    (void)x;
+    return y < history_stop_y;
+}
+
+static uint16_t
+ui_history_clamp_line_size(const ui_history_render_ctx* ctx, int prefix_len) {
+    uint16_t line_size = ctx->string_size;
+    if (ctx->history_mode != 2 && ctx->cols > 0) {
+        int max_text = ctx->cols - (prefix_len + 2);
+        if (max_text < 0) {
+            max_text = 0;
+        }
+        if (max_text < (int)line_size) {
+            line_size = (uint16_t)max_text;
+        }
+    }
+    return line_size;
+}
+
+static void
+ui_history_print_event_summary(const Event_History* item, const char* line_prefix, int prefix_len,
+                               const ui_history_render_ctx* ctx) {
+    uint16_t line_size = ui_history_clamp_line_size(ctx, prefix_len);
+    if (item->event_string[0] == '\0') {
+        printw("%s\n", line_prefix);
+        return;
+    }
+
+    char compact_string[2000];
+    char text_string[2000];
+    ui_history_compact_event_text(compact_string, sizeof compact_string, item->event_string, ctx->history_mode);
+    DSD_MEMCPY(text_string, compact_string, (size_t)line_size * sizeof(char));
+    text_string[line_size] = 0;
+    printw("%s", line_prefix);
+    attron(COLOR_PAIR(item->color_pair));
+    printw("%s\n", text_string);
+    attron(COLOR_PAIR(4));
+}
+
+static int
+ui_history_print_detail_line(int history_stop_y, uint8_t slot, const char* label, const char* value) {
+    if (value == NULL || value[0] == '\0') {
+        return 1;
+    }
+    if (!ui_history_has_room_for_line(history_stop_y)) {
+        return 0;
+    }
+
+    attron(COLOR_PAIR(4));
+    if (slot < 2) {
+        if (label && label[0] != '\0') {
+            printw("|[%d] \\-- %s%s \n", slot + 1, label, value);
+        } else {
+            printw("|[%d] \\-- %s\n", slot + 1, value);
+        }
+    } else if (label && label[0] != '\0') {
+        printw("|  \\-- %s%s \n", label, value);
+    } else {
+        printw("|  \\-- %s\n", value);
+    }
+    attron(COLOR_PAIR(4));
+    return 1;
+}
+
+static void
+ui_history_render_single_slot_item(const Event_History* item, const ui_history_render_ctx* ctx) {
+    const int show_enc_tag = (ctx->history_mode == 1 && item->enc != 0);
+    const char* line_prefix = show_enc_tag ? "| [ENC] " : "| ";
+    const int line_prefix_len = show_enc_tag ? 8 : 2;
+    attron(COLOR_PAIR(4));
+    ui_history_print_event_summary(item, line_prefix, line_prefix_len, ctx);
+
+    if (!ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "", item->text_message)) {
+        return;
+    }
+    if (!ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "Alias: ", item->alias)) {
+        return;
+    }
+    if (!ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "GPS: ", item->gps_s)) {
+        return;
+    }
+    (void)ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "DSD-neo: ", item->internal_str);
+}
+
+static void
+ui_history_render_dual_slot_item(const Event_History* item, uint8_t slot, const ui_history_render_ctx* ctx) {
+    char line_prefix[16];
+    const int show_enc_tag = (ctx->history_mode == 1 && item->enc != 0);
+    if (show_enc_tag) {
+        DSD_SNPRINTF(line_prefix, sizeof line_prefix, "|[%d] [ENC] ", slot + 1);
+    } else {
+        DSD_SNPRINTF(line_prefix, sizeof line_prefix, "|[%d] ", slot + 1);
+    }
+
+    attron(COLOR_PAIR(4));
+    ui_history_print_event_summary(item, line_prefix, (int)strlen(line_prefix), ctx);
+
+    if (!ui_history_print_detail_line(ctx->history_stop_y, slot, "", item->text_message)) {
+        return;
+    }
+    if (!ui_history_print_detail_line(ctx->history_stop_y, slot, "Alias: ", item->alias)) {
+        return;
+    }
+    if (!ui_history_print_detail_line(ctx->history_stop_y, slot, "GPS: ", item->gps_s)) {
+        return;
+    }
+    (void)ui_history_print_detail_line(ctx->history_stop_y, slot, "DSD-neo: ", item->internal_str);
+}
+
+static uint16_t
+ui_history_single_slot_start_index(const dsd_state* state, uint8_t slot, uint16_t skip) {
+    uint16_t idx = 1;
+    while (idx < 255 && skip > 0) {
+        const Event_History* item = &state->event_history_s[slot].Event_History_Items[idx];
+        if (ui_eh_item_has_content(item)) {
+            skip--;
+        }
+        idx++;
+    }
+    return idx;
+}
+
+static void
+ui_history_advance_dual_indices(const dsd_state* state, uint16_t* idx0, uint16_t* idx1) {
+    while (*idx0 < 255 && !ui_eh_item_has_content(&state->event_history_s[0].Event_History_Items[*idx0])) {
+        (*idx0)++;
+    }
+    while (*idx1 < 255 && !ui_eh_item_has_content(&state->event_history_s[1].Event_History_Items[*idx1])) {
+        (*idx1)++;
+    }
+}
+
+static int
+ui_history_take_latest_dual_item(const dsd_state* state, uint16_t* idx0, uint16_t* idx1, uint8_t* slot, uint16_t* idx) {
+    ui_history_advance_dual_indices(state, idx0, idx1);
+    if (*idx0 >= 255 && *idx1 >= 255) {
+        return 0;
+    }
+
+    time_t t0 = (*idx0 < 255) ? state->event_history_s[0].Event_History_Items[*idx0].event_time : 0;
+    time_t t1 = (*idx1 < 255) ? state->event_history_s[1].Event_History_Items[*idx1].event_time : 0;
+    if (*idx1 < 255 && (*idx0 >= 255 || t1 > t0)) {
+        *slot = 1;
+        *idx = *idx1;
+        (*idx1)++;
+    } else {
+        *slot = 0;
+        *idx = *idx0;
+        (*idx0)++;
+    }
+    return 1;
+}
+
+static void
+ui_history_skip_dual_items(const dsd_state* state, uint16_t skip, uint16_t* idx0, uint16_t* idx1) {
+    uint8_t slot = 0;
+    uint16_t idx = 0;
+    while (skip > 0 && ui_history_take_latest_dual_item(state, idx0, idx1, &slot, &idx)) {
+        (void)slot;
+        (void)idx;
+        skip--;
+    }
+}
+
+static void
+ui_history_render_single_slot(const dsd_state* state, const ui_history_render_ctx* ctx) {
+    uint8_t slot = state->eh_slot;
+    uint16_t idx = ui_history_single_slot_start_index(state, slot, state->eh_index);
+
+    for (int shown = 0; shown < ctx->events_to_show && idx < 255; idx++) {
+        if (!ui_history_has_room_for_line(ctx->history_stop_y)) {
+            break;
+        }
+        const Event_History* item = &state->event_history_s[slot].Event_History_Items[idx];
+        if (!ui_eh_item_has_content(item)) {
+            continue;
+        }
+        shown++;
+        ui_history_render_single_slot_item(item, ctx);
+    }
+}
+
+static void
+ui_history_render_dual_slots(const dsd_state* state, const ui_history_render_ctx* ctx) {
+    uint16_t idx0 = 1;
+    uint16_t idx1 = 1;
+    ui_history_skip_dual_items(state, state->eh_index, &idx0, &idx1);
+
+    for (int shown = 0; shown < ctx->events_to_show; shown++) {
+        if (!ui_history_has_room_for_line(ctx->history_stop_y)) {
+            break;
+        }
+        uint8_t slot = 0;
+        uint16_t idx = 0;
+        if (!ui_history_take_latest_dual_item(state, &idx0, &idx1, &slot, &idx)) {
+            break;
+        }
+        const Event_History* item = &state->event_history_s[slot].Event_History_Items[idx];
+        ui_history_render_dual_slot_item(item, slot, ctx);
+    }
+}
+
+static void
+ui_render_event_history_section(const dsd_state* state) {
+    const int history_mode = ui_history_get_mode();
+    int history_draw_footer = 1;
+    attron(COLOR_PAIR(4));
+    ui_history_render_header(state, history_mode);
+
+    if (history_mode != 0) {
+        ui_history_render_ctx ctx = {0};
+        ui_history_setup_render_ctx(history_mode, &history_draw_footer, &ctx);
+        if (state->event_history_s != NULL) {
+            if (state->eh_slot < 2) {
+                ui_history_render_single_slot(state, &ctx);
+            } else {
+                ui_history_render_dual_slots(state, &ctx);
             }
-            // Selection sort by last_seen desc (n is typically small)
-            for (int i = 0; i < n; i++) {
-                int best = i;
-                for (int j = i + 1; j < n; j++) {
-                    if (state->p25_aff_last_seen[idxs[j]] > state->p25_aff_last_seen[idxs[best]]) {
-                        best = j;
-                    }
-                }
-                if (best != i) {
-                    int tmp = idxs[i];
-                    idxs[i] = idxs[best];
-                    idxs[best] = tmp;
-                }
-            }
-            int shown = 0;
-            int rows = 0, cols = 80;
-            getmaxyx(stdscr, rows, cols);
-            (void)rows;
-            if (cols < 1) {
-                cols = 80;
-            }
-            // Track the current line width after the left border
-            int line_used = 0;
-            for (int i = 0; i < n && shown < 20; i++) {
-                int k = idxs[i];
-                uint32_t rid = state->p25_aff_rid[k];
-                long age = (long)((state->p25_aff_last_seen[k] != 0) ? (now - state->p25_aff_last_seen[k]) : 0);
-                if (age < 0) {
-                    age = 0;
-                }
-                char buf[64];
-                int m = snprintf(buf, sizeof buf, "RID:%u age:%lds", (unsigned)rid, age);
-                if (m < 0) {
-                    m = 0;
-                }
-                int sep = (line_used == 0) ? 0 : 4; // spacing between columns
-                // If this is the first item on the line, account for "| " at line start
-                int left_border = (line_used == 0) ? 2 : 0;
-                if ((left_border + line_used + sep + m) > cols) {
-                    // New line and reset tracking
-                    if (line_used > 0) {
-                        addch('\n');
-                    }
-                    line_used = 0;
-                }
-                if (line_used == 0) {
-                    ui_print_lborder_green();
-                    addch(' ');
-                } else {
-                    addstr("    ");
-                }
-                addnstr(buf, m);
-                line_used += ((line_used == 0) ? 0 : sep) + m;
-                shown++;
-            }
-            if (shown > 0 && line_used > 0) {
-                addch('\n');
-            }
-            if (shown == 0) {
-                ui_print_lborder_green();
-                addstr(" (none)\n");
-            }
-            ui_print_hr();
         }
     }
 
-    /* P25 Group Affiliation (RID ↔ TG) */
-    {
-        int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
-        int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
-        if (opts->show_p25_group_affiliations == 1 && (is_p25p1 || is_p25p2)) {
-            ui_print_header("P25 Group Affiliation");
-            int idxs[512];
-            int n = 0;
-            time_t now = time(NULL);
-            for (int i = 0; i < 512; i++) {
-                if (state->p25_ga_rid[i] != 0 && state->p25_ga_tg[i] != 0) {
-                    idxs[n++] = i;
-                }
-            }
-            for (int i = 0; i < n; i++) {
-                int best = i;
-                for (int j = i + 1; j < n; j++) {
-                    if (state->p25_ga_last_seen[idxs[j]] > state->p25_ga_last_seen[idxs[best]]) {
-                        best = j;
-                    }
-                }
-                if (best != i) {
-                    int tmp = idxs[i];
-                    idxs[i] = idxs[best];
-                    idxs[best] = tmp;
-                }
-            }
-            int shown = 0;
-            int rows = 0, cols = 80;
-            getmaxyx(stdscr, rows, cols);
-            (void)rows;
-            if (cols < 1) {
-                cols = 80;
-            }
-            int line_used = 0;
-            for (int i = 0; i < n && shown < 20; i++) {
-                int k = idxs[i];
-                uint32_t rid = state->p25_ga_rid[k];
-                uint16_t tg = state->p25_ga_tg[k];
-                long age = (long)((state->p25_ga_last_seen[k] != 0) ? (now - state->p25_ga_last_seen[k]) : 0);
-                if (age < 0) {
-                    age = 0;
-                }
-                char buf[80];
-                int m = snprintf(buf, sizeof buf, "RID:%u TG:%u age:%lds", (unsigned)rid, (unsigned)tg, age);
-                if (m < 0) {
-                    m = 0;
-                }
-                int sep = (line_used == 0) ? 0 : 4;
-                int left_border = (line_used == 0) ? 2 : 0;
-                if ((left_border + line_used + sep + m) > cols) {
-                    if (line_used > 0) {
-                        addch('\n');
-                    }
-                    line_used = 0;
-                }
-                if (line_used == 0) {
-                    ui_print_lborder_green();
-                    addch(' ');
-                } else {
-                    addstr("    ");
-                }
-                addnstr(buf, m);
-                line_used += ((line_used == 0) ? 0 : sep) + m;
-                shown++;
-            }
-            if (shown > 0 && line_used > 0) {
-                addch('\n');
-            }
-            if (shown == 0) {
-                ui_print_lborder_green();
-                addstr(" (none)\n");
-            }
-            ui_print_hr();
-        }
+    if (history_draw_footer || history_mode == 0) {
+        ui_print_hr();
     }
+    attroff(COLOR_PAIR(4)); //cyan for history
+}
 
-    ui_print_header("Call Info");
-
+static void
+ui_render_call_info_dstar(dsd_state* state) {
     //DSTAR
     if (DSD_SYNC_IS_DSTAR(lls)) {
         printw("| %s ", dsd_synctype_to_string(lls));
@@ -1274,7 +1788,42 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("| DATA: %s", state->dstar_gps);
         printw("\n");
     }
+}
 
+static void
+ui_print_m17_data_type(int dt) {
+    switch (dt) {
+        case 0: printw("Reserved"); break;
+        case 1: printw("Data "); break;
+        case 2: printw("Voice (3200) "); break;
+        case 3: printw("Voice (1600) + Data"); break;
+        default: break;
+    }
+}
+
+static void
+ui_print_m17_encryption_details(dsd_state* state) {
+    //fill in any extra info, like Meta (IV, etc)
+    if (state->m17_enc == 1) {
+        printw(" Scrambler - Type: %d", state->m17_enc_st);
+    }
+
+    if (state->m17_enc == 2) {
+        attron(COLOR_PAIR(1));
+        printw("AES-CTR - IV: ");
+        //display packed meta as IV
+        for (int i = 0; i < 16; i++) {
+            printw("%02X", state->m17_meta[i]);
+        }
+    }
+
+    if (state->m17_enc == 3) {
+        printw(" Reserved Enc - Type: %d", state->m17_enc_st);
+    }
+}
+
+static void
+ui_render_call_info_m17(dsd_state* state) {
     //M17
     if (lls == DSD_SYNC_M17_STR_POS || lls == DSD_SYNC_M17_STR_NEG || lls == DSD_SYNC_M17_LSF_POS
         || lls == DSD_SYNC_M17_LSF_NEG) {
@@ -1283,18 +1832,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("M17: ");
 
         //insert data type and frame information
-        if (state->m17_str_dt == 0) {
-            printw("Reserved");
-        }
-        if (state->m17_str_dt == 1) {
-            printw("Data ");
-        }
-        if (state->m17_str_dt == 2) {
-            printw("Voice (3200) ");
-        }
-        if (state->m17_str_dt == 3) {
-            printw("Voice (1600) + Data");
-        }
+        ui_print_m17_data_type(state->m17_str_dt);
 
         printw("\n");
         printw("| ");
@@ -1326,30 +1864,16 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("\n");
         printw("| ");
 
-        //fill in any extra info, like Meta (IV, etc)
-        if (state->m17_enc == 1) {
-            printw(" Scrambler - Type: %d", state->m17_enc_st);
-        }
-
-        if (state->m17_enc == 2) {
-            attron(COLOR_PAIR(1));
-            printw("AES-CTR - IV: ");
-            //display packed meta as IV
-            for (i = 0; i < 16; i++) {
-                printw("%02X", state->m17_meta[i]);
-            }
-        }
-
-        if (state->m17_enc == 3) {
-            printw(" Reserved Enc - Type: %d", state->m17_enc_st);
-        }
+        ui_print_m17_encryption_details(state);
 
         printw("\n");
     }
+}
 
+static void
+ui_render_call_info_ysf(dsd_state* state) {
     //YSF
     if (DSD_SYNC_IS_YSF(lls)) {
-        // printw ("\n");
         printw("| ");
         printw("Fusion - ");
         //insert data type and frame information
@@ -1410,122 +1934,138 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("RM3: %s ", state->ysf_rm3);
         printw("RM4: %s ", state->ysf_rm4);
 
-        //these texts can get pretty long and out of sorts, and lots of 0x20 spaces
-        //just going to leave these to only be in the console output
-
-        // printw ("\n");
-        // printw ("| ");
-        // printw ("TXT: ");
-        // for (i = 4; i < 8; i++)
-        // {
-        //   for (int j = 0; j < 20; j++)
-        //   {
-        //     //no spaces and no asterisks
-        //     if (state->ysf_txt[i][j] != 0x2A)
-        //       printw ("%c", state->ysf_txt[i][j]);
-        //   }
-        //   // printw (" "); //just a single space between each 'block'
-        // }
-
         printw("\n");
     }
+}
 
-    //NXDN
-    if (DSD_SYNC_IS_NXDN(lls)) {
-        if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
-            idas = 1;
+static int
+ui_channel_label_is_locked(const dsd_opts* opts, const dsd_state* state, const char* label) {
+    int locked = ui_is_locked_from_label(state, label);
+    if (locked || !opts) {
+        return locked;
+    }
+    if (opts->trunk_tune_data_calls == 0 && strstr(label, "Active Data Ch:") != NULL) {
+        return 1;
+    }
+    if (opts->trunk_tune_group_calls == 0 && strstr(label, "TG:") != NULL) {
+        return 1;
+    }
+    if (opts->trunk_tune_private_calls == 0 && strstr(label, "TGT:") != NULL) {
+        return 1;
+    }
+    return 0;
+}
+
+static void
+ui_render_active_channel_list(const dsd_opts* opts, const dsd_state* state, unsigned int max_channels) {
+    for (unsigned int i = 0; i < max_channels; i++) {
+        if (state->active_channel[i][0] == '\0') {
+            continue;
         }
-
-        if (opts->p25_trunk == 1) {
-
-            printw("| ");
-            if (opts->p25_is_tuned == 0) {
-                if (idas == 0) {
-                    printw("Monitoring RCCH Channel"); //Control Channel
-                }
-                if (idas == 1) {
-                    printw("Monitoring RTCH2 Channel"); //Idas RTCH2 Channel
-                }
-                if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
-                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                    printw(" - Frequency: %.06lf Mhz ", (double)f / 1000000);
-                }
-            } else if (opts->p25_is_tuned == 1) {
-                if (idas == 0) {
-                    printw("Monitoring RTCH Channel"); //Traffic Channel
-                }
-                if (idas == 1) {
-                    printw("Monitoring RTCH2 Channel"); //Idas RTCH2
-                }
-                if (state->trunk_vc_freq[0] != 0 || state->p25_vc_freq[0] != 0) {
-                    long f = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
-                    printw(" - Frequency: %.06lf Mhz ", (double)f / 1000000);
-                }
-            }
-
-            printw("\n");
+        const char* s = state->active_channel[i];
+        if (ui_channel_label_is_locked(opts, state, s)) {
+            attron(COLOR_PAIR(2));
+            printw("%s", s);
+            attron(COLOR_PAIR(4));
+        } else {
+            printw("%s", s);
         }
+    }
+    if (state->carrier == 1) {
+        attron(COLOR_PAIR(3));
+    } else {
+        attron(COLOR_PAIR(4));
+    }
+}
 
-        printw("| ");
-        // #ifdef LIMAZULUTWEAKS
-        if (idas == 0) {
-            printw("NXDN - RAN: %02d; ", state->nxdn_last_ran);
-        }
-        if (idas == 1) {
-            printw("IDAS - Area: %02d; ", state->nxdn_last_ran);
-        }
-        // #else
-        // if (idas == 0) printw ("NXDN - RAN: [%02d] ", rn);
-        // if (idas == 1) printw ("IDAS - Area: [%02d] ", rn);
-        // #endif
-        if (state->nxdn_location_site_code != 0) {
-            printw("Cat: %s; ", state->nxdn_location_category);
-            printw("Sys Code: %d; ", state->nxdn_location_sys_code);
-            printw("Site Code: %d; ", state->nxdn_location_site_code);
-        }
+static int
+ui_nxdn_is_idas(const dsd_state* state) {
+    return strcmp(state->nxdn_location_category, "Type-D") == 0;
+}
 
-        //if system supports Direct Frequency Assignment
-        if (state->nxdn_rcn == 1) {
-            printw("DFA ");
+static void
+ui_render_nxdn_monitor_line(const dsd_opts* opts, const dsd_state* state, int idas) {
+    if (opts->p25_trunk != 1) {
+        return;
+    }
+    printw("| ");
+    if (opts->p25_is_tuned == 0) {
+        printw(idas ? "Monitoring RTCH2 Channel" : "Monitoring RCCH Channel");
+        if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
+            long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+            printw(" - Frequency: %.06lf Mhz ", (double)f / 1000000);
         }
-
-        printw("\n");
-        printw("| ");
-        printw("TGT: [%5d] ", state->nxdn_last_tg);
-        printw("SRC: [%5d] ", state->nxdn_last_rid);
-        printw("Alias: [%s]", state->generic_talker_alias[0]);
-
-        //Group Name Labels from CSV import
-        {
-            char group_mode[8];
-            char group_name[50];
-            if (ui_lookup_group_label(state, (unsigned long)state->nxdn_last_tg, group_mode, sizeof(group_mode),
-                                      group_name, sizeof(group_name))) {
-                printw("TG: ");
-                attron(COLOR_PAIR(4));
-                printw(" [%s]", group_name);
-                printw("[%s] ", group_mode);
-            }
-            if (state->nxdn_last_rid != state->nxdn_last_tg
-                && ui_lookup_group_label(state, (unsigned long)state->nxdn_last_rid, NULL, 0, group_name,
-                                         sizeof(group_name))) {
-                attron(COLOR_PAIR(4));
-                printw(" [%s]", group_name);
-            }
-            if (state->carrier == 1) {
-                attron(COLOR_PAIR(3));
-            }
+    } else {
+        printw(idas ? "Monitoring RTCH2 Channel" : "Monitoring RTCH Channel");
+        if (state->trunk_vc_freq[0] != 0 || state->p25_vc_freq[0] != 0) {
+            long f = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
+            printw(" - Frequency: %.06lf Mhz ", (double)f / 1000000);
         }
+    }
+    printw("\n");
+}
 
+static void
+ui_render_nxdn_site_line(const dsd_state* state, int idas) {
+    printw("| ");
+    if (idas) {
+        printw("IDAS - Area: %02d; ", state->nxdn_last_ran);
+    } else {
+        printw("NXDN - RAN: %02d; ", state->nxdn_last_ran);
+    }
+    if (state->nxdn_location_site_code != 0) {
+        printw("Cat: %s; ", state->nxdn_location_category);
+        printw("Sys Code: %d; ", state->nxdn_location_sys_code);
+        printw("Site Code: %d; ", state->nxdn_location_site_code);
+    }
+    if (state->nxdn_rcn == 1) {
+        printw("DFA ");
+    }
+    printw("\n");
+}
+
+static void
+ui_render_nxdn_tgt_src_line(const dsd_state* state) {
+    printw("| ");
+    printw("TGT: [%5d] ", state->nxdn_last_tg);
+    printw("SRC: [%5d] ", state->nxdn_last_rid);
+    printw("Alias: [%s]", state->generic_talker_alias[0]);
+    {
+        char group_mode[8];
+        char group_name[50];
+        if (ui_lookup_group_label(state, (unsigned long)state->nxdn_last_tg, group_mode, sizeof(group_mode), group_name,
+                                  sizeof(group_name))) {
+            printw("TG: ");
+            attron(COLOR_PAIR(4));
+            printw(" [%s]", group_name);
+            printw("[%s] ", group_mode);
+        }
+        if (state->nxdn_last_rid != state->nxdn_last_tg
+            && ui_lookup_group_label(state, (unsigned long)state->nxdn_last_rid, NULL, 0, group_name,
+                                     sizeof(group_name))) {
+            attron(COLOR_PAIR(4));
+            printw(" [%s]", group_name);
+        }
         if (state->carrier == 1) {
-            printw(" %s ", state->nxdn_call_type);
+            attron(COLOR_PAIR(3));
         }
-        printw("\n|");
-        if (state->nxdn_cipher_type > 0) {
-            // printw (" ALG: %d Key ID: %02X ", state->nxdn_cipher_type, state->nxdn_key);
-            printw(" ALG: %d Key ID: %02d ", state->nxdn_cipher_type, state->nxdn_key);
-        }
-        if (state->nxdn_cipher_type == 0x1 && state->carrier == 1) {
+    }
+    if (state->carrier == 1) {
+        printw(" %s ", state->nxdn_call_type);
+    }
+}
+
+static void
+ui_render_nxdn_encryption_line(const dsd_state* state) {
+    printw("\n|");
+    if (state->nxdn_cipher_type > 0) {
+        printw(" ALG: %d Key ID: %02d ", state->nxdn_cipher_type, state->nxdn_key);
+    }
+    if (state->carrier != 1) {
+        return;
+    }
+    switch (state->nxdn_cipher_type) {
+        case 0x1:
             if (state->R == 0) {
                 attron(COLOR_PAIR(2));
             }
@@ -1540,8 +2080,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 printw("Key: %05lld ", state->R);
                 attron(COLOR_PAIR(3));
             }
-        }
-        if (state->nxdn_cipher_type == 0x2 && state->carrier == 1) {
+            break;
+        case 0x2:
             attron(COLOR_PAIR(1));
             printw("IV: %016llX ", state->payload_miN);
             attron(COLOR_PAIR(2));
@@ -1551,8 +2091,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
             attroff(COLOR_PAIR(2));
             attron(COLOR_PAIR(3));
-        }
-        if (state->nxdn_cipher_type == 0x3 && state->carrier == 1) {
+            break;
+        case 0x3:
             attron(COLOR_PAIR(1));
             printw("IV: %016llX ", state->payload_miN);
             attron(COLOR_PAIR(2));
@@ -1562,679 +2102,46 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
             attroff(COLOR_PAIR(2));
             attron(COLOR_PAIR(3));
-        }
-        if (state->nxdn_cipher_type > 0x3 && state->carrier == 1) {
-            attron(COLOR_PAIR(2));
-            printw("Unknown Encryption ");
-            attroff(COLOR_PAIR(2));
-            attron(COLOR_PAIR(3));
-        }
-
-        //Active Trunking Channels (NXDN and IDAS)
-        /* opts->p25_trunk */
-        {
-            printw("\n");
-            printw("| ");
-
-            //active channel display
-            attron(COLOR_PAIR(4));
-            for (int i = 0; i < 16; i++) {
-                if (state->active_channel[i][0] != '\0') {
-                    const char* s = state->active_channel[i];
-                    int locked = ui_is_locked_from_label(state, s);
-                    /* Also show disabled classes (global toggles) in red */
-                    if (!locked && opts) {
-                        if (opts->trunk_tune_data_calls == 0 && strstr(s, "Active Data Ch:") != NULL) {
-                            locked = 1;
-                        }
-                        if (!locked && opts->trunk_tune_group_calls == 0 && strstr(s, "TG:") != NULL) {
-                            locked = 1;
-                        }
-                        if (!locked && opts->trunk_tune_private_calls == 0 && strstr(s, "TGT:") != NULL) {
-                            locked = 1;
-                        }
-                    }
-                    if (locked) {
-                        // Highlight locked-out TGs in red
-                        attron(COLOR_PAIR(2));
-                        printw("%s", s);
-                        attron(COLOR_PAIR(4)); // restore cyan for subsequent items
-                    } else {
-                        printw("%s", s);
-                    }
-                }
-            }
-
-            if (state->carrier == 1) {
-                attron(COLOR_PAIR(3));
-            } else {
-                /* When no active call, keep UI in idle cyan instead of default white */
-                attron(COLOR_PAIR(4));
-            }
-        }
-
-        //TG Hold, if specified by user
-        if (state->tg_hold != 0) {
-            printw("TG HOLD: %d", state->tg_hold);
-        }
-
-        printw("\n");
-    }
-
-    //P25 and DMR BS/MS
-    if (DSD_SYNC_IS_P25(lls) || DSD_SYNC_IS_DMR(lls)) {
-        printw("| ");
-        if (DSD_SYNC_IS_DMR_BS(lls)) {
-            printw("DMR BS - DCC: %02i; ", state->dmr_color_code);
-            // printw ("%s %s", state->dmr_branding, state->dmr_branding_sub);
-            printw("%s ", state->dmr_branding);
-            printw("%s", state->dmr_branding_sub);
-            printw("%s", state->dmr_site_parms); //site id, net id, etc
-            if (state->dmr_rest_channel > 0) {
-                printw("Rest LSN: %02d; ", state->dmr_rest_channel);
-                if (state->trunk_chan_map[state->dmr_rest_channel] != 0) {
-                    printw("Freq: %.06lf Mhz", (double)state->trunk_chan_map[state->dmr_rest_channel] / 1000000);
-                }
-            } else if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
-                long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                printw("Freq: %.06lf MHz", (double)f / 1000000);
-            }
-
-        } else if (DSD_SYNC_IS_DMR_MS(lls)) {
-            printw("DMR MS - DCC: %02i; ", state->dmr_color_code);
-        } else if (DSD_SYNC_IS_P25P1(lls)) //P1
-        {
-            // Clarify identifiers to avoid confusion when SYSID and NAC
-            // happen to have the same numeric value on some systems.
-            char callsign[7] = {0};
-            if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
-                p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
-            }
-            printw("P25p1  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
-            if (opts->show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
-                printw(" [%s]", callsign);
-            }
-            printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
-            if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
-                long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                printw("FREQ: %.06lf MHz", (double)f / 1000000);
-            }
-
-            //load talker aliases here (Moto, Tait, Harris)
-            {
-                char group_name[50];
-                if (ui_lookup_group_label(state, (unsigned long)state->lastsrc, NULL, 0, group_name,
-                                          sizeof(group_name))) //or state->lastsrc
-                {
-                    snprintf(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", group_name);
-                }
-            }
-
-        } else if (DSD_SYNC_IS_P25P2(lls)) //P2
-        {
-            // Clarify identifiers to avoid confusion when SYSID and NAC
-            // happen to have the same numeric value on some systems.
-            char callsign[7] = {0};
-            if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
-                p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
-            }
-            printw("P25p2  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
-            if (opts->show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
-                printw(" [%s]", callsign);
-            }
-            printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
-            if (state->p2_wacn == 0 || state->p2_sysid == 0 || state->p2_cc == 0) {
+            break;
+        default:
+            if (state->nxdn_cipher_type > 0x3) {
                 attron(COLOR_PAIR(2));
-                printw(" Phase 2 Missing Parameters ");
-                attron(COLOR_PAIR(3));
-            } else if (state->p2_wacn == 0xFFFFF || state->p2_sysid == 0xFFF || state->p2_cc == 0xFFF) {
-                attron(COLOR_PAIR(2));
-                printw(" Phase 2 Invalid Parameters ");
-                attron(COLOR_PAIR(3));
-            } else {
-                if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
-                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                    printw("FREQ: %.06lf MHz", (double)f / 1000000);
-                }
-            }
-
-            //load talker aliases here (Moto, Tait, Harris)
-            {
-                char group_name[50];
-                if (ui_lookup_group_label(state, (unsigned long)state->lastsrc, NULL, 0, group_name,
-                                          sizeof(group_name))) {
-                    snprintf(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", group_name);
-                }
-            }
-
-            //load talker aliases here (Moto, Tait, Harris)
-            {
-                char group_name[50];
-                if (ui_lookup_group_label(state, (unsigned long)state->lastsrcR, NULL, 0, group_name,
-                                          sizeof(group_name))) {
-                    snprintf(state->generic_talker_alias[1], sizeof state->generic_talker_alias[1], "%s", group_name);
-                }
-            }
-        }
-
-        printw("\n");
-        //Slot 1 [0]
-        printw("| SLOT 1 - ");
-        if (state->dmrburstL < 16 && state->carrier == 1 && state->lasttg > 0 && state->lastsrc > 0) {
-            attron(COLOR_PAIR(2));
-        }
-        // Only show IDs when the left slot is actively in a call; otherwise avoid stale values
-        // Active when:
-        //  - DMR voice (16)
-        //  - P25p2: PTT/VOICE/HANGTIME (20/21/22)
-        //  - P25p1 voice frames (26/27)
-        int show_l_ids = ui_burst_is_active_call(state->dmrburstL);
-        int show_l_p25_vxtra = ui_burst_has_p25_crypto_metadata(state->dmrburstL);
-        int show_l_crypto_status = state->dmrburstL == 16 || show_l_p25_vxtra;
-        if (show_l_ids) {
-            printw("TGT: [%8i] SRC: [%8i] ", state->lasttg, state->lastsrc);
-            // P25 call flags: show [EM] and [PR:n] when active
-            if (state->p25_call_emergency[0]) {
-                printw("[EM] ");
-            }
-            if (state->p25_call_priority[0] > 0) {
-                printw("[PR:%d] ", (int)state->p25_call_priority[0]);
-            }
-        } else {
-            // Blank out IDs cleanly when slot 1 is not in an active call
-            printw("TGT: [        ] SRC: [        ] ");
-        }
-        if (state->dmrburstL != 16 && state->carrier == 1 && state->lasttg > 0 && state->lastsrc > 0) {
-            attroff(COLOR_PAIR(2));
-            attron(COLOR_PAIR(3));
-        }
-
-        // Show banner only when actively in a call; otherwise blank to avoid stale labels
-        if (show_l_ids) {
-            printw("%s | ", state->call_string[0]);
-        } else {
-            printw("%s | ", "                     "); // 21 spaces
-        }
-        printw("%s ", DMRBusrtTypes[state->dmrburstL]);
-
-        printw("\n");
-
-        printw("| V XTRA | "); //10 spaces
-
-        if (state->dmrburstL == 16 && state->payload_algid == 0
-            && state->dmr_so & 0x40) //4F or CF mask? & 0xCF currently //&& (state->dmr_so & 0xCF) == 0x40
-        {
-            attron(COLOR_PAIR(5));
-            printw(" **BP** ");
-            attroff(COLOR_PAIR(5));
-            attron(COLOR_PAIR(3));
-        }
-
-        if (state->dmrburstL == 16 && state->payload_algid == 0 && state->K > 0 && state->dmr_fid == 0x10
-            && state->dmr_so & 0x40) {
-            attron(COLOR_PAIR(1));
-            printw("BP Key: %3lld ", state->K);
-            attroff(COLOR_PAIR(1));
-            attron(COLOR_PAIR(3));
-        }
-
-        if (state->dmrburstL == 16 && state->payload_algid == 0 && state->H > 0 && state->dmr_fid == 0x68
-            && state->dmr_so & 0x40) {
-            attron(COLOR_PAIR(1));
-            printw("Hytera BP Key: %010llX ", state->H);
-            attroff(COLOR_PAIR(1));
-            attron(COLOR_PAIR(3));
-        }
-
-        //ALG, KeyID, MI                            //was key_id
-        if (state->dmrburstL == 16 && state->payload_algid > 0 && state->dmr_so & 0x40) {
-            attron(COLOR_PAIR(1));
-            printw("ALG: 0x%02X KEY: 0x%02X MI: 0x%08llX ", state->payload_algid, state->payload_keyid,
-                   state->payload_mi);
-            attroff(COLOR_PAIR(1));
-            attron(COLOR_PAIR(3));
-        }
-
-        //P25 FDMA/TDMA
-        if (show_l_p25_vxtra && state->payload_algid > 0 && state->payload_algid != 0x80) {
-            attron(COLOR_PAIR(1));
-            printw("ALG: 0x%02X KEY: 0x%04X MI: 0x%016llX ", state->payload_algid, state->payload_keyid,
-                   state->payload_miP);
-            attroff(COLOR_PAIR(1));
-            attron(COLOR_PAIR(3));
-        }
-
-        //Anytone 0x01 will never show here since its converted to 0x21 for handling
-        if (show_l_crypto_status
-            && (state->payload_algid == 0xAA || state->payload_algid == 0x21 || state->payload_algid == 0x01)) {
-            attron(COLOR_PAIR(1));
-            printw("RC4 ");
-            if (state->R != 0) {
-                printw("Key: %010llX ", state->R);
-            }
-            attron(COLOR_PAIR(3));
-        }
-        if (show_l_crypto_status && (state->payload_algid == 0x81 || state->payload_algid == 0x22)) {
-            attron(COLOR_PAIR(1));
-            printw("DES1 ");
-            if (state->R != 0) {
-                printw("Key: %010llX ", state->R);
-            }
-            attron(COLOR_PAIR(3));
-        }
-        if (show_l_crypto_status && state->payload_algid == 0x9F) {
-            attron(COLOR_PAIR(1));
-            printw("DES-XL ");
-            if (state->R != 0) {
-                printw("Key: %010llX ", state->R);
-            }
-            attron(COLOR_PAIR(3));
-        }
-        if (show_l_crypto_status && state->payload_algid == 0x82) {
-            attron(COLOR_PAIR(1));
-            printw("DES2 ");
-            attron(COLOR_PAIR(3));
-        }
-        if (show_l_crypto_status && state->payload_algid == 0x83) {
-            attron(COLOR_PAIR(1));
-            printw("DES3 ");
-            attron(COLOR_PAIR(3));
-        }
-        if (show_l_crypto_status && (state->payload_algid == 0x89 || state->payload_algid == 0x24)) {
-            attron(COLOR_PAIR(1));
-            printw("AES-128 ");
-            if (state->aes_key_loaded[0] != 0) {
-                printw("KS: %016llX ", state->A2[0]);
-            }
-            attron(COLOR_PAIR(3));
-        }
-        if (show_l_crypto_status
-            && (state->payload_algid == 0x84 || state->payload_algid == 0x25 || state->payload_algid == 0x05)) {
-            attron(COLOR_PAIR(1));
-            printw("AES-256 ");
-            if (state->aes_key_loaded[0] != 0) {
-                printw("KS: %016llX ", state->A4[0]);
-            }
-            attron(COLOR_PAIR(3));
-        }
-        if (show_l_crypto_status && state->payload_algid == 0x02) {
-            attron(COLOR_PAIR(1));
-            printw("Hytera Enhanced");
-            if (state->R != 0) {
-                printw(" Key: %010llX", state->R);
-            }
-            attron(COLOR_PAIR(3));
-        }
-        if (show_l_crypto_status && state->payload_algid == 0x07) {
-            attron(COLOR_PAIR(1));
-            printw("Vertex Std");
-            attron(COLOR_PAIR(3));
-        }
-        if (show_l_crypto_status && (state->payload_algid == 0x36 || state->payload_algid == 0x37)) {
-            attron(COLOR_PAIR(1));
-            if (state->payload_algid == 0x36) {
-                printw("Kirisun Adv");
-            } else {
-                printw("Kirisun Uni");
-            }
-            if (state->aes_key_loaded[0] != 0) {
-                printw(" KS: %016llX", state->A4[0]);
-            }
-            attron(COLOR_PAIR(3));
-        }
-
-        printw("\n");
-
-        //printw ("|        | "); //10 spaces
-        printw("| D XTRA | ");
-
-        attron(COLOR_PAIR(4));
-
-        if (state->dmrburstL == 16 || state->dmrburstL == 21 || state->dmrburstL == 26 || state->dmrburstL == 27
-            || state->dmrburstL == 32) //only during call
-        {
-
-            attron(COLOR_PAIR(4));
-
-            //Embedded GPS (not LRRP)
-            printw("%s ", state->dmr_embedded_gps[0]);
-
-            //Embedded Talker Alias String (show when present during active call)
-            if (state->generic_talker_alias[0][0] != '\0') {
-                printw("%s ", state->generic_talker_alias[0]);
-            }
-
-            attroff(COLOR_PAIR(5));
-            if (state->carrier == 1) {
-                attron(COLOR_PAIR(3));
-            }
-        }
-
-        //LRRP
-        if (state->dmrburstL != 16) //only during data and no trunking
-        {
-            attron(COLOR_PAIR(4));
-            printw("%s", state->dmr_lrrp_gps[0]);
-        }
-
-        //Group Name Labels from CSV import
-        if (show_l_ids) {
-            char group_mode[8];
-            char group_name[50];
-            if (ui_lookup_group_label(state, (unsigned long)state->lasttg, group_mode, sizeof(group_mode), group_name,
-                                      sizeof(group_name))) {
-                attron(COLOR_PAIR(4));
-                printw(" [%s]", group_name);
-                printw("[%s] ", group_mode);
-                if (state->carrier == 1) {
-                    attron(COLOR_PAIR(3));
-                }
-            }
-        }
-
-        if (state->carrier == 1) {
-            attron(COLOR_PAIR(3));
-        } else {
-            /* Restore idle cyan after extras when carrier drops */
-            attron(COLOR_PAIR(4));
-        }
-
-        printw("\n");
-
-        //Slot 2 [1] -- Also Including DMR MS now to keep the display more 'uniform' in nature
-        // if (lls < 30 || lls == 35 || lls == 36)
-        {
-            printw("| SLOT 2 - ");
-            if (state->dmrburstR < 16 && state->carrier == 1 && state->lasttgR > 0 && state->lastsrcR > 0) {
-                attron(COLOR_PAIR(2));
-            }
-            // Only show IDs when the right slot is actively in a call; otherwise avoid stale values
-            // Active when:
-            //  - DMR voice (16)
-            //  - P25p2: PTT/VOICE/HANGTIME (20/21/22)
-            //  - P25p1 voice frames (26/27) [right slot used for MS/dual displays]
-            int show_r_ids = ui_burst_is_active_call(state->dmrburstR);
-            int show_r_p25_vxtra = ui_burst_has_p25_crypto_metadata(state->dmrburstR);
-            int show_r_crypto_status = state->dmrburstR == 16 || show_r_p25_vxtra;
-            if (show_r_ids) {
-                printw("TGT: [%8i] SRC: [%8i] ", state->lasttgR, state->lastsrcR);
-                // P25 call flags for right slot
-                if (state->p25_call_emergency[1]) {
-                    printw("[EM] ");
-                }
-                if (state->p25_call_priority[1] > 0) {
-                    printw("[PR:%d] ", (int)state->p25_call_priority[1]);
-                }
-            } else {
-                // Blank out IDs cleanly when slot 2 is not in an active call
-                printw("TGT: [        ] SRC: [        ] ");
-            }
-            if (state->dmrburstR != 16 && state->carrier == 1 && state->lasttgR > 0 && state->lastsrcR > 0) {
+                printw("Unknown Encryption ");
                 attroff(COLOR_PAIR(2));
                 attron(COLOR_PAIR(3));
             }
+            break;
+    }
+}
 
-            // Show banner only during active call states on slot 2
-            if (show_r_ids) {
-                printw("%s | ", state->call_string[1]);
-            } else {
-                printw("%s | ", "                     "); // 21 spaces
-            }
-            printw("%s ", DMRBusrtTypes[state->dmrburstR]);
+static void
+ui_render_nxdn_active_channels_and_tg_hold(const dsd_opts* opts, const dsd_state* state) {
+    printw("\n| ");
+    attron(COLOR_PAIR(4));
+    ui_render_active_channel_list(opts, state, 16);
+    if (state->tg_hold != 0) {
+        printw("TG HOLD: %d", state->tg_hold);
+    }
+    printw("\n");
+}
 
-            printw("\n");
+static void
+ui_render_call_info_nxdn(const dsd_opts* opts, const dsd_state* state) {
+    //NXDN
+    if (!DSD_SYNC_IS_NXDN(lls)) {
+        return;
+    }
 
-            printw("| V XTRA | "); //10 spaces
+    int idas = ui_nxdn_is_idas(state);
+    ui_render_nxdn_monitor_line(opts, state, idas);
+    ui_render_nxdn_site_line(state, idas);
+    ui_render_nxdn_tgt_src_line(state);
+    ui_render_nxdn_encryption_line(state);
+    ui_render_nxdn_active_channels_and_tg_hold(opts, state);
+}
 
-            if (state->dmrburstR == 16 && state->payload_algidR == 0 && state->dmr_soR & 0x40) //4F or CF mask?
-            {
-                attron(COLOR_PAIR(5));
-                printw(" **BP** ");
-                attroff(COLOR_PAIR(5));
-                attron(COLOR_PAIR(3));
-            }
-
-            if (state->dmrburstR == 16 && state->payload_algidR == 0 && state->K > 0 && state->dmr_soR & 0x40
-                && state->dmr_fidR == 0x10) {
-                attron(COLOR_PAIR(1));
-                printw("BP Key: %3lld ", state->K);
-                attroff(COLOR_PAIR(1));
-                attron(COLOR_PAIR(3));
-            }
-            if (state->dmrburstR == 16 && state->payload_algidR == 0 && state->H > 0 && state->dmr_soR & 0x40
-                && state->dmr_fidR == 0x68) {
-                attron(COLOR_PAIR(1));
-                printw("Hytera BP Key: %010llX ", state->H);
-                attroff(COLOR_PAIR(1));
-                attron(COLOR_PAIR(3));
-            }
-            //ALG, KeyID, MI 2                          //was keyidR
-            if (state->dmrburstR == 16 && state->payload_algidR > 0 && state->dmr_soR & 0x40) {
-                attron(COLOR_PAIR(1));
-                printw("ALG: 0x%02X KEY: 0x%02X MI: 0x%08llX ", state->payload_algidR, state->payload_keyidR,
-                       state->payload_miR);
-                attroff(COLOR_PAIR(1));
-                attron(COLOR_PAIR(3));
-            }
-            //P25-P1 and P2
-            if (show_r_p25_vxtra && state->payload_algidR > 0 && state->payload_algidR != 0x80) {
-                attron(COLOR_PAIR(1));
-                printw("ALG: 0x%02X KEY: 0x%04X MI: 0x%016llX ", state->payload_algidR, state->payload_keyidR,
-                       state->payload_miN);
-                attroff(COLOR_PAIR(1));
-                attron(COLOR_PAIR(3));
-            }
-
-            //Anytone 0x01 will never show here since its converted to 0x21 for handling
-            if (show_r_crypto_status
-                && (state->payload_algidR == 0xAA || state->payload_algidR == 0x21 || state->payload_algidR == 0x01)) {
-                attron(COLOR_PAIR(1));
-                printw("RC4 ");
-                if (state->RR != 0) {
-                    printw("Key: %010llX ", state->RR);
-                }
-                attron(COLOR_PAIR(3));
-            }
-            if (show_r_crypto_status && (state->payload_algidR == 0x81 || state->payload_algidR == 0x22)) {
-                attron(COLOR_PAIR(1));
-                printw("DES1 ");
-                if (state->RR != 0) {
-                    printw("Key: %010llX ", state->RR);
-                }
-                attron(COLOR_PAIR(3));
-            }
-            if (show_r_crypto_status && state->payload_algidR == 0x9F) {
-                attron(COLOR_PAIR(1));
-                printw("DES-XL ");
-                if (state->RR != 0) {
-                    printw("Key: %010llX ", state->RR);
-                }
-                attron(COLOR_PAIR(3));
-            }
-            if (show_r_crypto_status && state->payload_algidR == 0x82) {
-                attron(COLOR_PAIR(1));
-                printw("DES2 ");
-                attron(COLOR_PAIR(3));
-            }
-            if (show_r_crypto_status && state->payload_algidR == 0x83) {
-                attron(COLOR_PAIR(1));
-                printw("DES3 ");
-                attron(COLOR_PAIR(3));
-            }
-            if (show_r_crypto_status && (state->payload_algidR == 0x89 || state->payload_algidR == 0x24)) {
-                attron(COLOR_PAIR(1));
-                printw("AES-128 ");
-                if (state->aes_key_loaded[1] != 0) {
-                    printw("KS: %016llX ", state->A2[1]);
-                }
-                attron(COLOR_PAIR(3));
-            }
-            if (show_r_crypto_status
-                && (state->payload_algidR == 0x84 || state->payload_algidR == 0x25 || state->payload_algidR == 0x05)) {
-                attron(COLOR_PAIR(1));
-                printw("AES-256 ");
-                if (state->aes_key_loaded[1] != 0) {
-                    printw("KS: %016llX ", state->A4[1]);
-                }
-                attron(COLOR_PAIR(3));
-            }
-            if (show_r_crypto_status && state->payload_algidR == 0x02) {
-                attron(COLOR_PAIR(1));
-                printw("Hytera Enhanced");
-                if (state->RR != 0) {
-                    printw(" Key: %010llX", state->RR);
-                }
-                attron(COLOR_PAIR(3));
-            }
-            if (show_r_crypto_status && state->payload_algidR == 0x07) {
-                attron(COLOR_PAIR(1));
-                printw("Vertex Std");
-                attron(COLOR_PAIR(3));
-            }
-            if (show_r_crypto_status && (state->payload_algidR == 0x36 || state->payload_algidR == 0x37)) {
-                attron(COLOR_PAIR(1));
-                if (state->payload_algidR == 0x36) {
-                    printw("Kirisun Adv");
-                } else {
-                    printw("Kirisun Uni");
-                }
-                if (state->aes_key_loaded[1] != 0) {
-                    printw(" KS: %016llX", state->A4[1]);
-                }
-                attron(COLOR_PAIR(3));
-            }
-
-            printw("\n");
-
-            //printw ("|        | ");
-            printw("| D XTRA | ");
-
-            attron(COLOR_PAIR(4));
-
-            if (state->dmrburstR == 16 || state->dmrburstR == 21) //only during call
-            {
-
-                //Embedded GPS (not LRRP)
-                attron(COLOR_PAIR(4));
-                printw("%s ", state->dmr_embedded_gps[1]);
-
-                //Embedded Talker Alias String (show when present during active call)
-                if (state->generic_talker_alias[1][0] != '\0') {
-                    printw("%s ", state->generic_talker_alias[1]);
-                }
-
-                attroff(COLOR_PAIR(5));
-                if (state->carrier == 1) {
-                    attron(COLOR_PAIR(3));
-                }
-            }
-
-            //LRRP
-            if (state->dmrburstR != 16) //only during data and no trunking
-            {
-                attron(COLOR_PAIR(4));
-                printw("%s", state->dmr_lrrp_gps[1]);
-            }
-
-            //Group Name Labels from CSV import
-            if (show_r_ids) {
-                char group_mode[8];
-                char group_name[50];
-                if (ui_lookup_group_label(state, (unsigned long)state->lasttgR, group_mode, sizeof(group_mode),
-                                          group_name, sizeof(group_name))) {
-                    attron(COLOR_PAIR(4));
-                    printw(" [%s]", group_name);
-                    printw("[%s] ", group_mode);
-                }
-                if (state->carrier == 1) {
-                    attron(COLOR_PAIR(3));
-                }
-            }
-
-            if (state->carrier == 1) {
-                attron(COLOR_PAIR(3));
-            } else {
-                /* Keep cyan when idle to avoid white fallback */
-                attron(COLOR_PAIR(4));
-            }
-
-            printw("\n");
-
-            /* opts->p25_trunk == 1 */
-            {
-                printw("|        | "); //Active Trunking Channels
-
-                //active channel display
-                attron(COLOR_PAIR(4));
-                for (unsigned int i = 0; i < 31; i++) //up to 31 idas channels
-                {
-                    if (state->active_channel[i][0] != '\0') {
-                        const char* s = state->active_channel[i];
-                        int locked = ui_is_locked_from_label(state, s);
-                        /* Also show disabled classes (global toggles) in red */
-                        if (!locked && opts) {
-                            if (opts->trunk_tune_data_calls == 0 && strstr(s, "Active Data Ch:") != NULL) {
-                                locked = 1;
-                            }
-                            if (!locked && opts->trunk_tune_group_calls == 0 && strstr(s, "TG:") != NULL) {
-                                locked = 1;
-                            }
-                            if (!locked && opts->trunk_tune_private_calls == 0 && strstr(s, "TGT:") != NULL) {
-                                locked = 1;
-                            }
-                        }
-                        if (locked) {
-                            attron(COLOR_PAIR(2));
-                            printw("%s", s);
-                            attron(COLOR_PAIR(4));
-                        } else {
-                            printw("%s", s);
-                        }
-                    }
-                }
-
-                if (state->carrier == 1) {
-                    attron(COLOR_PAIR(3));
-                } else {
-                    /* Keep cyan when idle to avoid white fallback */
-                    attron(COLOR_PAIR(4));
-                }
-                printw("\n");
-            }
-
-            if (opts->p25_trunk == 1) {
-                printw("|        | "); //Currently Tuned Frequency
-
-                // Only render VC frequency when tuned off CC (on a voice/data channel)
-                if (opts->p25_is_tuned == 1) {
-                    // Tuned/Active Frequency Display: prefer tuned VC; else derive from active channel text/map
-                    long int vc = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
-                    if (vc == 0) {
-                        vc = ui_guess_active_vc_freq(state);
-                    }
-                    if (vc != 0) {
-                        attron(COLOR_PAIR(4));
-                        printw("Frequency: %.06lf MHz  ", (double)vc / 1000000);
-                    }
-                }
-
-                //TG Hold, if specified by user
-                if (state->tg_hold != 0) {
-                    printw("TG HOLD: %d", state->tg_hold);
-                }
-
-                if (state->carrier == 1) {
-                    attron(COLOR_PAIR(3));
-                } else {
-                    /* Keep cyan when idle to avoid white fallback */
-                    attron(COLOR_PAIR(4));
-                }
-                printw("\n");
-            }
-
-        } // end if not MS
-    } //end DMR BS Types
-
+static void
+ui_render_call_info_dpmr(dsd_state* state) {
     //dPMR
     if (DSD_SYNC_IS_DPMR(lls)) {
         printw("| DCC: [%i] ", state->dpmr_color_code);
@@ -2248,290 +2155,788 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             if (state->R != 0) {
                 attron(COLOR_PAIR(1));
                 printw("KEY VALUE: [%05lld] ", state->R);
-                //printw ("SEED: [%04llX]", state->payload_miN);
                 attron(COLOR_PAIR(3));
             }
         }
         printw("\n");
     }
+}
 
-    //EDACS and ProVoice
-    if (DSD_SYNC_IS_EDACS(lls)) {
-        attroff(COLOR_PAIR(3)); //colors off for EDACS
-        if (state->edacs_site_id != 0) {
-            if (opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0) {
-                printw("| Monitoring CC - LCN [%02d]\n", state->edacs_cc_lcn);
-            } else {
-                printw("| Monitoring VC - LCN [%02d]\n", state->edacs_tuned_lcn);
-                //since we are tuned, keep updating the time so it doesn't disappear during call
-                edacs_channel_tree[state->edacs_tuned_lcn][5] = time(NULL);
-            }
-            printw("| SITE [%03lld][%02llX]", state->edacs_site_id, state->edacs_site_id);
+static void
+ui_render_edacs_site_header(const dsd_opts* opts, dsd_state* state) {
+    if (state->edacs_site_id == 0) {
+        return;
+    }
 
-            if (state->ea_mode == 1) {
-                printw(" Extended Addressing");
-            } else {
-                printw(" Standard/Networked");
-            }
-            if (state->esk_mask == 0xA0) {
-                printw(" w/  ESK");
-            } else {
-                printw(" w/o ESK");
-            }
-            printw("\n");
+    if (opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0) {
+        printw("| Monitoring CC - LCN [%02d]\n", state->edacs_cc_lcn);
+    } else {
+        printw("| Monitoring VC - LCN [%02d]\n", state->edacs_tuned_lcn);
+        edacs_channel_tree[state->edacs_tuned_lcn][5] = time(NULL);
+    }
+    printw("| SITE [%03lld][%02llX]", state->edacs_site_id, state->edacs_site_id);
+    printw((state->ea_mode == 1) ? " Extended Addressing" : " Standard/Networked");
+    printw((state->esk_mask == 0xA0) ? " w/  ESK" : " w/o ESK");
+    printw("\n");
+}
+
+static int
+ui_get_edacs_call_color(const dsd_state* state, int lcn) {
+    if (lcn == state->edacs_cc_lcn) {
+        return 0;
+    }
+    time_t age = time(NULL) - edacs_channel_tree[lcn][5];
+    if (age < 2) {
+        return 3;
+    }
+    if (age < 5) {
+        return 2;
+    }
+    return 0;
+}
+
+static void
+ui_render_edacs_call_flags_ea(unsigned long long flags) {
+    if ((flags & EDACS_IS_TEST_CALL) == 0) {
+        printw(((flags & EDACS_IS_DIGITAL) == 0) ? " [Ana]" : " [Dig]");
+    }
+    if ((flags & EDACS_IS_EMERGENCY) != 0) {
+        printw("[EM]");
+    }
+}
+
+static void
+ui_render_edacs_call_flags_standard(unsigned long long flags) {
+    if ((flags & EDACS_IS_TEST_CALL) == 0) {
+        printw(((flags & EDACS_IS_DIGITAL) == 0) ? " [Ana]" : " [Dig]");
+    }
+    if ((flags & EDACS_IS_AGENCY_CALL) != 0) {
+        printw("[A]");
+    }
+    if ((flags & EDACS_IS_FLEET_CALL) != 0) {
+        printw("[F]");
+    }
+    if ((flags & EDACS_IS_EMERGENCY) != 0) {
+        printw("[EM]");
+    }
+}
+
+static void
+ui_render_edacs_extended_call_body(int lcn, unsigned long long flags) {
+    unsigned long long tgt = edacs_channel_tree[lcn][2];
+    unsigned long long src = edacs_channel_tree[lcn][3];
+
+    if ((flags & EDACS_IS_VOICE) == 0) {
+        printw(" TGT [  DATA  ] SRC [%8lld] Data", src);
+        return;
+    }
+
+    if ((flags & EDACS_IS_GROUP) != 0) {
+        printw(" TGT [%8lld] SRC [%8lld]", tgt, src);
+    } else if ((flags & EDACS_IS_INDIVIDUAL) != 0) {
+        printw(" TGT [%8lld] SRC [%8lld] I-Call", tgt, src);
+    } else if ((flags & EDACS_IS_ALL_CALL) != 0) {
+        printw(" TGT [ SYSTEM ] SRC [%8lld] All-Call", src);
+    } else if ((flags & EDACS_IS_INTERCONNECT) != 0) {
+        printw(" TGT [ SYSTEM ] SRC [%8lld] Interconnect", src);
+    } else if ((flags & EDACS_IS_TEST_CALL) != 0) {
+        printw(" TGT [ SYSTEM ] SRC [ SYSTEM ] Test Call");
+    } else {
+        printw(" Unknown call type");
+    }
+    ui_render_edacs_call_flags_ea(flags);
+}
+
+static void
+ui_render_edacs_standard_voice_body(const dsd_state* state, int lcn, unsigned long long flags, int a, int f, int s) {
+    const int afs_len = getAfsStringLength(state);
+    unsigned long long tgt = edacs_channel_tree[lcn][2];
+    unsigned long long src = edacs_channel_tree[lcn][3];
+
+    if ((flags & EDACS_IS_GROUP) != 0) {
+        char afs_str[8];
+        getAfsString(state, afs_str, a, f, s);
+        printw(" TGT [%6lld][%s] SRC [%5lld]", tgt, afs_str, src);
+    } else if ((flags & EDACS_IS_INDIVIDUAL) != 0) {
+        printw((afs_len == 6) ? " TGT [%6lld][ UNIT ] SRC [%5lld] I-Call" : " TGT [%6lld][  UNIT ] SRC [%5lld] I-Call",
+               tgt, src);
+    } else if ((flags & EDACS_IS_ALL_CALL) != 0) {
+        printw((afs_len == 6) ? " TGT [    SYSTEM    ] SRC [%5lld] All-Call"
+                              : " TGT [     SYSTEM    ] SRC [%5lld] All-Call",
+               src);
+    } else if ((flags & EDACS_IS_INTERCONNECT) != 0) {
+        printw((afs_len == 6) ? " TGT [    SYSTEM    ] SRC [%5lld] Interconnect"
+                              : " TGT [     SYSTEM    ] SRC [%5lld] Interconnect",
+               src);
+    } else if ((flags & EDACS_IS_TEST_CALL) != 0) {
+        printw((afs_len == 6) ? " TGT [    SYSTEM    ] SRC [ SYS ] Test Call"
+                              : " TGT [     SYSTEM    ] SRC [ SYS ] Test Call");
+    } else {
+        printw(" Unknown call type");
+    }
+    ui_render_edacs_call_flags_standard(flags);
+}
+
+static void
+ui_render_edacs_standard_call_body(const dsd_state* state, int lcn, unsigned long long flags, int a, int f, int s) {
+    if ((flags & EDACS_IS_VOICE) != 0) {
+        ui_render_edacs_standard_voice_body(state, lcn, flags, a, f, s);
+        return;
+    }
+    if (getAfsStringLength(state) == 6) {
+        printw(" TGT [     DATA     ] SRC [%5lld] Data", edacs_channel_tree[lcn][3]);
+    } else {
+        printw(" TGT [      DATA     ] SRC [%5lld] Data", edacs_channel_tree[lcn][3]);
+    }
+}
+
+static void
+ui_render_edacs_channel_label(const dsd_state* state, int lcn) {
+    char group_mode[8];
+    char group_name[50];
+    int label_found = 0;
+    if (edacs_channel_tree[lcn][2] != 0) {
+        label_found = ui_lookup_group_label(state, (unsigned long)edacs_channel_tree[lcn][2], group_mode,
+                                            sizeof(group_mode), group_name, sizeof(group_name));
+    }
+    if (!label_found && edacs_channel_tree[lcn][3] != 0) {
+        label_found = ui_lookup_group_label(state, (unsigned long)edacs_channel_tree[lcn][3], group_mode,
+                                            sizeof(group_mode), group_name, sizeof(group_name));
+    }
+    if (label_found) {
+        printw(" [%s]", group_name);
+        printw("[%s]", group_mode);
+    }
+}
+
+static void
+ui_render_edacs_lcn_row(const dsd_opts* opts, dsd_state* state, int lcn) {
+    int a = (edacs_channel_tree[lcn][2] >> state->edacs_a_shift) & state->edacs_a_mask;
+    int f = (edacs_channel_tree[lcn][2] >> state->edacs_f_shift) & state->edacs_f_mask;
+    int s = edacs_channel_tree[lcn][2] & state->edacs_s_mask;
+    unsigned long long flags = edacs_channel_tree[lcn][4];
+
+    printw("| - LCN [%02d][%.06lf] MHz", lcn, (double)state->trunk_lcn_freq[lcn - 1] / 1000000);
+    if (lcn == state->edacs_cc_lcn) {
+        attron(COLOR_PAIR(1));
+        printw(" Control Channel");
+        attroff(COLOR_PAIR(1));
+    }
+
+    int call_color = ui_get_edacs_call_color(state, lcn);
+    if (call_color == 3) {
+        attron(COLOR_PAIR(3));
+    } else if (call_color == 2) {
+        attron(COLOR_PAIR(2));
+    }
+    if (call_color != 0) {
+        if (state->ea_mode == 1) {
+            ui_render_edacs_extended_call_body(lcn, flags);
+        } else {
+            ui_render_edacs_standard_call_body(state, lcn, flags, a, f, s);
         }
-        for (i = 1; i <= state->edacs_lcn_count; i++) {
-            // Compute AFS for display purposes only
-            int a = (edacs_channel_tree[i][2] >> state->edacs_a_shift) & state->edacs_a_mask;
-            int f = (edacs_channel_tree[i][2] >> state->edacs_f_shift) & state->edacs_f_mask;
-            int s = edacs_channel_tree[i][2] & state->edacs_s_mask;
-            printw("| - LCN [%02d][%.06lf] MHz", i, (double)state->trunk_lcn_freq[i - 1] / 1000000);
-
-            //print Control Channel on LCN line with the current Control Channel
-            if ((i) == state->edacs_cc_lcn) {
-                attron(COLOR_PAIR(1)); //yellow
-                printw(" Control Channel");
-                attroff(COLOR_PAIR(1));
-            }
-
-            int print_call = 0;
-            //print active calls on corresponding LCN line
-            if ((i != state->edacs_cc_lcn) && time(NULL) - edacs_channel_tree[i][5] < 2) {
-                print_call = 3;
-                attron(COLOR_PAIR(3));
-            }
-            //print dying or dead calls in red for x seconds longer
-            else if ((i != state->edacs_cc_lcn) && (time(NULL) - edacs_channel_tree[i][5] >= 2)
-                     && (time(NULL) - edacs_channel_tree[i][5] < 5)) {
-                print_call = 2;
-                attron(COLOR_PAIR(2));
-            }
-
-            if (print_call != 0) {
-                if (state->ea_mode == 1) {
-                    // Voice call
-                    if ((edacs_channel_tree[i][4] & EDACS_IS_VOICE) != 0) {
-                        // Group call
-                        if ((edacs_channel_tree[i][4] & EDACS_IS_GROUP) != 0) {
-                            printw(" TGT [%8lld] SRC [%8lld]", edacs_channel_tree[i][2], edacs_channel_tree[i][3]);
-                        }
-                        // I-Call
-                        else if ((edacs_channel_tree[i][4] & EDACS_IS_INDIVIDUAL) != 0) {
-                            printw(" TGT [%8lld] SRC [%8lld] I-Call", edacs_channel_tree[i][2],
-                                   edacs_channel_tree[i][3]);
-                        }
-                        // System all-call
-                        else if ((edacs_channel_tree[i][4] & EDACS_IS_ALL_CALL) != 0) {
-                            printw(" TGT [ SYSTEM ] SRC [%8lld] All-Call", edacs_channel_tree[i][3]);
-                        }
-                        // Interconnect call
-                        else if ((edacs_channel_tree[i][4] & EDACS_IS_INTERCONNECT) != 0) {
-                            printw(" TGT [ SYSTEM ] SRC [%8lld] Interconnect", edacs_channel_tree[i][3]);
-                        }
-                        // Test call
-                        else if ((edacs_channel_tree[i][4] & EDACS_IS_TEST_CALL) != 0) {
-                            printw(" TGT [ SYSTEM ] SRC [ SYSTEM ] Test Call");
-                        }
-                        // Unknown call
-                        else {
-                            printw(" Unknown call type");
-                        }
-
-                        // Call flags
-                        if ((edacs_channel_tree[i][4] & EDACS_IS_TEST_CALL) != 0) {
-                        } else if ((edacs_channel_tree[i][4] & EDACS_IS_DIGITAL) == 0) {
-                            printw(" [Ana]");
-                        } else {
-                            printw(" [Dig]");
-                        }
-                        if ((edacs_channel_tree[i][4] & EDACS_IS_EMERGENCY) != 0) {
-                            printw("[EM]");
-                        }
-                    } else {
-                        // Data call
-                        printw(" TGT [  DATA  ] SRC [%8lld] Data", edacs_channel_tree[i][3]);
-                    }
-                } else {
-                    // Voice call
-                    if ((edacs_channel_tree[i][4] & EDACS_IS_VOICE) != 0) {
-                        // Group call
-                        if ((edacs_channel_tree[i][4] & EDACS_IS_GROUP) != 0) {
-                            char afs_str[8];
-                            getAfsString(state, afs_str, a, f, s);
-                            printw(" TGT [%6lld][%s] SRC [%5lld]", edacs_channel_tree[i][2], afs_str,
-                                   edacs_channel_tree[i][3]);
-                        }
-                        // I-Call
-                        else if ((edacs_channel_tree[i][4] & EDACS_IS_INDIVIDUAL) != 0) {
-                            if (getAfsStringLength(state) == 6) {
-                                printw(" TGT [%6lld][ UNIT ] SRC [%5lld] I-Call", edacs_channel_tree[i][2],
-                                       edacs_channel_tree[i][3]);
-                            } else {
-                                printw(" TGT [%6lld][  UNIT ] SRC [%5lld] I-Call", edacs_channel_tree[i][2],
-                                       edacs_channel_tree[i][3]);
-                            }
-                        }
-                        // System all-call
-                        else if ((edacs_channel_tree[i][4] & EDACS_IS_ALL_CALL) != 0) {
-                            if (getAfsStringLength(state) == 6) {
-                                printw(" TGT [    SYSTEM    ] SRC [%5lld] All-Call", edacs_channel_tree[i][3]);
-                            } else {
-                                printw(" TGT [     SYSTEM    ] SRC [%5lld] All-Call", edacs_channel_tree[i][3]);
-                            }
-                        }
-                        // Interconnect call
-                        else if ((edacs_channel_tree[i][4] & EDACS_IS_INTERCONNECT) != 0) {
-                            if (getAfsStringLength(state) == 6) {
-                                printw(" TGT [    SYSTEM    ] SRC [%5lld] Interconnect", edacs_channel_tree[i][3]);
-                            } else {
-                                printw(" TGT [     SYSTEM    ] SRC [%5lld] Interconnect", edacs_channel_tree[i][3]);
-                            }
-                        }
-                        // Test call
-                        else if ((edacs_channel_tree[i][4] & EDACS_IS_TEST_CALL) != 0) {
-                            if (getAfsStringLength(state) == 6) {
-                                printw(" TGT [    SYSTEM    ] SRC [ SYS ] Test Call");
-                            } else {
-                                printw(" TGT [     SYSTEM    ] SRC [ SYS ] Test Call");
-                            }
-                        }
-                        // Unknown call
-                        else {
-                            printw(" Unknown call type");
-                        }
-
-                        // Call flags
-                        if ((edacs_channel_tree[i][4] & EDACS_IS_TEST_CALL) != 0) {
-                        } else if ((edacs_channel_tree[i][4] & EDACS_IS_DIGITAL) == 0) {
-                            printw(" [Ana]");
-                        } else {
-                            printw(" [Dig]");
-                        }
-                        if ((edacs_channel_tree[i][4] & EDACS_IS_AGENCY_CALL) != 0) {
-                            printw("[A]");
-                        }
-                        if ((edacs_channel_tree[i][4] & EDACS_IS_FLEET_CALL) != 0) {
-                            printw("[F]");
-                        }
-                        if ((edacs_channel_tree[i][4] & EDACS_IS_EMERGENCY) != 0) {
-                            printw("[EM]");
-                        }
-                    }
-                    // Data call
-                    else if (getAfsStringLength(state) == 6) {
-                        printw(" TGT [     DATA     ] SRC [%5lld] Data", edacs_channel_tree[i][3]);
-                    } else {
-                        printw(" TGT [      DATA     ] SRC [%5lld] Data", edacs_channel_tree[i][3]);
-                    }
-                }
-                {
-                    char group_mode[8];
-                    char group_name[50];
-                    int label_found = 0;
-                    if (edacs_channel_tree[i][2] != 0) {
-                        label_found = ui_lookup_group_label(state, (unsigned long)edacs_channel_tree[i][2], group_mode,
-                                                            sizeof(group_mode), group_name, sizeof(group_name));
-                    }
-                    if (!label_found && edacs_channel_tree[i][3] != 0) {
-                        label_found = ui_lookup_group_label(state, (unsigned long)edacs_channel_tree[i][3], group_mode,
-                                                            sizeof(group_mode), group_name, sizeof(group_name));
-                    }
-                    if (label_found) {
-                        printw(" [%s]", group_name);
-                        printw("[%s]", group_mode);
-                    }
-                }
-
-                if (print_call == 3) {
-                    attroff(COLOR_PAIR(3));
-                } else if (print_call == 2) {
-                    attroff(COLOR_PAIR(2));
-                }
-            }
-
-            if (i == state->edacs_tuned_lcn && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
-                printw(" **T**"); //asterisk which lcn is tuned
-            }
-            printw("\n");
-        }
-        if (state->carrier == 1) {
-            attron(COLOR_PAIR(3));
+        ui_render_edacs_channel_label(state, lcn);
+        if (call_color == 3) {
+            attroff(COLOR_PAIR(3));
+        } else if (call_color == 2) {
+            attroff(COLOR_PAIR(2));
         }
     }
 
+    if (lcn == state->edacs_tuned_lcn && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
+        printw(" **T**");
+    }
+    printw("\n");
+}
+
+static void
+ui_render_call_info_edacs(const dsd_opts* opts, dsd_state* state) {
+    //EDACS and ProVoice
+    if (!DSD_SYNC_IS_EDACS(lls)) {
+        return;
+    }
+
+    attroff(COLOR_PAIR(3));
+    ui_render_edacs_site_header(opts, state);
+    for (int i = 1; i <= state->edacs_lcn_count; i++) {
+        ui_render_edacs_lcn_row(opts, state, i);
+    }
+    if (state->carrier == 1) {
+        attron(COLOR_PAIR(3));
+    }
+}
+
+static void
+ui_parse_patch_tokens(const char* patch_line, char tokens[48][64], int* count_out) {
+    int count = 0;
+    const char* s = patch_line;
+    while (*s && count < 48) {
+        while (*s == ';' || *s == ' ') {
+            s++;
+        }
+        if (!*s) {
+            break;
+        }
+        int t = 0;
+        while (*s && *s != ';' && t < 63) {
+            tokens[count][t++] = *s++;
+        }
+        while (t > 0 && tokens[count][t - 1] == ' ') {
+            t--;
+        }
+        tokens[count][t] = '\0';
+        if (t > 0) {
+            count++;
+        }
+        if (*s == ';') {
+            s++;
+        }
+    }
+    *count_out = count;
+}
+
+static int
+ui_patch_tokens_col_width(char tokens[48][64], int count) {
+    int colw = 0;
+    for (int i = 0; i < count; i++) {
+        int len = (int)strlen(tokens[i]);
+        if (len > colw) {
+            colw = len;
+        }
+    }
+    if (colw > 28) {
+        colw = 28;
+    }
+    return colw;
+}
+
+static void
+ui_render_patch_rows(const dsd_state* state, char tokens[48][64], int count, int colw) {
+    const int cols_per_line = 3;
+    const char* label = "Patches: ";
+    int idx = 0;
+    while (idx < count) {
+        printw("|        | ");
+        if (idx == 0) {
+            attron(COLOR_PAIR(4));
+            printw("%s", label);
+        } else {
+            for (size_t sp = 0; sp < strlen(label); sp++) {
+                addch(' ');
+            }
+        }
+        for (int c = 0; c < cols_per_line && idx < count; c++, idx++) {
+            attron(COLOR_PAIR(4));
+            printw("%-*s", colw, tokens[idx]);
+            if (state->carrier == 1) {
+                attron(COLOR_PAIR(3));
+            } else {
+                attron(COLOR_PAIR(4));
+            }
+            if (c < cols_per_line - 1 && idx < count) {
+                addstr("   ");
+            }
+        }
+        printw("\n");
+    }
+}
+
+static void
+ui_render_call_info_patches(const dsd_state* state) {
     // If any P25 patches are active, show them in wrapped columns (3 per line)
     // to avoid overflowing the Call Info width (similar to Channels layout).
     {
         char patch_line[192] = {0};
         int n = p25_patch_compose_details(state, patch_line, sizeof patch_line);
         if (n > 0) {
-            // Parse tokens separated by ';' and compute uniform column width
             char tokens[48][64];
             int count = 0;
-            const char* s = patch_line;
-            while (*s && count < 48) {
-                while (*s == ';' || *s == ' ') {
-                    s++;
-                }
-                if (!*s) {
-                    break;
-                }
-                int t = 0;
-                while (*s && *s != ';' && t < 63) {
-                    tokens[count][t++] = *s++;
-                }
-                while (t > 0 && tokens[count][t - 1] == ' ') {
-                    t--; // rtrim
-                }
-                tokens[count][t] = '\0';
-                if (t > 0) {
-                    count++;
-                }
-                if (*s == ';') {
-                    s++;
-                }
-            }
+            ui_parse_patch_tokens(patch_line, tokens, &count);
             if (count > 0) {
-                int colw = 0;
-                for (int i = 0; i < count; i++) {
-                    int len = (int)strlen(tokens[i]);
-                    if (len > colw) {
-                        colw = len;
-                    }
-                }
-                if (colw > 28) {
-                    colw = 28; // clamp
-                }
-                const int cols_per_line = 3;
-                const char* label = "Patches: ";
-                int idx = 0;
-                while (idx < count) {
-                    printw("|        | ");
-                    if (idx == 0) {
-                        attron(COLOR_PAIR(4));
-                        printw("%s", label);
-                    } else {
-                        for (size_t sp = 0; sp < strlen(label); sp++) {
-                            addch(' ');
-                        }
-                    }
-                    for (int c = 0; c < cols_per_line && idx < count; c++, idx++) {
-                        attron(COLOR_PAIR(4));
-                        printw("%-*s", colw, tokens[idx]);
-                        if (state->carrier == 1) {
-                            attron(COLOR_PAIR(3));
-                        } else {
-                            attron(COLOR_PAIR(4));
-                        }
-                        if (c < cols_per_line - 1 && idx < count) {
-                            addstr("   ");
-                        }
-                    }
-                    printw("\n");
-                }
+                int colw = ui_patch_tokens_col_width(tokens, count);
+                ui_render_patch_rows(state, tokens, count, colw);
             }
         }
     }
+}
+
+typedef struct {
+    int slot_no;
+    int burst;
+    int lasttg;
+    int lastsrc;
+    int p25_call_emergency;
+    int p25_call_priority;
+    int payload_algid;
+    int payload_keyid;
+    unsigned long long payload_mi_dmr;
+    unsigned long long payload_mi_p25;
+    unsigned int dmr_so;
+    unsigned int dmr_fid;
+    unsigned long long rc4_key;
+    const char* call_banner;
+    const char* embedded_gps;
+    const char* lrrp_gps;
+    const char* talker_alias;
+    int aes_loaded;
+    unsigned long long aes_a2;
+    unsigned long long aes_a4;
+} ui_slot_view;
+
+typedef struct {
+    int show_ids;
+    int show_p25_vxtra;
+    int show_crypto_status;
+} ui_slot_render_flags;
+
+static ui_slot_view
+ui_build_slot_view(const dsd_state* state, int slot_idx) {
+    ui_slot_view slot;
+    slot.slot_no = slot_idx + 1;
+    slot.burst = (slot_idx == 0) ? state->dmrburstL : state->dmrburstR;
+    slot.lasttg = (slot_idx == 0) ? state->lasttg : state->lasttgR;
+    slot.lastsrc = (slot_idx == 0) ? state->lastsrc : state->lastsrcR;
+    slot.p25_call_emergency = state->p25_call_emergency[slot_idx];
+    slot.p25_call_priority = state->p25_call_priority[slot_idx];
+    slot.payload_algid = (slot_idx == 0) ? state->payload_algid : state->payload_algidR;
+    slot.payload_keyid = (slot_idx == 0) ? state->payload_keyid : state->payload_keyidR;
+    slot.payload_mi_dmr = (slot_idx == 0) ? state->payload_mi : state->payload_miR;
+    slot.payload_mi_p25 = (slot_idx == 0) ? state->payload_miP : state->payload_miN;
+    slot.dmr_so = (slot_idx == 0) ? state->dmr_so : state->dmr_soR;
+    slot.dmr_fid = (slot_idx == 0) ? state->dmr_fid : state->dmr_fidR;
+    slot.rc4_key = (slot_idx == 0) ? state->R : state->RR;
+    slot.call_banner = state->call_string[slot_idx];
+    slot.embedded_gps = state->dmr_embedded_gps[slot_idx];
+    slot.lrrp_gps = state->dmr_lrrp_gps[slot_idx];
+    slot.talker_alias = state->generic_talker_alias[slot_idx];
+    slot.aes_loaded = state->aes_key_loaded[slot_idx];
+    slot.aes_a2 = state->A2[slot_idx];
+    slot.aes_a4 = state->A4[slot_idx];
+    return slot;
+}
+
+static void
+ui_restore_call_info_color(const dsd_state* state) {
+    if (state->carrier == 1) {
+        attron(COLOR_PAIR(3));
+    } else {
+        attron(COLOR_PAIR(4));
+    }
+}
+
+static void
+ui_render_p25_talker_alias(dsd_state* state, unsigned long src, int alias_index) {
+    char group_name[50];
+    if (ui_lookup_group_label(state, src, NULL, 0, group_name, sizeof(group_name))) {
+        DSD_SNPRINTF(state->generic_talker_alias[alias_index], sizeof state->generic_talker_alias[alias_index], "%s",
+                     group_name);
+    }
+}
+
+static void
+ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
+    printw("DMR BS - DCC: %02i; ", state->dmr_color_code);
+    printw("%s ", state->dmr_branding);
+    printw("%s", state->dmr_branding_sub);
+    printw("%s", state->dmr_site_parms);
+    if (state->dmr_rest_channel > 0) {
+        printw("Rest LSN: %02d; ", state->dmr_rest_channel);
+        if (state->trunk_chan_map[state->dmr_rest_channel] != 0) {
+            printw("Freq: %.06lf Mhz", (double)state->trunk_chan_map[state->dmr_rest_channel] / 1000000);
+        }
+        return;
+    }
+    if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
+        long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+        printw("Freq: %.06lf MHz", (double)f / 1000000);
+    }
+}
+
+static void
+ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
+    char callsign[7] = {0};
+    if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
+        p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
+    }
+    printw("P25p1  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
+    if (opts->show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
+        printw(" [%s]", callsign);
+    }
+    printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
+    if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
+        long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+        printw("FREQ: %.06lf MHz", (double)f / 1000000);
+    }
+    ui_render_p25_talker_alias(state, (unsigned long)state->lastsrc, 0);
+}
+
+static void
+ui_render_p25p2_parameter_status(const dsd_state* state) {
+    if (state->p2_wacn == 0 || state->p2_sysid == 0 || state->p2_cc == 0) {
+        attron(COLOR_PAIR(2));
+        printw(" Phase 2 Missing Parameters ");
+        attron(COLOR_PAIR(3));
+        return;
+    }
+    if (state->p2_wacn == 0xFFFFF || state->p2_sysid == 0xFFF || state->p2_cc == 0xFFF) {
+        attron(COLOR_PAIR(2));
+        printw(" Phase 2 Invalid Parameters ");
+        attron(COLOR_PAIR(3));
+        return;
+    }
+    if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
+        long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+        printw("FREQ: %.06lf MHz", (double)f / 1000000);
+    }
+}
+
+static void
+ui_render_p25_dmr_header_p25p2(const dsd_opts* opts, dsd_state* state) {
+    char callsign[7] = {0};
+    if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
+        p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
+    }
+    printw("P25p2  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
+    if (opts->show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
+        printw(" [%s]", callsign);
+    }
+    printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
+    ui_render_p25p2_parameter_status(state);
+    ui_render_p25_talker_alias(state, (unsigned long)state->lastsrc, 0);
+    ui_render_p25_talker_alias(state, (unsigned long)state->lastsrcR, 1);
+}
+
+static void
+ui_render_p25_dmr_header(const dsd_opts* opts, dsd_state* state) {
+    printw("| ");
+    if (DSD_SYNC_IS_DMR_BS(lls)) {
+        ui_render_p25_dmr_header_dmr_bs(state);
+    } else if (DSD_SYNC_IS_DMR_MS(lls)) {
+        printw("DMR MS - DCC: %02i; ", state->dmr_color_code);
+    } else if (DSD_SYNC_IS_P25P1(lls)) {
+        ui_render_p25_dmr_header_p25p1(opts, state);
+    } else if (DSD_SYNC_IS_P25P2(lls)) {
+        ui_render_p25_dmr_header_p25p2(opts, state);
+    }
+}
+
+static void
+ui_render_slot_header_line(const dsd_state* state, const ui_slot_view* slot, ui_slot_render_flags* flags) {
+    printw("| SLOT %d - ", slot->slot_no);
+    if (slot->burst < 16 && state->carrier == 1 && slot->lasttg > 0 && slot->lastsrc > 0) {
+        attron(COLOR_PAIR(2));
+    }
+
+    flags->show_ids = ui_burst_is_active_call(slot->burst);
+    flags->show_p25_vxtra = ui_burst_has_p25_crypto_metadata(slot->burst);
+    flags->show_crypto_status = slot->burst == 16 || flags->show_p25_vxtra;
+
+    if (flags->show_ids) {
+        printw("TGT: [%8i] SRC: [%8i] ", slot->lasttg, slot->lastsrc);
+        if (slot->p25_call_emergency) {
+            printw("[EM] ");
+        }
+        if (slot->p25_call_priority > 0) {
+            printw("[PR:%d] ", slot->p25_call_priority);
+        }
+    } else {
+        printw("TGT: [        ] SRC: [        ] ");
+    }
+
+    if (slot->burst != 16 && state->carrier == 1 && slot->lasttg > 0 && slot->lastsrc > 0) {
+        attroff(COLOR_PAIR(2));
+        attron(COLOR_PAIR(3));
+    }
+    printw("%s | ", flags->show_ids ? slot->call_banner : "                     ");
+    printw("%s ", DMRBusrtTypes[slot->burst]);
+    printw("\n");
+}
+
+static void
+ui_render_slot_p25_dmr_alg_details(const ui_slot_view* slot, int show_p25_vxtra) {
+    if (slot->burst == 16 && slot->payload_algid > 0 && (slot->dmr_so & 0x40)) {
+        attron(COLOR_PAIR(1));
+        printw("ALG: 0x%02X KEY: 0x%02X MI: 0x%08llX ", slot->payload_algid, slot->payload_keyid, slot->payload_mi_dmr);
+        attroff(COLOR_PAIR(1));
+        attron(COLOR_PAIR(3));
+    }
+
+    if (show_p25_vxtra && slot->payload_algid > 0 && slot->payload_algid != 0x80) {
+        attron(COLOR_PAIR(1));
+        printw("ALG: 0x%02X KEY: 0x%04X MI: 0x%016llX ", slot->payload_algid, slot->payload_keyid,
+               slot->payload_mi_p25);
+        attroff(COLOR_PAIR(1));
+        attron(COLOR_PAIR(3));
+    }
+}
+
+static int
+ui_render_slot_named_crypto_rc4_des(const ui_slot_view* slot) {
+    if (slot->payload_algid == 0xAA || slot->payload_algid == 0x21 || slot->payload_algid == 0x01) {
+        attron(COLOR_PAIR(1));
+        printw("RC4 ");
+        if (slot->rc4_key != 0) {
+            printw("Key: %010llX ", slot->rc4_key);
+        }
+        attron(COLOR_PAIR(3));
+        return 1;
+    }
+    if (slot->payload_algid == 0x81 || slot->payload_algid == 0x22) {
+        attron(COLOR_PAIR(1));
+        printw("DES1 ");
+        if (slot->rc4_key != 0) {
+            printw("Key: %010llX ", slot->rc4_key);
+        }
+        attron(COLOR_PAIR(3));
+        return 1;
+    }
+    if (slot->payload_algid == 0x9F) {
+        attron(COLOR_PAIR(1));
+        printw("DES-XL ");
+        if (slot->rc4_key != 0) {
+            printw("Key: %010llX ", slot->rc4_key);
+        }
+        attron(COLOR_PAIR(3));
+        return 1;
+    }
+    if (slot->payload_algid == 0x82) {
+        attron(COLOR_PAIR(1));
+        printw("DES2 ");
+        attron(COLOR_PAIR(3));
+        return 1;
+    }
+    if (slot->payload_algid == 0x83) {
+        attron(COLOR_PAIR(1));
+        printw("DES3 ");
+        attron(COLOR_PAIR(3));
+        return 1;
+    }
+    return 0;
+}
+
+static int
+ui_render_slot_named_crypto_aes(const ui_slot_view* slot) {
+    if (slot->payload_algid == 0x89 || slot->payload_algid == 0x24) {
+        attron(COLOR_PAIR(1));
+        printw("AES-128 ");
+        if (slot->aes_loaded != 0) {
+            printw("KS: %016llX ", slot->aes_a2);
+        }
+        attron(COLOR_PAIR(3));
+        return 1;
+    }
+    if (slot->payload_algid == 0x84 || slot->payload_algid == 0x25 || slot->payload_algid == 0x05) {
+        attron(COLOR_PAIR(1));
+        printw("AES-256 ");
+        if (slot->aes_loaded != 0) {
+            printw("KS: %016llX ", slot->aes_a4);
+        }
+        attron(COLOR_PAIR(3));
+        return 1;
+    }
+    return 0;
+}
+
+static int
+ui_render_slot_named_crypto_vendor(const ui_slot_view* slot) {
+    if (slot->payload_algid == 0x02) {
+        attron(COLOR_PAIR(1));
+        printw("Hytera Enhanced");
+        if (slot->rc4_key != 0) {
+            printw(" Key: %010llX", slot->rc4_key);
+        }
+        attron(COLOR_PAIR(3));
+        return 1;
+    }
+    if (slot->payload_algid == 0x07) {
+        attron(COLOR_PAIR(1));
+        printw("Vertex Std");
+        attron(COLOR_PAIR(3));
+        return 1;
+    }
+    if (slot->payload_algid == 0x36 || slot->payload_algid == 0x37) {
+        attron(COLOR_PAIR(1));
+        printw((slot->payload_algid == 0x36) ? "Kirisun Adv" : "Kirisun Uni");
+        if (slot->aes_loaded != 0) {
+            printw(" KS: %016llX", slot->aes_a4);
+        }
+        attron(COLOR_PAIR(3));
+        return 1;
+    }
+    return 0;
+}
+
+static void
+ui_render_slot_named_crypto_details(const ui_slot_view* slot, int show_crypto_status) {
+    if (!show_crypto_status) {
+        return;
+    }
+    if (ui_render_slot_named_crypto_rc4_des(slot)) {
+        return;
+    }
+    if (ui_render_slot_named_crypto_aes(slot)) {
+        return;
+    }
+    (void)ui_render_slot_named_crypto_vendor(slot);
+}
+
+static void
+ui_render_slot_vxtra_line(const dsd_state* state, const ui_slot_view* slot, const ui_slot_render_flags* flags) {
+    printw("| V XTRA | ");
+
+    if (slot->burst == 16 && slot->payload_algid == 0 && (slot->dmr_so & 0x40)) {
+        attron(COLOR_PAIR(5));
+        printw(" **BP** ");
+        attroff(COLOR_PAIR(5));
+        attron(COLOR_PAIR(3));
+    }
+    if (slot->burst == 16 && slot->payload_algid == 0 && state->K > 0 && slot->dmr_fid == 0x10
+        && (slot->dmr_so & 0x40)) {
+        attron(COLOR_PAIR(1));
+        printw("BP Key: %3lld ", state->K);
+        attroff(COLOR_PAIR(1));
+        attron(COLOR_PAIR(3));
+    }
+    if (slot->burst == 16 && slot->payload_algid == 0 && state->H > 0 && slot->dmr_fid == 0x68
+        && (slot->dmr_so & 0x40)) {
+        attron(COLOR_PAIR(1));
+        printw("Hytera BP Key: %010llX ", state->H);
+        attroff(COLOR_PAIR(1));
+        attron(COLOR_PAIR(3));
+    }
+
+    ui_render_slot_p25_dmr_alg_details(slot, flags->show_p25_vxtra);
+    ui_render_slot_named_crypto_details(slot, flags->show_crypto_status);
+    printw("\n");
+}
+
+static int
+ui_slot_has_dxtra_embedded(int slot_no, int burst) {
+    if (slot_no == 1) {
+        return burst == 16 || burst == 21 || burst == 26 || burst == 27 || burst == 32;
+    }
+    return burst == 16 || burst == 21;
+}
+
+static void
+ui_render_slot_group_label(const dsd_state* state, const ui_slot_view* slot, int show_ids) {
+    if (!show_ids) {
+        return;
+    }
+
+    char group_mode[8];
+    char group_name[50];
+    if (ui_lookup_group_label(state, (unsigned long)slot->lasttg, group_mode, sizeof(group_mode), group_name,
+                              sizeof(group_name))) {
+        attron(COLOR_PAIR(4));
+        printw(" [%s]", group_name);
+        printw("[%s] ", group_mode);
+    }
+}
+
+static void
+ui_render_slot_dxtra_line(const dsd_state* state, const ui_slot_view* slot, int show_ids) {
+    printw("| D XTRA | ");
+    attron(COLOR_PAIR(4));
+
+    if (ui_slot_has_dxtra_embedded(slot->slot_no, slot->burst)) {
+        attron(COLOR_PAIR(4));
+        printw("%s ", slot->embedded_gps);
+        if (slot->talker_alias[0] != '\0') {
+            printw("%s ", slot->talker_alias);
+        }
+        attroff(COLOR_PAIR(5));
+        if (state->carrier == 1) {
+            attron(COLOR_PAIR(3));
+        }
+    }
+
+    if (slot->burst != 16) {
+        attron(COLOR_PAIR(4));
+        printw("%s", slot->lrrp_gps);
+    }
+
+    ui_render_slot_group_label(state, slot, show_ids);
+    ui_restore_call_info_color(state);
+    printw("\n");
+}
+
+static void
+ui_render_p25_dmr_slot_block(const dsd_state* state, const ui_slot_view* slot) {
+    ui_slot_render_flags flags = {0};
+    ui_render_slot_header_line(state, slot, &flags);
+    ui_render_slot_vxtra_line(state, slot, &flags);
+    ui_render_slot_dxtra_line(state, slot, flags.show_ids);
+}
+
+static void
+ui_render_p25_dmr_active_channels_line(const dsd_opts* opts, const dsd_state* state) {
+    printw("|        | ");
+    attron(COLOR_PAIR(4));
+    ui_render_active_channel_list(opts, state, 31);
+    printw("\n");
+}
+
+static void
+ui_render_p25_dmr_tuned_freq_line(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->p25_trunk != 1) {
+        return;
+    }
+
+    printw("|        | ");
+    if (opts->p25_is_tuned == 1) {
+        long int vc = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
+        if (vc == 0) {
+            vc = ui_guess_active_vc_freq(state);
+        }
+        if (vc != 0) {
+            attron(COLOR_PAIR(4));
+            printw("Frequency: %.06lf MHz  ", (double)vc / 1000000);
+        }
+    }
+    if (state->tg_hold != 0) {
+        printw("TG HOLD: %d", state->tg_hold);
+    }
+    ui_restore_call_info_color(state);
+    printw("\n");
+}
+
+static void
+ui_render_call_info_p25_dmr(const dsd_opts* opts, dsd_state* state) {
+    if (!(DSD_SYNC_IS_P25(lls) || DSD_SYNC_IS_DMR(lls))) {
+        return;
+    }
+
+    ui_render_p25_dmr_header(opts, state);
+    printw("\n");
+
+    ui_slot_view left = ui_build_slot_view(state, 0);
+    ui_slot_view right = ui_build_slot_view(state, 1);
+    ui_render_p25_dmr_slot_block(state, &left);
+    ui_render_p25_dmr_slot_block(state, &right);
+    ui_render_p25_dmr_active_channels_line(opts, state);
+    ui_render_p25_dmr_tuned_freq_line(opts, state);
+}
+
+static void
+ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
+    ui_print_header("Call Info");
+
+    ui_render_call_info_dstar(state);
+
+    ui_render_call_info_m17(state);
+
+    ui_render_call_info_ysf(state);
+
+    ui_render_call_info_nxdn(opts, state);
+
+    ui_render_call_info_p25_dmr(opts, state);
+
+    ui_render_call_info_dpmr(state);
+
+    ui_render_call_info_edacs(opts, state);
+
+    ui_render_call_info_patches(state);
 
     // Bottom border for Call Info section
     ui_print_hr();
@@ -2546,390 +2951,44 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (state->carrier == 1) { //same as above
         attroff(COLOR_PAIR(3));
     }
-    //only print event history if enabled
-    const int history_mode = ui_history_get_mode();
-    int history_draw_footer = 1;
-    attron(COLOR_PAIR(4)); //cyan for history
-    {
-        /* Custom header to emphasize active Cycle (h) mode */
-        int rows = 0, cols = 80;
-        getmaxyx(stdscr, rows, cols);
-        if (cols < 4) {
-            cols = 80;
-        }
-        int y = 0, x0 = 0;
-        getyx(stdscr, y, x0);
-        (void)x0;
+    ui_render_event_history_section(state);
+}
 
-        /* Left prefix and static portion */
-        addstr("--");
-        if (state->eh_slot < 2) {
-            printw("Latest Event History ([|])  Slot %d (\\)  Cycle (h): ", state->eh_slot + 1);
-        } else {
-            printw("Latest Event History ([|])  Slots 1+2 (\\)  Cycle (h): ");
-        }
-
-        /* Bold the active cycle indicator based on UI history mode
-           0 = Off, 1 = Short, 2 = Long */
-        const int hist = history_mode;
-
-        if (hist == 1) {
-            attron(A_BOLD);
-        }
-        addstr("Short");
-        if (hist == 1) {
-            attroff(A_BOLD);
-        }
-
-        addch('/');
-
-        if (hist == 2) {
-            attron(A_BOLD);
-        }
-        addstr("Long");
-        if (hist == 2) {
-            attroff(A_BOLD);
-        }
-
-        addch('/');
-
-        if (hist == 0) {
-            attron(A_BOLD);
-        }
-        addstr("Off");
-        if (hist == 0) {
-            attroff(A_BOLD);
-        }
-
-        // If there's no room for at least one event row, surface it in-header.
-        if (history_mode != 0) {
-            int room_hint = rows - (y + 1) - 2;
-            if (room_hint < 1) {
-                addstr(" [No room]");
-            }
-        }
-
-        /* Fill remainder of line with '-' and advance to next line */
-        int used_y = 0, used = 0;
-        getyx(stdscr, used_y, used);
-        (void)used_y;
-        if (used < cols) {
-            mvhline(y, used, '-', cols - used);
-        }
-        if (y + 1 < rows) {
-            move(y + 1, 0);
-        } else {
-            addch('\n');
-        }
+static void
+ui_ncurses_printer_impl(dsd_opts* opts, dsd_state* state) {
+    /* Guard against null opts. Without opts we cannot render safely. */
+    if (!opts) {
+        return;
     }
-    if (history_mode != 0) {
-        int rows = 0, cols = 0;
-        getmaxyx(stdscr, rows, cols);
+    /* Demod path must not touch ncurses. Allow calls only from the UI thread
+       context; otherwise publish snapshots and request a redraw. */
+    if (!ui_is_thread_context()) {
+        // Publish snapshots for the UI thread to consume and request a redraw
+        ui_publish_both_and_redraw(opts, state);
+        return;
+    }
+    int level = 0;
 
-        int start_y = 0, start_x = 0;
-        getyx(stdscr, start_y, start_x);
-        (void)start_x;
+    ui_update_sync_and_edacs_tree(state);
 
-        // Leave room for the bottom HR line and avoid scrolling on ui_print_hr().
-        // If that leaves no room, reclaim the footer line instead of truncating
-        // higher sections.
-        int avail_lines = rows - start_y - 2;
-        if (avail_lines < 1) {
-            avail_lines = rows - start_y - 1;
-            history_draw_footer = 0;
-        }
-        if (avail_lines < 0) {
-            avail_lines = 0;
-        }
-
-        // Scale the visible event history to the available vertical space (within reason).
-        const int max_events = 50;
-        int events_to_show = avail_lines;
-        if (events_to_show > max_events) {
-            events_to_show = max_events;
-        }
-
-        int history_stop_y = rows - (history_draw_footer ? 2 : 1);
-        if (history_stop_y < 0) {
-            history_stop_y = 0;
-        }
-
-        // In short mode, bound the displayed event string to the current width to avoid wrapping.
-        uint16_t string_size = 71;
-        if (history_mode == 2) {
-            string_size = 1999;
-        } else if (cols > 0) {
-            int max_text = cols - 4; // "| " (2) + 2 cols of slack
-            if (max_text < 0) {
-                max_text = 0;
-            }
-            if (max_text < (int)string_size) {
-                string_size = (uint16_t)max_text;
-            }
-        }
-
-        if (state->event_history_s != NULL) {
-            if (state->eh_slot < 2) {
-                uint8_t slot = state->eh_slot;
-                uint16_t idx = 1;
-                uint16_t skip = state->eh_index;
-
-                while (idx < 255 && skip > 0) {
-                    const Event_History* item = &state->event_history_s[slot].Event_History_Items[idx];
-                    if (ui_eh_item_has_content(item)) {
-                        skip--;
-                    }
-                    idx++;
-                }
-
-                for (int shown = 0; shown < events_to_show && idx < 255; idx++) {
-                    int y = 0, x = 0;
-                    getyx(stdscr, y, x);
-                    (void)x;
-                    if (y >= history_stop_y) {
-                        break;
-                    }
-
-                    const Event_History* item = &state->event_history_s[slot].Event_History_Items[idx];
-                    if (!ui_eh_item_has_content(item)) {
-                        continue;
-                    }
-                    shown++;
-
-                    uint8_t color_pair = item->color_pair; //this is the color pair assignment for this line
-                    attron(COLOR_PAIR(4));
-
-                    if (item->event_string[0] != '\0') {
-                        char compact_string[2000];
-                        char text_string[2000];
-                        ui_history_compact_event_text(compact_string, sizeof compact_string, item->event_string,
-                                                      history_mode);
-
-                        const int show_enc_tag = (history_mode == 1 && item->enc != 0);
-                        const char* line_prefix = show_enc_tag ? "| [ENC] " : "| ";
-                        const int line_prefix_len = show_enc_tag ? 8 : 2;
-                        uint16_t line_size = string_size;
-                        if (history_mode != 2 && cols > 0) {
-                            int max_text = cols - (line_prefix_len + 2);
-                            if (max_text < 0) {
-                                max_text = 0;
-                            }
-                            if (max_text < (int)line_size) {
-                                line_size = (uint16_t)max_text;
-                            }
-                        }
-
-                        memcpy(text_string, compact_string, (size_t)line_size * sizeof(char));
-                        text_string[line_size] = 0; //terminate string
-                        printw("%s", line_prefix);
-                        attron(COLOR_PAIR(color_pair)); //this is where the custom color switch occurs for the
-                                                        //event_string
-                        printw("%s\n", text_string);
-                        attron(COLOR_PAIR(4));
-                    } else {
-                        printw("| \n");
-                    }
-
-                    if (item->text_message[0] != '\0') {
-                        getyx(stdscr, y, x);
-                        if (y >= history_stop_y) {
-                            break;
-                        }
-                        printw("|");
-                        attron(COLOR_PAIR(4));
-                        printw("  \\-- %s\n", item->text_message);
-                        attron(COLOR_PAIR(4));
-                    }
-
-                    if (item->alias[0] != '\0') {
-                        getyx(stdscr, y, x);
-                        if (y >= history_stop_y) {
-                            break;
-                        }
-                        printw("|");
-                        attron(COLOR_PAIR(4));
-                        printw("  \\-- Alias: %s \n", item->alias);
-                        attron(COLOR_PAIR(4));
-                    }
-
-                    if (item->gps_s[0] != '\0') {
-                        getyx(stdscr, y, x);
-                        if (y >= history_stop_y) {
-                            break;
-                        }
-                        printw("|");
-                        attron(COLOR_PAIR(4));
-                        printw("  \\-- GPS: %s \n", item->gps_s);
-                        attron(COLOR_PAIR(4));
-                    }
-
-                    if (item->internal_str[0] != '\0') {
-                        getyx(stdscr, y, x);
-                        if (y >= history_stop_y) {
-                            break;
-                        }
-                        printw("|");
-                        attron(COLOR_PAIR(4));
-                        printw("  \\-- DSD-neo: %s \n", item->internal_str);
-                        attron(COLOR_PAIR(4));
-                    }
-                }
-            } else {
-                const int base_prefix_len = 5; // "|[1] " (5)
-                uint16_t idx0 = 1;
-                uint16_t idx1 = 1;
-                uint16_t skip = state->eh_index;
-
-                if (history_mode != 2 && cols > 0) {
-                    int max_text = cols - (base_prefix_len + 2);
-                    if (max_text < 0) {
-                        max_text = 0;
-                    }
-                    if (max_text < (int)string_size) {
-                        string_size = (uint16_t)max_text;
-                    }
-                }
-
-                for (uint16_t skipped = 0; skipped < skip;) {
-                    while (idx0 < 255
-                           && !ui_eh_item_has_content(&state->event_history_s[0].Event_History_Items[idx0])) {
-                        idx0++;
-                    }
-                    while (idx1 < 255
-                           && !ui_eh_item_has_content(&state->event_history_s[1].Event_History_Items[idx1])) {
-                        idx1++;
-                    }
-                    if (idx0 >= 255 && idx1 >= 255) {
-                        break;
-                    }
-
-                    time_t t0 = (idx0 < 255) ? state->event_history_s[0].Event_History_Items[idx0].event_time : 0;
-                    time_t t1 = (idx1 < 255) ? state->event_history_s[1].Event_History_Items[idx1].event_time : 0;
-                    if (idx1 < 255 && (idx0 >= 255 || t1 > t0)) {
-                        idx1++;
-                    } else {
-                        idx0++;
-                    }
-                    skipped++;
-                }
-
-                for (int shown = 0; shown < events_to_show; shown++) {
-                    int y = 0, x = 0;
-                    getyx(stdscr, y, x);
-                    (void)x;
-                    if (y >= history_stop_y) {
-                        break;
-                    }
-
-                    while (idx0 < 255
-                           && !ui_eh_item_has_content(&state->event_history_s[0].Event_History_Items[idx0])) {
-                        idx0++;
-                    }
-                    while (idx1 < 255
-                           && !ui_eh_item_has_content(&state->event_history_s[1].Event_History_Items[idx1])) {
-                        idx1++;
-                    }
-                    if (idx0 >= 255 && idx1 >= 255) {
-                        break;
-                    }
-
-                    uint8_t slot;
-                    uint16_t i;
-                    time_t t0 = (idx0 < 255) ? state->event_history_s[0].Event_History_Items[idx0].event_time : 0;
-                    time_t t1 = (idx1 < 255) ? state->event_history_s[1].Event_History_Items[idx1].event_time : 0;
-                    if (idx1 < 255 && (idx0 >= 255 || t1 > t0)) {
-                        slot = 1;
-                        i = idx1;
-                        idx1++;
-                    } else {
-                        slot = 0;
-                        i = idx0;
-                        idx0++;
-                    }
-
-                    const Event_History* item = &state->event_history_s[slot].Event_History_Items[i];
-                    uint8_t color_pair = item->color_pair;
-                    attron(COLOR_PAIR(4));
-
-                    char compact_string[2000];
-                    char text_string[2000];
-                    char line_prefix[16];
-                    const int show_enc_tag = (history_mode == 1 && item->enc != 0);
-                    if (show_enc_tag) {
-                        snprintf(line_prefix, sizeof line_prefix, "|[%d] [ENC] ", slot + 1);
-                    } else {
-                        snprintf(line_prefix, sizeof line_prefix, "|[%d] ", slot + 1);
-                    }
-
-                    ui_history_compact_event_text(compact_string, sizeof compact_string, item->event_string,
-                                                  history_mode);
-
-                    uint16_t line_size = string_size;
-                    if (history_mode != 2 && cols > 0) {
-                        int max_text = cols - ((int)strlen(line_prefix) + 2);
-                        if (max_text < 0) {
-                            max_text = 0;
-                        }
-                        if (max_text < (int)line_size) {
-                            line_size = (uint16_t)max_text;
-                        }
-                    }
-
-                    memcpy(text_string, compact_string, (size_t)line_size * sizeof(char));
-                    text_string[line_size] = 0; //terminate string
-                    printw("%s", line_prefix);
-                    attron(COLOR_PAIR(color_pair)); //this is where the custom color switch occurs for the event_string
-                    printw("%s\n", text_string);
-                    attron(COLOR_PAIR(4));
-
-                    if (item->text_message[0] != '\0') {
-                        getyx(stdscr, y, x);
-                        if (y >= history_stop_y) {
-                            break;
-                        }
-                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                        printw("|[%d] \\-- %s\n", slot + 1, item->text_message);
-                        attron(COLOR_PAIR(4));
-                    }
-
-                    if (item->alias[0] != '\0') {
-                        getyx(stdscr, y, x);
-                        if (y >= history_stop_y) {
-                            break;
-                        }
-                        attron(COLOR_PAIR(4));
-                        printw("|[%d] \\-- Alias: %s \n", slot + 1, item->alias);
-                        attron(COLOR_PAIR(4));
-                    }
-
-                    if (item->gps_s[0] != '\0') {
-                        getyx(stdscr, y, x);
-                        if (y >= history_stop_y) {
-                            break;
-                        }
-                        attron(COLOR_PAIR(4));
-                        printw("|[%d] \\-- GPS: %s \n", slot + 1, item->gps_s);
-                        attron(COLOR_PAIR(4));
-                    }
-
-                    if (item->internal_str[0] != '\0') {
-                        getyx(stdscr, y, x);
-                        if (y >= history_stop_y) {
-                            break;
-                        }
-                        attron(COLOR_PAIR(4));
-                        printw("|[%d] \\-- DSD-neo: %s \n", slot + 1, item->internal_str);
-                        attron(COLOR_PAIR(4));
-                    }
-                }
-            }
-        }
+    //Start Printing Section (render factored function placeholder)
+    ui_draw_frame(opts, state);
+    erase();
+    ui_panel_header_render(opts, state);
+    if (state) {
+        ui_panel_footer_status_render(opts, state);
     }
 
-    if (history_draw_footer || history_mode == 0) {
-        ui_print_hr();
-    }
-    attroff(COLOR_PAIR(4)); //cyan for history
+    ui_render_input_output_section(opts, state);
+    ui_render_rtl_visual_aids(opts, state);
+
+    level = ui_compute_input_level_and_color(opts, state);
+
+    ui_render_audio_decode_section(opts, state, level);
+
+    ui_render_p25_optional_sections(opts, state);
+
+    ui_render_call_info_and_history(opts, state);
 
     wnoutrefresh(stdscr);
 
@@ -2937,4 +2996,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (ui_menu_is_open()) {
         ui_menu_tick(opts, state);
     }
+}
+
+void
+ncursesPrinter(dsd_opts* opts, dsd_state* state) {
+    ui_ncurses_printer_impl(opts, state);
 }

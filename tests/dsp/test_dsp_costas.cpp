@@ -23,17 +23,16 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
-
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static demod_state*
 alloc_state(void) {
     demod_state* s = (demod_state*)malloc(sizeof(demod_state));
     if (s) {
-        memset(s, 0, sizeof(*s));
+        DSD_MEMSET(s, 0, sizeof(*s));
         /* Initialize TED state */
         ted_init_state(&s->ted_state);
     }
@@ -64,7 +63,7 @@ test_basic_passthrough(void) {
     const int pairs = n_syms * sps;
     float* buf = (float*)malloc((size_t)pairs * 2 * sizeof(float));
     if (!buf) {
-        fprintf(stderr, "alloc failed\n");
+        DSD_FPRINTF(stderr, "alloc failed\n");
         return 1;
     }
 
@@ -77,7 +76,7 @@ test_basic_passthrough(void) {
 
     demod_state* s = alloc_state();
     if (!s) {
-        fprintf(stderr, "state alloc failed\n");
+        DSD_FPRINTF(stderr, "state alloc failed\n");
         free(buf);
         return 1;
     }
@@ -101,7 +100,7 @@ test_basic_passthrough(void) {
     /* Check that output was produced (decimated by ~sps) */
     int out_pairs = s->lp_len / 2;
     if (out_pairs < 1) {
-        fprintf(stderr, "BASIC: no output symbols produced (lp_len=%d)\n", s->lp_len);
+        DSD_FPRINTF(stderr, "BASIC: no output symbols produced (lp_len=%d)\n", s->lp_len);
         free(buf);
         free(s);
         return 1;
@@ -109,7 +108,7 @@ test_basic_passthrough(void) {
 
     /* Verify Costas state was initialized */
     if (!s->costas_state.initialized) {
-        fprintf(stderr, "BASIC: Costas loop not initialized\n");
+        DSD_FPRINTF(stderr, "BASIC: Costas loop not initialized\n");
         free(buf);
         free(s);
         return 1;
@@ -124,7 +123,7 @@ test_basic_passthrough(void) {
     }
     float avg_mag = mag_sum / (float)out_pairs;
     if (avg_mag < 0.01f || avg_mag > 5.0f) {
-        fprintf(stderr, "BASIC: output magnitude out of range (avg_mag=%f)\n", avg_mag);
+        DSD_FPRINTF(stderr, "BASIC: output magnitude out of range (avg_mag=%f)\n", avg_mag);
         free(buf);
         free(s);
         return 1;
@@ -148,7 +147,7 @@ test_cfo_tracking(void) {
     const int pairs = n_syms * sps;
     float* buf = (float*)malloc((size_t)pairs * 2 * sizeof(float));
     if (!buf) {
-        fprintf(stderr, "alloc failed\n");
+        DSD_FPRINTF(stderr, "alloc failed\n");
         return 1;
     }
 
@@ -164,7 +163,7 @@ test_cfo_tracking(void) {
 
     demod_state* s = alloc_state();
     if (!s) {
-        fprintf(stderr, "state alloc failed\n");
+        DSD_FPRINTF(stderr, "state alloc failed\n");
         free(buf);
         return 1;
     }
@@ -189,7 +188,7 @@ test_cfo_tracking(void) {
     if (freq_mag < 0.0001f) {
         /* This is acceptable - with OP25's slow loop, small CFO may not
          * develop much freq correction in 128 symbols. Just warn. */
-        fprintf(stderr, "CFO: freq correction is small (freq=%f), may need more symbols\n", s->costas_state.freq);
+        DSD_FPRINTF(stderr, "CFO: freq correction is small (freq=%f), may need more symbols\n", s->costas_state.freq);
     }
 
     free(buf);
@@ -202,16 +201,16 @@ test_cfo_tracking(void) {
  */
 static int
 test_disabled_when_not_cqpsk(void) {
-    float buf[100];
+    static float buf[100];
     for (int i = 0; i < 100; i++) {
         buf[i] = 0.5f;
     }
     float ref[100];
-    memcpy(ref, buf, sizeof(buf));
+    DSD_MEMCPY(ref, buf, sizeof(buf));
 
     demod_state* s = alloc_state();
     if (!s) {
-        fprintf(stderr, "alloc failed\n");
+        DSD_FPRINTF(stderr, "alloc failed\n");
         return 1;
     }
     s->cqpsk_enable = 0; /* disabled */
@@ -222,8 +221,8 @@ test_disabled_when_not_cqpsk(void) {
 
     /* Buffer should be unchanged when disabled */
     for (int i = 0; i < 100; i++) {
-        if (buf[i] != ref[i]) {
-            fprintf(stderr, "DISABLED: buffer modified when cqpsk_enable=0\n");
+        if (buf[i] < ref[i] || ref[i] < buf[i]) {
+            DSD_FPRINTF(stderr, "DISABLED: buffer modified when cqpsk_enable=0\n");
             free(s);
             return 1;
         }
@@ -241,7 +240,7 @@ test_disabled_when_not_cqpsk(void) {
  */
 static int
 test_diff_phasor_correctness(void) {
-    float buf[8]; /* 4 complex samples */
+    static float buf[8]; /* 4 complex samples */
 
     /* Samples at phases: 0°, 90°, 180°, -90° */
     buf[0] = 1.0f;
@@ -255,7 +254,7 @@ test_diff_phasor_correctness(void) {
 
     demod_state* s = alloc_state();
     if (!s) {
-        fprintf(stderr, "alloc failed\n");
+        DSD_FPRINTF(stderr, "alloc failed\n");
         return 1;
     }
     s->lowpassed = buf;
@@ -276,7 +275,7 @@ test_diff_phasor_correctness(void) {
     /* Check sample 0: should be ~0° */
     float ang0 = atan2f(buf[1], buf[0]);
     if (fabsf(ang0) > 0.1f) {
-        fprintf(stderr, "DIFF: sample 0 angle wrong (ang=%f, expected ~0)\n", ang0);
+        DSD_FPRINTF(stderr, "DIFF: sample 0 angle wrong (ang=%f, expected ~0)\n", ang0);
         free(s);
         return 1;
     }
@@ -285,7 +284,7 @@ test_diff_phasor_correctness(void) {
     float ang1 = atan2f(buf[3], buf[2]);
     float target1 = 1.5708f; /* pi/2 */
     if (fabsf(ang1 - target1) > 0.1f) {
-        fprintf(stderr, "DIFF: sample 1 angle wrong (ang=%f, expected ~90°)\n", ang1);
+        DSD_FPRINTF(stderr, "DIFF: sample 1 angle wrong (ang=%f, expected ~90°)\n", ang1);
         free(s);
         return 1;
     }
@@ -303,7 +302,7 @@ test_diff_phasor_correctness(void) {
  */
 static int
 test_costas_normalizes_reliable_magnitude(void) {
-    float buf[8]; /* 4 complex samples */
+    static float buf[8]; /* 4 complex samples */
 
     /* Differential phasors with large envelope swings. */
     buf[0] = 0.20f;
@@ -317,7 +316,7 @@ test_costas_normalizes_reliable_magnitude(void) {
 
     demod_state* s = alloc_state();
     if (!s) {
-        fprintf(stderr, "alloc failed\n");
+        DSD_FPRINTF(stderr, "alloc failed\n");
         return 1;
     }
     s->lowpassed = buf;
@@ -337,7 +336,7 @@ test_costas_normalizes_reliable_magnitude(void) {
         float Q = buf[(size_t)k * 2 + 1];
         float mag = sqrtf(I * I + Q * Q);
         if (fabsf(mag - target) > 0.0001f) {
-            fprintf(stderr, "COSTAS NORM: sample %d magnitude %f expected %f\n", k, mag, target);
+            DSD_FPRINTF(stderr, "COSTAS NORM: sample %d magnitude %f expected %f\n", k, mag, target);
             free(s);
             return 1;
         }
@@ -345,7 +344,7 @@ test_costas_normalizes_reliable_magnitude(void) {
 
     float ang1 = atan2f(buf[3], buf[2]);
     if (fabsf(ang1 - 1.5708f) > 0.1f) {
-        fprintf(stderr, "COSTAS NORM: sample 1 phase changed unexpectedly (ang=%f)\n", ang1);
+        DSD_FPRINTF(stderr, "COSTAS NORM: sample 1 phase changed unexpectedly (ang=%f)\n", ang1);
         free(s);
         return 1;
     }
@@ -359,7 +358,7 @@ test_costas_normalizes_reliable_magnitude(void) {
  */
 static int
 test_costas_deep_fade_does_not_boost_or_train(void) {
-    float buf[4]; /* 2 complex samples */
+    static float buf[4]; /* 2 complex samples */
     buf[0] = 0.03f;
     buf[1] = 0.01f;
     buf[2] = 0.028f;
@@ -367,7 +366,7 @@ test_costas_deep_fade_does_not_boost_or_train(void) {
 
     demod_state* s = alloc_state();
     if (!s) {
-        fprintf(stderr, "alloc failed\n");
+        DSD_FPRINTF(stderr, "alloc failed\n");
         return 1;
     }
     s->lowpassed = buf;
@@ -387,7 +386,7 @@ test_costas_deep_fade_does_not_boost_or_train(void) {
         float Q = buf[(size_t)k * 2 + 1];
         float mag = sqrtf(I * I + Q * Q);
         if (mag > 0.05f) {
-            fprintf(stderr, "COSTAS FADE: sample %d magnitude %f was boosted\n", k, mag);
+            DSD_FPRINTF(stderr, "COSTAS FADE: sample %d magnitude %f was boosted\n", k, mag);
             free(s);
             return 1;
         }
@@ -395,15 +394,15 @@ test_costas_deep_fade_does_not_boost_or_train(void) {
 
     if (fabsf(s->costas_state.phase) > 1.0e-7f || fabsf(s->costas_state.freq) > 1.0e-7f
         || fabsf(s->costas_state.error_smooth) > 1.0e-7f) {
-        fprintf(stderr, "COSTAS FADE: loop trained on deep fade phase=%f freq=%f smooth=%f\n", s->costas_state.phase,
-                s->costas_state.freq, s->costas_state.error_smooth);
+        DSD_FPRINTF(stderr, "COSTAS FADE: loop trained on deep fade phase=%f freq=%f smooth=%f\n",
+                    s->costas_state.phase, s->costas_state.freq, s->costas_state.error_smooth);
         free(s);
         return 1;
     }
     if (s->costas_err_avg_q14 != 0 || s->costas_err_raw_avg_q14 != 0 || s->costas_conf_avg_q14 != 0
         || s->costas_zero_conf_pct != 100) {
-        fprintf(stderr, "COSTAS FADE: metrics smooth=%d raw=%d conf=%d zero=%d\n", s->costas_err_avg_q14,
-                s->costas_err_raw_avg_q14, s->costas_conf_avg_q14, s->costas_zero_conf_pct);
+        DSD_FPRINTF(stderr, "COSTAS FADE: metrics smooth=%d raw=%d conf=%d zero=%d\n", s->costas_err_avg_q14,
+                    s->costas_err_raw_avg_q14, s->costas_conf_avg_q14, s->costas_zero_conf_pct);
         free(s);
         return 1;
     }
@@ -415,7 +414,9 @@ test_costas_deep_fade_does_not_boost_or_train(void) {
 static float
 run_single_costas_update(float mag, float* out_freq) {
     const float angle = 0.30f;
-    float buf[2] = {mag * cosf(angle), mag * sinf(angle)};
+    static float buf[2];
+    buf[0] = mag * cosf(angle);
+    buf[1] = mag * sinf(angle);
 
     demod_state* s = alloc_state();
     if (!s) {
@@ -451,16 +452,19 @@ test_costas_marginal_confidence_scales_loop_update(void) {
     float marginal_phase = run_single_costas_update(0.20f, &marginal_freq);
 
     if (!(fabsf(full_phase) > 0.001f && fabsf(full_freq) > 0.000001f)) {
-        fprintf(stderr, "COSTAS CONF: full-confidence sample did not train phase=%f freq=%f\n", full_phase, full_freq);
+        DSD_FPRINTF(stderr, "COSTAS CONF: full-confidence sample did not train phase=%f freq=%f\n", full_phase,
+                    full_freq);
         return 1;
     }
     if (!(fabsf(marginal_phase) > 0.0001f && fabsf(marginal_freq) > 0.0f)) {
-        fprintf(stderr, "COSTAS CONF: marginal sample did not train phase=%f freq=%f\n", marginal_phase, marginal_freq);
+        DSD_FPRINTF(stderr, "COSTAS CONF: marginal sample did not train phase=%f freq=%f\n", marginal_phase,
+                    marginal_freq);
         return 1;
     }
     if (!(fabsf(marginal_phase) < fabsf(full_phase) && fabsf(marginal_freq) < fabsf(full_freq))) {
-        fprintf(stderr, "COSTAS CONF: marginal update not smaller full phase=%f freq=%f marginal phase=%f freq=%f\n",
-                full_phase, full_freq, marginal_phase, marginal_freq);
+        DSD_FPRINTF(stderr,
+                    "COSTAS CONF: marginal update not smaller full phase=%f freq=%f marginal phase=%f freq=%f\n",
+                    full_phase, full_freq, marginal_phase, marginal_freq);
         return 1;
     }
 
@@ -474,11 +478,13 @@ static int
 test_costas_smooths_error_step(void) {
     const float angle = 0.30f;
     const float mag = 0.70f;
-    float buf[2] = {mag * cosf(angle), mag * sinf(angle)};
+    static float buf[2];
+    buf[0] = mag * cosf(angle);
+    buf[1] = mag * sinf(angle);
 
     demod_state* s = alloc_state();
     if (!s) {
-        fprintf(stderr, "alloc failed\n");
+        DSD_FPRINTF(stderr, "alloc failed\n");
         return 1;
     }
     s->lowpassed = buf;
@@ -503,9 +509,9 @@ test_costas_smooths_error_step(void) {
         || fabsf(s->costas_state.error - expected_error) > 1.0e-5f
         || fabsf(s->costas_state.freq - expected_freq) > 1.0e-6f
         || fabsf(s->costas_state.phase - expected_phase) > 1.0e-5f) {
-        fprintf(stderr, "COSTAS SMOOTH: err=%f smooth=%f freq=%f phase=%f expected err=%f freq=%f phase=%f\n",
-                s->costas_state.error, s->costas_state.error_smooth, s->costas_state.freq, s->costas_state.phase,
-                expected_error, expected_freq, expected_phase);
+        DSD_FPRINTF(stderr, "COSTAS SMOOTH: err=%f smooth=%f freq=%f phase=%f expected err=%f freq=%f phase=%f\n",
+                    s->costas_state.error, s->costas_state.error_smooth, s->costas_state.freq, s->costas_state.phase,
+                    expected_error, expected_freq, expected_phase);
         free(s);
         return 1;
     }
@@ -513,9 +519,9 @@ test_costas_smooths_error_step(void) {
     int expected_smooth_q14 = (int)lrintf(fabsf(expected_error) * 16384.0f);
     if (abs(s->costas_err_raw_avg_q14 - expected_raw_q14) > 1 || abs(s->costas_err_avg_q14 - expected_smooth_q14) > 1
         || s->costas_conf_avg_q14 != 16384 || s->costas_zero_conf_pct != 0) {
-        fprintf(stderr, "COSTAS SMOOTH: metrics smooth=%d raw=%d conf=%d zero=%d expected smooth=%d raw=%d\n",
-                s->costas_err_avg_q14, s->costas_err_raw_avg_q14, s->costas_conf_avg_q14, s->costas_zero_conf_pct,
-                expected_smooth_q14, expected_raw_q14);
+        DSD_FPRINTF(stderr, "COSTAS SMOOTH: metrics smooth=%d raw=%d conf=%d zero=%d expected smooth=%d raw=%d\n",
+                    s->costas_err_avg_q14, s->costas_err_raw_avg_q14, s->costas_conf_avg_q14, s->costas_zero_conf_pct,
+                    expected_smooth_q14, expected_raw_q14);
         free(s);
         return 1;
     }
@@ -524,7 +530,7 @@ test_costas_smooths_error_step(void) {
     c.error_smooth = 0.5f;
     dsd_costas_reset(&c);
     if (c.error_smooth != 0.0f) {
-        fprintf(stderr, "COSTAS SMOOTH: reset did not clear smoothed error\n");
+        DSD_FPRINTF(stderr, "COSTAS SMOOTH: reset did not clear smoothed error\n");
         free(s);
         return 1;
     }
@@ -541,11 +547,13 @@ test_costas_adapts_smoothing_for_phase_kick(void) {
     const float angle = 0.30f;
     const float mag = 0.70f;
     const float seed_error = 0.05f;
-    float buf[2] = {mag * cosf(angle), mag * sinf(angle)};
+    static float buf[2];
+    buf[0] = mag * cosf(angle);
+    buf[1] = mag * sinf(angle);
 
     demod_state* s = alloc_state();
     if (!s) {
-        fprintf(stderr, "alloc failed\n");
+        DSD_FPRINTF(stderr, "alloc failed\n");
         return 1;
     }
     s->lowpassed = buf;
@@ -572,9 +580,10 @@ test_costas_adapts_smoothing_for_phase_kick(void) {
         || fabsf(s->costas_state.freq - expected_freq) > 1.0e-6f
         || fabsf(s->costas_state.phase - expected_phase) > 1.0e-5f
         || fabsf(s->costas_state.error_smooth - fixed_error) < 0.01f) {
-        fprintf(stderr, "COSTAS ADAPT: err=%f smooth=%f freq=%f phase=%f expected err=%f freq=%f phase=%f fixed=%f\n",
-                s->costas_state.error, s->costas_state.error_smooth, s->costas_state.freq, s->costas_state.phase,
-                expected_error, expected_freq, expected_phase, fixed_error);
+        DSD_FPRINTF(stderr,
+                    "COSTAS ADAPT: err=%f smooth=%f freq=%f phase=%f expected err=%f freq=%f phase=%f fixed=%f\n",
+                    s->costas_state.error, s->costas_state.error_smooth, s->costas_state.freq, s->costas_state.phase,
+                    expected_error, expected_freq, expected_phase, fixed_error);
         free(s);
         return 1;
     }
@@ -592,7 +601,7 @@ test_ted_initialization(void) {
     const int pairs = 100;
     float* buf = (float*)malloc((size_t)pairs * 2 * sizeof(float));
     if (!buf) {
-        fprintf(stderr, "alloc failed\n");
+        DSD_FPRINTF(stderr, "alloc failed\n");
         return 1;
     }
 
@@ -603,7 +612,7 @@ test_ted_initialization(void) {
 
     demod_state* s = alloc_state();
     if (!s) {
-        fprintf(stderr, "state alloc failed\n");
+        DSD_FPRINTF(stderr, "state alloc failed\n");
         free(buf);
         return 1;
     }
@@ -622,7 +631,7 @@ test_ted_initialization(void) {
 
     /* TED state should be zero-initialized */
     if (s->ted_state.omega != 0.0f) {
-        fprintf(stderr, "TED: omega should start at 0 before call\n");
+        DSD_FPRINTF(stderr, "TED: omega should start at 0 before call\n");
         free(buf);
         free(s);
         return 1;
@@ -632,14 +641,14 @@ test_ted_initialization(void) {
 
     /* After call, TED state should be initialized */
     if (s->ted_state.omega < 1.0f) {
-        fprintf(stderr, "TED: omega not initialized after call (omega=%f)\n", s->ted_state.omega);
+        DSD_FPRINTF(stderr, "TED: omega not initialized after call (omega=%f)\n", s->ted_state.omega);
         free(buf);
         free(s);
         return 1;
     }
 
     if (s->ted_state.twice_sps < 2) {
-        fprintf(stderr, "TED: twice_sps not initialized (twice_sps=%d)\n", s->ted_state.twice_sps);
+        DSD_FPRINTF(stderr, "TED: twice_sps not initialized (twice_sps=%d)\n", s->ted_state.twice_sps);
         free(buf);
         free(s);
         return 1;
@@ -663,7 +672,7 @@ test_gardner_omega_absolute_clamp_p25p2(void) {
     const int pairs = 512 * sps;
     float* buf = (float*)malloc((size_t)pairs * 2 * sizeof(float));
     if (!buf) {
-        fprintf(stderr, "alloc failed\n");
+        DSD_FPRINTF(stderr, "alloc failed\n");
         return 1;
     }
 
@@ -678,7 +687,7 @@ test_gardner_omega_absolute_clamp_p25p2(void) {
 
     demod_state* s = alloc_state();
     if (!s) {
-        fprintf(stderr, "state alloc failed\n");
+        DSD_FPRINTF(stderr, "state alloc failed\n");
         free(buf);
         return 1;
     }
@@ -692,7 +701,7 @@ test_gardner_omega_absolute_clamp_p25p2(void) {
 
     float omega_delta = fabsf(s->ted_state.omega - (float)sps);
     if (omega_delta > 0.0021f) {
-        fprintf(stderr, "GARDNER: omega delta %f exceeds OP25 absolute clamp\n", omega_delta);
+        DSD_FPRINTF(stderr, "GARDNER: omega delta %f exceeds OP25 absolute clamp\n", omega_delta);
         free(buf);
         free(s);
         return 1;
@@ -712,7 +721,7 @@ expect_p25p2_tracking_gain_after_lock(const char* label, float ted_gain, int ted
     const int pairs = 64 * sps;
     float* buf = (float*)malloc((size_t)pairs * 2 * sizeof(float));
     if (!buf) {
-        fprintf(stderr, "alloc failed\n");
+        DSD_FPRINTF(stderr, "alloc failed\n");
         return 1;
     }
 
@@ -723,7 +732,7 @@ expect_p25p2_tracking_gain_after_lock(const char* label, float ted_gain, int ted
 
     demod_state* s = alloc_state();
     if (!s) {
-        fprintf(stderr, "state alloc failed\n");
+        DSD_FPRINTF(stderr, "state alloc failed\n");
         free(buf);
         return 1;
     }
@@ -740,7 +749,7 @@ expect_p25p2_tracking_gain_after_lock(const char* label, float ted_gain, int ted
     op25_gardner_cc(s);
 
     if (fabsf(s->ted_effective_gain - expected_gain) > 0.0001f) {
-        fprintf(stderr, "%s: got effective TED gain %.6f want %.6f\n", label, s->ted_effective_gain, expected_gain);
+        DSD_FPRINTF(stderr, "%s: got effective TED gain %.6f want %.6f\n", label, s->ted_effective_gain, expected_gain);
         free(buf);
         free(s);
         return 1;

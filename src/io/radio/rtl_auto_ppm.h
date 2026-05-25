@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_IO_RADIO_RTL_AUTO_PPM_H
+#define DSD_NEO_IO_RADIO_RTL_AUTO_PPM_H
 
 #include <stdint.h>
 
@@ -13,7 +14,7 @@ namespace dsd {
 namespace io {
 namespace radio {
 
-enum class RtlAutoPpmSource : int {
+enum class RtlAutoPpmSource : uint8_t {
     None = 0,
     CarrierTotal = 1,
     PhaseResidual = 2,
@@ -96,8 +97,6 @@ class RtlAutoPpmController {
   private:
     void clear_observation_state();
     void clear_runtime_state();
-    int max_step_ppm(RtlAutoPpmSource source, const RtlAutoPpmConfig& config) const;
-    int observation_ms(RtlAutoPpmSource source, const RtlAutoPpmConfig& config) const;
 
     int last_enabled_ = 0;
     int locked_ = 0;
@@ -123,3 +122,5 @@ class RtlAutoPpmController {
 } // namespace radio
 } // namespace io
 } // namespace dsd
+
+#endif /* DSD_NEO_IO_RADIO_RTL_AUTO_PPM_H */

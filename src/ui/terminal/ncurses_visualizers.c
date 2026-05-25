@@ -9,157 +9,233 @@
 
 #include <curses.h>
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/ui/ncurses_visualizers.h>
-#include <dsd-neo/ui/ui_prims.h>
-
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
-
-#ifdef USE_RTLSDR
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/ncurses_internal.h>
+#include <dsd-neo/ui/ncurses_visualizers.h>
+#include <dsd-neo/ui/ui_prims.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
+
+#ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
-void
-print_constellation_view(dsd_opts* opts, dsd_state* state) {
-    UNUSED(opts);
-    UNUSED(state);
-#ifdef USE_RTLSDR
-    /* Fetch a snapshot of recent I/Q points */
-    enum { MAXP = 4096 };
-
-    float buf[(size_t)MAXP * 2];
-    int n = rtl_stream_constellation_get(buf, MAXP);
-
-    ui_print_header("Constellation");
-    if (n <= 0) {
-        ui_print_lborder();
-        printw(" (no samples yet)\n");
-        attron(COLOR_PAIR(4));
-        ui_print_hr();
-        attroff(COLOR_PAIR(4));
-        return;
+static int
+clamp_int_local(int value, int lo, int hi) {
+    if (value < lo) {
+        return lo;
     }
-
-    /* Determine grid size from terminal */
-    int rows = 24, cols = 80;
-    getmaxyx(stdscr, rows, cols);
-    int W = cols - 4;
-    if (W < 32) {
-        W = 32;
+    if (value > hi) {
+        return hi;
     }
-    /* Make the constellation a bit taller by default for readability */
-    int H = rows / 2;
-    if (H < 12) {
-        H = 12;
+    return value;
+}
+
+static float
+clamp_float_local(float value, float lo, float hi) {
+    if (value < lo) {
+        return lo;
     }
+    if (value > hi) {
+        return hi;
+    }
+    return value;
+}
 
-    /* Respect UI toggles */
-    int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
+static const char k_density_ascii_palette[] = " .:-=+*#%@";
+static const char* const k_density_block_palette[] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
+static const char* const k_constellation_dot_palette[] = {" ", "·", "∙", "•", "●", "⬤"};
+static const short k_density_color_seq[] = {COLOR_BLUE,    COLOR_CYAN, COLOR_GREEN, COLOR_YELLOW,
+                                            COLOR_MAGENTA, COLOR_RED,  COLOR_WHITE};
 
-    /* Local palettes */
-    static const char ascii_palette[] = " .:-=+*#%@"; /* 10 levels */
-    const int ascii_len = (int)(sizeof(ascii_palette) - 1);
-    /* Blocks (eye-style) */
-    static const char* block_palette[] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}; /* 9 levels */
-    const int block_len = (int)(sizeof(block_palette) / sizeof(block_palette[0]));
-    /* Dots of increasing weight/size (preferred for constellation) */
-    static const char* dot_palette[] = {" ", "·", "∙", "•", "●", "⬤"}; /* 6 levels */
-    const int dot_len = (int)(sizeof(dot_palette) / sizeof(dot_palette[0]));
-    int use_dots = 1; /* default to dot style for constellation */
+static int
+density_palette_index(double g, int len) {
+    return clamp_int_local((int)lrint(g * (double)(len - 1)), 0, len - 1);
+}
 
-    /* Optional color ramp (blue->cyan->green->yellow->red) */
-    static const short color_seq[] = {COLOR_BLUE,    COLOR_CYAN, COLOR_GREEN, COLOR_YELLOW,
-                                      COLOR_MAGENTA, COLOR_RED,  COLOR_WHITE};
-    const int color_len = (int)(sizeof(color_seq) / sizeof(color_seq[0]));
-    const short color_base = 41; /* keep separate from eye's base to avoid clashes */
-    const short guide_h_pair = (short)(color_base + 8);
-    const short guide_v_pair = (short)(color_base + 9);
-    const short guide_x_pair = (short)(color_base + 10);
-    static int color_inited = 0;
-    if (opts && opts->eye_color && has_colors() && !color_inited) {
-        for (int i = 0; i < color_len; i++) {
-            init_pair((short)(color_base + i), color_seq[i], COLOR_BLACK);
+static double
+density_gamma_value(unsigned short d, unsigned short dmax) {
+    double f = (double)d / (double)dmax;
+    f = clamp_float_local((float)f, 0.0f, 1.0f);
+    return ui_gamma_map01(f);
+}
+
+static int
+density_color_pair_id(short color_base, int color_len, double g) {
+    int ci = density_palette_index(g, color_len);
+    return (int)color_base + ci;
+}
+
+static void
+print_density_color_bar(int use_unicode, short color_base, int color_len) {
+    ui_print_lborder();
+    printw(" Color:   ");
+    for (int i = 0; i < color_len; i++) {
+        attron(COLOR_PAIR((short)(color_base + i)));
+        if (use_unicode) {
+            addstr("██");
+        } else {
+            addstr("##");
         }
-        init_pair(guide_h_pair, COLOR_YELLOW, COLOR_BLACK);
-        init_pair(guide_v_pair, COLOR_CYAN, COLOR_BLACK);
-        init_pair(guide_x_pair, COLOR_MAGENTA, COLOR_BLACK);
+        attroff(COLOR_PAIR((short)(color_base + i)));
+    }
+    printw("  low -> high\n");
+
+    ui_print_lborder();
+    printw("          ");
+    int barw = color_len * 2;
+    for (int x = 0; x < barw; x++) {
+        if (x == 0 || x == barw / 2 || x == barw - 1) {
+            addch('|');
+        } else {
+            addch(' ');
+        }
+    }
+    printw("\n");
+
+    ui_print_lborder();
+    printw("          0%%");
+    int pad_mid = barw / 2 - 2;
+    for (int i = 0; i < pad_mid; i++) {
+        addch(' ');
+    }
+    printw("50%%");
+    int pad_end = barw - (barw / 2 + 2) - 4;
+    for (int i = 0; i < pad_end; i++) {
+        addch(' ');
+    }
+    printw("100%%\n");
+}
+
+typedef struct {
+    int use_unicode;
+    int use_dots;
+    int color_enabled;
+    int ascii_len;
+    int block_len;
+    int dot_len;
+    int color_len;
+    short color_base;
+    short guide_h_pair;
+    short guide_v_pair;
+    short guide_x_pair;
+} constellation_style;
+
+typedef struct {
+    int W;
+    int H;
+    int cx;
+    int cy;
+    int x0;
+    int x1;
+    int y0;
+    int y1;
+    double y_aspect;
+    double outer_margin;
+} constellation_geom;
+
+static void
+constellation_grid_size(int* W, int* H) {
+    int rows = 24;
+    int cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    *W = cols - 4;
+    if (*W < 32) {
+        *W = 32;
+    }
+    *H = rows / 2;
+    if (*H < 12) {
+        *H = 12;
+    }
+}
+
+static constellation_style
+constellation_make_style(const dsd_opts* opts) {
+    constellation_style style;
+    style.use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
+    style.use_dots = 1;
+    style.color_enabled = (opts && opts->eye_color && has_colors());
+    style.ascii_len = (int)(sizeof(k_density_ascii_palette) - 1);
+    style.block_len = (int)(sizeof(k_density_block_palette) / sizeof(k_density_block_palette[0]));
+    style.dot_len = (int)(sizeof(k_constellation_dot_palette) / sizeof(k_constellation_dot_palette[0]));
+    style.color_len = (int)(sizeof(k_density_color_seq) / sizeof(k_density_color_seq[0]));
+    style.color_base = 41;
+    style.guide_h_pair = (short)(style.color_base + 8);
+    style.guide_v_pair = (short)(style.color_base + 9);
+    style.guide_x_pair = (short)(style.color_base + 10);
+
+    static int color_inited = 0;
+    if (style.color_enabled && !color_inited) {
+        for (int i = 0; i < style.color_len; i++) {
+            init_pair((short)(style.color_base + i), k_density_color_seq[i], COLOR_BLACK);
+        }
+        init_pair(style.guide_h_pair, COLOR_YELLOW, COLOR_BLACK);
+        init_pair(style.guide_v_pair, COLOR_CYAN, COLOR_BLACK);
+        init_pair(style.guide_x_pair, COLOR_MAGENTA, COLOR_BLACK);
         color_inited = 1;
     }
+    return style;
+}
 
-    /* Density buffer (reused across frames to avoid malloc/free churn) */
-    size_t den_sz = (size_t)H * (size_t)W;
+static int
+constellation_prepare_density_buffer(int H, int W, unsigned short** den_out) {
     static unsigned short* s_den = NULL;
     static size_t s_den_cap = 0;
+    size_t den_sz = (size_t)H * (size_t)W;
+
     if (s_den_cap < den_sz) {
         void* nb = realloc(s_den, den_sz * sizeof(unsigned short));
         if (!nb) {
             free(s_den);
             s_den = NULL;
             s_den_cap = 0;
-            printw("| (constellation: out of memory)\n");
-            ui_print_hr();
-            return;
+            *den_out = NULL;
+            return 0;
         }
         s_den = (unsigned short*)nb;
         s_den_cap = den_sz;
     }
-    unsigned short* den = s_den;
-    if (den_sz > 0 && den != NULL) {
-        memset(den, 0, den_sz * sizeof(unsigned short));
-    }
-    if (den == NULL) {
-        return;
-    }
 
-    /* Dynamic radial scale using high-percentile magnitude (robust to outliers), then smooth. */
-    static int s_maxR = 256; /* smoothed scale for radius (~99th percentile of |IQ|) */
-    /* Collect absolute I/Q and magnitude values for percentile computation */
-    /* Note: float samples are normalized [-1.0, 1.0]; scale to integer range for legacy logic */
-    static const float kFloatScale = 16384.0f;
-    static int absI[(size_t)MAXP];
-    static int absQ[(size_t)MAXP];
-    static int magR[(size_t)MAXP];
+    if (den_sz > 0 && s_den != NULL) {
+        DSD_MEMSET(s_den, 0, den_sz * sizeof(unsigned short));
+    }
+    *den_out = s_den;
+    return (s_den != NULL);
+}
+
+static int
+constellation_compute_scale_radius(const float* buf, int n) {
+    static int s_maxR = 256;
+    static int magR[4096];
+    const float kFloatScale = 16384.0f;
+
     for (int k = 0; k < n; k++) {
         float i = buf[(size_t)(k << 1) + 0] * kFloatScale;
         float q = buf[(size_t)(k << 1) + 1] * kFloatScale;
-        int ai = (int)lrintf(fabsf(i));
-        int aq = (int)lrintf(fabsf(q));
-        absI[k] = ai;
-        absQ[k] = aq;
         double r2 = (double)i * (double)i + (double)q * (double)q;
-        int r = (int)lrint(sqrt(r2));
-        magR[k] = r;
+        magR[k] = (int)lrint(sqrt(r2));
     }
-    (void)absI;
-    (void)absQ;
-    /* Compute 99th percentile radius via quickselect (avoid full sort) */
-    /* Use 99th percentile (index ~ 0.99*(n-1)) to ignore rare spikes */
+
     int idxP = (int)lrint(0.99 * (double)(n - 1));
-    if (idxP < 0) {
-        idxP = 0;
-    }
-    if (idxP >= n) {
-        idxP = n - 1;
-    }
+    idxP = clamp_int_local(idxP, 0, n - 1);
     int pR = select_k_int_local(magR, n, idxP);
-    /* Avoid zooming into noise; also keep a sane lower bound */
     if (pR < 64) {
         pR = 64;
     }
-    /* EMA smoothing (alpha ~0.2) */
     s_maxR = (int)(0.8 * (double)s_maxR + 0.2 * (double)pR);
     if (s_maxR < 64) {
         s_maxR = 64;
     }
+    return s_maxR;
+}
 
-    /* Magnitude gate to reduce near-origin clutter */
+static double
+constellation_gate_squared(const dsd_opts* opts) {
     double gate = 0.10;
     if (opts) {
         gate = (opts->mod_qpsk == 1) ? (double)opts->const_gate_qpsk : (double)opts->const_gate_other;
@@ -170,11 +246,16 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             gate = 0.90;
         }
     }
-    const double gate2 = gate * gate;
+    return gate * gate;
+}
 
-    /* Accumulate density */
-    int cx = W / 2, cy = H / 2;
-    /* Use equal scale on both axes so circles stay round on wide terminals. */
+static constellation_geom
+constellation_compute_geometry(int W, int H) {
+    constellation_geom geom;
+    geom.W = W;
+    geom.H = H;
+    geom.cx = W / 2;
+    geom.cy = H / 2;
     int halfX = (W / 2) - 1;
     int halfY = (H / 2) - 1;
     if (halfX < 1) {
@@ -184,57 +265,50 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         halfY = 1;
     }
     int scale_eq = (halfX < halfY) ? halfX : halfY;
-    /* Terminal cell aspect compensation: rows are visually taller than columns.
-       Compress vertical mapping to counteract oval appearance (empirical factor). */
-    const double y_aspect = 0.55; /* 0.5–0.6 typical; adjust if needed */
-    /* Add a small headroom margin so dense clusters don't pin to the border */
-    const double outer_margin = 0.92; /* 92% of the square radius */
-    /* Define a centered square plotting region so each quadrant is square in rows/cols */
-    int x0 = cx - scale_eq;
-    int x1 = cx + scale_eq;
-    int y0 = cy - scale_eq;
-    int y1 = cy + scale_eq;
+    geom.y_aspect = 0.55;
+    geom.outer_margin = 0.92;
+    geom.x0 = geom.cx - scale_eq;
+    geom.x1 = geom.cx + scale_eq;
+    geom.y0 = geom.cy - scale_eq;
+    geom.y1 = geom.cy + scale_eq;
+    return geom;
+}
+
+static unsigned short
+constellation_accumulate_density(const float* buf, int n, const dsd_opts* opts, const constellation_geom* geom,
+                                 int s_maxR, double gate2, unsigned short* den) {
+    const float kFloatScale = 16384.0f;
     unsigned short dmax = 0;
+
     for (int k = 0; k < n; k++) {
-        /* Scale normalized float samples to integer range for legacy logic */
         float fi = buf[(size_t)(k << 1) + 0] * kFloatScale;
         float fq = buf[(size_t)(k << 1) + 1] * kFloatScale;
-        /* Compute raw magnitude for gating and optional unit-circle normalization */
         double ii = (double)fi;
         double qq = (double)fq;
         double r = sqrt(ii * ii + qq * qq);
-        double rn = r / (double)s_maxR; /* normalized radius for gating */
+        double rn = r / (double)s_maxR;
         if ((rn * rn) < gate2) {
             continue;
         }
-        double nx, ny;
+
+        double nx;
+        double ny;
         if (opts && opts->const_norm_mode == 1) {
-            /* Unit-circle normalization (direction only) */
             if (r <= 1e-9) {
-                continue; /* skip degenerate */
+                continue;
             }
             nx = ii / r;
             ny = qq / r;
         } else {
-            /* Radial (percentile) normalization */
             nx = ii / (double)s_maxR;
             ny = qq / (double)s_maxR;
         }
-        int x = cx + (int)lrint(nx * (double)scale_eq * outer_margin);
-        int y = cy - (int)lrint(ny * (double)scale_eq * outer_margin * y_aspect);
-        if (x < 0) {
-            x = 0;
-        }
-        if (x >= W) {
-            x = W - 1;
-        }
-        if (y < 0) {
-            y = 0;
-        }
-        if (y >= H) {
-            y = H - 1;
-        }
-        unsigned short* cell = &den[(size_t)y * (size_t)W + (size_t)x];
+
+        int x = geom->cx + (int)lrint(nx * (double)(geom->x1 - geom->cx) * geom->outer_margin);
+        int y = geom->cy - (int)lrint(ny * (double)(geom->y1 - geom->cy) * geom->outer_margin * geom->y_aspect);
+        x = clamp_int_local(x, 0, geom->W - 1);
+        y = clamp_int_local(y, 0, geom->H - 1);
+        unsigned short* cell = &den[(size_t)y * (size_t)geom->W + (size_t)x];
         if (*cell != 0xFFFF) {
             (*cell)++;
             if (*cell > dmax) {
@@ -242,29 +316,27 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             }
         }
     }
-    if (dmax == 0) {
-        dmax = 1; /* avoid div-by-zero */
-    }
 
-    /* Render with overlays and optional color (trim to active density vertically) */
-    /* Find first/last rows within [y0,y1] that contain any density. */
-    int y_start = y0;
-    int y_end = y1;
-    if (y_start < 0) {
-        y_start = 0;
+    if (dmax == 0) {
+        dmax = 1;
     }
-    if (y_end >= H) {
-        y_end = H - 1;
-    }
-    int y_top = -1, y_bot = -1;
+    return dmax;
+}
+
+static void
+constellation_active_y_bounds(const unsigned short* den, const constellation_geom* geom, int* y_start_out,
+                              int* y_end_out) {
+    int y_start = clamp_int_local(geom->y0, 0, geom->H - 1);
+    int y_end = clamp_int_local(geom->y1, 0, geom->H - 1);
+    int y_top = -1;
+    int y_bot = -1;
+
     for (int y = y_start; y <= y_end; y++) {
         int has = 0;
-        for (int x = x0; x <= x1; x++) {
-            if (x >= 0 && x < W) {
-                if (den[(size_t)y * (size_t)W + (size_t)x] > 0) {
-                    has = 1;
-                    break;
-                }
+        for (int x = geom->x0; x <= geom->x1; x++) {
+            if (x >= 0 && x < geom->W && den[(size_t)y * (size_t)geom->W + (size_t)x] > 0) {
+                has = 1;
+                break;
             }
         }
         if (has) {
@@ -272,14 +344,13 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             break;
         }
     }
+
     for (int y = y_end; y >= y_start; y--) {
         int has = 0;
-        for (int x = x0; x <= x1; x++) {
-            if (x >= 0 && x < W) {
-                if (den[(size_t)y * (size_t)W + (size_t)x] > 0) {
-                    has = 1;
-                    break;
-                }
+        for (int x = geom->x0; x <= geom->x1; x++) {
+            if (x >= 0 && x < geom->W && den[(size_t)y * (size_t)geom->W + (size_t)x] > 0) {
+                has = 1;
+                break;
             }
         }
         if (has) {
@@ -287,288 +358,245 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             break;
         }
     }
+
     if (y_top >= 0 && y_bot >= y_top) {
         y_start = y_top;
         y_end = y_bot;
     }
+    *y_start_out = y_start;
+    *y_end_out = y_end;
+}
+
+static void
+constellation_apply_density_color(const constellation_style* style, double g, int* last_pair) {
+    int pid = density_color_pair_id(style->color_base, style->color_len, g);
+    if (pid != *last_pair) {
+        if (*last_pair >= 0) {
+            attroff(COLOR_PAIR(*last_pair));
+        }
+        attron(COLOR_PAIR(pid));
+        *last_pair = pid;
+    }
+}
+
+static void
+constellation_density_glyph(const constellation_style* style, double g, char* ch_out) {
+    if (style->use_unicode) {
+        if (style->use_dots) {
+            int idx = density_palette_index(g, style->dot_len);
+            addstr(k_constellation_dot_palette[idx]);
+        } else {
+            int idx = density_palette_index(g, style->block_len);
+            addstr(k_density_block_palette[idx]);
+        }
+        *ch_out = 0;
+        return;
+    }
+
+    int idx = density_palette_index(g, style->ascii_len);
+    *ch_out = k_density_ascii_palette[idx];
+}
+
+static char
+constellation_axis_char(int is_haxis, int is_vaxis) {
+    if (is_haxis && is_vaxis) {
+        return '+';
+    }
+    if (is_haxis) {
+        return '-';
+    }
+    return '|';
+}
+
+static int
+constellation_apply_axis_guide(const constellation_style* style, int is_haxis, int is_vaxis, int* last_pair) {
+    if (!style->color_enabled) {
+        return 0;
+    }
+    short gp = (is_haxis && is_vaxis) ? style->guide_x_pair : (is_haxis ? style->guide_h_pair : style->guide_v_pair);
+    if (*last_pair >= 0) {
+        attroff(COLOR_PAIR(*last_pair));
+        *last_pair = -1;
+    }
+    attron(COLOR_PAIR(gp));
+    return gp;
+}
+
+static char
+constellation_density_char(const constellation_style* style, unsigned short d, unsigned short dmax, int* last_pair) {
+    double g = density_gamma_value(d, dmax);
+    if (style->color_enabled) {
+        constellation_apply_density_color(style, g, last_pair);
+    }
+    char ch = ' ';
+    constellation_density_glyph(style, g, &ch);
+    return ch;
+}
+
+static void
+constellation_restore_after_guide(const constellation_style* style, int used_guide, unsigned short d,
+                                  unsigned short dmax, int* last_pair) {
+    if (!used_guide) {
+        return;
+    }
+    attroff(COLOR_PAIR(used_guide));
+    if (style->color_enabled && d > 0) {
+        double g = density_gamma_value(d, dmax);
+        int pid = density_color_pair_id(style->color_base, style->color_len, g);
+        attron(COLOR_PAIR(pid));
+        *last_pair = pid;
+    }
+}
+
+static void
+constellation_render_cell(const constellation_style* style, const constellation_geom* geom, const unsigned short* den,
+                          int x, int y, unsigned short dmax, int* last_pair) {
+    int inside_sq = (x >= geom->x0 && x <= geom->x1 && y >= geom->y0 && y <= geom->y1);
+    int is_haxis = inside_sq && (y == geom->cy);
+    int is_vaxis = inside_sq && (x == geom->cx);
+    unsigned short d = den[(size_t)y * (size_t)geom->W + (size_t)x];
+    char ch = ' ';
+    int used_guide = 0;
+
+    if (is_haxis || is_vaxis) {
+        ch = constellation_axis_char(is_haxis, is_vaxis);
+        used_guide = constellation_apply_axis_guide(style, is_haxis, is_vaxis, last_pair);
+    } else if (inside_sq && d > 0) {
+        ch = constellation_density_char(style, d, dmax, last_pair);
+    }
+
+    if (ch != 0) {
+        addch(ch);
+    }
+    constellation_restore_after_guide(style, used_guide, d, dmax, last_pair);
+}
+
+static void
+constellation_render_rows(const constellation_style* style, const constellation_geom* geom, const unsigned short* den,
+                          int y_start, int y_end, unsigned short dmax) {
     for (int y = y_start; y <= y_end; y++) {
         ui_print_lborder();
         int last_pair = -1;
-        for (int x = 0; x < W; x++) {
-            /* Determine overlays (restricted to the centered square region) */
-            int inside_sq = (x >= x0 && x <= x1 && y >= y0 && y <= y1);
-            int is_haxis = inside_sq && (y == cy);
-            int is_vaxis = inside_sq && (x == cx);
-
-            unsigned short d = den[(size_t)y * (size_t)W + (size_t)x];
-            char ch = ' ';
-            int used_guide = 0;
-
-            if (is_haxis || is_vaxis) {
-                /* Choose overlay char */
-                if (is_haxis && is_vaxis) {
-                    ch = '+';
-                } else if (is_haxis) {
-                    ch = '-';
-                } else if (is_vaxis) {
-                    ch = '|';
-                }
-                if (opts && opts->eye_color && has_colors()) {
-                    short gp = (is_haxis && is_vaxis) ? guide_x_pair : (is_haxis ? guide_h_pair : guide_v_pair);
-                    if (last_pair >= 0) {
-                        attroff(COLOR_PAIR(last_pair));
-                        last_pair = -1;
-                    }
-                    attron(COLOR_PAIR(gp));
-                    used_guide = gp;
-                }
-            } else if (inside_sq && d > 0) {
-                /* Density glyph + color */
-                double f = (double)d / (double)dmax;
-                if (f < 0.0) {
-                    f = 0.0;
-                }
-                if (f > 1.0) {
-                    f = 1.0;
-                }
-                double g = ui_gamma_map01(f); /* gamma brighten via LUT */
-                if (opts && opts->eye_color && has_colors()) {
-                    int ci = (int)lrint(g * (double)(color_len - 1));
-                    if (ci < 0) {
-                        ci = 0;
-                    }
-                    if (ci >= color_len) {
-                        ci = color_len - 1;
-                    }
-                    int pid = color_base + ci;
-                    if (pid != last_pair) {
-                        if (last_pair >= 0) {
-                            attroff(COLOR_PAIR(last_pair));
-                        }
-                        attron(COLOR_PAIR(pid));
-                        last_pair = pid;
-                    }
-                }
-                if (use_unicode) {
-                    if (use_dots) {
-                        int idx = (int)lrint(g * (double)(dot_len - 1));
-                        if (idx < 0) {
-                            idx = 0;
-                        }
-                        if (idx >= dot_len) {
-                            idx = dot_len - 1;
-                        }
-                        ch = 0; /* mark to addstr */
-                        addstr(dot_palette[idx]);
-                    } else {
-                        int idx = (int)lrint(g * (double)(block_len - 1));
-                        if (idx < 0) {
-                            idx = 0;
-                        }
-                        if (idx >= block_len) {
-                            idx = block_len - 1;
-                        }
-                        ch = 0; /* mark to addstr */
-                        addstr(block_palette[idx]);
-                    }
-                } else {
-                    int idx = (int)lrint(g * (double)(ascii_len - 1));
-                    if (idx < 0) {
-                        idx = 0;
-                    }
-                    if (idx >= ascii_len) {
-                        idx = ascii_len - 1;
-                    }
-                    ch = ascii_palette[idx];
-                }
-            }
-
-            if (ch != 0) {
-                addch(ch);
-            }
-            if (used_guide) {
-                attroff(COLOR_PAIR(used_guide));
-                /* Restore density color if active */
-                if (opts && opts->eye_color && has_colors()) {
-                    /* Recompute density pair for this cell */
-                    if (d > 0) {
-                        double f = (double)d / (double)dmax;
-                        if (f < 0.0) {
-                            f = 0.0;
-                        }
-                        if (f > 1.0) {
-                            f = 1.0;
-                        }
-                        double g = ui_gamma_map01(f);
-                        int ci = (int)lrint(g * (double)(color_len - 1));
-                        if (ci < 0) {
-                            ci = 0;
-                        }
-                        if (ci >= color_len) {
-                            ci = color_len - 1;
-                        }
-                        int pid = color_base + ci;
-                        attron(COLOR_PAIR(pid));
-                        last_pair = pid;
-                    }
-                }
-            }
+        for (int x = 0; x < geom->W; x++) {
+            constellation_render_cell(style, geom, den, x, y, dmax, &last_pair);
         }
-        if (opts && opts->eye_color && has_colors()) {
-            if (last_pair >= 0) {
-                attroff(COLOR_PAIR(last_pair));
-            }
+        if (style->color_enabled && last_pair >= 0) {
+            attroff(COLOR_PAIR(last_pair));
         }
         printw("\n");
     }
+}
 
-    /* Legend */
+static void
+constellation_print_legend(const dsd_opts* opts, const constellation_style* style) {
     ui_print_lborder();
     printw(" Ref: axes '+', '-', '|'\n");
-    if (use_unicode) {
-        if (use_dots) {
-            ui_print_lborder();
-            printw(" Density: · • ● ⬤  (low -> high)%s\n",
-                   (opts && opts->eye_color && has_colors()) ? "; colored" : "");
+    if (style->use_unicode) {
+        ui_print_lborder();
+        if (style->use_dots) {
+            printw(" Density: · • ● ⬤  (low -> high)%s\n", style->color_enabled ? "; colored" : "");
         } else {
-            ui_print_lborder();
-            printw(" Density: ▁ ▂ ▃ ▄ ▅ ▆ ▇ █  (low -> high)%s\n",
-                   (opts && opts->eye_color && has_colors()) ? "; colored" : "");
+            printw(" Density: ▁ ▂ ▃ ▄ ▅ ▆ ▇ █  (low -> high)%s\n", style->color_enabled ? "; colored" : "");
         }
     } else {
         ui_print_lborder();
-        printw(" Density: . : - = + * # @  (low -> high)%s\n",
-               (opts && opts->eye_color && has_colors()) ? "; colored" : "");
+        printw(" Density: . : - = + * # @  (low -> high)%s\n", style->color_enabled ? "; colored" : "");
     }
-    /* Color bar legend (consistent with Eye Diagram) */
     ui_print_lborder();
     printw(" Norm: %s (toggle with 'n')\n", (opts && opts->const_norm_mode) ? "unit-circle" : "radial (p99)");
-    if (opts && opts->eye_color && has_colors()) {
+    if (style->color_enabled) {
         ui_print_lborder();
         addch('\n');
-        ui_print_lborder();
-        printw(" Color:   ");
-        for (int i = 0; i < color_len; i++) {
-            attron(COLOR_PAIR((short)(color_base + i)));
-            if (use_unicode) {
-                addstr("██");
-            } else {
-                addstr("##");
-            }
-            attroff(COLOR_PAIR((short)(color_base + i)));
-        }
-        printw("  low -> high\n");
-        ui_print_lborder();
-        printw("          ");
-        int barw = color_len * 2;
-        for (int x = 0; x < barw; x++) {
-            if (x == 0 || x == barw / 2 || x == barw - 1) {
-                addch('|');
-            } else {
-                addch(' ');
-            }
-        }
-        printw("\n");
-        ui_print_lborder();
-        printw("          0%%");
-        int pad_mid = barw / 2 - 2;
-        for (int i = 0; i < pad_mid; i++) {
-            addch(' ');
-        }
-        printw("50%%");
-        int pad_end = barw - (barw / 2 + 2) - 4;
-        for (int i = 0; i < pad_end; i++) {
-            addch(' ');
-        }
-        printw("100%%\n");
+        print_density_color_bar(style->use_unicode, style->color_base, style->color_len);
     }
-    attron(COLOR_PAIR(4));
-    attron(COLOR_PAIR(4));
-    ui_print_hr();
-    attroff(COLOR_PAIR(4));
-    attroff(COLOR_PAIR(4));
-    /* s_den reused; no free */
-#else
-    ui_print_header("Constellation");
-    printw("| (RTL disabled in this build)\n");
-    ui_print_hr();
-#endif
 }
 
-void
-print_eye_view(dsd_opts* opts, dsd_state* state) {
-    UNUSED2(opts, state);
-#ifdef USE_RTLSDR
-    /* Fetch a snapshot of recent I-channel samples and SPS */
-    enum { MAXS = 16384 };
+typedef struct {
+    int use_unicode_ui;
+    int unicode_requested;
+    int color_enabled;
+    int color_len;
+    short color_base;
+    short guide_h_pair;
+    short guide_v_pair;
+    short guide_x_pair;
+} eye_style;
 
-    static float buf[(size_t)MAXS];
-    int sps = 0;
-    int n = rtl_stream_eye_get(buf, MAXS, &sps);
-    ui_print_header("Eye Diagram (C4FM/FSK)");
-    /* Auto-fallback to ASCII if Unicode likely unsupported */
+typedef struct {
+    const unsigned short* den;
+    int W;
+    int H;
+    unsigned short dmax;
+    int yq1;
+    int yq2;
+    int yq3;
+    int xb0;
+    int xb1;
+    int xb2;
+} eye_plot;
+
+static int
+eye_effective_unicode_ui(const dsd_opts* opts) {
     static int s_unicode_ready = -1;
     static int s_unicode_warned = 0;
     if (s_unicode_ready < 0) {
         s_unicode_ready = ui_unicode_supported() ? 1 : 0;
     }
-    /* Compute effective Unicode use for this frame without mutating opts */
     int use_unicode_ui = (opts && opts->eye_unicode && s_unicode_ready);
     if (opts && opts->eye_unicode && !s_unicode_ready && !s_unicode_warned) {
         printw("| (Unicode block glyphs unsupported; falling back to ASCII)\n");
         s_unicode_warned = 1;
     }
-    if (n <= 0 || sps <= 0) {
-        ui_print_lborder();
-        printw(" (no samples or SPS)\n");
-        attron(COLOR_PAIR(4));
-        ui_print_hr();
-        attroff(COLOR_PAIR(4));
-        return;
-    }
-    /* Grid size adaptive */
-    int rows = 24, cols = 80;
+    return use_unicode_ui;
+}
+
+static void
+eye_grid_size(int* W, int* H) {
+    int rows = 24;
+    int cols = 80;
     getmaxyx(stdscr, rows, cols);
-    int W = cols - 4;
-    if (W < 32) {
-        W = 32;
+    *W = cols - 4;
+    if (*W < 32) {
+        *W = 32;
     }
-    int H = rows / 3;
-    if (H < 12) {
-        H = 12;
+    *H = rows / 3;
+    if (*H < 12) {
+        *H = 12;
     }
-    /* Density buffer sized to current grid (reuse across frames) */
-    size_t den_sz = (size_t)H * (size_t)W;
+}
+
+static int
+eye_prepare_density_buffer(int H, int W, unsigned short** den_out) {
     static unsigned short* s_den_eye = NULL;
     static size_t s_den_eye_cap = 0;
+    size_t den_sz = (size_t)H * (size_t)W;
+
     if (s_den_eye_cap < den_sz) {
         void* nb = realloc(s_den_eye, den_sz * sizeof(unsigned short));
         if (!nb) {
             free(s_den_eye);
             s_den_eye = NULL;
             s_den_eye_cap = 0;
-            printw("| (eye: out of memory)\n");
-            ui_print_hr();
-            return;
+            *den_out = NULL;
+            return 0;
         }
         s_den_eye = (unsigned short*)nb;
         s_den_eye_cap = den_sz;
     }
-    unsigned short* den = s_den_eye;
-    if (den_sz > 0 && den != NULL) {
-        memset(den, 0, den_sz * sizeof(unsigned short));
+
+    if (den_sz > 0 && s_den_eye != NULL) {
+        DSD_MEMSET(s_den_eye, 0, den_sz * sizeof(unsigned short));
     }
-    if (den == NULL) {
-        return;
-    }
-    int mid = H / 2;
-    /* Normalize peak with EMA for stability */
-    /* Note: float samples are normalized [-1.0, 1.0]; scale to integer range for legacy logic */
-    static const float kEyeFloatScale = 16384.0f;
+    *den_out = s_den_eye;
+    return (s_den_eye != NULL);
+}
+
+static int
+eye_smooth_peak(const float* buf, int n, float scale) {
     static int s_peak = 256;
     int peak = 1;
     for (int i = 0; i < n; i++) {
-        float v = buf[i] * kEyeFloatScale;
+        float v = buf[i] * scale;
         int a = (int)lrintf(fabsf(v));
         if (a > peak) {
             peak = a;
@@ -581,7 +609,11 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     if (s_peak < 64) {
         s_peak = 64;
     }
-    /* Build quartiles for reference levels */
+    return s_peak;
+}
+
+static void
+eye_compute_quartiles(const float* buf, int n, float scale, int s_peak, int* q1, int* q2, int* q3) {
     int step_ds = (n > 8192) ? (n / 8192) : 1;
     int m = (n + step_ds - 1) / step_ds;
     if (m > 8192) {
@@ -590,7 +622,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     static int qvals[8192];
     int vi = 0;
     for (int i = 0; i < n && vi < m; i += step_ds) {
-        qvals[vi++] = (int)lrintf(buf[i] * kEyeFloatScale);
+        qvals[vi++] = (int)lrintf(buf[i] * scale);
     }
     m = vi;
     if (m < 8) {
@@ -598,47 +630,34 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         qvals[1] = s_peak;
         m = 2;
     }
-    /* Quartiles via quickselect */
     int idx1 = (int)((size_t)m / 4);
     int idx2 = (int)((size_t)m / 2);
     int idx3 = (int)((size_t)(3 * (size_t)m) / 4);
-    int q2 = select_k_int_local(qvals, m, idx2);
-    int q1 = select_k_int_local(qvals, idx2, idx1); /* select within lower half */
-    int q3 = select_k_int_local(qvals + idx2 + 1, m - (idx2 + 1), idx3 - (idx2 + 1));
-    /* Accumulate density by folding modulo 2 symbols */
-    int two_sps = 2 * sps;
-    if (two_sps < 8) {
-        two_sps = 8;
-    }
+    *q2 = select_k_int_local(qvals, m, idx2);
+    *q1 = select_k_int_local(qvals, idx2, idx1);
+    *q3 = select_k_int_local(qvals + idx2 + 1, m - (idx2 + 1), idx3 - (idx2 + 1));
+}
+
+static void
+eye_accumulate_density(const float* buf, int n, float scale, int s_peak, int mid, int H, int W, int two_sps,
+                       unsigned short* den) {
     for (int i = 0; i < n; i++) {
-        double v = ((double)buf[i] * (double)kEyeFloatScale) / (double)s_peak;
-        if (v > 1.0) {
-            v = 1.0;
-        }
-        if (v < -1.0) {
-            v = -1.0;
-        }
+        double v = ((double)buf[i] * (double)scale) / (double)s_peak;
+        v = clamp_float_local((float)v, -1.0f, 1.0f);
         int y = mid - (int)lrint(v * ((double)H / 2.0 - 1.0));
-        if (y < 0) {
-            y = 0;
-        }
-        if (y >= H) {
-            y = H - 1;
-        }
+        y = clamp_int_local(y, 0, H - 1);
         int phase = i % two_sps;
         int x = (int)lrint(((double)phase / (double)(two_sps - 1)) * (double)(W - 1));
-        if (x < 0) {
-            x = 0;
-        }
-        if (x >= W) {
-            x = W - 1;
-        }
+        x = clamp_int_local(x, 0, W - 1);
         size_t di = (size_t)y * (size_t)W + (size_t)x;
         if (den[di] < 65535) {
             den[di]++;
         }
     }
-    /* Determine max density for mapping */
+}
+
+static unsigned short
+eye_density_max(const unsigned short* den, int W, int H) {
     unsigned short dmax = 1;
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
@@ -648,278 +667,436 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
             }
         }
     }
-    /* Map density to a higher-contrast palette (ASCII or Unicode) and overlay guides */
-    /* ASCII palette (low -> high density) */
-    static const char ascii_palette[] = " .:-=+*#%@"; /* 10 levels */
-    const int ascii_len = (int)(sizeof(ascii_palette) - 1);
-    /* Unicode block palette (UTF-8), width 1 per glyph */
-    static const char* uni_palette[] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}; /* 9 levels */
-    const int uni_len = (int)(sizeof(uni_palette) / sizeof(uni_palette[0]));
+    return dmax;
+}
 
-    /* Optional color density mapping */
+static int
+eye_row_for_level(int q, int s_peak, int mid, int H) {
+    int y = mid - (int)lrint(((double)q / (double)s_peak) * ((double)H / 2.0 - 1.0));
+    return clamp_int_local(y, 0, H - 1);
+}
+
+static int
+eye_boundary_col(int phase, int two_sps, int W) {
+    int x = (int)lrint(((double)phase / (double)(two_sps - 1)) * (double)(W - 1));
+    return clamp_int_local(x, 0, W - 1);
+}
+
+static eye_style
+eye_make_style(const dsd_opts* opts, int use_unicode_ui) {
+    eye_style style;
+    style.use_unicode_ui = use_unicode_ui;
+    style.unicode_requested = opts->eye_unicode;
+    style.color_enabled = opts->eye_color && has_colors();
+    style.color_len = (int)(sizeof(k_density_color_seq) / sizeof(k_density_color_seq[0]));
+    style.color_base = 21;
+    style.guide_h_pair = (short)(style.color_base + 8);
+    style.guide_v_pair = (short)(style.color_base + 9);
+    style.guide_x_pair = (short)(style.color_base + 10);
+
     static int color_inited = 0;
-    static const short color_seq[] = {COLOR_BLUE,    COLOR_CYAN, COLOR_GREEN, COLOR_YELLOW,
-                                      COLOR_MAGENTA, COLOR_RED,  COLOR_WHITE};
-    const int color_len = (int)(sizeof(color_seq) / sizeof(color_seq[0]));
-    const short color_base = 21; /* avoid clashing with existing pairs */
-    /* Guide color pairs (horizontal, vertical, cross) */
-    const short guide_h_pair = (short)(color_base + 8);
-    const short guide_v_pair = (short)(color_base + 9);
-    const short guide_x_pair = (short)(color_base + 10);
-    if (opts->eye_color && has_colors() && !color_inited) {
-        for (int i = 0; i < color_len; i++) {
-            init_pair((short)(color_base + i), color_seq[i], COLOR_BLACK);
+    if (style.color_enabled && !color_inited) {
+        for (int i = 0; i < style.color_len; i++) {
+            init_pair((short)(style.color_base + i), k_density_color_seq[i], COLOR_BLACK);
         }
-        init_pair(guide_h_pair, COLOR_YELLOW, COLOR_BLACK);
-        init_pair(guide_v_pair, COLOR_CYAN, COLOR_BLACK);
-        init_pair(guide_x_pair, COLOR_MAGENTA, COLOR_BLACK);
+        init_pair(style.guide_h_pair, COLOR_YELLOW, COLOR_BLACK);
+        init_pair(style.guide_v_pair, COLOR_CYAN, COLOR_BLACK);
+        init_pair(style.guide_x_pair, COLOR_MAGENTA, COLOR_BLACK);
         color_inited = 1;
     }
+    return style;
+}
 
-    /* Compute reference rows for quartiles (approximate C4FM levels) */
-    int yq1 = mid - (int)lrint(((double)q1 / (double)s_peak) * ((double)H / 2.0 - 1.0));
-    if (yq1 < 0) {
-        yq1 = 0;
+static void
+eye_apply_density_color(const eye_style* style, double g, int* last_pair) {
+    int pid = density_color_pair_id(style->color_base, style->color_len, g);
+    if (pid != *last_pair) {
+        if (*last_pair >= 0) {
+            attroff(COLOR_PAIR(*last_pair));
+        }
+        attron(COLOR_PAIR(pid));
+        *last_pair = pid;
     }
-    if (yq1 >= H) {
-        yq1 = H - 1;
-    }
-    int yq2 = mid - (int)lrint(((double)q2 / (double)s_peak) * ((double)H / 2.0 - 1.0));
-    if (yq2 < 0) {
-        yq2 = 0;
-    }
-    if (yq2 >= H) {
-        yq2 = H - 1;
-    }
-    int yq3 = mid - (int)lrint(((double)q3 / (double)s_peak) * ((double)H / 2.0 - 1.0));
-    if (yq3 < 0) {
-        yq3 = 0;
-    }
-    if (yq3 >= H) {
-        yq3 = H - 1;
-    }
-    /* Symbol boundary columns (phase 0, 1 symbol, 2 symbols) */
-    int xb0 = 0;
-    int xb1 = (int)lrint(((double)sps / (double)(two_sps - 1)) * (double)(W - 1));
-    if (xb1 < 0) {
-        xb1 = 0;
-    }
-    if (xb1 >= W) {
-        xb1 = W - 1;
-    }
-    int xb2 = W - 1;
+}
 
-    /* Draw with overlays */
-    for (int y = 0; y < H; y++) {
+static char
+eye_ascii_density_char(double g) {
+    int idx = density_palette_index(g, (int)(sizeof(k_density_ascii_palette) - 1));
+    return k_density_ascii_palette[idx];
+}
+
+static char
+eye_overlay_char(char ch, int is_hline, int is_vline) {
+    if (is_hline && is_vline) {
+        return '+';
+    }
+    if (is_hline) {
+        return (ch == ' ' || ch == '.' || ch == ':') ? '-' : '=';
+    }
+    return (ch == ' ' || ch == '.' || ch == ':' || ch == '-') ? '|' : '+';
+}
+
+static int
+eye_is_hline(const eye_plot* plot, int y) {
+    return (y == plot->yq1 || y == plot->yq2 || y == plot->yq3);
+}
+
+static int
+eye_is_vline(const eye_plot* plot, int x) {
+    return (x == plot->xb0 || x == plot->xb1 || x == plot->xb2);
+}
+
+static int
+eye_apply_guide_color(const eye_style* style, int is_hline, int is_vline, int* last_pair) {
+    if (!style->color_enabled) {
+        return 0;
+    }
+    short gp = is_hline && is_vline ? style->guide_x_pair : (is_hline ? style->guide_h_pair : style->guide_v_pair);
+    if (*last_pair >= 0) {
+        attroff(COLOR_PAIR(*last_pair));
+        *last_pair = -1;
+    }
+    attron(COLOR_PAIR(gp));
+    return gp;
+}
+
+static char
+eye_density_char(const eye_style* style, unsigned short d, unsigned short dmax, int* last_pair) {
+    double g = density_gamma_value(d, dmax);
+    if (style->color_enabled) {
+        eye_apply_density_color(style, g, last_pair);
+    }
+    if (style->unicode_requested) {
+        return 0;
+    }
+    return eye_ascii_density_char(g);
+}
+
+static void
+eye_draw_density_or_char(const eye_style* style, unsigned short d, unsigned short dmax, char ch, int used_guide) {
+    if (style->use_unicode_ui && ch == 0 && !used_guide) {
+        double g2 = density_gamma_value(d, dmax);
+        int uidx =
+            density_palette_index(g2, (int)(sizeof(k_density_block_palette) / sizeof(k_density_block_palette[0])));
+        addstr(k_density_block_palette[uidx]);
+    } else {
+        addch(ch);
+    }
+}
+
+static void
+eye_restore_after_guide(const eye_style* style, int used_guide, unsigned short d, unsigned short dmax, int* last_pair) {
+    if (!used_guide) {
+        return;
+    }
+    attroff(COLOR_PAIR(used_guide));
+    if (style->color_enabled) {
+        double g = density_gamma_value(d, dmax);
+        eye_apply_density_color(style, g, last_pair);
+    }
+}
+
+static void
+eye_render_cell(const eye_style* style, const eye_plot* plot, int x, int y, int* last_pair) {
+    unsigned short d = plot->den[(size_t)y * (size_t)plot->W + (size_t)x];
+    char ch = ' ';
+
+    if (d > 0) {
+        ch = eye_density_char(style, d, plot->dmax, last_pair);
+    }
+
+    int is_hline = eye_is_hline(plot, y);
+    int is_vline = eye_is_vline(plot, x);
+    int used_guide = 0;
+    if (is_hline || is_vline) {
+        ch = eye_overlay_char(ch, is_hline, is_vline);
+        used_guide = eye_apply_guide_color(style, is_hline, is_vline, last_pair);
+    }
+
+    eye_draw_density_or_char(style, d, plot->dmax, ch, used_guide);
+    eye_restore_after_guide(style, used_guide, d, plot->dmax, last_pair);
+}
+
+static void
+eye_render_rows(const eye_style* style, const eye_plot* plot) {
+    for (int y = 0; y < plot->H; y++) {
         ui_print_lborder();
         int last_pair = -1;
-        for (int x = 0; x < W; x++) {
-            unsigned short d = den[(size_t)y * (size_t)W + (size_t)x];
-            char ch = ' ';
-            if (d > 0) {
-                /* Gamma to brighten low densities */
-                double f = (double)d / (double)dmax;
-                if (f < 0.0) {
-                    f = 0.0;
-                }
-                if (f > 1.0) {
-                    f = 1.0;
-                }
-                double g = ui_gamma_map01(f); /* gamma = 0.5 via LUT */
-                if (opts->eye_unicode) {
-                    int idx = (int)lrint(g * (double)(uni_len - 1));
-                    if (idx < 0) {
-                        idx = 0;
-                    }
-                    if (idx >= uni_len) {
-                        idx = uni_len - 1;
-                    }
-                    (void)idx; // reserve for overlays using density index
-                    /* Color mapping (based on g) */
-                    if (opts->eye_color && has_colors()) {
-                        int ci = (int)lrint(g * (double)(color_len - 1));
-                        if (ci < 0) {
-                            ci = 0;
-                        }
-                        if (ci >= color_len) {
-                            ci = color_len - 1;
-                        }
-                        int pid = color_base + ci;
-                        if (pid != last_pair) {
-                            if (last_pair >= 0) {
-                                attroff(COLOR_PAIR(last_pair));
-                            }
-                            attron(COLOR_PAIR(pid));
-                            last_pair = pid;
-                        }
-                    }
-                    /* Unicode draw below unless overlays apply */
-                    ch = 0; /* marker to indicate we'll addstr() later */
-                    /* overlays handled further below */
-                    /* store density index in x-local via idx variable */
-                    /* reuse idx below if not overridden */
-                    /* To keep scope, repeat calculation */
-                    ;
-                } else {
-                    int idx = (int)lrint(g * (double)(ascii_len - 1));
-                    if (idx < 0) {
-                        idx = 0;
-                    }
-                    if (idx >= ascii_len) {
-                        idx = ascii_len - 1;
-                    }
-                    if (opts->eye_color && has_colors()) {
-                        int ci = (int)lrint(g * (double)(color_len - 1));
-                        if (ci < 0) {
-                            ci = 0;
-                        }
-                        if (ci >= color_len) {
-                            ci = color_len - 1;
-                        }
-                        int pid = color_base + ci;
-                        if (pid != last_pair) {
-                            if (last_pair >= 0) {
-                                attroff(COLOR_PAIR(last_pair));
-                            }
-                            attron(COLOR_PAIR(pid));
-                            last_pair = pid;
-                        }
-                    }
-                    ch = ascii_palette[idx];
-                }
-            }
-            /* Determine overlays */
-            int is_hline = (y == yq1 || y == yq2 || y == yq3);
-            int is_vline = (x == xb0 || x == xb1 || x == xb2);
-            int used_guide = 0;
-            if (is_hline || is_vline) {
-                /* Choose overlay character */
-                if (is_hline && is_vline) {
-                    ch = '+';
-                } else if (is_hline) {
-                    ch = (ch == ' ' || ch == '.' || ch == ':') ? '-' : '=';
-                } else {
-                    ch = (ch == ' ' || ch == '.' || ch == ':' || ch == '-') ? '|' : '+';
-                }
-                /* Apply guide colors if enabled */
-                if (opts->eye_color && has_colors()) {
-                    short gp = is_hline && is_vline ? guide_x_pair : (is_hline ? guide_h_pair : guide_v_pair);
-                    if (last_pair >= 0) {
-                        attroff(COLOR_PAIR(last_pair));
-                        last_pair = -1; /* force reapply after */
-                    }
-                    attron(COLOR_PAIR(gp));
-                    used_guide = gp;
-                }
-            }
-            if (use_unicode_ui && ch == 0 && !used_guide) {
-                /* Redetermine density index for unicode and print glyph */
-                unsigned short d2 = den[(size_t)y * (size_t)W + (size_t)x];
-                double f2 = (double)d2 / (double)dmax;
-                if (f2 < 0.0) {
-                    f2 = 0.0;
-                }
-                if (f2 > 1.0) {
-                    f2 = 1.0;
-                }
-                double g2 = ui_gamma_map01(f2);
-                int uidx = (int)lrint(g2 * (double)(uni_len - 1));
-                if (uidx < 0) {
-                    uidx = 0;
-                }
-                if (uidx >= uni_len) {
-                    uidx = uni_len - 1;
-                }
-                addstr(uni_palette[uidx]);
-            } else {
-                addch(ch);
-            }
-            /* If we used guide color, restore previous density color */
-            if (used_guide) {
-                attroff(COLOR_PAIR(used_guide));
-                /* Re-enable density color if was active */
-                if (opts->eye_color && has_colors()) {
-                    /* recompute f to restore approximate density color */
-                    double f = (double)d / (double)dmax;
-                    if (f < 0.0) {
-                        f = 0.0;
-                    }
-                    if (f > 1.0) {
-                        f = 1.0;
-                    }
-                    double g = ui_gamma_map01(f);
-                    int ci = (int)lrint(g * (double)(color_len - 1));
-                    if (ci < 0) {
-                        ci = 0;
-                    }
-                    if (ci >= color_len) {
-                        ci = color_len - 1;
-                    }
-                    int pid = color_base + ci;
-                    attron(COLOR_PAIR(pid));
-                    last_pair = pid;
-                }
-            }
+        for (int x = 0; x < plot->W; x++) {
+            eye_render_cell(style, plot, x, y, &last_pair);
         }
-        if (opts->eye_color && has_colors()) {
-            if (last_pair >= 0) {
-                attroff(COLOR_PAIR(last_pair));
-            }
+        if (style->color_enabled && last_pair >= 0) {
+            attroff(COLOR_PAIR(last_pair));
         }
         addch('\n');
     }
-    /* Legend + reference info */
+}
+
+static void
+eye_print_legend(const eye_style* style) {
     ui_print_lborder();
     printw(" Ref: '-' Q1/Q3, '=' median; '|' edges; '+' crossings\n");
-    if (use_unicode_ui) {
+    if (style->use_unicode_ui) {
         ui_print_lborder();
-        printw(" Density: ▁ ▂ ▃ ▄ ▅ ▆ ▇ █  (low -> high)%s\n", (opts->eye_color && has_colors()) ? "; colored" : "");
+        printw(" Density: ▁ ▂ ▃ ▄ ▅ ▆ ▇ █  (low -> high)%s\n", style->color_enabled ? "; colored" : "");
     } else {
         ui_print_lborder();
-        printw(" Density: . : - = + * # @  (low -> high)%s\n", (opts->eye_color && has_colors()) ? "; colored" : "");
+        printw(" Density: . : - = + * # @  (low -> high)%s\n", style->color_enabled ? "; colored" : "");
     }
-    if (opts->eye_color && has_colors()) {
+    if (style->color_enabled) {
         ui_print_lborder();
         addch('\n');
-        /* Show a color bar legend for density mapping */
-        ui_print_lborder();
-        printw(" Color:   ");
-        for (int i = 0; i < color_len; i++) {
-            attron(COLOR_PAIR((short)(color_base + i)));
-            if (use_unicode_ui) {
-                addstr("██");
-            } else {
-                addstr("##");
-            }
-            attroff(COLOR_PAIR((short)(color_base + i)));
-        }
-        printw("  low -> high\n");
-        /* Ticks under the color bar: 0%, 50%, 100% */
-        ui_print_lborder();
-        printw("          ");
-        int barw = color_len * 2;
-        for (int x = 0; x < barw; x++) {
-            if (x == 0 || x == barw / 2 || x == barw - 1) {
-                addch('|');
-            } else {
-                addch(' ');
-            }
-        }
-        printw("\n");
-        ui_print_lborder();
-        printw("          0%%");
-        int pad_mid = barw / 2 - 2;
-        for (int i = 0; i < pad_mid; i++) {
-            addch(' ');
-        }
-        printw("50%%");
-        int pad_end = barw - (barw / 2 + 2) - 4;
-        for (int i = 0; i < pad_end; i++) {
-            addch(' ');
-        }
-        printw("100%%\n");
+        print_density_color_bar(style->use_unicode_ui, style->color_base, style->color_len);
     }
-    /* Prefer post-filter demod SNR when available (only for confirmed C4FM) */
+}
+
+static int
+eye_snr_in_window(int phase, int c1, int c2, int win) {
+    return (abs(phase - c1) <= win) || (abs(phase - c2) <= win);
+}
+
+static int
+eye_snr_bucket(int v, int q1, int q2, int q3) {
+    if (v <= q1) {
+        return 0;
+    }
+    if (v <= q2) {
+        return 1;
+    }
+    if (v <= q3) {
+        return 2;
+    }
+    return 3;
+}
+
+static void
+eye_snr_collect_bins(const float* buf, int n, int two_sps, int c1, int c2, int win, int q1, int q2, int q3,
+                     long long cnt[4], double sum[4]) {
+    for (int i = 0; i < n; i++) {
+        int phase = i % two_sps;
+        if (!eye_snr_in_window(phase, c1, c2, win)) {
+            continue;
+        }
+        int v = (int)buf[i];
+        int b = eye_snr_bucket(v, q1, q2, q3);
+        cnt[b]++;
+        sum[b] += (double)v;
+    }
+}
+
+static long long
+eye_snr_level_means(const long long cnt[4], const double sum[4], double mu[4]) {
+    long long total = 0;
+    for (int b = 0; b < 4; b++) {
+        if (cnt[b] > 0) {
+            mu[b] = sum[b] / (double)cnt[b];
+        }
+        total += cnt[b];
+    }
+    return total;
+}
+
+static int
+eye_snr_has_levels(long long total, const long long cnt[4]) {
+    if (total <= 50) {
+        return 0;
+    }
+    if (!cnt[0] || !cnt[1] || !cnt[2] || !cnt[3]) {
+        return 0;
+    }
+    return 1;
+}
+
+static double
+eye_snr_noise_var(const float* buf, int n, int two_sps, int c1, int c2, int win, int q1, int q2, int q3,
+                  const double mu[4], long long total) {
+    double nsum = 0.0;
+    for (int i = 0; i < n; i++) {
+        int phase = i % two_sps;
+        if (!eye_snr_in_window(phase, c1, c2, win)) {
+            continue;
+        }
+        int v = (int)buf[i];
+        int b = eye_snr_bucket(v, q1, q2, q3);
+        double e = (double)v - mu[b];
+        nsum += e * e;
+    }
+    return nsum / (double)total;
+}
+
+static double
+eye_snr_signal_var(const double mu[4], const long long cnt[4], long long total) {
+    double mu_all = 0.0;
+    for (int b = 0; b < 4; b++) {
+        mu_all += mu[b] * (double)cnt[b] / (double)total;
+    }
+    double ssum = 0.0;
+    for (int b = 0; b < 4; b++) {
+        double d = mu[b] - mu_all;
+        ssum += (double)cnt[b] * d * d;
+    }
+    return ssum / (double)total;
+}
+
+static double
+eye_estimate_snr_fallback(const float* buf, int n, int sps, int two_sps, int q1, int q2, int q3, double snr_db) {
+    if (sps <= 0 || n <= 100) {
+        return snr_db;
+    }
+
+    int c1 = sps / 2;
+    int c2 = (3 * sps) / 2;
+    int win = sps / 10;
+    if (win < 1) {
+        win = 1;
+    }
+    long long cnt[4] = {0, 0, 0, 0};
+    double sum[4] = {0, 0, 0, 0};
+    eye_snr_collect_bins(buf, n, two_sps, c1, c2, win, q1, q2, q3, cnt, sum);
+
+    double mu[4] = {0, 0, 0, 0};
+    long long total = eye_snr_level_means(cnt, sum, mu);
+    if (!eye_snr_has_levels(total, cnt)) {
+        return snr_db;
+    }
+
+    double noise_var = eye_snr_noise_var(buf, n, two_sps, c1, c2, win, q1, q2, q3, mu, total);
+    double sig_var = eye_snr_signal_var(mu, cnt, total);
+    if (noise_var > 1e-9 && sig_var > 1e-9) {
+#ifdef USE_RTLSDR
+        double bias = rtl_stream_get_snr_bias_c4fm();
+#else
+        double bias = 8.0;
+#endif
+        snr_db = 10.0 * log10(sig_var / noise_var) - bias;
+    }
+    return snr_db;
+}
+
+void
+print_constellation_view(dsd_opts* opts, dsd_state* state) {
+    UNUSED(opts);
+    UNUSED(state);
+#ifdef USE_RTLSDR
+    enum { MAXP = 4096 };
+
+    float buf[(size_t)MAXP * 2];
+    int n = rtl_stream_constellation_get(buf, MAXP);
+    ui_print_header("Constellation");
+    if (n <= 0) {
+        ui_print_lborder();
+        printw(" (no samples yet)\n");
+        attron(COLOR_PAIR(4));
+        ui_print_hr();
+        attroff(COLOR_PAIR(4));
+        return;
+    }
+
+    int W = 0;
+    int H = 0;
+    constellation_grid_size(&W, &H);
+    constellation_style style = constellation_make_style(opts);
+    unsigned short* den = NULL;
+    if (!constellation_prepare_density_buffer(H, W, &den)) {
+        printw("| (constellation: out of memory)\n");
+        ui_print_hr();
+        return;
+    }
+    if (den == NULL) {
+        return;
+    }
+
+    int s_maxR = constellation_compute_scale_radius(buf, n);
+    double gate2 = constellation_gate_squared(opts);
+    constellation_geom geom = constellation_compute_geometry(W, H);
+    unsigned short dmax = constellation_accumulate_density(buf, n, opts, &geom, s_maxR, gate2, den);
+
+    int y_start = 0;
+    int y_end = 0;
+    constellation_active_y_bounds(den, &geom, &y_start, &y_end);
+    constellation_render_rows(&style, &geom, den, y_start, y_end, dmax);
+    constellation_print_legend(opts, &style);
+
+    attron(COLOR_PAIR(4));
+    attron(COLOR_PAIR(4));
+    ui_print_hr();
+    attroff(COLOR_PAIR(4));
+    attroff(COLOR_PAIR(4));
+#else
+    ui_print_header("Constellation");
+    printw("| (RTL disabled in this build)\n");
+    ui_print_hr();
+#endif
+}
+
+void
+print_eye_view(dsd_opts* opts, dsd_state* state) {
+    UNUSED2(opts, state);
+#ifdef USE_RTLSDR
+    enum { MAXS = 16384 };
+
+    static float buf[(size_t)MAXS];
+    int sps = 0;
+    int n = rtl_stream_eye_get(buf, MAXS, &sps);
+    ui_print_header("Eye Diagram (C4FM/FSK)");
+    int use_unicode_ui = eye_effective_unicode_ui(opts);
+    if (n <= 0 || sps <= 0) {
+        ui_print_lborder();
+        printw(" (no samples or SPS)\n");
+        attron(COLOR_PAIR(4));
+        ui_print_hr();
+        attroff(COLOR_PAIR(4));
+        return;
+    }
+    int W = 0;
+    int H = 0;
+    eye_grid_size(&W, &H);
+    unsigned short* den = NULL;
+    if (!eye_prepare_density_buffer(H, W, &den)) {
+        printw("| (eye: out of memory)\n");
+        ui_print_hr();
+        return;
+    }
+    if (den == NULL) {
+        return;
+    }
+
+    int mid = H / 2;
+    static const float kEyeFloatScale = 16384.0f;
+    int s_peak = eye_smooth_peak(buf, n, kEyeFloatScale);
+    int q1 = 0;
+    int q2 = 0;
+    int q3 = 0;
+    eye_compute_quartiles(buf, n, kEyeFloatScale, s_peak, &q1, &q2, &q3);
+
+    int two_sps = 2 * sps;
+    if (two_sps < 8) {
+        two_sps = 8;
+    }
+    eye_accumulate_density(buf, n, kEyeFloatScale, s_peak, mid, H, W, two_sps, den);
+    unsigned short dmax = eye_density_max(den, W, H);
+    eye_style style = eye_make_style(opts, use_unicode_ui);
+
+    int yq1 = eye_row_for_level(q1, s_peak, mid, H);
+    int yq2 = eye_row_for_level(q2, s_peak, mid, H);
+    int yq3 = eye_row_for_level(q3, s_peak, mid, H);
+    int xb0 = 0;
+    int xb1 = eye_boundary_col(sps, two_sps, W);
+    int xb2 = W - 1;
+
+    eye_plot plot = {.den = den,
+                     .W = W,
+                     .H = H,
+                     .dmax = dmax,
+                     .yq1 = yq1,
+                     .yq2 = yq2,
+                     .yq3 = yq3,
+                     .xb0 = xb0,
+                     .xb1 = xb1,
+                     .xb2 = xb2};
+    eye_render_rows(&style, &plot);
+    eye_print_legend(&style);
+
     double snr_db = -1.0;
     int is_c4fm = (opts->mod_c4fm == 1);
     if (state) {
@@ -931,70 +1108,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     }
 #endif
     if (is_c4fm && snr_db < -20.0) {
-        /* Fallback: quick estimate using current buffer */
-        if (sps > 0 && n > 100) {
-            int c1 = sps / 2;
-            int c2 = (3 * sps) / 2;
-            int win = sps / 10;
-            if (win < 1) {
-                win = 1;
-            }
-            long long cnt[4] = {0, 0, 0, 0};
-            double sum[4] = {0, 0, 0, 0};
-            for (int i = 0; i < n; i++) {
-                int phase = i % two_sps;
-                int inwin = (abs(phase - c1) <= win) || (abs(phase - c2) <= win);
-                if (!inwin) {
-                    continue;
-                }
-                int v = (int)buf[i];
-                int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
-                cnt[b]++;
-                sum[b] += (double)v;
-            }
-            double mu[4] = {0, 0, 0, 0};
-            long long total = 0;
-            for (int b = 0; b < 4; b++) {
-                if (cnt[b] > 0) {
-                    mu[b] = sum[b] / (double)cnt[b];
-                }
-                total += cnt[b];
-            }
-            if (total > 50 && cnt[0] && cnt[1] && cnt[2] && cnt[3]) {
-                double nsum = 0.0;
-                for (int i = 0; i < n; i++) {
-                    int phase = i % two_sps;
-                    int inwin = (abs(phase - c1) <= win) || (abs(phase - c2) <= win);
-                    if (!inwin) {
-                        continue;
-                    }
-                    int v = (int)buf[i];
-                    int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
-                    double e = (double)v - mu[b];
-                    nsum += e * e;
-                }
-                double noise_var = nsum / (double)total;
-                double mu_all = 0.0;
-                for (int b = 0; b < 4; b++) {
-                    mu_all += mu[b] * (double)cnt[b] / (double)total;
-                }
-                double ssum = 0.0;
-                for (int b = 0; b < 4; b++) {
-                    double d = mu[b] - mu_all;
-                    ssum += (double)cnt[b] * d * d;
-                }
-                double sig_var = ssum / (double)total;
-                if (noise_var > 1e-9 && sig_var > 1e-9) {
-                    /* Apply same dynamic C4FM calibration as radio path (accounts for BW/rate). */
-#ifdef USE_RTLSDR
-                    double bias = rtl_stream_get_snr_bias_c4fm();
-#else
-                    double bias = 8.0; /* fallback: typical C4FM bias */
-#endif
-                    snr_db = 10.0 * log10(sig_var / noise_var) - bias;
-                }
-            }
-        }
+        snr_db = eye_estimate_snr_fallback(buf, n, sps, two_sps, q1, q2, q3, snr_db);
     }
     if (is_c4fm && snr_db > -50.0) {
         ui_print_lborder();
@@ -1006,7 +1120,6 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     attron(COLOR_PAIR(4));
     ui_print_hr();
     attroff(COLOR_PAIR(4));
-    /* den buffer reused across frames; do not free here */
 #else
     ui_print_header("Eye Diagram");
     printw("| (RTL disabled in this build)\n");
@@ -1014,30 +1127,27 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
 #endif
 }
 
-void
-print_fsk_hist_view(void) {
 #ifdef USE_RTLSDR
-    enum { MAXS = 8192 };
-
-    static float buf[(size_t)MAXS];
-    int sps = 0;
-    int n = rtl_stream_eye_get(buf, MAXS, &sps);
-    ui_print_header("FSK 4-Level Histogram");
-    if (n <= 0) {
-        ui_print_lborder();
-        printw(" (no samples)\n");
-        attron(COLOR_PAIR(4));
-        ui_print_hr();
-        attroff(COLOR_PAIR(4));
-        return;
+static int
+fsk_hist_bucket_for_value(int v, int q1, int q2, int q3) {
+    if (v <= q1) {
+        return 0;
     }
-    /* Compute peak and mean DC offset */
-    /* Note: float samples are normalized [-1.0, 1.0]; scale to integer range for legacy logic */
-    static const float kHistFloatScale = 16384.0f;
+    if (v <= q2) {
+        return 1;
+    }
+    if (v <= q3) {
+        return 2;
+    }
+    return 3;
+}
+
+static double
+fsk_hist_dc_offset_norm(const float* buf, int n, float scale, int* peak_out) {
     int peak = 1;
     double sum = 0.0;
     for (int i = 0; i < n; i++) {
-        float v = buf[i] * kHistFloatScale;
+        float v = buf[i] * scale;
         int a = (int)lrintf(fabsf(v));
         if (a > peak) {
             peak = a;
@@ -1047,55 +1157,49 @@ print_fsk_hist_view(void) {
     if (peak < 64) {
         peak = 64;
     }
-    double dc_norm = (double)sum / (double)n / (double)peak; /* ~[-1,1] */
+    *peak_out = peak;
+    return (double)sum / (double)n / (double)peak;
+}
 
-    /* Adaptive quartile thresholds over recent I-channel samples. */
-    /* Downsample set for faster sort if needed */
+static int
+fsk_hist_collect_values(const float* buf, int n, float scale, int* vals) {
     int step = (n > 4096) ? (n / 4096) : 1;
     int m = (n + step - 1) / step;
     if (m < 8) {
-        m = n, step = 1; /* ensure adequate sample count */
+        m = n;
+        step = 1;
     }
-    /* Copy sampled values into a temp array for sorting */
-    static int vals[8192];
     if (m > 8192) {
         m = 8192;
     }
     int vi = 0;
     for (int i = 0; i < n && vi < m; i += step) {
-        vals[vi++] = (int)lrintf(buf[i] * kHistFloatScale);
+        vals[vi++] = (int)lrintf(buf[i] * scale);
     }
-    m = vi;
-    /* Quartiles via quickselect */
+    return vi;
+}
+
+static void
+fsk_hist_compute_quartiles(int* vals, int m, int* q1, int* q2, int* q3) {
     int idx1 = (int)((size_t)m / 4);
     int idx2 = (int)((size_t)m / 2);
     int idx3 = (int)((size_t)(3 * (size_t)m) / 4);
-    int q2 = select_k_int_local(vals, m, idx2);
-    int q1 = select_k_int_local(vals, idx2, idx1);
-    int q3 = select_k_int_local(vals + idx2 + 1, m - (idx2 + 1), idx3 - (idx2 + 1));
-    /* Bin using quartile boundaries */
-    int64_t bin[4] = {0, 0, 0, 0};
+    *q2 = select_k_int_local(vals, m, idx2);
+    *q1 = select_k_int_local(vals, idx2, idx1);
+    *q3 = select_k_int_local(vals + idx2 + 1, m - (idx2 + 1), idx3 - (idx2 + 1));
+}
+
+static void
+fsk_hist_count_bins(const float* buf, int n, float scale, int q1, int q2, int q3, int64_t bin[4]) {
     for (int i = 0; i < n; i++) {
-        int v = (int)lrintf(buf[i] * kHistFloatScale);
-        int b = 0;
-        if (v <= q1) {
-            b = 0;
-        } else if (v <= q2) {
-            b = 1;
-        } else if (v <= q3) {
-            b = 2;
-        } else {
-            b = 3;
-        }
+        int v = (int)lrintf(buf[i] * scale);
+        int b = fsk_hist_bucket_for_value(v, q1, q2, q3);
         bin[b]++;
     }
-    /* Draw quartile ruler across value span (min..max) */
-    int minv = vals[0];
-    int maxv = vals[m - 1];
-    if (maxv == minv) {
-        maxv = minv + 1; /* avoid div-by-zero */
-    }
+}
 
+static void
+fsk_hist_draw_ruler(int q1, int q2, int q3, int minv, int maxv) {
     enum { WR = 60 };
 
     char ruler[WR];
@@ -1105,26 +1209,11 @@ print_fsk_hist_view(void) {
     int p1 = (int)lrint(((double)(q1 - minv) / (double)(maxv - minv)) * (double)(WR - 1));
     int p2 = (int)lrint(((double)(q2 - minv) / (double)(maxv - minv)) * (double)(WR - 1));
     int p3 = (int)lrint(((double)(q3 - minv) / (double)(maxv - minv)) * (double)(WR - 1));
-    if (p1 < 0) {
-        p1 = 0;
-    }
-    if (p1 >= WR) {
-        p1 = WR - 1;
-    }
-    if (p2 < 0) {
-        p2 = 0;
-    }
-    if (p2 >= WR) {
-        p2 = WR - 1;
-    }
-    if (p3 < 0) {
-        p3 = 0;
-    }
-    if (p3 >= WR) {
-        p3 = WR - 1;
-    }
+    p1 = clamp_int_local(p1, 0, WR - 1);
+    p2 = clamp_int_local(p2, 0, WR - 1);
+    p3 = clamp_int_local(p3, 0, WR - 1);
     ruler[p1] = '|';
-    ruler[p2] = '+'; /* median */
+    ruler[p2] = '+';
     ruler[p3] = '|';
     ui_print_lborder();
     printw(" Ruler:  ");
@@ -1132,39 +1221,96 @@ print_fsk_hist_view(void) {
         addch(ruler[x]);
     }
     printw("  (Q1='|', Median='+', Q3='|')\n");
+}
 
-    /* Draw bars */
-    const int W = 60;
+static void
+fsk_hist_draw_bars(const int64_t bin[4], double dc_norm) {
+    const int bar_width = 60;
+    static const char* labels[4] = {"L3(-)", "L1(-)", "L1(+)", "L3(+)"};
     int64_t maxc = 1;
     for (int i = 0; i < 4; i++) {
         if (bin[i] > maxc) {
             maxc = bin[i];
         }
     }
-    const char* labels[4] = {"L3(-)", "L1(-)", "L1(+)", "L3(+)"};
     ui_print_lborder();
     printw(" DC Offset: %+0.2f%% of full-scale\n", dc_norm * 100.0);
     for (int i = 0; i < 4; i++) {
-        int w = (int)((double)bin[i] / (double)maxc * (double)W + 0.5);
-        if (w < 0) {
-            w = 0;
-        }
-        if (w > W) {
-            w = W;
-        }
+        int w = (int)((double)bin[i] / (double)maxc * (double)bar_width + 0.5);
+        w = clamp_int_local(w, 0, bar_width);
         ui_print_lborder();
         printw(" %-6s ", labels[i]);
         for (int x = 0; x < w; x++) {
             addch('#');
         }
-        for (int x = w; x < W; x++) {
+        for (int x = w; x < bar_width; x++) {
             addch(' ');
         }
         printw(" %lld\n", (long long)bin[i]);
     }
+}
+
+static void
+print_fsk_hist_view_rtlsdr(void) {
+    enum { MAXS = 8192 };
+
+    static const float kHistFloatScale = 16384.0f;
+
+    static float buf[(size_t)MAXS];
+    static int vals[8192];
+    int sps = 0;
+    int n = rtl_stream_eye_get(buf, MAXS, &sps);
+    UNUSED(sps);
+
+    ui_print_header("FSK 4-Level Histogram");
+    if (n <= 0) {
+        ui_print_lborder();
+        printw(" (no samples)\n");
+        attron(COLOR_PAIR(4));
+        ui_print_hr();
+        attroff(COLOR_PAIR(4));
+        return;
+    }
+
+    int peak = 1;
+    double dc_norm = fsk_hist_dc_offset_norm(buf, n, kHistFloatScale, &peak);
+    UNUSED(peak);
+
+    int m = fsk_hist_collect_values(buf, n, kHistFloatScale, vals);
+    if (m <= 0) {
+        ui_print_lborder();
+        printw(" (insufficient samples)\n");
+        attron(COLOR_PAIR(4));
+        ui_print_hr();
+        attroff(COLOR_PAIR(4));
+        return;
+    }
+
+    int q1 = 0;
+    int q2 = 0;
+    int q3 = 0;
+    fsk_hist_compute_quartiles(vals, m, &q1, &q2, &q3);
+
+    int64_t bin[4] = {0, 0, 0, 0};
+    fsk_hist_count_bins(buf, n, kHistFloatScale, q1, q2, q3, bin);
+
+    int minv = vals[0];
+    int maxv = vals[m - 1];
+    if (maxv == minv) {
+        maxv = minv + 1;
+    }
+    fsk_hist_draw_ruler(q1, q2, q3, minv, maxv);
+    fsk_hist_draw_bars(bin, dc_norm);
     attron(COLOR_PAIR(4));
     ui_print_hr();
     attroff(COLOR_PAIR(4));
+}
+#endif
+
+void
+print_fsk_hist_view(void) {
+#ifdef USE_RTLSDR
+    print_fsk_hist_view_rtlsdr();
 #else
     ui_print_header("FSK 4-Level Histogram");
     printw("| (RTL disabled in this build)\n");
@@ -1172,10 +1318,9 @@ print_fsk_hist_view(void) {
 #endif
 }
 
-void
-print_spectrum_view(dsd_opts* opts) {
-    UNUSED(opts);
 #ifdef USE_RTLSDR
+static int
+spectrum_nfft_clamped(void) {
     int nfft = rtl_stream_spectrum_get_size();
     if (nfft < 64) {
         nfft = 64;
@@ -1183,42 +1328,50 @@ print_spectrum_view(dsd_opts* opts) {
     if (nfft > 1024) {
         nfft = 1024;
     }
-    static float bins_static[1024];
-    float* bins = bins_static; /* nfft clamped to <= 1024 above */
-    int rate = 0;
-    int n = rtl_stream_spectrum_get(bins, nfft, &rate);
-    ui_print_header("Spectrum Analyzer");
-    if (n <= 0) {
-        printw("| (no spectrum yet)\n");
-        ui_print_hr();
-        return;
-    }
-    int rows = 24, cols = 80;
+    return nfft;
+}
+
+static int
+spectrum_grid_width(void) {
+    int rows = 24;
+    int cols = 80;
     getmaxyx(stdscr, rows, cols);
-    int W = cols - 4;
-    if (W < 32) {
-        W = 32;
+    UNUSED(rows);
+    int w = cols - 4;
+    if (w < 32) {
+        w = 32;
     }
-    int H = rows / 3;
-    if (H < 10) {
-        H = 10;
+    if (w > 2048) {
+        w = 2048;
     }
-    /* Downsample or upsample bins to match width W */
-    static float col[(size_t)2048];
-    if (W > (int)(sizeof col / sizeof col[0])) {
-        W = (int)(sizeof col / sizeof col[0]);
+    return w;
+}
+
+static int
+spectrum_grid_height(void) {
+    int rows = 24;
+    int cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    UNUSED(cols);
+    int h = rows / 3;
+    if (h < 10) {
+        h = 10;
     }
-    if (n >= W) {
-        for (int x = 0; x < W; x++) {
-            int i0 = (int)((long long)x * n / W);
-            int i1 = (int)((long long)(x + 1) * n / W);
+    return h;
+}
+
+static void
+spectrum_resample_columns(const float* bins, int n, float* col, int w) {
+    if (n >= w) {
+        for (int x = 0; x < w; x++) {
+            int i0 = (int)((long long)x * n / w);
+            int i1 = (int)((long long)(x + 1) * n / w);
             if (i1 <= i0) {
                 i1 = i0 + 1;
             }
             if (i1 > n) {
                 i1 = n;
             }
-            /* Use max within the column to preserve narrow peaks */
             float s = -1e9f;
             for (int i = i0; i < i1; i++) {
                 if (bins[i] > s) {
@@ -1227,120 +1380,165 @@ print_spectrum_view(dsd_opts* opts) {
             }
             col[x] = s;
         }
-    } else {
-        for (int x = 0; x < W; x++) {
-            int src = (int)((long long)x * n / W);
-            if (src < 0) {
-                src = 0;
-            }
-            if (src >= n) {
-                src = n - 1;
-            }
-            col[x] = bins[src];
-        }
-    }
-    /* Auto-scale dB floor to 60 dB span around recent max */
-    float vmax = -1e9f;
-    for (int x = 0; x < W; x++) {
-        if (col[x] > vmax) {
-            vmax = col[x];
-        }
-    }
-    float vmin = vmax - 60.0f;
-    float span = (vmax - vmin);
-    if (span < 1.0f) {
-        span = 1.0f;
+        return;
     }
 
-    int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
+    for (int x = 0; x < w; x++) {
+        int src = (int)((long long)x * n / w);
+        src = clamp_int_local(src, 0, n - 1);
+        col[x] = bins[src];
+    }
+}
+
+static void
+spectrum_range(const float* col, int w, float* vmin, float* vmax, float* span) {
+    float vmax_local = -1e9f;
+    for (int x = 0; x < w; x++) {
+        if (col[x] > vmax_local) {
+            vmax_local = col[x];
+        }
+    }
+    float vmin_local = vmax_local - 60.0f;
+    float span_local = vmax_local - vmin_local;
+    if (span_local < 1.0f) {
+        span_local = 1.0f;
+    }
+    *vmin = vmin_local;
+    *vmax = vmax_local;
+    *span = span_local;
+}
+
 #ifdef PRETTY_COLORS
-    const short C_GOOD = 11, C_MOD = 12, C_POOR = 13;
+static short
+spectrum_color_pair_for_level(float t) {
+    if (t < 0.33f) {
+        return 13;
+    }
+    if (t < 0.66f) {
+        return 12;
+    }
+    return 11;
+}
 #endif
-    for (int y = 0; y < H; y++) {
-        for (int x = 0; x < W; x++) {
-            float v = col[x];
-            if (v < vmin) {
-                v = vmin;
-            }
-            if (v > vmax) {
-                v = vmax;
-            }
-            float t = (v - vmin) / span; /* 0..1 */
-            int h = (int)lrint(t * (H - 1));
-            int filled = (H - 1 - y) <= h;
+
+static void
+spectrum_draw_cell(const dsd_opts* opts, int use_unicode, float v, float vmin, float vmax, float span, int y, int h) {
+    float vc = clamp_float_local(v, vmin, vmax);
+    float t = (vc - vmin) / span;
+    int col_h = (int)lrintf(t * (float)(h - 1));
+    int filled = (h - 1 - y) <= col_h;
 #ifdef PRETTY_COLORS
-            /* Color by relative height bands */
-            short cp = (t < 0.33f) ? C_POOR : (t < 0.66f) ? C_MOD : C_GOOD;
-            if (opts && opts->eye_color && has_colors()) {
-                attron(COLOR_PAIR(cp));
-            }
+    short cp = spectrum_color_pair_for_level(t);
+    if (opts && opts->eye_color && has_colors()) {
+        attron(COLOR_PAIR(cp));
+    }
 #endif
-            if (filled) {
-                if (use_unicode) {
-                    addstr("█");
-                } else {
-                    addch('#');
-                }
-            } else {
-                addch(' ');
-            }
+    if (filled) {
+        if (use_unicode) {
+            addstr("█");
+        } else {
+            addch('#');
+        }
+    } else {
+        addch(' ');
+    }
 #ifdef PRETTY_COLORS
-            if (opts && opts->eye_color && has_colors()) {
-                attroff(COLOR_PAIR(cp));
-            }
+    if (opts && opts->eye_color && has_colors()) {
+        attroff(COLOR_PAIR(cp));
+    }
 #endif
+}
+
+static void
+spectrum_draw_plot(const dsd_opts* opts, const float* col, int w, int h, float vmin, float vmax, float span,
+                   int use_unicode) {
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            spectrum_draw_cell(opts, use_unicode, col[x], vmin, vmax, span, y, h);
         }
         addch('\n');
     }
-    /* Legend */
+}
+
+#ifdef PRETTY_COLORS
+static void
+spectrum_print_color_legend(int use_unicode) {
+    printw("| Color:   ");
+    attron(COLOR_PAIR(13));
+    addstr(use_unicode ? "██" : "##");
+    attroff(COLOR_PAIR(13));
+    printw(" low  ");
+    attron(COLOR_PAIR(12));
+    addstr(use_unicode ? "██" : "##");
+    attroff(COLOR_PAIR(12));
+    printw(" mid  ");
+    attron(COLOR_PAIR(11));
+    addstr(use_unicode ? "██" : "##");
+    attroff(COLOR_PAIR(11));
+    printw(" high\n");
+}
+#endif
+
+static void
+spectrum_print_legend(const dsd_opts* opts, int rate, int w, int use_unicode, float vmax, float vmin) {
     float span_hz = (float)rate;
     int nfft2 = rtl_stream_spectrum_get_size();
     const char* df = use_unicode ? "\xCE\x94"
                                    "f"
                                  : "df";
     ui_print_lborder();
-    printw(" Span: %.1f kHz  %s(FFT): %.1f Hz  %s(col): %.1f Hz  FFT: %d  "
-           "Glyphs: %s%s\n",
-           span_hz / 1000.0f, df, (rate > 0 && nfft2 > 0) ? (span_hz / (float)nfft2) : 0.0f, df,
-           (rate > 0 && W > 0) ? (span_hz / (float)W) : 0.0f, nfft2, use_unicode ? "Unicode" : "ASCII",
+    printw(" Span: %.1f kHz  %s(FFT): %.1f Hz  %s(col): %.1f Hz  FFT: %d  Glyphs: %s%s\n", span_hz / 1000.0f, df,
+           (rate > 0 && nfft2 > 0) ? (span_hz / (float)nfft2) : 0.0f, df,
+           (rate > 0 && w > 0) ? (span_hz / (float)w) : 0.0f, nfft2, use_unicode ? "Unicode" : "ASCII",
            (opts && opts->eye_color && has_colors()) ? "; colored" : "");
-    /* Frequency ticks around DC */
     ui_print_lborder();
     printw(" Freq: -%.1fk   0   +%.1fk\n", (span_hz * 0.5f) / 1000.0f, (span_hz * 0.5f) / 1000.0f);
-    /* Amplitude scale relative to current peak */
     ui_print_lborder();
     printw(" Scale: top=%.1f dB  floor=%.1f dB (relative)\n", vmax, vmin);
 #ifdef PRETTY_COLORS
     if (opts && opts->eye_color && has_colors()) {
-        printw("| Color:   ");
-        attron(COLOR_PAIR(C_POOR));
-        if (use_unicode) {
-            addstr("██");
-        } else {
-            addstr("##");
-        }
-        attroff(COLOR_PAIR(C_POOR));
-        printw(" low  ");
-        attron(COLOR_PAIR(C_MOD));
-        if (use_unicode) {
-            addstr("██");
-        } else {
-            addstr("##");
-        }
-        attroff(COLOR_PAIR(C_MOD));
-        printw(" mid  ");
-        attron(COLOR_PAIR(C_GOOD));
-        if (use_unicode) {
-            addstr("██");
-        } else {
-            addstr("##");
-        }
-        attroff(COLOR_PAIR(C_GOOD));
-        printw(" high\n");
+        spectrum_print_color_legend(use_unicode);
     }
 #endif
     ui_print_hr();
+}
+
+static void
+print_spectrum_view_rtlsdr(const dsd_opts* opts) {
+    static float bins_static[1024];
+    static float col[2048];
+
+    int rate = 0;
+    int nfft = spectrum_nfft_clamped();
+    int n = rtl_stream_spectrum_get(bins_static, nfft, &rate);
+    ui_print_header("Spectrum Analyzer");
+    if (n <= 0) {
+        printw("| (no spectrum yet)\n");
+        ui_print_hr();
+        return;
+    }
+
+    int w = spectrum_grid_width();
+    int h = spectrum_grid_height();
+    spectrum_resample_columns(bins_static, n, col, w);
+
+    float vmin = 0.0f;
+    float vmax = 0.0f;
+    float span = 1.0f;
+    spectrum_range(col, w, &vmin, &vmax, &span);
+
+    int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
+    spectrum_draw_plot(opts, col, w, h, vmin, vmax, span, use_unicode);
+    spectrum_print_legend(opts, rate, w, use_unicode, vmax, vmin);
+}
+#endif
+
+void
+print_spectrum_view(const dsd_opts* opts) {
+#ifdef USE_RTLSDR
+    print_spectrum_view_rtlsdr(opts);
 #else
+    UNUSED(opts);
     ui_print_header("Spectrum Analyzer");
     printw("| (RTL disabled in this build)\n");
     ui_print_hr();

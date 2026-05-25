@@ -11,7 +11,8 @@
  * `src/protocol/p25/p25_frequency.c`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_FREQUENCY_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_FREQUENCY_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -23,8 +24,8 @@
 extern "C" {
 #endif
 
-long int process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel);
-long int process_channel_to_freq_with_mode(dsd_opts* opts, dsd_state* state, int channel, int prefer_tdma);
+long int process_channel_to_freq(const dsd_opts* opts, dsd_state* state, int channel);
+long int process_channel_to_freq_with_mode(const dsd_opts* opts, dsd_state* state, int channel, int prefer_tdma);
 long int nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel);
 long int nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel);
 
@@ -51,3 +52,5 @@ void p25_confirm_idens_for_current_site(dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_FREQUENCY_H_ */

@@ -16,14 +16,14 @@ dsd_udp_audio_hooks_set(dsd_udp_audio_hooks hooks) {
 }
 
 void
-dsd_udp_audio_hook_blast(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
+dsd_udp_audio_hook_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     if (g_udp_audio_hooks.blast) {
         g_udp_audio_hooks.blast(opts, state, nsam, data);
     }
 }
 
 void
-dsd_udp_audio_hook_blast_analog(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
+dsd_udp_audio_hook_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     if (g_udp_audio_hooks.blast_analog) {
         g_udp_audio_hooks.blast_analog(opts, state, nsam, data);
     }

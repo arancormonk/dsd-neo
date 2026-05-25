@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_IO_RADIO_RTL_PERF_H
+#define DSD_NEO_IO_RADIO_RTL_PERF_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -28,3 +29,5 @@ void rtl_perf_shutdown(void);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_IO_RADIO_RTL_PERF_H */

@@ -11,7 +11,8 @@
  * read path to perform spectrum/SNR-based PPM adjustments.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_METRICS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_METRICS_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,3 +44,5 @@ void rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_in
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_METRICS_H_ */

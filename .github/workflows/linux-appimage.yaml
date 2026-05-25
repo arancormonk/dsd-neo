@@ -22,7 +22,11 @@ jobs:
   build-appimage:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
       contents: write
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -32,7 +36,7 @@ jobs:
       APPIMAGE_CCACHE_DIR: ${{ github.workspace }}/.ccache/appimage-${{ matrix.arch }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Validate release tag
         if: startsWith(github.ref, 'refs/tags/v')
         id: release
@@ -44,7 +48,7 @@ jobs:
         # Only run on trusted contexts (not forked PRs), otherwise the
         # `secrets` context is unavailable and would error.
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -53,7 +57,7 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
       - name: Enable QEMU for cross-arch containers
-        uses: docker/setup-qemu-action@v4.0.0
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a
         with:
           platforms: all
       - name: Ensure binfmt for aarch64 is registered
@@ -104,7 +108,7 @@ jobs:
           mkdir -p "${APPIMAGE_DEPS_DIR}" "${APPIMAGE_CCACHE_DIR}"
 
       - name: Restore AppImage dependency cache
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.APPIMAGE_DEPS_DIR }}
           key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
@@ -112,7 +116,7 @@ jobs:
             deps-appimage-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Restore AppImage ccache
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.APPIMAGE_CCACHE_DIR }}
           key: ccache-${{ runner.os }}-appimage-${{ matrix.arch }}-${{ github.sha }}
@@ -404,21 +408,41 @@ jobs:
               ccache -s || true
             '
       - name: Upload artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.names.outputs.ART }}
           path: ${{ steps.names.outputs.OUT }}
           retention-days: 7
+      - name: Generate artifact SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: ${{ steps.names.outputs.OUT }}
+          format: spdx-json
+          output-file: ${{ steps.names.outputs.OUT }}.spdx.json
+          artifact-name: ${{ steps.names.outputs.ART }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+      - name: Attest artifact provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: ${{ steps.names.outputs.OUT }}
+      - name: Attest artifact SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: ${{ steps.names.outputs.OUT }}
+          sbom-path: ${{ steps.names.outputs.OUT }}.spdx.json
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3.0.0
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
           files: ${{ steps.names.outputs.OUT }}
           name: ${{ steps.release.outputs.release_title }}
           generate_release_notes: true
       - name: Upload nightly asset (overwrite)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: svenstaro/upload-release-action@v2
+        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           tag: nightly

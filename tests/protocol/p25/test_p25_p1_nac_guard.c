@@ -17,37 +17,36 @@
 #include <dsd-neo/core/state.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL %s: got 0x%X want 0x%X\n", tag, got, want);
+        DSD_FPRINTF(stderr, "FAIL %s: got 0x%X want 0x%X\n", tag, got, want);
         return 1;
     }
-    fprintf(stderr, "PASS %s\n", tag);
+    DSD_FPRINTF(stderr, "PASS %s\n", tag);
     return 0;
 }
 
 static int
 expect_eq_uint(const char* tag, unsigned int got, unsigned int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL %s: got %u want %u\n", tag, got, want);
+        DSD_FPRINTF(stderr, "FAIL %s: got %u want %u\n", tag, got, want);
         return 1;
     }
-    fprintf(stderr, "PASS %s\n", tag);
+    DSD_FPRINTF(stderr, "PASS %s\n", tag);
     return 0;
 }
 
 static int
 expect_eq_ull(const char* tag, unsigned long long got, unsigned long long want) {
     if (got != want) {
-        fprintf(stderr, "FAIL %s: got 0x%llX want 0x%llX\n", tag, got, want);
+        DSD_FPRINTF(stderr, "FAIL %s: got 0x%llX want 0x%llX\n", tag, got, want);
         return 1;
     }
-    fprintf(stderr, "PASS %s\n", tag);
+    DSD_FPRINTF(stderr, "PASS %s\n", tag);
     return 0;
 }
 
@@ -83,19 +82,19 @@ main(void) {
      * --------------------------------------------------------------- */
 
     /* NAC zeroed by corrupted NID (new_nac = 0x0) */
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     state->nac = 0x2AA;
     simulate_nid_processing(state, 0x0, 1);
     rc |= expect_eq_int("nac_preserved_after_zero", state->nac, 0x2AA);
 
     /* NAC set to 0xFFF by corrupted NID */
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     state->nac = 0x2AA;
     simulate_nid_processing(state, 0xFFF, 1);
     rc |= expect_eq_int("nac_preserved_after_0xFFF", state->nac, 0x2AA);
 
     /* p2_cc already guarded — existing guard prevents overwrite */
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     state->nac = 0x2AA;
     state->p2_cc = 0x2AA;
     state->p2_hardset = 0;
@@ -114,7 +113,7 @@ main(void) {
             int new_nac = valid_nacs[i];
             int initial_nac = (new_nac == 0x2AA) ? 0x1B5 : 0x2AA;
 
-            memset(state, 0, sizeof(*state));
+            DSD_MEMSET(state, 0, sizeof(*state));
             state->nac = initial_nac;
             state->p2_hardset = 0;
             state->p2_cc = initial_nac;
@@ -122,16 +121,16 @@ main(void) {
             simulate_nid_processing(state, new_nac, 1);
 
             char tag[128];
-            snprintf(tag, sizeof(tag), "valid_nac_update_0x%X_to_0x%X", initial_nac, new_nac);
+            DSD_SNPRINTF(tag, sizeof(tag), "valid_nac_update_0x%X_to_0x%X", initial_nac, new_nac);
             rc |= expect_eq_int(tag, state->nac, new_nac);
 
-            snprintf(tag, sizeof(tag), "valid_p2cc_update_0x%X_to_0x%X", initial_nac, new_nac);
+            DSD_SNPRINTF(tag, sizeof(tag), "valid_p2cc_update_0x%X_to_0x%X", initial_nac, new_nac);
             rc |= expect_eq_ull(tag, state->p2_cc, (unsigned long long)new_nac);
         }
     }
 
     /* Same NAC no-op — identical NAC short-circuits */
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     state->nac = 0x2AA;
     state->debug_header_errors = 0;
     simulate_nid_processing(state, 0x2AA, 1);
@@ -142,12 +141,12 @@ main(void) {
      * BCH failure path — check_result != 1 leaves state unchanged
      * --------------------------------------------------------------- */
 
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     state->nac = 0x2AA;
     simulate_nid_processing(state, 0x0, 0);
     rc |= expect_eq_int("bch_fail_check0_nac_preserved", state->nac, 0x2AA);
 
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     state->nac = 0x2AA;
     simulate_nid_processing(state, 0x0, -1);
     rc |= expect_eq_int("bch_fail_checkn1_nac_preserved", state->nac, 0x2AA);
@@ -156,7 +155,7 @@ main(void) {
      * p2_cc hardset guard — p2_cc preserved when p2_hardset == 1
      * --------------------------------------------------------------- */
 
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     state->nac = 0x2AA;
     state->p2_hardset = 1;
     state->p2_cc = 0x2AA;
@@ -167,7 +166,7 @@ main(void) {
      * First NAC after engine init — state.nac == 0 accepts first valid NAC
      * --------------------------------------------------------------- */
 
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     state->nac = 0;
     simulate_nid_processing(state, 0x2AA, 1);
     rc |= expect_eq_int("first_nac_after_init", state->nac, 0x2AA);

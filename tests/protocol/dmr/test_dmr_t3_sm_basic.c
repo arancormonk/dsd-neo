@@ -59,8 +59,8 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 
 static void
 init_opts_state(dsd_opts* opts, dsd_state* state) {
-    memset(opts, 0, sizeof(*opts));
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_enable = 1;               // enable trunking logic
     opts->use_rigctl = 0;                 // avoid IO during test
     opts->audio_in_type = AUDIO_IN_PULSE; // avoid RTL path

@@ -9,7 +9,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 monotonic_nondecreasing(const float* x, int n) {
@@ -28,7 +28,7 @@ main(void) {
     if (!s) {
         return 1;
     }
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(s, 0, sizeof(*s));
 
     // Test audio_lpf_filter on step input
     {
@@ -42,13 +42,13 @@ main(void) {
         s->audio_lpf_state = 0.0f;
         audio_lpf_filter(s);
         if (!monotonic_nondecreasing(s->result, s->result_len)) {
-            fprintf(stderr, "audio_lpf_filter: not monotonic nondecreasing on step\n");
+            DSD_FPRINTF(stderr, "audio_lpf_filter: not monotonic nondecreasing on step\n");
             free(s);
             return 1;
         }
         // Final value should approach target (allow some residual)
         if (!(s->result[N - 1] >= 0.9f && s->result[N - 1] <= 1.0f)) {
-            fprintf(stderr, "audio_lpf_filter: final=%f not near 1.0\n", s->result[N - 1]);
+            DSD_FPRINTF(stderr, "audio_lpf_filter: final=%f not near 1.0\n", s->result[N - 1]);
             free(s);
             return 1;
         }
@@ -66,14 +66,14 @@ main(void) {
         // Should be non-increasing sequence and significantly reduced by end
         for (int i = 1; i < N; i++) {
             if (s->result[i] > s->result[i - 1]) {
-                fprintf(stderr, "dc_block_filter: sequence increased at %d\n", i);
+                DSD_FPRINTF(stderr, "dc_block_filter: sequence increased at %d\n", i);
                 free(s);
                 return 1;
             }
         }
         float last = s->result[N - 1];
         if (last >= 0.5f) {
-            fprintf(stderr, "dc_block_filter: insufficient reduction (last=%f)\n", last);
+            DSD_FPRINTF(stderr, "dc_block_filter: insufficient reduction (last=%f)\n", last);
             free(s);
             return 1;
         }

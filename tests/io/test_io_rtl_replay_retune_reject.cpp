@@ -7,24 +7,23 @@
 #error "DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS must be enabled for this test."
 #endif
 
+#include <cstdint>
+#include <cstdio>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/timing.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/io/iq_types.h"
-
-#include <cstdint>
-#include <cstdio>
-#include <cstring>
 #include <memory>
-
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/io/iq_types.h"
+#include "dsd-neo/io/rtl_stream_fwd.h"
 #include "test_support.h"
 
 static int
 expect_int_eq(const char* label, int got, int want) {
     if (got != want) {
-        std::fprintf(stderr, "FAIL: %s got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -33,7 +32,7 @@ expect_int_eq(const char* label, int got, int want) {
 static int
 expect_true(const char* label, int cond) {
     if (!cond) {
-        std::fprintf(stderr, "FAIL: %s\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         return 1;
     }
     return 0;
@@ -41,11 +40,11 @@ expect_true(const char* label, int cond) {
 
 static void
 fill_capture_cfg(dsd_iq_capture_config* cfg, const char* data_path, const char* metadata_path) {
-    std::memset(cfg, 0, sizeof(*cfg));
-    std::snprintf(cfg->data_path, sizeof(cfg->data_path), "%s", data_path);
-    std::snprintf(cfg->metadata_path, sizeof(cfg->metadata_path), "%s", metadata_path);
+    DSD_MEMSET(cfg, 0, sizeof(*cfg));
+    DSD_SNPRINTF(cfg->data_path, sizeof(cfg->data_path), "%s", data_path);
+    DSD_SNPRINTF(cfg->metadata_path, sizeof(cfg->metadata_path), "%s", metadata_path);
     cfg->format = DSD_IQ_FORMAT_CU8;
-    std::snprintf(cfg->capture_stage, sizeof(cfg->capture_stage), "%s", "post_mute_pre_widen");
+    DSD_SNPRINTF(cfg->capture_stage, sizeof(cfg->capture_stage), "%s", "post_mute_pre_widen");
     cfg->sample_rate_hz = 1536000U;
     cfg->center_frequency_hz = 851375000ULL;
     cfg->capture_center_frequency_hz = 851759000ULL;
@@ -59,8 +58,8 @@ fill_capture_cfg(dsd_iq_capture_config* cfg, const char* data_path, const char* 
     cfg->fs4_shift_enabled = 1;
     cfg->combine_rotate_enabled = 1;
     cfg->muted_bytes_excluded = 1;
-    std::snprintf(cfg->source_backend, sizeof(cfg->source_backend), "%s", "rtl");
-    std::snprintf(cfg->source_args, sizeof(cfg->source_args), "%s", "dev=0");
+    DSD_SNPRINTF(cfg->source_backend, sizeof(cfg->source_backend), "%s", "rtl");
+    DSD_SNPRINTF(cfg->source_args, sizeof(cfg->source_args), "%s", "dev=0");
 }
 
 static int
@@ -71,7 +70,7 @@ make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size) {
 
     char temp_dir[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_replay_retune")) {
-        std::fprintf(stderr, "FAIL: could not create temporary fixture directory\n");
+        DSD_FPRINTF(stderr, "FAIL: could not create temporary fixture directory\n");
         return 1;
     }
 
@@ -79,7 +78,7 @@ make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size) {
     char metadata_path[DSD_TEST_PATH_MAX];
     if (dsd_test_path_join(data_path, sizeof(data_path), temp_dir, "fixture.iq") != 0
         || dsd_test_path_join(metadata_path, sizeof(metadata_path), temp_dir, "fixture.iq.json") != 0) {
-        std::fprintf(stderr, "FAIL: could not construct fixture paths\n");
+        DSD_FPRINTF(stderr, "FAIL: could not construct fixture paths\n");
         return 1;
     }
 
@@ -88,7 +87,7 @@ make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size) {
     dsd_iq_capture_writer* writer = NULL;
     char err_buf[256] = {0};
     if (dsd_iq_capture_open(&cfg, &writer, err_buf, sizeof(err_buf)) != DSD_IQ_OK || !writer) {
-        std::fprintf(stderr, "FAIL: could not open IQ capture writer: %s\n", err_buf[0] ? err_buf : "unknown");
+        DSD_FPRINTF(stderr, "FAIL: could not open IQ capture writer: %s\n", err_buf[0] ? err_buf : "unknown");
         return 1;
     }
 
@@ -97,17 +96,17 @@ make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size) {
         payload[i] = (uint8_t)(i & 0xFFU);
     }
     if (dsd_iq_capture_submit(writer, payload, sizeof(payload)) != DSD_IQ_OK) {
-        std::fprintf(stderr, "FAIL: could not submit fixture payload\n");
+        DSD_FPRINTF(stderr, "FAIL: could not submit fixture payload\n");
         dsd_iq_capture_abort(writer);
         return 1;
     }
 
     dsd_iq_capture_final_stats stats;
-    std::memset(&stats, 0, sizeof(stats));
+    DSD_MEMSET(&stats, 0, sizeof(stats));
     dsd_iq_capture_close(writer, &stats);
 
-    if (std::snprintf(out_metadata_path, out_metadata_path_size, "%s", metadata_path) >= (int)out_metadata_path_size) {
-        std::fprintf(stderr, "FAIL: metadata path overflow\n");
+    if (DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s", metadata_path) >= (int)out_metadata_path_size) {
+        DSD_FPRINTF(stderr, "FAIL: metadata path overflow\n");
         return 1;
     }
     return 0;
@@ -115,13 +114,13 @@ make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size) {
 
 static void
 prepare_replay_opts(dsd_opts* opts, const char* metadata_path) {
-    std::memset(opts, 0, sizeof(*opts));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->iq_replay_requested = 1;
     opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_FAST;
     opts->iq_replay_loop = 0;
-    std::snprintf(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", metadata_path);
-    std::snprintf(opts->audio_in_dev, sizeof(opts->audio_in_dev), "iqreplay:%s", metadata_path);
+    DSD_SNPRINTF(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", metadata_path);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "iqreplay:%s", metadata_path);
 }
 
 static int

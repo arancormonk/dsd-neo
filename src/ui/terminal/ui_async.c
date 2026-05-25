@@ -45,6 +45,101 @@ ui_control_pump(dsd_opts* opts, dsd_state* state) {
     (void)ui_drain_cmds(opts, state);
 }
 
+static const dsd_opts*
+ui_get_opts_snapshot_or_default(void) {
+    const dsd_opts* osnap = ui_get_latest_opts_snapshot();
+    if (!osnap) {
+        osnap = g_ui_opts;
+    }
+    return osnap;
+}
+
+static int
+ui_curses_is_active(const dsd_opts* osnap) {
+    return (osnap && osnap->use_ncurses_terminal == 1 && stdscr != NULL);
+}
+
+static void
+ui_configure_curses_once(void) {
+    if (g_ui_curses_cfg_done) {
+        return;
+    }
+    dsd_curses_set_escdelay(25);
+    keypad(stdscr, TRUE);
+    timeout(0);
+    g_ui_curses_cfg_done = 1;
+}
+
+static int
+ui_read_key_nonblocking(const dsd_opts* osnap) {
+    if (osnap->audio_in_type == AUDIO_IN_STDIN) {
+        return ERR;
+    }
+    return getch();
+}
+
+static void
+ui_handle_menu_input(int ch) {
+    if (ch != ERR) {
+        ui_menu_handle_key(ch, g_ui_opts, g_ui_state);
+    }
+    ui_menu_tick(g_ui_opts, g_ui_state);
+    ui_commit_frame();
+}
+
+static void
+ui_handle_normal_input(int ch) {
+    if (ch == KEY_RESIZE) {
+#if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
+        // PDCurses doesn't auto-update dimensions on resize;
+        // resize_term(0,0) queries actual console size.
+        resize_term(0, 0);
+#endif
+        clearok(stdscr, TRUE);
+        ui_terminal_telemetry_request_redraw();
+        return;
+    }
+    if (ch != ERR) {
+        (void)ncurses_input_handler(g_ui_opts, g_ui_state, ch);
+    }
+}
+
+static void
+ui_process_input_frame(const dsd_opts* osnap) {
+    ui_configure_curses_once();
+    int ch = ui_read_key_nonblocking(osnap);
+    if (ui_menu_is_open()) {
+        ui_handle_menu_input(ch);
+        return;
+    }
+    ui_handle_normal_input(ch);
+}
+
+static void
+ui_draw_frame(const dsd_opts* osnap) {
+    /* Draw using a state snapshot when available */
+    const dsd_state* snap = ui_get_latest_snapshot();
+    if (snap) {
+        ncursesPrinter((dsd_opts*)osnap, (dsd_state*)snap);
+    } else {
+        ncursesPrinter((dsd_opts*)osnap, g_ui_state);
+    }
+}
+
+static void
+ui_draw_if_needed(const dsd_opts* osnap, uint64_t* last_draw_ns, uint64_t frame_ns) {
+    uint64_t now_ns = dsd_time_monotonic_ns();
+    uint64_t dt_ns = now_ns - *last_draw_ns;
+    if (!(atomic_exchange(&g_ui_dirty, 0) || dt_ns >= frame_ns)) {
+        return;
+    }
+    atomic_store(&g_ui_in_context, 1);
+    ui_draw_frame(osnap);
+    atomic_store(&g_ui_in_context, 0);
+    ui_commit_frame();
+    *last_draw_ns = now_ns;
+}
+
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
@@ -64,63 +159,10 @@ static DSD_THREAD_RETURN_TYPE
 
     while (!atomic_load(&g_ui_stop)) {
         // Input + overlays are single-owner in the UI thread.
-        const dsd_opts* osnap = ui_get_latest_opts_snapshot();
-        if (!osnap) {
-            osnap = g_ui_opts;
-        }
-        if (osnap && osnap->use_ncurses_terminal == 1 && stdscr != NULL) {
-            // One-time input config in UI thread (ESC delay, keypad, nonblocking getch)
-            if (!g_ui_curses_cfg_done) {
-                dsd_curses_set_escdelay(25);
-                keypad(stdscr, TRUE);
-                timeout(0);
-                g_ui_curses_cfg_done = 1;
-            }
-
-            int ch = ERR;
-            if (osnap->audio_in_type != AUDIO_IN_STDIN) { // Avoid getch when stdin is input
-                ch = getch();
-            }
-
-            if (ui_menu_is_open()) {
-                if (ch != ERR) {
-                    ui_menu_handle_key(ch, g_ui_opts, g_ui_state);
-                }
-                // Keep overlays updated each frame
-                ui_menu_tick(g_ui_opts, g_ui_state);
-                ui_commit_frame();
-            } else {
-                if (ch == KEY_RESIZE) {
-#if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
-                    // PDCurses doesn't auto-update dimensions on resize;
-                    // resize_term(0,0) queries actual console size.
-                    resize_term(0, 0);
-#endif
-                    clearok(stdscr, TRUE);
-                    ui_terminal_telemetry_request_redraw();
-                } else if (ch != ERR) {
-                    (void)ncurses_input_handler(g_ui_opts, g_ui_state, ch);
-                }
-            }
-        }
-
-        // Draw on dirty or FPS tick when curses is active
-        if (osnap && osnap->use_ncurses_terminal == 1 && stdscr != NULL) {
-            uint64_t now_ns = dsd_time_monotonic_ns();
-            uint64_t dt_ns = now_ns - last_draw_ns;
-            if (atomic_exchange(&g_ui_dirty, 0) || dt_ns >= frame_ns) {
-                atomic_store(&g_ui_in_context, 1);
-                /* Draw using a state snapshot when available */
-                const dsd_state* snap = ui_get_latest_snapshot();
-                if (snap) {
-                    ncursesPrinter((dsd_opts*)osnap, (dsd_state*)snap);
-                } else {
-                    ncursesPrinter((dsd_opts*)osnap, g_ui_state);
-                }
-                atomic_store(&g_ui_in_context, 0);
-                ui_commit_frame();
-                last_draw_ns = now_ns;
-            }
+        const dsd_opts* osnap = ui_get_opts_snapshot_or_default();
+        if (ui_curses_is_active(osnap)) {
+            ui_process_input_frame(osnap);
+            ui_draw_if_needed(osnap, &last_draw_ns, frame_ns);
         }
 
         dsd_sleep_ms(sleep_ms);

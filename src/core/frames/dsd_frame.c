@@ -20,11 +20,12 @@
  */
 
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdio.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 void
@@ -32,24 +33,24 @@ printFrameInfo(dsd_opts* opts, dsd_state* state) {
 
     UNUSED(opts);
 
-    fprintf(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, "%s", KCYN);
     if (state->p2_wacn != 0) {
-        fprintf(stderr, "WACN: %05llX; ", state->p2_wacn);
+        DSD_FPRINTF(stderr, "WACN: %05llX; ", state->p2_wacn);
     }
     if (state->p2_sysid != 0) {
-        fprintf(stderr, "SYS: %03llX; ", state->p2_sysid);
+        DSD_FPRINTF(stderr, "SYS: %03llX; ", state->p2_sysid);
     }
     if (state->p2_cc != 0) {
-        fprintf(stderr, "NAC/CC: %03llX; ", state->p2_cc);
+        DSD_FPRINTF(stderr, "NAC/CC: %03llX; ", state->p2_cc);
     } else {
-        fprintf(stderr, "NAC: %03X; ", state->nac);
+        DSD_FPRINTF(stderr, "NAC: %03X; ", state->nac);
     }
 
     if (state->p2_rfssid != 0) {
-        fprintf(stderr, "RFSS: %03lld; ", state->p2_rfssid);
+        DSD_FPRINTF(stderr, "RFSS: %03lld; ", state->p2_rfssid);
     }
     if (state->p2_siteid != 0) {
-        fprintf(stderr, "Site: %03lld; ", state->p2_siteid);
+        DSD_FPRINTF(stderr, "Site: %03lld; ", state->p2_siteid);
     }
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 }

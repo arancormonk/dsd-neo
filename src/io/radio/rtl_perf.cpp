@@ -9,7 +9,6 @@
  */
 
 #include "rtl_perf.h"
-
 #include <atomic>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/timing.h>
@@ -19,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 namespace {
 
@@ -46,6 +46,7 @@ FILE* g_perf_file = nullptr;
 uint64_t g_perf_interval_ns = 1000000000ULL;
 uint64_t g_perf_next_log_ns = 0;
 RtlPerfCounters g_perf;
+const char* kRtlPerfCsvPath = "dsd-neo-rtl-perf.csv";
 
 uint64_t
 exchange_counter(std::atomic<uint64_t>& counter) {
@@ -74,10 +75,11 @@ parse_interval_ns(void) {
 
 void
 write_header(FILE* f) {
-    fprintf(f, "time_ms,source,rate_hz,output_kind,input_used,input_capacity,input_drops,output_used,output_capacity,"
-               "symbol_cache_pending,ingest_blocks,ingest_samples,ingest_drops,ingest_ns,demod_blocks,"
-               "demod_input_samples,demod_output_samples,full_demod_ns,post_metrics_ns,output_write_ns,"
-               "consumer_reads,consumer_samples,consumer_read_ns,snr_db,cfo_hz,carrier_lock\n");
+    DSD_FPRINTF(f,
+                "time_ms,source,rate_hz,output_kind,input_used,input_capacity,input_drops,output_used,output_capacity,"
+                "symbol_cache_pending,ingest_blocks,ingest_samples,ingest_drops,ingest_ns,demod_blocks,"
+                "demod_input_samples,demod_output_samples,full_demod_ns,post_metrics_ns,output_write_ns,"
+                "consumer_reads,consumer_samples,consumer_read_ns,snr_db,cfo_hz,carrier_lock\n");
 }
 
 void
@@ -91,9 +93,9 @@ init_locked(void) {
         return;
     }
 
-    FILE* f = fopen(path, "a");
+    FILE* f = dsd_fopen_private(kRtlPerfCsvPath, "a");
     if (!f) {
-        fprintf(stderr, "RTL PERF: failed to open '%s': %s\n", path, strerror(errno));
+        DSD_FPRINTF(stderr, "RTL PERF: failed to open '%s': %s\n", kRtlPerfCsvPath, strerror(errno));
         g_perf_state.store(1, std::memory_order_release);
         return;
     }
@@ -207,15 +209,15 @@ rtl_perf_maybe_log(const char* source, uint32_t sample_rate_hz, int output_kind,
     uint64_t consumer_samples = exchange_counter(g_perf.consumer_samples);
     uint64_t consumer_read_ns = exchange_counter(g_perf.consumer_read_ns);
 
-    fprintf(g_perf_file,
-            "%" PRIu64 ",%s,%" PRIu32 ",%d,%zu,%zu,%" PRIu64 ",%zu,%zu,%d,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
-            ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
-            ",%.3f,%.3f,%d\n",
-            (uint64_t)(now_ns / 1000000ULL), source ? source : "unknown", sample_rate_hz, output_kind, input_used,
-            input_capacity, input_drops, output_used, output_capacity, symbol_cache_pending, ingest_blocks,
-            ingest_samples, ingest_drops, ingest_ns, demod_blocks, demod_input_samples, demod_output_samples,
-            full_demod_ns, post_metrics_ns, output_write_ns, consumer_reads, consumer_samples, consumer_read_ns, snr_db,
-            cfo_hz, carrier_lock);
+    DSD_FPRINTF(g_perf_file,
+                "%" PRIu64 ",%s,%" PRIu32 ",%d,%zu,%zu,%" PRIu64 ",%zu,%zu,%d,%" PRIu64 ",%" PRIu64 ",%" PRIu64
+                ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
+                ",%" PRIu64 ",%" PRIu64 ",%.3f,%.3f,%d\n",
+                (uint64_t)(now_ns / 1000000ULL), source ? source : "unknown", sample_rate_hz, output_kind, input_used,
+                input_capacity, input_drops, output_used, output_capacity, symbol_cache_pending, ingest_blocks,
+                ingest_samples, ingest_drops, ingest_ns, demod_blocks, demod_input_samples, demod_output_samples,
+                full_demod_ns, post_metrics_ns, output_write_ns, consumer_reads, consumer_samples, consumer_read_ns,
+                snr_db, cfo_hz, carrier_lock);
     fflush(g_perf_file);
     g_perf_next_log_ns = now_ns + g_perf_interval_ns;
 }

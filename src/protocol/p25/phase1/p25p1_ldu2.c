@@ -27,6 +27,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -42,8 +43,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/p25p1_heuristics.h"
 
@@ -76,463 +77,225 @@ p25p1_lsd_corrected_byte(const uint8_t bits16[16], char out_bits[9]) {
     return value;
 }
 
-void
-processLDU2(dsd_opts* opts, dsd_state* state) {
-    state->p25_p1_duid_ldu2++;
-    P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
-
-    // Hysteresis: if we have very recent activity within a fraction of the
-    // hangtime window, refresh the timer early to avoid thrashing between the
-    // VC and CC on marginal signals. Otherwise, defer updates until after FEC
-    // checks succeed (below).
-    {
-        time_t now = time(NULL);
-        double hold_hyst = opts->trunk_hangtime * 0.75;
-        if (hold_hyst < 0.75) {
-            hold_hyst = 0.75; // minimum grace window
-        }
-        if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
-            state->last_vc_sync_time = now;
-            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-        }
-    }
-
-    // Hysteresis: if we have very recent activity within a fraction of the
-    // hangtime window, refresh the timer early to avoid thrashing between the
-    // VC and CC on marginal signals. Otherwise, defer updates until after FEC
-    // success (below), so hangtime is not extended by false decodes when the
-    // signal is gone.
-    {
-        time_t now = time(NULL);
-        double hold_hyst = opts->trunk_hangtime * 0.75;
-        if (hold_hyst < 0.75) {
-            hold_hyst = 0.75; // minimum grace window
-        }
-        if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
-            state->last_vc_sync_time = now;
-            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-        }
-    }
-
-    // Start status-symbol collection unless the dispatcher already did so for this data unit.
-    p25_status_accum_ensure_started(state);
-
-    //push current slot to 0, just in case swapping p2 to p1
-    //or stale slot value from p2 and then decoding a pdu
-    state->currentslot = 0;
-
-    // extracts IMBE frames from LDU frame
-    int i;
+typedef struct {
     uint8_t mi[73];
-    char algid[9], kid[17];
-    char lsd1[9], lsd2[9];
-    int algidhex, kidhex;
-    uint8_t lsd_hex1, lsd_hex2;
+    char algid[9];
+    char kid[17];
+    char lsd1[9];
+    char lsd2[9];
+    int algidhex;
+    int kidhex;
+    uint8_t lsd_hex1;
+    uint8_t lsd_hex2;
     uint8_t lowspeeddata[32];
-    memset(lowspeeddata, 0, sizeof(lowspeeddata));
     int16_t lowspeed_llr[32];
-    memset(lowspeed_llr, 0, sizeof(lowspeed_llr));
-    unsigned long long int mihex1, mihex2, mihex3;
-    int status_count;
-    int lsd1_okay, lsd2_okay = 0;
-    UNUSED(mihex3);
-
-    char hex_data[16][6];  // Data in hex-words (6 bit words). A total of 16 hex words.
-    char hex_parity[8][6]; // Parity of the data, again in hex-word format. A total of 12 parity hex words.
-
+    unsigned long long mihex1;
+    unsigned long long mihex2;
+    unsigned long long mihex3;
+    int lsd1_okay;
+    int lsd2_okay;
     int irrecoverable_errors;
-
-    AnalogSignal analog_signal_array[16 * (3 + 2) + 8 * (3 + 2)] = {0};
+    char hex_data[16][6];
+    char hex_parity[8][6];
+    AnalogSignal analog_signal_array[16 * (3 + 2) + 8 * (3 + 2)];
     int analog_signal_index;
+    int status_count;
+} Ldu2Frame;
 
-    analog_signal_index = 0;
+static void
+ldu2_refresh_hold_hysteresis(const dsd_opts* opts, dsd_state* state) {
+    time_t now = time(NULL);
+    double hold_hyst = opts->trunk_hangtime * 0.75;
+    if (hold_hyst < 0.75) {
+        hold_hyst = 0.75;
+    }
+    if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
+        state->last_vc_sync_time = now;
+        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+    }
+}
 
-    // we skip the status dibits that occur every 36 symbols
-    // the first IMBE frame starts 14 symbols before next status
-    // so we start counter at 36-14-1 = 21
-    status_count = 21;
+static void
+ldu2_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, char debug_prefix, int emit_active) {
+#ifdef TRACE_DSD
+    state->debug_prefix_2 = debug_prefix;
+#else
+    UNUSED(debug_prefix);
+#endif
+    process_IMBE(opts, state, status_count);
+    p25p1_play_imbe_audio(opts, state);
+    if (emit_active != 0) {
+        p25_sm_emit_active(opts, state, 0);
+    }
+}
 
+static void
+ldu2_read_hex_word_block(dsd_opts* opts, dsd_state* state, char words[][6], int start_index, int word_count,
+                         Ldu2Frame* frame, int sequence_break_word) {
+    for (int i = 0; i < word_count; i++) {
+        read_and_correct_hex_word(opts, state, &(words[start_index - i][0]), &frame->status_count,
+                                  frame->analog_signal_array, &frame->analog_signal_index);
+    }
+    if (sequence_break_word >= 0) {
+        size_t idx = (size_t)sequence_break_word * ((size_t)3 + 2);
+        frame->analog_signal_array[idx].sequence_broken = 1;
+    }
+}
+
+static void
+ldu2_extract_ess_fields(const char hex_data[16][6], uint8_t mi[73], char algid[9], char kid[17]) {
+    size_t mi_pos = 0;
+    for (int row = 15; row >= 4; row--) {
+        for (int bit = 0; bit < 6; bit++) {
+            mi[mi_pos++] = (uint8_t)(hex_data[row][bit] + '0');
+        }
+    }
+    mi[72] = 0;
+
+    size_t alg_pos = 0;
+    for (int bit = 0; bit < 6; bit++) {
+        algid[alg_pos++] = (char)(hex_data[3][bit] + '0');
+    }
+    algid[alg_pos++] = (char)(hex_data[2][0] + '0');
+    algid[alg_pos++] = (char)(hex_data[2][1] + '0');
+    algid[8] = 0;
+
+    size_t kid_pos = 0;
+    for (int bit = 2; bit < 6; bit++) {
+        kid[kid_pos++] = (char)(hex_data[2][bit] + '0');
+    }
+    for (int row = 1; row >= 0; row--) {
+        for (int bit = 0; bit < 6; bit++) {
+            kid[kid_pos++] = (char)(hex_data[row][bit] + '0');
+        }
+    }
+    kid[16] = 0;
+}
+
+static void
+ldu2_maybe_apply_early_unmute(dsd_opts* opts, const dsd_state* state, const char hex_data[16][6]) {
+    if (state->payload_algid != 0) {
+        return;
+    }
+
+    uint8_t mi_bits[73];
+    char algid_bits[9];
+    char kid_bits[17];
+    ldu2_extract_ess_fields(hex_data, mi_bits, algid_bits, kid_bits);
+    int algid_early = (int)strtol(algid_bits, NULL, 2);
+
+    if (state->R != 0 && (algid_early == 0xAA || algid_early == 0x81 || algid_early == 0x9F)) {
+        opts->unmute_encrypted_p25 = 1;
+        return;
+    }
+    if (algid_early == 0x84 || algid_early == 0x89) {
+        return;
+    }
+    if (algid_early != 0 && algid_early != 0x80) {
+        opts->unmute_encrypted_p25 = 0;
+    }
+}
+
+static void
+ldu2_read_soft_octet(dsd_opts* opts, dsd_state* state, int* status_count, char bits[8], int16_t llr_bits[8]) {
+    for (int i = 0; i <= 6; i += 2) {
+        int16_t llr[2];
+        read_dibit_soft(opts, state, bits + i, status_count, NULL, NULL, NULL, llr);
+        llr_bits[i + 0] = llr[0];
+        llr_bits[i + 1] = llr[1];
+    }
+}
+
+static void
+ldu2_capture_lsd(dsd_opts* opts, dsd_state* state, Ldu2Frame* frame) {
+    char lsd[8];
+    char cyclic_parity[8];
+
+    ldu2_read_soft_octet(opts, state, &frame->status_count, lsd, frame->lowspeed_llr + 0);
+    ldu2_read_soft_octet(opts, state, &frame->status_count, cyclic_parity, frame->lowspeed_llr + 8);
+    frame->lsd_hex1 = 0;
+    for (int i = 0; i < 8; i++) {
+        frame->lsd_hex1 = (uint8_t)((frame->lsd_hex1 << 1) | (uint8_t)lsd[i]);
+        frame->lsd1[i] = (char)(lsd[i] + '0');
+        frame->lowspeeddata[i + 0] = (uint8_t)lsd[i];
+        frame->lowspeeddata[i + 8] = (uint8_t)cyclic_parity[i];
+    }
+
+    ldu2_read_soft_octet(opts, state, &frame->status_count, lsd, frame->lowspeed_llr + 16);
+    ldu2_read_soft_octet(opts, state, &frame->status_count, cyclic_parity, frame->lowspeed_llr + 24);
+    frame->lsd_hex2 = 0;
+    for (int i = 0; i < 8; i++) {
+        frame->lsd_hex2 = (uint8_t)((frame->lsd_hex2 << 1) | (uint8_t)lsd[i]);
+        frame->lsd2[i] = (char)(lsd[i] + '0');
+        frame->lowspeeddata[i + 16] = (uint8_t)lsd[i];
+        frame->lowspeeddata[i + 24] = (uint8_t)cyclic_parity[i];
+    }
+    frame->lsd1[8] = 0;
+    frame->lsd2[8] = 0;
+
+    state->dropL += 2;
+    state->octet_counter += 2;
+}
+
+static void
+ldu2_collect_voice_symbols(dsd_opts* opts, dsd_state* state, Ldu2Frame* frame) {
+    static const char trace_prefix[9] = {'0', '1', '2', '3', '4', '5', '6', '7', '8'};
+
+    frame->status_count = 21;
+    frame->analog_signal_index = 0;
     state->p25vc = 9;
 
-    if (opts->errorbars == 1) {
-        //fprintf (stderr, "e:");
+    for (int imbe = 0; imbe < 9; imbe++) {
+        ldu2_process_imbe_frame(opts, state, &frame->status_count, trace_prefix[imbe], (imbe == 0));
+        if (imbe >= 1 && imbe <= 4) {
+            int start = 15 - ((imbe - 1) * 4);
+            int break_word = (imbe - 1) * 4;
+            ldu2_read_hex_word_block(opts, state, frame->hex_data, start, 4, frame, break_word);
+            if (imbe == 4) {
+                ldu2_maybe_apply_early_unmute(opts, state, (const char (*)[6])frame->hex_data);
+            }
+            continue;
+        }
+        if (imbe == 5) {
+            ldu2_read_hex_word_block(opts, state, frame->hex_parity, 7, 4, frame, 16);
+            continue;
+        }
+        if (imbe == 6) {
+            ldu2_read_hex_word_block(opts, state, frame->hex_parity, 3, 4, frame, 20);
+            continue;
+        }
+        if (imbe == 7) {
+            ldu2_capture_lsd(opts, state, frame);
+        }
     }
 
-    // IMBE 1
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = '0';
-#endif
-    process_IMBE(opts, state, &status_count);
-    p25p1_play_imbe_audio(opts, state);
-    // SM event: ACTIVE (P1 uses slot 0)
-    p25_sm_emit_active(opts, state, 0);
-
-    // IMBE 2
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = '1';
-#endif
-    process_IMBE(opts, state, &status_count);
-    p25p1_play_imbe_audio(opts, state);
-
-    // Read data after IMBE 2
-    read_and_correct_hex_word(opts, state, &(hex_data[15][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[14][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[13][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[12][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    {
-        size_t idx = (size_t)0 * 5u;
-        analog_signal_array[idx].sequence_broken = 1;
-    }
-
-    // IMBE 3
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = '2';
-#endif
-    process_IMBE(opts, state, &status_count);
-    p25p1_play_imbe_audio(opts, state);
-
-    // Read data after IMBE 3
-    read_and_correct_hex_word(opts, state, &(hex_data[11][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[10][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[9][0]), &status_count, analog_signal_array, &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[8][0]), &status_count, analog_signal_array, &analog_signal_index);
-    {
-        size_t idx = (size_t)4 * 5u;
-        analog_signal_array[idx].sequence_broken = 1;
-    }
-
-    // IMBE 4
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = '3';
-#endif
-    process_IMBE(opts, state, &status_count);
-    p25p1_play_imbe_audio(opts, state);
-
-    // Read data after IMBE 4
-    read_and_correct_hex_word(opts, state, &(hex_data[7][0]), &status_count, analog_signal_array, &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[6][0]), &status_count, analog_signal_array, &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[5][0]), &status_count, analog_signal_array, &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[4][0]), &status_count, analog_signal_array, &analog_signal_index);
-    {
-        size_t idx = (size_t)8 * 5u;
-        analog_signal_array[idx].sequence_broken = 1;
-    }
-
-    // IMBE 5
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = '4';
-#endif
-    process_IMBE(opts, state, &status_count);
-    p25p1_play_imbe_audio(opts, state);
-
-    // Read data after IMBE 5
-    read_and_correct_hex_word(opts, state, &(hex_data[3][0]), &status_count, analog_signal_array, &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[2][0]), &status_count, analog_signal_array, &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[1][0]), &status_count, analog_signal_array, &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_data[0][0]), &status_count, analog_signal_array, &analog_signal_index);
-    {
-        size_t idx = (size_t)12 * 5u;
-        analog_signal_array[idx].sequence_broken = 1;
-    }
-
-    // Early extract of ALGID/KID/MI after IMBE 5 so we can gate audio for the
-    // remainder of this LDU if encrypted. Policy: allow clear (ALGID 0/0x80).
-    // For encrypted payloads, allow audio only when a key is present for a
-    // recognized algorithm:
-    //  - RC4 (0xAA), DES-OFB (0x81), DES-XL (0x9F): require R != 0
-    //  - AES-256 (0x84), AES-128 (0x89): require aes_key_loaded[slot] == 1
-    // If keys are absent, keep audio muted and (if trunking ENC lockout is
-    // enabled) return to CC early. Keep prints later; just set state here.
-    if (state->payload_algid == 0) {
-        char algid_b[9] = {0};
-        char kid_b[17] = {0};
-        char mi_b[73] = {0};
-
-        // Build MI bits from hex_data[15..4]
-        mi_b[0] = hex_data[15][0] + '0';
-        mi_b[1] = hex_data[15][1] + '0';
-        mi_b[2] = hex_data[15][2] + '0';
-        mi_b[3] = hex_data[15][3] + '0';
-        mi_b[4] = hex_data[15][4] + '0';
-        mi_b[5] = hex_data[15][5] + '0';
-
-        mi_b[6] = hex_data[14][0] + '0';
-        mi_b[7] = hex_data[14][1] + '0';
-        mi_b[8] = hex_data[14][2] + '0';
-        mi_b[9] = hex_data[14][3] + '0';
-        mi_b[10] = hex_data[14][4] + '0';
-        mi_b[11] = hex_data[14][5] + '0';
-
-        mi_b[12] = hex_data[13][0] + '0';
-        mi_b[13] = hex_data[13][1] + '0';
-        mi_b[14] = hex_data[13][2] + '0';
-        mi_b[15] = hex_data[13][3] + '0';
-        mi_b[16] = hex_data[13][4] + '0';
-        mi_b[17] = hex_data[13][5] + '0';
-
-        mi_b[18] = hex_data[12][0] + '0';
-        mi_b[19] = hex_data[12][1] + '0';
-        mi_b[20] = hex_data[12][2] + '0';
-        mi_b[21] = hex_data[12][3] + '0';
-        mi_b[22] = hex_data[12][4] + '0';
-        mi_b[23] = hex_data[12][5] + '0';
-
-        mi_b[24] = hex_data[11][0] + '0';
-        mi_b[25] = hex_data[11][1] + '0';
-        mi_b[26] = hex_data[11][2] + '0';
-        mi_b[27] = hex_data[11][3] + '0';
-        mi_b[28] = hex_data[11][4] + '0';
-        mi_b[29] = hex_data[11][5] + '0';
-
-        mi_b[30] = hex_data[10][0] + '0';
-        mi_b[31] = hex_data[10][1] + '0';
-        mi_b[32] = hex_data[10][2] + '0';
-        mi_b[33] = hex_data[10][3] + '0';
-        mi_b[34] = hex_data[10][4] + '0';
-        mi_b[35] = hex_data[10][5] + '0';
-
-        mi_b[36] = hex_data[9][0] + '0';
-        mi_b[37] = hex_data[9][1] + '0';
-        mi_b[38] = hex_data[9][2] + '0';
-        mi_b[39] = hex_data[9][3] + '0';
-        mi_b[40] = hex_data[9][4] + '0';
-        mi_b[41] = hex_data[9][5] + '0';
-
-        mi_b[42] = hex_data[8][0] + '0';
-        mi_b[43] = hex_data[8][1] + '0';
-        mi_b[44] = hex_data[8][2] + '0';
-        mi_b[45] = hex_data[8][3] + '0';
-        mi_b[46] = hex_data[8][4] + '0';
-        mi_b[47] = hex_data[8][5] + '0';
-
-        mi_b[48] = hex_data[7][0] + '0';
-        mi_b[49] = hex_data[7][1] + '0';
-        mi_b[50] = hex_data[7][2] + '0';
-        mi_b[51] = hex_data[7][3] + '0';
-        mi_b[52] = hex_data[7][4] + '0';
-        mi_b[53] = hex_data[7][5] + '0';
-
-        mi_b[54] = hex_data[6][0] + '0';
-        mi_b[55] = hex_data[6][1] + '0';
-        mi_b[56] = hex_data[6][2] + '0';
-        mi_b[57] = hex_data[6][3] + '0';
-        mi_b[58] = hex_data[6][4] + '0';
-        mi_b[59] = hex_data[6][5] + '0';
-
-        mi_b[60] = hex_data[5][0] + '0';
-        mi_b[61] = hex_data[5][1] + '0';
-        mi_b[62] = hex_data[5][2] + '0';
-        mi_b[63] = hex_data[5][3] + '0';
-        mi_b[64] = hex_data[5][4] + '0';
-        mi_b[65] = hex_data[5][5] + '0';
-
-        mi_b[66] = hex_data[4][0] + '0';
-        mi_b[67] = hex_data[4][1] + '0';
-        mi_b[68] = hex_data[4][2] + '0';
-        mi_b[69] = hex_data[4][3] + '0';
-        mi_b[70] = hex_data[4][4] + '0';
-        mi_b[71] = hex_data[4][5] + '0';
-
-        // Build ALGID bits
-        algid_b[0] = hex_data[3][0] + '0';
-        algid_b[1] = hex_data[3][1] + '0';
-        algid_b[2] = hex_data[3][2] + '0';
-        algid_b[3] = hex_data[3][3] + '0';
-        algid_b[4] = hex_data[3][4] + '0';
-        algid_b[5] = hex_data[3][5] + '0';
-        algid_b[6] = hex_data[2][0] + '0';
-        algid_b[7] = hex_data[2][1] + '0';
-
-        // Build KID bits
-        kid_b[0] = hex_data[2][2] + '0';
-        kid_b[1] = hex_data[2][3] + '0';
-        kid_b[2] = hex_data[2][4] + '0';
-        kid_b[3] = hex_data[2][5] + '0';
-        kid_b[4] = hex_data[1][0] + '0';
-        kid_b[5] = hex_data[1][1] + '0';
-        kid_b[6] = hex_data[1][2] + '0';
-        kid_b[7] = hex_data[1][3] + '0';
-        kid_b[8] = hex_data[1][4] + '0';
-        kid_b[9] = hex_data[1][5] + '0';
-        kid_b[10] = hex_data[0][0] + '0';
-        kid_b[11] = hex_data[0][1] + '0';
-        kid_b[12] = hex_data[0][2] + '0';
-        kid_b[13] = hex_data[0][3] + '0';
-        kid_b[14] = hex_data[0][4] + '0';
-        kid_b[15] = hex_data[0][5] + '0';
-
-        int algid_early = (int)strtol(algid_b, NULL, 2);
-        int kid_early = (int)strtol(kid_b, NULL, 2);
-        unsigned long long mihex1_e = (unsigned long long)ConvertBitIntoBytes((unsigned char*)&mi_b[0], 32);
-        unsigned long long mihex2_e = (unsigned long long)ConvertBitIntoBytes((unsigned char*)&mi_b[32], 32);
-
-        // Do NOT persist early ALGID/KID/MI into state here; bits are not
-        // yet fully FEC-corrected and can cause false ENC classification.
-        // Defer assignments until after FEC below where algidhex/kidhex/MI
-        // are computed from corrected words.
-        (void)algid_early;
-        (void)kid_early;
-        (void)mihex1_e;
-        (void)mihex2_e;
-
-        // Establish mute/unmute policy early (no prints here)
-        if (state->R != 0 && (algid_early == 0xAA || algid_early == 0x81 || algid_early == 0x9F)) {
-            opts->unmute_encrypted_p25 = 1; // RC4/DES/DES-XL with key
-        } else if (algid_early == 0x84 || algid_early == 0x89) {
-            // AES: defer unmute unless key already known loaded; keep muted by default
-            // opts->unmute_encrypted_p25 remains as-is
-        } else if (algid_early != 0 && algid_early != 0x80) {
-            opts->unmute_encrypted_p25 = 0;
-        }
-
-        // Do NOT apply ENC lockout before FEC confirmation; early bits can be
-        // wrong and spuriously trigger lockout/misclassification. The proper
-        // ENC lockout is handled later after parity/FEC steps.
-    }
-
-    // IMBE 6
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = '5';
-#endif
-    process_IMBE(opts, state, &status_count);
-    p25p1_play_imbe_audio(opts, state);
-
-    // Read data after IMBE 6
-    read_and_correct_hex_word(opts, state, &(hex_parity[7][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_parity[6][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_parity[5][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_parity[4][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    analog_signal_array[((size_t)16) * 5].sequence_broken = 1;
-
-    // IMBE 7
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = '6';
-#endif
-    process_IMBE(opts, state, &status_count);
-    p25p1_play_imbe_audio(opts, state);
-
-    // Read data after IMBE 7
-    read_and_correct_hex_word(opts, state, &(hex_parity[3][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_parity[2][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_parity[1][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    read_and_correct_hex_word(opts, state, &(hex_parity[0][0]), &status_count, analog_signal_array,
-                              &analog_signal_index);
-    analog_signal_array[((size_t)20) * 5].sequence_broken = 1;
-
-    // IMBE 8
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = '7';
-#endif
-    process_IMBE(opts, state, &status_count);
-    p25p1_play_imbe_audio(opts, state);
-
-    // Read data after IMBE 8: LSD (low speed data)
-    {
-        char lsd[8];
-        char cyclic_parity[8];
-
-        for (i = 0; i <= 6; i += 2) {
-            int16_t llr[2];
-            read_dibit_soft(opts, state, lsd + i, &status_count, NULL, NULL, NULL, llr);
-            lowspeed_llr[i + 0] = llr[0];
-            lowspeed_llr[i + 1] = llr[1];
-        }
-        for (i = 0; i <= 6; i += 2) {
-            int16_t llr[2];
-            read_dibit_soft(opts, state, cyclic_parity + i, &status_count, NULL, NULL, NULL, llr);
-            lowspeed_llr[8 + i + 0] = llr[0];
-            lowspeed_llr[8 + i + 1] = llr[1];
-        }
-        lsd_hex1 = 0;
-        for (i = 0; i < 8; i++) {
-            lsd_hex1 = lsd_hex1 << 1;
-            lsd1[i] = lsd[i] + '0';
-            lsd_hex1 |= (uint8_t)lsd[i];
-            lowspeeddata[i + 0] = (uint8_t)lsd[i];
-            lowspeeddata[i + 8] = (uint8_t)cyclic_parity[i];
-        }
-
-        for (i = 0; i <= 6; i += 2) {
-            int16_t llr[2];
-            read_dibit_soft(opts, state, lsd + i, &status_count, NULL, NULL, NULL, llr);
-            lowspeed_llr[16 + i + 0] = llr[0];
-            lowspeed_llr[16 + i + 1] = llr[1];
-        }
-        for (i = 0; i <= 6; i += 2) {
-            int16_t llr[2];
-            read_dibit_soft(opts, state, cyclic_parity + i, &status_count, NULL, NULL, NULL, llr);
-            lowspeed_llr[24 + i + 0] = llr[0];
-            lowspeed_llr[24 + i + 1] = llr[1];
-        }
-        lsd_hex2 = 0;
-        for (i = 0; i < 8; i++) {
-            lsd_hex2 = lsd_hex2 << 1;
-            lsd2[i] = lsd[i] + '0';
-            lsd_hex2 |= (uint8_t)lsd[i];
-            lowspeeddata[i + 16] = (uint8_t)lsd[i];
-            lowspeeddata[i + 24] = (uint8_t)cyclic_parity[i];
-        }
-
-        // TODO: error correction of the LSD bytes... <--THIS!
-        // TODO: do something useful with the LSD bytes... <--THIS!
-
-        state->dropL += 2; //need to skip 2 here for the LSD bytes
-        //same for octet counter
-        state->octet_counter += 2;
-    }
-
-    // IMBE 9
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = '8';
-#endif
-    process_IMBE(opts, state, &status_count);
-    p25p1_play_imbe_audio(opts, state);
-
-    //set vc counter to 0
     state->p25vc = 0;
-
-    //reset dropbytes -- skip first 11 for next LCW
     state->dropL = 267;
-    //reset octet counter
     state->octet_counter = 0;
 
     if (opts->errorbars == 1) {
-        fprintf(stderr, "\n");
+        DSD_FPRINTF(stderr, "\n");
     }
-
     if (opts->p25status == 1) {
-        fprintf(stderr, "lsd1: %s lsd2: %s\n", lsd1, lsd2);
+        DSD_FPRINTF(stderr, "lsd1: %s lsd2: %s\n", frame->lsd1, frame->lsd2);
     }
+}
 
-    // Trailing status symbol: feed to accumulator for advisory source classification.
-    {
-        dsd_dibit_soft_t status_soft;
-        int ss = getDibitSoft(opts, state, &status_soft);
-        p25_status_accum_add(state, ss);
-    }
-
-    // Classify accumulated status symbols and set advisory AFC gate flag.
+static void
+ldu2_consume_trailing_status(dsd_opts* opts, dsd_state* state) {
+    dsd_dibit_soft_t status_soft;
+    int ss = getDibitSoft(opts, state, &status_soft);
+    p25_status_accum_add(state, ss);
     p25_status_accum_classify(state, opts);
+}
 
-    // Error correct the hex_data using Reed-Solomon hex_parity
-    irrecoverable_errors = check_and_fix_reedsolomon_24_16_9((char*)hex_data, (char*)hex_parity);
+static int
+ldu2_run_fec_and_heuristics(dsd_state* state, P25Heuristics* heur, char hex_data[16][6], char hex_parity[8][6],
+                            AnalogSignal analog_signal_array[16 * (3 + 2) + 8 * (3 + 2)]) {
+    int irrecoverable_errors = check_and_fix_reedsolomon_24_16_9((char*)hex_data, (char*)hex_parity);
     if (irrecoverable_errors == 1) {
         uint8_t data_reliab[16];
         uint8_t parity_reliab[8];
-
         build_ldu2_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
         if (p25p1_rs_24_16_9_soft_reliability((char*)hex_data, (char*)hex_parity, data_reliab, parity_reliab) == 0) {
             state->p25_p1_soft_rs_ok++;
@@ -542,401 +305,307 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     if (irrecoverable_errors == 1) {
         state->p25_p1_voice_fec_err++;
         state->debug_header_critical_errors++;
-
-        // We can correct (9-1)/2 = 4 errors. If we failed, it means that there were more than 4 errors in
-        // these 12+12 words. But take into account that each hex word was already error corrected with
-        // Hamming(10,6,3), which can correct 1 bits on each sequence of (6+4) bits. We could say that there
-        // were 5 errors of 2 bits.
         update_error_stats(heur, 12 * 6 + 12 * 6, 5 * 2);
-    } else {
-        state->p25_p1_voice_fec_ok++;
-        // Passed FEC checks: mark recent voice activity for trunk hangtime
-        // tracking so we don't prematurely return to CC mid-call.
-        state->last_vc_sync_time = time(NULL);
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-        // Same comments as in processHDU. See there.
-
-        char fixed_parity[8 * 6];
-
-        // Correct the dibits that we read according with hex_data values
-        correct_hamming_dibits((char*)hex_data, 16, analog_signal_array);
-
-        // Generate again the Reed-Solomon parity
-        encode_reedsolomon_24_16_9((char*)hex_data, fixed_parity);
-
-        // Correct the dibits that we read according with the fixed parity values
-        correct_hamming_dibits(fixed_parity, 8, analog_signal_array + ((size_t)16) * (3 + 2));
-
-        // Once corrected, contribute this information to the heuristics module
-        contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, 16 * (3 + 2) + 8 * (3 + 2));
+        return 1;
     }
+
+    state->p25_p1_voice_fec_ok++;
+    state->last_vc_sync_time = time(NULL);
+    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+
+    char fixed_parity[8 * 6];
+    correct_hamming_dibits((char*)hex_data, 16, analog_signal_array);
+    encode_reedsolomon_24_16_9((char*)hex_data, fixed_parity);
+    correct_hamming_dibits(fixed_parity, 8, analog_signal_array + ((size_t)16) * (3 + 2));
+    contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, 16 * (3 + 2) + 8 * (3 + 2));
+    return 0;
+}
+
+static void
+ldu2_decode_post_fec_fields(const dsd_state* state, Ldu2Frame* frame) {
+    ldu2_extract_ess_fields((const char (*)[6])frame->hex_data, frame->mi, frame->algid, frame->kid);
+    frame->algidhex = (int)strtol(frame->algid, NULL, 2);
+    frame->kidhex = (int)strtol(frame->kid, NULL, 2);
+    frame->mihex1 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[0], 32);
+    frame->mihex2 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[32], 32);
+    frame->mihex3 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[64], 8);
+
+    frame->lsd1_okay = p25_lsd_fec_16x8_soft(frame->lowspeeddata + 0, frame->lowspeed_llr + 0);
+    frame->lsd2_okay = p25_lsd_fec_16x8_soft(frame->lowspeeddata + 16, frame->lowspeed_llr + 16);
+    frame->lsd_hex1 = p25p1_lsd_corrected_byte(frame->lowspeeddata + 0, frame->lsd1);
+    frame->lsd_hex2 = p25p1_lsd_corrected_byte(frame->lowspeeddata + 16, frame->lsd2);
+
+    if (state->payload_algid != 0x80) {
+        frame->lsd_hex1 = 0;
+        frame->lsd_hex2 = 0;
+    }
+}
+
+static void
+ldu2_apply_unmute_policy(dsd_opts* opts, dsd_state* state) {
+    if (state->R != 0
+        && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
+        DSD_FPRINTF(stderr, " Key: %010llX", state->R);
+        opts->unmute_encrypted_p25 = 1;
+        return;
+    }
+    if ((state->payload_algid == 0x84 || state->payload_algid == 0x89) && state->aes_key_loaded[0] == 1) {
+        DSD_FPRINTF(stderr, "\n ");
+        DSD_FPRINTF(stderr, "%s", KYEL);
+        DSD_FPRINTF(stderr, "Key: %016llX %016llX ", state->A1[0], state->A2[0]);
+        if (state->payload_algid == 0x84) {
+            DSD_FPRINTF(stderr, "%016llX %016llX", state->A3[0], state->A4[0]);
+        }
+        DSD_FPRINTF(stderr, "%s ", KNRM);
+        opts->unmute_encrypted_p25 = 1;
+        return;
+    }
+    if (state->payload_algid != 0 && state->payload_algid != 0x80) {
+        opts->unmute_encrypted_p25 = 0;
+    }
+}
+
+static void
+ldu2_print_decode_result(dsd_opts* opts, dsd_state* state, const Ldu2Frame* frame) {
+    if (frame->irrecoverable_errors != 0) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " LDU2 FEC ERR ");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, " LDU2 ALG ID: 0x%02X KEY ID: 0x%04X MI: 0x%08llX%08llX", frame->algidhex, frame->kidhex,
+                frame->mihex1, frame->mihex2);
+    state->payload_algid = frame->algidhex;
+    state->payload_keyid = frame->kidhex;
+    if (frame->mihex3 != 0ULL) {
+        DSD_FPRINTF(stderr, "-%02llX", frame->mihex3);
+    }
+
+    ldu2_apply_unmute_policy(opts, state);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+
+    state->payload_miP = (frame->mihex1 << 32) | frame->mihex2;
+    if (state->payload_algid != 0x80 && state->payload_algid != 0) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " ENC");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+}
+
+static void
+ldu2_print_payload_lsd(const dsd_opts* opts, const Ldu2Frame* frame) {
+    if (opts->payload != 1) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, "    LSD: %02X %02X ", frame->lsd_hex1, frame->lsd_hex2);
+    if ((frame->lsd_hex1 > 0x19) && (frame->lsd_hex1 < 0x7F) && (frame->lsd1_okay == 1)) {
+        DSD_FPRINTF(stderr, "(%c", frame->lsd_hex1);
+    } else {
+        DSD_FPRINTF(stderr, "( ");
+    }
+    if ((frame->lsd_hex2 > 0x19) && (frame->lsd_hex2 < 0x7F) && (frame->lsd2_okay == 1)) {
+        DSD_FPRINTF(stderr, "%c)", frame->lsd_hex2);
+    } else {
+        DSD_FPRINTF(stderr, " )");
+    }
+    if (frame->lsd1_okay == 0) {
+        DSD_FPRINTF(stderr, " L1 ERR");
+    }
+    if (frame->lsd2_okay == 0) {
+        DSD_FPRINTF(stderr, " L2 ERR");
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+ldu2_store_lsd_alias_chars(dsd_state* state, const Ldu2Frame* frame) {
+    if (state->dmr_alias_format[0] != 0x02) {
+        return;
+    }
+
+    int k = state->data_block_counter[0];
+    if ((frame->lsd_hex1 > 0x19) && (frame->lsd_hex1 < 0x7F) && (frame->lsd1_okay == 1)) {
+        state->dmr_alias_block_segment[0][0][k / 4][k % 4] = (char)frame->lsd_hex1;
+    }
+    k++;
+    if ((frame->lsd_hex2 > 0x19) && (frame->lsd_hex2 < 0x7F) && (frame->lsd2_okay == 1)) {
+        state->dmr_alias_block_segment[0][0][k / 4][k % 4] = (char)frame->lsd_hex2;
+    }
+    k++;
+    state->data_block_counter[0] = k;
+}
+
+static void
+ldu2_maybe_begin_lsd_alias(dsd_state* state, const Ldu2Frame* frame) {
+    if (frame->lsd_hex1 != 0x02 || frame->lsd1_okay != 1 || frame->lsd2_okay != 1) {
+        return;
+    }
+    uint8_t block_len = frame->lsd_hex2;
+    if (block_len > 8U) {
+        block_len = 8U;
+    }
+    state->dmr_alias_format[0] = 0x02;
+    state->dmr_alias_block_len[0] = block_len;
+    state->data_block_counter[0] = 0;
+}
+
+static void
+ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
+    int k = state->data_block_counter[0];
+    if (state->dmr_alias_format[0] != 0x02 || k < state->dmr_alias_block_len[0]) {
+        return;
+    }
+
+    char str[16];
+    int tsrc = state->lastsrc;
+    int str_pos = 0;
+    DSD_MEMSET(str, 0, sizeof(str));
+
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, " LSD Soft ID: ");
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            char ch = state->dmr_alias_block_segment[0][0][i][j];
+            DSD_FPRINTF(stderr, "%c", ch);
+            if (ch != 0 && str_pos < (int)sizeof(str) - 1) {
+                str[str_pos++] = ch;
+            }
+        }
+    }
+
+    if (tsrc != 0) {
+        const char* mode = "D";
+        dsd_tg_policy_entry alias_entry;
+        if (state->payload_algid != 0x80 && state->payload_algid != 0 && opts->trunk_tune_enc_calls == 0
+            && state->R == 0) {
+            mode = "DE";
+        }
+        if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias_entry)
+            == 0) {
+            (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY);
+            (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
+        }
+    }
+
+    DSD_FPRINTF(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "\n");
+    state->dmr_alias_format[0] = 0;
+    state->data_block_counter[0] = 0;
+    state->dmr_alias_block_len[0] = 0;
+}
+
+static void
+ldu2_handle_lsd_alias(const dsd_opts* opts, dsd_state* state, const Ldu2Frame* frame) {
+    ldu2_store_lsd_alias_chars(state, frame);
+    ldu2_maybe_begin_lsd_alias(state, frame);
+    ldu2_maybe_finalize_lsd_alias(opts, state);
+}
+
+static void
+ldu2_record_enc_lockout(dsd_opts* opts, dsd_state* state, int talkgroup) {
+    if (talkgroup == 0) {
+        return;
+    }
+
+    int enc_existing = 0;
+    char lockout_name_buf[50];
+    const char* lockout_name = "ENC LO";
+    dsd_tg_policy_entry lockout_entry;
+    if (dsd_tg_policy_lookup_label(state, (uint32_t)talkgroup, NULL, 0, lockout_name_buf, sizeof(lockout_name_buf))) {
+        enc_existing = 1;
+        lockout_name = lockout_name_buf;
+    }
+
+    if (dsd_tg_policy_make_exact_entry((uint32_t)talkgroup, "DE", lockout_name, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
+                                       &lockout_entry)
+            != 0
+        || dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) != 0
+        || enc_existing != 0) {
+        return;
+    }
+
+    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
+                 sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
+                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", talkgroup);
+    dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
+    Event_History_I* eh = &state->event_history_s[0];
+    if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
+                sizeof eh->Event_History_Items[0].internal_str)
+        != 0) {
+        if (opts->event_out_file[0] != '\0') {
+            dsd_p25_optional_hook_write_event_to_log_file(opts, state, 0, /*swrite*/ 0,
+                                                          eh->Event_History_Items[0].event_string);
+        }
+        dsd_p25_optional_hook_push_event_history(eh);
+        dsd_p25_optional_hook_init_event_history(eh, 0, 1);
+    }
+}
+
+static void
+ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int irrecoverable_errors) {
+    if (irrecoverable_errors != 0 || state->payload_algid == 0x80 || state->payload_algid == 0) {
+        return;
+    }
+    if (!(opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0)) {
+        return;
+    }
+
+    int enc_lo = 1;
+    if (state->payload_algid == 0xAA && state->R != 0) {
+        enc_lo = 0;
+    }
+    if (enc_lo == 0 || state->lasttg == 0) {
+        return;
+    }
+
+    ldu2_record_enc_lockout(opts, state, state->lasttg);
+    DSD_FPRINTF(stderr, " No Enc Following on P25p1 Trunking; Return to CC; \n");
+    p25_sm_on_release(opts, state);
+}
+
+void
+processLDU2(dsd_opts* opts, dsd_state* state) {
+    state->p25_p1_duid_ldu2++;
+    P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
+
+    ldu2_refresh_hold_hysteresis(opts, state);
+    p25_status_accum_ensure_started(state);
+    state->currentslot = 0;
+
+    Ldu2Frame frame = {0};
+    ldu2_collect_voice_symbols(opts, state, &frame);
+    ldu2_consume_trailing_status(opts, state);
+    frame.irrecoverable_errors =
+        ldu2_run_fec_and_heuristics(state, heur, frame.hex_data, frame.hex_parity, frame.analog_signal_array);
 
 #ifdef HEURISTICS_DEBUG
-    fprintf(stderr, "(audio errors, header errors, critical header errors) (%i,%i,%i)\n", state->debug_audio_errors,
-            state->debug_header_errors, state->debug_header_critical_errors);
+    DSD_FPRINTF(stderr, "(audio errors, header errors, critical header errors) (%i,%i,%i)\n", state->debug_audio_errors,
+                state->debug_header_errors, state->debug_header_critical_errors);
 #endif
 
-    // Now put the corrected data into the DSD structures
+    ldu2_decode_post_fec_fields(state, &frame);
+    ldu2_print_decode_result(opts, state, &frame);
+    ldu2_print_payload_lsd(opts, &frame);
+    DSD_FPRINTF(stderr, "\n");
 
-    mi[72] = 0;
-    algid[8] = 0;
-    kid[16] = 0;
-    lsd1[8] = 0;
-    lsd2[8] = 0;
+    ldu2_handle_lsd_alias(opts, state, &frame);
 
-    mi[0] = hex_data[15][0] + '0';
-    mi[1] = hex_data[15][1] + '0';
-    mi[2] = hex_data[15][2] + '0';
-    mi[3] = hex_data[15][3] + '0';
-    mi[4] = hex_data[15][4] + '0';
-    mi[5] = hex_data[15][5] + '0';
-
-    mi[6] = hex_data[14][0] + '0';
-    mi[7] = hex_data[14][1] + '0';
-    mi[8] = hex_data[14][2] + '0';
-    mi[9] = hex_data[14][3] + '0';
-    mi[10] = hex_data[14][4] + '0';
-    mi[11] = hex_data[14][5] + '0';
-
-    mi[12] = hex_data[13][0] + '0';
-    mi[13] = hex_data[13][1] + '0';
-    mi[14] = hex_data[13][2] + '0';
-    mi[15] = hex_data[13][3] + '0';
-    mi[16] = hex_data[13][4] + '0';
-    mi[17] = hex_data[13][5] + '0';
-
-    mi[18] = hex_data[12][0] + '0';
-    mi[19] = hex_data[12][1] + '0';
-    mi[20] = hex_data[12][2] + '0';
-    mi[21] = hex_data[12][3] + '0';
-    mi[22] = hex_data[12][4] + '0';
-    mi[23] = hex_data[12][5] + '0';
-
-    mi[24] = hex_data[11][0] + '0';
-    mi[25] = hex_data[11][1] + '0';
-    mi[26] = hex_data[11][2] + '0';
-    mi[27] = hex_data[11][3] + '0';
-    mi[28] = hex_data[11][4] + '0';
-    mi[29] = hex_data[11][5] + '0';
-
-    mi[30] = hex_data[10][0] + '0';
-    mi[31] = hex_data[10][1] + '0';
-    mi[32] = hex_data[10][2] + '0';
-    mi[33] = hex_data[10][3] + '0';
-    mi[34] = hex_data[10][4] + '0';
-    mi[35] = hex_data[10][5] + '0';
-
-    mi[36] = hex_data[9][0] + '0';
-    mi[37] = hex_data[9][1] + '0';
-    mi[38] = hex_data[9][2] + '0';
-    mi[39] = hex_data[9][3] + '0';
-    mi[40] = hex_data[9][4] + '0';
-    mi[41] = hex_data[9][5] + '0';
-
-    mi[42] = hex_data[8][0] + '0';
-    mi[43] = hex_data[8][1] + '0';
-    mi[44] = hex_data[8][2] + '0';
-    mi[45] = hex_data[8][3] + '0';
-    mi[46] = hex_data[8][4] + '0';
-    mi[47] = hex_data[8][5] + '0';
-
-    mi[48] = hex_data[7][0] + '0';
-    mi[49] = hex_data[7][1] + '0';
-    mi[50] = hex_data[7][2] + '0';
-    mi[51] = hex_data[7][3] + '0';
-    mi[52] = hex_data[7][4] + '0';
-    mi[53] = hex_data[7][5] + '0';
-
-    mi[54] = hex_data[6][0] + '0';
-    mi[55] = hex_data[6][1] + '0';
-    mi[56] = hex_data[6][2] + '0';
-    mi[57] = hex_data[6][3] + '0';
-    mi[58] = hex_data[6][4] + '0';
-    mi[59] = hex_data[6][5] + '0';
-
-    mi[60] = hex_data[5][0] + '0';
-    mi[61] = hex_data[5][1] + '0';
-    mi[62] = hex_data[5][2] + '0';
-    mi[63] = hex_data[5][3] + '0';
-    mi[64] = hex_data[5][4] + '0';
-    mi[65] = hex_data[5][5] + '0';
-
-    mi[66] = hex_data[4][0] + '0';
-    mi[67] = hex_data[4][1] + '0';
-    mi[68] = hex_data[4][2] + '0';
-    mi[69] = hex_data[4][3] + '0';
-    mi[70] = hex_data[4][4] + '0';
-    mi[71] = hex_data[4][5] + '0';
-
-    algid[0] = hex_data[3][0] + '0';
-    algid[1] = hex_data[3][1] + '0';
-    algid[2] = hex_data[3][2] + '0';
-    algid[3] = hex_data[3][3] + '0';
-    algid[4] = hex_data[3][4] + '0';
-    algid[5] = hex_data[3][5] + '0';
-
-    algid[6] = hex_data[2][0] + '0';
-    algid[7] = hex_data[2][1] + '0';
-    kid[0] = hex_data[2][2] + '0';
-    kid[1] = hex_data[2][3] + '0';
-    kid[2] = hex_data[2][4] + '0';
-    kid[3] = hex_data[2][5] + '0';
-
-    kid[4] = hex_data[1][0] + '0';
-    kid[5] = hex_data[1][1] + '0';
-    kid[6] = hex_data[1][2] + '0';
-    kid[7] = hex_data[1][3] + '0';
-    kid[8] = hex_data[1][4] + '0';
-    kid[9] = hex_data[1][5] + '0';
-
-    kid[10] = hex_data[0][0] + '0';
-    kid[11] = hex_data[0][1] + '0';
-    kid[12] = hex_data[0][2] + '0';
-    kid[13] = hex_data[0][3] + '0';
-    kid[14] = hex_data[0][4] + '0';
-    kid[15] = hex_data[0][5] + '0';
-
-    algidhex = strtol(algid, NULL, 2);
-    kidhex = strtol(kid, NULL, 2);
-    mihex1 = (unsigned long long int)ConvertBitIntoBytes(&mi[0], 32);
-    mihex2 = (unsigned long long int)ConvertBitIntoBytes(&mi[32], 32);
-    mihex3 = (unsigned long long int)ConvertBitIntoBytes(&mi[64], 8);
-
-    // LSD FEC (16,8) — correct single-bit errors in full codeword
-    lsd1_okay = p25_lsd_fec_16x8_soft(lowspeeddata + 0, lowspeed_llr + 0);
-    lsd2_okay = p25_lsd_fec_16x8_soft(lowspeeddata + 16, lowspeed_llr + 16);
-    lsd_hex1 = p25p1_lsd_corrected_byte(lowspeeddata + 0, lsd1);
-    lsd_hex2 = p25p1_lsd_corrected_byte(lowspeeddata + 16, lsd2);
-
-    //NOTE: LSD is also encrypted if voice is encrypted, so let's just zip it for now
-    if (state->payload_algid != 0x80) {
-        lsd_hex1 = 0;
-        lsd_hex2 = 0;
-    }
-
-    if (irrecoverable_errors == 0) {
-        fprintf(stderr, "%s", KYEL);
-        fprintf(stderr, " LDU2 ALG ID: 0x%02X KEY ID: 0x%04X MI: 0x%08llX%08llX", algidhex, kidhex, mihex1, mihex2);
-        state->payload_algid = algidhex;
-        state->payload_keyid = kidhex;
-        if (mihex3) {
-            fprintf(stderr, "-%02llX", mihex3);
-        }
-        if (state->R != 0
-            && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
-            fprintf(stderr, " Key: %010llX", state->R);
-            opts->unmute_encrypted_p25 = 1;
-        }
-        /* //going to want to update this for OFB, CBC, and ECB
-      { 0x84, "AES-256-OFB" },
-      { 0x85, "AES-128-ECB"},
-      { 0x88, "AES-CBC"},
-      { 0x89, "AES-128-OFB"},
-    */
-        else if ((state->payload_algid == 0x84 || state->payload_algid == 0x89) && state->aes_key_loaded[0] == 1) {
-            fprintf(stderr, "\n ");
-            fprintf(stderr, "%s", KYEL);
-            fprintf(stderr, "Key: %016llX %016llX ", state->A1[0], state->A2[0]);
-            if (state->payload_algid == 0x84) {
-                fprintf(stderr, "%016llX %016llX", state->A3[0], state->A4[0]);
-            }
-            fprintf(stderr, "%s ", KNRM);
-            opts->unmute_encrypted_p25 = 1;
-        } else if (state->payload_algid != 0 && state->payload_algid != 0x80) {
-            //may want to mute this again, or may not want to
-            opts->unmute_encrypted_p25 = 0;
-        }
-        fprintf(stderr, "%s", KNRM);
-        //only use 64 MSB, trailing 8 bits aren't used, so no mihex3
-        state->payload_miP = (mihex1 << 32) | (mihex2);
-
-        if (state->payload_algid != 0x80 && state->payload_algid != 0x0) {
-            fprintf(stderr, "%s", KRED);
-            fprintf(stderr, " ENC");
-            fprintf(stderr, "%s", KNRM);
-        }
-    } else {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, " LDU2 FEC ERR ");
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    if (opts->payload == 1) {
-        //view Low Speed Data
-        fprintf(stderr, "%s", KCYN);
-        fprintf(stderr, "    LSD: %02X %02X ", lsd_hex1, lsd_hex2);
-        if ((lsd_hex1 > 0x19) && (lsd_hex1 < 0x7F) && (lsd1_okay == 1)) {
-            fprintf(stderr, "(%c", lsd_hex1);
-        } else {
-            fprintf(stderr, "( ");
-        }
-        if ((lsd_hex2 > 0x19) && (lsd_hex2 < 0x7F) && (lsd2_okay == 1)) {
-            fprintf(stderr, "%c)", lsd_hex2);
-        } else {
-            fprintf(stderr, " )");
-        }
-        if (lsd1_okay == 0) {
-            fprintf(stderr, " L1 ERR");
-        }
-        if (lsd2_okay == 0) {
-            fprintf(stderr, " L2 ERR");
-        }
-        fprintf(stderr, "%s", KNRM);
-    }
-
-    fprintf(stderr, "\n");
-
-    //TEST: Store LSD into array if 0x02 0x08 (opcode and len?)
-    int k = 0;
-    if (state->dmr_alias_format[0] == 0x02) {
-        k = state->data_block_counter[0];
-        if ((lsd_hex1 > 0x19) && (lsd_hex1 < 0x7F) && (lsd1_okay == 1)) {
-            state->dmr_alias_block_segment[0][0][k / 4][k % 4] = (char)lsd_hex1;
-        }
-        // else state->dmr_alias_block_segment[0][0][k/4][k%4] = 0x20;
-        k++;
-        if ((lsd_hex2 > 0x19) && (lsd_hex2 < 0x7F) && (lsd2_okay == 1)) {
-            state->dmr_alias_block_segment[0][0][k / 4][k % 4] = (char)lsd_hex2;
-        }
-        // else state->dmr_alias_block_segment[0][0][k/4][k%4] = 0x20;
-        k++;
-        state->data_block_counter[0] = k;
-    }
-
-    //reset format, len, counter.
-    if (lsd_hex1 == 0x02 && lsd1_okay == 1 && lsd2_okay == 1) {
-        state->dmr_alias_format[0] = 0x02;
-        if (lsd_hex2 > 8) {
-            lsd_hex2 = 8; //sanity check
-        }
-        state->dmr_alias_block_len[0] = lsd_hex2;
-        state->data_block_counter[0] = 0;
-    }
-
-    if ((k >= state->dmr_alias_block_len[0]) && (state->dmr_alias_format[0] == 0x02)) {
-        //storage for completed string
-        char str[16];
-        int tsrc = state->lastsrc;
-        k = 0;
-        for (i = 0; i < 16; i++) {
-            str[i] = 0;
-        }
-
-        //print out what we've gathered
-        fprintf(stderr, "%s", KCYN);
-        fprintf(stderr, " LSD Soft ID: ");
-        for (i = 0; i < 4; i++) {
-            for (int j = 0; j < 4; j++) {
-                fprintf(stderr, "%c", state->dmr_alias_block_segment[0][0][i][j]);
-                if (state->dmr_alias_block_segment[0][0][i][j] != 0) {
-                    str[k++] = state->dmr_alias_block_segment[0][0][i][j];
-                }
-            }
-        }
-
-        //debug
-        // fprintf (stderr, " STR: %s", str);
-
-        //assign to tg name string, but only if not trunking (this could clash with ENC LO functionality)
-        if (tsrc
-            != 0) //&& opts->p25_trunk == 0 //should never get here if enc, should be zeroed out, but could potentially slip if HDU is missed and offchance of 02 opcode
-        {
-            const char* mode = "D";
-            dsd_tg_policy_entry alias_entry;
-            // Only mark as encrypted if ALG is known non-clear (not 0x80 and not 0)
-            if (state->payload_algid != 0x80 && state->payload_algid != 0 && opts->trunk_tune_enc_calls == 0
-                && state->R == 0) {
-                mode = "DE";
-            }
-            if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS,
-                                               &alias_entry)
-                == 0) {
-                (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY);
-                (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
-            }
-        }
-
-        fprintf(stderr, "%s", KNRM);
-        fprintf(stderr, "\n");
-
-        //reset values
-        state->dmr_alias_format[0] = 0;
-        state->data_block_counter[0] = 0;
-        state->dmr_alias_block_len[0] = 0;
-        // memset (state->dmr_alias_block_segment, 0, sizeof(state->dmr_alias_block_segment));
-    }
-
-    //run LFSR on the MI if we have irrecoverable errors here
-    if (irrecoverable_errors && state->payload_algid != 0x80 && state->payload_keyid != 0 && state->payload_miP != 0) {
+    if (frame.irrecoverable_errors != 0 && state->payload_algid != 0x80 && state->payload_keyid != 0
+        && state->payload_miP != 0) {
         LFSRP(state);
-        fprintf(stderr, "\n");
+        DSD_FPRINTF(stderr, "\n");
     }
 
-    //expand 64-bit MI to 128-bit for AES
     if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
         LFSR128(state);
-        fprintf(stderr, "\n");
+        DSD_FPRINTF(stderr, "\n");
     }
 
-    //xl, we need to know if the ESS is from HDU, or LDU2
     state->xl_is_hdu = 0;
-
-#define P25p1_ENC_LO //disable if this behavior is detremental
-#ifdef P25p1_ENC_LO
-    //If trunking and tuning ENC calls is disabled, lock out and go back to CC
-    int enc_lo = 1;
-    int ttg = state->lasttg; //checking to a valid TG will help make sure we have a good LDU1 LCW or HDU first
-    if (irrecoverable_errors == 0 && state->payload_algid != 0x80 && state->payload_algid != 0 && opts->p25_trunk == 1
-        && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
-        //NOTE: This may still cause an issue IF we havent' loaded the key yet from keyloader
-        if (state->payload_algid == 0xAA && state->R != 0) {
-            enc_lo = 0;
-        }
-        // else if (future condition) enc_lo = 0;
-        // else if (future condition) enc_lo = 0;
-
-        //if this is locked out by conditions above, then write it into the TG mode if we have a TG value assigned
-        if (enc_lo == 1 && ttg != 0) {
-            int enc_existing = 0;
-            char lockout_name_buf[50];
-            const char* lockout_name = "ENC LO";
-            dsd_tg_policy_entry lockout_entry;
-            if (dsd_tg_policy_lookup_label(state, (uint32_t)ttg, NULL, 0, lockout_name_buf, sizeof(lockout_name_buf))) {
-                enc_existing = 1;
-                lockout_name = lockout_name_buf;
-            }
-
-            if (dsd_tg_policy_make_exact_entry((uint32_t)ttg, "DE", lockout_name, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
-                                               &lockout_entry)
-                    == 0
-                && dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0) {
-                //run a watchdog here so we can update this with the crypto variables and ENC LO
-                if (ttg != 0 && enc_existing == 0) //
-                {
-                    snprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
-                             sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
-                             "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
-                    dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
-                    Event_History_I* eh = &state->event_history_s[0];
-                    if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
-                                sizeof eh->Event_History_Items[0].internal_str)
-                        != 0) {
-                        if (opts->event_out_file[0] != '\0') {
-                            dsd_p25_optional_hook_write_event_to_log_file(opts, state, 0, /*swrite*/ 0,
-                                                                          eh->Event_History_Items[0].event_string);
-                        }
-                        dsd_p25_optional_hook_push_event_history(eh);
-                        dsd_p25_optional_hook_init_event_history(eh, 0, 1);
-                    }
-                }
-            }
-
-            //return to the control channel
-            fprintf(stderr, " No Enc Following on P25p1 Trunking; Return to CC; \n");
-            p25_sm_on_release(opts, state);
-        }
-    }
-#endif //P25p1_ENC_LO
+    ldu2_maybe_enc_lockout(opts, state, frame.irrecoverable_errors);
 }
 
 //LFSR code courtesy of https://github.com/mattames/LFSR/
@@ -969,16 +638,16 @@ LFSRP(dsd_state* state) {
     }
 
     //print current ENC identifiers already known and new calculated MI
-    fprintf(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "%s", KYEL);
     if (state->currentslot == 0) {
-        fprintf(stderr, "\n LDU2/ESS_B FEC ERR - ALG: 0x%02X KEY ID: 0x%04X LFSR MI: 0x%016llX", state->payload_algid,
-                state->payload_keyid, state->payload_miP);
+        DSD_FPRINTF(stderr, "\n LDU2/ESS_B FEC ERR - ALG: 0x%02X KEY ID: 0x%04X LFSR MI: 0x%016llX",
+                    state->payload_algid, state->payload_keyid, state->payload_miP);
     }
     if (state->currentslot == 1) {
-        fprintf(stderr, "\n LDU2/ESS_B FEC ERR - ALG: 0x%02X KEY ID: 0x%04X LFSR MI: 0x%016llX", state->payload_algidR,
-                state->payload_keyidR, state->payload_miN);
+        DSD_FPRINTF(stderr, "\n LDU2/ESS_B FEC ERR - ALG: 0x%02X KEY ID: 0x%04X LFSR MI: 0x%016llX",
+                    state->payload_algidR, state->payload_keyidR, state->payload_miN);
     }
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
 void
@@ -1018,15 +687,15 @@ LFSR128(dsd_state* state) {
 
     int cnt = 0;
     int x = 64;
-    unsigned long long int bit;
     //polynomial P(x) = 1 + X15 + X27 + X38 + X46 + X62 + X64
     for (cnt = 0; cnt < 64; cnt++) {
         //63,61,45,37,27,14
         // Polynomial is C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1
-        bit = ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
+        unsigned long long int bit =
+            ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
         lfsr = (lfsr << 1) | bit;
 
-        //continue packing aes_iv
+        // Continue packing aes_iv
         if (slot == 0) {
             state->aes_iv[x / 8] = (state->aes_iv[x / 8] << 1) + bit;
         }
@@ -1037,30 +706,28 @@ LFSR128(dsd_state* state) {
     }
 
     if (state->currentslot == 0) {
-        fprintf(stderr, "%s", KYEL);
-        if (state->dmrburstL != 27) { //if not LDU2
-            fprintf(stderr, "\n");
+        DSD_FPRINTF(stderr, "%s", KYEL);
+        if (state->dmrburstL != 27) { // If not LDU2
+            DSD_FPRINTF(stderr, "\n");
         }
-        fprintf(stderr, "     ");
-        fprintf(stderr, " ALG ID: 0x%02X KEY ID: 0x%04X MI(128): 0x", state->payload_algid, state->payload_keyid);
+        DSD_FPRINTF(stderr, "     ");
+        DSD_FPRINTF(stderr, " ALG ID: 0x%02X KEY ID: 0x%04X MI(128): 0x", state->payload_algid, state->payload_keyid);
         for (x = 0; x < 16; x++) {
-            fprintf(stderr, "%02X", state->aes_iv[x]);
+            DSD_FPRINTF(stderr, "%02X", state->aes_iv[x]);
         }
-        fprintf(stderr, "%s", KNRM);
-        // fprintf (stderr, "\n");
+        DSD_FPRINTF(stderr, "%s", KNRM);
     }
 
     if (state->currentslot == 1) {
-        fprintf(stderr, "%s", KYEL);
-        if (state->dmrburstL != 27) { //if not LDU2, shouldn't matter on P25p2 for the second slot
-            fprintf(stderr, "\n");
+        DSD_FPRINTF(stderr, "%s", KYEL);
+        if (state->dmrburstL != 27) { // If not LDU2, shouldn't matter on P25p2 for the second slot
+            DSD_FPRINTF(stderr, "\n");
         }
-        fprintf(stderr, "     ");
-        fprintf(stderr, " ALG ID: 0x%02X KEY ID: 0x%04X MI(128): 0x", state->payload_algidR, state->payload_keyidR);
+        DSD_FPRINTF(stderr, "     ");
+        DSD_FPRINTF(stderr, " ALG ID: 0x%02X KEY ID: 0x%04X MI(128): 0x", state->payload_algidR, state->payload_keyidR);
         for (x = 0; x < 16; x++) {
-            fprintf(stderr, "%02X", state->aes_ivR[x]);
+            DSD_FPRINTF(stderr, "%02X", state->aes_ivR[x]);
         }
-        fprintf(stderr, "%s", KNRM);
-        // fprintf (stderr, "\n");
+        DSD_FPRINTF(stderr, "%s", KNRM);
     }
 }

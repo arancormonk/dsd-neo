@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  cat <<'USAGE'
+  cat << 'USAGE'
 Usage: tools/check_install_runtime_destinations.sh [cmake-file...]
 
 Validate that install(TARGETS ...) rules with LIBRARY/ARCHIVE destinations
@@ -18,14 +18,14 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+repo_root="$(git rev-parse --show-toplevel 2> /dev/null || pwd)"
 cd "$repo_root"
 
 cmake_files=()
 if [[ $# -gt 0 ]]; then
   cmake_files=("$@")
 else
-  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
     while IFS= read -r f; do
       case "$f" in
         src/third_party/*) continue ;;
@@ -47,13 +47,13 @@ if [[ ${#cmake_files[@]} -eq 0 ]]; then
   exit 0
 fi
 
-if ! command -v perl >/dev/null 2>&1; then
+if ! command -v perl > /dev/null 2>&1; then
   echo "perl not found in PATH; required for install-rule validation." >&2
   exit 1
 fi
 
 set +e
-perl - "${cmake_files[@]}" <<'PERL'
+perl - "${cmake_files[@]}" << 'PERL'
 use strict;
 use warnings;
 

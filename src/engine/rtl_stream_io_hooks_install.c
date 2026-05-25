@@ -6,6 +6,9 @@
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <stddef.h>
 
+#include "dsd-neo/io/rtl_stream_fwd.h"
+#include "engine_hooks_install.h"
+
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 

@@ -16,9 +16,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct sf_private_tag;
 
@@ -35,8 +40,8 @@ open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uint8_t ext)
 }
 
 struct sf_private_tag*
-close_and_rename_wav_file(struct sf_private_tag* wav_file, dsd_opts* opts, char* wav_out_filename, char* dir,
-                          Event_History_I* event_struct) {
+close_and_rename_wav_file(struct sf_private_tag* wav_file, const dsd_opts* opts, const char* wav_out_filename,
+                          const char* dir, const Event_History_I* event_struct) {
     UNUSED(wav_file);
     UNUSED(opts);
     UNUSED(wav_out_filename);
@@ -58,25 +63,25 @@ dsd_synctype_to_string(int synctype) {
 }
 
 int
-getAfsString(dsd_state* state, char* buffer, int a, int f, int s) {
+getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) {
     UNUSED(state);
-    return snprintf(buffer, 7, "%02d-%02d%01d", a, f, s);
+    return DSD_SNPRINTF(buffer, 7, "%02d-%02d%01d", a, f, s);
 }
 
 void
 getTimeN_buf(time_t t, char out[9]) {
     UNUSED(t);
-    snprintf(out, 9, "00:00:00");
+    DSD_SNPRINTF(out, 9, "00:00:00");
 }
 
 void
 getDateN_buf(time_t t, char out[11]) {
     UNUSED(t);
-    snprintf(out, 11, "2026-04-30");
+    DSD_SNPRINTF(out, 11, "2026-04-30");
 }
 
 void
-// NOLINTNEXTLINE(bugprone-reserved-identifier)
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 __wrap_beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
     UNUSED(opts);
     UNUSED(state);
@@ -89,9 +94,9 @@ __wrap_beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len)
 
 static void
 reset_fixture(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]) {
-    memset(opts, 0, sizeof *opts);
-    memset(state, 0, sizeof *state);
-    memset(event_history, 0, sizeof event_history[0] * 2);
+    DSD_MEMSET(opts, 0, sizeof *opts);
+    DSD_MEMSET(state, 0, sizeof *state);
+    DSD_MEMSET(event_history, 0, sizeof event_history[0] * 2);
     state->event_history_s = event_history;
     init_event_history(&state->event_history_s[0], 0, 255);
     init_event_history(&state->event_history_s[1], 0, 255);
@@ -103,7 +108,17 @@ reset_fixture(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", label, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_has_substr(const char* label, const char* haystack, const char* needle) {
+    if (haystack == NULL || needle == NULL || strstr(haystack, needle) == NULL) {
+        DSD_FPRINTF(stderr, "%s: missing '%s' in '%s'\n", label, needle ? needle : "<null>",
+                    haystack ? haystack : "<null>");
         return 1;
     }
     return 0;
@@ -180,6 +195,37 @@ test_voice_end_alert_still_emits_for_voice_history(void) {
     return rc;
 }
 
+static int
+test_edacs_service_string_appends_past_pointer_size(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    opts.p25_is_tuned = 1;
+    state.lastsynctype = DSD_SYNC_EDACS_POS;
+    state.lastsrc = 1201;
+    state.lasttg = 0x0123;
+    state.edacs_tuned_lcn = 7;
+    state.edacs_site_id = 3;
+    state.edacs_area_code = 1;
+    state.edacs_sys_id = 0x2A;
+    state.edacs_vc_call_type = 0x0A;
+    state.edacs_a_shift = 7;
+    state.edacs_f_shift = 3;
+    state.edacs_a_mask = 0x0F;
+    state.edacs_f_mask = 0x0F;
+    state.edacs_s_mask = 0x07;
+
+    watchdog_event_current(&opts, &state, 0);
+
+    const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
+    int rc = 0;
+    rc |= expect_has_substr("edacs sysid service suffix", item->sysid_string, "EDACS_SITE_003_Digital_Group_Call");
+    rc |= expect_has_substr("edacs event service suffix", item->event_string, "Digital Group Call;");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -188,9 +234,14 @@ main(void) {
     rc |= test_data_only_data_call_emits_one_data_alert();
     rc |= test_source_less_data_call_does_not_suppress_next_voice_start_alert();
     rc |= test_voice_end_alert_still_emits_for_voice_history();
+    rc |= test_edacs_service_string_appends_past_pointer_size();
 
     if (rc == 0) {
         printf("CORE_CALL_ALERT_HISTORY: OK\n");
     }
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

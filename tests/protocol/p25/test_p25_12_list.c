@@ -3,11 +3,11 @@
  * Focused tests for the P25 Phase 1 1/2-rate soft-decision list decoder.
  */
 
+#include <dsd-neo/protocol/p25/p25_12.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
-#include <dsd-neo/protocol/p25/p25_12.h>
+#include "dsd-neo/core/safe_api.h"
 
 static const uint8_t test_p25_interleave[98] = {
     0,  1,  8,  9,  16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57, 64, 65, 72, 73, 80, 81, 88, 89, 96,
@@ -71,17 +71,17 @@ main(void) {
     p25_12_candidate_t list[P25_12_MAX_CANDIDATES];
     int list_count = p25_12_soft_llr_list(dibits, bit_llr, list, P25_12_MAX_CANDIDATES);
     if (list_count <= 0 || memcmp(list[0].bytes, payload, sizeof(payload)) != 0) {
-        fprintf(stderr, "clean P25 1/2 list decode failed count=%d\n", list_count);
+        DSD_FPRINTF(stderr, "clean P25 1/2 list decode failed count=%d\n", list_count);
         return 1;
     }
 
     uint8_t noisy_dibits[98];
-    memcpy(noisy_dibits, dibits, sizeof(noisy_dibits));
+    DSD_MEMCPY(noisy_dibits, dibits, sizeof(noisy_dibits));
     noisy_dibits[9] ^= 1U;
     dibits_to_llr(noisy_dibits, bit_llr, 200);
     set_dibit_llr_magnitude(noisy_dibits, bit_llr, 9, 10);
 
-    memset(list, 0, sizeof(list));
+    DSD_MEMSET(list, 0, sizeof(list));
     list_count = p25_12_soft_llr_list(noisy_dibits, bit_llr, list, P25_12_MAX_CANDIDATES);
     int found_original = 0;
     for (int i = 0; i < list_count; i++) {
@@ -91,10 +91,10 @@ main(void) {
         }
     }
     if (!found_original) {
-        fprintf(stderr, "noisy P25 1/2 list decode did not include original count=%d\n", list_count);
+        DSD_FPRINTF(stderr, "noisy P25 1/2 list decode did not include original count=%d\n", list_count);
         return 2;
     }
 
-    fprintf(stderr, "p25_12 soft list tests OK\n");
+    DSD_FPRINTF(stderr, "p25_12 soft list tests OK\n");
     return 0;
 }

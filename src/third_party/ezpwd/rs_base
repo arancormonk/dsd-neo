@@ -625,9 +625,11 @@ namespace ezpwd {
 	        EZPWD_RAISE_OR_ABORT( std::runtime_error, "reed-solomon: Galois field polynomial not primitive" );
 	    }
 
+	#if !defined( EZPWD_NO_MOD_TAB )
 	    // Generate modulo table for some commonly used (non-trivial) values
 	    for ( unsigned x = NN; x < NN + MODS; ++x )
 		mod_of[x-NN]		= _modnn( x );
+	#endif
 	    // Find prim-th root of 1, index form, used in decoding.
 	    unsigned			iptmp	= 1;
 	    while ( iptmp % PRM != 0 )
@@ -664,9 +666,11 @@ namespace ezpwd {
 		x		       -= NN;
 		x			= ( x >> MM ) + ( x & NN );
 	    }
+	#if !defined( EZPWD_NO_MOD_TAB )
 	    if ( MODS && x >= NN )
 		x			= mod_of[x-NN];
-	    return x;
+	#endif
+    return x;
 	}
     };
 

@@ -9,22 +9,23 @@
  */
 
 #include "menu_actions.h"
-
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
+#include <dsd-neo/ui/ui_dsp_cmd.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <xmmintrin.h>
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_callbacks.h"
@@ -33,12 +34,9 @@
 #include "menu_prompts.h"
 
 #ifdef USE_RADIO
-#include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/ui/ui_dsp_cmd.h>
 #endif
 
 #if defined(__SSE__) || defined(__SSE2__)
-#include <xmmintrin.h>
 #endif
 
 // ---- Main menu actions ----
@@ -144,7 +142,7 @@ act_config_save_current(void* v) {
 void
 act_config_save_default(void* v) {
     UiCtx* c = (UiCtx*)v;
-    if (!c) {
+    if (!c || !c->state) {
         return;
     }
     const char* path = dsd_user_config_default_path();
@@ -155,6 +153,8 @@ act_config_save_default(void* v) {
     dsdneoUserConfig cfg;
     dsd_snapshot_opts_to_user_config(c->opts, c->state, &cfg);
     if (dsd_user_config_save_atomic(path, &cfg) == 0) {
+        // Keep subsequent "save current" actions pinned to the default path used here.
+        DSD_SNPRINTF(c->state->config_autosave_path, sizeof(c->state->config_autosave_path), "%s", path);
         ui_statusf("Config saved to %s", path);
     } else {
         ui_statusf("Failed to save config to %s", path);
@@ -345,7 +345,7 @@ act_p2_params(void* v) {
     pc->step = 0;
     pc->w = pc->s = pc->n = 0ULL;
     char pre[64];
-    snprintf(pre, sizeof pre, "%llX", (unsigned long long)c->state->p2_wacn);
+    DSD_SNPRINTF(pre, sizeof pre, "%llX", (unsigned long long)c->state->p2_wacn);
     ui_prompt_open_string_async("Enter Phase 2 WACN (HEX)", pre, sizeof pre, cb_p2_step, pc);
 }
 
@@ -633,10 +633,15 @@ io_toggle_cc_candidates(void* vctx) {
 void
 io_enable_per_call_wav(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
+    if (!c || !c->opts) {
+        return;
+    }
     if (c->opts->dmr_stereo_wav == 1 && c->opts->wav_out_f != NULL) {
+        c->opts->dmr_stereo_wav = 0;
         ui_post_cmd(UI_CMD_WAV_STOP, NULL, 0);
         ui_statusf("Per-call WAV stop requested");
     } else {
+        c->opts->dmr_stereo_wav = 1;
         ui_post_cmd(UI_CMD_WAV_START, NULL, 0);
         ui_statusf("Per-call WAV start requested");
     }
@@ -722,7 +727,7 @@ io_set_pulse_device_common(void* vctx, int is_input, const char* chooser_title, 
         }
         int name_len = (int)strnlen(dev->name, 511);
         int desc_len = (int)strnlen(dev->description, 255);
-        snprintf(bufs[n], 768, "[%d] %.*s - %.*s", dev->index, name_len, dev->name, desc_len, dev->description);
+        DSD_SNPRINTF(bufs[n], 768, "[%d] %.*s - %.*s", dev->index, name_len, dev->name, desc_len, dev->description);
         labels[n] = bufs[n];
         names[n] = dsd_strdup(dev->name);
         n++;
@@ -769,7 +774,7 @@ io_set_udp_out(void* vctx) {
     }
     u->c = c;
     const char* src = c->opts->udp_hostname[0] ? c->opts->udp_hostname : "127.0.0.1";
-    snprintf(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, src);
+    DSD_SNPRINTF(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, src);
     ui_prompt_open_string_async("UDP blaster host", u->host, sizeof u->host, cb_udp_out_host, u);
 }
 
@@ -782,7 +787,7 @@ io_tcp_direct_link(void* vctx) {
     }
     u->c = c;
     const char* defh = c->opts->tcp_hostname[0] ? c->opts->tcp_hostname : "localhost";
-    snprintf(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, defh);
+    DSD_SNPRINTF(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, defh);
     ui_prompt_open_string_async("Enter TCP Direct Link Hostname", u->host, sizeof u->host, cb_tcp_host, u);
 }
 
@@ -856,7 +861,7 @@ io_rigctl_config(void* vctx) {
     }
     u->c = c;
     const char* defh = c->opts->rigctlhostname[0] ? c->opts->rigctlhostname : "localhost";
-    snprintf(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, defh);
+    DSD_SNPRINTF(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, defh);
     ui_prompt_open_string_async("Enter RIGCTL Hostname", u->host, sizeof u->host, cb_rig_host, u);
 }
 
@@ -921,7 +926,7 @@ switch_to_udp(void* vctx) {
     }
     u->c = c;
     const char* defa = c->opts->udp_in_bindaddr[0] ? c->opts->udp_in_bindaddr : "127.0.0.1";
-    snprintf(u->addr, sizeof u->addr, "%.*s", (int)sizeof(u->addr) - 1, defa);
+    DSD_SNPRINTF(u->addr, sizeof u->addr, "%.*s", (int)sizeof(u->addr) - 1, defa);
     ui_prompt_open_string_async("Enter UDP bind address", u->addr, sizeof u->addr, cb_udp_in_addr, u);
 }
 

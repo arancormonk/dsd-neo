@@ -8,7 +8,8 @@
  * @brief Lightweight condition helpers shared across runtime components.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_THREADING_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_THREADING_H_
 
 #include <dsd-neo/platform/threading.h>
 
@@ -23,3 +24,5 @@
     dsd_mutex_lock(m);                                                                                                 \
     dsd_cond_wait(n, m);                                                                                               \
     dsd_mutex_unlock(m)
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_THREADING_H_ */

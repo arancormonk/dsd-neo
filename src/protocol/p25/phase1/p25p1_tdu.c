@@ -7,14 +7,15 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/p25p1_heuristics.h>
+#include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdio.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 void
@@ -41,9 +42,9 @@ processTDU(dsd_opts* opts, dsd_state* state) {
 
     // Next we should find an status dibit
     if (status_count != 35) {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, "*** SYNC ERROR\n");
-        fprintf(stderr, "%s", KNRM);
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, "*** SYNC ERROR\n");
+        DSD_FPRINTF(stderr, "%s", KNRM);
     }
 
     // trailing status symbol
@@ -54,8 +55,8 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     }
 
     //reset some strings -- since its a tdu, blank out any call strings, only want during actual call
-    sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-    sprintf(state->call_string[1], "%s", "                     "); //21 spaces
+    DSD_SPRINTF(state->call_string[0], "%s", "                     "); //21 spaces
+    DSD_SPRINTF(state->call_string[1], "%s", "                     "); //21 spaces
 
     //reset gain
     if (opts->floating_point == 1) {
@@ -71,10 +72,6 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     state->payload_miP = 0;
     state->payload_algid = 0; // unknown → treated as encrypted by IMBE path
     state->payload_keyid = 0;
-
-    // state->lasttg = 0;
-    // state->lastsrc = 0;
-    // state->gi[0] = -1;
 
     // Classify accumulated status symbols and set advisory AFC gate flag.
     p25_status_accum_classify(state, opts);

@@ -10,11 +10,11 @@
  * ncurses display components.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_INTERNAL_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_INTERNAL_H_
 
 #include <stdint.h>
 
-#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #ifdef __cplusplus
@@ -51,3 +51,5 @@ ui_burst_is_active_call(int burst) {
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_INTERNAL_H_ */

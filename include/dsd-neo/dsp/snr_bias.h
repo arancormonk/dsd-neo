@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_SNR_BIAS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_SNR_BIAS_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,3 +33,5 @@ double dsd_snr_bias_evm_db(int rate_out, int ted_sps, int lpf_profile);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_SNR_BIAS_H_ */

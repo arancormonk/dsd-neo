@@ -15,20 +15,19 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 
-// Minimal stubs for testing
 static dsd_opts g_opts;
 static dsd_state g_state;
 
 static void
 reset_test_state(void) {
     dsd_state_ext_free_all(&g_state);
-    memset(&g_opts, 0, sizeof(g_opts));
-    memset(&g_state, 0, sizeof(g_state));
+    DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
+    DSD_MEMSET(&g_state, 0, sizeof(g_state));
     g_opts.p25_trunk = 1;
     g_opts.trunk_enable = 1;
     g_opts.trunk_hangtime = 2.0f; // op25 TGID_HOLD_TIME
@@ -56,11 +55,11 @@ test_init_with_cc(void) {
     p25_sm_init_ctx(&ctx, &g_opts, &g_state);
 
     if (ctx.state != P25_SM_ON_CC) {
-        fprintf(stderr, "FAIL: Expected ON_CC, got %s\n", p25_sm_state_name(ctx.state));
+        DSD_FPRINTF(stderr, "FAIL: Expected ON_CC, got %s\n", p25_sm_state_name(ctx.state));
         return 1;
     }
     if (!ctx.initialized) {
-        fprintf(stderr, "FAIL: Expected initialized=1\n");
+        DSD_FPRINTF(stderr, "FAIL: Expected initialized=1\n");
         return 1;
     }
     return 0;
@@ -76,7 +75,7 @@ test_init_without_cc(void) {
     p25_sm_init_ctx(&ctx, &g_opts, &g_state);
 
     if (ctx.state != P25_SM_IDLE) {
-        fprintf(stderr, "FAIL: Expected IDLE, got %s\n", p25_sm_state_name(ctx.state));
+        DSD_FPRINTF(stderr, "FAIL: Expected IDLE, got %s\n", p25_sm_state_name(ctx.state));
         return 1;
     }
     return 0;
@@ -97,15 +96,15 @@ test_grant_to_tuned(void) {
 
     // In 4-state model, grant goes to TUNED (which includes armed/following/hangtime)
     if (ctx.state != P25_SM_TUNED) {
-        fprintf(stderr, "FAIL: Expected TUNED after grant, got %s\n", p25_sm_state_name(ctx.state));
+        DSD_FPRINTF(stderr, "FAIL: Expected TUNED after grant, got %s\n", p25_sm_state_name(ctx.state));
         return 1;
     }
     if (ctx.vc_freq_hz != 851500000) {
-        fprintf(stderr, "FAIL: Expected vc_freq_hz=851500000, got %ld\n", ctx.vc_freq_hz);
+        DSD_FPRINTF(stderr, "FAIL: Expected vc_freq_hz=851500000, got %ld\n", ctx.vc_freq_hz);
         return 1;
     }
     if (ctx.vc_tg != 1000) {
-        fprintf(stderr, "FAIL: Expected vc_tg=1000, got %d\n", ctx.vc_tg);
+        DSD_FPRINTF(stderr, "FAIL: Expected vc_tg=1000, got %d\n", ctx.vc_tg);
         return 1;
     }
     return 0;
@@ -130,11 +129,11 @@ test_ptt_voice_active(void) {
 
     // Still in TUNED state (now unified)
     if (ctx.state != P25_SM_TUNED) {
-        fprintf(stderr, "FAIL: Expected TUNED after PTT, got %s\n", p25_sm_state_name(ctx.state));
+        DSD_FPRINTF(stderr, "FAIL: Expected TUNED after PTT, got %s\n", p25_sm_state_name(ctx.state));
         return 1;
     }
     if (ctx.slots[0].voice_active != 1) {
-        fprintf(stderr, "FAIL: Expected slot[0].voice_active=1\n");
+        DSD_FPRINTF(stderr, "FAIL: Expected slot[0].voice_active=1\n");
         return 1;
     }
     return 0;
@@ -165,11 +164,12 @@ test_end_clears_voice(void) {
     // This is the P25P2 fix: MAC_END_PTT should return to CC immediately
     // rather than waiting for the 2s hangtime timeout.
     if (ctx.state != P25_SM_ON_CC) {
-        fprintf(stderr, "FAIL: Expected ON_CC after END (immediate release), got %s\n", p25_sm_state_name(ctx.state));
+        DSD_FPRINTF(stderr, "FAIL: Expected ON_CC after END (immediate release), got %s\n",
+                    p25_sm_state_name(ctx.state));
         return 1;
     }
     if (ctx.slots[0].voice_active != 0) {
-        fprintf(stderr, "FAIL: Expected slot[0].voice_active=0 after END\n");
+        DSD_FPRINTF(stderr, "FAIL: Expected slot[0].voice_active=0 after END\n");
         return 1;
     }
     return 0;
@@ -179,19 +179,19 @@ test_end_clears_voice(void) {
 static int
 test_state_names(void) {
     if (strcmp(p25_sm_state_name(P25_SM_IDLE), "IDLE") != 0) {
-        fprintf(stderr, "FAIL: Expected 'IDLE'\n");
+        DSD_FPRINTF(stderr, "FAIL: Expected 'IDLE'\n");
         return 1;
     }
     if (strcmp(p25_sm_state_name(P25_SM_ON_CC), "ON_CC") != 0) {
-        fprintf(stderr, "FAIL: Expected 'ON_CC'\n");
+        DSD_FPRINTF(stderr, "FAIL: Expected 'ON_CC'\n");
         return 1;
     }
     if (strcmp(p25_sm_state_name(P25_SM_TUNED), "TUNED") != 0) {
-        fprintf(stderr, "FAIL: Expected 'TUNED'\n");
+        DSD_FPRINTF(stderr, "FAIL: Expected 'TUNED'\n");
         return 1;
     }
     if (strcmp(p25_sm_state_name(P25_SM_HUNTING), "HUNT") != 0) {
-        fprintf(stderr, "FAIL: Expected 'HUNT'\n");
+        DSD_FPRINTF(stderr, "FAIL: Expected 'HUNT'\n");
         return 1;
     }
     return 0;
@@ -206,16 +206,16 @@ test_config_defaults(void) {
 
     // Check defaults (aligned with op25 timing parameters)
     if (ctx.config.hangtime_s != 2.0) {
-        fprintf(stderr, "FAIL: Expected hangtime_s=2.0 (op25 TGID_HOLD_TIME), got %.2f\n", ctx.config.hangtime_s);
+        DSD_FPRINTF(stderr, "FAIL: Expected hangtime_s=2.0 (op25 TGID_HOLD_TIME), got %.2f\n", ctx.config.hangtime_s);
         return 1;
     }
     if (ctx.config.grant_timeout_s != 3.0) {
-        fprintf(stderr, "FAIL: Expected grant_timeout_s=3.0 (op25 TSYS_HOLD_TIME), got %.2f\n",
-                ctx.config.grant_timeout_s);
+        DSD_FPRINTF(stderr, "FAIL: Expected grant_timeout_s=3.0 (op25 TSYS_HOLD_TIME), got %.2f\n",
+                    ctx.config.grant_timeout_s);
         return 1;
     }
     if (ctx.config.cc_grace_s != 5.0) {
-        fprintf(stderr, "FAIL: Expected cc_grace_s=5.0 (op25 CC_HUNT_TIME), got %.2f\n", ctx.config.cc_grace_s);
+        DSD_FPRINTF(stderr, "FAIL: Expected cc_grace_s=5.0 (op25 CC_HUNT_TIME), got %.2f\n", ctx.config.cc_grace_s);
         return 1;
     }
     return 0;
@@ -228,11 +228,11 @@ test_singleton(void) {
     p25_sm_ctx_t* sm2 = p25_sm_get_ctx();
 
     if (sm1 != sm2) {
-        fprintf(stderr, "FAIL: Singleton should return same pointer\n");
+        DSD_FPRINTF(stderr, "FAIL: Singleton should return same pointer\n");
         return 1;
     }
     if (!sm1->initialized) {
-        fprintf(stderr, "FAIL: Singleton should be initialized\n");
+        DSD_FPRINTF(stderr, "FAIL: Singleton should be initialized\n");
         return 1;
     }
     return 0;
@@ -249,7 +249,7 @@ test_audio_allowed(void) {
 
     // Before grant, audio not allowed
     if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 0) {
-        fprintf(stderr, "FAIL: Audio should not be allowed before grant\n");
+        DSD_FPRINTF(stderr, "FAIL: Audio should not be allowed before grant\n");
         return 1;
     }
 
@@ -266,14 +266,14 @@ test_audio_allowed(void) {
 
     // Now audio should be allowed (via legacy state)
     if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 1) {
-        fprintf(stderr, "FAIL: Audio should be allowed when p25_p2_audio_allowed is set\n");
+        DSD_FPRINTF(stderr, "FAIL: Audio should be allowed when p25_p2_audio_allowed is set\n");
         return 1;
     }
 
     // Test that disabling it works
     g_state.p25_p2_audio_allowed[0] = 0;
     if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 0) {
-        fprintf(stderr, "FAIL: Audio should not be allowed when p25_p2_audio_allowed is cleared\n");
+        DSD_FPRINTF(stderr, "FAIL: Audio should not be allowed when p25_p2_audio_allowed is cleared\n");
         return 1;
     }
 
@@ -285,11 +285,11 @@ static int
 test_sacch_slot_mapping(void) {
     // SACCH uses inverted slot mapping
     if (p25_sacch_to_voice_slot(0) != 1) {
-        fprintf(stderr, "FAIL: p25_sacch_to_voice_slot(0) should be 1\n");
+        DSD_FPRINTF(stderr, "FAIL: p25_sacch_to_voice_slot(0) should be 1\n");
         return 1;
     }
     if (p25_sacch_to_voice_slot(1) != 0) {
-        fprintf(stderr, "FAIL: p25_sacch_to_voice_slot(1) should be 0\n");
+        DSD_FPRINTF(stderr, "FAIL: p25_sacch_to_voice_slot(1) should be 0\n");
         return 1;
     }
     return 0;
@@ -312,7 +312,7 @@ test_tdma_partial_end_stays_tuned(void) {
 
     // Should be detected as TDMA
     if (!ctx.vc_is_tdma) {
-        fprintf(stderr, "FAIL: Expected vc_is_tdma=1 for TDMA channel\n");
+        DSD_FPRINTF(stderr, "FAIL: Expected vc_is_tdma=1 for TDMA channel\n");
         return 1;
     }
 
@@ -331,8 +331,8 @@ test_tdma_partial_end_stays_tuned(void) {
 
     // Should stay TUNED because slot 1 is still active
     if (ctx.state != P25_SM_TUNED) {
-        fprintf(stderr, "FAIL: Expected TUNED after END on slot 0 (slot 1 still active), got %s\n",
-                p25_sm_state_name(ctx.state));
+        DSD_FPRINTF(stderr, "FAIL: Expected TUNED after END on slot 0 (slot 1 still active), got %s\n",
+                    p25_sm_state_name(ctx.state));
         return 1;
     }
 
@@ -343,7 +343,7 @@ test_tdma_partial_end_stays_tuned(void) {
 
     // Now both slots ended - should release to ON_CC
     if (ctx.state != P25_SM_ON_CC) {
-        fprintf(stderr, "FAIL: Expected ON_CC after END on both slots, got %s\n", p25_sm_state_name(ctx.state));
+        DSD_FPRINTF(stderr, "FAIL: Expected ON_CC after END on both slots, got %s\n", p25_sm_state_name(ctx.state));
         return 1;
     }
 
@@ -369,7 +369,7 @@ test_tdma_single_slot_end_releases(void) {
 
     // Should be detected as TDMA
     if (!ctx.vc_is_tdma) {
-        fprintf(stderr, "FAIL: Expected vc_is_tdma=1 for TDMA channel\n");
+        DSD_FPRINTF(stderr, "FAIL: Expected vc_is_tdma=1 for TDMA channel\n");
         return 1;
     }
 
@@ -385,7 +385,7 @@ test_tdma_single_slot_end_releases(void) {
 
     // Verify slot 1 never had activity
     if (ctx.slots[1].last_active_m != 0.0) {
-        fprintf(stderr, "FAIL: Expected slot 1 last_active_m=0 (never active)\n");
+        DSD_FPRINTF(stderr, "FAIL: Expected slot 1 last_active_m=0 (never active)\n");
         return 1;
     }
 
@@ -398,17 +398,17 @@ test_tdma_single_slot_end_releases(void) {
 
     // Should release to ON_CC immediately - not waiting for slot 1
     if (ctx.state != P25_SM_ON_CC) {
-        fprintf(stderr, "FAIL: Expected ON_CC after END on single-slot TDMA call, got %s\n",
-                p25_sm_state_name(ctx.state));
-        fprintf(stderr, "      (slot 1 never had activity, should not block release)\n");
-        fprintf(stderr, "      audio_allowed[0]=%d audio_allowed[1]=%d\n", g_state.p25_p2_audio_allowed[0],
-                g_state.p25_p2_audio_allowed[1]);
+        DSD_FPRINTF(stderr, "FAIL: Expected ON_CC after END on single-slot TDMA call, got %s\n",
+                    p25_sm_state_name(ctx.state));
+        DSD_FPRINTF(stderr, "      (slot 1 never had activity, should not block release)\n");
+        DSD_FPRINTF(stderr, "      audio_allowed[0]=%d audio_allowed[1]=%d\n", g_state.p25_p2_audio_allowed[0],
+                    g_state.p25_p2_audio_allowed[1]);
         return 1;
     }
 
     // Verify the SM cleared audio_allowed for slot 0
     if (g_state.p25_p2_audio_allowed[0] != 0) {
-        fprintf(stderr, "FAIL: Expected audio_allowed[0]=0 after END, got %d\n", g_state.p25_p2_audio_allowed[0]);
+        DSD_FPRINTF(stderr, "FAIL: Expected audio_allowed[0]=0 after END, got %d\n", g_state.p25_p2_audio_allowed[0]);
         return 1;
     }
 
@@ -428,7 +428,7 @@ test_tdma_enc_respects_media_policy(void) {
     g_state.trunk_chan_map[0x1234] = 851500000;
     g_state.p25_chan_tdma_explicit[1] = 2;
     if (seed_exact(1000, "A", "KNOWN") != 0) {
-        fprintf(stderr, "FAIL: seed_exact allow-list setup failed\n");
+        DSD_FPRINTF(stderr, "FAIL: seed_exact allow-list setup failed\n");
         return 1;
     }
 
@@ -448,7 +448,7 @@ test_tdma_enc_respects_media_policy(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     if (g_state.p25_p2_audio_allowed[0] != 0) {
-        fprintf(stderr, "FAIL: ENC reopened allow-list blocked decryptable audio\n");
+        DSD_FPRINTF(stderr, "FAIL: ENC reopened allow-list blocked decryptable audio\n");
         return 1;
     }
 
@@ -474,7 +474,7 @@ test_tdma_enc_respects_media_policy(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     if (g_state.p25_p2_audio_allowed[0] != 0) {
-        fprintf(stderr, "FAIL: ENC reopened TG-hold blocked decryptable audio\n");
+        DSD_FPRINTF(stderr, "FAIL: ENC reopened TG-hold blocked decryptable audio\n");
         return 1;
     }
 
@@ -484,7 +484,7 @@ test_tdma_enc_respects_media_policy(void) {
     g_state.trunk_chan_map[0x1234] = 851500000;
     g_state.p25_chan_tdma_explicit[1] = 2;
     if (seed_exact(3000, "A", "ALLOW") != 0) {
-        fprintf(stderr, "FAIL: seed_exact allowed setup failed\n");
+        DSD_FPRINTF(stderr, "FAIL: seed_exact allowed setup failed\n");
         return 1;
     }
 
@@ -504,7 +504,7 @@ test_tdma_enc_respects_media_policy(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     if (g_state.p25_p2_audio_allowed[0] != 1) {
-        fprintf(stderr, "FAIL: ENC failed to reopen allowed decryptable audio\n");
+        DSD_FPRINTF(stderr, "FAIL: ENC failed to reopen allowed decryptable audio\n");
         return 1;
     }
 

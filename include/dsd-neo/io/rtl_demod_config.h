@@ -12,7 +12,8 @@
  * Exposes only pointer types so callers avoid heavy struct includes.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEMOD_CONFIG_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEMOD_CONFIG_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 
@@ -22,6 +23,11 @@ extern "C" {
 
 struct demod_state;
 struct output_state;
+
+/* Runtime-config toggles shared with RTL stream/device modules. */
+extern int combine_rotate_enabled;
+extern int upsample_fixedpoint_enabled;
+extern int disable_fs4_shift;
 
 /**
  * Initialize the demodulator state for the requested mode (digital,
@@ -43,7 +49,7 @@ void rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* out
  * @param demod Demodulator state.
  * @param opts  Decoder options (CLI/runtime flags).
  */
-void rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts);
+void rtl_demod_config_from_env_and_opts(struct demod_state* demod, const dsd_opts* opts);
 
 /**
  * Apply sensible defaults for digital vs analog modes when env/CLI
@@ -53,7 +59,8 @@ void rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opt
  * @param opts   Decoder options (mode flags).
  * @param output Output state used to infer effective sample rate.
  */
-void rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, const struct output_state* output);
+void rtl_demod_select_defaults_for_mode(struct demod_state* demod, const dsd_opts* opts,
+                                        const struct output_state* output);
 
 /**
  * Recompute resampler configuration when the demod output rate changes,
@@ -87,3 +94,5 @@ void rtl_demod_cleanup(struct demod_state* demod);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEMOD_CONFIG_H_ */

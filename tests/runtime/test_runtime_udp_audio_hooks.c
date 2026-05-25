@@ -12,13 +12,13 @@
 
 static int g_blast_calls = 0;
 static int g_blast_analog_calls = 0;
-static dsd_opts* g_last_opts = NULL;
+static const dsd_opts* g_last_opts = NULL;
 static dsd_state* g_last_state = NULL;
 static size_t g_last_nsam = 0;
-static void* g_last_data = NULL;
+static const void* g_last_data = NULL;
 
 static void
-fake_blast(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
+fake_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     g_blast_calls++;
     g_last_opts = opts;
     g_last_state = state;
@@ -27,7 +27,7 @@ fake_blast(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
 }
 
 static void
-fake_blast_analog(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
+fake_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     g_blast_analog_calls++;
     g_last_opts = opts;
     g_last_state = state;

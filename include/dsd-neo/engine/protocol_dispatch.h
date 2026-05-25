@@ -8,7 +8,8 @@
  * @brief Protocol dispatch interface for mapping synctypes to handlers.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_ENGINE_PROTOCOL_DISPATCH_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_ENGINE_PROTOCOL_DISPATCH_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -29,3 +30,5 @@ extern const dsd_protocol_handler dsd_protocol_handlers[];
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_ENGINE_PROTOCOL_DISPATCH_H_ */

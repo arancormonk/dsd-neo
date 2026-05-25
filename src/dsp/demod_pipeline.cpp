@@ -26,11 +26,9 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <math.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/fsk_modem.h"
 
-/* Macros and constants from the original file */
 #ifndef MAXIMUM_OVERSAMPLE
 #define MAXIMUM_OVERSAMPLE 16
 #endif
@@ -117,6 +115,17 @@ atan2_qpsk_approx(float y, float x) {
 
     float angle = atan_unit_approx(x / y);
     return (y > 0.0f) ? (1.57079632679489661923f - angle) : (-1.57079632679489661923f - angle);
+}
+
+static inline float
+clamp_float(float value, float lo, float hi) {
+    if (value < lo) {
+        return lo;
+    }
+    if (value > hi) {
+        return hi;
+    }
+    return value;
 }
 
 /* Fixed channel low-pass for high-rate mode.
@@ -293,22 +302,14 @@ static const float channel_lpf_digital[kChannelLpfFallbackTaps] = {
  * prototype (Q15) for the given M and streams with a circular history.
  * Keeps state in demod_state to persist across blocks.
  */
+static inline int
+audio_polydecim_requires_redesign(const struct demod_state* d, int M, int K) {
+    return (!d->post_polydecim_taps || !d->post_polydecim_hist || d->post_polydecim_M != M || d->post_polydecim_K != K);
+}
+
 static void
-audio_polydecim_ensure(struct demod_state* d, int M) {
+audio_polydecim_release(struct demod_state* d) {
     if (!d) {
-        return;
-    }
-    if (M <= 1) {
-        d->post_polydecim_enabled = 0;
-        return;
-    }
-    const int K = 16; /* taps */
-    int redesign = 0;
-    if (!d->post_polydecim_taps || !d->post_polydecim_hist || d->post_polydecim_M != M || d->post_polydecim_K != K) {
-        redesign = 1;
-    }
-    if (!redesign) {
-        d->post_polydecim_enabled = 1;
         return;
     }
     if (d->post_polydecim_taps) {
@@ -319,52 +320,90 @@ audio_polydecim_ensure(struct demod_state* d, int M) {
         dsd_neo_aligned_free(d->post_polydecim_hist);
         d->post_polydecim_hist = NULL;
     }
-    {
-        void* mem_ptr = dsd_neo_aligned_malloc((size_t)K * sizeof(float));
-        d->post_polydecim_taps = (float*)mem_ptr;
-    }
-    {
-        void* mem_ptr = dsd_neo_aligned_malloc((size_t)K * sizeof(float));
-        d->post_polydecim_hist = (float*)mem_ptr;
-    }
+}
+
+static int
+audio_polydecim_allocate(struct demod_state* d, int K) {
+    d->post_polydecim_taps = static_cast<float*>(dsd_neo_aligned_malloc((size_t)K * sizeof(float)));
+    d->post_polydecim_hist = static_cast<float*>(dsd_neo_aligned_malloc((size_t)K * sizeof(float)));
     if (!d->post_polydecim_taps || !d->post_polydecim_hist) {
-        if (d->post_polydecim_taps) {
-            free(d->post_polydecim_taps);
-            d->post_polydecim_taps = NULL;
-        }
-        if (d->post_polydecim_hist) {
-            free(d->post_polydecim_hist);
-            d->post_polydecim_hist = NULL;
-        }
-        d->post_polydecim_enabled = 0;
-        return;
+        audio_polydecim_release(d);
+        return 0;
     }
-    memset(d->post_polydecim_hist, 0, (size_t)K * sizeof(float));
+    DSD_MEMSET(d->post_polydecim_hist, 0, (size_t)K * sizeof(float));
     d->post_polydecim_hist_head = 0;
     d->post_polydecim_phase = 0;
+    return 1;
+}
 
-    /* Design windowed-sinc low-pass: fc ≈ 0.45 / M (normalized), Hamming window */
-    double fc = 0.45 / (double)M;
-    int N = K;
-    int mid = (N - 1) / 2;
+static void
+audio_polydecim_design_taps(float* taps, int K, int M) {
+    const double fc = 0.45 / (double)M;
+    const int mid = (K - 1) / 2;
     double gain = 0.0;
-    for (int n = 0; n < N; n++) {
-        int m = n - mid;
-        double w = 0.54 - 0.46 * cos(2.0 * 3.14159265358979323846 * (double)n / (double)(N - 1));
-        double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
-        double t = h * w;
-        gain += t;
+    for (int n = 0; n < K; n++) {
+        const int m = n - mid;
+        const double w = 0.54 - 0.46 * cos(2.0 * 3.14159265358979323846 * (double)n / (double)(K - 1));
+        const double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
+        gain += h * w;
     }
     if (gain == 0.0) {
         gain = 1.0;
     }
-    for (int n = 0; n < N; n++) {
-        int m = n - mid;
-        double w = 0.54 - 0.46 * cos(2.0 * 3.14159265358979323846 * (double)n / (double)(N - 1));
-        double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
-        double t = (h * w) / gain;
-        d->post_polydecim_taps[n] = (float)t;
+    for (int n = 0; n < K; n++) {
+        const int m = n - mid;
+        const double w = 0.54 - 0.46 * cos(2.0 * 3.14159265358979323846 * (double)n / (double)(K - 1));
+        const double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
+        taps[n] = (float)((h * w) / gain);
     }
+}
+
+static inline int
+audio_polydecim_passthrough(const float* in, int in_len, float* out) {
+    if (in && out && in_len > 0 && in != out) {
+        DSD_MEMCPY(out, in, (size_t)in_len * sizeof(float));
+    }
+    return in_len;
+}
+
+static inline float
+audio_polydecim_dot_latest(const float* hist, const float* taps, int K, int head) {
+    int idx = head - 1;
+    if (idx < 0) {
+        idx += K;
+    }
+    float acc = 0.0f;
+    for (int k = 0; k < K; k++) {
+        acc += hist[idx] * taps[k];
+        idx--;
+        if (idx < 0) {
+            idx += K;
+        }
+    }
+    return acc;
+}
+
+static void
+audio_polydecim_ensure(struct demod_state* d, int M) {
+    if (!d) {
+        return;
+    }
+    if (M <= 1) {
+        d->post_polydecim_enabled = 0;
+        return;
+    }
+    const int K = 16; /* taps */
+    if (!audio_polydecim_requires_redesign(d, M, K)) {
+        d->post_polydecim_enabled = 1;
+        return;
+    }
+    audio_polydecim_release(d);
+    if (!audio_polydecim_allocate(d, K)) {
+        d->post_polydecim_enabled = 0;
+        return;
+    }
+    /* Design windowed-sinc low-pass: fc ≈ 0.45 / M (normalized), Hamming window. */
+    audio_polydecim_design_taps(d->post_polydecim_taps, K, M);
     d->post_polydecim_M = M;
     d->post_polydecim_K = K;
     d->post_polydecim_enabled = 1;
@@ -373,10 +412,7 @@ audio_polydecim_ensure(struct demod_state* d, int M) {
 static int
 audio_polydecim_process(struct demod_state* d, const float* in, int in_len, float* out) {
     if (!d || !d->post_polydecim_enabled || !d->post_polydecim_taps || !d->post_polydecim_hist || in_len <= 0) {
-        if (in && out && in_len > 0 && in != out) {
-            memcpy(out, in, (size_t)in_len * sizeof(float));
-        }
-        return in_len;
+        return audio_polydecim_passthrough(in, in_len, out);
     }
     const int K = d->post_polydecim_K;
     const int M = d->post_polydecim_M;
@@ -387,33 +423,56 @@ audio_polydecim_process(struct demod_state* d, const float* in, int in_len, floa
     for (int n = 0; n < in_len; n++) {
         /* push */
         d->post_polydecim_hist[head] = in[n];
-        head++;
-        if (head == K) {
+        if (++head == K) {
             head = 0;
         }
         /* phase accum */
-        phase++;
-        if (phase >= M) {
-            phase -= M;
-            /* dot product over K most recent samples */
-            int idx = head - 1;
-            if (idx < 0) {
-                idx += K;
-            }
-            float acc = 0.0f;
-            for (int k = 0; k < K; k++) {
-                acc += d->post_polydecim_hist[idx] * taps[k];
-                idx--;
-                if (idx < 0) {
-                    idx += K;
-                }
-            }
-            out[out_len++] = acc;
+        if (++phase < M) {
+            continue;
         }
+        phase -= M;
+        out[out_len++] = audio_polydecim_dot_latest(d->post_polydecim_hist, taps, K, head);
     }
     d->post_polydecim_hist_head = head;
     d->post_polydecim_phase = phase;
     return out_len;
+}
+
+static inline float
+fm_agc_target_rms(const struct demod_state* d) {
+    const float target = (d->fm_agc_target_rms > 0.0f) ? d->fm_agc_target_rms : 0.30f;
+    return clamp_float(target, 0.05f, 2.5f);
+}
+
+static inline float
+fm_agc_alpha(float configured, float fallback) {
+    const float alpha = (configured > 0.0f) ? configured : fallback;
+    return clamp_float(alpha, 0.0f, 1.0f);
+}
+
+static inline float
+fm_agc_gain_from_rms(float target, float rms) {
+    const float kEps = 1e-6f;
+    return clamp_float(target / (rms + kEps), 0.125f, 8.0f);
+}
+
+static inline double
+fm_limiter_gain_for_mag2(float target, float m2) {
+    if (m2 <= 0.0f) {
+        return 0.0;
+    }
+    const double mag = sqrt((double)m2);
+    if (mag < 1e-6) {
+        return 0.0;
+    }
+    const double gain = (double)target / mag;
+    if (gain < 0.125) {
+        return 0.125;
+    }
+    if (gain > 8.0) {
+        return 8.0;
+    }
+    return gain;
 }
 
 /* ---------------- Fixed channel LPF (complex, no decimation) ----------------- */
@@ -493,7 +552,7 @@ channel_lpf_ensure_plan(struct demod_state* d) {
     if (taps_len <= 0) {
         int fallback_len = 0;
         const float* fallback = channel_lpf_fallback_taps(profile, &fallback_len);
-        memcpy(d->channel_lpf_plan_taps, fallback, (size_t)fallback_len * sizeof(float));
+        DSD_MEMCPY(d->channel_lpf_plan_taps, fallback, (size_t)fallback_len * sizeof(float));
         taps_len = fallback_len;
     }
     d->channel_lpf_plan_rate_out = rate_out;
@@ -881,8 +940,9 @@ cqpsk_cma_equalizer(struct demod_state* d) {
     {
         static int call_count = 0;
         if (debug_cqpsk_enabled() && (++call_count % 50) == 0) {
-            fprintf(stderr, "[CMA] taps:%d mu:%.5f mag2:%.3f err:%.4f symbols:%u\n", d->cqpsk_eq_state.taps,
-                    d->cqpsk_eq_mu, d->cqpsk_eq_state.mag2_ema, d->cqpsk_eq_state.err_ema, d->cqpsk_eq_state.symbols);
+            DSD_FPRINTF(stderr, "[CMA] taps:%d mu:%.5f mag2:%.3f err:%.4f symbols:%u\n", d->cqpsk_eq_state.taps,
+                        d->cqpsk_eq_mu, d->cqpsk_eq_state.mag2_ema, d->cqpsk_eq_state.err_ema,
+                        d->cqpsk_eq_state.symbols);
         }
     }
 }
@@ -973,7 +1033,7 @@ audio_lpf_filter(struct demod_state* fm) {
  * @return Mean power (squared RMS) with DC bias removed.
  */
 float
-mean_power(float* samples, int len, int step) {
+mean_power(const float* samples, int len, int step) {
     double p = 0.0;
     double t = 0.0;
     for (int i = 0; i < len; i += step) {
@@ -1096,28 +1156,9 @@ fm_envelope_agc(struct demod_state* d) {
     if (rms_pre < (double)min_rms) {
         return;
     }
-    float target = (d->fm_agc_target_rms > 0.0f) ? d->fm_agc_target_rms : 0.30f;
-    if (target < 0.05f) {
-        target = 0.05f;
-    }
-    if (target > 2.5f) {
-        target = 2.5f;
-    }
-    float alpha_up = (d->fm_agc_alpha_up > 0.0f) ? d->fm_agc_alpha_up : 0.25f;
-    float alpha_dn = (d->fm_agc_alpha_down > 0.0f) ? d->fm_agc_alpha_down : 0.75f;
-    if (alpha_up < 0.0f) {
-        alpha_up = 0.0f;
-    }
-    if (alpha_up > 1.0f) {
-        alpha_up = 1.0f;
-    }
-    if (alpha_dn < 0.0f) {
-        alpha_dn = 0.0f;
-    }
-    if (alpha_dn > 1.0f) {
-        alpha_dn = 1.0f;
-    }
-    const float kEps = 1e-6f;
+    const float target = fm_agc_target_rms(d);
+    const float alpha_up = fm_agc_alpha(d->fm_agc_alpha_up, 0.25f);
+    const float alpha_dn = fm_agc_alpha(d->fm_agc_alpha_down, 0.75f);
 
     float rms = (float)d->fm_agc_ema_rms;
     if (rms <= 0.0f) {
@@ -1133,26 +1174,11 @@ fm_envelope_agc(struct demod_state* d) {
         float mag2 = I * I + Q * Q;
 
         /* Faster update when we need to back off gain; slower when ramping up. */
-        float alpha = (mag2 > rms2) ? alpha_dn : alpha_up;
-        if (alpha < 0.0f) {
-            alpha = 0.0f;
-        }
-        if (alpha > 1.0f) {
-            alpha = 1.0f;
-        }
-        rms2 = (1.0f - alpha) * rms2 + alpha * mag2;
-        if (rms2 < 0.0f) {
-            rms2 = 0.0f;
-        }
+        const float alpha = (mag2 > rms2) ? alpha_dn : alpha_up;
+        rms2 = fmaxf((1.0f - alpha) * rms2 + alpha * mag2, 0.0f);
         rms = sqrtf(rms2);
 
-        float g = target / (rms + kEps);
-        if (g > 8.0f) {
-            g = 8.0f;
-        }
-        if (g < 0.125f) {
-            g = 0.125f;
-        }
+        const float g = fm_agc_gain_from_rms(target, rms);
         last_g = g;
 
         out[(size_t)(n << 1)] = I * g;
@@ -1201,13 +1227,7 @@ fm_constant_envelope_limiter(struct demod_state* d) {
     if (!d || !d->fm_limiter_enable || d->cqpsk_enable || !d->lowpassed || d->lp_len < 2) {
         return;
     }
-    float target = (d->fm_agc_target_rms > 0.0f) ? d->fm_agc_target_rms : 0.30f;
-    if (target < 0.05f) {
-        target = 0.05f;
-    }
-    if (target > 2.5f) {
-        target = 2.5f;
-    }
+    const float target = fm_agc_target_rms(d);
     const float t2 = target * target;
     const float lo2 = t2 * 0.25f; /* 0.5^2 */
     const float hi2 = t2 * 4.0f;  /* 2.0^2 */
@@ -1217,23 +1237,13 @@ fm_constant_envelope_limiter(struct demod_state* d) {
         float I = iq[(size_t)(n << 1) + 0];
         float Q = iq[(size_t)(n << 1) + 1];
         float m2 = I * I + Q * Q;
-        if (m2 <= 0.0f) {
-            continue;
-        }
-        if (m2 >= lo2 && m2 <= hi2) {
+        if (m2 <= 0.0f || (m2 >= lo2 && m2 <= hi2)) {
             /* within tolerance, leave unchanged */
             continue;
         }
-        double mag = sqrt((double)m2);
-        if (mag < 1e-6) {
+        double g = fm_limiter_gain_for_mag2(target, m2);
+        if (g == 0.0) {
             continue;
-        }
-        double g = (double)target / mag;
-        if (g > 8.0) {
-            g = 8.0;
-        }
-        if (g < 0.125) {
-            g = 0.125;
         }
         float yI = (float)((double)I * g);
         float yQ = (float)((double)Q * g);
@@ -1291,468 +1301,399 @@ gardner_timing_adjust(struct demod_state* d) {
         if (debug_cqpsk_enabled() && d->cqpsk_enable && (++call_count % 50) == 0) {
             float lock_norm =
                 (d->ted_state.lock_count > 0) ? d->ted_state.lock_accum / (float)d->ted_state.lock_count : 0.0f;
-            fprintf(stderr, "[TED] omega:%.3f mu:%.3f e_ema:%.4f lock:%.2f in:%d out:%d\n", d->ted_state.omega,
-                    d->ted_state.mu, d->ted_state.e_ema, lock_norm, d->lp_len, d->lp_len);
+            DSD_FPRINTF(stderr, "[TED] omega:%.3f mu:%.3f e_ema:%.4f lock:%.2f in:%d out:%d\n", d->ted_state.omega,
+                        d->ted_state.mu, d->ted_state.e_ema, lock_norm, d->lp_len, d->lp_len);
         }
     }
 }
 
 /**
- * @brief Full demodulation pipeline for one block.
- *
- * Applies decimation via half-band cascade, optional FLL and timing
- * correction, followed by the configured discriminator and post-processing.
- *
- * @param d Demodulator state (consumes lowpassed, produces result).
+ * @brief Apply stage-wise half-band decimation for complex baseband.
  */
-void
-full_demod(struct demod_state* d) {
-    int i, ds_p;
-    ds_p = d->downsample_passes;
-    if (ds_p > 0) {
-        /* Apply ds_p stages of 2:1 half-band decimation on interleaved lowpassed */
-        int in_len = d->lp_len;
-        float* src = d->lowpassed;
-        float* dst = d->hb_workbuf;
-        for (i = 0; i < ds_p; i++) {
-            /* Stage-aware HB selection: heavier early, light later */
-            const float* taps = hb_q15_taps;
-            int taps_len = HB_TAPS;
-            if (i == 0) {
-                taps = hb31_q15_taps;
-                taps_len = 31;
-            }
-            /* Fused complex HB decimation on interleaved I/Q */
-            int out_len_interleaved =
-                hb_decim2_complex_interleaved_ex(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i], taps, taps_len);
-            /* Next stage */
-            src = dst;
-            in_len = out_len_interleaved;
-            dst = (src == d->hb_workbuf) ? d->lowpassed : d->hb_workbuf;
-        }
-        /* Final output resides in 'src' with length in_len; consume in-place (no copy) */
-        d->lowpassed = src;
-        d->lp_len = in_len;
+static void
+full_demod_apply_halfband_decimation(struct demod_state* d) {
+    if (!d || d->downsample_passes <= 0) {
+        return;
     }
-    /* Bound channel noise when running at higher Fs (24 kHz default) */
+    int in_len = d->lp_len;
+    float* src = d->lowpassed;
+    float* dst = d->hb_workbuf;
+    for (int i = 0; i < d->downsample_passes; i++) {
+        const float* taps = (i == 0) ? hb31_q15_taps : hb_q15_taps;
+        int taps_len = (i == 0) ? 31 : HB_TAPS;
+        int out_len =
+            hb_decim2_complex_interleaved_ex(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i], taps, taps_len);
+        src = dst;
+        in_len = out_len;
+        dst = (src == d->hb_workbuf) ? d->lowpassed : d->hb_workbuf;
+    }
+    d->lowpassed = src;
+    d->lp_len = in_len;
+}
+
+static void
+full_demod_update_channel_state(struct demod_state* d) {
     channel_lpf_apply(d);
-    /* Update channel power measurement (post-channel-filter) for UI/squelch */
     if (d->lowpassed && d->lp_len >= 2) {
-        int n = d->lp_len;
-        if (n > 512) {
-            n = 512;
-        }
+        int n = (d->lp_len > 512) ? 512 : d->lp_len;
         d->channel_pwr = mean_power(d->lowpassed, n, 1);
     }
-    /* Channel-based squelch: if power below threshold, zero buffer but continue processing.
-     * Industry standard: DSP pipeline always flows at constant rate. Squelch is a metadata
-     * flag, not a flow stopper. This keeps downstream consumers (frame sync, UI updates)
-     * running smoothly even when squelched. Decoders will simply fail to find sync on zeros. */
     if (d->lowpassed && d->lp_len > 0 && d->channel_squelch_level > 0.0f && d->channel_pwr < d->channel_squelch_level) {
         d->channel_squelched = 1;
         d->squelch_gate_open = 0;
-        /* Zero the buffer so downstream sees silence */
         for (int k = 0; k < d->lp_len; k++) {
             d->lowpassed[k] = 0.0f;
         }
-        /* Continue processing with zeroed buffer - don't return early.
-         * This maintains continuous sample flow for UI responsiveness. */
-    } else {
-        d->channel_squelched = 0;
-        d->squelch_gate_open = 1;
-    }
-    /* Branch early by mode to simplify ordering. */
-    if (d->cqpsk_enable) {
-        /*
-         * OP25-aligned CQPSK signal chain:
-         *   AGC -> FLL band-edge -> Gardner -> CMA equalizer -> diff_phasor -> Costas
-         *
-         * Implemented by cqpsk_rms_agc(), op25_fll_band_edge_cc(), op25_gardner_cc(),
-         * cqpsk_cma_equalizer(), op25_diff_phasor_cc(), op25_costas_loop_cc().
-         */
-
-        /* Fast path when squelched: skip expensive DSP but produce zero symbols to keep
-         * the pipeline flowing for UI responsiveness. The expensive AGC/FLL/TED/Costas
-         * processing is pointless on a zeroed buffer. */
-        if (d->channel_squelched) {
-            /* Estimate output symbol count: input IQ pairs / samples_per_symbol.
-             * TED decimates from sample rate to symbol rate. */
-            int in_pairs = d->lp_len >> 1;
-            int sps = (d->ted_sps > 0) ? d->ted_sps : 5;
-            int out_syms = (in_pairs + sps - 1) / sps; /* ceiling division */
-            if (out_syms < 1) {
-                out_syms = 1;
-            }
-            if (out_syms > MAXIMUM_BUF_LENGTH) {
-                out_syms = MAXIMUM_BUF_LENGTH;
-            }
-            /* Produce zero symbols directly */
-            for (int k = 0; k < out_syms; k++) {
-                d->result[k] = 0.0f;
-            }
-            d->result_len = out_syms;
-            return; /* Skip all CQPSK DSP and go straight to output */
-        }
-
-        /* OP25: rms_agc.rms_agc(0.45, 0.85)
-         * RMS AGC normalizes amplitude using running RMS estimate. */
-        cqpsk_rms_agc(d);
-
-        /* Debug: Post-AGC magnitudes when DSD_NEO_DEBUG_CQPSK=1 */
-        {
-            static int call_count = 0;
-            if (debug_cqpsk_enabled() && (++call_count % 50) == 0 && d->lp_len >= 8) {
-                const float* iq = d->lowpassed;
-                float mag_sum = 0.0f;
-                float max_env = 0.0f;
-                int pairs = d->lp_len >> 1;
-                for (int k = 0; k < pairs && k < 100; k++) {
-                    float I = iq[(k << 1)];
-                    float Q = iq[(k << 1) + 1];
-                    float mag = sqrtf(I * I + Q * Q);
-                    mag_sum += mag;
-                    if (mag > max_env) {
-                        max_env = mag;
-                    }
-                }
-                float avg_mag = mag_sum / (pairs < 100 ? pairs : 100);
-                fprintf(stderr, "[POST-AGC] avg_mag:%.3f max_env:%.3f samples:%d\n", avg_mag, max_env, d->lp_len / 2);
-            }
-        }
-
-        /*
-         * OP25-aligned CQPSK signal chain (matches p25_demodulator_dev.py line 486):
-         *
-         *   AGC -> FLL -> Gardner (timing) -> CMA equalizer -> diff_phasor -> Costas
-         *
-         * This is the CORRECT OP25 flow where:
-         *   0. FLL band-edge does coarse frequency acquisition (BEFORE timing recovery)
-         *   1. Gardner does ONLY timing recovery (no NCO rotation)
-         *   2. CMA equalizer mitigates multipath/ISI at symbol rate
-         *   3. diff_phasor is applied after equalization
-         *   4. Costas loop operates at symbol rate on differential symbols
-         *
-         * Key differences from old combined block:
-         *   - FLL for coarse frequency correction before timing recovery
-         *   - No NCO rotation in Gardner
-         *   - Costas operates at symbol rate (not sample rate)
-         *   - Costas uses loop_bw=0.008, computed alpha≈0.0223, beta≈0.000253
-         *   - Phase limited to ±π/2 (not wrapped)
-         *
-         * Skip during unit tests that use raw_demod.
-         */
-        if (d->mode_demod != &raw_demod) {
-            int pre_len = d->lp_len;
-
-            /* 0. FLL band-edge frequency acquisition (OP25's fll block)
-             *    This corrects coarse frequency offset BEFORE timing recovery.
-             *    Critical for initial acquisition after channel retunes.
-             *    From p25_demodulator_dev.py line 403:
-             *      self.fll = digital.fll_band_edge_cc(sps, excess_bw, 2*sps+1, TWO_PI/sps/350)
-             */
-            op25_fll_band_edge_cc(d);
-
-            /* 1. Gardner timing recovery (OP25's clock block)
-             *    Output: symbol-rate samples, NOT carrier corrected */
-            op25_gardner_cc(d);
-
-            /* 2. Blind CMA equalizer for multipath/ISI mitigation.
-             *    Output: equalized symbol-rate samples, still not differentially decoded */
-            cqpsk_cma_equalizer(d);
-
-            /* 3. Differential phasor (OP25's diffdec block)
-             *    Output: differential phase symbols */
-            op25_diff_phasor_cc(d);
-
-            /* 4. Costas carrier recovery at symbol rate (OP25's costas block)
-             *    Output: carrier-corrected differential symbols */
-            op25_costas_loop_cc(d);
-
-            /* Debug: Post-processing state when DSD_NEO_DEBUG_CQPSK=1 */
-            {
-                static int call_count = 0;
-                if (debug_cqpsk_enabled() && (++call_count % 50) == 0) {
-                    dsd_costas_loop_state_t* c = &d->costas_state;
-                    dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
-                    ted_state_t* ted = &d->ted_state;
-                    const float kTwoPi = 6.28318530717958647692f;
-                    /* FLL freq at sample rate */
-                    float fll_freq_hz = f->freq * ((float)d->rate_out / kTwoPi);
-                    /* Costas freq at symbol rate (not sample rate) */
-                    int sym_rate = (d->ted_sps > 0 && d->rate_out > 0) ? (d->rate_out / d->ted_sps) : 4800;
-                    float costas_freq_hz = c->freq * ((float)sym_rate / kTwoPi);
-                    float ted_lock = (ted->lock_count > 0) ? (ted->lock_accum / (float)ted->lock_count) : 0.0f;
-                    fprintf(stderr,
-                            "[OP25] in:%d out:%d omega:%.3f ted_gain:%.3f ted_lock:%.3f fll_freq:%.1fHz "
-                            "costas_freq:%.1fHz phase:%.3f\n",
-                            pre_len / 2, d->lp_len / 2, ted->omega, d->ted_effective_gain, ted_lock, fll_freq_hz,
-                            costas_freq_hz, c->phase);
-                    /* Log IQ constellation: first few symbols to check positioning */
-                    if (d->lp_len >= 8) {
-                        const float* iq = d->lowpassed;
-                        fprintf(stderr, "[IQ] ");
-                        for (int k = 0; k < 4 && k < (d->lp_len >> 1); k++) {
-                            float I = iq[(k << 1)];
-                            float Q = iq[(k << 1) + 1];
-                            float phase_deg = atan2f(Q, I) * 57.2957795f;
-                            float mag = sqrtf(I * I + Q * Q);
-                            fprintf(stderr, "(%.2f,%.2f|%.0f°,%.2f) ", I, Q, phase_deg, mag);
-                        }
-                        fprintf(stderr, "\n");
-                    }
-                }
-            }
-        } else {
-            /* For raw_demod tests, just do differential decoding without Costas */
-            cqpsk_diff_phasor(d);
-        }
-    } else {
-        const int fsk_symbol_output = (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK);
-        /* Fast path when squelched: skip expensive DSP for FM/C4FM but keep samples flowing.
-         * The buffer is already zeroed, so just skip conditioning and let the demod produce zeros. */
-        if (d->channel_squelched) {
-            /* Skip all conditioning - zeros don't need DC block, AGC, limiter, or FLL.
-             * Fall through to mode_demod which will produce zero output. */
-        } else {
-            /* Baseband conditioning order (FM/C4FM):
-               1) Remove DC offset on I/Q to avoid biasing AGC and discriminator
-               2) Block-based envelope AGC to normalize |z|
-               3) Optional per-sample limiter to clamp fast AM ripple */
-            iq_dc_block(d);
-            if (!fsk_symbol_output) {
-                /* Avoid running both AGC and limiter simultaneously to reduce gain "pumping". */
-                if (d->fm_agc_enable) {
-                    fm_envelope_agc(d);
-                } else if (d->fm_limiter_enable) {
-                    fm_constant_envelope_limiter(d);
-                }
-                /* Residual-CFO FLL when enabled */
-                if (d->fll_enabled) {
-                    /* Update control only when squelch indicates a carrier; always apply rotation. */
-                    if (d->squelch_gate_open) {
-                        fll_update_error(d);
-                    }
-                    fll_mix_and_update(d);
-                }
-            }
-        }
-    }
-    /* Mode-aware generic IQ balance (image suppression) after CFO rotation.
-     * Skip when squelched - zeros don't benefit from IQ correction. */
-    if (d->iqbal_enable && !d->cqpsk_enable && !d->channel_squelched && d->lowpassed && d->lp_len >= 2) {
-        /* Widely-linear IQ imbalance estimator/corrector:
-         *   alpha ~= E[z^2] / E[|z|^2],  y = z - alpha * conj(z)
-         * This suppresses the image term without explicit (gain, phase) decomposition. */
-        double s2r = 0.0, s2i = 0.0, p2 = 0.0;
-        int N = d->lp_len >> 1; /* complex pairs */
-        const float* iq = d->lowpassed;
-        for (int n = 0; n < N; n++) {
-            double I = (double)iq[(size_t)(n << 1) + 0];
-            double Q = (double)iq[(size_t)(n << 1) + 1];
-            s2r += I * I - Q * Q;
-            s2i += 2.0 * I * Q;
-            p2 += I * I + Q * Q;
-        }
-        if (p2 <= 1e-9) {
-            p2 = 1e-9;
-        }
-        float ar = (float)(s2r / p2);
-        float ai = (float)(s2i / p2);
-        float ema_alpha = d->iqbal_alpha_ema_a > 0.0f ? d->iqbal_alpha_ema_a : 0.2f;
-        /* EMA update: er += alpha * (ar - er) */
-        float er = d->iqbal_alpha_ema_r;
-        float ei = d->iqbal_alpha_ema_i;
-        er += ema_alpha * (ar - er);
-        ei += ema_alpha * (ai - ei);
-        d->iqbal_alpha_ema_r = er;
-        d->iqbal_alpha_ema_i = ei;
-        float thr = d->iqbal_thr > 0.0f ? d->iqbal_thr : 0.02f;
-        float mag2 = er * er + ei * ei;
-        float thr2 = thr * thr;
-        if (mag2 >= thr2) {
-            float* out = d->lowpassed;
-            for (int n = 0; n < N; n++) {
-                float I = out[(size_t)(n << 1) + 0];
-                float Q = out[(size_t)(n << 1) + 1];
-                float tI = er * I + ei * Q;
-                float tQ = -er * Q + ei * I;
-                float yI = I - tI;
-                float yQ = Q - tQ;
-                out[(size_t)(n << 1) + 0] = yI;
-                out[(size_t)(n << 1) + 1] = yQ;
-            }
-        }
-    }
-    /* Apply Gardner TED for non-CQPSK paths (e.g., C4FM) using the legacy
-       non-decimating Farrow-based implementation so that FM/C4FM downstream
-       stages continue to see sample-rate complex baseband. Requires integer
-       SPS; analog FM remains excluded unless explicitly forced.
-       Skip when squelched - timing recovery on zeros is pointless. */
-    if (d->ted_enabled && d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK && !d->cqpsk_enable && !d->channel_squelched
-        && d->sps_is_integer && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
-        gardner_timing_adjust(d);
-    }
-    if (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
-        int in_pairs = d->lp_len >> 1;
-        if (d->channel_squelched) {
-            d->result_len = dsd_fsk_modem_zero_symbols(&d->fsk_modem_state, in_pairs, d->result, MAXIMUM_BUF_LENGTH);
-        } else {
-            d->result_len =
-                dsd_fsk_modem_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result, MAXIMUM_BUF_LENGTH);
-        }
         return;
     }
-    /*
-     * For CQPSK, produce a single real stream of differential phase symbols
-     * (arg(z_n), where z_n was differenced pre-Costas) to feed the legacy
-     * symbol sampler instead of FM discriminating. For other paths, use the
-     * configured demodulator.
-     */
+    d->channel_squelched = 0;
+    d->squelch_gate_open = 1;
+}
+
+static int
+full_demod_emit_zero_cqpsk_symbols(struct demod_state* d) {
+    if (!d->cqpsk_enable || !d->channel_squelched) {
+        return 0;
+    }
+    int in_pairs = d->lp_len >> 1;
+    int sps = (d->ted_sps > 0) ? d->ted_sps : 5;
+    int out_syms = (in_pairs + sps - 1) / sps;
+    if (out_syms < 1) {
+        out_syms = 1;
+    } else if (out_syms > MAXIMUM_BUF_LENGTH) {
+        out_syms = MAXIMUM_BUF_LENGTH;
+    }
+    for (int k = 0; k < out_syms; k++) {
+        d->result[k] = 0.0f;
+    }
+    d->result_len = out_syms;
+    return 1;
+}
+
+static void
+full_demod_debug_post_agc(const demod_state* d) {
+    static int call_count = 0;
+    if (!debug_cqpsk_enabled() || (++call_count % 50) != 0 || d->lp_len < 8) {
+        return;
+    }
+    const float* iq = d->lowpassed;
+    float mag_sum = 0.0f;
+    float max_env = 0.0f;
+    int pairs = d->lp_len >> 1;
+    int limit = (pairs < 100) ? pairs : 100;
+    for (int k = 0; k < limit; k++) {
+        float I = iq[(k << 1)];
+        float Q = iq[(k << 1) + 1];
+        float mag = sqrtf(I * I + Q * Q);
+        mag_sum += mag;
+        if (mag > max_env) {
+            max_env = mag;
+        }
+    }
+    float avg_mag = mag_sum / (float)limit;
+    DSD_FPRINTF(stderr, "[POST-AGC] avg_mag:%.3f max_env:%.3f samples:%d\n", avg_mag, max_env, d->lp_len / 2);
+}
+
+static void
+full_demod_debug_op25_state(const struct demod_state* d, int pre_len) {
+    static int call_count = 0;
+    if (!debug_cqpsk_enabled() || (++call_count % 50) != 0) {
+        return;
+    }
+    const dsd_costas_loop_state_t* c = &d->costas_state;
+    const dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
+    const ted_state_t* ted = &d->ted_state;
+    const float kTwoPi = 6.28318530717958647692f;
+    float fll_freq_hz = f->freq * ((float)d->rate_out / kTwoPi);
+    int sym_rate = (d->ted_sps > 0 && d->rate_out > 0) ? (d->rate_out / d->ted_sps) : 4800;
+    float costas_freq_hz = c->freq * ((float)sym_rate / kTwoPi);
+    float ted_lock = (ted->lock_count > 0) ? (ted->lock_accum / (float)ted->lock_count) : 0.0f;
+    DSD_FPRINTF(stderr,
+                "[OP25] in:%d out:%d omega:%.3f ted_gain:%.3f ted_lock:%.3f fll_freq:%.1fHz "
+                "costas_freq:%.1fHz phase:%.3f\n",
+                pre_len / 2, d->lp_len / 2, ted->omega, d->ted_effective_gain, ted_lock, fll_freq_hz, costas_freq_hz,
+                c->phase);
+    if (d->lp_len < 8) {
+        return;
+    }
+    const float* iq = d->lowpassed;
+    DSD_FPRINTF(stderr, "[IQ] ");
+    for (int k = 0; k < 4 && k < (d->lp_len >> 1); k++) {
+        float I = iq[(k << 1)];
+        float Q = iq[(k << 1) + 1];
+        float phase_deg = atan2f(Q, I) * 57.2957795f;
+        float mag = sqrtf(I * I + Q * Q);
+        DSD_FPRINTF(stderr, "(%.2f,%.2f|%.0f°,%.2f) ", I, Q, phase_deg, mag);
+    }
+    DSD_FPRINTF(stderr, "\n");
+}
+
+static void
+full_demod_run_cqpsk_chain(struct demod_state* d) {
+    if (!d->cqpsk_enable || d->channel_squelched) {
+        return;
+    }
+    cqpsk_rms_agc(d);
+    full_demod_debug_post_agc(d);
+    if (d->mode_demod == &raw_demod) {
+        cqpsk_diff_phasor(d);
+        return;
+    }
+    int pre_len = d->lp_len;
+    op25_fll_band_edge_cc(d);
+    op25_gardner_cc(d);
+    cqpsk_cma_equalizer(d);
+    op25_diff_phasor_cc(d);
+    op25_costas_loop_cc(d);
+    full_demod_debug_op25_state(d, pre_len);
+}
+
+static void
+full_demod_run_non_cqpsk_chain(struct demod_state* d) {
+    if (d->cqpsk_enable || d->channel_squelched) {
+        return;
+    }
+    int fsk_symbol_output = (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK);
+    iq_dc_block(d);
+    if (fsk_symbol_output) {
+        return;
+    }
+    if (d->fm_agc_enable) {
+        fm_envelope_agc(d);
+    } else if (d->fm_limiter_enable) {
+        fm_constant_envelope_limiter(d);
+    }
+    if (d->fll_enabled) {
+        if (d->squelch_gate_open) {
+            fll_update_error(d);
+        }
+        fll_mix_and_update(d);
+    }
+}
+
+static void
+full_demod_apply_iq_balance(struct demod_state* d) {
+    if (!d->iqbal_enable || d->cqpsk_enable || d->channel_squelched || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    double s2r = 0.0, s2i = 0.0, p2 = 0.0;
+    int N = d->lp_len >> 1;
+    const float* iq = d->lowpassed;
+    for (int n = 0; n < N; n++) {
+        double I = (double)iq[(size_t)(n << 1) + 0];
+        double Q = (double)iq[(size_t)(n << 1) + 1];
+        s2r += I * I - Q * Q;
+        s2i += 2.0 * I * Q;
+        p2 += I * I + Q * Q;
+    }
+    if (p2 <= 1e-9) {
+        p2 = 1e-9;
+    }
+    float er = d->iqbal_alpha_ema_r;
+    float ei = d->iqbal_alpha_ema_i;
+    float ar = (float)(s2r / p2);
+    float ai = (float)(s2i / p2);
+    float ema_alpha = d->iqbal_alpha_ema_a > 0.0f ? d->iqbal_alpha_ema_a : 0.2f;
+    er += ema_alpha * (ar - er);
+    ei += ema_alpha * (ai - ei);
+    d->iqbal_alpha_ema_r = er;
+    d->iqbal_alpha_ema_i = ei;
+    float thr = d->iqbal_thr > 0.0f ? d->iqbal_thr : 0.02f;
+    if ((er * er + ei * ei) < (thr * thr)) {
+        return;
+    }
+    float* out = d->lowpassed;
+    for (int n = 0; n < N; n++) {
+        float I = out[(size_t)(n << 1) + 0];
+        float Q = out[(size_t)(n << 1) + 1];
+        float tI = er * I + ei * Q;
+        float tQ = -er * Q + ei * I;
+        out[(size_t)(n << 1) + 0] = I - tI;
+        out[(size_t)(n << 1) + 1] = Q - tQ;
+    }
+}
+
+static void
+full_demod_maybe_apply_farrow_ted(struct demod_state* d) {
+    if (!d->ted_enabled || d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK || d->cqpsk_enable || d->channel_squelched
+        || !d->sps_is_integer || (d->mode_demod == &dsd_fm_demod && !d->ted_force)) {
+        return;
+    }
+    gardner_timing_adjust(d);
+}
+
+static int
+full_demod_handle_fsk_output(struct demod_state* d) {
+    if (d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+        return 0;
+    }
+    int in_pairs = d->lp_len >> 1;
+    if (d->channel_squelched) {
+        d->result_len = dsd_fsk_modem_zero_symbols(&d->fsk_modem_state, in_pairs, d->result, MAXIMUM_BUF_LENGTH);
+    } else {
+        d->result_len =
+            dsd_fsk_modem_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result, MAXIMUM_BUF_LENGTH);
+    }
+    return 1;
+}
+
+static void
+full_demod_debug_cqpsk_symbols(const struct demod_state* d) {
+    static unsigned int call_count = 0;
+    static int hist_p3 = 0, hist_p1 = 0, hist_m1 = 0, hist_m3 = 0, hist_other = 0;
+    static int hist_samples = 0;
+    static double evm_err_acc = 0.0;
+    static double evm_ref_acc = 0.0;
+    static int evm_count = 0;
+    if (!debug_cqpsk_enabled()) {
+        return;
+    }
+    const float* syms = d->result;
+    for (int k = 0; k < d->result_len; k++) {
+        float s = syms[k];
+        float ideal = 0.0f;
+        if (s > 2.0f) {
+            hist_p3++;
+            ideal = 3.0f;
+        } else if (s > 0.0f) {
+            hist_p1++;
+            ideal = 1.0f;
+        } else if (s > -2.0f) {
+            hist_m1++;
+            ideal = -1.0f;
+        } else {
+            hist_m3++;
+            ideal = -3.0f;
+        }
+        hist_samples++;
+        double err = (double)s - (double)ideal;
+        evm_err_acc += err * err;
+        evm_ref_acc += (double)ideal * (double)ideal;
+        evm_count++;
+    }
+    if ((++call_count % 25) != 0 || hist_samples <= 0) {
+        return;
+    }
+    float total = (float)hist_samples;
+    DSD_FPRINTF(stderr, "[SYM] +3:%.1f%% +1:%.1f%% -1:%.1f%% -3:%.1f%% (n=%d)\n", 100.0f * hist_p3 / total,
+                100.0f * hist_p1 / total, 100.0f * hist_m1 / total, 100.0f * hist_m3 / total, hist_samples);
+    if (evm_count > 0 && evm_ref_acc > 1e-9) {
+        double mse = evm_err_acc / (double)evm_count;
+        double ref_pwr = evm_ref_acc / (double)evm_count;
+        double evm_rms = sqrt(mse);
+        double ref_rms = sqrt(ref_pwr);
+        double evm_pct = (ref_rms > 1e-9) ? (evm_rms / ref_rms) * 100.0 : 0.0;
+        double bias = dsd_rtl_stream_metrics_hook_snr_bias_evm();
+        double snr_db = (mse > 1e-12) ? 10.0 * log10(ref_pwr / mse) - bias : 99.0;
+        DSD_FPRINTF(stderr, "[CQPSK] EVM:%.2f%% SNR:%.1f dB ref_rms:%.2f n:%d\n", evm_pct, snr_db, ref_rms, evm_count);
+    }
+    hist_p3 = hist_p1 = hist_m1 = hist_m3 = hist_other = 0;
+    hist_samples = 0;
+    evm_err_acc = 0.0;
+    evm_ref_acc = 0.0;
+    evm_count = 0;
+}
+
+static void
+full_demod_run_output_demod(struct demod_state* d) {
     if (d->cqpsk_enable) {
         qpsk_differential_demod(d);
-        /* Debug: Symbol histogram when DSD_NEO_DEBUG_CQPSK=1 */
-        {
-            static unsigned int call_count = 0; /* unsigned to avoid signed overflow UB */
-            /* Accumulate histogram over multiple blocks for meaningful statistics */
-            static int hist_p3 = 0, hist_p1 = 0, hist_m1 = 0, hist_m3 = 0, hist_other = 0;
-            static int hist_samples = 0;
-            /* Track EVM/SNR across the same window to catch slicer health issues */
-            static double evm_err_acc = 0.0;
-            static double evm_ref_acc = 0.0;
-            static int evm_count = 0;
-            if (debug_cqpsk_enabled()) {
-                const float* syms = d->result;
-                for (int k = 0; k < d->result_len; k++) {
-                    float s = syms[k];
-                    float ideal;
-                    if (s > 2.0f) {
-                        hist_p3++;
-                        ideal = 3.0f;
-                    } else if (s > 0.0f) {
-                        hist_p1++;
-                        ideal = 1.0f;
-                    } else if (s > -2.0f) {
-                        hist_m1++;
-                        ideal = -1.0f;
-                    } else {
-                        hist_m3++;
-                        ideal = -3.0f;
-                    }
-                    hist_samples++;
-                    double err = (double)s - (double)ideal;
-                    evm_err_acc += err * err;
-                    evm_ref_acc += (double)ideal * (double)ideal;
-                    evm_count++;
-                }
-                if ((++call_count % 25) == 0 && hist_samples > 0) {
-                    float total = (float)hist_samples;
-                    fprintf(stderr, "[SYM] +3:%.1f%% +1:%.1f%% -1:%.1f%% -3:%.1f%% (n=%d)\n", 100.0f * hist_p3 / total,
-                            100.0f * hist_p1 / total, 100.0f * hist_m1 / total, 100.0f * hist_m3 / total, hist_samples);
-                    if (evm_count > 0 && evm_ref_acc > 1e-9) {
-                        double mse = evm_err_acc / (double)evm_count;
-                        double ref_pwr = evm_ref_acc / (double)evm_count;
-                        double evm_rms = sqrt(mse);
-                        double ref_rms = sqrt(ref_pwr);
-                        double evm_pct = (ref_rms > 1e-9) ? (evm_rms / ref_rms) * 100.0 : 0.0;
-                        /* Apply dynamic bias correction for consistency with main SNR display */
-                        double bias = dsd_rtl_stream_metrics_hook_snr_bias_evm();
-                        double snr_db = (mse > 1e-12) ? 10.0 * log10(ref_pwr / mse) - bias : 99.0;
-                        fprintf(stderr, "[CQPSK] EVM:%.2f%% SNR:%.1f dB ref_rms:%.2f n:%d\n", evm_pct, snr_db, ref_rms,
-                                evm_count);
-                    }
-                    /* Reset histogram */
-                    hist_p3 = hist_p1 = hist_m1 = hist_m3 = hist_other = 0;
-                    hist_samples = 0;
-                    evm_err_acc = 0.0;
-                    evm_ref_acc = 0.0;
-                    evm_count = 0;
-                }
-            }
-        }
+        full_demod_debug_cqpsk_symbols(d);
     } else {
-        d->mode_demod(d); /* lowpassed -> result */
+        d->mode_demod(d);
     }
-    if (d->mode_demod == &raw_demod) {
+}
+
+static void
+full_demod_apply_post_audio_decimation(struct demod_state* d) {
+    if (d->cqpsk_enable || d->post_downsample <= 1) {
         return;
     }
-    /* todo, fm noise squelch */
-    // use nicer filter here too?
-    if (!d->cqpsk_enable && d->post_downsample > 1) {
-        int decim = d->post_downsample;
-        /* Prefer the FIR polyphase decimator for all integer factors > 1. */
-        audio_polydecim_ensure(d, decim);
-        if (d->post_polydecim_enabled) {
-            int out_n = audio_polydecim_process(d, d->result, d->result_len, d->timing_buf);
-            if (out_n > 0) {
-                memcpy(d->result, d->timing_buf, (size_t)out_n * sizeof(float));
-                d->result_len = out_n;
-            }
-        } else {
-            /* Allocation/design fallback: preserve legacy one-pole + boxcar path. */
-            int Fs = (d->rate_out > 0) ? d->rate_out : 48000;
-            double fc = 0.2 * ((double)Fs / (double)decim);
-            if (fc < 50.0) {
-                fc = 50.0;
-            }
-            double a = 1.0 - exp(-2.0 * 3.14159265358979323846 * fc / (double)Fs);
-            if (a < 0.0) {
-                a = 0.0;
-            }
-            if (a > 1.0) {
-                a = 1.0;
-            }
-            float alpha_f = (float)a;
-            if (alpha_f < 0.0f) {
-                alpha_f = 0.0f;
-            }
-            if (alpha_f > 1.0f) {
-                alpha_f = 1.0f;
-            }
-            float y = (d->result_len > 0) ? d->result[0] : 0.0f;
-            for (int k = 0; k < d->result_len; k++) {
-                float x = d->result[k];
-                float dlt = x - y;
-                y += dlt * alpha_f;
-                d->result[k] = y;
-            }
-            d->result_len = low_pass_simple(d->result, d->result_len, decim);
+    int decim = d->post_downsample;
+    audio_polydecim_ensure(d, decim);
+    if (d->post_polydecim_enabled) {
+        int out_n = audio_polydecim_process(d, d->result, d->result_len, d->timing_buf);
+        if (out_n > 0) {
+            DSD_MEMCPY(d->result, d->timing_buf, (size_t)out_n * sizeof(float));
+            d->result_len = out_n;
         }
+        return;
     }
+    int Fs = (d->rate_out > 0) ? d->rate_out : 48000;
+    double fc = 0.2 * ((double)Fs / (double)decim);
+    if (fc < 50.0) {
+        fc = 50.0;
+    }
+    double a = 1.0 - exp(-2.0 * 3.14159265358979323846 * fc / (double)Fs);
+    if (a < 0.0) {
+        a = 0.0;
+    } else if (a > 1.0) {
+        a = 1.0;
+    }
+    float alpha_f = clamp_float((float)a, 0.0f, 1.0f);
+    float y = (d->result_len > 0) ? d->result[0] : 0.0f;
+    for (int k = 0; k < d->result_len; k++) {
+        float x = d->result[k];
+        y += (x - y) * alpha_f;
+        d->result[k] = y;
+    }
+    d->result_len = low_pass_simple(d->result, d->result_len, decim);
+}
+
+static void
+full_demod_apply_audio_post_filters(struct demod_state* d) {
     if (!d->cqpsk_enable) {
         if (d->deemph) {
             deemph_filter(d);
         }
-        /* Optional post-demod audio LPF */
         audio_lpf_filter(d);
         if (d->dc_block) {
             dc_block_filter(d);
         }
+        if (d->rate_out2 > 0) {
+            low_pass_real(d);
+        }
     }
-    /* Skip post-demod audio decimator for CQPSK symbol streams. */
-    if (!d->cqpsk_enable && d->rate_out2 > 0) {
-        low_pass_real(d);
-        //arbitrary_resample(d->result, d->result, d->result_len, d->result_len * d->rate_out2 / d->rate_out);
-    }
+}
 
-    /* Apply soft squelch envelope on audio (skip for CQPSK symbol stream) */
-    if (!d->cqpsk_enable) {
-        float env = d->squelch_env;
-        float target = d->squelch_gate_open ? 1.0f : 0.0f;
-        float alpha = d->squelch_gate_open ? (d->squelch_env_attack > 0.0f ? d->squelch_env_attack : 0.125f)
-                                           : (d->squelch_env_release > 0.0f ? d->squelch_env_release : 0.03125f);
-        float err = target - env;
-        env += alpha * err;
-        if (env < 0.0f) {
-            env = 0.0f;
-        }
-        if (env > 1.0f) {
-            env = 1.0f;
-        }
-        d->squelch_env = env;
-        /* Multiply audio by envelope */
-        float* res = d->result;
-        for (int k = 0; k < d->result_len; k++) {
-            res[k] = res[k] * env;
-        }
+static void
+full_demod_apply_squelch_envelope(struct demod_state* d) {
+    if (d->cqpsk_enable) {
+        return;
     }
+    float env = d->squelch_env;
+    float target = d->squelch_gate_open ? 1.0f : 0.0f;
+    float alpha = d->squelch_gate_open ? (d->squelch_env_attack > 0.0f ? d->squelch_env_attack : 0.125f)
+                                       : (d->squelch_env_release > 0.0f ? d->squelch_env_release : 0.03125f);
+    env = clamp_float(env + alpha * (target - env), 0.0f, 1.0f);
+    d->squelch_env = env;
+    for (int k = 0; k < d->result_len; k++) {
+        d->result[k] = d->result[k] * env;
+    }
+}
+
+/**
+ * @brief Full demodulation pipeline for one block.
+ */
+void
+full_demod(struct demod_state* d) {
+    full_demod_apply_halfband_decimation(d);
+    full_demod_update_channel_state(d);
+    if (full_demod_emit_zero_cqpsk_symbols(d)) {
+        return;
+    }
+    full_demod_run_cqpsk_chain(d);
+    full_demod_run_non_cqpsk_chain(d);
+    full_demod_apply_iq_balance(d);
+    full_demod_maybe_apply_farrow_ted(d);
+    if (full_demod_handle_fsk_output(d)) {
+        return;
+    }
+    full_demod_run_output_demod(d);
+    if (d->mode_demod == &raw_demod) {
+        return;
+    }
+    full_demod_apply_post_audio_decimation(d);
+    full_demod_apply_audio_post_filters(d);
+    full_demod_apply_squelch_envelope(d);
 }

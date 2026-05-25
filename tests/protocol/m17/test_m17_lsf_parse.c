@@ -11,15 +11,19 @@
  * into the expected m17_lsf_result.
  */
 
+#include <dsd-neo/protocol/m17/m17_parse.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-#include <dsd-neo/protocol/m17/m17_parse.h>
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Minimal MSB-first bit-to-integer helper matching the DMR utils API.
 uint64_t
-ConvertBitIntoBytes(uint8_t* bits, uint32_t n) {
+ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) { // NOLINT(misc-use-internal-linkage)
     uint64_t v = 0ULL;
     for (uint32_t i = 0; i < n; i++) {
         v = (v << 1) | (uint64_t)(bits[i] & 1U);
@@ -38,7 +42,7 @@ write_bits_from_u64(uint8_t* dst, uint64_t value, uint32_t nbits) {
 static int
 expect_eq_u64(const char* tag, uint64_t got, uint64_t want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %llu want %llu\n", tag, (unsigned long long)got, (unsigned long long)want);
+        DSD_FPRINTF(stderr, "%s: got %llu want %llu\n", tag, (unsigned long long)got, (unsigned long long)want);
         return 1;
     }
     return 0;
@@ -47,7 +51,7 @@ expect_eq_u64(const char* tag, uint64_t got, uint64_t want) {
 static int
 expect_eq_u8(const char* tag, uint8_t got, uint8_t want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %u want %u\n", tag, (unsigned)got, (unsigned)want);
+        DSD_FPRINTF(stderr, "%s: got %u want %u\n", tag, (unsigned)got, (unsigned)want);
         return 1;
     }
     return 0;
@@ -56,7 +60,7 @@ expect_eq_u8(const char* tag, uint8_t got, uint8_t want) {
 int
 main(void) {
     uint8_t lsf_bits[240];
-    memset(lsf_bits, 0, sizeof(lsf_bits));
+    DSD_MEMSET(lsf_bits, 0, sizeof(lsf_bits));
 
     // Choose arbitrary but distinct dst/src values within the valid range.
     const uint64_t dst = 0x0000ABCDEF12ULL;
@@ -78,7 +82,7 @@ main(void) {
 
     // META/IV bytes: make the first byte non-zero so has_meta=1.
     uint8_t meta[14];
-    memset(meta, 0, sizeof(meta));
+    DSD_MEMSET(meta, 0, sizeof(meta));
     meta[0] = 0x42U;
     meta[1] = 0x99U;
 
@@ -99,7 +103,7 @@ main(void) {
     struct m17_lsf_result res;
     int rc = m17_parse_lsf(lsf_bits, sizeof(lsf_bits), &res);
     if (rc != 0) {
-        fprintf(stderr, "m17_parse_lsf failed: rc=%d\n", rc);
+        DSD_FPRINTF(stderr, "m17_parse_lsf failed: rc=%d\n", rc);
         return 1;
     }
 
@@ -114,7 +118,7 @@ main(void) {
     err |= expect_eq_u8("has_meta", res.has_meta, 1U);
 
     if (res.meta[0] != meta[0] || res.meta[1] != meta[1]) {
-        fprintf(stderr, "meta[0..1]: got %02X %02X want %02X %02X\n", res.meta[0], res.meta[1], meta[0], meta[1]);
+        DSD_FPRINTF(stderr, "meta[0..1]: got %02X %02X want %02X %02X\n", res.meta[0], res.meta[1], meta[0], meta[1]);
         err |= 1;
     }
 
@@ -123,3 +127,7 @@ main(void) {
     }
     return err;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

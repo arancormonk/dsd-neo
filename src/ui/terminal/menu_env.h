@@ -9,7 +9,8 @@
  *
  * This header is internal to src/ui/terminal/ and should NOT be installed.
  */
-#pragma once
+#ifndef DSD_NEO_SRC_UI_TERMINAL_MENU_ENV_H_
+#define DSD_NEO_SRC_UI_TERMINAL_MENU_ENV_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 
@@ -24,3 +25,5 @@ void env_reparse_runtime_cfg(dsd_opts* opts);
 
 // Hex string parsing utility used by key entry callbacks
 int parse_hex_u64(const char* s, unsigned long long* out);
+
+#endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_ENV_H_ */

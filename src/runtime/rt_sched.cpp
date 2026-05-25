@@ -20,6 +20,55 @@
 #include <stdio.h>
 #include <string.h>
 
+static const char*
+role_or_default(const char* role) {
+    return role ? role : "RT";
+}
+
+static const dsdneoRuntimeConfig*
+runtime_config_ready(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
+    }
+    return cfg;
+}
+
+static int
+resolve_role_rt_priority(const dsdneoRuntimeConfig* cfg, const char* role) {
+    if (!cfg || !role) {
+        return 0;
+    }
+    if (strcmp(role, "USB") == 0 && cfg->rt_prio_usb_is_set) {
+        return cfg->rt_prio_usb;
+    }
+    if (strcmp(role, "DONGLE") == 0 && cfg->rt_prio_dongle_is_set) {
+        return cfg->rt_prio_dongle;
+    }
+    if (strcmp(role, "DEMOD") == 0 && cfg->rt_prio_demod_is_set) {
+        return cfg->rt_prio_demod;
+    }
+    return 0;
+}
+
+static int
+resolve_role_cpu_affinity(const dsdneoRuntimeConfig* cfg, const char* role) {
+    if (!cfg || !role) {
+        return -1;
+    }
+    if (strcmp(role, "USB") == 0 && cfg->cpu_usb_is_set) {
+        return cfg->cpu_usb;
+    }
+    if (strcmp(role, "DONGLE") == 0 && cfg->cpu_dongle_is_set) {
+        return cfg->cpu_dongle;
+    }
+    if (strcmp(role, "DEMOD") == 0 && cfg->cpu_demod_is_set) {
+        return cfg->cpu_demod;
+    }
+    return -1;
+}
+
 /**
  * @brief Optionally enable realtime scheduling and set CPU affinity for the current thread.
  *
@@ -32,52 +81,30 @@
  */
 void
 maybe_set_thread_realtime_and_affinity(const char* role) {
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (!cfg) {
-        dsd_neo_config_init(NULL);
-        cfg = dsd_neo_get_config();
-    }
+    const dsdneoRuntimeConfig* cfg = runtime_config_ready();
+    const char* label = role_or_default(role);
     if (!cfg || !cfg->rt_sched_enable) {
         return;
     }
 
-    int priority = 0; /* default priority for abstraction layer */
-
-    if (role) {
-        if (strcmp(role, "USB") == 0 && cfg->rt_prio_usb_is_set) {
-            priority = cfg->rt_prio_usb;
-        } else if (strcmp(role, "DONGLE") == 0 && cfg->rt_prio_dongle_is_set) {
-            priority = cfg->rt_prio_dongle;
-        } else if (strcmp(role, "DEMOD") == 0 && cfg->rt_prio_demod_is_set) {
-            priority = cfg->rt_prio_demod;
-        }
-    }
+    int priority = resolve_role_rt_priority(cfg, role);
 
     if (dsd_thread_set_realtime_priority(priority) != 0) {
         int err = errno;
-        LOG_WARNING("Failed to set %s thread to realtime priority (needs elevated privileges). errno=%d (%s)\n",
-                    role ? role : "RT", err, strerror(err));
+        LOG_WARNING("Failed to set %s thread to realtime priority (needs elevated privileges). errno=%d (%s)\n", label,
+                    err, strerror(err));
     } else {
-        LOG_INFO("%s thread realtime priority set to %d.\n", role ? role : "RT", priority);
+        LOG_INFO("%s thread realtime priority set to %d.\n", label, priority);
     }
 
-    if (role) {
-        int cpu = -1;
-        if (strcmp(role, "USB") == 0 && cfg->cpu_usb_is_set) {
-            cpu = cfg->cpu_usb;
-        } else if (strcmp(role, "DONGLE") == 0 && cfg->cpu_dongle_is_set) {
-            cpu = cfg->cpu_dongle;
-        } else if (strcmp(role, "DEMOD") == 0 && cfg->cpu_demod_is_set) {
-            cpu = cfg->cpu_demod;
-        }
-        if (cpu >= 0) {
-            if (dsd_thread_set_affinity(cpu) != 0) {
-                int err = errno;
-                LOG_WARNING("Failed to set CPU affinity for %s thread to CPU %d. errno=%d (%s)\n", role, cpu, err,
-                            strerror(err));
-            } else {
-                LOG_INFO("%s thread pinned to CPU %d.\n", role, cpu);
-            }
+    int cpu = resolve_role_cpu_affinity(cfg, role);
+    if (cpu >= 0) {
+        if (dsd_thread_set_affinity(cpu) != 0) {
+            int err = errno;
+            LOG_WARNING("Failed to set CPU affinity for %s thread to CPU %d. errno=%d (%s)\n", label, cpu, err,
+                        strerror(err));
+        } else {
+            LOG_INFO("%s thread pinned to CPU %d.\n", label, cpu);
         }
     }
 }

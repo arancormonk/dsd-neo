@@ -8,7 +8,8 @@
  * @brief Output ring buffer API for demodulated audio samples.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RING_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RING_H_
 
 #include <atomic>
 #include <stdint.h>
@@ -134,3 +135,5 @@ int ring_read_one(struct output_state* o, float* out);
  * @return Number of samples read (>=1) or -1 on exit.
  */
 int ring_read_batch(struct output_state* o, float* out, size_t max_count);
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RING_H_ */

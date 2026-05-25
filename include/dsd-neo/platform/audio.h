@@ -3,7 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_AUDIO_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_AUDIO_H_H
 
 /**
  * @file
@@ -149,3 +150,4 @@ const char* dsd_audio_backend_name(void);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_AUDIO_H_H */

@@ -8,13 +8,18 @@
  */
 
 #include <dsd-neo/protocol/m17/m17_parse.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 uint64_t
-ConvertBitIntoBytes(uint8_t* bits, uint32_t n) {
+ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) { // NOLINT(misc-use-internal-linkage)
     uint64_t v = 0ULL;
     for (uint32_t i = 0; i < n; i++) {
         v = (v << 1U) | (uint64_t)(bits[i] & 1U);
@@ -29,8 +34,8 @@ expect_name(const char* tag, uint8_t protocol, const char* want) {
         return 0;
     }
     if (want == NULL || got == NULL || strcmp(got, want) != 0) {
-        fprintf(stderr, "%s: protocol 0x%02X got '%s' want '%s'\n", tag, (unsigned)protocol, got ? got : "(null)",
-                want ? want : "(null)");
+        DSD_FPRINTF(stderr, "%s: protocol 0x%02X got '%s' want '%s'\n", tag, (unsigned)protocol, got ? got : "(null)",
+                    want ? want : "(null)");
         return 1;
     }
     return 0;
@@ -52,3 +57,7 @@ main(void) {
     }
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

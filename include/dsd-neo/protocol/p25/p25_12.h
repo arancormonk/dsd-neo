@@ -11,7 +11,8 @@
  * `src/protocol/p25/p25_12.c`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_12_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_12_H_
 
 #include <stdint.h>
 
@@ -26,8 +27,8 @@ typedef struct {
 extern "C" {
 #endif
 
-int p25_12(uint8_t* input, uint8_t treturn[12]);
-int p25_12_soft(uint8_t* input, const uint8_t* reliab98, uint8_t treturn[12]);
+int p25_12(const uint8_t* input, uint8_t treturn[12]);
+int p25_12_soft(const uint8_t* input, const uint8_t* reliab98, uint8_t treturn[12]);
 int p25_12_soft_llr(const uint8_t* input, const int16_t* bit_llr196, uint8_t treturn[12]);
 int p25_12_soft_llr_list(const uint8_t* input, const int16_t* bit_llr196, p25_12_candidate_t* candidates,
                          int max_candidates);
@@ -35,3 +36,5 @@ int p25_12_soft_llr_list(const uint8_t* input, const int16_t* bit_llr196, p25_12
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_12_H_ */

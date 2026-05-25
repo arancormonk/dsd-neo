@@ -6,6 +6,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 static uint8_t
 nxdn_bits_to_u8(const uint8_t* bits, size_t start, size_t nbits) {
@@ -43,7 +44,7 @@ nxdn_dcr_decode_csm_alias(const uint8_t trellis_bits[96], char* out, size_t out_
         digits[i] = (char)('0' + nibble);
     }
     digits[9] = '\0';
-    int written = snprintf(out, out_sz, "CSM %s", digits);
+    int written = DSD_SNPRINTF(out, out_sz, "CSM %s", digits);
     if (written < 0 || (size_t)written >= out_sz) {
         out[0] = '\0';
         return 0;

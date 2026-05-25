@@ -5,18 +5,22 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -25,7 +29,7 @@ expect_eq_int(const char* tag, int got, int want) {
 static int
 expect_eq_u8(const char* tag, unsigned got, unsigned want) {
     if (got != want) {
-        fprintf(stderr, "%s: got 0x%02X want 0x%02X\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got 0x%02X want 0x%02X\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -45,7 +49,8 @@ bits_to_u8(const uint8_t* bits, int start) {
  * This test only needs uppercase/lowercase contiguous hex parsing.
  */
 uint16_t
-parse_raw_user_string(char* input, uint8_t* output, size_t out_cap) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+parse_raw_user_string(const char* input, uint8_t* output, size_t out_cap) {
     if (!input || !output || out_cap == 0) {
         return 0;
     }
@@ -65,7 +70,8 @@ parse_raw_user_string(char* input, uint8_t* output, size_t out_cap) {
 }
 
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     int k = 0;
     for (int i = 0; i < len; i++) {
         output[k++] = (uint8_t)((input[i] >> 7) & 1U);
@@ -84,7 +90,7 @@ main(void) {
     int rc = 0;
     dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
     if (!st) {
-        fprintf(stderr, "allocation failed\n");
+        DSD_FPRINTF(stderr, "allocation failed\n");
         return 1;
     }
 
@@ -124,7 +130,7 @@ main(void) {
         rc |= expect_eq_int("len-partial-mod", st->straight_mod, 0);
     }
 
-    memset(st->static_ks_bits, 0, sizeof(st->static_ks_bits));
+    DSD_MEMSET(st->static_ks_bits, 0, sizeof(st->static_ks_bits));
     {
         char arg[] = "49:123456789ABC80";
         straight_mod_xor_keystream_creation(st, arg);
@@ -203,8 +209,8 @@ main(void) {
         char arg[] = "8:F0";
         char frame0[49];
         char frame1[49];
-        memset(frame0, 0, sizeof(frame0));
-        memset(frame1, 0, sizeof(frame1));
+        DSD_MEMSET(frame0, 0, sizeof(frame0));
+        DSD_MEMSET(frame1, 0, sizeof(frame1));
         straight_mod_xor_keystream_creation(st, arg);
         straight_mod_xor_apply_frame49(st, 0, frame0);
         straight_mod_xor_apply_frame49(st, 0, frame1);
@@ -220,10 +226,10 @@ main(void) {
         char frame1[49];
         char frame2[49];
         char frame_slot1[49];
-        memset(frame0, 0, sizeof(frame0));
-        memset(frame1, 0, sizeof(frame1));
-        memset(frame2, 0, sizeof(frame2));
-        memset(frame_slot1, 0, sizeof(frame_slot1));
+        DSD_MEMSET(frame0, 0, sizeof(frame0));
+        DSD_MEMSET(frame1, 0, sizeof(frame1));
+        DSD_MEMSET(frame2, 0, sizeof(frame2));
+        DSD_MEMSET(frame_slot1, 0, sizeof(frame_slot1));
         straight_mod_xor_keystream_creation(st, arg);
         straight_mod_xor_apply_frame49(st, 0, frame0);
         straight_mod_xor_apply_frame49(st, 0, frame1);
@@ -242,7 +248,7 @@ main(void) {
     {
         char arg[] = "49:123456789ABC80:2:48";
         char frame0[49];
-        memset(frame0, 0, sizeof(frame0));
+        DSD_MEMSET(frame0, 0, sizeof(frame0));
         straight_mod_xor_keystream_creation(st, arg);
         st->static_ks_counter[0] = 1000000000;
         straight_mod_xor_apply_frame49(st, 0, frame0);
@@ -263,3 +269,7 @@ main(void) {
     free(st);
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

@@ -9,7 +9,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 approx_eq(float a, float b, float tol) {
@@ -26,7 +26,7 @@ main(void) {
     if (!s) {
         return 1;
     }
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(s, 0, sizeof(*s));
 
     // Prepare constant DC complex input
     const int pairs = 128;
@@ -49,7 +49,7 @@ main(void) {
 
     // Expect 2:1 complex decimation (elements halved)
     if (s->result_len != pairs) {
-        fprintf(stderr, "HB complex: result_len=%d want %d\n", s->result_len, pairs);
+        DSD_FPRINTF(stderr, "HB complex: result_len=%d want %d\n", s->result_len, pairs);
         free(s);
         return 1;
     }
@@ -58,7 +58,7 @@ main(void) {
         float I = s->result[(size_t)(2 * k) + 0];
         float Q = s->result[(size_t)(2 * k) + 1];
         if (!approx_eq(I, 0.25f, 1e-3f) || !approx_eq(Q, -0.125f, 1e-3f)) {
-            fprintf(stderr, "HB complex: sample %d=(%f,%f) deviates from DC\n", k, I, Q);
+            DSD_FPRINTF(stderr, "HB complex: sample %d=(%f,%f) deviates from DC\n", k, I, Q);
             free(s);
             return 1;
         }

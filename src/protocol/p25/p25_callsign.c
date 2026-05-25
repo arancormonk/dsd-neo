@@ -14,15 +14,8 @@
 
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
-/* P25 Radix-50 character table (40 characters):
- * Index 0: space
- * Index 1-26: A-Z
- * Index 27: $
- * Index 28: .
- * Index 29: ?
- * Index 30-39: 0-9
- */
 static const char p25_radix50[41] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ$.?0123456789";
 
 /*
@@ -52,6 +45,33 @@ p25_is_generic_wacn(uint32_t wacn) {
     return 0;
 }
 
+static int
+p25_callsign_has_alnum(const char callsign[7]) {
+    for (int i = 0; i < 6; i++) {
+        char ch = callsign[i];
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+p25_callsign_trim_trailing_spaces(char callsign[7]) {
+    int len = 6;
+    while (len > 0 && callsign[len - 1] == ' ') {
+        len--;
+    }
+    callsign[len] = '\0';
+    return len;
+}
+
+static int
+p25_format_wacn_sysid_base(uint32_t wacn, uint16_t sysid, char* out, int out_len) {
+    int n = DSD_SNPRINTF(out, (size_t)out_len, "WACN [%05X] SYSID [%03X]", wacn, sysid);
+    return (n > 0 && n < out_len) ? n : 0;
+}
+
 void
 p25_wacn_sysid_to_callsign(uint32_t wacn, uint16_t sysid, char out[7]) {
     /* Clamp to valid ranges */
@@ -74,16 +94,16 @@ p25_wacn_sysid_to_callsign(uint32_t wacn, uint16_t sysid, char out[7]) {
     uint32_t idx1 = (n1 / 40) % 40;
     uint32_t idx2 = n1 % 40;
     out[0] = (idx0 < 40) ? p25_radix50[idx0] : '?';
-    out[1] = (idx1 < 40) ? p25_radix50[idx1] : '?';
-    out[2] = (idx2 < 40) ? p25_radix50[idx2] : '?';
+    out[1] = p25_radix50[idx1];
+    out[2] = p25_radix50[idx2];
 
     /* Characters 4-6 from n2 */
     uint32_t idx3 = n2 / 1600;
     uint32_t idx4 = (n2 / 40) % 40;
     uint32_t idx5 = n2 % 40;
     out[3] = (idx3 < 40) ? p25_radix50[idx3] : '?';
-    out[4] = (idx4 < 40) ? p25_radix50[idx4] : '?';
-    out[5] = (idx5 < 40) ? p25_radix50[idx5] : '?';
+    out[4] = p25_radix50[idx4];
+    out[5] = p25_radix50[idx5];
 
     out[6] = '\0';
 }
@@ -99,32 +119,14 @@ p25_format_wacn_sysid(uint32_t wacn, uint16_t sysid, char* out, int out_len) {
 
     /* Short-circuit if no callsign was produced (generic WACN) */
     if (callsign[0] == '\0') {
-        int n = snprintf(out, (size_t)out_len, "WACN [%05X] SYSID [%03X]", wacn, sysid);
-        return (n > 0 && n < out_len) ? n : 0;
+        return p25_format_wacn_sysid_base(wacn, sysid, out, out_len);
     }
 
-    /* Check if callsign is meaningful (not all spaces or special chars) */
-    int has_alpha = 0;
-    for (int i = 0; i < 6; i++) {
-        if ((callsign[i] >= 'A' && callsign[i] <= 'Z') || (callsign[i] >= '0' && callsign[i] <= '9')) {
-            has_alpha = 1;
-            break;
-        }
+    int len = p25_callsign_trim_trailing_spaces(callsign);
+    if (!p25_callsign_has_alnum(callsign) || len <= 0) {
+        return p25_format_wacn_sysid_base(wacn, sysid, out, out_len);
     }
 
-    /* Trim trailing spaces from callsign for cleaner display */
-    int len = 6;
-    while (len > 0 && callsign[len - 1] == ' ') {
-        len--;
-    }
-    callsign[len] = '\0';
-
-    int n;
-    if (has_alpha && len > 0) {
-        n = snprintf(out, (size_t)out_len, "WACN [%05X] SYSID [%03X] (%s)", wacn, sysid, callsign);
-    } else {
-        n = snprintf(out, (size_t)out_len, "WACN [%05X] SYSID [%03X]", wacn, sysid);
-    }
-
+    int n = DSD_SNPRINTF(out, (size_t)out_len, "WACN [%05X] SYSID [%03X] (%s)", wacn, sysid, callsign);
     return (n > 0 && n < out_len) ? n : 0;
 }

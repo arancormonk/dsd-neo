@@ -7,11 +7,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
+#include <errno.h>
+#include <iconv.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #if !defined(DSD_HAVE_ICONV)
@@ -19,13 +21,11 @@
 #endif
 
 #if DSD_HAVE_ICONV
-#include <errno.h>
-#include <iconv.h>
 #endif
 
 static uint8_t
 nxdn_bits_to_u8(const uint8_t* bits, size_t start, uint32_t len) {
-    return (uint8_t)ConvertBitIntoBytes((uint8_t*)&bits[start], len); // NOLINT(cppcoreguidelines-pro-type-const-cast)
+    return (uint8_t)ConvertBitIntoBytes(&bits[start], len);
 }
 
 static void
@@ -42,10 +42,10 @@ nxdn_alias_publish(dsd_state* state, const char* alias) {
     if (state == NULL || alias == NULL) {
         return;
     }
-    snprintf(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", alias);
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", alias);
     if (state->event_history_s != NULL) {
-        snprintf(state->event_history_s[0].Event_History_Items[0].alias,
-                 sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", alias);
+        DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
+                     sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", alias);
     }
 }
 
@@ -56,7 +56,7 @@ nxdn_alias_reset_arib(dsd_state* state) {
     }
     state->nxdn_alias_arib_total_segments = 0U;
     state->nxdn_alias_arib_seen_mask = 0U;
-    memset(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));
+    DSD_MEMSET(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));
 }
 
 static uint32_t
@@ -154,6 +154,126 @@ nxdn_alias_effective_len(const uint8_t* in, size_t in_len) {
     return n;
 }
 
+static int
+nxdn_alias_try_append_ascii(char* out, size_t out_sz, size_t* pos, char c) {
+    if (out == NULL || pos == NULL || *pos + 1U >= out_sz) {
+        return 0;
+    }
+    out[(*pos)++] = c;
+    return 1;
+}
+
+static size_t
+nxdn_alias_decode_shift_jis_fallback(const uint8_t* in, size_t in_len, size_t eff_len, char* out, size_t out_sz) {
+    size_t pos = 0U;
+    size_t i = 0U;
+    while (i < eff_len) {
+        uint8_t b = in[i];
+        if (b >= 0x20U && b <= 0x7EU) {
+            if (!nxdn_alias_try_append_ascii(out, out_sz, &pos, (char)b)) {
+                break;
+            }
+            i++;
+            continue;
+        }
+
+        if (b >= 0xA1U && b <= 0xDFU) {
+            uint32_t cp = 0xFF61U + (uint32_t)(b - 0xA1U);
+            pos = nxdn_alias_append_utf8_cp(out, out_sz, pos, cp);
+            i++;
+            continue;
+        }
+
+        if (nxdn_is_sjis_lead(b) && (i + 1U) < in_len && nxdn_is_sjis_trail(in[i + 1U])) {
+            // Full table-based Shift-JIS decode is intentionally not embedded here.
+            // Emit replacement for unsupported multibyte pairs.
+            pos = nxdn_alias_append_utf8_cp(out, out_sz, pos, 0xFFFDU);
+            i += 2U;
+            continue;
+        }
+
+        if (!nxdn_alias_try_append_ascii(out, out_sz, &pos, '?')) {
+            break;
+        }
+        i++;
+    }
+    return pos;
+}
+
+static void
+nxdn_alias_log_prop_segment(const dsd_opts* opts, uint8_t block_number, uint8_t total_blocks, uint8_t crc_ok) {
+    if (opts == NULL || opts->payload != 1) {
+        return;
+    }
+    DSD_FPRINTF(stderr, " Alias segment %u/%u", (unsigned)block_number, (unsigned)total_blocks);
+    if (crc_ok == 0U) {
+        DSD_FPRINTF(stderr, " (CRC ERR)");
+    }
+}
+
+static void
+nxdn_alias_store_prop_segment(dsd_state* state, const uint8_t* message_bits, uint8_t block_number) {
+    for (size_t i = 0U; i < 4U; i++) {
+        uint8_t b = nxdn_bits_to_u8(message_bits, 40U + (i * 8U), 8U);
+        char c = (b >= 0x20U && b <= 0x7EU) ? (char)b : ' ';
+        state->nxdn_alias_block_segment[block_number - 1U][i][0] = c;
+        state->nxdn_alias_block_segment[block_number - 1U][i][1] = '\0';
+    }
+}
+
+static void
+nxdn_alias_collect_prop_alias(const dsd_state* state, uint8_t total_blocks, char* alias, size_t alias_sz) {
+    if (state == NULL || alias == NULL || alias_sz == 0U) {
+        return;
+    }
+    size_t pos = 0U;
+    size_t limit = alias_sz - 1U;
+    for (size_t b = 0U; b < total_blocks && pos < limit; b++) {
+        for (size_t i = 0U; i < 4U && pos < limit; i++) {
+            char c = state->nxdn_alias_block_segment[b][i][0];
+            if (c != '\0') {
+                alias[pos++] = c;
+            }
+        }
+    }
+    alias[pos] = '\0';
+}
+
+static void
+nxdn_alias_log_arib_segment(const dsd_opts* opts, uint8_t seg_num, uint8_t seg_total, uint8_t crc_ok) {
+    if (opts == NULL || opts->payload != 1) {
+        return;
+    }
+    DSD_FPRINTF(stderr, " ARIB alias segment %u/%u", (unsigned)seg_num, (unsigned)seg_total);
+    if (crc_ok == 0U) {
+        DSD_FPRINTF(stderr, " (CRC ERR)");
+    }
+}
+
+static int
+nxdn_alias_valid_arib_segment(uint8_t seg_num, uint8_t seg_total) {
+    return (seg_num >= 1U && seg_num <= 4U && seg_total >= 1U && seg_total <= 4U && seg_num <= seg_total) ? 1 : 0;
+}
+
+static int
+nxdn_alias_arib_pack_and_validate(const dsd_state* state, uint8_t seg_total, uint8_t packed[24], size_t* packed_len) {
+    DSD_MEMSET(packed, 0, 24U);
+    *packed_len = (size_t)seg_total * 6U;
+    for (size_t s = 0U; s < (size_t)seg_total; s++) {
+        DSD_MEMCPY(&packed[s * 6U], state->nxdn_alias_arib_segments[s], 6U);
+    }
+    if (*packed_len < 4U) {
+        return 0;
+    }
+    uint32_t crc32_have = nxdn_alias_read_u32_be(&packed[*packed_len - 4U]);
+    uint32_t crc32_want = nxdn_alias_crc32_msb_first(packed, *packed_len - 4U);
+    if (crc32_have != crc32_want) {
+        return 0;
+    }
+    *packed_len -= 4U;
+    return 1;
+}
+
 #if DSD_HAVE_ICONV
 static const char* const nxdn_alias_iconv_enc_candidates[] = {"SHIFT-JIS", "SHIFT_JIS", "CP932"};
 
@@ -165,12 +285,13 @@ nxdn_alias_try_iconv_decode(const uint8_t* in, size_t in_len, char* out, size_t 
 
     const size_t enc_count = sizeof(nxdn_alias_iconv_enc_candidates) / sizeof(nxdn_alias_iconv_enc_candidates[0]);
     for (size_t i = 0U; i < enc_count; i++) {
+        errno = 0;
         iconv_t cd = iconv_open("UTF-8", nxdn_alias_iconv_enc_candidates[i]);
-        if (cd == (iconv_t)-1) {
+        if (errno != 0) {
             continue;
         }
 
-        char* in_ptr = (char*)(uintptr_t)in; // iconv API may not be const-correct.
+        char* in_ptr = (char*)(const char*)in; // iconv API may not be const-correct.
         size_t in_left = in_len;
         char* out_ptr = out;
         size_t out_left = out_sz - 1U;
@@ -193,8 +314,9 @@ static int
 nxdn_alias_iconv_shift_jis_available(void) {
     const size_t enc_count = sizeof(nxdn_alias_iconv_enc_candidates) / sizeof(nxdn_alias_iconv_enc_candidates[0]);
     for (size_t i = 0U; i < enc_count; i++) {
+        errno = 0;
         iconv_t cd = iconv_open("UTF-8", nxdn_alias_iconv_enc_candidates[i]);
-        if (cd != (iconv_t)-1) {
+        if (errno == 0) {
             (void)iconv_close(cd);
             return 1;
         }
@@ -237,37 +359,7 @@ nxdn_alias_decode_shift_jis_like(const uint8_t* in, size_t in_len, char* out, si
     }
 #endif
 
-    size_t pos = 0U;
-    for (size_t i = 0U; i < eff_len; i++) {
-        uint8_t b = in[i];
-
-        if (b >= 0x20U && b <= 0x7EU) {
-            if (pos + 1U >= out_sz) {
-                break;
-            }
-            out[pos++] = (char)b;
-            continue;
-        }
-
-        if (b >= 0xA1U && b <= 0xDFU) {
-            uint32_t cp = 0xFF61U + (uint32_t)(b - 0xA1U);
-            pos = nxdn_alias_append_utf8_cp(out, out_sz, pos, cp);
-            continue;
-        }
-
-        if (nxdn_is_sjis_lead(b) && (i + 1U) < in_len && nxdn_is_sjis_trail(in[i + 1U])) {
-            // Full table-based Shift-JIS decode is intentionally not embedded here.
-            // Emit replacement for unsupported multibyte pairs.
-            pos = nxdn_alias_append_utf8_cp(out, out_sz, pos, 0xFFFDU);
-            i++;
-            continue;
-        }
-
-        if (pos + 1U >= out_sz) {
-            break;
-        }
-        out[pos++] = '?';
-    }
+    size_t pos = nxdn_alias_decode_shift_jis_fallback(in, in_len, eff_len, out, out_sz);
 
     if (pos >= out_sz) {
         pos = out_sz - 1U;
@@ -283,25 +375,19 @@ nxdn_alias_reset(dsd_state* state) {
         return;
     }
     state->nxdn_alias_block_number = 0U;
-    memset(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+    DSD_MEMSET(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
     nxdn_alias_reset_arib(state);
 }
 
 void
-nxdn_alias_decode_prop(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
+nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
     if (state == NULL || message_bits == NULL) {
         return;
     }
 
     uint8_t block_number = nxdn_bits_to_u8(message_bits, 32U, 4U);
     uint8_t total_blocks = nxdn_bits_to_u8(message_bits, 36U, 4U);
-
-    if (opts != NULL && opts->payload == 1) {
-        fprintf(stderr, " Alias segment %u/%u", (unsigned)block_number, (unsigned)total_blocks);
-        if (crc_ok == 0U) {
-            fprintf(stderr, " (CRC ERR)");
-        }
-    }
+    nxdn_alias_log_prop_segment(opts, block_number, total_blocks, crc_ok);
 
     if (crc_ok == 0U) {
         return;
@@ -314,26 +400,11 @@ nxdn_alias_decode_prop(dsd_opts* opts, dsd_state* state, const uint8_t* message_
     }
 
     state->nxdn_alias_block_number = block_number;
-    for (size_t i = 0U; i < 4U; i++) {
-        uint8_t b = nxdn_bits_to_u8(message_bits, 40U + (i * 8U), 8U);
-        char c = (b >= 0x20U && b <= 0x7EU) ? (char)b : ' ';
-        state->nxdn_alias_block_segment[block_number - 1U][i][0] = c;
-        state->nxdn_alias_block_segment[block_number - 1U][i][1] = '\0';
-    }
+    nxdn_alias_store_prop_segment(state, message_bits, block_number);
 
     char alias[17];
-    memset(alias, 0, sizeof(alias));
-    size_t pos = 0U;
-    for (size_t b = 0U; b < total_blocks && pos < (sizeof(alias) - 1U); b++) {
-        for (size_t i = 0U; i < 4U && pos < (sizeof(alias) - 1U); i++) {
-            char c = state->nxdn_alias_block_segment[b][i][0];
-            if (c == '\0') {
-                continue;
-            }
-            alias[pos++] = c;
-        }
-    }
-    alias[pos] = '\0';
+    DSD_MEMSET(alias, 0, sizeof(alias));
+    nxdn_alias_collect_prop_alias(state, total_blocks, alias, sizeof(alias));
     nxdn_alias_trim_trailing_spaces(alias);
     if (alias[0] != '\0') {
         nxdn_alias_publish(state, alias);
@@ -341,25 +412,19 @@ nxdn_alias_decode_prop(dsd_opts* opts, dsd_state* state, const uint8_t* message_
 }
 
 void
-nxdn_alias_decode_arib(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
+nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
     if (state == NULL || message_bits == NULL) {
         return;
     }
 
     uint8_t seg_num = nxdn_bits_to_u8(message_bits, 16U, 4U);
     uint8_t seg_total = nxdn_bits_to_u8(message_bits, 20U, 4U);
-
-    if (opts != NULL && opts->payload == 1) {
-        fprintf(stderr, " ARIB alias segment %u/%u", (unsigned)seg_num, (unsigned)seg_total);
-        if (crc_ok == 0U) {
-            fprintf(stderr, " (CRC ERR)");
-        }
-    }
+    nxdn_alias_log_arib_segment(opts, seg_num, seg_total, crc_ok);
 
     if (crc_ok == 0U) {
         return;
     }
-    if (seg_num < 1U || seg_num > 4U || seg_total < 1U || seg_total > 4U || seg_num > seg_total) {
+    if (!nxdn_alias_valid_arib_segment(seg_num, seg_total)) {
         return;
     }
 
@@ -387,26 +452,15 @@ nxdn_alias_decode_arib(dsd_opts* opts, dsd_state* state, const uint8_t* message_
     }
 
     uint8_t packed[24];
-    memset(packed, 0, sizeof(packed));
-    size_t packed_len = (size_t)seg_total * 6U;
-    for (size_t s = 0U; s < (size_t)seg_total; s++) {
-        memcpy(&packed[s * 6U], state->nxdn_alias_arib_segments[s], 6U);
-    }
-    if (packed_len < 4U) {
-        nxdn_alias_reset_arib(state);
-        return;
-    }
-    uint32_t crc32_have = nxdn_alias_read_u32_be(&packed[packed_len - 4U]);
-    uint32_t crc32_want = nxdn_alias_crc32_msb_first(packed, packed_len - 4U);
-    if (crc32_have != crc32_want) {
+    size_t packed_len = 0U;
+    if (!nxdn_alias_arib_pack_and_validate(state, seg_total, packed, &packed_len)) {
         // Reject mixed/invalid assemblies so stale segments cannot leak into published aliases.
         nxdn_alias_reset_arib(state);
         return;
     }
-    packed_len -= 4U; // trailing CRC32
 
     char alias[500];
-    memset(alias, 0, sizeof(alias));
+    DSD_MEMSET(alias, 0, sizeof(alias));
     (void)nxdn_alias_decode_shift_jis_like(packed, packed_len, alias, sizeof(alias));
     if (alias[0] != '\0') {
         nxdn_alias_publish(state, alias);

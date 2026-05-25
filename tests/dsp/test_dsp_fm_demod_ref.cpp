@@ -10,7 +10,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 int
 main(void) {
@@ -18,7 +18,7 @@ main(void) {
     if (!s) {
         return 1;
     }
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(s, 0, sizeof(*s));
 
     // Build a complex tone that advances by constant phase per sample
     const int N = 256; // complex pairs
@@ -48,13 +48,13 @@ main(void) {
     double im = (double)j1 * (double)r0 - (double)r1 * (double)j0;
     float expect_rad = (float)atan2(im, re);
     if (s->result_len != N) {
-        fprintf(stderr, "FM demod ref: result_len=%d want %d\n", s->result_len, N);
+        DSD_FPRINTF(stderr, "FM demod ref: result_len=%d want %d\n", s->result_len, N);
         free(s);
         return 1;
     }
     // First sample seeds history; steady-state starts at index 1
     if (fabsf(s->result[0]) > 1e-3f) {
-        fprintf(stderr, "FM demod ref: result[0]=%f want 0\n", s->result[0]);
+        DSD_FPRINTF(stderr, "FM demod ref: result[0]=%f want 0\n", s->result[0]);
         free(s);
         return 1;
     }
@@ -62,13 +62,13 @@ main(void) {
         float v = s->result[i];
         float d = fabsf(v - expect_rad);
         if (d > 0.01f) { // allow small tolerance for native float output
-            fprintf(stderr, "FM demod ref: result[%d]=%f expect~%f\n", i, v, expect_rad);
+            DSD_FPRINTF(stderr, "FM demod ref: result[%d]=%f expect~%f\n", i, v, expect_rad);
             free(s);
             return 1;
         }
     }
 
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(s, 0, sizeof(*s));
     const double small_dphi = 0.08;
     for (int k = 0; k < N; k++) {
         double th = k * small_dphi;
@@ -91,7 +91,7 @@ main(void) {
         float v = s->result[i];
         float d = fabsf(v - expect_rad);
         if (d > 1e-4f) {
-            fprintf(stderr, "FM demod small-angle: result[%d]=%f expect~%f\n", i, v, expect_rad);
+            DSD_FPRINTF(stderr, "FM demod small-angle: result[%d]=%f expect~%f\n", i, v, expect_rad);
             free(s);
             return 1;
         }

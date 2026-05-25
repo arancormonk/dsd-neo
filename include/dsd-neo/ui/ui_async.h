@@ -7,7 +7,8 @@
  * @file
  * @brief Async ncurses UI thread lifecycle and command helpers.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_UI_ASYNC_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_UI_ASYNC_H_H
 
 #include <stddef.h>
 
@@ -51,3 +52,4 @@ int ui_is_thread_context(void);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_UI_ASYNC_H_H */

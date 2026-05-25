@@ -5,20 +5,20 @@
 
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
-
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 #include "test_support.h"
 
 static int
 expect_true(const char* label, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         return 1;
     }
     return 0;
@@ -27,7 +27,7 @@ expect_true(const char* label, int cond) {
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -36,7 +36,7 @@ expect_int(const char* label, int got, int want) {
 static int
 expect_u32(const char* label, uint32_t got, uint32_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%u want=%u\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%u want=%u\n", label, got, want);
         return 1;
     }
     return 0;
@@ -45,7 +45,7 @@ expect_u32(const char* label, uint32_t got, uint32_t want) {
 static int
 expect_u64(const char* label, uint64_t got, uint64_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%" PRIu64 " want=%" PRIu64 "\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%" PRIu64 " want=%" PRIu64 "\n", label, got, want);
         return 1;
     }
     return 0;
@@ -58,7 +58,7 @@ path_join(char* out, size_t out_size, const char* a, const char* b) {
 
 static int
 write_bytes_file(const char* path, const uint8_t* bytes, size_t len) {
-    FILE* fp = fopen(path, "wb");
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (!fp) {
         return -1;
     }
@@ -72,7 +72,7 @@ write_bytes_file(const char* path, const uint8_t* bytes, size_t len) {
 
 static int
 write_text_file(const char* path, const char* text) {
-    FILE* fp = fopen(path, "wb");
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (!fp) {
         return -1;
     }
@@ -140,41 +140,42 @@ write_valid_metadata(const char* metadata_path, const char* data_file_json, cons
                      uint32_t base_decimation, uint32_t post_downsample, uint32_t demod_rate_hz, int contains_retunes,
                      uint64_t data_bytes) {
     char json[4096];
-    snprintf(json, sizeof(json),
-             "{\n"
-             "  \"format\": \"dsd-neo-iq\",\n"
-             "  \"version\": 1,\n"
-             "  \"sample_format\": \"%s\",\n"
-             "  \"iq_order\": \"IQ\",\n"
-             "  \"endianness\": \"%s\",\n"
-             "  \"capture_stage\": \"%s\",\n"
-             "  \"sample_rate_hz\": %u,\n"
-             "  \"center_frequency_hz\": 851375000,\n"
-             "  \"capture_center_frequency_hz\": 851759000,\n"
-             "  \"ppm\": 0,\n"
-             "  \"tuner_gain_tenth_db\": 270,\n"
-             "  \"rtl_dsp_bw_khz\": 48,\n"
-             "  \"base_decimation\": %u,\n"
-             "  \"post_downsample\": %u,\n"
-             "  \"demod_rate_hz\": %u,\n"
-             "  \"offset_tuning_enabled\": false,\n"
-             "  \"fs4_shift_enabled\": true,\n"
-             "  \"combine_rotate_enabled\": true,\n"
-             "  \"muted_bytes_excluded\": true,\n"
-             "  \"contains_retunes\": %s,\n"
-             "  \"capture_retune_count\": %u,\n"
-             "  \"source_backend\": \"rtl\",\n"
-             "  \"source_args\": \"dev=0\",\n"
-             "  \"capture_started_utc\": \"2026-04-11T12:34:56Z\",\n"
-             "  \"data_file\": \"%s\",\n"
-             "  \"data_bytes\": %" PRIu64 ",\n"
-             "  \"capture_drops\": 0,\n"
-             "  \"capture_drop_blocks\": 0,\n"
-             "  \"input_ring_drops\": 0,\n"
-             "  \"notes\": \"\"\n"
-             "}\n",
-             sample_format, endianness, capture_stage, sample_rate_hz, base_decimation, post_downsample, demod_rate_hz,
-             contains_retunes ? "true" : "false", contains_retunes ? 1U : 0U, data_file_json, data_bytes);
+    DSD_SNPRINTF(json, sizeof(json),
+                 "{\n"
+                 "  \"format\": \"dsd-neo-iq\",\n"
+                 "  \"version\": 1,\n"
+                 "  \"sample_format\": \"%s\",\n"
+                 "  \"iq_order\": \"IQ\",\n"
+                 "  \"endianness\": \"%s\",\n"
+                 "  \"capture_stage\": \"%s\",\n"
+                 "  \"sample_rate_hz\": %u,\n"
+                 "  \"center_frequency_hz\": 851375000,\n"
+                 "  \"capture_center_frequency_hz\": 851759000,\n"
+                 "  \"ppm\": 0,\n"
+                 "  \"tuner_gain_tenth_db\": 270,\n"
+                 "  \"rtl_dsp_bw_khz\": 48,\n"
+                 "  \"base_decimation\": %u,\n"
+                 "  \"post_downsample\": %u,\n"
+                 "  \"demod_rate_hz\": %u,\n"
+                 "  \"offset_tuning_enabled\": false,\n"
+                 "  \"fs4_shift_enabled\": true,\n"
+                 "  \"combine_rotate_enabled\": true,\n"
+                 "  \"muted_bytes_excluded\": true,\n"
+                 "  \"contains_retunes\": %s,\n"
+                 "  \"capture_retune_count\": %u,\n"
+                 "  \"source_backend\": \"rtl\",\n"
+                 "  \"source_args\": \"dev=0\",\n"
+                 "  \"capture_started_utc\": \"2026-04-11T12:34:56Z\",\n"
+                 "  \"data_file\": \"%s\",\n"
+                 "  \"data_bytes\": %" PRIu64 ",\n"
+                 "  \"capture_drops\": 0,\n"
+                 "  \"capture_drop_blocks\": 0,\n"
+                 "  \"input_ring_drops\": 0,\n"
+                 "  \"notes\": \"\"\n"
+                 "}\n",
+                 sample_format, endianness, capture_stage, sample_rate_hz, base_decimation, post_downsample,
+                 demod_rate_hz, contains_retunes ? "true" : "false", contains_retunes ? 1U : 0U, data_file_json,
+                 data_bytes);
     return write_text_file(metadata_path, json);
 }
 
@@ -182,42 +183,42 @@ static int
 write_metadata_with_events_version(const char* metadata_path, const char* data_file_json, const char* events_json,
                                    uint64_t data_bytes, int contains_retunes, uint32_t version) {
     char json[8192];
-    snprintf(json, sizeof(json),
-             "{\n"
-             "  \"format\": \"dsd-neo-iq\",\n"
-             "  \"version\": %u,\n"
-             "  \"sample_format\": \"cu8\",\n"
-             "  \"iq_order\": \"IQ\",\n"
-             "  \"endianness\": \"none\",\n"
-             "  \"capture_stage\": \"post_mute_pre_widen\",\n"
-             "  \"sample_rate_hz\": 1536000,\n"
-             "  \"center_frequency_hz\": 851375000,\n"
-             "  \"capture_center_frequency_hz\": 851759000,\n"
-             "  \"ppm\": 0,\n"
-             "  \"tuner_gain_tenth_db\": 270,\n"
-             "  \"rtl_dsp_bw_khz\": 48,\n"
-             "  \"base_decimation\": 32,\n"
-             "  \"post_downsample\": 1,\n"
-             "  \"demod_rate_hz\": 48000,\n"
-             "  \"offset_tuning_enabled\": false,\n"
-             "  \"fs4_shift_enabled\": true,\n"
-             "  \"combine_rotate_enabled\": true,\n"
-             "  \"muted_bytes_excluded\": true,\n"
-             "  \"contains_retunes\": %s,\n"
-             "  \"capture_retune_count\": %u,\n"
-             "  \"source_backend\": \"rtl\",\n"
-             "  \"source_args\": \"dev=0\",\n"
-             "  \"capture_started_utc\": \"2026-04-11T12:34:56Z\",\n"
-             "  \"data_file\": \"%s\",\n"
-             "  \"data_bytes\": %" PRIu64 ",\n"
-             "  \"capture_drops\": 0,\n"
-             "  \"capture_drop_blocks\": 0,\n"
-             "  \"input_ring_drops\": 0,\n"
-             "  \"notes\": \"\",\n"
-             "  \"events\": %s\n"
-             "}\n",
-             version, contains_retunes ? "true" : "false", contains_retunes ? 1U : 0U, data_file_json, data_bytes,
-             events_json);
+    DSD_SNPRINTF(json, sizeof(json),
+                 "{\n"
+                 "  \"format\": \"dsd-neo-iq\",\n"
+                 "  \"version\": %u,\n"
+                 "  \"sample_format\": \"cu8\",\n"
+                 "  \"iq_order\": \"IQ\",\n"
+                 "  \"endianness\": \"none\",\n"
+                 "  \"capture_stage\": \"post_mute_pre_widen\",\n"
+                 "  \"sample_rate_hz\": 1536000,\n"
+                 "  \"center_frequency_hz\": 851375000,\n"
+                 "  \"capture_center_frequency_hz\": 851759000,\n"
+                 "  \"ppm\": 0,\n"
+                 "  \"tuner_gain_tenth_db\": 270,\n"
+                 "  \"rtl_dsp_bw_khz\": 48,\n"
+                 "  \"base_decimation\": 32,\n"
+                 "  \"post_downsample\": 1,\n"
+                 "  \"demod_rate_hz\": 48000,\n"
+                 "  \"offset_tuning_enabled\": false,\n"
+                 "  \"fs4_shift_enabled\": true,\n"
+                 "  \"combine_rotate_enabled\": true,\n"
+                 "  \"muted_bytes_excluded\": true,\n"
+                 "  \"contains_retunes\": %s,\n"
+                 "  \"capture_retune_count\": %u,\n"
+                 "  \"source_backend\": \"rtl\",\n"
+                 "  \"source_args\": \"dev=0\",\n"
+                 "  \"capture_started_utc\": \"2026-04-11T12:34:56Z\",\n"
+                 "  \"data_file\": \"%s\",\n"
+                 "  \"data_bytes\": %" PRIu64 ",\n"
+                 "  \"capture_drops\": 0,\n"
+                 "  \"capture_drop_blocks\": 0,\n"
+                 "  \"input_ring_drops\": 0,\n"
+                 "  \"notes\": \"\",\n"
+                 "  \"events\": %s\n"
+                 "}\n",
+                 version, contains_retunes ? "true" : "false", contains_retunes ? 1U : 0U, data_file_json, data_bytes,
+                 events_json);
     return write_text_file(metadata_path, json);
 }
 
@@ -233,7 +234,7 @@ test_metadata_round_trip_capture_open_close(void) {
     int rc = 0;
     char dir[256];
     if (mk_temp_dir(dir, sizeof(dir)) != 0) {
-        fprintf(stderr, "failed to create temp dir\n");
+        DSD_FPRINTF(stderr, "failed to create temp dir\n");
         return 1;
     }
 
@@ -243,11 +244,11 @@ test_metadata_round_trip_capture_open_close(void) {
     path_join(metadata_path, sizeof(metadata_path), dir, "capture.iq.json");
 
     dsd_iq_capture_config cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    snprintf(cfg.data_path, sizeof(cfg.data_path), "%s", data_path);
-    snprintf(cfg.metadata_path, sizeof(cfg.metadata_path), "%s", metadata_path);
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    DSD_SNPRINTF(cfg.data_path, sizeof(cfg.data_path), "%s", data_path);
+    DSD_SNPRINTF(cfg.metadata_path, sizeof(cfg.metadata_path), "%s", metadata_path);
     cfg.format = DSD_IQ_FORMAT_CU8;
-    snprintf(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_mute_pre_widen");
+    DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_mute_pre_widen");
     cfg.sample_rate_hz = 1536000;
     cfg.center_frequency_hz = 851375000ULL;
     cfg.capture_center_frequency_hz = 851759000ULL;
@@ -261,8 +262,8 @@ test_metadata_round_trip_capture_open_close(void) {
     cfg.fs4_shift_enabled = 1;
     cfg.combine_rotate_enabled = 1;
     cfg.muted_bytes_excluded = 1;
-    snprintf(cfg.source_backend, sizeof(cfg.source_backend), "%s", "rtl");
-    snprintf(cfg.source_args, sizeof(cfg.source_args), "%s", "dev=\\\"0\\\"\\\\tcp");
+    DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "rtl");
+    DSD_SNPRINTF(cfg.source_args, sizeof(cfg.source_args), "%s", "dev=\\\"0\\\"\\\\tcp");
 
     dsd_iq_capture_writer* writer = NULL;
     char err[256];
@@ -277,7 +278,7 @@ test_metadata_round_trip_capture_open_close(void) {
     rc |= expect_int("capture submit odd bytes", dsd_iq_capture_submit(writer, bytes, sizeof(bytes)), DSD_IQ_OK);
 
     dsd_iq_capture_final_stats stats;
-    memset(&stats, 0, sizeof(stats));
+    DSD_MEMSET(&stats, 0, sizeof(stats));
     stats.input_ring_drops = 7;
     dsd_iq_capture_close(writer, &stats);
 
@@ -288,7 +289,7 @@ test_metadata_round_trip_capture_open_close(void) {
     }
 
     dsd_iq_replay_config replay_cfg;
-    memset(&replay_cfg, 0, sizeof(replay_cfg));
+    DSD_MEMSET(&replay_cfg, 0, sizeof(replay_cfg));
     int prc = dsd_iq_replay_read_metadata(metadata_path, &replay_cfg, err, sizeof(err));
     rc |= expect_int("replay read metadata", prc, DSD_IQ_OK);
     if (prc == DSD_IQ_OK) {
@@ -323,11 +324,11 @@ test_metadata_v2_events_round_trip(void) {
     path_join(metadata_path, sizeof(metadata_path), dir, "events.iq.json");
 
     dsd_iq_capture_config cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    snprintf(cfg.data_path, sizeof(cfg.data_path), "%s", data_path);
-    snprintf(cfg.metadata_path, sizeof(cfg.metadata_path), "%s", metadata_path);
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    DSD_SNPRINTF(cfg.data_path, sizeof(cfg.data_path), "%s", data_path);
+    DSD_SNPRINTF(cfg.metadata_path, sizeof(cfg.metadata_path), "%s", metadata_path);
     cfg.format = DSD_IQ_FORMAT_CU8;
-    snprintf(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_mute_pre_widen");
+    DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_mute_pre_widen");
     cfg.sample_rate_hz = 1536000;
     cfg.center_frequency_hz = 851375000ULL;
     cfg.capture_center_frequency_hz = 851759000ULL;
@@ -339,8 +340,8 @@ test_metadata_v2_events_round_trip(void) {
     cfg.fs4_shift_enabled = 1;
     cfg.combine_rotate_enabled = 1;
     cfg.muted_bytes_excluded = 1;
-    snprintf(cfg.source_backend, sizeof(cfg.source_backend), "%s", "rtl");
-    snprintf(cfg.source_args, sizeof(cfg.source_args), "%s", "dev=0");
+    DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "rtl");
+    DSD_SNPRINTF(cfg.source_args, sizeof(cfg.source_args), "%s", "dev=0");
 
     dsd_iq_capture_writer* writer = NULL;
     char err[256] = {0};
@@ -354,36 +355,36 @@ test_metadata_v2_events_round_trip(void) {
     rc |= expect_int("event submit first", dsd_iq_capture_submit(writer, first, sizeof(first)), DSD_IQ_OK);
 
     dsd_iq_event ev;
-    memset(&ev, 0, sizeof(ev));
+    DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_RETUNE;
     ev.center_frequency_hz = 851500000ULL;
     ev.capture_center_frequency_hz = 851884000ULL;
     ev.sample_rate_hz = 1536000;
-    snprintf(ev.reason, sizeof(ev.reason), "%s", "frequency");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "frequency");
     rc |= expect_int("record retune event", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
 
-    memset(&ev, 0, sizeof(ev));
+    DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_MUTE;
     ev.duration_bytes = 4;
-    snprintf(ev.reason, sizeof(ev.reason), "%s", "retune_mute");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "retune_mute");
     rc |= expect_int("record mute event", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
 
-    memset(&ev, 0, sizeof(ev));
+    DSD_MEMSET(&ev, 0, sizeof(ev));
     ev.kind = DSD_IQ_EVENT_RESET;
     ev.center_frequency_hz = 851500000ULL;
     ev.capture_center_frequency_hz = 851884000ULL;
     ev.sample_rate_hz = 1536000;
-    snprintf(ev.reason, sizeof(ev.reason), "%s", "frequency");
+    DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "frequency");
     rc |= expect_int("record reset event", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
 
     rc |= expect_int("event submit second", dsd_iq_capture_submit(writer, second, sizeof(second)), DSD_IQ_OK);
 
     dsd_iq_capture_final_stats stats;
-    memset(&stats, 0, sizeof(stats));
+    DSD_MEMSET(&stats, 0, sizeof(stats));
     dsd_iq_capture_close(writer, &stats);
 
     dsd_iq_replay_config replay_cfg;
-    memset(&replay_cfg, 0, sizeof(replay_cfg));
+    DSD_MEMSET(&replay_cfg, 0, sizeof(replay_cfg));
     int prc = dsd_iq_replay_read_metadata(metadata_path, &replay_cfg, err, sizeof(err));
     rc |= expect_int("v2 replay read metadata", prc, DSD_IQ_OK);
     if (prc == DSD_IQ_OK) {
@@ -401,7 +402,7 @@ test_metadata_v2_events_round_trip(void) {
     dsd_iq_replay_config_clear(&replay_cfg);
 
     dsd_iq_replay_source* src = NULL;
-    memset(&replay_cfg, 0, sizeof(replay_cfg));
+    DSD_MEMSET(&replay_cfg, 0, sizeof(replay_cfg));
     prc = dsd_iq_replay_open(metadata_path, &replay_cfg, &src, err, sizeof(err));
     rc |= expect_int("v2 replay open", prc, DSD_IQ_OK);
     if (src) {
@@ -444,7 +445,7 @@ test_metadata_reuse_after_explicit_clear(void) {
     }
 
     dsd_iq_replay_config cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     int prc = dsd_iq_replay_read_metadata(meta1, &cfg, err, sizeof(err));
     rc |= expect_int("first metadata reuse read", prc, DSD_IQ_OK);
     if (prc == DSD_IQ_OK) {
@@ -463,7 +464,7 @@ test_metadata_reuse_after_explicit_clear(void) {
     dsd_iq_replay_config_clear(&cfg);
 
     dsd_iq_replay_source* src = NULL;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_open(meta1, &cfg, &src, err, sizeof(err));
     rc |= expect_int("first open reuse read", prc, DSD_IQ_OK);
     dsd_iq_replay_close(src);
@@ -506,7 +507,7 @@ test_metadata_output_is_write_only_on_first_success(void) {
     }
 
     dsd_iq_replay_config cfg;
-    memset(&cfg, 0xA5, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0xA5, sizeof(cfg));
     int prc = dsd_iq_replay_read_metadata(meta, &cfg, err, sizeof(err));
     rc |= expect_int("metadata read ignores prior output bytes", prc, DSD_IQ_OK);
     if (prc == DSD_IQ_OK) {
@@ -515,7 +516,7 @@ test_metadata_output_is_write_only_on_first_success(void) {
     }
 
     dsd_iq_replay_source* src = NULL;
-    memset(&cfg, 0xA5, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0xA5, sizeof(cfg));
     prc = dsd_iq_replay_open(meta, &cfg, &src, err, sizeof(err));
     rc |= expect_int("replay open ignores prior output bytes", prc, DSD_IQ_OK);
     if (src) {
@@ -582,7 +583,7 @@ test_missing_field_reports_clear_error(void) {
     }
 
     dsd_iq_replay_config cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     int prc = dsd_iq_replay_read_metadata(meta, &cfg, err, sizeof(err));
     rc |= expect_int("missing field parse rc", prc, DSD_IQ_ERR_INVALID_META);
     rc |= expect_true("missing field message", strstr(err, "sample_rate_hz") != NULL);
@@ -598,6 +599,11 @@ test_json_unescape_and_control_rejection(void) {
         return 1;
     }
 
+    /*
+     * Use a metadata file beside a nested data file so unescaping and relative
+     * path resolution are covered in the same parse. The rejection cases below
+     * then prove decoded control bytes cannot reach operational string fields.
+     */
     char subdir[512];
     path_join(subdir, sizeof(subdir), dir, "sub");
     if (dsd_mkdir(subdir, 0700) != 0) {
@@ -650,7 +656,7 @@ test_json_unescape_and_control_rejection(void) {
     }
 
     dsd_iq_replay_config cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     int prc = dsd_iq_replay_read_metadata(meta, &cfg, err, sizeof(err));
     rc |= expect_int("escaped metadata parses", prc, DSD_IQ_OK);
     if (prc == DSD_IQ_OK) {
@@ -694,10 +700,11 @@ test_json_unescape_and_control_rejection(void) {
                               "  \"notes\": \"\"\n"
                               "}\n";
     write_text_file(bad1, bad_control);
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_read_metadata(bad1, &cfg, err, sizeof(err));
     rc |= expect_int("operational control-byte reject", prc, DSD_IQ_ERR_INVALID_META);
 
+    // Embedded NULs in paths must be rejected after JSON unescape, not truncated.
     char bad2[512];
     path_join(bad2, sizeof(bad2), dir, "bad_nul.iq.json");
     const char* bad_nul = "{\n"
@@ -733,7 +740,7 @@ test_json_unescape_and_control_rejection(void) {
                           "  \"notes\": \"\"\n"
                           "}\n";
     write_text_file(bad2, bad_nul);
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_read_metadata(bad2, &cfg, err, sizeof(err));
     rc |= expect_int("embedded nul reject", prc, DSD_IQ_ERR_INVALID_META);
 
@@ -749,6 +756,11 @@ test_invalid_json_shapes_and_number_types(void) {
         return 1;
     }
 
+    /*
+     * Metadata rejects syntax errors, nested values where strings are required,
+     * and floating-point numbers in integer-only fields. These cases protect the
+     * replay loader from silently coercing malformed capture descriptors.
+     */
     char data[512];
     path_join(data, sizeof(data), dir, "x.iq");
     uint8_t b[2] = {1, 2};
@@ -758,7 +770,7 @@ test_invalid_json_shapes_and_number_types(void) {
     path_join(trunc_meta, sizeof(trunc_meta), dir, "trunc.iq.json");
     write_text_file(trunc_meta, "{\"format\":\"dsd-neo-iq\"");
     dsd_iq_replay_config cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     int prc = dsd_iq_replay_read_metadata(trunc_meta, &cfg, err, sizeof(err));
     rc |= expect_int("truncated json reject", prc, DSD_IQ_ERR_INVALID_META);
 
@@ -797,7 +809,7 @@ test_invalid_json_shapes_and_number_types(void) {
                               "  \"notes\": \"\"\n"
                               "}\n";
     write_text_file(nested_meta, nested_json);
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_read_metadata(nested_meta, &cfg, err, sizeof(err));
     rc |= expect_int("nested object reject", prc, DSD_IQ_ERR_INVALID_META);
 
@@ -836,7 +848,7 @@ test_invalid_json_shapes_and_number_types(void) {
                              "  \"notes\": \"\"\n"
                              "}\n";
     write_text_file(float_meta, float_json);
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_read_metadata(float_meta, &cfg, err, sizeof(err));
     rc |= expect_int("non-integer field reject", prc, DSD_IQ_ERR_INVALID_META);
 
@@ -852,6 +864,11 @@ test_event_timeline_validation(void) {
         return 1;
     }
 
+    /*
+     * Event metadata is parsed before replay open, so this test separates schema
+     * validation from replay compatibility checks. Invalid timelines reject at
+     * metadata load time; retune summaries reject later when replay is opened.
+     */
     char data[512];
     path_join(data, sizeof(data), dir, "events_bad.iq");
     uint8_t bytes[8] = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -880,18 +897,19 @@ test_event_timeline_validation(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         char meta[512];
         char file_name[64];
-        snprintf(file_name, sizeof(file_name), "%s.iq.json", cases[i].name);
+        DSD_SNPRINTF(file_name, sizeof(file_name), "%s.iq.json", cases[i].name);
         path_join(meta, sizeof(meta), dir, file_name);
         if (write_v2_metadata_with_events(meta, "events_bad.iq", cases[i].events_json, cases[i].data_bytes, 0) != 0) {
             return 1;
         }
         dsd_iq_replay_config cfg;
-        memset(&cfg, 0, sizeof(cfg));
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
         int prc = dsd_iq_replay_read_metadata(meta, &cfg, err, sizeof(err));
         rc |= expect_int(cases[i].name, prc, cases[i].want);
         dsd_iq_replay_config_clear(&cfg);
     }
 
+    // Version 1 files cannot opt into event arrays after a successful parse.
     {
         char meta[512];
         path_join(meta, sizeof(meta), dir, "events_on_v1.iq.json");
@@ -902,7 +920,7 @@ test_event_timeline_validation(void) {
             return 1;
         }
         dsd_iq_replay_config cfg;
-        memset(&cfg, 0, sizeof(cfg));
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
         int prc = dsd_iq_replay_read_metadata(meta, &cfg, err, sizeof(err));
         rc |= expect_int("v1 events rejected after parse", prc, DSD_IQ_ERR_UNSUPPORTED_VER);
         dsd_iq_replay_config_clear(&cfg);
@@ -912,46 +930,46 @@ test_event_timeline_validation(void) {
         char meta[512];
         char json[8192];
         path_join(meta, sizeof(meta), dir, "events_then_bad_field.iq.json");
-        snprintf(json, sizeof(json),
-                 "{\n"
-                 "  \"format\": \"dsd-neo-iq\",\n"
-                 "  \"version\": 2,\n"
-                 "  \"sample_format\": \"cu8\",\n"
-                 "  \"iq_order\": \"IQ\",\n"
-                 "  \"endianness\": \"none\",\n"
-                 "  \"capture_stage\": \"post_mute_pre_widen\",\n"
-                 "  \"sample_rate_hz\": 1536000,\n"
-                 "  \"center_frequency_hz\": 851375000,\n"
-                 "  \"capture_center_frequency_hz\": 851759000,\n"
-                 "  \"ppm\": 0,\n"
-                 "  \"tuner_gain_tenth_db\": 270,\n"
-                 "  \"rtl_dsp_bw_khz\": 48,\n"
-                 "  \"base_decimation\": 32,\n"
-                 "  \"post_downsample\": 1,\n"
-                 "  \"demod_rate_hz\": 48000,\n"
-                 "  \"offset_tuning_enabled\": false,\n"
-                 "  \"fs4_shift_enabled\": true,\n"
-                 "  \"combine_rotate_enabled\": true,\n"
-                 "  \"muted_bytes_excluded\": true,\n"
-                 "  \"contains_retunes\": false,\n"
-                 "  \"capture_retune_count\": 0,\n"
-                 "  \"source_backend\": \"rtl\",\n"
-                 "  \"source_args\": \"dev=0\",\n"
-                 "  \"capture_started_utc\": \"2026-04-11T12:34:56Z\",\n"
-                 "  \"data_file\": \"events_bad.iq\",\n"
-                 "  \"data_bytes\": 8,\n"
-                 "  \"capture_drops\": 0,\n"
-                 "  \"capture_drop_blocks\": 0,\n"
-                 "  \"input_ring_drops\": 0,\n"
-                 "  \"notes\": \"\",\n"
-                 "  \"events\": [{\"kind\":\"MUTE\",\"byte_offset\":2,\"duration_bytes\":2,\"reason\":\"x\"}],\n"
-                 "  \"sample_rate_hz\": \"bad\"\n"
-                 "}\n");
+        DSD_SNPRINTF(json, sizeof(json),
+                     "{\n"
+                     "  \"format\": \"dsd-neo-iq\",\n"
+                     "  \"version\": 2,\n"
+                     "  \"sample_format\": \"cu8\",\n"
+                     "  \"iq_order\": \"IQ\",\n"
+                     "  \"endianness\": \"none\",\n"
+                     "  \"capture_stage\": \"post_mute_pre_widen\",\n"
+                     "  \"sample_rate_hz\": 1536000,\n"
+                     "  \"center_frequency_hz\": 851375000,\n"
+                     "  \"capture_center_frequency_hz\": 851759000,\n"
+                     "  \"ppm\": 0,\n"
+                     "  \"tuner_gain_tenth_db\": 270,\n"
+                     "  \"rtl_dsp_bw_khz\": 48,\n"
+                     "  \"base_decimation\": 32,\n"
+                     "  \"post_downsample\": 1,\n"
+                     "  \"demod_rate_hz\": 48000,\n"
+                     "  \"offset_tuning_enabled\": false,\n"
+                     "  \"fs4_shift_enabled\": true,\n"
+                     "  \"combine_rotate_enabled\": true,\n"
+                     "  \"muted_bytes_excluded\": true,\n"
+                     "  \"contains_retunes\": false,\n"
+                     "  \"capture_retune_count\": 0,\n"
+                     "  \"source_backend\": \"rtl\",\n"
+                     "  \"source_args\": \"dev=0\",\n"
+                     "  \"capture_started_utc\": \"2026-04-11T12:34:56Z\",\n"
+                     "  \"data_file\": \"events_bad.iq\",\n"
+                     "  \"data_bytes\": 8,\n"
+                     "  \"capture_drops\": 0,\n"
+                     "  \"capture_drop_blocks\": 0,\n"
+                     "  \"input_ring_drops\": 0,\n"
+                     "  \"notes\": \"\",\n"
+                     "  \"events\": [{\"kind\":\"MUTE\",\"byte_offset\":2,\"duration_bytes\":2,\"reason\":\"x\"}],\n"
+                     "  \"sample_rate_hz\": \"bad\"\n"
+                     "}\n");
         if (write_text_file(meta, json) != 0) {
             return 1;
         }
         dsd_iq_replay_config cfg;
-        memset(&cfg, 0, sizeof(cfg));
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
         int prc = dsd_iq_replay_read_metadata(meta, &cfg, err, sizeof(err));
         rc |= expect_int("events parsed before malformed field", prc, DSD_IQ_ERR_INVALID_META);
         dsd_iq_replay_config_clear(&cfg);
@@ -962,7 +980,7 @@ test_event_timeline_validation(void) {
     write_valid_metadata(retuned_v1, "events_bad.iq", "cu8", "none", "post_mute_pre_widen", 1536000, 32, 1, 48000, 1,
                          8);
     dsd_iq_replay_config cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     int prc = dsd_iq_replay_read_metadata(retuned_v1, &cfg, err, sizeof(err));
     rc |= expect_int("retuned v1 metadata-only read allowed", prc, DSD_IQ_OK);
     if (prc == DSD_IQ_OK) {
@@ -971,12 +989,13 @@ test_event_timeline_validation(void) {
     }
     dsd_iq_replay_config_clear(&cfg);
     dsd_iq_replay_source* src = NULL;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_open(retuned_v1, &cfg, &src, err, sizeof(err));
     rc |= expect_int("retuned v1 replay open rejected", prc, DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retuned v1 rejected source null", src == NULL);
     dsd_iq_replay_config_clear(&cfg);
 
+    // Replay open rejects retune-bearing captures even when metadata reads cleanly.
     char retuned_mute_only[512];
     path_join(retuned_mute_only, sizeof(retuned_mute_only), dir, "retuned_mute_only.iq.json");
     if (write_v2_metadata_with_events(retuned_mute_only, "events_bad.iq",
@@ -985,12 +1004,12 @@ test_event_timeline_validation(void) {
         != 0) {
         return 1;
     }
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_read_metadata(retuned_mute_only, &cfg, err, sizeof(err));
     rc |= expect_int("retuned mute-only metadata read allowed", prc, DSD_IQ_OK);
     dsd_iq_replay_config_clear(&cfg);
     src = NULL;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_open(retuned_mute_only, &cfg, &src, err, sizeof(err));
     rc |= expect_int("retuned mute-only replay open rejected", prc, DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retuned mute-only rejected source null", src == NULL);
@@ -1006,12 +1025,12 @@ test_event_timeline_validation(void) {
         != 0) {
         return 1;
     }
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_read_metadata(retuned_retune_only, &cfg, err, sizeof(err));
     rc |= expect_int("retuned retune-only metadata read allowed", prc, DSD_IQ_OK);
     dsd_iq_replay_config_clear(&cfg);
     src = NULL;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_open(retuned_retune_only, &cfg, &src, err, sizeof(err));
     rc |= expect_int("retuned retune-only replay open rejected", prc, DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retuned retune-only rejected source null", src == NULL);
@@ -1028,7 +1047,7 @@ test_event_timeline_validation(void) {
         return 1;
     }
     src = NULL;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_open(retune_flag_false, &cfg, &src, err, sizeof(err));
     rc |= expect_int("retune with false summary replay open rejected", prc, DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retune with false summary source null", src == NULL);
@@ -1050,7 +1069,7 @@ test_event_timeline_validation(void) {
         != 0) {
         return 1;
     }
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_open(retuned_count_mismatch, &cfg, &src, err, sizeof(err));
     rc |= expect_int("retuned count mismatch replay open rejected", prc, DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retuned count mismatch source null", src == NULL);
@@ -1084,7 +1103,7 @@ test_rate_chain_validation(void) {
     write_valid_metadata(m3, "r.iq", "cu8", "none", "post_mute_pre_widen", 1536000, 32, 1, 12345, 0, 8);
 
     dsd_iq_replay_config cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     int prc = dsd_iq_replay_read_metadata(m1, &cfg, err, sizeof(err));
     rc |= expect_int("non-power-two base_decimation", prc, DSD_IQ_ERR_RATE_CHAIN);
     prc = dsd_iq_replay_read_metadata(m2, &cfg, err, sizeof(err));
@@ -1103,6 +1122,11 @@ test_relative_data_resolution_info_and_open_validation(void) {
         return 1;
     }
 
+    /*
+     * Relative data paths are resolved from the metadata directory, then reused
+     * by the info printer and replay opener. Later cases keep the path valid but
+     * vary byte counts and retune flags to exercise open-time rejection paths.
+     */
     char subdir[512];
     path_join(subdir, sizeof(subdir), dir, "meta");
     if (dsd_mkdir(subdir, 0700) != 0) {
@@ -1118,7 +1142,7 @@ test_relative_data_resolution_info_and_open_validation(void) {
     write_valid_metadata(meta, "capture.iq", "cu8", "none", "post_mute_pre_widen", 1536000, 32, 1, 48000, 0, 12);
 
     dsd_iq_replay_config cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     int prc = dsd_iq_replay_read_metadata(meta, &cfg, err, sizeof(err));
     rc |= expect_int("relative data path parse", prc, DSD_IQ_OK);
     if (prc == DSD_IQ_OK) {
@@ -1145,6 +1169,7 @@ test_relative_data_resolution_info_and_open_validation(void) {
     rc |= expect_true("info has header", strstr(out_buf, "IQ Capture Info:") != NULL);
     rc |= expect_true("info has replay compatibility", strstr(out_buf, "Replay compatible:") != NULL);
 
+    // Warnings are written to the warning stream while the info output remains usable.
     fflush(warn);
     fseek(warn, 0, SEEK_SET);
     char warn_buf[1024];
@@ -1166,7 +1191,7 @@ test_relative_data_resolution_info_and_open_validation(void) {
         != 0) {
         return 1;
     }
-    memset(&cfg, 0, sizeof(cfg));
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
     prc = dsd_iq_replay_read_metadata(truncated_meta, &cfg, err, sizeof(err));
     rc |= expect_int("truncated event metadata read", prc, DSD_IQ_OK);
     out = tmpfile();

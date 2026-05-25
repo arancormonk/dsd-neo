@@ -16,16 +16,18 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
 
@@ -40,7 +42,7 @@ copy_str_field(char* dst, const char* src, size_t cap) {
         return;
     }
     size_t n = strnlen(src, cap - 1);
-    memmove(dst, src, n);
+    DSD_MEMMOVE(dst, src, n);
     dst[n] = '\0';
 }
 
@@ -74,7 +76,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].event_time = 0;
 
-        memset(event_struct->Event_History_Items[i].pdu, 0, sizeof(event_struct->Event_History_Items[0].pdu));
+        DSD_MEMSET(event_struct->Event_History_Items[i].pdu, 0, sizeof(event_struct->Event_History_Items[0].pdu));
         event_struct->Event_History_Items[i].sysid_string[0] = '\0';
         event_struct->Event_History_Items[i].alias[0] = '\0';
         event_struct->Event_History_Items[i].gps_s[0] = '\0';
@@ -121,8 +123,8 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].event_time = event_struct->Event_History_Items[i - 1].event_time;
 
-        memcpy(event_struct->Event_History_Items[i].pdu, event_struct->Event_History_Items[i - 1].pdu,
-               sizeof(event_struct->Event_History_Items[0].pdu));
+        DSD_MEMCPY(event_struct->Event_History_Items[i].pdu, event_struct->Event_History_Items[i - 1].pdu,
+                   sizeof(event_struct->Event_History_Items[0].pdu));
         copy_str_field(event_struct->Event_History_Items[i].sysid_string,
                        event_struct->Event_History_Items[i - 1].sysid_string,
                        sizeof event_struct->Event_History_Items[i].sysid_string);
@@ -143,33 +145,34 @@ push_event_history(Event_History_I* event_struct) {
 }
 
 void
-write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
+write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
                         char* event_string) //pass completed event string here that is in the struct
 {
 
     //open log file
     FILE* event_log_file;
-    event_log_file = fopen(opts->event_out_file, "a");
+    event_log_file = dsd_fopen_private(opts->event_out_file, "a");
 
     if (event_log_file != NULL) {
-        fprintf(event_log_file, "%s ", event_string);
+        DSD_FPRINTF(event_log_file, "%s ", event_string);
         if (swrite == 1) {
-            fprintf(event_log_file, "Slot %d; ", slot + 1);
+            DSD_FPRINTF(event_log_file, "Slot %d; ", slot + 1);
         }
-        fprintf(event_log_file, "\n");
+        DSD_FPRINTF(event_log_file, "\n");
 
         if (state->event_history_s[slot].Event_History_Items[0].text_message[0] != '\0') {
-            fprintf(event_log_file, "%s \n", state->event_history_s[slot].Event_History_Items[0].text_message);
+            DSD_FPRINTF(event_log_file, "%s \n", state->event_history_s[slot].Event_History_Items[0].text_message);
         }
         if (state->event_history_s[slot].Event_History_Items[0].alias[0] != '\0') {
-            fprintf(event_log_file, " Talker Alias: %s \n", state->event_history_s[slot].Event_History_Items[0].alias);
+            DSD_FPRINTF(event_log_file, " Talker Alias: %s \n",
+                        state->event_history_s[slot].Event_History_Items[0].alias);
         }
         if (state->event_history_s[slot].Event_History_Items[0].gps_s[0] != '\0') {
-            fprintf(event_log_file, " GPS: %s \n", state->event_history_s[slot].Event_History_Items[0].gps_s);
+            DSD_FPRINTF(event_log_file, " GPS: %s \n", state->event_history_s[slot].Event_History_Items[0].gps_s);
         }
         if (state->event_history_s[slot].Event_History_Items[0].internal_str[0] != '\0') {
-            fprintf(event_log_file, " DSD-neo: %s \n",
-                    state->event_history_s[slot].Event_History_Items[0].internal_str);
+            DSD_FPRINTF(event_log_file, " DSD-neo: %s \n",
+                        state->event_history_s[slot].Event_History_Items[0].internal_str);
         }
 
         //flush and close log file
@@ -178,92 +181,146 @@ write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t 
     }
 }
 
+static uint8_t
+watchdog_event_should_write_slot(const dsd_state* state) {
+    return (DSD_SYNC_IS_DMR_BS(state->lastsynctype) || DSD_SYNC_IS_P25P2(state->lastsynctype)) ? 1u : 0u;
+}
+
+static int
+watchdog_event_is_m17_sync(int synctype) {
+    return (synctype == DSD_SYNC_M17_STR_POS || synctype == DSD_SYNC_M17_STR_NEG || synctype == DSD_SYNC_M17_LSF_POS
+            || synctype == DSD_SYNC_M17_LSF_NEG);
+}
+
+static uint32_t
+watchdog_event_source_ysf(const dsd_state* state) {
+    uint32_t source_id = 0;
+    if (strncmp(state->ysf_src, "          ", 10) != 0) {
+        for (uint8_t i = 0; i < 11; i++) {
+            source_id += state->ysf_src[i];
+        }
+    }
+    return source_id;
+}
+
+static uint32_t
+watchdog_event_source_dstar(const dsd_state* state) {
+    if (strncmp(state->dstar_src, "        ", 8) == 0) {
+        return 0;
+    }
+    uint32_t source_id = 0;
+    for (uint8_t i = 0; i < 12; i++) {
+        source_id += state->dstar_src[i];
+    }
+    return source_id;
+}
+
+static uint32_t
+watchdog_event_source_dpmr(const dsd_state* state) {
+    if (strncmp(state->dpmr_caller_id, "      ", 6) == 0) {
+        return 0;
+    }
+    uint32_t source_id = 0;
+    for (uint8_t i = 0; i < 20; i++) {
+        source_id += state->dpmr_caller_id[i];
+    }
+    return source_id;
+}
+
+static uint32_t
+watchdog_event_source_id(const dsd_opts* opts, const dsd_state* state, uint8_t slot) {
+    uint32_t source_id = (slot == 0) ? state->lastsrc : state->lastsrcR;
+    if (slot != 0) {
+        return source_id;
+    }
+
+    if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
+        return state->nxdn_last_rid;
+    }
+
+    if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
+        return watchdog_event_source_ysf(state);
+    }
+
+    if (watchdog_event_is_m17_sync(state->lastsynctype)) {
+        return (uint32_t)state->m17_src;
+    }
+
+    if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) {
+        return watchdog_event_source_dstar(state);
+    }
+
+    if (DSD_SYNC_IS_DPMR(state->lastsynctype)) {
+        return watchdog_event_source_dpmr(state);
+    }
+
+    if (DSD_SYNC_IS_EDACS(state->lastsynctype)) {
+        return (opts->p25_is_tuned == 1) ? state->lastsrc : 0;
+    }
+
+    return source_id;
+}
+
+static void
+watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot) {
+    if (opts->static_wav_file != 0) {
+        return;
+    }
+
+    if (slot == 0 && opts->wav_out_f != NULL) {
+        opts->wav_out_f =
+            close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir, event_struct);
+        opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
+        return;
+    }
+
+    if (slot == 1 && opts->wav_out_fR != NULL) {
+        opts->wav_out_fR =
+            close_and_rename_wav_file(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir, event_struct);
+        opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);
+    }
+}
+
+static void
+watchdog_event_reset_post_push(dsd_state* state, uint8_t slot) {
+    DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
+    DSD_MEMSET(state->dstar_gps, 0, sizeof(state->dstar_gps));
+    DSD_MEMSET(state->dstar_txt, 0, sizeof(state->dstar_txt));
+    uint8_t slot_idx = (slot >= 2) ? 1 : slot;
+    state->gi[slot_idx] = -1;
+}
+
+static void
+watchdog_event_maybe_beep_call_end(dsd_opts* opts, dsd_state* state, uint8_t slot, int last_event_is_data) {
+    if (!last_event_is_data
+        && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_END)) {
+        beeper(opts, state, slot, 40, 86, 3);
+    }
+}
+
+static void
+watchdog_event_handle_source_transition(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct, uint8_t slot,
+                                        uint8_t swrite, int last_event_is_data) {
+    if (opts->event_out_file[0] != 0) {
+        write_event_to_log_file(opts, state, slot, swrite, event_struct->Event_History_Items[0].event_string);
+    }
+
+    event_struct->Event_History_Items[0].write = 1;
+    watchdog_event_rotate_wav_if_needed(opts, event_struct, slot);
+    push_event_history(event_struct);
+    init_event_history(event_struct, 0, 1);
+    watchdog_event_reset_post_push(state, slot);
+    watchdog_event_maybe_beep_call_end(opts, state, slot, last_event_is_data);
+}
+
 // run once per loop to check for and push and update event history
 void
 watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
-
-    //create a pointer to the current slot event history
     Event_History_I* event_struct = &state->event_history_s[slot];
-
-    //is this a TDMA slot (append Slot value to end of written event history)
-    uint8_t swrite = 0;
-
-    //who is currently talking
-    uint32_t source_id = 0;
-
-    //last values pulled from the event history
+    uint8_t swrite = watchdog_event_should_write_slot(state);
     uint32_t last_source_id = event_struct->Event_History_Items[0].source_id;
     int last_event_is_data = event_struct->Event_History_Items[0].subtype == DSD_EVENT_SUBTYPE_DATA;
-
-    if (slot == 0) {
-        source_id = state->lastsrc;
-    } else {
-        source_id = state->lastsrcR;
-    }
-
-    //If DMR BS or P25P2, then flag the swrite, so write can append slot value to event history log
-    if (DSD_SYNC_IS_DMR_BS(state->lastsynctype) || DSD_SYNC_IS_P25P2(state->lastsynctype)) {
-        swrite = 1;
-    }
-
-    if (slot == 0) //BUGFIX: generic catch on FDMA systems so that we don't write duplicate data to slot 2 event history
-    {
-        //NXDN RID (TODO: Changeover to lastsrc later on)
-        if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
-            source_id = state->nxdn_last_rid;
-        }
-
-        if (DSD_SYNC_IS_YSF(state->lastsynctype)) //YSF Fusion
-        {
-            source_id = 0;
-            if (strncmp(state->ysf_src, "          ", 10) != 0) //if this field does not have ten spaces in it
-            {
-                for (uint8_t i = 0; i < 11; i++) {
-                    source_id += state->ysf_src[i]; //convert to sum value to make a distinct enough src value
-                }
-            }
-        }
-
-        if (state->lastsynctype == DSD_SYNC_M17_STR_POS || state->lastsynctype == DSD_SYNC_M17_STR_NEG
-            || state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_LSF_NEG) //M17 STR
-        {
-            source_id = (uint32_t)state->m17_src;
-        }
-
-        if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) //DSTAR
-        {
-            source_id = 0;
-            for (uint8_t i = 0; i < 12; i++) {
-                source_id += state->dstar_src[i]; //convert to sum value to make a distinct enough src value
-            }
-
-            //need a strncmp here for 8 spaces in this field first so we don't blip a blank into the event history
-            if (strncmp(state->dstar_src, "        ", 8) == 0) {
-                source_id = 0;
-            }
-        }
-
-        if (DSD_SYNC_IS_DPMR(state->lastsynctype)) //dPMR
-        {
-            source_id = 0;
-            for (uint8_t i = 0; i < 20; i++) {
-                source_id += state->dpmr_caller_id[i]; //convert to sum value to make a distinct enough src value
-            }
-
-            //need a strncmp here for 8 spaces in this field first so we don't blip a blank into the event history
-            if (strncmp(state->dpmr_caller_id, "      ", 6) == 0) {
-                source_id = 0;
-            }
-        }
-
-        if (DSD_SYNC_IS_EDACS(state->lastsynctype)) //EDACS Calls
-        {
-            source_id = 0;
-            if (opts->p25_is_tuned == 1) {
-                source_id = state->lastsrc;
-            }
-        }
-    }
+    uint32_t source_id = watchdog_event_source_id(opts, state, slot);
 
     //call alert beep when new call detected
     if (last_source_id == 0 && source_id != 0
@@ -272,848 +329,652 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     }
 
     if (source_id != last_source_id && last_source_id != 0) {
-
-        if (opts->event_out_file[0] != 0) {
-            write_event_to_log_file(opts, state, slot, swrite, event_struct->Event_History_Items[0].event_string);
-        }
-
-        event_struct->Event_History_Items[0].write = 1; //written, or pushed at this point
-
-        if (opts->static_wav_file == 0) {
-
-            if (slot == 0 && opts->wav_out_f != NULL) {
-                opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file,
-                                                            opts->wav_out_dir, event_struct);
-                opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
-            }
-
-            else if (slot == 1 && opts->wav_out_fR != NULL) {
-                opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts, opts->wav_out_fileR,
-                                                             opts->wav_out_dir, event_struct);
-                opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);
-            }
-        }
-
-        push_event_history(event_struct);
-        init_event_history(event_struct, 0, 1);
-
-        //clear out some strings and things
-        memset(state->ysf_txt, 0, sizeof(state->ysf_txt));
-        memset(state->dstar_gps, 0, sizeof(state->dstar_gps));
-        memset(state->dstar_txt, 0, sizeof(state->dstar_txt));
-        {
-            uint8_t slot_idx = (slot >= 2) ? 1 : slot;
-            state->gi[slot_idx] = -1; //return to an unset value
-        }
-
-        //end of voice call alert
-        if (!last_event_is_data
-            && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events,
-                                            DSD_CALL_ALERT_EVENT_VOICE_END)) {
-            beeper(opts, state, slot, 40, 86, 3);
-        }
+        watchdog_event_handle_source_transition(opts, state, event_struct, slot, swrite, last_event_is_data);
     }
 }
 
 //similar to above, but constantly testing and checking the most recent event only
 //this will hopefully be more useful when dealing with an ongoing event with
 //features that update over time with embedded signalling, etc
-void
-watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
-
-    //create a pointer to the current slot event history
-    Event_History_I* event_struct = &state->event_history_s[slot];
-
-    //ncurses color pairs
-    uint8_t color_pair = 4; //default voice color
-
-    //TODO: Flesh out more later on.
-    uint32_t source_id = 0;
-    uint32_t target_id = 0;
-    char src_str[200] = {0};
-    char tgt_str[200] = {0};
-
-    //group import items
-    char t_name[200] = {0};
-    char s_name[200] = {0};
-    char t_mode[200] = {0};
-    char s_mode[200] = {0};
-
-    uint16_t svc_opts = 0;
-    uint8_t subtype = 0;
-    uint8_t mfid = 0;
-    uint32_t sys_id1 = 0;
-    uint32_t sys_id2 = 0;
-    uint32_t sys_id3 = 0;
-    uint32_t sys_id4 = 0;
-    uint32_t sys_id5 = 0;
-
-    uint32_t channel = 0;
-
-    uint8_t enc = 0;
-    uint8_t alg_id = 0;
-    uint16_t key_id = 0;
+typedef struct {
+    uint8_t color_pair;
+    uint32_t source_id;
+    uint32_t target_id;
+    char src_str[200];
+    char tgt_str[200];
+    char t_name[200];
+    char s_name[200];
+    char t_mode[200];
+    char s_mode[200];
+    uint16_t svc_opts;
+    uint8_t subtype;
+    uint8_t mfid;
+    uint32_t sys_id1;
+    uint32_t sys_id2;
+    uint32_t sys_id3;
+    uint32_t sys_id4;
+    uint32_t sys_id5;
+    uint32_t channel;
+    uint8_t enc;
+    uint8_t alg_id;
+    uint16_t key_id;
     unsigned long long int mi;
-
     char sysid_string[200];
-    memset(sysid_string, 0, sizeof(sysid_string));
-    snprintf(sysid_string, sizeof sysid_string, "%s", "");
+    uint8_t t_name_loaded;
+    uint8_t s_name_loaded;
+} watchdog_event_current_ctx;
+
+typedef struct {
+    uint16_t bit;
+    const char* token_underscore;
+    const char* token_space;
+} watchdog_event_edacs_flag;
+
+static const watchdog_event_edacs_flag k_watchdog_event_edacs_flags[] = {
+    {0x04, "Emergency_", "Emergency "},
+    {0x08, "Group_", "Group "},
+    {0x10, "I_", "I "},
+    {0x20, "ALL_", "ALL "},
+    {0x40, "INTER_", "INTER "},
+    {0x80, "TEST_", "TEST "},
+    {0x100, "AGENCY_", "AGENCY "},
+    {0x200, "FLEET_", "FLEET "},
+    {0x01, "Voice_", "Voice "},
+};
+
+static void
+watchdog_event_set_sanitized_ascii_id(char* dst, size_t dst_sz, const char* src, size_t src_len) {
+    if (dst == NULL || src == NULL || dst_sz == 0) {
+        return;
+    }
+
+    DSD_MEMSET(dst, 0, dst_sz);
+    size_t max_copy = src_len;
+    if (max_copy > dst_sz - 1) {
+        max_copy = dst_sz - 1;
+    }
+
+    for (size_t i = 0; i < max_copy; i++) {
+        uint8_t c = (uint8_t)src[i];
+        if (c == 0) {
+            break;
+        }
+        if (c > 0x20 && c < 0x7F) {
+            dst[i] = (char)c;
+        } else {
+            dst[i] = '_';
+        }
+    }
+}
+
+static void
+watchdog_event_str_append(char* dst, size_t dst_sz, const char* src) {
+    if (dst == NULL || src == NULL || dst_sz == 0) {
+        return;
+    }
+
+    size_t dst_len = strnlen(dst, dst_sz);
+    if (dst_len >= dst_sz) {
+        return;
+    }
+
+    size_t rem = dst_sz - dst_len - 1U;
+    if (rem > 0) {
+        dsd_strncat_s(dst, dst_sz, src, rem);
+    }
+}
+
+static void
+watchdog_event_build_edacs_sup_str(uint16_t svc_opts, int use_underscore, char* out, size_t out_sz) {
+    if (out == NULL || out_sz == 0) {
+        return;
+    }
+
+    DSD_MEMSET(out, 0, out_sz);
+    if (use_underscore) {
+        watchdog_event_str_append(out, out_sz, "_");
+    }
+
+    if (svc_opts & 0x02) {
+        watchdog_event_str_append(out, out_sz, use_underscore ? "Digital_" : "Digital ");
+    } else {
+        watchdog_event_str_append(out, out_sz, use_underscore ? "Analog_" : "Analog ");
+    }
+
+    size_t count = sizeof(k_watchdog_event_edacs_flags) / sizeof(k_watchdog_event_edacs_flags[0]);
+    for (size_t i = 0; i < count; i++) {
+        if (svc_opts & k_watchdog_event_edacs_flags[i].bit) {
+            watchdog_event_str_append(out, out_sz,
+                                      use_underscore ? k_watchdog_event_edacs_flags[i].token_underscore
+                                                     : k_watchdog_event_edacs_flags[i].token_space);
+        }
+    }
+
+    watchdog_event_str_append(out, out_sz, "Call");
+}
+
+static void
+watchdog_event_set_ysf_text_message(dsd_state* state, Event_History_I* event_struct) {
+    char ysf_emp[21][21];
+    DSD_MEMSET(ysf_emp, 0, sizeof(ysf_emp));
+
+    if (memcmp(ysf_emp, state->ysf_txt, sizeof(state->ysf_txt)) != 0) {
+        uint8_t k = 0;
+        for (uint8_t i = 4; i < 8; i++) {
+            for (uint8_t j = 0; j < 20; j++) {
+                if (state->ysf_txt[i][j] != 0x2A) {
+                    event_struct->Event_History_Items[0].text_message[k++] = state->ysf_txt[i][j];
+                } else {
+                    event_struct->Event_History_Items[0].text_message[k++] = 0x20;
+                }
+            }
+            event_struct->Event_History_Items[0].text_message[k] = 0;
+        }
+    } else {
+        event_struct->Event_History_Items[0].text_message[0] = '\0';
+    }
+}
+
+static void
+watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, watchdog_event_current_ctx* ctx) {
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->color_pair = 4;
 
     if (slot == 0) {
-        source_id = state->lastsrc;
-        target_id = state->lasttg;
-
-        subtype = state->dmrburstL;
-        mfid = state->dmr_fid;
-
-        svc_opts = state->dmr_so;
-        enc = (svc_opts >> 6) & 1;
-        alg_id = state->payload_algid;
-        key_id = (uint16_t)state->payload_keyid;
-
-        mi = state->payload_mi;
+        ctx->source_id = state->lastsrc;
+        ctx->target_id = state->lasttg;
+        ctx->subtype = state->dmrburstL;
+        ctx->mfid = state->dmr_fid;
+        ctx->svc_opts = state->dmr_so;
+        ctx->enc = (ctx->svc_opts >> 6) & 1;
+        ctx->alg_id = state->payload_algid;
+        ctx->key_id = (uint16_t)state->payload_keyid;
+        ctx->mi = state->payload_mi;
     } else {
-        source_id = state->lastsrcR;
-        target_id = state->lasttgR;
-
-        subtype = state->dmrburstR;
-        mfid = state->dmr_fidR;
-
-        svc_opts = state->dmr_soR;
-        enc = (svc_opts >> 6) & 1;
-
-        alg_id = state->payload_algidR;
-        key_id = (uint16_t)state->payload_keyidR;
-        mi = state->payload_miR;
+        ctx->source_id = state->lastsrcR;
+        ctx->target_id = state->lasttgR;
+        ctx->subtype = state->dmrburstR;
+        ctx->mfid = state->dmr_fidR;
+        ctx->svc_opts = state->dmr_soR;
+        ctx->enc = (ctx->svc_opts >> 6) & 1;
+        ctx->alg_id = state->payload_algidR;
+        ctx->key_id = (uint16_t)state->payload_keyidR;
+        ctx->mi = state->payload_miR;
     }
 
-    //if P25 (if not P25, then these will all be zero anyways)
-    sys_id1 = state->p2_wacn;
-    sys_id2 = state->p2_sysid;
+    ctx->sys_id1 = state->p2_wacn;
+    ctx->sys_id2 = state->p2_sysid;
     if (state->nac != 0) {
-        sys_id3 = state->nac; //same as state->p2_cc, but zeroes out when no signal or error
+        ctx->sys_id3 = state->nac;
     } else {
-        sys_id3 = state->p2_cc;
+        ctx->sys_id3 = state->p2_cc;
     }
-    sys_id4 = state->p2_rfssid;
-    sys_id5 = state->p2_siteid;
+    ctx->sys_id4 = state->p2_rfssid;
+    ctx->sys_id5 = state->p2_siteid;
 
-    if (sys_id1) {
-        snprintf(sysid_string, sizeof sysid_string, "P25_%05X%03X%03X_%d_%d", sys_id1, sys_id2, sys_id3, sys_id4,
-                 sys_id5);
+    if (ctx->sys_id1) {
+        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "P25_%05X%03X%03X_%d_%d", ctx->sys_id1, ctx->sys_id2,
+                     ctx->sys_id3, ctx->sys_id4, ctx->sys_id5);
     } else {
-        snprintf(sysid_string, sizeof sysid_string, "P25_%03X", sys_id3);
+        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "P25_%03X", ctx->sys_id3);
     }
 
     if (DSD_SYNC_IS_DMR(state->lastsynctype)) {
-        sys_id1 = state->dmr_t3_syscode;
-        sys_id2 = state->dmr_color_code;
-
-        if (sys_id1) {
-            snprintf(sysid_string, sizeof sysid_string, "DMR_%X_CC_%d", sys_id1, sys_id2);
+        ctx->sys_id1 = state->dmr_t3_syscode;
+        ctx->sys_id2 = state->dmr_color_code;
+        if (ctx->sys_id1) {
+            DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "DMR_%X_CC_%d", ctx->sys_id1, ctx->sys_id2);
         } else {
-            snprintf(sysid_string, sizeof sysid_string, "DMR_CC_%d", sys_id2);
+            DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "DMR_CC_%d", ctx->sys_id2);
         }
     }
+}
 
-    if (slot == 0) //BUGFIX: generic catch on FDMA systems so that we don't write duplicate data to slot 2 event history
-    {
-        //NXDN RID (TODO: Changeover to lastsrc and lasttg later on)
-        if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
-            source_id = state->nxdn_last_rid;
-            target_id = state->nxdn_last_tg;
-            if (state->nxdn_cipher_type != 0) {
-                enc = 1;
-            }
-            alg_id = state->nxdn_cipher_type;
-            key_id = state->nxdn_key;
+static void
+watchdog_event_current_apply_nxdn(const dsd_state* state, watchdog_event_current_ctx* ctx) {
+    ctx->source_id = state->nxdn_last_rid;
+    ctx->target_id = state->nxdn_last_tg;
+    if (state->nxdn_cipher_type != 0) {
+        ctx->enc = 1;
+    }
+    ctx->alg_id = state->nxdn_cipher_type;
+    ctx->key_id = state->nxdn_key;
+    ctx->sys_id1 = state->nxdn_location_site_code;
+    ctx->sys_id2 = state->nxdn_location_sys_code;
+    ctx->sys_id3 = state->nxdn_last_ran;
 
-            sys_id1 = state->nxdn_location_site_code;
-            sys_id2 = state->nxdn_location_sys_code;
-            sys_id3 =
-                state
-                    ->nxdn_last_ran; //might be an issue on conventional systems that have a different RAN on the tx_rel or idle data bursts
+    if (ctx->sys_id1) {
+        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "NXDN_%d_%d_RAN_%d", ctx->sys_id2, ctx->sys_id1,
+                     ctx->sys_id3);
+    } else {
+        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "NXDN_RAN_%d", ctx->sys_id3);
+    }
+}
 
-            if (sys_id1) {
-                snprintf(sysid_string, sizeof sysid_string, "NXDN_%d_%d_RAN_%d", sys_id2, sys_id1, sys_id3);
-            } else {
-                snprintf(sysid_string, sizeof sysid_string, "NXDN_RAN_%d", sys_id3);
-            }
-        }
+static void
+watchdog_event_current_apply_ysf(dsd_state* state, Event_History_I* event_struct, watchdog_event_current_ctx* ctx) {
+    ctx->source_id = watchdog_event_source_ysf(state);
+    watchdog_event_set_ysf_text_message(state, event_struct);
 
-        if (DSD_SYNC_IS_YSF(state->lastsynctype)) //YSF Fusion
-        {
-            source_id = 0;
-            if (strncmp(state->ysf_src, "          ", 10) != 0) //if this field does not have ten spaces in it
-            {
-                for (uint8_t i = 0; i < 11; i++) {
-                    source_id += state->ysf_src[i]; //convert to sum value to make a distinct enough src value
-                }
-            }
+    DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", "YSF");
+    watchdog_event_set_sanitized_ascii_id(ctx->src_str, sizeof(ctx->src_str), state->ysf_src, 10);
+    watchdog_event_set_sanitized_ascii_id(ctx->tgt_str, sizeof(ctx->tgt_str), state->ysf_tgt, 10);
+}
 
-            //WIP: If Text, compile it here (still having issues with an empty txt string making a line break)
-            uint8_t k = 0;
-            char ysf_emp[21][21];
-            memset(ysf_emp, 0, sizeof(ysf_emp));
-            if (memcmp(ysf_emp, state->ysf_txt, sizeof(state->ysf_txt)) != 0) {
-                for (uint8_t i = 4; i < 8; i++) {
-                    for (uint8_t j = 0; j < 20; j++) {
-                        if (state->ysf_txt[i][j] != 0x2A) {
-                            event_struct->Event_History_Items[0].text_message[k++] = state->ysf_txt[i][j];
-                        } else {
-                            event_struct->Event_History_Items[0].text_message[k++] = 0x20; //space
-                        }
-                    }
-                    event_struct->Event_History_Items[0].text_message[k] = 0; //terminate
-                }
-            } else {
-                event_struct->Event_History_Items[0].text_message[0] = '\0';
-            }
+static void
+watchdog_event_current_apply_m17(const dsd_state* state, watchdog_event_current_ctx* ctx) {
+    ctx->target_id = (uint32_t)state->m17_dst;
+    ctx->source_id = (uint32_t)state->m17_src;
+    ctx->sys_id1 = state->m17_can;
 
-            snprintf(sysid_string, sizeof sysid_string, "%s", "YSF");
+    DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "M17_CAN_%d", ctx->sys_id1);
+    DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "%s", state->m17_src_csd);
+    DSD_SNPRINTF(ctx->tgt_str, sizeof(ctx->tgt_str), "%s", state->m17_dst_csd);
+}
 
-            char temp_str[20];
-            memset(temp_str, 0, sizeof(temp_str));
+static void
+watchdog_event_current_apply_dstar(const dsd_state* state, watchdog_event_current_ctx* ctx) {
+    ctx->source_id = watchdog_event_source_dstar(state);
 
-            //set src string as a non-spaced non-garbo char string
-            for (uint8_t i = 0; i < 10; i++) {
-                if (state->ysf_src[i] == 0) {
-                    break; // terminator
-                } else if (state->ysf_src[i] > 0x20 && state->ysf_src[i] < 0x7F) {
-                    temp_str[i] = state->ysf_src[i];
-                } else { // spaces and non-ascii
-                    temp_str[i] = 0x5F;
-                }
-            }
-            snprintf(src_str, sizeof src_str, "%s", temp_str);
+    DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", "DSTAR");
+    watchdog_event_set_sanitized_ascii_id(ctx->src_str, sizeof(ctx->src_str), state->dstar_src, 12);
+    watchdog_event_set_sanitized_ascii_id(ctx->tgt_str, sizeof(ctx->tgt_str), state->dstar_dst, 8);
+}
 
-            //same for tgt str
-            memset(temp_str, 0, sizeof(temp_str));
-            for (uint8_t i = 0; i < 10; i++) {
-                if (state->ysf_tgt[i] == 0) {
-                    break; // terminator
-                } else if (state->ysf_tgt[i] > 0x20 && state->ysf_tgt[i] < 0x7F) {
-                    temp_str[i] = state->ysf_tgt[i];
-                } else { // spaces and non-ascii
-                    temp_str[i] = 0x5F;
-                }
-            }
-            snprintf(tgt_str, sizeof tgt_str, "%s", temp_str);
-        }
+static void
+watchdog_event_current_apply_dpmr(const dsd_state* state, watchdog_event_current_ctx* ctx) {
+    ctx->source_id = watchdog_event_source_dpmr(state);
+    DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "DPMR_CC_%d", state->dpmr_color_code);
+    DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "%s", state->dpmr_caller_id);
+    DSD_SNPRINTF(ctx->tgt_str, sizeof(ctx->tgt_str), "%s", state->dpmr_target_id);
+}
 
-        if (state->lastsynctype == DSD_SYNC_M17_STR_POS || state->lastsynctype == DSD_SYNC_M17_STR_NEG
-            || state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_LSF_NEG) //M17 STR
-        {
-            target_id = (uint32_t)state->m17_dst;
-            source_id = (uint32_t)state->m17_src;
-            sys_id1 = state->m17_can;
-            snprintf(sysid_string, sizeof sysid_string, "M17_CAN_%d", sys_id1);
-            snprintf(src_str, sizeof src_str, "%s", state->m17_src_csd);
-            snprintf(tgt_str, sizeof tgt_str, "%s", state->m17_dst_csd);
-        }
-
-        if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) //DSTAR
-        {
-            source_id = 0;
-            for (uint8_t i = 0; i < 12; i++) {
-                source_id += state->dstar_src[i]; //convert to sum value to make a distinct enough src value
-            }
-
-            //need a strncmp here for 8 spaces in this field first so we don't blip a blank into the event history
-            if (strncmp(state->dstar_src, "        ", 8) == 0) {
-                source_id = 0;
-            }
-
-            snprintf(sysid_string, sizeof sysid_string, "%s", "DSTAR");
-
-            char temp_str[20];
-            memset(temp_str, 0, sizeof(temp_str));
-
-            //set src string as a non-spaced non-garbo char string
-            for (uint8_t i = 0; i < 12; i++) {
-                if (state->dstar_src[i] == 0) {
-                    break; // terminator
-                } else if (state->dstar_src[i] > 0x20 && state->dstar_src[i] < 0x7F) {
-                    temp_str[i] = state->dstar_src[i];
-                } else { // spaces and non-ascii
-                    temp_str[i] = 0x5F;
-                }
-            }
-            snprintf(src_str, sizeof src_str, "%s", temp_str);
-
-            //same for tgt str
-            memset(temp_str, 0, sizeof(temp_str));
-            for (uint8_t i = 0; i < 8; i++) {
-                if (state->dstar_dst[i] == 0) {
-                    break; // terminator
-                } else if (state->dstar_dst[i] > 0x20 && state->dstar_dst[i] < 0x7F) {
-                    temp_str[i] = state->dstar_dst[i];
-                } else { // spaces and non-ascii
-                    temp_str[i] = 0x5F;
-                }
-            }
-            snprintf(tgt_str, sizeof tgt_str, "%s", temp_str);
-        }
-
-        if (DSD_SYNC_IS_DPMR(state->lastsynctype)) //dPMR
-        {
-            source_id = 0;
-            for (uint8_t i = 0; i < 20; i++) {
-                source_id += state->dpmr_caller_id[i]; //convert to sum value to make a distinct enough src value
-            }
-
-            //need a strncmp here for 8 spaces in this field first so we don't blip a blank into the event history
-            if (strncmp(state->dpmr_caller_id, "      ", 6) == 0) {
-                source_id = 0;
-            }
-
-            snprintf(sysid_string, sizeof sysid_string, "DPMR_CC_%d", state->dpmr_color_code);
-
-            snprintf(src_str, sizeof src_str, "%s", state->dpmr_caller_id);
-            snprintf(tgt_str, sizeof tgt_str, "%s", state->dpmr_target_id);
-        }
-
-        if (DSD_SYNC_IS_EDACS(state->lastsynctype)) //EDACS Calls
-        {
-            source_id = 0;
-            if (opts->p25_is_tuned == 1) {
-                source_id = state->lastsrc;
-                channel = state->edacs_tuned_lcn;
-            }
-
-            sys_id1 = state->edacs_site_id;
-            sys_id2 = state->edacs_area_code;
-            sys_id3 = state->edacs_sys_id;
-            svc_opts = state->edacs_vc_call_type;
-            char sup_str[200];
-            memset(sup_str, 0, sizeof(sup_str));
-            snprintf(sup_str, sizeof sup_str, "%s", "_");
-            size_t rem;
-            if (svc_opts & 0x02) {
-                rem = sizeof(sup_str) - strlen(sup_str) - 1;
-                if (rem > 0) {
-                    strncat(sup_str, "Digital_", rem);
-                }
-            } else {
-                rem = sizeof(sup_str) - strlen(sup_str) - 1;
-                if (rem > 0) {
-                    strncat(sup_str, "Analog_", rem);
-                }
-            }
-            if (svc_opts & 0x04) {
-                rem = sizeof(sup_str) - strlen(sup_str) - 1;
-                if (rem > 0) {
-                    strncat(sup_str, "Emergency_", rem);
-                }
-            }
-            if (svc_opts & 0x08) {
-                rem = sizeof(sup_str) - strlen(sup_str) - 1;
-                if (rem > 0) {
-                    strncat(sup_str, "Group_", rem);
-                }
-            }
-            if (svc_opts & 0x10) {
-                rem = sizeof(sup_str) - strlen(sup_str) - 1;
-                if (rem > 0) {
-                    strncat(sup_str, "I_", rem);
-                }
-            }
-            if (svc_opts & 0x20) {
-                rem = sizeof(sup_str) - strlen(sup_str) - 1;
-                if (rem > 0) {
-                    strncat(sup_str, "ALL_", rem);
-                }
-            }
-            if (svc_opts & 0x40) {
-                rem = sizeof(sup_str) - strlen(sup_str) - 1;
-                if (rem > 0) {
-                    strncat(sup_str, "INTER_", rem);
-                }
-            }
-            if (svc_opts & 0x80) {
-                rem = sizeof(sup_str) - strlen(sup_str) - 1;
-                if (rem > 0) {
-                    strncat(sup_str, "TEST_", rem);
-                }
-            }
-            if (svc_opts & 0x100) {
-                rem = sizeof(sup_str) - strlen(sup_str) - 1;
-                if (rem > 0) {
-                    strncat(sup_str, "AGENCY_", rem);
-                }
-            }
-            if (svc_opts & 0x200) {
-                rem = sizeof(sup_str) - strlen(sup_str) - 1;
-                if (rem > 0) {
-                    strncat(sup_str, "FLEET_", rem);
-                }
-            }
-            if (svc_opts & 0x01) {
-                rem = sizeof(sup_str) - strlen(sup_str) - 1;
-                if (rem > 0) {
-                    strncat(sup_str, "Voice_", rem);
-                }
-            }
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "Call", rem);
-            }
-
-            snprintf(sysid_string, sizeof sysid_string, "EDACS_SITE_%03u", (unsigned)sys_id1);
-            sysid_string[sizeof sysid_string - 1] = '\0';
-            {
-                size_t used = strlen(sysid_string);
-                if (used >= sizeof(sysid_string)) {
-                    used = sizeof(sysid_string) - 1;
-                }
-                size_t rem2 = sizeof(sysid_string) - used - 1;
-                if (rem2 > 0) {
-                    size_t sup_len = strlen(sup_str);
-                    if (sup_len > rem2) {
-                        sup_len = rem2;
-                    }
-                    memcpy(sysid_string + used, sup_str, sup_len);
-                    sysid_string[used + sup_len] = '\0';
-                }
-            }
-
-            if (state->ea_mode == 0) {
-                int afs = state->lasttg;
-                snprintf(src_str, sizeof src_str, "%s", "");
-                snprintf(tgt_str, sizeof tgt_str, "%s", "");
-                int a = (afs >> state->edacs_a_shift) & state->edacs_a_mask;
-                int f = (afs >> state->edacs_f_shift) & state->edacs_f_mask;
-                int s = afs & state->edacs_s_mask;
-                snprintf(tgt_str, sizeof tgt_str, "%03d_AFS_%02d_%02d%01d", afs, a, f, s);
-                if (state->lastsrc != 0x800 && state->lastsrc != 0) {
-                    snprintf(src_str, sizeof src_str, "LID_%d", state->lastsrc);
-                } else {
-                    snprintf(src_str, sizeof src_str, "LID_UNK");
-                }
-            }
-        }
+static void
+watchdog_event_current_apply_edacs(const dsd_opts* opts, dsd_state* state, watchdog_event_current_ctx* ctx) {
+    ctx->source_id = 0;
+    if (opts->p25_is_tuned == 1) {
+        ctx->source_id = state->lastsrc;
+        ctx->channel = state->edacs_tuned_lcn;
     }
 
-    //if we have talkgroup policy labels, search and load them here
-    //will search and load both target values, and src values if available
-    uint8_t t_name_loaded = 0;
-    uint8_t s_name_loaded = 0;
-    if (target_id != 0) {
-        if (dsd_tg_policy_lookup_label(state, target_id, t_mode, sizeof(t_mode), t_name, sizeof(t_name))) {
-            t_name_loaded = 1;
+    ctx->sys_id1 = state->edacs_site_id;
+    ctx->sys_id2 = state->edacs_area_code;
+    ctx->sys_id3 = state->edacs_sys_id;
+    ctx->svc_opts = state->edacs_vc_call_type;
+
+    char sup_str[200];
+    watchdog_event_build_edacs_sup_str(ctx->svc_opts, 1, sup_str, sizeof(sup_str));
+
+    DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "EDACS_SITE_%03u", (unsigned)ctx->sys_id1);
+    watchdog_event_str_append(ctx->sysid_string, sizeof(ctx->sysid_string), sup_str);
+
+    if (state->ea_mode == 0) {
+        int afs = state->lasttg;
+        int a = (afs >> state->edacs_a_shift) & state->edacs_a_mask;
+        int f = (afs >> state->edacs_f_shift) & state->edacs_f_mask;
+        int s = afs & state->edacs_s_mask;
+
+        DSD_SNPRINTF(ctx->tgt_str, sizeof(ctx->tgt_str), "%03d_AFS_%02d_%02d%01d", afs, a, f, s);
+        if (state->lastsrc != 0x800 && state->lastsrc != 0) {
+            DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "LID_%d", state->lastsrc);
+        } else {
+            DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "LID_UNK");
         }
     }
+}
 
-    if (source_id != 0) //&& state->gi[slot] == 1
-    {
-        if (dsd_tg_policy_lookup_label(state, source_id, s_mode, sizeof(s_mode), s_name, sizeof(s_name))) {
-            s_name_loaded = 1;
-        }
+static void
+watchdog_event_current_apply_slot0_overrides(const dsd_opts* opts, dsd_state* state, Event_History_I* event_struct,
+                                             watchdog_event_current_ctx* ctx) {
+    if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
+        watchdog_event_current_apply_nxdn(state, ctx);
     }
 
-    //system type string (P25, DMR, etc)
+    if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
+        watchdog_event_current_apply_ysf(state, event_struct, ctx);
+    }
+
+    if (watchdog_event_is_m17_sync(state->lastsynctype)) {
+        watchdog_event_current_apply_m17(state, ctx);
+    }
+
+    if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) {
+        watchdog_event_current_apply_dstar(state, ctx);
+    }
+
+    if (DSD_SYNC_IS_DPMR(state->lastsynctype)) {
+        watchdog_event_current_apply_dpmr(state, ctx);
+    }
+
+    if (DSD_SYNC_IS_EDACS(state->lastsynctype)) {
+        watchdog_event_current_apply_edacs(opts, state, ctx);
+    }
+}
+
+static void
+watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_current_ctx* ctx) {
+    ctx->t_name_loaded = 0;
+    ctx->s_name_loaded = 0;
+
+    if (ctx->target_id != 0
+        && dsd_tg_policy_lookup_label(state, ctx->target_id, ctx->t_mode, sizeof(ctx->t_mode), ctx->t_name,
+                                      sizeof(ctx->t_name))) {
+        ctx->t_name_loaded = 1;
+    }
+
+    if (ctx->source_id != 0
+        && dsd_tg_policy_lookup_label(state, ctx->source_id, ctx->s_mode, sizeof(ctx->s_mode), ctx->s_name,
+                                      sizeof(ctx->s_name))) {
+        ctx->s_name_loaded = 1;
+    }
+}
+
+static void
+watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History_I* event_struct,
+                                   const watchdog_event_current_ctx* ctx) {
+    if (ctx->source_id == 0) {
+        return;
+    }
+
+    event_struct->Event_History_Items[0].write = 0;
+    state->event_history_s[slot].Event_History_Items[0].color_pair = ctx->color_pair;
+    if (state->lastsynctype != DSD_SYNC_NONE) {
+        event_struct->Event_History_Items[0].systype = state->lastsynctype;
+    } else {
+        event_struct->Event_History_Items[0].systype = 39;
+    }
+    event_struct->Event_History_Items[0].subtype = ctx->subtype;
+    event_struct->Event_History_Items[0].gi = state->gi[slot];
+    event_struct->Event_History_Items[0].sys_id1 = ctx->sys_id1;
+    event_struct->Event_History_Items[0].sys_id2 = ctx->sys_id2;
+    event_struct->Event_History_Items[0].sys_id3 = ctx->sys_id3;
+    event_struct->Event_History_Items[0].sys_id4 = ctx->sys_id4;
+    event_struct->Event_History_Items[0].sys_id5 = ctx->sys_id5;
+    event_struct->Event_History_Items[0].enc = ctx->enc;
+    event_struct->Event_History_Items[0].enc_alg = ctx->alg_id;
+    event_struct->Event_History_Items[0].enc_key = ctx->key_id;
+    event_struct->Event_History_Items[0].mi = ctx->mi;
+    event_struct->Event_History_Items[0].svc = ctx->svc_opts;
+    event_struct->Event_History_Items[0].source_id = ctx->source_id;
+    event_struct->Event_History_Items[0].target_id = ctx->target_id;
+    event_struct->Event_History_Items[0].channel = ctx->channel;
+    if (opts->playfiles == 0) {
+        event_struct->Event_History_Items[0].event_time = time(NULL);
+    }
+
+    DSD_SNPRINTF(event_struct->Event_History_Items[0].sysid_string,
+                 sizeof(event_struct->Event_History_Items[0].sysid_string), "%s", ctx->sysid_string);
+    DSD_SNPRINTF(event_struct->Event_History_Items[0].src_str, sizeof(event_struct->Event_History_Items[0].src_str),
+                 "%s", ctx->src_str);
+    DSD_SNPRINTF(event_struct->Event_History_Items[0].tgt_str, sizeof(event_struct->Event_History_Items[0].tgt_str),
+                 "%s", ctx->tgt_str);
+    DSD_SNPRINTF(event_struct->Event_History_Items[0].t_name, sizeof(event_struct->Event_History_Items[0].t_name), "%s",
+                 ctx->t_name);
+    DSD_SNPRINTF(event_struct->Event_History_Items[0].s_name, sizeof(event_struct->Event_History_Items[0].s_name), "%s",
+                 ctx->s_name);
+    DSD_SNPRINTF(event_struct->Event_History_Items[0].t_mode, sizeof(event_struct->Event_History_Items[0].t_mode), "%s",
+                 ctx->t_mode);
+    DSD_SNPRINTF(event_struct->Event_History_Items[0].s_mode, sizeof(event_struct->Event_History_Items[0].s_mode), "%s",
+                 ctx->s_mode);
+}
+
+static void
+watchdog_event_current_build_event_ysf(const dsd_state* state, const char* datestr, const char* timestr,
+                                       const char* sys_string, char* event_string, size_t event_size) {
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string, state->ysf_tgt,
+                 state->ysf_src);
+}
+
+static void
+watchdog_event_current_build_event_m17(const dsd_state* state, const char* datestr, const char* timestr,
+                                       const char* sys_string, char* event_string, size_t event_size) {
+    if (state->m17_dst == 0xFFFFFFFFFFFFULL) {
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s CAN: %02d;", datestr, timestr, sys_string,
+                     "BROADCAST", state->m17_src_str, state->m17_can);
+    } else {
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s CAN: %02d;", datestr, timestr, sys_string,
+                     state->m17_dst_str, state->m17_src_str, state->m17_can);
+    }
+}
+
+static void
+watchdog_event_current_build_event_dstar(const dsd_state* state, const char* datestr, const char* timestr,
+                                         const char* sys_string, char* event_string, size_t event_size) {
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string, state->dstar_dst,
+                 state->dstar_src);
+}
+
+static void
+watchdog_event_current_build_event_dpmr(const dsd_state* state, const char* datestr, const char* timestr,
+                                        const char* sys_string, char* event_string, size_t event_size) {
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s CC: %02d; TGT: %s; SRC: %s; ", datestr, timestr, sys_string,
+                 state->dpmr_color_code, state->dpmr_target_id, state->dpmr_caller_id);
+    if (state->dPMRVoiceFS2Frame.Version[0] == 3) {
+        watchdog_event_str_append(event_string, event_size, "Scrambler Enc; ");
+    }
+}
+
+static void
+watchdog_event_current_build_event_edacs(const dsd_state* state, const watchdog_event_current_ctx* ctx,
+                                         const char* datestr, const char* timestr, const char* sys_string,
+                                         char* event_string, size_t event_size) {
+    char sup_str[200];
+    watchdog_event_build_edacs_sup_str(ctx->svc_opts, 0, sup_str, sizeof(sup_str));
+
+    if (state->ea_mode == 1) {
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %07d; SRC: %07d; LCN: %02d; SITE: %d:%d.%04X; %s;",
+                     datestr, timestr, sys_string, ctx->target_id, ctx->source_id, ctx->channel, ctx->sys_id1,
+                     ctx->sys_id2, ctx->sys_id3, sup_str);
+        return;
+    }
+
+    int afs = state->lasttg;
+    int a = (afs >> state->edacs_a_shift) & state->edacs_a_mask;
+    int f = (afs >> state->edacs_f_shift) & state->edacs_f_mask;
+    int s = afs & state->edacs_s_mask;
+    char afs_str[8];
+    getAfsString((dsd_state*)state, afs_str, a, f, s);
+
+    char lid_str[20];
+    DSD_MEMSET(lid_str, 0, sizeof(lid_str));
+    if (state->lastsrc != 0 && state->lastsrc != 0x800) {
+        DSD_SPRINTF(lid_str, "LID: %05d;", state->lastsrc);
+    } else {
+        DSD_SPRINTF(lid_str, "LID: __UNK;");
+    }
+
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s AFS: %s (%04d); %s LCN: %02d; Site: %d; %s; ", datestr, timestr,
+                 sys_string, afs_str, afs, lid_str, ctx->channel, ctx->sys_id1, sup_str);
+}
+
+static void
+watchdog_event_current_build_event_dmr(const dsd_state* state, uint8_t slot, const watchdog_event_current_ctx* ctx,
+                                       const char* datestr, const char* timestr, const char* sys_string,
+                                       char* event_string, size_t event_size) {
+    if (ctx->sys_id1) {
+        DSD_SPRINTF(event_string, "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; SYS: %X; ", datestr, timestr, sys_string,
+                    ctx->target_id, ctx->source_id, ctx->sys_id2, ctx->sys_id1);
+    } else {
+        DSD_SPRINTF(event_string, "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; ", datestr, timestr, sys_string,
+                    ctx->target_id, ctx->source_id, ctx->sys_id2);
+    }
+
+    if (ctx->enc) {
+        watchdog_event_str_append(event_string, event_size, "ENC; ");
+    }
+    if (ctx->alg_id != 0) {
+        char ess_str[30];
+        DSD_SPRINTF(ess_str, "ALG: %02X; KID: %02X; ", ctx->alg_id, ctx->key_id);
+        watchdog_event_str_append(event_string, event_size, ess_str);
+    }
+
+    if (ctx->svc_opts & 0x80) {
+        watchdog_event_str_append(event_string, event_size, "Emergency; ");
+    }
+    if (ctx->svc_opts & 0x08) {
+        watchdog_event_str_append(event_string, event_size, "Broadcast; ");
+    }
+    if (ctx->svc_opts & 0x04) {
+        watchdog_event_str_append(event_string, event_size, "OVCM; ");
+    }
+
+    if (state->gi[slot] == 0) {
+        watchdog_event_str_append(event_string, event_size, "Group; ");
+    } else if (state->gi[slot] == 1) {
+        watchdog_event_str_append(event_string, event_size, "Private; ");
+    }
+
+    if (ctx->mfid == 0x10) {
+        if (ctx->svc_opts & 0x30) {
+            watchdog_event_str_append(event_string, event_size, "TXI; ");
+        }
+
+        if (ctx->svc_opts & 0x03) {
+            watchdog_event_str_append(event_string, event_size, "PRIORITY; ");
+        }
+    }
+}
+
+static void
+watchdog_event_current_build_event_p25(const dsd_state* state, uint8_t slot, const watchdog_event_current_ctx* ctx,
+                                       const char* datestr, const char* timestr, const char* sys_string,
+                                       char* event_string, size_t event_size) {
+    if (ctx->sys_id1) {
+        DSD_SPRINTF(event_string, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; NET_STS: %05X:%03X:%d.%d; ", datestr,
+                    timestr, sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3, ctx->sys_id1, ctx->sys_id2,
+                    ctx->sys_id4, ctx->sys_id5);
+    } else {
+        DSD_SPRINTF(event_string, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; ", datestr, timestr, sys_string,
+                    ctx->target_id, ctx->source_id, ctx->sys_id3);
+    }
+
+    if (ctx->alg_id != 0 && ctx->alg_id != 0x80) {
+        char ess_str[30];
+        DSD_SPRINTF(ess_str, "ENC; ALG: %02X; KID: %04X; ", ctx->alg_id, ctx->key_id);
+        watchdog_event_str_append(event_string, event_size, ess_str);
+    }
+    if (ctx->svc_opts & 0x80) {
+        watchdog_event_str_append(event_string, event_size, "Emergency; ");
+    }
+    if (state->gi[slot] == 0) {
+        watchdog_event_str_append(event_string, event_size, "Group; ");
+    } else if (state->gi[slot] == 1) {
+        watchdog_event_str_append(event_string, event_size, "Private; ");
+    }
+}
+
+static void
+watchdog_event_current_build_event_nxdn(const dsd_state* state, uint8_t slot, const watchdog_event_current_ctx* ctx,
+                                        const char* datestr, const char* timestr, const char* sys_string,
+                                        char* event_string, size_t event_size) {
+    if (ctx->sys_id1) {
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; SYS: %d.%d; ", datestr,
+                     timestr, sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3, ctx->sys_id2, ctx->sys_id1);
+    } else {
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; ", datestr, timestr,
+                     sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3);
+    }
+
+    if (state->nxdn_grant_chan != 0) {
+        char ch_str[96];
+        if (state->nxdn_grant_freq != 0) {
+            DSD_SNPRINTF(ch_str, sizeof(ch_str), "CH: %u; FREQ: %.6lf MHz; ", state->nxdn_grant_chan,
+                         (double)state->nxdn_grant_freq / 1000000.0);
+        } else {
+            DSD_SNPRINTF(ch_str, sizeof(ch_str), "CH: %u; ", state->nxdn_grant_chan);
+        }
+        watchdog_event_str_append(event_string, event_size, ch_str);
+    }
+
+    if (ctx->enc) {
+        watchdog_event_str_append(event_string, event_size, "ENC; ");
+    }
+    if (ctx->alg_id != 0) {
+        char ess_str[30];
+        DSD_SNPRINTF(ess_str, sizeof(ess_str), "ALG: %d; KID: %02X; ", ctx->alg_id, ctx->key_id);
+        watchdog_event_str_append(event_string, event_size, ess_str);
+    }
+
+    if (state->gi[slot] == 0) {
+        watchdog_event_str_append(event_string, event_size, "Group; ");
+    } else if (state->gi[slot] == 1) {
+        watchdog_event_str_append(event_string, event_size, "Private; ");
+    }
+}
+
+static void
+watchdog_event_current_build_event_string(const dsd_state* state, uint8_t slot, const watchdog_event_current_ctx* ctx,
+                                          const char* datestr, const char* timestr, const char* sys_string,
+                                          char* event_string, size_t event_size) {
+    if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
+        watchdog_event_current_build_event_ysf(state, datestr, timestr, sys_string, event_string, event_size);
+    } else if (state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_LSF_NEG) {
+        watchdog_event_current_build_event_m17(state, datestr, timestr, sys_string, event_string, event_size);
+    } else if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) {
+        watchdog_event_current_build_event_dstar(state, datestr, timestr, sys_string, event_string, event_size);
+    } else if (DSD_SYNC_IS_DPMR(state->lastsynctype)) {
+        watchdog_event_current_build_event_dpmr(state, datestr, timestr, sys_string, event_string, event_size);
+    } else if (DSD_SYNC_IS_EDACS(state->lastsynctype)) {
+        watchdog_event_current_build_event_edacs(state, ctx, datestr, timestr, sys_string, event_string, event_size);
+    } else if (DSD_SYNC_IS_DMR(state->lastsynctype)) {
+        watchdog_event_current_build_event_dmr(state, slot, ctx, datestr, timestr, sys_string, event_string,
+                                               event_size);
+    } else if (DSD_SYNC_IS_P25(state->lastsynctype)) {
+        watchdog_event_current_build_event_p25(state, slot, ctx, datestr, timestr, sys_string, event_string,
+                                               event_size);
+    } else if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
+        watchdog_event_current_build_event_nxdn(state, slot, ctx, datestr, timestr, sys_string, event_string,
+                                                event_size);
+    }
+}
+
+static void
+watchdog_event_current_append_policy_labels(const watchdog_event_current_ctx* ctx, char* event_string,
+                                            size_t event_size) {
+    if (ctx->t_name_loaded) {
+        char group[420];
+        DSD_SNPRINTF(group, sizeof(group), "TName: %s; Mode: %s; ", ctx->t_name, ctx->t_mode);
+        watchdog_event_str_append(event_string, event_size, group);
+    }
+
+    if (ctx->s_name_loaded) {
+        char private[420];
+        DSD_SNPRINTF(private, sizeof(private), "SName: %s; Mode: %s; ", ctx->s_name, ctx->s_mode);
+        watchdog_event_str_append(event_string, event_size, private);
+    }
+}
+
+void
+watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    Event_History_I* event_struct = &state->event_history_s[slot];
+
+    watchdog_event_current_ctx ctx;
+    watchdog_event_current_init_base(state, slot, &ctx);
+
+    if (slot == 0) {
+        watchdog_event_current_apply_slot0_overrides(opts, state, event_struct, &ctx);
+    }
+
+    watchdog_event_current_load_labels(state, &ctx);
+
     const char* sys_string = dsd_synctype_to_string(state->lastsynctype);
 
-    //date and time strings
     char timestr[9];
     char datestr[11];
-    getTimeN_buf(time(NULL), timestr);
-    getDateN_buf(time(NULL), datestr);
+    time_t now = time(NULL);
+    getTimeN_buf(now, timestr);
+    getDateN_buf(now, datestr);
 
-    if (source_id != 0) {
-        event_struct->Event_History_Items[0].write = 0;
-        state->event_history_s[slot].Event_History_Items[0].color_pair = color_pair;
-        if (state->lastsynctype != DSD_SYNC_NONE) {
-            event_struct->Event_History_Items[0].systype = state->lastsynctype;
-        } else {
-            event_struct->Event_History_Items[0].systype = 39; //generic digital call
-        }
-        event_struct->Event_History_Items[0].subtype = subtype;    //voice
-        event_struct->Event_History_Items[0].gi = state->gi[slot]; //need this add this to link control messages
-        event_struct->Event_History_Items[0].sys_id1 = sys_id1;
-        event_struct->Event_History_Items[0].sys_id2 = sys_id2;
-        event_struct->Event_History_Items[0].sys_id3 = sys_id3;
-        event_struct->Event_History_Items[0].sys_id4 = sys_id4;
-        event_struct->Event_History_Items[0].sys_id5 = sys_id5;
-        event_struct->Event_History_Items[0].enc = enc;
-        event_struct->Event_History_Items[0].enc_alg = alg_id;
-        event_struct->Event_History_Items[0].enc_key = key_id;
-        event_struct->Event_History_Items[0].mi = mi;
-        event_struct->Event_History_Items[0].svc = svc_opts;
-        event_struct->Event_History_Items[0].source_id = source_id;
-        event_struct->Event_History_Items[0].target_id = target_id;
-        event_struct->Event_History_Items[0].channel =
-            channel;                //need to add this to trunking messages, if tuned from call grant
-        if (opts->playfiles == 0) { //if playing back .mbe files with a time in it, don't set this
-            event_struct->Event_History_Items[0].event_time = time(NULL);
-        }
-        snprintf(event_struct->Event_History_Items[0].sysid_string,
-                 sizeof event_struct->Event_History_Items[0].sysid_string, "%s", sysid_string);
-        snprintf(event_struct->Event_History_Items[0].src_str, sizeof event_struct->Event_History_Items[0].src_str,
-                 "%s", src_str);
-        snprintf(event_struct->Event_History_Items[0].tgt_str, sizeof event_struct->Event_History_Items[0].tgt_str,
-                 "%s", tgt_str);
+    watchdog_event_current_update_item(opts, state, slot, event_struct, &ctx);
 
-        snprintf(event_struct->Event_History_Items[0].t_name, sizeof event_struct->Event_History_Items[0].t_name, "%s",
-                 t_name);
-        snprintf(event_struct->Event_History_Items[0].s_name, sizeof event_struct->Event_History_Items[0].s_name, "%s",
-                 s_name);
-        snprintf(event_struct->Event_History_Items[0].t_mode, sizeof event_struct->Event_History_Items[0].t_mode, "%s",
-                 t_mode);
-        snprintf(event_struct->Event_History_Items[0].s_mode, sizeof event_struct->Event_History_Items[0].s_mode, "%s",
-                 s_mode);
-    }
-
-    //Craft an event string for ncurses event history, and a more complex string for logging
     char event_string[2000];
-    memset(event_string, 0, sizeof(event_string));
+    DSD_MEMSET(event_string, 0, sizeof(event_string));
+    watchdog_event_current_build_event_string(state, slot, &ctx, datestr, timestr, sys_string, event_string,
+                                              sizeof(event_string));
+    watchdog_event_current_append_policy_labels(&ctx, event_string, sizeof(event_string));
 
-    //WIP: Seperate Voice Call Event Strings when SRC/TGT values are numerical,
-    //and a seperate one for when they are string values (M17, YSF, DSTAR, and dPMR, or use special formatting)
-    if (DSD_SYNC_IS_YSF(state->lastsynctype)) //YSF Fusion //TODO: Data calls dumping a lot of events as VOICE
-    {
-        //TODO: See if we can add some decoded data as well in the future to an event string
-        snprintf(event_string, sizeof event_string, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string,
-                 state->ysf_tgt, state->ysf_src);
-    } else if (state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_LSF_NEG) //M17
-    {
-        //TODO: See if we can add some decoded data as well in the future to an event string
-        if (state->m17_dst == 0xFFFFFFFFFFFF) {
-            snprintf(event_string, sizeof event_string, "%s %s %s TGT: %s SRC: %s CAN: %02d;", datestr, timestr,
-                     sys_string, "BROADCAST", state->m17_src_str, state->m17_can);
-        } else {
-            snprintf(event_string, sizeof event_string, "%s %s %s TGT: %s SRC: %s CAN: %02d;", datestr, timestr,
-                     sys_string, state->m17_dst_str, state->m17_src_str, state->m17_can);
-        }
-    } else if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) //DSTAR
-    {
-        //TODO: See if we can add some decoded data as well in the future to an event string
-        snprintf(event_string, sizeof event_string, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string,
-                 state->dstar_dst, state->dstar_src);
-    } else if (DSD_SYNC_IS_DPMR(state->lastsynctype)) //dPMR
-    {
-        //TODO: See if we can add some decoded data as well in the future to an event string
-        snprintf(event_string, sizeof event_string, "%s %s %s CC: %02d; TGT: %s; SRC: %s; ", datestr, timestr,
-                 sys_string, state->dpmr_color_code, state->dpmr_target_id, state->dpmr_caller_id);
-        if (state->dPMRVoiceFS2Frame.Version[0] == 3) {
-            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-            if (rem > 0) {
-                strncat(event_string, "Scrambler Enc; ", rem);
-            }
-        }
-    } else if (DSD_SYNC_IS_EDACS(state->lastsynctype)) //EDACS Calls
-    {
-        svc_opts = state->edacs_vc_call_type;
-        char sup_str[200];
-        memset(sup_str, 0, sizeof(sup_str));
-        sprintf(sup_str, "%s", "");
-        size_t rem;
-        if (svc_opts & 0x02) {
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "Digital ", rem);
-            }
-        } else {
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "Analog ", rem);
-            }
-        }
-        if (svc_opts & 0x04) {
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "Emergency ", rem);
-            }
-        }
-        if (svc_opts & 0x08) {
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "Group ", rem);
-            }
-        }
-        if (svc_opts & 0x10) {
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "I ", rem);
-            }
-        }
-        if (svc_opts & 0x20) {
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "ALL ", rem);
-            }
-        }
-        if (svc_opts & 0x40) {
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "INTER ", rem);
-            }
-        }
-        if (svc_opts & 0x80) {
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "TEST ", rem);
-            }
-        }
-        if (svc_opts & 0x100) {
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "AGENCY ", rem);
-            }
-        }
-        if (svc_opts & 0x200) {
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "FLEET ", rem);
-            }
-        }
-        if (svc_opts & 0x01) {
-            rem = sizeof(sup_str) - strlen(sup_str) - 1;
-            if (rem > 0) {
-                strncat(sup_str, "Voice ", rem);
-            }
-        }
-        rem = sizeof(sup_str) - strlen(sup_str) - 1;
-        if (rem > 0) {
-            strncat(sup_str, "Call", rem);
-        }
-
-        if (state->ea_mode == 1) {
-            sprintf(event_string, "%s %s %s TGT: %07d; SRC: %07d; LCN: %02d; SITE: %d:%d.%04X; %s;", datestr, timestr,
-                    sys_string, target_id, source_id, channel, sys_id1, sys_id2, sys_id3, sup_str);
-        } else {
-            int afs = state->lasttg;
-            int a = (afs >> state->edacs_a_shift) & state->edacs_a_mask;
-            int f = (afs >> state->edacs_f_shift) & state->edacs_f_mask;
-            int s = afs & state->edacs_s_mask;
-            char afs_str[8];
-            getAfsString(state, afs_str, a, f, s);
-            char lid_str[20];
-            memset(lid_str, 0, sizeof(lid_str));
-            sprintf(lid_str, "%s", "");
-            if (state->lastsrc != 0 && state->lastsrc != 0x800) {
-                sprintf(lid_str, "LID: %05d;", state->lastsrc);
-            } else {
-                sprintf(lid_str, "LID: __UNK;");
-            }
-
-            sprintf(event_string, "%s %s %s AFS: %s (%04d); %s LCN: %02d; Site: %d; %s; ", datestr, timestr, sys_string,
-                    afs_str, afs, lid_str, channel, sys_id1, sup_str);
-        }
-    } else if (DSD_SYNC_IS_DMR(state->lastsynctype)) //DMR
-    {
-        if (sys_id1) {
-            sprintf(event_string, "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; SYS: %X; ", datestr, timestr, sys_string,
-                    target_id, source_id, sys_id2, sys_id1);
-        } else {
-            sprintf(event_string, "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; ", datestr, timestr, sys_string, target_id,
-                    source_id, sys_id2);
-        }
-        if (enc) {
-            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-            if (rem > 0) {
-                strncat(event_string, "ENC; ", rem);
-            }
-        }
-        if (alg_id != 0) {
-            char ess_str[30];
-            sprintf(ess_str, "ALG: %02X; KID: %02X; ", alg_id, key_id);
-            {
-                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                if (rem > 0) {
-                    strncat(event_string, ess_str, rem);
-                }
-            }
-        }
-
-        //monitor for misc link control that may set a SO without having SO inside of it,
-        //those could cause misc issues here, will need to observe and make adjustments
-        if (svc_opts & 0x80) {
-            {
-                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                if (rem > 0) {
-                    strncat(event_string, "Emergency; ", rem);
-                }
-            }
-        }
-
-        if (svc_opts & 0x08) {
-            {
-                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                if (rem > 0) {
-                    strncat(event_string, "Broadcast; ", rem);
-                }
-            }
-        }
-
-        if (svc_opts & 0x04) {
-            {
-                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                if (rem > 0) {
-                    strncat(event_string, "OVCM; ", rem);
-                }
-            }
-        }
-
-        if (state->gi[slot] == 0) {
-            {
-                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                if (rem > 0) {
-                    strncat(event_string, "Group; ", rem);
-                }
-            }
-        } else if (state->gi[slot] == 1) {
-            {
-                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                if (rem > 0) {
-                    strncat(event_string, "Private; ", rem);
-                }
-            }
-        }
-
-        if (mfid == 0x10) {
-            if (svc_opts & 0x20) {
-                {
-                    size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                    if (rem > 0) {
-                        strncat(event_string, "TXI; ", rem);
-                    }
-                }
-            } else if (svc_opts & 0x10) {
-                {
-                    size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                    if (rem > 0) {
-                        strncat(event_string, "TXI; ", rem);
-                    }
-                }
-            }
-
-            if (svc_opts & 0x03) {
-                {
-                    size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                    if (rem > 0) {
-                        strncat(event_string, "PRIORITY; ", rem);
-                    }
-                }
-            }
-        }
-
-    } else if (DSD_SYNC_IS_P25(state->lastsynctype)) {
-        if (sys_id1) {
-            sprintf(event_string, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; NET_STS: %05X:%03X:%d.%d; ", datestr,
-                    timestr, sys_string, target_id, source_id, sys_id3, sys_id1, sys_id2, sys_id4, sys_id5);
-        } else {
-            sprintf(event_string, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; ", datestr, timestr, sys_string, target_id,
-                    source_id, sys_id3);
-        }
-        if (alg_id != 0 && alg_id != 0x80) {
-            char ess_str[30];
-            sprintf(ess_str, "ENC; ALG: %02X; KID: %04X; ", alg_id, key_id);
-            {
-                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                if (rem > 0) {
-                    strncat(event_string, ess_str, rem);
-                }
-            }
-        }
-        if (svc_opts & 0x80) {
-            {
-                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                if (rem > 0) {
-                    strncat(event_string, "Emergency; ", rem);
-                }
-            }
-        }
-        if (state->gi[slot] == 0) {
-            {
-                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                if (rem > 0) {
-                    strncat(event_string, "Group; ", rem);
-                }
-            }
-        } else if (state->gi[slot] == 1) {
-            {
-                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                if (rem > 0) {
-                    strncat(event_string, "Private; ", rem);
-                }
-            }
-        }
-    }
-
-    else if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
-        if (sys_id1) {
-            snprintf(event_string, sizeof event_string, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; SYS: %d.%d; ",
-                     datestr, timestr, sys_string, target_id, source_id, sys_id3, sys_id2, sys_id1);
-        } else {
-            snprintf(event_string, sizeof event_string, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; ", datestr, timestr,
-                     sys_string, target_id, source_id, sys_id3);
-        }
-        if (state->nxdn_grant_chan != 0) {
-            char ch_str[96];
-            if (state->nxdn_grant_freq != 0) {
-                snprintf(ch_str, sizeof ch_str, "CH: %u; FREQ: %.6lf MHz; ", state->nxdn_grant_chan,
-                         (double)state->nxdn_grant_freq / 1000000.0);
-            } else {
-                snprintf(ch_str, sizeof ch_str, "CH: %u; ", state->nxdn_grant_chan);
-            }
-            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-            if (rem > 0) {
-                strncat(event_string, ch_str, rem);
-            }
-        }
-        if (enc) {
-            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-            if (rem > 0) {
-                strncat(event_string, "ENC; ", rem);
-            }
-        }
-        if (alg_id != 0) {
-            char ess_str[30];
-            snprintf(ess_str, sizeof ess_str, "ALG: %d; KID: %02X; ", alg_id, key_id);
-            {
-                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-                if (rem > 0) {
-                    strncat(event_string, ess_str, rem);
-                }
-            }
-        }
-        if (state->gi[slot] == 0) {
-            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-            if (rem > 0) {
-                strncat(event_string, "Group; ", rem);
-            }
-        } else if (state->gi[slot] == 1) {
-            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-            if (rem > 0) {
-                strncat(event_string, "Private; ", rem);
-            }
-        }
-    }
-
-    if (t_name_loaded) {
-        char group[420];
-        snprintf(group, sizeof group, "TName: %s; Mode: %s; ", t_name, t_mode);
-        {
-            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-            if (rem > 0) {
-                strncat(event_string, group, rem);
-            }
-        }
-    }
-    if (s_name_loaded) {
-        char private[420];
-        snprintf(private, sizeof private, "SName: %s; Mode: %s; ", s_name, s_mode);
-        {
-            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-            if (rem > 0) {
-                strncat(event_string, private, rem);
-            }
-        }
-    }
-
-    snprintf(event_struct->Event_History_Items[0].event_string,
-             sizeof event_struct->Event_History_Items[0].event_string, "%s", event_string);
+    DSD_SNPRINTF(event_struct->Event_History_Items[0].event_string,
+                 sizeof(event_struct->Event_History_Items[0].event_string), "%s", event_string);
 
     /* stack buffers; no free */
 }
@@ -1121,11 +982,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 void
 watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
     state->event_history_s[slot].Event_History_Items[0].write = 0;
-    if (state->event_history_s[slot].Event_History_Items[0].color_pair
-        == 4) { //if not set previously by specific decoder //don't touch this one
-        state->event_history_s[slot].Event_History_Items[0].color_pair =
-            4; //default data color //you can change this one
-    }
+    state->event_history_s[slot].Event_History_Items[0].color_pair = 4; //default data color //you can change this one
     state->event_history_s[slot].Event_History_Items[0].systype = state->lastsynctype;
     state->event_history_s[slot].Event_History_Items[0].subtype = DSD_EVENT_SUBTYPE_DATA;
     state->event_history_s[slot].Event_History_Items[0].gi = state->gi[slot];
@@ -1139,24 +996,23 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
     state->event_history_s[slot].Event_History_Items[0].channel = 0;
     state->event_history_s[slot].Event_History_Items[0].event_time = time(NULL);
 
-    //date and time strings //getTimeN(time(NULL)); //getDateN(time(NULL));
     char timestr[9];
     char datestr[11];
     getTimeN_buf(time(NULL), timestr);
     getDateN_buf(time(NULL), datestr);
 
     char event_string[2000];
-    memset(event_string, 0, sizeof(event_string));
-    snprintf(event_string, sizeof event_string, "%s %s ", datestr, timestr);
+    DSD_MEMSET(event_string, 0, sizeof(event_string));
+    DSD_SNPRINTF(event_string, sizeof event_string, "%s %s ", datestr, timestr);
     {
         size_t rem = sizeof(event_string) - strlen(event_string) - 1;
         if (rem > 0) {
-            strncat(event_string, data_string, rem);
+            DSD_STRNCAT(event_string, data_string, rem);
         }
     }
-    snprintf(state->event_history_s[slot].Event_History_Items[0].event_string,
-             sizeof state->event_history_s[slot].Event_History_Items[0].event_string, "%s",
-             event_string); // could change this to a strncpy to prevent potential overflow
+    DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].event_string,
+                 sizeof state->event_history_s[slot].Event_History_Items[0].event_string, "%s",
+                 event_string); // could change this to a strncpy to prevent potential overflow
 
     dsd_frame_logf(opts, "FRAME DATA slot=%d src=%u dst=%u %s", slot + 1, src, dst, data_string ? data_string : "");
 

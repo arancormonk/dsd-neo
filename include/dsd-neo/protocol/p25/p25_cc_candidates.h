@@ -13,11 +13,11 @@
  * per-system candidate list, and expire stale entries.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CC_CANDIDATES_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CC_CANDIDATES_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -71,14 +71,14 @@ int p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added);
  * @param opts Decoder options (used for logging/context).
  * @param state Decoder state to populate.
  */
-void p25_cc_try_load_cache(dsd_opts* opts, dsd_state* state);
+void p25_cc_try_load_cache(const dsd_opts* opts, dsd_state* state);
 /**
  * @brief Persist the current candidate CC list (best-effort).
  *
  * @param opts Decoder options (used for logging/context).
  * @param state Decoder state containing candidates.
  */
-void p25_cc_persist_cache(dsd_opts* opts, dsd_state* state);
+void p25_cc_persist_cache(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Add a neighbor with full site metadata to the in-memory table.
@@ -115,3 +115,4 @@ void p25_nb_tick(dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CC_CANDIDATES_H_H */

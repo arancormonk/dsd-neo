@@ -3,8 +3,10 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/dsp/sps_filters.h>
 #include <math.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 #define FIR_MAX_TAPS          1024
 #define SPS_FIR_DESIGN_INTERP 0
@@ -29,8 +31,8 @@ reset_sps_fir(sps_fir* f) {
     if (!f) {
         return;
     }
-    memset(f->taps, 0, sizeof(f->taps));
-    memset(f->hist, 0, sizeof(f->hist));
+    DSD_MEMSET(f->taps, 0, sizeof(f->taps));
+    DSD_MEMSET(f->hist, 0, sizeof(f->hist));
     f->taps_len = 0;
     f->head = -1;
     f->last_sps = 0;
@@ -88,14 +90,8 @@ rrc_impulse(float t_sym, float alpha) {
     return num / den;
 }
 
-static void
-design_sps_fir(sps_fir* f, int sps) {
-    if (!f || !f->base || f->base_len <= 0 || f->base_sps <= 0 || sps <= 1) {
-        if (f) {
-            f->ready = 0;
-        }
-        return;
-    }
+static int
+sps_fir_compute_taps_len(const sps_fir* f, int sps) {
     int taps_len = 0;
     if (sps == f->base_sps && f->base_len <= FIR_MAX_TAPS) {
         /* Exact base design when no SPS change is requested. */
@@ -112,14 +108,16 @@ design_sps_fir(sps_fir* f, int sps) {
         taps_len += 1; /* prefer odd length for symmetry */
     }
     if (taps_len > FIR_MAX_TAPS) {
-        taps_len = FIR_MAX_TAPS;
-        if ((taps_len & 1) == 0) {
-            taps_len -= 1;
-        }
+        /* Clamp to max and force odd tap count for symmetric center tap. */
+        taps_len = FIR_MAX_TAPS - 1;
     }
+    return taps_len;
+}
 
+static void
+sps_fir_design_taps(sps_fir* f, int sps, int taps_len) {
     if (sps == f->base_sps && taps_len == f->base_len) {
-        memcpy(f->taps, f->base, (size_t)taps_len * sizeof(float));
+        DSD_MEMCPY(f->taps, f->base, (size_t)taps_len * sizeof(float));
     } else {
         float mid_new = 0.5f * (float)(taps_len - 1);
         float mid_base = 0.5f * (float)(f->base_len - 1);
@@ -133,7 +131,10 @@ design_sps_fir(sps_fir* f, int sps) {
             }
         }
     }
+}
 
+static void
+sps_fir_normalize_and_clear(sps_fir* f, int taps_len) {
     double sum = 0.0;
     for (int n = 0; n < taps_len; n++) {
         sum += f->taps[n];
@@ -146,6 +147,20 @@ design_sps_fir(sps_fir* f, int sps) {
         f->taps[n] *= inv_sum;
         f->hist[n] = 0.0f;
     }
+}
+
+static void
+design_sps_fir(sps_fir* f, int sps) {
+    if (!f || !f->base || f->base_len <= 0 || f->base_sps <= 0 || sps <= 1) {
+        if (f) {
+            f->ready = 0;
+        }
+        return;
+    }
+
+    int taps_len = sps_fir_compute_taps_len(f, sps);
+    sps_fir_design_taps(f, sps, taps_len);
+    sps_fir_normalize_and_clear(f, taps_len);
 
     f->taps_len = taps_len;
     f->head = -1;
@@ -329,28 +344,28 @@ static sps_fir g_fir_m17 = {.base = m17coeffs,
                             .rrc_alpha = 0.5f};
 
 float
-dmr_filter(float sample, int sps) {
-    return apply_sps_fir(&g_fir_dmr, sample, sps);
+dmr_filter(float sample, int samples_per_symbol) {
+    return apply_sps_fir(&g_fir_dmr, sample, samples_per_symbol);
 }
 
 float
-nxdn_filter(float sample, int sps) {
-    return apply_sps_fir(&g_fir_nxdn, sample, sps);
+nxdn_filter(float sample, int samples_per_symbol) {
+    return apply_sps_fir(&g_fir_nxdn, sample, samples_per_symbol);
 }
 
 float
-dpmr_filter(float sample, int sps) {
-    return apply_sps_fir(&g_fir_dpmr, sample, sps);
+dpmr_filter(float sample, int samples_per_symbol) {
+    return apply_sps_fir(&g_fir_dpmr, sample, samples_per_symbol);
 }
 
 float
-m17_filter(float sample, int sps) {
-    return apply_sps_fir(&g_fir_m17, sample, sps);
+m17_filter(float sample, int samples_per_symbol) {
+    return apply_sps_fir(&g_fir_m17, sample, samples_per_symbol);
 }
 
 float
-p25_filter(float sample, int sps) {
-    return apply_sps_fir(&g_fir_p25, sample, sps);
+p25_filter(float sample, int samples_per_symbol) {
+    return apply_sps_fir(&g_fir_p25, sample, samples_per_symbol);
 }
 
 void

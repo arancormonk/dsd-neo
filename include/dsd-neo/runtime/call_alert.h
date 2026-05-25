@@ -8,11 +8,12 @@
  * @brief Call-alert event selection helpers.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_CALL_ALERT_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_CALL_ALERT_H_H
 
 #include <stdint.h>
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSD_CALL_ALERT_EVENT_VOICE_START = 1u << 0,
     DSD_CALL_ALERT_EVENT_VOICE_END = 1u << 1,
     DSD_CALL_ALERT_EVENT_DATA = 1u << 2,
@@ -44,3 +45,4 @@ dsd_call_alert_event_enabled(int enabled, uint8_t configured_events, uint8_t eve
     uint8_t events = dsd_call_alert_effective_events(enabled, configured_events);
     return (events & event) != 0;
 }
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_CALL_ALERT_H_H */

@@ -26,15 +26,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/* ============================================================================
- * Internal Helpers
- * ============================================================================ */
-
-// Forward declaration for do_release (used by handle_enc)
 static void do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
 
 // Serialize release-to-CC operations to avoid duplicate retunes when multiple
@@ -196,15 +191,15 @@ cc_ted_sps(const dsd_opts* opts, const dsd_state* state) {
 
 // Log status tag for debugging
 static void
-sm_log(dsd_opts* opts, dsd_state* state, const char* tag) {
+sm_log(const dsd_opts* opts, dsd_state* state, const char* tag) {
     if (!opts || opts->verbose < 1 || !tag) {
         return;
     }
     if (state) {
-        snprintf(state->p25_sm_last_reason, sizeof(state->p25_sm_last_reason), "%s", tag);
+        DSD_SNPRINTF(state->p25_sm_last_reason, sizeof(state->p25_sm_last_reason), "%s", tag);
         state->p25_sm_last_reason_time = time(NULL);
         int idx = state->p25_sm_tag_head % 8;
-        snprintf(state->p25_sm_tags[idx], sizeof(state->p25_sm_tags[idx]), "%s", tag);
+        DSD_SNPRINTF(state->p25_sm_tags[idx], sizeof(state->p25_sm_tags[idx]), "%s", tag);
         state->p25_sm_tag_time[idx] = state->p25_sm_last_reason_time;
         state->p25_sm_tag_head++;
         if (state->p25_sm_tag_count < 8) {
@@ -212,13 +207,13 @@ sm_log(dsd_opts* opts, dsd_state* state, const char* tag) {
         }
     }
     if (opts->verbose > 1) {
-        fprintf(stderr, "\n[P25 SM] %s\n", tag);
+        DSD_FPRINTF(stderr, "\n[P25 SM] %s\n", tag);
     }
 }
 
 // Set state with logging
 static void
-set_state(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, p25_sm_state_e new_state, const char* reason) {
+set_state(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, p25_sm_state_e new_state, const char* reason) {
     if (!ctx || ctx->state == new_state) {
         return;
     }
@@ -236,8 +231,8 @@ set_state(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, p25_sm_state_e ne
     }
 
     if (opts && opts->verbose > 0) {
-        fprintf(stderr, "\n[P25 SM] %s -> %s (%s)\n", p25_sm_state_name(old), p25_sm_state_name(new_state),
-                reason ? reason : "");
+        DSD_FPRINTF(stderr, "\n[P25 SM] %s -> %s (%s)\n", p25_sm_state_name(old), p25_sm_state_name(new_state),
+                    reason ? reason : "");
     }
     sm_log(opts, state, reason);
 }
@@ -300,77 +295,272 @@ log_preempt_decision(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_st
         return;
     }
     current_priority = lookup_policy_priority_for_tg(state, ctx->vc_tg);
-    fprintf(stderr,
-            "\n[P25 SM] preempt-%s reason=%s current_tg=%d current_prio=%d candidate_tg=%u candidate_prio=%d "
-            "ch=0x%04X freq=%ld slot=%d\n",
-            allowed ? "allow" : "deny", reason, ctx->vc_tg, current_priority, route->target_id, decision->priority,
-            route->channel & 0xFFFF, route->freq_hz, route->slot);
+    DSD_FPRINTF(stderr,
+                "\n[P25 SM] preempt-%s reason=%s current_tg=%d current_prio=%d candidate_tg=%u candidate_prio=%d "
+                "ch=0x%04X freq=%ld slot=%d\n",
+                allowed ? "allow" : "deny", reason, ctx->vc_tg, current_priority, route->target_id, decision->priority,
+                route->channel & 0xFFFF, route->freq_hz, route->slot);
+}
+
+typedef struct {
+    int svc;
+    int data_call;
+    int encrypted_call;
+    int enc_override_clear;
+    int is_indiv;
+    int tg;
+} p25_grant_eval_ctx_t;
+
+static p25_grant_eval_ctx_t
+p25_grant_eval_ctx_from_event(const p25_sm_event_t* ev) {
+    p25_grant_eval_ctx_t ctx;
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    if (!ev) {
+        return ctx;
+    }
+    ctx.svc = ev->svc_bits;
+    ctx.data_call = SVC_IS_DATA(ctx.svc) ? 1 : 0;
+    ctx.encrypted_call = SVC_IS_ENC(ctx.svc) ? 1 : 0;
+    ctx.is_indiv = !ev->is_group;
+    ctx.tg = ctx.is_indiv ? ev->dst : ev->tg;
+    return ctx;
+}
+
+static void
+p25_grant_apply_clear_override(const dsd_opts* opts, const dsd_state* state, p25_grant_eval_ctx_t* eval_ctx) {
+    if (!opts || !state || !eval_ctx) {
+        return;
+    }
+    // Preserve P25 regroup clear-key override before policy evaluation.
+    if (!eval_ctx->is_indiv && eval_ctx->encrypted_call && opts->trunk_tune_enc_calls == 0 && eval_ctx->tg > 0) {
+        if (p25_patch_tg_key_is_clear(state, eval_ctx->tg) || p25_patch_sg_key_is_clear(state, eval_ctx->tg)) {
+            eval_ctx->encrypted_call = 0;
+            eval_ctx->enc_override_clear = 1;
+        }
+    }
+}
+
+static int
+p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm_event_t* ev,
+                      const p25_grant_eval_ctx_t* eval_ctx, dsd_tg_policy_decision* out_decision) {
+    if (!opts || !state || !ev || !eval_ctx || !out_decision) {
+        return -1;
+    }
+    if (eval_ctx->is_indiv) {
+        return dsd_tg_policy_evaluate_private_call(
+            opts, state, (uint32_t)ev->src, (uint32_t)ev->dst, eval_ctx->encrypted_call, eval_ctx->data_call,
+            DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_ALLOW, DSD_TG_POLICY_HOLD_COMPAT_GRANT, out_decision);
+    }
+    return dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)eval_ctx->tg, (uint32_t)ev->src,
+                                             eval_ctx->encrypted_call, eval_ctx->data_call,
+                                             DSD_TG_POLICY_HOLD_COMPAT_GRANT, out_decision);
+}
+
+static int
+p25_grant_handle_policy_block(dsd_opts* opts, dsd_state* state, const p25_grant_eval_ctx_t* eval_ctx,
+                              const dsd_tg_policy_decision* decision) {
+    if (!opts || !state || !eval_ctx || !decision || decision->tune_allowed) {
+        return 0;
+    }
+    sm_log(opts, state, grant_block_log_tag(eval_ctx->is_indiv, decision->block_reasons));
+    if (!eval_ctx->is_indiv && eval_ctx->tg > 0 && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
+        p25_emit_enc_lockout_once(opts, state, 0, eval_ctx->tg, eval_ctx->svc);
+    }
+    return 1;
+}
+
+static void
+p25_grant_track_src_tg(dsd_state* state, const p25_sm_event_t* ev, const p25_grant_eval_ctx_t* eval_ctx) {
+    if (!state || !ev || !eval_ctx) {
+        return;
+    }
+    // Track RID<->TG mapping for accepted group grants only.
+    if (ev->src > 0 && eval_ctx->tg > 0) {
+        p25_ga_add(state, (uint32_t)ev->src, (uint16_t)eval_ctx->tg);
+    }
 }
 
 static int
 grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, dsd_tg_policy_decision* out_decision) {
+    p25_grant_eval_ctx_t eval_ctx;
     dsd_tg_policy_decision decision;
-    int eval_rc = 0;
-    int svc = 0;
-    int data_call = 0;
-    int encrypted_call = 0;
-    int enc_override_clear = 0;
-    int is_indiv = 0;
-    int tg = 0;
     if (!opts || !state || !ev) {
         return 0;
     }
 
-    svc = ev->svc_bits;
-    data_call = SVC_IS_DATA(svc) ? 1 : 0;
-    encrypted_call = SVC_IS_ENC(svc) ? 1 : 0;
-    is_indiv = !ev->is_group;
-    tg = is_indiv ? ev->dst : ev->tg;
-
-    // Preserve P25 regroup clear-key override before policy evaluation.
-    if (!is_indiv && encrypted_call && opts->trunk_tune_enc_calls == 0 && tg > 0) {
-        if (p25_patch_tg_key_is_clear(state, tg) || p25_patch_sg_key_is_clear(state, tg)) {
-            encrypted_call = 0;
-            enc_override_clear = 1;
-        }
-    }
-
-    if (is_indiv) {
-        eval_rc = dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)ev->src, (uint32_t)ev->dst, encrypted_call,
-                                                      data_call, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_ALLOW,
-                                                      DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
-    } else {
-        eval_rc = dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)tg, (uint32_t)ev->src, encrypted_call,
-                                                    data_call, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
-    }
-    if (eval_rc != 0) {
+    eval_ctx = p25_grant_eval_ctx_from_event(ev);
+    p25_grant_apply_clear_override(opts, state, &eval_ctx);
+    if (p25_grant_eval_policy(opts, state, ev, &eval_ctx, &decision) != 0) {
         return 0;
     }
 
-    if (!decision.tune_allowed) {
+    if (p25_grant_handle_policy_block(opts, state, &eval_ctx, &decision)) {
         if (out_decision) {
             *out_decision = decision;
         }
-        sm_log(opts, state, grant_block_log_tag(is_indiv, decision.block_reasons));
-        if (!is_indiv && tg > 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
-            p25_emit_enc_lockout_once(opts, state, 0, tg, svc);
-        }
         return 0;
     }
 
-    if (!is_indiv && enc_override_clear) {
+    if (!eval_ctx.is_indiv && eval_ctx.enc_override_clear) {
         sm_log(opts, state, "enc-override-clear");
     }
-
-    // Track RID<->TG mapping for accepted group grants only.
-    if (ev->src > 0 && tg > 0) {
-        p25_ga_add(state, (uint32_t)ev->src, (uint16_t)tg);
-    }
+    p25_grant_track_src_tg(state, ev, &eval_ctx);
 
     if (out_decision) {
         *out_decision = decision;
     }
     return 1;
+}
+
+static int
+p25_grant_target_id(const p25_sm_event_t* ev, const dsd_tg_policy_decision* decision) {
+    if (!ev || !decision) {
+        return 0;
+    }
+    if (decision->target_id > 0) {
+        return (int)decision->target_id;
+    }
+    return ev->is_group ? ev->tg : ev->dst;
+}
+
+static void
+p25_grant_fill_route(dsd_tg_policy_call_route* route, const p25_sm_event_t* ev, long freq, int slot, int needs_retune,
+                     int target_id) {
+    if (!route || !ev) {
+        return;
+    }
+    DSD_MEMSET(route, 0, sizeof(*route));
+    route->target_id = (uint32_t)target_id;
+    route->source_id = (uint32_t)((ev->src > 0) ? ev->src : 0);
+    route->freq_hz = freq;
+    route->channel = ev->channel;
+    route->slot = slot;
+    route->requires_tuner_retune = needs_retune;
+}
+
+static int
+p25_grant_candidate_displaces_active(const p25_sm_ctx_t* ctx, const dsd_state* state,
+                                     const dsd_tg_policy_call_route* route) {
+    if (!ctx || !state || !route) {
+        return 0;
+    }
+    if (route->slot == -1 || route->requires_tuner_retune) {
+        return 1;
+    }
+    if (route->slot >= 0 && route->slot <= 1) {
+        const p25_sm_slot_ctx_t* active_slot = &ctx->slots[route->slot];
+        if (active_slot->voice_active || active_slot->last_active_m > 0.0 || state->p25_p2_audio_allowed[route->slot]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+p25_grant_preempt_active_call_if_needed(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
+                                        const dsd_tg_policy_call_route* route, const dsd_tg_policy_decision* decision,
+                                        double now_m) {
+    if (!ctx || !opts || !state || !route || !decision || ctx->state != P25_SM_TUNED) {
+        return 1;
+    }
+    if (!p25_grant_candidate_displaces_active(ctx, state, route)) {
+        return 1;
+    }
+    if (!decision->preempt_requested) {
+        log_preempt_decision(ctx, opts, state, route, decision, "preempt-flag-off", 0);
+        sm_log(opts, state, "grant-preempt-flag-off");
+        return 0;
+    }
+    if (!dsd_tg_policy_should_preempt(opts, state, route, decision, now_m)) {
+        log_preempt_decision(ctx, opts, state, route, decision, "policy-reject", 0);
+        sm_log(opts, state, "grant-preempt-reject");
+        return 0;
+    }
+    log_preempt_decision(ctx, opts, state, route, decision, "policy-allow", 1);
+    sm_log(opts, state, "grant-preempt-accept");
+    do_release(ctx, opts, state, "grant-preempt");
+    return 1;
+}
+
+static void
+p25_sm_clear_slot_activity(p25_sm_ctx_t* ctx) {
+    if (!ctx) {
+        return;
+    }
+    for (int s = 0; s < 2; s++) {
+        ctx->slots[s].voice_active = 0;
+        ctx->slots[s].last_active_m = 0.0;
+    }
+}
+
+static void
+p25_grant_clear_slot_state(p25_sm_ctx_t* ctx) {
+    if (!ctx) {
+        return;
+    }
+    p25_sm_clear_slot_activity(ctx);
+    for (int s = 0; s < 2; s++) {
+        ctx->slots[s].algid = 0;
+        ctx->slots[s].keyid = 0;
+        ctx->slots[s].tg = 0;
+    }
+}
+
+static void
+p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev, long freq, int target_id,
+                           double now_m) {
+    if (!ctx || !ev) {
+        return;
+    }
+    ctx->vc_freq_hz = freq;
+    ctx->vc_channel = ev->channel;
+    ctx->vc_tg = target_id;
+    ctx->vc_src = ev->src;
+    ctx->vc_is_tdma = is_tdma_channel(state, ev->channel);
+    ctx->t_tune_m = now_m;
+    ctx->t_voice_m = 0.0;
+    ctx->vc_cqpsk_retry_done = 0;
+    if (state) {
+        // Clear any stale one-shot VC CQPSK override from a previous attempt.
+        state->p25_vc_cqpsk_override = -1;
+    }
+}
+
+static int
+p25_grant_configure_channel_profile(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot) {
+    int ted_sps = p25_ted_sps_for_bw(opts, 4800);
+    if (!ctx || !state) {
+        return ted_sps;
+    }
+    if (ctx->vc_is_tdma) {
+        ted_sps = p25_ted_sps_for_bw(opts, 6000);
+        state->p25_p2_active_slot = slot;
+        // P25P2 TDMA always uses CQPSK modulation.
+        state->rf_mod = 1;
+    } else {
+        state->p25_p2_active_slot = -1;
+    }
+    state->samplesPerSymbol = ted_sps;
+    state->symbolCenter = dsd_opts_symbol_center(ted_sps);
+    return ted_sps;
+}
+
+static void
+p25_grant_debug_log_tdma(const dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* ctx,
+                         const p25_sm_event_t* ev, long freq, int ted_sps) {
+    if (!opts || !state || !ctx || !ev || !ctx->vc_is_tdma) {
+        return;
+    }
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    const int debug_sync = (cfg && cfg->debug_sync_enable) ? 1 : 0;
+    if (!debug_sync) {
+        return;
+    }
+    DSD_FPRINTF(stderr,
+                "[P25-SM] TDMA grant: ch=0x%04X freq=%ld slot=%d rf_mod=%d sps=%d center=%d ted_sps=%d "
+                "tune_count=%u grant_count=%u\n",
+                ev->channel & 0xFFFF, freq, state->p25_p2_active_slot, state->rf_mod, state->samplesPerSymbol,
+                state->symbolCenter, ted_sps, ctx->tune_count, ctx->grant_count);
 }
 
 /* ============================================================================
@@ -381,9 +571,11 @@ static void
 handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     dsd_tg_policy_decision decision;
     dsd_tg_policy_call_route route;
-    int slot = -1;
-    int needs_retune = 0;
+    int slot = 0;
     int target_id = 0;
+    int ted_sps = 0;
+    int needs_retune = 0;
+    long freq = 0;
     double now_m = 0.0;
     if (!ctx || !ev || !opts || !state) {
         return;
@@ -394,23 +586,17 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         return;
     }
 
-    // Compute frequency from channel
-    long freq = process_channel_to_freq(opts, state, ev->channel);
+    freq = process_channel_to_freq(opts, state, ev->channel);
     if (freq == 0) {
         sm_log(opts, state, "grant-no-freq");
         return;
     }
+
     now_m = now_monotonic();
     slot = channel_slot(state, ev->channel);
     needs_retune = (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz != 0 && ctx->vc_freq_hz != freq) ? 1 : 0;
-    target_id = (decision.target_id > 0) ? (int)decision.target_id : (ev->is_group ? ev->tg : ev->dst);
-    memset(&route, 0, sizeof(route));
-    route.target_id = (uint32_t)target_id;
-    route.source_id = (uint32_t)((ev->src > 0) ? ev->src : 0);
-    route.freq_hz = freq;
-    route.channel = ev->channel;
-    route.slot = slot;
-    route.requires_tuner_retune = needs_retune;
+    target_id = p25_grant_target_id(ev, &decision);
+    p25_grant_fill_route(&route, ev, freq, slot, needs_retune, target_id);
 
     // Skip if already tuned to same frequency AND same TG (avoid bounce on duplicate grants)
     // Different TG/call type should still trigger a new tune
@@ -420,92 +606,18 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         return;
     }
 
-    if (ctx->state == P25_SM_TUNED) {
-        int candidate_displaces_active = 0;
-        if (route.slot == -1 || route.requires_tuner_retune) {
-            candidate_displaces_active = 1;
-        } else if (route.slot >= 0 && route.slot <= 1) {
-            const p25_sm_slot_ctx_t* active_slot = &ctx->slots[route.slot];
-            if (active_slot->voice_active || active_slot->last_active_m > 0.0
-                || state->p25_p2_audio_allowed[route.slot]) {
-                candidate_displaces_active = 1;
-            }
-        }
-        if (candidate_displaces_active) {
-            if (!decision.preempt_requested) {
-                log_preempt_decision(ctx, opts, state, &route, &decision, "preempt-flag-off", 0);
-                sm_log(opts, state, "grant-preempt-flag-off");
-                return;
-            }
-            if (!dsd_tg_policy_should_preempt(opts, state, &route, &decision, now_m)) {
-                log_preempt_decision(ctx, opts, state, &route, &decision, "policy-reject", 0);
-                sm_log(opts, state, "grant-preempt-reject");
-                return;
-            }
-            log_preempt_decision(ctx, opts, state, &route, &decision, "policy-allow", 1);
-            sm_log(opts, state, "grant-preempt-accept");
-            do_release(ctx, opts, state, "grant-preempt");
-        }
+    if (!p25_grant_preempt_active_call_if_needed(ctx, opts, state, &route, &decision, now_m)) {
+        return;
     }
 
-    // Store VC context
-    ctx->vc_freq_hz = freq;
-    ctx->vc_channel = ev->channel;
-    ctx->vc_tg = target_id;
-    ctx->vc_src = ev->src;
-    ctx->vc_is_tdma = is_tdma_channel(state, ev->channel);
-    ctx->t_tune_m = now_m;
-    ctx->t_voice_m = 0.0;
-    ctx->vc_cqpsk_retry_done = 0;
-    if (state) {
-        /* Clear any stale one-shot VC CQPSK override from a previous attempt. */
-        state->p25_vc_cqpsk_override = -1;
-    }
+    p25_grant_store_vc_context(ctx, state, ev, freq, target_id, now_m);
+    p25_grant_clear_slot_state(ctx);
+    ted_sps = p25_grant_configure_channel_profile(ctx, opts, state, slot);
 
-    // Clear slot activity
-    for (int s = 0; s < 2; s++) {
-        ctx->slots[s].voice_active = 0;
-        ctx->slots[s].last_active_m = 0.0;
-        ctx->slots[s].algid = 0;
-        ctx->slots[s].keyid = 0;
-        ctx->slots[s].tg = 0;
-    }
-
-    // Set symbol timing and modulation based on channel type.
-    // Use dynamic SPS computation based on configured DSP bandwidth.
-    int ted_sps;
-    if (ctx->vc_is_tdma) {
-        ted_sps = p25_ted_sps_for_bw(opts, 6000);
-        state->samplesPerSymbol = ted_sps;
-        state->symbolCenter = dsd_opts_symbol_center(ted_sps);
-        state->p25_p2_active_slot = slot;
-        // P25P2 TDMA always uses CQPSK modulation - force QPSK mode
-        // to prevent modulation auto-detect from flapping to C4FM
-        state->rf_mod = 1;
-    } else {
-        ted_sps = p25_ted_sps_for_bw(opts, 4800);
-        state->samplesPerSymbol = ted_sps;
-        state->symbolCenter = dsd_opts_symbol_center(ted_sps);
-        state->p25_p2_active_slot = -1;
-    }
-
-    // Tune to VC with TED SPS determined by channel type
     dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, ted_sps);
     ctx->tune_count++;
     ctx->grant_count++;
-
-    // Optional debug: log TDMA grant context when sync debug is enabled.
-    {
-        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-        const int debug_sync = (cfg && cfg->debug_sync_enable) ? 1 : 0;
-        if (debug_sync && ctx->vc_is_tdma) {
-            fprintf(stderr,
-                    "[P25-SM] TDMA grant: ch=0x%04X freq=%ld slot=%d rf_mod=%d sps=%d center=%d ted_sps=%d "
-                    "tune_count=%u grant_count=%u\n",
-                    ev->channel & 0xFFFF, freq, state->p25_p2_active_slot, state->rf_mod, state->samplesPerSymbol,
-                    state->symbolCenter, ted_sps, ctx->tune_count, ctx->grant_count);
-        }
-    }
+    p25_grant_debug_log_tdma(opts, state, ctx, ev, freq, ted_sps);
 
     if (state) {
         state->p25_sm_tune_count++;
@@ -533,7 +645,7 @@ slot_can_decrypt(const dsd_state* state, int slot, int algid) {
 }
 
 static void
-handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why) {
+handle_voice_start(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot, const char* why) {
     if (!ctx) {
         return;
     }
@@ -608,7 +720,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
 }
 
 static void
-handle_cc_sync(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+handle_cc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx) {
         return;
     }
@@ -706,6 +818,8 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
 
 static void
 do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    double tune_start_m = 0.0;
+    int opts_tuned = 0;
     if (!ctx) {
         return;
     }
@@ -717,34 +831,22 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         return;
     }
 
+    if (state) {
+        // Clear any pending forced-release request; we're handling teardown now.
+        state->p25_sm_force_release = 0;
+    }
+
     // Only do a hardware return-to-CC when we are (or believe we are) tuned to
     // a voice channel. This makes repeated release requests idempotent.
-    int opts_tuned = (opts && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
+    opts_tuned = (opts && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
     if (ctx->state != P25_SM_TUNED && !opts_tuned) {
-        if (state) {
-            state->p25_sm_force_release = 0;
-        }
         atomic_store(&g_p25_sm_release_lock, 0);
         return;
     }
 
-    // Clear any pending forced-release request; we're handling teardown now.
-    if (state) {
-        state->p25_sm_force_release = 0;
-    }
-
     sm_log(opts, state, reason);
 
-    // Clear all slot state
-    for (int s = 0; s < 2; s++) {
-        ctx->slots[s].voice_active = 0;
-        ctx->slots[s].last_active_m = 0.0;
-        ctx->slots[s].algid = 0;
-        ctx->slots[s].keyid = 0;
-        ctx->slots[s].tg = 0;
-    }
-
-    // Clear VC context
+    p25_grant_clear_slot_state(ctx);
     ctx->vc_freq_hz = 0;
     ctx->vc_channel = 0;
     ctx->vc_tg = 0;
@@ -786,7 +888,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     }
 
     // Return to CC
-    double tune_start_m = now_monotonic();
+    tune_start_m = now_monotonic();
     dsd_trunk_tuning_hook_return_to_cc(opts, state);
     p25_sm_start_cc_grace_after_tune(ctx, state, tune_start_m);
 
@@ -901,12 +1003,12 @@ p25_sm_state_name(p25_sm_state_e state) {
 }
 
 void
-p25_sm_init_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx) {
         return;
     }
 
-    memset(ctx, 0, sizeof(*ctx));
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
 
@@ -957,8 +1059,340 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     ctx->initialized = 1;
 }
 
+static void
+p25_sm_handle_vc_sync_event(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
+    if (!ctx || ctx->state != P25_SM_TUNED) {
+        return;
+    }
+    ctx->t_voice_m = now_monotonic();
+#ifdef USE_RADIO
+    /* Learn successful TDMA VC acquisition only for the OP25-style CQPSK+TED
+     * chain. TED can remain enabled as a metric when CQPSK is off, so do not
+     * treat a legacy FM/QPSK sync as a durable preference for P25p2 TDMA. */
+    if (opts && state && ctx->vc_is_tdma && opts->audio_in_type == AUDIO_IN_RTL) {
+        int cqpsk = 0, fll = 0, ted = 0;
+        dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
+        if (cqpsk && ted) {
+            state->p25_vc_cqpsk_pref = 1;
+        }
+    }
+#else
+    (void)opts;
+    (void)state;
+#endif
+}
+
+static void
+p25_sm_handle_event_grant(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    handle_grant(ctx, (dsd_opts*)opts, state, ev);
+}
+
+static void
+p25_sm_handle_event_ptt(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    handle_voice_start(ctx, opts, state, ev->slot, "ptt");
+}
+
+static void
+p25_sm_handle_event_active(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    handle_voice_start(ctx, opts, state, ev->slot, "active");
+}
+
+static void
+p25_sm_handle_event_end(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    // MAC_END_PTT is an explicit call termination - trigger immediate release check.
+    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "end", 1);
+}
+
+static void
+p25_sm_handle_event_idle(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    // MAC_IDLE may occur during brief gaps - use hangtime, not immediate release.
+    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "idle", 0);
+}
+
+static void
+p25_sm_handle_event_tdu(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    (void)ev;
+    // P1 terminator - explicit call end, trigger immediate release check.
+    handle_voice_end(ctx, (dsd_opts*)opts, state, 0, "tdu", 1);
+}
+
+static void
+p25_sm_handle_event_cc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    (void)ev;
+    handle_cc_sync(ctx, opts, state);
+}
+
+static void
+p25_sm_handle_event_vc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    (void)ev;
+    p25_sm_handle_vc_sync_event(ctx, opts, state);
+}
+
+static void
+p25_sm_handle_event_sync_lost(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    (void)ctx;
+    (void)opts;
+    (void)state;
+    (void)ev;
+    // Handled in tick based on timeouts.
+}
+
+static void
+p25_sm_handle_event_enc(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    handle_enc(ctx, (dsd_opts*)opts, state, ev);
+}
+
+typedef void (*p25_sm_event_handler_fn)(p25_sm_ctx_t*, const dsd_opts*, dsd_state*, const p25_sm_event_t*);
+
+static const p25_sm_event_handler_fn g_p25_sm_event_handlers[] = {
+    [P25_SM_EV_GRANT] = p25_sm_handle_event_grant,         [P25_SM_EV_PTT] = p25_sm_handle_event_ptt,
+    [P25_SM_EV_ACTIVE] = p25_sm_handle_event_active,       [P25_SM_EV_END] = p25_sm_handle_event_end,
+    [P25_SM_EV_IDLE] = p25_sm_handle_event_idle,           [P25_SM_EV_TDU] = p25_sm_handle_event_tdu,
+    [P25_SM_EV_CC_SYNC] = p25_sm_handle_event_cc_sync,     [P25_SM_EV_VC_SYNC] = p25_sm_handle_event_vc_sync,
+    [P25_SM_EV_SYNC_LOST] = p25_sm_handle_event_sync_lost, [P25_SM_EV_ENC] = p25_sm_handle_event_enc,
+};
+
+static int
+p25_sm_tick_handle_forced_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+    if (!ctx || !state || state->p25_sm_force_release == 0) {
+        return 0;
+    }
+    state->p25_sm_force_release = 0;
+    if (ctx->state == P25_SM_TUNED) {
+        do_release(ctx, opts, state, "release-forced");
+    }
+    return 1;
+}
+
+static void
+p25_sm_tick_on_cc_sync_from_state(p25_sm_ctx_t* ctx, const dsd_state* state) {
+    if (!ctx) {
+        return;
+    }
+    if (state && state->last_cc_sync_time_m > ctx->t_cc_sync_m) {
+        ctx->t_cc_sync_m = state->last_cc_sync_time_m;
+        p25_sm_set_expected_cc_nac(ctx, state, 1);
+    } else {
+        p25_sm_set_expected_cc_nac(ctx, state, 0);
+    }
+}
+
+static int
+p25_sm_tick_on_cc_nac_mismatch(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
+    if (!ctx || !state || !p25_sm_valid_nac_int(ctx->expected_cc_nac) || !p25_sm_valid_nac_int(state->nac)) {
+        if (ctx) {
+            ctx->nac_mismatch_count = 0;
+        }
+        return 0;
+    }
+    if (state->nac == ctx->expected_cc_nac) {
+        ctx->nac_mismatch_count = 0;
+        return 0;
+    }
+    ctx->nac_mismatch_count++;
+    if (ctx->nac_mismatch_count < 3) {
+        return 0;
+    }
+    if (opts && opts->verbose > 0) {
+        DSD_FPRINTF(stderr, "\n[P25 SM] NAC mismatch: expected 0x%03llX, got 0x%03X (%d consecutive)\n",
+                    (unsigned long long)ctx->expected_cc_nac, state->nac, ctx->nac_mismatch_count);
+    }
+    ctx->nac_mismatch_count = 0;
+    set_state(ctx, opts, state, P25_SM_HUNTING, "cc-lost-nac-mismatch");
+    ctx->t_hunt_try_m = now_m;
+    try_next_cc(ctx, opts, state, now_m);
+    return 1;
+}
+
+static void
+p25_sm_tick_on_cc_eval_cooldown(const p25_sm_ctx_t* ctx, dsd_state* state, double now_m) {
+    const double eval_window_s = 3.0;
+    double eval_dt = 0.0;
+    double cc_ts = 0.0;
+    if (!ctx || !state || state->p25_cc_eval_freq == 0) {
+        return;
+    }
+    eval_dt = (state->p25_cc_eval_start_m > 0.0) ? (now_m - state->p25_cc_eval_start_m) : 0.0;
+    if (eval_dt < eval_window_s) {
+        return;
+    }
+
+    cc_ts = ctx->t_cc_sync_m;
+    if (state->last_cc_sync_time_m > 0.0 && state->last_cc_sync_time_m < cc_ts) {
+        cc_ts = state->last_cc_sync_time_m;
+    }
+    if (cc_ts <= 0.0 || (now_m - cc_ts) >= eval_window_s) {
+        dsd_trunk_cc_candidates_set_cooldown(state, state->p25_cc_eval_freq, now_m + 10.0);
+    }
+    state->p25_cc_eval_freq = 0;
+    state->p25_cc_eval_start_m = 0.0;
+}
+
+static int
+p25_sm_tick_on_cc_is_lost(const p25_sm_ctx_t* ctx, const dsd_state* state, double now_m, double cc_grace) {
+    double cc_ts = 0.0;
+    if (!ctx) {
+        return 0;
+    }
+    cc_ts = ctx->t_cc_sync_m;
+    if (state) {
+        if (state->last_cc_sync_time_m <= 0.0) {
+            cc_ts = 0.0;
+        } else if (state->last_cc_sync_time_m < cc_ts) {
+            cc_ts = state->last_cc_sync_time_m;
+        }
+    }
+    if (cc_ts <= 0.0 && ctx->t_cc_sync_m > 0.0) {
+        return 1;
+    }
+    if (cc_ts > 0.0 && (now_m - cc_ts) > cc_grace) {
+        return 1;
+    }
+    return 0;
+}
+
+static void
+p25_sm_tick_on_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double cc_grace) {
+    p25_sm_tick_on_cc_sync_from_state(ctx, state);
+    if (p25_sm_tick_on_cc_nac_mismatch(ctx, opts, state, now_m)) {
+        return;
+    }
+    p25_sm_tick_on_cc_eval_cooldown(ctx, state, now_m);
+    if (!p25_sm_tick_on_cc_is_lost(ctx, state, now_m, cc_grace)) {
+        return;
+    }
+    set_state(ctx, opts, state, P25_SM_HUNTING, "cc-lost");
+    ctx->t_hunt_try_m = now_m;
+    try_next_cc(ctx, opts, state, now_m);
+}
+
+static double
+p25_sm_effective_hangtime(const dsd_state* state, double hangtime) {
+    if (!state || hangtime <= 0.0) {
+        return hangtime;
+    }
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    double thr_pct = (cfg && cfg->p25p1_err_hold_pct_is_set) ? cfg->p25p1_err_hold_pct : 0.0;
+    double add_s = (cfg && cfg->p25p1_err_hold_s_is_set) ? cfg->p25p1_err_hold_s : 0.0;
+    if (thr_pct > 0.0 && add_s > 0.0 && state->p25_p1_voice_err_hist_len > 0) {
+        double avg = (double)state->p25_p1_voice_err_hist_sum / (double)state->p25_p1_voice_err_hist_len;
+        if (avg >= thr_pct) {
+            return hangtime + add_s;
+        }
+    }
+    return hangtime;
+}
+
+static void
+p25_sm_tick_tuned_check_hangtime(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double hangtime) {
+    double dt_voice = 0.0;
+    double effective_hangtime = 0.0;
+    if (!ctx || ctx->t_voice_m <= 0.0) {
+        return;
+    }
+    dt_voice = now_m - ctx->t_voice_m;
+    effective_hangtime = p25_sm_effective_hangtime(state, hangtime);
+    if (dt_voice >= effective_hangtime) {
+        do_release(ctx, opts, state, "hangtime-expired");
+    }
+}
+
+static void
+p25_sm_tick_try_cqpsk_retry(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double dt_tune) {
+#ifdef USE_RADIO
+    if (!(opts && state && opts->audio_in_type == AUDIO_IN_RTL && ctx->vc_is_tdma && !ctx->vc_cqpsk_retry_done
+          && dt_tune >= 0.8 && state->p25_vc_cqpsk_pref != 1)) {
+        return;
+    }
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(opts);
+        cfg = dsd_neo_get_config();
+    }
+    if ((cfg && cfg->cqpsk_is_set) || ctx->vc_freq_hz <= 0) {
+        return;
+    }
+
+    int cqpsk = 0, fll = 0, ted = 0;
+    dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
+    if (cqpsk) {
+        ctx->vc_cqpsk_retry_done = 1;
+        return;
+    }
+
+    state->p25_vc_cqpsk_override = 1;
+    ctx->vc_cqpsk_retry_done = 1;
+    // Restart the tune timer for retry to avoid immediate timeout from the new attempt.
+    ctx->t_tune_m = now_m;
+    ctx->t_voice_m = 0.0;
+    p25_sm_clear_slot_activity(ctx);
+    int ted_sps = p25_ted_sps_for_bw(opts, 6000);
+    state->samplesPerSymbol = ted_sps;
+    state->symbolCenter = dsd_opts_symbol_center(ted_sps);
+    dsd_trunk_tuning_hook_tune_to_freq(opts, state, ctx->vc_freq_hz, ted_sps);
+    sm_log(opts, state, "cqpsk-retry-on");
+#else
+    (void)ctx;
+    (void)opts;
+    (void)state;
+    (void)now_m;
+    (void)dt_tune;
+#endif
+}
+
+static void
+p25_sm_tick_tuned_wait_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double grant_timeout) {
+    if (!ctx || ctx->t_tune_m <= 0.0) {
+        return;
+    }
+    double dt_tune = now_m - ctx->t_tune_m;
+    p25_sm_tick_try_cqpsk_retry(ctx, opts, state, now_m, dt_tune);
+    if (dt_tune >= grant_timeout) {
+        do_release(ctx, opts, state, "grant-timeout");
+    }
+}
+
+static void
+p25_sm_tick_tuned(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double hangtime,
+                  double grant_timeout) {
+    if (!ctx) {
+        return;
+    }
+    if (ctx->slots[0].voice_active || ctx->slots[1].voice_active) {
+        ctx->t_voice_m = now_m;
+        return;
+    }
+    if (ctx->t_voice_m > 0.0) {
+        p25_sm_tick_tuned_check_hangtime(ctx, opts, state, now_m, hangtime);
+        return;
+    }
+    p25_sm_tick_tuned_wait_voice(ctx, opts, state, now_m, grant_timeout);
+}
+
+static void
+p25_sm_tick_hunting(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
+    if (!ctx) {
+        return;
+    }
+    if (ctx->t_hunt_try_m <= 0.0 || (now_m - ctx->t_hunt_try_m) >= CC_HUNT_INTERVAL_S) {
+        ctx->t_hunt_try_m = now_m;
+        try_next_cc(ctx, opts, state, now_m);
+    }
+}
+
+static void
+p25_sm_tick_age_tables(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    p25_aff_tick(state);
+    p25_ga_tick(state);
+    p25_nb_tick(state);
+}
+
 void
 p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    p25_sm_event_handler_fn handler = NULL;
     if (!ctx || !ev) {
         return;
     }
@@ -968,54 +1402,12 @@ p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         p25_sm_init_ctx(ctx, opts, state);
     }
 
-    switch (ev->type) {
-        case P25_SM_EV_GRANT: handle_grant(ctx, opts, state, ev); break;
-
-        case P25_SM_EV_PTT: handle_voice_start(ctx, opts, state, ev->slot, "ptt"); break;
-
-        case P25_SM_EV_ACTIVE: handle_voice_start(ctx, opts, state, ev->slot, "active"); break;
-
-        case P25_SM_EV_END:
-            // MAC_END_PTT is an explicit call termination - trigger immediate release check
-            handle_voice_end(ctx, opts, state, ev->slot, "end", 1);
-            break;
-
-        case P25_SM_EV_IDLE:
-            // MAC_IDLE may occur during brief gaps - use hangtime, not immediate release
-            handle_voice_end(ctx, opts, state, ev->slot, "idle", 0);
-            break;
-
-        case P25_SM_EV_TDU:
-            // P1 terminator - explicit call end, trigger immediate release check
-            handle_voice_end(ctx, opts, state, 0, "tdu", 1);
-            break;
-
-        case P25_SM_EV_CC_SYNC: handle_cc_sync(ctx, opts, state); break;
-
-        case P25_SM_EV_VC_SYNC:
-            // Voice sync - update activity timestamp
-            if (ctx->state == P25_SM_TUNED) {
-                ctx->t_voice_m = now_monotonic();
-#ifdef USE_RADIO
-                /* Learn successful TDMA VC acquisition only for the OP25-style CQPSK+TED
-                 * chain. TED can remain enabled as a metric when CQPSK is off, so do not
-                 * treat a legacy FM/QPSK sync as a durable preference for P25p2 TDMA. */
-                if (opts && state && ctx->vc_is_tdma && opts->audio_in_type == AUDIO_IN_RTL) {
-                    int cqpsk = 0, fll = 0, ted = 0;
-                    dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
-                    if (cqpsk && ted) {
-                        state->p25_vc_cqpsk_pref = 1;
-                    }
-                }
-#endif
-            }
-            break;
-
-        case P25_SM_EV_SYNC_LOST:
-            // Handled in tick based on timeouts
-            break;
-
-        case P25_SM_EV_ENC: handle_enc(ctx, opts, state, ev); break;
+    if ((unsigned)ev->type > (unsigned)P25_SM_EV_ENC) {
+        return;
+    }
+    handler = g_p25_sm_event_handlers[(unsigned)ev->type];
+    if (handler) {
+        handler(ctx, opts, state, ev);
     }
 }
 
@@ -1030,201 +1422,25 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
         p25_sm_init_ctx(ctx, opts, state);
     }
 
-    // Check for forced release request (e.g., from encryption lockout paths)
-    if (state && state->p25_sm_force_release != 0) {
-        state->p25_sm_force_release = 0;
-        if (ctx->state == P25_SM_TUNED) {
-            do_release(ctx, opts, state, "release-forced");
-        }
+    if (p25_sm_tick_handle_forced_release(ctx, opts, state)) {
         return;
     }
 
-    double now_m = now_monotonic();
-    double hangtime = ctx->config.hangtime_s;
-    double grant_timeout = ctx->config.grant_timeout_s;
-    double cc_grace = ctx->config.cc_grace_s;
+    const double now_m = now_monotonic();
 
     switch (ctx->state) {
         case P25_SM_IDLE:
             // Nothing to do
             break;
 
-        case P25_SM_ON_CC:
-            // Sync CC timestamp from state if more recent
-            if (state && state->last_cc_sync_time_m > ctx->t_cc_sync_m) {
-                ctx->t_cc_sync_m = state->last_cc_sync_time_m;
-                p25_sm_set_expected_cc_nac(ctx, state, 1);
-            } else {
-                p25_sm_set_expected_cc_nac(ctx, state, 0);
-            }
-            // NAC mismatch detection: if we have a known CC NAC and the current
-            // decoded NAC differs, treat it as cc-lost immediately rather than
-            // waiting for the grace timer. This handles the case where the decoder
-            // lands on a wrong frequency (for example, an adjacent traffic channel).
-            // Ignore transient NAC values 0 and 0xFFF which appear during signal drops.
-            if (state && p25_sm_valid_nac_int(ctx->expected_cc_nac) && p25_sm_valid_nac_int(state->nac)
-                && state->nac != ctx->expected_cc_nac) {
-                ctx->nac_mismatch_count++;
-                if (ctx->nac_mismatch_count >= 3) {
-                    // Three consecutive ticks is enough to distinguish a wrong channel
-                    // from a short transient without waiting for the full CC grace timer.
-                    if (opts && opts->verbose > 0) {
-                        fprintf(stderr, "\n[P25 SM] NAC mismatch: expected 0x%03llX, got 0x%03X (%d consecutive)\n",
-                                (unsigned long long)ctx->expected_cc_nac, state->nac, ctx->nac_mismatch_count);
-                    }
-                    ctx->nac_mismatch_count = 0;
-                    set_state(ctx, opts, state, P25_SM_HUNTING, "cc-lost-nac-mismatch");
-                    ctx->t_hunt_try_m = now_m;
-                    try_next_cc(ctx, opts, state, now_m);
-                    break;
-                }
-            } else {
-                ctx->nac_mismatch_count = 0;
-            }
-            // CC candidate evaluation cooldown: if we tuned to a candidate
-            // and no CC activity appeared within the eval window, penalize
-            if (state && state->p25_cc_eval_freq != 0) {
-                double eval_dt = (state->p25_cc_eval_start_m > 0.0) ? (now_m - state->p25_cc_eval_start_m) : 0.0;
-                double eval_window_s = 3.0;
-                if (eval_dt >= eval_window_s) {
-                    double cc_ts = ctx->t_cc_sync_m;
-                    if (state->last_cc_sync_time_m > 0.0 && state->last_cc_sync_time_m < cc_ts) {
-                        cc_ts = state->last_cc_sync_time_m;
-                    }
-                    int stale = (cc_ts <= 0.0) || ((now_m - cc_ts) >= eval_window_s);
-                    if (stale) {
-                        // Apply cooldown to the candidate
-                        dsd_trunk_cc_candidates_set_cooldown(state, state->p25_cc_eval_freq, now_m + 10.0);
-                    }
-                    state->p25_cc_eval_freq = 0;
-                    state->p25_cc_eval_start_m = 0.0;
-                }
-            }
-            // Check for CC loss
-            {
-                double cc_ts = ctx->t_cc_sync_m;
-                // State's timestamp takes precedence - if it's 0, CC is lost
-                if (state) {
-                    if (state->last_cc_sync_time_m <= 0.0) {
-                        // Explicit loss - state says no CC sync
-                        cc_ts = 0.0;
-                    } else if (state->last_cc_sync_time_m < cc_ts) {
-                        // State's timestamp is older
-                        cc_ts = state->last_cc_sync_time_m;
-                    }
-                }
-                int cc_lost = 0;
-                if (cc_ts <= 0.0 && ctx->t_cc_sync_m > 0.0) {
-                    // State explicitly cleared CC timestamp
-                    cc_lost = 1;
-                } else if (cc_ts > 0.0) {
-                    double dt_cc = now_m - cc_ts;
-                    if (dt_cc > cc_grace) {
-                        cc_lost = 1;
-                    }
-                }
-                if (cc_lost) {
-                    set_state(ctx, opts, state, P25_SM_HUNTING, "cc-lost");
-                    // Try CC candidates immediately
-                    ctx->t_hunt_try_m = now_m;
-                    try_next_cc(ctx, opts, state, now_m);
-                }
-            }
+        case P25_SM_ON_CC: p25_sm_tick_on_cc(ctx, opts, state, now_m, ctx->config.cc_grace_s); break;
+        case P25_SM_TUNED:
+            p25_sm_tick_tuned(ctx, opts, state, now_m, ctx->config.hangtime_s, ctx->config.grant_timeout_s);
             break;
-
-        case P25_SM_TUNED: {
-            // Unified TUNED state handles: waiting for voice, active voice, and hangtime
-            int has_voice = ctx->slots[0].voice_active || ctx->slots[1].voice_active;
-
-            if (has_voice) {
-                // Voice is active - update timestamp
-                ctx->t_voice_m = now_m;
-            } else if (ctx->t_voice_m > 0.0) {
-                // Voice was active before, now in hangtime
-                double dt_voice = now_m - ctx->t_voice_m;
-                double effective_hangtime = hangtime;
-                /* Optional: extend hangtime when P25p1 voice error is elevated to reduce VC↔CC thrash. */
-                if (state && hangtime > 0.0) {
-                    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-                    double thr_pct = (cfg && cfg->p25p1_err_hold_pct_is_set) ? cfg->p25p1_err_hold_pct : 0.0;
-                    double add_s = (cfg && cfg->p25p1_err_hold_s_is_set) ? cfg->p25p1_err_hold_s : 0.0;
-                    if (thr_pct > 0.0 && add_s > 0.0 && state->p25_p1_voice_err_hist_len > 0) {
-                        double avg =
-                            (double)state->p25_p1_voice_err_hist_sum / (double)state->p25_p1_voice_err_hist_len;
-                        if (avg >= thr_pct) {
-                            effective_hangtime = hangtime + add_s;
-                        }
-                    }
-                }
-                if (dt_voice >= effective_hangtime) {
-                    // Hangtime expired - release
-                    do_release(ctx, opts, state, "hangtime-expired");
-                }
-            } else {
-                // Never saw voice - check grant timeout
-                if (ctx->t_tune_m > 0.0) {
-                    double dt_tune = now_m - ctx->t_tune_m;
-#ifdef USE_RADIO
-                    /* CQPSK fallback for P25p2 TDMA VCs (RTL input only):
-                     * If a TDMA VC somehow started on the legacy path, retry once with
-                     * the OP25-style CQPSK+TED chain. Do not flip a TDMA VC from CQPSK
-                     * back to the legacy slicer; that creates alternating bad/good
-                     * retunes and loses the carrier/timing loops we need for P25p2. */
-                    if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && ctx->vc_is_tdma
-                        && !ctx->vc_cqpsk_retry_done && dt_tune >= 0.8 && state->p25_vc_cqpsk_pref != 1) {
-                        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-                        if (!cfg) {
-                            dsd_neo_config_init(opts);
-                            cfg = dsd_neo_get_config();
-                        }
-                        if (!(cfg && cfg->cqpsk_is_set) && ctx->vc_freq_hz > 0) {
-                            int cqpsk = 0, fll = 0, ted = 0;
-                            dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
-                            if (cqpsk) {
-                                ctx->vc_cqpsk_retry_done = 1;
-                            } else {
-                                state->p25_vc_cqpsk_override = 1;
-                                ctx->vc_cqpsk_retry_done = 1;
-                                /* Restart the tune timer for the retry to avoid immediate grant-timeout. */
-                                ctx->t_tune_m = now_m;
-                                ctx->t_voice_m = 0.0;
-                                for (int s = 0; s < 2; s++) {
-                                    ctx->slots[s].voice_active = 0;
-                                    ctx->slots[s].last_active_m = 0.0;
-                                }
-                                int ted_sps = p25_ted_sps_for_bw(opts, 6000);
-                                state->samplesPerSymbol = ted_sps;
-                                state->symbolCenter = dsd_opts_symbol_center(ted_sps);
-                                dsd_trunk_tuning_hook_tune_to_freq(opts, state, ctx->vc_freq_hz, ted_sps);
-                                sm_log(opts, state, "cqpsk-retry-on");
-                            }
-                        }
-                    }
-#endif
-                    if (dt_tune >= grant_timeout) {
-                        // No voice seen within timeout - return to CC
-                        do_release(ctx, opts, state, "grant-timeout");
-                    }
-                }
-            }
-            break;
-        }
-
-        case P25_SM_HUNTING:
-            // Try next CC candidate periodically
-            if (ctx->t_hunt_try_m <= 0.0 || (now_m - ctx->t_hunt_try_m) >= CC_HUNT_INTERVAL_S) {
-                ctx->t_hunt_try_m = now_m;
-                try_next_cc(ctx, opts, state, now_m);
-            }
-            break;
+        case P25_SM_HUNTING: p25_sm_tick_hunting(ctx, opts, state, now_m); break;
     }
 
-    // Age affiliation/neighbor tables (1 Hz)
-    if (state) {
-        p25_aff_tick(state);
-        p25_ga_tick(state);
-        p25_nb_tick(state);
-    }
+    p25_sm_tick_age_tables(state);
 }
 
 /* ============================================================================
@@ -1297,7 +1513,7 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
 }
 
 int
-p25_sm_audio_allowed(p25_sm_ctx_t* ctx, dsd_state* state, int slot) {
+p25_sm_audio_allowed(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
     if (!ctx) {
         ctx = p25_sm_get_ctx();
     }
@@ -1363,8 +1579,8 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
     // Compose event text and push
     Event_History_I* eh = (state->event_history_s != NULL) ? &state->event_history_s[slot & 1] : NULL;
     if (eh) {
-        snprintf(eh->Event_History_Items[0].internal_str, sizeof eh->Event_History_Items[0].internal_str,
-                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", tg);
+        DSD_SNPRINTF(eh->Event_History_Items[0].internal_str, sizeof eh->Event_History_Items[0].internal_str,
+                     "Target: %d; has been locked out; Encryption Lock Out Enabled.", tg);
         dsd_p25_optional_hook_watchdog_event_current(opts, state, (uint8_t)(slot & 1));
         if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
                     sizeof eh->Event_History_Items[0].internal_str)

@@ -12,8 +12,8 @@ static dsd_rtl_stream_metrics_hooks g_rtl_stream_metrics_hooks = {0};
 static atomic_int g_rtl_symbol_cache_pending;
 
 void
-dsd_rtl_stream_metrics_hooks_set(dsd_rtl_stream_metrics_hooks hooks) {
-    g_rtl_stream_metrics_hooks = hooks;
+dsd_rtl_stream_metrics_hooks_set(const dsd_rtl_stream_metrics_hooks* hooks) {
+    g_rtl_stream_metrics_hooks = hooks ? *hooks : (dsd_rtl_stream_metrics_hooks){0};
 }
 
 unsigned int

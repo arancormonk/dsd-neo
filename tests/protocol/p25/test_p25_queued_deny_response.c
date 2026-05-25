@@ -17,9 +17,14 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
@@ -32,6 +37,7 @@ void p25_sm_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int
 
 /* Stubs for external hooks referenced by linked modules */
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -39,6 +45,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -46,14 +53,17 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -62,13 +72,15 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 
 /* Alias decode helpers referenced by MAC VPDU handler */
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -77,6 +89,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -85,6 +98,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -94,6 +108,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -135,7 +150,7 @@ fake_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason
 static p25_sm_api
 sm_test_api(void) {
     p25_sm_api api;
-    memset(&api, 0, sizeof(api));
+    DSD_MEMSET(&api, 0, sizeof(api));
     api.on_queued_response = fake_on_queued_response;
     api.on_deny_response = fake_on_deny_response;
     return api;
@@ -157,7 +172,7 @@ reset_tracking(void) {
 static void
 build_que_deny_mac_aii(unsigned long long MAC[24], int is_deny, int svc_type, int reason_code, int addl_info,
                        int target_addr, int has_addl_info) {
-    memset(MAC, 0, 24 * sizeof(unsigned long long));
+    DSD_MEMSET(MAC, 0, 24 * sizeof(unsigned long long));
     MAC[0] = 0x07;                                                                 // TSBK marker
     MAC[1] = (unsigned long long)(is_deny ? 0x67 : 0x61);                          // opcode
     MAC[2] = (unsigned long long)((svc_type & 0x3F) | (has_addl_info ? 0x80 : 0)); // AII, Service_Type
@@ -184,11 +199,14 @@ static int
 test_que_rsp_field_extraction_known_payload(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     // SVC=0x15, Reason=0x20, Addl=0x123456, Target=0xABCDEF (11259375)
@@ -198,20 +216,22 @@ test_que_rsp_field_extraction_known_payload(void) {
 
     int rc = 0;
     if (g_queued_calls != 1) {
-        fprintf(stderr, "FAIL: test_que_rsp_field_extraction: expected 1 queued call, got %d\n", g_queued_calls);
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: expected 1 queued call, got %d\n", g_queued_calls);
         rc = 1;
     }
     if (g_last_svc_type != 0x15) {
-        fprintf(stderr, "FAIL: test_que_rsp_field_extraction: svc_type expected 0x15, got 0x%02X\n", g_last_svc_type);
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: svc_type expected 0x15, got 0x%02X\n",
+                    g_last_svc_type);
         rc = 1;
     }
     if (g_last_reason_code != 0x20) {
-        fprintf(stderr, "FAIL: test_que_rsp_field_extraction: reason_code expected 0x20, got 0x%02X\n",
-                g_last_reason_code);
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: reason_code expected 0x20, got 0x%02X\n",
+                    g_last_reason_code);
         rc = 1;
     }
     if (g_last_target != 0xABCDEF) {
-        fprintf(stderr, "FAIL: test_que_rsp_field_extraction: target expected 0xABCDEF, got 0x%06X\n", g_last_target);
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: target expected 0xABCDEF, got 0x%06X\n",
+                    g_last_target);
         rc = 1;
     }
 
@@ -227,11 +247,14 @@ static int
 test_deny_rsp_field_extraction_known_payload(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     // SVC=0x3F, Reason=0xFF, Addl=0xFEDCBA, Target=0x000001
@@ -241,20 +264,22 @@ test_deny_rsp_field_extraction_known_payload(void) {
 
     int rc = 0;
     if (g_deny_calls != 1) {
-        fprintf(stderr, "FAIL: test_deny_rsp_field_extraction: expected 1 deny call, got %d\n", g_deny_calls);
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: expected 1 deny call, got %d\n", g_deny_calls);
         rc = 1;
     }
     if (g_last_svc_type != 0x3F) {
-        fprintf(stderr, "FAIL: test_deny_rsp_field_extraction: svc_type expected 0x3F, got 0x%02X\n", g_last_svc_type);
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: svc_type expected 0x3F, got 0x%02X\n",
+                    g_last_svc_type);
         rc = 1;
     }
     if (g_last_reason_code != 0xFF) {
-        fprintf(stderr, "FAIL: test_deny_rsp_field_extraction: reason_code expected 0xFF, got 0x%02X\n",
-                g_last_reason_code);
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: reason_code expected 0xFF, got 0x%02X\n",
+                    g_last_reason_code);
         rc = 1;
     }
     if (g_last_target != 0x000001) {
-        fprintf(stderr, "FAIL: test_deny_rsp_field_extraction: target expected 0x000001, got 0x%06X\n", g_last_target);
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: target expected 0x000001, got 0x%06X\n",
+                    g_last_target);
         rc = 1;
     }
 
@@ -291,28 +316,31 @@ test_que_reason_code_lookup_all_known(void) {
     };
 
     for (int i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
-        memset(&opts, 0, sizeof opts);
-        memset(&st, 0, sizeof st);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
         reset_tracking();
-        p25_sm_set_api(sm_test_api());
+        {
+            p25_sm_api api = sm_test_api();
+            p25_sm_set_api(&api);
+        }
 
         unsigned long long MAC[24];
         build_que_deny_mac(MAC, 0, 0x01, cases[i].code, 0, 12345);
         process_MAC_VPDU(&opts, &st, 0, MAC);
 
         if (g_last_reason_code != cases[i].code) {
-            fprintf(stderr, "FAIL: test_que_reason_code[0x%02X]: reason_code mismatch got 0x%02X\n", cases[i].code,
-                    g_last_reason_code);
+            DSD_FPRINTF(stderr, "FAIL: test_que_reason_code[0x%02X]: reason_code mismatch got 0x%02X\n", cases[i].code,
+                        g_last_reason_code);
             rc = 1;
         }
         if (strstr(st.active_channel[0], "QUE") == NULL) {
-            fprintf(stderr, "FAIL: test_que_reason_code[0x%02X]: active_channel missing 'QUE': '%s'\n", cases[i].code,
-                    st.active_channel[0]);
+            DSD_FPRINTF(stderr, "FAIL: test_que_reason_code[0x%02X]: active_channel missing 'QUE': '%s'\n",
+                        cases[i].code, st.active_channel[0]);
             rc = 1;
         }
         if (strstr(st.active_channel[0], cases[i].expected_substr) == NULL) {
-            fprintf(stderr, "FAIL: test_que_reason_code[0x%02X]: active_channel missing '%s': '%s'\n", cases[i].code,
-                    cases[i].expected_substr, st.active_channel[0]);
+            DSD_FPRINTF(stderr, "FAIL: test_que_reason_code[0x%02X]: active_channel missing '%s': '%s'\n",
+                        cases[i].code, cases[i].expected_substr, st.active_channel[0]);
             rc = 1;
         }
         p25_sm_reset_api();
@@ -365,28 +393,31 @@ test_deny_reason_code_lookup_all_known(void) {
     };
 
     for (int i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
-        memset(&opts, 0, sizeof opts);
-        memset(&st, 0, sizeof st);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
         reset_tracking();
-        p25_sm_set_api(sm_test_api());
+        {
+            p25_sm_api api = sm_test_api();
+            p25_sm_set_api(&api);
+        }
 
         unsigned long long MAC[24];
         build_que_deny_mac(MAC, 1, 0x02, cases[i].code, 0, 54321);
         process_MAC_VPDU(&opts, &st, 0, MAC);
 
         if (g_last_reason_code != cases[i].code) {
-            fprintf(stderr, "FAIL: test_deny_reason_code[0x%02X]: reason_code mismatch got 0x%02X\n", cases[i].code,
-                    g_last_reason_code);
+            DSD_FPRINTF(stderr, "FAIL: test_deny_reason_code[0x%02X]: reason_code mismatch got 0x%02X\n", cases[i].code,
+                        g_last_reason_code);
             rc = 1;
         }
         if (strstr(st.active_channel[0], "DENY") == NULL) {
-            fprintf(stderr, "FAIL: test_deny_reason_code[0x%02X]: active_channel missing 'DENY': '%s'\n", cases[i].code,
-                    st.active_channel[0]);
+            DSD_FPRINTF(stderr, "FAIL: test_deny_reason_code[0x%02X]: active_channel missing 'DENY': '%s'\n",
+                        cases[i].code, st.active_channel[0]);
             rc = 1;
         }
         if (strstr(st.active_channel[0], cases[i].expected_substr) == NULL) {
-            fprintf(stderr, "FAIL: test_deny_reason_code[0x%02X]: active_channel missing '%s': '%s'\n", cases[i].code,
-                    cases[i].expected_substr, st.active_channel[0]);
+            DSD_FPRINTF(stderr, "FAIL: test_deny_reason_code[0x%02X]: active_channel missing '%s': '%s'\n",
+                        cases[i].code, cases[i].expected_substr, st.active_channel[0]);
             rc = 1;
         }
         p25_sm_reset_api();
@@ -403,10 +434,13 @@ static int
 test_que_rsp_user_reason_range(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 0, 0x01, 0xAB, 0, 999);
@@ -414,17 +448,17 @@ test_que_rsp_user_reason_range(void) {
 
     int rc = 0;
     if (g_last_reason_code != 0xAB) {
-        fprintf(stderr, "FAIL: test_que_rsp_user_reason_range: expected 0xAB, got 0x%02X\n", g_last_reason_code);
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_user_reason_range: expected 0xAB, got 0x%02X\n", g_last_reason_code);
         rc = 1;
     }
     if (strstr(st.active_channel[0], "QUE") == NULL) {
-        fprintf(stderr, "FAIL: test_que_rsp_user_reason_range: active_channel missing 'QUE': '%s'\n",
-                st.active_channel[0]);
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_user_reason_range: active_channel missing 'QUE': '%s'\n",
+                    st.active_channel[0]);
         rc = 1;
     }
     if (strstr(st.active_channel[0], "User/System Defined") == NULL) {
-        fprintf(stderr, "FAIL: test_que_rsp_user_reason_range: active_channel missing user/system label: '%s'\n",
-                st.active_channel[0]);
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_user_reason_range: active_channel missing user/system label: '%s'\n",
+                    st.active_channel[0]);
         rc = 1;
     }
 
@@ -440,10 +474,13 @@ static int
 test_deny_rsp_user_reason_range(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 1, 0x02, 0x99, 0, 888);
@@ -451,17 +488,17 @@ test_deny_rsp_user_reason_range(void) {
 
     int rc = 0;
     if (g_last_reason_code != 0x99) {
-        fprintf(stderr, "FAIL: test_deny_rsp_user_reason_range: expected 0x99, got 0x%02X\n", g_last_reason_code);
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_user_reason_range: expected 0x99, got 0x%02X\n", g_last_reason_code);
         rc = 1;
     }
     if (strstr(st.active_channel[0], "DENY") == NULL) {
-        fprintf(stderr, "FAIL: test_deny_rsp_user_reason_range: active_channel missing 'DENY': '%s'\n",
-                st.active_channel[0]);
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_user_reason_range: active_channel missing 'DENY': '%s'\n",
+                    st.active_channel[0]);
         rc = 1;
     }
     if (strstr(st.active_channel[0], "User/System Defined") == NULL) {
-        fprintf(stderr, "FAIL: test_deny_rsp_user_reason_range: active_channel missing user/system label: '%s'\n",
-                st.active_channel[0]);
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_user_reason_range: active_channel missing user/system label: '%s'\n",
+                    st.active_channel[0]);
         rc = 1;
     }
 
@@ -477,12 +514,12 @@ static int
 test_sm_queued_releases_when_tuned(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     /* Force SM into TUNED state */
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    memset(ctx, 0, sizeof(*ctx));
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->state = P25_SM_TUNED;
     ctx->initialized = 1;
 
@@ -493,13 +530,13 @@ test_sm_queued_releases_when_tuned(void) {
 
     int rc = 0;
     if (st.p25_sm_queued_count != 1) {
-        fprintf(stderr, "FAIL: test_sm_queued_releases_when_tuned: counter expected 1, got %u\n",
-                st.p25_sm_queued_count);
+        DSD_FPRINTF(stderr, "FAIL: test_sm_queued_releases_when_tuned: counter expected 1, got %u\n",
+                    st.p25_sm_queued_count);
         rc = 1;
     }
     /* After release, SM should be back to ON_CC (or IDLE depending on implementation) */
     if (ctx->state == P25_SM_TUNED) {
-        fprintf(stderr, "FAIL: test_sm_queued_releases_when_tuned: SM still in TUNED state\n");
+        DSD_FPRINTF(stderr, "FAIL: test_sm_queued_releases_when_tuned: SM still in TUNED state\n");
         rc = 1;
     }
 
@@ -514,11 +551,11 @@ static int
 test_sm_deny_releases_when_tuned(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    memset(ctx, 0, sizeof(*ctx));
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->state = P25_SM_TUNED;
     ctx->initialized = 1;
 
@@ -528,11 +565,12 @@ test_sm_deny_releases_when_tuned(void) {
 
     int rc = 0;
     if (st.p25_sm_deny_count != 1) {
-        fprintf(stderr, "FAIL: test_sm_deny_releases_when_tuned: counter expected 1, got %u\n", st.p25_sm_deny_count);
+        DSD_FPRINTF(stderr, "FAIL: test_sm_deny_releases_when_tuned: counter expected 1, got %u\n",
+                    st.p25_sm_deny_count);
         rc = 1;
     }
     if (ctx->state == P25_SM_TUNED) {
-        fprintf(stderr, "FAIL: test_sm_deny_releases_when_tuned: SM still in TUNED state\n");
+        DSD_FPRINTF(stderr, "FAIL: test_sm_deny_releases_when_tuned: SM still in TUNED state\n");
         rc = 1;
     }
 
@@ -547,11 +585,11 @@ static int
 test_sm_queued_noop_when_on_cc(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    memset(ctx, 0, sizeof(*ctx));
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->state = P25_SM_ON_CC;
     ctx->initialized = 1;
 
@@ -561,11 +599,12 @@ test_sm_queued_noop_when_on_cc(void) {
 
     int rc = 0;
     if (st.p25_sm_queued_count != 1) {
-        fprintf(stderr, "FAIL: test_sm_queued_noop_when_on_cc: counter expected 1, got %u\n", st.p25_sm_queued_count);
+        DSD_FPRINTF(stderr, "FAIL: test_sm_queued_noop_when_on_cc: counter expected 1, got %u\n",
+                    st.p25_sm_queued_count);
         rc = 1;
     }
     if (ctx->state != P25_SM_ON_CC) {
-        fprintf(stderr, "FAIL: test_sm_queued_noop_when_on_cc: SM state changed from ON_CC\n");
+        DSD_FPRINTF(stderr, "FAIL: test_sm_queued_noop_when_on_cc: SM state changed from ON_CC\n");
         rc = 1;
     }
 
@@ -580,11 +619,11 @@ static int
 test_sm_deny_noop_when_on_cc(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    memset(ctx, 0, sizeof(*ctx));
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->state = P25_SM_ON_CC;
     ctx->initialized = 1;
 
@@ -594,11 +633,11 @@ test_sm_deny_noop_when_on_cc(void) {
 
     int rc = 0;
     if (st.p25_sm_deny_count != 1) {
-        fprintf(stderr, "FAIL: test_sm_deny_noop_when_on_cc: counter expected 1, got %u\n", st.p25_sm_deny_count);
+        DSD_FPRINTF(stderr, "FAIL: test_sm_deny_noop_when_on_cc: counter expected 1, got %u\n", st.p25_sm_deny_count);
         rc = 1;
     }
     if (ctx->state != P25_SM_ON_CC) {
-        fprintf(stderr, "FAIL: test_sm_deny_noop_when_on_cc: SM state changed from ON_CC\n");
+        DSD_FPRINTF(stderr, "FAIL: test_sm_deny_noop_when_on_cc: SM state changed from ON_CC\n");
         rc = 1;
     }
 
@@ -613,11 +652,11 @@ static int
 test_sm_queued_counter_increments(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    memset(ctx, 0, sizeof(*ctx));
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->state = P25_SM_IDLE;
     ctx->initialized = 1;
 
@@ -629,7 +668,7 @@ test_sm_queued_counter_increments(void) {
 
     int rc = 0;
     if (st.p25_sm_queued_count != 3) {
-        fprintf(stderr, "FAIL: test_sm_queued_counter_increments: expected 3, got %u\n", st.p25_sm_queued_count);
+        DSD_FPRINTF(stderr, "FAIL: test_sm_queued_counter_increments: expected 3, got %u\n", st.p25_sm_queued_count);
         rc = 1;
     }
 
@@ -644,11 +683,11 @@ static int
 test_sm_deny_counter_increments(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    memset(ctx, 0, sizeof(*ctx));
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->state = P25_SM_HUNTING;
     ctx->initialized = 1;
 
@@ -659,7 +698,7 @@ test_sm_deny_counter_increments(void) {
 
     int rc = 0;
     if (st.p25_sm_deny_count != 2) {
-        fprintf(stderr, "FAIL: test_sm_deny_counter_increments: expected 2, got %u\n", st.p25_sm_deny_count);
+        DSD_FPRINTF(stderr, "FAIL: test_sm_deny_counter_increments: expected 2, got %u\n", st.p25_sm_deny_count);
         rc = 1;
     }
 
@@ -674,10 +713,13 @@ static int
 test_active_channel_que_format(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 0, 0x01, 0x40, 0, 67890);
@@ -685,11 +727,11 @@ test_active_channel_que_format(void) {
 
     int rc = 0;
     if (strstr(st.active_channel[0], "QUE") == NULL) {
-        fprintf(stderr, "FAIL: test_active_channel_que_format: missing 'QUE' in '%s'\n", st.active_channel[0]);
+        DSD_FPRINTF(stderr, "FAIL: test_active_channel_que_format: missing 'QUE' in '%s'\n", st.active_channel[0]);
         rc = 1;
     }
     if (strstr(st.active_channel[0], "67890") == NULL) {
-        fprintf(stderr, "FAIL: test_active_channel_que_format: missing '67890' in '%s'\n", st.active_channel[0]);
+        DSD_FPRINTF(stderr, "FAIL: test_active_channel_que_format: missing '67890' in '%s'\n", st.active_channel[0]);
         rc = 1;
     }
 
@@ -705,10 +747,13 @@ static int
 test_active_channel_deny_format(void) {
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 1, 0x02, 0x60, 0, 12345);
@@ -716,11 +761,11 @@ test_active_channel_deny_format(void) {
 
     int rc = 0;
     if (strstr(st.active_channel[0], "DENY") == NULL) {
-        fprintf(stderr, "FAIL: test_active_channel_deny_format: missing 'DENY' in '%s'\n", st.active_channel[0]);
+        DSD_FPRINTF(stderr, "FAIL: test_active_channel_deny_format: missing 'DENY' in '%s'\n", st.active_channel[0]);
         rc = 1;
     }
     if (strstr(st.active_channel[0], "12345") == NULL) {
-        fprintf(stderr, "FAIL: test_active_channel_deny_format: missing '12345' in '%s'\n", st.active_channel[0]);
+        DSD_FPRINTF(stderr, "FAIL: test_active_channel_deny_format: missing '12345' in '%s'\n", st.active_channel[0]);
         rc = 1;
     }
 
@@ -739,25 +784,28 @@ test_additional_info_indicator_controls_display(void) {
     int rc = 0;
 
     reset_tracking();
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     unsigned long long MAC[24];
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     build_que_deny_mac_aii(MAC, 0, 0x01, 0x40, 0x123456, 777, 0);
     process_MAC_VPDU(&opts, &st, 0, MAC);
     if (strstr(st.active_channel[0], "Info:") != NULL) {
-        fprintf(stderr, "FAIL: test_additional_info_indicator: displayed info without AII: '%s'\n",
-                st.active_channel[0]);
+        DSD_FPRINTF(stderr, "FAIL: test_additional_info_indicator: displayed info without AII: '%s'\n",
+                    st.active_channel[0]);
         rc = 1;
     }
 
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     build_que_deny_mac_aii(MAC, 0, 0x01, 0x40, 0x123456, 777, 1);
     process_MAC_VPDU(&opts, &st, 0, MAC);
     if (strstr(st.active_channel[0], "Info: 123456") == NULL) {
-        fprintf(stderr, "FAIL: test_additional_info_indicator: missing AII info: '%s'\n", st.active_channel[0]);
+        DSD_FPRINTF(stderr, "FAIL: test_additional_info_indicator: missing AII info: '%s'\n", st.active_channel[0]);
         rc = 1;
     }
 
@@ -790,7 +838,11 @@ main(void) {
     rc |= test_additional_info_indicator_controls_display();
 
     if (rc == 0) {
-        fprintf(stderr, "All P25 queued/deny response tests passed.\n");
+        DSD_FPRINTF(stderr, "All P25 queued/deny response tests passed.\n");
     }
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

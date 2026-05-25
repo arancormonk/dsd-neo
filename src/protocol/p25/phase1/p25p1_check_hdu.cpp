@@ -3,98 +3,110 @@
 #include <dsd-neo/fec/ReedSolomon.hpp>
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
-
 #include <stdint.h>
 #include <string.h>
-
-// Uncomment for very verbose trace messages
-//#define CHECK_HDU_DEBUG
-
-// The following methods are just a C bridge for the C++ implementations of the Golay and ReedSolomon
-// algorithms.
+#include "dsd-neo/core/safe_api.h"
 
 static DSDGolay24 golay24;
 
-static DSDReedSolomon_36_20_17 reed_solomon_36_20_17;
+namespace {
+
+static DSDReedSolomon_36_20_17*
+reed_solomon_36_20_17_instance(void) {
+    static DSDReedSolomon_36_20_17* instance = []() noexcept -> DSDReedSolomon_36_20_17* {
+        try {
+            return new DSDReedSolomon_36_20_17();
+        } catch (...) {
+            return nullptr;
+        }
+    }();
+    return instance;
+}
+
+} // namespace
 
 int
-check_and_fix_golay_24_6(char* hex, char* parity, int* fixed_errors) {
+check_and_fix_golay_24_6(char* hex, const char* parity, int* fixed_errors) {
 #ifdef CHECK_HDU_DEBUG
-    fprintf(stderr, "[");
+    DSD_FPRINTF(stderr, "[");
     for (unsigned int i = 0; i < 6; i++) {
-        fprintf(stderr, "%c", (hex[i] != 0) ? 'X' : ' ');
+        DSD_FPRINTF(stderr, "%c", (hex[i] != 0) ? 'X' : ' ');
     }
-    fprintf(stderr, "]  [");
+    DSD_FPRINTF(stderr, "]  [");
     for (unsigned int i = 12; i < 24; i++) {
-        fprintf(stderr, "%c", (parity[i - 12] != 0) ? 'X' : ' ');
+        DSD_FPRINTF(stderr, "%c", (parity[i - 12] != 0) ? 'X' : ' ');
     }
-    fprintf(stderr, "]");
+    DSD_FPRINTF(stderr, "]");
 #endif
 
     int irrecoverable_errors = golay24.decode_6(hex, parity, fixed_errors);
 
 #ifdef CHECK_HDU_DEBUG
-    fprintf(stderr, " -> [");
+    DSD_FPRINTF(stderr, " -> [");
     for (unsigned int i = 0; i < 6; i++) {
-        fprintf(stderr, "%c", (hex[i] != 0) ? 'X' : ' ');
+        DSD_FPRINTF(stderr, "%c", (hex[i] != 0) ? 'X' : ' ');
     }
-    fprintf(stderr, "]");
+    DSD_FPRINTF(stderr, "]");
     if (irrecoverable_errors) {
-        fprintf(stderr, "  Errors: >4");
+        DSD_FPRINTF(stderr, "  Errors: >4");
     } else {
-        fprintf(stderr, "  Errors: %i", *fixed_errors);
+        DSD_FPRINTF(stderr, "  Errors: %i", *fixed_errors);
     }
-    fprintf(stderr, "\n");
+    DSD_FPRINTF(stderr, "\n");
 #endif
 
     return irrecoverable_errors;
 }
 
 int
-check_and_fix_golay_24_12(char* dodeca, char* parity, int* fixed_errors) {
+check_and_fix_golay_24_12(char* dodeca, const char* parity, int* fixed_errors) {
 #ifdef CHECK_HDU_DEBUG
-    fprintf(stderr, "[");
+    DSD_FPRINTF(stderr, "[");
     for (unsigned int i = 0; i < 12; i++) {
-        fprintf(stderr, "%c", (dodeca[i] != 0) ? 'X' : ' ');
+        DSD_FPRINTF(stderr, "%c", (dodeca[i] != 0) ? 'X' : ' ');
     }
-    fprintf(stderr, "]  [");
+    DSD_FPRINTF(stderr, "]  [");
     for (unsigned int i = 12; i < 24; i++) {
-        fprintf(stderr, "%c", (parity[i - 12] != 0) ? 'X' : ' ');
+        DSD_FPRINTF(stderr, "%c", (parity[i - 12] != 0) ? 'X' : ' ');
     }
-    fprintf(stderr, "]");
+    DSD_FPRINTF(stderr, "]");
 #endif
 
     int irrecoverable_errors = golay24.decode_12(dodeca, parity, fixed_errors);
 
 #ifdef CHECK_HDU_DEBUG
-    fprintf(stderr, " -> [");
+    DSD_FPRINTF(stderr, " -> [");
     for (unsigned int i = 0; i < 12; i++) {
-        fprintf(stderr, "%c", (dodeca[i] != 0) ? 'X' : ' ');
+        DSD_FPRINTF(stderr, "%c", (dodeca[i] != 0) ? 'X' : ' ');
     }
-    fprintf(stderr, "]");
+    DSD_FPRINTF(stderr, "]");
     if (irrecoverable_errors) {
-        fprintf(stderr, "  Errors: >4");
+        DSD_FPRINTF(stderr, "  Errors: >4");
     } else {
-        fprintf(stderr, "  Errors: %i", *fixed_errors);
+        DSD_FPRINTF(stderr, "  Errors: %i", *fixed_errors);
     }
-    fprintf(stderr, "\n");
+    DSD_FPRINTF(stderr, "\n");
 #endif
 
     return irrecoverable_errors;
 }
 
 void
-encode_golay_24_6(char* hex, char* out_parity) {
+encode_golay_24_6(const char* hex, char* out_parity) {
     golay24.encode_6(hex, out_parity);
 }
 
 void
-encode_golay_24_12(char* dodeca, char* out_parity) {
+encode_golay_24_12(const char* dodeca, char* out_parity) {
     golay24.encode_12(dodeca, out_parity);
 }
 
 int
-check_and_fix_redsolomon_36_20_17(char* data, char* parity) {
+check_and_fix_redsolomon_36_20_17(char* data, const char* parity) {
+    const DSDReedSolomon_36_20_17* rs = reed_solomon_36_20_17_instance();
+    if (rs == nullptr) {
+        return 1;
+    }
 #ifdef CHECK_HDU_DEBUG
     char original[20][6];
     for (int i = 0; i < 20; i++) {
@@ -104,47 +116,52 @@ check_and_fix_redsolomon_36_20_17(char* data, char* parity) {
     }
 #endif
 
-    int irrecoverable_errors = reed_solomon_36_20_17.decode(data, parity);
+    int irrecoverable_errors = rs->decode(data, parity);
 
 #ifdef CHECK_HDU_DEBUG
-    fprintf(stderr, "Results for Reed-Solomon code (36,20,17)\n\n");
+    DSD_FPRINTF(stderr, "Results for Reed-Solomon code (36,20,17)\n\n");
     if (irrecoverable_errors == 0) {
-        fprintf(stderr, "  i  original fixed\n");
+        DSD_FPRINTF(stderr, "  i  original fixed\n");
         for (int i = 0; i < 20; i++) {
-            fprintf(stderr, "%3d  [", i);
+            DSD_FPRINTF(stderr, "%3d  [", i);
             for (int j = 0; j < 6; j++) {
-                fprintf(stderr, "%c", (original[i][j] == 1) ? 'X' : ' ');
+                DSD_FPRINTF(stderr, "%c", (original[i][j] == 1) ? 'X' : ' ');
             }
-            fprintf(stderr, "] [");
+            DSD_FPRINTF(stderr, "] [");
             for (int j = 0; j < 6; j++) {
-                fprintf(stderr, "%c", (data[i * 6 + j] == 1) ? 'X' : ' ');
+                DSD_FPRINTF(stderr, "%c", (data[i * 6 + j] == 1) ? 'X' : ' ');
             }
-            fprintf(stderr, "]\n");
+            DSD_FPRINTF(stderr, "]\n");
         }
     } else {
-        fprintf(stderr, "Irrecoverable errors found\n");
-        fprintf(stderr, "  i  original fixed\n");
+        DSD_FPRINTF(stderr, "Irrecoverable errors found\n");
+        DSD_FPRINTF(stderr, "  i  original fixed\n");
         for (int i = 0; i < 20; i++) {
-            fprintf(stderr, "%3d  [", i);
+            DSD_FPRINTF(stderr, "%3d  [", i);
             for (int j = 0; j < 6; j++) {
-                fprintf(stderr, "%c", (original[i][j] == 1) ? 'X' : ' ');
+                DSD_FPRINTF(stderr, "%c", (original[i][j] == 1) ? 'X' : ' ');
             }
-            fprintf(stderr, "]\n");
+            DSD_FPRINTF(stderr, "]\n");
         }
     }
-    fprintf(stderr, "\n");
+    DSD_FPRINTF(stderr, "\n");
 #endif
 
     return irrecoverable_errors;
 }
 
 int
-check_and_fix_redsolomon_36_20_17_soft(char* data, char* parity, const int* erasures, int n_erasures) {
-    return reed_solomon_36_20_17.decode_soft(data, parity, erasures, n_erasures);
+check_and_fix_redsolomon_36_20_17_soft(char* data, const char* parity, const int* erasures, int n_erasures) {
+    const DSDReedSolomon_36_20_17* rs = reed_solomon_36_20_17_instance();
+    if (rs == nullptr) {
+        return 1;
+    }
+    return rs->decode_soft(data, parity, erasures, n_erasures);
 }
 
 int
-p25p1_rs_36_20_17_soft_reliability(char* data, char* parity, const uint8_t* data_reliab, const uint8_t* parity_reliab) {
+p25p1_rs_36_20_17_soft_reliability(char* data, const char* parity, const uint8_t* data_reliab,
+                                   const uint8_t* parity_reliab) {
     if (data == NULL || parity == NULL || data_reliab == NULL || parity_reliab == NULL) {
         return 1;
     }
@@ -152,13 +169,13 @@ p25p1_rs_36_20_17_soft_reliability(char* data, char* parity, const uint8_t* data
     int erasures[16];
     int n_ranked = p25p1_build_rs_ranked_erasures(data_reliab, 20, parity_reliab, 16, 8, erasures, 16);
     char original_data[20 * 6];
-    memcpy(original_data, data, sizeof(original_data));
+    DSD_MEMCPY(original_data, data, sizeof(original_data));
 
     for (int n = 1; n <= n_ranked; n++) {
         char candidate_data[20 * 6];
-        memcpy(candidate_data, original_data, sizeof(candidate_data));
+        DSD_MEMCPY(candidate_data, original_data, sizeof(candidate_data));
         if (check_and_fix_redsolomon_36_20_17_soft(candidate_data, parity, erasures, n) == 0) {
-            memcpy(data, candidate_data, sizeof(candidate_data));
+            DSD_MEMCPY(data, candidate_data, sizeof(candidate_data));
             return 0;
         }
     }
@@ -166,6 +183,10 @@ p25p1_rs_36_20_17_soft_reliability(char* data, char* parity, const uint8_t* data
 }
 
 void
-encode_reedsolomon_36_20_17(char* hex_data, char* fixed_parity) {
-    reed_solomon_36_20_17.encode(hex_data, fixed_parity);
+encode_reedsolomon_36_20_17(const char* hex_data, char* fixed_parity) {
+    const DSDReedSolomon_36_20_17* rs = reed_solomon_36_20_17_instance();
+    if (rs == nullptr) {
+        return;
+    }
+    rs->encode(hex_data, fixed_parity);
 }

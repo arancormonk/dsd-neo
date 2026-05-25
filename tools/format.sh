@@ -24,7 +24,7 @@ for f in "${files[@]}"; do
 done
 files=("${filtered[@]}")
 
-if command -v clang-format >/dev/null 2>&1; then
+if command -v clang-format > /dev/null 2>&1; then
   if [ ${#files[@]} -eq 0 ]; then
     echo "No C/C headers found to format."
     exit 0

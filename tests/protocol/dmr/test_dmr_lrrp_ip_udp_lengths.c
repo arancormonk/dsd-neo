@@ -22,9 +22,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Minimal stubs for direct link with dmr_pdu.c
 const char*
@@ -38,14 +43,15 @@ dsd_unicode_supported(void) {
 }
 
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     if (len > 0) {
-        memset(output, 0, (size_t)len);
+        DSD_MEMSET(output, 0, (size_t)len);
     }
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -53,6 +59,7 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     (void)opts;
     (void)state;
@@ -72,12 +79,12 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
 
 void
 getTimeC_buf(char out[9]) {
-    snprintf(out, 9, "%s", "11:22:33");
+    DSD_SNPRINTF(out, 9, "%s", "11:22:33");
 }
 
 void
 getDateS_buf(char out[11]) {
-    snprintf(out, 11, "%s", "1999/01/02");
+    DSD_SNPRINTF(out, 11, "%s", "1999/01/02");
 }
 
 // Under test
@@ -86,7 +93,7 @@ void decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* inpu
 static int
 expect_has_substr(const char* buf, const char* needle, const char* tag) {
     if (!buf || !strstr(buf, needle)) {
-        fprintf(stderr, "%s: missing '%s' in '%s'\n", tag, needle, buf ? buf : "(null)");
+        DSD_FPRINTF(stderr, "%s: missing '%s' in '%s'\n", tag, needle, buf ? buf : "(null)");
         return 1;
     }
     return 0;
@@ -95,7 +102,7 @@ expect_has_substr(const char* buf, const char* needle, const char* tag) {
 static int
 expect_nonempty(const char* buf, const char* tag) {
     if (!buf || buf[0] == '\0') {
-        fprintf(stderr, "%s: empty output\n", tag);
+        DSD_FPRINTF(stderr, "%s: empty output\n", tag);
         return 1;
     }
     return 0;
@@ -103,7 +110,7 @@ expect_nonempty(const char* buf, const char* tag) {
 
 static size_t
 build_ipv4_udp_lrrp(uint8_t* out, size_t cap, uint8_t ihl_words) {
-    memset(out, 0, cap);
+    DSD_MEMSET(out, 0, cap);
 
     const size_t ip_header_len = (size_t)ihl_words * 4u;
     const size_t lrrp_len = 16u;          // LRRP header (2) + token stream (14)
@@ -179,7 +186,7 @@ build_ipv4_udp_lrrp(uint8_t* out, size_t cap, uint8_t ihl_words) {
 
 static size_t
 build_ipv4_udp_vertex_tms(uint8_t* out, size_t cap, uint8_t ihl_words) {
-    memset(out, 0, cap);
+    DSD_MEMSET(out, 0, cap);
 
     const size_t ip_header_len = (size_t)ihl_words * 4u;
     const size_t vtx_hdr_len = 21u;
@@ -233,7 +240,7 @@ build_ipv4_udp_vertex_tms(uint8_t* out, size_t cap, uint8_t ihl_words) {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,             // reserved/unknown
         0x00, 0x00, 0x00, 0x00, 0x00                          // reserved/unknown
     };
-    memcpy(out + p, vtx_hdr, sizeof(vtx_hdr));
+    DSD_MEMCPY(out + p, vtx_hdr, sizeof(vtx_hdr));
     p += sizeof(vtx_hdr);
 
     out[p++] = 0x00;
@@ -250,8 +257,8 @@ main(void) {
 
     static dsd_opts opts;
     static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
     st.currentslot = 0;
     opts.lrrp_file_output = 0;
 
@@ -296,3 +303,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

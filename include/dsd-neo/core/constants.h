@@ -11,24 +11,15 @@
  * as a shared lightweight header.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_CONSTANTS_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_CONSTANTS_H_H
 
 // Base I/O sample rates
-#define SAMPLE_RATE_IN        48000 // 48 kHz input
-#define SAMPLE_RATE_OUT       8000  // 8 kHz output
+#define SAMPLE_RATE_IN              48000 // 48 kHz input
+#define SAMPLE_RATE_OUT             8000  // 8 kHz output
 
 // Shared return code for "operation unsupported by backend/capability"
-#define DSD_ERR_NOT_SUPPORTED (-2)
-
-// Provide portable boolean-style macros for legacy code paths that used
-// ncurses-provided TRUE/FALSE. Keep these independent from ncurses to avoid
-// leaking curses into non-UI translation units.
-#ifndef TRUE
-#define TRUE 1
-#endif
-#ifndef FALSE
-#define FALSE 0
-#endif
+#define DSD_ERR_NOT_SUPPORTED       (-2)
 
 // Lightweight UNUSED helpers used throughout the codebase
 #define UNUSED(x)                   (void)(x)
@@ -36,3 +27,4 @@
 #define UNUSED3(x1, x2, x3)         (UNUSED(x1), UNUSED(x2), UNUSED(x3))
 #define UNUSED4(x1, x2, x3, x4)     (UNUSED(x1), UNUSED(x2), UNUSED(x3), UNUSED(x4))
 #define UNUSED5(x1, x2, x3, x4, x5) (UNUSED(x1), UNUSED(x2), UNUSED(x3), UNUSED(x4), UNUSED(x5))
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_CONSTANTS_H_H */

@@ -22,9 +22,8 @@
  * @see dmr_sync.h for DMR-specific resample-on-sync features
  */
 
-#pragma once
-
-#include <stdint.h>
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_SYNC_CALIBRATION_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_SYNC_CALIBRATION_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -172,7 +171,7 @@ typedef enum {
  *
  * @note Can be disabled at runtime via DSD_NEO_SYNC_WARMSTART=0 env var.
  */
-dsd_warm_start_result_t dsd_sync_warm_start_thresholds_outer_only(struct dsd_opts* opts, struct dsd_state* state,
+dsd_warm_start_result_t dsd_sync_warm_start_thresholds_outer_only(const struct dsd_opts* opts, struct dsd_state* state,
                                                                   int sync_len);
 
 /**
@@ -210,3 +209,5 @@ int dsd_sync_warm_start_enabled(void);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_SYNC_CALIBRATION_H_ */

@@ -11,6 +11,7 @@
 #include <dsd-neo/core/state_fwd.h>
 
 #include <dsd-neo/dsp/p25p1_heuristics.h>
+#include <stdint.h>
 
 /**
  * Reads a dibit (two bits) from the stream of data. Takes into account the periodic occurrence of status

@@ -6,14 +6,13 @@
 #include <assert.h>
 #include <dsd-neo/core/state.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dmr_confidence.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static void
 init_state(dsd_state* state) {
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     state->dmr_color_code = 16;
     state->dmr_confidence_color_code = 16;
     state->dmr_confidence_candidate_cc = 16;

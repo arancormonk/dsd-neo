@@ -48,14 +48,14 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
 // Minimal bit/byte helpers used by linked code
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
 uint64_t
-ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     (void)BufferIn;
     (void)BitLength;
     return 0;
@@ -115,15 +115,15 @@ parse_last(const char* buf, int len, int* out_sap, int* out_fmt, int* out_len) {
     int sap = -1, fmt = -1, jlen = -1;
     const char* q;
     q = strstr(line, "\"sap\":");
-    if (!q || sscanf(q, "\"sap\":%d", &sap) != 1) {
+    if (!q || DSD_SSCANF(q, "\"sap\":%d", &sap) != 1) {
         return -1;
     }
     q = strstr(line, "\"fmt\":");
     if (q) {
-        sscanf(q, "\"fmt\":%d", &fmt);
+        DSD_SSCANF(q, "\"fmt\":%d", &fmt);
     }
     q = strstr(line, "\"len\":");
-    if (!q || sscanf(q, "\"len\":%d", &jlen) != 1) {
+    if (!q || DSD_SSCANF(q, "\"len\":%d", &jlen) != 1) {
         return -2;
     }
     if (out_sap) {
@@ -141,7 +141,7 @@ parse_last(const char* buf, int len, int* out_sap, int* out_fmt, int* out_len) {
 static int
 expect_eq(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -165,7 +165,7 @@ main(void) {
     // Case 1: LRRP (SAP 48) with 4-byte payload
     {
         uint8_t pdu[64];
-        memset(pdu, 0, sizeof pdu);
+        DSD_MEMSET(pdu, 0, sizeof pdu);
         pdu[0] = 0x10;                // fmt=16, io=0
         pdu[1] = 48;                  // SAP 48
         pdu[2] = 0x01;                // MFID
@@ -184,7 +184,7 @@ main(void) {
     // Case 2: Response (fmt=3) minimal
     {
         uint8_t pdu[32];
-        memset(pdu, 0, sizeof pdu);
+        DSD_MEMSET(pdu, 0, sizeof pdu);
         pdu[0] = 0x03;              // fmt=3 response
         pdu[1] = 0x00;              // class/type/status bits mostly zeroed
         pdu[2] = 0x00;              // MFID

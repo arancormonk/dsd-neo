@@ -8,8 +8,8 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "telemetry_hooks_impl.h"
 
 static dsd_opts g_pub_opts;     // latest published
@@ -35,7 +35,7 @@ ui_terminal_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
     }
     ensure_opts_mu_init();
     dsd_mutex_lock(&g_opts_mu);
-    memcpy(&g_pub_opts, opts, sizeof(dsd_opts));
+    DSD_MEMCPY(&g_pub_opts, opts, sizeof(dsd_opts));
     g_pub_opts_seq++;
     g_have_opts = 1;
     dsd_mutex_unlock(&g_opts_mu);
@@ -50,7 +50,7 @@ ui_get_latest_opts_snapshot(void) {
         return NULL;
     }
     if (g_consume_opts_seq != g_pub_opts_seq) {
-        memcpy(&g_consume_opts, &g_pub_opts, sizeof(dsd_opts));
+        DSD_MEMCPY(&g_consume_opts, &g_pub_opts, sizeof(dsd_opts));
         g_consume_opts_seq = g_pub_opts_seq;
     }
     dsd_mutex_unlock(&g_opts_mu);

@@ -10,6 +10,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Use shim to avoid pulling in external deps like mbelib.
 int p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int chan16, long map_override,
@@ -20,14 +26,18 @@ typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
 
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output,
+                                 int len) { // NOLINT(misc-use-internal-linkage)
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
-apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                 uint8_t* lc_bits) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     (void)slot;
@@ -35,7 +45,9 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
-apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                 uint8_t* lc_bits) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     (void)slot;
@@ -43,7 +55,9 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
-l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len,
+                          uint8_t* input) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     (void)slot;
@@ -52,7 +66,9 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 }
 
 void
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src,
+            int slot) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     (void)input;
@@ -61,28 +77,28 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 }
 
 bool
-SetFreq(int sockfd, long int freq) {
+SetFreq(int sockfd, long int freq) { // NOLINT(misc-use-internal-linkage)
     (void)sockfd;
     (void)freq;
     return false;
 }
 
 bool
-SetModulation(int sockfd, int bw) {
+SetModulation(int sockfd, int bw) { // NOLINT(misc-use-internal-linkage)
     (void)sockfd;
     (void)bw;
     return false;
 }
 
 void
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
 }
-struct RtlSdrContext* g_rtl_ctx = 0;
+struct RtlSdrContext* g_rtl_ctx = 0; // NOLINT(misc-use-internal-linkage)
 
 int
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
+rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) { // NOLINT(misc-use-internal-linkage)
     (void)ctx;
     (void)center_freq_hz;
     return 0;
@@ -91,7 +107,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 expect_eq_long(const char* tag, long got, long want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %ld want %ld\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %ld want %ld\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -125,3 +141,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

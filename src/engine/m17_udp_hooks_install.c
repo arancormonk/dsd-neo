@@ -8,6 +8,8 @@
 #include <dsd-neo/io/m17_udp.h>
 #include <dsd-neo/io/udp_bind.h>
 
+#include "engine_hooks_install.h"
+
 void
 dsd_engine_m17_udp_hooks_install(void) {
     dsd_m17_udp_hooks hooks = {0};

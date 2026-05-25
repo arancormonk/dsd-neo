@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -36,30 +37,47 @@ dsd_audio_group_source_id(const dsd_state* state, unsigned long tg) {
     return 0;
 }
 
+static int
+dsd_alg_list_contains(const uint8_t* algs, size_t count, int algid) {
+    size_t i = 0;
+    if (!algs) {
+        return 0;
+    }
+    for (i = 0; i < count; i++) {
+        if (algid == (int)algs[i]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int
 dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loaded) {
-    switch (algid) {
-        // RC4/DES-style families keyed from 40/56-bit key material.
-        case 0x02: // Hytera Enhanced
-        case 0x21: // DMR RC4
-        case 0x22: // DMR DES
-        case 0x81: // P25 DES
-        case 0x9F: // P25 DES-XL
-        case 0xAA: // P25 RC4
-            return (r_key != 0ULL) ? 1 : 0;
+    static const uint8_t kRKeyAlgs[] = {
+        0x02, // Hytera Enhanced
+        0x21, // DMR RC4
+        0x22, // DMR DES
+        0x81, // P25 DES
+        0x9F, // P25 DES-XL
+        0xAA  // P25 RC4
+    };
+    static const uint8_t kAesLoadedAlgs[] = {
+        0x24, // DMR AES-128
+        0x25, // DMR AES-256
+        0x36, // Kirisun Advanced
+        0x37, // Kirisun Universal
+        0x83, // P25 TDEA
+        0x84, // P25 AES-256
+        0x89  // P25 AES-128
+    };
 
-        // AES/TDEA-style families keyed from loaded AES key segments.
-        case 0x24: // DMR AES-128
-        case 0x25: // DMR AES-256
-        case 0x36: // Kirisun Advanced
-        case 0x37: // Kirisun Universal
-        case 0x83: // P25 TDEA
-        case 0x84: // P25 AES-256
-        case 0x89: // P25 AES-128
-            return (aes_loaded == 1) ? 1 : 0;
-
-        default: return 0;
+    if (dsd_alg_list_contains(kRKeyAlgs, sizeof(kRKeyAlgs) / sizeof(kRKeyAlgs[0]), algid)) {
+        return (r_key != 0ULL) ? 1 : 0;
     }
+    if (dsd_alg_list_contains(kAesLoadedAlgs, sizeof(kAesLoadedAlgs) / sizeof(kAesLoadedAlgs[0]), algid)) {
+        return (aes_loaded == 1) ? 1 : 0;
+    }
+    return 0;
 }
 
 int
@@ -180,38 +198,65 @@ dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned
     return rc;
 }
 
+static int
+dsd_audio_record_slot_allows_audio(const dsd_opts* opts, const dsd_state* state, int slot) {
+    int enc = 0;
+    int dmr_unmute_slot = 0;
+
+    if (!opts || !state) {
+        return 0;
+    }
+
+    if (DSD_SYNC_IS_P25P2(state->synctype)) {
+        return (state->p25_p2_audio_allowed[slot] != 0) ? 1 : 0;
+    }
+
+    enc = (slot == 1) ? state->dmr_encR : state->dmr_encL;
+    dmr_unmute_slot = (slot == 1) ? (opts->dmr_mute_encR == 0) : (opts->dmr_mute_encL == 0);
+    if (opts->unmute_encrypted_p25 == 1 || enc == 0 || dmr_unmute_slot) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
+dsd_audio_record_policy_blocks(const dsd_opts* opts, const dsd_state* state, int slot) {
+    dsd_tg_policy_decision decision;
+    unsigned long tg = 0;
+    uint32_t source_id = 0;
+
+    if (!opts || !state) {
+        return 1;
+    }
+
+    tg = (slot == 1) ? (unsigned long)state->lasttgR : (unsigned long)state->lasttg;
+    source_id = (slot == 1) ? state->lastsrcR : state->lastsrc;
+    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)tg, source_id, 0, 0,
+                                          DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY, &decision)
+        != 0) {
+        return 0;
+    }
+
+    if (decision.tg_hold_active && decision.tg_hold_match) {
+        return 0;
+    }
+    if (!decision.record_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
+        return 1;
+    }
+    return 0;
+}
+
 int
 dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out) {
-    dsd_tg_policy_decision decision;
-
     if (!opts || !state || !allow_out) {
         return -1;
     }
 
     const int slot = (state->currentslot == 1) ? 1 : 0;
-    int allow = 0;
-    if (DSD_SYNC_IS_P25P2(state->synctype)) {
-        allow = (state->p25_p2_audio_allowed[slot] != 0) ? 1 : 0;
-    } else {
-        const int enc = (slot == 1) ? state->dmr_encR : state->dmr_encL;
-        const int dmr_unmute_slot = (slot == 1) ? (opts->dmr_mute_encR == 0) : (opts->dmr_mute_encL == 0);
-        allow = (opts->unmute_encrypted_p25 == 1 || enc == 0 || dmr_unmute_slot) ? 1 : 0;
-    }
+    int allow = dsd_audio_record_slot_allows_audio(opts, state, slot);
 
-    if (allow) {
-        const unsigned long tg = (slot == 1) ? (unsigned long)state->lasttgR : (unsigned long)state->lasttg;
-        const uint32_t source_id = (slot == 1) ? state->lastsrcR : state->lastsrc;
-        if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)tg, source_id, 0, 0,
-                                              DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY, &decision)
-            == 0) {
-            int blocked = (!decision.record_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u);
-            if (decision.tg_hold_active && decision.tg_hold_match) {
-                blocked = 0;
-            }
-            if (blocked) {
-                allow = 0;
-            }
-        }
+    if (allow && dsd_audio_record_policy_blocks(opts, state, slot)) {
+        allow = 0;
     }
 
     *allow_out = allow;

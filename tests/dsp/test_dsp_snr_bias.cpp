@@ -6,6 +6,7 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/snr_bias.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 nearly_equal(double got, double expected, double tol) {
@@ -42,14 +43,14 @@ main(void) {
         const struct test_case* tc = &cases[i];
         double got_c4fm = dsd_snr_bias_c4fm_db(rate_out, ted_sps, tc->profile);
         if (!nearly_equal(got_c4fm, tc->expected_c4fm, tol)) {
-            fprintf(stderr, "SNR bias C4FM mismatch for %s: got %.12f expected %.12f\n", tc->name, got_c4fm,
-                    tc->expected_c4fm);
+            DSD_FPRINTF(stderr, "SNR bias C4FM mismatch for %s: got %.12f expected %.12f\n", tc->name, got_c4fm,
+                        tc->expected_c4fm);
             return 1;
         }
         double got_evm = dsd_snr_bias_evm_db(rate_out, ted_sps, tc->profile);
         if (!nearly_equal(got_evm, tc->expected_evm, tol)) {
-            fprintf(stderr, "SNR bias EVM mismatch for %s: got %.12f expected %.12f\n", tc->name, got_evm,
-                    tc->expected_evm);
+            DSD_FPRINTF(stderr, "SNR bias EVM mismatch for %s: got %.12f expected %.12f\n", tc->name, got_evm,
+                        tc->expected_evm);
             return 1;
         }
     }
@@ -59,11 +60,11 @@ main(void) {
         const double fb_c4fm = dsd_snr_bias_c4fm_db(0, ted_sps, DSD_CH_LPF_PROFILE_WIDE);
         const double fb_evm = dsd_snr_bias_evm_db(rate_out, 0, DSD_CH_LPF_PROFILE_WIDE);
         if (!nearly_equal(fb_c4fm, 7.93, tol)) {
-            fprintf(stderr, "SNR bias C4FM fallback mismatch: got %.12f expected %.12f\n", fb_c4fm, 7.93);
+            DSD_FPRINTF(stderr, "SNR bias C4FM fallback mismatch: got %.12f expected %.12f\n", fb_c4fm, 7.93);
             return 1;
         }
         if (!nearly_equal(fb_evm, 2.42, tol)) {
-            fprintf(stderr, "SNR bias EVM fallback mismatch: got %.12f expected %.12f\n", fb_evm, 2.42);
+            DSD_FPRINTF(stderr, "SNR bias EVM fallback mismatch: got %.12f expected %.12f\n", fb_evm, 2.42);
             return 1;
         }
     }

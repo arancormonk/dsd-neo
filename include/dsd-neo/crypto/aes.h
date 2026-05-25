@@ -10,7 +10,8 @@
  * Declares the AES wrapper helpers implemented in `src/crypto/crypt-aes.c`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_AES_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_AES_H_H
 
 #include <stdint.h>
 
@@ -19,20 +20,21 @@ extern "C" {
 #endif
 
 /** @brief Generate AES OFB keystream blocks for the given IV/key. */
-void aes_ofb_keystream_output(uint8_t* iv, uint8_t* key, uint8_t* output, int type, int nblocks);
+void aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks);
 /** @brief Encrypt/decrypt payload in AES-ECB mode (byte-wise). */
-void aes_ecb_bytewise_payload_crypt(uint8_t* input, uint8_t* key, uint8_t* output, int type, int de);
+void aes_ecb_bytewise_payload_crypt(const uint8_t* input, const uint8_t* key, uint8_t* output, int type, int de);
 /** @brief Encrypt/decrypt payload in AES-CBC mode (byte-wise). */
-void aes_cbc_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* out, int type, int nblocks,
-                                    int de);
+void aes_cbc_bytewise_payload_crypt(const uint8_t* iv, const uint8_t* key, const uint8_t* in, uint8_t* out, int type,
+                                    int nblocks, int de);
 /** @brief Encrypt/decrypt payload in AES-CFB mode (byte-wise). */
-void aes_cfb_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* out, int type, int nblocks,
-                                    int de);
+void aes_cfb_bytewise_payload_crypt(const uint8_t* iv, const uint8_t* key, const uint8_t* in, uint8_t* out, int type,
+                                    int nblocks, int de);
 /** @brief Encrypt/decrypt payload in AES-CTR mode (byte-wise counter). */
-void aes_ctr_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* payload, int type);
+void aes_ctr_bytewise_payload_crypt(const uint8_t* iv, const uint8_t* key, uint8_t* payload, int type);
 /** @brief Encrypt/decrypt payload in AES-CTR mode (bit-wise counter). */
-void aes_ctr_bitwise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* payload, int type);
+void aes_ctr_bitwise_payload_crypt(const uint8_t* iv, const uint8_t* key, uint8_t* payload, int type);
 
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_AES_H_H */

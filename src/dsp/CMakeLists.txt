@@ -1,88 +1,111 @@
 # DSP module library
 add_library(dsd-neo_dsp)
 
-target_sources(dsd-neo_dsp PRIVATE
-  demod_pipeline.cpp
-  snr_bias.cpp
-  costas.cpp
-  equalizer.cpp
-  resampler.cpp
-  halfband.cpp
-  fll.cpp
-  ted.cpp
-  fsk_modem.c
-  firdes.cpp
-  simd_widen.cpp
-	  simd_fir.cpp
-  dsd_filters.c
-  pcm_input_staging.c
-	  symbol_levels.c
-	  dsd_symbol.c
-	  p25p1_heuristics.c
-	  dsd_frame_sync.c
-	  frame_sync_policy.c
-	  sync_hamming.c
-	  dmr_sync.c
-	  sync_calibration.c
+target_sources(
+    dsd-neo_dsp
+    PRIVATE
+        demod_pipeline.cpp
+        snr_bias.cpp
+        costas.cpp
+        equalizer.cpp
+        resampler.cpp
+        halfband.cpp
+        fll.cpp
+        ted.cpp
+        fsk_modem.c
+        firdes.cpp
+        simd_widen.cpp
+        simd_fir.cpp
+        dsd_filters.c
+        pcm_input_staging.c
+        symbol_levels.c
+        dsd_symbol.c
+        p25p1_heuristics.c
+        dsd_frame_sync.c
+        frame_sync_policy.c
+        sync_hamming.c
+        dmr_sync.c
+        sync_calibration.c
 )
 
 set(_dsd_neo_dsp_target_arch "${CMAKE_SYSTEM_PROCESSOR}")
 if(APPLE AND CMAKE_OSX_ARCHITECTURES)
-  list(LENGTH CMAKE_OSX_ARCHITECTURES _dsd_neo_osx_arch_count)
-  if(_dsd_neo_osx_arch_count EQUAL 1)
-    list(GET CMAKE_OSX_ARCHITECTURES 0 _dsd_neo_dsp_target_arch)
-  endif()
+    list(LENGTH CMAKE_OSX_ARCHITECTURES _dsd_neo_osx_arch_count)
+    if(_dsd_neo_osx_arch_count EQUAL 1)
+        list(GET CMAKE_OSX_ARCHITECTURES 0 _dsd_neo_dsp_target_arch)
+    endif()
 endif()
 
 # x86-64 SIMD sources with arch-specific flags
 if(_dsd_neo_dsp_target_arch MATCHES "x86_64|AMD64|amd64")
-  target_sources(dsd-neo_dsp PRIVATE simd_fir_sse2.cpp)
-  target_sources(dsd-neo_dsp PRIVATE simd_widen_sse2.cpp)
-  # Explicit SSE2 flag for clarity and cross-compilation safety
-  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    set_source_files_properties(simd_fir_sse2.cpp PROPERTIES COMPILE_FLAGS "-msse2")
-    set_source_files_properties(simd_widen_sse2.cpp PROPERTIES COMPILE_FLAGS "-msse2")
-  endif()
+    target_sources(dsd-neo_dsp PRIVATE simd_fir_sse2.cpp)
+    target_sources(dsd-neo_dsp PRIVATE simd_widen_sse2.cpp)
+    # Explicit SSE2 flag for clarity and cross-compilation safety
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        set_source_files_properties(
+            simd_fir_sse2.cpp
+            PROPERTIES COMPILE_FLAGS "-msse2"
+        )
+        set_source_files_properties(
+            simd_widen_sse2.cpp
+            PROPERTIES COMPILE_FLAGS "-msse2"
+        )
+    endif()
 
-  # AVX2+FMA needs explicit flag; add source only if the compiler accepts it
-  include(CheckCXXCompilerFlag)
-  set(_avx2_flags "")
-  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    check_cxx_compiler_flag("-mavx2 -mfma" DSD_NEO_HAS_AVX2_FLAGS)
-    if(DSD_NEO_HAS_AVX2_FLAGS)
-      set(_avx2_flags "-mavx2 -mfma")
+    # AVX2+FMA needs explicit flag; add source only if the compiler accepts it
+    include(CheckCXXCompilerFlag)
+    set(_avx2_flags "")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        check_cxx_compiler_flag("-mavx2 -mfma" DSD_NEO_HAS_AVX2_FLAGS)
+        if(DSD_NEO_HAS_AVX2_FLAGS)
+            set(_avx2_flags "-mavx2 -mfma")
+        endif()
+    elseif(MSVC)
+        check_cxx_compiler_flag("/arch:AVX2" DSD_NEO_HAS_AVX2_MSVC)
+        if(DSD_NEO_HAS_AVX2_MSVC)
+            set(_avx2_flags "/arch:AVX2")
+        endif()
     endif()
-  elseif(MSVC)
-    check_cxx_compiler_flag("/arch:AVX2" DSD_NEO_HAS_AVX2_MSVC)
-    if(DSD_NEO_HAS_AVX2_MSVC)
-      set(_avx2_flags "/arch:AVX2")
+    if(_avx2_flags)
+        target_sources(dsd-neo_dsp PRIVATE simd_fir_avx2.cpp)
+        target_sources(dsd-neo_dsp PRIVATE simd_widen_avx2.cpp)
+        set_source_files_properties(
+            simd_fir_avx2.cpp
+            PROPERTIES COMPILE_FLAGS "${_avx2_flags}"
+        )
+        set_source_files_properties(
+            simd_widen_avx2.cpp
+            PROPERTIES COMPILE_FLAGS "${_avx2_flags}"
+        )
+        target_compile_definitions(
+            dsd-neo_dsp
+            PRIVATE $<$<COMPILE_LANGUAGE:CXX>:DSD_NEO_DSP_HAVE_AVX2_IMPL=1>
+        )
     endif()
-  endif()
-  if(_avx2_flags)
-    target_sources(dsd-neo_dsp PRIVATE simd_fir_avx2.cpp)
-    target_sources(dsd-neo_dsp PRIVATE simd_widen_avx2.cpp)
-    set_source_files_properties(simd_fir_avx2.cpp PROPERTIES COMPILE_FLAGS "${_avx2_flags}")
-    set_source_files_properties(simd_widen_avx2.cpp PROPERTIES COMPILE_FLAGS "${_avx2_flags}")
-    target_compile_definitions(dsd-neo_dsp PRIVATE $<$<COMPILE_LANGUAGE:CXX>:DSD_NEO_DSP_HAVE_AVX2_IMPL=1>)
-  endif()
 endif()
 
 # ARM64 NEON (always available on AArch64)
 if(_dsd_neo_dsp_target_arch MATCHES "aarch64|arm64|ARM64")
-  target_sources(dsd-neo_dsp PRIVATE simd_fir_neon.cpp)
-  target_sources(dsd-neo_dsp PRIVATE simd_widen_neon.cpp)
+    target_sources(dsd-neo_dsp PRIVATE simd_fir_neon.cpp)
+    target_sources(dsd-neo_dsp PRIVATE simd_widen_neon.cpp)
 endif()
 
-target_include_directories(dsd-neo_dsp
-  PUBLIC ${PROJECT_SOURCE_DIR}/include
-  PRIVATE ${_PUBLIC_INCLUDES}
+target_include_directories(
+    dsd-neo_dsp
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${_PUBLIC_INCLUDES}
 )
 
-target_link_libraries(dsd-neo_dsp PUBLIC dsd-neo_runtime dsd-neo_feature_radio dsd-neo_feature_rtlsdr)
+target_link_libraries(
+    dsd-neo_dsp
+    PUBLIC dsd-neo_runtime dsd-neo_feature_radio dsd-neo_feature_rtlsdr
+)
 
 target_link_libraries(dsd-neo_dsp PRIVATE dsd-neo_warnings dsd-neo_feature_pvc)
 
-install(TARGETS dsd-neo_dsp
+install(
+    TARGETS dsd-neo_dsp
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)

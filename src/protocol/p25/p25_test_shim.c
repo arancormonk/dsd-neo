@@ -23,6 +23,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_test_shim.h"
 
 void processTDULC(dsd_opts* opts, dsd_state* state);
 

@@ -11,12 +11,14 @@
  * asynchronous overlay menu driver.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_DEFS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_DEFS_H_
 
 #include <stdbool.h>
 #include <stddef.h>
 
 #include <dsd-neo/ui/menu_core.h>
+#include "menu_internal.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,7 +42,7 @@ void ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* 
 /**
  * @brief Predicate: returns true when RTL-SDR is the active input.
  */
-bool io_rtl_active(void* ctx);
+bool io_rtl_active(const void* ctx);
 /**
  * @brief Action: signal the application to exit.
  */
@@ -49,3 +51,5 @@ void act_exit(void* v);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_DEFS_H_ */

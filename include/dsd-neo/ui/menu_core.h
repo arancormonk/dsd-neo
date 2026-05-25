@@ -10,7 +10,8 @@
  * Declares the menu item structure and overlay driver helpers used by the
  * asynchronous menu system.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_CORE_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_CORE_H_
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -21,11 +22,11 @@
 typedef struct NcMenuItem NcMenuItem;
 
 /** Predicate signature for enabling/disabling items. */
-typedef bool (*nc_enabled_fn)(void* ctx);
+typedef bool (*nc_enabled_fn)(const void* ctx);
 /** Action to invoke on item selection. */
 typedef void (*nc_action_fn)(void* ctx);
 /** Dynamic label generator; writes into buf and returns it. */
-typedef const char* (*nc_label_fn)(void* ctx, char* buf, size_t buf_len);
+typedef const char* (*nc_label_fn)(const void* ctx, char* buf, size_t buf_len);
 
 /**
  * @brief Declarative menu item description.
@@ -63,3 +64,5 @@ int ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state);
  * @brief Draw/update one frame of the overlay (no input read here).
  */
 void ui_menu_tick(dsd_opts* opts, dsd_state* state);
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_CORE_H_ */

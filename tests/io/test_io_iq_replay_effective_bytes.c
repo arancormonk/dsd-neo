@@ -6,14 +6,13 @@
 #include <dsd-neo/io/iq_replay.h>
 #include <inttypes.h>
 #include <stdio.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 
 static int
 expect_u64(const char* label, uint64_t got, uint64_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%" PRIu64 " want=%" PRIu64 "\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%" PRIu64 " want=%" PRIu64 "\n", label, got, want);
         return 1;
     }
     return 0;
@@ -22,7 +21,7 @@ expect_u64(const char* label, uint64_t got, uint64_t want) {
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -76,7 +75,7 @@ main(void) {
                      DSD_IQ_ERR_ALIGNMENT);
 
     dsd_iq_sample_format invalid_format = DSD_IQ_FORMAT_CU8;
-    memset(&invalid_format, 0, sizeof(invalid_format));
+    DSD_MEMSET(&invalid_format, 0, sizeof(invalid_format));
     rc |=
         expect_int("invalid format", dsd_iq_replay_compute_effective_bytes(0, 1, invalid_format, &effective, &mismatch),
                    DSD_IQ_ERR_INVALID_ARG);

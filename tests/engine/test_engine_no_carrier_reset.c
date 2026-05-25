@@ -3,35 +3,30 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#define DSD_NEO_MAIN
-#include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
-#include <dsd-neo/protocol/provoice/provoice_const.h>
-#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
-#undef DSD_NEO_MAIN
-
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
-#endif
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
-
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "%s failed\n", tag);
+        DSD_FPRINTF(stderr, "%s failed\n", tag);
         return 1;
     }
     return 0;
@@ -45,14 +40,15 @@ fake_rtl_fsk_output_kind(void) {
 #endif
 
 int
-ui_start(dsd_opts* opts, dsd_state* state) {
+ui_start(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     return 0;
 }
 
 void
-ui_stop(void) {}
+ui_stop(void) { // NOLINT(misc-use-internal-linkage)
+}
 
 static int
 init_test_runtime(dsd_opts** opts_out, dsd_state** state_out) {
@@ -60,7 +56,7 @@ init_test_runtime(dsd_opts** opts_out, dsd_state** state_out) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (opts == NULL || state == NULL) {
-        fprintf(stderr, "alloc-failed: runtime\n");
+        DSD_FPRINTF(stderr, "alloc-failed: runtime\n");
         free(opts);
         free(state);
         return 1;
@@ -113,7 +109,7 @@ main(void) {
 
     for (int i = 0; i < 200; i++) {
         if (state->dmr_payload_buf[i] != 0) {
-            fprintf(stderr, "dmr payload buf[%d] not reset: %d\n", i, state->dmr_payload_buf[i]);
+            DSD_FPRINTF(stderr, "dmr payload buf[%d] not reset: %d\n", i, state->dmr_payload_buf[i]);
             rc = 1;
             break;
         }
@@ -123,7 +119,7 @@ main(void) {
         rc |= expect_true("dmr-reliab-pointer-buffer", state->dmr_reliab_p == state->dmr_reliab_buf + 200);
         for (int i = 0; i < 200; i++) {
             if (state->dmr_reliab_buf[i] != 0U) {
-                fprintf(stderr, "dmr reliab buf[%d] not reset: %u\n", i, (unsigned)state->dmr_reliab_buf[i]);
+                DSD_FPRINTF(stderr, "dmr reliab buf[%d] not reset: %u\n", i, (unsigned)state->dmr_reliab_buf[i]);
                 rc = 1;
                 break;
             }
@@ -157,7 +153,8 @@ main(void) {
     rc |= expect_true("p25-stale-vc-clears-freq", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
 
 #ifdef USE_RADIO
-    dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){.output_kind = fake_rtl_fsk_output_kind});
+    dsd_rtl_stream_metrics_hooks hooks = {.output_kind = fake_rtl_fsk_output_kind};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
     opts->audio_in_type = AUDIO_IN_RTL;
     state->rtl_ctx = (struct RtlSdrContext*)state;
     state->lastsynctype = DSD_SYNC_YSF_POS;
@@ -171,7 +168,7 @@ main(void) {
     rc |= expect_true("rtl-fsk-recovered-sync-clears-gap", state->rtl_fsk_reacquire_gap_start_m == 0.0);
     rc |= expect_true("rtl-fsk-recovered-sync-refreshes-timer",
                       state->rtl_fsk_reacquire_last_sync_m > old_reacquire_sync_m);
-    dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){0});
+    dsd_rtl_stream_metrics_hooks_set(NULL);
 #endif
 
     free_test_runtime(opts, state);
@@ -181,3 +178,7 @@ main(void) {
     }
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

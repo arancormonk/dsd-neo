@@ -10,7 +10,8 @@
  * Declares minimal RC4 utilities implemented in `src/crypto/crypt-rc4.c`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_RC4_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_RC4_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -21,8 +22,8 @@
 extern "C" {
 #endif
 
-void rc4_block_output(int drop, int keylen, int meslen, uint8_t* key, uint8_t* output_blocks);
-void rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, uint8_t key[], uint8_t cipher[],
+void rc4_block_output(int drop, int keylen, int meslen, const uint8_t* key, uint8_t* output_blocks);
+void rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, const uint8_t key[], const uint8_t cipher[],
                        uint8_t plain[]);
 void hytera_enhanced_rc4_setup(dsd_opts* opts, dsd_state* state, unsigned long long int key_value,
                                unsigned long long int mi_value);
@@ -30,3 +31,4 @@ void hytera_enhanced_rc4_setup(dsd_opts* opts, dsd_state* state, unsigned long l
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_RC4_H_H */

@@ -13,13 +13,19 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "test_support.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 #define setenv dsd_test_setenv
 
@@ -34,13 +40,15 @@ void p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac
 
 // Stubs for alias helpers and rigctl/rtl hooks referenced in linked objects
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -49,6 +57,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -57,6 +66,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -66,6 +76,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -75,6 +86,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -82,6 +94,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -89,17 +102,40 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
     return 0;
+}
+
+static int
+parse_json_int_field(const char* line, const char* key, int* out) {
+    if (!line || !key || !out) {
+        return 0;
+    }
+    const char* p = strstr(line, key);
+    if (!p) {
+        return 0;
+    }
+    p += strlen(key);
+    errno = 0;
+    char* end = NULL;
+    long v = strtol(p, &end, 10);
+    if (end == p || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
+        return 0;
+    }
+    *out = (int)v;
+    return 1;
 }
 
 static int
@@ -113,8 +149,7 @@ extract_last_lenB(const char* buf, int len) {
         return -1;
     }
     int b = -1;
-    const char* q = strstr(p, "\"lenB\":");
-    if (!q || sscanf(q, "\"lenB\":%d", &b) != 1) {
+    if (!parse_json_int_field(p, "\"lenB\":", &b)) {
         return -2;
     }
     return b;
@@ -123,7 +158,7 @@ extract_last_lenB(const char* buf, int len) {
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -137,12 +172,12 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_mac_json_vendor") != 0) {
-        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 101;
     }
 
     unsigned char mac[24];
-    memset(mac, 0, sizeof(mac));
+    DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = opcode;
     mac[2] = mfid;
     p25_test_process_mac_vpdu(1 /* SACCH */, mac, 24);
@@ -151,7 +186,7 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
 
     FILE* rf = fopen(cap.path, "rb");
     if (!rf) {
-        fprintf(stderr, "fopen read failed\n");
+        DSD_FPRINTF(stderr, "fopen read failed\n");
         return 102;
     }
     fseek(rf, 0, SEEK_END);
@@ -176,7 +211,7 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
     int lenB = extract_last_lenB(buf, (int)nread);
     free(buf);
     if (lenB < 0) {
-        fprintf(stderr, "failed to parse lenB (er=%d)\n", lenB);
+        DSD_FPRINTF(stderr, "failed to parse lenB (er=%d)\n", lenB);
         return 104;
     }
     (void)remove(cap.path);
@@ -193,3 +228,7 @@ main(void) {
     rc |= run_one(0x81, 0x20, 7);  // Harris extra
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

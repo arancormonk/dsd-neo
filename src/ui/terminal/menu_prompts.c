@@ -12,19 +12,19 @@
  */
 
 #include "menu_prompts.h"
-
 #include <ctype.h>
 #include <curses.h>
+#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/ui/menu_core.h"
 #include "menu_internal.h"
 
-// ---- Prompt overlay state ----
 typedef struct {
     int active;
     const char* title;
@@ -100,10 +100,79 @@ ui_help_push_line(char lines[][UI_HELP_MAX_LINE_CHARS], int max_lines, int* coun
     if (len >= UI_HELP_MAX_LINE_CHARS) {
         len = UI_HELP_MAX_LINE_CHARS - 1;
     }
-    memcpy(lines[*count], src, (size_t)len);
+    DSD_MEMCPY(lines[*count], src, (size_t)len);
     lines[*count][len] = '\0';
     (*count)++;
     return 1;
+}
+
+static void
+ui_help_skip_spaces(const char** p) {
+    if (!p || !*p) {
+        return;
+    }
+    while (**p == ' ') {
+        (*p)++;
+    }
+}
+
+static int
+ui_help_scan_word(const char** p, const char** wstart) {
+    if (!p || !*p || !wstart) {
+        return 0;
+    }
+    *wstart = *p;
+    int wlen = 0;
+    while (**p != '\0' && **p != ' ' && **p != '\n') {
+        if (wlen < (UI_HELP_MAX_LINE_CHARS - 1)) {
+            wlen++;
+        }
+        (*p)++;
+    }
+    return wlen;
+}
+
+static int
+ui_help_append_word(char cur[], int* cur_len, int width, const char* wstart, int wlen,
+                    char lines[][UI_HELP_MAX_LINE_CHARS], int max_lines, int* out_count) {
+    if (!cur || !cur_len || !wstart || !lines || !out_count || wlen <= 0) {
+        return 0;
+    }
+    if (*cur_len > 0 && (*cur_len + 1 + wlen) <= width) {
+        cur[(*cur_len)++] = ' ';
+        DSD_MEMCPY(cur + *cur_len, wstart, (size_t)wlen);
+        *cur_len += wlen;
+        return 1;
+    }
+    if (*cur_len > 0) {
+        ui_help_push_line(lines, max_lines, out_count, cur, *cur_len);
+        *cur_len = 0;
+    }
+    if (wlen <= width) {
+        DSD_MEMCPY(cur, wstart, (size_t)wlen);
+        *cur_len = wlen;
+        return 1;
+    }
+    return 0;
+}
+
+static void
+ui_help_hard_wrap_word(const char* wstart, int wlen, int width, char lines[][UI_HELP_MAX_LINE_CHARS], int max_lines,
+                       int* out_count) {
+    if (!wstart || !lines || !out_count || wlen <= 0 || width <= 0) {
+        return;
+    }
+    int off = 0;
+    while (off < wlen) {
+        int chunk = width;
+        if (chunk > wlen - off) {
+            chunk = wlen - off;
+        }
+        if (!ui_help_push_line(lines, max_lines, out_count, wstart + off, chunk)) {
+            break;
+        }
+        off += chunk;
+    }
 }
 
 static int
@@ -126,10 +195,7 @@ ui_help_wrap_text(const char* text, int width, char lines[][UI_HELP_MAX_LINE_CHA
             p++;
             continue;
         }
-
-        while (*p == ' ') {
-            p++;
-        }
+        ui_help_skip_spaces(&p);
         if (*p == '\0') {
             break;
         }
@@ -137,48 +203,14 @@ ui_help_wrap_text(const char* text, int width, char lines[][UI_HELP_MAX_LINE_CHA
             continue;
         }
 
-        const char* wstart = p;
-        int wlen = 0;
-        while (*p != '\0' && *p != ' ' && *p != '\n') {
-            if (wlen < (UI_HELP_MAX_LINE_CHARS - 1)) {
-                wlen++;
-            }
-            p++;
-        }
-
+        const char* wstart = NULL;
+        int wlen = ui_help_scan_word(&p, &wstart);
         if (wlen <= 0) {
             continue;
         }
-
-        if (cur_len > 0 && (cur_len + 1 + wlen) <= width) {
-            cur[cur_len++] = ' ';
-            memcpy(cur + cur_len, wstart, (size_t)wlen);
-            cur_len += wlen;
-            continue;
-        }
-
-        if (cur_len > 0) {
-            ui_help_push_line(lines, max_lines, &out_count, cur, cur_len);
-            cur_len = 0;
-        }
-
-        if (wlen <= width) {
-            memcpy(cur, wstart, (size_t)wlen);
-            cur_len = wlen;
-            continue;
-        }
-
-        // Long unbreakable token: hard-wrap it to keep the overlay stable.
-        int off = 0;
-        while (off < wlen) {
-            int chunk = width;
-            if (chunk > wlen - off) {
-                chunk = wlen - off;
-            }
-            if (!ui_help_push_line(lines, max_lines, &out_count, wstart + off, chunk)) {
-                break;
-            }
-            off += chunk;
+        if (!ui_help_append_word(cur, &cur_len, width, wstart, wlen, lines, max_lines, &out_count)) {
+            // Long unbreakable token: hard-wrap it to keep the overlay stable.
+            ui_help_hard_wrap_word(wstart, wlen, width, lines, max_lines, &out_count);
         }
     }
 
@@ -197,7 +229,7 @@ ui_chooser_keep_selection_visible(void) {
     g_chooser.top = ui_scroll_follow_selection(g_chooser.count, g_chooser.page_rows, g_chooser.top, g_chooser.sel);
 }
 
-static int
+static int DSD_ATTR_USED
 ui_prompt_curs_set(int visibility) {
 #ifdef DSD_NEO_TEST_HOOKS
     (void)visibility;
@@ -229,7 +261,7 @@ ui_prompt_close_all(void) {
         g_prompt.buf = NULL;
     }
     (void)ui_prompt_curs_set(0); // hide cursor when no prompt is active
-    memset(&g_prompt, 0, sizeof(g_prompt));
+    DSD_MEMSET(&g_prompt, 0, sizeof(g_prompt));
 }
 
 void
@@ -255,7 +287,7 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap,
         return;
     }
     if (prefill && *prefill) {
-        strncpy(g_prompt.buf, prefill, cap - 1);
+        dsd_strncpy_s(g_prompt.buf, cap, prefill, cap - 1);
         g_prompt.buf[cap - 1] = '\0';
         g_prompt.len = strlen(g_prompt.buf);
         g_prompt.cursor = g_prompt.len;
@@ -321,7 +353,7 @@ ui_prompt_double_finish(void* u, const char* text) {
 void
 ui_prompt_open_int_async(const char* title, int initial, void (*cb)(void* user, int ok, int value), void* user) {
     char pre[64];
-    snprintf(pre, sizeof pre, "%d", initial);
+    DSD_SNPRINTF(pre, sizeof pre, "%d", initial);
     PromptIntCtx* pic = (PromptIntCtx*)calloc(1, sizeof(PromptIntCtx));
     if (!pic) {
         // Allocation failed: immediately signal cancel so caller can clean up.
@@ -339,7 +371,7 @@ void
 ui_prompt_open_double_async(const char* title, double initial, void (*cb)(void* user, int ok, double value),
                             void* user) {
     char pre[64];
-    snprintf(pre, sizeof pre, "%.6f", initial);
+    DSD_SNPRINTF(pre, sizeof pre, "%.6f", initial);
     PromptDblCtx* pdc = (PromptDblCtx*)calloc(1, sizeof(PromptDblCtx));
     if (!pdc) {
         // Allocation failed: immediately signal cancel so caller can clean up.
@@ -360,37 +392,31 @@ ui_prompt_active(void) {
     return g_prompt.active;
 }
 
-int
-ui_prompt_handle_key(int ch) {
-    if (!g_prompt.active) {
-        return 0;
-    }
-    if (ch == KEY_RESIZE) {
+static void
+ui_prompt_handle_resize_event(void) {
 #if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
-        resize_term(0, 0);
+    resize_term(0, 0);
 #endif
-        if (g_prompt.win) {
-            delwin(g_prompt.win);
-            g_prompt.win = NULL;
-        }
-        return 1;
+    if (g_prompt.win) {
+        delwin(g_prompt.win);
+        g_prompt.win = NULL;
     }
-    if (ch == ERR) {
-        return 1;
+}
+
+static void
+ui_prompt_cancel(void) {
+    void (*cb)(void*, const char*) = g_prompt.on_done_str;
+    void* up = g_prompt.user;
+    // Close first so callbacks can safely open a new prompt.
+    g_prompt.on_done_str = NULL; // prevent close_all() from calling again
+    ui_prompt_close_all();
+    if (cb) {
+        cb(up, NULL);
     }
-    // Prompts must allow any printable characters (including 'q') so users can
-    // type filenames like "iq.bin" without accidentally cancelling.
-    if (ch == DSD_KEY_ESC) {
-        void (*cb)(void*, const char*) = g_prompt.on_done_str;
-        void* up = g_prompt.user;
-        // Close first so callbacks can safely open a new prompt.
-        g_prompt.on_done_str = NULL; // prevent close_all() from calling again
-        ui_prompt_close_all();
-        if (cb) {
-            cb(up, NULL);
-        }
-        return 1;
-    }
+}
+
+static int
+ui_prompt_handle_cursor_key(int ch) {
     if (ch == KEY_LEFT) {
         if (g_prompt.cursor > 0) {
             g_prompt.cursor--;
@@ -411,52 +437,279 @@ ui_prompt_handle_key(int ch) {
         g_prompt.cursor = g_prompt.len;
         return 1;
     }
-    if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
-        if (g_prompt.cursor > 0) {
-            memmove(g_prompt.buf + g_prompt.cursor - 1, g_prompt.buf + g_prompt.cursor,
+    return 0;
+}
+
+static void
+ui_prompt_delete_left(void) {
+    if (g_prompt.cursor > 0) {
+        DSD_MEMMOVE(g_prompt.buf + g_prompt.cursor - 1, g_prompt.buf + g_prompt.cursor,
                     g_prompt.len - g_prompt.cursor + 1);
-            g_prompt.cursor--;
-            g_prompt.len--;
+        g_prompt.cursor--;
+        g_prompt.len--;
+    }
+}
+
+static void
+ui_prompt_delete_at_cursor(void) {
+    if (g_prompt.cursor < g_prompt.len) {
+        DSD_MEMMOVE(g_prompt.buf + g_prompt.cursor, g_prompt.buf + g_prompt.cursor + 1, g_prompt.len - g_prompt.cursor);
+        g_prompt.len--;
+    }
+}
+
+static void
+ui_prompt_submit(void) {
+    void (*cb)(void*, const char*) = g_prompt.on_done_str;
+    void* up = g_prompt.user;
+    const int have_text = (g_prompt.len > 0 && g_prompt.buf != NULL);
+    char* text_copy = NULL;
+    if (have_text) {
+        text_copy = (char*)malloc(g_prompt.len + 1);
+        if (text_copy) {
+            DSD_MEMCPY(text_copy, g_prompt.buf, g_prompt.len + 1);
         }
+    }
+    // Close first so callbacks can safely open a new prompt.
+    g_prompt.on_done_str = NULL; // prevent close_all() from calling again
+    ui_prompt_close_all();
+    if (cb) {
+        cb(up, have_text ? text_copy : "");
+    }
+    free(text_copy);
+}
+
+static void
+ui_prompt_insert_char(int ch) {
+    if (g_prompt.len + 1 < g_prompt.cap) {
+        DSD_MEMMOVE(g_prompt.buf + g_prompt.cursor + 1, g_prompt.buf + g_prompt.cursor,
+                    g_prompt.len - g_prompt.cursor + 1);
+        g_prompt.buf[g_prompt.cursor++] = (char)ch;
+        g_prompt.len++;
+    }
+}
+
+int
+ui_prompt_handle_key(int ch) {
+    if (!g_prompt.active) {
+        return 0;
+    }
+    if (ch == KEY_RESIZE) {
+        ui_prompt_handle_resize_event();
+        return 1;
+    }
+    if (ch == ERR) {
+        return 1;
+    }
+    // Prompts must allow any printable characters (including 'q') so users can
+    // type filenames like "iq.bin" without accidentally cancelling.
+    if (ch == DSD_KEY_ESC) {
+        ui_prompt_cancel();
+        return 1;
+    }
+    if (ui_prompt_handle_cursor_key(ch)) {
+        return 1;
+    }
+    if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
+        ui_prompt_delete_left();
         return 1;
     }
     if (ch == KEY_DC) {
-        if (g_prompt.cursor < g_prompt.len) {
-            memmove(g_prompt.buf + g_prompt.cursor, g_prompt.buf + g_prompt.cursor + 1, g_prompt.len - g_prompt.cursor);
-            g_prompt.len--;
-        }
+        ui_prompt_delete_at_cursor();
         return 1;
     }
     if (ch == 10 || ch == KEY_ENTER || ch == '\r') {
-        void (*cb)(void*, const char*) = g_prompt.on_done_str;
-        void* up = g_prompt.user;
-        const int have_text = (g_prompt.len > 0 && g_prompt.buf != NULL);
-        char* text_copy = NULL;
-        if (have_text) {
-            text_copy = (char*)malloc(g_prompt.len + 1);
-            if (text_copy) {
-                memcpy(text_copy, g_prompt.buf, g_prompt.len + 1);
-            }
-        }
-        // Close first so callbacks can safely open a new prompt.
-        g_prompt.on_done_str = NULL; // prevent close_all() from calling again
-        ui_prompt_close_all();
-        if (cb) {
-            cb(up, have_text ? text_copy : "");
-        }
-        free(text_copy);
+        ui_prompt_submit();
         return 1;
     }
     if (isprint(ch)) {
-        if (g_prompt.len + 1 < g_prompt.cap) {
-            memmove(g_prompt.buf + g_prompt.cursor + 1, g_prompt.buf + g_prompt.cursor,
-                    g_prompt.len - g_prompt.cursor + 1);
-            g_prompt.buf[g_prompt.cursor++] = (char)ch;
-            g_prompt.len++;
-        }
+        ui_prompt_insert_char(ch);
         return 1;
     }
     return 1;
+}
+
+static int
+ui_center_axis(int screen_extent, int window_extent) {
+    int pos = (screen_extent - window_extent) / 2;
+    if (pos < 0) {
+        pos = 0;
+    }
+    return pos;
+}
+
+static int
+ui_prompt_fit_width(int desired_width, int screen_width) {
+    int max_width = screen_width - 2;
+    if (max_width < 10) {
+        max_width = screen_width;
+    }
+    if (max_width < 4) {
+        return 0;
+    }
+    if (desired_width > max_width) {
+        desired_width = max_width;
+    }
+    if (desired_width < 10 && max_width >= 10) {
+        desired_width = 10;
+    }
+    return desired_width;
+}
+
+static int
+ui_prompt_fit_height(int desired_height, int screen_height) {
+    int max_height = screen_height - 2;
+    if (max_height < 6) {
+        max_height = screen_height;
+    }
+    if (max_height < 3) {
+        return 0;
+    }
+    if (desired_height > max_height) {
+        desired_height = max_height;
+    }
+    if (desired_height < 6 && max_height >= 6) {
+        desired_height = 6;
+    }
+    if (desired_height < 3) {
+        desired_height = 3;
+    }
+    return desired_height;
+}
+
+static int
+ui_prompt_compute_window_rect(const char* title, int* h, int* w, int* py, int* px) {
+    if (!title || !h || !w || !py || !px) {
+        return 0;
+    }
+    int scr_h = 0, scr_w = 0;
+    getmaxyx(stdscr, scr_h, scr_w);
+    if (scr_h < 4 || scr_w < 8) {
+        return 0;
+    }
+    int local_w = (int)strlen(title) + 16;
+    if (local_w < 54) {
+        local_w = 54;
+    }
+    local_w = ui_prompt_fit_width(local_w, scr_w);
+    if (local_w <= 0) {
+        return 0;
+    }
+
+    int local_h = ui_prompt_fit_height(8, scr_h);
+    if (local_h <= 0) {
+        return 0;
+    }
+
+    int local_py = ui_center_axis(scr_h, local_h);
+    int local_px = ui_center_axis(scr_w, local_w);
+    *h = local_h;
+    *w = local_w;
+    *py = local_py;
+    *px = local_px;
+    return 1;
+}
+
+static void
+ui_prompt_compute_row_positions(int h, int* title_y, int* input_y, int* footer_y) {
+    if (!title_y || !input_y || !footer_y) {
+        return;
+    }
+    int local_title_y = -1;
+    int local_input_y = 1;
+    int local_footer_y = -1;
+    int interior_rows = h - 2;
+    if (interior_rows >= 4) {
+        local_title_y = 1;
+        local_input_y = 3;
+        local_footer_y = h - 2;
+    } else if (interior_rows == 3) {
+        local_title_y = 1;
+        local_input_y = 2;
+        local_footer_y = h - 2;
+    } else if (interior_rows == 2) {
+        local_title_y = 1;
+        local_input_y = 2;
+    }
+    *title_y = local_title_y;
+    *input_y = local_input_y;
+    *footer_y = local_footer_y;
+}
+
+static void
+ui_prompt_compute_field_geometry(int w, int* field_col, int* field_right, int* field_width) {
+    if (!field_col || !field_right || !field_width) {
+        return;
+    }
+    int local_col = 4;
+    int local_right = w - 2;
+    if (local_col > local_right) {
+        local_col = local_right;
+    }
+    if (local_col < 2) {
+        local_col = 2;
+    }
+    int local_width = local_right - local_col;
+    if (local_width < 1) {
+        local_width = 1;
+    }
+    *field_col = local_col;
+    *field_right = local_right;
+    *field_width = local_width;
+}
+
+typedef struct {
+    size_t start;
+    size_t cursor;
+    int show_left_ellipsis;
+} UiPromptViewState;
+
+static UiPromptViewState
+ui_prompt_compute_view_state(const char* text, size_t cursor, int field_width) {
+    UiPromptViewState view = {0, 0, 0};
+    size_t text_len = text ? strlen(text) : 0;
+    size_t cpos = cursor;
+    if (cpos > text_len) {
+        cpos = text_len;
+    }
+    view.cursor = cpos;
+    if (text_len <= (size_t)field_width) {
+        return view;
+    }
+    int usable = field_width;
+    if (cpos > (size_t)usable) {
+        view.start = cpos - (size_t)(usable - 1);
+    }
+    if (view.start > 0 && field_width >= 4) {
+        view.show_left_ellipsis = 1;
+        usable = field_width - 3;
+        if (cpos > view.start + (size_t)usable) {
+            view.start = cpos - (size_t)(usable - 1);
+        }
+        if (cpos < view.start) {
+            view.start = cpos;
+        }
+        if (view.start == 0) {
+            view.show_left_ellipsis = 0;
+        }
+    }
+    return view;
+}
+
+static int
+ui_prompt_compute_cursor_x(int field_col, int field_right, const UiPromptViewState* view) {
+    if (!view) {
+        return field_col;
+    }
+    int prefix = view->show_left_ellipsis ? 3 : 0;
+    int cursor_x = field_col + prefix + (int)(view->cursor - view->start);
+    if (cursor_x > field_right) {
+        cursor_x = field_right;
+    }
+    if (cursor_x < 2) {
+        cursor_x = 2;
+    }
+    return cursor_x;
 }
 
 void
@@ -465,55 +718,9 @@ ui_prompt_render(void) {
         return;
     }
     const char* title = g_prompt.title ? g_prompt.title : "Input";
-    int h = 8;
-    int w = (int)strlen(title) + 16;
-    if (w < 54) {
-        w = 54;
-    }
-    int scr_h = 0, scr_w = 0;
-    getmaxyx(stdscr, scr_h, scr_w);
-    if (scr_h < 4 || scr_w < 8) {
+    int h = 0, w = 0, py = 0, px = 0;
+    if (!ui_prompt_compute_window_rect(title, &h, &w, &py, &px)) {
         return;
-    }
-    int max_w = scr_w - 2;
-    if (max_w < 10) {
-        // On narrow terminals, relax side margins before forcing a larger minimum width.
-        max_w = scr_w;
-    }
-    if (max_w < 4) {
-        return;
-    }
-    if (w > max_w) {
-        w = max_w;
-    }
-    if (w < 10 && max_w >= 10) {
-        w = 10;
-    }
-
-    int max_h = scr_h - 2;
-    if (max_h < 6) {
-        // On short terminals, relax vertical margins before forcing a larger minimum height.
-        max_h = scr_h;
-    }
-    if (max_h < 3) {
-        return;
-    }
-    if (h > max_h) {
-        h = max_h;
-    }
-    if (h < 6 && max_h >= 6) {
-        h = 6;
-    }
-    if (h < 3) {
-        h = 3;
-    }
-    int py = (scr_h - h) / 2;
-    int px = (scr_w - w) / 2;
-    if (py < 0) {
-        py = 0;
-    }
-    if (px < 0) {
-        px = 0;
     }
     if (!g_prompt.win) {
         g_prompt.win = ui_make_window(h, w, py, px);
@@ -523,92 +730,37 @@ ui_prompt_render(void) {
         wtimeout(g_prompt.win, 0);
     }
     WINDOW* win = g_prompt.win;
-    (void)ui_prompt_curs_set(1); // show cursor while editing prompt text
-    werase(win);
-    box(win, 0, 0);
-
-    int interior_rows = h - 2;
     int title_y = -1;
     int input_y = 1;
     int footer_y = -1;
-    if (interior_rows >= 4) {
-        title_y = 1;
-        input_y = 3;
-        footer_y = h - 2;
-    } else if (interior_rows == 3) {
-        title_y = 1;
-        input_y = 2;
-        footer_y = h - 2;
-    } else if (interior_rows == 2) {
-        title_y = 1;
-        input_y = 2;
-    } else {
-        input_y = 1;
-    }
+    ui_prompt_compute_row_positions(h, &title_y, &input_y, &footer_y);
+    int field_col = 2;
+    int field_right = 2;
+    int field_width = 1;
+    ui_prompt_compute_field_geometry(w, &field_col, &field_right, &field_width);
+    const char* text = g_prompt.buf ? g_prompt.buf : "";
+    UiPromptViewState view = ui_prompt_compute_view_state(text, g_prompt.cursor, field_width);
+    int cursor_x = ui_prompt_compute_cursor_x(field_col, field_right, &view);
     int body_w = (w > 4) ? (w - 4) : 1;
+
+    (void)ui_prompt_curs_set(1); // show cursor while editing prompt text
+    werase(win);
+    box(win, 0, 0);
     if (title_y > 0) {
         mvwaddnstr(win, title_y, 2, title, body_w);
     }
-
-    const char* text = g_prompt.buf ? g_prompt.buf : "";
-    int field_col = 4; // after "> " in normal-width prompts
-    int field_right = w - 2;
-    if (field_col > field_right) {
-        field_col = field_right;
-    }
-    if (field_col < 2) {
-        field_col = 2;
-    }
-    int field_width = field_right - field_col;
-    if (field_width < 1) {
-        field_width = 1;
-    }
-    size_t text_len = strlen(text);
-    size_t cpos = g_prompt.cursor;
-    if (cpos > text_len) {
-        cpos = text_len;
-    }
-    size_t start = 0;
-    int show_left_ellipsis = 0;
-    if ((int)text_len > field_width) {
-        // Scroll viewport to keep cursor visible
-        int usable = field_width;
-        if (cpos > (size_t)usable) {
-            start = cpos - (size_t)(usable - 1);
-        }
-        if (start > 0 && field_width >= 4) {
-            show_left_ellipsis = 1;
-            usable = field_width - 3;
-            if (cpos > start + (size_t)usable) {
-                start = cpos - (size_t)(usable - 1);
-            }
-            if (cpos < start) {
-                start = cpos;
-            }
-            if (start == 0) {
-                show_left_ellipsis = 0;
-            }
-        }
-    }
     mvwaddnstr(win, input_y, 2, "> ", (w > 5) ? 2 : 1);
-    if (show_left_ellipsis) {
+    if (view.show_left_ellipsis) {
         mvwaddnstr(win, input_y, field_col, "...", 3);
-        mvwaddnstr(win, input_y, field_col + 3, text + start, field_width - 3);
+        mvwaddnstr(win, input_y, field_col + 3, text + view.start, field_width - 3);
     } else {
-        mvwaddnstr(win, input_y, field_col, text + start, field_width);
+        mvwaddnstr(win, input_y, field_col, text + view.start, field_width);
     }
-    int cursor_prefix = show_left_ellipsis ? 3 : 0;
-    int cursor_x = field_col + cursor_prefix + (int)(cpos - start);
-    if (cursor_x > field_right) {
-        cursor_x = field_right;
-    }
-    if (cursor_x < 2) {
-        cursor_x = 2;
-    }
-    wmove(win, input_y, cursor_x);
     if (footer_y > 0 && footer_y != input_y) {
         mvwaddnstr(win, footer_y, 2, "Enter=OK  Esc=Cancel", body_w);
     }
+    // Footer/title writes also move the curses cursor; place it last so input editing stays visible.
+    wmove(win, input_y, cursor_x);
     wnoutrefresh(win);
 }
 
@@ -637,12 +789,76 @@ ui_help_close(void) {
         g_help.win = NULL;
     }
     (void)ui_prompt_curs_set(0);
-    memset(&g_help, 0, sizeof(g_help));
+    DSD_MEMSET(&g_help, 0, sizeof(g_help));
 }
 
 int
 ui_help_active(void) {
     return g_help.active;
+}
+
+static void
+ui_help_handle_resize_event(void) {
+#if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
+    resize_term(0, 0);
+#endif
+    if (g_help.win) {
+        delwin(g_help.win);
+        g_help.win = NULL;
+    }
+}
+
+static int
+ui_help_max_scroll(void) {
+    if (g_help.line_count > g_help.page_rows && g_help.page_rows > 0) {
+        return g_help.line_count - g_help.page_rows;
+    }
+    return 0;
+}
+
+static int
+ui_help_is_close_key(int ch) {
+    return (ch == DSD_KEY_ESC || ch == 'q' || ch == 'Q' || ch == 'h' || ch == 'H' || ch == 10 || ch == KEY_ENTER
+            || ch == '\r' || ch == KEY_LEFT);
+}
+
+static int
+ui_help_handle_scroll_key(int ch, int max_scroll, int page_step) {
+    if (ch == KEY_UP) {
+        if (g_help.scroll > 0) {
+            g_help.scroll--;
+        }
+        return 1;
+    }
+    if (ch == KEY_DOWN) {
+        if (g_help.scroll < max_scroll) {
+            g_help.scroll++;
+        }
+        return 1;
+    }
+    if (ch == KEY_PPAGE) {
+        g_help.scroll -= page_step;
+        if (g_help.scroll < 0) {
+            g_help.scroll = 0;
+        }
+        return 1;
+    }
+    if (ch == KEY_NPAGE) {
+        g_help.scroll += page_step;
+        if (g_help.scroll > max_scroll) {
+            g_help.scroll = max_scroll;
+        }
+        return 1;
+    }
+    if (ch == KEY_HOME) {
+        g_help.scroll = 0;
+        return 1;
+    }
+    if (ch == KEY_END) {
+        g_help.scroll = max_scroll;
+        return 1;
+    }
+    return 0;
 }
 
 int
@@ -651,62 +867,115 @@ ui_help_handle_key(int ch) {
         return 0;
     }
     if (ch == KEY_RESIZE) {
-#if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
-        resize_term(0, 0);
-#endif
-        if (g_help.win) {
-            delwin(g_help.win);
-            g_help.win = NULL;
-        }
+        ui_help_handle_resize_event();
         return 1;
     }
-    int max_scroll = 0;
-    if (g_help.line_count > g_help.page_rows && g_help.page_rows > 0) {
-        max_scroll = g_help.line_count - g_help.page_rows;
+    if (ch == ERR) {
+        return 1;
     }
+    int max_scroll = ui_help_max_scroll();
     int page_step = ui_scroll_page_step_from_rows(g_help.page_rows);
-    if (ch != ERR) {
-        if (ch == KEY_UP) {
-            if (g_help.scroll > 0) {
-                g_help.scroll--;
-            }
-            return 1;
-        }
-        if (ch == KEY_DOWN) {
-            if (g_help.scroll < max_scroll) {
-                g_help.scroll++;
-            }
-            return 1;
-        }
-        if (ch == KEY_PPAGE) {
-            g_help.scroll -= page_step;
-            if (g_help.scroll < 0) {
-                g_help.scroll = 0;
-            }
-            return 1;
-        }
-        if (ch == KEY_NPAGE) {
-            g_help.scroll += page_step;
-            if (g_help.scroll > max_scroll) {
-                g_help.scroll = max_scroll;
-            }
-            return 1;
-        }
-        if (ch == KEY_HOME) {
-            g_help.scroll = 0;
-            return 1;
-        }
-        if (ch == KEY_END) {
-            g_help.scroll = max_scroll;
-            return 1;
-        }
-        if (ch == DSD_KEY_ESC || ch == 'q' || ch == 'Q' || ch == 'h' || ch == 'H' || ch == 10 || ch == KEY_ENTER
-            || ch == '\r' || ch == KEY_LEFT) {
-            ui_help_close();
-            return 1;
-        }
+    if (ui_help_handle_scroll_key(ch, max_scroll, page_step)) {
+        return 1;
+    }
+    if (ui_help_is_close_key(ch)) {
+        ui_help_close();
+        return 1;
     }
     return 1;
+}
+
+static int
+ui_help_compute_window_rect(int* h, int* w, int* hy, int* hx) {
+    if (!h || !w || !hy || !hx) {
+        return 0;
+    }
+    int local_h = 14;
+    int local_w = 68;
+    int scr_h = 0, scr_w = 0;
+    getmaxyx(stdscr, scr_h, scr_w);
+    if (scr_h < 4 || scr_w < 8) {
+        return 0;
+    }
+    int max_w = scr_w - 2;
+    int max_h = scr_h - 2;
+    if (max_w < 10 || max_h < 6) {
+        return 0;
+    }
+    if (local_w > max_w) {
+        local_w = max_w;
+    }
+    if (local_w < 30) {
+        local_w = max_w;
+    }
+    if (local_h > max_h) {
+        local_h = max_h;
+    }
+    int local_hy = (scr_h - local_h) / 2;
+    int local_hx = (scr_w - local_w) / 2;
+    if (local_hy < 0) {
+        local_hy = 0;
+    }
+    if (local_hx < 0) {
+        local_hx = 0;
+    }
+    *h = local_h;
+    *w = local_w;
+    *hy = local_hy;
+    *hx = local_hx;
+    return 1;
+}
+
+static void
+ui_help_clamp_scroll(int max_scroll) {
+    if (max_scroll < 0) {
+        max_scroll = 0;
+    }
+    if (g_help.scroll < 0) {
+        g_help.scroll = 0;
+    }
+    if (g_help.scroll > max_scroll) {
+        g_help.scroll = max_scroll;
+    }
+}
+
+static void
+ui_help_draw_title(WINDOW* hw, int max_scroll, int first, int last, int line_count) {
+    if (!hw) {
+        return;
+    }
+    if (max_scroll > 0) {
+        mvwprintw(hw, 1, 2, "Help (%d-%d/%d)", first + 1, last, line_count);
+    } else {
+        mvwprintw(hw, 1, 2, "Help");
+    }
+}
+
+static void
+ui_help_draw_page_lines(WINDOW* hw, int h, int body_w, char lines[][UI_HELP_MAX_LINE_CHARS], int first, int last,
+                        int line_count) {
+    if (!hw || !lines) {
+        return;
+    }
+    int y = 2;
+    for (int i = first; i < last && y <= (h - 3); i++, y++) {
+        if (i < 0 || i >= line_count || i >= UI_HELP_MAX_LINES) {
+            break;
+        }
+        mvwaddnstr(hw, y, 2, lines[i], body_w);
+    }
+}
+
+static void
+ui_help_draw_footer(WINDOW* hw, int h, int body_w, int max_scroll) {
+    if (!hw) {
+        return;
+    }
+    if (max_scroll > 0) {
+        mvwaddnstr(hw, h - 2, 2, "Up/Down/PgUp/PgDn: scroll  Esc/q: close", body_w);
+    } else {
+        mvwaddnstr(hw, h - 2, 2, "Esc/q/Enter: close", body_w);
+    }
 }
 
 void
@@ -714,41 +983,10 @@ ui_help_render(void) {
     if (!g_help.active) {
         return;
     }
-    const char* t = g_help.text ? g_help.text : "";
-    int h = 14;
-    int w = 68;
-    int scr_h = 0, scr_w = 0;
-    getmaxyx(stdscr, scr_h, scr_w);
-    if (scr_h < 4 || scr_w < 8) {
+    int h = 0, w = 0, hy = 0, hx = 0;
+    if (!ui_help_compute_window_rect(&h, &w, &hy, &hx)) {
         ui_help_close();
         return;
-    }
-    int max_w = scr_w - 2;
-    int max_h = scr_h - 2;
-    if (max_w < 10 || max_h < 6) {
-        // Overlay cannot be rendered at its minimum usable size.
-        ui_help_close();
-        return;
-    }
-    if (w > max_w) {
-        w = max_w;
-    }
-    if (w < 30) {
-        w = max_w;
-    }
-    if (h > max_h) {
-        h = max_h;
-    }
-    if (h < 6) {
-        h = 6;
-    }
-    int hy = (scr_h - h) / 2;
-    int hx = (scr_w - w) / 2;
-    if (hy < 0) {
-        hy = 0;
-    }
-    if (hx < 0) {
-        hx = 0;
     }
     if (!g_help.win) {
         g_help.win = ui_make_window(h, w, hy, hx);
@@ -761,14 +999,12 @@ ui_help_render(void) {
     WINDOW* hw = g_help.win;
     werase(hw);
     box(hw, 0, 0);
-    const int body_w = (w > 4) ? (w - 4) : 1;
-    const int page_rows = (h > 4) ? (h - 4) : 1;
-    if (page_rows < 1) {
-        return;
-    }
+    int body_w = (w > 4) ? (w - 4) : 1;
+    int page_rows = (h > 4) ? (h - 4) : 1;
 
+    const char* text = g_help.text ? g_help.text : "";
     char lines[UI_HELP_MAX_LINES][UI_HELP_MAX_LINE_CHARS];
-    int line_count = ui_help_wrap_text(t, body_w, lines, UI_HELP_MAX_LINES);
+    int line_count = ui_help_wrap_text(text, body_w, lines, UI_HELP_MAX_LINES);
     if (line_count < 1) {
         line_count = 1;
     }
@@ -776,41 +1012,16 @@ ui_help_render(void) {
     g_help.page_rows = page_rows;
 
     int max_scroll = (line_count > page_rows) ? (line_count - page_rows) : 0;
-    if (max_scroll < 0) {
-        max_scroll = 0;
-    }
-    if (g_help.scroll < 0) {
-        g_help.scroll = 0;
-    }
-    if (g_help.scroll > max_scroll) {
-        g_help.scroll = max_scroll;
-    }
-
+    ui_help_clamp_scroll(max_scroll);
     int first = g_help.scroll;
     int last = first + page_rows;
     if (last > line_count) {
         last = line_count;
     }
 
-    if (max_scroll > 0) {
-        mvwprintw(hw, 1, 2, "Help (%d-%d/%d)", first + 1, last, line_count);
-    } else {
-        mvwprintw(hw, 1, 2, "Help");
-    }
-
-    int y = 2;
-    for (int i = first; i < last && y <= (h - 3); i++, y++) {
-        if (i < 0 || i >= line_count || i >= UI_HELP_MAX_LINES) {
-            break;
-        }
-        mvwaddnstr(hw, y, 2, lines[i], body_w);
-    }
-
-    if (max_scroll > 0) {
-        mvwaddnstr(hw, h - 2, 2, "Up/Down/PgUp/PgDn: scroll  Esc/q: close", body_w);
-    } else {
-        mvwaddnstr(hw, h - 2, 2, "Esc/q/Enter: close", body_w);
-    }
+    ui_help_draw_title(hw, max_scroll, first, last, line_count);
+    ui_help_draw_page_lines(hw, h, body_w, lines, first, last, line_count);
+    ui_help_draw_footer(hw, h, body_w, max_scroll);
     wnoutrefresh(hw);
 }
 
@@ -858,7 +1069,7 @@ ui_chooser_close(void) {
         g_chooser.win = NULL;
     }
     (void)ui_prompt_curs_set(0);
-    memset(&g_chooser, 0, sizeof(g_chooser));
+    DSD_MEMSET(&g_chooser, 0, sizeof(g_chooser));
 }
 
 int
@@ -866,28 +1077,38 @@ ui_chooser_active(void) {
     return g_chooser.active;
 }
 
-int
-ui_chooser_handle_key(int ch) {
-    if (!g_chooser.active) {
-        return 0;
-    }
-    if (g_chooser.count <= 0) {
-        ui_chooser_finish(-1);
-        return 1;
-    }
-    if (ch == ERR) {
-        return 1;
-    }
-    if (ch == KEY_RESIZE) {
+static void
+ui_chooser_handle_resize_event(void) {
 #if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
-        resize_term(0, 0);
+    resize_term(0, 0);
 #endif
-        if (g_chooser.win) {
-            delwin(g_chooser.win);
-            g_chooser.win = NULL;
-        }
-        return 1;
+    if (g_chooser.win) {
+        delwin(g_chooser.win);
+        g_chooser.win = NULL;
     }
+}
+
+static void
+ui_chooser_page_move(int direction) {
+    int page_step = ui_scroll_page_step_from_rows(g_chooser.page_rows);
+    if (direction < 0) {
+        g_chooser.sel -= page_step;
+        if (g_chooser.sel < 0) {
+            g_chooser.sel = 0;
+        }
+        g_chooser.top -= page_step;
+    } else {
+        g_chooser.sel += page_step;
+        if (g_chooser.sel >= g_chooser.count) {
+            g_chooser.sel = g_chooser.count - 1;
+        }
+        g_chooser.top += page_step;
+    }
+    ui_chooser_keep_selection_visible();
+}
+
+static int
+ui_chooser_handle_navigation_key(int ch) {
     if (ch == KEY_UP) {
         g_chooser.sel = (g_chooser.sel - 1 + g_chooser.count) % g_chooser.count;
         ui_chooser_keep_selection_visible();
@@ -909,35 +1130,194 @@ ui_chooser_handle_key(int ch) {
         return 1;
     }
     if (ch == KEY_PPAGE) {
-        int page_step = ui_scroll_page_step_from_rows(g_chooser.page_rows);
-        g_chooser.sel -= page_step;
-        if (g_chooser.sel < 0) {
-            g_chooser.sel = 0;
-        }
-        g_chooser.top -= page_step;
-        ui_chooser_keep_selection_visible();
+        ui_chooser_page_move(-1);
         return 1;
     }
     if (ch == KEY_NPAGE) {
-        int page_step = ui_scroll_page_step_from_rows(g_chooser.page_rows);
-        g_chooser.sel += page_step;
-        if (g_chooser.sel >= g_chooser.count) {
-            g_chooser.sel = g_chooser.count - 1;
-        }
-        g_chooser.top += page_step;
-        ui_chooser_keep_selection_visible();
+        ui_chooser_page_move(1);
         return 1;
     }
-    if (ch == 'q' || ch == 'Q' || ch == DSD_KEY_ESC || ch == KEY_LEFT) {
+    return 0;
+}
+
+static int
+ui_chooser_is_cancel_key(int ch) {
+    return (ch == 'q' || ch == 'Q' || ch == DSD_KEY_ESC || ch == KEY_LEFT);
+}
+
+static int
+ui_chooser_is_accept_key(int ch) {
+    return (ch == 10 || ch == KEY_ENTER || ch == '\r' || ch == KEY_RIGHT);
+}
+
+int
+ui_chooser_handle_key(int ch) {
+    if (!g_chooser.active) {
+        return 0;
+    }
+    if (g_chooser.count <= 0) {
         ui_chooser_finish(-1);
         return 1;
     }
-    if (ch == 10 || ch == KEY_ENTER || ch == '\r' || ch == KEY_RIGHT) {
-        int sel = g_chooser.sel;
-        ui_chooser_finish(sel);
+    if (ch == ERR) {
+        return 1;
+    }
+    if (ch == KEY_RESIZE) {
+        ui_chooser_handle_resize_event();
+        return 1;
+    }
+    if (ui_chooser_handle_navigation_key(ch)) {
+        return 1;
+    }
+    if (ui_chooser_is_cancel_key(ch)) {
+        ui_chooser_finish(-1);
+        return 1;
+    }
+    if (ui_chooser_is_accept_key(ch)) {
+        ui_chooser_finish(g_chooser.sel);
         return 1;
     }
     return 1;
+}
+
+static int
+ui_chooser_max_item_width(void) {
+    int max_item = 0;
+    for (int i = 0; i < g_chooser.count; i++) {
+        int item_len = (int)strlen(g_chooser.items[i]);
+        if (item_len > max_item) {
+            max_item = item_len;
+        }
+    }
+    return max_item;
+}
+
+static int
+ui_chooser_initial_width(const char* title, const char* footer, int max_item) {
+    int width = 4 + (int)strlen(title);
+    int item_need = 4 + max_item;
+    if (item_need > width) {
+        width = item_need;
+    }
+    int footer_need = 4 + (int)strlen(footer);
+    if (footer_need > width) {
+        width = footer_need;
+    }
+    return width + 2;
+}
+
+static int
+ui_chooser_fit_width(int desired_width, int screen_width) {
+    int max_width = screen_width - 2;
+    if (max_width < 10) {
+        return 0;
+    }
+    if (desired_width > max_width) {
+        desired_width = max_width;
+    }
+    if (desired_width < 10) {
+        desired_width = 10;
+    }
+    return desired_width;
+}
+
+static int
+ui_chooser_fit_height(int desired_height, int screen_height) {
+    int max_height = screen_height - 2;
+    if (max_height < 6) {
+        return 0;
+    }
+    if (desired_height > max_height) {
+        desired_height = max_height;
+    }
+    if (desired_height < 6) {
+        desired_height = 6;
+    }
+    return desired_height;
+}
+
+static int
+ui_chooser_compute_window_rect(const char* title, const char* footer, int max_item, int* h, int* w, int* wy, int* wx) {
+    if (!title || !footer || !h || !w || !wy || !wx) {
+        return 0;
+    }
+    int local_w = ui_chooser_initial_width(title, footer, max_item);
+    int local_h = g_chooser.count + 5;
+    if (local_h < 7) {
+        local_h = 7;
+    }
+
+    int scr_h = 0, scr_w = 0;
+    getmaxyx(stdscr, scr_h, scr_w);
+    if (scr_h < 4 || scr_w < 8) {
+        return 0;
+    }
+    local_w = ui_chooser_fit_width(local_w, scr_w);
+    local_h = ui_chooser_fit_height(local_h, scr_h);
+    if (local_w <= 0 || local_h <= 0) {
+        return 0;
+    }
+
+    int local_wy = ui_center_axis(scr_h, local_h);
+    int local_wx = ui_center_axis(scr_w, local_w);
+    *h = local_h;
+    *w = local_w;
+    *wy = local_wy;
+    *wx = local_wx;
+    return 1;
+}
+
+static void
+ui_chooser_clamp_selection(void) {
+    if (g_chooser.sel < 0) {
+        g_chooser.sel = 0;
+    }
+    if (g_chooser.sel >= g_chooser.count) {
+        g_chooser.sel = g_chooser.count - 1;
+    }
+    ui_chooser_keep_selection_visible();
+}
+
+static void
+ui_chooser_draw_title(WINDOW* win, const char* title, int body_w, int page_rows) {
+    if (!win || !title) {
+        return;
+    }
+    if (g_chooser.count > page_rows) {
+        int first = g_chooser.top + 1;
+        int last = g_chooser.top + page_rows;
+        char title_line[256];
+        if (last > g_chooser.count) {
+            last = g_chooser.count;
+        }
+        DSD_SNPRINTF(title_line, sizeof title_line, "%s (%d-%d/%d)", title, first, last, g_chooser.count);
+        mvwaddnstr(win, 1, 2, title_line, body_w);
+        return;
+    }
+    mvwaddnstr(win, 1, 2, title, body_w);
+}
+
+static void
+ui_chooser_draw_items(WINDOW* win, int w, int body_w, int page_rows) {
+    if (!win) {
+        return;
+    }
+    int y = 3;
+    int drawn = 0;
+    for (int i = g_chooser.top; i < g_chooser.count && drawn < page_rows; i++, drawn++) {
+        mvwhline(win, y, 1, ' ', w - 2);
+        if (i == g_chooser.sel) {
+            wattron(win, A_REVERSE);
+        }
+        mvwaddnstr(win, y++, 2, g_chooser.items[i], body_w);
+        if (i == g_chooser.sel) {
+            wattroff(win, A_REVERSE);
+        }
+    }
+    while (drawn < page_rows) {
+        mvwhline(win, y++, 1, ' ', w - 2);
+        drawn++;
+    }
 }
 
 void
@@ -950,60 +1330,12 @@ ui_chooser_render(void) {
         return;
     }
     const char* title = g_chooser.title ? g_chooser.title : "Select";
-    int max_item = 0;
-    for (int i = 0; i < g_chooser.count; i++) {
-        int L = (int)strlen(g_chooser.items[i]);
-        if (L > max_item) {
-            max_item = L;
-        }
-    }
     const char* footer = "Arrows/PgUp/PgDn  Right/Enter: select  Esc/q/Left";
-    int w = 4 + (int)strlen(title);
-    int need = 4 + max_item;
-    if (need > w) {
-        w = need;
-    }
-    need = 4 + (int)strlen(footer);
-    if (need > w) {
-        w = need;
-    }
-    w += 2;
-    int h = g_chooser.count + 5;
-    if (h < 7) {
-        h = 7;
-    }
-    int scr_h = 0, scr_w = 0;
-    getmaxyx(stdscr, scr_h, scr_w);
-    if (scr_h < 4 || scr_w < 8) {
+    int max_item = ui_chooser_max_item_width();
+    int h = 0, w = 0, wy = 0, wx = 0;
+    if (!ui_chooser_compute_window_rect(title, footer, max_item, &h, &w, &wy, &wx)) {
         ui_chooser_finish(-1);
         return;
-    }
-    int max_w = scr_w - 2;
-    int max_h = scr_h - 2;
-    if (max_w < 10 || max_h < 6) {
-        // Overlay cannot be rendered at its minimum usable size.
-        ui_chooser_finish(-1);
-        return;
-    }
-    if (w > max_w) {
-        w = max_w;
-    }
-    if (w < 10) {
-        w = 10;
-    }
-    if (h > max_h) {
-        h = max_h;
-    }
-    if (h < 6) {
-        h = 6;
-    }
-    int wy = (scr_h - h) / 2;
-    int wx = (scr_w - w) / 2;
-    if (wy < 0) {
-        wy = 0;
-    }
-    if (wx < 0) {
-        wx = 0;
     }
     if (!g_chooser.win) {
         g_chooser.win = ui_make_window(h, w, wy, wx);
@@ -1023,43 +1355,9 @@ ui_chooser_render(void) {
         page_rows = 1;
     }
     g_chooser.page_rows = page_rows;
-    if (g_chooser.sel < 0) {
-        g_chooser.sel = 0;
-    }
-    if (g_chooser.sel >= g_chooser.count) {
-        g_chooser.sel = g_chooser.count - 1;
-    }
-    ui_chooser_keep_selection_visible();
-
-    if (g_chooser.count > page_rows) {
-        int first = g_chooser.top + 1;
-        int last = g_chooser.top + page_rows;
-        char title_line[256];
-        if (last > g_chooser.count) {
-            last = g_chooser.count;
-        }
-        snprintf(title_line, sizeof title_line, "%s (%d-%d/%d)", title, first, last, g_chooser.count);
-        mvwaddnstr(win, 1, 2, title_line, body_w);
-    } else {
-        mvwaddnstr(win, 1, 2, title, body_w);
-    }
-
-    int y = 3;
-    int drawn = 0;
-    for (int i = g_chooser.top; i < g_chooser.count && drawn < page_rows; i++, drawn++) {
-        mvwhline(win, y, 1, ' ', w - 2);
-        if (i == g_chooser.sel) {
-            wattron(win, A_REVERSE);
-        }
-        mvwaddnstr(win, y++, 2, g_chooser.items[i], body_w);
-        if (i == g_chooser.sel) {
-            wattroff(win, A_REVERSE);
-        }
-    }
-    while (drawn < page_rows) {
-        mvwhline(win, y++, 1, ' ', w - 2);
-        drawn++;
-    }
+    ui_chooser_clamp_selection();
+    ui_chooser_draw_title(win, title, body_w, page_rows);
+    ui_chooser_draw_items(win, w, body_w, page_rows);
     mvwaddnstr(win, h - 2, 2, footer, body_w);
     wnoutrefresh(win);
 }

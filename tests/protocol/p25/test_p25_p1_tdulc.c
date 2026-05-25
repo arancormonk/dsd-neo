@@ -19,11 +19,15 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/p25p1_heuristics.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 void processTDULC(dsd_opts* opts, dsd_state* state);
 
@@ -103,6 +107,7 @@ sm_test_api(void) {
 
 // Alias helpers referenced by LCW path
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -111,6 +116,7 @@ apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -119,6 +125,7 @@ apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -127,6 +134,7 @@ l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -134,6 +142,7 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -143,6 +152,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -153,7 +163,8 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 
 // Minimal utility used by p25_lcw (MSB-first)
 uint64_t
-ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     uint64_t v = 0;
     for (uint32_t i = 0; i < BitLength; i++) {
         v = (v << 1) | (uint64_t)(BufferIn[i] & 1);
@@ -163,6 +174,7 @@ ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
 
 // FEC stubs (bypass corrections)
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 check_and_fix_golay_24_12(char* dodeca, char* parity, int* fixed_errors) {
     (void)dodeca;
     (void)parity;
@@ -173,12 +185,14 @@ check_and_fix_golay_24_12(char* dodeca, char* parity, int* fixed_errors) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 encode_golay_24_12(char* data, char* parity) {
     (void)data;
     (void)parity;
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 check_and_fix_reedsolomon_24_12_13(char* data, char* parity) {
     (void)data;
     (void)parity;
@@ -186,6 +200,7 @@ check_and_fix_reedsolomon_24_12_13(char* data, char* parity) {
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 check_and_fix_reedsolomon_24_12_13_soft(char* data, char* parity, const int* erasures, int n_erasures) {
     (void)data;
     (void)parity;
@@ -195,6 +210,7 @@ check_and_fix_reedsolomon_24_12_13_soft(char* data, char* parity, const int* era
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 encode_reedsolomon_24_12_13(char* data, char* parity) {
     (void)data;
     (void)parity;
@@ -202,6 +218,7 @@ encode_reedsolomon_24_12_13(char* data, char* parity) {
 
 // Analog/sample reader stubs
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* output, unsigned int count, int* status_count,
                               AnalogSignal* analog_signal_array, int* analog_signal_index) {
     (void)opts;
@@ -210,7 +227,7 @@ read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* output, un
     (void)analog_signal_array;
     (void)analog_signal_index;
     // Provide zeros; only used for heuristics bookkeeping in this test
-    memset(output, 0, count);
+    DSD_MEMSET(output, 0, count);
 }
 
 int
@@ -273,7 +290,7 @@ build_lcw_words(uint8_t lc_format, uint8_t mfid, uint8_t svc, uint16_t group1, u
     bits_from_u16(channelr, 16, cr16);
 
     // Clear all words
-    memset(g_words, 0, sizeof(g_words));
+    DSD_MEMSET(g_words, 0, sizeof(g_words));
 
     // Map into dodeca_data[5..0] per TDULC packing
     // data[5]
@@ -315,17 +332,17 @@ build_lcw_words(uint8_t lc_format, uint8_t mfid, uint8_t svc, uint16_t group1, u
 
     // Shift the assembled data words into read order: index 0..5 should be data[5]..data[0]
     char ordered[6][12];
-    memcpy(ordered[0], g_words[0], 12); // data[5]
-    memcpy(ordered[1], g_words[1], 12); // data[4]
-    memcpy(ordered[2], g_words[2], 12); // data[3]
-    memcpy(ordered[3], g_words[3], 12); // data[2]
-    memcpy(ordered[4], g_words[4], 12); // data[1]
-    memcpy(ordered[5], g_words[5], 12); // data[0]
-    memcpy(g_words, ordered, sizeof(ordered));
+    DSD_MEMCPY(ordered[0], g_words[0], 12); // data[5]
+    DSD_MEMCPY(ordered[1], g_words[1], 12); // data[4]
+    DSD_MEMCPY(ordered[2], g_words[2], 12); // data[3]
+    DSD_MEMCPY(ordered[3], g_words[3], 12); // data[2]
+    DSD_MEMCPY(ordered[4], g_words[4], 12); // data[1]
+    DSD_MEMCPY(ordered[5], g_words[5], 12); // data[0]
+    DSD_MEMCPY(g_words, ordered, sizeof(ordered));
 
     // Parity words (not used by stubs): fill with zeros for indices 6..11 in read order parity[5]..[0]
     for (int w = 6; w < 12; w++) {
-        memset(g_words[w], 0, 12);
+        DSD_MEMSET(g_words[w], 0, 12);
     }
 
     g_word_index = 0;
@@ -333,6 +350,7 @@ build_lcw_words(uint8_t lc_format, uint8_t mfid, uint8_t svc, uint16_t group1, u
 
 // Reader stubs used by TDULC
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 read_word(dsd_opts* opts, dsd_state* state, char* word, unsigned int length, int* status_count,
           AnalogSignal* analog_signal_array, int* analog_signal_index) {
     (void)opts;
@@ -341,14 +359,15 @@ read_word(dsd_opts* opts, dsd_state* state, char* word, unsigned int length, int
     (void)analog_signal_array;
     (void)analog_signal_index;
     if (length != 12 || g_word_index >= 12) {
-        memset(word, 0, length);
+        DSD_MEMSET(word, 0, length);
         return;
     }
-    memcpy(word, g_words[g_word_index], 12);
+    DSD_MEMCPY(word, g_words[g_word_index], 12);
     g_word_index++;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 read_golay24_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count,
                     AnalogSignal* analog_signal_array, int* analog_signal_index) {
     (void)opts;
@@ -356,13 +375,13 @@ read_golay24_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_
     (void)status_count;
     (void)analog_signal_array;
     (void)analog_signal_index;
-    memset(parity, 0, 12);
+    DSD_MEMSET(parity, 0, 12);
 }
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -372,14 +391,17 @@ int
 main(void) {
     int rc = 0;
 
-    p25_sm_set_api(sm_test_api());
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
 
     // Case 1: Retune enabled (baseline)
     build_lcw_words(0x44, 0x00, 0x00, 0x4567, 0x100A, 0x0000);
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
     opts.p25_trunk = 1;
     opts.p25_lcw_retune = 1;
     opts.trunk_tune_group_calls = 1;
@@ -429,3 +451,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

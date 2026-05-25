@@ -16,7 +16,7 @@
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <math.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 #define FLOAT_TOL 0.01f
 
@@ -41,15 +41,6 @@ check_int(const char* name, int expected, int actual) {
     }
 }
 
-static void
-check_float_range(const char* name, float min, float max, float actual) {
-    g_test_count++;
-    if (actual < min || actual > max) {
-        printf("FAIL: %s: expected [%.4f, %.4f], got %.4f\n", name, (double)min, (double)max, (double)actual);
-        g_fail_count++;
-    }
-}
-
 /**
  * @brief Test symbol history initialization and basic operations.
  */
@@ -58,7 +49,7 @@ test_history_basic_ops(void) {
     printf("=== test_history_basic_ops ===\n");
 
     static struct dsd_state state;
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     /* Initialize history */
     int rc = dsd_symbol_history_init(&state, 64);
@@ -95,7 +86,7 @@ test_history_wraparound(void) {
     printf("=== test_history_wraparound ===\n");
 
     static struct dsd_state state;
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     /* Small buffer for easy wrap testing */
     int rc = dsd_symbol_history_init(&state, 4);
@@ -130,10 +121,10 @@ test_warm_start_ideal(void) {
     printf("=== test_warm_start_ideal ===\n");
 
     static struct dsd_state state;
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     static struct dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
     /* Initialize history */
@@ -171,10 +162,10 @@ test_warm_start_dc_offset(void) {
     printf("=== test_warm_start_dc_offset ===\n");
 
     static struct dsd_state state;
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     static struct dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
     dsd_symbol_history_init(&state, 64);
@@ -210,10 +201,10 @@ test_center_only_warm_start(void) {
     printf("=== test_center_only_warm_start ===\n");
 
     static struct dsd_state state;
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     static struct dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
     dsd_symbol_history_init(&state, 64);
@@ -260,10 +251,10 @@ test_center_only_large_bias(void) {
     printf("=== test_center_only_large_bias ===\n");
 
     static struct dsd_state state;
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     static struct dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
     dsd_symbol_history_init(&state, 64);
@@ -291,10 +282,10 @@ test_warm_start_insufficient_history(void) {
     printf("=== test_warm_start_insufficient_history ===\n");
 
     static struct dsd_state state;
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     static struct dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
     dsd_symbol_history_init(&state, 64);
@@ -319,10 +310,10 @@ test_warm_start_degenerate(void) {
     printf("=== test_warm_start_degenerate ===\n");
 
     static struct dsd_state state;
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     static struct dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
     dsd_symbol_history_init(&state, 64);
@@ -359,10 +350,10 @@ test_warm_start_various_sync_lengths(void) {
     printf("=== test_warm_start_various_sync_lengths ===\n");
 
     static struct dsd_state state;
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     static struct dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
     /* Test with sync lengths from different protocols */
@@ -381,13 +372,13 @@ test_warm_start_various_sync_lengths(void) {
 
         dsd_warm_start_result_t result = dsd_sync_warm_start_thresholds_outer_only(&opts, &state, sync_len);
         char buf[64];
-        snprintf(buf, sizeof(buf), "sync_len=%d result", sync_len);
+        DSD_SNPRINTF(buf, sizeof(buf), "sync_len=%d result", sync_len);
         check_int(buf, DSD_WARM_START_OK, result);
 
-        snprintf(buf, sizeof(buf), "sync_len=%d max", sync_len);
+        DSD_SNPRINTF(buf, sizeof(buf), "sync_len=%d max", sync_len);
         check_float(buf, 3.0f, state.max, FLOAT_TOL);
 
-        snprintf(buf, sizeof(buf), "sync_len=%d min", sync_len);
+        DSD_SNPRINTF(buf, sizeof(buf), "sync_len=%d min", sync_len);
         check_float(buf, -3.0f, state.min, FLOAT_TOL);
 
         dsd_symbol_history_free(&state);
@@ -404,7 +395,7 @@ test_null_handling(void) {
     printf("=== test_null_handling ===\n");
 
     static struct dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
     /* NULL state */
@@ -427,10 +418,10 @@ test_buffer_prefill(void) {
     printf("=== test_buffer_prefill ===\n");
 
     static struct dsd_state state;
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     static struct dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 32;
 
     dsd_symbol_history_init(&state, 64);

@@ -10,7 +10,8 @@
  * Declares the Viterbi routines implemented in `src/core/util/dsd_misc.c`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_FEC_VITERBI_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_FEC_VITERBI_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -30,3 +31,5 @@ uint16_t q_abs_diff(const uint16_t v1, const uint16_t v2);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_FEC_VITERBI_H_ */

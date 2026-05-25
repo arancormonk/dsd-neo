@@ -19,35 +19,39 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <assert.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
-#ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#endif
-
-#include <assert.h>
-#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#ifdef TRACE_DSD
+#include <dsd-neo/platform/file_compat.h>
+#endif
+
+#ifdef USE_RADIO
+#endif
 
 #ifdef USE_RADIO
 #define DSD_RTL_OUTPUT_KIND_SYMBOL_FSK 1
 #endif
 
-static void
-throttle_symbol_bin_replay(dsd_opts* opts, dsd_state* state) {
+static void DSD_ATTR_USED
+throttle_symbol_bin_replay(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || state->use_throttle != 1) {
         return;
     }
@@ -92,94 +96,107 @@ throttle_symbol_bin_replay(dsd_opts* opts, dsd_state* state) {
     state->symbol_replay_next_deadline_ns = deadline_ns + period_ns;
 }
 
+static void DSD_ATTR_USED
+datascope_modulation_label(const dsd_state* state, char modulation[8]) {
+    if (state->rf_mod == 0) {
+        DSD_SNPRINTF(modulation, 8, "C4FM");
+    } else if (state->rf_mod == 1) {
+        DSD_SNPRINTF(modulation, 8, "QPSK");
+    } else if (state->rf_mod == 2) {
+        DSD_SNPRINTF(modulation, 8, "GFSK");
+    }
+}
+
+static int
+clamp_datascope_bin(int bin) {
+    if (bin < 0) {
+        return 0;
+    }
+    if (bin > 63) {
+        return 63;
+    }
+    return bin;
+}
+
 static void
-print_datascope(dsd_opts* opts, dsd_state* state, const float* sbuf2, int count) {
-    int i, j, o;
+build_datascope_spectrum(const float* sbuf2, int count, float scale, int spectrum[64]) {
+    for (int i = 0; i < 64; i++) {
+        spectrum[i] = 0;
+    }
+
+    for (int i = 0; i < count; i++) {
+        int bin = (int)lrintf((sbuf2[i] * scale) + 32.0f);
+        spectrum[clamp_datascope_bin(bin)]++;
+    }
+}
+
+static void DSD_ATTR_USED
+build_datascope_bins(const dsd_state* state, float scale, int bins[5]) {
+    bins[0] = clamp_datascope_bin((int)lrintf(state->min * scale + 32.0f));
+    bins[1] = clamp_datascope_bin((int)lrintf(state->max * scale + 32.0f));
+    bins[2] = clamp_datascope_bin((int)lrintf(state->lmid * scale + 32.0f));
+    bins[3] = clamp_datascope_bin((int)lrintf(state->umid * scale + 32.0f));
+    bins[4] = clamp_datascope_bin((int)lrintf(state->center * scale + 32.0f));
+}
+
+static char
+datascope_char_for_cell(int row, int col, const int spectrum[64], const int bins[5]) {
+    if (row == 0) {
+        if (col == bins[0] || col == bins[1]) {
+            return '#';
+        }
+        if (col == bins[2] || col == bins[3]) {
+            return '^';
+        }
+        if (col == bins[4]) {
+            return '!';
+        }
+    } else if (spectrum[col] > 9 - row) {
+        return '*';
+    }
+
+    if (col == 32) {
+        return '|';
+    }
+    return ' ';
+}
+
+static void
+print_datascope_grid(const int spectrum[64], const int bins[5]) {
+    for (int row = 0; row < 10; row++) {
+        printf("|");
+        for (int col = 0; col < 64; col++) {
+            DSD_FPRINTF(stderr, "%c", datascope_char_for_cell(row, col, spectrum, bins));
+        }
+        DSD_FPRINTF(stderr, "|\n");
+    }
+}
+
+static void DSD_ATTR_USED
+print_datascope(const dsd_opts* opts, dsd_state* state, const float* sbuf2, int count) {
     char modulation[8];
     int spectrum[64];
 
-    if (state->rf_mod == 0) {
-        snprintf(modulation, sizeof modulation, "C4FM");
-    } else if (state->rf_mod == 1) {
-        snprintf(modulation, sizeof modulation, "QPSK");
-    } else if (state->rf_mod == 2) {
-        snprintf(modulation, sizeof modulation, "GFSK");
-    }
-
-    for (i = 0; i < 64; i++) {
-        spectrum[i] = 0;
-    }
+    datascope_modulation_label(state, modulation);
     float span = fmaxf(fabsf(state->max), fabsf(state->min));
     if (span < 1e-3f) {
         span = 1.0f;
     }
     const float scale = 32.0f / span;
-    for (i = 0; i < count; i++) {
-        float v = sbuf2[i];
-        o = (int)lrintf((v * scale) + 32.0f);
-        if (o < 0) {
-            o = 0;
-        }
-        if (o > 63) {
-            o = 63;
-        }
-        spectrum[o]++;
-    }
+    build_datascope_spectrum(sbuf2, count, scale, spectrum);
     if (state->symbolcnt > (4800 / opts->scoperate)) {
         state->symbolcnt = 0;
-        fprintf(stderr, "\n");
-        fprintf(stderr, "Demod mode:     %s                Nac:                     %4X\n", modulation, state->nac);
-        fprintf(stderr, "Frame Type:    %s        Talkgroup:            %7i\n", state->ftype, state->lasttg);
-        fprintf(stderr, "Frame Subtype: %s       Source:          %12i\n", state->fsubtype, state->lastsrc);
-        fprintf(stderr, "TDMA activity:  %s %s     Voice errors: %s\n", state->slot0light, state->slot1light,
-                state->err_str);
-        fprintf(stderr, "+----------------------------------------------------------------+\n");
-        int bin_min = (int)lrintf(state->min * scale + 32.0f);
-        int bin_max = (int)lrintf(state->max * scale + 32.0f);
-        int bin_lmid = (int)lrintf(state->lmid * scale + 32.0f);
-        int bin_umid = (int)lrintf(state->umid * scale + 32.0f);
-        int bin_center = (int)lrintf(state->center * scale + 32.0f);
-        int bins[] = {bin_min, bin_max, bin_lmid, bin_umid, bin_center};
-        for (size_t b = 0; b < sizeof(bins) / sizeof(bins[0]); b++) {
-            if (bins[b] < 0) {
-                bins[b] = 0;
-            }
-            if (bins[b] > 63) {
-                bins[b] = 63;
-            }
-        }
-        for (i = 0; i < 10; i++) {
-            printf("|");
-            for (j = 0; j < 64; j++) {
-                if (i == 0) {
-                    if (j == bins[0] || j == bins[1]) {
-                        fprintf(stderr, "#");
-                    } else if (j == bins[2] || j == bins[3]) {
-                        fprintf(stderr, "^");
-                    } else if (j == bins[4]) {
-                        fprintf(stderr, "!");
-                    } else {
-                        if (j == 32) {
-                            fprintf(stderr, "|");
-                        } else {
-                            fprintf(stderr, " ");
-                        }
-                    }
-                } else {
-                    if (spectrum[j] > 9 - i) {
-                        fprintf(stderr, "*");
-                    } else {
-                        if (j == 32) {
-                            fprintf(stderr, "|");
-                        } else {
-                            fprintf(stderr, " ");
-                        }
-                    }
-                }
-            }
-            fprintf(stderr, "|\n");
-        }
-        fprintf(stderr, "+----------------------------------------------------------------+\n");
+        DSD_FPRINTF(stderr, "\n");
+        DSD_FPRINTF(stderr, "Demod mode:     %s                Nac:                     %4X\n", modulation, state->nac);
+        DSD_FPRINTF(stderr, "Frame Type:    %s        Talkgroup:            %7i\n", state->ftype, state->lasttg);
+        DSD_FPRINTF(stderr, "Frame Subtype: %s       Source:          %12i\n", state->fsubtype, state->lastsrc);
+        DSD_FPRINTF(stderr, "TDMA activity:  %s %s     Voice errors: %s\n", state->slot0light, state->slot1light,
+                    state->err_str);
+        DSD_FPRINTF(stderr, "+----------------------------------------------------------------+\n");
+        int bins[5];
+        build_datascope_bins(state, scale, bins);
+        print_datascope_grid(spectrum, bins);
+        DSD_FPRINTF(stderr, "+----------------------------------------------------------------+\n");
     }
 }
 
@@ -232,8 +249,8 @@ symbol_window_extrema_avg2(const float* samples, int count, float* out_min, floa
     *out_max = (max1 + max2) * 0.5f;
 }
 
-static void
-use_symbol(dsd_opts* opts, dsd_state* state, float symbol) {
+static void DSD_ATTR_USED
+use_symbol(const dsd_opts* opts, dsd_state* state, float symbol) {
     UNUSED(symbol);
 
     if (opts == NULL || state == NULL) {
@@ -321,7 +338,7 @@ invert_dibit(int dibit) {
  * @param symbol Input symbol value (scaled phase, ~[-4,+4]).
  * @return Dibit value [0,3].
  */
-static inline int
+static inline int DSD_ATTR_USED
 cqpsk_slice(float symbol) {
     /* Fixed threshold slicer for CQPSK symbols, matching OP25's fsk4_slicer_fb.
      * qpsk_differential_demod outputs phase * 4/π, giving symbols at ±1, ±3.
@@ -349,7 +366,7 @@ cqpsk_slice(float symbol) {
  * The CQPSK DSP path mirrors OP25, so constellation rotation is already resolved
  * by the differential Costas loop.
  */
-static inline int
+static inline int DSD_ATTR_USED
 cqpsk_slice_aligned(float symbol) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
@@ -367,181 +384,200 @@ cqpsk_slice_aligned(float symbol) {
     return raw_dibit;
 }
 
-uint8_t
-dmr_compute_reliability(const dsd_state* st, float sym) {
-    /* Remove DC bias for CQPSK to keep thresholds centered */
-    float sym_c = sym;
-    if (st->rf_mod == 1) {
-        sym_c -= st->center;
+static float
+cqpsk_reliability_ideal(float sym_c) {
+    if (sym_c >= 2.0f) {
+        return 3.0f;
     }
-    int rel = 0;
-
-    /* ========== CQPSK path ========== */
-    if (st->rf_mod == 1) {
-        /* CQPSK reliability: angle-error based metric.
-         *
-         * The symbol value (after recentering) is the output of qpsk_differential_demod():
-         *   sym = atan2(Q, I) * (4/π), recentered with st->center for CQPSK
-         *
-         * Ideal levels: +1 ↔ +π/4, +3 ↔ +3π/4, -1 ↔ -π/4, -3 ↔ -3π/4.
-         * The decision boundary is 1.0 away from each ideal level.
-         */
-        float ideal;
-        if (sym_c >= 2.0f) {
-            ideal = 3.0f;
-        } else if (sym_c >= 0.0f) {
-            ideal = 1.0f;
-        } else if (sym_c >= -2.0f) {
-            ideal = -1.0f;
-        } else {
-            ideal = -3.0f;
-        }
-
-        float error = fabsf(sym_c - ideal);
-        if (error > 1.0f) {
-            error = 1.0f;
-        }
-
-        rel = (int)((1.0f - error) * 255.0f + 0.5f);
-        if (rel < 0) {
-            rel = 0;
-        }
-        if (rel > 255) {
-            rel = 255;
-        }
-
-        /* SNR-weighted scaling (CQPSK path) */
-#ifdef USE_RADIO
-        {
-            double snr_db = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
-            if (snr_db > -50.0) {
-                int w256 = 0;
-                if (snr_db >= 25.0) {
-                    w256 = 255;
-                } else if (snr_db > 0.0) {
-                    w256 = (int)((snr_db / 25.0) * 255.0 + 0.5);
-                }
-                int scale_num = 204 + (w256 >> 2);
-                int scaled = (rel * scale_num) >> 8;
-                if (scaled > 255) {
-                    scaled = 255;
-                }
-                if (scaled < 0) {
-                    scaled = 0;
-                }
-                rel = scaled;
-            }
-        }
-#endif
+    if (sym_c >= 0.0f) {
+        return 1.0f;
     }
-    /* ========== END CQPSK path ========== */
+    if (sym_c >= -2.0f) {
+        return -1.0f;
+    }
+    return -3.0f;
+}
 
-    else {
-        /* ========== C4FM/GFSK path ========== */
-        int rtl_fsk_soft = 0;
-        int rtl_fsk_levels = 4;
+static int
+cqpsk_reliability_raw(float sym_c) {
+    float error = fabsf(sym_c - cqpsk_reliability_ideal(sym_c));
+    if (error > 1.0f) {
+        error = 1.0f;
+    }
+
+    int rel = (int)((1.0f - error) * 255.0f + 0.5f);
+    if (rel < 0) {
+        rel = 0;
+    }
+    if (rel > 255) {
+        rel = 255;
+    }
+    return rel;
+}
+
 #ifdef USE_RADIO
-        {
-            int symbol_rate_hz = 0;
-            int levels = 0;
-            int channel_profile = 0;
-            if (dsd_rtl_stream_metrics_hook_stream_active()
-                && dsd_rtl_stream_metrics_hook_output_kind() == DSD_RTL_OUTPUT_KIND_SYMBOL_FSK
-                && dsd_rtl_stream_metrics_hook_symbol_profile(&symbol_rate_hz, &levels, &channel_profile) == 0) {
-                (void)symbol_rate_hz;
-                (void)channel_profile;
-                rtl_fsk_soft = 1;
-                rtl_fsk_levels = (levels == 2) ? 2 : 4;
-            }
-        }
+static int
+apply_cqpsk_snr_weight(int rel) {
+    double snr_db = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
+    if (snr_db <= -50.0) {
+        return rel;
+    }
+
+    int w256 = 0;
+    if (snr_db >= 25.0) {
+        w256 = 255;
+    } else if (snr_db > 0.0) {
+        w256 = (int)((snr_db / 25.0) * 255.0 + 0.5);
+    }
+    int scale_num = 204 + (w256 >> 2);
+    int scaled = (rel * scale_num) >> 8;
+    if (scaled > 255) {
+        scaled = 255;
+    }
+    if (scaled < 0) {
+        scaled = 0;
+    }
+    return scaled;
+}
 #endif
 
-        if (rtl_fsk_soft) {
-            rel = (int)dsd_fsk_symbol_reliability(sym, rtl_fsk_levels);
-        } else {
-            const float eps = 1e-6f;
-            float min = st->min, max = st->max, lmid = st->lmid, center = st->center, umid = st->umid;
-
-            if (sym > umid) {
-                float span = max - umid;
-                if (span < eps) {
-                    span = eps;
-                }
-                rel = (int)lrintf(((sym - umid) * 255.0f) / span);
-            } else if (sym > center) {
-                float d1 = sym - center;
-                float d2 = umid - sym;
-                float span = umid - center;
-                if (span < eps) {
-                    span = eps;
-                }
-                float m = d1 < d2 ? d1 : d2;
-                rel = (int)lrintf((m * 510.0f) / span);
-            } else if (sym >= lmid) {
-                float d1 = center - sym;
-                float d2 = sym - lmid;
-                float span = center - lmid;
-                if (span < eps) {
-                    span = eps;
-                }
-                float m = d1 < d2 ? d1 : d2;
-                rel = (int)lrintf((m * 510.0f) / span);
-            } else {
-                float span = lmid - min;
-                if (span < eps) {
-                    span = eps;
-                }
-                rel = (int)lrintf(((lmid - sym) * 255.0f) / span);
-            }
-            if (rel < 0) {
-                rel = 0;
-            }
-            if (rel > 255) {
-                rel = 255;
-            }
+static int DSD_ATTR_USED
+fsk_soft_metric_available(int* out_levels) {
+#ifdef USE_RADIO
+    int symbol_rate_hz = 0;
+    int levels = 0;
+    int channel_profile = 0;
+    if (dsd_rtl_stream_metrics_hook_stream_active()
+        && dsd_rtl_stream_metrics_hook_output_kind() == DSD_RTL_OUTPUT_KIND_SYMBOL_FSK
+        && dsd_rtl_stream_metrics_hook_symbol_profile(&symbol_rate_hz, &levels, &channel_profile) == 0) {
+        (void)symbol_rate_hz;
+        (void)channel_profile;
+        if (out_levels) {
+            *out_levels = (levels == 2) ? 2 : 4;
         }
+        return 1;
+    }
+#else
+    (void)out_levels;
+#endif
+    return 0;
+}
+
+static int
+c4fm_reliability_from_thresholds(const dsd_state* st, float sym) {
+    const float eps = 1e-6f;
+    float lmid = st->lmid;
+    float center = st->center;
+    float umid = st->umid;
+    int rel;
+
+    if (sym > umid) {
+        float span = st->max - umid;
+        if (span < eps) {
+            span = eps;
+        }
+        rel = (int)lrintf(((sym - umid) * 255.0f) / span);
+    } else if (sym > center) {
+        float d1 = sym - center;
+        float d2 = umid - sym;
+        float span = umid - center;
+        if (span < eps) {
+            span = eps;
+        }
+        float m = d1 < d2 ? d1 : d2;
+        rel = (int)lrintf((m * 510.0f) / span);
+    } else if (sym >= lmid) {
+        float d1 = center - sym;
+        float d2 = sym - lmid;
+        float span = center - lmid;
+        if (span < eps) {
+            span = eps;
+        }
+        float m = d1 < d2 ? d1 : d2;
+        rel = (int)lrintf((m * 510.0f) / span);
+    } else {
+        float span = lmid - st->min;
+        if (span < eps) {
+            span = eps;
+        }
+        rel = (int)lrintf(((lmid - sym) * 255.0f) / span);
+    }
+
+    if (rel < 0) {
+        rel = 0;
+    }
+    if (rel > 255) {
+        rel = 255;
+    }
+    return rel;
+}
 
 #ifdef USE_RADIO
-        double snr_db = -100.0;
-        if (rtl_fsk_soft && rtl_fsk_levels == 2) {
-            snr_db = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
-            if (snr_db < -50.0) {
-                snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
-            }
-        } else {
+static int
+apply_c4fm_snr_weight(int rel, int rtl_fsk_soft, int rtl_fsk_levels) {
+    double snr_db = -100.0;
+    if (rtl_fsk_soft && rtl_fsk_levels == 2) {
+        snr_db = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
+        if (snr_db < -50.0) {
             snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
         }
-        if (snr_db < -50.0) {
-            snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
-        }
-        int w256 = 0;
-        if (snr_db > -13.0) {
-            if (snr_db >= 12.0) {
-                w256 = 255;
-            } else {
-                double w = (snr_db + 13.0) / 25.0;
-                if (w < 0.0) {
-                    w = 0.0;
-                }
-                if (w > 1.0) {
-                    w = 1.0;
-                }
-                w256 = (int)(w * 255.0 + 0.5);
-            }
-        }
-        int scale_num = 204 + (w256 >> 2);
-        int scaled = (rel * scale_num) >> 8;
-        if (scaled > 255) {
-            scaled = 255;
-        }
-        if (scaled < 0) {
-            scaled = 0;
-        }
-        rel = scaled;
-#endif
-        /* ========== END C4FM/GFSK path ========== */
+    } else {
+        snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
+    }
+    if (snr_db < -50.0) {
+        snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
     }
 
+    int w256 = 0;
+    if (snr_db > -13.0) {
+        if (snr_db >= 12.0) {
+            w256 = 255;
+        } else {
+            double w = (snr_db + 13.0) / 25.0;
+            if (w < 0.0) {
+                w = 0.0;
+            }
+            if (w > 1.0) {
+                w = 1.0;
+            }
+            w256 = (int)(w * 255.0 + 0.5);
+        }
+    }
+
+    int scale_num = 204 + (w256 >> 2);
+    int scaled = (rel * scale_num) >> 8;
+    if (scaled > 255) {
+        scaled = 255;
+    }
+    if (scaled < 0) {
+        scaled = 0;
+    }
+    return scaled;
+}
+#endif
+
+uint8_t
+dmr_compute_reliability(const dsd_state* st, float sym) {
+    if (st->rf_mod == 1) {
+        float sym_c = sym - st->center;
+        int rel = cqpsk_reliability_raw(sym_c);
+#ifdef USE_RADIO
+        rel = apply_cqpsk_snr_weight(rel);
+#endif
+        return (uint8_t)rel;
+    }
+
+    int rel = c4fm_reliability_from_thresholds(st, sym);
+#ifdef USE_RADIO
+    int rtl_fsk_levels = 4;
+    int rtl_fsk_soft = fsk_soft_metric_available(&rtl_fsk_levels);
+    if (rtl_fsk_soft) {
+        rel = (int)dsd_fsk_symbol_reliability(sym, rtl_fsk_levels);
+    }
+#endif
+#ifdef USE_RADIO
+    rel = apply_c4fm_snr_weight(rel, rtl_fsk_soft, rtl_fsk_levels);
+#endif
     return (uint8_t)rel;
 }
 
@@ -615,7 +651,7 @@ soft_metric_for_bit(float symbol, const float ideal[4], int bit_index) {
     return clamp_u8_int(magnitude);
 }
 
-static void
+static void DSD_ATTR_USED
 build_standard_dibit_ideals(const dsd_state* state, int inverted, float ideal[4]) {
     float plus_one = 0.5f * (state->center + state->umid);
     float minus_one = 0.5f * (state->lmid + state->center);
@@ -633,7 +669,7 @@ build_standard_dibit_ideals(const dsd_state* state, int inverted, float ideal[4]
     }
 }
 
-static void
+static void DSD_ATTR_USED
 build_cqpsk_dibit_ideals(const dsd_state* state, float ideal[4]) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
@@ -647,7 +683,17 @@ build_cqpsk_dibit_ideals(const dsd_state* state, float ideal[4]) {
 
     for (int dibit = 0; dibit < 4; dibit++) {
         int base = inv ? invert_dibit(dibit) : dibit;
-        float level = base_ideal[base];
+        if (base < 0 || base >= 4) {
+            base = 0;
+        }
+        float level = 1.0f;
+        switch (base) {
+            case 0: level = base_ideal[0]; break;
+            case 1: level = base_ideal[1]; break;
+            case 2: level = base_ideal[2]; break;
+            case 3: level = base_ideal[3]; break;
+            default: level = base_ideal[0]; break;
+        }
         if (negate) {
             level = -level;
         }
@@ -655,7 +701,7 @@ build_cqpsk_dibit_ideals(const dsd_state* state, float ideal[4]) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 compute_dibit_soft_metric(const dsd_state* state, float symbol, int dibit, int inverted, int cqpsk_aligned,
                           dsd_dibit_soft_t* out) {
     if (!state || !out || dibit < 0 || dibit > 3) {
@@ -690,14 +736,14 @@ compute_dibit_soft_metric(const dsd_state* state, float symbol, int dibit, int i
     out->reliability = (uint8_t)clamp_u8_int(rel_from_llr);
 }
 
-static void
+static void DSD_ATTR_USED
 wrap_soft_buffer(dsd_state* state) {
     if (state && state->dmr_soft_buf && state->dmr_soft_p > state->dmr_soft_buf + 900000) {
         state->dmr_soft_p = state->dmr_soft_buf + 200;
     }
 }
 
-static void
+static void DSD_ATTR_USED
 write_dibit_soft_metric(dsd_state* state, const dsd_dibit_soft_t* soft) {
     if (!state || !soft || !state->dmr_soft_p) {
         return;
@@ -707,7 +753,7 @@ write_dibit_soft_metric(dsd_state* state, const dsd_dibit_soft_t* soft) {
     state->dmr_soft_p++;
 }
 
-static int
+static int DSD_ATTR_USED
 read_previous_dibit_soft(const dsd_state* state, dsd_dibit_soft_t* out) {
     if (!state || !out || !state->dmr_soft_buf || !state->dmr_soft_p) {
         return 0;
@@ -720,7 +766,7 @@ read_previous_dibit_soft(const dsd_state* state, dsd_dibit_soft_t* out) {
     return 1;
 }
 
-static void
+static void DSD_ATTR_USED
 replace_previous_dibit_soft(dsd_state* state, const dsd_dibit_soft_t* soft) {
     if (!state || !soft) {
         return;
@@ -741,7 +787,7 @@ replace_previous_dibit_soft(dsd_state* state, const dsd_dibit_soft_t* soft) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 replace_symbol_bin_soft_metric(dsd_state* state, int dibit) {
     dsd_dibit_soft_t soft;
     if (state != NULL && state->symbol_replay_has_soft) {
@@ -768,7 +814,7 @@ write_le_u32(unsigned char* out, uint32_t value) {
     out[3] = (unsigned char)((value >> 24) & 0xFFU);
 }
 
-static void
+static void DSD_ATTR_USED
 write_symbol_capture_record_with_soft(dsd_opts* opts, dsd_state* state, int dibit, float symbol,
                                       const dsd_dibit_soft_t* soft_in) {
     if (opts == NULL || state == NULL || opts->symbol_out_f == NULL) {
@@ -793,7 +839,7 @@ write_symbol_capture_record_with_soft(dsd_opts* opts, dsd_state* state, int dibi
     write_le_i16(record + 2, soft.llr[0]);
     write_le_i16(record + 4, soft.llr[1]);
     uint32_t raw_symbol = 0;
-    memcpy(&raw_symbol, &symbol, sizeof(raw_symbol));
+    DSD_MEMCPY(&raw_symbol, &symbol, sizeof(raw_symbol));
     write_le_u32(record + 6, raw_symbol);
     if (fwrite(record, 1, sizeof(record), opts->symbol_out_f) == sizeof(record)) {
         state->symbol_capture_soft_records++;
@@ -812,7 +858,7 @@ dsd_test_compute_cqpsk_reliability(float sym) {
     static dsd_state dummy;
     static int initialized = 0;
     if (!initialized) {
-        memset(&dummy, 0, sizeof(dummy));
+        DSD_MEMSET(&dummy, 0, sizeof(dummy));
         initialized = 1;
     }
     dummy.rf_mod = 1;
@@ -829,8 +875,8 @@ dsd_test_compute_cqpsk_reliability(float sym) {
  * @param opts Decoder options (checks audio_in_type).
  * @return 1 if CQPSK active, 0 otherwise.
  */
-static inline int
-is_cqpsk_active(dsd_opts* opts) {
+static inline int DSD_ATTR_USED
+is_cqpsk_active(const dsd_opts* opts) {
 #ifdef USE_RADIO
     if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
         int cqpsk = 0, fll = 0, ted = 0;
@@ -847,7 +893,7 @@ is_cqpsk_active(dsd_opts* opts) {
 
 #ifdef USE_RADIO
 /* Optional histogram of CQPSK slicer output during decoding. */
-static void
+static void DSD_ATTR_USED
 debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
     static int hist[4] = {0, 0, 0, 0};
     static int sample_count = 0;
@@ -877,9 +923,10 @@ debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
     if (++sample_count >= 4800) {
         float n = (float)sample_count;
         float avg = sym_sum / n;
-        fprintf(stderr, "[SLICE-DECODE] d0:%.1f%% d1:%.1f%% d2:%.1f%% d3:%.1f%% avg:%.2f range:[%.2f,%.2f] (n=%d)\n",
-                100.0f * hist[0] / n, 100.0f * hist[1] / n, 100.0f * hist[2] / n, 100.0f * hist[3] / n, avg, sym_min,
-                sym_max, sample_count);
+        DSD_FPRINTF(stderr,
+                    "[SLICE-DECODE] d0:%.1f%% d1:%.1f%% d2:%.1f%% d3:%.1f%% avg:%.2f range:[%.2f,%.2f] (n=%d)\n",
+                    100.0f * hist[0] / n, 100.0f * hist[1] / n, 100.0f * hist[2] / n, 100.0f * hist[3] / n, avg,
+                    sym_min, sym_max, sample_count);
         hist[0] = hist[1] = hist[2] = hist[3] = 0;
         sample_count = 0;
         sym_sum = 0.0f;
@@ -888,231 +935,186 @@ debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
     }
 }
 #else
-static inline void
+static inline void DSD_ATTR_USED
 debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
     UNUSED3(dibit, symbol, state);
 }
 #endif
 
+static int
+is_two_level_pos_synctype(int synctype) {
+    switch (synctype) {
+        case DSD_SYNC_DSTAR_VOICE_POS:
+        case DSD_SYNC_PROVOICE_POS:
+        case DSD_SYNC_DSTAR_HD_POS:
+        case DSD_SYNC_EDACS_POS: return 1;
+        default: break;
+    }
+    return 0;
+}
+
+static int
+is_two_level_neg_synctype(int synctype) {
+    switch (synctype) {
+        case DSD_SYNC_DSTAR_VOICE_NEG:
+        case DSD_SYNC_PROVOICE_NEG:
+        case DSD_SYNC_DSTAR_HD_NEG:
+        case DSD_SYNC_EDACS_NEG: return 1;
+        default: break;
+    }
+    return 0;
+}
+
+static int
+is_four_level_neg_synctype(int synctype) {
+    switch (synctype) {
+        case DSD_SYNC_P25P1_NEG:
+        case DSD_SYNC_X2TDMA_VOICE_NEG:
+        case DSD_SYNC_X2TDMA_DATA_NEG:
+        case DSD_SYNC_M17_STR_NEG:
+        case DSD_SYNC_DMR_BS_VOICE_NEG:
+        case DSD_SYNC_DMR_BS_DATA_NEG:
+        case DSD_SYNC_M17_LSF_NEG:
+        case DSD_SYNC_NXDN_NEG:
+        case DSD_SYNC_YSF_NEG:
+        case DSD_SYNC_M17_BRT_NEG:
+        case DSD_SYNC_M17_PKT_NEG:
+        case DSD_SYNC_P25P2_NEG:
+        case DSD_SYNC_M17_PRE_NEG: return 1;
+        default: break;
+    }
+    return 0;
+}
+
+static int DSD_ATTR_USED
+store_two_level_dibit(dsd_state* state, float symbol, int high_symbol_return) {
+    if (symbol > state->center) {
+        *state->dibit_buf_p = 1;
+        state->dibit_buf_p++;
+        return high_symbol_return;
+    }
+
+    *state->dibit_buf_p = 3;
+    state->dibit_buf_p++;
+    return high_symbol_return ? 0 : 1;
+}
+
+static int DSD_ATTR_USED
+want_cqpsk_p25_slice(const dsd_opts* opts, const dsd_state* state, int is_negative) {
+    int p25p1_sync = is_negative ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
+    int p25p2_sync = is_negative ? DSD_SYNC_P25P2_NEG : DSD_SYNC_P25P2_POS;
+#ifdef USE_RADIO
+    return is_cqpsk_active(opts) && state->rf_mod == 1
+           && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == p25p1_sync
+               || state->synctype == p25p2_sync || state->lastsynctype == p25p1_sync
+               || state->lastsynctype == p25p2_sync);
+#else
+    UNUSED(opts);
+    UNUSED(state);
+    UNUSED(p25p1_sync);
+    UNUSED(p25p2_sync);
+    return 0;
+#endif
+}
+
+static int DSD_ATTR_USED
+try_p25p1_heuristic_slice(const dsd_opts* opts, dsd_state* state, float symbol, int is_negative, int* out_dibit) {
+    if (!opts || !state || !out_dibit || opts->use_heuristics != 1) {
+        return 0;
+    }
+
+    if (is_negative) {
+        if (state->synctype != DSD_SYNC_P25P1_NEG) {
+            return 0;
+        }
+        return estimate_symbol(state->rf_mod, &(state->inv_p25_heuristics), state->last_dibit, symbol, out_dibit);
+    }
+
+    if (state->synctype != DSD_SYNC_P25P1_POS) {
+        return 0;
+    }
+    return estimate_symbol(state->rf_mod, &(state->p25_heuristics), state->last_dibit, symbol, out_dibit);
+}
+
+static int DSD_ATTR_USED
+slice_dibit_from_symbol_regions(const dsd_state* state, float symbol, int is_negative) {
+    if (symbol > state->center) {
+        if (symbol > state->umid) {
+            return is_negative ? 3 : 1;
+        }
+        return is_negative ? 2 : 0;
+    }
+
+    if (symbol < state->lmid) {
+        return is_negative ? 1 : 3;
+    }
+    return is_negative ? 0 : 2;
+}
+
+static int DSD_ATTR_USED
+select_four_level_dibit(const dsd_opts* opts, dsd_state* state, float symbol, int is_negative, int* used_cqpsk_slice) {
+    if (used_cqpsk_slice) {
+        *used_cqpsk_slice = 0;
+    }
+
+#ifdef USE_RADIO
+    if (want_cqpsk_p25_slice(opts, state, is_negative)) {
+        int dibit = cqpsk_slice_aligned(symbol - state->center);
+        if (used_cqpsk_slice) {
+            *used_cqpsk_slice = 1;
+        }
+        debug_log_cqpsk_slice(dibit, symbol, state);
+        return dibit;
+    }
+#endif
+
+    int dibit = 0;
+    if (try_p25p1_heuristic_slice(opts, state, symbol, is_negative, &dibit)) {
+        return dibit;
+    }
+    return slice_dibit_from_symbol_regions(state, symbol, is_negative);
+}
+
+static void DSD_ATTR_USED
+store_dibit_with_soft(dsd_state* state, int stored_dibit, const dsd_dibit_soft_t* soft) {
+    *state->dibit_buf_p = stored_dibit;
+    state->dibit_buf_p++;
+
+    *state->dmr_payload_p = stored_dibit;
+    if (state->dmr_reliab_p) {
+        if (state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
+            state->dmr_reliab_p = state->dmr_reliab_buf + 200;
+        }
+        *state->dmr_reliab_p = soft->reliability;
+        state->dmr_reliab_p++;
+    }
+    write_dibit_soft_metric(state, soft);
+    state->dmr_payload_p++;
+}
+
 int
-digitize(dsd_opts* opts, dsd_state* state, float symbol) {
+digitize(const dsd_opts* opts, dsd_state* state, float symbol) {
     if (opts == NULL || state == NULL) {
         return -1;
     }
 
-    // determine dibit state
-    if ((state->synctype == DSD_SYNC_DSTAR_VOICE_POS) || (state->synctype == DSD_SYNC_PROVOICE_POS)
-        || (state->synctype == DSD_SYNC_DSTAR_HD_POS) || (state->synctype == DSD_SYNC_EDACS_POS))
-
-    {
-        //  6 +D-STAR
-        // 14 +ProVoice
-        // 18 +D-STAR_HD
-        // 37 +EDACS
-
-        if (symbol > state->center) {
-            *state->dibit_buf_p = 1;
-            state->dibit_buf_p++;
-            return (0); // +1
-        } else {
-            *state->dibit_buf_p = 3;
-            state->dibit_buf_p++;
-            return (1); // +3
-        }
-    } else if ((state->synctype == DSD_SYNC_DSTAR_VOICE_NEG) || (state->synctype == DSD_SYNC_PROVOICE_NEG)
-               || (state->synctype == DSD_SYNC_DSTAR_HD_NEG) || (state->synctype == DSD_SYNC_EDACS_NEG)) {
-        //  7 -D-STAR
-        // 15 -ProVoice
-        // 19 -D-STAR_HD
-        // 38 -EDACS
-
-        if (symbol > state->center) {
-            *state->dibit_buf_p = 1;
-            state->dibit_buf_p++;
-            return (1); // +3
-        } else {
-            *state->dibit_buf_p = 3;
-            state->dibit_buf_p++;
-            return (0); // +1
-        }
+    if (is_two_level_pos_synctype(state->synctype)) {
+        return store_two_level_dibit(state, symbol, 0);
+    }
+    if (is_two_level_neg_synctype(state->synctype)) {
+        return store_two_level_dibit(state, symbol, 1);
     }
 
-    else if ((state->synctype == DSD_SYNC_P25P1_NEG) || (state->synctype == DSD_SYNC_X2TDMA_VOICE_NEG)
-             || (state->synctype == DSD_SYNC_X2TDMA_DATA_NEG) || (state->synctype == DSD_SYNC_M17_STR_NEG)
-             || (state->synctype == DSD_SYNC_DMR_BS_VOICE_NEG) || (state->synctype == DSD_SYNC_DMR_BS_DATA_NEG)
-             || (state->synctype == DSD_SYNC_M17_LSF_NEG) || (state->synctype == DSD_SYNC_NXDN_NEG)
-             || (state->synctype == DSD_SYNC_YSF_NEG) || (state->synctype == DSD_SYNC_M17_BRT_NEG)
-             || (state->synctype == DSD_SYNC_M17_PKT_NEG) || (state->synctype == DSD_SYNC_P25P2_NEG)
-             || (state->synctype == DSD_SYNC_M17_PRE_NEG))
+    int is_negative = is_four_level_neg_synctype(state->synctype);
+    int used_cqpsk_slice = 0;
+    int dibit = select_four_level_dibit(opts, state, symbol, is_negative, &used_cqpsk_slice);
+    int stored_dibit = is_negative ? invert_dibit(dibit) : dibit;
 
-    {
-        //  1 -P25p1
-        //  3 -X2-TDMA (inverted signal voice frame)
-        //  5 -X2-TDMA (inverted signal data frame)
-        //  9 -M17 LSR
-        // 11 -DMR (inverted signal voice frame)
-        // 13 -DMR (inverted signal data frame)
-        // 17 -M17 STR
-        // 29 -NXDN (inverted FSW)
-        // 31 -YSF
-        // 36 -P25p2
-        // 77 -M17 BRT
-        // 87 -M17 PKT
-        // 99 -M17 Preamble
-
-        int valid;
-        int dibit;
-
-        valid = 0;
-        /* Prefer the fixed CQPSK slicer whenever the CQPSK DSP path is active and
-         * we are hunting/decoding P25 (Phase 1 or 2). This keeps the sync search
-         * aligned even before synctype is fully resolved. */
-        int want_cqpsk_slice =
-            is_cqpsk_active(opts) && state->rf_mod == 1
-            && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == DSD_SYNC_P25P1_NEG
-                || state->synctype == DSD_SYNC_P25P2_NEG || state->lastsynctype == DSD_SYNC_P25P1_NEG
-                || state->lastsynctype == DSD_SYNC_P25P2_NEG);
-        int used_cqpsk_slice = 0;
-        if (want_cqpsk_slice) {
-            float sym = symbol - state->center; /* remove DC bias before fixed-threshold slice */
-            dibit = cqpsk_slice_aligned(sym);
-            valid = 1;
-            used_cqpsk_slice = 1;
-            debug_log_cqpsk_slice(dibit, symbol, state);
-        }
-
-        if (valid == 0 && state->synctype == DSD_SYNC_P25P1_NEG && opts->use_heuristics == 1) {
-            // Use the P25p1 heuristics if available
-            valid = estimate_symbol(state->rf_mod, &(state->inv_p25_heuristics), state->last_dibit, symbol, &dibit);
-        }
-
-        if (valid == 0) {
-            // Revert to the original approach: choose the symbol according to the regions delimited
-            // by center, umid and lmid
-            if (symbol > state->center) {
-                if (symbol > state->umid) {
-                    dibit = 3; // -3
-                } else {
-                    dibit = 2; // -1
-                }
-            } else {
-                if (symbol < state->lmid) {
-                    dibit = 1; // +3
-                } else {
-                    dibit = 0; // +1
-                }
-            }
-        }
-
-        int out_dibit = invert_dibit(dibit);
-        dsd_dibit_soft_t soft;
-        compute_dibit_soft_metric(state, symbol, dibit, !used_cqpsk_slice, used_cqpsk_slice, &soft);
-
-        state->last_dibit = dibit;
-
-        *state->dibit_buf_p = out_dibit;
-        state->dibit_buf_p++;
-
-        //dmr buffer
-        *state->dmr_payload_p = out_dibit;
-        if (state->dmr_reliab_p) {
-            if (state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
-                state->dmr_reliab_p = state->dmr_reliab_buf + 200;
-            }
-            *state->dmr_reliab_p = soft.reliability;
-            state->dmr_reliab_p++;
-        }
-        write_dibit_soft_metric(state, &soft);
-        state->dmr_payload_p++;
-        //dmr buffer end
-
-        return dibit;
-    } else {
-        //  0 +P25p1
-        //  2 +X2-TDMA (non inverted signal data frame)
-        //  4 +X2-TDMA (non inverted signal voice frame)
-        //  8 +M17 LSF
-        // 10 +DMR (non inverted signal data frame)
-        // 12 +DMR (non inverted signal voice frame)
-        // 16 +M17 STR
-        // 28 +NXND (FSW)
-        // 30 +YSF
-        // 35 +p25p2
-        // 76 +M17 BRT
-        // 86 +M17 PKT
-        // 98 +M17 Preamble
-
-        int valid;
-        int dibit;
-
-        valid = 0;
-        /* Prefer the fixed CQPSK slicer whenever the CQPSK DSP path is active and
-         * we are hunting/decoding P25 (Phase 1 or 2). This keeps the sync search
-         * aligned even before synctype is fully resolved. */
-        int want_cqpsk_slice =
-            is_cqpsk_active(opts) && state->rf_mod == 1
-            && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == DSD_SYNC_P25P1_POS
-                || state->synctype == DSD_SYNC_P25P2_POS || state->lastsynctype == DSD_SYNC_P25P1_POS
-                || state->lastsynctype == DSD_SYNC_P25P2_POS);
-        int used_cqpsk_slice = 0;
-        if (want_cqpsk_slice) {
-            float sym = symbol - state->center; /* remove DC bias before fixed-threshold slice */
-            dibit = cqpsk_slice_aligned(sym);
-            valid = 1;
-            used_cqpsk_slice = 1;
-            debug_log_cqpsk_slice(dibit, symbol, state);
-        }
-
-        if (valid == 0 && state->synctype == DSD_SYNC_P25P1_POS && opts->use_heuristics == 1) {
-            // Use the P25p1 heuristics if available
-            valid = estimate_symbol(state->rf_mod, &(state->p25_heuristics), state->last_dibit, symbol, &dibit);
-        }
-
-        if (valid == 0) {
-            // Revert to the original approach: choose the symbol according to the regions delimited
-            // by center, umid and lmid
-            if (symbol > state->center) {
-                if (symbol > state->umid) {
-                    dibit = 1; // +3
-                } else {
-                    dibit = 0; // +1
-                }
-            } else {
-                if (symbol < state->lmid) {
-                    dibit = 3; // -3
-                } else {
-                    dibit = 2; // -1
-                }
-            }
-        }
-
-        dsd_dibit_soft_t soft;
-        compute_dibit_soft_metric(state, symbol, dibit, 0, used_cqpsk_slice, &soft);
-
-        state->last_dibit = dibit;
-
-        *state->dibit_buf_p = dibit;
-        state->dibit_buf_p++;
-
-        //dmr buffer
-        //note to self, perceived bug with initial dibit buffer appears to be caused by
-        //media player, when playing back from audacity, the initial few dmr frames are
-        //decoded properly, need to investigate the root cause of what audacity is doing
-        //vs other audio sources...perhaps just the audio level itself?
-        *state->dmr_payload_p = dibit;
-        if (state->dmr_reliab_p) {
-            if (state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
-                state->dmr_reliab_p = state->dmr_reliab_buf + 200;
-            }
-            *state->dmr_reliab_p = soft.reliability;
-            state->dmr_reliab_p++;
-        }
-        write_dibit_soft_metric(state, &soft);
-        state->dmr_payload_p++;
-        //dmr buffer end
-
-        return dibit;
-    }
+    dsd_dibit_soft_t soft;
+    compute_dibit_soft_metric(state, symbol, dibit, is_negative && !used_cqpsk_slice, used_cqpsk_slice, &soft);
+    state->last_dibit = dibit;
+    store_dibit_with_soft(state, stored_dibit, &soft);
+    return dibit;
 }
 
 int
@@ -1161,14 +1163,13 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
 
 #ifdef TRACE_DSD
     {
-        float left, right;
         if (state->debug_label_dibit_file == NULL) {
-            state->debug_label_dibit_file = fopen("pp_label_dibit.txt", "w");
+            state->debug_label_dibit_file = dsd_fopen_private("pp_label_dibit.txt", "w");
         }
         if (state->debug_label_dibit_file != NULL) {
-            left = l / 48000.0;
-            right = r / 48000.0;
-            fprintf(state->debug_label_dibit_file, "%f\t%f\t%i\n", left, right, dibit);
+            float left = l / 48000.0f;
+            float right = r / 48000.0f;
+            DSD_FPRINTF(state->debug_label_dibit_file, "%f\t%f\t%i\n", left, right, dibit);
         }
     }
 #endif

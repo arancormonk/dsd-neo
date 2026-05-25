@@ -1,0 +1,6 @@
+rules:
+  # External actions must be pinned to immutable commit SHAs.
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin

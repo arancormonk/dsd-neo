@@ -10,7 +10,8 @@
  * Declares analog monitor and audio utility filters implemented in core/util.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_FILTERS_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_FILTERS_H_H
 
 #include <dsd-neo/core/state_fwd.h>
 
@@ -31,3 +32,4 @@ void pbf_f(dsd_state* state, float* input, int len);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_FILTERS_H_H */

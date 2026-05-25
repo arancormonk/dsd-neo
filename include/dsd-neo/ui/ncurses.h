@@ -11,7 +11,8 @@
  * `src/ui/terminal/`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -29,6 +30,11 @@ void ncursesClose(void);
 
 uint8_t ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c);
 
+/* Shared EDACS channel occupancy map used across ncurses UI modules. */
+extern unsigned long long int edacs_channel_tree[33][6];
+
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_H_ */

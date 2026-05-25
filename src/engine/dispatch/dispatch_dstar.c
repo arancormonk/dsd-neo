@@ -9,9 +9,10 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <stdio.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "protocol_dispatch_impl.h"
 
 int
 dsd_dispatch_matches_dstar(int synctype) {
@@ -25,11 +26,11 @@ dsd_dispatch_handle_dstar(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->synctype == DSD_SYNC_DSTAR_VOICE_POS || state->synctype == DSD_SYNC_DSTAR_VOICE_NEG) {
-        sprintf(state->fsubtype, " VOICE        ");
+        DSD_SPRINTF(state->fsubtype, " VOICE        ");
         processDSTAR(opts, state);
         return;
     }
 
-    sprintf(state->fsubtype, " DATA         ");
+    DSD_SPRINTF(state->fsubtype, " DATA         ");
     processDSTAR_HD(opts, state);
 }

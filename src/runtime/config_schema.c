@@ -14,8 +14,8 @@
 #include <dsd-neo/runtime/config_schema.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "dsd-neo/core/safe_api.h"
 
-/* Schema data for all configuration keys */
 static const dsdcfg_schema_entry_t s_schema[] = {
     /* [input] section */
     {"input", "source", "Input source type", "pulse", "pulse|rtl|rtltcp|soapy|file|tcp|udp", DSDCFG_TYPE_ENUM, 0, 0, 0},
@@ -200,19 +200,19 @@ dsdcfg_diags_add(dsdcfg_diagnostics_t* diags, dsdcfg_diag_level_t level, int lin
 
     d->section[0] = '\0';
     if (section) {
-        snprintf(d->section, sizeof(d->section), "%s", section);
+        DSD_SNPRINTF(d->section, sizeof(d->section), "%s", section);
         d->section[sizeof(d->section) - 1] = '\0';
     }
 
     d->key[0] = '\0';
     if (key) {
-        snprintf(d->key, sizeof(d->key), "%s", key);
+        DSD_SNPRINTF(d->key, sizeof(d->key), "%s", key);
         d->key[sizeof(d->key) - 1] = '\0';
     }
 
     d->message[0] = '\0';
     if (message) {
-        snprintf(d->message, sizeof(d->message), "%s", message);
+        DSD_SNPRINTF(d->message, sizeof(d->message), "%s", message);
         d->message[sizeof(d->message) - 1] = '\0';
     }
 
@@ -252,26 +252,26 @@ dsdcfg_diags_print(const dsdcfg_diagnostics_t* diags, FILE* stream, const char* 
         }
 
         if (path && d->line_number > 0) {
-            fprintf(stream, "%s:%d: %s", path, d->line_number, level_str);
+            DSD_FPRINTF(stream, "%s:%d: %s", path, d->line_number, level_str);
         } else if (d->line_number > 0) {
-            fprintf(stream, "line %d: %s", d->line_number, level_str);
+            DSD_FPRINTF(stream, "line %d: %s", d->line_number, level_str);
         } else {
-            fprintf(stream, "%s", level_str);
+            DSD_FPRINTF(stream, "%s", level_str);
         }
 
         if (d->section[0] && d->key[0]) {
-            fprintf(stream, " [%s] %s: ", d->section, d->key);
+            DSD_FPRINTF(stream, " [%s] %s: ", d->section, d->key);
         } else if (d->section[0]) {
-            fprintf(stream, " [%s]: ", d->section);
+            DSD_FPRINTF(stream, " [%s]: ", d->section);
         } else {
-            fprintf(stream, ": ");
+            DSD_FPRINTF(stream, ": ");
         }
 
-        fprintf(stream, "%s\n", d->message);
+        DSD_FPRINTF(stream, "%s\n", d->message);
     }
 
     if (diags->error_count > 0 || diags->warning_count > 0) {
-        fprintf(stream, "\nSummary: %d error(s), %d warning(s)\n", diags->error_count, diags->warning_count);
+        DSD_FPRINTF(stream, "\nSummary: %d error(s), %d warning(s)\n", diags->error_count, diags->warning_count);
     }
 }
 

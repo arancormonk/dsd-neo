@@ -10,13 +10,11 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
-
-// Minimal forward declarations to keep test dependencies narrow.
 #define RS_12_9_DATASIZE     9
 #define RS_12_9_CHECKSUMSIZE 3
 
@@ -47,7 +45,7 @@ static void
 test_lc_crc24_mask(uint32_t mask24) {
     // Build a 12-byte LC codeword with valid RS(12,9) parity, then mask it.
     rs_12_9_codeword_t cw;
-    memset(&cw, 0, sizeof(cw));
+    DSD_MEMSET(&cw, 0, sizeof(cw));
 
     // Deterministic 9-byte LC payload
     for (int i = 0; i < RS_12_9_DATASIZE; i++) {
@@ -84,7 +82,7 @@ test_ccitt16_mask(uint16_t mask16) {
     // Simulate BPTC(196,96) deinterleaved payload: first 80 bits are info,
     // last 16 bits [80..95] carry the masked CCITT CRC.
     uint8_t bits[96];
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
 
     // Fill 80 info bits with a deterministic pattern
     for (unsigned i = 0; i < 80; i++) {

@@ -18,11 +18,9 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
-
 #include <stdint.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 void
@@ -32,7 +30,7 @@ p25_status_accum_reset(dsd_state* state) {
     }
 
     /* Zero the symbol buffer and count; revert classification to UNKNOWN. */
-    memset(state->p25_ss_buf, 0, sizeof(state->p25_ss_buf));
+    DSD_MEMSET(state->p25_ss_buf, 0, sizeof(state->p25_ss_buf));
     state->p25_ss_count = 0;
     state->p25_ss_frame_active = 1;
     state->p25_ss_classification = (uint8_t)P25_SS_CLASS_UNKNOWN;

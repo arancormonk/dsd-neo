@@ -9,8 +9,7 @@
 #include <dsd-neo/crypto/pc5.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 PC5Context ctxpc5;
@@ -38,8 +37,7 @@ pc5_next_rng(PC5Context* ctx) {
 }
 
 static void
-pc5_arc4_init(PC5Context* ctx, unsigned char key[]) {
-    int tmp = 0;
+pc5_arc4_init(PC5Context* ctx, const unsigned char key[]) {
     for (ctx->i_arc4 = 0; ctx->i_arc4 < 256; ctx->i_arc4++) {
         ctx->array_arc4[ctx->i_arc4] = (unsigned char)ctx->i_arc4;
     }
@@ -47,7 +45,7 @@ pc5_arc4_init(PC5Context* ctx, unsigned char key[]) {
     ctx->j_arc4 = 0;
     for (ctx->i_arc4 = 0; ctx->i_arc4 < 256; ctx->i_arc4++) {
         ctx->j_arc4 = (ctx->j_arc4 + ctx->array_arc4[ctx->i_arc4] + key[ctx->i_arc4 % 256]) % 256;
-        tmp = ctx->array_arc4[ctx->i_arc4];
+        int tmp = ctx->array_arc4[ctx->i_arc4];
         ctx->array_arc4[ctx->i_arc4] = ctx->array_arc4[ctx->j_arc4];
         ctx->array_arc4[ctx->j_arc4] = (unsigned char)tmp;
     }
@@ -100,7 +98,7 @@ pc5_md2_init(PC5Context* ctx) {
 }
 
 static void
-pc5_md2_hashing(PC5Context* ctx, unsigned char t1[], size_t b6) {
+pc5_md2_hashing(PC5Context* ctx, const unsigned char t1[], size_t b6) {
     static const unsigned char s4[256] = {
         13,  199, 11,  67,  237, 193, 164, 77,  115, 184, 141, 222, 73,  38,  147, 36,  150, 87,  21,  104, 12,  61,
         156, 101, 111, 145, 119, 22,  207, 35,  198, 37,  171, 167, 80,  30,  219, 28,  213, 121, 86,  29,  214, 242,
@@ -116,11 +114,7 @@ pc5_md2_hashing(PC5Context* ctx, unsigned char t1[], size_t b6) {
         206, 232, 103, 102, 195, 117, 250, 99,  0,   74,  160, 241, 2,   113,
     };
 
-    int b1 = 0;
-    int b2 = 0;
-    int b3 = 0;
     int b4 = 0;
-    int b5 = 0;
 
     if (ctx->x2 < 0 || ctx->x2 > PC5_MD2_N) {
         ctx->x2 = 0;
@@ -131,17 +125,17 @@ pc5_md2_hashing(PC5Context* ctx, unsigned char t1[], size_t b6) {
 
     while (b6) {
         for (; b6 && ctx->x2 < PC5_MD2_N; b6--, ctx->x2++) {
-            b5 = t1[b4++];
+            int b5 = t1[b4++];
             ctx->h1[ctx->x2 + PC5_MD2_N] = (unsigned char)b5;
             ctx->h1[ctx->x2 + (PC5_MD2_N * 2)] = (unsigned char)(b5 ^ ctx->h1[ctx->x2]);
             ctx->x1 = ctx->h2[ctx->x2] ^= s4[b5 ^ ctx->x1];
         }
 
         if (ctx->x2 == PC5_MD2_N) {
-            b2 = 0;
+            int b2 = 0;
             ctx->x2 = 0;
-            for (b3 = 0; b3 < (PC5_MD2_N + 2); b3++) {
-                for (b1 = 0; b1 < (PC5_MD2_N * 3); b1++) {
+            for (int b3 = 0; b3 < (PC5_MD2_N + 2); b3++) {
+                for (int b1 = 0; b1 < (PC5_MD2_N * 3); b1++) {
                     b2 = ctx->h1[b1] ^= s4[b2];
                 }
                 b2 = (b2 + b3) % 256;
@@ -159,7 +153,7 @@ pc5_md2_end(PC5Context* ctx, unsigned char h4[PC5_MD2_N]) {
     }
 
     size_t n4 = (size_t)PC5_MD2_N - x2;
-    memset(h3, (unsigned char)n4, sizeof(h3));
+    DSD_MEMSET(h3, (unsigned char)n4, sizeof(h3));
     pc5_md2_hashing(ctx, h3, n4);
     pc5_md2_hashing(ctx, ctx->h2, sizeof(ctx->h2));
     for (int i = 0; i < PC5_MD2_N; i++) {
@@ -175,24 +169,40 @@ pc5_mixy(PC5Context* ctx, int nn2) {
 static void
 pc5_mixer(PC5Context* ctx, uint8_t* mixu, int nn) {
     int ii = 0;
-    int jj = 0;
-    int tmp = 0;
     for (ii = nn - 1; ii > 0; ii--) {
-        jj = pc5_mixy(ctx, ii + 1);
-        tmp = mixu[jj];
+        int jj = pc5_mixy(ctx, ii + 1);
+        uint8_t tmp = mixu[jj];
         mixu[jj] = mixu[ii];
-        mixu[ii] = (uint8_t)tmp;
+        mixu[ii] = tmp;
     }
 }
 
-void
-create_keys_pc5(PC5Context* ctx, unsigned char key1[], size_t size1) {
-    int i = 0;
-    int w = 0;
-    int k = 0;
-    unsigned char h4[PC5_MD2_N];
-    memset(h4, 0, sizeof(h4));
+static void
+pc5_discard_arc4(PC5Context* ctx) {
+    int count = pc5_arc4_output(ctx) + 256;
+    for (int i = 0; i < count; i++) {
+        (void)pc5_arc4_output(ctx);
+    }
+}
 
+static void
+pc5_fill_sequence(uint8_t* numbers, int count) {
+    for (int i = 0; i < count; i++) {
+        numbers[i] = (uint8_t)i;
+    }
+}
+
+static void
+pc5_shuffle_into(PC5Context* ctx, uint8_t* numbers, uint8_t* dst, int count) {
+    pc5_fill_sequence(numbers, count);
+    pc5_mixer(ctx, numbers, count);
+    for (int i = 0; i < count; i++) {
+        dst[i] = numbers[i];
+    }
+}
+
+static void
+pc5_init_hash_state(PC5Context* ctx, const unsigned char key1[], size_t size1, unsigned char h4[PC5_MD2_N]) {
     pc5_md2_init(ctx);
     pc5_md2_hashing(ctx, key1, size1);
     pc5_md2_end(ctx, h4);
@@ -200,115 +210,98 @@ create_keys_pc5(PC5Context* ctx, unsigned char key1[], size_t size1) {
     pc5_arc4_init(ctx, h4);
 
     ctx->x = 0;
-    for (i = 0; i < 8; i++) {
+    for (int i = 0; i < 8; i++) {
         ctx->x = (ctx->x << 8) + (uint64_t)(h4[256 + i] & 0xffu);
     }
     ctx->xyz = 0;
     ctx->count = 0;
 
-    for (i = 0; i < 23000; i++) {
+    for (int i = 0; i < 23000; i++) {
         (void)pc5_arc4_output(ctx);
-    }
-
-    uint8_t numbers[256];
-    memset(numbers, 0, sizeof(numbers));
-
-    for (w = 0; w < 253; w++) {
-        k = pc5_arc4_output(ctx) + 256;
-        for (i = 0; i < k; i++) {
-            (void)pc5_arc4_output(ctx);
-        }
-        for (i = 0; i < 16; i++) {
-            numbers[i] = (uint8_t)i;
-        }
-        pc5_mixer(ctx, numbers, 16);
-        for (i = 0; i < 16; i++) {
-            ctx->perm[i][w] = numbers[i];
-        }
-    }
-
-    k = pc5_arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)pc5_arc4_output(ctx);
-    }
-    for (i = 0; i < 16; i++) {
-        numbers[i] = (uint8_t)i;
-    }
-    pc5_mixer(ctx, numbers, 16);
-    for (i = 0; i < 16; i++) {
-        ctx->new1[i] = numbers[i];
-    }
-
-    k = pc5_arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)pc5_arc4_output(ctx);
-    }
-    for (i = 0; i < PC5_NBROUND; i++) {
-        ctx->decal[i] = (uint8_t)((pc5_arc4_output(ctx) % 11) + 1);
-    }
-
-    k = pc5_arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)pc5_arc4_output(ctx);
-    }
-    for (w = 0; w < 3; w++) {
-        for (i = 0; i < PC5_NBROUND; i++) {
-            ctx->rngxor[i][w] = (uint8_t)(pc5_arc4_output(ctx) % 16);
-        }
-    }
-
-    k = pc5_arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)pc5_arc4_output(ctx);
-    }
-    for (i = 0; i < 16; i++) {
-        numbers[i] = (uint8_t)i;
-    }
-    pc5_mixer(ctx, numbers, 16);
-    for (i = 0; i < 16; i++) {
-        ctx->tab[i] = numbers[i];
-        ctx->inv[ctx->tab[i]] = (unsigned char)i;
-    }
-
-    k = pc5_arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)pc5_arc4_output(ctx);
-    }
-    for (w = 0; w < 3; w++) {
-        k = pc5_arc4_output(ctx) + 256;
-        for (i = 0; i < k; i++) {
-            (void)pc5_arc4_output(ctx);
-        }
-        for (i = 0; i < 3; i++) {
-            numbers[i] = (uint8_t)i;
-        }
-        pc5_mixer(ctx, numbers, 3);
-        for (i = 0; i < 3; i++) {
-            ctx->permut[w][i] = numbers[i];
-        }
-    }
-
-    k = pc5_arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)pc5_arc4_output(ctx);
-    }
-    for (w = 0; w < 3; w++) {
-        for (i = 0; i < PC5_NBROUND; i++) {
-            ctx->rngxor2[i][w] = (uint8_t)(pc5_arc4_output(ctx) % 16);
-        }
-    }
-
-    k = pc5_arc4_output(ctx) + 256;
-    for (i = 0; i < k; i++) {
-        (void)pc5_arc4_output(ctx);
-    }
-    for (w = 0; w < 25; w++) {
-        ctx->numbers[w] = (uint8_t)(pc5_arc4_output(ctx) % 2);
     }
 }
 
 static void
-pc5_compute(PC5Context* ctx, uint8_t* tab1, uint8_t round) {
+pc5_init_perm_columns(PC5Context* ctx, uint8_t* numbers) {
+    for (int w = 0; w < 253; w++) {
+        pc5_discard_arc4(ctx);
+        pc5_fill_sequence(numbers, 16);
+        pc5_mixer(ctx, numbers, 16);
+        for (int i = 0; i < 16; i++) {
+            ctx->perm[i][w] = numbers[i];
+        }
+    }
+}
+
+static void
+pc5_init_round_xor(PC5Context* ctx, uint8_t dst[PC5_NBROUND][3]) {
+    for (int w = 0; w < 3; w++) {
+        for (int i = 0; i < PC5_NBROUND; i++) {
+            dst[i][w] = (uint8_t)(pc5_arc4_output(ctx) % 16);
+        }
+    }
+}
+
+static void
+pc5_init_tab_inverse(PC5Context* ctx, uint8_t* numbers) {
+    pc5_shuffle_into(ctx, numbers, ctx->tab, 16);
+    for (int i = 0; i < 16; i++) {
+        ctx->inv[ctx->tab[i]] = (unsigned char)i;
+    }
+}
+
+static void
+pc5_init_permutations(PC5Context* ctx, uint8_t* numbers) {
+    pc5_discard_arc4(ctx);
+    for (int w = 0; w < 3; w++) {
+        pc5_discard_arc4(ctx);
+        pc5_shuffle_into(ctx, numbers, ctx->permut[w], 3);
+    }
+}
+
+static void
+pc5_init_tail_numbers(PC5Context* ctx) {
+    for (int w = 0; w < 25; w++) {
+        ctx->numbers[w] = (uint8_t)(pc5_arc4_output(ctx) % 2);
+    }
+}
+
+void
+create_keys_pc5(PC5Context* ctx, const unsigned char key1[], size_t size1) {
+    unsigned char h4[PC5_MD2_N];
+    DSD_MEMSET(h4, 0, sizeof(h4));
+    uint8_t numbers[256];
+
+    DSD_MEMSET(numbers, 0, sizeof(numbers));
+
+    pc5_init_hash_state(ctx, key1, size1, h4);
+    pc5_init_perm_columns(ctx, numbers);
+
+    pc5_discard_arc4(ctx);
+    pc5_shuffle_into(ctx, numbers, ctx->new1, 16);
+
+    pc5_discard_arc4(ctx);
+    for (int i = 0; i < PC5_NBROUND; i++) {
+        ctx->decal[i] = (uint8_t)((pc5_arc4_output(ctx) % 11) + 1);
+    }
+
+    pc5_discard_arc4(ctx);
+    pc5_init_round_xor(ctx, ctx->rngxor);
+
+    pc5_discard_arc4(ctx);
+    pc5_init_tab_inverse(ctx, numbers);
+
+    pc5_init_permutations(ctx, numbers);
+
+    pc5_discard_arc4(ctx);
+    pc5_init_round_xor(ctx, ctx->rngxor2);
+
+    pc5_discard_arc4(ctx);
+    pc5_init_tail_numbers(ctx);
+}
+
+static void
+pc5_compute(PC5Context* ctx, const uint8_t* tab1, uint8_t round) {
     ctx->tot[0] = (uint8_t)((ctx->perm[tab1[ctx->permut[0][0]]][round] + ctx->perm[tab1[ctx->permut[0][1]]][round])
                             ^ ctx->perm[tab1[ctx->permut[0][2]]][round]);
     ctx->tot[0] = (uint8_t)((ctx->tot[0] + ctx->new1[ctx->tot[0]]) % 16);
@@ -321,8 +314,8 @@ pc5_compute(PC5Context* ctx, uint8_t* tab1, uint8_t round) {
 }
 
 void
-binhexpc5(PC5Context* ctx, short* z, int length) {
-    short* b = (short*)z;
+binhexpc5(PC5Context* ctx, const short* z, int length) {
+    const short* b = z;
     uint8_t i = 0;
     uint8_t j = 0;
     for (i = 0; i < (uint8_t)length; i = j) {
@@ -479,17 +472,32 @@ pc5_collect_hex_digits(const char* input, char* out, size_t out_cap) {
 }
 
 static int
+pc5_hex_nibble_value(int c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return 10 + (c - 'a');
+    }
+    if (c >= 'A' && c <= 'F') {
+        return 10 + (c - 'A');
+    }
+    return -1;
+}
+
+static int
 pc5_parse_hex_bytes(const char* hex, size_t nhex, uint8_t* out, size_t out_len) {
     if (!hex || !out || (out_len * 2) != nhex) {
         return -1;
     }
 
     for (size_t i = 0; i < out_len; i++) {
-        unsigned int v = 0;
-        if (sscanf(&hex[i * 2], "%2X", &v) != 1) {
+        int hi = pc5_hex_nibble_value((int)hex[i * 2U]);
+        int lo = pc5_hex_nibble_value((int)hex[i * 2U + 1U]);
+        if (hi < 0 || lo < 0) {
             return -1;
         }
-        out[i] = (uint8_t)v;
+        out[i] = (uint8_t)((hi << 4) | lo);
     }
     return 0;
 }
@@ -503,17 +511,17 @@ baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input) {
     char hex[65];
     size_t nhex = pc5_collect_hex_digits(input, hex, sizeof(hex));
     if (nhex == 0) {
-        fprintf(stderr, "DMR PC5 key parse failed: expected hex input\n");
+        DSD_FPRINTF(stderr, "DMR PC5 key parse failed: expected hex input\n");
         return -1;
     }
 
     if (nhex == 32) {
         uint8_t raw[16];
         uint8_t reversed[16];
-        memset(raw, 0, sizeof(raw));
-        memset(reversed, 0, sizeof(reversed));
+        DSD_MEMSET(raw, 0, sizeof(raw));
+        DSD_MEMSET(reversed, 0, sizeof(reversed));
         if (pc5_parse_hex_bytes(hex, nhex, raw, sizeof(raw)) != 0) {
-            fprintf(stderr, "DMR PC5 key parse failed: invalid 128-bit key\n");
+            DSD_FPRINTF(stderr, "DMR PC5 key parse failed: invalid 128-bit key\n");
             return -1;
         }
         for (int i = 0; i < 16; i++) {
@@ -521,25 +529,25 @@ baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input) {
         }
         create_keys_pc5(&ctxpc5, reversed, sizeof(reversed));
         ctxpc5.rounds = PC5_NBROUND;
-        fprintf(stderr, "DMR Baofeng AP (PC5) 128-bit key with forced application\n");
+        DSD_FPRINTF(stderr, "DMR Baofeng AP (PC5) 128-bit key with forced application\n");
         state->baofeng_ap = 1;
         return 0;
     }
 
     if (nhex == 64) {
         uint8_t raw[32];
-        memset(raw, 0, sizeof(raw));
+        DSD_MEMSET(raw, 0, sizeof(raw));
         if (pc5_parse_hex_bytes(hex, nhex, raw, sizeof(raw)) != 0) {
-            fprintf(stderr, "DMR PC5 key parse failed: invalid 256-bit key\n");
+            DSD_FPRINTF(stderr, "DMR PC5 key parse failed: invalid 256-bit key\n");
             return -1;
         }
         create_keys_pc5(&ctxpc5, raw, sizeof(raw));
         ctxpc5.rounds = PC5_NBROUND;
-        fprintf(stderr, "DMR Baofeng AP (PC5) 256-bit key with forced application\n");
+        DSD_FPRINTF(stderr, "DMR Baofeng AP (PC5) 256-bit key with forced application\n");
         state->baofeng_ap = 1;
         return 0;
     }
 
-    fprintf(stderr, "DMR PC5 key parse failed: expected 32 or 64 hex characters, got %zu\n", nhex);
+    DSD_FPRINTF(stderr, "DMR PC5 key parse failed: expected 32 or 64 hex characters, got %zu\n", nhex);
     return -1;
 }

@@ -15,18 +15,17 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", tag);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", tag);
         return 1;
     }
     return 0;
@@ -57,7 +56,7 @@ main(void) {
     dsd_tg_policy_decision decision;
 
     if (!opts || !st) {
-        fprintf(stderr, "FAIL: alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !st ? " dsd_state" : "");
+        DSD_FPRINTF(stderr, "FAIL: alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !st ? " dsd_state" : "");
         free_test_state(st);
         free(opts);
         return 1;

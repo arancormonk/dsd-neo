@@ -5,14 +5,13 @@
 
 #include <cmath>
 #include <cstdio>
-#include <cstring>
-
 #include <dsd-neo/dsp/equalizer.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_close(float got, float want, float tol, const char* label) {
     if (std::fabs(got - want) > tol) {
-        std::fprintf(stderr, "%s: got %.6f want %.6f\n", label, got, want);
+        DSD_FPRINTF(stderr, "%s: got %.6f want %.6f\n", label, got, want);
         return 1;
     }
     return 0;
@@ -41,11 +40,11 @@ mean_abs_modulus_error(const float* iq, int pairs, int start, float modulus) {
 static int
 test_reset_initializes_center_spike(void) {
     dsd_cqpsk_cma_equalizer_state_t st;
-    std::memset(&st, 0x5a, sizeof(st));
+    DSD_MEMSET(&st, 0x5a, sizeof(st));
 
     dsd_cqpsk_cma_equalizer_init(&st, 8);
     if (st.taps != 9) {
-        std::fprintf(stderr, "init: even tap count should round up to 9, got %d\n", st.taps);
+        DSD_FPRINTF(stderr, "init: even tap count should round up to 9, got %d\n", st.taps);
         return 1;
     }
     int rc = 0;
@@ -56,14 +55,14 @@ test_reset_initializes_center_spike(void) {
     }
 
     dsd_cqpsk_cma_equalizer_metrics_t m;
-    std::memset(&m, 0x5a, sizeof(m));
+    DSD_MEMSET(&m, 0x5a, sizeof(m));
     dsd_cqpsk_cma_equalizer_get_metrics(&st, &m);
     rc |= expect_close(m.tap_energy, 1.0f, 0.0f, "init tap_energy");
     rc |= expect_close(m.center_tap_mag, 1.0f, 0.0f, "init center_tap_mag");
     rc |= expect_close(m.max_side_tap_mag, 0.0f, 0.0f, "init max_side_tap_mag");
     if (m.initialized != 1 || m.taps != 9 || m.symbols != 0U) {
-        std::fprintf(stderr, "init metrics mismatch: initialized=%d taps=%d symbols=%u\n", m.initialized, m.taps,
-                     m.symbols);
+        DSD_FPRINTF(stderr, "init metrics mismatch: initialized=%d taps=%d symbols=%u\n", m.initialized, m.taps,
+                    m.symbols);
         return 1;
     }
     return rc;
@@ -71,7 +70,7 @@ test_reset_initializes_center_spike(void) {
 
 static int
 test_cma_reduces_constant_modulus_error_on_isi(void) {
-    enum { kSymbols = 8192 };
+    enum : unsigned short { kSymbols = 8192 };
 
     float clean[kSymbols * 2];
     float rx[kSymbols * 2];
@@ -119,19 +118,19 @@ test_cma_reduces_constant_modulus_error_on_isi(void) {
     float eq_err = mean_abs_modulus_error(eq, kSymbols, start, 1.0f);
 
     if (!(eq_err < raw_err * 0.85f)) {
-        std::fprintf(stderr, "CMA did not reduce modulus error enough: raw=%.6f eq=%.6f\n", raw_err, eq_err);
+        DSD_FPRINTF(stderr, "CMA did not reduce modulus error enough: raw=%.6f eq=%.6f\n", raw_err, eq_err);
         return 1;
     }
     if (st.symbols < 1000U) {
-        std::fprintf(stderr, "CMA did not adapt enough symbols: %u\n", st.symbols);
+        DSD_FPRINTF(stderr, "CMA did not adapt enough symbols: %u\n", st.symbols);
         return 1;
     }
 
     dsd_cqpsk_cma_equalizer_metrics_t m;
     dsd_cqpsk_cma_equalizer_get_metrics(&st, &m);
     if (m.symbols != st.symbols || m.taps != st.taps || !(m.tap_energy > 0.1f) || !(m.max_side_tap_mag > 0.001f)) {
-        std::fprintf(stderr, "CMA metrics mismatch: symbols=%u/%u taps=%d/%d energy=%.6f side=%.6f\n", m.symbols,
-                     st.symbols, m.taps, st.taps, m.tap_energy, m.max_side_tap_mag);
+        DSD_FPRINTF(stderr, "CMA metrics mismatch: symbols=%u/%u taps=%d/%d energy=%.6f side=%.6f\n", m.symbols,
+                    st.symbols, m.taps, st.taps, m.tap_energy, m.max_side_tap_mag);
         return 1;
     }
 
@@ -140,7 +139,7 @@ test_cma_reduces_constant_modulus_error_on_isi(void) {
 
 static int
 test_cma_defaults_reduce_scaled_isi(void) {
-    enum { kSymbols = 8192 };
+    enum : unsigned short { kSymbols = 8192 };
 
     float clean[kSymbols * 2];
     float rx[kSymbols * 2];
@@ -190,11 +189,11 @@ test_cma_defaults_reduce_scaled_isi(void) {
     float eq_err = mean_abs_modulus_error(eq, kSymbols, start, DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS);
 
     if (!(eq_err < raw_err * 0.88f)) {
-        std::fprintf(stderr, "CMA defaults did not reduce scaled ISI enough: raw=%.6f eq=%.6f\n", raw_err, eq_err);
+        DSD_FPRINTF(stderr, "CMA defaults did not reduce scaled ISI enough: raw=%.6f eq=%.6f\n", raw_err, eq_err);
         return 1;
     }
     if (st.taps != DSD_CQPSK_CMA_EQ_DEFAULT_TAPS || st.symbols < 1000U) {
-        std::fprintf(stderr, "CMA defaults state mismatch: taps=%d symbols=%u\n", st.taps, st.symbols);
+        DSD_FPRINTF(stderr, "CMA defaults state mismatch: taps=%d symbols=%u\n", st.taps, st.symbols);
         return 1;
     }
 

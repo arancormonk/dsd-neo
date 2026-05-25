@@ -22,7 +22,11 @@ jobs:
   build-native-msvc:
     runs-on: windows-latest
     permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
       contents: write
+      id-token: write
     env:
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
       VCPKG_DEFAULT_TRIPLET: x64-windows-dynamic-release
@@ -32,7 +36,7 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Validate release tag
         if: startsWith(github.ref, 'refs/tags/v')
         id: release
@@ -42,7 +46,7 @@ jobs:
         run: tools/ci_validate_release_tag.sh
 
       - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
 
       - name: Initialize sccache
         shell: pwsh
@@ -51,10 +55,10 @@ jobs:
           & $env:SCCACHE_PATH --zero-stats
 
       - name: Setup MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1.13.0
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11.6
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
         with:
           # run-vcpkg v11.5 requires a full 40-char SHA1.
           # Keep this in sync with vcpkg.json's builtin-baseline.
@@ -169,15 +173,38 @@ jobs:
           & $exe -h
 
       - name: Upload native MSVC artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.zip.outputs.ART_NAME }}
           path: ${{ steps.zip.outputs.ZIP_PATH }}
           retention-days: 7
 
+      - name: Generate native MSVC SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: ${{ steps.zip.outputs.ZIP_PATH }}
+          format: spdx-json
+          output-file: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
+          artifact-name: ${{ steps.zip.outputs.ART_NAME }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Attest native MSVC provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: ${{ steps.zip.outputs.ZIP_PATH }}
+
+      - name: Attest native MSVC SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: ${{ steps.zip.outputs.ZIP_PATH }}
+          sbom-path: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
+
       - name: Upload native MSVC release asset
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3.0.0
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
           files: ${{ steps.zip.outputs.ZIP_PATH }}
           name: ${{ steps.release.outputs.release_title }}
@@ -185,7 +212,7 @@ jobs:
 
       - name: Upload native MSVC nightly asset (overwrite)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: svenstaro/upload-release-action@v2
+        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           tag: nightly
@@ -197,7 +224,11 @@ jobs:
   build-native-mingw:
     runs-on: windows-latest
     permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
       contents: write
+      id-token: write
     env:
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
       VCPKG_DEFAULT_TRIPLET: x64-mingw-dynamic-release
@@ -207,7 +238,7 @@ jobs:
       VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\vcpkg-triplets
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Validate release tag
         if: startsWith(github.ref, 'refs/tags/v')
         id: release
@@ -217,7 +248,7 @@ jobs:
         run: tools/ci_validate_release_tag.sh
 
       - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
 
       - name: Initialize sccache
         shell: pwsh
@@ -226,7 +257,7 @@ jobs:
           & $env:SCCACHE_PATH --zero-stats
 
       - name: Setup MSYS2 (MinGW-w64)
-        uses: msys2/setup-msys2@v2.31.1
+        uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c
         with:
           msystem: MINGW64
           # Avoid full MSYS2 system upgrades in CI.
@@ -242,7 +273,7 @@ jobs:
             mingw-w64-x86_64-ncurses
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11.6
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
         with:
           # run-vcpkg v11.5 requires a full 40-char SHA1.
           # Keep this in sync with vcpkg.json's builtin-baseline.
@@ -375,15 +406,38 @@ jobs:
           & $exe -h
 
       - name: Upload native MinGW artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.zip.outputs.ART_NAME }}
           path: ${{ steps.zip.outputs.ZIP_PATH }}
           retention-days: 7
 
+      - name: Generate native MinGW SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: ${{ steps.zip.outputs.ZIP_PATH }}
+          format: spdx-json
+          output-file: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
+          artifact-name: ${{ steps.zip.outputs.ART_NAME }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Attest native MinGW provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: ${{ steps.zip.outputs.ZIP_PATH }}
+
+      - name: Attest native MinGW SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: ${{ steps.zip.outputs.ZIP_PATH }}
+          sbom-path: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
+
       - name: Upload native MinGW release asset
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3.0.0
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
           files: ${{ steps.zip.outputs.ZIP_PATH }}
           name: ${{ steps.release.outputs.release_title }}
@@ -391,7 +445,7 @@ jobs:
 
       - name: Upload native MinGW nightly asset (overwrite)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: svenstaro/upload-release-action@v2
+        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           tag: nightly

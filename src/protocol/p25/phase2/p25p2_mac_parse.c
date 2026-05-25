@@ -22,6 +22,77 @@ p25p2_signed_offset_units(int sign_bit, int raw_offset) {
     return sign_bit ? raw_offset : -raw_offset;
 }
 
+static int
+p25p2_mac_capacity(int type) {
+    return (type == 1) ? 19 : 16;
+}
+
+static int
+p25p2_clamp_int(int value, int min, int max) {
+    if (value < min) {
+        return min;
+    }
+    if (value > max) {
+        return max;
+    }
+    return value;
+}
+
+static int
+p25p2_mac_guess_len_b(int type, const unsigned long long mac[24], int capacity) {
+    int mco = (int)(mac[1] & 0x3F);
+    if (mco <= 0) {
+        return -1;
+    }
+    if (mac[0] == 0 && type != 1) {
+        return -1;
+    }
+    return p25p2_clamp_int(mco - 1, 0, capacity);
+}
+
+static int
+p25p2_mac_resolve_len_b(int type, const unsigned long long mac[24], int capacity, int len_b) {
+    if (len_b != 0 && len_b <= capacity) {
+        return len_b;
+    }
+    if (len_b == 0 || len_b > capacity) {
+        int guess = p25p2_mac_guess_len_b(type, mac, capacity);
+        if (guess >= 0) {
+            return guess;
+        }
+    }
+    return len_b;
+}
+
+static int
+p25p2_mac_has_second_message(int type, int len_b) {
+    if (type == 1) {
+        return len_b < 19;
+    }
+    if (type == 0) {
+        return len_b < 16;
+    }
+    return 0;
+}
+
+static int
+p25p2_mac_resolve_len_c(int type, const unsigned long long mac[24], int len_a, int len_b, int capacity) {
+    if (!p25p2_mac_has_second_message(type, len_b)) {
+        return 0;
+    }
+
+    int len_c = p25p2_mac_len_for((uint8_t)mac[3 + len_a], (uint8_t)mac[1 + len_b]);
+    if (len_c != 0) {
+        return len_c;
+    }
+
+    int remain = capacity - len_b;
+    if (remain > 0) {
+        return remain;
+    }
+    return 0;
+}
+
 int
 p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_result* out) {
     if (out == NULL || mac == NULL) {
@@ -35,41 +106,9 @@ p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_res
 
     int len_a = 0;
     int len_b = p25p2_mac_len_for(out->mfid, out->opcode);
-    int len_c = 0;
-
-    /* Compute per-channel capacity for message-carrying octets (excludes opcode byte itself). */
-    const int capacity = (type == 1) ? 19 : 16;
-
-    /* If table/override gives no guidance, try deriving from MCO when header is present. */
-    if (len_b == 0 || len_b > capacity) {
-        int mco = (int)(mac[1] & 0x3F);
-        if ((mac[0] != 0 || type == 1) && mco > 0) {
-            int guess = mco - 1;
-            if (guess > capacity) {
-                guess = capacity;
-            }
-            if (guess < 0) {
-                guess = 0;
-            }
-            len_b = guess;
-        }
-    }
-
-    /* Derive second message length when possible using the same table. */
-    if (type == 1 && len_b < 19) {
-        len_c = p25p2_mac_len_for((uint8_t)mac[3 + len_a], (uint8_t)mac[1 + len_b]);
-    }
-    if (type == 0 && len_b < 16) {
-        len_c = p25p2_mac_len_for((uint8_t)mac[3 + len_a], (uint8_t)mac[1 + len_b]);
-    }
-
-    /* If the second message length is unknown, fill with remaining capacity as a last resort. */
-    if ((type == 1 && len_b < 19 && len_c == 0) || (type == 0 && len_b < 16 && len_c == 0)) {
-        int remain = capacity - len_b;
-        if (remain > 0) {
-            len_c = remain;
-        }
-    }
+    const int capacity = p25p2_mac_capacity(type);
+    len_b = p25p2_mac_resolve_len_b(type, mac, capacity, len_b);
+    int len_c = p25p2_mac_resolve_len_c(type, mac, len_a, len_b, capacity);
 
     out->len_a = len_a;
     out->len_b = len_b;

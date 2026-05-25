@@ -16,20 +16,20 @@
 #include <dsd-neo/runtime/ring.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 
 /* RTL-SDR stream exit shim (when USE_RTLSDR is enabled in runtime) */
 extern "C" int
-dsd_rtl_stream_should_exit(void) {
+dsd_rtl_stream_should_exit(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
 static int
 float_arrays_equal(const float* a, const float* b, size_t count) {
     for (size_t i = 0; i < count; i++) {
-        if (a[i] != b[i]) {
+        float diff = a[i] - b[i];
+        if (diff < -1.0e-6f || diff > 1.0e-6f) {
             return 0;
         }
     }
@@ -40,10 +40,10 @@ static int
 test_input_ring_wrap_and_read(void) {
     const size_t cap = 8;
     struct input_ring_state r;
-    memset(&r, 0, sizeof(r));
+    DSD_MEMSET(&r, 0, sizeof(r));
 
     if (input_ring_init(&r, cap) != 0) {
-        fprintf(stderr, "input_ring: init failed\n");
+        DSD_FPRINTF(stderr, "input_ring: init failed\n");
         return 1;
     }
 
@@ -55,11 +55,11 @@ test_input_ring_wrap_and_read(void) {
     float out[8] = {0};
     int read = input_ring_read_block(&r, out, 3);
     if (read != 3) {
-        fprintf(stderr, "input_ring: expected read 3, got %d\n", read);
+        DSD_FPRINTF(stderr, "input_ring: expected read 3, got %d\n", read);
         return 1;
     }
     if (out[0] != 10 || out[1] != 20 || out[2] != 30) {
-        fprintf(stderr, "input_ring: first read mismatch\n");
+        DSD_FPRINTF(stderr, "input_ring: first read mismatch\n");
         return 1;
     }
 
@@ -70,19 +70,19 @@ test_input_ring_wrap_and_read(void) {
     /* Queue should now contain {40,50,60,70,80,90} */
     size_t used = input_ring_used(&r);
     if (used != 6) {
-        fprintf(stderr, "input_ring: expected used=6, got %zu\n", used);
+        DSD_FPRINTF(stderr, "input_ring: expected used=6, got %zu\n", used);
         return 1;
     }
 
-    memset(out, 0, sizeof(out));
+    DSD_MEMSET(out, 0, sizeof(out));
     read = input_ring_read_block(&r, out, 6);
     if (read != 6) {
-        fprintf(stderr, "input_ring: expected read 6, got %d\n", read);
+        DSD_FPRINTF(stderr, "input_ring: expected read 6, got %d\n", read);
         return 1;
     }
     const float expect[6] = {40, 50, 60, 70, 80, 90};
     if (!float_arrays_equal(out, expect, sizeof(expect) / sizeof(expect[0]))) {
-        fprintf(stderr, "input_ring: wrap/read sequence mismatch\n");
+        DSD_FPRINTF(stderr, "input_ring: wrap/read sequence mismatch\n");
         return 1;
     }
 
@@ -94,10 +94,10 @@ static int
 test_input_ring_drop_on_full(void) {
     const size_t cap = 4;
     struct input_ring_state r;
-    memset(&r, 0, sizeof(r));
+    DSD_MEMSET(&r, 0, sizeof(r));
 
     if (input_ring_init(&r, cap) != 0) {
-        fprintf(stderr, "input_ring drop: init failed\n");
+        DSD_FPRINTF(stderr, "input_ring drop: init failed\n");
         return 1;
     }
 
@@ -105,7 +105,7 @@ test_input_ring_drop_on_full(void) {
     float initial[3] = {1, 2, 3};
     input_ring_write(&r, initial, 3);
     if (input_ring_used(&r) != 3) {
-        fprintf(stderr, "input_ring drop: expected used=3 after initial write, got %zu\n", input_ring_used(&r));
+        DSD_FPRINTF(stderr, "input_ring drop: expected used=3 after initial write, got %zu\n", input_ring_used(&r));
         return 1;
     }
 
@@ -115,12 +115,12 @@ test_input_ring_drop_on_full(void) {
     input_ring_write(&r, extra, 2);
 
     if (input_ring_used(&r) != 3) {
-        fprintf(stderr, "input_ring drop: expected used=3 after drop write, got %zu\n", input_ring_used(&r));
+        DSD_FPRINTF(stderr, "input_ring drop: expected used=3 after drop write, got %zu\n", input_ring_used(&r));
         return 1;
     }
     if (r.producer_drops.load() != 2) {
-        fprintf(stderr, "input_ring drop: expected producer_drops=2, got %llu\n",
-                (unsigned long long)r.producer_drops.load());
+        DSD_FPRINTF(stderr, "input_ring drop: expected producer_drops=2, got %llu\n",
+                    (unsigned long long)r.producer_drops.load());
         return 1;
     }
 
@@ -128,11 +128,11 @@ test_input_ring_drop_on_full(void) {
     float out[4] = {0};
     int read = input_ring_read_block(&r, out, 3);
     if (read != 3) {
-        fprintf(stderr, "input_ring drop: expected read 3, got %d\n", read);
+        DSD_FPRINTF(stderr, "input_ring drop: expected read 3, got %d\n", read);
         return 1;
     }
     if (out[0] != 1 || out[1] != 2 || out[2] != 3) {
-        fprintf(stderr, "input_ring drop: queue contents corrupted after drop\n");
+        DSD_FPRINTF(stderr, "input_ring drop: queue contents corrupted after drop\n");
         return 1;
     }
 
@@ -144,11 +144,11 @@ static int
 test_output_ring_wrap_and_read(void) {
     const size_t cap = 8;
     struct output_state o;
-    memset(&o, 0, sizeof(o));
+    DSD_MEMSET(&o, 0, sizeof(o));
 
     o.buffer = (float*)calloc(cap, sizeof(float));
     if (!o.buffer) {
-        fprintf(stderr, "output_ring: allocation failed\n");
+        DSD_FPRINTF(stderr, "output_ring: allocation failed\n");
         return 1;
     }
     o.capacity = cap;
@@ -168,11 +168,11 @@ test_output_ring_wrap_and_read(void) {
     float out[8] = {0};
     int read = ring_read_batch(&o, out, 3);
     if (read != 3) {
-        fprintf(stderr, "output_ring: expected read 3, got %d\n", read);
+        DSD_FPRINTF(stderr, "output_ring: expected read 3, got %d\n", read);
         return 1;
     }
     if (out[0] != 1 || out[1] != 2 || out[2] != 3) {
-        fprintf(stderr, "output_ring: first read mismatch\n");
+        DSD_FPRINTF(stderr, "output_ring: first read mismatch\n");
         return 1;
     }
 
@@ -183,19 +183,19 @@ test_output_ring_wrap_and_read(void) {
     /* Queue should now contain {4,5,6,7,8,9} */
     size_t used = ring_used(&o);
     if (used != 6) {
-        fprintf(stderr, "output_ring: expected used=6, got %zu\n", used);
+        DSD_FPRINTF(stderr, "output_ring: expected used=6, got %zu\n", used);
         return 1;
     }
 
-    memset(out, 0, sizeof(out));
+    DSD_MEMSET(out, 0, sizeof(out));
     read = ring_read_batch(&o, out, 6);
     if (read != 6) {
-        fprintf(stderr, "output_ring: expected read 6, got %d\n", read);
+        DSD_FPRINTF(stderr, "output_ring: expected read 6, got %d\n", read);
         return 1;
     }
     const float expect[6] = {4, 5, 6, 7, 8, 9};
     if (!float_arrays_equal(out, expect, sizeof(expect) / sizeof(expect[0]))) {
-        fprintf(stderr, "output_ring: wrap/read sequence mismatch\n");
+        DSD_FPRINTF(stderr, "output_ring: wrap/read sequence mismatch\n");
         return 1;
     }
 
@@ -206,7 +206,7 @@ test_output_ring_wrap_and_read(void) {
     return 0;
 }
 
-struct OutputWriterArgs {
+struct OutputWriterArgs { // NOLINT(misc-use-internal-linkage)
     struct output_state* ring;
     const float* data;
     size_t count;
@@ -215,7 +215,7 @@ struct OutputWriterArgs {
     int* ready_flag;
 };
 
-struct OutputReaderArgs {
+struct OutputReaderArgs { // NOLINT(misc-use-internal-linkage)
     struct output_state* ring;
     size_t total_expected;
     float* out;
@@ -253,7 +253,7 @@ static DSD_THREAD_RETURN_TYPE
             *(ctx->error_flag) = 1;
             DSD_THREAD_RETURN;
         }
-        memcpy(ctx->out + have, tmp, (size_t)n * sizeof(float));
+        DSD_MEMCPY(ctx->out + have, tmp, (size_t)n * sizeof(float));
         have += (size_t)n;
     }
     *(ctx->out_count) = have;
@@ -264,11 +264,11 @@ static int
 test_output_ring_blocking_producer_consumer(void) {
     const size_t cap = 4;
     struct output_state o;
-    memset(&o, 0, sizeof(o));
+    DSD_MEMSET(&o, 0, sizeof(o));
 
     o.buffer = (float*)calloc(cap, sizeof(float));
     if (!o.buffer) {
-        fprintf(stderr, "output_ring pc: allocation failed\n");
+        DSD_FPRINTF(stderr, "output_ring pc: allocation failed\n");
         return 1;
     }
     o.capacity = cap;
@@ -284,7 +284,7 @@ test_output_ring_blocking_producer_consumer(void) {
     float pre[3] = {100, 101, 102};
     ring_write_no_signal(&o, pre, 3);
     if (ring_used(&o) != 3) {
-        fprintf(stderr, "output_ring pc: expected used=3 after prefill, got %zu\n", ring_used(&o));
+        DSD_FPRINTF(stderr, "output_ring pc: expected used=3 after prefill, got %zu\n", ring_used(&o));
         return 1;
     }
 
@@ -321,8 +321,8 @@ test_output_ring_blocking_producer_consumer(void) {
     dsd_thread_t wthread;
     dsd_thread_t rthread;
 
-    if (dsd_thread_create(&wthread, (dsd_thread_fn)output_writer_thread, &wargs) != 0) {
-        fprintf(stderr, "output_ring pc: failed to create writer thread\n");
+    if (dsd_thread_create(&wthread, output_writer_thread, &wargs) != 0) {
+        DSD_FPRINTF(stderr, "output_ring pc: failed to create writer thread\n");
         return 1;
     }
 
@@ -333,8 +333,8 @@ test_output_ring_blocking_producer_consumer(void) {
     }
     dsd_mutex_unlock(&barrier_mu);
 
-    if (dsd_thread_create(&rthread, (dsd_thread_fn)output_reader_thread, &rargs) != 0) {
-        fprintf(stderr, "output_ring pc: failed to create reader thread\n");
+    if (dsd_thread_create(&rthread, output_reader_thread, &rargs) != 0) {
+        DSD_FPRINTF(stderr, "output_ring pc: failed to create reader thread\n");
         return 1;
     }
 
@@ -342,29 +342,34 @@ test_output_ring_blocking_producer_consumer(void) {
     dsd_thread_join(rthread);
 
     if (read_error != 0) {
-        fprintf(stderr, "output_ring pc: reader saw error\n");
+        DSD_FPRINTF(stderr, "output_ring pc: reader saw error\n");
         return 1;
     }
     if (all_count != 13) {
-        fprintf(stderr, "output_ring pc: expected 13 samples, got %zu\n", all_count);
+        DSD_FPRINTF(stderr, "output_ring pc: expected 13 samples, got %zu\n", all_count);
         return 1;
     }
 
     /* First three samples must be the prefilled values (FIFO), remainder the bulk sequence */
-    if (all[0] != 100 || all[1] != 101 || all[2] != 102) {
-        fprintf(stderr, "output_ring pc: prefilled samples out of order\n");
+    float d0 = all[0] - 100.0f;
+    float d1 = all[1] - 101.0f;
+    float d2 = all[2] - 102.0f;
+    if (d0 < -1.0e-6f || d0 > 1.0e-6f || d1 < -1.0e-6f || d1 > 1.0e-6f || d2 < -1.0e-6f || d2 > 1.0e-6f) {
+        DSD_FPRINTF(stderr, "output_ring pc: prefilled samples out of order\n");
         return 1;
     }
     for (int i = 0; i < 10; i++) {
-        if (all[3 + i] != (float)(200 + i)) {
-            fprintf(stderr, "output_ring pc: bulk sample mismatch at index %d (got %.1f, expected %d)\n", i, all[3 + i],
-                    200 + i);
+        float diff = all[3 + i] - (float)(200 + i);
+        if (diff < -1.0e-6f || diff > 1.0e-6f) {
+            DSD_FPRINTF(stderr, "output_ring pc: bulk sample mismatch at index %d (got %.1f, expected %d)\n", i,
+                        all[3 + i], 200 + i);
             return 1;
         }
     }
 
     if (ring_used(&o) != 0) {
-        fprintf(stderr, "output_ring pc: expected ring empty after producer/consumer, got used=%zu\n", ring_used(&o));
+        DSD_FPRINTF(stderr, "output_ring pc: expected ring empty after producer/consumer, got used=%zu\n",
+                    ring_used(&o));
         return 1;
     }
 
@@ -385,7 +390,7 @@ main(void) {
     rc |= test_input_ring_drop_on_full();
     rc |= test_output_ring_blocking_producer_consumer();
     if (rc == 0) {
-        fprintf(stderr, "runtime ring tests: OK\n");
+        DSD_FPRINTF(stderr, "runtime ring tests: OK\n");
     }
     return rc;
 }

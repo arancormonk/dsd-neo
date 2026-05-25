@@ -8,7 +8,8 @@
  * @brief Frame sync helper APIs.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_FRAME_SYNC_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_FRAME_SYNC_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -44,8 +45,10 @@ int getFrameSync(dsd_opts* opts, dsd_state* state);
  * @param offset Bit offset into the buffer where sync was found.
  * @param modulation Modulation label (e.g., C4FM, QPSK).
  */
-void printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, char* modulation);
+void printFrameSync(const dsd_opts* opts, const dsd_state* state, const char* frametype, int offset,
+                    const char* modulation);
 
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_FRAME_SYNC_H_H */

@@ -11,7 +11,8 @@
  * module.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_LFSR_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_LFSR_H_H
 
 #include <dsd-neo/core/state_fwd.h>
 
@@ -19,9 +20,10 @@
 extern "C" {
 #endif
 
-void LFSRN(char* BufferIn, char* BufferOut, dsd_state* state);
+void LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state);
 void LFSR128n(dsd_state* state);
 
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_LFSR_H_H */

@@ -12,15 +12,14 @@
  * modules that only need audio APIs can avoid pulling in the full core header.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/platform/audio.h>
-#include <dsd-neo/platform/sndfile_fwd.h>
 
+#include <sndfile.h>
 #include <stddef.h>
-#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,9 +28,9 @@ extern "C" {
 /** @brief Process one block of dPMR voice through the decoder/synth path. */
 void processdPMRvoice(dsd_opts* opts, dsd_state* state);
 /** @brief Core audio processing entry point (slot 1). */
-void processAudio(dsd_opts* opts, dsd_state* state);
+void processAudio(const dsd_opts* opts, dsd_state* state);
 /** @brief Core audio processing entry point (slot 2 / right). */
-void processAudioR(dsd_opts* opts, dsd_state* state);
+void processAudioR(const dsd_opts* opts, dsd_state* state);
 
 /** @brief Open audio input stream based on opts. Returns 0 on success. */
 int openAudioInput(dsd_opts* opts);
@@ -67,6 +66,8 @@ void playSynthesizedVoice(dsd_opts* opts, dsd_state* state); // short mono outpu
 void playSynthesizedVoiceR(dsd_opts* opts, dsd_state* state); // short mono output slot 2
 /** @brief Play synthesized voice (short mono mix). */
 void playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state); // short mono mix
+/** @brief Play synthesized voice (short mono output slot 2 alternate path). */
+void playSynthesizedVoiceMSR(dsd_opts* opts, dsd_state* state); // short mono output slot 2 (alt path)
 /** @brief Play synthesized voice (short stereo mix). */
 void playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state); // short stereo mix
 /** @brief Play synthesized voice (short stereo mix 3v2 DMR). */
@@ -77,15 +78,15 @@ void playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state); // short stereo 
 void playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state); // short stereo mix 18V Superframe
 
 /** @brief Apply float-domain gain to 160-sample block for given slot. */
-void agf(dsd_opts* opts, dsd_state* state, float samp[160], int slot); // float gain control
+void agf(const dsd_opts* opts, dsd_state* state, float samp[160], int slot); // float gain control
 /** @brief Apply short-domain gain to buffer of given length. */
 void agsm(dsd_opts* opts, dsd_state* state, short* input, int len); // short gain control
 /** @brief Apply float-domain auto gain control for analog monitor path. */
 void agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len); // float gain control for analog
 /** @brief Apply manual analog gain to short buffer. */
-void analog_gain(dsd_opts* opts, dsd_state* state, short* input, int len); // manual gain for analog paths
+void analog_gain(const dsd_opts* opts, dsd_state* state, short* input, int len); // manual gain for analog paths
 /** @brief Apply manual analog gain to float buffer. */
-void analog_gain_f(dsd_opts* opts, dsd_state* state, float* input, int len); // float manual gain for analog
+void analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len); // float manual gain for analog
 
 /** @brief Multiply float buffer by gain factor in-place. */
 void audio_apply_gain_f32(float* buf, size_t n, float gain);
@@ -221,3 +222,4 @@ int audio_list_devices(void);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_H_H */

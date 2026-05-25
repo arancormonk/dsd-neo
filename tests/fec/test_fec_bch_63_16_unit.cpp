@@ -11,10 +11,10 @@
  * detection limits, and backward-compatible legacy interface.
  */
 
-#include <dsd-neo/fec/BCH_63_16.hpp>
-
 #include <cstdio>
 #include <cstring>
+#include <dsd-neo/fec/BCH_63_16.hpp>
+#include "dsd-neo/core/safe_api.h"
 
 static unsigned long long
 pack_63_bits(const char codeword[63]) {
@@ -43,12 +43,12 @@ test_encode_all_zeros(void) {
     char info[16];
     char codeword[63];
 
-    std::memset(info, 0, sizeof(info));
+    DSD_MEMSET(info, 0, sizeof(info));
     bch.encode(info, codeword);
 
     for (int i = 0; i < 63; i++) {
         if (codeword[i] != 0) {
-            std::fprintf(stderr, "test_encode_all_zeros: expected codeword[%d]=0, got %d\n", i, (int)codeword[i]);
+            DSD_FPRINTF(stderr, "test_encode_all_zeros: expected codeword[%d]=0, got %d\n", i, (int)codeword[i]);
             return 1;
         }
     }
@@ -84,8 +84,8 @@ test_encode_matches_p25_generator_matrix(void) {
         unsigned long long actual = pack_63_bits(codeword);
 
         if (actual != expected) {
-            std::fprintf(stderr, "test_encode_matches_p25_generator_matrix: bit %d expected 0x%016llX, got 0x%016llX\n",
-                         bit, expected, actual);
+            DSD_FPRINTF(stderr, "test_encode_matches_p25_generator_matrix: bit %d expected 0x%016llX, got 0x%016llX\n",
+                        bit, expected, actual);
             return 1;
         }
     }
@@ -119,10 +119,10 @@ test_encode_nac_293_ldu1(void) {
     // Verify systematic property: first 16 bits must equal info
     for (int i = 0; i < 16; i++) {
         if (codeword[i] != info[i]) {
-            std::fprintf(stderr,
-                         "test_encode_nac_293_ldu1: systematic check failed at bit %d: "
-                         "expected %d, got %d\n",
-                         i, (int)info[i], (int)codeword[i]);
+            DSD_FPRINTF(stderr,
+                        "test_encode_nac_293_ldu1: systematic check failed at bit %d: "
+                        "expected %d, got %d\n",
+                        i, (int)info[i], (int)codeword[i]);
             return 1;
         }
     }
@@ -132,17 +132,17 @@ test_encode_nac_293_ldu1(void) {
     BCH_63_16_Result result = bch.decode_with_result(codeword, decoded);
 
     if (!result.success) {
-        std::fprintf(stderr, "test_encode_nac_293_ldu1: decode of clean codeword failed\n");
+        DSD_FPRINTF(stderr, "test_encode_nac_293_ldu1: decode of clean codeword failed\n");
         return 1;
     }
     if (result.error_count != 0) {
-        std::fprintf(stderr, "test_encode_nac_293_ldu1: expected error_count=0, got %d\n", result.error_count);
+        DSD_FPRINTF(stderr, "test_encode_nac_293_ldu1: expected error_count=0, got %d\n", result.error_count);
         return 1;
     }
 
     // Verify decoded bits match original info
     if (std::memcmp(decoded, info, 16) != 0) {
-        std::fprintf(stderr, "test_encode_nac_293_ldu1: decoded bits do not match input\n");
+        DSD_FPRINTF(stderr, "test_encode_nac_293_ldu1: decoded bits do not match input\n");
         return 1;
     }
 
@@ -168,15 +168,15 @@ test_decode_no_errors(void) {
     BCH_63_16_Result result = bch.decode_with_result(codeword, decoded);
 
     if (!result.success) {
-        std::fprintf(stderr, "test_decode_no_errors: decode failed on clean codeword\n");
+        DSD_FPRINTF(stderr, "test_decode_no_errors: decode failed on clean codeword\n");
         return 1;
     }
     if (result.error_count != 0) {
-        std::fprintf(stderr, "test_decode_no_errors: expected error_count=0, got %d\n", result.error_count);
+        DSD_FPRINTF(stderr, "test_decode_no_errors: expected error_count=0, got %d\n", result.error_count);
         return 1;
     }
     if (std::memcmp(decoded, info, 16) != 0) {
-        std::fprintf(stderr, "test_decode_no_errors: decoded bits do not match input\n");
+        DSD_FPRINTF(stderr, "test_decode_no_errors: decoded bits do not match input\n");
         return 1;
     }
 
@@ -199,11 +199,11 @@ test_decode_failure_12_errors(void) {
     char corrupted[63];
     char decoded[16];
 
-    std::memset(info, 0, sizeof(info));
+    DSD_MEMSET(info, 0, sizeof(info));
     bch.encode(info, codeword);
 
     // Copy and flip 12 distinct bit positions
-    std::memcpy(corrupted, codeword, 63);
+    DSD_MEMCPY(corrupted, codeword, 63);
     int flip_positions[12] = {0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55};
     for (int i = 0; i < 12; i++) {
         corrupted[flip_positions[i]] ^= 1;
@@ -212,17 +212,17 @@ test_decode_failure_12_errors(void) {
     BCH_63_16_Result result = bch.decode_with_result(corrupted, decoded);
 
     if (result.success) {
-        std::fprintf(stderr,
-                     "test_decode_failure_12_errors: expected decode failure, "
-                     "but got success with error_count=%d\n",
-                     result.error_count);
+        DSD_FPRINTF(stderr,
+                    "test_decode_failure_12_errors: expected decode failure, "
+                    "but got success with error_count=%d\n",
+                    result.error_count);
         return 1;
     }
     if (result.error_count != 0) {
-        std::fprintf(stderr,
-                     "test_decode_failure_12_errors: expected error_count=0 on failure, "
-                     "got %d\n",
-                     result.error_count);
+        DSD_FPRINTF(stderr,
+                    "test_decode_failure_12_errors: expected error_count=0 on failure, "
+                    "got %d\n",
+                    result.error_count);
         return 1;
     }
 
@@ -265,7 +265,7 @@ test_gf_field_properties(void) {
         char decoded[16];
 
         bch.encode(info, codeword);
-        std::memcpy(corrupted, codeword, 63);
+        DSD_MEMCPY(corrupted, codeword, 63);
 
         // Flip 11 distinct positions spread across the codeword
         int positions[11] = {0, 6, 12, 18, 24, 30, 36, 42, 48, 54, 60};
@@ -275,16 +275,16 @@ test_gf_field_properties(void) {
 
         BCH_63_16_Result result = bch.decode_with_result(corrupted, decoded);
         if (!result.success) {
-            std::fprintf(stderr, "test_gf_field_properties: 11-error decode failed "
-                                 "(field arithmetic error)\n");
+            DSD_FPRINTF(stderr, "test_gf_field_properties: 11-error decode failed "
+                                "(field arithmetic error)\n");
             return 1;
         }
         if (result.error_count != 11) {
-            std::fprintf(stderr, "test_gf_field_properties: expected error_count=11, got %d\n", result.error_count);
+            DSD_FPRINTF(stderr, "test_gf_field_properties: expected error_count=11, got %d\n", result.error_count);
             return 1;
         }
         if (std::memcmp(decoded, info, 16) != 0) {
-            std::fprintf(stderr, "test_gf_field_properties: 11-error decode produced wrong bits\n");
+            DSD_FPRINTF(stderr, "test_gf_field_properties: 11-error decode produced wrong bits\n");
             return 1;
         }
     }
@@ -300,8 +300,8 @@ test_gf_field_properties(void) {
         bch.encode(info_b, cw_b);
 
         if (std::memcmp(cw_a, cw_b, 63) == 0) {
-            std::fprintf(stderr, "test_gf_field_properties: different info words produced "
-                                 "identical codewords (field generation error)\n");
+            DSD_FPRINTF(stderr, "test_gf_field_properties: different info words produced "
+                                "identical codewords (field generation error)\n");
             return 1;
         }
     }
@@ -317,29 +317,29 @@ test_gf_field_properties(void) {
         bch.encode(info, codeword);
 
         for (int pos = 0; pos < 63; pos++) {
-            std::memcpy(corrupted, codeword, 63);
+            DSD_MEMCPY(corrupted, codeword, 63);
             corrupted[pos] ^= 1;
 
             BCH_63_16_Result result = bch.decode_with_result(corrupted, decoded);
             if (!result.success) {
-                std::fprintf(stderr,
-                             "test_gf_field_properties: single-error at pos %d failed "
-                             "(missing field element alpha^%d)\n",
-                             pos, pos);
+                DSD_FPRINTF(stderr,
+                            "test_gf_field_properties: single-error at pos %d failed "
+                            "(missing field element alpha^%d)\n",
+                            pos, pos);
                 return 1;
             }
             if (result.error_count != 1) {
-                std::fprintf(stderr,
-                             "test_gf_field_properties: single-error at pos %d "
-                             "reported %d errors instead of 1\n",
-                             pos, result.error_count);
+                DSD_FPRINTF(stderr,
+                            "test_gf_field_properties: single-error at pos %d "
+                            "reported %d errors instead of 1\n",
+                            pos, result.error_count);
                 return 1;
             }
             if (std::memcmp(decoded, info, 16) != 0) {
-                std::fprintf(stderr,
-                             "test_gf_field_properties: single-error at pos %d "
-                             "decoded wrong bits\n",
-                             pos);
+                DSD_FPRINTF(stderr,
+                            "test_gf_field_properties: single-error at pos %d "
+                            "decoded wrong bits\n",
+                            pos);
                 return 1;
             }
         }
@@ -375,11 +375,11 @@ test_backward_compat_legacy_decode(void) {
 
         bool ok = bch.decode(codeword, decoded);
         if (!ok) {
-            std::fprintf(stderr, "test_backward_compat_legacy_decode: expected true, got false\n");
+            DSD_FPRINTF(stderr, "test_backward_compat_legacy_decode: expected true, got false\n");
             return 1;
         }
         if (std::memcmp(decoded, info, 16) != 0) {
-            std::fprintf(stderr, "test_backward_compat_legacy_decode: decoded bits mismatch\n");
+            DSD_FPRINTF(stderr, "test_backward_compat_legacy_decode: decoded bits mismatch\n");
             return 1;
         }
     }
@@ -390,7 +390,7 @@ test_backward_compat_legacy_decode(void) {
         char codeword[63];
         char decoded[16];
 
-        std::memset(info, 0, sizeof(info));
+        DSD_MEMSET(info, 0, sizeof(info));
         bch.encode(info, codeword);
 
         // Flip 12 bits
@@ -400,8 +400,8 @@ test_backward_compat_legacy_decode(void) {
 
         bool ok = bch.decode(codeword, decoded);
         if (ok) {
-            std::fprintf(stderr, "test_backward_compat_legacy_decode: expected false on 12 errors, "
-                                 "got true\n");
+            DSD_FPRINTF(stderr, "test_backward_compat_legacy_decode: expected false on 12 errors, "
+                                "got true\n");
             return 1;
         }
     }

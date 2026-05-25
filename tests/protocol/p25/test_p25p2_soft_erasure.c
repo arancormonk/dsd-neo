@@ -7,16 +7,22 @@
  * Unit tests for P25P2 soft-decision RS erasure marking.
  */
 
+#include <dsd-neo/protocol/p25/p25p2_soft.h>
+#include <dsd-neo/runtime/config.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-#include <dsd-neo/protocol/p25/p25p2_soft.h>
-#include <dsd-neo/runtime/config.h>
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 /* Define LLR buffers that p25p2_soft.c will extern */
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 int16_t p2llr[1400] = {0};
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 int16_t p2xllr[1400] = {0};
 
 static void
@@ -29,7 +35,7 @@ fill_llr(int16_t* llr, size_t count, int16_t value) {
 static void
 set_p25p2_threshold(int threshold) {
     char value[16];
-    snprintf(value, sizeof(value), "%d", threshold);
+    DSD_SNPRINTF(value, sizeof(value), "%d", threshold);
     setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
     dsd_neo_config_init(NULL);
 }
@@ -121,7 +127,7 @@ main(void) {
         p2llr[bit] = 30;
     }
     /* Reset erasure array */
-    memset(erasures, 0, sizeof(erasures));
+    DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
     for (int e = 0; e <= 8; e++) {
         erasures[n_fixed++] = e;
@@ -140,7 +146,7 @@ main(void) {
     /* Test 7: Max erasure cap is respected */
     printf("Test 7: FACCH soft erasures (max cap)... ");
     fill_llr(p2llr, 1400, 10); /* All low reliability */
-    memset(erasures, 0, sizeof(erasures));
+    DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
     for (int e = 0; e <= 8; e++) {
         erasures[n_fixed++] = e;
@@ -159,7 +165,7 @@ main(void) {
     /* Test 8: SACCH soft erasures basic balanced-prefix test */
     printf("Test 8: SACCH soft erasures (all high reliability balanced prefix)... ");
     fill_llr(p2llr, 1400, 200);
-    memset(erasures, 0, sizeof(erasures));
+    DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
     /* Add fixed erasures for SACCH: 0-4, 57-62 */
     for (int e = 0; e <= 4; e++) {
@@ -198,7 +204,7 @@ main(void) {
     for (int bit = 2; bit <= 7; bit++) {
         p2xllr[bit] = 25;
     }
-    memset(erasures, 0, sizeof(erasures));
+    DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
     for (int e = 0; e <= 4; e++) {
         erasures[n_fixed++] = e;
@@ -226,7 +232,7 @@ main(void) {
     for (int bit = 312; bit <= 317; bit++) {
         p2llr[bit] = 5; /* RS position 53 */
     }
-    memset(erasures, 0, sizeof(erasures));
+    DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
     for (int e = 0; e <= 8; e++) {
         erasures[n_fixed++] = e;
@@ -256,7 +262,7 @@ main(void) {
         parity_llr[(3 * 6) + bit] = 7;  /* position 19 */
         parity_llr[(27 * 6) + bit] = 5; /* position 43 */
     }
-    memset(erasures, 0, sizeof(erasures));
+    DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_total = p25p2_ess_soft_erasures_from_llr(payload_llr, parity_llr, erasures, 2, 2);
     if (n_total == 4 && erasures[0] == 4 && erasures[1] == 0 && erasures[2] == 43 && erasures[3] == 19) {
         printf("PASS\n");
@@ -267,7 +273,7 @@ main(void) {
 
     /* Test 13: production ESS erasures are globally ranked across payload and parity */
     printf("Test 13: ESS global erasure ordering... ");
-    memset(erasures, 0, sizeof(erasures));
+    DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_total = p25p2_ess_soft_erasures_ranked(payload_llr, parity_llr, erasures, 4);
     if (n_total == 4 && erasures[0] == 43 && erasures[1] == 19 && erasures[2] == 4 && erasures[3] == 0) {
         printf("PASS\n");
@@ -280,7 +286,7 @@ main(void) {
     printf("Test 14: FACCH threshold 0 uses minimum prefix... ");
     set_p25p2_threshold(0);
     fill_llr(p2llr, 1400, 200);
-    memset(erasures, 0, sizeof(erasures));
+    DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
     for (int e = 0; e <= 8; e++) {
         erasures[n_fixed++] = e;
@@ -300,7 +306,7 @@ main(void) {
     printf("Test 15: FACCH threshold 255 uses max prefix... ");
     set_p25p2_threshold(255);
     fill_llr(p2llr, 1400, 200);
-    memset(erasures, 0, sizeof(erasures));
+    DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
     for (int e = 0; e <= 8; e++) {
         erasures[n_fixed++] = e;
@@ -323,3 +329,7 @@ main(void) {
     printf("%d test(s) failed\n", failures);
     return failures > 0 ? 1 : 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

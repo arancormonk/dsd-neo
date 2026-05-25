@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "io/radio/rtl_capture_phase.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -136,7 +136,7 @@ process_legacy_rotate_chunk_with_carry(const unsigned char* src, size_t len, uns
     size_t prefix = rtl_capture_u8_byte_carry_consume_prefix(src, len, carry, pair);
     if (prefix != 0U) {
         phase = rotate90_u8_inplace_phase(pair, 2U, phase);
-        memcpy(dst, pair, 2U);
+        DSD_MEMCPY(dst, pair, 2U);
         src += prefix;
         len -= prefix;
         dst += 2;
@@ -145,7 +145,7 @@ process_legacy_rotate_chunk_with_carry(const unsigned char* src, size_t len, uns
 
     size_t body = len & ~((size_t)1U);
     if (body != 0U) {
-        memcpy(dst, src, body);
+        DSD_MEMCPY(dst, src, body);
         phase = rotate90_u8_inplace_phase(dst, (uint32_t)body, phase);
         src += body;
         len -= body;
@@ -186,11 +186,11 @@ test_rotate_widen_backend(const char* name, widen_backend_fn fn) {
     phase_split = fn(src + 4, dst_split + 4, 6U, phase_split);
 
     if (phase_full != phase_ref || phase_split != phase_ref) {
-        fprintf(stderr, "%s phase carry: mismatch\n", name);
+        DSD_FPRINTF(stderr, "%s phase carry: mismatch\n", name);
         return 1;
     }
     if (!arrays_close(dst_full, ref, 10, 1e-6f) || !arrays_close(dst_split, ref, 10, 1e-6f)) {
-        fprintf(stderr, "%s output: mismatch\n", name);
+        DSD_FPRINTF(stderr, "%s output: mismatch\n", name);
         return 1;
     }
 
@@ -199,6 +199,13 @@ test_rotate_widen_backend(const char* name, widen_backend_fn fn) {
 
 int
 main(void) {
+    /*
+     * Cover the widening helpers in the order used by capture replay:
+     * bias conversion, full-buffer rotation, chunked phase carry, odd-byte carry,
+     * and dropped-span phase advancement. Backend-specific tests then reuse the
+     * same reference rotation logic.
+     */
+
     // 4 complex samples (8 bytes)
     const unsigned char src[8] = {127, 127, 130, 130, 255, 0, 0, 255};
     float dst[8] = {0};
@@ -211,7 +218,7 @@ main(void) {
         ref[i] = ((float)src[i] - 127.5f) * inv;
     }
     if (!arrays_close(dst, ref, 8, 1e-6f)) {
-        fprintf(stderr, "SIMD widen: mismatch\n");
+        DSD_FPRINTF(stderr, "SIMD widen: mismatch\n");
         return 1;
     }
 
@@ -226,11 +233,12 @@ main(void) {
     float i3 = ((float)src[6] - 127.5f) * inv, q3 = ((float)src[7] - 127.5f) * inv;
     float ref_rot[8] = {i0, q0, -q1, i1, -i2, -q2, q3, -i3};
     if (!arrays_close(dst, ref_rot, 8, 1e-6f)) {
-        fprintf(stderr, "SIMD rotate+widen: mismatch\n");
+        DSD_FPRINTF(stderr, "SIMD rotate+widen: mismatch\n");
         return 1;
     }
 
     {
+        // Split processing must match a single pass and return the same phase.
         const unsigned char src_phase[10] = {127, 127, 130, 130, 255, 0, 0, 255, 64, 192};
         float dst_full[10] = {0};
         float dst_split[10] = {0};
@@ -251,16 +259,17 @@ main(void) {
         }
 
         if (phase_full != phase_split || phase_full != phase_ref) {
-            fprintf(stderr, "SIMD rotate+widen phase carry: mismatch\n");
+            DSD_FPRINTF(stderr, "SIMD rotate+widen phase carry: mismatch\n");
             return 1;
         }
         if (!arrays_close(dst_full, ref_phase, 10, 1e-6f) || !arrays_close(dst_split, ref_phase, 10, 1e-6f)) {
-            fprintf(stderr, "SIMD rotate+widen phase carry output: mismatch\n");
+            DSD_FPRINTF(stderr, "SIMD rotate+widen phase carry output: mismatch\n");
             return 1;
         }
     }
 
     {
+        // Legacy byte rotation keeps capture compatibility with bias-128 widening.
         unsigned char legacy[8] = {10, 11, 20, 21, 30, 31, 40, 41};
         unsigned char legacy_ref[8] = {0};
         float legacy_wide[8] = {0};
@@ -275,14 +284,14 @@ main(void) {
         }
 
         if (rotate90_u8_inplace_phase(legacy, 8, 0U) != 0U || !bytes_equal(legacy, legacy_ref, 8)) {
-            fprintf(stderr, "Legacy byte rotate: mismatch\n");
+            DSD_FPRINTF(stderr, "Legacy byte rotate: mismatch\n");
             return 1;
         }
 
         widen_u8_to_f32_bias128_scalar(legacy, legacy_wide, 8);
         widen_u8_to_f32_bias128_scalar(legacy_ref, legacy_ref_wide, 8);
         if (!arrays_close(legacy_wide, legacy_ref_wide, 8, 1e-6f)) {
-            fprintf(stderr, "Legacy byte rotate + bias128 widen: mismatch\n");
+            DSD_FPRINTF(stderr, "Legacy byte rotate + bias128 widen: mismatch\n");
             return 1;
         }
     }
@@ -291,8 +300,8 @@ main(void) {
         const unsigned char src_split[10] = {10, 11, 20, 21, 30, 31, 40, 41, 50, 51};
         unsigned char whole[10];
         unsigned char split[10];
-        memcpy(whole, src_split, sizeof(whole));
-        memcpy(split, src_split, sizeof(split));
+        DSD_MEMCPY(whole, src_split, sizeof(whole));
+        DSD_MEMCPY(split, src_split, sizeof(split));
 
         unsigned int phase_whole = rotate90_u8_inplace_phase(whole, 10, 1U);
         unsigned int phase_split = 1U;
@@ -300,16 +309,17 @@ main(void) {
         phase_split = rotate90_u8_inplace_phase(split + 6, 4, phase_split);
 
         if (phase_whole != phase_split || !bytes_equal(whole, split, 10)) {
-            fprintf(stderr, "Legacy byte rotate phase carry: mismatch\n");
+            DSD_FPRINTF(stderr, "Legacy byte rotate phase carry: mismatch\n");
             return 1;
         }
     }
 
     {
+        // Odd chunks carry one input byte across calls before emitting a pair.
         const unsigned char src_odd_split[10] = {127, 127, 130, 130, 255, 0, 0, 255, 64, 192};
         float dst_full[10] = {0};
         float dst_split[10] = {0};
-        struct rtl_capture_u8_byte_carry carry = {0};
+        struct rtl_capture_u8_byte_carry carry = {};
         unsigned int phase_full = widen_rotate90_u8_to_f32_bias127_phase(src_odd_split, dst_full, 10, 3U);
         unsigned int phase_split = 3U;
         size_t out = 0;
@@ -324,7 +334,7 @@ main(void) {
 
         if (carry.valid != 0U || out != 10U || phase_split != phase_full
             || !arrays_close(dst_split, dst_full, 10, 1e-6f)) {
-            fprintf(stderr, "SIMD rotate+widen odd split carry: mismatch\n");
+            DSD_FPRINTF(stderr, "SIMD rotate+widen odd split carry: mismatch\n");
             return 1;
         }
     }
@@ -333,13 +343,13 @@ main(void) {
         const unsigned char src_odd_split[10] = {10, 11, 20, 21, 30, 31, 40, 41, 50, 51};
         unsigned char whole[10];
         unsigned char split[10] = {0};
-        struct rtl_capture_u8_byte_carry carry = {0};
+        struct rtl_capture_u8_byte_carry carry = {};
         unsigned int phase_full = 0U;
         unsigned int phase_split = 0U;
         size_t out = 0;
         size_t wrote = 0;
 
-        memcpy(whole, src_odd_split, sizeof(whole));
+        DSD_MEMCPY(whole, src_odd_split, sizeof(whole));
         phase_full = rotate90_u8_inplace_phase(whole, 10, 0U);
 
         phase_split =
@@ -350,12 +360,13 @@ main(void) {
         out += wrote;
 
         if (carry.valid != 0U || out != 10U || phase_split != phase_full || !bytes_equal(split, whole, 10)) {
-            fprintf(stderr, "Legacy byte rotate odd split carry: mismatch\n");
+            DSD_FPRINTF(stderr, "Legacy byte rotate odd split carry: mismatch\n");
             return 1;
         }
     }
 
     {
+        // Dropped muted spans still advance the quarter-cycle rotation phase.
         const unsigned char src_gap[14] = {127, 127, 130, 130, 255, 0, 0, 255, 64, 192, 10, 240, 200, 40};
         const unsigned int start_phase = 1U;
         const size_t lead_bytes = 4;
@@ -389,11 +400,11 @@ main(void) {
         }
 
         if (phase_gap != phase_ref) {
-            fprintf(stderr, "SIMD rotate+widen discard phase carry: mismatch\n");
+            DSD_FPRINTF(stderr, "SIMD rotate+widen discard phase carry: mismatch\n");
             return 1;
         }
         if (!arrays_close(dst_gap, ref_gap, (int)ref_out, 1e-6f)) {
-            fprintf(stderr, "SIMD rotate+widen discard phase carry output: mismatch\n");
+            DSD_FPRINTF(stderr, "SIMD rotate+widen discard phase carry output: mismatch\n");
             return 1;
         }
     }
@@ -411,8 +422,8 @@ main(void) {
         unsigned int phase_ref = start_phase;
         size_t ref_out = 0;
 
-        memcpy(rotated, src_gap, lead_bytes);
-        memcpy(rotated + lead_bytes, src_gap + tail_offset, tail_bytes);
+        DSD_MEMCPY(rotated, src_gap, lead_bytes);
+        DSD_MEMCPY(rotated + lead_bytes, src_gap + tail_offset, tail_bytes);
 
         phase_gap = rotate90_u8_inplace_phase(rotated, (uint32_t)lead_bytes, phase_gap);
         phase_gap = (unsigned int)rtl_capture_phase_advance_u8_bytes((int)phase_gap, dropped_bytes);
@@ -432,11 +443,11 @@ main(void) {
         }
 
         if (phase_gap != phase_ref) {
-            fprintf(stderr, "Legacy byte rotate discard phase carry: mismatch\n");
+            DSD_FPRINTF(stderr, "Legacy byte rotate discard phase carry: mismatch\n");
             return 1;
         }
         if (!bytes_equal(rotated, ref_rotated, (int)ref_out)) {
-            fprintf(stderr, "Legacy byte rotate discard phase carry output: mismatch\n");
+            DSD_FPRINTF(stderr, "Legacy byte rotate discard phase carry output: mismatch\n");
             return 1;
         }
     }

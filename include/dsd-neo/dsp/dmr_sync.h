@@ -14,9 +14,8 @@
  * 3. Resamples CACH and message prefix with corrected timing
  */
 
-#pragma once
-
-#include <stdint.h>
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_DMR_SYNC_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_DMR_SYNC_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -90,7 +89,7 @@ void dmr_sample_history_push(struct dsd_state* state, float sample);
  * @param offset Negative offset from current position (0 = most recent)
  * @return Sample value at offset
  */
-float dmr_sample_history_get(struct dsd_state* state, int offset);
+float dmr_sample_history_get(const struct dsd_state* state, int offset);
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Sync Correlation
@@ -107,7 +106,7 @@ float dmr_sample_history_get(struct dsd_state* state, int offset);
  * @param pattern Sync pattern identifier
  * @return Correlation score (higher = better match)
  */
-float dmr_sync_score(struct dsd_state* state, float offset, float sps, dmr_sync_pattern_t pattern);
+float dmr_sync_score(const struct dsd_state* state, float offset, float sps, dmr_sync_pattern_t pattern);
 
 /**
  * @brief Extract sync symbols from sample history using linear interpolation.
@@ -117,7 +116,7 @@ float dmr_sync_score(struct dsd_state* state, float offset, float sps, dmr_sync_
  * @param sps Samples per symbol
  * @param[out] symbols Array of 24 symbols to fill
  */
-void dmr_extract_sync_symbols(struct dsd_state* state, float offset, float sps, float symbols[DMR_SYNC_SYMBOLS]);
+void dmr_extract_sync_symbols(const struct dsd_state* state, float offset, float sps, float symbols[DMR_SYNC_SYMBOLS]);
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Threshold Initialization
@@ -133,7 +132,7 @@ void dmr_extract_sync_symbols(struct dsd_state* state, float offset, float sps, 
  * @param state Decoder state to update
  * @param sync_symbols 24 extracted sync symbol values
  */
-void dmr_init_thresholds_from_sync(struct dsd_opts* opts, struct dsd_state* state,
+void dmr_init_thresholds_from_sync(const struct dsd_opts* opts, struct dsd_state* state,
                                    const float sync_symbols[DMR_SYNC_SYMBOLS]);
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -170,3 +169,5 @@ int dmr_resample_on_sync(struct dsd_opts* opts, struct dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_DMR_SYNC_H_ */

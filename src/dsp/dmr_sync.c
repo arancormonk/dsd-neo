@@ -97,7 +97,7 @@ dmr_sample_history_push(dsd_state* state, float sample) {
 }
 
 float
-dmr_sample_history_get(dsd_state* state, int offset) {
+dmr_sample_history_get(const dsd_state* state, int offset) {
     /* DMR API uses offset convention where 0 = most recent, negative = older.
      * Generic API uses 'back' where 0 = most recent, positive = older.
      * Convert: back = -offset when offset <= 0 */
@@ -112,7 +112,7 @@ dmr_sample_history_get(dsd_state* state, int offset) {
  * ───────────────────────────────────────────────────────────────────────────── */
 
 float
-dmr_sync_score(dsd_state* state, float offset, float sps, dmr_sync_pattern_t pattern) {
+dmr_sync_score(const dsd_state* state, float offset, float sps, dmr_sync_pattern_t pattern) {
     if (state == NULL || state->dmr_sample_history == NULL) {
         return 0.0f;
     }
@@ -142,7 +142,7 @@ dmr_sync_score(dsd_state* state, float offset, float sps, dmr_sync_pattern_t pat
 }
 
 void
-dmr_extract_sync_symbols(dsd_state* state, float offset, float sps, float symbols[DMR_SYNC_SYMBOLS]) {
+dmr_extract_sync_symbols(const dsd_state* state, float offset, float sps, float symbols[DMR_SYNC_SYMBOLS]) {
     if (state == NULL || state->dmr_sample_history == NULL || symbols == NULL) {
         return;
     }
@@ -160,7 +160,7 @@ dmr_extract_sync_symbols(dsd_state* state, float offset, float sps, float symbol
  * ───────────────────────────────────────────────────────────────────────────── */
 
 void
-dmr_init_thresholds_from_sync(dsd_opts* opts, dsd_state* state, const float sync_symbols[DMR_SYNC_SYMBOLS]) {
+dmr_init_thresholds_from_sync(const dsd_opts* opts, dsd_state* state, const float sync_symbols[DMR_SYNC_SYMBOLS]) {
     if (state == NULL || sync_symbols == NULL) {
         return;
     }
@@ -226,7 +226,7 @@ dmr_init_thresholds_from_sync(dsd_opts* opts, dsd_state* state, const float sync
  * @return Dibit value (0-3)
  */
 static int
-dmr_digitize_symbol(dsd_state* state, float symbol) {
+dmr_digitize_symbol(const dsd_state* state, float symbol) {
     /* 4-level slicer using calibrated thresholds */
     if (symbol > state->center) {
         if (symbol > state->umid) {

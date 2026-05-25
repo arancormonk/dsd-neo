@@ -12,10 +12,14 @@
 #include <dsd-neo/fec/rs_12_9.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Forward under test
 extern void dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[],
@@ -30,7 +34,7 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 void
-watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
@@ -47,6 +51,7 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -54,6 +59,7 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int type) {
     (void)opts;
     (void)state;
@@ -81,13 +87,13 @@ rs_12_9_calc_syndrome(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome) {
 }
 
 uint8_t
-rs_12_9_check_syndrome(rs_12_9_poly_t* syndrome) {
+rs_12_9_check_syndrome(const rs_12_9_poly_t* syndrome) {
     (void)syndrome;
     return 0;
 }
 
 rs_12_9_correct_errors_result_t
-rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome, uint8_t* errors_found) {
+rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, const rs_12_9_poly_t* syndrome, uint8_t* errors_found) {
     (void)codeword;
     (void)syndrome;
     if (errors_found) {
@@ -98,12 +104,14 @@ rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome, u
 
 // Crypto and PDU helpers (stubs)
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 LFSR128d(dsd_state* state) {
     (void)state;
 }
 
 void
-rc4_block_output(int drop, int keylen, int meslen, uint8_t* key, uint8_t* output_blocks) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+rc4_block_output(int drop, int keylen, int meslen, const uint8_t* key, uint8_t* output_blocks) {
     (void)drop;
     (void)keylen;
     (void)meslen;
@@ -112,7 +120,8 @@ rc4_block_output(int drop, int keylen, int meslen, uint8_t* key, uint8_t* output
 }
 
 void
-aes_ofb_keystream_output(uint8_t* iv, uint8_t* key, uint8_t* output, int type, int nblocks) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks) {
     (void)iv;
     (void)key;
     (void)output;
@@ -121,6 +130,7 @@ aes_ofb_keystream_output(uint8_t* iv, uint8_t* key, uint8_t* output, int type, i
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
                            int nblocks) {
     (void)mi;
@@ -131,6 +141,7 @@ des_multi_keystream_output(unsigned long long int mi, unsigned long long int key
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -139,6 +150,7 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
     (void)opts;
     (void)state;
@@ -147,7 +159,8 @@ dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
 }
 
 void
-dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU) {
     (void)opts;
     (void)state;
     (void)len;
@@ -155,6 +168,7 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PD
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU,
          uint8_t pdu_crc_ok) {
     (void)opts;
@@ -167,6 +181,7 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes, uint32_t CRCCorrect,
           uint32_t IrrecoverableErrors) {
     (void)opts;
@@ -178,6 +193,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes, uint3
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     (void)state;
     (void)wr;
@@ -186,6 +202,7 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
     (void)opts;
     (void)state;
@@ -207,8 +224,8 @@ main(int argc, char** argv) {
     (void)argv;
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
 
     // Craft a minimal DMR Data Header bit array (MSB-first) with:
@@ -220,8 +237,8 @@ main(int argc, char** argv) {
 
     uint8_t dheader[12];
     uint8_t bits[196];
-    memset(dheader, 0, sizeof(dheader));
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    DSD_MEMSET(bits, 0, sizeof(bits));
 
     // gi(0), a(0), ab(0)
     // mpoc at bit 3 -> 0
@@ -247,7 +264,7 @@ main(int argc, char** argv) {
     assert(state.data_header_sap[state.currentslot] == before_sap);
 
     // Relaxed mode: should accept header despite CRC failure
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
     opts.aggressive_framesync = 0;
     dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/0, /*IrrecoverableErrors=*/0);
@@ -258,10 +275,10 @@ main(int argc, char** argv) {
     assert(state.dmr_lrrp_source[state.currentslot] != 0);
 
     // Vertex proprietary extended header (MFID 0x77), slot 0.
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
     state.data_ks_start[0] = 3;
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
     set_bits(bits, 0, 2U, 4);            // p_sap != 1
     set_bits(bits, 4, 15U, 4);           // dpf=15 (proprietary)
     set_bits(bits, 8, 0x77U, 8);         // p_mfid=Vertex
@@ -275,10 +292,10 @@ main(int argc, char** argv) {
     assert(state.data_ks_start[0] == 0);
 
     // Vertex proprietary extended header (MFID 0x77), slot 1 mirror fields.
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 1;
     state.data_ks_start[1] = 2;
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
     set_bits(bits, 0, 2U, 4);            // p_sap != 1
     set_bits(bits, 4, 15U, 4);           // dpf=15 (proprietary)
     set_bits(bits, 8, 0x77U, 8);         // p_mfid=Vertex
@@ -293,3 +310,7 @@ main(int argc, char** argv) {
 
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

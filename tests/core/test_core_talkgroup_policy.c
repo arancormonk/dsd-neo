@@ -9,19 +9,18 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "%s failed\n", tag);
+        DSD_FPRINTF(stderr, "%s failed\n", tag);
         return 1;
     }
     return 0;
@@ -37,11 +36,11 @@ free_test_state(dsd_state* st) {
 
 static void
 init_entry(dsd_tg_policy_entry* e, uint32_t id, const char* mode, const char* name, uint8_t source) {
-    memset(e, 0, sizeof(*e));
+    DSD_MEMSET(e, 0, sizeof(*e));
     e->id_start = id;
     e->id_end = id;
-    snprintf(e->mode, sizeof(e->mode), "%s", mode ? mode : "");
-    snprintf(e->name, sizeof(e->name), "%s", name ? name : "");
+    DSD_SNPRINTF(e->mode, sizeof(e->mode), "%s", mode ? mode : "");
+    DSD_SNPRINTF(e->name, sizeof(e->name), "%s", name ? name : "");
     e->source = source;
     e->audio = (strcmp(e->mode, "B") == 0 || strcmp(e->mode, "DE") == 0) ? 0 : 1;
     e->record = e->audio;
@@ -130,7 +129,7 @@ test_snapshot_reclones_recreated_empty_reload_context(void) {
         return 1;
     }
 
-    snprintf(path_template, sizeof(path_template), "%s", "dsd-neo-test-tg-empty-reload-XXXXXX");
+    DSD_SNPRINTF(path_template, sizeof(path_template), "%s", "dsd-neo-test-tg-empty-reload-XXXXXX");
     fd = dsd_mkstemp(path_template);
     if (fd < 0) {
         free_test_state(live);
@@ -139,7 +138,7 @@ test_snapshot_reclones_recreated_empty_reload_context(void) {
         return 1;
     }
     (void)dsd_close(fd);
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
 
     rc |= expect_true("snapshot empty reload seed", dsd_tg_policy_reload_group_file(opts, live) == 0);
     init_entry(&e, 42, "A", "OLD", DSD_TG_POLICY_SOURCE_IMPORTED);
@@ -305,6 +304,11 @@ test_evaluator_behaviors(void) {
         return 1;
     }
 
+    /*
+     * Keep all evaluator toggles enabled up front, then flip one switch at a
+     * time. That makes each block-reason assertion isolate the intended gate.
+     * Hold and private-call cases reuse the same policy table to cover overrides.
+     */
     opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_private_calls = 1;
     opts->trunk_tune_data_calls = 1;
@@ -389,6 +393,7 @@ test_evaluator_behaviors(void) {
     opts->trunk_tune_private_calls = 1;
     opts->trunk_use_allow_list = 1;
     st->tg_hold = 0;
+    // Private allowlist behavior can match either endpoint before mode gates run.
     rc |= expect_true("private unknown block", dsd_tg_policy_evaluate_private_call(
                                                    opts, st, 1, 2, 0, 0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
                                                    DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
@@ -480,6 +485,11 @@ test_group_file_append_helper(void) {
         return 1;
     }
 
+    /*
+     * Each file shape models a user-maintained CSV encountered during append.
+     * Missing and empty files need new headers; existing headers decide whether
+     * metadata is appended in the short schema or full policy schema.
+     */
     init_entry(&e, 100, "D", "Alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
     e.priority = 7;
     e.preempt = 1;
@@ -487,7 +497,7 @@ test_group_file_append_helper(void) {
     e.record = 0;
     e.stream = 1;
 
-    snprintf(path_template, sizeof(path_template), "%s", path_seed);
+    DSD_SNPRINTF(path_template, sizeof(path_template), "%s", path_seed);
     fd = dsd_mkstemp(path_template);
     if (fd < 0) {
         free(opts);
@@ -496,7 +506,7 @@ test_group_file_append_helper(void) {
     (void)dsd_close(fd);
     (void)remove(path_template);
 
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     rc |= expect_true("append to missing file", dsd_tg_policy_append_group_file_row(opts, &e, "") == 0);
     rc |= expect_true("read missing-created file",
                       read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
@@ -504,14 +514,14 @@ test_group_file_append_helper(void) {
     rc |= expect_true("missing row", strstr(l2, "100,D,Alias") == l2);
     (void)remove(path_template);
 
-    snprintf(path_template, sizeof(path_template), "%s", path_seed);
+    DSD_SNPRINTF(path_template, sizeof(path_template), "%s", path_seed);
     fd = dsd_mkstemp(path_template);
     if (fd < 0) {
         free(opts);
         return 1;
     }
     (void)dsd_close(fd);
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     rc |= expect_true("append to empty file", dsd_tg_policy_append_group_file_row(opts, &e, "ALG:01") == 0);
     rc |= expect_true("read empty-appended file",
                       read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
@@ -519,7 +529,7 @@ test_group_file_append_helper(void) {
     rc |= expect_true("empty row metadata", strstr(l2, ",ALG:01") != NULL);
     (void)remove(path_template);
 
-    snprintf(path_template, sizeof(path_template), "%s", path_seed);
+    DSD_SNPRINTF(path_template, sizeof(path_template), "%s", path_seed);
     fd = dsd_mkstemp(path_template);
     if (fd < 0) {
         free(opts);
@@ -527,22 +537,22 @@ test_group_file_append_helper(void) {
     }
     (void)dsd_close(fd);
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free(opts);
             return 1;
         }
-        fprintf(fp, "id,mode,name,tag\n");
+        DSD_FPRINTF(fp, "id,mode,name,tag\n");
         fclose(fp);
     }
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     rc |= expect_true("append to basic header", dsd_tg_policy_append_group_file_row(opts, &e, "VEND") == 0);
     rc |= expect_true("read basic file", read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
     rc |= expect_true("basic row contains metadata", strstr(l2, ",VEND") != NULL);
     (void)remove(path_template);
 
-    snprintf(path_template, sizeof(path_template), "%s", path_seed);
+    DSD_SNPRINTF(path_template, sizeof(path_template), "%s", path_seed);
     fd = dsd_mkstemp(path_template);
     if (fd < 0) {
         free(opts);
@@ -550,22 +560,23 @@ test_group_file_append_helper(void) {
     }
     (void)dsd_close(fd);
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free(opts);
             return 1;
         }
-        fprintf(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n");
+        DSD_FPRINTF(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n");
         fclose(fp);
     }
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     rc |= expect_true("append to policy header", dsd_tg_policy_append_group_file_row(opts, &e, "hello,\nworld") == 0);
     rc |= expect_true("read policy file", read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
     rc |= expect_true("policy row full schema", strstr(l2, "100,D,Alias,7,true,on,off,on,hello  world") == l2);
     (void)remove(path_template);
 
-    snprintf(path_template, sizeof(path_template), "%s", path_seed);
+    // A policy-looking header with odd ordering still writes the full schema.
+    DSD_SNPRINTF(path_template, sizeof(path_template), "%s", path_seed);
     fd = dsd_mkstemp(path_template);
     if (fd < 0) {
         free(opts);
@@ -573,16 +584,16 @@ test_group_file_append_helper(void) {
     }
     (void)dsd_close(fd);
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free(opts);
             return 1;
         }
-        fprintf(fp, "id,mode,name,PRIORITY,wrong_order\n");
+        DSD_FPRINTF(fp, "id,mode,name,PRIORITY,wrong_order\n");
         fclose(fp);
     }
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     rc |= expect_true("append with policy-prefix header",
                       dsd_tg_policy_append_group_file_row(opts, &e, "TAG-UPPER") == 0);
     rc |= expect_true("read policy-prefix file",
@@ -591,7 +602,7 @@ test_group_file_append_helper(void) {
         expect_true("policy-prefix row uses policy schema", strstr(l2, "100,D,Alias,7,true,on,off,on,TAG-UPPER") == l2);
     (void)remove(path_template);
 
-    snprintf(path_template, sizeof(path_template), "%s", path_seed);
+    DSD_SNPRINTF(path_template, sizeof(path_template), "%s", path_seed);
     fd = dsd_mkstemp(path_template);
     if (fd < 0) {
         free(opts);
@@ -599,16 +610,16 @@ test_group_file_append_helper(void) {
     }
     (void)dsd_close(fd);
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free(opts);
             return 1;
         }
-        fprintf(fp, "id,mode,name,something_else\n");
+        DSD_FPRINTF(fp, "id,mode,name,something_else\n");
         fclose(fp);
     }
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     rc |= expect_true("append unknown metadata header", dsd_tg_policy_append_group_file_row(opts, &e, "META") == 0);
     rc |= expect_true("read unknown metadata file",
                       read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
@@ -623,7 +634,7 @@ test_group_file_append_helper(void) {
 static void
 init_route(dsd_tg_policy_call_route* r, uint32_t target, uint32_t source, long freq_hz, int channel, int slot,
            int needs_retune) {
-    memset(r, 0, sizeof(*r));
+    DSD_MEMSET(r, 0, sizeof(*r));
     r->target_id = target;
     r->source_id = source;
     r->freq_hz = freq_hz;
@@ -635,7 +646,7 @@ init_route(dsd_tg_policy_call_route* r, uint32_t target, uint32_t source, long f
 static void
 init_decision(dsd_tg_policy_decision* d, uint32_t target, uint32_t source, int priority, int preempt,
               int tune_allowed) {
-    memset(d, 0, sizeof(*d));
+    DSD_MEMSET(d, 0, sizeof(*d));
     d->target_id = target;
     d->source_id = source;
     d->priority = priority;
@@ -660,6 +671,11 @@ test_preemption_helpers(void) {
         return 1;
     }
 
+    /*
+     * Preemption depends on active-route state, candidate policy, dwell time,
+     * and cooldowns. This test walks those inputs in sequence so a failure points
+     * to the exact condition that changed.
+     */
     (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "500", 1);
     (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
     opts->trunk_tune_group_calls = 1;
@@ -728,6 +744,7 @@ test_preemption_helpers(void) {
     rc |= expect_true("note active for hold-preempt cases",
                       dsd_tg_policy_note_active_call(st, &active0, &active_dec, 10.0) == 0);
 
+    // Hold overrides can only preempt when they also make the candidate tunable.
     init_entry(&e, 5001, "B", "HOLD-CAND", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.priority = 90;
     e.preempt = 1;
@@ -806,7 +823,7 @@ test_reload_group_file(void) {
     rc |= expect_true("seed old row", dsd_tg_policy_append_exact(st, &e) == 0);
     rc |= expect_true("seed generation records mutation", policy_generation(st) == 1u);
 
-    snprintf(path_template, sizeof(path_template), "%s", "dsd-neo-test-tg-reload-XXXXXX");
+    DSD_SNPRINTF(path_template, sizeof(path_template), "%s", "dsd-neo-test-tg-reload-XXXXXX");
     fd = dsd_mkstemp(path_template);
     if (fd < 0) {
         free_test_state(st);
@@ -815,19 +832,19 @@ test_reload_group_file(void) {
     }
     (void)dsd_close(fd);
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free_test_state(st);
             free(opts);
             return 1;
         }
-        fprintf(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n");
-        fprintf(fp, "100,A,ONE,5,true,on,on,on,\n");
-        fprintf(fp, "200,B,TWO,1,false,off,off,off,\n");
+        DSD_FPRINTF(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n");
+        DSD_FPRINTF(fp, "100,A,ONE,5,true,on,on,on,\n");
+        DSD_FPRINTF(fp, "200,B,TWO,1,false,off,off,off,\n");
         fclose(fp);
     }
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     generation_before = policy_generation(st);
     rc |= expect_true("reload success", dsd_tg_policy_reload_group_file(opts, st) == 0);
     rc |= expect_true("reload replaced policy rows", policy_count(st) == 2u);
@@ -839,7 +856,7 @@ test_reload_group_file(void) {
     rc |= expect_true("lookup row 200", dsd_tg_policy_lookup_id(st, 200, &lookup) == 0);
     rc |= expect_true("lookup row 200 blocked mode", strcmp(lookup.entry.mode, "B") == 0);
 
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", "/tmp/dsd-neo-missing-group-file-nope.csv");
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", "/tmp/dsd-neo-missing-group-file-nope.csv");
     generation_before = policy_generation(st);
     rc |= expect_true("reload missing file fails", dsd_tg_policy_reload_group_file(opts, st) != 0);
     rc |= expect_true("failed reload keeps current rows", policy_count(st) == 2u);
@@ -848,18 +865,18 @@ test_reload_group_file(void) {
     rc |= expect_true("failed reload keeps generation", policy_generation(st) == generation_before);
 
     {
-        FILE* fp = fopen(path_template, "w");
+        FILE* fp = dsd_fopen_private(path_template, "w");
         if (!fp) {
             (void)remove(path_template);
             free_test_state(st);
             free(opts);
             return 1;
         }
-        fprintf(fp, "id,mode,name\n");
-        fprintf(fp, "300,A,THREE\n");
+        DSD_FPRINTF(fp, "id,mode,name\n");
+        DSD_FPRINTF(fp, "300,A,THREE\n");
         fclose(fp);
     }
-    snprintf(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     generation_before = policy_generation(st);
     rc |= expect_true("second reload success", dsd_tg_policy_reload_group_file(opts, st) == 0);
     rc |= expect_true("second reload replaced policy rows", policy_count(st) == 1u);

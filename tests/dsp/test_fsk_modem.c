@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 #ifndef DSD_TEST_PI
 #define DSD_TEST_PI 3.14159265358979323846f
@@ -142,7 +142,8 @@ expect_4level_accuracy(const char* name, const float* out, int out_count, const 
     assert(checked > 200);
     float accuracy = (float)ok / (float)checked;
     if (accuracy < min_accuracy) {
-        fprintf(stderr, "%s: 4-level accuracy %.3f below %.3f (%d/%d)\n", name, accuracy, min_accuracy, ok, checked);
+        DSD_FPRINTF(stderr, "%s: 4-level accuracy %.3f below %.3f (%d/%d)\n", name, accuracy, min_accuracy, ok,
+                    checked);
         assert(0);
     }
 }
@@ -166,7 +167,8 @@ expect_2level_accuracy(const char* name, const float* out, int out_count, const 
     assert(checked > 200);
     float accuracy = (float)ok / (float)checked;
     if (accuracy < min_accuracy) {
-        fprintf(stderr, "%s: 2-level accuracy %.3f below %.3f (%d/%d)\n", name, accuracy, min_accuracy, ok, checked);
+        DSD_FPRINTF(stderr, "%s: 2-level accuracy %.3f below %.3f (%d/%d)\n", name, accuracy, min_accuracy, ok,
+                    checked);
         assert(0);
     }
 }
@@ -175,7 +177,7 @@ static void
 seed_tracking_boundary_window(dsd_fsk_modem_state* modem, int clock_i, int best_phase, float start_phase) {
     int target = clock_i * 64;
     assert(target <= DSD_FSK_MODEM_TRACK_MAX_SAMPLES);
-    memset(modem->track_freq, 0, sizeof(modem->track_freq));
+    DSD_MEMSET(modem->track_freq, 0, sizeof(modem->track_freq));
     for (int pos = best_phase; pos < target - 1; pos += clock_i) {
         if (pos > 0) {
             modem->track_freq[pos - 1] = -1.0f;
@@ -274,7 +276,7 @@ run_mid_symbol_start_case(const char* name, const float* levels, int level_count
     assert(checked > 500);
     float accuracy = (float)ok / (float)checked;
     if (accuracy < min_accuracy) {
-        fprintf(stderr, "%s accuracy %.3f below %.3f (%d/%d)\n", name, accuracy, min_accuracy, ok, checked);
+        DSD_FPRINTF(stderr, "%s accuracy %.3f below %.3f (%d/%d)\n", name, accuracy, min_accuracy, ok, checked);
         assert(0);
     }
 
@@ -604,7 +606,7 @@ test_timing_tracker_skips_low_confidence_windows(void) {
         symbols[i] = levels[i & 3];
     }
     synthesize_fsk(iq, symbols, SYMBOLS, SPS, 0.026f, 0.0f, 0.0f, 0);
-    memset(zeros, 0, sizeof(zeros));
+    DSD_MEMSET(zeros, 0, sizeof(zeros));
 
     dsd_fsk_modem_state modem;
     dsd_fsk_modem_config cfg = {48000, 4800, 4, 4};

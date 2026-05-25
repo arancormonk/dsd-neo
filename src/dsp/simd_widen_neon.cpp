@@ -17,7 +17,7 @@ alignas(16) static const float kPhase3Signs[4] = {1.0f, -1.0f, 1.0f, 1.0f};
 static inline float32x4_t
 widen4_u8_to_f32_bias127_neon(const unsigned char* src) {
     uint32_t packed = 0;
-    std::memcpy(&packed, src, sizeof(packed));
+    DSD_MEMCPY(&packed, src, sizeof(packed));
 
     uint8x8_t bytes = vreinterpret_u8_u32(vdup_n_u32(packed));
     uint16x8_t words = vmovl_u8(bytes);

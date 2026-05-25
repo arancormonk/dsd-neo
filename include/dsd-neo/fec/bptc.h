@@ -8,7 +8,8 @@
  * @brief BPTC (block product turbo code) helpers for DMR payload extraction.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_FEC_BPTC_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_FEC_BPTC_H_
 
 #include <stdint.h>
 
@@ -21,7 +22,7 @@ extern const uint8_t BPTCDeInterleavingIndex[196];
 extern const uint8_t DeInterleaveReverseChannelBptc[32];
 extern const uint8_t DeInterleaveReverseChannelBptcPlacement[32];
 
-void BPTCDeInterleaveDMRData(uint8_t* Input, uint8_t* Output);
+void BPTCDeInterleaveDMRData(const uint8_t* Input, uint8_t* Output);
 uint32_t BPTC_196x96_Extract_Data(uint8_t InputDeInteleavedData[196], uint8_t DMRDataExtracted[96], uint8_t R[3]);
 uint32_t BPTC_128x77_Extract_Data(uint8_t InputDataMatrix[8][16], uint8_t DMRDataExtracted[77]);
 uint32_t BPTC_16x2_Extract_Data(uint8_t InputInterleavedData[32], uint8_t DMRDataExtracted[32],
@@ -30,3 +31,5 @@ uint32_t BPTC_16x2_Extract_Data(uint8_t InputInterleavedData[32], uint8_t DMRDat
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_FEC_BPTC_H_ */

@@ -157,7 +157,7 @@ dsd_socket_resolve(const char* hostname, int port, struct sockaddr_in* addr) {
         }
     }
 
-    memset(addr, 0, sizeof(*addr));
+    DSD_MEMSET(addr, 0, sizeof(*addr));
     addr->sin_family = AF_INET;
     addr->sin_port = htons((u_short)port);
 
@@ -173,7 +173,7 @@ dsd_socket_resolve(const char* hostname, int port, struct sockaddr_in* addr) {
         return -1;
     }
 
-    memcpy(&addr->sin_addr, he->h_addr_list[0], sizeof(addr->sin_addr));
+    DSD_MEMCPY(&addr->sin_addr, he->h_addr_list[0], sizeof(addr->sin_addr));
     return 0;
 }
 

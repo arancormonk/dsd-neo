@@ -7,7 +7,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_SM_WATCHDOG_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_SM_WATCHDOG_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -52,3 +53,4 @@ int p25_sm_in_tick(void);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_SM_WATCHDOG_H_H */

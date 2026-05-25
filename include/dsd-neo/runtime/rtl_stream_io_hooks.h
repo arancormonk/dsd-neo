@@ -12,7 +12,8 @@
  * hook functions at startup; the runtime provides safe wrappers and fallback
  * behavior when hooks are not installed.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_IO_HOOKS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_IO_HOOKS_H_
 
 #include <dsd-neo/core/state_fwd.h>
 #include <stddef.h>
@@ -34,3 +35,5 @@ double dsd_rtl_stream_io_hook_return_pwr(const dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_IO_HOOKS_H_ */

@@ -11,9 +11,11 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -22,18 +24,15 @@
 #include <dsd-neo/ui/menu_services.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <time.h>
-
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
 
 #ifdef USE_RADIO
-#include <dsd-neo/io/rtl_stream_c.h>
 
 static int
 svc_radio_source_is_soapy(const dsd_opts* opts) {
@@ -74,15 +73,14 @@ svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     char wav_file_directory[1024];
-    snprintf(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
+    DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
     struct stat st;
     if (stat(wav_file_directory, &st) == -1) {
         LOG_NOTICE("%s wav file directory does not exist\n", wav_file_directory);
         LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
         dsd_mkdir(wav_file_directory, 0700);
     }
-    fprintf(stderr, "\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
-    srand((unsigned)time(NULL));
+    DSD_FPRINTF(stderr, "\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
     opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
     opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);
     opts->dmr_stereo_wav = 1;
@@ -94,7 +92,7 @@ svc_open_symbol_out(dsd_opts* opts, dsd_state* state, const char* filename) {
     if (!opts || !state || !filename || !*filename) {
         return -1;
     }
-    snprintf(opts->symbol_out_file, sizeof opts->symbol_out_file, "%s", filename);
+    DSD_SNPRINTF(opts->symbol_out_file, sizeof opts->symbol_out_file, "%s", filename);
     openSymbolOutFile(opts, state);
     return (opts->symbol_out_f != NULL) ? 0 : -1;
 }
@@ -123,7 +121,7 @@ svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
         opts->symbolfile = NULL;
         return -1;
     }
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", filename);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", filename);
     opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; // symbol capture bin
     if (state) {
         state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
@@ -191,7 +189,7 @@ svc_stop_symbol_saving(dsd_opts* opts, dsd_state* state) {
     }
     if (opts->symbol_out_f) {
         closeSymbolOutFile(opts, state);
-        snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", opts->symbol_out_file);
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", opts->symbol_out_file);
     }
 }
 
@@ -200,7 +198,7 @@ svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
     if (!opts || !host || port <= 0) {
         return -1;
     }
-    snprintf(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", host);
+    DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", host);
     opts->rigctlportno = port;
     opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
     if (opts->rigctl_sockfd != 0) {
@@ -220,7 +218,7 @@ svc_lrrp_set_home(dsd_opts* opts) {
     if (dsd_config_expand_path("~/lrrp.txt", path, sizeof path) != 0 || !path[0]) {
         return -1;
     }
-    snprintf(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", path);
+    DSD_SNPRINTF(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", path);
     opts->lrrp_file_output = 1;
     return 0;
 }
@@ -230,7 +228,7 @@ svc_lrrp_set_dsdp(dsd_opts* opts) {
     if (!opts) {
         return -1;
     }
-    snprintf(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", "DSDPlus.LRRP");
+    DSD_SNPRINTF(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", "DSDPlus.LRRP");
     opts->lrrp_file_output = 1;
     return 0;
 }
@@ -240,7 +238,7 @@ svc_lrrp_set_custom(dsd_opts* opts, const char* filename) {
     if (!opts || !filename || !*filename) {
         return -1;
     }
-    snprintf(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", filename);
+    DSD_SNPRINTF(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", filename);
     opts->lrrp_file_output = 1;
     return 0;
 }
@@ -283,7 +281,7 @@ svc_toggle_payload(dsd_opts* opts) {
         return;
     }
     opts->payload = !opts->payload;
-    fprintf(stderr, opts->payload ? "Payload on\n" : "Payload Off\n");
+    DSD_FPRINTF(stderr, opts->payload ? "Payload on\n" : "Payload Off\n");
 }
 
 void
@@ -303,7 +301,7 @@ svc_set_event_log(dsd_opts* opts, const char* path) {
     if (!opts || !path || !*path) {
         return -1;
     }
-    strncpy(opts->event_out_file, path, sizeof opts->event_out_file - 1);
+    DSD_STRNCPY(opts->event_out_file, path, sizeof opts->event_out_file - 1);
     opts->event_out_file[sizeof opts->event_out_file - 1] = '\0';
     return 0;
 }
@@ -321,7 +319,7 @@ svc_open_static_wav(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
-    strncpy(opts->wav_out_file, path, sizeof opts->wav_out_file - 1);
+    DSD_STRNCPY(opts->wav_out_file, path, sizeof opts->wav_out_file - 1);
     opts->wav_out_file[sizeof opts->wav_out_file - 1] = '\0';
     opts->dmr_stereo_wav = 0;
     opts->static_wav_file = 1;
@@ -334,7 +332,7 @@ svc_open_raw_wav(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
-    strncpy(opts->wav_out_file_raw, path, sizeof opts->wav_out_file_raw - 1);
+    DSD_STRNCPY(opts->wav_out_file_raw, path, sizeof opts->wav_out_file_raw - 1);
     opts->wav_out_file_raw[sizeof opts->wav_out_file_raw - 1] = '\0';
     openWavOutFileRaw(opts, state);
     return (opts->wav_out_raw != NULL) ? 0 : -1;
@@ -346,12 +344,12 @@ svc_set_dsp_output_file(dsd_opts* opts, const char* filename) {
         return -1;
     }
     char dir[1024];
-    snprintf(dir, sizeof dir, "./DSP");
+    DSD_SNPRINTF(dir, sizeof dir, "./DSP");
     struct stat st;
     if (stat(dir, &st) == -1) {
         dsd_mkdir(dir, 0700);
     }
-    snprintf(opts->dsp_out_file, sizeof opts->dsp_out_file, "%s/%s", dir, filename);
+    DSD_SNPRINTF(opts->dsp_out_file, sizeof opts->dsp_out_file, "%s/%s", dir, filename);
     opts->use_dsp_output = 1;
     return 0;
 }
@@ -362,11 +360,11 @@ svc_set_pulse_output(dsd_opts* opts, const char* index) {
     if (!opts || !index) {
         return -1;
     }
-    snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
     opts->audio_out_type = 0;
     // supply only the part after 'pulse:' to parser
     char tmp[128];
-    snprintf(tmp, sizeof tmp, "%s", index);
+    DSD_SNPRINTF(tmp, sizeof tmp, "%s", index);
     parse_audio_output_string(opts, tmp);
     return 0;
 }
@@ -376,10 +374,10 @@ svc_set_pulse_input(dsd_opts* opts, const char* index) {
     if (!opts || !index) {
         return -1;
     }
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     opts->audio_in_type = AUDIO_IN_PULSE;
     char tmp[128];
-    snprintf(tmp, sizeof tmp, "%s", index);
+    DSD_SNPRINTF(tmp, sizeof tmp, "%s", index);
     parse_audio_input_string(opts, tmp);
     return 0;
 }
@@ -389,7 +387,7 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
     if (!opts || !state || !host || port <= 0) {
         return -1;
     }
-    strncpy(opts->udp_hostname, host, sizeof opts->udp_hostname - 1);
+    DSD_STRNCPY(opts->udp_hostname, host, sizeof opts->udp_hostname - 1);
     opts->udp_hostname[sizeof opts->udp_hostname - 1] = '\0';
     opts->udp_portno = port;
     int err = udp_socket_connect(opts, state);
@@ -435,7 +433,7 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
-    strncpy(opts->chan_in_file, path, sizeof opts->chan_in_file - 1);
+    DSD_STRNCPY(opts->chan_in_file, path, sizeof opts->chan_in_file - 1);
     opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
     return csvChanImport(opts, state);
 }
@@ -445,7 +443,7 @@ svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
-    strncpy(opts->group_in_file, path, sizeof opts->group_in_file - 1);
+    DSD_STRNCPY(opts->group_in_file, path, sizeof opts->group_in_file - 1);
     opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
     return dsd_tg_policy_reload_group_file(opts, state);
 }
@@ -455,7 +453,7 @@ svc_import_keys_dec(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
-    strncpy(opts->key_in_file, path, sizeof opts->key_in_file - 1);
+    DSD_STRNCPY(opts->key_in_file, path, sizeof opts->key_in_file - 1);
     opts->key_in_file[sizeof opts->key_in_file - 1] = '\0';
     return csvKeyImportDec(opts, state);
 }
@@ -465,7 +463,7 @@ svc_import_keys_hex(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
-    strncpy(opts->key_in_file, path, sizeof opts->key_in_file - 1);
+    DSD_STRNCPY(opts->key_in_file, path, sizeof opts->key_in_file - 1);
     opts->key_in_file[sizeof opts->key_in_file - 1] = '\0';
     return csvKeyImportHex(opts, state);
 }
@@ -749,7 +747,7 @@ svc_rtl_set_volume_mult(dsd_opts* opts, int mult) {
 }
 
 int
-svc_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, int on) {
+svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on) {
     if (!opts) {
         return -1;
     }
@@ -762,7 +760,7 @@ svc_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, int on) {
 }
 
 int
-svc_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, int on) {
+svc_rtltcp_set_autotune(dsd_opts* opts, const dsd_state* state, int on) {
     if (!opts) {
         return -1;
     }
@@ -777,7 +775,7 @@ svc_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, int on) {
 }
 
 int
-svc_rtl_set_auto_ppm(dsd_opts* opts, dsd_state* state, int on) {
+svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
     if (!opts) {
         return -1;
     }

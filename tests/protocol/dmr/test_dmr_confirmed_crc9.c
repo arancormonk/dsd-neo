@@ -10,11 +10,10 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include "dsd-neo/core/safe_api.h"
 
 static void
 append_bits(uint8_t* dst, unsigned start, uint32_t val, unsigned k) {
@@ -32,7 +31,7 @@ test_r12_confirmed_crc9(void) {
     // bits [7..15]  = CRC9 (masked)
     // bits [16..95] = 80 information bits (10 octets)
     uint8_t bits[96];
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
 
     // Deterministic payload pattern: 80 bits
     uint8_t payload[80];
@@ -99,7 +98,7 @@ test_r1_confirmed_crc9(void) {
     // bits [96..99] = pad bits
     // bits [100..195] = remaining 96 information bits
     uint8_t info[196];
-    memset(info, 0, sizeof(info));
+    DSD_MEMSET(info, 0, sizeof(info));
 
     // 176 payload bits
     uint8_t payload[176];
@@ -173,7 +172,7 @@ test_r34_confirmed_crc9(void) {
     // Build DMR_PDU_bits as in the trellis path:
     // [0..6]=DBSN, [7..15]=CRC9(masked), [16..143]=128 info bits
     uint8_t bits[144];
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
     // payload 128 bits
     uint8_t payload[128];
     for (unsigned i = 0; i < 128; i++) {

@@ -72,14 +72,62 @@
  *
  */
 
-int m, n, length, k, t, d;
-int p[21];
-int alpha_to[1048576], index_of[1048576], g[548576];
-int recd[1048576], ddata[1048576], bb[548576];
-int seed;
-int numerr, errpos[1024], decerror = 0;
+#include <dsd-neo/protocol/edacs/edacs_bch.h>
 
-void
+static int m, n, length, k, t, d;
+static int p[21];
+static int alpha_to[1048576], index_of[1048576], g[548576];
+static int recd[1048576], ddata[1048576], bb[548576];
+
+static unsigned int
+primitive_poly_mask_for_degree(int degree) {
+    static const unsigned int primitive_masks[21] = {
+        [2] = (1u << 1),
+        [3] = (1u << 1),
+        [4] = (1u << 1),
+        [5] = (1u << 2),
+        [6] = (1u << 1),
+        [7] = (1u << 1),
+        [8] = (1u << 4) | (1u << 5) | (1u << 6),
+        [9] = (1u << 4),
+        [10] = (1u << 3),
+        [11] = (1u << 2),
+        [12] = (1u << 3) | (1u << 4) | (1u << 7),
+        [13] = (1u << 1) | (1u << 3) | (1u << 4),
+        [14] = (1u << 1) | (1u << 11) | (1u << 12),
+        [15] = (1u << 1),
+        [16] = (1u << 2) | (1u << 3) | (1u << 5),
+        [17] = (1u << 3),
+        [18] = (1u << 7),
+        [19] = (1u << 1) | (1u << 5) | (1u << 6),
+        [20] = (1u << 3),
+    };
+
+    if (degree < 0 || degree >= 21) {
+        return 0u;
+    }
+    return primitive_masks[degree];
+}
+
+static void
+set_primitive_polynomial(int degree) {
+    int i;
+    unsigned int mask = primitive_poly_mask_for_degree(degree);
+
+    for (i = 1; i < degree; i++) {
+        p[i] = 0;
+    }
+    p[0] = 1;
+    p[degree] = 1;
+
+    for (i = 1; i < degree; i++) {
+        if ((mask & (1u << i)) != 0u) {
+            p[i] = 1;
+        }
+    }
+}
+
+static void
 read_p(void)
 /*
  *	Read m, the degree of a primitive polynomial p(x) used to compute the
@@ -87,53 +135,23 @@ read_p(void)
  *	the code length.
  */
 {
-    int i, ninf;
+    int ninf;
 
     do {
-
         m = 6;
     } while (!(m > 1) || !(m < 21));
-    for (i = 1; i < m; i++) {
-        p[i] = 0;
-    }
-    p[0] = p[m] = 1;
-    switch (m) {
-        case 2:
-        case 3:
-        case 4:
-        case 6:
-        case 7:
-        case 15: p[1] = 1; break;
-        case 5: p[2] = 1; break;
-        case 8: p[4] = p[5] = p[6] = 1; break;
-        case 9: p[4] = 1; break;
-        case 10:
-        case 17:
-        case 20: p[3] = 1; break;
-        case 11: p[2] = 1; break;
-        case 12: p[3] = p[4] = p[7] = 1; break;
-        case 13: p[1] = p[3] = p[4] = 1; break;
-        case 14: p[1] = p[11] = p[12] = 1; break;
-        case 16: p[2] = p[3] = p[5] = 1; break;
-        case 18: p[7] = 1; break;
-        case 19: p[1] = p[5] = p[6] = 1; break;
-        default: break;
-    }
 
-    n = 1;
-    for (i = 0; i <= m; i++) {
-        n *= 2;
-    }
-    n = n / 2 - 1;
+    set_primitive_polynomial(m);
+
+    n = (1 << m) - 1;
     ninf = (n + 1) / 2 - 1;
 
     do {
-
         length = 40;
     } while (!((length <= n) && (length > ninf)));
 }
 
-void
+static void
 generate_gf(void)
 /*
  * Generate field GF(2**m) from the irreducible polynomial p(X) with
@@ -171,100 +189,122 @@ generate_gf(void)
     index_of[0] = -1;
 }
 
-void
-gen_poly(void)
-/*
- * Compute the generator polynomial of a binary BCH code. Fist generate the
- * cycle sets modulo 2**m - 1, cycle[][] =  (i, 2*i, 4*i, ..., 2^l*i). Then
- * determine those cycle sets that contain integers in the set of (d-1)
- * consecutive integers {1..(d-1)}. The generator polynomial is calculated
- * as the product of linear factors of the form (x+alpha^i), for every i in
- * the above cycle sets.
- */
-{
-    register int ii, jj, ll, kaux;
-    register int test, aux, nocycles, root, noterms, rdncy;
-    int cycle[1024][21], size[1024], min[1024], zeros[1024];
+static int
+is_value_in_cycle_sets(int cycle[1024][21], int size[1024], int cycle_count, int value) {
+    int ii, kaux;
+
+    for (ii = 1; ii <= cycle_count; ii++) {
+        for (kaux = 0; kaux < size[ii]; kaux++) {
+            if (value == cycle[ii][kaux]) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void
+generate_cycle_set(int cycle[1024][21], int size[1024], int cycle_index) {
+    int ii = 0;
+    int aux;
+
+    do {
+        ii++;
+        cycle[cycle_index][ii] = (cycle[cycle_index][ii - 1] * 2) % n;
+        size[cycle_index]++;
+        aux = (cycle[cycle_index][ii] * 2) % n;
+    } while (aux != cycle[cycle_index][0]);
+}
+
+static int
+find_next_cycle_representative(int cycle[1024][21], int size[1024], int cycle_count, int* found_new) {
+    int candidate = 0;
+    int seen;
+
+    do {
+        candidate++;
+        seen = is_value_in_cycle_sets(cycle, size, cycle_count, candidate);
+    } while (seen && (candidate < (n - 1)));
+
+    *found_new = !seen;
+    return candidate;
+}
+
+static int
+cycle_contains_root(int cycle[1024][21], int size[1024], int cycle_index) {
+    int jj, root;
+
+    for (jj = 0; jj < size[cycle_index]; jj++) {
+        for (root = 1; root < d; root++) {
+            if (root == cycle[cycle_index][jj]) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void
+generate_cycle_sets(int cycle[1024][21], int size[1024], int* nocycles) {
+    int jj = 1;
+    int ll;
+    int found_new;
 
     /* Generate cycle sets modulo n, n = 2**m - 1 */
     cycle[0][0] = 0;
     size[0] = 1;
     cycle[1][0] = 1;
     size[1] = 1;
-    jj = 1; /* cycle set index */
-    if (m > 9) {}
+
     do {
-        /* Generate the jj-th cycle set */
-        ii = 0;
-        do {
-            ii++;
-            cycle[jj][ii] = (cycle[jj][ii - 1] * 2) % n;
-            size[jj]++;
-            aux = (cycle[jj][ii] * 2) % n;
-        } while (aux != cycle[jj][0]);
-        /* Next cycle set representative */
-        ll = 0;
-        do {
-            ll++;
-            test = 0;
-            for (ii = 1; ((ii <= jj) && (!test)); ii++) {
-                /* Examine previous cycle sets */
-                for (kaux = 0; ((kaux < size[ii]) && (!test)); kaux++) {
-                    if (ll == cycle[ii][kaux]) {
-                        test = 1;
-                    }
-                }
-            }
-        } while ((test) && (ll < (n - 1)));
-        if (!(test)) {
-            jj++; /* next cycle set index */
+        generate_cycle_set(cycle, size, jj);
+        ll = find_next_cycle_representative(cycle, size, jj, &found_new);
+        if (found_new) {
+            jj++;
             cycle[jj][0] = ll;
             size[jj] = 1;
         }
     } while (ll < (n - 1));
-    nocycles = jj; /* number of cycle sets modulo n */
 
-    t = 2;
+    *nocycles = jj;
+}
 
-    d = 2 * t + 1;
+static void
+select_generator_cycles(int cycle[1024][21], int size[1024], int nocycles, int min[1024], int* noterms, int* rdncy) {
+    int ii;
+    int min_index = 0;
 
-    /* Search for roots 1, 2, ..., d-1 in cycle sets */
-    kaux = 0;
-    rdncy = 0;
+    *rdncy = 0;
     for (ii = 1; ii <= nocycles; ii++) {
-        min[kaux] = 0;
-        test = 0;
-        for (jj = 0; ((jj < size[ii]) && (!test)); jj++) {
-            for (root = 1; ((root < d) && (!test)); root++) {
-                if (root == cycle[ii][jj]) {
-                    test = 1;
-                    min[kaux] = ii;
-                }
-            }
-        }
-        if (min[kaux]) {
-            rdncy += size[min[kaux]];
-            kaux++;
+        if (cycle_contains_root(cycle, size, ii)) {
+            min[min_index] = ii;
+            *rdncy += size[ii];
+            min_index++;
         }
     }
-    noterms = kaux;
-    kaux = 1;
+    *noterms = min_index;
+}
+
+static void
+collect_zero_exponents(int cycle[1024][21], int size[1024], int min[1024], int noterms, int zeros[1024]) {
+    int ii, jj;
+    int zero_index = 1;
+
     for (ii = 0; ii < noterms; ii++) {
         for (jj = 0; jj < size[min[ii]]; jj++) {
-            zeros[kaux] = cycle[min[ii]][jj];
-            kaux++;
+            zeros[zero_index] = cycle[min[ii]][jj];
+            zero_index++;
         }
     }
+}
 
-    k = length - rdncy;
+static void
+build_generator_polynomial(const int zeros[1024], int rdncy) {
+    int ii, jj;
 
-    if (k < 0) {
-        return;
-    }
-
-    /* Compute the generator polynomial */
+    /* g(x) = (X + zeros[1]) initially */
     g[0] = alpha_to[zeros[1]];
-    g[1] = 1; /* g(x) = (X + zeros[1]) initially */
+    g[1] = 1;
     for (ii = 2; ii <= rdncy; ii++) {
         g[ii] = 1;
         for (jj = ii - 1; jj > 0; jj--) {
@@ -278,7 +318,37 @@ gen_poly(void)
     }
 }
 
-void
+static void
+gen_poly(void)
+/*
+ * Compute the generator polynomial of a binary BCH code. Fist generate the
+ * cycle sets modulo 2**m - 1, cycle[][] =  (i, 2*i, 4*i, ..., 2^l*i). Then
+ * determine those cycle sets that contain integers in the set of (d-1)
+ * consecutive integers {1..(d-1)}. The generator polynomial is calculated
+ * as the product of linear factors of the form (x+alpha^i), for every i in
+ * the above cycle sets.
+ */
+{
+    int nocycles, noterms, rdncy;
+    int cycle[1024][21], size[1024], min[1024], zeros[1024];
+
+    generate_cycle_sets(cycle, size, &nocycles);
+
+    t = 2;
+    d = 2 * t + 1;
+
+    select_generator_cycles(cycle, size, nocycles, min, &noterms, &rdncy);
+    collect_zero_exponents(cycle, size, min, noterms, zeros);
+
+    k = length - rdncy;
+    if (k < 0) {
+        return;
+    }
+
+    build_generator_polynomial(zeros, rdncy);
+}
+
+static void
 encode_bch(void)
 /*
  * Compute redundacy bb[], the coefficients of b(x). The redundancy
@@ -287,7 +357,6 @@ encode_bch(void)
  */
 {
     register int i, j;
-    register int feedback;
 
     if (k <= 0 || length <= k) {
         return; // invalid parameters; avoid out-of-bounds when indexing bb[length-k-1]
@@ -296,7 +365,7 @@ encode_bch(void)
         bb[i] = 0;
     }
     for (i = k - 1; i >= 0; i--) {
-        feedback = ddata[i] ^ bb[length - k - 1];
+        register int feedback = ddata[i] ^ bb[length - k - 1];
         if (feedback != 0) {
             for (j = length - k - 1; j > 0; j--) {
                 if (g[j] != 0) {
@@ -315,203 +384,11 @@ encode_bch(void)
     }
 }
 
-void
-decode_bch(void)
-/*
- * Simon Rockliff's implementation of Berlekamp's algorithm.
- *
- * Assume we have received bits in recd[i], i=0..(n-1).
- *
- * Compute the 2*t syndromes by substituting alpha^i into rec(X) and
- * evaluating, storing the syndromes in s[i], i=1..2t (leave s[0] zero) .
- * Then we use the Berlekamp algorithm to find the error location polynomial
- * elp[i].
- *
- * If the degree of the elp is >t, then we cannot correct all the errors, and
- * we have detected an uncorrectable error pattern. We output the information
- * bits uncorrected.
- *
- * If the degree of elp is <=t, we substitute alpha^i , i=1..n into the elp
- * to get the roots, hence the inverse roots, the error location numbers.
- * This step is usually called "Chien's search".
- *
- * If the number of errors located is not equal the degree of the elp, then
- * the decoder assumes that there are more than t errors and cannot correct
- * them, only detect them. We output the information bits uncorrected.
- */
-{
-    register int i, j, u, q, t2, count = 0, syn_error = 0;
-    int elp[1026][1024], d[1026], l[1026], u_lu[1026], s[1025];
-    int root[200], loc[200], reg[201];
-    (void)(root);
-
-    t2 = 2 * t;
-
-    /* first form the syndromes */
-    for (i = 1; i <= t2; i++) {
-        s[i] = 0;
-        for (j = 0; j < length; j++) {
-            if (recd[j] != 0) {
-                s[i] ^= alpha_to[(i * j) % n];
-            }
-        }
-        if (s[i] != 0) {
-            syn_error = 1; /* set error flag if non-zero syndrome */
-        }
-        /*
- * Note:    If the code is used only for ERROR DETECTION, then
- *          exit program here indicating the presence of errors.
- */
-        /* convert syndrome from polynomial form to index form  */
-        s[i] = index_of[s[i]];
-    }
-
-    if (syn_error) { /* if there are errors, try to correct them */
-        /*
-		 * Compute the error location polynomial via the Berlekamp
-		 * iterative algorithm. Following the terminology of Lin and
-		 * Costello's book :   d[u] is the 'mu'th discrepancy, where
-		 * u='mu'+1 and 'mu' (the Greek letter!) is the step number
-		 * ranging from -1 to 2*t (see L&C),  l[u] is the degree of
-		 * the elp at that step, and u_l[u] is the difference between
-		 * the step number and the degree of the elp.
-		 */
-        /* initialise table entries */
-        d[0] = 0;      /* index form */
-        d[1] = s[1];   /* index form */
-        elp[0][0] = 0; /* index form */
-        elp[1][0] = 1; /* polynomial form */
-        for (i = 1; i < t2; i++) {
-            elp[0][i] = -1; /* index form */
-            elp[1][i] = 0;  /* polynomial form */
-        }
-        l[0] = 0;
-        l[1] = 0;
-        u_lu[0] = -1;
-        u_lu[1] = 0;
-        u = 0;
-
-        do {
-            u++;
-            if (d[u] == -1) {
-                l[u + 1] = l[u];
-                for (i = 0; i <= l[u]; i++) {
-                    elp[u + 1][i] = elp[u][i];
-                    elp[u][i] = index_of[elp[u][i]];
-                }
-            } else
-            /*
-				 * search for words with greatest u_lu[q] for
-				 * which d[q]!=0
-				 */
-            {
-                q = u - 1;
-                while ((d[q] == -1) && (q > 0)) {
-                    q--;
-                }
-                /* have found first non-zero d[q]  */
-                if (q > 0) {
-                    j = q;
-                    do {
-                        j--;
-                        if ((d[j] != -1) && (u_lu[q] < u_lu[j])) {
-                            q = j;
-                        }
-                    } while (j > 0);
-                }
-
-                /*
-				 * have now found q such that d[u]!=0 and
-				 * u_lu[q] is maximum
-				 */
-                /* store degree of new elp polynomial */
-                if (l[u] > l[q] + u - q) {
-                    l[u + 1] = l[u];
-                } else {
-                    l[u + 1] = l[q] + u - q;
-                }
-
-                /* form new elp(x) */
-                for (i = 0; i < t2; i++) {
-                    elp[u + 1][i] = 0;
-                }
-                for (i = 0; i <= l[q]; i++) {
-                    if (elp[q][i] != -1) {
-                        elp[u + 1][i + u - q] = alpha_to[(d[u] + n - d[q] + elp[q][i]) % n];
-                    }
-                }
-                for (i = 0; i <= l[u]; i++) {
-                    elp[u + 1][i] ^= elp[u][i];
-                    elp[u][i] = index_of[elp[u][i]];
-                }
-            }
-            u_lu[u + 1] = u - l[u + 1];
-
-            /* form (u+1)th discrepancy */
-            if (u < t2) {
-                /* no discrepancy computed on last iteration */
-                if (s[u + 1] != -1) {
-                    d[u + 1] = alpha_to[s[u + 1]];
-                } else {
-                    d[u + 1] = 0;
-                }
-                for (i = 1; i <= l[u + 1]; i++) {
-                    if ((s[u + 1 - i] != -1) && (elp[u + 1][i] != 0)) {
-                        d[u + 1] ^= alpha_to[(s[u + 1 - i] + index_of[elp[u + 1][i]]) % n];
-                    }
-                }
-                /* put d[u+1] into index form */
-                d[u + 1] = index_of[d[u + 1]];
-            }
-        } while ((u < t2) && (l[u + 1] <= t));
-
-        u++;
-        if (l[u] <= t) { /* Can correct errors */
-            /* put elp into index form */
-            for (i = 0; i <= l[u]; i++) {
-                elp[u][i] = index_of[elp[u][i]];
-            }
-
-            for (i = 0; i <= l[u]; i++) {
-
-                /* Chien search: find roots of the error location polynomial */
-                for (i = 1; i <= l[u]; i++) {
-                    reg[i] = elp[u][i];
-                }
-            }
-            count = 0;
-            for (i = 1; i <= n; i++) {
-                q = 1;
-                for (j = 1; j <= l[u]; j++) {
-                    if (reg[j] != -1) {
-                        reg[j] = (reg[j] + j) % n;
-                        q ^= alpha_to[reg[j]];
-                    }
-                }
-                if (!q) { /* store root and error
-						 * location number indices */
-                    root[count] = i;
-                    loc[count] = n - i;
-                    count++;
-                }
-            }
-
-            if (count == l[u]) {
-                /* no. roots = degree of elp hence <= t errors */
-                for (i = 0; i < l[u]; i++) {
-                    recd[loc[i]] ^= 1;
-                }
-            }
-        }
-    }
-}
-
-unsigned long long int messagepp = 0x0;
-
 //very simplified version, just to encode, get frame and compare
 unsigned long long int
 edacs_bch(unsigned long long int message) {
     int i;
+    unsigned long long int messagepp = 0ULL;
     //not ideal to run these every frame, will want to eventually run once on start of DSD-neo, and store values
     read_p();      /* Read m */
     generate_gf(); /* Construct the Galois Field GF(2**m) */

@@ -6,6 +6,8 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stddef.h>
 
+#include "engine_hooks_install.h"
+
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 
@@ -38,5 +40,5 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.p25p2_err_update = rtl_stream_p25p2_err_update;
     hooks.stream_active = rtl_stream_is_active;
 #endif
-    dsd_rtl_stream_metrics_hooks_set(hooks);
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
 }

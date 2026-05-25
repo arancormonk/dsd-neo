@@ -12,7 +12,12 @@
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 /*
  * Link stubs:
@@ -20,7 +25,8 @@
  * provides minimal symbols required to link that object safely.
  */
 uint64_t
-ConvertBitIntoBytes(uint8_t* bits, uint32_t n) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
     uint64_t v = 0ULL;
     for (uint32_t i = 0; i < n; i++) {
         v = (v << 1U) | (uint64_t)(bits[i] & 1U);
@@ -29,7 +35,8 @@ ConvertBitIntoBytes(uint8_t* bits, uint32_t n) {
 }
 
 uint64_t
-convert_bits_into_output(uint8_t* input, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+convert_bits_into_output(const uint8_t* input, int len) {
     if (len <= 0) {
         return 0ULL;
     }
@@ -37,15 +44,18 @@ convert_bits_into_output(uint8_t* input, int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 CNXDNConvolution_start(void) {}
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 CNXDNConvolution_decode(uint8_t s0, uint8_t s1) {
     (void)s0;
     (void)s1;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 CNXDNConvolution_decode_soft(uint8_t s0, uint8_t s1, uint8_t r0, uint8_t r1) {
     (void)s0;
     (void)s1;
@@ -54,15 +64,16 @@ CNXDNConvolution_decode_soft(uint8_t s0, uint8_t s1, uint8_t r0, uint8_t r1) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 CNXDNConvolution_chainback(unsigned char* out, unsigned int nBits) {
     (void)nBits;
     if (out != NULL) {
-        memset(out, 0, 32U);
+        DSD_MEMSET(out, 0, 32U);
     }
 }
 
 void
-NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent,
+NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, const uint8_t* ElementsContent,
                              size_t elements_bits) {
     (void)opts;
     (void)state;
@@ -78,7 +89,7 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t direction) {
+NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction) {
     (void)opts;
     (void)state;
     (void)Message;
@@ -86,6 +97,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_alias_reset(dsd_state* state) {
     (void)state;
 }
@@ -106,22 +118,24 @@ nxdn_scch_crc7_check_from_trellis(const uint8_t trellis_bits[32]) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 trellis_decode(uint8_t result[], const uint8_t source[], int result_len) {
     (void)source;
     if (result != NULL && result_len > 0) {
-        memset(result, 0, (size_t)result_len * sizeof(uint8_t));
+        DSD_MEMSET(result, 0, (size_t)result_len * sizeof(uint8_t));
     }
 }
 
 static void
 bytes_to_bits(const uint8_t* input, int nbytes, uint8_t* output) {
-    memset(output, 0, (size_t)(nbytes * 8) * sizeof(uint8_t));
+    DSD_MEMSET(output, 0, (size_t)(nbytes * 8) * sizeof(uint8_t));
     for (int i = 0; i < nbytes; i++) {
         uint8_t b = input[i];
         int base = i * 8;
@@ -134,7 +148,7 @@ bytes_to_bits(const uint8_t* input, int nbytes, uint8_t* output) {
 static int
 expect_u32(const char* tag, uint32_t got, uint32_t want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %08X want %08X\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %08X want %08X\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -165,3 +179,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

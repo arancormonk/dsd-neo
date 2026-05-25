@@ -10,7 +10,8 @@
  * constellation diagram, eye diagram, FSK histogram, and spectrum analyzer.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_VISUALIZERS_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_VISUALIZERS_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -29,8 +30,10 @@ void print_eye_view(dsd_opts* opts, dsd_state* state);
 void print_fsk_hist_view(void);
 
 /** Render spectrum analyzer (requires USE_RTLSDR). */
-void print_spectrum_view(dsd_opts* opts);
+void print_spectrum_view(const dsd_opts* opts);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_VISUALIZERS_H_ */

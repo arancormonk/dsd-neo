@@ -5,9 +5,8 @@
 
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 typedef struct dsd_opts dsd_opts;
@@ -113,7 +112,7 @@ fake_tick(dsd_opts* opts, dsd_state* state) {
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -122,7 +121,7 @@ expect_eq_int(const char* tag, int got, int want) {
 static int
 expect_eq_long(const char* tag, long got, long want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %ld want %ld\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %ld want %ld\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -131,7 +130,7 @@ expect_eq_long(const char* tag, long got, long want) {
 static int
 expect_eq_ptr(const char* tag, const void* got, const void* want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %p want %p\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %p want %p\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -143,11 +142,11 @@ main(void) {
 
     unsigned char opts_blob[32];
     unsigned char state_blob[32];
-    memset(opts_blob, 0xA5, sizeof(opts_blob));
-    memset(state_blob, 0x5A, sizeof(state_blob));
+    DSD_MEMSET(opts_blob, 0xA5, sizeof(opts_blob));
+    DSD_MEMSET(state_blob, 0x5A, sizeof(state_blob));
 
-    dsd_opts* opts = (dsd_opts*)(void*)opts_blob;
-    dsd_state* state = (dsd_state*)(void*)state_blob;
+    dsd_opts* opts = (dsd_opts*)opts_blob;
+    dsd_state* state = (dsd_state*)state_blob;
 
     long freqs[] = {851000000L, 852000000L, 853000000L};
     long out_freq = 0;
@@ -162,7 +161,7 @@ main(void) {
     api.on_neighbor_update = fake_on_neighbor_update;
     api.next_cc_candidate = fake_next_cc_candidate;
     api.tick = fake_tick;
-    p25_sm_set_api(api);
+    p25_sm_set_api(&api);
 
     p25_sm_init(opts, state);
     rc |= expect_eq_int("init_calls", g_init_calls, 1);

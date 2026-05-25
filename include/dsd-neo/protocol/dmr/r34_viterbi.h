@@ -8,7 +8,8 @@
  * @brief Rate 3/4 Viterbi decoder helpers for DMR.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_R34_VITERBI_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_R34_VITERBI_H_
 
 #include <stdint.h>
 
@@ -110,3 +111,5 @@ int dmr_r34_encode(const uint8_t out_bytes18[18], uint8_t dibits98[98]);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_R34_VITERBI_H_ */

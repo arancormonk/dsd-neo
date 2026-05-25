@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_SRC_UI_TERMINAL_TELEMETRY_HOOKS_IMPL_H_
+#define DSD_NEO_SRC_UI_TERMINAL_TELEMETRY_HOOKS_IMPL_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -21,3 +22,5 @@ void ui_terminal_install_telemetry_hooks(void);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_SRC_UI_TERMINAL_TELEMETRY_HOOKS_IMPL_H_ */

@@ -14,7 +14,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_TRUNK_SM_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_TRUNK_SM_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -164,7 +165,7 @@ typedef struct {
  * @param opts Decoder options (may be NULL for defaults).
  * @param state Decoder state (may be NULL).
  */
-void p25_sm_init_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state);
+void p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Process an event and update state machine.
@@ -241,7 +242,7 @@ void p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const c
  * @param slot Slot index (0 or 1, -1 for P1).
  * @return 1 if audio is allowed, 0 if muted.
  */
-int p25_sm_audio_allowed(p25_sm_ctx_t* ctx, dsd_state* state, int slot);
+int p25_sm_audio_allowed(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot);
 
 /**
  * @brief Update audio gating for a slot based on current encryption state.
@@ -700,3 +701,4 @@ void p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, i
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_TRUNK_SM_H_H */

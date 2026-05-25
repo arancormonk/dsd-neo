@@ -10,9 +10,10 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma.h>
 #include <stdio.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "protocol_dispatch_impl.h"
 
 int
 dsd_dispatch_matches_x2tdma(int synctype) {
@@ -30,7 +31,7 @@ dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state) {
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
-        sprintf(state->fsubtype, " VOICE        ");
+        DSD_SPRINTF(state->fsubtype, " VOICE        ");
         processX2TDMAvoice(opts, state);
         return;
     }

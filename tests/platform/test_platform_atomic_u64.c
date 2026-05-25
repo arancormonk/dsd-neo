@@ -7,9 +7,9 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
-
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 struct inc_args {
     dsd_atomic_u64* counter;
@@ -48,7 +48,7 @@ static DSD_THREAD_RETURN_TYPE
 static int
 expect_u64(const char* label, uint64_t got, uint64_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%llu want=%llu\n", label, (unsigned long long)got, (unsigned long long)want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%llu want=%llu\n", label, (unsigned long long)got, (unsigned long long)want);
         return 1;
     }
     return 0;
@@ -57,7 +57,7 @@ expect_u64(const char* label, uint64_t got, uint64_t want) {
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -102,7 +102,7 @@ test_multithread_increment(void) {
     for (int i = 0; i < k_threads; i++) {
         args[i].counter = &counter;
         args[i].loops = k_loops;
-        int trc = dsd_thread_create(&threads[i], (dsd_thread_fn)inc_thread_fn, &args[i]);
+        int trc = dsd_thread_create(&threads[i], inc_thread_fn, &args[i]);
         rc |= expect_int("thread_create", trc, 0);
     }
     for (int i = 0; i < k_threads; i++) {
@@ -122,7 +122,7 @@ test_release_acquire_smoke(void) {
     atomic_int ready = 0;
     struct publish_args args = {&value, &ready, 0x1122334455667788ULL};
     dsd_thread_t t;
-    rc |= expect_int("publish thread create", dsd_thread_create(&t, (dsd_thread_fn)publish_thread_fn, &args), 0);
+    rc |= expect_int("publish thread create", dsd_thread_create(&t, publish_thread_fn, &args), 0);
     while (!atomic_load(&ready)) {
         dsd_sleep_ms(1);
     }

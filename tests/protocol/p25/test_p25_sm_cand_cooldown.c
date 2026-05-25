@@ -13,15 +13,19 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 static long g_last_tuned_cc = 0;
 
 void
-trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     (void)ted_sps;
@@ -37,8 +41,8 @@ install_trunk_tuning_hooks(void) {
 
 static void
 init_basic(dsd_opts* o, dsd_state* s) {
-    memset(o, 0, sizeof(*o));
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(o, 0, sizeof(*o));
+    DSD_MEMSET(s, 0, sizeof(*s));
     o->p25_trunk = 1;
     o->trunk_hangtime = 0.2; // short for test
     o->p25_prefer_candidates = 1;
@@ -76,3 +80,7 @@ main(void) {
     assert(g_last_tuned_cc == B);
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

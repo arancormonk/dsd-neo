@@ -6,28 +6,16 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
-
-#define DSD_NEO_MAIN
-#include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
-#include <dsd-neo/protocol/provoice/provoice_const.h>
-#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
-
-#undef DSD_NEO_MAIN
-
 #include <errno.h>
-#include <fcntl.h> // IWYU pragma: keep
 #include <stdio.h>
 #include <string.h>
-
+#include <unistd.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "test_support.h"
 
-#if !defined(_WIN32)
-#include <unistd.h>
-#endif
+#include <fcntl.h> // IWYU pragma: keep
 
 static int
 count_occurrences(const char* haystack, const char* needle) {
@@ -47,18 +35,18 @@ count_occurrences(const char* haystack, const char* needle) {
 static int
 test_frame_log_writes_entry(void) {
     static dsd_opts opts;
-    memset(&opts, 0, sizeof opts);
+    DSD_MEMSET(&opts, 0, sizeof opts);
     initOpts(&opts);
 
     char path[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_frame_log");
     if (fd < 0) {
-        fprintf(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
         return 1;
     }
     (void)dsd_close(fd);
 
-    snprintf(opts.frame_log_file, sizeof opts.frame_log_file, "%s", path);
+    DSD_SNPRINTF(opts.frame_log_file, sizeof opts.frame_log_file, "%s", path);
     opts.frame_log_file[sizeof opts.frame_log_file - 1] = '\0';
 
     dsd_frame_logf(&opts, "frame=%d", 42);
@@ -66,7 +54,7 @@ test_frame_log_writes_entry(void) {
 
     FILE* fp = fopen(path, "rb");
     if (!fp) {
-        fprintf(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
+        DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
         (void)remove(path);
         return 1;
     }
@@ -74,7 +62,7 @@ test_frame_log_writes_entry(void) {
     char buf[512];
     size_t n = fread(buf, 1, sizeof buf - 1, fp);
     if (n == 0 && ferror(fp)) {
-        fprintf(stderr, "fread(%s) failed: %s\n", path, strerror(errno));
+        DSD_FPRINTF(stderr, "fread(%s) failed: %s\n", path, strerror(errno));
         fclose(fp);
         (void)remove(path);
         return 1;
@@ -84,7 +72,7 @@ test_frame_log_writes_entry(void) {
     (void)remove(path);
 
     if (strstr(buf, "frame=42") == NULL) {
-        fprintf(stderr, "frame log did not contain expected payload\n");
+        DSD_FPRINTF(stderr, "frame log did not contain expected payload\n");
         return 1;
     }
     return 0;
@@ -94,17 +82,22 @@ test_frame_log_writes_entry(void) {
 static int
 test_frame_log_write_error_reported_once(void) {
     static dsd_opts opts;
-    memset(&opts, 0, sizeof opts);
+    DSD_MEMSET(&opts, 0, sizeof opts);
     initOpts(&opts);
 
     const char* sink_path = "/dev/full";
-    FILE* probe = fopen(sink_path, "a");
+    FILE* probe = dsd_fopen_private(sink_path, "a");
     if (!probe) {
         return 0;
     }
     fclose(probe);
 
-    snprintf(opts.frame_log_file, sizeof opts.frame_log_file, "%s", sink_path);
+    /*
+     * /dev/full gives a deterministic write failure while still opening normally.
+     * stderr is redirected only around the two writes so the test can assert that
+     * the guard suppresses duplicate diagnostics from the same failing sink.
+     */
+    DSD_SNPRINTF(opts.frame_log_file, sizeof opts.frame_log_file, "%s", sink_path);
     opts.frame_log_file[sizeof opts.frame_log_file - 1] = '\0';
 
     int rc = 0;
@@ -145,6 +138,7 @@ test_frame_log_write_error_reported_once(void) {
     }
     stderr_redirected = 1;
 
+    // The first write reports the failure and the second write should stay quiet.
     dsd_frame_logf(&opts, "frame=%d", 1);
     dsd_frame_logf(&opts, "frame=%d", 2);
 
@@ -199,9 +193,9 @@ out:
 
     if (failure) {
         if (saved_errno != 0) {
-            fprintf(stderr, "%s: %s\n", failure, strerror(saved_errno));
+            DSD_FPRINTF(stderr, "%s: %s\n", failure, strerror(saved_errno));
         } else {
-            fprintf(stderr, "%s\n", failure);
+            DSD_FPRINTF(stderr, "%s\n", failure);
         }
     }
     return rc;

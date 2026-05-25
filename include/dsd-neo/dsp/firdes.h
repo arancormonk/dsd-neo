@@ -21,7 +21,7 @@ extern "C" {
 /**
  * @brief Window function types matching GNU Radio's fft::window::win_type
  */
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSD_WIN_RECTANGULAR = 0,
     DSD_WIN_HAMMING = 1,
     DSD_WIN_HANN = 2,

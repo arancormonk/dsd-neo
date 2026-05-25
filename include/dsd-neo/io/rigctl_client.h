@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RIGCTL_CLIENT_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_RIGCTL_CLIENT_H_H
 
 #include <dsd-neo/platform/sockets.h>
 
@@ -21,3 +22,4 @@ bool SetModulation(dsd_socket_t sockfd, int bandwidth);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_RIGCTL_CLIENT_H_H */

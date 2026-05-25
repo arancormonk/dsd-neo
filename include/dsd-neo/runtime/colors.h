@@ -11,7 +11,8 @@
  * output. Colorization can be toggled at build time via PRETTY_COLORS_LOGS.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_COLORS_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_COLORS_H_H
 
 // ANSI Color Characters in Terminal -- Disable by using cmake -DCOLORSLOGS=Off ..
 #ifdef PRETTY_COLORS_LOGS
@@ -33,3 +34,4 @@
 #define KCYN ""
 #define KWHT ""
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_COLORS_H_H */

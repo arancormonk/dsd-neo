@@ -3,7 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_PLATFORM_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_PLATFORM_H_H
 
 /*
  * Platform detection macros for DSD-neo
@@ -62,3 +63,4 @@
 #else
 #define DSD_COMPILER_CLANG 0
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_PLATFORM_H_H */

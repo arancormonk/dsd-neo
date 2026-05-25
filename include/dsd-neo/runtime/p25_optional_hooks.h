@@ -11,10 +11,12 @@
  * The engine installs the real hook functions at startup; the runtime provides
  * safe no-op wrappers until then.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_P25_OPTIONAL_HOOKS_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_P25_OPTIONAL_HOOKS_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include "dsd-neo/core/state.h"
 
 #include <stdint.h>
 
@@ -23,8 +25,9 @@ extern "C" {
 #endif
 
 typedef struct {
-    void (*watchdog_event_current)(dsd_opts* opts, dsd_state* state, uint8_t slot);
-    void (*write_event_to_log_file)(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string);
+    void (*watchdog_event_current)(const dsd_opts* opts, dsd_state* state, uint8_t slot);
+    void (*write_event_to_log_file)(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
+                                    char* event_string);
     void (*push_event_history)(Event_History_I* event_struct);
     void (*init_event_history)(Event_History_I* event_struct, uint8_t start, uint8_t stop);
     void (*p25p2_flush_partial_audio)(dsd_opts* opts, dsd_state* state);
@@ -42,3 +45,4 @@ void dsd_p25_optional_hook_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* 
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_P25_OPTIONAL_HOOKS_H_H */

@@ -7,7 +7,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CALLSIGN_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CALLSIGN_H_
 
 #include <stdint.h>
 
@@ -48,3 +49,5 @@ int p25_format_wacn_sysid(uint32_t wacn, uint16_t sysid, char* out, int out_len)
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CALLSIGN_H_ */

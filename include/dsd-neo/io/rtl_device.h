@@ -12,12 +12,10 @@
  * control, PPM correction, and asynchronous USB ingestion into an input ring.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 
 #include <stdint.h>
-
-#include <dsd-neo/platform/threading.h>
-#include <dsd-neo/runtime/input_ring.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,6 +23,7 @@ extern "C" {
 
 /* Opaque handle for RTL-SDR device */
 struct rtl_device;
+struct input_ring_state;
 struct dsd_iq_capture_writer;
 
 /**
@@ -396,3 +395,5 @@ int rtl_device_get_tcp_quality_snapshot(struct rtl_device* dev, struct tcp_quali
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_ */

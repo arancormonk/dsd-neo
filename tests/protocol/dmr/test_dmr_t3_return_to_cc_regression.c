@@ -20,10 +20,16 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/platform/sockets.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 /*
  * Local stubs for trunk_tuning.c dependencies.
@@ -33,23 +39,28 @@ static int g_setfreq_calls = 0;
 static long int g_last_setfreq_hz = 0;
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_frame_sync_reset_mod_state(void) {}
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_p2_frame_reset(void) {}
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_sm_in_tick(void) {
     return 0;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_drain_audio_output(dsd_opts* opts) {
     (void)opts;
 }
@@ -109,6 +120,7 @@ rtl_stream_set_ted_sps_no_override(int sps) {
 }
 
 uint64_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_time_monotonic_ns(void) {
     return 1234500000000ULL;
 }
@@ -128,7 +140,7 @@ main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
-        fprintf(stderr, "allocation failed\n");
+        DSD_FPRINTF(stderr, "allocation failed\n");
         free(state);
         free(opts);
         return 1;
@@ -184,3 +196,7 @@ main(void) {
     free(opts);
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

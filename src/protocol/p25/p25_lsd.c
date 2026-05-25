@@ -19,13 +19,11 @@
  */
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <stdint.h>
-#include <string.h>
-
-// Parity lookup from legacy implementation in p25_crc.c
-extern uint8_t lsd_parity[256];
+#include "dsd-neo/core/safe_api.h"
 
 int
 p25_lsd_fec_16x8(uint8_t* bits16) {
@@ -135,7 +133,7 @@ p25_lsd_fec_16x8_soft(uint8_t* bits16, const int16_t llr16[16]) {
     int combinations = 1 << candidate_count;
     for (int mask = 1; mask < combinations; mask++) {
         uint8_t tmp[16];
-        memcpy(tmp, bits16, 16);
+        DSD_MEMCPY(tmp, bits16, 16);
         int penalty = 0;
         for (int b = 0; b < candidate_count; b++) {
             if ((mask & (1 << b)) != 0) {
@@ -148,7 +146,7 @@ p25_lsd_fec_16x8_soft(uint8_t* bits16, const int16_t llr16[16]) {
             continue;
         }
         if (p25_lsd_fec_16x8(tmp)) {
-            memcpy(best, tmp, 16);
+            DSD_MEMCPY(best, tmp, 16);
             best_penalty = penalty;
             found = 1;
         }
@@ -157,6 +155,6 @@ p25_lsd_fec_16x8_soft(uint8_t* bits16, const int16_t llr16[16]) {
     if (!found) {
         return 0;
     }
-    memcpy(bits16, best, 16);
+    DSD_MEMCPY(bits16, best, 16);
     return 1;
 }

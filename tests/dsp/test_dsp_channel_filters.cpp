@@ -6,6 +6,7 @@
 /* Unit tests for input channel filters in dsd_filters.c: DC preservation. */
 
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 extern "C" void init_rrc_filter_memory(void);
 extern "C" float dmr_filter(float sample, int sps);
@@ -42,19 +43,19 @@ main(void) {
     const int sps_m17 = 10;
     // Allow small rounding tolerance
     if (!dc_pass_check(&dmr_filter, dc, sps_dmr, warm, 1e-4f)) {
-        fprintf(stderr, "DMR DC fail\n");
+        DSD_FPRINTF(stderr, "DMR DC fail\n");
         return 1;
     }
     if (!dc_pass_check(&nxdn_filter, dc, sps_nxdn, warm, 1e-4f)) {
-        fprintf(stderr, "NXDN DC fail\n");
+        DSD_FPRINTF(stderr, "NXDN DC fail\n");
         return 1;
     }
     if (!dc_pass_check(&dpmr_filter, dc, sps_dpmr, warm, 1e-4f)) {
-        fprintf(stderr, "DPMR DC fail\n");
+        DSD_FPRINTF(stderr, "DPMR DC fail\n");
         return 1;
     }
     if (!dc_pass_check(&m17_filter, dc, sps_m17, warm, 1e-4f)) {
-        fprintf(stderr, "M17 DC fail\n");
+        DSD_FPRINTF(stderr, "M17 DC fail\n");
         return 1;
     }
     return 0;

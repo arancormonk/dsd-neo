@@ -8,6 +8,9 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
+
+int ui_unicode_supported(void); // NOLINT(misc-use-internal-linkage)
 
 #if defined(DSD_NEO_FAST_MATH) || defined(__FAST_MATH__) || defined(_M_FP_FAST)
 #define DSD_NEO_TEST_FAST_MATH 1
@@ -18,7 +21,7 @@
 #endif
 
 int
-ui_unicode_supported(void) {
+ui_unicode_supported(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
@@ -26,7 +29,7 @@ static void
 assert_bars(double snr_db, int expected) {
     int actual = dsd_ncurses_snr_meter_bar_count_for_test(snr_db);
     if (actual != expected) {
-        fprintf(stderr, "bar count for %.1f dB: expected %d, got %d\n", snr_db, expected, actual);
+        DSD_FPRINTF(stderr, "bar count for %.1f dB: expected %d, got %d\n", snr_db, expected, actual);
     }
     assert(actual == expected);
 }
@@ -34,10 +37,10 @@ assert_bars(double snr_db, int expected) {
 static void
 assert_ascii(double snr_db, const char* expected) {
     char actual[16];
-    memset(actual, 'X', sizeof(actual));
+    DSD_MEMSET(actual, 'X', sizeof(actual));
     dsd_ncurses_snr_meter_ascii_for_test(snr_db, actual, sizeof(actual));
     if (strcmp(actual, expected) != 0) {
-        fprintf(stderr, "ASCII meter for %.1f dB: expected '%s', got '%s'\n", snr_db, expected, actual);
+        DSD_FPRINTF(stderr, "ASCII meter for %.1f dB: expected '%s', got '%s'\n", snr_db, expected, actual);
     }
     assert(strcmp(actual, expected) == 0);
     assert(actual[9] == '\0');
@@ -79,7 +82,7 @@ main(void) {
 
     {
         char tiny[3];
-        memset(tiny, 'X', sizeof(tiny));
+        DSD_MEMSET(tiny, 'X', sizeof(tiny));
         dsd_ncurses_snr_meter_ascii_for_test(21.0, tiny, sizeof(tiny));
         assert(strcmp(tiny, "| ") == 0);
         assert(tiny[2] == '\0');

@@ -10,7 +10,8 @@
  * IDEN bandplans, and control channel candidates.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_P25_DISPLAY_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_P25_DISPLAY_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -49,3 +50,5 @@ int compute_p25p2_voice_avg_err(const dsd_state* s, int slot, double* out_avg);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_P25_DISPLAY_H_ */

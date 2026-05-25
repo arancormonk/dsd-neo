@@ -12,7 +12,8 @@
  * callers never see or route a discriminator PCM stream for digital decode.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_FSK_MODEM_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_FSK_MODEM_H_
 
 #include <stdint.h>
 
@@ -102,3 +103,5 @@ int dsd_fsk_modem_get_metrics(const dsd_fsk_modem_state* st, dsd_fsk_modem_metri
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_FSK_MODEM_H_ */

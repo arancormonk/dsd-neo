@@ -10,25 +10,22 @@
  *
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/fec/trellis.h>
+#include <dsd-neo/fec/viterbi.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-uint16_t q_abs_diff(const uint16_t v1, const uint16_t v2);
-uint32_t viterbi_chainback(uint8_t* out, size_t pos, uint16_t len);
-void viterbi_decode_bit(uint16_t s0, uint16_t s1, const size_t pos);
-void viterbi_reset(void);
 
 static const int PARITY[] = {0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
                              1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1};
 
 // trellis_1_2 encode: source is in bits, result in bits
-void
+static void
 trellis_encode(uint8_t result[], const uint8_t source[], int result_len, int reg) {
     for (int i = 0; i < result_len; i += 2) {
         reg = (reg << 1) | source[i >> 1];
@@ -51,11 +48,6 @@ trellis_decode(uint8_t result[], const uint8_t source[], int result_len) {
 
     uint8_t bt[NTEST];
     uint8_t tt[NTEST * 2];
-    int dstats[4];
-    int sum;
-    for (int p = 0; p < 4; p++) {
-        dstats[p] = 0;
-    }
     for (int p = 0; p < result_len; p++) {
         for (int i = 0; i < NTESTC; i++) {
             bt[0] = (i & 8) >> 3;
@@ -63,7 +55,7 @@ trellis_decode(uint8_t result[], const uint8_t source[], int result_len) {
             bt[2] = (i & 2) >> 1;
             bt[3] = (i & 1);
             trellis_encode(tt, bt, NTEST * 2, reg);
-            sum = 0;
+            int sum = 0;
             for (int j = 0; j < NTEST * 2; j++) {
                 sum += tt[j] ^ source[p * 2 + j];
             }
@@ -74,11 +66,9 @@ trellis_decode(uint8_t result[], const uint8_t source[], int result_len) {
         }
         result[p] = min_bt;
         reg = (reg << 1) | min_bt;
-        dstats[(min_d > 3) ? 3 : min_d] += 1;
     }
 
     //debug output
-    // fprintf (stderr, "\n stats\t%d %d %d %d\n", dstats[0], dstats[1], dstats[2], dstats[3]);
 }
 
 //Original Copyright/License
@@ -126,7 +116,7 @@ static uint16_t viterbi_history[244];
 uint32_t
 viterbi_decode(uint8_t* out, const uint16_t* in, const uint16_t len) {
     if (len > 244 * 2) {
-        fprintf(stderr, "Input size exceeds max history\n");
+        DSD_FPRINTF(stderr, "Input size exceeds max history\n");
     }
 
     viterbi_reset();
@@ -142,9 +132,6 @@ viterbi_decode(uint8_t* out, const uint16_t* in, const uint16_t len) {
     uint32_t err = viterbi_chainback(out, pos, len / 2);
 
     //debug
-    // fprintf (stderr, "\n vcb: \n");
-    // for (size_t i = 0; i < len; i++)
-    // 	fprintf (stderr, "%02X", out[i]);
 
     return err;
 }
@@ -163,7 +150,7 @@ uint32_t
 viterbi_decode_punctured(uint8_t* out, const uint16_t* in, const uint8_t* punct, const uint16_t in_len,
                          const uint16_t p_len) {
     if (in_len > 244 * 2) {
-        fprintf(stderr, "Input size exceeds max history\n");
+        DSD_FPRINTF(stderr, "Input size exceeds max history\n");
     }
 
     uint16_t umsg[244 * 2] = {0}; //unpunctured message
@@ -185,7 +172,6 @@ viterbi_decode_punctured(uint8_t* out, const uint16_t* in, const uint8_t* punct,
     }
 
     //debug
-    // fprintf (stderr, " p: %d, u: %d; p_len: %d; len: %d;", p, u, p_len, (u-in_len)*0x7FFF);
 
     return viterbi_decode(out, umsg, u) - (u - in_len) * 0x7FFF;
 }
@@ -257,7 +243,7 @@ viterbi_chainback(uint8_t* out, size_t pos, uint16_t len) {
     uint8_t state = 0;
     size_t bitPos = len + 4;
 
-    memset(out, 0, (len - 1) / 8 + 1);
+    DSD_MEMSET(out, 0, (len - 1) / 8 + 1);
 
     while (pos > 0) {
         bitPos--;
@@ -271,9 +257,6 @@ viterbi_chainback(uint8_t* out, size_t pos, uint16_t len) {
     }
 
     //debug
-    // fprintf (stderr, "\n cb: \n");
-    // for (size_t i = 0; i < len; i++)
-    // 	fprintf (stderr, "%02X", out[i]);
 
     uint32_t best_cost = prevMetrics[0];
     for (size_t i = 1; i < NUM_STATES; i++) {
@@ -290,11 +273,11 @@ viterbi_chainback(uint8_t* out, size_t pos, uint16_t len) {
  */
 void
 viterbi_reset(void) {
-    memset((uint8_t*)viterbi_history, 0, sizeof(viterbi_history));
-    memset((uint8_t*)currMetrics, 0, sizeof(currMetrics));
-    memset((uint8_t*)prevMetrics, 0, sizeof(prevMetrics));
-    memset((uint8_t*)currMetricsData, 0, sizeof(currMetricsData));
-    memset((uint8_t*)prevMetricsData, 0, sizeof(prevMetricsData));
+    DSD_MEMSET((uint8_t*)viterbi_history, 0, sizeof(viterbi_history));
+    DSD_MEMSET((uint8_t*)currMetrics, 0, sizeof(currMetrics));
+    DSD_MEMSET((uint8_t*)prevMetrics, 0, sizeof(prevMetrics));
+    DSD_MEMSET((uint8_t*)currMetricsData, 0, sizeof(currMetricsData));
+    DSD_MEMSET((uint8_t*)prevMetricsData, 0, sizeof(prevMetricsData));
 }
 
 uint16_t
@@ -333,16 +316,7 @@ q_abs_diff(const uint16_t v1, const uint16_t v2) {
 //no license / information provided in source code
 #define PI 3.141592653
 
-//do we need this for test input sthit?
-// #define PLOT_POINTS     100
-// #define SAMPLE_TIME_S   0.001
-// #define CUTOFFFREQ_HZ   50
-// #define sine_freq       40
-// #define sine_freq_1     500
-// #define HFC 50
-// #define LFC 100
-
-void
+static void
 LPFilter_Init(LPFilter* filter, float cutoffFreqHz, float sampleTimeS) {
 
     float RC = 0.0;
@@ -354,7 +328,7 @@ LPFilter_Init(LPFilter* filter, float cutoffFreqHz, float sampleTimeS) {
     filter->v_out[1] = 0.0;
 }
 
-float
+static float
 LPFilter_Update(LPFilter* filter, float v_in) {
 
     filter->v_out[1] = filter->v_out[0];
@@ -366,7 +340,7 @@ LPFilter_Update(LPFilter* filter, float v_in) {
 /********************************************************************************************************
  *                              HIGH PASS FILTER
 ********************************************************************************************************/
-void
+static void
 HPFilter_Init(HPFilter* filter, float cutoffFreqHz, float sampleTimeS) {
 
     float RC = 0.0;
@@ -381,7 +355,7 @@ HPFilter_Init(HPFilter* filter, float cutoffFreqHz, float sampleTimeS) {
     filter->v_out[1] = 0.0;
 }
 
-float
+static float
 HPFilter_Update(HPFilter* filter, float v_in) {
 
     filter->v_in[1] = filter->v_in[0];
@@ -397,7 +371,7 @@ HPFilter_Update(HPFilter* filter, float v_in) {
  *                              BAND PASS FILTER
 ********************************************************************************************************/
 
-void
+static void
 PBFilter_Init(PBFilter* filter, float HPF_cutoffFreqHz, float LPF_cutoffFreqHz, float sampleTimeS) {
 
     LPFilter_Init(&filter->lpf, LPF_cutoffFreqHz, sampleTimeS);
@@ -406,7 +380,7 @@ PBFilter_Init(PBFilter* filter, float HPF_cutoffFreqHz, float LPF_cutoffFreqHz, 
     filter->out_in = 0.0;
 }
 
-float
+static float
 PBFilter_Update(PBFilter* filter, float v_in) {
 
     filter->out_in = HPFilter_Update(&filter->hpf, v_in);
@@ -420,7 +394,7 @@ PBFilter_Update(PBFilter* filter, float v_in) {
  *                              NOTCH FILTER
 ********************************************************************************************************/
 
-void
+static void
 NOTCHFilter_Init(NOTCHFilter* filter, float centerFreqHz, float notchWidthHz, float sampleTimeS) {
 
     //filter frequency to angular (rad/s)
@@ -441,27 +415,6 @@ NOTCHFilter_Init(NOTCHFilter* filter, float centerFreqHz, float notchWidthHz, fl
         filter->vin[n] = 0;
         filter->vout[n] = 0;
     }
-}
-
-float
-NOTCHFilter_Update(NOTCHFilter* filter, float vin) {
-
-    //shifting samples
-    filter->vin[2] = filter->vin[1];
-    filter->vin[1] = filter->vin[0];
-
-    filter->vout[2] = filter->vout[1];
-    filter->vout[1] = filter->vout[0];
-
-    filter->vin[0] = vin;
-
-    //compute new output
-    filter->vout[0] =
-        (filter->alpha * filter->vin[0] + 2.0 * (filter->alpha - 8.0) * filter->vin[1] + filter->alpha * filter->vin[2]
-         - (2.0f * (filter->alpha - 8.0) * filter->vout[1] + (filter->alpha - filter->beta) * filter->vout[2]))
-        / (filter->alpha + filter->beta);
-
-    return (filter->vout[0]);
 }
 
 static float
@@ -495,9 +448,6 @@ init_audio_filters(dsd_state* state, int sample_rate_hz) {
     LPFilter_Init(&state->RCFilterR, 960.0f, digital_Ts);
     HPFilter_Init(&state->HRCFilterR, 960.0f, digital_Ts);
 
-    //PBFilter_Init(PBFilter *filter, float HPF_cutoffFreqHz, float LPF_cutoffFreqHz, float sampleTimeS);
-    //NOTCHFilter_Init(NOTCHFilter *filter, float centerFreqHz, float notchWidthHz, float sampleTimeS);
-
     //NOTE: PBFilter_init also inits a LPF and HPF, but on another set of filters, might be worth
     //testing just using the PBFilter by itself and see how it does without the hpf used
 
@@ -512,7 +462,7 @@ init_audio_filters(dsd_state* state, int sample_rate_hz) {
 
 //FUNCTIONS for handing use of above filters
 
-//lpf (short)
+// LPF short path
 void
 lpf(dsd_state* state, short* input, int len) {
     int i;
@@ -521,7 +471,7 @@ lpf(dsd_state* state, short* input, int len) {
     }
 }
 
-//lpf (float) - native float path for analog monitor
+// LPF float path for analog monitor
 void
 lpf_f(dsd_state* state, float* input, int len) {
     int i;
@@ -530,7 +480,18 @@ lpf_f(dsd_state* state, float* input, int len) {
     }
 }
 
-//hpf (short)
+static short
+clamp_float_to_short(float value) {
+    if (value > 32767.0f) {
+        return 32767;
+    }
+    if (value < -32768.0f) {
+        return -32768;
+    }
+    return (short)value;
+}
+
+// HPF short path
 void
 hpf(dsd_state* state, short* input, int len) {
     int i;
@@ -539,7 +500,7 @@ hpf(dsd_state* state, short* input, int len) {
     }
 }
 
-//hpf (float) - native float path for analog monitor
+// HPF float path for analog monitor
 void
 hpf_f(dsd_state* state, float* input, int len) {
     int i;
@@ -553,9 +514,7 @@ void
 hpf_dL(dsd_state* state, short* input, int len) {
     int i;
     for (i = 0; i < len; i++) {
-        // fprintf (stderr, "\n in: %05d", input[i]);
-        input[i] = HPFilter_Update(&state->HRCFilterL, input[i]);
-        // fprintf (stderr, "\n out: %05d", input[i]);
+        input[i] = clamp_float_to_short(HPFilter_Update(&state->HRCFilterL, input[i]));
     }
 }
 
@@ -564,24 +523,11 @@ void
 hpf_dR(dsd_state* state, short* input, int len) {
     int i;
     for (i = 0; i < len; i++) {
-        // fprintf (stderr, "\n in: %05d", input[i]);
-        input[i] = HPFilter_Update(&state->HRCFilterR, input[i]);
-        // fprintf (stderr, "\n out: %05d", input[i]);
+        input[i] = clamp_float_to_short(HPFilter_Update(&state->HRCFilterR, input[i]));
     }
 }
 
-//nf
-void
-nf(dsd_state* state, short* input, int len) {
-    int i;
-    for (i = 0; i < len; i++) {
-        // fprintf (stderr, "\n in: %05d", input[i]);
-        input[i] = NOTCHFilter_Update(&state->NF, input[i]);
-        // fprintf (stderr, "\n out: %05d", input[i]);
-    }
-}
-
-//pbf (short)
+// PBF short path
 void
 pbf(dsd_state* state, short* input, int len) {
     int i;
@@ -590,7 +536,7 @@ pbf(dsd_state* state, short* input, int len) {
     }
 }
 
-//pbf (float) - native float path for analog monitor
+// PBF float path for analog monitor
 void
 pbf_f(dsd_state* state, float* input, int len) {
     int i;

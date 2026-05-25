@@ -24,6 +24,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
@@ -38,9 +39,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/resampler.h"
 
@@ -100,16 +101,50 @@ dsd_audio_init_raw_pcm16_info(SF_INFO* info, int sample_rate_hz) {
         sample_rate_hz = 48000;
     }
 
-    memset(info, 0, sizeof(*info));
+    DSD_MEMSET(info, 0, sizeof(*info));
     info->samplerate = sample_rate_hz;
     info->channels = 1;
     info->seekable = 0;
     info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
 }
 
+static int
+dsd_audio_default_sample_rate_hz(int configured_sample_rate_hz) {
+    return (configured_sample_rate_hz > 0) ? configured_sample_rate_hz : 48000;
+}
+
+static int
+dsd_audio_try_open_mono_wav_container(const char* path, SF_INFO* info, SNDFILE** out_file, int* out_sample_rate_hz) {
+    if (!dsd_audio_path_is_wav_container(path) || !dsd_audio_file_has_wav_family_header(path)) {
+        return 0;
+    }
+
+    *out_file = sf_open(path, SFM_READ, info);
+    if (!*out_file) {
+        return -1;
+    }
+    if (info->channels != 1) {
+        sf_close(*out_file);
+        *out_file = NULL;
+        return -1;
+    }
+    if (out_sample_rate_hz && info->samplerate > 0) {
+        *out_sample_rate_hz = info->samplerate;
+    }
+    return 1;
+}
+
+static SNDFILE*
+dsd_audio_open_raw_mono_pcm16(const char* path, SF_INFO* info, int configured_sample_rate_hz) {
+    dsd_audio_init_raw_pcm16_info(info, configured_sample_rate_hz);
+    return sf_open(path, SFM_READ, info);
+}
+
 int
 dsd_audio_open_mono_file_input(const char* path, int configured_sample_rate_hz, SNDFILE** out_file, SF_INFO** out_info,
                                int* out_sample_rate_hz, int* out_opened_as_container) {
+    int default_sample_rate_hz = dsd_audio_default_sample_rate_hz(configured_sample_rate_hz);
+
     if (!path || path[0] == '\0' || !out_file || !out_info) {
         return -1;
     }
@@ -117,7 +152,7 @@ dsd_audio_open_mono_file_input(const char* path, int configured_sample_rate_hz, 
     *out_file = NULL;
     *out_info = NULL;
     if (out_sample_rate_hz) {
-        *out_sample_rate_hz = (configured_sample_rate_hz > 0) ? configured_sample_rate_hz : 48000;
+        *out_sample_rate_hz = default_sample_rate_hz;
     }
     if (out_opened_as_container) {
         *out_opened_as_container = 0;
@@ -130,26 +165,18 @@ dsd_audio_open_mono_file_input(const char* path, int configured_sample_rate_hz, 
 
     SNDFILE* file = NULL;
     int opened_as_container = 0;
-    int active_sample_rate_hz = (configured_sample_rate_hz > 0) ? configured_sample_rate_hz : 48000;
+    int active_sample_rate_hz = default_sample_rate_hz;
+    int container_open_status = dsd_audio_try_open_mono_wav_container(path, info, &file, &active_sample_rate_hz);
 
-    if (dsd_audio_path_is_wav_container(path) && dsd_audio_file_has_wav_family_header(path)) {
-        file = sf_open(path, SFM_READ, info);
-        if (!file) {
-            free(info);
-            return -1;
-        }
-        if (info->channels != 1) {
-            sf_close(file);
-            free(info);
-            return -1;
-        }
+    if (container_open_status < 0) {
+        free(info);
+        return -1;
+    }
+
+    if (container_open_status > 0) {
         opened_as_container = 1;
-        if (info->samplerate > 0) {
-            active_sample_rate_hz = info->samplerate;
-        }
     } else {
-        dsd_audio_init_raw_pcm16_info(info, configured_sample_rate_hz);
-        file = sf_open(path, SFM_READ, info);
+        file = dsd_audio_open_raw_mono_pcm16(path, info, configured_sample_rate_hz);
         if (!file) {
             free(info);
             return -1;
@@ -337,29 +364,29 @@ dsd_drain_audio_output(dsd_opts* opts) {
 
 void
 parse_audio_input_string(dsd_opts* opts, char* input) {
-    char* curr;
+    const char* curr;
     char* saveptr = NULL;
     curr = dsd_strtok_r(input, ":", &saveptr);
     if (curr != NULL) {
-        strncpy(opts->pa_input_idx, curr, 99);
+        DSD_STRNCPY(opts->pa_input_idx, curr, 99);
         opts->pa_input_idx[99] = '\0';
-        fprintf(stderr, "\n");
-        fprintf(stderr, "Audio Input Device: %s; ", opts->pa_input_idx);
-        fprintf(stderr, "\n");
+        DSD_FPRINTF(stderr, "\n");
+        DSD_FPRINTF(stderr, "Audio Input Device: %s; ", opts->pa_input_idx);
+        DSD_FPRINTF(stderr, "\n");
     }
 }
 
 void
 parse_audio_output_string(dsd_opts* opts, char* input) {
-    char* curr;
+    const char* curr;
     char* saveptr = NULL;
     curr = dsd_strtok_r(input, ":", &saveptr);
     if (curr != NULL) {
-        strncpy(opts->pa_output_idx, curr, 99);
+        DSD_STRNCPY(opts->pa_output_idx, curr, 99);
         opts->pa_output_idx[99] = '\0';
-        fprintf(stderr, "\n");
-        fprintf(stderr, "Audio Output Device: %s; ", opts->pa_output_idx);
-        fprintf(stderr, "\n");
+        DSD_FPRINTF(stderr, "\n");
+        DSD_FPRINTF(stderr, "Audio Output Device: %s; ", opts->pa_output_idx);
+        DSD_FPRINTF(stderr, "\n");
     }
 }
 
@@ -368,234 +395,309 @@ audio_list_devices(void) {
     return dsd_audio_list_devices();
 }
 
-void
-processAudio(dsd_opts* opts, dsd_state* state) {
-
-    int i, n;
-    float aout_abs, max, gainfactor, gaindelta, maxbuf;
-
-    if (opts->audio_gain == (float)0) {
-        // detect max level
-        max = 0;
-
-        state->audio_out_temp_buf_p = state->audio_out_temp_buf;
-        for (n = 0; n < 160; n++) {
-            aout_abs = fabsf(*state->audio_out_temp_buf_p);
-            if (aout_abs > max) {
-                max = aout_abs;
-            }
-            state->audio_out_temp_buf_p++;
-        }
-        *state->aout_max_buf_p = max;
-
-        state->aout_max_buf_p++;
-
-        state->aout_max_buf_idx++;
-
-        if (state->aout_max_buf_idx > 24) {
-            state->aout_max_buf_idx = 0;
-            state->aout_max_buf_p = state->aout_max_buf;
-        }
-
-        // lookup max history
-        for (i = 0; i < 25; i++) {
-            maxbuf = state->aout_max_buf[i];
-            if (maxbuf > max) {
-                max = maxbuf;
-            }
-        }
-
-        // determine optimal gain level
-        if (max > (float)0) {
-            gainfactor = ((float)30000 / max);
-        } else {
-            gainfactor = (float)50;
-        }
-        if (gainfactor < state->aout_gain) {
-            state->aout_gain = gainfactor;
-            gaindelta = (float)0;
-        } else {
-            if (gainfactor > (float)50) {
-                gainfactor = (float)50;
-            }
-            gaindelta = gainfactor - state->aout_gain;
-            if (gaindelta > ((float)0.05 * state->aout_gain)) {
-                gaindelta = ((float)0.05 * state->aout_gain);
-            }
-        }
-        gaindelta /= (float)160;
-    } else {
-        gaindelta = (float)0;
+static float
+dsd_audio_clamp_pcm16_f32(float sample) {
+    if (sample > 32767.0F) {
+        return 32767.0F;
     }
-
-    if (opts->audio_gain >= 0) {
-        // adjust output gain
-        state->audio_out_temp_buf_p = state->audio_out_temp_buf;
-        for (n = 0; n < 160; n++) {
-            *state->audio_out_temp_buf_p = (state->aout_gain + ((float)n * gaindelta)) * (*state->audio_out_temp_buf_p);
-            state->audio_out_temp_buf_p++;
-        }
-        state->aout_gain += ((float)160 * gaindelta);
+    if (sample < -32768.0F) {
+        return -32768.0F;
     }
+    return sample;
+}
 
-    // copy audio data to output buffer and upsample if necessary
+static float
+dsd_audio_detect_block_peak_left(dsd_state* state) {
+    int n;
+    float max = 0.0F;
+
     state->audio_out_temp_buf_p = state->audio_out_temp_buf;
-    //we only want to upsample when using sample rates greater than 8k for output
-    if (opts->pulse_digi_rate_out > 8000) {
-        for (n = 0; n < 160; n++) {
-            upsample(state, *state->audio_out_temp_buf_p);
-            state->audio_out_temp_buf_p++;
-            state->audio_out_float_buf_p += 6;
-            state->audio_out_idx += 6;
-            state->audio_out_idx2 += 6;
+    for (n = 0; n < 160; n++) {
+        float aout_abs = fabsf(*state->audio_out_temp_buf_p);
+        if (aout_abs > max) {
+            max = aout_abs;
         }
-        state->audio_out_float_buf_p -= (960 + opts->playoffset);
-        // copy to output (short) buffer
-        for (n = 0; n < 960; n++) {
-            if (*state->audio_out_float_buf_p > 32767.0F) {
-                *state->audio_out_float_buf_p = 32767.0F;
-            } else if (*state->audio_out_float_buf_p < -32768.0F) {
-                *state->audio_out_float_buf_p = -32768.0F;
-            }
-            *state->audio_out_buf_p = (short)*state->audio_out_float_buf_p;
-            //tap the pointer here and store the short upsample buffer samples
-            state->s_lu[n] = (short)*state->audio_out_float_buf_p;
-            state->audio_out_buf_p++;
-            state->audio_out_float_buf_p++;
+        state->audio_out_temp_buf_p++;
+    }
+    return max;
+}
+
+static float
+dsd_audio_update_peak_history_left(dsd_state* state, float block_max) {
+    float max = block_max;
+    int i;
+
+    *state->aout_max_buf_p = block_max;
+    state->aout_max_buf_p++;
+    state->aout_max_buf_idx++;
+
+    if (state->aout_max_buf_idx > 24) {
+        state->aout_max_buf_idx = 0;
+        state->aout_max_buf_p = state->aout_max_buf;
+    }
+
+    for (i = 0; i < 25; i++) {
+        float maxbuf = state->aout_max_buf[i];
+        if (maxbuf > max) {
+            max = maxbuf;
         }
-        state->audio_out_float_buf_p += opts->playoffset;
+    }
+    return max;
+}
+
+static float
+dsd_audio_compute_gain_delta_left(const dsd_opts* opts, dsd_state* state) {
+    float gaindelta;
+    float gainfactor;
+    float max;
+
+    if (opts->audio_gain != 0.0F) {
+        return 0.0F;
+    }
+
+    max = dsd_audio_detect_block_peak_left(state);
+    max = dsd_audio_update_peak_history_left(state, max);
+
+    if (max > 0.0F) {
+        gainfactor = 30000.0F / max;
     } else {
-        for (n = 0; n < 160; n++) {
-            if (*state->audio_out_temp_buf_p > 32767.0F) {
-                *state->audio_out_temp_buf_p = 32767.0F;
-            } else if (*state->audio_out_temp_buf_p < -32768.0F) {
-                *state->audio_out_temp_buf_p = -32768.0F;
-            }
-            *state->audio_out_buf_p = (short)*state->audio_out_temp_buf_p;
-            //tap the pointer here and store the short buffer samples
-            state->s_l[n] = (short)*state->audio_out_temp_buf_p;
-            //debug
-            // fprintf (stderr, " %d", state->s_l[n]);
-            state->audio_out_buf_p++;
-            state->audio_out_temp_buf_p++;
-            state->audio_out_idx++;
-            state->audio_out_idx2++;
+        gainfactor = 50.0F;
+    }
+
+    if (gainfactor < state->aout_gain) {
+        state->aout_gain = gainfactor;
+        gaindelta = 0.0F;
+    } else {
+        if (gainfactor > 50.0F) {
+            gainfactor = 50.0F;
         }
+        gaindelta = gainfactor - state->aout_gain;
+        if (gaindelta > (0.05F * state->aout_gain)) {
+            gaindelta = 0.05F * state->aout_gain;
+        }
+    }
+
+    return gaindelta / 160.0F;
+}
+
+static void
+dsd_audio_apply_gain_left(const dsd_opts* opts, dsd_state* state, float gaindelta) {
+    int n;
+
+    if (opts->audio_gain < 0) {
+        return;
+    }
+
+    state->audio_out_temp_buf_p = state->audio_out_temp_buf;
+    for (n = 0; n < 160; n++) {
+        *state->audio_out_temp_buf_p = (state->aout_gain + ((float)n * gaindelta)) * (*state->audio_out_temp_buf_p);
+        state->audio_out_temp_buf_p++;
+    }
+    state->aout_gain += 160.0F * gaindelta;
+}
+
+static void
+dsd_audio_emit_upsampled_left(const dsd_opts* opts, dsd_state* state) {
+    int n;
+
+    state->audio_out_temp_buf_p = state->audio_out_temp_buf;
+    for (n = 0; n < 160; n++) {
+        upsample(state, *state->audio_out_temp_buf_p);
+        state->audio_out_temp_buf_p++;
+        state->audio_out_float_buf_p += 6;
+        state->audio_out_idx += 6;
+        state->audio_out_idx2 += 6;
+    }
+
+    state->audio_out_float_buf_p -= (960 + opts->playoffset);
+    for (n = 0; n < 960; n++) {
+        *state->audio_out_float_buf_p = dsd_audio_clamp_pcm16_f32(*state->audio_out_float_buf_p);
+        *state->audio_out_buf_p = (short)*state->audio_out_float_buf_p;
+        state->s_lu[n] = (short)*state->audio_out_float_buf_p;
+        state->audio_out_buf_p++;
+        state->audio_out_float_buf_p++;
+    }
+    state->audio_out_float_buf_p += opts->playoffset;
+}
+
+static void
+dsd_audio_emit_native_left(dsd_state* state) {
+    int n;
+
+    state->audio_out_temp_buf_p = state->audio_out_temp_buf;
+    for (n = 0; n < 160; n++) {
+        *state->audio_out_temp_buf_p = dsd_audio_clamp_pcm16_f32(*state->audio_out_temp_buf_p);
+        *state->audio_out_buf_p = (short)*state->audio_out_temp_buf_p;
+        state->s_l[n] = (short)*state->audio_out_temp_buf_p;
+        state->audio_out_buf_p++;
+        state->audio_out_temp_buf_p++;
+        state->audio_out_idx++;
+        state->audio_out_idx2++;
     }
 }
 
-void
-processAudioR(dsd_opts* opts, dsd_state* state) {
-
-    int i, n;
-    float aout_abs, max, gainfactor, gaindelta, maxbuf;
-    if (opts->audio_gainR == (float)0) {
-        // detect max level
-        max = 0;
-
-        state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;
-        for (n = 0; n < 160; n++) {
-            aout_abs = fabsf(*state->audio_out_temp_buf_pR);
-            if (aout_abs > max) {
-                max = aout_abs;
-            }
-            state->audio_out_temp_buf_pR++;
-        }
-        *state->aout_max_buf_pR = max;
-
-        state->aout_max_buf_pR++;
-
-        state->aout_max_buf_idxR++;
-
-        if (state->aout_max_buf_idxR > 24) {
-            state->aout_max_buf_idxR = 0;
-            state->aout_max_buf_pR = state->aout_max_bufR;
-        }
-
-        // lookup max history
-        for (i = 0; i < 25; i++) {
-            maxbuf = state->aout_max_bufR[i];
-            if (maxbuf > max) {
-                max = maxbuf;
-            }
-        }
-
-        // determine optimal gain level
-        if (max > (float)0) {
-            gainfactor = ((float)30000 / max);
-        } else {
-            gainfactor = (float)50;
-        }
-        if (gainfactor < state->aout_gainR) {
-            state->aout_gainR = gainfactor;
-            gaindelta = (float)0;
-        } else {
-            if (gainfactor > (float)50) {
-                gainfactor = (float)50;
-            }
-            gaindelta = gainfactor - state->aout_gainR;
-            if (gaindelta > ((float)0.05 * state->aout_gainR)) {
-                gaindelta = ((float)0.05 * state->aout_gainR);
-            }
-        }
-        gaindelta /= (float)160;
-    } else {
-        gaindelta = (float)0;
-    }
-
-    if (opts->audio_gainR >= 0) {
-        // adjust output gain
-        state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;
-        for (n = 0; n < 160; n++) {
-            *state->audio_out_temp_buf_pR =
-                (state->aout_gainR + ((float)n * gaindelta)) * (*state->audio_out_temp_buf_pR);
-            state->audio_out_temp_buf_pR++;
-        }
-        state->aout_gainR += ((float)160 * gaindelta);
-    }
-
-    // copy audio data to output buffer and upsample if necessary
-    state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;
-    //we only want to upsample when using sample rates greater than 8k for output,
+static void
+dsd_audio_emit_output_left(const dsd_opts* opts, dsd_state* state) {
     if (opts->pulse_digi_rate_out > 8000) {
-        for (n = 0; n < 160; n++) {
-            upsample(state, *state->audio_out_temp_buf_pR);
-            state->audio_out_temp_buf_pR++;
-            state->audio_out_float_buf_pR += 6;
-            state->audio_out_idxR += 6;
-            state->audio_out_idx2R += 6;
+        dsd_audio_emit_upsampled_left(opts, state);
+        return;
+    }
+    dsd_audio_emit_native_left(state);
+}
+
+void
+processAudio(const dsd_opts* opts, dsd_state* state) {
+    float gaindelta = dsd_audio_compute_gain_delta_left(opts, state);
+
+    dsd_audio_apply_gain_left(opts, state, gaindelta);
+    dsd_audio_emit_output_left(opts, state);
+}
+
+static float
+dsd_audio_detect_block_peak_right(dsd_state* state) {
+    int n;
+    float max = 0.0F;
+
+    state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;
+    for (n = 0; n < 160; n++) {
+        float aout_abs = fabsf(*state->audio_out_temp_buf_pR);
+        if (aout_abs > max) {
+            max = aout_abs;
         }
-        state->audio_out_float_buf_pR -= (960 + opts->playoffsetR);
-        // copy to output (short) buffer
-        for (n = 0; n < 960; n++) {
-            if (*state->audio_out_float_buf_pR > 32767.0F) {
-                *state->audio_out_float_buf_pR = 32767.0F;
-            } else if (*state->audio_out_float_buf_pR < -32768.0F) {
-                *state->audio_out_float_buf_pR = -32768.0F;
-            }
-            *state->audio_out_buf_pR = (short)*state->audio_out_float_buf_pR;
-            //tap the pointer here and store the short upsample buffer samples
-            state->s_ru[n] = (short)*state->audio_out_float_buf_pR;
-            state->audio_out_buf_pR++;
-            state->audio_out_float_buf_pR++;
-        }
-        state->audio_out_float_buf_pR += opts->playoffsetR;
-    } else {
-        for (n = 0; n < 160; n++) {
-            if (*state->audio_out_temp_buf_pR > 32767.0F) {
-                *state->audio_out_temp_buf_pR = 32767.0F;
-            } else if (*state->audio_out_temp_buf_pR < -32768.0F) {
-                *state->audio_out_temp_buf_pR = -32768.0F;
-            }
-            *state->audio_out_buf_pR = (short)*state->audio_out_temp_buf_pR;
-            //tap the pointer here and store the short buffer samples
-            state->s_r[n] = (short)*state->audio_out_temp_buf_pR;
-            state->audio_out_buf_pR++;
-            state->audio_out_temp_buf_pR++;
-            state->audio_out_idxR++;
-            state->audio_out_idx2R++;
+        state->audio_out_temp_buf_pR++;
+    }
+    return max;
+}
+
+static float
+dsd_audio_update_peak_history_right(dsd_state* state, float block_max) {
+    float max = block_max;
+    int i;
+
+    *state->aout_max_buf_pR = block_max;
+    state->aout_max_buf_pR++;
+    state->aout_max_buf_idxR++;
+
+    if (state->aout_max_buf_idxR > 24) {
+        state->aout_max_buf_idxR = 0;
+        state->aout_max_buf_pR = state->aout_max_bufR;
+    }
+
+    for (i = 0; i < 25; i++) {
+        float maxbuf = state->aout_max_bufR[i];
+        if (maxbuf > max) {
+            max = maxbuf;
         }
     }
+    return max;
+}
+
+static float
+dsd_audio_compute_gain_delta_right(const dsd_opts* opts, dsd_state* state) {
+    float gaindelta;
+    float gainfactor;
+    float max;
+
+    if (opts->audio_gainR != 0.0F) {
+        return 0.0F;
+    }
+
+    max = dsd_audio_detect_block_peak_right(state);
+    max = dsd_audio_update_peak_history_right(state, max);
+
+    if (max > 0.0F) {
+        gainfactor = 30000.0F / max;
+    } else {
+        gainfactor = 50.0F;
+    }
+
+    if (gainfactor < state->aout_gainR) {
+        state->aout_gainR = gainfactor;
+        gaindelta = 0.0F;
+    } else {
+        if (gainfactor > 50.0F) {
+            gainfactor = 50.0F;
+        }
+        gaindelta = gainfactor - state->aout_gainR;
+        if (gaindelta > (0.05F * state->aout_gainR)) {
+            gaindelta = 0.05F * state->aout_gainR;
+        }
+    }
+
+    return gaindelta / 160.0F;
+}
+
+static void
+dsd_audio_apply_gain_right(const dsd_opts* opts, dsd_state* state, float gaindelta) {
+    int n;
+
+    if (opts->audio_gainR < 0) {
+        return;
+    }
+
+    state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;
+    for (n = 0; n < 160; n++) {
+        *state->audio_out_temp_buf_pR = (state->aout_gainR + ((float)n * gaindelta)) * (*state->audio_out_temp_buf_pR);
+        state->audio_out_temp_buf_pR++;
+    }
+    state->aout_gainR += 160.0F * gaindelta;
+}
+
+static void
+dsd_audio_emit_upsampled_right(const dsd_opts* opts, dsd_state* state) {
+    int n;
+
+    state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;
+    for (n = 0; n < 160; n++) {
+        upsample(state, *state->audio_out_temp_buf_pR);
+        state->audio_out_temp_buf_pR++;
+        state->audio_out_float_buf_pR += 6;
+        state->audio_out_idxR += 6;
+        state->audio_out_idx2R += 6;
+    }
+
+    state->audio_out_float_buf_pR -= (960 + opts->playoffsetR);
+    for (n = 0; n < 960; n++) {
+        *state->audio_out_float_buf_pR = dsd_audio_clamp_pcm16_f32(*state->audio_out_float_buf_pR);
+        *state->audio_out_buf_pR = (short)*state->audio_out_float_buf_pR;
+        state->s_ru[n] = (short)*state->audio_out_float_buf_pR;
+        state->audio_out_buf_pR++;
+        state->audio_out_float_buf_pR++;
+    }
+    state->audio_out_float_buf_pR += opts->playoffsetR;
+}
+
+static void
+dsd_audio_emit_native_right(dsd_state* state) {
+    int n;
+
+    state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;
+    for (n = 0; n < 160; n++) {
+        *state->audio_out_temp_buf_pR = dsd_audio_clamp_pcm16_f32(*state->audio_out_temp_buf_pR);
+        *state->audio_out_buf_pR = (short)*state->audio_out_temp_buf_pR;
+        state->s_r[n] = (short)*state->audio_out_temp_buf_pR;
+        state->audio_out_buf_pR++;
+        state->audio_out_temp_buf_pR++;
+        state->audio_out_idxR++;
+        state->audio_out_idx2R++;
+    }
+}
+
+static void
+dsd_audio_emit_output_right(const dsd_opts* opts, dsd_state* state) {
+    if (opts->pulse_digi_rate_out > 8000) {
+        dsd_audio_emit_upsampled_right(opts, state);
+        return;
+    }
+    dsd_audio_emit_native_right(state);
+}
+
+void
+processAudioR(const dsd_opts* opts, dsd_state* state) {
+    float gaindelta = dsd_audio_compute_gain_delta_right(opts, state);
+
+    dsd_audio_apply_gain_right(opts, state, gaindelta);
+    dsd_audio_emit_output_right(opts, state);
 }
 
 void
@@ -675,19 +777,6 @@ writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-writeRawSample(dsd_opts* opts, dsd_state* state, short sample) {
-    UNUSED(state);
-
-    //short aout_buf[160];
-    //sf_write_short(opts->wav_out_raw, aout_buf, 160);
-
-    //only write if actual audio, truncate silence
-    if (sample != 0) {
-        sf_write_short(opts->wav_out_raw, &sample, 2); //2 to match pulseaudio input sample read
-    }
-}
-
-void
 playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
 
     //don't synthesize voice if slot is turned off
@@ -695,8 +784,8 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
         //clear any previously buffered audio
         state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
         state->audio_out_buf_p = state->audio_out_buf + 100;
-        memset(state->audio_out_float_buf, 0, 100 * sizeof(float));
-        memset(state->audio_out_buf, 0, 100 * sizeof(short));
+        DSD_MEMSET(state->audio_out_float_buf, 0, 100 * sizeof(float));
+        DSD_MEMSET(state->audio_out_buf, 0, 100 * sizeof(short));
         state->audio_out_idx2 = 0;
         state->audio_out_idx = 0;
         goto end_psv;
@@ -734,8 +823,8 @@ end_psv:
     if (state->audio_out_idx2 >= 800000) {
         state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
         state->audio_out_buf_p = state->audio_out_buf + 100;
-        memset(state->audio_out_float_buf, 0, 100 * sizeof(float));
-        memset(state->audio_out_buf, 0, 100 * sizeof(short));
+        DSD_MEMSET(state->audio_out_float_buf, 0, 100 * sizeof(float));
+        DSD_MEMSET(state->audio_out_buf, 0, 100 * sizeof(short));
         state->audio_out_idx2 = 0;
     }
 }
@@ -768,8 +857,8 @@ playSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
     if (state->audio_out_idx2R >= 800000) {
         state->audio_out_float_buf_pR = state->audio_out_float_bufR + 100;
         state->audio_out_buf_pR = state->audio_out_bufR + 100;
-        memset(state->audio_out_float_bufR, 0, 100 * sizeof(float));
-        memset(state->audio_out_bufR, 0, 100 * sizeof(short));
+        DSD_MEMSET(state->audio_out_float_bufR, 0, 100 * sizeof(float));
+        DSD_MEMSET(state->audio_out_bufR, 0, 100 * sizeof(short));
         state->audio_out_idx2R = 0;
     }
 }
@@ -785,13 +874,11 @@ openAudioOutDevice(dsd_opts* opts, int speed) {
     if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_PULSE;
     }
-    fprintf(stderr, "Audio Out Device: %s\n", opts->audio_out_dev);
+    DSD_FPRINTF(stderr, "Audio Out Device: %s\n", opts->audio_out_dev);
 }
 
-int
-openAudioInDevice(dsd_opts* opts, dsd_state* state) {
-    int old_effective_input_rate = dsd_opts_current_input_timing_rate(opts);
-
+static void
+dsd_audio_release_input_sources(dsd_opts* opts) {
     if (opts->audio_in_file) {
         sf_close(opts->audio_in_file);
         opts->audio_in_file = NULL;
@@ -812,257 +899,273 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
         dsd_net_audio_input_hook_udp_stop(opts);
     }
     dsd_opts_reset_pcm_input_state(opts);
-    if (state) {
-        /* .bin symbol replay can opt into paced playback; reset before probing input type. */
-        state->use_throttle = 0;
-        state->symbol_replay_next_deadline_ns = 0;
+}
+
+static void
+dsd_audio_reset_symbol_replay_pacing(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->use_throttle = 0;
+    state->symbol_replay_next_deadline_ns = 0;
+}
+
+static SF_INFO*
+dsd_audio_alloc_pcm16_mono_info_exact_rate(int sample_rate_hz) {
+    SF_INFO* info = calloc(1, sizeof(*info));
+    if (!info) {
+        return NULL;
     }
 
-    char* extension;
-    const char ch = '.';
-    extension = strrchr(opts->audio_in_dev, ch); //return extension if this is a .wav or .bin file
+    info->samplerate = sample_rate_hz;
+    info->channels = 1;
+    info->seekable = 0;
+    info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
+    return info;
+}
 
-    //if no extension set, give default of .wav -- bugfix for github issue #105
-    // if (extension == NULL) extension = ".wav";
-
-    // get info of device/file
-    if (strncmp(opts->audio_in_dev, "-", 1) == 0) {
-        opts->audio_in_type = AUDIO_IN_STDIN;
-        opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
-        if (opts->audio_in_file_info == NULL) {
-            LOG_ERROR("Error, couldn't allocate memory for audio input\n");
-            return -1;
-        }
-        opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
-        opts->audio_in_file_info->channels = 1;
-        opts->audio_in_file_info->seekable = 0;
-        opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-        opts->audio_in_file = sf_open_fd(dsd_fileno(stdin), SFM_READ, opts->audio_in_file_info, 0);
-
-        if (opts->audio_in_file == NULL) {
-            LOG_ERROR("Error, couldn't open stdin with libsndfile: %s\n", sf_strerror(NULL));
-            free(opts->audio_in_file_info);
-            opts->audio_in_file_info = NULL;
-            return -1;
-        }
+static int
+dsd_audio_open_stdin_input(dsd_opts* opts) {
+    opts->audio_in_type = AUDIO_IN_STDIN;
+    opts->audio_in_file_info = dsd_audio_alloc_pcm16_mono_info_exact_rate(opts->wav_sample_rate);
+    if (opts->audio_in_file_info == NULL) {
+        LOG_ERROR("Error, couldn't allocate memory for audio input\n");
+        return -1;
     }
 
-    else if (dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) {
-        opts->audio_in_type = AUDIO_IN_NULL; //NULL audio device
+    opts->audio_in_file = sf_open_fd(dsd_fileno(stdin), SFM_READ, opts->audio_in_file_info, 0);
+    if (opts->audio_in_file == NULL) {
+        LOG_ERROR("Error, couldn't open stdin with libsndfile: %s\n", sf_strerror(NULL));
+        free(opts->audio_in_file_info);
+        opts->audio_in_file_info = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+static int
+dsd_audio_open_udp_input(dsd_opts* opts) {
+    opts->audio_in_type = AUDIO_IN_UDP;
+
+    if (opts->udp_in_portno == 0) {
+        opts->udp_in_portno = 7355;
+    }
+    if (opts->udp_in_bindaddr[0] == '\0') {
+        DSD_SNPRINTF(opts->udp_in_bindaddr, sizeof(opts->udp_in_bindaddr), "%s", "127.0.0.1");
     }
 
-    else if (dsd_opts_audio_in_dev_is_udp_spec(opts->audio_in_dev)) {
-        // UDP direct audio input (PCM16LE)
-        opts->audio_in_type = AUDIO_IN_UDP;
-        // parse optional udp:addr:port string
-        // default bind 127.0.0.1:7355 (matches TCP default)
-        if (opts->udp_in_portno == 0) {
-            opts->udp_in_portno = 7355;
-        }
-        if (opts->udp_in_bindaddr[0] == '\0') {
-            snprintf(opts->udp_in_bindaddr, sizeof(opts->udp_in_bindaddr), "%s", "127.0.0.1");
-        }
-        // Start UDP input
-        if (dsd_net_audio_input_hook_udp_start(opts, opts->udp_in_bindaddr, opts->udp_in_portno, opts->wav_sample_rate)
-            < 0) {
-            fprintf(stderr, "Error, couldn't start UDP input on %s:%d\n", opts->udp_in_bindaddr, opts->udp_in_portno);
-            return -1;
-        }
-        fprintf(stderr, "Waiting for UDP audio on %s:%d ...\n", opts->udp_in_bindaddr, opts->udp_in_portno);
+    if (dsd_net_audio_input_hook_udp_start(opts, opts->udp_in_bindaddr, opts->udp_in_portno, opts->wav_sample_rate)
+        < 0) {
+        DSD_FPRINTF(stderr, "Error, couldn't start UDP input on %s:%d\n", opts->udp_in_bindaddr, opts->udp_in_portno);
+        return -1;
     }
 
-    else if (dsd_opts_audio_in_dev_is_tcp_spec(opts->audio_in_dev)) {
-        opts->audio_in_type = AUDIO_IN_TCP;
-        opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
-        if (opts->tcp_in_ctx == NULL) {
-            LOG_ERROR("Error, couldn't open TCP audio input\n");
-            return -1;
-        }
+    DSD_FPRINTF(stderr, "Waiting for UDP audio on %s:%d ...\n", opts->udp_in_bindaddr, opts->udp_in_portno);
+    return 0;
+}
+
+static int
+dsd_audio_open_tcp_input(dsd_opts* opts) {
+    opts->audio_in_type = AUDIO_IN_TCP;
+    opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
+    if (opts->tcp_in_ctx == NULL) {
+        LOG_ERROR("Error, couldn't open TCP audio input\n");
+        return -1;
     }
+    return 0;
+}
 
-    // else if (strncmp(opts->audio_in_dev, "udp", 3) == 0)
-    // {
-    //   opts->audio_in_type = AUDIO_IN_UDP;
-    //   opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
-    //   opts->audio_in_file_info->samplerate=opts->wav_sample_rate;
-    //   opts->audio_in_file_info->channels=1;
-    //   opts->audio_in_file_info->seekable=0;
-    //   opts->audio_in_file_info->format=SF_FORMAT_RAW|SF_FORMAT_PCM_16|SF_ENDIAN_LITTLE;
-    //   opts->udp_file_in = sf_open_fd(opts->udp_sockfd, SFM_READ, opts->audio_in_file_info, 0);
-
-    //   if(opts->udp_file_in == NULL)
-    //   {
-    //     fprintf(stderr, "Error, couldn't open UDP with libsndfile: %s\n", sf_strerror(NULL));
-    //     return;
-    //   }
-    // }
-
-    else if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)
-             || dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
-             || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
-             || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)) {
+static int
+dsd_audio_select_radio_or_pulse_input(dsd_opts* opts) {
 #ifdef USE_RADIO
-        opts->audio_in_type = AUDIO_IN_RTL;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    return 0;
 #else
-        if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
-            LOG_ERROR("IQ replay requires a build with radio pipeline support.\n");
-            return -1;
-        }
-        opts->audio_in_type = AUDIO_IN_PULSE;
-        sprintf(opts->audio_in_dev, "pulse");
+    if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
+        LOG_ERROR("IQ replay requires a build with radio pipeline support.\n");
+        return -1;
+    }
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    DSD_SPRINTF(opts->audio_in_dev, "pulse");
+    return 0;
 #endif
-    } else if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
+}
+
+static int
+dsd_audio_try_open_named_input(dsd_opts* opts) {
+    if (strncmp(opts->audio_in_dev, "-", 1) == 0) {
+        return (dsd_audio_open_stdin_input(opts) == 0) ? 1 : -1;
+    }
+    if (dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) {
+        opts->audio_in_type = AUDIO_IN_NULL;
+        return 1;
+    }
+    if (dsd_opts_audio_in_dev_is_udp_spec(opts->audio_in_dev)) {
+        return (dsd_audio_open_udp_input(opts) == 0) ? 1 : -1;
+    }
+    if (dsd_opts_audio_in_dev_is_tcp_spec(opts->audio_in_dev)) {
+        return (dsd_audio_open_tcp_input(opts) == 0) ? 1 : -1;
+    }
+    if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)
+        || dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
+        || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
+        || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)) {
+#ifdef USE_RADIO
+        (void)dsd_audio_select_radio_or_pulse_input(opts);
+        return 1;
+#else
+        return (dsd_audio_select_radio_or_pulse_input(opts) == 0) ? 1 : -1;
+#endif
+    }
+    if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_PULSE;
+        return 1;
+    }
+    return 0;
+}
+
+static int
+dsd_audio_open_headless_wav_input(dsd_opts* opts, int sample_rate_hz, int include_path_in_error) {
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->audio_in_file_info = dsd_audio_alloc_pcm16_mono_info_exact_rate(sample_rate_hz);
+    if (opts->audio_in_file_info == NULL) {
+        LOG_ERROR("Error, couldn't allocate memory for audio input\n");
+        return -1;
     }
 
-    //if no extension set, treat as named pipe or extensionless wav file -- bugfix for github issue #105
-    else if (extension == NULL) {
-        opts->audio_in_type = AUDIO_IN_WAV;
-        opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
-        if (opts->audio_in_file_info == NULL) {
-            LOG_ERROR("Error, couldn't allocate memory for audio input\n");
-            return -1;
-        }
-        opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
-        opts->audio_in_file_info->channels = 1;
-        opts->audio_in_file_info->seekable = 0;
-        opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-        opts->audio_in_file = sf_open(opts->audio_in_dev, SFM_READ, opts->audio_in_file_info);
-
-        if (opts->audio_in_file == NULL) {
-            LOG_ERROR("Error, couldn't open file/pipe with libsndfile: %s\n", sf_strerror(NULL));
-            free(opts->audio_in_file_info);
-            opts->audio_in_file_info = NULL;
-            return -1;
-        }
-    }
-
-    //test .rrc files with hardset wav file settings
-    else if (strncmp(extension, ".rrc", 4) == 0) {
-        //debug
-        fprintf(stderr, "Opening M17 .rrc headless wav file\n");
-
-        opts->audio_in_type = AUDIO_IN_WAV;
-        opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
-        if (opts->audio_in_file_info == NULL) {
-            LOG_ERROR("Error, couldn't allocate memory for audio input\n");
-            return -1;
-        }
-        opts->audio_in_file_info->samplerate = 48000;
-        opts->audio_in_file_info->channels = 1;
-        opts->audio_in_file_info->seekable = 0;
-        opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-        opts->audio_in_file = sf_open(opts->audio_in_dev, SFM_READ, opts->audio_in_file_info);
-
-        if (opts->audio_in_file == NULL) {
+    opts->audio_in_file = sf_open(opts->audio_in_dev, SFM_READ, opts->audio_in_file_info);
+    if (opts->audio_in_file == NULL) {
+        if (include_path_in_error) {
             LOG_ERROR("Error, couldn't open %s with libsndfile: %s\n", opts->audio_in_dev, sf_strerror(NULL));
-            free(opts->audio_in_file_info);
-            opts->audio_in_file_info = NULL;
-            return -1;
-        }
-    }
-
-    //Open .raw files as a float input type
-    else if (strncmp(extension, ".raw", 4) == 0) {
-        dsd_stat_t stat_buf;
-        if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
-            LOG_ERROR("Error, couldn't open raw (float) file %s\n", opts->audio_in_dev);
-            return -1;
-        }
-        if (dsd_stat_is_regular(&stat_buf)) {
-            opts->symbolfile = fopen(opts->audio_in_dev, "rb");
-            if (opts->symbolfile == NULL) {
-                LOG_ERROR("Error, couldn't open raw (float) file %s\n", opts->audio_in_dev);
-                return -1;
-            }
-            opts->audio_in_type = AUDIO_IN_SYMBOL_FLT; //float symbol input
         } else {
-            opts->audio_in_type = AUDIO_IN_PULSE;
+            LOG_ERROR("Error, couldn't open file/pipe with libsndfile: %s\n", sf_strerror(NULL));
+        }
+        free(opts->audio_in_file_info);
+        opts->audio_in_file_info = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+static void
+dsd_audio_enable_bin_symbol_replay(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->use_throttle = 1;
+    state->symbol_replay_next_deadline_ns = 0;
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+    state->symbol_replay_header_checked = 0;
+    state->symbol_replay_has_soft = 0;
+}
+
+static int
+dsd_audio_open_symbol_input(dsd_opts* opts, dsd_state* state, int symbol_type, const char* label) {
+    dsd_stat_t stat_buf;
+
+    if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
+        LOG_ERROR("Error, couldn't open %s file %s\n", label, opts->audio_in_dev);
+        return -1;
+    }
+    if (!dsd_stat_is_regular(&stat_buf)) {
+        opts->audio_in_type = AUDIO_IN_PULSE;
+        return 0;
+    }
+
+    opts->symbolfile = fopen(opts->audio_in_dev, "rb");
+    if (opts->symbolfile == NULL) {
+        LOG_ERROR("Error, couldn't open %s file %s\n", label, opts->audio_in_dev);
+        return -1;
+    }
+
+    opts->audio_in_type = symbol_type;
+    if (symbol_type == AUDIO_IN_SYMBOL_BIN) {
+        dsd_audio_enable_bin_symbol_replay(state);
+    }
+    return 0;
+}
+
+static int
+dsd_audio_open_fallback_file_input(dsd_opts* opts, dsd_state* state, int old_effective_input_rate) {
+    dsd_stat_t stat_buf;
+
+    if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
+        LOG_ERROR("Error, couldn't open input file %s\n", opts->audio_in_dev);
+        return -1;
+    }
+    if (!dsd_stat_is_regular(&stat_buf)) {
+        LOG_ERROR("Error, couldn't open input file.\n");
+        return -1;
+    }
+
+    opts->audio_in_type = AUDIO_IN_WAV;
+    int configured_file_sample_rate = dsd_opts_requested_file_sample_rate(opts);
+    int active_sample_rate = configured_file_sample_rate;
+    int opened_as_container = 0;
+    if (dsd_audio_open_mono_file_input(opts->audio_in_dev, configured_file_sample_rate, &opts->audio_in_file,
+                                       &opts->audio_in_file_info, &active_sample_rate, &opened_as_container)
+        != 0) {
+        LOG_ERROR("Error, couldn't open input file %s\n", opts->audio_in_dev);
+        return -1;
+    }
+
+    if (active_sample_rate != opts->wav_sample_rate) {
+        if (opened_as_container) {
+            LOG_NOTICE("WAV header sample rate %d Hz overrides configured %d Hz for %s\n", active_sample_rate,
+                       configured_file_sample_rate, opts->audio_in_dev);
+        }
+        dsd_audio_apply_input_sample_rate(opts, state, old_effective_input_rate, active_sample_rate);
+    }
+    return 0;
+}
+
+static int
+dsd_audio_open_extension_input(dsd_opts* opts, dsd_state* state, const char* extension, int old_effective_input_rate) {
+    if (extension == NULL) {
+        return dsd_audio_open_headless_wav_input(opts, opts->wav_sample_rate, 0);
+    }
+    if (strncmp(extension, ".rrc", 4) == 0) {
+        DSD_FPRINTF(stderr, "Opening M17 .rrc headless wav file\n");
+        return dsd_audio_open_headless_wav_input(opts, 48000, 1);
+    }
+    if (strncmp(extension, ".raw", 4) == 0) {
+        return dsd_audio_open_symbol_input(opts, state, AUDIO_IN_SYMBOL_FLT, "raw (float)");
+    }
+    if (strncmp(extension, ".sym", 4) == 0) {
+        return dsd_audio_open_symbol_input(opts, state, AUDIO_IN_SYMBOL_FLT, "sym (float)");
+    }
+    if (strncmp(extension, ".bin", 4) == 0) {
+        return dsd_audio_open_symbol_input(opts, state, AUDIO_IN_SYMBOL_BIN, "bin");
+    }
+    return dsd_audio_open_fallback_file_input(opts, state, old_effective_input_rate);
+}
+
+int
+openAudioInDevice(dsd_opts* opts, dsd_state* state) {
+    if (opts == NULL || state == NULL) {
+        return -1;
+    }
+    int old_effective_input_rate = dsd_opts_current_input_timing_rate(opts);
+    int named_input_status;
+
+    dsd_audio_release_input_sources(opts);
+    dsd_audio_reset_symbol_replay_pacing(state);
+
+    named_input_status = dsd_audio_try_open_named_input(opts);
+    if (named_input_status < 0) {
+        return -1;
+    }
+    if (named_input_status == 0) {
+        const char* extension = strrchr(opts->audio_in_dev, '.');
+        if (dsd_audio_open_extension_input(opts, state, extension, old_effective_input_rate) != 0) {
+            return -1;
         }
     }
 
-    //Open .raw files as a float input type
-    else if (strncmp(extension, ".sym", 4) == 0) {
-        dsd_stat_t stat_buf;
-        if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
-            LOG_ERROR("Error, couldn't open sym (float) file %s\n", opts->audio_in_dev);
-            return -1;
-        }
-        if (dsd_stat_is_regular(&stat_buf)) {
-            opts->symbolfile = fopen(opts->audio_in_dev, "rb");
-            if (opts->symbolfile == NULL) {
-                LOG_ERROR("Error, couldn't open sym (float) file %s\n", opts->audio_in_dev);
-                return -1;
-            }
-            opts->audio_in_type = AUDIO_IN_SYMBOL_FLT; //float symbol input
-        } else {
-            opts->audio_in_type = AUDIO_IN_PULSE;
-        }
-    }
-
-    else if (strncmp(extension, ".bin", 4) == 0) {
-        dsd_stat_t stat_buf;
-        if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
-            LOG_ERROR("Error, couldn't open bin file %s\n", opts->audio_in_dev);
-            return -1;
-        }
-        if (dsd_stat_is_regular(&stat_buf)) {
-            opts->symbolfile = fopen(opts->audio_in_dev, "rb");
-            if (opts->symbolfile == NULL) {
-                LOG_ERROR("Error, couldn't open bin file %s\n", opts->audio_in_dev);
-                return -1;
-            }
-            opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; //symbol capture bin files
-            if (state) {
-                state->use_throttle = 1;
-                state->symbol_replay_next_deadline_ns = 0;
-                state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
-                state->symbol_replay_header_checked = 0;
-                state->symbol_replay_has_soft = 0;
-            }
-        } else {
-            opts->audio_in_type = AUDIO_IN_PULSE;
-        }
-    }
-    //open as wav file as last resort, wav files subseptible to sample rate issues if not 48000
-    else {
-        dsd_stat_t stat_buf;
-        if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
-            LOG_ERROR("Error, couldn't open input file %s\n", opts->audio_in_dev);
-            return -1;
-        }
-        if (dsd_stat_is_regular(&stat_buf)) {
-            opts->audio_in_type = AUDIO_IN_WAV; //two now, seperating STDIN and wav files
-            int configured_file_sample_rate = dsd_opts_requested_file_sample_rate(opts);
-            int active_sample_rate = configured_file_sample_rate;
-            int opened_as_container = 0;
-            if (dsd_audio_open_mono_file_input(opts->audio_in_dev, configured_file_sample_rate, &opts->audio_in_file,
-                                               &opts->audio_in_file_info, &active_sample_rate, &opened_as_container)
-                != 0) {
-                LOG_ERROR("Error, couldn't open input file %s\n", opts->audio_in_dev);
-                return -1;
-            }
-
-            if (active_sample_rate != opts->wav_sample_rate) {
-                if (opened_as_container) {
-                    LOG_NOTICE("WAV header sample rate %d Hz overrides configured %d Hz for %s\n", active_sample_rate,
-                               configured_file_sample_rate, opts->audio_in_dev);
-                }
-                dsd_audio_apply_input_sample_rate(opts, state, old_effective_input_rate, active_sample_rate);
-            }
-
-        }
-        //open pulse audio if no bin or wav
-        else //seems this condition is never met
-        {
-            LOG_ERROR("Error, couldn't open input file.\n");
-            return -1;
-        }
-    }
     if (opts->split == 1) {
-        fprintf(stderr, "Audio In Device: %s\n", opts->audio_in_dev);
+        DSD_FPRINTF(stderr, "Audio In Device: %s\n", opts->audio_in_dev);
     } else {
-        fprintf(stderr, "Audio In/Out Device: %s\n", opts->audio_in_dev);
+        DSD_FPRINTF(stderr, "Audio In/Out Device: %s\n", opts->audio_in_dev);
     }
     return 0;
 }

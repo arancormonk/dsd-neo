@@ -10,48 +10,12 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
-
-extern int dsd_dispatch_matches_nxdn(int synctype);
-extern void dsd_dispatch_handle_nxdn(dsd_opts* opts, dsd_state* state);
-
-extern int dsd_dispatch_matches_dstar(int synctype);
-extern void dsd_dispatch_handle_dstar(dsd_opts* opts, dsd_state* state);
-
-extern int dsd_dispatch_matches_dmr(int synctype);
-extern void dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state);
-
-extern int dsd_dispatch_matches_x2tdma(int synctype);
-extern void dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state);
-
-extern int dsd_dispatch_matches_provoice(int synctype);
-extern void dsd_dispatch_handle_provoice(dsd_opts* opts, dsd_state* state);
-
-extern int dsd_dispatch_matches_edacs(int synctype);
-extern void dsd_dispatch_handle_edacs(dsd_opts* opts, dsd_state* state);
-
-extern int dsd_dispatch_matches_ysf(int synctype);
-extern void dsd_dispatch_handle_ysf(dsd_opts* opts, dsd_state* state);
-
-extern int dsd_dispatch_matches_m17(int synctype);
-extern void dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state);
-
-extern int dsd_dispatch_matches_p25p2(int synctype);
-extern void dsd_dispatch_handle_p25p2(dsd_opts* opts, dsd_state* state);
-
-extern int dsd_dispatch_matches_dpmr(int synctype);
-extern void dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state);
-
-extern int dsd_dispatch_matches_p25p1(int synctype);
-extern void dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
+#include "protocol_dispatch_impl.h"
 
 static const dsd_protocol_handler*
 dsd_find_protocol_handler(int synctype) {
     const dsd_protocol_handler* handler = dsd_protocol_handlers;
     const dsd_protocol_handler* fallback = NULL;
-
-    if (handler == NULL) {
-        return NULL;
-    }
 
     while (handler->name != NULL) {
         if (handler->matches_synctype != NULL && handler->matches_synctype(synctype)) {

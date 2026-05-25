@@ -10,7 +10,8 @@
  * For high-level startup orchestration (config discovery/one-shots/interactive
  * bootstrap decisions), see `include/dsd-neo/runtime/bootstrap.h`.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_CLI_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_CLI_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -87,3 +88,4 @@ void dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_CLI_H_H */

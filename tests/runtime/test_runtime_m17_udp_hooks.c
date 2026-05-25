@@ -17,10 +17,10 @@ static int g_receiver_calls = 0;
 static int g_blaster_calls = 0;
 static char* g_last_hostname = NULL;
 static int g_last_portno = 0;
-static dsd_opts* g_last_opts = NULL;
+static const dsd_opts* g_last_opts = NULL;
 static dsd_state* g_last_state = NULL;
 static size_t g_last_nsam = 0;
-static void* g_last_data = NULL;
+static const void* g_last_data = NULL;
 
 static void
 reset_state(void) {
@@ -47,21 +47,27 @@ fake_udp_bind(char* hostname, int portno) {
 static int
 fake_connect(dsd_opts* opts, dsd_state* state) {
     g_connect_calls++;
+    if (opts) {
+        ((unsigned char*)opts)[0] = 0U;
+    }
     g_last_opts = opts;
     g_last_state = state;
     return 11;
 }
 
 static int
-fake_receiver(dsd_opts* opts, void* data) {
+fake_receiver(const dsd_opts* opts, void* data) {
     g_receiver_calls++;
+    if (data) {
+        ((unsigned char*)data)[0] = 0U;
+    }
     g_last_opts = opts;
     g_last_data = data;
     return 22;
 }
 
 static int
-fake_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
+fake_blaster(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     g_blaster_calls++;
     g_last_opts = opts;
     g_last_state = state;

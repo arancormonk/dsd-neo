@@ -10,16 +10,12 @@
  * 2022-10 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <stdint.h>
-#ifdef USE_RTLSDR
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#endif
+#include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
@@ -28,12 +24,16 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#ifdef USE_RTLSDR
+#endif
 
 static int16_t
 saturating_llr_add(int acc, int value) {
@@ -47,220 +47,227 @@ saturating_llr_add(int acc, int value) {
     return (int16_t)acc;
 }
 
-void
-processTSBK(dsd_opts* opts, dsd_state* state) {
+enum {
+    TSBK_REPETITIONS = 3,
+    TSBK_DIBITS_PER_REP = 98,
+    TSBK_DIBITS_WITH_STATUS = 101,
+    TSBK_SOFT_BITS_PER_REP = 196,
+    TSBK_BYTES_PER_BLOCK = 12,
+    TSBK_BITS_PER_BLOCK = 96
+};
+
+typedef struct {
+    uint8_t tsbk_dibit[TSBK_DIBITS_PER_REP];
+    int16_t tsbk_llr[TSBK_SOFT_BITS_PER_REP];
+    int16_t rep_llr[TSBK_REPETITIONS][TSBK_SOFT_BITS_PER_REP];
+    uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK];
+    uint8_t rep_bits[TSBK_REPETITIONS][TSBK_BITS_PER_BLOCK];
+    uint8_t rep_bytes[TSBK_REPETITIONS][TSBK_BYTES_PER_BLOCK];
+    int rep_crc[TSBK_REPETITIONS];
+    int tsbk_decoded_bits[TSBK_BITS_PER_BLOCK];
+} tsbk_decode_ctx_t;
+
+static void
+tsbk_prepare_frame_state(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_tsbk++;
 
-    // Reset counters and buffers to avoid carryover from voice paths
+    // Reset counters and buffers to avoid carryover from voice paths.
     state->voice_counter[0] = 0;
     state->voice_counter[1] = 0;
-    memset(state->s_l4, 0, sizeof(state->s_l4));
-    memset(state->s_r4, 0, sizeof(state->s_r4));
+    DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
+    DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
     opts->slot_preference = 2;
 
-    // Ensure slot index is sane when swapping protocols
+    // Ensure slot index is sane when swapping protocols.
     state->currentslot = 0;
 
     p25_status_accum_ensure_started(state);
 
-    // Clear stale Active Channel messages after idle
+    // Clear stale active-channel text after a short idle gap.
     const time_t now = time(NULL);
     if ((now - state->last_active_time) > 3) {
-        memset(state->active_channel, 0, sizeof(state->active_channel));
+        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
     }
+}
 
-    // Buffers
-    uint8_t tsbk_dibit[98];
-    memset(tsbk_dibit, 0, sizeof(tsbk_dibit));
+static void
+tsbk_init_decode_ctx(tsbk_decode_ctx_t* ctx) {
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    for (int i = 0; i < TSBK_REPETITIONS; i++) {
+        ctx->rep_crc[i] = -2;
+    }
+}
 
-    int16_t tsbk_llr[196];
-    memset(tsbk_llr, 0, sizeof(tsbk_llr));
-    int16_t rep_llr[3][196];
-    memset(rep_llr, 0, sizeof(rep_llr));
-
-    uint8_t tsbk_byte[12]; // per repetition
-    memset(tsbk_byte, 0, sizeof(tsbk_byte));
-
-    // Store decoded 96 bits from each of the 3 repetitions
-    uint8_t rep_bits[3][96];
-    memset(rep_bits, 0, sizeof(rep_bits));
-    uint8_t rep_bytes[3][12];
-    memset(rep_bytes, 0, sizeof(rep_bytes));
-    int rep_crc[3] = {-2, -2, -2};
-
-    unsigned long long int PDU[24];
-    memset(PDU, 0, sizeof(PDU));
-
-    int tsbk_decoded_bits[96];
-    memset(tsbk_decoded_bits, 0, sizeof(tsbk_decoded_bits));
-
-    int i, j, k, x;
-    int err = -2; // CRC16 result (majority)
-
-    int protectbit = 0;
-    int MFID = 0xFF;
-
-    // Status-dibit skipping state
-    int skipdibit = 36 - 14;
-    int status_count = 1;
-    int dibit_count = 0;
-    UNUSED(status_count);
-    UNUSED(dibit_count);
-
-    // Collect up to 3 repetitions of 101 dibits (with status dibits interlaced)
-    int reps_got = 0;
-    for (j = 0; j < 3; j++) {
-        k = 0;
-        for (i = 0; i < 101; i++) {
-            dsd_dibit_soft_t soft;
-            int dibit = getDibitSoft(opts, state, &soft);
-            if ((skipdibit / 36) == 0) {
-                dibit_count++;
-                tsbk_dibit[k] = (uint8_t)dibit;
-                tsbk_llr[(k * 2) + 0] = soft.llr[0];
-                tsbk_llr[(k * 2) + 1] = soft.llr[1];
-                k++;
-            } else {
-                p25_status_accum_add(state, dibit);
-                skipdibit = 0;
-                status_count++;
-            }
-            skipdibit++;
+static void
+tsbk_bits_from_bytes(const uint8_t bytes[TSBK_BYTES_PER_BLOCK], int bits[TSBK_BITS_PER_BLOCK]) {
+    int bit_index = 0;
+    for (int b = 0; b < TSBK_BYTES_PER_BLOCK; b++) {
+        for (int bit = 0; bit < 8; bit++) {
+            bits[bit_index++] = ((bytes[b] << bit) & 0x80) >> 7;
         }
+    }
+}
 
-        // 1/2-rate decode this repetition; prefer a CRC-valid soft-list candidate.
-        p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
-        int candidate_count = p25_12_soft_llr_list(tsbk_dibit, tsbk_llr, candidates, P25_12_MAX_CANDIDATES);
-        if (candidate_count > 0) {
-            int selected = 0;
-            for (int c = 0; c < candidate_count; c++) {
-                int candidate_bits[96];
-                int bit_index = 0;
-                for (int b = 0; b < 12; b++) {
-                    for (int bit = 0; bit < 8; bit++) {
-                        candidate_bits[bit_index++] = ((candidates[c].bytes[b] << bit) & 0x80) >> 7;
-                    }
-                }
-                if (crc16_lb_bridge(candidate_bits, 80) == 0) {
-                    selected = c;
-                    break;
-                }
-            }
-            memcpy(tsbk_byte, candidates[selected].bytes, 12);
+static void
+tsbk_bytes_from_bits(const uint8_t bits[TSBK_BITS_PER_BLOCK], uint8_t bytes[TSBK_BYTES_PER_BLOCK]) {
+    for (int i = 0; i < TSBK_BYTES_PER_BLOCK; i++) {
+        int byte = 0;
+        for (int x = 0; x < 8; x++) {
+            byte = (byte << 1) | (bits[(i * 8) + x] & 1);
+        }
+        bytes[i] = (uint8_t)byte;
+    }
+}
+
+static int
+tsbk_select_crc_candidate(const p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES], int candidate_count,
+                          int default_index) {
+    for (int c = 0; c < candidate_count; c++) {
+        int candidate_bits[TSBK_BITS_PER_BLOCK];
+        tsbk_bits_from_bytes(candidates[c].bytes, candidate_bits);
+        if (crc16_lb_bridge(candidate_bits, 80) == 0) {
+            return c;
+        }
+    }
+    return default_index;
+}
+
+static void
+tsbk_decode_repetition_bytes(const uint8_t tsbk_dibit[TSBK_DIBITS_PER_REP],
+                             const int16_t tsbk_llr[TSBK_SOFT_BITS_PER_REP], uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
+    int candidate_count = p25_12_soft_llr_list(tsbk_dibit, tsbk_llr, candidates, P25_12_MAX_CANDIDATES);
+    if (candidate_count > 0) {
+        int selected = tsbk_select_crc_candidate(candidates, candidate_count, 0);
+        DSD_MEMCPY(tsbk_byte, candidates[selected].bytes, TSBK_BYTES_PER_BLOCK);
+        return;
+    }
+    (void)p25_12_soft_llr(tsbk_dibit, tsbk_llr, tsbk_byte);
+}
+
+static void
+tsbk_read_repetition_samples(dsd_opts* opts, dsd_state* state, int* skipdibit, uint8_t tsbk_dibit[TSBK_DIBITS_PER_REP],
+                             int16_t tsbk_llr[TSBK_SOFT_BITS_PER_REP]) {
+    int k = 0;
+    for (int i = 0; i < TSBK_DIBITS_WITH_STATUS; i++) {
+        dsd_dibit_soft_t soft;
+        int dibit = getDibitSoft(opts, state, &soft);
+        if ((*skipdibit / 36) == 0) {
+            tsbk_dibit[k] = (uint8_t)dibit;
+            tsbk_llr[(k * 2) + 0] = soft.llr[0];
+            tsbk_llr[(k * 2) + 1] = soft.llr[1];
+            k++;
         } else {
-            (void)p25_12_soft_llr(tsbk_dibit, tsbk_llr, tsbk_byte);
+            p25_status_accum_add(state, dibit);
+            *skipdibit = 0;
         }
-        memcpy(rep_llr[j], tsbk_llr, sizeof(tsbk_llr));
+        (*skipdibit)++;
+    }
+}
 
-        // Convert decoded bytes into a 96-bit MSB-first vector
-        k = 0;
-        for (i = 0; i < 12; i++) {
-            for (x = 0; x < 8; x++) {
-                tsbk_decoded_bits[k++] = ((tsbk_byte[i] << x) & 0x80) >> 7;
-            }
-        }
-        for (i = 0; i < 96; i++) {
-            rep_bits[j][i] = (uint8_t)(tsbk_decoded_bits[i] & 1);
-        }
-        memcpy(rep_bytes[j], tsbk_byte, 12);
+static int
+tsbk_collect_repetitions(dsd_opts* opts, dsd_state* state, tsbk_decode_ctx_t* ctx) {
+    int skipdibit = 36 - 14;
+    int reps_got = 0;
 
-        // Compute per-repetition CRC16 over first 80 bits for later selection
-        rep_crc[j] = crc16_lb_bridge(tsbk_decoded_bits, 80);
+    for (int rep = 0; rep < TSBK_REPETITIONS; rep++) {
+        tsbk_read_repetition_samples(opts, state, &skipdibit, ctx->tsbk_dibit, ctx->tsbk_llr);
+        tsbk_decode_repetition_bytes(ctx->tsbk_dibit, ctx->tsbk_llr, ctx->tsbk_byte);
+
+        DSD_MEMCPY(ctx->rep_llr[rep], ctx->tsbk_llr, sizeof(ctx->tsbk_llr));
+        tsbk_bits_from_bytes(ctx->tsbk_byte, ctx->tsbk_decoded_bits);
+        for (int i = 0; i < TSBK_BITS_PER_BLOCK; i++) {
+            ctx->rep_bits[rep][i] = (uint8_t)(ctx->tsbk_decoded_bits[i] & 1);
+        }
+        DSD_MEMCPY(ctx->rep_bytes[rep], ctx->tsbk_byte, TSBK_BYTES_PER_BLOCK);
+        ctx->rep_crc[rep] = crc16_lb_bridge(ctx->tsbk_decoded_bits, 80);
 
         reps_got++;
-
-        // If this repetition indicates Last Block, further reps typically stop.
-        // Use what we have for majority to avoid blending with the next message.
-        int lb_rep = (tsbk_byte[0] >> 7) & 0x1;
-        if (lb_rep) {
+        if (((ctx->tsbk_byte[0] >> 7) & 0x1) != 0) {
             break;
         }
     }
 
-    // Majority-vote across available repetitions (1..3)
-    uint8_t maj_bits[96];
-    memset(maj_bits, 0, sizeof(maj_bits));
-    int reps = (reps_got > 0) ? reps_got : 1;
+    return reps_got;
+}
+
+static void
+tsbk_build_majority_bits(uint8_t rep_bits[TSBK_REPETITIONS][TSBK_BITS_PER_BLOCK], int reps,
+                         uint8_t maj_bits[TSBK_BITS_PER_BLOCK]) {
+    DSD_MEMSET(maj_bits, 0, TSBK_BITS_PER_BLOCK);
     int thresh = (reps >= 2) ? ((reps + 1) / 2) : 1;
-    for (i = 0; i < 96; i++) {
+    for (int i = 0; i < TSBK_BITS_PER_BLOCK; i++) {
         int sum = 0;
         for (int r = 0; r < reps; r++) {
             sum += (int)rep_bits[r][i];
         }
         maj_bits[i] = (uint8_t)((sum >= thresh) ? 1 : 0);
     }
+}
 
-    // Select best repetition: prefer any CRC-pass rep; otherwise fall back to majority
-    int sel_idx = -1;
+static int
+tsbk_select_passing_repetition(const int rep_crc[TSBK_REPETITIONS], int reps) {
     for (int r = 0; r < reps; r++) {
         if (rep_crc[r] == 0) {
-            sel_idx = r;
-            break;
+            return r;
         }
     }
+    return -1;
+}
+
+static int
+tsbk_try_combined_soft_decode(dsd_state* state, tsbk_decode_ctx_t* ctx, int reps) {
+    int16_t combined_llr[TSBK_SOFT_BITS_PER_REP];
+    DSD_MEMSET(combined_llr, 0, sizeof(combined_llr));
+    for (int i = 0; i < TSBK_SOFT_BITS_PER_REP; i++) {
+        int acc = 0;
+        for (int r = 0; r < reps; r++) {
+            acc = saturating_llr_add(acc, ctx->rep_llr[r][i]);
+        }
+        combined_llr[i] = (int16_t)acc;
+    }
+
+    p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
+    int candidate_count = p25_12_soft_llr_list(NULL, combined_llr, candidates, P25_12_MAX_CANDIDATES);
+    int selected = tsbk_select_crc_candidate(candidates, candidate_count, -1);
+    if (selected < 0) {
+        return -1;
+    }
+
+    DSD_MEMCPY(ctx->tsbk_byte, candidates[selected].bytes, TSBK_BYTES_PER_BLOCK);
+    state->p25_p1_soft_combined_ok++;
+    return 0;
+}
+
+static int
+tsbk_finalize_decode(dsd_state* state, tsbk_decode_ctx_t* ctx, int reps_got) {
+    uint8_t maj_bits[TSBK_BITS_PER_BLOCK];
+    int reps = (reps_got > 0) ? reps_got : 1;
+    tsbk_build_majority_bits(ctx->rep_bits, reps, maj_bits);
+
+    int sel_idx = tsbk_select_passing_repetition(ctx->rep_crc, reps);
     if (sel_idx >= 0) {
-        // Use passing repetition
-        memcpy(tsbk_byte, rep_bytes[sel_idx], 12);
-        err = 0;
-    } else if (reps > 1) {
-        int16_t combined_llr[196];
-        memset(combined_llr, 0, sizeof(combined_llr));
-        for (i = 0; i < 196; i++) {
-            int acc = 0;
-            for (int r = 0; r < reps; r++) {
-                acc = saturating_llr_add(acc, rep_llr[r][i]);
-            }
-            combined_llr[i] = (int16_t)acc;
-        }
-
-        p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
-        int candidate_count = p25_12_soft_llr_list(NULL, combined_llr, candidates, P25_12_MAX_CANDIDATES);
-        int selected = -1;
-        for (int c = 0; c < candidate_count; c++) {
-            int candidate_bits[96];
-            int bit_index = 0;
-            for (int b = 0; b < 12; b++) {
-                for (int bit = 0; bit < 8; bit++) {
-                    candidate_bits[bit_index++] = ((candidates[c].bytes[b] << bit) & 0x80) >> 7;
-                }
-            }
-            if (crc16_lb_bridge(candidate_bits, 80) == 0) {
-                selected = c;
-                break;
-            }
-        }
-        if (selected >= 0) {
-            memcpy(tsbk_byte, candidates[selected].bytes, 12);
-            err = 0;
-            state->p25_p1_soft_combined_ok++;
-        } else {
-            err = -1;
-        }
-    } else {
-        err = -1;
+        DSD_MEMCPY(ctx->tsbk_byte, ctx->rep_bytes[sel_idx], TSBK_BYTES_PER_BLOCK);
+        return 0;
     }
 
-    if (err != 0) {
-        // No rep passed; compute CRC on majority and use majority bytes
-        int maj_bits_int[96];
-        for (i = 0; i < 96; i++) {
-            maj_bits_int[i] = (int)maj_bits[i];
-        }
-        err = crc16_lb_bridge(maj_bits_int, 80);
-        // Rebuild bytes from majority bits for downstream parsing
-        for (i = 0; i < 12; i++) {
-            int byte = 0;
-            for (x = 0; x < 8; x++) {
-                byte = (byte << 1) | (maj_bits[(i * 8) + x] & 1);
-            }
-            tsbk_byte[i] = (uint8_t)byte;
-        }
+    if (reps > 1 && tsbk_try_combined_soft_decode(state, ctx, reps) == 0) {
+        return 0;
     }
 
-    // Update FEC counters once per message
+    int maj_bits_int[TSBK_BITS_PER_BLOCK];
+    for (int i = 0; i < TSBK_BITS_PER_BLOCK; i++) {
+        maj_bits_int[i] = (int)maj_bits[i];
+    }
+    int err = crc16_lb_bridge(maj_bits_int, 80);
+    tsbk_bytes_from_bits(maj_bits, ctx->tsbk_byte);
+    return err;
+}
+
+static void
+tsbk_update_fec_counters(dsd_state* state, int err) {
     if (err == 0) {
-        // Refresh CC activity on any good TSBK decode to keep the SM from
-        // hunting prematurely when CC is healthy but TSBK cadence is sparse.
+        // Refresh CC activity on any good TSBK decode to avoid premature hunting.
         state->last_cc_sync_time = time(NULL);
         state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
         state->p25_p1_fec_ok++;
@@ -273,13 +280,10 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
 #endif
     }
+}
 
-    // Basic field extraction
-    MFID = tsbk_byte[1];
-    protectbit = (tsbk_byte[0] >> 6) & 0x1;
-    /* lb not needed here: only used intra-repetition for early break */
-
-    // Prepare a MAC-like PDU form when applicable
+static void
+tsbk_build_mac_like_pdu(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], unsigned long long int PDU[24]) {
     PDU[0] = 0x07; // P25p1 TSBK DUID
     PDU[1] = tsbk_byte[0] & 0x3F;
     PDU[2] = tsbk_byte[2];
@@ -293,207 +297,260 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
     PDU[10] = 0; // strip CRC for vPDU search
     PDU[11] = 0;
     PDU[1] ^= 0x40; // flip to match MAC_PDU flavor (3D -> 7D)
+}
 
-    // Downstream handling on majority-decoded frame
-    if (MFID < 0x2 && protectbit == 0 && err == 0 && PDU[1] != 0x7B) {
-        fprintf(stderr, "%s", KYEL);
-        process_MAC_VPDU(opts, state, 0, PDU);
-        fprintf(stderr, "%s", KNRM);
-    } else if (MFID == 0x90 && protectbit == 0 && err == 0) {
-        // Motorola MFID90 Group Regroup opcodes
-        int opcode = tsbk_byte[0] & 0x3F;
-        fprintf(stderr, "%s", KYEL);
-
-        if (opcode == 0x00) {
-            // MFID90 GRG Add Command: sg(16), ga1(16), ga2(16), ga3(16)
-            int sg = (tsbk_byte[2] << 8) | tsbk_byte[3];
-            int ga1 = (tsbk_byte[4] << 8) | tsbk_byte[5];
-            int ga2 = (tsbk_byte[6] << 8) | tsbk_byte[7];
-            int ga3 = (tsbk_byte[8] << 8) | tsbk_byte[9];
-            fprintf(stderr, "\n MFID90 (Moto) Group Regroup Add Command\n");
-            fprintf(stderr, "  SG: %d", sg);
-            if (ga1 != 0) {
-                fprintf(stderr, " GA1: %d", ga1);
-                p25_patch_add_wgid(state, sg, ga1);
-            }
-            if (ga2 != 0) {
-                fprintf(stderr, " GA2: %d", ga2);
-                p25_patch_add_wgid(state, sg, ga2);
-            }
-            if (ga3 != 0) {
-                fprintf(stderr, " GA3: %d", ga3);
-                p25_patch_add_wgid(state, sg, ga3);
-            }
-            fprintf(stderr, "\n");
-            p25_patch_update(state, sg, /*is_patch*/ 1, /*active*/ 1);
-
-        } else if (opcode == 0x01) {
-            // MFID90 GRG Del Command: sg(16), ga1(16), ga2(16), ga3(16)
-            int sg = (tsbk_byte[2] << 8) | tsbk_byte[3];
-            int ga1 = (tsbk_byte[4] << 8) | tsbk_byte[5];
-            int ga2 = (tsbk_byte[6] << 8) | tsbk_byte[7];
-            int ga3 = (tsbk_byte[8] << 8) | tsbk_byte[9];
-            fprintf(stderr, "\n MFID90 (Moto) Group Regroup Delete Command\n");
-            fprintf(stderr, "  SG: %d", sg);
-            if (ga1 != 0) {
-                fprintf(stderr, " GA1: %d", ga1);
-                p25_patch_remove_wgid(state, sg, ga1);
-            }
-            if (ga2 != 0) {
-                fprintf(stderr, " GA2: %d", ga2);
-                p25_patch_remove_wgid(state, sg, ga2);
-            }
-            if (ga3 != 0) {
-                fprintf(stderr, " GA3: %d", ga3);
-                p25_patch_remove_wgid(state, sg, ga3);
-            }
-            fprintf(stderr, "\n");
-
-        } else if (opcode == 0x02) {
-            // MFID90 GRG Channel Grant: reserved(8), ch(16), sg(16), sa(24)
-            int channel = (tsbk_byte[3] << 8) | tsbk_byte[4];
-            int sg = (tsbk_byte[5] << 8) | tsbk_byte[6];
-            int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
-            fprintf(stderr, "\n MFID90 (Moto) Group Regroup Channel Grant\n");
-            fprintf(stderr, "  CHAN [%04X] SG: %d SRC: %d", channel, sg, source);
-            long int freq = process_channel_to_freq(opts, state, channel);
-            char suf[32];
-            p25_format_chan_suffix(state, (uint16_t)channel, -1, suf, sizeof suf);
-            sprintf(state->active_channel[0], "MFID90 GRG Grant: %04X%s SG: %d; ", channel, suf, sg);
-            state->last_active_time = time(NULL);
-            fprintf(stderr, "\n");
-            // Route through SM for tuning (GRG grants don't carry SVC bits)
-            if (opts->p25_trunk == 1 && freq != 0) {
-                p25_sm_on_group_grant(opts, state, channel, /*svc*/ 0, sg, source);
-            }
-
-        } else if (opcode == 0x03) {
-            // MFID90 GRG Channel Grant Update: ch1(16), sg1(16), ch2(16), sg2(16)
-            int ch1 = (tsbk_byte[2] << 8) | tsbk_byte[3];
-            int sg1 = (tsbk_byte[4] << 8) | tsbk_byte[5];
-            int ch2 = (tsbk_byte[6] << 8) | tsbk_byte[7];
-            int sg2 = (tsbk_byte[8] << 8) | tsbk_byte[9];
-            fprintf(stderr, "\n MFID90 (Moto) Group Regroup Channel Grant Update\n");
-            fprintf(stderr, "  CH1 [%04X] SG1: %d  CH2 [%04X] SG2: %d", ch1, sg1, ch2, sg2);
-            long int freq1 = (ch1 != 0) ? process_channel_to_freq(opts, state, ch1) : 0;
-            long int freq2 = (ch2 != 0) ? process_channel_to_freq(opts, state, ch2) : 0;
-            char suf1[32], suf2[32];
-            p25_format_chan_suffix(state, (uint16_t)ch1, -1, suf1, sizeof suf1);
-            p25_format_chan_suffix(state, (uint16_t)ch2, -1, suf2, sizeof suf2);
-            sprintf(state->active_channel[0], "MFID90 GRG Upd: %04X%s SG: %d; ", ch1, suf1, sg1);
-            state->last_active_time = time(NULL);
-            fprintf(stderr, "\n");
-            // Route both through SM for tuning consideration
-            if (opts->p25_trunk == 1 && ch1 != 0 && freq1 != 0) {
-                p25_sm_on_group_grant(opts, state, ch1, /*svc*/ 0, sg1, /*src*/ 0);
-            }
-            if (opts->p25_trunk == 1 && ch2 != 0 && freq2 != 0) {
-                p25_sm_on_group_grant(opts, state, ch2, /*svc*/ 0, sg2, /*src*/ 0);
-            }
-
-        } else if (opcode == 0x09) {
-            // MFID90 Motorola Scan Marker Broadcast
-            // Per OP25: mk(4), ms(8), value(16) - used for scan priority/ordering
-            int mk = (tsbk_byte[2] >> 4) & 0x0F;
-            int ms = tsbk_byte[3];
-            int value = (tsbk_byte[4] << 8) | tsbk_byte[5];
-            fprintf(stderr, "\n MFID90 (Moto) Scan Marker Broadcast\n");
-            fprintf(stderr, "  MK: %d MS: %d Value: %d\n", mk, ms, value);
-
-        } else if (opcode == 0x0A) {
-            // MFID90 Motorola Emergency Alarm Activation
-            // Source address triggering the emergency
-            int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
-            fprintf(stderr, "\n MFID90 (Moto) Emergency Alarm Activation\n");
-            fprintf(stderr, "  Source: %d", source);
-            fprintf(stderr, " %s** EMERGENCY **%s\n", KRED, KYEL);
-
-        } else if (opcode == 0x0B) {
-            // MFID90 Motorola System Information / BSI
-            // Field layout is proprietary; log raw bytes and show computed callsign from WACN/SysID
-            fprintf(stderr, "\n MFID90 (Moto) System Information (BSI)\n");
-            fprintf(stderr, "  Data: %02X %02X %02X %02X %02X %02X %02X %02X", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
-                    tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
-            // Show computed callsign from current WACN/SysID if available
-            if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
-                char callsign[7];
-                p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
-                fprintf(stderr, " [Callsign: %s]", callsign);
-            }
-            fprintf(stderr, "\n");
+static void
+tsbk_handle_mfid90_regroup_add_del(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int add_cmd) {
+    int sg = (tsbk_byte[2] << 8) | tsbk_byte[3];
+    int ga1 = (tsbk_byte[4] << 8) | tsbk_byte[5];
+    int ga2 = (tsbk_byte[6] << 8) | tsbk_byte[7];
+    int ga3 = (tsbk_byte[8] << 8) | tsbk_byte[9];
+    const char* action = add_cmd ? "Add" : "Delete";
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup %s Command\n", action);
+    DSD_FPRINTF(stderr, "  SG: %d", sg);
+    if (ga1 != 0) {
+        DSD_FPRINTF(stderr, " GA1: %d", ga1);
+        if (add_cmd) {
+            p25_patch_add_wgid(state, sg, ga1);
+        } else {
+            p25_patch_remove_wgid(state, sg, ga1);
         }
+    }
+    if (ga2 != 0) {
+        DSD_FPRINTF(stderr, " GA2: %d", ga2);
+        if (add_cmd) {
+            p25_patch_add_wgid(state, sg, ga2);
+        } else {
+            p25_patch_remove_wgid(state, sg, ga2);
+        }
+    }
+    if (ga3 != 0) {
+        DSD_FPRINTF(stderr, " GA3: %d", ga3);
+        if (add_cmd) {
+            p25_patch_add_wgid(state, sg, ga3);
+        } else {
+            p25_patch_remove_wgid(state, sg, ga3);
+        }
+    }
+    DSD_FPRINTF(stderr, "\n");
+    if (add_cmd) {
+        p25_patch_update(state, sg, /*is_patch*/ 1, /*active*/ 1);
+    }
+}
 
-        fprintf(stderr, "%s", KNRM);
-    } else if (MFID == 0xA4 && protectbit == 0 && err == 0) {
-        // Harris regrouping summaries
-        if ((tsbk_byte[0] & 0x3F) == 0x30) {
-            int sg = (tsbk_byte[3] << 8) | tsbk_byte[4];
-            int key = (tsbk_byte[5] << 8) | tsbk_byte[6];
-            int add = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
-            int tga = tsbk_byte[2] >> 5;
-            int ssn = tsbk_byte[2] & 0x1F;
-            fprintf(stderr, "%s", KYEL);
-            fprintf(stderr, "\n MFID A4 (Harris) Group Regroup Explicit Encryption Command\n");
-            if ((tga & 0x2) == 2) {
-                fprintf(stderr, "  SG: %d; KEY: %04X; WGID: %d; ", sg, key, add);
-                p25_patch_add_wgid(state, sg, add);
-            } else {
-                fprintf(stderr, "  SG: %d; KEY: %04X; WUID: %d; ", sg, key, add);
-                p25_patch_add_wuid(state, sg, (uint32_t)add);
-            }
-            fprintf(stderr, (tga & 0x4) ? " Simulselect" : " Patch");
-            fprintf(stderr, (tga & 0x1) ? " Active;" : " Inactive;");
-            fprintf(stderr, " SSN: %02d \n", ssn);
-            int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
-            int active = (tga & 0x1) ? 1 : 0;
-            p25_patch_update(state, sg, is_patch, active);
-            // TSBK form carries KEY and SSN; ALG not present here.
-            p25_patch_set_kas(state, sg, key, -1, ssn);
-        }
-    } else if (MFID < 0x2 && protectbit == 1 && err == 0) {
-        // Standard TIA-102 ISP messages (protectbit=1, MFID 0x00/0x01)
-        // These never reach the VPDU handler because the bridge only routes protectbit=0.
-        int opcode = tsbk_byte[0] & 0x3F;
+static void
+tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int channel = (tsbk_byte[3] << 8) | tsbk_byte[4];
+    int sg = (tsbk_byte[5] << 8) | tsbk_byte[6];
+    int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Channel Grant\n");
+    DSD_FPRINTF(stderr, "  CHAN [%04X] SG: %d SRC: %d", channel, sg, source);
+    long int freq = process_channel_to_freq(opts, state, channel);
+    char suf[32];
+    p25_format_chan_suffix(state, (uint16_t)channel, -1, suf, sizeof suf);
+    DSD_SPRINTF(state->active_channel[0], "MFID90 GRG Grant: %04X%s SG: %d; ", channel, suf, sg);
+    state->last_active_time = time(NULL);
+    DSD_FPRINTF(stderr, "\n");
+    if (opts->p25_trunk == 1 && freq != 0) {
+        p25_sm_on_group_grant(opts, state, channel, /*svc*/ 0, sg, source);
+    }
+}
 
-        if (opcode == 0x27) {
-            // Emergency Alarm Request ISP — TIA-102.AABC-B §6.3.1
-            int group = (tsbk_byte[5] << 8) | tsbk_byte[6];
-            int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
-            fprintf(stderr, "%s", KYEL);
-            fprintf(stderr, "\n Emergency Alarm Request (ISP)\n");
-            fprintf(stderr, "  Source: %d Group: %d", source, group);
-            fprintf(stderr, " %s** EMERGENCY **%s", KRED, KYEL);
-            fprintf(stderr, "\n");
-        }
-    } else if (protectbit == 0 && err == 0 && (tsbk_byte[0] & 0x3F) == 0x3B) {
-        // Network Status Broadcast (Abbreviated)
-        long int wacn = (tsbk_byte[3] << 12) | (tsbk_byte[4] << 4) | (tsbk_byte[5] >> 4);
-        int sysid = ((tsbk_byte[5] & 0xF) << 8) | tsbk_byte[6];
-        int channel = (tsbk_byte[7] << 8) | tsbk_byte[8];
-        fprintf(stderr, "%s", KYEL);
-        fprintf(stderr, "\n Network Status Broadcast TSBK - Abbreviated \n");
-        fprintf(stderr, "  WACN [%05lX] SYSID [%03X] NAC [%03llX]", wacn, sysid, state->p2_cc);
-        if (opts->show_p25_callsign_decode) {
-            char callsign[7];
-            p25_wacn_sysid_to_callsign((uint32_t)wacn, (uint16_t)sysid, callsign);
-            fprintf(stderr, " [%s]", callsign);
-        }
-        state->p25_cc_freq = process_channel_to_freq(opts, state, channel);
-        long neigh[1] = {state->p25_cc_freq};
-        p25_sm_on_neighbor_update(opts, state, neigh, 1);
-        state->p25_cc_is_tdma = 0;
-        if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
-            state->trunk_lcn_freq[0] = state->p25_cc_freq;
-        }
-        if (state->p2_hardset == 0) {
-            state->p2_wacn = wacn;
-            state->p2_sysid = sysid;
-        }
-        p25_confirm_idens_for_current_site(state);
+static void
+tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int ch1 = (tsbk_byte[2] << 8) | tsbk_byte[3];
+    int sg1 = (tsbk_byte[4] << 8) | tsbk_byte[5];
+    int ch2 = (tsbk_byte[6] << 8) | tsbk_byte[7];
+    int sg2 = (tsbk_byte[8] << 8) | tsbk_byte[9];
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Channel Grant Update\n");
+    DSD_FPRINTF(stderr, "  CH1 [%04X] SG1: %d  CH2 [%04X] SG2: %d", ch1, sg1, ch2, sg2);
+    long int freq1 = (ch1 != 0) ? process_channel_to_freq(opts, state, ch1) : 0;
+    long int freq2 = (ch2 != 0) ? process_channel_to_freq(opts, state, ch2) : 0;
+    char suf1[32], suf2[32];
+    p25_format_chan_suffix(state, (uint16_t)ch1, -1, suf1, sizeof suf1);
+    p25_format_chan_suffix(state, (uint16_t)ch2, -1, suf2, sizeof suf2);
+    DSD_SPRINTF(state->active_channel[0], "MFID90 GRG Upd: %04X%s SG: %d; ", ch1, suf1, sg1);
+    state->last_active_time = time(NULL);
+    DSD_FPRINTF(stderr, "\n");
+    if (opts->p25_trunk == 1 && ch1 != 0 && freq1 != 0) {
+        p25_sm_on_group_grant(opts, state, ch1, /*svc*/ 0, sg1, /*src*/ 0);
+    }
+    if (opts->p25_trunk == 1 && ch2 != 0 && freq2 != 0) {
+        p25_sm_on_group_grant(opts, state, ch2, /*svc*/ 0, sg2, /*src*/ 0);
+    }
+}
+
+static void
+tsbk_handle_mfid90_scan_marker(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int mk = (tsbk_byte[2] >> 4) & 0x0F;
+    int ms = tsbk_byte[3];
+    int value = (tsbk_byte[4] << 8) | tsbk_byte[5];
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Scan Marker Broadcast\n");
+    DSD_FPRINTF(stderr, "  MK: %d MS: %d Value: %d\n", mk, ms, value);
+}
+
+static void
+tsbk_handle_mfid90_emergency(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Emergency Alarm Activation\n");
+    DSD_FPRINTF(stderr, "  Source: %d", source);
+    DSD_FPRINTF(stderr, " %s** EMERGENCY **%s\n", KRED, KYEL);
+}
+
+static void
+tsbk_handle_mfid90_system_info(const dsd_opts* opts, const dsd_state* state,
+                               const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) System Information (BSI)\n");
+    DSD_FPRINTF(stderr, "  Data: %02X %02X %02X %02X %02X %02X %02X %02X", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
+                tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
+    if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
+        char callsign[7];
+        p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
+        DSD_FPRINTF(stderr, " [Callsign: %s]", callsign);
+    }
+    DSD_FPRINTF(stderr, "\n");
+}
+
+static void
+tsbk_handle_mfid90(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int opcode = tsbk_byte[0] & 0x3F;
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    switch (opcode) {
+        case 0x00: tsbk_handle_mfid90_regroup_add_del(state, tsbk_byte, 1); break;
+        case 0x01: tsbk_handle_mfid90_regroup_add_del(state, tsbk_byte, 0); break;
+        case 0x02: tsbk_handle_mfid90_grant(opts, state, tsbk_byte); break;
+        case 0x03: tsbk_handle_mfid90_grant_update(opts, state, tsbk_byte); break;
+        case 0x09: tsbk_handle_mfid90_scan_marker(tsbk_byte); break;
+        case 0x0A: tsbk_handle_mfid90_emergency(tsbk_byte); break;
+        case 0x0B: tsbk_handle_mfid90_system_info(opts, state, tsbk_byte); break;
+        default: break;
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+tsbk_handle_mfid_a4(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    if ((tsbk_byte[0] & 0x3F) != 0x30) {
+        return;
     }
 
-    fprintf(stderr, "%s", KNRM);
-    fprintf(stderr, "\n");
+    int sg = (tsbk_byte[3] << 8) | tsbk_byte[4];
+    int key = (tsbk_byte[5] << 8) | tsbk_byte[6];
+    int add = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
+    int tga = tsbk_byte[2] >> 5;
+    int ssn = tsbk_byte[2] & 0x1F;
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n MFID A4 (Harris) Group Regroup Explicit Encryption Command\n");
+    if ((tga & 0x2) == 2) {
+        DSD_FPRINTF(stderr, "  SG: %d; KEY: %04X; WGID: %d; ", sg, key, add);
+        p25_patch_add_wgid(state, sg, add);
+    } else {
+        DSD_FPRINTF(stderr, "  SG: %d; KEY: %04X; WUID: %d; ", sg, key, add);
+        p25_patch_add_wuid(state, sg, (uint32_t)add);
+    }
+    DSD_FPRINTF(stderr, (tga & 0x4) ? " Simulselect" : " Patch");
+    DSD_FPRINTF(stderr, (tga & 0x1) ? " Active;" : " Inactive;");
+    DSD_FPRINTF(stderr, " SSN: %02d \n", ssn);
+    int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
+    int active = (tga & 0x1) ? 1 : 0;
+    p25_patch_update(state, sg, is_patch, active);
+    p25_patch_set_kas(state, sg, key, -1, ssn);
+}
+
+static void
+tsbk_handle_isp_messages(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int opcode = tsbk_byte[0] & 0x3F;
+    if (opcode != 0x27) {
+        return;
+    }
+
+    int group = (tsbk_byte[5] << 8) | tsbk_byte[6];
+    int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Emergency Alarm Request (ISP)\n");
+    DSD_FPRINTF(stderr, "  Source: %d Group: %d", source, group);
+    DSD_FPRINTF(stderr, " %s** EMERGENCY **%s", KRED, KYEL);
+    DSD_FPRINTF(stderr, "\n");
+}
+
+static void
+tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    long int wacn = (tsbk_byte[3] << 12) | (tsbk_byte[4] << 4) | (tsbk_byte[5] >> 4);
+    int sysid = ((tsbk_byte[5] & 0xF) << 8) | tsbk_byte[6];
+    int channel = (tsbk_byte[7] << 8) | tsbk_byte[8];
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Network Status Broadcast TSBK - Abbreviated \n");
+    DSD_FPRINTF(stderr, "  WACN [%05lX] SYSID [%03X] NAC [%03llX]", wacn, sysid, state->p2_cc);
+    if (opts->show_p25_callsign_decode) {
+        char callsign[7];
+        p25_wacn_sysid_to_callsign((uint32_t)wacn, (uint16_t)sysid, callsign);
+        DSD_FPRINTF(stderr, " [%s]", callsign);
+    }
+    state->p25_cc_freq = process_channel_to_freq(opts, state, channel);
+    const long neigh[1] = {state->p25_cc_freq};
+    p25_sm_on_neighbor_update(opts, state, neigh, 1);
+    state->p25_cc_is_tdma = 0;
+    if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
+        state->trunk_lcn_freq[0] = state->p25_cc_freq;
+    }
+    if (state->p2_hardset == 0) {
+        state->p2_wacn = wacn;
+        state->p2_sysid = sysid;
+    }
+    p25_confirm_idens_for_current_site(state);
+}
+
+static void
+tsbk_dispatch_message(dsd_opts* opts, dsd_state* state, const tsbk_decode_ctx_t* ctx, int err, int MFID, int protectbit,
+                      unsigned long long int PDU[24]) {
+    if (err != 0) {
+        return;
+    }
+
+    if (protectbit == 1) {
+        if (MFID < 0x2) {
+            tsbk_handle_isp_messages(ctx->tsbk_byte);
+        }
+        return;
+    }
+
+    if (MFID < 0x2 && PDU[1] != 0x7B) {
+        DSD_FPRINTF(stderr, "%s", KYEL);
+        process_MAC_VPDU(opts, state, 0, PDU);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
+    if (MFID == 0x90) {
+        tsbk_handle_mfid90(opts, state, ctx->tsbk_byte);
+        return;
+    }
+    if (MFID == 0xA4) {
+        tsbk_handle_mfid_a4(state, ctx->tsbk_byte);
+        return;
+    }
+    if ((ctx->tsbk_byte[0] & 0x3F) == 0x3B) {
+        tsbk_handle_network_status(opts, state, ctx->tsbk_byte);
+    }
+}
+
+void
+processTSBK(dsd_opts* opts, dsd_state* state) {
+    tsbk_decode_ctx_t ctx;
+    unsigned long long int PDU[24];
+    DSD_MEMSET(PDU, 0, sizeof(PDU));
+    tsbk_prepare_frame_state(opts, state);
+    tsbk_init_decode_ctx(&ctx);
+    int reps_got = tsbk_collect_repetitions(opts, state, &ctx);
+    int err = tsbk_finalize_decode(state, &ctx, reps_got);
+    tsbk_update_fec_counters(state, err);
+
+    int MFID = ctx.tsbk_byte[1];
+    int protectbit = (ctx.tsbk_byte[0] >> 6) & 0x1;
+    tsbk_build_mac_like_pdu(ctx.tsbk_byte, PDU);
+    tsbk_dispatch_message(opts, state, &ctx, err, MFID, protectbit, PDU);
+
+    DSD_FPRINTF(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "\n");
 
     p25_status_accum_classify(state, opts);
 

@@ -10,7 +10,8 @@
  * Declares the simple SPSC input ring and operations to reserve, commit,
  * write, and blockingly read samples with wrap-around handling.
  */
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_H_
 
 #include <atomic>
 #include <stdint.h>
@@ -207,3 +208,5 @@ input_ring_discard_all_consumer(struct input_ring_state* r) {
     size_t h = r->head.load(std::memory_order_acquire);
     r->tail.store(h, std::memory_order_release);
 }
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_H_ */

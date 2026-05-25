@@ -11,7 +11,8 @@
  * decoder options from renderer snapshots.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_UI_HISTORY_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_UI_HISTORY_H_
 
 #include <stddef.h>
 
@@ -46,3 +47,5 @@ size_t ui_history_compact_event_text(char* out, size_t out_size, const char* eve
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_UI_HISTORY_H_ */

@@ -14,12 +14,10 @@
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/* EDACS channel tree state (initialized in ncursesOpen) */
 unsigned long long int edacs_channel_tree[33][6];
 
 /* When ncurses UI is active, we temporarily suppress stderr to avoid stdio
@@ -99,7 +97,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     cbreak();
 
     // initialize EDACS channel tree
-    memset(edacs_channel_tree, 0, sizeof(edacs_channel_tree));
+    DSD_MEMSET(edacs_channel_tree, 0, sizeof(edacs_channel_tree));
 
     // When ncurses UI is active, suppress direct stderr logging to prevent
     // screen corruption from background fprintf calls in protocol paths.
@@ -110,7 +108,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
         // Backup current stderr FD, then redirect to null device.
         int backup_fd = dsd_dup(dsd_fileno(stderr));
         if (backup_fd >= 0) {
-            FILE* devnull = fopen(dsd_null_device(), "w");
+            FILE* devnull = dsd_fopen_private(dsd_null_device(), "w");
             if (devnull) {
                 fflush(stderr);
                 dsd_dup2(dsd_fileno(devnull), dsd_fileno(stderr));

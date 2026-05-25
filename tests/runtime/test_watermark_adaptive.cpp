@@ -18,14 +18,14 @@
 /* Validates: Requirements 3.5, 3.6 */
 
 #include <dsd-neo/runtime/input_ring_watermark.h>
-
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_u32(const char* label, uint32_t got, uint32_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%u want=%u\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%u want=%u\n", label, got, want);
         return 1;
     }
     return 0;
@@ -34,7 +34,7 @@ expect_u32(const char* label, uint32_t got, uint32_t want) {
 static int
 expect_true(const char* label, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         return 1;
     }
     return 0;

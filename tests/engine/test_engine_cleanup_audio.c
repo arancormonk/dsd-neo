@@ -3,43 +3,42 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#define DSD_NEO_MAIN
-#include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
-#include <dsd-neo/protocol/provoice/provoice_const.h>
-#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
-#undef DSD_NEO_MAIN
-
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/audio.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
-
 #include <stdio.h>
 #include <stdlib.h>
+#include "../../src/platform/audio_stream_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "%s failed\n", tag);
+        DSD_FPRINTF(stderr, "%s failed\n", tag);
         return 1;
     }
     return 0;
 }
 
 int
-ui_start(dsd_opts* opts, dsd_state* state) {
+ui_start(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     return 0;
 }
 
 void
-ui_stop(void) {}
+ui_stop(void) { // NOLINT(misc-use-internal-linkage)
+}
 
 static int
 init_test_runtime(dsd_opts** opts_out, dsd_state** state_out) {
@@ -47,7 +46,7 @@ init_test_runtime(dsd_opts** opts_out, dsd_state** state_out) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (opts == NULL || state == NULL) {
-        fprintf(stderr, "alloc-failed: runtime\n");
+        DSD_FPRINTF(stderr, "alloc-failed: runtime\n");
         free(opts);
         free(state);
         return 1;
@@ -84,10 +83,10 @@ main(void) {
         return 1;
     }
 
-    opts->audio_out_stream = (dsd_audio_stream*)calloc(1, 64);
-    opts->audio_out_streamR = (dsd_audio_stream*)calloc(1, 64);
-    opts->audio_raw_out = (dsd_audio_stream*)calloc(1, 64);
-    opts->audio_in_stream = (dsd_audio_stream*)calloc(1, 64);
+    opts->audio_out_stream = (dsd_audio_stream*)calloc(1, sizeof(*opts->audio_out_stream));
+    opts->audio_out_streamR = (dsd_audio_stream*)calloc(1, sizeof(*opts->audio_out_streamR));
+    opts->audio_raw_out = (dsd_audio_stream*)calloc(1, sizeof(*opts->audio_raw_out));
+    opts->audio_in_stream = (dsd_audio_stream*)calloc(1, sizeof(*opts->audio_in_stream));
 
     dsd_engine_cleanup(opts, state);
 
@@ -136,3 +135,7 @@ main(void) {
     }
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

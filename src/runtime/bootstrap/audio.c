@@ -10,8 +10,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 
 static void
 trim_newline(char* s) {
@@ -27,7 +27,7 @@ trim_newline(char* s) {
 static int
 prompt_int(const char* q, int def_val, int min_val, int max_val) {
     char buf[64];
-    fprintf(stderr, "%s [%d]: ", q, def_val);
+    DSD_FPRINTF(stderr, "%s [%d]: ", q, def_val);
     if (!fgets(buf, sizeof buf, stdin)) {
         return def_val;
     }
@@ -57,7 +57,7 @@ dsd_bootstrap_choose_audio_output(dsd_opts* opts) {
 
     if (dsd_audio_enumerate_devices(ins, outs, 16) < 0) {
         LOG_WARNING("Audio device query failed; using default output.\n");
-        snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
+        DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
         return;
     }
     for (int i = 0; i < 16; i++) {
@@ -68,17 +68,17 @@ dsd_bootstrap_choose_audio_output(dsd_opts* opts) {
         }
     }
 
-    fprintf(stderr, "\nOutput Sinks:\n");
-    fprintf(stderr, "  0) Default\n");
+    DSD_FPRINTF(stderr, "\nOutput Sinks:\n");
+    DSD_FPRINTF(stderr, "  0) Default\n");
     for (int i = 0; i < n_out; i++) {
-        fprintf(stderr, "  %d) %s (%s)\n", i + 1, outs[i].name, outs[i].description);
+        DSD_FPRINTF(stderr, "  %d) %s (%s)\n", i + 1, outs[i].name, outs[i].description);
     }
     int sel_out = prompt_int("Select output sink", 0, 0, n_out);
     if (sel_out <= 0) {
-        snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
+        DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
     } else {
         const char* name = outs[sel_out - 1].name;
-        snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "pulse:%s", name);
+        DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "pulse:%s", name);
     }
 }
 
@@ -90,7 +90,7 @@ dsd_bootstrap_choose_audio_input(dsd_opts* opts) {
 
     if (dsd_audio_enumerate_devices(ins, outs, 16) < 0) {
         LOG_WARNING("Audio device query failed; using default input.\n");
-        snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
         return;
     }
     for (int i = 0; i < 16; i++) {
@@ -101,16 +101,16 @@ dsd_bootstrap_choose_audio_input(dsd_opts* opts) {
         }
     }
 
-    fprintf(stderr, "\nInput Sources:\n");
-    fprintf(stderr, "  0) Default\n");
+    DSD_FPRINTF(stderr, "\nInput Sources:\n");
+    DSD_FPRINTF(stderr, "  0) Default\n");
     for (int i = 0; i < n_in; i++) {
-        fprintf(stderr, "  %d) %s (%s)\n", i + 1, ins[i].name, ins[i].description);
+        DSD_FPRINTF(stderr, "  %d) %s (%s)\n", i + 1, ins[i].name, ins[i].description);
     }
     int sel_in = prompt_int("Select input source", 0, 0, n_in);
     if (sel_in <= 0) {
-        snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     } else {
         const char* name = ins[sel_in - 1].name;
-        snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "pulse:%s", name);
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "pulse:%s", name);
     }
 }

@@ -10,7 +10,8 @@
  * Declares the MBE decode functions implemented in `src/core/vocoder/`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_VOCODER_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_VOCODER_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -46,3 +47,4 @@ void playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_VOCODER_H_H */

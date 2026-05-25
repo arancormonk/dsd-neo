@@ -17,57 +17,64 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
 
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
+
 // Stubs and helpers (same pattern as other DMR tests)
 uint64_t
-ConvertBitIntoBytes(uint8_t* bits, uint32_t n) {
+ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < n; i++) {
-        v = (v << 1) | (bits[i] & 1);
+    for (uint32_t i = 0; i < BitLength; i++) {
+        v = (v << 1) | (BufferIn[i] & 1);
     }
     return v;
 }
 
 void
-watchdog_event_history(dsd_opts* o, dsd_state* s, uint8_t sl) {
-    (void)o;
-    (void)s;
-    (void)sl;
+watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
 }
 
 void
-watchdog_event_current(dsd_opts* o, dsd_state* s, uint8_t sl) {
-    (void)o;
-    (void)s;
-    (void)sl;
+watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
 }
 
 void
-watchdog_event_datacall(dsd_opts* o, dsd_state* s, uint32_t a, uint32_t b, char* c, uint8_t d) {
-    (void)o;
-    (void)s;
-    (void)a;
-    (void)b;
-    (void)c;
-    (void)d;
+watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)src;
+    (void)dst;
+    (void)data_string;
+    (void)slot;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rotate_symbol_out_file(dsd_opts* o, dsd_state* s) {
     (void)o;
     (void)s;
 }
 struct RtlSdrContext;
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* c, uint32_t f) {
     (void)c;
     (void)f;
@@ -75,26 +82,27 @@ rtl_stream_tune(struct RtlSdrContext* c, uint32_t f) {
 }
 
 bool
-SetFreq(dsd_socket_t fd, long int f) {
-    (void)fd;
-    (void)f;
+SetFreq(dsd_socket_t sockfd, long int freq) {
+    (void)sockfd;
+    (void)freq;
     return false;
 }
 
 bool
-SetModulation(dsd_socket_t fd, int bw) {
-    (void)fd;
-    (void)bw;
+SetModulation(dsd_socket_t sockfd, int bandwidth) {
+    (void)sockfd;
+    (void)bandwidth;
     return false;
 }
 
 long int
-GetCurrentFreq(dsd_socket_t fd) {
-    (void)fd;
+GetCurrentFreq(dsd_socket_t sockfd) {
+    (void)sockfd;
     return 0;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_reset_blocks(dsd_opts* o, dsd_state* s) {
     (void)o;
     (void)s;
@@ -108,11 +116,13 @@ crc8(uint8_t bits[], unsigned int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_drain_audio_output(dsd_opts* opts) {
     (void)opts;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)ted_sps;
     if (!opts || !state || freq <= 0) {
@@ -124,6 +134,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts) {
         opts->trunk_is_tuned = 0;
@@ -137,16 +148,16 @@ extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint3
 
 static void
 init_env(dsd_opts* o, dsd_state* s) {
-    memset(o, 0, sizeof(*o));
-    memset(s, 0, sizeof(*s));
+    DSD_MEMSET(o, 0, sizeof(*o));
+    DSD_MEMSET(s, 0, sizeof(*s));
     o->trunk_enable = 1;
     s->trunk_cc_freq = 851000000;
 }
 
 static void
 build_pclear(uint8_t* bits, uint8_t* bytes) {
-    memset(bits, 0, 256);
-    memset(bytes, 0, 48);
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
     bytes[0] = (uint8_t)(46 & 0x3F);
 }
 
@@ -172,3 +183,7 @@ main(int argc, char** argv) {
     printf("DMR_T3_FORCE_RELEASE: OK\n");
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

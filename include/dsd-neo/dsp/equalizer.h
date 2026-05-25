@@ -8,7 +8,8 @@
  * @brief Adaptive equalizers for CQPSK/H-DQPSK symbol streams.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_EQUALIZER_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_DSP_EQUALIZER_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,3 +59,5 @@ void dsd_cqpsk_cma_equalizer_get_metrics(const dsd_cqpsk_cma_equalizer_state_t* 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_EQUALIZER_H_ */

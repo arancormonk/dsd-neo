@@ -13,15 +13,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/protocol/p25/p25_cc_candidates.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -29,14 +34,17 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
     return false;
 }
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -46,7 +54,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "%s: expected true\n", tag);
+        DSD_FPRINTF(stderr, "%s: expected true\n", tag);
         return 1;
     }
     return 0;
@@ -62,6 +70,7 @@ seed_policy_group(dsd_state* st, uint32_t id, const char* mode, const char* name
 }
 
 long int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
     (void)opts;
     (void)state;
@@ -72,6 +81,7 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;
@@ -80,6 +90,7 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_confirm_idens_for_current_site(dsd_state* state) {
     (void)state;
 }
@@ -103,11 +114,13 @@ p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_reset_iden_tables(dsd_state* state) {
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]) {
     (void)opts;
     (void)state;
@@ -116,6 +129,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_patch_tg_key_is_clear(const dsd_state* state, int group) {
     (void)state;
     (void)group;
@@ -123,6 +137,7 @@ p25_patch_tg_key_is_clear(const dsd_state* state, int group) {
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_patch_sg_key_is_clear(const dsd_state* state, int group) {
     (void)state;
     (void)group;
@@ -130,6 +145,7 @@ p25_patch_sg_key_is_clear(const dsd_state* state, int group) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits) {
     (void)opts;
     (void)state;
@@ -139,6 +155,7 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
     (void)state;
@@ -149,6 +166,7 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     (void)channel;
     (void)svc_bits;
@@ -162,6 +180,7 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_format_chan_suffix(const dsd_state* state, uint16_t channel, int slot_hint, char* out, size_t out_sz) {
     (void)state;
     (void)channel;
@@ -178,9 +197,9 @@ main(void) {
     static dsd_opts opts;
     static dsd_state st;
     uint8_t mpdu[64];
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
-    memset(mpdu, 0, sizeof mpdu);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
 
     opts.p25_trunk = 1;
     opts.trunk_tune_private_calls = 1;
@@ -231,3 +250,7 @@ main(void) {
 
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

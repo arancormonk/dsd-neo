@@ -16,7 +16,7 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
 }
 
 int
-csvGroupImport(dsd_opts* opts, dsd_state* state) {
+csvGroupImport(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     return csvGroupImportPath("", state);
 }

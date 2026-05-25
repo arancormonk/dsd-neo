@@ -11,8 +11,8 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/menu_services.h>
 #include <stdio.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 
 int
 svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
@@ -21,7 +21,7 @@ svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
     }
 
     char next_host[sizeof opts->tcp_hostname];
-    snprintf(next_host, sizeof next_host, "%s", host);
+    DSD_SNPRINTF(next_host, sizeof next_host, "%s", host);
 
     dsd_socket_t new_sockfd = Connect(next_host, port);
     if (new_sockfd == 0 || new_sockfd == DSD_INVALID_SOCKET) {
@@ -41,7 +41,7 @@ svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
 
     opts->tcp_in_ctx = new_tcp_in_ctx;
     opts->tcp_sockfd = new_sockfd;
-    snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", next_host);
+    DSD_SNPRINTF(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", next_host);
     opts->tcp_portno = port;
 
     if (old_audio_in_type == AUDIO_IN_PULSE) {

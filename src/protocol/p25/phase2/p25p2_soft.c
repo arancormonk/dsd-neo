@@ -7,6 +7,7 @@
  * P25P2 soft-decision RS erasure helpers.
  */
 
+#include <dsd-neo/protocol/p25/p25p2_soft.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdint.h>
 #include <stdio.h>

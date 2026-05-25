@@ -12,11 +12,9 @@
 #include <dsd-neo/ui/ui_prims.h>
 #include <math.h>
 #include <stdarg.h>
-#include <stdio.h>
 #include <string.h>
 #include <time.h>
-
-// ---------------- Window helpers ----------------
+#include "dsd-neo/core/safe_api.h"
 
 WINDOW*
 ui_make_window(int h, int w, int y, int x) {
@@ -50,9 +48,12 @@ static time_t s_status_expire = 0;
 
 void
 ui_statusf(const char* fmt, ...) {
+    if (!fmt) {
+        return;
+    }
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(s_status_msg, sizeof s_status_msg, fmt, ap); // NOLINT
+    (void)DSD_VSNPRINTF(s_status_msg, sizeof s_status_msg, fmt, ap);
     va_end(ap);
     s_status_expire = time(NULL) + 3; // ~3 seconds visibility
 }
@@ -69,7 +70,7 @@ ui_status_peek(char* buf, size_t n, time_t now) {
         return 0;
     }
     // copy but keep message for this frame; caller may clear after
-    snprintf(buf, n, "%s", s_status_msg);
+    DSD_SNPRINTF(buf, n, "%s", s_status_msg);
     return 1;
 }
 

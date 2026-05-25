@@ -18,7 +18,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 void
-ui_panel_footer_status_render(dsd_opts* opts, dsd_state* state) {
+ui_panel_footer_status_render(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }

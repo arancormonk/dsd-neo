@@ -28,7 +28,7 @@ extern "C" {
  *   - Positive values (NID_OK, NID_PARITY_OVERRIDE) indicate an accepted frame.
  *   - Zero or negative values (NID_DECODE_FAIL, NID_PARITY_MISMATCH) indicate rejection.
  */
-enum NidResult {
+enum __attribute__((packed)) NidResult {
     NID_PARITY_MISMATCH = -1, /**< BCH decoded, valid DUID, but parity disagrees (rejected).
                                    Reserved for callers that choose to enforce the final
                                    parity bit; the default decoder accepts parity-bit
@@ -61,7 +61,8 @@ enum NidResult {
  * @return NidResult code indicating decode outcome. Positive values indicate acceptance,
  *         zero or negative values indicate rejection.
  */
-int check_NID_with_error_count(char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count);
+int check_NID_with_error_count(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity,
+                               int* error_count);
 
 /**
  * @brief Decode and validate a P25 NID, retrying with a known NAC after BCH failure.
@@ -80,8 +81,8 @@ int check_NID_with_error_count(char* bch_code, int* new_nac, char* new_duid, uns
  * @param error_count  Output. Pointer to store the number of BCH errors corrected.
  * @return NidResult code (same semantics as check_NID_with_error_count()).
  */
-int check_NID_with_observed_nac(char* bch_code, int observed_nac, int* new_nac, char* new_duid, unsigned char parity,
-                                int* error_count);
+int check_NID_with_observed_nac(const char* bch_code, int observed_nac, int* new_nac, char* new_duid,
+                                unsigned char parity, int* error_count);
 
 /**
  * @brief Decode and validate a P25 NID with reliability-guided fallback.
@@ -101,7 +102,7 @@ int check_NID_with_observed_nac(char* bch_code, int observed_nac, int* new_nac, 
  * @param error_count   Output. Pointer to store the number of BCH errors corrected.
  * @return NidResult code (same semantics as check_NID_with_error_count()).
  */
-int check_NID_with_observed_nac_soft(char* bch_code, const uint8_t* reliab63, int observed_nac, int* new_nac,
+int check_NID_with_observed_nac_soft(const char* bch_code, const uint8_t* reliab63, int observed_nac, int* new_nac,
                                      char* new_duid, unsigned char parity, uint8_t parity_reliab, int* error_count);
 
 /**
@@ -117,7 +118,7 @@ int check_NID_with_observed_nac_soft(char* bch_code, const uint8_t* reliab63, in
  * @param parity   Input. The 64th parity bit read from the air interface.
  * @return NidResult code (same semantics as check_NID_with_error_count()).
  */
-int check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity);
+int check_NID(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity);
 
 #ifdef __cplusplus
 }

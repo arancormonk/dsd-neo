@@ -8,7 +8,8 @@
  * @brief Core frame helpers.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_FRAME_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_FRAME_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -22,3 +23,5 @@ void printFrameInfo(dsd_opts* opts, dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_FRAME_H_ */

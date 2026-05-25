@@ -4,10 +4,6 @@
  */
 
 #include <assert.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/resampler.h>
@@ -15,8 +11,14 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/menu_services.h>
-
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 static dsd_socket_t g_connect_result = DSD_INVALID_SOCKET;
 static int g_connect_calls = 0;
@@ -37,6 +39,10 @@ static int g_socket_close_calls = 0;
 static dsd_socket_t g_closed_sockets[8];
 
 static int g_resampler_reset_calls = 0;
+static unsigned char g_ctx_old_token = 0;
+static unsigned char g_ctx_existing_token = 0;
+static unsigned char g_ctx_new_token = 0;
+static unsigned char g_ctx_unused_token = 0;
 
 static void
 reset_fakes(void) {
@@ -52,14 +58,14 @@ reset_fakes(void) {
     g_last_tcp_close_ctx = NULL;
     g_close_audio_input_calls = 0;
     g_socket_close_calls = 0;
-    memset(g_closed_sockets, 0, sizeof(g_closed_sockets));
+    DSD_MEMSET(g_closed_sockets, 0, sizeof(g_closed_sockets));
     g_resampler_reset_calls = 0;
 }
 
 dsd_socket_t
-Connect(char* hostname, int portno) {
+Connect(char* hostname, int portno) { // NOLINT(misc-use-internal-linkage)
     g_connect_calls++;
-    snprintf(g_last_connect_host, sizeof(g_last_connect_host), "%s", hostname ? hostname : "");
+    DSD_SNPRINTF(g_last_connect_host, sizeof(g_last_connect_host), "%s", hostname ? hostname : "");
     g_last_connect_port = portno;
     return g_connect_result;
 }
@@ -99,7 +105,7 @@ dsd_resampler_reset(dsd_resampler_state* state) {
     if (!state) {
         return;
     }
-    memset(state, 0, sizeof(*state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     state->L = 1;
     state->M = 1;
 }
@@ -115,13 +121,13 @@ test_preserves_wav_input_when_tcp_backend_open_fails(void) {
     reset_fakes();
 
     dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    snprintf(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "/tmp/current.wav");
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "/tmp/current.wav");
     opts.audio_in_type = AUDIO_IN_WAV;
     opts.audio_out_type = 0;
     opts.wav_sample_rate = 24000;
     opts.tcp_portno = 7355;
-    snprintf(opts.tcp_hostname, sizeof(opts.tcp_hostname), "%s", "last.example");
+    DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "%s", "last.example");
 
     g_connect_result = (dsd_socket_t)77;
     g_tcp_open_result = NULL;
@@ -149,14 +155,14 @@ test_preserves_existing_tcp_input_when_reopen_fails(void) {
     reset_fakes();
 
     dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.wav_sample_rate = 8000;
     opts.tcp_sockfd = (dsd_socket_t)12;
-    opts.tcp_in_ctx = (tcp_input_ctx*)(uintptr_t)0x1234;
+    opts.tcp_in_ctx = (tcp_input_ctx*)&g_ctx_old_token;
     opts.tcp_portno = 1200;
-    snprintf(opts.tcp_hostname, sizeof(opts.tcp_hostname), "%s", "old.example");
-    snprintf(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "tcp:old.example:1200");
+    DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "%s", "old.example");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "tcp:old.example:1200");
 
     g_connect_result = (dsd_socket_t)99;
     g_tcp_open_result = NULL;
@@ -164,7 +170,7 @@ test_preserves_existing_tcp_input_when_reopen_fails(void) {
     assert(svc_tcp_connect_audio(&opts, "new.example", 1300) == -1);
     assert(opts.audio_in_type == AUDIO_IN_TCP);
     assert(opts.tcp_sockfd == (dsd_socket_t)12);
-    assert(opts.tcp_in_ctx == (tcp_input_ctx*)(uintptr_t)0x1234);
+    assert(opts.tcp_in_ctx == (tcp_input_ctx*)&g_ctx_old_token);
     assert(strcmp(opts.audio_in_dev, "tcp:old.example:1200") == 0);
     assert(strcmp(opts.tcp_hostname, "old.example") == 0);
     assert(opts.tcp_portno == 1200);
@@ -184,22 +190,22 @@ test_preserves_existing_tcp_input_when_reconnect_fails_before_open(void) {
     reset_fakes();
 
     dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.wav_sample_rate = 8000;
     opts.tcp_sockfd = (dsd_socket_t)12;
-    opts.tcp_in_ctx = (tcp_input_ctx*)(uintptr_t)0x1234;
+    opts.tcp_in_ctx = (tcp_input_ctx*)&g_ctx_old_token;
     opts.tcp_portno = 1200;
-    snprintf(opts.tcp_hostname, sizeof(opts.tcp_hostname), "%s", "old.example");
-    snprintf(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "tcp:old.example:1200");
+    DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "%s", "old.example");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "tcp:old.example:1200");
 
     g_connect_result = DSD_INVALID_SOCKET;
-    g_tcp_open_result = (tcp_input_ctx*)(uintptr_t)0x9999;
+    g_tcp_open_result = (tcp_input_ctx*)&g_ctx_unused_token;
 
     assert(svc_tcp_connect_audio(&opts, "new.example", 1300) == -1);
     assert(opts.audio_in_type == AUDIO_IN_TCP);
     assert(opts.tcp_sockfd == (dsd_socket_t)12);
-    assert(opts.tcp_in_ctx == (tcp_input_ctx*)(uintptr_t)0x1234);
+    assert(opts.tcp_in_ctx == (tcp_input_ctx*)&g_ctx_old_token);
     assert(strcmp(opts.audio_in_dev, "tcp:old.example:1200") == 0);
     assert(strcmp(opts.tcp_hostname, "old.example") == 0);
     assert(opts.tcp_portno == 1200);
@@ -218,11 +224,11 @@ test_switches_tcp_backend_only_after_successful_open(void) {
     reset_fakes();
 
     dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.wav_sample_rate = 8000;
     opts.tcp_sockfd = (dsd_socket_t)21;
-    opts.tcp_in_ctx = (tcp_input_ctx*)(uintptr_t)0x2222;
+    opts.tcp_in_ctx = (tcp_input_ctx*)&g_ctx_existing_token;
     opts.input_upsample_prev = 55.0f;
     opts.input_upsample_len = 4;
     opts.input_upsample_pos = 2;
@@ -232,16 +238,16 @@ test_switches_tcp_backend_only_after_successful_open(void) {
     }
 
     g_connect_result = (dsd_socket_t)88;
-    g_tcp_open_result = (tcp_input_ctx*)(uintptr_t)0x3333;
+    g_tcp_open_result = (tcp_input_ctx*)&g_ctx_new_token;
 
     assert(svc_tcp_connect_audio(&opts, "live.example", 1400) == 0);
     assert(opts.audio_in_type == AUDIO_IN_TCP);
     assert(opts.tcp_sockfd == (dsd_socket_t)88);
-    assert(opts.tcp_in_ctx == (tcp_input_ctx*)(uintptr_t)0x3333);
+    assert(opts.tcp_in_ctx == (tcp_input_ctx*)&g_ctx_new_token);
     assert(strcmp(opts.tcp_hostname, "live.example") == 0);
     assert(opts.tcp_portno == 1400);
     assert(g_tcp_close_calls == 1);
-    assert(g_last_tcp_close_ctx == (tcp_input_ctx*)(uintptr_t)0x2222);
+    assert(g_last_tcp_close_ctx == (tcp_input_ctx*)&g_ctx_existing_token);
     assert(g_socket_close_calls == 1);
     assert(g_closed_sockets[0] == (dsd_socket_t)21);
     assert(g_close_audio_input_calls == 0);
@@ -263,3 +269,7 @@ main(void) {
     test_switches_tcp_backend_only_after_successful_open();
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

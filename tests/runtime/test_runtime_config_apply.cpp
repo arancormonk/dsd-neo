@@ -14,50 +14,37 @@
  * rollback semantics depend on the helper's success/failure result.
  */
 
-#include <dsd-neo/runtime/config.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_cmd.h>
-#include <dsd-neo/ui/ui_dsp_cmd.h>
-
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_cmd.h>
+#include <dsd-neo/ui/ui_dsp_cmd.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "test_support.h"
 
-#ifdef USE_RADIO
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-#define DSD_NEO_MAIN
-#include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
-#include <dsd-neo/protocol/provoice/provoice_const.h>
-#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
-#undef DSD_NEO_MAIN
-#ifdef __cplusplus
-}
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
 static int
 expect_true(const char* label, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         return 1;
     }
     return 0;
@@ -66,7 +53,7 @@ expect_true(const char* label, int cond) {
 static int
 expect_int_eq(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s (got %d want %d)\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s (got %d want %d)\n", label, got, want);
         return 1;
     }
     return 0;
@@ -75,7 +62,7 @@ expect_int_eq(const char* label, int got, int want) {
 static int
 expect_float_ne(const char* label, float lhs, float rhs) {
     if (fabsf(lhs - rhs) <= 1e-6f) {
-        fprintf(stderr, "FAIL: %s (both %.6f)\n", label, lhs);
+        DSD_FPRINTF(stderr, "FAIL: %s (both %.6f)\n", label, lhs);
         return 1;
     }
     return 0;
@@ -84,7 +71,7 @@ expect_float_ne(const char* label, float lhs, float rhs) {
 static int
 expect_float_close(const char* label, float got, float want, float tol) {
     if (fabsf(got - want) > tol) {
-        fprintf(stderr, "FAIL: %s (got %.8f want %.8f tol %.8f)\n", label, got, want, tol);
+        DSD_FPRINTF(stderr, "FAIL: %s (got %.8f want %.8f tol %.8f)\n", label, got, want, tol);
         return 1;
     }
     return 0;
@@ -104,13 +91,13 @@ reset_tcp_connect_audio_fake(void) {
 }
 
 int
-svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
+svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) { // NOLINT(misc-use-internal-linkage)
     g_tcp_connect_audio_calls++;
-    snprintf(g_last_tcp_connect_audio_host, sizeof g_last_tcp_connect_audio_host, "%s", host ? host : "");
+    DSD_SNPRINTF(g_last_tcp_connect_audio_host, sizeof g_last_tcp_connect_audio_host, "%s", host ? host : "");
     g_last_tcp_connect_audio_port = port;
 
     if (g_tcp_connect_audio_result == 0 && opts && host && port > 0) {
-        snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", host);
+        DSD_SNPRINTF(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", host);
         opts->tcp_portno = port;
         opts->audio_in_type = AUDIO_IN_TCP;
     }
@@ -130,13 +117,13 @@ typedef struct test_runtime {
 
 static int
 alloc_test_runtime(test_runtime* runtime) {
-    memset(runtime, 0, sizeof(*runtime));
+    DSD_MEMSET(runtime, 0, sizeof(*runtime));
 
     // dsd_state is multi-megabyte; keep it off the function stack.
     runtime->opts = (dsd_opts*)calloc(1, sizeof(*runtime->opts));
     runtime->state = (dsd_state*)calloc(1, sizeof(*runtime->state));
     if (runtime->opts == NULL || runtime->state == NULL) {
-        fprintf(stderr, "FAIL: alloc test runtime\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc test runtime\n");
         free(runtime->opts);
         free(runtime->state);
         runtime->opts = NULL;
@@ -172,21 +159,21 @@ free_test_runtime(test_runtime* runtime) {
 static int
 create_temp_wav_file(const char* prefix, int sample_rate, int channels, char* out_path, size_t out_path_sz) {
     if (!prefix || !out_path || out_path_sz == 0 || sample_rate <= 0 || channels <= 0 || channels > 2) {
-        fprintf(stderr, "FAIL: invalid temp wav request\n");
+        DSD_FPRINTF(stderr, "FAIL: invalid temp wav request\n");
         return 1;
     }
 
     char base_path[DSD_TEST_PATH_MAX] = {0};
     int fd = dsd_test_mkstemp(base_path, sizeof base_path, prefix);
     if (fd < 0) {
-        fprintf(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
+        DSD_FPRINTF(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
         return 1;
     }
     (void)dsd_close(fd);
     (void)remove(base_path);
 
-    if (snprintf(out_path, out_path_sz, "%s.wav", base_path) >= (int)out_path_sz) {
-        fprintf(stderr, "FAIL: temp wav path too long for %s\n", prefix);
+    if (DSD_SNPRINTF(out_path, out_path_sz, "%s.wav", base_path) >= (int)out_path_sz) {
+        DSD_FPRINTF(stderr, "FAIL: temp wav path too long for %s\n", prefix);
         return 1;
     }
     (void)remove(out_path);
@@ -198,7 +185,7 @@ create_temp_wav_file(const char* prefix, int sample_rate, int channels, char* ou
 
     SNDFILE* sf = sf_open(out_path, SFM_WRITE, &info);
     if (sf == NULL) {
-        fprintf(stderr, "FAIL: sf_open write failed for %s: %s\n", out_path, sf_strerror(NULL));
+        DSD_FPRINTF(stderr, "FAIL: sf_open write failed for %s: %s\n", out_path, sf_strerror(NULL));
         (void)remove(out_path);
         return 1;
     }
@@ -206,13 +193,13 @@ create_temp_wav_file(const char* prefix, int sample_rate, int channels, char* ou
     short samples[16] = {0};
     sf_count_t sample_count = ((sf_count_t)channels) * 8;
     if (sf_write_short(sf, samples, sample_count) != sample_count) {
-        fprintf(stderr, "FAIL: sf_write_short failed for %s\n", out_path);
+        DSD_FPRINTF(stderr, "FAIL: sf_write_short failed for %s\n", out_path);
         sf_close(sf);
         (void)remove(out_path);
         return 1;
     }
     if (sf_close(sf) != 0) {
-        fprintf(stderr, "FAIL: sf_close failed for %s\n", out_path);
+        DSD_FPRINTF(stderr, "FAIL: sf_close failed for %s\n", out_path);
         (void)remove(out_path);
         return 1;
     }
@@ -223,34 +210,34 @@ static int
 create_temp_raw_pcm_wav_suffix(const char* prefix, const short* samples, size_t sample_count, char* out_path,
                                size_t out_path_sz) {
     if (!prefix || !samples || sample_count == 0 || !out_path || out_path_sz == 0) {
-        fprintf(stderr, "FAIL: invalid raw temp file request\n");
+        DSD_FPRINTF(stderr, "FAIL: invalid raw temp file request\n");
         return 1;
     }
 
     char base_path[DSD_TEST_PATH_MAX] = {0};
     int fd = dsd_test_mkstemp(base_path, sizeof base_path, prefix);
     if (fd < 0) {
-        fprintf(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
+        DSD_FPRINTF(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
         return 1;
     }
     (void)dsd_close(fd);
     (void)remove(base_path);
 
-    if (snprintf(out_path, out_path_sz, "%s.wav", base_path) >= (int)out_path_sz) {
-        fprintf(stderr, "FAIL: temp raw wav path too long for %s\n", prefix);
+    if (DSD_SNPRINTF(out_path, out_path_sz, "%s.wav", base_path) >= (int)out_path_sz) {
+        DSD_FPRINTF(stderr, "FAIL: temp raw wav path too long for %s\n", prefix);
         return 1;
     }
 
-    FILE* fp = fopen(out_path, "wb");
+    FILE* fp = dsd_fopen_private(out_path, "wb");
     if (!fp) {
-        fprintf(stderr, "FAIL: fopen write failed for %s\n", out_path);
+        DSD_FPRINTF(stderr, "FAIL: fopen write failed for %s\n", out_path);
         return 1;
     }
 
     size_t nwritten = fwrite(samples, sizeof(samples[0]), sample_count, fp);
     fclose(fp);
     if (nwritten != sample_count) {
-        fprintf(stderr, "FAIL: fwrite failed for %s\n", out_path);
+        DSD_FPRINTF(stderr, "FAIL: fwrite failed for %s\n", out_path);
         (void)remove(out_path);
         return 1;
     }
@@ -269,19 +256,19 @@ test_basic_pulse_config_apply(void) {
 
     // Start from a known input/output so that config apply has something to
     // mutate. Use Pulse I/O to avoid depending on RTL or network resources.
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     opts->audio_in_type = AUDIO_IN_PULSE;
-    snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
     opts->audio_out_type = 0;
 
     dsdneoUserConfig cfg = {0};
     cfg.version = 1;
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_PULSE;
-    snprintf(cfg.pulse_input, sizeof cfg.pulse_input, "%s", "test-source");
+    DSD_SNPRINTF(cfg.pulse_input, sizeof cfg.pulse_input, "%s", "test-source");
     cfg.has_output = 1;
     cfg.output_backend = DSDCFG_OUTPUT_PULSE;
-    snprintf(cfg.pulse_output, sizeof cfg.pulse_output, "%s", "test-sink");
+    DSD_SNPRINTF(cfg.pulse_output, sizeof cfg.pulse_output, "%s", "test-sink");
     cfg.ncurses_ui = 1;
 
     // Public API: ui_post_cmd() enqueues; ui_drain_cmds() is called from the
@@ -319,11 +306,11 @@ test_stereo_file_hot_swap_rolls_back_to_live_input(void) {
     dsd_state* state = runtime.state;
 
     dsd_opts_apply_input_sample_rate(opts, 48000);
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", mono_path);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", mono_path);
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->audio_in_file_info = (SF_INFO*)calloc(1, sizeof(*opts->audio_in_file_info));
     if (opts->audio_in_file_info == NULL) {
-        fprintf(stderr, "FAIL: alloc mono SF_INFO\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc mono SF_INFO\n");
         free_test_runtime(&runtime);
         (void)remove(mono_path);
         (void)remove(stereo_path);
@@ -331,7 +318,7 @@ test_stereo_file_hot_swap_rolls_back_to_live_input(void) {
     }
     opts->audio_in_file = sf_open(mono_path, SFM_READ, opts->audio_in_file_info);
     if (opts->audio_in_file == NULL) {
-        fprintf(stderr, "FAIL: sf_open read failed for %s: %s\n", mono_path, sf_strerror(NULL));
+        DSD_FPRINTF(stderr, "FAIL: sf_open read failed for %s: %s\n", mono_path, sf_strerror(NULL));
         free_test_runtime(&runtime);
         (void)remove(mono_path);
         (void)remove(stereo_path);
@@ -348,7 +335,7 @@ test_stereo_file_hot_swap_rolls_back_to_live_input(void) {
     cfg.file_sample_rate = 48000;
     cfg.has_mode = 1;
     cfg.decode_mode = DSDCFG_MODE_P25P2;
-    snprintf(cfg.file_path, sizeof cfg.file_path, "%s", stereo_path);
+    DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", stereo_path);
 
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     ui_drain_cmds(opts, state);
@@ -425,7 +412,7 @@ test_return_cc_uses_pulse_rate_not_stale_file_rate(void) {
     dsd_opts* opts = runtime.opts;
     dsd_state* state = runtime.state;
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     opts->audio_in_type = AUDIO_IN_PULSE;
     opts->pulse_digi_rate_in = 48000;
     opts->wav_sample_rate = 96000;
@@ -460,7 +447,7 @@ test_file_config_apply_keeps_live_pulse_timing(void) {
     dsd_opts* opts = runtime.opts;
     dsd_state* state = runtime.state;
 
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     opts->audio_in_type = AUDIO_IN_PULSE;
     opts->pulse_digi_rate_in = 48000;
     opts->wav_sample_rate = 96000;
@@ -473,7 +460,7 @@ test_file_config_apply_keeps_live_pulse_timing(void) {
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_FILE;
     cfg.file_sample_rate = 48000;
-    snprintf(cfg.file_path, sizeof cfg.file_path, "%s", wav_path);
+    DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", wav_path);
 
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     ui_drain_cmds(opts, state);
@@ -519,7 +506,7 @@ test_file_config_apply_keeps_live_socket_timing(void) {
         dsd_opts* opts = runtime.opts;
         dsd_state* state = runtime.state;
 
-        snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[i].live_dev);
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[i].live_dev);
         opts->audio_in_type = cases[i].audio_in_type;
         opts->wav_sample_rate = 48000;
         opts->staged_file_sample_rate = 0;
@@ -532,7 +519,7 @@ test_file_config_apply_keeps_live_socket_timing(void) {
         cfg.has_input = 1;
         cfg.input_source = DSDCFG_INPUT_FILE;
         cfg.file_sample_rate = 96000;
-        snprintf(cfg.file_path, sizeof cfg.file_path, "%s", wav_path);
+        DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", wav_path);
 
         ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
         ui_drain_cmds(opts, state);
@@ -541,21 +528,21 @@ test_file_config_apply_keeps_live_socket_timing(void) {
         dsd_snapshot_opts_to_user_config(opts, state, &snap);
 
         char label[128];
-        snprintf(label, sizeof label, "%s apply keeps live socket input active", cases[i].label);
+        DSD_SNPRINTF(label, sizeof label, "%s apply keeps live socket input active", cases[i].label);
         rc |= expect_true(label, opts->audio_in_type == cases[i].audio_in_type);
-        snprintf(label, sizeof label, "%s apply preserves live socket rate", cases[i].label);
+        DSD_SNPRINTF(label, sizeof label, "%s apply preserves live socket rate", cases[i].label);
         rc |= expect_int_eq(label, opts->wav_sample_rate, 48000);
-        snprintf(label, sizeof label, "%s apply stages requested file rate", cases[i].label);
+        DSD_SNPRINTF(label, sizeof label, "%s apply stages requested file rate", cases[i].label);
         rc |= expect_int_eq(label, opts->staged_file_sample_rate, 96000);
-        snprintf(label, sizeof label, "%s apply keeps live socket timing", cases[i].label);
+        DSD_SNPRINTF(label, sizeof label, "%s apply keeps live socket timing", cases[i].label);
         rc |= expect_int_eq(label, dsd_opts_current_input_timing_rate(opts), 48000);
-        snprintf(label, sizeof label, "%s apply preserves socket sps", cases[i].label);
+        DSD_SNPRINTF(label, sizeof label, "%s apply preserves socket sps", cases[i].label);
         rc |= expect_int_eq(label, state->samplesPerSymbol, 10);
-        snprintf(label, sizeof label, "%s apply preserves socket center", cases[i].label);
+        DSD_SNPRINTF(label, sizeof label, "%s apply preserves socket center", cases[i].label);
         rc |= expect_int_eq(label, state->symbolCenter, 4);
-        snprintf(label, sizeof label, "%s snapshot keeps staged file source", cases[i].label);
+        DSD_SNPRINTF(label, sizeof label, "%s snapshot keeps staged file source", cases[i].label);
         rc |= expect_true(label, snap.has_input && snap.input_source == DSDCFG_INPUT_FILE);
-        snprintf(label, sizeof label, "%s snapshot keeps staged file rate", cases[i].label);
+        DSD_SNPRINTF(label, sizeof label, "%s snapshot keeps staged file rate", cases[i].label);
         rc |= expect_int_eq(label, snap.file_sample_rate, 96000);
 
         free_test_runtime(&runtime);
@@ -578,15 +565,15 @@ test_tcp_hot_restart_failure_rolls_back_requested_spec_and_retries(void) {
     g_tcp_connect_audio_result = -1;
 
     opts->audio_in_type = AUDIO_IN_TCP;
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "tcp:old.example:1200");
-    snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", "old.example");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "tcp:old.example:1200");
+    DSD_SNPRINTF(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", "old.example");
     opts->tcp_portno = 1200;
 
     dsdneoUserConfig cfg = {0};
     cfg.version = 1;
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_TCP;
-    snprintf(cfg.tcp_host, sizeof cfg.tcp_host, "%s", "new.example");
+    DSD_SNPRINTF(cfg.tcp_host, sizeof cfg.tcp_host, "%s", "new.example");
     cfg.tcp_port = 1300;
 
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
@@ -646,11 +633,11 @@ test_file_hot_swap_rebuilds_filters_when_header_matches_configured_rate(void) {
     dsd_state* state = runtime.state;
 
     dsd_opts_apply_input_sample_rate(opts, 48000);
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", old_path);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", old_path);
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->audio_in_file_info = (SF_INFO*)calloc(1, sizeof(*opts->audio_in_file_info));
     if (opts->audio_in_file_info == NULL) {
-        fprintf(stderr, "FAIL: alloc old-rate SF_INFO\n");
+        DSD_FPRINTF(stderr, "FAIL: alloc old-rate SF_INFO\n");
         free_test_runtime(&runtime);
         (void)remove(old_path);
         (void)remove(new_path);
@@ -658,7 +645,7 @@ test_file_hot_swap_rebuilds_filters_when_header_matches_configured_rate(void) {
     }
     opts->audio_in_file = sf_open(old_path, SFM_READ, opts->audio_in_file_info);
     if (opts->audio_in_file == NULL) {
-        fprintf(stderr, "FAIL: sf_open read failed for %s: %s\n", old_path, sf_strerror(NULL));
+        DSD_FPRINTF(stderr, "FAIL: sf_open read failed for %s: %s\n", old_path, sf_strerror(NULL));
         free_test_runtime(&runtime);
         (void)remove(old_path);
         (void)remove(new_path);
@@ -675,7 +662,7 @@ test_file_hot_swap_rebuilds_filters_when_header_matches_configured_rate(void) {
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_FILE;
     cfg.file_sample_rate = 72000;
-    snprintf(cfg.file_path, sizeof cfg.file_path, "%s", new_path);
+    DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", new_path);
 
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     ui_drain_cmds(opts, state);
@@ -712,7 +699,7 @@ test_same_path_headerless_wav_reconfig_keeps_requested_raw_rate(void) {
     dsd_state* state = runtime.state;
 
     dsd_opts_apply_input_sample_rate(opts, 72000);
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", path);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", path);
     opts->audio_in_type = AUDIO_IN_WAV;
 
     int active_sample_rate = 0;
@@ -720,7 +707,7 @@ test_same_path_headerless_wav_reconfig_keeps_requested_raw_rate(void) {
     if (dsd_audio_open_mono_file_input(path, opts->wav_sample_rate, &opts->audio_in_file, &opts->audio_in_file_info,
                                        &active_sample_rate, &opened_as_container)
         != 0) {
-        fprintf(stderr, "FAIL: dsd_audio_open_mono_file_input failed for %s: %s\n", path, sf_strerror(NULL));
+        DSD_FPRINTF(stderr, "FAIL: dsd_audio_open_mono_file_input failed for %s: %s\n", path, sf_strerror(NULL));
         free_test_runtime(&runtime);
         (void)remove(path);
         return 1;
@@ -734,7 +721,7 @@ test_same_path_headerless_wav_reconfig_keeps_requested_raw_rate(void) {
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_FILE;
     cfg.file_sample_rate = 48000;
-    snprintf(cfg.file_path, sizeof cfg.file_path, "%s", path);
+    DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", path);
 
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     ui_drain_cmds(opts, state);
@@ -768,14 +755,14 @@ test_same_value_rtl_ppm_retry_is_republished(void) {
     opts->rtl_dsp_bw_khz = 48;
     opts->rtl_volume_multiplier = 2;
     opts->rtlsdr_ppm_error = 0;
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:1000000:10:5:48:0:2");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:1000000:10:5:48:0:2");
 
     dsdneoUserConfig cfg = {0};
     cfg.version = 1;
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_RTL;
     cfg.rtl_device = 0;
-    snprintf(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "1000000");
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "1000000");
     cfg.rtl_gain = 10;
     cfg.rtl_ppm = 5;
     cfg.rtl_ppm_is_set = 1;
@@ -807,14 +794,14 @@ test_zero_rtl_ppm_apply_updates_live_request(void) {
     opts->rtl_dsp_bw_khz = 48;
     opts->rtl_volume_multiplier = 2;
     opts->rtlsdr_ppm_error = 9;
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:1000000:10:0:48:0:2");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:1000000:10:0:48:0:2");
 
     dsdneoUserConfig cfg = {0};
     cfg.version = 1;
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_RTL;
     cfg.rtl_device = 0;
-    snprintf(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "1000000");
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "1000000");
     cfg.rtl_gain = 10;
     cfg.rtl_ppm = 0;
     cfg.rtl_ppm_is_set = 1;
@@ -843,14 +830,14 @@ test_omitted_rtl_ppm_apply_preserves_live_request(void) {
     opts->rtl_dsp_bw_khz = 48;
     opts->rtl_volume_multiplier = 2;
     opts->rtlsdr_ppm_error = 9;
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:1000000:10:9:48:0:2");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:1000000:10:9:48:0:2");
 
     dsdneoUserConfig cfg = {0};
     cfg.version = 1;
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_RTL;
     cfg.rtl_device = 0;
-    snprintf(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "1000000");
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "1000000");
     cfg.rtl_gain = 10;
     cfg.rtl_bw_khz = 48;
     cfg.rtl_volume = 2;
@@ -955,3 +942,7 @@ main(void) {
 #endif
     return rc ? 1 : 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

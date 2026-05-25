@@ -15,7 +15,6 @@
 #define DSD_NEO_RUNTIME_CONFIG_H
 
 /* Include schema types first (before extern "C" for C++ compat) */
-#include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config_schema.h>
 
 #ifdef __cplusplus
@@ -190,7 +189,7 @@ extern "C" {
  * - DSD_NEO_CACHE_DIR, DSD_NEO_CC_CACHE
  */
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSD_NEO_DEEMPH_UNSET = 0,
     DSD_NEO_DEEMPH_OFF,
     DSD_NEO_DEEMPH_50,
@@ -635,7 +634,7 @@ void dsd_neo_get_cqpsk_eq(int* enable, int* taps, float* mu, float* modulus);
  * on stable, user-facing knobs (input, output, decode mode, trunking).
  */
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSDCFG_INPUT_UNSET = 0,
     DSDCFG_INPUT_PULSE,
     DSDCFG_INPUT_RTL,
@@ -646,9 +645,13 @@ typedef enum {
     DSDCFG_INPUT_UDP
 } dsdneoUserInputSource;
 
-typedef enum { DSDCFG_OUTPUT_UNSET = 0, DSDCFG_OUTPUT_PULSE, DSDCFG_OUTPUT_NULL } dsdneoUserOutputBackend;
+typedef enum __attribute__((packed)) {
+    DSDCFG_OUTPUT_UNSET = 0,
+    DSDCFG_OUTPUT_PULSE,
+    DSDCFG_OUTPUT_NULL
+} dsdneoUserOutputBackend;
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSDCFG_MODE_UNSET = 0,
     DSDCFG_MODE_AUTO,
     DSDCFG_MODE_P25P1,
@@ -666,7 +669,7 @@ typedef enum {
     DSDCFG_MODE_ANALOG
 } dsdneoUserDecodeMode;
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     DSDCFG_DEMOD_UNSET = 0,
     DSDCFG_DEMOD_AUTO,
     DSDCFG_DEMOD_C4FM,
@@ -782,6 +785,18 @@ const char* dsd_user_config_default_path(void);
 int dsd_user_config_load(const char* path, dsdneoUserConfig* cfg);
 
 /**
+ * @brief Load a user config from an already-open stream.
+ *
+ * The stream must be readable and seekable. The parser rewinds it as needed.
+ *
+ * @param stream Open INI stream.
+ * @param source_name Display name used for include-cycle tracking.
+ * @param cfg [out] Destination user config.
+ * @return 0 on success; non-zero on error.
+ */
+int dsd_user_config_load_stream(FILE* stream, const char* source_name, dsdneoUserConfig* cfg);
+
+/**
  * @brief Atomically write cfg to the given path (for interactive save).
  *
  * @param path Destination path for the INI file.
@@ -884,6 +899,20 @@ int dsd_config_expand_path(const char* input, char* output, size_t output_size);
 int dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoUserConfig* cfg);
 
 /**
+ * @brief Load a user config with optional profile overlay from an already-open stream.
+ *
+ * The stream must be readable and seekable. The parser rewinds it as needed.
+ *
+ * @param stream Open INI stream.
+ * @param source_name Display name used for include-cycle tracking.
+ * @param profile_name Profile name (NULL for base config only).
+ * @param cfg [out] Destination user config.
+ * @return 0 on success; non-zero on error.
+ */
+int dsd_user_config_load_profile_stream(FILE* stream, const char* source_name, const char* profile_name,
+                                        dsdneoUserConfig* cfg);
+
+/**
  * @brief List available profile names in a config file.
  *
  * Scans the INI file for [profile.NAME] sections and returns the names.
@@ -899,6 +928,21 @@ int dsd_user_config_list_profiles(const char* path, const char** names, char* na
                                   int max_names);
 
 /**
+ * @brief List available profile names from an already-open config stream.
+ *
+ * The stream must be readable and seekable. The parser rewinds it before use.
+ *
+ * @param stream Open INI stream.
+ * @param names Output array of profile name pointers (caller provides).
+ * @param names_buf Buffer to store profile name strings.
+ * @param names_buf_size Size of names buffer.
+ * @param max_names Maximum number of names to return.
+ * @return Number of profiles found, or -1 on error.
+ */
+int dsd_user_config_list_profiles_stream(FILE* stream, const char** names, char* names_buf, size_t names_buf_size,
+                                         int max_names);
+
+/**
  * @brief Validate a config file and collect diagnostics.
  *
  * Parses the config file and checks for:
@@ -912,6 +956,17 @@ int dsd_user_config_list_profiles(const char* path, const char** names, char* na
  * @return 0 if no errors; non-zero if errors present.
  */
 int dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags);
+
+/**
+ * @brief Validate an already-open config stream and collect diagnostics.
+ *
+ * The stream must be readable and seekable. The parser rewinds it before use.
+ *
+ * @param stream Open INI stream.
+ * @param diags [out] Diagnostic results (caller frees via dsd_user_config_diags_free).
+ * @return 0 if no errors; non-zero if errors present.
+ */
+int dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags);
 
 /**
  * @brief Free diagnostic results from validation.

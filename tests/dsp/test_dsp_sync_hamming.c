@@ -4,13 +4,13 @@
  */
 
 #include <dsd-neo/dsp/sync_hamming.h>
-
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_int_eq(const char* label, int actual, int expected) {
     if (actual != expected) {
-        fprintf(stderr, "FAIL: %s: got %d expected %d\n", label, actual, expected);
+        DSD_FPRINTF(stderr, "FAIL: %s: got %d expected %d\n", label, actual, expected);
         return 0;
     }
     return 1;

@@ -3,7 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_FILE_COMPAT_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_FILE_COMPAT_H_H
 
 /**
  * @file
@@ -11,8 +12,8 @@
  */
 
 #include <dsd-neo/platform/platform.h>
-#include <stddef.h>
 #include <stdio.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -101,6 +102,46 @@ int dsd_fstat(int fd, dsd_stat_t* st);
 int dsd_fchmod(int fd, int mode);
 
 /**
+ * @brief Open a file for writing/appending with owner-only permissions when created.
+ *
+ * Supports standard write/append modes such as "w", "wb", "a", "ab", "w+",
+ * and "a+". Read-only modes fall back to normal fopen semantics.
+ *
+ * @param path  File path.
+ * @param mode  fopen-compatible mode string.
+ * @return FILE stream, or NULL on error.
+ */
+FILE* dsd_fopen_private(const char* path, const char* mode);
+
+/**
+ * @brief Resolve a user-supplied local file name to an existing file in the current directory.
+ *
+ * The requested name must be a bare file name: no path separators, absolute
+ * paths, empty names, or ".." segments. On success, @p out receives the
+ * directory entry name for the existing regular file.
+ *
+ * @param requested  User-supplied bare file name.
+ * @param out        Output buffer.
+ * @param out_size   Output buffer size.
+ * @return 0 on success, -1 on error with errno set.
+ */
+int dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_size);
+
+/**
+ * @brief Open an existing regular file from the current directory by bare local file name.
+ *
+ * The requested name must be a bare file name: no path separators, absolute
+ * paths, empty names, or ".." segments. On success, @p out receives the
+ * directory entry name used to open the file.
+ *
+ * @param requested  User-supplied bare file name.
+ * @param out        Output buffer.
+ * @param out_size   Output buffer size.
+ * @return Read stream for the existing regular file, or NULL with errno set.
+ */
+FILE* dsd_fopen_existing_local_file(const char* requested, char* out, size_t out_size);
+
+/**
  * @brief Read from a file descriptor.
  *
  * @param fd        File descriptor.
@@ -145,3 +186,4 @@ const char* dsd_null_device(void);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_FILE_COMPAT_H_H */

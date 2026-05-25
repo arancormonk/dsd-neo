@@ -19,10 +19,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 struct RtlSdrContext;
 
@@ -40,13 +45,15 @@ void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int 
 
 // Stubs referenced by MAC VPDU path
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     (void)input;
     (void)output;
     (void)len;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -55,6 +62,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -63,6 +71,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
@@ -72,6 +81,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
@@ -82,6 +92,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 
 // Rigctl/rtl stubs
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetFreq(int sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
@@ -89,6 +100,7 @@ SetFreq(int sockfd, long int freq) {
 }
 
 bool
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 SetModulation(int sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
@@ -96,14 +108,17 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
@@ -113,7 +128,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 expect_eq_long(const char* tag, long got, long want) {
     if (got != want) {
-        fprintf(stderr, "%s: got %ld want %ld\n", tag, got, want);
+        DSD_FPRINTF(stderr, "%s: got %ld want %ld\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -125,7 +140,7 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
                         int out_lcn_cap) {
     dsd_opts opts;
     dsd_state* state = NULL;
-    memset(&opts, 0, sizeof opts);
+    DSD_MEMSET(&opts, 0, sizeof opts);
     state = (dsd_state*)calloc(1, sizeof(*state));
     if (!state) {
         return -1;
@@ -178,7 +193,7 @@ run_cases(void) {
     // Case 1: SACCH, PTT opcode (0x01) with basic header → JSON emits summary "PTT"
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0x01; // PTT
         mac[2] = 0x00; // standard MFID
         p25_test_process_mac_vpdu(1 /*SACCH*/, mac, 24);
@@ -187,7 +202,7 @@ run_cases(void) {
     // Case 2: FACCH, IDLE opcode (0x03)
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[0] = 1;    // header-present hint
         mac[1] = 0x03; // IDLE
         mac[2] = 0x00;
@@ -198,7 +213,7 @@ run_cases(void) {
     // Use opcode 0x07 (reserved), MFID 0x00; MAC[0]==0 (no header) so table=0, MCO skip → unknown length warning path.
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0x07; // reserved/unknown
         mac[2] = 0x00; // standard MFID
         p25_test_process_mac_vpdu_ex(0 /*FACCH*/, mac, 24, /*is_lcch*/ 0, /*slot*/ 0);
@@ -207,7 +222,7 @@ run_cases(void) {
     // Case 4: LCCH label with SIGNAL opcode to exercise LCCH gating inside VPDU
     {
         unsigned char mac[24];
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0x00; // SIGNAL
         mac[2] = 0x00;
         p25_test_process_mac_vpdu_ex(0 /*FACCH*/, mac, 24, /*is_lcch*/ 1, /*slot*/ 1);
@@ -217,7 +232,7 @@ run_cases(void) {
     {
         unsigned char mac[24];
         long freqs[4] = {0};
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0xE9;
         mac[2] = 0x02; // RFSS
         mac[3] = 0x03; // SITE
@@ -236,7 +251,7 @@ run_cases(void) {
     {
         unsigned char mac[24];
         long freqs[4] = {0};
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0x79;
         mac[2] = 0x02; // RFSS
         mac[3] = 0x03; // SITE
@@ -257,7 +272,7 @@ run_cases(void) {
     {
         unsigned char mac[24];
         long freqs[4] = {0};
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[0] = 0x07; // P1 TSBK bridge marker used by this decoder path
         mac[1] = 0x69;
         mac[2] = 0x02; // RFSS
@@ -279,7 +294,7 @@ run_cases(void) {
         long freqs[4] = {0};
         int rfss_after = 0;
         int site_after = 0;
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0xE9;
         mac[2] = 0x02;
         mac[3] = 0x03;
@@ -300,7 +315,7 @@ run_cases(void) {
         unsigned char mac[24];
         long freqs[4] = {0};
         int lcn_count = -1;
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[0] = 0x07;
         mac[1] = 0x69;
         mac[2] = 0x02;
@@ -321,7 +336,7 @@ run_cases(void) {
     {
         unsigned char mac[24];
         long freqs[4] = {0};
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0x7C; // Adjacent Status Broadcast, abbreviated
         mac[2] = 0x01; // LRA
         mac[3] = 0x21; // CFVA=2 (valid/current), SYSID hi nibble=1
@@ -343,7 +358,7 @@ run_cases(void) {
         long freqs[4] = {0};
         long lcn_freqs[3] = {0};
         int lcn_count = -1;
-        memset(mac, 0, sizeof mac);
+        DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0x79;
         mac[2] = 0x02;
         mac[3] = 0x03;
@@ -373,7 +388,7 @@ main(void) {
     // Capture stderr to a temp file to avoid polluting test logs; we don't need to parse it here.
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_p2_vpdu_core") != 0) {
-        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 101;
     }
     int rc = run_cases();
@@ -381,3 +396,7 @@ main(void) {
     (void)remove(cap.path);
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

@@ -14,12 +14,12 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static int g_watchdog_calls = 0;
-static dsd_opts* g_watchdog_opts = NULL;
+static const dsd_opts* g_watchdog_opts = NULL;
 static dsd_state* g_watchdog_state = NULL;
 static uint8_t g_watchdog_slot = 0;
 
 static void
-fake_watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+fake_watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     g_watchdog_calls++;
     g_watchdog_opts = opts;
     g_watchdog_state = state;
@@ -27,14 +27,14 @@ fake_watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 static int g_write_calls = 0;
-static dsd_opts* g_write_opts = NULL;
+static const dsd_opts* g_write_opts = NULL;
 static dsd_state* g_write_state = NULL;
 static uint8_t g_write_slot = 0;
 static uint8_t g_write_swrite = 0;
 static char* g_write_event_string = NULL;
 
 static void
-fake_write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string) {
+fake_write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string) {
     g_write_calls++;
     g_write_opts = opts;
     g_write_state = state;

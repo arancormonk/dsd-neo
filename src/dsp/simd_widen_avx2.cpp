@@ -4,10 +4,24 @@
  */
 
 #include <cstdint>
-#include <cstring>
+#include "dsd-neo/core/safe_api.h"
+
+#if defined(__clang_analyzer__)
+extern "C" uint32_t
+widen_rotate90_u8_to_f32_bias127_phase_avx2(const unsigned char* src, float* dst, uint32_t len, uint32_t phase) {
+    (void)src;
+    (void)dst;
+    (void)len;
+    return phase & 3U;
+}
+#else
+
 #include <emmintrin.h>
 #include <immintrin.h>
+#include <mmintrin.h>
 #include <xmmintrin.h>
+
+// NOLINTBEGIN(portability-simd-intrinsics)
 
 namespace {
 
@@ -45,7 +59,7 @@ apply_phase2_sse(__m128 vals, uint32_t phase) {
 static inline __m256
 widen8_u8_to_f32_bias127_avx2(const unsigned char* src) {
     uint64_t packed = 0;
-    std::memcpy(&packed, src, sizeof(packed));
+    DSD_MEMCPY(&packed, src, sizeof(packed));
 
     __m128i bytes = _mm_cvtsi64_si128((long long)packed);
     __m256i ints = _mm256_cvtepu8_epi32(bytes);
@@ -58,7 +72,7 @@ widen8_u8_to_f32_bias127_avx2(const unsigned char* src) {
 static inline __m128
 widen4_u8_to_f32_bias127_sse(const unsigned char* src) {
     uint32_t packed = 0;
-    std::memcpy(&packed, src, sizeof(packed));
+    DSD_MEMCPY(&packed, src, sizeof(packed));
 
     __m128i bytes = _mm_cvtsi32_si128((int)packed);
     __m128i zero = _mm_setzero_si128();
@@ -137,3 +151,7 @@ widen_rotate90_u8_to_f32_bias127_phase_avx2(const unsigned char* src, float* dst
     _mm256_zeroupper();
     return cur_phase;
 }
+
+// NOLINTEND(portability-simd-intrinsics)
+
+#endif

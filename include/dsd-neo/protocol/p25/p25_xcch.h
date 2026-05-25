@@ -11,7 +11,8 @@
  * `src/protocol/p25/phase2/p25p2_xcch.c`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_XCCH_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_XCCH_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -26,3 +27,4 @@ void process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_XCCH_H_H */

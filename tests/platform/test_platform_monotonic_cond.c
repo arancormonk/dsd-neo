@@ -6,10 +6,10 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
-
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/safe_api.h"
 
 struct cond_signal_ctx {
     dsd_cond_t* cond;
@@ -34,7 +34,7 @@ static DSD_THREAD_RETURN_TYPE
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -43,7 +43,7 @@ expect_int(const char* label, int got, int want) {
 static int
 expect_true(const char* label, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         return 1;
     }
     return 0;
@@ -61,7 +61,7 @@ main(void) {
     rc |= expect_int("cond_init_monotonic", dsd_cond_init_monotonic(&cond), 0);
 
     struct cond_signal_ctx ctx = {&cond, &mutex, &fired};
-    rc |= expect_int("thread_create", dsd_thread_create(&thread, (dsd_thread_fn)signal_thread_fn, &ctx), 0);
+    rc |= expect_int("thread_create", dsd_thread_create(&thread, signal_thread_fn, &ctx), 0);
 
     uint64_t start_ns = dsd_time_monotonic_ns();
     uint64_t deadline_ns = start_ns + 2000000000ULL;
@@ -73,7 +73,7 @@ main(void) {
             break;
         }
         if (wrc != 0) {
-            fprintf(stderr, "FAIL: monotonic wait error rc=%d\n", wrc);
+            DSD_FPRINTF(stderr, "FAIL: monotonic wait error rc=%d\n", wrc);
             rc |= 1;
             break;
         }

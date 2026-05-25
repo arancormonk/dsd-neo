@@ -4,9 +4,6 @@
  */
 
 #include <assert.h>
-#include <stdint.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
@@ -16,6 +13,15 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "dsd-neo/core/safe_api.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 static uint32_t g_stream_generation = 1;
 static int g_symbol_rate_hz = 4800;
@@ -29,8 +35,11 @@ static int g_symbol_rate_hz_after_bump = 0;
 static int g_symbol_levels_after_bump = 0;
 static int g_channel_profile_after_bump = -1;
 static int g_cleanup_calls = 0;
+static int g_fail_reads = 0;
+static int g_failed_read_calls = 0;
 
 dsd_socket_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 Connect(char* hostname, int portno) {
     (void)hostname;
     (void)portno;
@@ -38,12 +47,14 @@ Connect(char* hostname, int portno) {
 }
 
 int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 openAudioInput(dsd_opts* opts) {
     (void)opts;
     return -1;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 cleanupAndExit(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
@@ -51,6 +62,7 @@ cleanupAndExit(dsd_opts* opts, dsd_state* state) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_hz) {
     (void)state;
     (void)old_rate_hz;
@@ -58,6 +70,7 @@ dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_
 }
 
 double
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 raw_pwr_f(const float* samples, int len, int step) {
     (void)samples;
     (void)len;
@@ -66,12 +79,14 @@ raw_pwr_f(const float* samples, int len, int step) {
 }
 
 double
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 pwr_to_dB(double mean_power) {
     (void)mean_power;
     return 0.0;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 lpf_f(dsd_state* state, float* input, int len) {
     (void)state;
     (void)input;
@@ -79,6 +94,7 @@ lpf_f(dsd_state* state, float* input, int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 hpf_f(dsd_state* state, float* input, int len) {
     (void)state;
     (void)input;
@@ -86,6 +102,7 @@ hpf_f(dsd_state* state, float* input, int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 pbf_f(dsd_state* state, float* input, int len) {
     (void)state;
     (void)input;
@@ -93,6 +110,7 @@ pbf_f(dsd_state* state, float* input, int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 analog_gain_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
     (void)opts;
     (void)state;
@@ -101,6 +119,7 @@ analog_gain_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
     (void)opts;
     (void)state;
@@ -116,6 +135,15 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     assert(count >= 4U);
 
     g_read_calls++;
+    if (g_fail_reads) {
+        g_failed_read_calls++;
+        if (g_failed_read_calls > 4) {
+            DSD_FPRINTF(stderr, "RTL symbol cache retried failed reads instead of returning EMPTY\n");
+            exit(2);
+        }
+        *out_got = 0;
+        return -1;
+    }
     float read_base = g_read_base;
     if (g_bump_generation_during_read) {
         g_stream_generation++;
@@ -177,8 +205,8 @@ main(void) {
     static dsd_state state;
     static int fake_rtl_context;
 
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.symboltiming = 0;
     state.rf_mod = 1;
@@ -188,11 +216,12 @@ main(void) {
         .read = fake_rtl_read,
         .return_pwr = fake_rtl_pwr,
     });
-    dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){
+    dsd_rtl_stream_metrics_hooks metrics_hooks = {
         .output_kind = fake_output_kind,
         .symbol_profile = fake_symbol_profile,
         .stream_generation = fake_stream_generation,
-    });
+    };
+    dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
 
     assert(getSymbol(&opts, &state, 1) == 1000.0f);
@@ -253,8 +282,18 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 0);
     assert(g_cleanup_calls == 0);
 
+    g_fail_reads = 1;
+    g_failed_read_calls = 0;
+    assert(getSymbol(&opts, &state, 1) == 0.0f);
+    assert(g_failed_read_calls == 1);
+    assert(g_cleanup_calls == 1);
+
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
-    dsd_rtl_stream_metrics_hooks_set((dsd_rtl_stream_metrics_hooks){0});
+    dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

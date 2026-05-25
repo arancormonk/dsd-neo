@@ -27,11 +27,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-// Bounded append helper
 static inline void
 dsd_append(char* dst, size_t dstsz, const char* src) {
     if (!dst || !src || dstsz == 0) {
@@ -41,7 +40,7 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     if (len >= dstsz) {
         return;
     }
-    snprintf(dst + len, dstsz - len, "%s", src);
+    DSD_SNPRINTF(dst + len, dstsz - len, "%s", src);
 }
 
 static inline int
@@ -50,8 +49,8 @@ p25_lcw_signed_offset_units(int sign_bit, int raw_offset) {
 }
 
 static void
-p25_lcw_store_fdma_iden(dsd_opts* opts, dsd_state* state, int iden, long int base_freq, int chan_spac, int trans_off,
-                        uint8_t bw_vu) {
+p25_lcw_store_fdma_iden(const dsd_opts* opts, dsd_state* state, int iden, long int base_freq, int chan_spac,
+                        int trans_off, uint8_t bw_vu) {
     if (!state || iden < 0 || iden >= 16 || base_freq == 0 || chan_spac == 0) {
         return;
     }
@@ -102,610 +101,706 @@ p25_algid_name(uint8_t algid) {
 }
 
 //new p25_lcw function here -- TIA-102.AABF-D LCW Format Messages (if anybody wants to fill the rest out)
+typedef struct p25_lcw_ctx {
+    dsd_opts* opts;
+    dsd_state* state;
+    uint8_t* bits;
+    uint8_t lc_format;
+    uint8_t lc_opcode;
+    uint8_t lc_mfid;
+    uint8_t lc_svcopt;
+    uint8_t lc_pf;
+    uint8_t lc_sf;
+    int is_standard_mfid;
+} p25_lcw_ctx;
+
+typedef void (*p25_lcw_handler_fn)(p25_lcw_ctx* ctx);
+
+typedef struct p25_lcw_handler_entry {
+    uint8_t key;
+    p25_lcw_handler_fn fn;
+} p25_lcw_handler_entry;
+
+static void
+p25_lcw_set_call_string_prefix(dsd_state* state, const char* prefix, uint8_t svcopt) {
+    DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", prefix);
+    if (svcopt & 0x80) {
+        dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency  ");
+    } else if (svcopt & 0x40) {
+        dsd_append(state->call_string[0], sizeof state->call_string[0], " Encrypted  ");
+    } else {
+        dsd_append(state->call_string[0], sizeof state->call_string[0], "            ");
+    }
+}
+
+static int
+p25_lcw_format_has_service_options(uint8_t lc_format) {
+    switch (lc_format) {
+        case 0x4A:
+        case 0x46:
+        case 0x45:
+        case 0x44:
+        case 0x03:
+        case 0x00: return 1;
+        default: return 0;
+    }
+}
+
+static void
+p25_lcw_print_service_options(const p25_lcw_ctx* ctx) {
+    if (ctx->lc_svcopt & 0x80) {
+        DSD_FPRINTF(stderr, " Emergency");
+    }
+    if (ctx->lc_svcopt & 0x40) {
+        DSD_FPRINTF(stderr, " Encrypted");
+    }
+
+    if (ctx->opts->payload == 1) {
+        if (ctx->lc_svcopt & 0x20) {
+            DSD_FPRINTF(stderr, " Duplex");
+        }
+        if (ctx->lc_svcopt & 0x10) {
+            DSD_FPRINTF(stderr, " Packet");
+        } else {
+            DSD_FPRINTF(stderr, " Circuit");
+        }
+        if (ctx->lc_svcopt & 0x8) {
+            DSD_FPRINTF(stderr, " R");
+        }
+        DSD_FPRINTF(stderr, " Priority %d", ctx->lc_svcopt & 0x7);
+    }
+}
+
+static void
+p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " Group Voice Channel User");
+    uint8_t res = (uint8_t)ConvertBitIntoBytes(&ctx->bits[24], 7);
+    uint8_t explicit_src = ctx->bits[24];
+    uint16_t group = (uint16_t)ConvertBitIntoBytes(&ctx->bits[32], 16);
+    uint32_t source = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " - Group %d Source %d", group, source);
+    UNUSED2(res, explicit_src);
+
+    ctx->state->gi[0] = 0;
+    ctx->state->dmr_so = ctx->lc_svcopt;
+    if (group != 0) {
+        ctx->state->lasttg = group;
+    }
+    if (source != 0) {
+        ctx->state->lastsrc = source;
+    }
+    ctx->state->generic_talker_alias[0][0] = '\0';
+    ctx->state->generic_talker_alias_src[0] = 0;
+
+    if (source != 0 && group != 0) {
+        p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
+    }
+
+    p25_lcw_set_call_string_prefix(ctx->state, "   Group ", ctx->lc_svcopt);
+}
+
+static void
+p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " Unit to Unit Voice Channel User");
+    uint32_t target = (uint32_t)ConvertBitIntoBytes(&ctx->bits[24], 24);
+    uint32_t source = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " - Target %d Source %d", target, source);
+
+    if (target != 0) {
+        ctx->state->lasttg = target;
+    }
+    if (source != 0) {
+        ctx->state->lastsrc = source;
+    }
+    ctx->state->generic_talker_alias[0][0] = '\0';
+    ctx->state->generic_talker_alias_src[0] = 0;
+    ctx->state->gi[0] = 1;
+    ctx->state->dmr_so = ctx->lc_svcopt;
+
+    p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
+}
+
+static void
+p25_lcw_handle_format_42(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " Group Voice Channel Update - ");
+    uint16_t channel1 = (uint16_t)ConvertBitIntoBytes(&ctx->bits[8], 16);
+    uint16_t group1 = (uint16_t)ConvertBitIntoBytes(&ctx->bits[24], 16);
+    uint16_t channel2 = (uint16_t)ConvertBitIntoBytes(&ctx->bits[40], 16);
+    uint16_t group2 = (uint16_t)ConvertBitIntoBytes(&ctx->bits[56], 16);
+
+    if (channel1 && group1) {
+        DSD_FPRINTF(stderr, "Ch: %04X TG: %d; ", channel1, group1);
+        char suf[32];
+        p25_format_chan_suffix(ctx->state, channel1, -1, suf, sizeof suf);
+        DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
+                     channel1, suf, group1);
+        ctx->state->last_active_time = time(NULL);
+    }
+
+    if (channel2 && group2 && group1 != group2) {
+        DSD_FPRINTF(stderr, "Ch: %04X TG: %d; ", channel2, group2);
+        char suf[32];
+        p25_format_chan_suffix(ctx->state, channel2, -1, suf, sizeof suf);
+        DSD_SNPRINTF(ctx->state->active_channel[1], sizeof ctx->state->active_channel[1], "Active Ch: %04X%s TG: %d; ",
+                     channel2, suf, group2);
+        ctx->state->last_active_time = time(NULL);
+    }
+}
+
+static void
+p25_lcw_handle_format_44(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " Group Voice Channel Update %s Explicit", dsd_unicode_or_ascii("–", "-"));
+    uint16_t group1 = (uint16_t)ConvertBitIntoBytes(&ctx->bits[24], 16);
+    uint16_t channelt = (uint16_t)ConvertBitIntoBytes(&ctx->bits[40], 16);
+    uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&ctx->bits[56], 16);
+    DSD_FPRINTF(stderr, "Ch: %04X TG: %d; ", channelt, group1);
+    UNUSED(channelr);
+
+    if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0) {
+        if (ctx->opts->trunk_tune_group_calls == 1) {
+            int skip_grant = 0;
+            if (ctx->state->tg_hold != 0 && ctx->state->tg_hold != group1) {
+                skip_grant = 1;
+            }
+            if ((ctx->lc_svcopt & 0x40) && ctx->opts->trunk_tune_enc_calls == 0
+                && !p25_patch_tg_key_is_clear(ctx->state, group1)) {
+                skip_grant = 1;
+            }
+            if (!skip_grant) {
+                p25_sm_on_group_grant(ctx->opts, ctx->state, channelt, ctx->lc_svcopt, group1,
+                                      (int)ctx->state->lastsrc);
+            }
+        }
+    } else if (ctx->opts->p25_lcw_retune == 0 && ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0
+               && ctx->state->p25_lcw_retune_disabled_warned == 0) {
+        ctx->state->p25_lcw_retune_disabled_warned = 1;
+        DSD_FPRINTF(stderr,
+                    " [WARN: P25 LCW explicit retune is disabled; 0x44 grants may not be followed. Enable with -j or "
+                    "menu.] ");
+    }
+
+    char suf[32];
+    p25_format_chan_suffix(ctx->state, channelt, -1, suf, sizeof suf);
+    DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
+                 channelt, suf, group1);
+    ctx->state->last_active_time = time(NULL);
+}
+
+static void
+p25_lcw_handle_format_45(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Unit to Unit Answer Request");
+}
+
+static void
+p25_lcw_handle_format_46(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Telephone Interconnect Voice Channel User");
+}
+
+static void
+p25_lcw_handle_format_47(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Telephone Interconnect Answer Request");
+}
+
+static void
+p25_lcw_handle_format_49(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " Source ID Extension -");
+    uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&ctx->bits[16], 20);
+    uint16_t sysid = (uint16_t)ConvertBitIntoBytes(&ctx->bits[36], 12);
+    uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " Full SUID: WACN %05X SYSID %03X SRC %d", wacn, sysid, src);
+    if (wacn != 0) {
+        ctx->state->p25_src_nid = wacn;
+    }
+    if (src != 0) {
+        ctx->state->lastsrc = (int)src;
+    }
+}
+
+static void
+p25_lcw_handle_format_4a(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " Unit to Unit Voice Channel User %s Extended", dsd_unicode_or_ascii("–", "-"));
+    uint32_t target = (uint32_t)ConvertBitIntoBytes(&ctx->bits[16], 24);
+    uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[40], 24);
+    DSD_FPRINTF(stderr, "TGT: %d; SRC: %d; ", target, src);
+    ctx->state->gi[0] = 1;
+}
+
+static void
+p25_lcw_handle_format_50(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " Group Affiliation Query");
+    uint16_t group = (uint16_t)ConvertBitIntoBytes(&ctx->bits[32], 16);
+    uint32_t source = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    if (group) {
+        DSD_FPRINTF(stderr, " - TG %u", group);
+        ctx->state->lasttg = group;
+    }
+    if (source) {
+        DSD_FPRINTF(stderr, " SRC %u", source);
+        ctx->state->lastsrc = source;
+    }
+    if (group && source) {
+        p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
+    }
+}
+
+static void
+p25_lcw_handle_format_51(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Unit Registration Command");
+}
+
+static void
+p25_lcw_handle_format_52(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Unit Authentication Command - OBSOLETE");
+}
+
+static void
+p25_lcw_handle_format_53(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Status Query");
+}
+
+static void
+p25_lcw_handle_format_54(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Status Update");
+}
+
+static void
+p25_lcw_handle_format_55(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Status Update");
+}
+
+static void
+p25_lcw_handle_format_56(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Call Alert");
+}
+
+static void
+p25_lcw_handle_format_57(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Extended Function Command");
+}
+
+static void
+p25_lcw_handle_format_58(p25_lcw_ctx* ctx) {
+    uint8_t iden = (uint8_t)ConvertBitIntoBytes(&ctx->bits[8], 4);
+    int bw = (int)ConvertBitIntoBytes(&ctx->bits[12], 9);
+    int sign = ctx->bits[21] & 1;
+    int tx_raw = (int)ConvertBitIntoBytes(&ctx->bits[22], 8);
+    int chan_spac = (int)ConvertBitIntoBytes(&ctx->bits[30], 10);
+    uint32_t base = (uint32_t)ConvertBitIntoBytes(&ctx->bits[40], 32);
+    int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
+    DSD_FPRINTF(stderr, " Channel Identifier Update; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %ld;", iden,
+                bw, trans_off, chan_spac, (long)base * 5L);
+    p25_lcw_store_fdma_iden(ctx->opts, ctx->state, iden, (long int)base, chan_spac, trans_off, 0);
+}
+
+static void
+p25_lcw_handle_format_59(p25_lcw_ctx* ctx) {
+    uint8_t iden = (uint8_t)ConvertBitIntoBytes(&ctx->bits[8], 4);
+    uint8_t bw_vu = (uint8_t)ConvertBitIntoBytes(&ctx->bits[12], 4);
+    int sign = ctx->bits[16] & 1;
+    int tx_raw = (int)ConvertBitIntoBytes(&ctx->bits[17], 13);
+    int chan_spac = (int)ConvertBitIntoBytes(&ctx->bits[30], 10);
+    uint32_t base = (uint32_t)ConvertBitIntoBytes(&ctx->bits[40], 32);
+    int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
+    DSD_FPRINTF(stderr, " Channel Identifier Update VU; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %ld;", iden,
+                bw_vu, trans_off, chan_spac, (long)base * 5L);
+    p25_lcw_store_fdma_iden(ctx->opts, ctx->state, iden, (long int)base, chan_spac, trans_off, bw_vu);
+}
+
+static void
+p25_lcw_handle_format_5a(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Status Update %s Source ID Extension Required", dsd_unicode_or_ascii("–", "-"));
+}
+
+static void
+p25_lcw_handle_format_5c(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Extended Function Command %s Source ID Extension Required", dsd_unicode_or_ascii("–", "-"));
+}
+
+static void
+p25_lcw_handle_format_60(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " System Service Broadcast");
+}
+
+static void
+p25_lcw_handle_format_61(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Secondary Control Channel Broadcast");
+}
+
+static void
+p25_lcw_handle_format_62(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Adjacent Site Status Broadcast");
+}
+
+static void
+p25_lcw_handle_format_63(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " RFSS Status Broadcast");
+}
+
+static void
+p25_lcw_handle_format_64(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Network Status Broadcast");
+}
+
+static void
+p25_lcw_handle_format_65(p25_lcw_ctx* ctx) {
+    uint8_t algid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[24], 8);
+    uint16_t kid = (uint16_t)ConvertBitIntoBytes(&ctx->bits[32], 16);
+    uint32_t target = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+
+    const char* alg_name = p25_algid_name(algid);
+
+    DSD_FPRINTF(stderr, " Protection Parameter Broadcast");
+    DSD_FPRINTF(stderr, "\n  ALGID [%02X]", algid);
+    if (alg_name) {
+        DSD_FPRINTF(stderr, " (%s)", alg_name);
+    }
+    DSD_FPRINTF(stderr, " KID [%04X] Target [%d]", kid, target);
+
+    ctx->state->p25_prot_algid = algid;
+    ctx->state->p25_prot_kid = kid;
+    ctx->state->p25_prot_valid = 1;
+}
+
+static void
+p25_lcw_handle_format_66(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Secondary Control Channel Broadcast %s Explicit (LCSCBX)", dsd_unicode_or_ascii("–", "-"));
+}
+
+static void
+p25_lcw_handle_format_67(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " Adjacent Site Status (LCASBX)");
+    uint8_t lra = (uint8_t)ConvertBitIntoBytes(&ctx->bits[8], 8);
+    uint16_t channelt = (uint16_t)ConvertBitIntoBytes(&ctx->bits[16], 16);
+    uint8_t rfssid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[32], 8);
+    uint8_t siteid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[40], 8);
+    uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&ctx->bits[48], 16);
+    uint8_t cfva = (uint8_t)ConvertBitIntoBytes(&ctx->bits[64], 4);
+    DSD_FPRINTF(stderr, " - RFSS %d Site %d CH %04X", rfssid, siteid, channelt);
+    UNUSED2(lra, channelr);
+    if (cfva & 0x1) {
+        DSD_FPRINTF(stderr, " - Connection Active");
+    }
+}
+
+static void
+p25_lcw_handle_format_68(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " RFSS Status Broadcast %s Explicit (LCRSBX)", dsd_unicode_or_ascii("–", "-"));
+}
+
+static void
+p25_lcw_handle_format_69(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Network Status Broadcast %s Explicit (LCNSBX)", dsd_unicode_or_ascii("–", "-"));
+}
+
+static void
+p25_lcw_handle_format_6a(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Conventional Fallback");
+}
+
+static void
+p25_lcw_handle_format_6b(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " Message Update %s Source ID Extension Required", dsd_unicode_or_ascii("–", "-"));
+}
+
+static void
+p25_lcw_handle_call_termination(p25_lcw_ctx* ctx) {
+    uint32_t tgt = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " Call Termination; TGT: %d;", tgt);
+    DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
+    if (ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->p25_is_tuned == 1) {
+        ctx->state->p25_sm_force_release = 1;
+        p25_sm_on_release(ctx->opts, ctx->state);
+    }
+}
+
+static int
+p25_lcw_dispatch_standard_format(p25_lcw_ctx* ctx) {
+    static const p25_lcw_handler_entry handlers[] = {
+        {0x00, p25_lcw_handle_format_00}, {0x03, p25_lcw_handle_format_03}, {0x42, p25_lcw_handle_format_42},
+        {0x44, p25_lcw_handle_format_44}, {0x45, p25_lcw_handle_format_45}, {0x46, p25_lcw_handle_format_46},
+        {0x47, p25_lcw_handle_format_47}, {0x49, p25_lcw_handle_format_49}, {0x4A, p25_lcw_handle_format_4a},
+        {0x50, p25_lcw_handle_format_50}, {0x51, p25_lcw_handle_format_51}, {0x52, p25_lcw_handle_format_52},
+        {0x53, p25_lcw_handle_format_53}, {0x54, p25_lcw_handle_format_54}, {0x55, p25_lcw_handle_format_55},
+        {0x56, p25_lcw_handle_format_56}, {0x57, p25_lcw_handle_format_57}, {0x58, p25_lcw_handle_format_58},
+        {0x59, p25_lcw_handle_format_59}, {0x5A, p25_lcw_handle_format_5a}, {0x5C, p25_lcw_handle_format_5c},
+        {0x60, p25_lcw_handle_format_60}, {0x61, p25_lcw_handle_format_61}, {0x62, p25_lcw_handle_format_62},
+        {0x63, p25_lcw_handle_format_63}, {0x64, p25_lcw_handle_format_64}, {0x65, p25_lcw_handle_format_65},
+        {0x66, p25_lcw_handle_format_66}, {0x67, p25_lcw_handle_format_67}, {0x68, p25_lcw_handle_format_68},
+        {0x69, p25_lcw_handle_format_69}, {0x6A, p25_lcw_handle_format_6a}, {0x6B, p25_lcw_handle_format_6b},
+    };
+
+    for (size_t i = 0; i < (sizeof(handlers) / sizeof(handlers[0])); i++) {
+        if (handlers[i].key == ctx->lc_format) {
+            handlers[i].fn(ctx);
+            return 1;
+        }
+    }
+
+    if (ctx->lc_opcode == 0x0F) {
+        p25_lcw_handle_call_termination(ctx);
+        return 1;
+    }
+
+    return 0;
+}
+
+static void
+p25_lcw_handle_unknown_standard(const p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " Unknown Format %02X MFID %02X SVC %02X", ctx->lc_format, ctx->lc_mfid, ctx->lc_svcopt);
+}
+
+static void
+p25_lcw_handle_mfid90_opcode_06(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " MFID90 (Moto)");
+    apx_embedded_gps(ctx->opts, ctx->state, ctx->bits);
+}
+
+static void
+p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Channel User (LCGRGR)");
+    uint32_t sg = (uint32_t)ConvertBitIntoBytes(&ctx->bits[32], 16);
+    uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " SG: %d; SRC: %d;", sg, src);
+    if (ctx->bits[16] == 1) {
+        DSD_FPRINTF(stderr, " Res;");
+    }
+    if (ctx->bits[17] == 1) {
+        DSD_FPRINTF(stderr, " ENC;");
+    }
+    if (ctx->bits[31] == 1) {
+        DSD_FPRINTF(stderr, " EXT;");
+    }
+    ctx->state->lasttg = sg;
+    if (src != 0) {
+        ctx->state->lastsrc = src;
+    }
+    ctx->state->gi[0] = 0;
+    p25_patch_update(ctx->state, (int)sg, 1, 1);
+}
+
+static void
+p25_lcw_handle_mfid90_opcode_01(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Channel Update (LCGRGU)");
+    uint32_t sg = (uint32_t)ConvertBitIntoBytes(&ctx->bits[24], 16);
+    uint32_t ch = (uint32_t)ConvertBitIntoBytes(&ctx->bits[56], 16);
+    DSD_FPRINTF(stderr, " SG: %d; CH: %04X;", sg, ch);
+    if (ctx->bits[16] == 1) {
+        DSD_FPRINTF(stderr, " Res;");
+    }
+    if (ctx->bits[17] == 1) {
+        DSD_FPRINTF(stderr, " ENC;");
+    }
+    ctx->state->gi[0] = 0;
+}
+
+static void
+p25_lcw_handle_mfid90_opcode_03(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Add");
+}
+
+static void
+p25_lcw_handle_mfid90_opcode_04(p25_lcw_ctx* ctx) {
+    UNUSED(ctx);
+    DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Delete");
+}
+
+static void
+p25_lcw_handle_mfid90_opcode_05(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " MFID90 (Moto) System Information (BSI)");
+    DSD_FPRINTF(stderr, " Data:");
+    for (int bi = 16; bi + 8 <= 72; bi += 8) {
+        uint8_t b = (uint8_t)ConvertBitIntoBytes(&ctx->bits[bi], 8);
+        DSD_FPRINTF(stderr, " %02X", b);
+    }
+    if (ctx->opts->show_p25_callsign_decode && (ctx->state->p2_wacn != 0 || ctx->state->p2_sysid != 0)) {
+        char callsign[7];
+        p25_wacn_sysid_to_callsign((uint32_t)ctx->state->p2_wacn, (uint16_t)ctx->state->p2_sysid, callsign);
+        DSD_FPRINTF(stderr, " [%s]", callsign);
+    }
+}
+
+static void
+p25_lcw_handle_mfid90_opcode_0f(p25_lcw_ctx* ctx) {
+    uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " MFID90 (Moto) Talker EOT; SRC: %d;", src);
+    DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
+    if (ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->p25_is_tuned == 1) {
+        ctx->state->p25_sm_force_release = 1;
+        p25_sm_on_release(ctx->opts, ctx->state);
+    }
+}
+
+static void
+p25_lcw_handle_mfid90_opcode_15(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " MFID90 (Moto) Talker Alias Header");
+    apx_embedded_alias_header_phase1(ctx->opts, ctx->state, 0, ctx->bits);
+}
+
+static void
+p25_lcw_handle_mfid90_opcode_17(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " MFID90 (Moto) Talker Alias Blocks");
+    apx_embedded_alias_blocks_phase1(ctx->opts, ctx->state, 0, ctx->bits);
+}
+
+static int
+p25_lcw_dispatch_mfid90(p25_lcw_ctx* ctx) {
+    static const p25_lcw_handler_entry handlers[] = {
+        {0x00, p25_lcw_handle_mfid90_opcode_00}, {0x01, p25_lcw_handle_mfid90_opcode_01},
+        {0x03, p25_lcw_handle_mfid90_opcode_03}, {0x04, p25_lcw_handle_mfid90_opcode_04},
+        {0x05, p25_lcw_handle_mfid90_opcode_05}, {0x06, p25_lcw_handle_mfid90_opcode_06},
+        {0x0F, p25_lcw_handle_mfid90_opcode_0f}, {0x15, p25_lcw_handle_mfid90_opcode_15},
+        {0x17, p25_lcw_handle_mfid90_opcode_17},
+    };
+
+    for (size_t i = 0; i < (sizeof(handlers) / sizeof(handlers[0])); i++) {
+        if (handlers[i].key == ctx->lc_opcode) {
+            handlers[i].fn(ctx);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+p25_lcw_dispatch_mfid_a4(p25_lcw_ctx* ctx) {
+    if (ctx->lc_opcode > 0x31 && ctx->lc_opcode < 0x36) {
+        DSD_FPRINTF(stderr, " MFIDA4 (Harris) Talker Alias Blocks");
+        l3h_embedded_alias_blocks_phase1(ctx->opts, ctx->state, 0, ctx->bits);
+        return 1;
+    }
+
+    if (ctx->lc_opcode == 0x2A) {
+        DSD_FPRINTF(stderr, " MFIDA4 (Harris) GPS Block 1");
+        DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
+        DSD_MEMCPY(ctx->state->dmr_pdu_sf[0], ctx->bits, 16 * sizeof(uint8_t));
+        DSD_MEMCPY(ctx->state->dmr_pdu_sf[0] + 40, ctx->bits + 16, 56 * sizeof(uint8_t));
+        return 1;
+    }
+
+    if (ctx->lc_opcode == 0x2B) {
+        DSD_FPRINTF(stderr, " MFIDA4 (Harris) GPS Block 2");
+        DSD_MEMCPY(ctx->state->dmr_pdu_sf[0] + 40 + 56, ctx->bits + 16, 56 * sizeof(uint8_t));
+        uint16_t check = (uint16_t)ConvertBitIntoBytes(&ctx->state->dmr_pdu_sf[0][0], 16);
+        if (check == 0x2AA4) {
+            nmea_harris(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[0], (uint32_t)ctx->state->lastsrc, 0);
+        } else {
+            DSD_FPRINTF(stderr, " Missing GPS Block 1");
+        }
+        DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
+        return 1;
+    }
+
+    if (ctx->lc_format == 0x0A) {
+        uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[24], 24);
+        uint32_t tgt = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+        DSD_FPRINTF(stderr, " MFIDA4 (Harris) Data Channel; SRC: %d; TGT: %d;", src, tgt);
+        return 1;
+    }
+
+    return 0;
+}
+
+static int
+p25_lcw_dispatch_mfid_d8(p25_lcw_ctx* ctx) {
+    if (ctx->lc_format == 0x00) {
+        DSD_FPRINTF(stderr, " MFIDD8 (Tait) Talker Alias: ");
+        tait_iso7_embedded_alias_decode(ctx->opts, ctx->state, 0, 8, ctx->bits);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+p25_lcw_dispatch_vendor_format(p25_lcw_ctx* ctx) {
+    if (ctx->lc_mfid == 0x90) {
+        return p25_lcw_dispatch_mfid90(ctx);
+    }
+    if (ctx->lc_mfid == 0xA4) {
+        return p25_lcw_dispatch_mfid_a4(ctx);
+    }
+    if (ctx->lc_mfid == 0xD8) {
+        return p25_lcw_dispatch_mfid_d8(ctx);
+    }
+    return 0;
+}
+
+static void
+p25_lcw_handle_unknown_vendor(const p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " Unknown Format %02X MFID %02X ", ctx->lc_format, ctx->lc_mfid);
+    if (ctx->lc_mfid == 0x90) {
+        DSD_FPRINTF(stderr, "(Moto)");
+    } else if (ctx->lc_mfid == 0xA4) {
+        DSD_FPRINTF(stderr, "(Harris)");
+    } else if (ctx->lc_mfid == 0xD8) {
+        DSD_FPRINTF(stderr, "(Tait)");
+    }
+}
+
 void
-p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors) {
+p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
     UNUSED(irrecoverable_errors);
-
-    uint8_t lc_format = (uint8_t)ConvertBitIntoBytes(&LCW_bits[0], 8);  //format
-    uint8_t lc_opcode = (uint8_t)ConvertBitIntoBytes(&LCW_bits[2], 6);  //opcode portion of format
-    uint8_t lc_mfid = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 8);    //mfid
-    uint8_t lc_svcopt = (uint8_t)ConvertBitIntoBytes(&LCW_bits[16], 8); //service options
-    uint8_t lc_pf = LCW_bits[0];                                        //protect flag
-    uint8_t lc_sf = LCW_bits[1]; // Implicit / Explicit MFID Format (SF bit in PB/SF/LCO)
-    int mfid_is_implicit = (lc_sf == 1);
-    int is_standard_mfid = mfid_is_implicit || lc_mfid == 0 || lc_mfid == 1;
-
-    if (lc_pf == 1) //check the protect flag -- if set, its an encrypted lcw
-    {
-        fprintf(stderr, "%s", KRED);
-        fprintf(stderr, " LCW Protected ");
-        fprintf(stderr, "%s", KNRM);
+    if (opts == NULL || state == NULL || lcw_bits == NULL) {
+        return;
     }
 
-    if (lc_pf == 0) //not protected/encrypted lcw
-    {
+    p25_lcw_ctx ctx;
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    ctx.opts = opts;
+    ctx.state = state;
+    ctx.bits = lcw_bits;
+    ctx.lc_format = (uint8_t)ConvertBitIntoBytes(&lcw_bits[0], 8);
+    ctx.lc_opcode = (uint8_t)ConvertBitIntoBytes(&lcw_bits[2], 6);
+    ctx.lc_mfid = (uint8_t)ConvertBitIntoBytes(&lcw_bits[8], 8);
+    ctx.lc_svcopt = (uint8_t)ConvertBitIntoBytes(&lcw_bits[16], 8);
+    ctx.lc_pf = lcw_bits[0];
+    ctx.lc_sf = lcw_bits[1];
+    ctx.is_standard_mfid = (ctx.lc_sf == 1) || ctx.lc_mfid == 0 || ctx.lc_mfid == 1;
 
+    if (ctx.lc_pf == 1) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " LCW Protected ");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+
+    if (ctx.lc_pf == 0) {
         if (opts->payload == 1) {
-            fprintf(stderr, " LCW");
+            DSD_FPRINTF(stderr, " LCW");
         }
 
-        // Standard MFID: explicit MFID=0/1, or implicit MFID (SF=1)
-        if (is_standard_mfid) // explicit MFID==0/1, or implicit MFID (SF=1)
-        {
-
-            //check the service options on applicable formats
-            if (lc_format == 0x4A || lc_format == 0x46 || lc_format == 0x45 || lc_format == 0x44 || lc_format == 0x03
-                || lc_format == 0x00) {
-
-                if (lc_svcopt & 0x80) {
-                    fprintf(stderr, " Emergency");
-                }
-                if (lc_svcopt & 0x40) {
-                    fprintf(stderr, " Encrypted");
-                }
-
-                if (opts->payload == 1) //hide behind payload due to len
-                {
-                    if (lc_svcopt & 0x20) {
-                        fprintf(stderr, " Duplex");
-                    }
-                    if (lc_svcopt & 0x10) {
-                        fprintf(stderr, " Packet");
-                    } else {
-                        fprintf(stderr, " Circuit");
-                    }
-                    if (lc_svcopt & 0x8) {
-                        fprintf(stderr, " R"); //reserved bit is on
-                    }
-                    fprintf(stderr, " Priority %d", lc_svcopt & 0x7); //call priority
-                }
+        if (ctx.is_standard_mfid) {
+            if (p25_lcw_format_has_service_options(ctx.lc_format)) {
+                p25_lcw_print_service_options(&ctx);
             }
-
-            if (lc_format == 0x00) {
-                fprintf(stderr, " Group Voice Channel User");
-                uint8_t res = (uint8_t)ConvertBitIntoBytes(&LCW_bits[24], 7);
-                uint8_t explicit = LCW_bits[24]; //explicit source id required == 1, full SUID on seperate LCW
-                uint16_t group = (uint16_t)ConvertBitIntoBytes(&LCW_bits[32], 16);
-                uint32_t source = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
-                fprintf(stderr, " - Group %d Source %d", group, source);
-                UNUSED2(res, explicit);
-                state->gi[0] = 0;
-                state->dmr_so = lc_svcopt; //test to make sure no random issues
-
-                //don't set this when zero, annoying blink occurs in ncurses
-                if (group != 0) {
-                    state->lasttg = group;
-                }
-                // Don't overwrite a known-good source ID with zero —
-                // some LDU1 frames decode with source=0 when the field
-                // isn't present, which would destroy the ID from an earlier frame.
-                if (source != 0) {
-                    state->lastsrc = source;
-                }
-                // Clear alias at start/update of talker for this call (don’t reuse across calls)
-                state->generic_talker_alias[0][0] = '\0';
-                state->generic_talker_alias_src[0] = 0;
-
-                // Track RID↔TG observation
-                if (source != 0 && group != 0) {
-                    p25_ga_add(state, (uint32_t)source, (uint16_t)group);
-                }
-
-                snprintf(state->call_string[0], sizeof state->call_string[0], "   Group ");
-                if (lc_svcopt & 0x80) {
-                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency  ");
-                } else if (lc_svcopt & 0x40) {
-                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Encrypted  ");
-                } else {
-                    dsd_append(state->call_string[0], sizeof state->call_string[0], "            ");
-                }
+            if (!p25_lcw_dispatch_standard_format(&ctx)) {
+                p25_lcw_handle_unknown_standard(&ctx);
             }
-
-            else if (lc_format == 0x03) {
-                fprintf(stderr, " Unit to Unit Voice Channel User");
-                uint32_t target = (uint32_t)ConvertBitIntoBytes(&LCW_bits[24], 24);
-                uint32_t source = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
-                fprintf(stderr, " - Target %d Source %d", target, source);
-
-                //don't set this when zero, annoying blink occurs in ncurses
-                if (target != 0) {
-                    state->lasttg = target;
-                }
-                // Don't overwrite a known-good source ID with zero —
-                // mirrors the target != 0 guard above and the group != 0
-                // guard in format 0x00.
-                if (source != 0) {
-                    state->lastsrc = source;
-                }
-                // Clear alias at start/update of talker for this call (don’t reuse across calls)
-                state->generic_talker_alias[0][0] = '\0';
-                state->generic_talker_alias_src[0] = 0;
-                state->gi[0] = 1;
-                state->dmr_so = lc_svcopt;
-
-                snprintf(state->call_string[0], sizeof state->call_string[0], " Private ");
-                if (lc_svcopt & 0x80) {
-                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency  ");
-                } else if (lc_svcopt & 0x40) {
-                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Encrypted  ");
-                } else {
-                    dsd_append(state->call_string[0], sizeof state->call_string[0], "            ");
-                }
-
-            }
-
-            //TODO: Allow Tuning from Call Grants either in LDU1 or TDULC? (TDMA to p1 fallback?)
-            //TODO: Allow TG Hold overrides here  either in LDU1 or TDULC?
-            //NOTE: If we have an active TG hold, we really should't be here anyways
-            else if (lc_format == 0x42) //is this group only, or group and private?
-            {
-                fprintf(stderr, " Group Voice Channel Update - ");
-                uint16_t channel1 = (uint16_t)ConvertBitIntoBytes(&LCW_bits[8], 16);
-                uint16_t group1 = (uint16_t)ConvertBitIntoBytes(&LCW_bits[24], 16);
-                uint16_t channel2 = (uint16_t)ConvertBitIntoBytes(&LCW_bits[40], 16);
-                uint16_t group2 = (uint16_t)ConvertBitIntoBytes(&LCW_bits[56], 16);
-
-                if (channel1 && group1) {
-                    fprintf(stderr, "Ch: %04X TG: %d; ", channel1, group1);
-                    char suf[32];
-                    p25_format_chan_suffix(state, channel1, -1, suf, sizeof suf);
-                    snprintf(state->active_channel[0], sizeof state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
-                             channel1, suf, group1);
-                    state->last_active_time = time(NULL);
-                }
-
-                if (channel2 && group2 && group1 != group2) {
-                    fprintf(stderr, "Ch: %04X TG: %d; ", channel2, group2);
-                    char suf[32];
-                    p25_format_chan_suffix(state, channel2, -1, suf, sizeof suf);
-                    snprintf(state->active_channel[1], sizeof state->active_channel[1], "Active Ch: %04X%s TG: %d; ",
-                             channel2, suf, group2);
-                    state->last_active_time = time(NULL);
-                }
-
-            }
-
-            else if (lc_format == 0x44) {
-                fprintf(stderr, " Group Voice Channel Update %s Explicit", dsd_unicode_or_ascii("–", "-"));
-                uint16_t group1 = (uint16_t)ConvertBitIntoBytes(&LCW_bits[24], 16);
-                uint16_t channelt = (uint16_t)ConvertBitIntoBytes(&LCW_bits[40], 16);
-                uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&LCW_bits[56], 16);
-                fprintf(stderr, "Ch: %04X TG: %d; ", channelt, group1);
-                UNUSED(channelr);
-
-                // Optional, guarded retune from LCW explicit update (format 0x44)
-                // Conditions:
-                //  - Enabled via opts->p25_lcw_retune
-                //  - Trunking mode active and CC known
-                //  - Group-call tuning allowed and TG Hold honored
-                //  - Encrypted calls skipped unless explicitly allowed
-                if (opts->p25_lcw_retune == 1 && opts->p25_trunk == 1 && state->p25_cc_freq != 0) {
-                    // Respect group-call tuning policy
-                    if (opts->trunk_tune_group_calls == 1) {
-                        // TG Hold gating
-                        if (state->tg_hold != 0 && state->tg_hold != group1) {
-                            // skip retune due to TG hold mismatch
-                        } else {
-                            // ENC gating from service options, with Harris GRG KEY=0000 override
-                            if ((lc_svcopt & 0x40) && opts->trunk_tune_enc_calls == 0
-                                && !p25_patch_tg_key_is_clear(state, group1)) {
-                                // skip encrypted when not allowed
-                            } else {
-                                // Dispatch to SM; SM will compute frequency and decide if a tune is appropriate
-                                p25_sm_on_group_grant(opts, state, channelt, lc_svcopt, group1, (int)state->lastsrc);
-                            }
-                        }
-                    }
-                } else if (opts->p25_lcw_retune == 0 && opts->p25_trunk == 1 && state->p25_cc_freq != 0
-                           && state->p25_lcw_retune_disabled_warned == 0) {
-                    /* One-shot guidance for explicit systems when LCW retune is disabled. */
-                    state->p25_lcw_retune_disabled_warned = 1;
-                    fprintf(stderr, " [WARN: P25 LCW explicit retune is disabled; 0x44 grants may not be followed. "
-                                    "Enable with -j or menu.] ");
-                }
-                {
-                    //add active channel to string for ncurses display (with FDMA/slot hint)
-                    char suf[32];
-                    p25_format_chan_suffix(state, channelt, -1, suf, sizeof suf);
-                    snprintf(state->active_channel[0], sizeof state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
-                             channelt, suf, group1);
-                    state->last_active_time = time(NULL);
-                }
-            }
-
-            else if (lc_format == 0x45) {
-                fprintf(stderr, " Unit to Unit Answer Request");
-            }
-
-            else if (lc_format == 0x46) {
-                fprintf(stderr, " Telephone Interconnect Voice Channel User");
-            }
-
-            else if (lc_format == 0x47) {
-                fprintf(stderr, " Telephone Interconnect Answer Request");
-            }
-
-            else if (lc_format == 0x49) {
-                fprintf(stderr, " Source ID Extension -");
-                uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&LCW_bits[16], 20);
-                uint16_t sysid = (uint16_t)ConvertBitIntoBytes(&LCW_bits[36], 12);
-                uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
-                fprintf(stderr, " Full SUID: WACN %05X SYSID %03X SRC %d", wacn, sysid, src);
-                if (wacn != 0) {
-                    state->p25_src_nid = wacn;
-                }
-                if (src != 0) {
-                    state->lastsrc = (int)src;
-                }
-            }
-
-            else if (lc_format == 0x4A) {
-                fprintf(stderr, " Unit to Unit Voice Channel User %s Extended", dsd_unicode_or_ascii("–", "-"));
-                uint32_t target = (uint32_t)ConvertBitIntoBytes(&LCW_bits[16], 24);
-                uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 24);
-                fprintf(stderr, "TGT: %d; SRC: %d; ", target, src);
-                state->gi[0] = 1;
-            }
-
-            else if (lc_format == 0x50) {
-                fprintf(stderr, " Group Affiliation Query");
-                // Heuristic field mapping: TG at bits[32..47], SRC at bits[48..71]
-                uint16_t group = (uint16_t)ConvertBitIntoBytes(&LCW_bits[32], 16);
-                uint32_t source = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
-                if (group) {
-                    fprintf(stderr, " - TG %u", group);
-                    state->lasttg = group;
-                }
-                if (source) {
-                    fprintf(stderr, " SRC %u", source);
-                    state->lastsrc = source;
-                }
-                if (group && source) {
-                    p25_ga_add(state, (uint32_t)source, (uint16_t)group);
-                }
-            }
-
-            else if (lc_format == 0x51) {
-                fprintf(stderr, " Unit Registration Command");
-            }
-
-            else if (lc_format == 0x52) //wonder if anybody uses this if its deleted/obsolete
-            {
-                fprintf(stderr, " Unit Authentication Command - OBSOLETE");
-            }
-
-            else if (lc_format == 0x53) {
-                fprintf(stderr, " Status Query");
-            }
-
-            else if (lc_format == 0x54 || lc_format == 0x55) {
-                fprintf(stderr, " Status Update");
-            }
-
-            else if (lc_format == 0x56) {
-                fprintf(stderr, " Call Alert");
-            }
-
-            else if (lc_format == 0x5A) {
-                fprintf(stderr, " Status Update %s Source ID Extension Required", dsd_unicode_or_ascii("–", "-"));
-            }
-
-            else if (lc_format == 0x5C) {
-                fprintf(stderr, " Extended Function Command %s Source ID Extension Required",
-                        dsd_unicode_or_ascii("–", "-"));
-            }
-
-            else if (lc_format == 0x60) {
-                fprintf(stderr, " System Service Broadcast");
-            }
-
-            //this PDU does not have an associated MFID, often seen on kiwi and matches its TSBK counterpart
-            //its possible some of the other ones here don't as well, need to re-check all of them
-            else if (lc_format == 0x61) {
-                fprintf(stderr, " Secondary Control Channel Broadcast");
-            }
-
-            else if (lc_format == 0x62) {
-                fprintf(stderr, " Adjacent Site Status Broadcast");
-            }
-
-            else if (lc_format == 0x63) {
-                fprintf(stderr, " RFSS Status Broadcast");
-            }
-
-            else if (lc_format == 0x64) {
-                fprintf(stderr, " Network Status Broadcast");
-            }
-
-            else if (lc_format == 0x65) {
-                // Protection Parameter Broadcast — TIA-102.AABF-D LCO 37
-                uint8_t algid = (uint8_t)ConvertBitIntoBytes(&LCW_bits[24], 8);
-                uint16_t kid = (uint16_t)ConvertBitIntoBytes(&LCW_bits[32], 16);
-                uint32_t target = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
-
-                const char* alg_name = p25_algid_name(algid);
-
-                fprintf(stderr, " Protection Parameter Broadcast");
-                fprintf(stderr, "\n  ALGID [%02X]", algid);
-                if (alg_name) {
-                    fprintf(stderr, " (%s)", alg_name);
-                }
-                fprintf(stderr, " KID [%04X] Target [%d]", kid, target);
-
-                state->p25_prot_algid = algid;
-                state->p25_prot_kid = kid;
-                state->p25_prot_valid = 1;
-            }
-
-            else if (lc_format == 0x66) {
-                fprintf(stderr, " Secondary Control Channel Broadcast %s Explicit (LCSCBX)",
-                        dsd_unicode_or_ascii("–", "-"));
-            }
-
-            else if (lc_format == 0x67) //explicit
-            {
-                fprintf(stderr, " Adjacent Site Status (LCASBX)");
-                uint8_t lra = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 8);
-                uint16_t channelt = (uint16_t)ConvertBitIntoBytes(&LCW_bits[16], 16);
-                uint8_t rfssid = (uint8_t)ConvertBitIntoBytes(&LCW_bits[32], 8);
-                uint8_t siteid = (uint8_t)ConvertBitIntoBytes(&LCW_bits[40], 8);
-                uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&LCW_bits[48], 16);
-                uint8_t cfva = (uint8_t)ConvertBitIntoBytes(&LCW_bits[64], 4);
-                fprintf(stderr, " - RFSS %d Site %d CH %04X", rfssid, siteid, channelt);
-                UNUSED2(lra, channelr);
-
-                //debug print only
-                // fprintf (stderr, "\n  ");
-                // fprintf (stderr, "  LRA [%02X] RFSS [%03d] SITE [%03d] CHAN-T [%04X] CHAN-R [%02X] CFVA [%X]\n  ", lra, rfssid, siteid, channelt, channelr, cfva);
-                // if (cfva & 0x8) fprintf (stderr, " Conventional");
-                // if (cfva & 0x4) fprintf (stderr, " Failure Condition");
-                // if (cfva & 0x2) fprintf (stderr, " Up to Date (Correct)");
-                // else fprintf (stderr, " Last Known");
-                if (cfva & 0x1) {
-                    fprintf(stderr, " - Connection Active");
-                }
-                // process_channel_to_freq (opts, state, channelt);
-                //end debug, way too much for a simple link control line
-
-            }
-
-            else if (lc_format == 0x68) {
-                fprintf(stderr, " RFSS Status Broadcast %s Explicit (LCRSBX)", dsd_unicode_or_ascii("–", "-"));
-            }
-
-            else if (lc_format == 0x69) {
-                fprintf(stderr, " Network Status Broadcast %s Explicit (LCNSBX)", dsd_unicode_or_ascii("–", "-"));
-            }
-
-            else if (lc_format == 0x6A) {
-                fprintf(stderr, " Conventional Fallback");
-            }
-
-            else if (lc_format == 0x6B) {
-                fprintf(stderr, " Message Update %s Source ID Extension Required", dsd_unicode_or_ascii("–", "-"));
-            }
-
-            // Return to control channel (call termination)
-            else if (lc_opcode == 0x0F) //# Call Termination/Cancellation
-            {
-                uint32_t tgt =
-                    (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24); //can be individual, or all units (0xFFFFFF)
-                fprintf(stderr, " Call Termination; TGT: %d;", tgt);
-                memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
-                if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
-                    // Force release so the SM does not defer due to any stale
-                    // per-slot audio gates when an explicit call termination is received.
-                    state->p25_sm_force_release = 1;
-                    p25_sm_on_release(opts, state);
-                }
-            }
-
-            // This lc_format doesn't use the MFID field
-            else if (lc_format == 0x57) {
-                fprintf(stderr, " Extended Function Command");
-            }
-
-            // This lc_format doesn't use the MFID field
-            else if (lc_format == 0x58) {
-                uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
-                int bw = (int)ConvertBitIntoBytes(&LCW_bits[12], 9);
-                int sign = LCW_bits[21] & 1;
-                int tx_raw = (int)ConvertBitIntoBytes(&LCW_bits[22], 8);
-                int chan_spac = (int)ConvertBitIntoBytes(&LCW_bits[30], 10);
-                uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
-                int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
-                fprintf(stderr, " Channel Identifier Update; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %ld;",
-                        iden, bw, trans_off, chan_spac, (long)base * 5L);
-                p25_lcw_store_fdma_iden(opts, state, iden, (long int)base, chan_spac, trans_off, 0);
-            }
-
-            // This lc_format doesn't use the MFID field
-            else if (lc_format == 0x59) {
-                uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
-                uint8_t bw_vu = (uint8_t)ConvertBitIntoBytes(&LCW_bits[12], 4);
-                int sign = LCW_bits[16] & 1;
-                int tx_raw = (int)ConvertBitIntoBytes(&LCW_bits[17], 13);
-                int chan_spac = (int)ConvertBitIntoBytes(&LCW_bits[30], 10);
-                uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
-                int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
-                fprintf(stderr,
-                        " Channel Identifier Update VU; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %ld;", iden,
-                        bw_vu, trans_off, chan_spac, (long)base * 5L);
-                p25_lcw_store_fdma_iden(opts, state, iden, (long int)base, chan_spac, trans_off, bw_vu);
-            }
-
-            else {
-                fprintf(stderr, " Unknown Format %02X MFID %02X SVC %02X", lc_format, lc_mfid, lc_svcopt);
-            }
-        }
-
-        //TODO: Look through all LCW format messages and move here if they don't use the MFID field
-        //just going to add/fix a few values I've observed for now, one issue with doing so may
-        //be where there is a reserved field that is also used as an MFID, i.e., Call Termination 0xF vs Moto Talker EOT 0xF with
-        //the reserved field showing the 0x90 for moto in it, and Harris 0xA vs Unit to Unit Voice Call 0xA
-
-        //TODO: Add Identification of Special SU Address values
-        //0 - No Unit
-        //1-0xFFFFFB - Assignable Units
-        //0xFFFFFC - FNE 16777212
-        //0xFFFFFD - System Default (FNE Calling Functions, Registration, Mobility)
-        //0xFFFFFE - Registration Default (registration transactions from SU)
-        //0xFFFFFF - All Units
-
-        //MFID 90 Embedded GPS
-        else if (lc_mfid == 0x90 && lc_opcode == 0x6) {
-            fprintf(stderr, " MFID90 (Moto)");
-            apx_embedded_gps(opts, state, LCW_bits);
-        }
-
-        else if (lc_mfid == 0x90 && lc_opcode == 0x0) {
-            //needed to fill this in, since tuning this on P1 will just leave the TG/SRC as zeroes
-            fprintf(stderr, " MFID90 (Moto) Group Regroup Channel User (LCGRGR)");
-            uint32_t sg = (uint32_t)ConvertBitIntoBytes(&LCW_bits[32], 16);
-            uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
-            fprintf(stderr, " SG: %d; SRC: %d;", sg, src);
-            if (LCW_bits[16] == 1) {
-                fprintf(stderr, " Res;"); //res bit (octet 2)
-            }
-            if (LCW_bits[17] == 1) {
-                fprintf(stderr, " ENC;"); //P-bit (octet 2)
-            }
-            if (LCW_bits[31] == 1) {
-                fprintf(stderr, " EXT;"); //Full SUID next LC (external) (octet 3)
-            }
-            state->lasttg = sg;
-            // Don't overwrite a known-good source ID with zero —
-            // mirrors the if (source != 0) guard in formats 0x00 and 0x03.
-            if (src != 0) {
-                state->lastsrc = src;
-            }
-            state->gi[0] = 0;
-
-            // Treat observed Super Group on LCW as an active two-way patch.
-            // This drives the UI patches line even when only LCWs are present.
-            p25_patch_update(state, (int)sg, /*is_patch*/ 1, /*active*/ 1);
-        }
-
-        else if (lc_mfid == 0x90 && lc_opcode == 0x1) {
-            fprintf(stderr, " MFID90 (Moto) Group Regroup Channel Update (LCGRGU)");
-            uint32_t sg = (uint32_t)ConvertBitIntoBytes(&LCW_bits[24], 16);
-            uint32_t ch = (uint32_t)ConvertBitIntoBytes(&LCW_bits[56], 16);
-            fprintf(stderr, " SG: %d; CH: %04X;", sg, ch);
-            if (LCW_bits[16] == 1) {
-                fprintf(stderr, " Res;"); //res bit (octet 2)
-            }
-            if (LCW_bits[17] == 1) {
-                fprintf(stderr, " ENC;"); //P-bit (octet 2)
-            }
-            state->gi[0] = 0;
-        }
-
-        else if (lc_mfid == 0x90 && lc_opcode == 0x3) {
-            fprintf(stderr, " MFID90 (Moto) Group Regroup Add");
-            // Best-effort: we don't fully parse membership here; keep SG marked active if previously seen.
-        }
-
-        else if (lc_mfid == 0x90 && lc_opcode == 0x4) {
-            fprintf(stderr, " MFID90 (Moto) Group Regroup Delete");
-            // Best-effort: without membership parsing, avoid clearing SG to prevent flicker.
-        }
-
-        else if (lc_mfid == 0x90 && lc_opcode == 0x5) {
-            // MFID90 Motorola System Information / BSI
-            // Field layout is proprietary; log raw data and show computed callsign
-            fprintf(stderr, " MFID90 (Moto) System Information (BSI)");
-            fprintf(stderr, " Data:");
-            for (int bi = 16; bi + 8 <= 72; bi += 8) {
-                uint8_t b = (uint8_t)ConvertBitIntoBytes(&LCW_bits[bi], 8);
-                fprintf(stderr, " %02X", b);
-            }
-            // Show computed callsign from current WACN/SysID if available
-            if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
-                char callsign[7];
-                p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
-                fprintf(stderr, " [%s]", callsign);
-            }
-        }
-
-        else if (lc_mfid == 0x90 && lc_opcode == 0xF) {
-            uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
-            fprintf(stderr, " MFID90 (Moto) Talker EOT; SRC: %d;", src);
-            // Motorola systems may signal end-of-call via MFID90 Talker EOT
-            // rather than standard implicit-MFID Call Termination (0x4F).
-            // Treat this as an explicit release when trunk-following.
-            memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
-            if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
-            }
-        }
-
-        //look for these in logs
-        else if (lc_mfid == 0x90 && lc_opcode == 0x15) {
-            fprintf(stderr, " MFID90 (Moto) Talker Alias Header");
-            apx_embedded_alias_header_phase1(opts, state, 0, LCW_bits);
-        }
-
-        else if (lc_mfid == 0x90 && lc_opcode == 0x17) {
-            fprintf(stderr, " MFID90 (Moto) Talker Alias Blocks");
-            apx_embedded_alias_blocks_phase1(opts, state, 0, LCW_bits);
-        }
-
-        else if (lc_mfid == 0xA4 && lc_opcode > 0x31 && lc_opcode < 0x36) {
-            fprintf(stderr, " MFIDA4 (Harris) Talker Alias Blocks");
-            l3h_embedded_alias_blocks_phase1(opts, state, 0, LCW_bits);
-        }
-
-        //Harris GPS on Phase 1 tested and working
-        else if (lc_mfid == 0xA4 && lc_opcode == 0x2A) {
-            fprintf(stderr, " MFIDA4 (Harris) GPS Block 1");
-            memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
-            memcpy(state->dmr_pdu_sf[0], LCW_bits, 16 * sizeof(uint8_t)); //opcode and mfid for check
-            memcpy(state->dmr_pdu_sf[0] + 40, LCW_bits + 16,
-                   56 * sizeof(uint8_t)); //+40 offset to match the vPDU decoder
-        }
-
-        else if (lc_mfid == 0xA4 && lc_opcode == 0x2B) {
-            fprintf(stderr, " MFIDA4 (Harris) GPS Block 2");
-            memcpy(state->dmr_pdu_sf[0] + 40 + 56, LCW_bits + 16, 56 * sizeof(uint8_t)); //+40 +56 to offset first block
-            uint16_t check = (uint16_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[0][0], 16);
-            if (check == 0x2AA4) {
-                nmea_harris(opts, state, state->dmr_pdu_sf[0], (uint32_t)state->lastsrc, 0);
-            } else {
-                fprintf(stderr, " Missing GPS Block 1");
-            }
-            memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
-        }
-
-        //observed format value on Harris SNDCP data channel (Phase 2 CC to Phase 1 MPDU channel)
-        else if (lc_mfid == 0xA4 && lc_format == 0x0A) {
-            //Could also just be a Unit to Unit Voice Channel User using the reserved field as the MFID?
-            //if it were similar to Unit to Unit though, the TGT and SRC values seem to be reversed
-            //this appears to be a data channel indicator, has a matching target and the FNE address in it
-            uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[24], 24);
-            uint32_t tgt = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
-            fprintf(stderr, " MFIDA4 (Harris) Data Channel; SRC: %d; TGT: %d;", src, tgt);
-        }
-
-        //observed on Tait conventional / uplink (TODO: Move all this to dsd_alias.c)
-        else if (lc_mfid == 0xD8 && lc_format == 0x00) {
-            fprintf(stderr, " MFIDD8 (Tait) Talker Alias: ");
-            tait_iso7_embedded_alias_decode(opts, state, 0, 8, LCW_bits);
-        }
-
-        //not a duplicate, this one will print if not MFID 0 or 1
-        else {
-            fprintf(stderr, " Unknown Format %02X MFID %02X ", lc_format, lc_mfid);
-            if (lc_mfid == 0x90) {
-                fprintf(stderr, "(Moto)");
-            } else if (lc_mfid == 0xA4) {
-                fprintf(stderr, "(Harris)");
-            } else if (lc_mfid == 0xD8) {
-                fprintf(stderr, "(Tait)");
-            }
+        } else if (!p25_lcw_dispatch_vendor_format(&ctx)) {
+            p25_lcw_handle_unknown_vendor(&ctx);
         }
     }
 
-    //ending line break
-    fprintf(stderr, "\n");
+    DSD_FPRINTF(stderr, "\n");
 }

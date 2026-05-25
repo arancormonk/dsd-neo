@@ -22,14 +22,18 @@ jobs:
   build-portable-dmg:
     runs-on: macos-latest
     permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
       contents: write
+      id-token: write
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
       HOMEBREW_NO_ANALYTICS: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Validate release tag
         if: startsWith(github.ref, 'refs/tags/v')
         id: release
@@ -64,7 +68,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Restore dependency cache
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.DEPS_PREFIX }}
           key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
@@ -99,7 +103,7 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/.ccache"
 
       - name: Restore ccache
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.sha }}
@@ -407,15 +411,38 @@ jobs:
           trap - EXIT
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.dmg.outputs.ART_NAME }}
           path: ${{ steps.dmg.outputs.DMG_PATH }}
           retention-days: 7
 
+      - name: Generate artifact SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: ${{ steps.dmg.outputs.DMG_PATH }}
+          format: spdx-json
+          output-file: ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
+          artifact-name: ${{ steps.dmg.outputs.ART_NAME }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Attest artifact provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: ${{ steps.dmg.outputs.DMG_PATH }}
+
+      - name: Attest artifact SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: ${{ steps.dmg.outputs.DMG_PATH }}
+          sbom-path: ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
+
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3.0.0
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
           files: ${{ steps.dmg.outputs.DMG_PATH }}
           name: ${{ steps.release.outputs.release_title }}
@@ -423,7 +450,7 @@ jobs:
 
       - name: Upload nightly asset (overwrite)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: svenstaro/upload-release-action@v2
+        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           tag: nightly

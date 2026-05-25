@@ -48,7 +48,10 @@ if(MSVC)
     # Visual Studio generators are more reliable when these are applied via the
     # language-specific C flags rather than directory compile options.
     if(NOT CMAKE_C_FLAGS MATCHES "/experimental:c11atomics")
-        string(APPEND CMAKE_C_FLAGS " /std:c11 /Zc:__STDC__ /experimental:c11atomics")
+        string(
+            APPEND CMAKE_C_FLAGS
+            " /std:c11 /Zc:__STDC__ /experimental:c11atomics"
+        )
     endif()
     # MSVC does not define common math constants (e.g., M_PI) unless explicitly enabled.
     add_compile_definitions(_USE_MATH_DEFINES)
@@ -56,17 +59,38 @@ endif()
 
 # Modern build options (aligned with mbelib-neo style)
 option(DSD_ENABLE_WARNINGS "Enable common warning flags" ON)
-option(DSD_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
-option(DSD_ENABLE_FAST_MATH "Enable fast-math optimizations (may relax IEEE semantics)" OFF)
-option(DSD_ENABLE_LTO "Enable Link Time Optimization (IPO/LTO) for Release builds" OFF)
+option(DSD_WARNINGS_AS_ERRORS "Treat warnings as errors" ON)
+option(
+    DSD_ENABLE_FAST_MATH
+    "Enable fast-math optimizations (may relax IEEE semantics)"
+    OFF
+)
+option(
+    DSD_ENABLE_LTO
+    "Enable Link Time Optimization (IPO/LTO) for Release builds"
+    OFF
+)
 option(DSD_ENABLE_NATIVE "Enable native CPU tuning (-march/-mtune=native)" OFF)
 option(DSD_ENABLE_ASAN "Enable AddressSanitizer in Debug builds" OFF)
 option(DSD_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer in Debug builds" OFF)
 option(DSD_ENABLE_TSAN "Enable ThreadSanitizer in Debug builds" OFF)
+option(
+    DSD_ENABLE_FUZZING
+    "Enable libFuzzer instrumentation and fuzz targets"
+    OFF
+)
 option(DSD_ENABLE_RTLSDR "Enable RTL-SDR backend support" ON)
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
-option(DSD_REQUIRE_RTLSDR "Fail configure when RTL-SDR is enabled but not found" OFF)
-option(DSD_REQUIRE_SOAPYSDR "Fail configure when SoapySDR is enabled but not found" OFF)
+option(
+    DSD_REQUIRE_RTLSDR
+    "Fail configure when RTL-SDR is enabled but not found"
+    OFF
+)
+option(
+    DSD_REQUIRE_SOAPYSDR
+    "Fail configure when SoapySDR is enabled but not found"
+    OFF
+)
 
 # -----------------------------------------------------------------------------
 # Common warning flags (target-scoped)
@@ -76,19 +100,74 @@ option(DSD_REQUIRE_SOAPYSDR "Fail configure when SoapySDR is enabled but not fou
 # this helper target PRIVATE.
 # -----------------------------------------------------------------------------
 
-add_library(dsd-neo_sanitizers INTERFACE)
-
-if(DSD_ENABLE_TSAN AND (DSD_ENABLE_ASAN OR DSD_ENABLE_UBSAN))
-    message(FATAL_ERROR "DSD_ENABLE_TSAN must use a separate build from ASan/UBSan.")
+add_library(dsd-neo_safe_api INTERFACE)
+target_include_directories(
+    dsd-neo_safe_api
+    INTERFACE ${PROJECT_SOURCE_DIR}/include
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(dsd-neo_safe_api INTERFACE _GNU_SOURCE)
+endif()
+if(MSVC)
+    target_compile_options(
+        dsd-neo_safe_api
+        INTERFACE
+            $<$<COMPILE_LANGUAGE:C>:/FI${PROJECT_SOURCE_DIR}/include/dsd-neo/core/safe_api.h>
+            $<$<COMPILE_LANGUAGE:CXX>:/FI${PROJECT_SOURCE_DIR}/include/dsd-neo/core/safe_api.h>
+    )
+else()
+    target_compile_options(
+        dsd-neo_safe_api
+        INTERFACE
+            $<$<COMPILE_LANGUAGE:C>:-include>
+            $<$<COMPILE_LANGUAGE:C>:dsd-neo/core/safe_api.h>
+            $<$<COMPILE_LANGUAGE:CXX>:-include>
+            $<$<COMPILE_LANGUAGE:CXX>:dsd-neo/core/safe_api.h>
+    )
 endif()
 
-if((DSD_ENABLE_ASAN OR DSD_ENABLE_UBSAN OR DSD_ENABLE_TSAN)
-   AND (NOT CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" OR NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU"))
+add_library(dsd-neo_sanitizers INTERFACE)
+target_link_libraries(dsd-neo_sanitizers INTERFACE dsd-neo_safe_api)
+
+if(DSD_ENABLE_TSAN AND (DSD_ENABLE_ASAN OR DSD_ENABLE_UBSAN))
+    message(
+        FATAL_ERROR
+        "DSD_ENABLE_TSAN must use a separate build from ASan/UBSan."
+    )
+endif()
+
+if(DSD_ENABLE_FUZZING AND DSD_ENABLE_TSAN)
+    message(
+        FATAL_ERROR
+        "DSD_ENABLE_FUZZING must not be combined with ThreadSanitizer."
+    )
+endif()
+
+if(
+    (DSD_ENABLE_ASAN OR DSD_ENABLE_UBSAN OR DSD_ENABLE_TSAN)
+    AND (
+        NOT CMAKE_C_COMPILER_ID MATCHES "Clang|GNU"
+        OR NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU"
+    )
+)
     message(FATAL_ERROR "DSD sanitizer builds require Clang or GCC.")
 endif()
 
+if(
+    DSD_ENABLE_FUZZING
+    AND (
+        NOT CMAKE_C_COMPILER_ID MATCHES "Clang"
+        OR NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang"
+    )
+)
+    message(FATAL_ERROR "DSD_ENABLE_FUZZING requires Clang libFuzzer support.")
+endif()
+
 if(DSD_ENABLE_TSAN AND WIN32)
-    message(FATAL_ERROR "DSD_ENABLE_TSAN is supported only on POSIX Clang/GCC builds.")
+    message(
+        FATAL_ERROR
+        "DSD_ENABLE_TSAN is supported only on POSIX Clang/GCC builds."
+    )
 endif()
 
 if(CMAKE_BUILD_TYPE MATCHES "Debug")
@@ -116,8 +195,24 @@ if(CMAKE_BUILD_TYPE MATCHES "Debug")
     if(_dsd_san_ldflags)
         target_link_options(dsd-neo_sanitizers INTERFACE ${_dsd_san_ldflags})
     endif()
-elseif(DSD_ENABLE_ASAN OR DSD_ENABLE_UBSAN OR DSD_ENABLE_TSAN)
-    message(WARNING "DSD sanitizer options are enabled only for Debug builds.")
+    if(DSD_ENABLE_FUZZING)
+        target_compile_options(
+            dsd-neo_sanitizers
+            INTERFACE
+                $<$<COMPILE_LANGUAGE:C>:-fsanitize=fuzzer-no-link>
+                $<$<COMPILE_LANGUAGE:CXX>:-fsanitize=fuzzer-no-link>
+        )
+    endif()
+elseif(
+    DSD_ENABLE_ASAN
+    OR DSD_ENABLE_UBSAN
+    OR DSD_ENABLE_TSAN
+    OR DSD_ENABLE_FUZZING
+)
+    message(
+        WARNING
+        "DSD sanitizer/fuzzing options are enabled only for Debug builds."
+    )
 endif()
 
 add_library(dsd-neo_warnings INTERFACE)
@@ -125,11 +220,25 @@ target_link_libraries(dsd-neo_warnings INTERFACE dsd-neo_sanitizers)
 
 if(DSD_ENABLE_WARNINGS)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-        target_compile_options(dsd-neo_warnings INTERFACE -Wall -Wextra -Wpedantic)
-        target_compile_options(dsd-neo_warnings INTERFACE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
-                               -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
-                               -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
-                               -Wtautological-compare)
+        target_compile_options(
+            dsd-neo_warnings
+            INTERFACE -Wall -Wextra -Wpedantic
+        )
+        target_compile_options(
+            dsd-neo_warnings
+            INTERFACE
+                -Wunused-but-set-variable
+                -Wunused-variable
+                -Wunused-parameter
+                -Wempty-body
+                -Wunused-label
+                $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
+                -Wmisleading-indentation
+                -Wparentheses
+                -Wunused-value
+                -Wreturn-type
+                -Wtautological-compare
+        )
     elseif(MSVC)
         target_compile_options(
             dsd-neo_warnings
@@ -216,7 +325,6 @@ option(LZ "Build with new LimaZulu Requested NXDN Tweaks Enabled" OFF)
 #use cmake option -DSID=ON to enable P25p1 Soft ID decoding -- Experimental
 option(SID "Build with P25p1 LSD/Soft ID Enabled" OFF)
 
-
 include(git_revision)
 # Gather git info: semantic-like tag and short hash
 get_git_head_revision(GIT_REFSPEC GIT_HASH)
@@ -243,21 +351,40 @@ find_package(mbe-neo ${_DSD_MBE_REQUIRED_VERSION} CONFIG REQUIRED)
 if(TARGET mbe_neo::mbe_shared)
     set(MBE_LINK_TARGET mbe_neo::mbe_shared)
 else()
-    message(FATAL_ERROR "mbe-neo package found but exported targets are missing")
+    message(
+        FATAL_ERROR
+        "mbe-neo package found but exported targets are missing"
+    )
 endif()
 # Ensure includes for legacy-style #include <mbelib.h>
 # by adding the directory that directly contains mbelib.h
-get_target_property(_MBE_TARGET_INCLUDE_DIRS ${MBE_LINK_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
+get_target_property(
+    _MBE_TARGET_INCLUDE_DIRS
+    ${MBE_LINK_TARGET}
+    INTERFACE_INCLUDE_DIRECTORIES
+)
 if(NOT _MBE_TARGET_INCLUDE_DIRS)
     set(_MBE_TARGET_INCLUDE_DIRS "")
 endif()
 set(_MBE_INCLUDE_HINTS "")
 foreach(_MBE_TARGET_INCLUDE_DIR IN LISTS _MBE_TARGET_INCLUDE_DIRS)
-    if(IS_ABSOLUTE "${_MBE_TARGET_INCLUDE_DIR}" AND NOT _MBE_TARGET_INCLUDE_DIR MATCHES "^\\$<")
-        list(APPEND _MBE_INCLUDE_HINTS "${_MBE_TARGET_INCLUDE_DIR}" "${_MBE_TARGET_INCLUDE_DIR}/mbelib-neo")
+    if(
+        IS_ABSOLUTE "${_MBE_TARGET_INCLUDE_DIR}"
+        AND NOT _MBE_TARGET_INCLUDE_DIR MATCHES "^\\$<"
+    )
+        list(
+            APPEND _MBE_INCLUDE_HINTS
+            "${_MBE_TARGET_INCLUDE_DIR}"
+            "${_MBE_TARGET_INCLUDE_DIR}/mbelib-neo"
+        )
     endif()
 endforeach()
-find_path(MBE_INCLUDE_DIR NAMES mbelib.h HINTS ${_MBE_INCLUDE_HINTS} PATH_SUFFIXES mbelib-neo)
+find_path(
+    MBE_INCLUDE_DIR
+    NAMES mbelib.h
+    HINTS ${_MBE_INCLUDE_HINTS}
+    PATH_SUFFIXES mbelib-neo
+)
 if(NOT MBE_INCLUDE_DIR)
     message(FATAL_ERROR "mbe-neo 2.x package found, but mbelib.h was not found")
 endif()
@@ -267,7 +394,9 @@ set(_DSD_SAVED_CMAKE_REQUIRED_INCLUDES "${CMAKE_REQUIRED_INCLUDES}")
 set(_DSD_SAVED_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
 if(DEFINED CMAKE_TRY_COMPILE_TARGET_TYPE)
     set(_DSD_HAD_CMAKE_TRY_COMPILE_TARGET_TYPE TRUE)
-    set(_DSD_SAVED_CMAKE_TRY_COMPILE_TARGET_TYPE "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
+    set(_DSD_SAVED_CMAKE_TRY_COMPILE_TARGET_TYPE
+        "${CMAKE_TRY_COMPILE_TARGET_TYPE}"
+    )
 endif()
 set(CMAKE_REQUIRED_INCLUDES "${MBE_INCLUDE_DIR}")
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
@@ -275,7 +404,8 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 unset(DSD_HAVE_MBE_NEO_SOFT_API CACHE)
-check_c_source_compiles([[
+check_c_source_compiles(
+    [[
 #include <stddef.h>
 #include <stdint.h>
 #include <mbelib.h>
@@ -303,11 +433,15 @@ int main(void) {
     mbe_formatProcessResult(err_str, sizeof(err_str), &result);
     return (int)(sizeof(mbe_soft_bit) + sizeof(mbe_process_result));
 }
-]] DSD_HAVE_MBE_NEO_SOFT_API)
+]]
+    DSD_HAVE_MBE_NEO_SOFT_API
+)
 set(CMAKE_REQUIRED_INCLUDES "${_DSD_SAVED_CMAKE_REQUIRED_INCLUDES}")
 set(CMAKE_REQUIRED_FLAGS "${_DSD_SAVED_CMAKE_REQUIRED_FLAGS}")
 if(_DSD_HAD_CMAKE_TRY_COMPILE_TARGET_TYPE)
-    set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_DSD_SAVED_CMAKE_TRY_COMPILE_TARGET_TYPE}")
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE
+        "${_DSD_SAVED_CMAKE_TRY_COMPILE_TARGET_TYPE}"
+    )
 else()
     unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
 endif()
@@ -316,7 +450,10 @@ unset(_DSD_SAVED_CMAKE_TRY_COMPILE_TARGET_TYPE)
 unset(_DSD_SAVED_CMAKE_REQUIRED_INCLUDES)
 unset(_DSD_SAVED_CMAKE_REQUIRED_FLAGS)
 if(NOT DSD_HAVE_MBE_NEO_SOFT_API)
-    message(FATAL_ERROR "mbe-neo 2.x with the soft-decision/V2 API is required; update mbelib-neo")
+    message(
+        FATAL_ERROR
+        "mbe-neo 2.x with the soft-decision/V2 API is required; update mbelib-neo"
+    )
 endif()
 if(DSD_ENABLE_RTLSDR)
     find_package(RTLSDR)
@@ -359,23 +496,38 @@ if(DSD_REQUIRE_RTLSDR AND NOT DSD_ENABLE_RTLSDR)
 endif()
 
 if(DSD_REQUIRE_SOAPYSDR AND NOT DSD_ENABLE_SOAPYSDR)
-    message(FATAL_ERROR "DSD_REQUIRE_SOAPYSDR=ON requires DSD_ENABLE_SOAPYSDR=ON.")
+    message(
+        FATAL_ERROR
+        "DSD_REQUIRE_SOAPYSDR=ON requires DSD_ENABLE_SOAPYSDR=ON."
+    )
 endif()
 
 if(DSD_REQUIRE_RTLSDR AND NOT DSD_HAS_RTLSDR)
-    message(FATAL_ERROR "RTL-SDR backend was required but not found. Install librtlsdr or disable DSD_REQUIRE_RTLSDR.")
+    message(
+        FATAL_ERROR
+        "RTL-SDR backend was required but not found. Install librtlsdr or disable DSD_REQUIRE_RTLSDR."
+    )
 endif()
 
 if(DSD_REQUIRE_SOAPYSDR AND NOT DSD_HAS_SOAPYSDR)
-    message(FATAL_ERROR "SoapySDR backend was required but not found. Install SoapySDR or disable DSD_REQUIRE_SOAPYSDR.")
+    message(
+        FATAL_ERROR
+        "SoapySDR backend was required but not found. Install SoapySDR or disable DSD_REQUIRE_SOAPYSDR."
+    )
 endif()
 
 if(DSD_ENABLE_RTLSDR AND NOT DSD_HAS_RTLSDR AND NOT DSD_REQUIRE_RTLSDR)
-    message(STATUS "RTL-SDR not found; building without RTL-SDR backend (set DSD_REQUIRE_RTLSDR=ON to fail).")
+    message(
+        STATUS
+        "RTL-SDR not found; building without RTL-SDR backend (set DSD_REQUIRE_RTLSDR=ON to fail)."
+    )
 endif()
 
 if(DSD_ENABLE_SOAPYSDR AND NOT DSD_HAS_SOAPYSDR AND NOT DSD_REQUIRE_SOAPYSDR)
-    message(STATUS "SoapySDR not found; building without SoapySDR backend (set DSD_REQUIRE_SOAPYSDR=ON to fail).")
+    message(
+        STATUS
+        "SoapySDR not found; building without SoapySDR backend (set DSD_REQUIRE_SOAPYSDR=ON to fail)."
+    )
 endif()
 
 set(DSD_HAS_RADIO OFF)
@@ -383,8 +535,14 @@ if(DSD_HAS_RTLSDR OR DSD_HAS_SOAPYSDR)
     set(DSD_HAS_RADIO ON)
 endif()
 
-message(STATUS "RTL-SDR backend enabled: ${DSD_ENABLE_RTLSDR} (available: ${DSD_HAS_RTLSDR})")
-message(STATUS "SoapySDR backend enabled: ${DSD_ENABLE_SOAPYSDR} (available: ${DSD_HAS_SOAPYSDR})")
+message(
+    STATUS
+    "RTL-SDR backend enabled: ${DSD_ENABLE_RTLSDR} (available: ${DSD_HAS_RTLSDR})"
+)
+message(
+    STATUS
+    "SoapySDR backend enabled: ${DSD_ENABLE_SOAPYSDR} (available: ${DSD_HAS_SOAPYSDR})"
+)
 message(STATUS "Radio pipeline available: ${DSD_HAS_RADIO}")
 
 # Curses library selection:
@@ -403,14 +561,17 @@ if(WIN32 AND NOT MINGW)
     set(CMAKE_REQUIRED_INCLUDES ${PDCURSES_INCLUDE_DIRS})
     set(CMAKE_REQUIRED_LIBRARIES PDCurses::PDCurses)
     unset(DSD_HAS_PDCURSES_WIDE_API CACHE)
-    check_c_source_compiles("
+    check_c_source_compiles(
+        "
         #include <wchar.h>
         #include <curses.h>
         int main(void) {
             static const wchar_t glyph[] = {0x2588, 0};
             return addwstr(glyph);
         }
-    " DSD_HAS_PDCURSES_WIDE_API)
+    "
+        DSD_HAS_PDCURSES_WIDE_API
+    )
     set(CMAKE_REQUIRED_DEFINITIONS "${_CMAKE_REQUIRED_DEFINITIONS_SAVE}")
     set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
     set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
@@ -429,7 +590,10 @@ else()
     # so add the ncursesw subdir when needed.
     if(CURSES_NEED_WIDE)
         foreach(_curses_inc IN LISTS CURSES_INCLUDE_DIRS)
-            if(EXISTS "${_curses_inc}/ncursesw/curses.h" AND NOT EXISTS "${_curses_inc}/curses.h")
+            if(
+                EXISTS "${_curses_inc}/ncursesw/curses.h"
+                AND NOT EXISTS "${_curses_inc}/curses.h"
+            )
                 list(APPEND CURSES_INCLUDE_DIRS "${_curses_inc}/ncursesw")
             endif()
         endforeach()
@@ -442,7 +606,11 @@ find_package(CODEC2)
 find_package(CURL)
 
 # Audio backend selection
-option(DSD_USE_PORTAUDIO "Use PortAudio for cross-platform audio (required on Windows)" OFF)
+option(
+    DSD_USE_PORTAUDIO
+    "Use PortAudio for cross-platform audio (required on Windows)"
+    OFF
+)
 
 # Windows requires PortAudio (no PulseAudio available)
 if(WIN32)
@@ -478,7 +646,12 @@ else()
     set(AUDIO_LIBS ${PULSEAUDIO_SIMPLE_LIBRARY} ${PULSEAUDIO_LIBRARY})
 endif()
 
-set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARIES} ${AUDIO_LIBS} ${CURSES_LIBRARIES})
+set(LIBS
+    ${MBE_LINK_TARGET}
+    ${LIBSNDFILE_LIBRARIES}
+    ${AUDIO_LIBS}
+    ${CURSES_LIBRARIES}
+)
 
 # -----------------------------------------------------------------------------
 # Optional feature interface targets
@@ -489,22 +662,40 @@ set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARIES} ${AUDIO_LIBS} ${CURSES_LIBRA
 # -----------------------------------------------------------------------------
 
 add_library(dsd-neo_feature_colors INTERFACE)
-target_compile_definitions(dsd-neo_feature_colors INTERFACE $<$<BOOL:${COLORS}>:PRETTY_COLORS>)
+target_compile_definitions(
+    dsd-neo_feature_colors
+    INTERFACE $<$<BOOL:${COLORS}>:PRETTY_COLORS>
+)
 
 add_library(dsd-neo_feature_colors_logs INTERFACE)
-target_compile_definitions(dsd-neo_feature_colors_logs INTERFACE $<$<BOOL:${COLORSLOGS}>:PRETTY_COLORS_LOGS>)
+target_compile_definitions(
+    dsd-neo_feature_colors_logs
+    INTERFACE $<$<BOOL:${COLORSLOGS}>:PRETTY_COLORS_LOGS>
+)
 
 add_library(dsd-neo_feature_pvc INTERFACE)
-target_compile_definitions(dsd-neo_feature_pvc INTERFACE $<$<BOOL:${PVC}>:PVCONVENTIONAL>)
+target_compile_definitions(
+    dsd-neo_feature_pvc
+    INTERFACE $<$<BOOL:${PVC}>:PVCONVENTIONAL>
+)
 
 add_library(dsd-neo_feature_lz INTERFACE)
-target_compile_definitions(dsd-neo_feature_lz INTERFACE $<$<BOOL:${LZ}>:LIMAZULUTWEAKS>)
+target_compile_definitions(
+    dsd-neo_feature_lz
+    INTERFACE $<$<BOOL:${LZ}>:LIMAZULUTWEAKS>
+)
 
 add_library(dsd-neo_feature_sid INTERFACE)
-target_compile_definitions(dsd-neo_feature_sid INTERFACE $<$<BOOL:${SID}>:SOFTID>)
+target_compile_definitions(
+    dsd-neo_feature_sid
+    INTERFACE $<$<BOOL:${SID}>:SOFTID>
+)
 
 add_library(dsd-neo_feature_radio INTERFACE)
-target_compile_definitions(dsd-neo_feature_radio INTERFACE $<$<BOOL:${DSD_HAS_RADIO}>:USE_RADIO>)
+target_compile_definitions(
+    dsd-neo_feature_radio
+    INTERFACE $<$<BOOL:${DSD_HAS_RADIO}>:USE_RADIO>
+)
 
 add_library(dsd-neo_feature_soapy INTERFACE)
 if(DSD_HAS_SOAPYSDR)
@@ -512,10 +703,20 @@ if(DSD_HAS_SOAPYSDR)
     if(TARGET SoapySDR)
         target_link_libraries(dsd-neo_feature_soapy INTERFACE SoapySDR)
     elseif(TARGET SoapySDR::SoapySDR)
-        target_link_libraries(dsd-neo_feature_soapy INTERFACE SoapySDR::SoapySDR)
+        target_link_libraries(
+            dsd-neo_feature_soapy
+            INTERFACE SoapySDR::SoapySDR
+        )
     elseif(SoapySDR_INCLUDE_DIRS AND SoapySDR_LIBRARIES)
-        target_include_directories(dsd-neo_feature_soapy SYSTEM INTERFACE ${SoapySDR_INCLUDE_DIRS})
-        target_link_libraries(dsd-neo_feature_soapy INTERFACE ${SoapySDR_LIBRARIES})
+        target_include_directories(
+            dsd-neo_feature_soapy
+            SYSTEM
+            INTERFACE ${SoapySDR_INCLUDE_DIRS}
+        )
+        target_link_libraries(
+            dsd-neo_feature_soapy
+            INTERFACE ${SoapySDR_LIBRARIES}
+        )
     endif()
 endif()
 
@@ -527,7 +728,11 @@ if(DSD_HAS_RTLSDR)
     # Interface target for USE_RTLSDR compile definition
     add_library(dsd-neo_feature_rtlsdr INTERFACE)
     target_compile_definitions(dsd-neo_feature_rtlsdr INTERFACE USE_RTLSDR)
-    target_include_directories(dsd-neo_feature_rtlsdr SYSTEM INTERFACE ${RTLSDR_INCLUDE_DIRS})
+    target_include_directories(
+        dsd-neo_feature_rtlsdr
+        SYSTEM
+        INTERFACE ${RTLSDR_INCLUDE_DIRS}
+    )
 
     # Detect rtlsdr_set_bias_tee availability in the installed librtlsdr
     include(CheckSymbolExists)
@@ -542,7 +747,10 @@ if(DSD_HAS_RTLSDR)
     unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
     unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
     if(HAVE_RTLSDR_BIAS_TEE)
-        target_compile_definitions(dsd-neo_feature_rtlsdr INTERFACE USE_RTLSDR_BIAS_TEE)
+        target_compile_definitions(
+            dsd-neo_feature_rtlsdr
+            INTERFACE USE_RTLSDR_BIAS_TEE
+        )
     endif()
 else()
     # Provide a stub interface target so linking remains unconditional upstream
@@ -555,7 +763,11 @@ if(CODEC2_FOUND)
     # Interface target for USE_CODEC2 compile definition
     add_library(dsd-neo_feature_codec2 INTERFACE)
     target_compile_definitions(dsd-neo_feature_codec2 INTERFACE USE_CODEC2)
-    target_include_directories(dsd-neo_feature_codec2 SYSTEM INTERFACE ${CODEC2_INCLUDE_DIRS})
+    target_include_directories(
+        dsd-neo_feature_codec2
+        SYSTEM
+        INTERFACE ${CODEC2_INCLUDE_DIRS}
+    )
 else()
     # Provide a stub interface target so linking remains unconditional upstream
     add_library(dsd-neo_feature_codec2 INTERFACE)
@@ -579,20 +791,31 @@ endif()
 configure_file(
     "cmake/cmake_uninstall.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
-    IMMEDIATE @ONLY)
+    IMMEDIATE
+    @ONLY
+)
 
-add_custom_target(uninstall
-    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
+add_custom_target(
+    uninstall
+    COMMAND
+        ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake
+)
 
 # Install license/notice files with binaries
-install(FILES LICENSE COPYRIGHT THIRD_PARTY.md
-    DESTINATION ${CMAKE_INSTALL_DOCDIR})
-install(FILES src/third_party/ezpwd/lesser.txt
+install(
+    FILES LICENSE COPYRIGHT THIRD_PARTY.md
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}
+)
+install(
+    FILES src/third_party/ezpwd/lesser.txt
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
-    RENAME ezpwd-LGPL-2.1-or-later.txt)
-install(FILES src/third_party/pffft/COPYING
+    RENAME ezpwd-LGPL-2.1-or-later.txt
+)
+install(
+    FILES src/third_party/pffft/COPYING
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
-    RENAME pffft-FFTPACK.txt)
+    RENAME pffft-FFTPACK.txt
+)
 
 add_subdirectory(src/platform)
 add_subdirectory(src/core)

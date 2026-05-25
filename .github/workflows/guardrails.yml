@@ -1,0 +1,350 @@
+name: guardrails
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: "19 6 * * 2"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  script-lint:
+    name: shell/workflow lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run shell and workflow lint
+        env:
+          CI_ARCH_EXTRA_PACKAGES: shellcheck shfmt actionlint
+        run: |
+          tools/ci_arch_toolchain.sh bash -lc '
+            set -euo pipefail
+            tools/shell_lint.sh
+            tools/workflow_lint.sh
+          '
+
+      - name: Upload lint output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: script-lint-report
+          path: |
+            .shell-lint.local.out
+            .actionlint.local.out
+          include-hidden-files: true
+          retention-days: 7
+
+  cmake-format:
+    name: cmake format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Compute PR changed files
+        if: github.event_name == 'pull_request'
+        id: changed
+        run: |
+          tools/ci_changed_files.sh \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head HEAD \
+            --no-header-expansion
+
+      - name: Skip CMake format
+        if: github.event_name == 'pull_request' && steps.changed.outputs.cmake_format_files == '0'
+        run: echo "No CMake files to check."
+
+      - name: Set up Python
+        if: github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0'
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.14"
+
+      - name: Install gersemi
+        if: github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0'
+        run: python -m pip install --require-hashes -r .github/requirements/gersemi.txt
+
+      - name: Check CMake formatting
+        if: github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0'
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            mapfile -t files < .ci/changed-files/cmake_format_files.txt
+            tools/cmake_format_check.sh -- "${files[@]}"
+          else
+            tools/cmake_format_check.sh
+          fi
+
+      - name: Upload CMake format output
+        if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cmake-format-report
+          path: .cmake-format.local.out
+          include-hidden-files: true
+          retention-days: 7
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        run: tools/gitleaks.sh
+
+      - name: Upload Gitleaks SARIF
+        if: always() && hashFiles('.gitleaks.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        with:
+          sarif_file: .gitleaks.sarif
+
+      - name: Upload Gitleaks output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gitleaks-report
+          path: |
+            .gitleaks.local.out
+            .gitleaks.sarif
+          include-hidden-files: true
+          retention-days: 7
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Compute PR changed files
+        if: github.event_name == 'pull_request'
+        id: changed
+        run: |
+          tools/ci_changed_files.sh \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head HEAD \
+            --no-header-expansion
+
+      - name: Skip zizmor
+        if: github.event_name == 'pull_request' && steps.changed.outputs.workflow_security_targets == '0'
+        run: echo "No workflow security files to check."
+
+      - name: Set up Python
+        if: github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0'
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.14"
+
+      - name: Install zizmor
+        if: github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0'
+        run: python -m pip install --require-hashes -r .github/requirements/zizmor.txt
+
+      - name: Run zizmor
+        if: github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0'
+        env:
+          DSD_ZIZMOR_SARIF_OUT: .zizmor.sarif
+        run: tools/zizmor.sh
+
+      - name: Run pedantic zizmor advisory
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        env:
+          DSD_ZIZMOR_SARIF_OUT: .zizmor-pedantic.sarif
+        run: tools/zizmor.sh --pedantic --min-confidence high --no-config
+
+      - name: Upload zizmor SARIF
+        if: always() && hashFiles('.zizmor.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        with:
+          sarif_file: .zizmor.sarif
+
+      - name: Upload zizmor output
+        if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zizmor-report
+          path: |
+            .zizmor.local.out
+            .zizmor.sarif
+            .zizmor-pedantic.sarif
+          include-hidden-files: true
+          retention-days: 7
+
+  osv-scan:
+    name: osv scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Compute PR changed files
+        if: github.event_name == 'pull_request'
+        id: changed
+        run: |
+          tools/ci_changed_files.sh \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head HEAD \
+            --no-header-expansion
+
+      - name: Skip OSV scan
+        if: github.event_name == 'pull_request' && steps.changed.outputs.dependency_scan_targets == '0'
+        run: echo "No dependency inputs to scan."
+
+      - name: Run OSV scan
+        if: github.event_name != 'pull_request' || steps.changed.outputs.dependency_scan_targets != '0'
+        env:
+          DSD_OSV_SARIF_OUT: .osv-scanner.sarif
+        run: tools/osv_scan.sh
+
+      - name: Upload OSV SARIF
+        if: always() && hashFiles('.osv-scanner.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        with:
+          sarif_file: .osv-scanner.sarif
+
+      - name: Upload OSV output
+        if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.dependency_scan_targets != '0')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: osv-scan-report
+          path: |
+            .osv-scanner.local.out
+            .osv-scanner.sarif
+          include-hidden-files: true
+          retention-days: 7
+
+  dependency-review:
+    name: dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        with:
+          fail-on-severity: moderate
+          comment-summary-in-pr: always
+
+  warnings-as-errors:
+    name: warnings as errors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config git \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+
+      - name: Prepare local dependency environment
+        run: |
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      - name: Configure with warnings as errors
+        run: |
+          cmake --preset dev-debug \
+            -DDSD_WARNINGS_AS_ERRORS=ON \
+            -DDSD_ENABLE_RTLSDR=ON \
+            -DDSD_REQUIRE_RTLSDR=ON \
+            -DDSD_ENABLE_SOAPYSDR=ON \
+            -DDSD_REQUIRE_SOAPYSDR=ON
+
+      - name: Build
+        run: cmake --build --preset dev-debug -j
+
+  fuzz-smoke:
+    name: fuzz smoke
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang cmake ninja-build pkg-config git \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+
+      - name: Prepare local dependency environment
+        run: |
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      - name: Run fuzz smoke
+        run: tools/fuzz_smoke.sh
+
+      - name: Upload fuzz output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-smoke-report
+          path: .fuzz-smoke.local.out
+          include-hidden-files: true
+          retention-days: 7

@@ -13,7 +13,8 @@
  * core↔protocol link cycle.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_P25_P2_AUDIO_RING_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_P25_P2_AUDIO_RING_H_H
 
 #include <dsd-neo/core/state_fwd.h>
 
@@ -50,3 +51,4 @@ int p25_p2_audio_ring_pop(dsd_state* state, int slot, float* out160);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_P25_P2_AUDIO_RING_H_H */

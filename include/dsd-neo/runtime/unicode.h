@@ -29,10 +29,7 @@ int dsd_unicode_supported(void);
 void dsd_unicode_init_locale(void);
 
 /** @brief Convenience helper to pick Unicode or ASCII string based on support. */
-static inline const char*
-dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) {
-    return dsd_unicode_supported() ? unicode_str : ascii_str;
-}
+const char* dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str);
 
 /** @brief Degree glyph string with ASCII fallback ("\xC2\xB0" vs " deg"). */
 const char* dsd_degrees_glyph(void);

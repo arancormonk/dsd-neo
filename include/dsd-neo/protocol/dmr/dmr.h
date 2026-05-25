@@ -10,7 +10,8 @@
  * Declares the DMR handlers implemented in `src/protocol/dmr/`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -47,13 +48,13 @@ void dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[]
 void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
 void dmr_confidence_reset(dsd_state* state);
 
-void dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU);
-void dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU);
-void dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU,
-              uint8_t pdu_crc_ok);
-void dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU);
+void dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
+void dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
+void dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest,
+              const uint8_t* DMR_PDU, uint8_t pdu_crc_ok);
+void dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 
-uint32_t dmr_34(uint8_t* input, uint8_t treturn[18]);
+uint32_t dmr_34(const uint8_t* input, uint8_t treturn[18]);
 
 void dmr_alg_reset(dsd_opts* opts, dsd_state* state);
 void dmr_alg_refresh(dsd_opts* opts, dsd_state* state);
@@ -61,7 +62,7 @@ void dmr_refresh_algids_on_error(dsd_opts* opts, dsd_state* state);
 void dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t ambe_fr[4][24],
                                 uint8_t ambe_fr2[4][24], uint8_t ambe_fr3[4][24]);
 void dmr_late_entry_mi(dsd_opts* opts, dsd_state* state);
-void dmr_sbrc(dsd_opts* opts, dsd_state* state, uint8_t power);
+void dmr_sbrc(const dsd_opts* opts, dsd_state* state, uint8_t power);
 void LFSR(dsd_state* state);
 void LFSR64(dsd_state* state);
 void LFSR128d(dsd_state* state);
@@ -71,3 +72,4 @@ uint32_t kirisun_lfsr(unsigned long long int mi);
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_H_H */

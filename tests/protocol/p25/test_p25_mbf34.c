@@ -5,15 +5,13 @@
 
 // Implementation test for P25p1 MBF 3/4 decoder
 
+#include <dsd-neo/protocol/p25/p25p1_mbf34.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-#include <dsd-neo/protocol/p25/p25p1_mbf34.h>
-
-// Local CRC helpers (copied from DMR utils, simplified) — forward decls
 static uint16_t test_crc9(const uint8_t* bits, unsigned int len);
-static uint32_t test_crc32(const uint8_t* bits, unsigned int len);
 
 // Must match mapping used in src/protocol/p25/phase1/p25p1_mbf34.c
 static const uint8_t interleave[98] = {0,  1,  8,  9,  16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57, 64, 65, 72, 73,
@@ -47,7 +45,7 @@ bytes_to_bits_msbf(const uint8_t* in, size_t nbytes, uint8_t* out_bits) {
 
 static void
 build_block(uint8_t dbsn, const uint8_t payload[16], uint8_t out[18]) {
-    memset(out, 0, 18);
+    DSD_MEMSET(out, 0, 18);
     out[0] = (uint8_t)(dbsn << 1); // reserve bit0 for CRC9 MSB
     // Compute CRC9 over 7 bits of DBSN + 128 payload bits (MSB-first)
     uint8_t bits[7 + 128];
@@ -56,12 +54,12 @@ build_block(uint8_t dbsn, const uint8_t payload[16], uint8_t out[18]) {
     }
     uint8_t payload_bits[128];
     bytes_to_bits_msbf(payload, 16, payload_bits);
-    memcpy(bits + 7, payload_bits, 128);
+    DSD_MEMCPY(bits + 7, payload_bits, 128);
     uint16_t crc9 = 0; // declared below
     crc9 = test_crc9(bits, 135);
     out[0] |= (uint8_t)((crc9 >> 8) & 0x1);
     out[1] = (uint8_t)(crc9 & 0xFF);
-    memcpy(out + 2, payload, 16);
+    DSD_MEMCPY(out + 2, payload, 16);
 }
 
 static void
@@ -139,26 +137,6 @@ test_crc9(const uint8_t* bits, unsigned int len) {
     return crc;
 }
 
-static uint32_t
-test_crc32(const uint8_t* bits, unsigned int len) {
-    uint32_t crc = 0;
-    const uint32_t poly = 0x04C11DB7;
-    for (unsigned int i = 0; i < len; i++) {
-        if (((crc >> 31) & 1) ^ (bits[i] & 1)) {
-            crc = (crc << 1) ^ poly;
-        } else {
-            crc <<= 1;
-        }
-    }
-    // reverse byte order to match mbf_bytes form
-    uint32_t a = (crc & 0xFF) << 24;
-    uint32_t b = ((crc & 0xFF00) >> 8) << 16;
-    uint32_t c = ((crc & 0xFF0000) >> 16) << 8;
-    uint32_t d = ((crc & 0xFF000000) >> 24);
-    crc = a | b | c | d;
-    return crc;
-}
-
 int
 main(void) {
     init_inverse_map();
@@ -176,18 +154,18 @@ main(void) {
     uint8_t tribits[49];
     block_to_tribits(block, tribits);
     uint8_t in_dibits[98];
-    memset(in_dibits, 0, sizeof(in_dibits));
+    DSD_MEMSET(in_dibits, 0, sizeof(in_dibits));
     encode_tribits_to_dibits(tribits, in_dibits);
 
     uint8_t out_block[18];
-    memset(out_block, 0, sizeof(out_block));
+    DSD_MEMSET(out_block, 0, sizeof(out_block));
     int rc = p25_mbf34_decode(in_dibits, out_block);
     if (rc != 0) {
-        fprintf(stderr, "decoder rc=%d\n", rc);
+        DSD_FPRINTF(stderr, "decoder rc=%d\n", rc);
         return 10;
     }
     if (memcmp(block, out_block, 18) != 0) {
-        fprintf(stderr, "decoded block mismatch\n");
+        DSD_FPRINTF(stderr, "decoded block mismatch\n");
         return 11;
     }
 
@@ -198,21 +176,21 @@ main(void) {
     }
     uint8_t payload_bits[128];
     bytes_to_bits_msbf(out_block + 2, 16, payload_bits);
-    memcpy(bits + 7, payload_bits, 128);
+    DSD_MEMCPY(bits + 7, payload_bits, 128);
     uint16_t crc9_cmp = test_crc9(bits, 135);
     uint16_t crc9_ext = (uint16_t)(((out_block[0] & 1) << 8) | out_block[1]);
     if (crc9_cmp != crc9_ext) {
-        fprintf(stderr, "CRC9 mismatch: %03X vs %03X\n", crc9_cmp, crc9_ext);
+        DSD_FPRINTF(stderr, "CRC9 mismatch: %03X vs %03X\n", crc9_cmp, crc9_ext);
         return 12;
     }
 
     // 4) Validate CRC32 over payload bits using two forms
     uint8_t concat_payload[16];
-    memcpy(concat_payload, out_block + 2, 16);
+    DSD_MEMCPY(concat_payload, out_block + 2, 16);
     uint32_t c32_bytes = crc32_mbf_bytes(concat_payload, 128);
     const uint32_t expected_crc32 = 0x96CF85AEu; // fixed payload pattern-dependent
     if (c32_bytes != expected_crc32) {
-        fprintf(stderr, "CRC32 mismatch: %08X vs %08X\n", c32_bytes, expected_crc32);
+        DSD_FPRINTF(stderr, "CRC32 mismatch: %08X vs %08X\n", c32_bytes, expected_crc32);
         return 13;
     }
 
@@ -220,28 +198,28 @@ main(void) {
     int16_t bit_llr[196];
     dibits_to_llr(in_dibits, bit_llr, 200);
     uint8_t out_soft[18];
-    memset(out_soft, 0, sizeof(out_soft));
+    DSD_MEMSET(out_soft, 0, sizeof(out_soft));
     rc = p25_mbf34_decode_soft(in_dibits, bit_llr, out_soft);
     if (rc != 0 || memcmp(block, out_soft, 18) != 0) {
-        fprintf(stderr, "soft decoder clean block mismatch rc=%d\n", rc);
+        DSD_FPRINTF(stderr, "soft decoder clean block mismatch rc=%d\n", rc);
         return 14;
     }
     p25_mbf34_candidate_t list[P25_MBF34_MAX_CANDIDATES];
     int list_count = p25_mbf34_decode_soft_list(in_dibits, bit_llr, list, P25_MBF34_MAX_CANDIDATES);
     if (list_count <= 0 || memcmp(block, list[0].bytes, 18) != 0) {
-        fprintf(stderr, "soft list decoder clean block mismatch count=%d\n", list_count);
+        DSD_FPRINTF(stderr, "soft list decoder clean block mismatch count=%d\n", list_count);
         return 18;
     }
 
     uint8_t noisy_dibits[98];
-    memcpy(noisy_dibits, in_dibits, sizeof(noisy_dibits));
+    DSD_MEMCPY(noisy_dibits, in_dibits, sizeof(noisy_dibits));
     noisy_dibits[7] ^= 1U;
     dibits_to_llr(noisy_dibits, bit_llr, 200);
     set_dibit_llr_magnitude(noisy_dibits, bit_llr, 7, 10);
-    memset(out_soft, 0, sizeof(out_soft));
+    DSD_MEMSET(out_soft, 0, sizeof(out_soft));
     rc = p25_mbf34_decode_soft(noisy_dibits, bit_llr, out_soft);
     if (rc != 0 || memcmp(block, out_soft, 18) != 0) {
-        fprintf(stderr, "soft decoder failed low-confidence dibit correction rc=%d\n", rc);
+        DSD_FPRINTF(stderr, "soft decoder failed low-confidence dibit correction rc=%d\n", rc);
         return 15;
     }
     list_count = p25_mbf34_decode_soft_list(noisy_dibits, bit_llr, list, P25_MBF34_MAX_CANDIDATES);
@@ -253,7 +231,7 @@ main(void) {
         }
     }
     if (!found_original) {
-        fprintf(stderr, "soft list decoder failed to include low-confidence correction count=%d\n", list_count);
+        DSD_FPRINTF(stderr, "soft list decoder failed to include low-confidence correction count=%d\n", list_count);
         return 19;
     }
 
@@ -263,24 +241,24 @@ main(void) {
         in_dibits[i] ^= 3;
     }
     uint8_t out_err[18];
-    memset(out_err, 0, sizeof(out_err));
+    DSD_MEMSET(out_err, 0, sizeof(out_err));
     rc = p25_mbf34_decode(in_dibits, out_err);
     if (rc != 0) {
-        fprintf(stderr, "decoder(rc=%d) after error inj\n", rc);
+        DSD_FPRINTF(stderr, "decoder(rc=%d) after error inj\n", rc);
         return 16;
     }
     for (int i = 0; i < 7; i++) {
         bits[i] = (uint8_t)((out_err[0] >> (7 - i)) & 1);
     }
     bytes_to_bits_msbf(out_err + 2, 16, payload_bits);
-    memcpy(bits + 7, payload_bits, 128);
+    DSD_MEMCPY(bits + 7, payload_bits, 128);
     crc9_cmp = test_crc9(bits, 135);
     crc9_ext = (uint16_t)(((out_err[0] & 1) << 8) | out_err[1]);
     if (crc9_cmp == crc9_ext) {
-        fprintf(stderr, "CRC9 unexpectedly matched after error injection\n");
+        DSD_FPRINTF(stderr, "CRC9 unexpectedly matched after error injection\n");
         return 17;
     }
 
-    fprintf(stderr, "p25_mbf34 decode+CRC tests OK\n");
+    DSD_FPRINTF(stderr, "p25_mbf34 decode+CRC tests OK\n");
     return 0;
 }

@@ -12,15 +12,14 @@
  */
 
 #include <dsd-neo/io/tcp_quality_metrics.h>
-
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%d want=%d\n", label, got, want);
         return 1;
     }
     return 0;
@@ -29,7 +28,7 @@ expect_int(const char* label, int got, int want) {
 static int
 expect_u32(const char* label, uint32_t got, uint32_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%u want=%u\n", label, got, want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%u want=%u\n", label, got, want);
         return 1;
     }
     return 0;
@@ -38,7 +37,7 @@ expect_u32(const char* label, uint32_t got, uint32_t want) {
 static int
 expect_u64(const char* label, uint64_t got, uint64_t want) {
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%llu want=%llu\n", label, (unsigned long long)got, (unsigned long long)want);
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%llu want=%llu\n", label, (unsigned long long)got, (unsigned long long)want);
         return 1;
     }
     return 0;
@@ -46,8 +45,9 @@ expect_u64(const char* label, uint64_t got, uint64_t want) {
 
 static int
 expect_float(const char* label, float got, float want) {
-    if (got != want) {
-        fprintf(stderr, "FAIL: %s: got=%f want=%f\n", label, got, want);
+    float diff = got - want;
+    if (diff < -1.0e-6f || diff > 1.0e-6f) {
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%f want=%f\n", label, got, want);
         return 1;
     }
     return 0;
@@ -56,7 +56,7 @@ expect_float(const char* label, float got, float want) {
 static int
 expect_nonzero_u64(const char* label, uint64_t val) {
     if (val == 0) {
-        fprintf(stderr, "FAIL: %s: expected non-zero, got 0\n", label);
+        DSD_FPRINTF(stderr, "FAIL: %s: expected non-zero, got 0\n", label);
         return 1;
     }
     return 0;
@@ -70,7 +70,7 @@ main(void) {
     {
         struct tcp_quality_metrics m;
         /* Fill with garbage first to ensure init clears everything */
-        memset(&m, 0xAB, sizeof(m));
+        DSD_MEMSET(&m, 0xAB, sizeof(m));
 
         tcp_metrics_init(&m, 1536000);
 

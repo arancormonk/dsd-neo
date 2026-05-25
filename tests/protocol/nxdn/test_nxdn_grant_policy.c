@@ -15,12 +15,16 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message);
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
+
+void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 
 static int g_tune_count = 0;
 static long g_last_tune_freq = 0;
@@ -28,7 +32,7 @@ static long g_last_tune_freq = 0;
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", tag);
+        DSD_FPRINTF(stderr, "FAIL: %s\n", tag);
         return 1;
     }
     return 0;
@@ -48,7 +52,8 @@ free_test_state(dsd_state* st) {
  * symbols that are irrelevant to this focused grant-policy test.
  */
 uint64_t
-ConvertBitIntoBytes(uint8_t* bits, uint32_t n) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
     uint64_t v = 0ULL;
     for (uint32_t i = 0U; i < n; i++) {
         v = (v << 1U) | (uint64_t)(bits[i] & 1U);
@@ -57,7 +62,8 @@ ConvertBitIntoBytes(uint8_t* bits, uint32_t n) {
 }
 
 uint64_t
-convert_bits_into_output(uint8_t* input, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+convert_bits_into_output(const uint8_t* input, int len) {
     if (input == NULL || len <= 0) {
         return 0ULL;
     }
@@ -65,31 +71,35 @@ convert_bits_into_output(uint8_t* input, int len) {
 }
 
 void
-unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
     if (input == NULL || output == NULL || len <= 0) {
         return;
     }
-    memset(output, 0, (size_t)len * sizeof(uint8_t));
+    DSD_MEMSET(output, 0, (size_t)len * sizeof(uint8_t));
     for (int i = 0; i < len; i++) {
         output[i] = (uint8_t)((input[i / 8] >> (7 - (i % 8))) & 1U);
     }
 }
 
 void
-nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     (void)opts;
     (void)state;
     (void)MessageType;
 }
 
 uint32_t
-nxdn_message_crc32(uint8_t* input, int len) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nxdn_message_crc32(const uint8_t* input, int len) {
     (void)input;
     (void)len;
     return 0U;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_alias_decode_arib(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
     (void)opts;
     (void)state;
@@ -98,6 +108,7 @@ nxdn_alias_decode_arib(dsd_opts* opts, dsd_state* state, const uint8_t* message_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_alias_decode_prop(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
     (void)opts;
     (void)state;
@@ -106,11 +117,13 @@ nxdn_alias_decode_prop(dsd_opts* opts, dsd_state* state, const uint8_t* message_
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_alias_reset(dsd_state* state) {
     (void)state;
 }
 
 long int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
     (void)opts;
     if (!state || channel >= (uint16_t)(sizeof(state->trunk_chan_map) / sizeof(state->trunk_chan_map[0]))) {
@@ -120,6 +133,7 @@ nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
 }
 
 long int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel) {
     if (!state || channel >= (uint16_t)(sizeof(state->trunk_chan_map) / sizeof(state->trunk_chan_map[0]))) {
         return 0;
@@ -128,6 +142,7 @@ nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_gps_report(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src) {
     (void)opts;
     (void)state;
@@ -136,6 +151,7 @@ nxdn_gps_report(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src) 
 }
 
 uint8_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_sentence_checker(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t slot, int len_bytes) {
     (void)opts;
     (void)state;
@@ -146,6 +162,7 @@ nmea_sentence_checker(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t 
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_trunk_diag_log_missing_channel_once(const dsd_opts* opts, dsd_state* state, uint16_t channel,
                                          const char* context) {
     (void)opts;
@@ -155,6 +172,7 @@ nxdn_trunk_diag_log_missing_channel_once(const dsd_opts* opts, dsd_state* state,
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
@@ -162,6 +180,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
     (void)opts;
     (void)state;
@@ -172,11 +191,13 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 LFSR128n(dsd_state* state) {
     (void)state;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
                            int len) {
     (void)mi;
@@ -187,7 +208,8 @@ des_multi_keystream_output(unsigned long long int mi, unsigned long long int key
 }
 
 void
-aes_ofb_keystream_output(uint8_t* iv, uint8_t* key, uint8_t* output, int type, int nblocks) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks) {
     (void)iv;
     (void)key;
     (void)output;
@@ -196,12 +218,14 @@ aes_ofb_keystream_output(uint8_t* iv, uint8_t* key, uint8_t* output, int type, i
 }
 
 long int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_rigctl_query_hook_get_current_freq_hz(const dsd_opts* opts) {
     (void)opts;
     return 0;
 }
 
 uint64_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_time_monotonic_ns(void) {
     return 0ULL;
 }
@@ -260,7 +284,7 @@ set_message_type(uint8_t* bits, uint8_t type) {
 static void
 build_vcall_assgn(uint8_t* message_bits, uint8_t message_type, uint8_t call_type, uint16_t source, uint16_t target,
                   uint16_t channel) {
-    memset(message_bits, 0, 96);
+    DSD_MEMSET(message_bits, 0, 96);
     set_message_type(message_bits, message_type);
     write_bits_u32(message_bits, 16U, call_type & 0x7U, 3U);
     write_bits_u32(message_bits, 24U, source, 16U);
@@ -296,7 +320,7 @@ main(void) {
     const long freq = 936012500L;
 
     if (!opts || !st) {
-        fprintf(stderr, "FAIL: alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !st ? " dsd_state" : "");
+        DSD_FPRINTF(stderr, "FAIL: alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !st ? " dsd_state" : "");
         free_test_state(st);
         free(opts);
         return 1;
@@ -354,3 +378,7 @@ main(void) {
     free(opts);
     return rc;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

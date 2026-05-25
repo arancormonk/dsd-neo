@@ -8,13 +8,11 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/protocol/dmr/r34_viterbi.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-#include <dsd-neo/protocol/dmr/r34_viterbi.h>
-
-// Simple deterministic RNG
 static uint32_t rng_state = 0xC0FFEEU;
 
 static inline uint32_t
@@ -84,19 +82,19 @@ main(void) {
 
         // Create noisy copies + reliabilities
         uint8_t noisy[98];
-        memcpy(noisy, clean, sizeof(noisy));
+        DSD_MEMCPY(noisy, clean, sizeof(noisy));
         uint8_t reliab[98];
         inject_noise_dibits(noisy, reliab, noise);
 
         // Decode (hard)
         uint8_t dec_hard[18];
-        memset(dec_hard, 0, sizeof(dec_hard));
+        DSD_MEMSET(dec_hard, 0, sizeof(dec_hard));
         int rc_h = dmr_r34_viterbi_decode(noisy, dec_hard);
         assert(rc_h == 0);
 
         // Decode (soft)
         uint8_t dec_soft[18];
-        memset(dec_soft, 0, sizeof(dec_soft));
+        DSD_MEMSET(dec_soft, 0, sizeof(dec_soft));
         int rc_s = dmr_r34_viterbi_decode_soft(noisy, reliab, dec_soft);
         assert(rc_s == 0);
 

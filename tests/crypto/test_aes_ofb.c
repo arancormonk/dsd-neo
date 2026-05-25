@@ -6,9 +6,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
-// Prototype from crypt-aes.c
-void aes_ofb_keystream_output(uint8_t* iv, uint8_t* key, uint8_t* output, int type, int nblocks);
+void aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks);
 
 static int
 test_aes128_ofb(void) {
@@ -21,9 +21,9 @@ test_aes128_ofb(void) {
     const uint8_t expect[16] = {0x69, 0xC4, 0xE0, 0xD8, 0x6A, 0x7B, 0x04, 0x30,
                                 0xD8, 0xCD, 0xB7, 0x80, 0x70, 0xB4, 0xC5, 0x5A};
     uint8_t out[16] = {0};
-    aes_ofb_keystream_output((uint8_t*)iv, (uint8_t*)key, out, /*AES-128*/ 0, 1);
+    aes_ofb_keystream_output(iv, key, out, /*AES-128*/ 0, 1);
     if (memcmp(out, expect, 16) != 0) {
-        fprintf(stderr, "AES-128 OFB: mismatch\n");
+        DSD_FPRINTF(stderr, "AES-128 OFB: mismatch\n");
         return 1;
     }
     return 0;
@@ -42,9 +42,9 @@ test_aes256_ofb(void) {
                                 0xEA, 0xFC, 0x49, 0x90, 0x4B, 0x49, 0x60, 0x89};
     uint8_t out[16] = {0};
     // The keystream block equals AES-encrypt(IV)
-    aes_ofb_keystream_output((uint8_t*)iv, (uint8_t*)key, out, /*AES-256*/ 2, 1);
+    aes_ofb_keystream_output(iv, key, out, /*AES-256*/ 2, 1);
     if (memcmp(out, expect, 16) != 0) {
-        fprintf(stderr, "AES-256 OFB: mismatch\n");
+        DSD_FPRINTF(stderr, "AES-256 OFB: mismatch\n");
         return 1;
     }
     return 0;
@@ -56,7 +56,7 @@ main(void) {
     rc |= test_aes128_ofb();
     rc |= test_aes256_ofb();
     if (rc == 0) {
-        fprintf(stderr, "AES OFB tests: OK\n");
+        DSD_FPRINTF(stderr, "AES OFB tests: OK\n");
     }
     return rc;
 }

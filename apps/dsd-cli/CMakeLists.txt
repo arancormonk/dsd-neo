@@ -3,12 +3,15 @@ add_executable(dsd-neo)
 target_sources(dsd-neo PRIVATE main.c)
 
 # Link against modular libraries
-target_link_libraries(dsd-neo PRIVATE
-  dsd-neo_engine
-  dsd-neo_ui_terminal
-  dsd-neo_feature_rtlsdr
-  dsd-neo_feature_codec2
-  ${LIBS})
+target_link_libraries(
+    dsd-neo
+    PRIVATE
+        dsd-neo_engine
+        dsd-neo_ui_terminal
+        dsd-neo_feature_rtlsdr
+        dsd-neo_feature_codec2
+        ${LIBS}
+)
 
 # Target include directories (prefer target-scoped over global)
 target_include_directories(dsd-neo SYSTEM PRIVATE ${_PUBLIC_INCLUDES})
@@ -34,14 +37,18 @@ install(TARGETS dsd-neo DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # man page from executable help output
 find_program(HELP2MAN_FOUND help2man)
-if (HELP2MAN_FOUND)
-    add_custom_command(TARGET dsd-neo POST_BUILD
+if(HELP2MAN_FOUND)
+    add_custom_command(
+        TARGET dsd-neo
+        POST_BUILD
         COMMAND help2man
-        ARGS -n "Digital Speech Decoder"
-            --version-string=${GIT_TAG}
-            -o ${CMAKE_CURRENT_BINARY_DIR}/dsd-neo.1
-            --no-info
+        ARGS
+            -n "Digital Speech Decoder" --version-string=${GIT_TAG} -o
+            ${CMAKE_CURRENT_BINARY_DIR}/dsd-neo.1 --no-info
             $<TARGET_FILE:dsd-neo>
     )
-    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/dsd-neo.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+    install(
+        FILES ${CMAKE_CURRENT_BINARY_DIR}/dsd-neo.1
+        DESTINATION ${CMAKE_INSTALL_MANDIR}/man1
+    )
 endif()

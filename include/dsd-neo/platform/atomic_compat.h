@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_ATOMIC_COMPAT_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_ATOMIC_COMPAT_H_
 
 /**
  * @file
@@ -175,3 +176,5 @@ dsd_atomic_u64_fetch_add_release(dsd_atomic_u64* a, uint64_t delta) {
 }
 
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_ATOMIC_COMPAT_H_ */

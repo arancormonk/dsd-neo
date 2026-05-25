@@ -8,7 +8,8 @@
  * @brief DMR block gather/reset helpers.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_BLOCK_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_BLOCK_H_
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -22,3 +23,5 @@ void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_BLOCK_H_ */

@@ -29,8 +29,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static inline void
@@ -42,7 +42,7 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     if (len >= dstsz) {
         return;
     }
-    snprintf(dst + len, dstsz - len, "%s", src);
+    DSD_SNPRINTF(dst + len, dstsz - len, "%s", src);
 }
 
 static void
@@ -77,10 +77,10 @@ p25_emit_pdu_json_if_enabled(uint8_t fmt, uint8_t sap, uint8_t mfid, uint8_t io,
 
     /* Start a new line and omit trailing newline so tests parse last segment. */
     fputc('\n', stderr);
-    fprintf(stderr,
-            "{\"ts\":%ld,\"proto\":\"p25\",\"fmt\":%u,\"sap\":%u,\"mfid\":%u,\"io\":%u,\"llid\":%u,"
-            "\"blks\":%u,\"pad\":%u,\"offset\":%u,\"len\":%d,\"enc\":%d,\"summary\":\"%s\"}",
-            (long)ts, fmt, sap, mfid, io, llid, blks, pad, offset, payload_len, encrypted ? 1 : 0, sum);
+    DSD_FPRINTF(stderr,
+                "{\"ts\":%ld,\"proto\":\"p25\",\"fmt\":%u,\"sap\":%u,\"mfid\":%u,\"io\":%u,\"llid\":%u,"
+                "\"blks\":%u,\"pad\":%u,\"offset\":%u,\"len\":%d,\"enc\":%d,\"summary\":\"%s\"}",
+                (long)ts, fmt, sap, mfid, io, llid, blks, pad, offset, payload_len, encrypted ? 1 : 0, sum);
 }
 
 static void
@@ -90,7 +90,7 @@ p25_parse_sap32_regauth(dsd_opts* opts, dsd_state* state, const uint8_t* p, int 
     UNUSED(state);
     /* Minimal: first byte often indicates message subtype/opcode. Keep concise. */
     uint8_t subtype = (plen > 0) ? p[0] : 0xFF;
-    snprintf(out_summary, out_sz, "RegAuth subtype:%u bytes:%d", (unsigned)subtype, plen);
+    DSD_SNPRINTF(out_summary, out_sz, "RegAuth subtype:%u bytes:%d", (unsigned)subtype, plen);
 }
 
 static void
@@ -101,288 +101,248 @@ p25_parse_sap34_syscfg(dsd_opts* opts, dsd_state* state, const uint8_t* p, int p
     uint8_t subtype = (plen > 0) ? p[0] : 0xFF;
     uint8_t b1 = (plen > 1) ? p[1] : 0;
     uint8_t b2 = (plen > 2) ? p[2] : 0;
-    snprintf(out_summary, out_sz, "SysCfg subtype:%u b1:%u b2:%u bytes:%d", (unsigned)subtype, (unsigned)b1,
-             (unsigned)b2, plen);
+    DSD_SNPRINTF(out_summary, out_sz, "SysCfg subtype:%u b1:%u b2:%u bytes:%d", (unsigned)subtype, (unsigned)b1,
+                 (unsigned)b2, plen);
 }
 
 void
 p25_decode_rsp(uint8_t C, uint8_t T, uint8_t S, char* rsp_string) {
 
     if (C == 0) {
-        sprintf(rsp_string, " ACK (Success);");
+        DSD_SPRINTF(rsp_string, " ACK (Success);");
     } else if (C == 2) {
-        sprintf(rsp_string, " SACK (Retry);");
+        DSD_SPRINTF(rsp_string, " SACK (Retry);");
     } else if (C == 1) {
         if (T == 0) {
-            sprintf(rsp_string, " NACK (Illegal Format);");
+            DSD_SPRINTF(rsp_string, " NACK (Illegal Format);");
         } else if (T == 1) {
-            sprintf(rsp_string, " NACK (CRC32 Failure);");
+            DSD_SPRINTF(rsp_string, " NACK (CRC32 Failure);");
         } else if (T == 2) {
-            sprintf(rsp_string, " NACK (Memory Full);");
+            DSD_SPRINTF(rsp_string, " NACK (Memory Full);");
         } else if (T == 3) {
-            sprintf(rsp_string, " NACK (FSN Sequence Error);");
+            DSD_SPRINTF(rsp_string, " NACK (FSN Sequence Error);");
         } else if (T == 4) {
-            sprintf(rsp_string, " NACK (Undeliverable);");
+            DSD_SPRINTF(rsp_string, " NACK (Undeliverable);");
         } else if (T == 5) {
-            sprintf(rsp_string, " NACK (NS/VR Sequence Error);"); //depreciated
+            DSD_SPRINTF(rsp_string, " NACK (NS/VR Sequence Error);"); //depreciated
         } else if (T == 6) {
-            sprintf(rsp_string, " NACK (Invalid User on System);");
+            DSD_SPRINTF(rsp_string, " NACK (Invalid User on System);");
         }
     }
 
     //catch all for everything else
     else {
-        sprintf(rsp_string, " Unknown RSP;");
+        DSD_SPRINTF(rsp_string, " Unknown RSP;");
     }
 
-    fprintf(stderr, " Response Packet:%s C: %X; T: %X; S: %X; ", rsp_string, C, T, S);
+    DSD_FPRINTF(stderr, " Response Packet:%s C: %X; T: %X; S: %X; ", rsp_string, C, T, S);
+}
+
+typedef struct {
+    uint8_t sap;
+    const char* label;
+} P25SapLabel;
+
+static const char*
+p25_sap_label(uint8_t sap) {
+    static const P25SapLabel labels[] = {
+        {0, " User Data;"},
+        {1, " Encrypted User Data;"},
+        {2, " Circuit Data;"},
+        {3, " Circuit Data Control;"},
+        {4, " Packet Data;"},
+        {5, " Address Resolution Protocol;"},
+        {6, " SNDCP Packet Data Control;"},
+        {15, " Packet Data Scan Preamble;"},
+        {29, " Packet Data Encryption Support;"},
+        {31, " Extended Address;"},
+        {32, " Registration and Authorization;"},
+        {33, " Channel Reassignment;"},
+        {34, " System Configuration;"},
+        {35, " Mobile Radio Loopback;"},
+        {36, " Mobile Radio Statistics;"},
+        {37, " Mobile Radio Out of Service;"},
+        {38, " Mobile Radio Paging;"},
+        {39, " Mobile Radio Configuration;"},
+        {40, " Unencrypted Key Management;"},
+        {41, " Encrypted Key Management;"},
+        {48, " Location Service;"},
+        {61, " Trunking Control;"},
+        {63, " Encrypted Trunking Control;"},
+    };
+
+    for (size_t i = 0; i < (sizeof(labels) / sizeof(labels[0])); i++) {
+        if (labels[i].sap == sap) {
+            return labels[i].label;
+        }
+    }
+    return " Unknown SAP;";
 }
 
 void
 p25_decode_sap(uint8_t SAP, char* sap_string) {
+    DSD_SPRINTF(sap_string, "%s", p25_sap_label(SAP));
 
-    if (SAP == 0) {
-        sprintf(sap_string, " User Data;");
-    } else if (SAP == 1) {
-        sprintf(sap_string, " Encrypted User Data;");
-    } else if (SAP == 2) {
-        sprintf(sap_string, " Circuit Data;");
-    } else if (SAP == 3) {
-        sprintf(sap_string, " Circuit Data Control;");
-    } else if (SAP == 4) {
-        sprintf(sap_string, " Packet Data;");
-    } else if (SAP == 5) {
-        sprintf(sap_string, " Address Resolution Protocol;");
-    } else if (SAP == 6) {
-        sprintf(sap_string, " SNDCP Packet Data Control;");
-    } else if (SAP == 15) {
-        sprintf(sap_string, " Packet Data Scan Preamble;");
-    } else if (SAP == 29) {
-        sprintf(sap_string, " Packet Data Encryption Support;");
-    } else if (SAP == 31) {
-        sprintf(sap_string, " Extended Address;");
-    } else if (SAP == 32) {
-        sprintf(sap_string, " Registration and Authorization;");
-    } else if (SAP == 33) {
-        sprintf(sap_string, " Channel Reassignment;");
-    } else if (SAP == 34) {
-        sprintf(sap_string, " System Configuration;");
-    } else if (SAP == 35) {
-        sprintf(sap_string, " Mobile Radio Loopback;");
-    } else if (SAP == 36) {
-        sprintf(sap_string, " Mobile Radio Statistics;");
-    } else if (SAP == 37) {
-        sprintf(sap_string, " Mobile Radio Out of Service;");
-    } else if (SAP == 38) {
-        sprintf(sap_string, " Mobile Radio Paging;");
-    } else if (SAP == 39) {
-        sprintf(sap_string, " Mobile Radio Configuration;");
-    } else if (SAP == 40) {
-        sprintf(sap_string, " Unencrypted Key Management;");
-    } else if (SAP == 41) {
-        sprintf(sap_string, " Encrypted Key Management;");
-    } else if (SAP == 48) {
-        sprintf(sap_string, " Location Service;");
-    } else if (SAP == 61) {
-        sprintf(sap_string, " Trunking Control;");
-    } else if (SAP == 63) {
-        sprintf(sap_string, " Encrypted Trunking Control;");
-    }
-
-    //catch all for everything else
-    else {
-        sprintf(sap_string, " Unknown SAP;");
-    }
-
-    fprintf(stderr, "SAP: 0x%02X;%s ", SAP, sap_string);
+    DSD_FPRINTF(stderr, "SAP: 0x%02X;%s ", SAP, sap_string);
 }
 
-void
+static void
 lfsr_64_to_128(uint8_t* iv) {
-    uint64_t lfsr = 0, bit = 0;
-
-    lfsr = ((uint64_t)iv[0] << 56ULL) + ((uint64_t)iv[1] << 48ULL) + ((uint64_t)iv[2] << 40ULL)
-           + ((uint64_t)iv[3] << 32ULL) + ((uint64_t)iv[4] << 24ULL) + ((uint64_t)iv[5] << 16ULL)
-           + ((uint64_t)iv[6] << 8ULL) + ((uint64_t)iv[7] << 0ULL);
+    uint64_t lfsr = ((uint64_t)iv[0] << 56ULL) + ((uint64_t)iv[1] << 48ULL) + ((uint64_t)iv[2] << 40ULL)
+                    + ((uint64_t)iv[3] << 32ULL) + ((uint64_t)iv[4] << 24ULL) + ((uint64_t)iv[5] << 16ULL)
+                    + ((uint64_t)iv[6] << 8ULL) + ((uint64_t)iv[7] << 0ULL);
 
     uint8_t cnt = 0, x = 64;
 
     for (cnt = 0; cnt < 64; cnt++) {
         //63,61,45,37,27,14
         // Polynomial is C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1
-        bit = ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
+        uint64_t bit = ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
         lfsr = (lfsr << 1) | bit;
 
-        //continue packing iv
+        // Continue packing iv
         iv[x / 8] = (iv[x / 8] << 1) + bit;
 
         x++;
     }
 }
 
+static void
+p25_store_u64_be(uint64_t value, uint8_t* out) {
+    for (int i = 0; i < 8; i++) {
+        out[i] = (uint8_t)((value >> (56ULL - ((uint64_t)i * 8ULL))) & 0xFFU);
+    }
+}
+
+static int
+p25_bytes_any_nonzero(const uint8_t* bytes, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if (bytes[i] != 0U) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+p25_load_aes_key(const dsd_state* state, uint16_t key_id, uint8_t aes_key[32]) {
+    unsigned long long int parts[4] = {
+        state->rkey_array[key_id + 0x000],
+        state->rkey_array[key_id + 0x101],
+        state->rkey_array[key_id + 0x201],
+        state->rkey_array[key_id + 0x301],
+    };
+
+    if ((parts[0] == 0) && (parts[1] == 0) && (parts[2] == 0) && (parts[3] == 0)) {
+        parts[0] = state->K1;
+        parts[1] = state->K2;
+        parts[2] = state->K3;
+        parts[3] = state->K4;
+    }
+
+    for (int part = 0; part < 4; part++) {
+        p25_store_u64_be((uint64_t)parts[part], aes_key + ((size_t)part * sizeof(uint64_t)));
+    }
+}
+
+static uint8_t
+p25_build_aes_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint8_t alg_id, uint16_t key_id,
+                            unsigned long long int mi, int len, uint8_t* ks_bytes, int* ks_idx) {
+    uint8_t aes_iv[16];
+    uint8_t aes_key[32];
+    DSD_MEMSET(aes_iv, 0, sizeof(aes_iv));
+    DSD_MEMSET(aes_key, 0, sizeof(aes_key));
+
+    *ks_idx = 16; // offset for OFB discard round
+    p25_load_aes_key(state, key_id, aes_key);
+    if (!p25_bytes_any_nonzero(aes_key, sizeof(aes_key))) {
+        return 1;
+    }
+
+    p25_store_u64_be((uint64_t)mi, aes_iv);
+    lfsr_64_to_128(aes_iv);
+
+    int nblocks = (len / 16) + 1;
+    aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, (alg_id == 0x84) ? 2 : 0, nblocks);
+
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n AES-%s keystream ready", (alg_id == 0x84) ? "256" : "128");
+    }
+    return 0;
+}
+
+static uint8_t
+p25_build_des_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16_t key_id, unsigned long long int mi,
+                            int len, uint8_t* ks_bytes, int* ks_idx) {
+    unsigned long long int des_key = state->rkey_array[key_id];
+    if (des_key == 0) {
+        des_key = state->R;
+    }
+
+    *ks_idx = 8; // offset for OFB discard round
+    if (des_key) {
+        int nblocks = (len / 8) + 1;
+        // codeql[cpp/weak-cryptographic-algorithm] DES is required for legacy P25 interoperability.
+        des_multi_keystream_output(mi, des_key, ks_bytes, 1, nblocks);
+    }
+
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n DES56 keystream ready");
+    }
+    return 0;
+}
+
+static uint8_t
+p25_build_rc4_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16_t key_id, unsigned long long int mi,
+                            int len, uint8_t* ks_bytes, int* ks_idx) {
+    unsigned long long int rc4_key = state->rkey_array[key_id];
+    if (rc4_key == 0) {
+        rc4_key = state->R;
+    }
+
+    uint8_t rc4_kiv[13];
+    DSD_MEMSET(rc4_kiv, 0, sizeof(rc4_kiv));
+    rc4_kiv[0] = (uint8_t)((rc4_key & 0xFF00000000ULL) >> 32);
+    rc4_kiv[1] = (uint8_t)((rc4_key & 0xFF000000ULL) >> 24);
+    rc4_kiv[2] = (uint8_t)((rc4_key & 0xFF0000ULL) >> 16);
+    rc4_kiv[3] = (uint8_t)((rc4_key & 0xFF00ULL) >> 8);
+    rc4_kiv[4] = (uint8_t)(rc4_key & 0xFFULL);
+    p25_store_u64_be((uint64_t)mi, rc4_kiv + 5);
+
+    *ks_idx = 0;
+    if (rc4_key) {
+        // codeql[cpp/weak-cryptographic-algorithm] RC4/ADP is required for legacy P25 interoperability.
+        rc4_block_output(256, 13, len, rc4_kiv, ks_bytes);
+    }
+
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n RC4 keystream ready");
+    }
+    return 0;
+}
+
 uint8_t
-p25_decrypt_pdu(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t alg_id, uint16_t key_id,
+p25_decrypt_pdu(const dsd_opts* opts, const dsd_state* state, uint8_t* input, uint8_t alg_id, uint16_t key_id,
                 unsigned long long int mi, int len) {
 
-    UNUSED(opts);
     uint8_t encrypted = 1;
 
-    int i = 0;
     int ks_idx = 0;
     uint8_t ks_bytes[3096];
-    memset(ks_bytes, 0, sizeof(ks_bytes));
+    DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
 
-    //create keystream
     if (alg_id == 0x84 || alg_id == 0x89) {
-        //aes specific arrays and things
-        uint8_t aes_iv[16];
-        memset(aes_iv, 0, sizeof(aes_iv));
-        uint8_t aes_key[32];
-        memset(aes_key, 0, sizeof(aes_key));
-        uint8_t empt[64];
-        memset(empt, 0, sizeof(empt));
-
-        uint8_t akl = 0; //aes key loaded into array flag
-        unsigned long long int a1 = state->rkey_array[key_id + 0x000];
-        unsigned long long int a2 = state->rkey_array[key_id + 0x101];
-        unsigned long long int a3 = state->rkey_array[key_id + 0x201];
-        unsigned long long int a4 = state->rkey_array[key_id + 0x301];
-
-        //checkdown to see if anything in a1-a4
-        if ((a1 == 0) && (a2 == 0) && (a3 == 0) && (a4 == 0)) {
-            //try loading from state->H instead (could clash if keys loaded that trigger any a1-a4 above)
-            a1 = state->K1;
-            a2 = state->K2;
-            a3 = state->K3;
-            a4 = state->K4;
-        }
-
-        //loader for aes keys
-        for (uint64_t i = 0; i < 8; i++) {
-            aes_key[i + 0] = (a1 >> (56ULL - (i * 8))) & 0xFF;
-            aes_key[i + 8] = (a2 >> (56ULL - (i * 8))) & 0xFF;
-            aes_key[i + 16] = (a3 >> (56ULL - (i * 8))) & 0xFF;
-            aes_key[i + 24] = (a4 >> (56ULL - (i * 8))) & 0xFF;
-        }
-
-        //check to see if a key is loaded into any part of the array
-        if (memcmp(aes_key, empt, sizeof(aes_key)) != 0) {
-            akl = 1;
-        } else {
-            akl = 0;
-        }
-
-        //convert mi to aes_iv and expand it
-        aes_iv[0] = ((mi & 0xFF00000000000000) >> 56);
-        aes_iv[1] = ((mi & 0xFF000000000000) >> 48);
-        aes_iv[2] = ((mi & 0xFF0000000000) >> 40);
-        aes_iv[3] = ((mi & 0xFF00000000) >> 32);
-        aes_iv[4] = ((mi & 0xFF000000) >> 24);
-        aes_iv[5] = ((mi & 0xFF0000) >> 16);
-        aes_iv[6] = ((mi & 0xFF00) >> 8);
-        aes_iv[7] = ((mi & 0xFF) >> 0);
-
-        lfsr_64_to_128(aes_iv);
-
-        ks_idx = 16; //offset for OFB discard round
-
-        if (akl == 1) {
-            int nblocks = (len / 16) + 1;
-            if (alg_id == 0x84) { //AES256
-                aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, 2, nblocks);
-            } else {
-                aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, 0, nblocks);
-            }
-
-            // Minimal logging: do not print key material
-            if (opts->payload == 1) {
-                fprintf(stderr, "\n AES-%s keystream ready", (alg_id == 0x84) ? "256" : "128");
-            }
-            encrypted = 0;
-        }
-        // Optional: IV log is not sensitive but omit by default for brevity
-    }
-
-    if (alg_id == 0x81) //DES56
-    {
-
-        int nblocks = (len / 8) + 1;
-        unsigned long long int des_key = 0;
-
-        des_key = state->rkey_array[key_id];
-
-        //if no key loaded from loader, check state->R for key
-        if (des_key == 0) {
-            des_key = state->R;
-        }
-
-        ks_idx = 8; //offset for OFB discard round
-
-        if (des_key) {
-            des_multi_keystream_output(mi, des_key, ks_bytes, 1, nblocks);
-        }
-
-        encrypted = 0;
-
-        if (opts->payload == 1) {
-            fprintf(stderr, "\n DES56 keystream ready");
-        }
-    }
-
-    if (alg_id == 0xAA) //RC4, or 'ADP'
-    {
-
-        unsigned long long int rc4_key = 0;
-
-        rc4_key = state->rkey_array[key_id];
-
-        //if no key loaded from loader, check state->R for key
-        if (rc4_key == 0) {
-            rc4_key = state->R;
-        }
-
-        ks_idx = 0; //offset
-
-        uint8_t rc4_kiv[13];
-        memset(rc4_kiv, 0, sizeof(rc4_key));
-
-        rc4_kiv[0] = ((rc4_key & 0xFF00000000) >> 32);
-        rc4_kiv[1] = ((rc4_key & 0xFF000000) >> 24);
-        rc4_kiv[2] = ((rc4_key & 0xFF0000) >> 16);
-        rc4_kiv[3] = ((rc4_key & 0xFF00) >> 8);
-        rc4_kiv[4] = ((rc4_key & 0xFF) >> 0);
-
-        rc4_kiv[5] = ((mi & 0xFF00000000000000) >> 56);
-        rc4_kiv[6] = ((mi & 0xFF000000000000) >> 48);
-        rc4_kiv[7] = ((mi & 0xFF0000000000) >> 40);
-        rc4_kiv[8] = ((mi & 0xFF00000000) >> 32);
-        rc4_kiv[9] = ((mi & 0xFF000000) >> 24);
-        rc4_kiv[10] = ((mi & 0xFF0000) >> 16);
-        rc4_kiv[11] = ((mi & 0xFF00) >> 8);
-        rc4_kiv[12] = ((mi & 0xFF) >> 0);
-
-        if (rc4_key) {
-            rc4_block_output(256, 13, len, rc4_kiv, ks_bytes);
-        }
-
-        encrypted = 0;
-
-        if (opts->payload == 1) {
-            fprintf(stderr, "\n RC4 keystream ready");
-        }
+        encrypted = p25_build_aes_pdu_keystream(opts, state, alg_id, key_id, mi, len, ks_bytes, &ks_idx);
+    } else if (alg_id == 0x81) {
+        encrypted = p25_build_des_pdu_keystream(opts, state, key_id, mi, len, ks_bytes, &ks_idx);
+    } else if (alg_id == 0xAA) {
+        encrypted = p25_build_rc4_pdu_keystream(opts, state, key_id, mi, len, ks_bytes, &ks_idx);
     }
 
     //debug input offset
-    // fprintf (stderr, "\n INPUT: ");
-    // for (i = 0; i < 16; i++)
-    //   fprintf (stderr, "%02X", input[i]);
-
-    // fprintf (stderr, "\n    KS: ");
-    // for (i = 0; i < 16; i++)
-    //   fprintf (stderr, "%02X", ks_bytes[i]);
 
     //apply keystream
-    for (i = 0; i < len; i++) { //need to subtract pad bytes and crc bytes from keystream application
+    for (int i = 0; i < len; i++) { //need to subtract pad bytes and crc bytes from keystream application
         input[i] ^= ks_bytes[i + ks_idx];
     }
 
@@ -395,22 +355,22 @@ p25_decrypt_pdu(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t alg_id
 
 //SAP 1
 uint8_t
-p25_decode_es_header(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t* sap, int* ptr, int len) {
+p25_decode_es_header(const dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t* sap, int* ptr, int len) {
 
     uint8_t encrypted = 0;
 
     uint8_t bits[13 * 8];
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
     unpack_byte_array_into_bit_array(input, bits, 13);
 
-    fprintf(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "%s", KYEL);
     unsigned long long int mi = (unsigned long long int)ConvertBitIntoBytes(bits, 64);
     uint8_t mi_res = (uint8_t)ConvertBitIntoBytes(bits + 64, 8);
     uint8_t alg_id = (uint8_t)ConvertBitIntoBytes(bits + 72, 8);
     uint16_t key_id = (uint16_t)ConvertBitIntoBytes(bits + 80, 16);
-    fprintf(stderr, "\n ES Aux Encryption Header; ALG: %02X; KEY ID: %04X; MI: %016llX; ", alg_id, key_id, mi);
+    DSD_FPRINTF(stderr, "\n ES Aux Encryption Header; ALG: %02X; KEY ID: %04X; MI: %016llX; ", alg_id, key_id, mi);
     if (mi_res != 0) {
-        fprintf(stderr, " RES: %02X;", mi_res);
+        DSD_FPRINTF(stderr, " RES: %02X;", mi_res);
     }
 
     //The Auxiliary Header signals the actual SAP value of the encrypted message (this byte is not encrypted)
@@ -421,7 +381,7 @@ p25_decode_es_header(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t* 
         (uint8_t)ConvertBitIntoBytes(&bits[98], 6); //the SAP of the message that is encrypted immediately after
     char aux_sap_string[99];
     p25_decode_sap(aux_sap, aux_sap_string);
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
     UNUSED(aux_res);
 
     //Decrypt PDU
@@ -435,8 +395,8 @@ p25_decode_es_header(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t* 
     //append enc at this point
     if (encrypted) {
         char ess_str[200];
-        memset(ess_str, 0, sizeof(ess_str));
-        sprintf(ess_str, "ALG: %02X; KID: %04X; SAP:%02X;%s", alg_id, key_id, aux_sap, aux_sap_string);
+        DSD_MEMSET(ess_str, 0, sizeof(ess_str));
+        DSD_SPRINTF(ess_str, "ALG: %02X; KID: %04X; SAP:%02X;%s", alg_id, key_id, aux_sap, aux_sap_string);
         dsd_append(state->dmr_lrrp_gps[0], sizeof state->dmr_lrrp_gps[0], ess_str);
     }
 
@@ -445,24 +405,24 @@ p25_decode_es_header(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t* 
 
 //alternate configuration for this (no Aux SAP)
 uint8_t
-p25_decode_es_header_2(dsd_opts* opts, dsd_state* state, uint8_t* input, int* ptr, int len) {
+p25_decode_es_header_2(const dsd_opts* opts, const dsd_state* state, uint8_t* input, int* ptr, int len) {
 
     uint8_t encrypted = 0;
 
     uint8_t bits[12 * 8];
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
     unpack_byte_array_into_bit_array(input, bits, 12);
 
-    fprintf(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "%s", KYEL);
     uint8_t alg_id = (uint8_t)ConvertBitIntoBytes(bits + 0, 8);
     uint16_t key_id = (uint16_t)ConvertBitIntoBytes(bits + 8, 16);
     unsigned long long int mi = (unsigned long long int)ConvertBitIntoBytes(bits + 24, 64);
     uint8_t mi_res = (uint8_t)ConvertBitIntoBytes(bits + 88, 8);
-    fprintf(stderr, "\n ES Aux Encryption Header 2; ALG: %02X; KEY ID: %04X; MI: %016llX;", alg_id, key_id, mi);
+    DSD_FPRINTF(stderr, "\n ES Aux Encryption Header 2; ALG: %02X; KEY ID: %04X; MI: %016llX;", alg_id, key_id, mi);
     if (mi_res != 0) {
-        fprintf(stderr, " RES: %02X;", mi_res);
+        DSD_FPRINTF(stderr, " RES: %02X;", mi_res);
     }
-    fprintf(stderr, "%s", KNRM);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 
     //Decrypt PDU
     if (alg_id != 0x80) {
@@ -476,12 +436,12 @@ p25_decode_es_header_2(dsd_opts* opts, dsd_state* state, uint8_t* input, int* pt
 
 //SAP 31 //Extended Addressing
 void
-p25_decode_extended_address(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t* sap, int* ptr) {
+p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t* sap, int* ptr) {
 
     UNUSED(opts);
 
     uint8_t bits[12 * 8];
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
     unpack_byte_array_into_bit_array(input, bits, 12);
 
     uint8_t ea_sap = (uint8_t)ConvertBitIntoBytes(bits + 10, 6);
@@ -490,8 +450,8 @@ p25_decode_extended_address(dsd_opts* opts, dsd_state* state, uint8_t* input, ui
     uint32_t ea_res = (uint32_t)ConvertBitIntoBytes(bits + 48, 32);
     uint16_t ea_crc = (uint16_t)ConvertBitIntoBytes(bits + 80, 16);
 
-    fprintf(stderr, "\n Extended Addressing Header; MFID: %02X; SRC LLID: %d; RES: %08X; CRC: %04X; ", ea_mfid, ea_llid,
-            ea_res, ea_crc);
+    DSD_FPRINTF(stderr, "\n Extended Addressing Header; MFID: %02X; SRC LLID: %d; RES: %08X; CRC: %04X; ", ea_mfid,
+                ea_llid, ea_res, ea_crc);
     char ea_sap_string[99];
     p25_decode_sap(ea_sap, ea_sap_string);
     UNUSED(ea_sap_string);
@@ -499,65 +459,95 @@ p25_decode_extended_address(dsd_opts* opts, dsd_state* state, uint8_t* input, ui
     //Print to Data Call String for Ncurses Terminal
     state->lastsrc = ea_llid;
     char ea_str[200];
-    memset(ea_str, 0, sizeof(ea_str));
-    sprintf(ea_str, "EXT ADD SRC: %d; SAP:%02X;%s", ea_llid, ea_sap, ea_sap_string);
+    DSD_MEMSET(ea_str, 0, sizeof(ea_str));
+    DSD_SPRINTF(ea_str, "EXT ADD SRC: %d; SAP:%02X;%s", ea_llid, ea_sap, ea_sap_string);
     dsd_append(state->dmr_lrrp_gps[0], sizeof state->dmr_lrrp_gps[0], ea_str);
 
     *sap = ea_sap;
     *ptr += 12;
 }
 
-//PDU Format Header Decode
-void
-p25_decode_pdu_header(dsd_opts* opts, dsd_state* state, uint8_t* input) {
+typedef struct {
+    uint8_t an;
+    uint8_t io;
+    uint8_t fmt;
+    uint8_t sap;
+    uint8_t mfid;
+    uint32_t address;
+    uint8_t blks;
+    uint8_t fmf;
+    uint8_t pad;
+    uint8_t ns;
+    uint8_t fsnf;
+    uint8_t offset;
+    uint8_t rsp_class;
+    uint8_t rsp_type;
+    uint8_t rsp_status;
+} P25PduHeaderFields;
 
-    UNUSED(opts);
+static int
+p25_sap_is_trunking_control(uint8_t sap) {
+    return sap == 61 || sap == 63;
+}
 
-    uint8_t an = (input[0] >> 6) & 0x1;
-    uint8_t io = (input[0] >> 5) & 0x1;
-    uint8_t fmt = input[0] & 0x1F;
-    uint8_t sap = input[1] & 0x3F;
-    uint8_t MFID = input[2];
-    uint32_t address = (input[3] << 16) | (input[4] << 8) | input[5];
-    uint8_t blks = input[6] & 0x7F;
+static P25PduHeaderFields
+p25_read_pdu_header_fields(const uint8_t* input) {
+    P25PduHeaderFields h;
+    h.an = (input[0] >> 6) & 0x1;
+    h.io = (input[0] >> 5) & 0x1;
+    h.fmt = input[0] & 0x1F;
+    h.sap = input[1] & 0x3F;
+    h.mfid = input[2];
+    h.address = (input[3] << 16) | (input[4] << 8) | input[5];
+    h.blks = input[6] & 0x7F;
+    h.fmf = (input[6] >> 7) & 0x1;
+    h.pad = input[7] & 0x1F;
+    h.ns = (input[8] >> 4) & 0x7;
+    h.fsnf = input[8] & 0xF;
+    h.offset = input[9] & 0x3F;
+    h.rsp_class = (input[1] >> 6) & 0x3;
+    h.rsp_type = (input[1] >> 3) & 0x7;
+    h.rsp_status = (input[1] >> 0) & 0x7;
+    return h;
+}
 
-    uint8_t fmf = (input[6] >> 7) & 0x1;
-    uint8_t pad = input[7] & 0x1F;
-    uint8_t ns = (input[8] >> 4) & 0x7;
-    uint8_t fsnf = input[8] & 0xF;
-    uint8_t offset = input[9] & 0x3F;
-
-    //response packet
-    uint8_t class = (input[1] >> 6) & 0x3;
-    uint8_t type = (input[1] >> 3) & 0x7;
-    uint8_t status = (input[1] >> 0) & 0x7;
-
-    fprintf(stderr, "%s", KGRN);
-    fprintf(stderr, " P25 Data - AN: %d; IO: %d; FMT: %02X; ", an, io, fmt);
-    char sap_string[40];
-    sprintf(sap_string, "%s", " ");
-    char rsp_string[40];
-    sprintf(rsp_string, "%s", " ");
-    if (fmt != 3) {
-        p25_decode_sap(sap, sap_string); //decode SAP to see what kind of data we are dealing with
+static void
+p25_decode_pdu_header_strings(const P25PduHeaderFields* h, char* sap_string, char* rsp_string) {
+    DSD_SPRINTF(sap_string, "%s", " ");
+    DSD_SPRINTF(rsp_string, "%s", " ");
+    if (h->fmt != 3) {
+        p25_decode_sap(h->sap, sap_string);
     } else {
-        p25_decode_rsp(class, type, status, rsp_string); //decode the response type (ack, nack, sack)
+        p25_decode_rsp(h->rsp_class, h->rsp_type, h->rsp_status, rsp_string);
     }
-    if (sap != 61 && sap != 63) { //Not too interested in viewing these on trunking control, just data packets mostly
-        fprintf(stderr, "\n F: %d; Blocks: %02X; Pad: %d; NS: %d; FSNF: %d; Offset: %d; MFID: %02X;", fmf, blks, pad,
-                ns, fsnf, offset, MFID);
+}
+
+static void
+p25_log_pdu_header_fields(const P25PduHeaderFields* h) {
+    if (p25_sap_is_trunking_control(h->sap)) {
+        return;
     }
-    if (io == 1 && sap != 61 && sap != 63) { //destination address if IO bit set
-        fprintf(stderr, " DST LLID: %d;", address);
-    } else if (io == 0 && sap != 61 && sap != 63) { //Source address if IO bit not set
-        fprintf(stderr, " SRC LLID: %d;", address);
+
+    DSD_FPRINTF(stderr, "\n F: %d; Blocks: %02X; Pad: %d; NS: %d; FSNF: %d; Offset: %d; MFID: %02X;", h->fmf, h->blks,
+                h->pad, h->ns, h->fsnf, h->offset, h->mfid);
+    if (h->io == 1) {
+        DSD_FPRINTF(stderr, " DST LLID: %d;", h->address);
+    } else {
+        DSD_FPRINTF(stderr, " SRC LLID: %d;", h->address);
     }
-    //Print to Data Call String for Ncurses Terminal
-    if (sap != 61 && sap != 63 && fmt != 3) {
-        sprintf(state->dmr_lrrp_gps[0], "Data Call:%s SAP:%02X; LLID: %d; ", sap_string, sap, address);
-    } else if (sap != 61 && sap != 63 && fmt == 3) {
-        //watchdog the data call and make it push to event history
-        sprintf(state->dmr_lrrp_gps[0], "Data Call Response:%s LLID: %d; ", rsp_string, address);
+}
+
+static void
+p25_update_pdu_header_state(dsd_opts* opts, dsd_state* state, const P25PduHeaderFields* h, const char* sap_string,
+                            const char* rsp_string) {
+    if (p25_sap_is_trunking_control(h->sap)) {
+        return;
+    }
+
+    if (h->fmt != 3) {
+        DSD_SPRINTF(state->dmr_lrrp_gps[0], "Data Call:%s SAP:%02X; LLID: %d; ", sap_string, h->sap, h->address);
+    } else {
+        DSD_SPRINTF(state->dmr_lrrp_gps[0], "Data Call Response:%s LLID: %d; ", rsp_string, h->address);
         state->lastsrc = 0xFFFFFF;
         watchdog_event_datacall(opts, state, state->lastsrc, state->lasttg, state->dmr_lrrp_gps[0], 0);
         state->lastsrc = 0;
@@ -566,124 +556,164 @@ p25_decode_pdu_header(dsd_opts* opts, dsd_state* state, uint8_t* input) {
         dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
     }
 
-    //following is for a continued PDU and not a response nor a trunking message
-    if (sap != 61 && sap != 63) //trunking blocks, don't set address (LID)
-    {
-        state->lasttg = address;
-        state->lastsrc = 0xFFFFFF; //none given, unless extended, so put any here for now
+    state->lasttg = h->address;
+    state->lastsrc = 0xFFFFFF; // none given, unless extended, so put any here for now
+}
+
+//PDU Format Header Decode
+void
+p25_decode_pdu_header(dsd_opts* opts, dsd_state* state, const uint8_t* input) {
+    P25PduHeaderFields h = p25_read_pdu_header_fields(input);
+
+    DSD_FPRINTF(stderr, "%s", KGRN);
+    DSD_FPRINTF(stderr, " P25 Data - AN: %d; IO: %d; FMT: %02X; ", h.an, h.io, h.fmt);
+    char sap_string[40];
+    char rsp_string[40];
+    p25_decode_pdu_header_strings(&h, sap_string, rsp_string);
+    p25_log_pdu_header_fields(&h);
+    p25_update_pdu_header_state(opts, state, &h, sap_string, rsp_string);
+}
+
+typedef struct {
+    uint8_t sap;
+    uint8_t fmt;
+    uint8_t io;
+    uint8_t mfid;
+    uint32_t llid;
+    uint8_t blks;
+    uint8_t pad;
+    uint8_t offset;
+} P25PduDataFields;
+
+static P25PduDataFields
+p25_read_pdu_data_fields(const uint8_t* input) {
+    P25PduDataFields pdu;
+    pdu.sap = input[1] & 0x3F;
+    pdu.fmt = input[0] & 0x1F;
+    pdu.io = (input[0] >> 1) & 0x1;
+    pdu.mfid = input[2];
+    pdu.llid = (input[3] << 16) | (input[4] << 8) | input[5];
+    pdu.blks = input[6] & 0x7F;
+    pdu.pad = input[7] & 0x1F;
+    pdu.offset = input[9] & 0x3F;
+    return pdu;
+}
+
+static int
+p25_pdu_payload_len(int len, uint8_t pad) {
+    if (len > (12 + 4 + pad)) {
+        return len - (12 + 4 + pad);
     }
+    return len;
+}
+
+static int
+p25_pdu_payload_span(int len, int ptr) {
+    int plen = (len > ptr) ? (len - ptr + 1) : len;
+    return (plen > 0) ? plen : 0;
+}
+
+static void
+p25_emit_pdu_json_for_fields(const P25PduDataFields* pdu, int len, int encrypted, const char* summary) {
+    p25_emit_pdu_json_if_enabled(pdu->fmt, pdu->sap, pdu->mfid, pdu->io, pdu->llid, pdu->blks, pdu->pad, pdu->offset,
+                                 len, encrypted, summary);
+}
+
+static void
+p25_handle_sap32_regauth_data(dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu, const uint8_t* payload,
+                              int len, int ptr, int encrypted) {
+    char summary[128] = {0};
+    p25_parse_sap32_regauth(opts, state, payload, p25_pdu_payload_span(len, ptr), summary, sizeof(summary));
+    if (summary[0] != '\0') {
+        DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "RegAuth: %s", summary);
+    }
+    p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
+}
+
+static void
+p25_handle_sap34_syscfg_data(dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu, const uint8_t* payload,
+                             int len, int ptr, int encrypted) {
+    char summary[128] = {0};
+    p25_parse_sap34_syscfg(opts, state, payload, p25_pdu_payload_span(len, ptr), summary, sizeof(summary));
+    if (summary[0] != '\0') {
+        DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "SysCfg: %s", summary);
+    }
+    p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
+}
+
+static void
+p25_store_lrrp_text_for_history(dsd_state* state) {
+    if (state->event_history_s[0].Event_History_Items[0].text_message[0] == '\0') {
+        return;
+    }
+
+    const char* src = (const char*)state->event_history_s[0].Event_History_Items[0].text_message;
+    size_t cap = sizeof(state->dmr_lrrp_gps[0]);
+    size_t maxcpy = cap - 7 - 1; /* prefix "LRRP: " + N + NUL */
+    DSD_SNPRINTF(state->dmr_lrrp_gps[0], cap, "LRRP: %.*s", (int)maxcpy, src);
+    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
+                 sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[0]);
+}
+
+static void
+p25_handle_sap48_location_data(dsd_state* state, const P25PduDataFields* pdu, const uint8_t* payload, int len, int ptr,
+                               int encrypted) {
+    utf8_to_text(state, 1, (uint16_t)(len - ptr + 1), payload);
+    p25_store_lrrp_text_for_history(state);
+    p25_emit_pdu_json_for_fields(pdu, len, encrypted, state->event_history_s[0].Event_History_Items[0].text_message);
+}
+
+static void
+p25_decode_clear_pdu_payload(dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu, uint8_t* input, int len,
+                             int ptr, int encrypted) {
+    uint8_t* payload = input + ptr;
+    switch (pdu->sap) {
+        case 0:
+        case 4: decode_ip_pdu(opts, state, (uint16_t)(len + 1), payload); break;
+        case 32: p25_handle_sap32_regauth_data(opts, state, pdu, payload, len, ptr, encrypted); break;
+        case 34: p25_handle_sap34_syscfg_data(opts, state, pdu, payload, len, ptr, encrypted); break;
+        case 48: p25_handle_sap48_location_data(state, pdu, payload, len, ptr, encrypted); break;
+        default: break;
+    }
+}
+
+static uint8_t
+p25_decode_pdu_optional_headers(dsd_opts* opts, dsd_state* state, uint8_t* input, P25PduDataFields* pdu, int* ptr,
+                                int len) {
+    uint8_t encrypted = 0;
+    if (pdu->sap == 31) {
+        p25_decode_extended_address(opts, state, input + *ptr, &pdu->sap, ptr);
+    }
+    if (pdu->sap == 1) {
+        encrypted = p25_decode_es_header(opts, state, input + *ptr, &pdu->sap, ptr, len);
+    }
+    return encrypted;
 }
 
 //user or other data delivered via PDU format
 void
 p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
-
-    uint8_t sap = input[1] & 0x3F;
-    uint8_t fmt = input[0] & 0x1F;
-    uint8_t io = (input[0] >> 1) & 0x1;
-    uint8_t mfid = input[2];
-    uint32_t llid = (input[3] << 16) | (input[4] << 8) | input[5];
-    uint8_t pad = input[7] & 0x1F;
-    uint8_t offset = input[9] & 0x3F;
-    UNUSED(offset); //determine the best way to use this
+    P25PduDataFields pdu = p25_read_pdu_data_fields(input);
     uint8_t encrypted = 0;
     int ptr = 12; //initial ptr index value past the first header
 
-    //may need a sanity check on this value to make sure it doesn't go negative
-    if (len > (12 + 4 + pad)) {
-        len -= (12 + 4 + pad); //substract the header, crc, and padding bytes from total len value
-    }
+    len = p25_pdu_payload_len(len, pdu.pad);
+    DSD_FPRINTF(stderr, " PDU Len: %d;", len);
 
-    //debug
-    fprintf(stderr, " PDU Len: %d;", len);
-
-    //check for additional headers
-    if (sap == 31) { //extended address header
-        p25_decode_extended_address(opts, state, input + ptr, &sap, &ptr);
-    }
-
-    //test shows this occurs after an extended address header
-    if (sap == 1) { //encryption sync header
-        encrypted = p25_decode_es_header(opts, state, input + ptr, &sap, &ptr, len);
-    }
-
+    encrypted = p25_decode_pdu_optional_headers(opts, state, input, &pdu, &ptr, len);
     if (!encrypted) {
-
-        //test if an offset value set, then take the difference between it and the ptr and and add that to the ptr
-        //or perhaps, just assign the ptr to that value + 12?
-        if (offset) {
-            ptr = 12 + offset;
+        if (pdu.offset) {
+            ptr = 12 + pdu.offset;
         }
-
-        //now start checking for the actual message
-        if (sap == 0 || sap == 4) { //User Data or Packet Data (both are UDP typically, same format dmr UDP/IP data)
-            decode_ip_pdu(opts, state, len + 1, input + ptr);
-        }
-
-        else if (sap == 32) { // Registration & Authorization
-            char summary[128] = {0};
-            int plen = (len > ptr) ? (len - ptr + 1) : (len);
-            if (plen < 0) {
-                plen = 0;
-            }
-            p25_parse_sap32_regauth(opts, state, input + ptr, plen, summary, sizeof(summary));
-            if (summary[0] != '\0') {
-                snprintf(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "RegAuth: %s", summary);
-            }
-            p25_emit_pdu_json_if_enabled(fmt, sap, mfid, io, llid, input[6] & 0x7F, pad, input[9] & 0x3F, len,
-                                         encrypted, summary);
-        }
-
-        else if (sap == 34) { // System Configuration
-            char summary[128] = {0};
-            int plen = (len > ptr) ? (len - ptr + 1) : (len);
-            if (plen < 0) {
-                plen = 0;
-            }
-            p25_parse_sap34_syscfg(opts, state, input + ptr, plen, summary, sizeof(summary));
-            if (summary[0] != '\0') {
-                snprintf(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "SysCfg: %s", summary);
-            }
-            p25_emit_pdu_json_if_enabled(fmt, sap, mfid, io, llid, input[6] & 0x7F, pad, input[9] & 0x3F, len,
-                                         encrypted, summary);
-        }
-
-        else if (sap == 48) { //Tier 1 Location Service (LRRP/NMEA)
-            // Capture as text for event history; if present, prefix for UI clarity
-            utf8_to_text(state, 1, len - ptr + 1, input + ptr);
-            if (state->event_history_s[0].Event_History_Items[0].text_message[0] != '\0') {
-                const char* src = (const char*)state->event_history_s[0].Event_History_Items[0].text_message;
-                size_t cap = sizeof(state->dmr_lrrp_gps[0]);
-                if (cap > 7) {
-                    size_t maxcpy = cap - 7 - 1; /* prefix "LRRP: " + N + NUL */
-                    snprintf(state->dmr_lrrp_gps[0], cap, "LRRP: %.*s", (int)maxcpy, src);
-                } else {
-                    state->dmr_lrrp_gps[0][0] = '\0';
-                }
-                snprintf(state->event_history_s[0].Event_History_Items[0].gps_s,
-                         sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[0]);
-            }
-            p25_emit_pdu_json_if_enabled(fmt, sap, mfid, io, llid, input[6] & 0x7F, pad, input[9] & 0x3F, len,
-                                         encrypted, state->event_history_s[0].Event_History_Items[0].text_message);
-        }
-
-        // else //default catch all (debug only)
-        // {
-        //   if (len > ptr)
-        //     utf8_to_text(state, 0, len-ptr+1, input+ptr);
-        //   else utf8_to_text(state, 0, len+1, input+ptr);
-        // }
+        p25_decode_clear_pdu_payload(opts, state, &pdu, input, len, ptr, encrypted);
     } else {
-        fprintf(stderr, " Encrypted PDU;");
+        DSD_FPRINTF(stderr, " Encrypted PDU;");
     }
 
-    /* Emit JSON for other SAPs as generic entries (skip trunking control) */
-    if (sap != 32 && sap != 34 && sap != 48) {
-        p25_emit_pdu_json_if_enabled(fmt, sap, mfid, io, llid, input[6] & 0x7F, pad, input[9] & 0x3F, len, encrypted,
-                                     "");
+    if (pdu.sap != 32 && pdu.sap != 34 && pdu.sap != 48) {
+        p25_emit_pdu_json_for_fields(&pdu, len, encrypted, "");
     }
 
-    //watchdog the data call and make it push to event history
     watchdog_event_datacall(opts, state, state->lastsrc, state->lasttg, state->dmr_lrrp_gps[0], 0);
     state->lastsrc = 0;
     state->lasttg = 0;

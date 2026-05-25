@@ -15,39 +15,84 @@ concurrency:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   analyze:
     name: analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - language: c-cpp
-            build-mode: none
+            build-mode: manual
           - language: actions
             build-mode: ""
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Initialize CodeQL
         if: matrix.build-mode == ''
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
         with:
           languages: ${{ matrix.language }}
           config-file: ./.github/codeql/codeql-config.yml
 
       - name: Initialize CodeQL with build mode
         if: matrix.build-mode != ''
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           config-file: ./.github/codeql/codeql-config.yml
 
+      - name: Install C/C++ build dependencies
+        if: matrix.language == 'c-cpp'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config git \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+
+      - name: Build and install mbelib-neo
+        if: matrix.language == 'c-cpp'
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+
+      - name: Prepare local dependency environment
+        if: matrix.language == 'c-cpp'
+        run: |
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      - name: Configure C/C++ database build
+        if: matrix.language == 'c-cpp'
+        run: |
+          cmake --preset dev-debug \
+            -DDSD_ENABLE_RTLSDR=ON \
+            -DDSD_REQUIRE_RTLSDR=ON \
+            -DDSD_ENABLE_SOAPYSDR=ON \
+            -DDSD_REQUIRE_SOAPYSDR=ON
+
+      - name: Build C/C++ database
+        if: matrix.language == 'c-cpp'
+        run: cmake --build --preset dev-debug -j
+
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4

@@ -11,7 +11,8 @@
  * `src/core/frames/dsd_dibit.c`.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_DIBIT_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_DIBIT_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -23,12 +24,12 @@ typedef struct {
     int16_t llr[2];      /* [0]=MSB, [1]=LSB. Positive values favor bit 1. */
 } dsd_dibit_soft_t;
 
-enum {
+enum __attribute__((packed)) {
     DSD_SYMBOL_CAPTURE_FORMAT_LEGACY = 0,
     DSD_SYMBOL_CAPTURE_FORMAT_SOFT = 1,
 };
 
-enum {
+enum __attribute__((packed)) {
     DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN = 0,
     DSD_SYMBOL_REPLAY_FORMAT_LEGACY = 1,
     DSD_SYMBOL_REPLAY_FORMAT_SOFT = 2,
@@ -52,9 +53,10 @@ uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
 void soft_symbol_frame_begin(dsd_state* state);
 uint16_t soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_position);
 uint16_t gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state);
-int digitize(dsd_opts* opts, dsd_state* state, float symbol);
+int digitize(const dsd_opts* opts, dsd_state* state, float symbol);
 void skipDibit(dsd_opts* opts, dsd_state* state, int count);
 
 #ifdef __cplusplus
 }
 #endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_DIBIT_H_H */

@@ -10,14 +10,18 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <stdio.h>
-#include <string.h>
-
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 // Stubs
 void
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) { // NOLINT(misc-use-internal-linkage)
     (void)freq;
     (void)ted_sps;
     if (opts) {
@@ -29,7 +33,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
 }
 
 void
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     if (opts) {
         opts->trunk_is_tuned = 0;
     }
@@ -40,7 +44,7 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
+dmr_reset_blocks(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
 }
@@ -51,8 +55,8 @@ main(int argc, char** argv) {
     (void)argv;
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof opts);
-    memset(&state, 0, sizeof state);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
     opts.trunk_enable = 1;
     opts.trunk_hangtime = 0.5f;
     state.trunk_cc_freq = 851000000;
@@ -99,3 +103,7 @@ main(int argc, char** argv) {
     printf("DMR_T3_SM_RELEASE: OK\n");
     return 0;
 }
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

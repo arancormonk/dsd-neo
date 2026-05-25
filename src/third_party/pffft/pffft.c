@@ -605,7 +605,7 @@ static NEVER_INLINE(void) radf2_ps(int ido, int l1, const v4sf* RESTRICT cc, v4s
                 ch[2 * (k + ido) - i - 1] = VSUB(br, tr2);
             }
         }
-        if (ido % 2 == 1) {
+        if (((unsigned int)ido & 1U) != 0U) {
             return;
         }
     }
@@ -644,7 +644,7 @@ static NEVER_INLINE(void) radb2_ps(int ido, int l1, const v4sf* cc, v4sf* ch, co
                 ch[i + 0 + k + l1ido] = ti2;
             }
         }
-        if (ido % 2 == 1) {
+        if (((unsigned int)ido & 1U) != 0U) {
             return;
         }
     }
@@ -818,7 +818,7 @@ static NEVER_INLINE(void) radf4_ps(int ido, int l1, const v4sf* RESTRICT cc, v4s
                 ch[ic + 4 * k + 1 * ido] = VSUB(tr4, ti3);
             }
         }
-        if (ido % 2 == 1) {
+        if (((unsigned int)ido & 1U) != 0U) {
             return;
         }
     }
@@ -904,7 +904,7 @@ static NEVER_INLINE(void) radb4_ps(int ido, int l1, const v4sf* RESTRICT cc, v4s
                 ph = ph - 3 * l1ido + 2;
             }
         }
-        if (ido % 2 == 1) {
+        if (((unsigned int)ido & 1U) != 0U) {
             return;
         }
     }
@@ -960,7 +960,6 @@ radf5_ps(int ido, int l1, const v4sf* RESTRICT cc, v4sf* RESTRICT ch, const floa
         ch_ref(1, 3, k) = VADD(SVMUL(ti11, ci5), SVMUL(ti12, ci4));
         ch_ref(ido, 4, k) = VADD(cc_ref(1, k, 1), VADD(SVMUL(tr12, cr2), SVMUL(tr11, cr3)));
         ch_ref(1, 5, k) = VSUB(SVMUL(ti12, ci5), SVMUL(ti11, ci4));
-        //printf("pffft: radf5, k=%d ch_ref=%f, ci4=%f\n", k, ch_ref(1, 5, k), ci4);
     }
     if (ido == 1) {
         return;
@@ -1369,6 +1368,9 @@ pffft_new_setup(int N, pffft_transform_t transform) {
         return 0;
     }
     PFFFT_Setup* s = (PFFFT_Setup*)malloc(sizeof(PFFFT_Setup));
+    if (s == NULL) {
+        return 0;
+    }
     int k, m;
     /* unfortunately, the fft size must be a multiple of 16 for complex FFTs
      and 32 for real FFTs -- a lot of stuff would need to be rewritten to
@@ -1379,7 +1381,6 @@ pffft_new_setup(int N, pffft_transform_t transform) {
     if (transform == PFFFT_COMPLEX) {
         assert((N % (SIMD_SZ * SIMD_SZ)) == 0 && N > 0);
     }
-    //assert((N % 32) == 0);
     s->N = N;
     s->transform = transform;
     /* nb of complex simd vectors */
@@ -1473,18 +1474,22 @@ pffft_zreorder(PFFFT_Setup* setup, const float* in, float* out, pffft_direction_
     v4sf* vout = (v4sf*)out;
     assert(in != out);
     if (setup->transform == PFFFT_REAL) {
-        int k, dk = N / 32;
+        int kr, dk = N / 32;
         if (direction == PFFFT_FORWARD) {
-            for (k = 0; k < dk; ++k) {
-                INTERLEAVE2(vin[k * 8 + 0], vin[k * 8 + 1], vout[2 * (0 * dk + k) + 0], vout[2 * (0 * dk + k) + 1]);
-                INTERLEAVE2(vin[k * 8 + 4], vin[k * 8 + 5], vout[2 * (2 * dk + k) + 0], vout[2 * (2 * dk + k) + 1]);
+            for (kr = 0; kr < dk; ++kr) {
+                INTERLEAVE2(vin[kr * 8 + 0], vin[kr * 8 + 1], vout[2 * (0 * dk + kr) + 0],
+                            vout[2 * (0 * dk + kr) + 1]);
+                INTERLEAVE2(vin[kr * 8 + 4], vin[kr * 8 + 5], vout[2 * (2 * dk + kr) + 0],
+                            vout[2 * (2 * dk + kr) + 1]);
             }
-            reversed_copy(dk, vin + 2, 8, (v4sf*)(out + N / 2));
-            reversed_copy(dk, vin + 6, 8, (v4sf*)(out + N));
+            reversed_copy(dk, (const v4sf*)(in + 2 * SIMD_SZ), 8, (v4sf*)(out + N / 2));
+            reversed_copy(dk, (const v4sf*)(in + 6 * SIMD_SZ), 8, (v4sf*)(out + N));
         } else {
-            for (k = 0; k < dk; ++k) {
-                UNINTERLEAVE2(vin[2 * (0 * dk + k) + 0], vin[2 * (0 * dk + k) + 1], vout[k * 8 + 0], vout[k * 8 + 1]);
-                UNINTERLEAVE2(vin[2 * (2 * dk + k) + 0], vin[2 * (2 * dk + k) + 1], vout[k * 8 + 4], vout[k * 8 + 5]);
+            for (kr = 0; kr < dk; ++kr) {
+                UNINTERLEAVE2(vin[2 * (0 * dk + kr) + 0], vin[2 * (0 * dk + kr) + 1], vout[kr * 8 + 0],
+                              vout[kr * 8 + 1]);
+                UNINTERLEAVE2(vin[2 * (2 * dk + kr) + 0], vin[2 * (2 * dk + kr) + 1], vout[kr * 8 + 4],
+                              vout[kr * 8 + 5]);
             }
             unreversed_copy(dk, (v4sf*)(in + N / 4), (v4sf*)(out + N - 6 * SIMD_SZ), -8);
             unreversed_copy(dk, (v4sf*)(in + 3 * N / 4), (v4sf*)(out + N - 2 * SIMD_SZ), -8);
@@ -1647,15 +1652,10 @@ static ALWAYS_INLINE(void)
     [0   0   0   0  -1   1  -1   1]   [i3]
   */
 
-    //cerr << "matrix initial, before e , REAL:\n 1: " << r0 << "\n 1: " << r1 << "\n 1: " << r2 << "\n 1: " << r3 << "\n";
-    //cerr << "matrix initial, before e, IMAG :\n 1: " << i0 << "\n 1: " << i1 << "\n 1: " << i2 << "\n 1: " << i3 << "\n";
 
     VCPLXMUL(r1, i1, e[0], e[1]);
     VCPLXMUL(r2, i2, e[2], e[3]);
     VCPLXMUL(r3, i3, e[4], e[5]);
-
-    //cerr << "matrix initial, real part:\n 1: " << r0 << "\n 1: " << r1 << "\n 1: " << r2 << "\n 1: " << r3 << "\n";
-    //cerr << "matrix initial, imag part:\n 1: " << i0 << "\n 1: " << i1 << "\n 1: " << i2 << "\n 1: " << i3 << "\n";
 
     sr0 = VADD(r0, r2);
     dr0 = VSUB(r0, r2);
@@ -1850,7 +1850,6 @@ pffft_transform_internal(PFFFT_Setup* setup, const float* finput, float* foutput
 
     assert(VALIGNED(finput) && VALIGNED(foutput));
 
-    //assert(finput != foutput);
     if (direction == PFFFT_FORWARD) {
         ib = !ib;
         if (setup->transform == PFFFT_REAL) {
@@ -1913,6 +1912,7 @@ pffft_zconvolve_accumulate(PFFFT_Setup* s, const float* a, const float* b, float
     v4sf* RESTRICT vab = (v4sf*)ab;
 
 #ifdef __arm__
+    // Prefetch the interleaved complex lanes ahead of the NEON hot loop.
     __builtin_prefetch(va);
     __builtin_prefetch(vb);
     __builtin_prefetch(vab);
@@ -1937,6 +1937,11 @@ pffft_zconvolve_accumulate(PFFFT_Setup* s, const float* a, const float* b, float
 #endif
 
     assert(VALIGNED(a) && VALIGNED(b) && VALIGNED(ab));
+    /*
+     * Real transforms pack the DC/Nyquist terms outside the normal complex lanes.
+     * Save those accumulators before the vector loop overwrites the surrounding
+     * storage, then restore them with the scalar real-only formula at the end.
+     */
     ar0 = ((v4sf_union*)va)[0].f[0];
     ai0 = ((v4sf_union*)va)[1].f[0];
     br0 = ((v4sf_union*)vb)[0].f[0];
@@ -1985,6 +1990,7 @@ pffft_zconvolve_accumulate(PFFFT_Setup* s, const float* a, const float* b, float
                  : "r8", "q0", "q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9", "q10", "q11", "q12", "q13", "q15",
                    "memory");
 #else // default routine, works fine for non-arm cpus with current compilers
+    // Process two complex vectors per trip to keep load/store ordering paired.
     for (i = 0; i < Ncvec; i += 2) {
         v4sf ar, ai, br, bi;
         ar = va[2 * i + 0];
@@ -2003,6 +2009,7 @@ pffft_zconvolve_accumulate(PFFFT_Setup* s, const float* a, const float* b, float
         vab[2 * i + 3] = VMADD(ai, vscal, vab[2 * i + 3]);
     }
 #endif
+    // Complex transforms already accumulated all lanes in the vector path.
     if (s->transform == PFFFT_REAL) {
         ((v4sf_union*)vab)[0].f[0] = abr0 + ar0 * br0 * scaling;
         ((v4sf_union*)vab)[1].f[0] = abi0 + ai0 * bi0 * scaling;

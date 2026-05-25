@@ -8,8 +8,8 @@
 static p25_sm_api g_api;
 
 void
-p25_sm_set_api(p25_sm_api api) {
-    g_api = api;
+p25_sm_set_api(const p25_sm_api* api) {
+    g_api = api ? *api : (p25_sm_api){0};
 }
 
 p25_sm_api

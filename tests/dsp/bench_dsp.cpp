@@ -15,6 +15,13 @@
  *   build/perf-bench/tests/dsd-neo_bench_dsp --iters 3000 --repeat 5
  */
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -31,18 +38,9 @@
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
-
-#include <algorithm>
-#include <atomic>
-// IWYU pragma: no_include <bits/chrono.h>
-#include <chrono> // IWYU pragma: keep
-#include <cmath>
-#include <cstdio>
-// IWYU pragma: no_include <bits/std_abs.h>
-#include <cstdlib>
-#include <cstring>
 #include <stdint.h>
 #include <vector>
+#include "dsd-neo/core/safe_api.h"
 
 extern "C" int
 dsd_rtl_stream_should_exit(void) {
@@ -54,7 +52,7 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 volatile float g_bench_sink = 0.0f;
 
-enum class OutputFormat { Text, Csv };
+enum class OutputFormat : uint8_t { Text, Csv };
 
 struct BenchOptions {
     int iterations = 2000;
@@ -86,7 +84,7 @@ struct DemodHolder {
 
     DemodHolder() : s((demod_state*)dsd_neo_aligned_malloc(sizeof(demod_state))) {
         if (s) {
-            std::memset(s, 0, sizeof(*s));
+            DSD_MEMSET(s, 0, sizeof(*s));
         }
     }
 
@@ -374,7 +372,7 @@ bench_input_ring(const BenchOptions& opts) {
 
     input_ring_state ring;
     if (input_ring_init(&ring, kBlock + 1U) != 0) {
-        std::fprintf(stderr, "input_ring_init failed\n");
+        DSD_FPRINTF(stderr, "input_ring_init failed\n");
         return ran;
     }
 
@@ -418,7 +416,7 @@ bench_output_ring(const BenchOptions& opts) {
     ring.capacity = kBlock + 1U;
     ring.buffer = (float*)std::calloc(ring.capacity, sizeof(float));
     if (!ring.buffer) {
-        std::fprintf(stderr, "output ring allocation failed\n");
+        DSD_FPRINTF(stderr, "output ring allocation failed\n");
         return ran;
     }
     dsd_cond_init(&ring.ready);
@@ -554,7 +552,7 @@ bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, i
 
     int taps_len = design_channel_lpf_taps(rate_hz, profile, taps.data(), kMaxTaps);
     if (taps_len <= 0) {
-        std::fprintf(stderr, "channel LPF design failed for %s\n", name);
+        DSD_FPRINTF(stderr, "channel LPF design failed for %s\n", name);
         return 0;
     }
 
@@ -700,7 +698,7 @@ bench_kernel_demods(const BenchOptions& opts) {
     DemodHolder fm_state;
     DemodHolder qpsk_state;
     if (!fm_state || !qpsk_state) {
-        std::fprintf(stderr, "demod_state allocation failed\n");
+        DSD_FPRINTF(stderr, "demod_state allocation failed\n");
         return ran;
     }
 
@@ -767,7 +765,7 @@ bench_carrier_loops(const BenchOptions& opts) {
     DemodHolder fll_state;
     DemodHolder costas_state;
     if (!fll_state || !costas_state) {
-        std::fprintf(stderr, "demod_state allocation failed\n");
+        DSD_FPRINTF(stderr, "demod_state allocation failed\n");
         return ran;
     }
 
@@ -826,7 +824,7 @@ bench_one_cqpsk_fll_stage(const BenchOptions& opts, const char* name, int sample
 
     DemodHolder state;
     if (!state) {
-        std::fprintf(stderr, "demod_state allocation failed\n");
+        DSD_FPRINTF(stderr, "demod_state allocation failed\n");
         return 0;
     }
     configure_cqpsk_stage_state(state.s, sample_rate, sps, 0);
@@ -860,7 +858,7 @@ bench_one_cqpsk_gardner_stage(const BenchOptions& opts, const char* name, int sa
 
     DemodHolder state;
     if (!state) {
-        std::fprintf(stderr, "demod_state allocation failed\n");
+        DSD_FPRINTF(stderr, "demod_state allocation failed\n");
         return 0;
     }
     configure_cqpsk_stage_state(state.s, sample_rate, sps, 0);
@@ -874,7 +872,7 @@ bench_one_cqpsk_gardner_stage(const BenchOptions& opts, const char* name, int sa
     return run_case(
         opts, name, "symbol", (double)kSymbols,
         [&]() -> float {
-            std::memcpy(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
+            DSD_MEMCPY(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
             state.s->lowpassed = state.s->input_cb_buf;
             state.s->lp_len = kInLen;
             op25_gardner_cc(state.s);
@@ -903,7 +901,7 @@ bench_one_cqpsk_equalizer_stage(const BenchOptions& opts, const char* name, int 
     return run_case(
         opts, name, "pair", (double)kPairs,
         [&]() -> float {
-            std::memcpy(work.data(), in.data(), in.size() * sizeof(float));
+            DSD_MEMCPY(work.data(), in.data(), in.size() * sizeof(float));
             dsd_cqpsk_cma_equalizer_apply(&eq, work.data(), kInLen, taps, DSD_CQPSK_CMA_EQ_DEFAULT_MU,
                                           DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS);
             return work[0] + work[kInLen - 1] + eq.err_ema;
@@ -1035,13 +1033,13 @@ bench_one_fsk_full_demod(const BenchOptions& opts, const char* name, int sample_
 
     DemodHolder state;
     if (!state) {
-        std::fprintf(stderr, "demod_state allocation failed\n");
+        DSD_FPRINTF(stderr, "demod_state allocation failed\n");
         return 0;
     }
     configure_common_fsk_state(state.s, sample_rate, symbol_rate, channel_lpf_enable, squelched);
 
     return run_case(opts, name, "symbol", (double)symbols, [&]() -> float {
-        std::memcpy(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
+        DSD_MEMCPY(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
         state.s->lowpassed = state.s->input_cb_buf;
         state.s->lp_len = in_len;
         full_demod(state.s);
@@ -1061,13 +1059,13 @@ bench_one_c4fm_audio_full_demod(const BenchOptions& opts, const char* name, int 
 
     DemodHolder state;
     if (!state) {
-        std::fprintf(stderr, "demod_state allocation failed\n");
+        DSD_FPRINTF(stderr, "demod_state allocation failed\n");
         return 0;
     }
     configure_common_c4fm_audio_state(state.s, sample_rate, symbol_rate, channel_lpf_enable, squelched);
 
     return run_case(opts, name, "symbol", (double)symbols, [&]() -> float {
-        std::memcpy(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
+        DSD_MEMCPY(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
         state.s->lowpassed = state.s->input_cb_buf;
         state.s->lp_len = in_len;
         full_demod(state.s);
@@ -1086,13 +1084,13 @@ bench_one_cqpsk_full_demod(const BenchOptions& opts, const char* name, int sampl
 
     DemodHolder state;
     if (!state) {
-        std::fprintf(stderr, "demod_state allocation failed\n");
+        DSD_FPRINTF(stderr, "demod_state allocation failed\n");
         return 0;
     }
     configure_common_cqpsk_state(state.s, sample_rate, symbol_rate, sps, eq_enable);
 
     return run_case(opts, name, "symbol", (double)symbols, [&]() -> float {
-        std::memcpy(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
+        DSD_MEMCPY(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
         state.s->lowpassed = state.s->input_cb_buf;
         state.s->lp_len = in_len;
         full_demod(state.s);
@@ -1156,7 +1154,7 @@ main(int argc, char** argv) {
     ran += bench_full_demod(opts);
 
     if (opts.case_filter && ran == 0) {
-        std::fprintf(stderr, "No benchmark case matched '%s'. Use --list to see available cases.\n", opts.case_filter);
+        DSD_FPRINTF(stderr, "No benchmark case matched '%s'. Use --list to see available cases.\n", opts.case_filter);
         return 2;
     }
 
