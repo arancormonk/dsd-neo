@@ -17,9 +17,11 @@
 
 #include <dsd-neo/platform/platform.h>
 #include <stdint.h>
-#include <string.h>  // IWYU pragma: keep
+#include <string.h> // IWYU pragma: keep
+#if !DSD_COMPILER_MSVC
 #include <strings.h> // IWYU pragma: keep
-struct timeval;      // IWYU pragma: keep
+#endif
+struct timeval; // IWYU pragma: keep
 
 #ifdef __cplusplus
 extern "C" {
