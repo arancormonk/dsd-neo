@@ -28,9 +28,11 @@ enabled in GitHub.
   environment variables instead of directly interpolating them into shell
   scripts.
 - Pull request workflows use least-privilege `GITHUB_TOKEN` permissions. The
-  default GitHub Actions workflow permission for the repository is read-only.
-  Privileged publication credentials are only used in upstream non-PR release,
-  nightly, or AUR update paths.
+  default GitHub Actions workflow permission for the repository is read-only,
+  and workflows keep `GITHUB_TOKEN` read-only by default. GitHub Release and
+  nightly publication, when enabled, uses a maintainer-scoped `RELEASE_TOKEN`
+  secret only in trusted upstream non-PR release/nightly paths. AUR update
+  credentials are likewise restricted to upstream non-PR AUR update paths.
 - Official project channels and distribution channels are GitHub HTTPS URLs and
   AUR HTTPS URLs.
 - The project prevents accidental credential storage through contributor policy,

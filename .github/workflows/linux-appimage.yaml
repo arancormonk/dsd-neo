@@ -18,6 +18,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build-appimage:
     runs-on: ubuntu-latest
@@ -25,13 +28,14 @@ jobs:
       actions: read
       attestations: write
       artifact-metadata: write
-      contents: write
+      contents: read
       id-token: write
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, aarch64]
     env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       APPIMAGE_DEPS_DIR: ${{ github.workspace }}/.deps/appimage-${{ matrix.arch }}
       APPIMAGE_CCACHE_DIR: ${{ github.workspace }}/.ccache/appimage-${{ matrix.arch }}
     steps:
@@ -421,7 +425,7 @@ jobs:
           output-file: ${{ steps.names.outputs.OUT }}.spdx.json
           artifact-name: ${{ steps.names.outputs.ART }}.spdx.json
           upload-artifact: true
-          upload-release-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+          upload-release-assets: false
       - name: Attest artifact provenance
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
@@ -434,17 +438,20 @@ jobs:
           subject-path: ${{ steps.names.outputs.OUT }}
           sbom-path: ${{ steps.names.outputs.OUT }}.spdx.json
       - name: Upload release asset
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != ''
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
-          files: ${{ steps.names.outputs.OUT }}
+          files: |
+            ${{ steps.names.outputs.OUT }}
+            ${{ steps.names.outputs.OUT }}.spdx.json
           name: ${{ steps.release.outputs.release_title }}
           generate_release_notes: true
+          token: ${{ env.RELEASE_TOKEN }}
       - name: Upload nightly asset (overwrite)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != '' }}
         uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          repo_token: ${{ env.RELEASE_TOKEN }}
           tag: nightly
           prerelease: true
           file: ${{ steps.names.outputs.OUT }}

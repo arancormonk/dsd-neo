@@ -12,15 +12,21 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  checks: read
   contents: read
+  issues: read
+  pull-requests: read
 
 jobs:
   scorecard:
     name: OpenSSF Scorecard
     runs-on: ubuntu-latest
     permissions:
+      checks: read
       contents: read
+      issues: read
       id-token: write
+      pull-requests: read
       security-events: write
     steps:
       - name: Checkout repository
