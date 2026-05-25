@@ -9,7 +9,6 @@
 #include <cctype>
 #include <cmath>
 #include <iterator>
-#include <limits>
 
 namespace dsdneo {
 
@@ -279,20 +278,22 @@ soapy_nearest_in_ranges(double requested, const std::vector<SoapyRange>& ranges,
     }
 
     double best = 0.0;
-    double best_error = std::numeric_limits<double>::infinity();
+    double best_error = 0.0;
+    bool have_best = false;
     for (const SoapyRange& range : ranges) {
         if (range.maximum < range.minimum) {
             continue;
         }
         double candidate = nearest_in_one_range(requested, range);
         double error = std::fabs(candidate - requested);
-        if (error < best_error) {
+        if (!have_best || error < best_error) {
             best = candidate;
             best_error = error;
+            have_best = true;
         }
     }
 
-    if (!std::isfinite(best_error)) {
+    if (!have_best) {
         return requested;
     }
     if (out_supported) {
