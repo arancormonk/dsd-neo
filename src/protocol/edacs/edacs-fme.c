@@ -49,11 +49,9 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
-#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
-#include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -64,6 +62,8 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RADIO
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <math.h>
 #endif
 
 static void
@@ -74,6 +74,7 @@ edacs_print_group_label(const dsd_state* state, uint32_t id) {
     }
 }
 
+#ifdef USE_RADIO
 static inline short
 clip_float_to_short(float v) {
     if (v > 32767.0f) {
@@ -84,6 +85,7 @@ clip_float_to_short(float v) {
     }
     return (short)lrintf(v);
 }
+#endif
 
 static int
 hamming_weight_u64(uint64_t v) {
@@ -293,9 +295,9 @@ edacs_fill_analog_block_udp(dsd_opts* opts, short* block) {
     }
 }
 
+#ifdef USE_RADIO
 static int
 edacs_fill_analog_block_rtl(dsd_opts* opts, dsd_state* state, short* block) {
-#ifdef USE_RADIO
     float rtl_sample = 0.0f;
     for (int i = 0; i < 960; i++) {
         if (!state->rtl_ctx) {
@@ -311,12 +313,8 @@ edacs_fill_analog_block_rtl(dsd_opts* opts, dsd_state* state, short* block) {
         block[i] = clip_float_to_short(rtl_sample);
     }
     return 1;
-#else
-    UNUSED(block);
-    cleanupAndExit(opts, state);
-    return 0;
-#endif
 }
+#endif
 
 static int
 edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,

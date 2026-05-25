@@ -20,11 +20,9 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
-#include <dsd-neo/ui/ui_dsp_cmd.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -35,6 +33,11 @@
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "test_support.h"
+
+#ifdef USE_RADIO
+#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/ui/ui_dsp_cmd.h>
+#endif
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -68,6 +71,7 @@ expect_float_ne(const char* label, float lhs, float rhs) {
     return 0;
 }
 
+#ifdef USE_RADIO
 static int
 expect_float_close(const char* label, float got, float want, float tol) {
     if (fabsf(got - want) > tol) {
@@ -76,6 +80,7 @@ expect_float_close(const char* label, float got, float want, float tol) {
     }
     return 0;
 }
+#endif
 
 static int g_tcp_connect_audio_calls = 0;
 static int g_tcp_connect_audio_result = 0;

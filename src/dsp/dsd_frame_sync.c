@@ -26,7 +26,6 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -43,7 +42,6 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -56,6 +54,8 @@
 #include "dsd-neo/platform/timing.h"
 
 #ifdef USE_RADIO
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
 static int
@@ -1669,6 +1669,8 @@ frame_sync_slice_cqpsk_dibit(const dsd_opts* opts, const dsd_state* state, float
             sym_max = -1000.0f;
         }
     }
+#else
+    UNUSED(opts);
 #endif
     return d;
 }
@@ -1697,6 +1699,9 @@ frame_sync_capture_symbol(dsd_opts* opts, dsd_state* state, int dibit, float sym
     if (!opts->symbol_out_f || dibit == 0) {
         return;
     }
+#ifndef USE_RADIO
+    UNUSED(cqpsk_4level);
+#endif
     int csymbol = 0;
 #ifdef USE_RADIO
     if (cqpsk_4level) {
@@ -2153,6 +2158,7 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
         demod_rate = dsd_opts_current_input_timing_rate(opts);
     }
 #else
+    UNUSED(levels_cycle);
     int demod_rate = dsd_opts_current_input_timing_rate(opts);
 #endif
 

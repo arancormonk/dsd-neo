@@ -46,7 +46,6 @@
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <errno.h>
@@ -71,6 +70,7 @@
 struct CODEC2;
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #ifdef USE_RTLSDR
 #include <rtl-sdr.h>
@@ -776,6 +776,7 @@ dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
     opts->audio_in_type = AUDIO_IN_RTL;
 }
 
+#ifdef USE_RTLSDR
 static int
 dsd_engine_setup_parse_rtl_spec_tokens(dsd_opts* opts, char** saveptr) {
     const char* curr = dsd_strtok_r(NULL, ":", saveptr);
@@ -851,7 +852,6 @@ dsd_engine_setup_update_rtl_spec_with_selected_index(dsd_opts* opts) {
 
 static int
 dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char* product, char* serial) {
-#ifdef USE_RTLSDR
     int device_count = 0;
 #if defined(_MSC_VER) && defined(_WIN32)
     __try {
@@ -890,14 +890,8 @@ dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char*
         }
     }
     return device_count;
-#else
-    UNUSED(opts);
-    UNUSED(vendor);
-    UNUSED(product);
-    UNUSED(serial);
-    return 0;
-#endif
 }
+#endif
 
 static int
 dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* vendor, char* product, char* serial) {

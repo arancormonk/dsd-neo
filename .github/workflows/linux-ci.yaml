@@ -1109,7 +1109,12 @@ jobs:
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
               mapfile -t files < .ci/changed-files/format_files.txt
             else
-              mapfile -t files < <(git ls-files "*.c" "*.cc" "*.cxx" "*.cpp" "*.h" "*.hpp" ":!:build/**")
+              mapfile -t files < <(
+                git ls-files \
+                  "*.c" "*.cc" "*.cxx" "*.cpp" "*.h" "*.hpp" \
+                  ":!:build/**" \
+                  ":!:src/third_party/**"
+              )
             fi
 
             clang-format --version
