@@ -756,10 +756,11 @@ ui_prompt_render(void) {
     } else {
         mvwaddnstr(win, input_y, field_col, text + view.start, field_width);
     }
-    wmove(win, input_y, cursor_x);
     if (footer_y > 0 && footer_y != input_y) {
         mvwaddnstr(win, footer_y, 2, "Enter=OK  Esc=Cancel", body_w);
     }
+    // Footer/title writes also move the curses cursor; place it last so input editing stays visible.
+    wmove(win, input_y, cursor_x);
     wnoutrefresh(win);
 }
 
