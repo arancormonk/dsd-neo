@@ -316,15 +316,14 @@ jobs:
               mkdir -p "$(dirname "$OUTPUT")"
               export PATH="/usr/local/bin:$PATH"
 
-              # Helper projects use CMake launcher settings below; do not also inherit CC/CXX ccache wrappers.
-              unset CC CXX
+              # Helper projects have nested CMake logic; use plain compilers here to avoid recursive ccache wrappers.
+              export CC=gcc
+              export CXX=g++
               cmake_common_opts=(
                 -G Ninja
                 -DCMAKE_BUILD_TYPE=Release
                 -DCMAKE_C_COMPILER=gcc
                 -DCMAKE_CXX_COMPILER=g++
-                -DCMAKE_C_COMPILER_LAUNCHER=ccache
-                -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
               )
 
               echo "Building native appimagetool from pinned source..."
