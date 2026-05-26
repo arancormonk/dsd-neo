@@ -190,6 +190,23 @@ jobs:
           restore-keys: |
             deps-${{ runner.os }}-
 
+      - name: Validate dependency cache
+        run: |
+          set -euxo pipefail
+          mf="$DEPS_PREFIX/.manifest"
+          if [ -d "$DEPS_PREFIX" ]; then
+            if [ -f "$mf" ] &&
+               grep -Fxq "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" "$mf" &&
+               grep -Fxq "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" "$mf" &&
+               grep -Fxq "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" "$mf"; then
+              echo "Dependency cache manifest matches requested SHAs"
+            else
+              echo "Dependency cache manifest is missing or stale; clearing $DEPS_PREFIX"
+              rm -rf "$DEPS_PREFIX"
+            fi
+          fi
+          mkdir -p "$DEPS_PREFIX"
+
       - name: Install base build dependencies
         run: |
           sudo apt-get update
@@ -416,6 +433,8 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.14"
+          cache: pip
+          cache-dependency-path: .github/requirements/semgrep.txt
 
       - name: Install Semgrep
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
@@ -462,6 +481,8 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.14"
+          cache: pip
+          cache-dependency-path: .github/requirements/lizard.txt
       - name: Install Lizard
         run: python -m pip install --require-hashes -r .github/requirements/lizard.txt
       - name: Run Lizard
@@ -911,6 +932,23 @@ jobs:
           restore-keys: |
             deps-${{ runner.os }}-
 
+      - name: Validate dependency cache
+        run: |
+          set -euxo pipefail
+          mf="$DEPS_PREFIX/.manifest"
+          if [ -d "$DEPS_PREFIX" ]; then
+            if [ -f "$mf" ] &&
+               grep -Fxq "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" "$mf" &&
+               grep -Fxq "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" "$mf" &&
+               grep -Fxq "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" "$mf"; then
+              echo "Dependency cache manifest matches requested SHAs"
+            else
+              echo "Dependency cache manifest is missing or stale; clearing $DEPS_PREFIX"
+              rm -rf "$DEPS_PREFIX"
+            fi
+          fi
+          mkdir -p "$DEPS_PREFIX"
+
       - name: Install base build dependencies
         run: |
           sudo apt-get update
@@ -1240,6 +1278,22 @@ jobs:
           key: arch-deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}
           restore-keys: |
             arch-deps-${{ runner.os }}-
+
+      - name: Validate dependency cache
+        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
+        run: |
+          set -euxo pipefail
+          mf=".deps/.manifest"
+          if [ -d .deps ]; then
+            if [ -f "$mf" ] &&
+               grep -Fxq "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" "$mf"; then
+              echo "Dependency cache manifest matches requested SHAs"
+            else
+              echo "Dependency cache manifest is missing or stale; clearing .deps"
+              rm -rf .deps
+            fi
+          fi
+          mkdir -p .deps
 
       - name: Restore IWYU toolchain cache
         if: (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0') && matrix.name == 'iwyu'

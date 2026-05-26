@@ -71,6 +71,8 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.14"
+          cache: pip
+          cache-dependency-path: .github/requirements/gersemi.txt
 
       - name: Install gersemi
         if: github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0'
@@ -157,6 +159,8 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.14"
+          cache: pip
+          cache-dependency-path: .github/requirements/zizmor.txt
 
       - name: Install zizmor
         if: github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0'

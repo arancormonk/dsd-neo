@@ -119,6 +119,24 @@ jobs:
           restore-keys: |
             deps-appimage-${{ runner.os }}-${{ matrix.arch }}-
 
+      - name: Validate AppImage dependency cache
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mf="${APPIMAGE_DEPS_DIR}/.manifest"
+          if [ -d "${APPIMAGE_DEPS_DIR}" ]; then
+            if [ -f "$mf" ] &&
+               grep -Fxq "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" "$mf" &&
+               grep -Fxq "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" "$mf" &&
+               grep -Fxq "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" "$mf"; then
+              echo "AppImage dependency cache manifest matches requested SHAs"
+            else
+              echo "AppImage dependency cache manifest is missing or stale; clearing ${APPIMAGE_DEPS_DIR}"
+              rm -rf "${APPIMAGE_DEPS_DIR}"
+            fi
+          fi
+          mkdir -p "${APPIMAGE_DEPS_DIR}"
+
       - name: Restore AppImage ccache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:

@@ -79,6 +79,24 @@ jobs:
           restore-keys: |
             deps-${{ runner.os }}-
 
+      - name: Validate dependency cache
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mf="$DEPS_PREFIX/.manifest"
+          if [ -d "$DEPS_PREFIX" ]; then
+            if [ -f "$mf" ] &&
+               grep -Fxq "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" "$mf" &&
+               grep -Fxq "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" "$mf" &&
+               grep -Fxq "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" "$mf"; then
+              echo "Dependency cache manifest matches requested SHAs"
+            else
+              echo "Dependency cache manifest is missing or stale; clearing $DEPS_PREFIX"
+              rm -rf "$DEPS_PREFIX"
+            fi
+          fi
+          mkdir -p "$DEPS_PREFIX"
+
       - name: Install base toolchain + libs (Homebrew)
         shell: bash
         run: |
