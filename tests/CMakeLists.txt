@@ -4143,6 +4143,14 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_io_udp_input PRIVATE dsd-neo_io_audio)
 add_test(NAME IO_UDP_INPUT COMMAND dsd-neo_test_io_udp_input)
 
+add_executable(dsd-neo_test_io_udp_bind io/test_io_udp_bind.c)
+target_include_directories(
+    dsd-neo_test_io_udp_bind
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_io_udp_bind PRIVATE dsd-neo_io_audio)
+add_test(NAME IO_UDP_BIND COMMAND dsd-neo_test_io_udp_bind)
+
 add_executable(
     dsd-neo_test_io_iq_replay_effective_bytes
     io/test_io_iq_replay_effective_bytes.c

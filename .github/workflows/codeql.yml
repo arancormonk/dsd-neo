@@ -67,7 +67,8 @@ jobs:
         if: matrix.language == 'c-cpp'
         run: |
           set -euxo pipefail
-          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
             -DCMAKE_INSTALL_PREFIX="$HOME/.local"

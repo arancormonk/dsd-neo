@@ -14,6 +14,8 @@ execution, or unsafe release behavior.
 - Normal decode paths should not execute shells or spawn external processes.
 - Network-facing features are explicit opt-in inputs or outputs, not hidden
   background listeners.
+- PCM UDP input and M17 frame listeners default to loopback unless the user
+  explicitly binds a wider address such as `0.0.0.0`.
 - Release and CI workflows should use least-privilege permissions and avoid
   exposing release credentials to pull-request code.
 - Security vulnerabilities should be handled through the private reporting
@@ -112,6 +114,11 @@ The project applies the following controls:
 - project safe API wrappers for memory, string, and formatting calls
 - broad CTest coverage across runtime, platform, DSP, IO, engine, FEC, crypto,
   protocol, core, and UI modules
+- default-on Release-like compiler/linker hardening for supported Clang/GCC
+  targets, with Linux release verification in CI
+- exclusive private sibling temp files for atomic user config, IQ metadata, and
+  Rdio sidecar replacement
+- redaction guardrails for key/keystream output paths
 - sanitizer CI for AddressSanitizer and UndefinedBehaviorSanitizer
 - ThreadSanitizer preset for threading-sensitive local validation
 - libFuzzer smoke targets for selected file, metadata, config, and protocol
@@ -120,8 +127,24 @@ The project applies the following controls:
   GCC `-fanalyzer`, include-what-you-use, and lizard
 - Gitleaks and GitHub secret scanning for credential leakage
 - OSV-Scanner and dependency review for dependency vulnerabilities
-- pinned GitHub Actions and zizmor workflow security checks
+- pinned GitHub Actions, pinned CI source checkouts, and zizmor workflow
+  security checks
 - branch protection requiring status checks before merge
+
+## Solo Maintainer Operating Mode
+
+DSD-neo is allowed to operate as a solo-maintainer project, but the absence of
+a routine second reviewer is treated as residual risk, not as implicit approval.
+For security-sensitive, workflow, release, parser, crypto, dependency, or broad
+runtime changes, the maintainer should:
+
+- keep the change narrowly scoped and document the risk in the pull request or
+  release notes
+- run `tools/preflight_ci.sh` or a broader equivalent before merge
+- avoid bypassing failing guardrails unless the bypass and mitigation are
+  documented
+- seek outside review for high-impact security or release-signing changes when
+  practical
 
 ## Vulnerability Handling
 

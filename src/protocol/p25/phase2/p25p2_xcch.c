@@ -27,6 +27,7 @@
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static const char* P25P2_EMPTY_CALL_STRING = "                     ";
@@ -305,18 +306,15 @@ p25p2_xcch_log_slot_encryption(dsd_opts* opts, dsd_state* state, int slot) {
     DSD_FPRINTF(stderr, " MPTT");
 
     if (key != 0 && algid == 0xAA) {
-        DSD_FPRINTF(stderr, " Key 0x%010llX", key);
+        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
     }
     if (key != 0 && algid == 0x81) {
-        DSD_FPRINTF(stderr, " Key 0x%016llX", key);
+        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
     }
 
     if ((algid == 0x84 || algid == 0x89) && state->aes_key_loaded[slot] == 1) {
         DSD_FPRINTF(stderr, "\n ");
-        DSD_FPRINTF(stderr, "Key: %016llX %016llX ", state->A1[slot], state->A2[slot]);
-        if (algid == 0x84) {
-            DSD_FPRINTF(stderr, "%016llX %016llX", state->A3[slot], state->A4[slot]);
-        }
+        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
     }
 
     if (algid == 0x84 || algid == 0x89) {

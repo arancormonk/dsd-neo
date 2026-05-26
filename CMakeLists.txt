@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(dsd-neo VERSION 1.0.0 LANGUAGES C CXX)
+if(POLICY CMP0083)
+    cmake_policy(SET CMP0083 NEW)
+endif()
 include(CTest) # provides BUILD_TESTING and enables tests when on
 enable_testing()
 include(GNUInstallDirs)
@@ -54,6 +57,11 @@ option(
     DSD_ENABLE_LTO
     "Enable Link Time Optimization (IPO/LTO) for Release builds"
     OFF
+)
+option(
+    DSD_ENABLE_HARDENING
+    "Enable Release-like compiler and linker hardening when supported"
+    ON
 )
 option(DSD_ENABLE_NATIVE "Enable native CPU tuning (-march/-mtune=native)" OFF)
 option(DSD_ENABLE_ASAN "Enable AddressSanitizer in Debug builds" OFF)
@@ -200,8 +208,96 @@ elseif(
     )
 endif()
 
+add_library(dsd-neo_hardening INTERFACE)
+target_link_libraries(dsd-neo_hardening INTERFACE dsd-neo_sanitizers)
+
+if(DSD_ENABLE_HARDENING AND CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    set(_dsd_release_like_config
+        "$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>"
+    )
+
+    target_compile_definitions(
+        dsd-neo_hardening
+        INTERFACE "$<${_dsd_release_like_config}:_FORTIFY_SOURCE=2>"
+    )
+
+    include(CheckCCompilerFlag)
+    include(CheckCXXCompilerFlag)
+    check_c_compiler_flag(
+        "-fstack-protector-strong"
+        DSD_C_HAS_STACK_PROTECTOR_STRONG
+    )
+    check_cxx_compiler_flag(
+        "-fstack-protector-strong"
+        DSD_CXX_HAS_STACK_PROTECTOR_STRONG
+    )
+    if(DSD_C_HAS_STACK_PROTECTOR_STRONG)
+        target_compile_options(
+            dsd-neo_hardening
+            INTERFACE
+                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:C>>:-fstack-protector-strong>"
+        )
+    endif()
+    if(DSD_CXX_HAS_STACK_PROTECTOR_STRONG)
+        target_compile_options(
+            dsd-neo_hardening
+            INTERFACE
+                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:CXX>>:-fstack-protector-strong>"
+        )
+    endif()
+
+    check_c_compiler_flag(
+        "-fstack-clash-protection"
+        DSD_C_HAS_STACK_CLASH_PROTECTION
+    )
+    check_cxx_compiler_flag(
+        "-fstack-clash-protection"
+        DSD_CXX_HAS_STACK_CLASH_PROTECTION
+    )
+    if(DSD_C_HAS_STACK_CLASH_PROTECTION)
+        target_compile_options(
+            dsd-neo_hardening
+            INTERFACE
+                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:C>>:-fstack-clash-protection>"
+        )
+    endif()
+    if(DSD_CXX_HAS_STACK_CLASH_PROTECTION)
+        target_compile_options(
+            dsd-neo_hardening
+            INTERFACE
+                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:CXX>>:-fstack-clash-protection>"
+        )
+    endif()
+
+    if(UNIX AND NOT APPLE)
+        include(CheckLinkerFlag)
+        check_linker_flag(C "-Wl,-z,relro" DSD_LD_HAS_RELRO)
+        check_linker_flag(C "-Wl,-z,now" DSD_LD_HAS_NOW)
+        check_linker_flag(C "-pie" DSD_LD_HAS_PIE)
+        if(DSD_LD_HAS_RELRO)
+            target_link_options(
+                dsd-neo_hardening
+                INTERFACE "$<${_dsd_release_like_config}:-Wl,-z,relro>"
+            )
+        endif()
+        if(DSD_LD_HAS_NOW)
+            target_link_options(
+                dsd-neo_hardening
+                INTERFACE "$<${_dsd_release_like_config}:-Wl,-z,now>"
+            )
+        endif()
+        if(DSD_LD_HAS_PIE)
+            target_link_options(
+                dsd-neo_hardening
+                INTERFACE
+                    "$<$<AND:${_dsd_release_like_config},$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>>:-pie>"
+            )
+        endif()
+    endif()
+endif()
+
 add_library(dsd-neo_warnings INTERFACE)
-target_link_libraries(dsd-neo_warnings INTERFACE dsd-neo_sanitizers)
+target_link_libraries(dsd-neo_warnings INTERFACE dsd-neo_hardening)
 
 if(DSD_ENABLE_WARNINGS)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")

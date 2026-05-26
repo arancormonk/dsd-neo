@@ -131,6 +131,31 @@ int dsd_fchmod(int fd, int mode);
 FILE* dsd_fopen_private(const char* path, const char* mode);
 
 /**
+ * @brief Create a private temporary sibling file for atomic replacement.
+ *
+ * The temporary file is created in the same directory as @p final_path with
+ * owner-only permissions and exclusive creation. On success, @p tmp_path
+ * receives the created file path and the returned stream owns the descriptor.
+ *
+ * @param final_path     Destination path that will later be replaced.
+ * @param tmp_path       Output buffer for the created temporary path.
+ * @param tmp_path_size  Output buffer size.
+ * @param mode           fopen-compatible write mode such as "w" or "wb".
+ * @return FILE stream, or NULL on error with errno set.
+ */
+FILE* dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path, size_t tmp_path_size,
+                                         const char* mode);
+
+/**
+ * @brief Atomically replace a destination path with a sibling temporary file.
+ *
+ * @param tmp_path    Existing temporary file created in the destination directory.
+ * @param final_path  Destination path to replace.
+ * @return 0 on success, -1 on error with errno set.
+ */
+int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
+
+/**
  * @brief Resolve a user-supplied local file name to an existing file in the current directory.
  *
  * The requested name must be a bare file name: no path separators, absolute

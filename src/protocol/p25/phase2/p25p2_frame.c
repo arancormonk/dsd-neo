@@ -40,6 +40,7 @@
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 
@@ -1087,17 +1088,14 @@ p25p2_ess_apply_slot0(const dsd_opts* opts, dsd_state* state, unsigned long long
     DSD_FPRINTF(stderr, " ESSB");
 
     if (state->R != 0 && state->payload_algid == 0xAA) {
-        DSD_FPRINTF(stderr, " Key 0x%010llX", state->R);
+        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
     }
     if (state->R != 0 && state->payload_algid == 0x81) {
-        DSD_FPRINTF(stderr, " Key 0x%016llX", state->R);
+        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
     }
     if ((state->payload_algid == 0x84 || state->payload_algid == 0x89) && state->aes_key_loaded[0] == 1) {
         DSD_FPRINTF(stderr, "\n ");
-        DSD_FPRINTF(stderr, "Key: %016llX %016llX ", state->A1[0], state->A2[0]);
-        if (state->payload_algid == 0x84) {
-            DSD_FPRINTF(stderr, "%016llX %016llX", state->A3[0], state->A4[0]);
-        }
+        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
     }
 
     if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
@@ -1125,17 +1123,14 @@ p25p2_ess_apply_slot1(const dsd_opts* opts, dsd_state* state, unsigned long long
     DSD_FPRINTF(stderr, " ESSB");
 
     if (state->RR != 0 && state->payload_algidR == 0xAA) {
-        DSD_FPRINTF(stderr, " Key 0x%010llX", state->RR);
+        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
     }
     if (state->RR != 0 && state->payload_algidR == 0x81) {
-        DSD_FPRINTF(stderr, " Key 0x%016llX", state->RR);
+        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
     }
     if ((state->payload_algidR == 0x84 || state->payload_algidR == 0x89) && state->aes_key_loaded[1] == 1) {
         DSD_FPRINTF(stderr, "\n ");
-        DSD_FPRINTF(stderr, "Key: %016llX %016llX ", state->A1[1], state->A2[1]);
-        if (state->payload_algidR == 0x84) {
-            DSD_FPRINTF(stderr, "%016llX %016llX", state->A3[1], state->A4[1]);
-        }
+        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
     }
 
     if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) {

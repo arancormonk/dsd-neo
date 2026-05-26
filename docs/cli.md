@@ -66,7 +66,7 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - SoapySDR: `-i soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]]`
 - TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (bare `tcp` connects to `localhost:7355`; sample rate uses `-s`, default 48000)
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355)
-- M17 UDP/IP frame input: `-i m17udp[:bind_addr:port]` (default port 17000; current decoder bind listens on all interfaces; use with `-fU`)
+- M17 UDP/IP frame input: `-i m17udp[:bind_addr:port]` (defaults `127.0.0.1:17000`; use `0.0.0.0` only when LAN access is intended; use with `-fU`)
 - stdin (raw PCM16LE mono): `-i -` (sample rate uses `-s`)
 
 - Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical)

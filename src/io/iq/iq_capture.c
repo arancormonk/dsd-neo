@@ -560,38 +560,36 @@ metadata_write_file(const dsd_iq_capture_config* cfg, const char* capture_starte
         return DSD_IQ_ERR_INVALID_ARG;
     }
 
-    char tmp_path[2304];
-    if (DSD_SNPRINTF(tmp_path, sizeof(tmp_path), "%s.tmp", metadata_path) >= (int)sizeof(tmp_path)) {
-        set_error(err_buf, err_buf_size, "metadata temp path too long");
-        return DSD_IQ_ERR_INVALID_ARG;
-    }
-
-    FILE* fp = dsd_fopen_private(tmp_path, "wb");
+    char tmp_path[2304] = {0};
+    FILE* fp = dsd_fopen_private_temp_for_replace(metadata_path, tmp_path, sizeof(tmp_path), "wb");
     if (!fp) {
-        set_error(err_buf, err_buf_size, "failed to open metadata temp file '%s': %s", tmp_path, strerror(errno));
+        set_error(err_buf, err_buf_size, "failed to open metadata temp file for '%s': %s", metadata_path,
+                  strerror(errno));
         return DSD_IQ_ERR_IO;
     }
 
     int write_rc = metadata_write_payload(fp, cfg, capture_started_utc, stats, notes, events, event_count);
-    if (fclose(fp) != 0 || write_rc != 0) {
+    if (write_rc == 0) {
+        int fd = dsd_fileno(fp);
+        if (fd >= 0) {
+            (void)dsd_fchmod(fd, 0600);
+            if (dsd_fsync(fd) != 0) {
+                write_rc = -1;
+            }
+        }
+    }
+    int close_rc = fclose(fp);
+    if (close_rc != 0 || write_rc != 0) {
         (void)remove(tmp_path);
         set_error(err_buf, err_buf_size, "failed to write metadata '%s': %s", metadata_path, strerror(errno));
         return DSD_IQ_ERR_IO;
     }
 
-#if DSD_PLATFORM_WIN_NATIVE
-    if (!MoveFileExA(tmp_path, metadata_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
-        (void)remove(tmp_path);
-        set_error(err_buf, err_buf_size, "failed to replace metadata '%s'", metadata_path);
-        return DSD_IQ_ERR_IO;
-    }
-#else
-    if (rename(tmp_path, metadata_path) != 0) {
+    if (dsd_replace_file_with_temp(tmp_path, metadata_path) != 0) {
         (void)remove(tmp_path);
         set_error(err_buf, err_buf_size, "failed to replace metadata '%s': %s", metadata_path, strerror(errno));
         return DSD_IQ_ERR_IO;
     }
-#endif
 
     return DSD_IQ_OK;
 }

@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -215,8 +216,7 @@ tyt_ap_pc4_keystream_creation(dsd_state* state, char* input) {
     create_keys(&g_pc4_context, key2, sizeof(key2));
     g_pc4_context.rounds = nbround;
 
-    DSD_FPRINTF(stderr, "DMR TYT AP (PC4) 128-bit Key %016llX%016llX with Forced Application\n",
-                (unsigned long long int)K1, (unsigned long long int)K2);
+    DSD_FPRINTF(stderr, "DMR TYT AP (PC4) 128-bit key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
     state->tyt_ap = 1;
 }
 
@@ -283,6 +283,6 @@ tyt_ep_aes_keystream_creation(dsd_state* state, char* input) {
         g_pc4_context.bits[i] = ks_bits[i];
     }
 
-    DSD_FPRINTF(stderr, "DMR TYT EP (AES-128) Key %016llX%016llX with Forced Application\n", K1, K2);
+    DSD_FPRINTF(stderr, "DMR TYT EP (AES-128) key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
     state->tyt_ep = 1;
 }

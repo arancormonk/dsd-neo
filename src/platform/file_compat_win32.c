@@ -115,6 +115,58 @@ dsd_fopen_private(const char* path, const char* mode) {
     return fp;
 }
 
+FILE*
+dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path, size_t tmp_path_size, const char* mode) {
+    if (!final_path || final_path[0] == '\0' || !tmp_path || tmp_path_size == 0 || !mode || mode[0] == 'r') {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    int n = DSD_SNPRINTF(tmp_path, tmp_path_size, "%s.tmp.XXXXXX", final_path);
+    if (n < 0 || (size_t)n >= tmp_path_size) {
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
+    if (_mktemp_s(tmp_path, tmp_path_size) != 0) {
+        errno = EEXIST;
+        return NULL;
+    }
+
+    int flags = dsd_private_open_flags(mode);
+    if (flags < 0) {
+        return NULL;
+    }
+    flags |= _O_EXCL;
+
+    int fd = _open(tmp_path, flags, _S_IREAD | _S_IWRITE);
+    if (fd < 0) {
+        return NULL;
+    }
+
+    FILE* fp = _fdopen(fd, mode);
+    if (!fp) {
+        int saved_errno = errno ? errno : EINVAL;
+        _close(fd);
+        (void)remove(tmp_path);
+        errno = saved_errno;
+        return NULL;
+    }
+    return fp;
+}
+
+int
+dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
+    if (!tmp_path || tmp_path[0] == '\0' || !final_path || final_path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!MoveFileExA(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
+        errno = EACCES;
+        return -1;
+    }
+    return 0;
+}
+
 static int
 dsd_local_file_name_is_unsafe(const char* requested) {
     return requested == NULL || requested[0] == '\0' || requested[0] == '/' || requested[0] == '\\'

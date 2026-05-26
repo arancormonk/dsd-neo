@@ -31,6 +31,7 @@
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 
@@ -1062,7 +1063,7 @@ dmr_block_dec_print_info(const dmr_block_dec_ctx* ctx) {
         DSD_FPRINTF(stderr, " AES256;");
     }
     if (ctx->rkey && ctx->alg != 0) {
-        DSD_FPRINTF(stderr, " Key: %010llX;", ctx->rkey);
+        DSD_FPRINTF(stderr, " Key: %s;", DSD_SECRET_REDACTED);
     }
 }
 
@@ -1114,7 +1115,7 @@ dmr_block_dec_apply_bp(dsd_state* state, uint8_t slot, const dmr_block_dec_ctx* 
     bp_key = BPK[state->K];
     ob[0] = (bp_key >> 8) & 0xFF;
     ob[1] = (bp_key >> 0) & 0xFF;
-    DSD_FPRINTF(stderr, " Key: %lld : %04X;", state->K, bp_key);
+    DSD_FPRINTF(stderr, " Key: %s;", DSD_SECRET_REDACTED);
     if (bp_key == 0) {
         return;
     }

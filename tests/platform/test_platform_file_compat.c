@@ -101,6 +101,67 @@ expect_rejects_small_buffer(void) {
     return rc == -1 && errno == ENAMETOOLONG ? 0 : 1;
 }
 
+static int
+expect_private_temp_replace(void) {
+    const char* name = "dsd_neo_atomic_replace_test.tmp";
+    char tmp[1024];
+    (void)remove(name);
+
+    FILE* fp = dsd_fopen_private_temp_for_replace(name, tmp, sizeof tmp, "wb");
+    if (!fp) {
+        return 1;
+    }
+    int ok = strcmp(tmp, name) != 0 && strstr(tmp, ".tmp.") != NULL;
+    if (fputs("replacement\n", fp) < 0) {
+        ok = 0;
+    }
+    if (fflush(fp) != 0) {
+        ok = 0;
+    }
+    int fd = dsd_fileno(fp);
+    if (fd < 0 || dsd_fsync(fd) != 0) {
+        ok = 0;
+    }
+    if (fclose(fp) != 0) {
+        ok = 0;
+    }
+    if (!ok || dsd_replace_file_with_temp(tmp, name) != 0) {
+        (void)remove(tmp);
+        (void)remove(name);
+        return 1;
+    }
+
+    dsd_stat_t st;
+    if (dsd_stat_path(tmp, &st) == 0) {
+        (void)remove(tmp);
+        (void)remove(name);
+        return 1;
+    }
+    if (dsd_stat_path(name, &st) != 0 || !dsd_stat_is_regular(&st)) {
+        (void)remove(name);
+        return 1;
+    }
+#if !DSD_PLATFORM_WIN_NATIVE
+    if ((st.st_mode & 0777) != 0600) {
+        (void)remove(name);
+        return 1;
+    }
+#endif
+
+    FILE* in = fopen(name, "rb");
+    if (!in) {
+        (void)remove(name);
+        return 1;
+    }
+    char line[32];
+    ok = fgets(line, sizeof line, in) != NULL && strcmp(line, "replacement\n") == 0;
+    if (fclose(in) != 0) {
+        ok = 0;
+    }
+    (void)remove(name);
+    return ok ? 0 : 1;
+}
+
 #if !DSD_PLATFORM_WIN_NATIVE
 static int
 expect_rejects_symlink(void) {
@@ -139,6 +200,7 @@ main(void) {
     rc |= expect_rejects_unsafe_name("config..ini");
     rc |= expect_rejects_missing_file();
     rc |= expect_rejects_small_buffer();
+    rc |= expect_private_temp_replace();
 #if !DSD_PLATFORM_WIN_NATIVE
     rc |= expect_rejects_symlink();
 #endif

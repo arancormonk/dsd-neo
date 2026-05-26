@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: ISC
+
+#ifndef DSD_NEO_CORE_SECRET_REDACTION_H
+#define DSD_NEO_CORE_SECRET_REDACTION_H
+
+#define DSD_SECRET_REDACTED "[redacted]"
+
+#endif /* DSD_NEO_CORE_SECRET_REDACTION_H */
