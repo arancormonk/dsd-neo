@@ -1355,12 +1355,17 @@ p25p2_duid_has_valid_site(const dsd_state* state) {
 }
 
 static void
-p25p2_duid_collect_and_decode(void) {
+p25p2_duid_collect_and_decode(int timeslot_index) {
     static const int duid_offsets[8] = {0, 1, 74, 75, 244, 245, 318, 319};
     uint8_t p2_duid_reliab[8];
     int p2_duid_complete = 0;
+    if (timeslot_index < 0 || timeslot_index >= 4) {
+        DSD_MEMSET(p2_duid, 0, sizeof(p2_duid));
+        duid_decoded = -1;
+        return;
+    }
     for (int i = 0; i < 8; i++) {
-        int abs_bit = duid_offsets[i] + (ts_counter * 360);
+        int abs_bit = duid_offsets[i] + (timeslot_index * 360);
         p2_duid[i] = p2bit[abs_bit];
         p2_duid_reliab[i] = p25p2_reliability_for_abs_bit(abs_bit);
         p2_duid_complete = (p2_duid_complete << 1) | p2_duid[i];
@@ -1606,7 +1611,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
 
     for (ts_counter = 0; ts_counter < 4; ts_counter++) {
         duid_decoded = -2;
-        p25p2_duid_collect_and_decode();
+        p25p2_duid_collect_and_decode(ts_counter);
 
         p25p2_duid_print_frame_header();
         int sacch_status = p25p2_duid_set_channel_label_and_sacch(opts, state);

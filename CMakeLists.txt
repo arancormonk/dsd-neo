@@ -211,15 +211,49 @@ endif()
 add_library(dsd-neo_hardening INTERFACE)
 target_link_libraries(dsd-neo_hardening INTERFACE dsd-neo_sanitizers)
 
+function(_dsd_flags_define_fortify out_var lang)
+    set(_dsd_fortify_defined OFF)
+    foreach(
+        _dsd_flag_var
+        IN
+        ITEMS
+            CMAKE_${lang}_FLAGS
+            CMAKE_${lang}_FLAGS_RELEASE
+            CMAKE_${lang}_FLAGS_RELWITHDEBINFO
+            CMAKE_${lang}_FLAGS_MINSIZEREL
+    )
+        if(
+            DEFINED ${_dsd_flag_var}
+            AND "${${_dsd_flag_var}}" MATCHES "_FORTIFY_SOURCE"
+        )
+            set(_dsd_fortify_defined ON)
+            break()
+        endif()
+    endforeach()
+    set(${out_var} "${_dsd_fortify_defined}" PARENT_SCOPE)
+endfunction()
+
 if(DSD_ENABLE_HARDENING AND CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     set(_dsd_release_like_config
         "$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>"
     )
 
-    target_compile_definitions(
-        dsd-neo_hardening
-        INTERFACE "$<${_dsd_release_like_config}:_FORTIFY_SOURCE=2>"
-    )
+    _dsd_flags_define_fortify(_dsd_c_flags_define_fortify C)
+    if(NOT _dsd_c_flags_define_fortify)
+        target_compile_definitions(
+            dsd-neo_hardening
+            INTERFACE
+                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:C>>:_FORTIFY_SOURCE=2>"
+        )
+    endif()
+    _dsd_flags_define_fortify(_dsd_cxx_flags_define_fortify CXX)
+    if(NOT _dsd_cxx_flags_define_fortify)
+        target_compile_definitions(
+            dsd-neo_hardening
+            INTERFACE
+                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:CXX>>:_FORTIFY_SOURCE=2>"
+        )
+    endif()
 
     include(CheckCCompilerFlag)
     include(CheckCXXCompilerFlag)

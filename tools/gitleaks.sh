@@ -21,7 +21,12 @@ fi
 LOG_FILE=".gitleaks.local.out"
 SARIF_FILE=".gitleaks.sarif"
 CONFIG_FILE=".gitleaks.toml"
-GITLEAKS_IMAGE="${DSD_GITLEAKS_IMAGE:-ghcr.io/gitleaks/gitleaks:v8.30.1}"
+
+# shellcheck source=tools/ci-dependency-pins.env
+# shellcheck disable=SC1091
+source "$ROOT_DIR/tools/ci-dependency-pins.env"
+PINNED_GITLEAKS_IMAGE="${GITLEAKS_IMAGE:?GITLEAKS_IMAGE is required}"
+GITLEAKS_IMAGE="${DSD_GITLEAKS_IMAGE:-$PINNED_GITLEAKS_IMAGE}"
 
 ARGS=(
   detect

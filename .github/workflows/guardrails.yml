@@ -369,3 +369,58 @@ jobs:
           path: .fuzz-smoke.local.out
           include-hidden-files: true
           retention-days: 7
+
+  fuzz-extended:
+    name: fuzz extended
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      CC: clang
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      DSD_FUZZ_RUNS: 25000
+      DSD_FUZZ_TIMEOUT: 20
+      DSD_FUZZ_RSS_LIMIT_MB: 2048
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang cmake ninja-build pkg-config git \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+
+      - name: Prepare local dependency environment
+        run: |
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      - name: Run extended fuzz pass
+        run: tools/fuzz_smoke.sh
+
+      - name: Upload fuzz output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-extended-report
+          path: .fuzz-smoke.local.out
+          include-hidden-files: true
+          retention-days: 14
