@@ -16,12 +16,12 @@
 #include <curses.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/curses_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/platform/platform.h"
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_internal.h"
 
