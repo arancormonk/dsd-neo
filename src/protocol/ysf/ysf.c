@@ -12,6 +12,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/mbe_api.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -21,7 +22,6 @@
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/colors.h>
-#include <mbelib.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -951,8 +951,9 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
         state->errs2 = vech_bits[103];
         state->debug_audio_errors += state->errs2;
 
-        mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
-                                 state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+        (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
+                                             sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
+                                             state->prev_mp_enhanced, opts->uvquality, NULL);
 
         if (dsd_frame_detail_enabled(opts)) {
             PrintAMBEData(opts, state, ambe_d);

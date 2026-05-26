@@ -46,6 +46,7 @@ target_link_libraries(
         dsd-neo_feature_rtlsdr
         dsd-neo_feature_codec2
         dsd-neo_feature_pvc
+        ${MBE_LINK_TARGET}
         ${LIBSNDFILE_LIBRARIES}
 )
 

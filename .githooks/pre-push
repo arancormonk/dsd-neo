@@ -368,6 +368,7 @@ if command -v rg > /dev/null 2>&1; then
   run_check "secret redaction guardrail" tools/check_secret_redaction.sh
   run_check "workflow Git pin guardrail" tools/check_workflow_git_pins.sh
   run_check "workflow download pin guardrail" tools/check_workflow_download_pins.sh
+  run_check "vcpkg overlay pin guardrail" tools/check_vcpkg_overlay_pins.sh
 else
   mark_missing_tool "rg" "repository security guardrails"
 fi
