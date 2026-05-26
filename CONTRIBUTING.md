@@ -108,6 +108,9 @@ Additional focused checks:
 - CMake changes: `tools/cmake_format_check.sh`
 - Workflow changes: `tools/workflow_lint.sh` and `tools/zizmor.sh`
 - Dependency input changes: `tools/osv_scan.sh`
+- Security-sensitive workflow/release changes: `tools/check_secret_redaction.sh`,
+  `tools/check_workflow_git_pins.sh`, and
+  `tools/check_workflow_download_pins.sh`
 - Sanitizer-sensitive code: configure and build `asan-ubsan-debug`, then run
   `ctest --preset asan-ubsan-debug --output-on-failure`
 - Fuzz-facing changes: `tools/fuzz_smoke.sh`

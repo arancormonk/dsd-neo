@@ -17,7 +17,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -185,6 +187,10 @@ typedef struct {
     dsd_socket_t listen_sock;
     dsd_thread_t thread;
     int rc;
+    int no_request_expected;
+    int saw_request;
+    unsigned int accept_timeout_ms;
+    char response[512];
 } rdio_test_http_server;
 
 static int
@@ -211,8 +217,33 @@ rdio_test_http_server_thread(void* arg) {
     rdio_test_http_server* server = (rdio_test_http_server*)arg;
     server->rc = 1;
 
+    if (server->no_request_expected) {
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(server->listen_sock, &readfds);
+        struct timeval tv;
+        tv.tv_sec = (time_t)(server->accept_timeout_ms / 1000U);
+        tv.tv_usec = (suseconds_t)((server->accept_timeout_ms % 1000U) * 1000U);
+        int ready = select(server->listen_sock + 1, &readfds, NULL, NULL, &tv);
+        if (ready <= 0) {
+            server->rc = 0;
+            (void)dsd_socket_close(server->listen_sock);
+            DSD_THREAD_RETURN;
+        }
+    }
+
     dsd_socket_t client = dsd_socket_accept(server->listen_sock, NULL, NULL);
     if (client == DSD_INVALID_SOCKET) {
+        if (server->no_request_expected) {
+            server->rc = 0;
+        }
+        (void)dsd_socket_close(server->listen_sock);
+        DSD_THREAD_RETURN;
+    }
+    server->saw_request = 1;
+
+    if (server->no_request_expected) {
+        (void)dsd_socket_close(client);
         (void)dsd_socket_close(server->listen_sock);
         DSD_THREAD_RETURN;
     }
@@ -239,7 +270,7 @@ rdio_test_http_server_thread(void* arg) {
         request[used] = '\0';
 
         if (header_len == 0) {
-            char* header_end = strstr(request, "\r\n\r\n");
+            const char* header_end = strstr(request, "\r\n\r\n");
             if (header_end) {
                 header_len = (size_t)(header_end - request) + 4U;
                 content_length = rdio_test_content_length(request);
@@ -252,8 +283,9 @@ rdio_test_http_server_thread(void* arg) {
         }
     }
 
-    const char response[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
-    (void)dsd_socket_send(client, response, sizeof(response) - 1, 0);
+    const char default_response[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+    const char* response = server->response[0] ? server->response : default_response;
+    (void)dsd_socket_send(client, response, strlen(response), 0);
     free(request);
     (void)dsd_socket_close(client);
     (void)dsd_socket_close(server->listen_sock);
@@ -261,7 +293,8 @@ rdio_test_http_server_thread(void* arg) {
 }
 
 static int
-rdio_test_http_server_start(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size) {
+rdio_test_http_server_start_ex(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size,
+                               const char* response, int no_request_expected, unsigned int accept_timeout_ms) {
     if (!server || !out_api_url || out_api_url_size == 0) {
         return 1;
     }
@@ -269,6 +302,12 @@ rdio_test_http_server_start(rdio_test_http_server* server, char* out_api_url, si
     DSD_MEMSET(server, 0, sizeof(*server));
     server->listen_sock = DSD_INVALID_SOCKET;
     server->rc = 1;
+    server->no_request_expected = no_request_expected;
+    server->accept_timeout_ms = accept_timeout_ms ? accept_timeout_ms : 5000U;
+    if (response) {
+        DSD_SNPRINTF(server->response, sizeof(server->response), "%s", response);
+        server->response[sizeof(server->response) - 1] = '\0';
+    }
 
     if (dsd_socket_init() != 0) {
         DSD_FPRINTF(stderr, "socket init failed\n");
@@ -283,7 +322,7 @@ rdio_test_http_server_start(rdio_test_http_server* server, char* out_api_url, si
 
     int one = 1;
     (void)dsd_socket_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, (int)sizeof(one));
-    (void)dsd_socket_set_recv_timeout(sock, 5000);
+    (void)dsd_socket_set_recv_timeout(sock, server->accept_timeout_ms);
 
     struct sockaddr_in addr;
     DSD_MEMSET(&addr, 0, sizeof(addr));
@@ -323,6 +362,11 @@ rdio_test_http_server_start(rdio_test_http_server* server, char* out_api_url, si
     }
 
     return 0;
+}
+
+static int
+rdio_test_http_server_start(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size) {
+    return rdio_test_http_server_start_ex(server, out_api_url, out_api_url_size, NULL, 0, 5000U);
 }
 #endif
 
@@ -746,6 +790,126 @@ test_api_delete_after_successful_upload(void) {
 #endif
 }
 
+static int
+test_api_upload_does_not_follow_redirect(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_redirect")) {
+        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "call_redirect.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "call_redirect.json") != 0) {
+        DSD_FPRINTF(stderr, "path join failed\n");
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    if (write_pcm16_mono_wav(wav_path, 8000, 1) != 0) {
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    /* Destination server must stay idle when libcurl receives the redirect. */
+    rdio_test_http_server destination_server;
+    char destination_url[128] = {0};
+    if (rdio_test_http_server_start_ex(&destination_server, destination_url, sizeof(destination_url), NULL, 1, 3000U)
+        != 0) {
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    char redirect_response[512] = {0};
+    DSD_SNPRINTF(redirect_response, sizeof(redirect_response),
+                 "HTTP/1.1 307 Temporary Redirect\r\n"
+                 "Location: %s/redirected\r\n"
+                 "Content-Length: 0\r\n"
+                 "Connection: close\r\n"
+                 "\r\n",
+                 destination_url);
+
+    /* Redirect server is the configured endpoint and should receive exactly one upload. */
+    rdio_test_http_server redirect_server;
+    char redirect_url[128] = {0};
+    if (rdio_test_http_server_start_ex(&redirect_server, redirect_url, sizeof(redirect_url), redirect_response, 0,
+                                       5000U)
+        != 0) {
+        (void)dsd_thread_join(destination_server.thread);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        dsd_socket_cleanup();
+        return 1;
+    }
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist) {
+        DSD_FPRINTF(stderr, "allocation failed\n");
+        free(hist);
+        free(opts);
+        (void)dsd_thread_join(redirect_server.thread);
+        (void)dsd_thread_join(destination_server.thread);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        dsd_socket_cleanup();
+        return 1;
+    }
+
+    opts->rdio_mode = DSD_RDIO_MODE_API;
+    opts->rdio_system_id = 48;
+    opts->rdio_upload_timeout_ms = 5000;
+    opts->rdio_upload_retries = 1;
+    DSD_SNPRINTF(opts->rdio_api_url, sizeof(opts->rdio_api_url), "%s", redirect_url);
+    opts->rdio_api_url[sizeof(opts->rdio_api_url) - 1] = '\0';
+    DSD_SNPRINTF(opts->rdio_api_key, sizeof(opts->rdio_api_key), "%s", "test-key");
+    opts->rdio_api_key[sizeof(opts->rdio_api_key) - 1] = '\0';
+
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
+
+    /* Queue one API upload, then drain the worker before checking server observations. */
+    int rc = 0;
+    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
+        DSD_FPRINTF(stderr, "api enqueue path failed\n");
+        rc = 1;
+    }
+
+    dsd_rdio_upload_shutdown();
+
+    if (dsd_thread_join(redirect_server.thread) != 0) {
+        DSD_FPRINTF(stderr, "redirect server thread join failed\n");
+        rc = 1;
+    }
+    if (dsd_thread_join(destination_server.thread) != 0) {
+        DSD_FPRINTF(stderr, "destination server thread join failed\n");
+        rc = 1;
+    }
+    /* The initial upload may fail after the 307, but it must not be replayed elsewhere. */
+    if (redirect_server.rc != 0 || !redirect_server.saw_request) {
+        DSD_FPRINTF(stderr, "redirect server did not receive the initial upload\n");
+        rc = 1;
+    }
+    if (destination_server.rc != 0 || destination_server.saw_request) {
+        DSD_FPRINTF(stderr, "redirect destination received an upload despite redirects being disabled\n");
+        rc = 1;
+    }
+
+    (void)remove(json_path);
+    (void)remove(wav_path);
+    remove_empty_dir(dir_template);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 int
 main(void) {
     int rc = 0;
@@ -755,5 +919,6 @@ main(void) {
     rc |= test_duration_uses_wav_samplerate();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
+    rc |= test_api_upload_does_not_follow_redirect();
     return rc;
 }

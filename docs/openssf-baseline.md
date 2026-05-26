@@ -14,11 +14,18 @@ enabled in GitHub.
   default.
 - The primary branch is `main`. GitHub branch protection is required for `main`,
   including required status checks before merge. Direct commits to `main` are
-  blocked by the protected branch workflow.
+  blocked by the protected branch workflow. Required status checks include the
+  repository guardrails job for secret redaction and workflow source/download
+  pinning.
 - `.github/CODEOWNERS` assigns ownership for the repository and
-  security-sensitive paths. The active `main` branch ruleset requires code-owner
-  review before merge.
+  security-sensitive paths. While DSD-neo has one maintainer, code-owner review
+  routes ownership but is not independent second-party review evidence.
+  Required status checks, release tag verification, and workflow guardrails are
+  the enforceable controls for solo-maintainer changes.
 - Deleting the protected `main` branch is disabled in GitHub branch protection.
+- Version release tags matching `v*.*.*` are protected by GitHub rulesets where
+  available: creation is restricted to the maintainer/admin role, deletion and
+  force updates are blocked, and signed tags are required when supported.
 
 ## Build, Release, and Secrets Controls
 

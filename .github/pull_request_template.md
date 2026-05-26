@@ -7,6 +7,8 @@
 - [ ] Changes were reviewed against the surrounding module design.
 - [ ] Behavior, ownership boundaries, and failure modes were reviewed by a human.
 - [ ] Risky or broad changes have a second reviewer, or the solo-maintainer exception and extra guardrails are documented.
+- [ ] High-risk areas touched are marked: security / workflow / release / parser / crypto / dependency / network input / none.
+- [ ] Outside review was requested when available, or unavailability is documented.
 - [ ] Copied, generated, or bulk-written code has been read, understood, and adapted to DSD-neo conventions.
 - [ ] Non-trivial commits include a DCO sign-off, or the exception is explained.
 
@@ -26,7 +28,7 @@
 - [ ] `tools/cmake_format_check.sh` for CMake changes
 - [ ] `tools/zizmor.sh` for workflow changes
 - [ ] `tools/osv_scan.sh` for dependency input changes
-- [ ] `tools/check_secret_redaction.sh` and `tools/check_workflow_git_pins.sh` for security-sensitive changes
+- [ ] `tools/check_secret_redaction.sh`, `tools/check_workflow_git_pins.sh`, and `tools/check_workflow_download_pins.sh` for security-sensitive workflow/release changes
 
 ## Risk
 

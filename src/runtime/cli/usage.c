@@ -178,7 +178,8 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("  --auto-ppm    Enable carrier-assisted RTL auto PPM correction\n");
     printf("  --auto-ppm-snr <dB>  Set SNR gate for auto PPM (default 6)\n");
     printf("  --rtltcp-autotune    Enable RTL-TCP adaptive networking (buffer/recv tuning)\n");
-    printf("  --rtl-udp-control <port>  Enable external RTL retune control on UDP/<port>\n");
+    printf("  --rtl-udp-control <port>  Enable external RTL retune control on 127.0.0.1:<port>\n");
+    printf("  --rtl-udp-control-bind <ipv4>  Bind RTL retune control to this numeric IPv4 address\n");
     printf("  --iq-capture <path>        Write I/Q capture data + metadata sidecar\n");
     printf("  --iq-capture-format <fmt>  Capture format (cu8|cf32)\n");
     printf("  --iq-capture-max-mb <n>    Capture size limit in MiB (0 = unlimited)\n");

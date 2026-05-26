@@ -384,7 +384,7 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         ui_print_rtl_auto_ppm_status();
         if (!soapy_input && opts->rtl_udp_port != 0) {
-            printw("\n| External RTL Tuning on UDP Port: %i", opts->rtl_udp_port);
+            printw("\n| External RTL Tuning on UDP: %s:%i", opts->rtl_udp_bindaddr, opts->rtl_udp_port);
         }
         printw("\n");
         /* Show compact DSP status directly above audio sections (optional) */

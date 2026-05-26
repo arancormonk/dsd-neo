@@ -122,6 +122,45 @@ cli_parse_decimal_u32(const char* in, unsigned long* out) {
 }
 
 static int
+cli_is_numeric_ipv4_address(const char* in) {
+    if (!in || in[0] == '\0') {
+        return 0;
+    }
+    int octets = 0;
+    const char* p = in;
+    while (*p) {
+        if (!isdigit((unsigned char)*p)) {
+            return 0;
+        }
+        unsigned long value = 0;
+        int digits = 0;
+        while (isdigit((unsigned char)*p)) {
+            value = (value * 10UL) + (unsigned long)(*p - '0');
+            if (value > 255UL) {
+                return 0;
+            }
+            ++digits;
+            ++p;
+        }
+        if (digits == 0) {
+            return 0;
+        }
+        ++octets;
+        if (*p == '.') {
+            ++p;
+            if (*p == '\0') {
+                return 0;
+            }
+            continue;
+        }
+        if (*p != '\0') {
+            return 0;
+        }
+    }
+    return octets == 4;
+}
+
+static int
 cli_parse_decimal_u64(const char* in, uint64_t* out) {
     if (!in || !out || in[0] == '\0') {
         return 0;
@@ -247,6 +286,11 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            if (parsed_port > 65535UL) {                                                                               \
+                LOG_ERROR("Invalid --rtl-udp-control value \"%s\" (expected port 0..65535)\n", port_arg);              \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rtl_udp_control_cli_seen = 1;                                                                              \
             rtl_udp_control_cli_port = parsed_port;                                                                    \
             arg_advance = 2;                                                                                           \
@@ -260,8 +304,39 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            if (parsed_port > 65535UL) {                                                                               \
+                LOG_ERROR("Invalid --rtl-udp-control value \"%s\" (expected port 0..65535)\n", port_arg);              \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             rtl_udp_control_cli_seen = 1;                                                                              \
             rtl_udp_control_cli_port = parsed_port;                                                                    \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--rtl-udp-control-bind") == 0) {                                                          \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--rtl-udp-control-bind requires a numeric IPv4 address\n");                                 \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            const char* bind_arg = DSD_PARSE_ARGS_NEXT_ARG();                                                          \
+            if (!cli_is_numeric_ipv4_address(bind_arg)) {                                                              \
+                LOG_ERROR("Invalid --rtl-udp-control-bind value \"%s\" (expected numeric IPv4 address)\n", bind_arg);  \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            rtl_udp_control_cli_bindaddr = bind_arg;                                                                   \
+            arg_advance = 2;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--rtl-udp-control-bind=", 23) == 0) {                                                    \
+            const char* bind_arg = argv[i] + 23;                                                                       \
+            if (!cli_is_numeric_ipv4_address(bind_arg)) {                                                              \
+                LOG_ERROR("Invalid --rtl-udp-control-bind value \"%s\" (expected numeric IPv4 address)\n", bind_arg);  \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            rtl_udp_control_cli_bindaddr = bind_arg;                                                                   \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--iq-capture") == 0) {                                                                    \
@@ -787,13 +862,20 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
     }                                                                                                                  \
                                                                                                                        \
     if (rtl_udp_control_cli_seen) {                                                                                    \
-        int p = rtl_udp_control_cli_port > 65535UL ? 65535 : (int)rtl_udp_control_cli_port;                            \
+        int p = (int)rtl_udp_control_cli_port;                                                                         \
         opts->rtl_udp_port = p;                                                                                        \
+        if (rtl_udp_control_cli_bindaddr) {                                                                            \
+            DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", rtl_udp_control_cli_bindaddr);   \
+            opts->rtl_udp_bindaddr[sizeof opts->rtl_udp_bindaddr - 1] = '\0';                                          \
+        }                                                                                                              \
         if (p > 0) {                                                                                                   \
-            LOG_NOTICE("RTL: external UDP retune control enabled on UDP/%d\n", p);                                     \
+            LOG_NOTICE("RTL: external UDP retune control enabled on %s:%d\n", opts->rtl_udp_bindaddr, p);              \
         } else {                                                                                                       \
             LOG_NOTICE("RTL: external UDP retune control disabled\n");                                                 \
         }                                                                                                              \
+    } else if (rtl_udp_control_cli_bindaddr) {                                                                         \
+        DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", rtl_udp_control_cli_bindaddr);       \
+        opts->rtl_udp_bindaddr[sizeof opts->rtl_udp_bindaddr - 1] = '\0';                                              \
     }                                                                                                                  \
                                                                                                                        \
     /* Apply input volume and warn threshold */                                                                        \
@@ -960,6 +1042,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int iq_loop_cli = 0;
     int rtl_udp_control_cli_seen = 0;
     unsigned long rtl_udp_control_cli_port = 0;
+    const char* rtl_udp_control_cli_bindaddr = NULL;
 
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
     DSD_PARSE_ARGS_IQ_PRE_BLOCK();

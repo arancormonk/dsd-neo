@@ -8,11 +8,12 @@ DSD-neo keeps release and CI dependencies explicit so analyzer results and binar
 - The current zizmor policy in `.github/zizmor.yml` requires every external `uses:` action to be pinned to a full commit SHA.
 - For new or refreshed third-party actions in release, packaging, signing, attestation, or upload workflows, resolve the upstream tag to the immutable commit and pin that SHA.
 - Public GitHub source checkouts in CI must go through `tools/fetch-pinned-git.sh` with SHAs from `tools/ci-dependency-pins.env`; `tools/check_workflow_git_pins.sh` blocks floating `git clone` and `git ls-remote` usage in workflows and CI helper scripts.
+- Release and packaging workflows must not execute mutable downloaded helper binaries. AppImage helper tools are built from pinned source SHAs, AppImage container images are pinned by digest, and installer downloads must be SHA256-verified before execution. `tools/check_workflow_download_pins.sh` enforces these rules for the AppImage workflow.
 - Workflow changes that add secrets, write permissions, artifact publication, release upload, or external actions need human review.
 
 ## Pinned CI Source Checkouts
 
-`tools/ci-dependency-pins.env` is the checked-in source of truth for CI-only GitHub source dependencies such as `mbelib-neo`, `codec2`, `rtl-sdr`, `include-what-you-use`, and AppImage helper projects.
+`tools/ci-dependency-pins.env` is the checked-in source of truth for CI-only GitHub source dependencies such as `mbelib-neo`, `codec2`, `rtl-sdr`, `include-what-you-use`, AppImage helper projects, AppImage container digests, and installer SHA256 values.
 
 To refresh one of these pins:
 
@@ -21,7 +22,9 @@ repo=https://github.com/arancormonk/mbelib-neo
 git ls-remote "$repo" HEAD
 ```
 
-Update the matching SHA in `tools/ci-dependency-pins.env`, then run `tools/check_workflow_git_pins.sh` and the affected CI/local build path. For `mbelib-neo` and `codec2`, keep the CI pin aligned with the vcpkg overlay `REF` unless there is a documented reason to test a different commit.
+Update the matching SHA in `tools/ci-dependency-pins.env`, then run `tools/check_workflow_git_pins.sh`, `tools/check_workflow_download_pins.sh`, and the affected CI/local build path. For `mbelib-neo` and `codec2`, keep the CI pin aligned with the vcpkg overlay `REF` unless there is a documented reason to test a different commit.
+
+For AppImage helper projects, refresh the source SHA only after checking the upstream changes. Do not switch back to `releases/download/continuous` helper AppImages. If the Ubuntu base image or CMake installer changes, update the digest or SHA256 in `tools/ci-dependency-pins.env` in the same change as the workflow update.
 
 ## vcpkg Overlay Ports
 

@@ -95,14 +95,25 @@ dsd_cli_compact_args(int argc, char** argv) {
 
     static const char* const k_skip_exact_next_nonopt[] = {
         "--rtl-udp-control",
+        "--rtl-udp-control-bind",
         "--config",
         "--validate-config",
     };
 
     static const char* const k_skip_prefix[] = {
-        "--rtl-udp-control=",       "--iq-capture=",   "--iq-capture-format=", "--iq-capture-max-mb=",
-        "--symbol-capture-format=", "--iq-replay=",    "--iq-replay-rate=",    "--iq-info=",
-        "--dmr-baofeng-pc5=",       "--dmr-csi-ee72=", "--dmr-vertex-ks-csv=", "--config=",
+        "--rtl-udp-control=",
+        "--rtl-udp-control-bind=",
+        "--iq-capture=",
+        "--iq-capture-format=",
+        "--iq-capture-max-mb=",
+        "--symbol-capture-format=",
+        "--iq-replay=",
+        "--iq-replay-rate=",
+        "--iq-info=",
+        "--dmr-baofeng-pc5=",
+        "--dmr-csi-ee72=",
+        "--dmr-vertex-ks-csv=",
+        "--config=",
     };
 
     // Remove recognized long options so short-option getopt() sees remaining tokens.

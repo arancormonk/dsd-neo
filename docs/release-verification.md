@@ -7,7 +7,8 @@ https://github.com/arancormonk/dsd-neo/releases
 ## Release Identifiers
 
 Release tags use the form `vX.Y.Z`. The tag must match the project version
-declared by CMake, or the release workflow fails before packaging.
+declared by CMake and must be an annotated tag signed by the trusted DSD-neo
+release key, or the release workflow fails before packaging.
 
 Nightly assets are published from the moving `nightly` tag on trusted upstream
 main-branch builds. They are intended for testing rather than stable
@@ -27,13 +28,20 @@ Inspect the tag and commit:
 git show --show-signature vX.Y.Z
 ```
 
-If the tag is signed, verify the signature with the maintainer public key
-published by GitHub:
+Verify the signature with the trusted DSD-neo release key checked into the repository:
 
 ```sh
-curl -fsSL https://github.com/arancormonk.gpg | gpg --import
+gpg --import release-keys/arancormonk-2026.pgp
 git tag -v vX.Y.Z
 ```
+
+`DSD_Author.pgp` is retained only for upstream attribution and is not a
+DSD-neo release-signing trust root.
+
+GitHub repository rulesets should also protect `v*.*.*` tags, restrict release
+tag creation to the maintainer/admin role, block tag deletion and force updates,
+and require signed tags where the GitHub ruleset UI supports it. Workflow
+verification remains mandatory even when repository rulesets are enabled.
 
 ## Asset Integrity and Provenance
 
@@ -76,5 +84,5 @@ the GitHub Actions release workflows in this repository.
 ## Release Review
 
 Before publication, release packaging must pass the required CI checks for the
-tag, including build, test, static-analysis, sanitizer, install/package,
-license-file, SBOM, attestation, and release validation jobs.
+tag, including signed-tag validation, build, test, static-analysis, sanitizer,
+install/package, license-file, SBOM, attestation, and release validation jobs.
