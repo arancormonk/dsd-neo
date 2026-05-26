@@ -4,7 +4,6 @@
  */
 
 #include <ctype.h>
-#include <curl/curl.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -26,11 +25,13 @@
 #include "dsd-neo/platform/platform.h"
 
 #ifdef USE_CURL
+#include <curl/curl.h>
 #endif
 
 #define DSD_RDIO_PATH_MAX         2048
 #define DSD_RDIO_UPLOAD_QUEUE_MAX 128U
 
+#ifdef USE_CURL
 typedef struct {
     int system_id;
     int upload_timeout_ms;
@@ -357,6 +358,10 @@ dsd_rdio_enqueue_api_upload(const dsd_opts* opts, const char* wav_path, const ch
     }
     return 0;
 }
+#else
+void
+dsd_rdio_upload_shutdown(void) {}
+#endif
 
 static int
 dsd_rdio_mode_wants_dirwatch(int mode) {
@@ -875,15 +880,6 @@ dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_p
         }
     }
 
-    return -1;
-}
-#else
-static int
-dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path) {
-    (void)api;
-    (void)wav_path;
-    (void)meta_path;
-    LOG_WARN("Rdio API upload requested but this build was compiled without libcurl support\n");
     return -1;
 }
 #endif
