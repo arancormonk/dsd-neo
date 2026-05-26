@@ -20,7 +20,7 @@ permissions:
 jobs:
   wait-for-linux-ci:
     name: Wait for Linux CI
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -72,7 +72,10 @@ jobs:
   scorecard:
     name: OpenSSF Scorecard
     needs: [wait-for-linux-ci]
-    if: always() && (github.event_name != 'push' || needs.wait-for-linux-ci.result == 'success')
+    if: >-
+      always() &&
+      github.ref_name == github.event.repository.default_branch &&
+      (github.event_name != 'push' || needs.wait-for-linux-ci.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       checks: read
