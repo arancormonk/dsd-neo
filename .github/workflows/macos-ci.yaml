@@ -8,10 +8,6 @@ on:
       - "v*.*.*"
     paths-ignore:
       - ".*"
-      - ".github/*.yml"
-      - ".github/*.yaml"
-      - ".github/**/*.yml"
-      - ".github/**/*.yaml"
       - "**/*.md"
 
 concurrency:
@@ -31,7 +27,6 @@ jobs:
       contents: read
       id-token: write
     env:
-      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
       HOMEBREW_NO_ANALYTICS: "1"
@@ -462,24 +457,85 @@ jobs:
           subject-path: ${{ steps.dmg.outputs.DMG_PATH }}
           sbom-path: ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
 
+  publish-portable-dmg:
+    name: Publish portable DMG
+    needs: build-portable-dmg
+    runs-on: ubuntu-latest
+    if: >-
+      github.repository == 'arancormonk/dsd-neo' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')))
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Prepare artifact naming
+        id: names
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          arch='arm64'
+          if [ "$REF_TYPE" = 'tag' ] && [ -n "$REF_NAME" ]; then
+            dmg="dist/dsd-neo-macos-${arch}-portable-${REF_NAME}.dmg"
+            artName="dsd-neo-macos-${arch}-portable-${REF_NAME}"
+            title="dsd-neo ${REF_NAME#v}"
+          else
+            dmg="dist/dsd-neo-macos-${arch}-portable-nightly.dmg"
+            artName="dsd-neo-macos-${arch}-portable-nightly"
+            title="nightly"
+          fi
+          mkdir -p dist
+          {
+            echo "DMG_PATH=$dmg"
+            echo "ART_NAME=$artName"
+            echo "RELEASE_TITLE=$title"
+          } >> "$GITHUB_OUTPUT"
+      - name: Download package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.names.outputs.ART_NAME }}
+          path: dist
+      - name: Download package SBOM artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.names.outputs.ART_NAME }}.spdx.json
+          path: dist
+      - name: Verify downloaded release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${{ steps.names.outputs.DMG_PATH }}"
+          test -f "${{ steps.names.outputs.DMG_PATH }}.spdx.json"
       - name: Upload release asset
-        if: startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != ''
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
           files: |
-            ${{ steps.dmg.outputs.DMG_PATH }}
-            ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
-          name: ${{ steps.release.outputs.release_title }}
+            ${{ steps.names.outputs.DMG_PATH }}
+            ${{ steps.names.outputs.DMG_PATH }}.spdx.json
+          name: ${{ steps.names.outputs.RELEASE_TITLE }}
           generate_release_notes: true
-          token: ${{ env.RELEASE_TOKEN }}
-
-      - name: Upload nightly asset (overwrite)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != '' }}
-        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}
+      - name: Upload nightly assets (overwrite)
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
-          repo_token: ${{ env.RELEASE_TOKEN }}
-          tag: nightly
+          tag_name: nightly
+          name: nightly
           prerelease: true
-          file: ${{ steps.dmg.outputs.DMG_PATH }}
-          asset_name: ${{ steps.dmg.outputs.ART_NAME }}.dmg
-          overwrite: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          files: |
+            ${{ steps.names.outputs.DMG_PATH }}
+            ${{ steps.names.outputs.DMG_PATH }}.spdx.json
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}

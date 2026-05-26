@@ -8,10 +8,6 @@ on:
       - "v*.*.*"
     paths-ignore:
       - ".*"
-      - ".github/*.yml"
-      - ".github/*.yaml"
-      - ".github/**/*.yml"
-      - ".github/**/*.yaml"
       - "**/*.md"
 
 concurrency:
@@ -32,7 +28,6 @@ jobs:
       id-token: write
       packages: write
     env:
-      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
       VCPKG_DEFAULT_TRIPLET: x64-windows-dynamic-release
       VCPKG_TARGET_TRIPLET: x64-windows-dynamic-release
@@ -232,24 +227,84 @@ jobs:
           subject-path: ${{ steps.zip.outputs.ZIP_PATH }}
           sbom-path: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
 
+  publish-native-msvc:
+    name: Publish native MSVC ZIP
+    needs: build-native-msvc
+    runs-on: ubuntu-latest
+    if: >-
+      github.repository == 'arancormonk/dsd-neo' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')))
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Prepare artifact naming
+        id: names
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = 'tag' ] && [ -n "$REF_NAME" ]; then
+            zip="dist/dsd-neo-msvc-x86_64-native-${REF_NAME}.zip"
+            artName="dsd-neo-msvc-x86_64-native-${REF_NAME}"
+            title="dsd-neo ${REF_NAME#v}"
+          else
+            zip="dist/dsd-neo-msvc-x86_64-native-nightly.zip"
+            artName="dsd-neo-msvc-x86_64-native-nightly"
+            title="nightly"
+          fi
+          mkdir -p dist
+          {
+            echo "ZIP_PATH=$zip"
+            echo "ART_NAME=$artName"
+            echo "RELEASE_TITLE=$title"
+          } >> "$GITHUB_OUTPUT"
+      - name: Download package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.names.outputs.ART_NAME }}
+          path: dist
+      - name: Download package SBOM artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.names.outputs.ART_NAME }}.spdx.json
+          path: dist
+      - name: Verify downloaded release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${{ steps.names.outputs.ZIP_PATH }}"
+          test -f "${{ steps.names.outputs.ZIP_PATH }}.spdx.json"
       - name: Upload native MSVC release asset
-        if: startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != ''
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
           files: |
-            ${{ steps.zip.outputs.ZIP_PATH }}
-            ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
-          name: ${{ steps.release.outputs.release_title }}
+            ${{ steps.names.outputs.ZIP_PATH }}
+            ${{ steps.names.outputs.ZIP_PATH }}.spdx.json
+          name: ${{ steps.names.outputs.RELEASE_TITLE }}
           generate_release_notes: true
-          token: ${{ env.RELEASE_TOKEN }}
-
-      - name: Upload native MSVC nightly asset (overwrite)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != '' }}
-        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}
+      - name: Upload native MSVC nightly assets (overwrite)
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
-          repo_token: ${{ env.RELEASE_TOKEN }}
-          tag: nightly
+          tag_name: nightly
+          name: nightly
           prerelease: true
-          file: ${{ steps.zip.outputs.ZIP_PATH }}
-          asset_name: dsd-neo-msvc-x86_64-native-nightly.zip
-          overwrite: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          files: |
+            ${{ steps.names.outputs.ZIP_PATH }}
+            ${{ steps.names.outputs.ZIP_PATH }}.spdx.json
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}

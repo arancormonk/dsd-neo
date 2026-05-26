@@ -8,10 +8,6 @@ on:
       - "v*.*.*"
     paths-ignore:
       - ".*"
-      - ".github/*.yml"
-      - ".github/*.yaml"
-      - ".github/**/*.yml"
-      - ".github/**/*.yaml"
       - "**/*.md"
 
 concurrency:
@@ -35,7 +31,6 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     env:
-      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       APPIMAGE_DEPS_DIR: ${{ github.workspace }}/.deps/appimage-${{ matrix.arch }}
       APPIMAGE_CCACHE_DIR: ${{ github.workspace }}/.ccache/appimage-${{ matrix.arch }}
     steps:
@@ -455,23 +450,90 @@ jobs:
         with:
           subject-path: ${{ steps.names.outputs.OUT }}
           sbom-path: ${{ steps.names.outputs.OUT }}.spdx.json
+
+  publish-appimage:
+    name: Publish AppImage (${{ matrix.arch }})
+    needs: build-appimage
+    runs-on: ubuntu-latest
+    if: >-
+      github.repository == 'arancormonk/dsd-neo' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')))
+    permissions:
+      actions: read
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Prepare artifact naming
+        id: names
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          arch='${{ matrix.arch }}'
+          if [ "$REF_TYPE" = 'tag' ] && [ -n "$REF_NAME" ]; then
+            out="dist/dsd-neo-linux-${arch}-portable-${REF_NAME}.AppImage"
+            art="dsd-neo-linux-${arch}-portable-${REF_NAME}"
+            title="dsd-neo ${REF_NAME#v}"
+          else
+            out="dist/dsd-neo-linux-${arch}-portable-nightly.AppImage"
+            art="dsd-neo-linux-${arch}-portable-nightly"
+            title="nightly"
+          fi
+          mkdir -p dist
+          {
+            echo "OUT=$out"
+            echo "ART=$art"
+            echo "RELEASE_TITLE=$title"
+          } >> "$GITHUB_OUTPUT"
+      - name: Download package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.names.outputs.ART }}
+          path: dist
+      - name: Download package SBOM artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.names.outputs.ART }}.spdx.json
+          path: dist
+      - name: Verify downloaded release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${{ steps.names.outputs.OUT }}"
+          test -f "${{ steps.names.outputs.OUT }}.spdx.json"
       - name: Upload release asset
-        if: startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != ''
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
           files: |
             ${{ steps.names.outputs.OUT }}
             ${{ steps.names.outputs.OUT }}.spdx.json
-          name: ${{ steps.release.outputs.release_title }}
+          name: ${{ steps.names.outputs.RELEASE_TITLE }}
           generate_release_notes: true
-          token: ${{ env.RELEASE_TOKEN }}
-      - name: Upload nightly asset (overwrite)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') && env.RELEASE_TOKEN != '' }}
-        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}
+      - name: Upload nightly assets (overwrite)
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
-          repo_token: ${{ env.RELEASE_TOKEN }}
-          tag: nightly
+          tag_name: nightly
+          name: nightly
           prerelease: true
-          file: ${{ steps.names.outputs.OUT }}
-          asset_name: ${{ steps.names.outputs.ART }}.AppImage
-          overwrite: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          files: |
+            ${{ steps.names.outputs.OUT }}
+            ${{ steps.names.outputs.OUT }}.spdx.json
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}
