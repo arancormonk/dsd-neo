@@ -853,23 +853,6 @@ rtl_capture_event_alignment_bytes(const struct rtl_device* s) {
 }
 
 static inline uint64_t
-rtl_coalesce_capture_mute_duration(uint64_t* pending_bytes, uint64_t duration_bytes, size_t alignment) {
-    if (!pending_bytes || duration_bytes == 0U || alignment <= 1U) {
-        return duration_bytes;
-    }
-
-    if (UINT64_MAX - *pending_bytes < duration_bytes) {
-        *pending_bytes = 0U;
-        return duration_bytes - (duration_bytes % (uint64_t)alignment);
-    }
-
-    uint64_t total = *pending_bytes + duration_bytes;
-    uint64_t emit = total - (total % (uint64_t)alignment);
-    *pending_bytes = total - emit;
-    return emit;
-}
-
-static inline uint64_t
 rtl_coalesce_capture_mute_duration(std::atomic<uint64_t>* pending_bytes, uint64_t duration_bytes, size_t alignment) {
     if (!pending_bytes || duration_bytes == 0U || alignment <= 1U) {
         return duration_bytes;
@@ -894,6 +877,23 @@ rtl_coalesce_capture_mute_duration(std::atomic<uint64_t>* pending_bytes, uint64_
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+static inline uint64_t
+rtl_coalesce_capture_mute_duration(uint64_t* pending_bytes, uint64_t duration_bytes, size_t alignment) {
+    if (!pending_bytes || duration_bytes == 0U || alignment <= 1U) {
+        return duration_bytes;
+    }
+
+    if (UINT64_MAX - *pending_bytes < duration_bytes) {
+        *pending_bytes = 0U;
+        return duration_bytes - (duration_bytes % (uint64_t)alignment);
+    }
+
+    uint64_t total = *pending_bytes + duration_bytes;
+    uint64_t emit = total - (total % (uint64_t)alignment);
+    *pending_bytes = total - emit;
+    return emit;
+}
+
 extern "C" uint64_t
 rtl_device_test_coalesce_capture_mute_duration(uint64_t* pending_bytes, uint64_t duration_bytes, size_t alignment) {
     return rtl_coalesce_capture_mute_duration(pending_bytes, duration_bytes, alignment);

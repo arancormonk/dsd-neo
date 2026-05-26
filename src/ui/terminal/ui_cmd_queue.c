@@ -21,6 +21,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -44,7 +45,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <time.h>
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -2467,13 +2467,13 @@ ui_cmd_handle_symcap_stop_legacy(dsd_opts* opts, dsd_state* state, const struct 
 
 static int
 ui_cmd_handle_replay_last_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    struct stat sb;
+    dsd_stat_t sb;
     (void)c;
-    if (stat(opts->audio_in_dev, &sb) != 0) {
+    if (dsd_stat_path(opts->audio_in_dev, &sb) != 0) {
         LOG_ERROR("Error, couldn't open %s\n", opts->audio_in_dev);
         return 1;
     }
-    if (S_ISREG(sb.st_mode)) {
+    if (dsd_stat_is_regular(&sb)) {
         opts->symbolfile = fopen(opts->audio_in_dev, "rb");
         if (opts->symbolfile) {
             opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
@@ -2488,11 +2488,11 @@ ui_cmd_handle_replay_last_legacy(dsd_opts* opts, dsd_state* state, const struct 
 static int
 ui_cmd_handle_wav_start_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     char wav_file_directory[1024] = {0};
-    struct stat st;
+    dsd_stat_t st;
     (void)state;
     (void)c;
     DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
-    if (stat(wav_file_directory, &st) == -1) {
+    if (dsd_stat_path(wav_file_directory, &st) == -1) {
         LOG_NOTICE("%s wav file directory does not exist\n", wav_file_directory);
         LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
         dsd_mkdir(wav_file_directory, 0700);

@@ -20,7 +20,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -51,8 +50,8 @@ p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
     const char* root = (cfg && cfg->cache_dir[0] != '\0') ? cfg->cache_dir : ".dsdneo_cache";
     DSD_SNPRINTF(path, sizeof(path), "%s", root);
 
-    struct stat st;
-    if (stat(path, &st) != 0) {
+    dsd_stat_t st;
+    if (dsd_stat_path(path, &st) != 0) {
         (void)dsd_mkdir(path, 0700);
     }
 

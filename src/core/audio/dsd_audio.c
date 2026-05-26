@@ -27,7 +27,6 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -37,31 +36,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/types.h>
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/resampler.h"
-
-static int
-dsd_stat_path(const char* path, dsd_stat_t* st) {
-#if DSD_PLATFORM_WIN_NATIVE
-    return _stat(path, st);
-#else
-    return stat(path, st);
-#endif
-}
-
-static int
-dsd_stat_is_regular(const dsd_stat_t* st) {
-#if DSD_PLATFORM_WIN_NATIVE
-    return ((st->st_mode & _S_IFMT) == _S_IFREG);
-#else
-    return S_ISREG(st->st_mode);
-#endif
-}
 
 static int
 dsd_audio_path_is_wav_container(const char* path) {

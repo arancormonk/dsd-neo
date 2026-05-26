@@ -18,18 +18,16 @@ Project homepage: https://github.com/arancormonk/dsd-neo
   - Linux AppImage (x86_64): `dsd-neo-linux-x86_64-portable-<version>.AppImage`
   - Linux AppImage (aarch64): `dsd-neo-linux-aarch64-portable-<version>.AppImage`
   - macOS DMG (arm64): `dsd-neo-macos-arm64-portable-<version>.dmg`
-  - Windows native ZIP (MSVC x86_64, **recommended**): `dsd-neo-msvc-x86_64-native-<version>.zip`
-  - Windows native ZIP (MinGW x86_64, alternative): `dsd-neo-mingw-x86_64-native-<version>.zip`
+  - Windows native ZIP (MSVC x86_64): `dsd-neo-msvc-x86_64-native-<version>.zip`
 - Nightly builds:
   - Linux AppImage (x86_64): [dsd-neo-linux-x86_64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-x86_64-portable-nightly.AppImage)
   - Linux AppImage (aarch64): [dsd-neo-linux-aarch64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-aarch64-portable-nightly.AppImage)
   - macOS DMG (arm64): [dsd-neo-macos-arm64-portable-nightly.dmg](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-macos-arm64-portable-nightly.dmg)
-  - Windows native ZIP (MSVC x86_64, **recommended**): [dsd-neo-msvc-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-msvc-x86_64-native-nightly.zip)
-  - Windows native ZIP (MinGW x86_64, alternative): [dsd-neo-mingw-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-mingw-x86_64-native-nightly.zip)
+  - Windows native ZIP (MSVC x86_64): [dsd-neo-msvc-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-msvc-x86_64-native-nightly.zip)
 - Arch Linux (AUR): [dsd-neo](https://aur.archlinux.org/packages/dsd-neo) for stable releases,
   or [dsd-neo-git](https://aur.archlinux.org/packages/dsd-neo-git) for main-branch snapshots.
 
-On Windows, the native MSVC ZIP is the preferred download for best integration with the Windows console and audio stack. The MinGW ZIP is a fully native alternative.
+On Windows, the native MSVC ZIP is the supported download for best integration with the Windows console and audio stack.
 
 ## Project Status
 
@@ -114,8 +112,8 @@ OS package hints
 - macOS (Homebrew):
   - `brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr soapysdr codec2`
 - Windows:
-  - Preferred binary: the native MSVC ZIP. The MinGW ZIP is an alternative native build.
-  - Source builds use CMake presets with vcpkg; set `VCPKG_ROOT` and use `win-msvc-*` or `win-mingw-*` presets in `CMakePresets.json`.
+  - Preferred binary: the native MSVC ZIP.
+  - Source builds use CMake presets with vcpkg; set `VCPKG_ROOT` and use `win-msvc-*` presets in `CMakePresets.json`.
 
 MBE vocoder dependency (mbelib-neo)
 

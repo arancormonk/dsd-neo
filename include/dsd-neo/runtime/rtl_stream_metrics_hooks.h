@@ -15,6 +15,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_METRICS_HOOKS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_METRICS_HOOKS_H_H
 
+#include <dsd-neo/platform/platform.h>
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -40,7 +42,7 @@ typedef struct {
     int (*stream_active)(void);
 } dsd_rtl_stream_metrics_hooks;
 
-typedef enum __attribute__((packed)) dsd_rtl_stream_channel_profile {
+typedef enum DSD_ATTR_PACKED dsd_rtl_stream_channel_profile {
     DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE = 0,
     DSD_RTL_STREAM_CHANNEL_PROFILE_6K25 = 1,
     DSD_RTL_STREAM_CHANNEL_PROFILE_12K5 = 2,

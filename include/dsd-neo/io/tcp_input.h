@@ -9,7 +9,7 @@
  *
  * Provides a cross-platform abstraction for TCP audio input. On POSIX systems
  * (Linux, macOS), this uses libsndfile's sf_open_fd() to wrap the socket.
- * On native Windows (MSVC/MinGW), sockets are not file descriptors, so we read
+ * On native Windows, sockets are not file descriptors, so we read
  * directly from the socket using recv() and buffer samples manually.
  */
 

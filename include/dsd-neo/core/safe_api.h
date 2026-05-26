@@ -10,6 +10,12 @@
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
+#define DSD_NEO_USE_STDIO_BUILTINS 1
+#else
+#define DSD_NEO_USE_STDIO_BUILTINS 0
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
 #define DSD_NEO_PRINTF_FORMAT(fmt_index, first_arg) __attribute__((format(printf, fmt_index, first_arg)))
 #define DSD_NEO_SCANF_FORMAT(fmt_index, first_arg)  __attribute__((format(scanf, fmt_index, first_arg)))
 #else
@@ -162,15 +168,18 @@ dsd_safe_vfprintf(FILE* stream, const char* fmt, va_list ap) {
     if (stream == NULL || fmt == NULL) {
         return -1;
     }
-#if defined(__GNUC__) || defined(__clang__)
 #if DSD_NEO_ANALYZER
+    FILE* mutable_stream = stream;
+    (void)mutable_stream;
     (void)ap;
     return 0;
 #else
-    return __builtin_vfprintf(stream, fmt, ap);
-#endif
+    FILE* mutable_stream = stream;
+#if DSD_NEO_USE_STDIO_BUILTINS
+    return __builtin_vfprintf(mutable_stream, fmt, ap);
 #else
-    return vfprintf(stream, fmt, ap);
+    return vfprintf(mutable_stream, fmt, ap);
+#endif
 #endif
 }
 
@@ -190,15 +199,13 @@ dsd_safe_vsnprintf(char* dst, size_t dst_size, const char* fmt, va_list ap) {
     if (dst == NULL || dst_size == 0U || fmt == NULL) {
         return -1;
     }
-#if defined(__GNUC__) || defined(__clang__)
 #if DSD_NEO_ANALYZER
     (void)fmt;
     (void)ap;
     dst[0] = '\0';
     return 0;
-#else
+#elif DSD_NEO_USE_STDIO_BUILTINS
     return __builtin_vsnprintf(dst, dst_size, fmt, ap);
-#endif
 #else
     return vsnprintf(dst, dst_size, fmt, ap);
 #endif
@@ -223,15 +230,13 @@ dsd_safe_vsprintf_impl(char* dst, size_t dst_size, const char* fmt, va_list ap) 
     if (dst_size != (size_t)-1) {
         return dsd_safe_vsnprintf(dst, dst_size, fmt, ap);
     }
-#if defined(__GNUC__) || defined(__clang__)
 #if DSD_NEO_ANALYZER
     (void)fmt;
     (void)ap;
     dst[0] = '\0';
     return 0;
-#else
+#elif DSD_NEO_USE_STDIO_BUILTINS
     return __builtin_vsprintf(dst, fmt, ap);
-#endif
 #else
     return vsprintf(dst, fmt, ap);
 #endif
@@ -253,13 +258,11 @@ dsd_safe_vsscanf(const char* src, const char* fmt, va_list ap) {
     if (src == NULL || fmt == NULL) {
         return EOF;
     }
-#if defined(__GNUC__) || defined(__clang__)
 #if DSD_NEO_ANALYZER
     (void)ap;
     return 0;
-#else
+#elif DSD_NEO_USE_STDIO_BUILTINS
     return __builtin_vsscanf(src, fmt, ap);
-#endif
 #else
     return vsscanf(src, fmt, ap);
 #endif
@@ -288,5 +291,6 @@ dsd_safe_sscanf(const char* src, const char* fmt, ...) {
 #undef DSD_NEO_PRINTF_FORMAT
 #undef DSD_NEO_SCANF_FORMAT
 #undef DSD_NEO_ANALYZER
+#undef DSD_NEO_USE_STDIO_BUILTINS
 
 #endif // DSD_NEO_CORE_SAFE_API_H

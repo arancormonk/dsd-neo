@@ -647,7 +647,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_ui_tcp_audio_connect
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES}
 )
 add_test(NAME UI_TCP_AUDIO_CONNECT COMMAND dsd-neo_test_ui_tcp_audio_connect)
 
@@ -722,6 +722,13 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/ui/terminal
         ${CURSES_INCLUDE_DIRS}
 )
+if(MSVC)
+    target_compile_definitions(
+        dsd-neo_test_ui_menu_navigation
+        PRIVATE CURSES_LIBRARY
+    )
+endif()
+target_link_libraries(dsd-neo_test_ui_menu_navigation PRIVATE dsd-neo_platform)
 add_test(NAME UI_MENU_NAVIGATION COMMAND dsd-neo_test_ui_menu_navigation)
 
 add_executable(
@@ -735,6 +742,16 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/ui/terminal
         ${CURSES_INCLUDE_DIRS}
+)
+if(MSVC)
+    target_compile_definitions(
+        dsd-neo_test_ui_menu_paging_viewport
+        PRIVATE CURSES_LIBRARY
+    )
+endif()
+target_link_libraries(
+    dsd-neo_test_ui_menu_paging_viewport
+    PRIVATE dsd-neo_platform
 )
 add_test(
     NAME UI_MENU_PAGING_VIEWPORT
@@ -1077,11 +1094,7 @@ target_include_directories(
 )
 add_test(NAME RUNTIME_CALL_ALERT COMMAND dsd-neo_test_runtime_call_alert)
 
-if(
-    NOT APPLE
-    AND (NOT WIN32 OR MINGW)
-    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-)
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_core_call_alert_history
         core/test_core_call_alert_history.c
@@ -1527,7 +1540,7 @@ file(
     "mode.decode = \"p25p1\"\n"
 )
 
-if(WIN32 AND NOT MINGW)
+if(WIN32)
     set(_DSD_BOOTSTRAP_DEFAULT_CFG_ROOT "${_DSD_BOOTSTRAP_FIXTURE_DIR}/appdata")
     set(_DSD_BOOTSTRAP_DEFAULT_CFG_ENV "APPDATA")
 else()

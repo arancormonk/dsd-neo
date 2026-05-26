@@ -14,6 +14,8 @@
 #ifndef DSD_NEO_DSP_FIRDES_H
 #define DSD_NEO_DSP_FIRDES_H
 
+#include <dsd-neo/platform/platform.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -21,7 +23,7 @@ extern "C" {
 /**
  * @brief Window function types matching GNU Radio's fft::window::win_type
  */
-typedef enum __attribute__((packed)) {
+typedef enum DSD_ATTR_PACKED {
     DSD_WIN_RECTANGULAR = 0,
     DSD_WIN_HAMMING = 1,
     DSD_WIN_HANN = 2,

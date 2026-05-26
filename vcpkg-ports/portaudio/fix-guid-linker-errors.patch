@@ -3,9 +3,9 @@ From: invertego <invertego@users.noreply.github.com>
 Date: Mon, 2 Oct 2023 16:44:48 -0700
 Subject: [PATCH 1/2] wdmks: declare GUIDs with selectany attribute
 
-Match the behavior of guiddef.h in both mingw and the Windows SDK
-headers. This prevents linking errors caused by multiply defined symbols
-when linking against certain Windows SDK libs (like dxguid.lib).
+Match guiddef.h behavior in the Windows SDK headers. This prevents linking
+errors caused by multiply defined symbols when linking against certain Windows
+SDK libs (like dxguid.lib).
 ---
  src/hostapi/wdmks/pa_win_wdmks.c | 4 ++--
  1 file changed, 2 insertions(+), 2 deletions(-)

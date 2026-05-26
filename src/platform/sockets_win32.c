@@ -157,23 +157,22 @@ dsd_socket_resolve(const char* hostname, int port, struct sockaddr_in* addr) {
         }
     }
 
-    DSD_MEMSET(addr, 0, sizeof(*addr));
-    addr->sin_family = AF_INET;
-    addr->sin_port = htons((u_short)port);
+    struct addrinfo hints;
+    struct addrinfo* result = NULL;
+    DSD_MEMSET(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
 
-    /* Try numeric address first */
-    addr->sin_addr.s_addr = inet_addr(hostname);
-    if (addr->sin_addr.s_addr != INADDR_NONE) {
-        return 0;
-    }
-
-    /* Fall back to DNS lookup */
-    struct hostent* he = gethostbyname(hostname);
-    if (!he || !he->h_addr_list[0]) {
+    int gai = getaddrinfo(hostname, NULL, &hints, &result);
+    if (gai != 0 || !result || !result->ai_addr) {
+        if (result) {
+            freeaddrinfo(result);
+        }
         return -1;
     }
 
-    DSD_MEMCPY(&addr->sin_addr, he->h_addr_list[0], sizeof(addr->sin_addr));
+    DSD_MEMCPY(addr, result->ai_addr, sizeof(*addr));
+    freeaddrinfo(result);
+    addr->sin_port = htons((u_short)port);
     return 0;
 }
 

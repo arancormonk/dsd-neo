@@ -14,6 +14,7 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
@@ -27,7 +28,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -35,10 +35,7 @@
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/runtime/call_alert.h"
 
-#if defined(__MINGW32__) || defined(__MINGW64__)
-#include <getopt.h>
-#include <unistd.h>
-#elif !DSD_PLATFORM_WIN_NATIVE
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
 #endif
 
@@ -672,8 +669,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ONE_SHOT;                                                                                 \
         }                                                                                                              \
-        struct stat st;                                                                                                \
-        if (stat(info_cfg.data_path, &st) != 0 || st.st_size < 0) {                                                    \
+        dsd_stat_t st;                                                                                                 \
+        if (dsd_stat_path(info_cfg.data_path, &st) != 0 || st.st_size < 0) {                                           \
             LOG_ERROR("--iq-info: failed to stat data file '%s'\n", info_cfg.data_path);                               \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ONE_SHOT;                                                                                 \
@@ -695,8 +692,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
         return DSD_PARSE_ERROR;                                                                                        \
     }                                                                                                                  \
                                                                                                                        \
-    struct stat st;                                                                                                    \
-    if (stat(replay_cfg.data_path, &st) != 0 || st.st_size < 0) {                                                      \
+    dsd_stat_t st;                                                                                                     \
+    if (dsd_stat_path(replay_cfg.data_path, &st) != 0 || st.st_size < 0) {                                             \
         LOG_ERROR("--iq-replay: failed to stat data file '%s'\n", replay_cfg.data_path);                               \
         dsd_iq_replay_config_clear(&replay_cfg);                                                                       \
         cli_set_exit_rc(out_exit_rc, 1);                                                                               \
@@ -1124,7 +1121,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         case 'Q':                                                                                                      \
             DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", "./DSP");                                \
             wav_file_directory[1023] = '\0';                                                                           \
-            if (stat(wav_file_directory, &st) == -1) {                                                                 \
+            if (dsd_stat_path(wav_file_directory, &st) == -1) {                                                        \
                 LOG_NOTICE("-Q %s DSP file directory does not exist\n", wav_file_directory);                           \
                 LOG_NOTICE("Creating directory %s to save DSP Structured or M17 Binary Stream files\n",                \
                            wav_file_directory);                                                                        \
@@ -1288,7 +1285,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             }                                                                                                          \
             DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);                      \
             wav_file_directory[1023] = '\0';                                                                           \
-            if (stat(wav_file_directory, &st) == -1) {                                                                 \
+            if (dsd_stat_path(wav_file_directory, &st) == -1) {                                                        \
                 LOG_NOTICE("-P %s WAV file directory does not exist\n", wav_file_directory);                           \
                 LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);                   \
                 dsd_mkdir(wav_file_directory, 0700);                                                                   \
@@ -1350,7 +1347,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         case 'd':                                                                                                      \
             DSD_STRNCPY(opts->mbe_out_dir, optarg, 1023);                                                              \
             opts->mbe_out_dir[1023] = '\0';                                                                            \
-            if (stat(opts->mbe_out_dir, &st) == -1) {                                                                  \
+            if (dsd_stat_path(opts->mbe_out_dir, &st) == -1) {                                                         \
                 LOG_NOTICE("%s directory does not exist\n", opts->mbe_out_dir);                                        \
                 LOG_NOTICE("Creating directory %s to save mbe+ processed files\n", opts->mbe_out_dir);                 \
                 dsd_mkdir(opts->mbe_out_dir, 0700);                                                                    \
@@ -2000,7 +1997,7 @@ static int
 dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc) {
 
     int c;
-    struct stat st = {0};
+    dsd_stat_t st = {0};
     char wav_file_directory[1024] = {0};
     char dsp_filename[1024] = {0};
 

@@ -8,7 +8,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -16,7 +15,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -27,17 +25,10 @@ path_is_regular_file(const char* path) {
     if (!path || path[0] == '\0') {
         return 0;
     }
-#if DSD_PLATFORM_WIN_NATIVE
-    if (_stat(path, &st) != 0) {
+    if (dsd_stat_path(path, &st) != 0) {
         return 0;
     }
-    return ((st.st_mode & _S_IFMT) == _S_IFREG);
-#else
-    if (stat(path, &st) != 0) {
-        return 0;
-    }
-    return S_ISREG(st.st_mode);
-#endif
+    return dsd_stat_is_regular(&st);
 }
 
 static void

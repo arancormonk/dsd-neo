@@ -9,7 +9,7 @@
  *
  * Platform-specific handling:
  * - POSIX (Linux, macOS): Uses libsndfile sf_open_fd() to wrap socket
- * - Windows native (MSVC/MinGW): Direct socket recv() with internal buffering
+ * - Windows native: Direct socket recv() with internal buffering
  */
 
 #include <dsd-neo/io/tcp_input.h>

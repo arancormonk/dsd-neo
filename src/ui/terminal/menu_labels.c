@@ -13,11 +13,11 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
-#include <sys/stat.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -554,8 +554,8 @@ const char*
 lbl_replay_last(const void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
     if (c->opts->audio_in_dev[0] != '\0') {
-        struct stat sb;
-        if (stat(c->opts->audio_in_dev, &sb) == 0) {
+        dsd_stat_t sb;
+        if (dsd_stat_path(c->opts->audio_in_dev, &sb) == 0) {
             DSD_SNPRINTF(b, n, "Replay Last Symbol Capture [%s]", c->opts->audio_in_dev);
             return b;
         }

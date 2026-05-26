@@ -17,9 +17,11 @@
 
 #include <dsd-neo/platform/platform.h>
 #include <stdint.h>
-#include <string.h>  // IWYU pragma: keep
+#include <string.h> // IWYU pragma: keep
+#if !DSD_COMPILER_MSVC
 #include <strings.h> // IWYU pragma: keep
-struct timeval;      // IWYU pragma: keep
+#endif
+struct timeval; // IWYU pragma: keep
 
 #ifdef __cplusplus
 extern "C" {
@@ -129,27 +131,6 @@ int dsd_mkstemp(char* tmpl);
  * @return tmpl on success, NULL on error.
  */
 char* dsd_mkdtemp(char* tmpl);
-
-/* ============================================================================
- * GCC/Clang Attribute Compatibility
- * ============================================================================ */
-
-#if DSD_COMPILER_MSVC
-#define DSD_ATTR_UNUSED
-#define DSD_ATTR_USED
-#define DSD_ATTR_NORETURN __declspec(noreturn)
-#define DSD_ATTR_PACKED
-#define DSD_ATTR_WEAK
-#define DSD_ATTR_FORMAT(archetype, string_index, first_to_check)
-#else
-#define DSD_ATTR_UNUSED   __attribute__((unused))
-#define DSD_ATTR_USED     __attribute__((used))
-#define DSD_ATTR_NORETURN __attribute__((noreturn))
-#define DSD_ATTR_PACKED   __attribute__((packed))
-#define DSD_ATTR_WEAK     __attribute__((weak))
-#define DSD_ATTR_FORMAT(archetype, string_index, first_to_check)                                                       \
-    __attribute__((format(archetype, string_index, first_to_check)))
-#endif
 
 /* ============================================================================
  * GCC Builtin Compatibility (__builtin_popcountll)

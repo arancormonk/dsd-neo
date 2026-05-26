@@ -6,6 +6,8 @@
 #ifndef DSD_NEO_LOG_H
 #define DSD_NEO_LOG_H
 
+#include <dsd-neo/platform/platform.h>
+
 /**
  * @file
  * @brief Runtime logging interface used across DSD-neo components.
@@ -17,7 +19,7 @@
 /**
  * @brief Log severity levels for runtime logging.
  */
-typedef enum __attribute__((packed)) {
+typedef enum DSD_ATTR_PACKED {
     LOG_LEVEL_ERROR = 0,
     LOG_LEVEL_WARN = 1,
     LOG_LEVEL_INFO = 2,

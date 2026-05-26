@@ -11,6 +11,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_DECODE_MODE_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_DECODE_MODE_H_
 
+#include <dsd-neo/platform/platform.h>
+
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/config.h>
@@ -25,7 +27,7 @@ extern "C" {
  * Some presets intentionally differ between config and CLI paths to preserve
  * existing behavior.
  */
-typedef enum __attribute__((packed)) {
+typedef enum DSD_ATTR_PACKED {
     DSD_DECODE_PRESET_PROFILE_CONFIG = 0,
     DSD_DECODE_PRESET_PROFILE_CLI,
     DSD_DECODE_PRESET_PROFILE_INTERACTIVE

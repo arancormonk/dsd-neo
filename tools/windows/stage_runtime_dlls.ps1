@@ -71,27 +71,6 @@ function Get-ObjdumpPath {
         return $cmd.Path
     }
 
-    $candidates = @(
-        'C:\msys64\mingw64\bin\objdump.exe',
-        'C:\msys64\ucrt64\bin\objdump.exe',
-        'C:\msys64\usr\bin\objdump.exe'
-    )
-
-    $runnerTemp = $env:RUNNER_TEMP
-    if ($runnerTemp) {
-        $candidates = @(
-            (Join-Path $runnerTemp 'msys64\mingw64\bin\objdump.exe'),
-            (Join-Path $runnerTemp 'msys64\ucrt64\bin\objdump.exe'),
-            (Join-Path $runnerTemp 'msys64\usr\bin\objdump.exe')
-        ) + $candidates
-    }
-
-    foreach ($candidate in $candidates) {
-        if (Test-Path $candidate) {
-            return $candidate
-        }
-    }
-
     return $null
 }
 
@@ -179,17 +158,6 @@ $normalizedDirs = @()
 $normalizedDirs += $destinationFull
 $normalizedDirs += $SearchDirs
 $normalizedDirs += (Get-VsRedistDirs)
-$runnerTemp = $env:RUNNER_TEMP
-if ($runnerTemp) {
-    $normalizedDirs += @(
-        (Join-Path $runnerTemp 'msys64\mingw64\bin'),
-        (Join-Path $runnerTemp 'msys64\ucrt64\bin')
-    )
-}
-$normalizedDirs += @(
-    'C:\msys64\mingw64\bin',
-    'C:\msys64\ucrt64\bin'
-)
 if ($system32) {
     $normalizedDirs += $system32
 }

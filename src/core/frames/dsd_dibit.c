@@ -28,7 +28,7 @@
 #include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
-#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>

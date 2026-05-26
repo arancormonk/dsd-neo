@@ -15,7 +15,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -27,8 +26,8 @@ pick_missing_dir(char* out, size_t out_sz) {
     }
     for (int i = 0; i < 1000; ++i) {
         (void)DSD_SNPRINTF(out, out_sz, "dsd-neo-test-missing-dir-%d", i);
-        struct stat st;
-        if (stat(out, &st) != 0) {
+        dsd_stat_t st;
+        if (dsd_stat_path(out, &st) != 0) {
             return 0;
         }
     }

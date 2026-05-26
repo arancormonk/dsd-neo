@@ -13,23 +13,6 @@ set(LIBSNDFILE_NAMES ${LIBSNDFILE_NAMES} sndfile libsndfile)
 find_library(LIBSNDFILE_LIBRARY NAMES ${LIBSNDFILE_NAMES})
 
 if(LIBSNDFILE_LIBRARY)
-    # On MinGW, prefer the import library (`*.dll.a`) for dynamic linking.
-    if(
-        MINGW
-        AND LIBSNDFILE_LIBRARY MATCHES "\\.a$"
-        AND NOT LIBSNDFILE_LIBRARY MATCHES "\\.dll\\.a$"
-    )
-        string(
-            REGEX REPLACE "\\.a$"
-            ".dll.a"
-            _libsndfile_dll_a_candidate
-            "${LIBSNDFILE_LIBRARY}"
-        )
-        if(EXISTS "${_libsndfile_dll_a_candidate}")
-            set(LIBSNDFILE_LIBRARY "${_libsndfile_dll_a_candidate}")
-        endif()
-    endif()
-
     set(LIBSNDFILE_LIBRARIES ${LIBSNDFILE_LIBRARY})
 endif()
 

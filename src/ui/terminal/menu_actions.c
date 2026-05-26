@@ -24,7 +24,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__SSE__) || defined(__SSE2__)
 #include <xmmintrin.h>
+#endif
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "dsd-neo/ui/menu_core.h"

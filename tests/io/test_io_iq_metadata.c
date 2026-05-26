@@ -10,7 +10,6 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 #include "test_support.h"
@@ -282,9 +281,9 @@ test_metadata_round_trip_capture_open_close(void) {
     stats.input_ring_drops = 7;
     dsd_iq_capture_close(writer, &stats);
 
-    struct stat st;
-    rc |= expect_true("data file stat", stat(data_path, &st) == 0);
-    if (stat(data_path, &st) == 0) {
+    dsd_stat_t st;
+    rc |= expect_true("data file stat", dsd_stat_path(data_path, &st) == 0);
+    if (dsd_stat_path(data_path, &st) == 0) {
         rc |= expect_true("data size aligned", ((uint64_t)st.st_size % 2ULL) == 0ULL);
     }
 

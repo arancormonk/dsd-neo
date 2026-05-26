@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -11,7 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 
@@ -91,8 +91,8 @@ file_size_u64(const char* path, uint64_t* out_size) {
     if (!path || !out_size) {
         return DSD_IQ_ERR_INVALID_ARG;
     }
-    struct stat st;
-    if (stat(path, &st) != 0) {
+    dsd_stat_t st;
+    if (dsd_stat_path(path, &st) != 0) {
         return DSD_IQ_ERR_IO;
     }
     if (st.st_size < 0) {
@@ -127,7 +127,7 @@ read_file_all(const char* path, char** out_data, size_t* out_size, char* err_buf
         fclose(fp);
         return DSD_IQ_ERR_IO;
     }
-    if ((unsigned long)end > (unsigned long)(SIZE_MAX - 1U)) {
+    if ((uintmax_t)end > ((uintmax_t)SIZE_MAX - 1U)) {
         set_error(err_buf, err_buf_size, "metadata file '%s' is too large", path);
         fclose(fp);
         return DSD_IQ_ERR_INVALID_META;
@@ -178,8 +178,8 @@ resolve_metadata_path(const char* path, char* out_metadata_path, size_t out_meta
     }
     DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s.json", path);
 
-    struct stat st;
-    if (stat(out_metadata_path, &st) != 0) {
+    dsd_stat_t st;
+    if (dsd_stat_path(out_metadata_path, &st) != 0) {
         set_error(err_buf, err_buf_size, "metadata sidecar not found for '%s' (expected '%s')", path,
                   out_metadata_path);
         return DSD_IQ_ERR_IO;

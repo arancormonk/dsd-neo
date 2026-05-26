@@ -11,6 +11,7 @@
 #include <cstring>
 #include <dsd-neo/fec/Golay24.hpp>
 #include <dsd-neo/fec/Hamming.hpp>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdint.h>
@@ -359,7 +360,7 @@ static void
 p25p1_golay6_search(const char* orig, const int* reliab, const int* least_rel, DSDGolay24* golay, int* best_penalty,
                     int* best_fixed, char best_data[6], int* found_valid) {
     for (int mask = 0; mask < 256; mask++) {
-        if (__builtin_popcount((unsigned)mask) > 4) {
+        if (dsd_popcount64((uint64_t)mask) > 4) {
             continue;
         }
 
@@ -421,7 +422,7 @@ static void
 p25p1_golay12_search(const char* orig, const int* reliab, const int* least_rel, DSDGolay24* golay, int* best_penalty,
                      int* best_fixed, char best_data[12], int* found_valid) {
     for (int mask = 0; mask < 256; mask++) {
-        if (__builtin_popcount((unsigned)mask) > 4) {
+        if (dsd_popcount64((uint64_t)mask) > 4) {
             continue;
         }
 
