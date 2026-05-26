@@ -41,6 +41,7 @@
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
 int load_i(const uint8_t val[], int len);
@@ -809,7 +810,7 @@ nxdn_print_sacch2_complete_message(dsd_state* state, const struct nxdn_sacch2_fi
         DSD_FPRINTF(stderr, "Scrambler; ");
         state->nxdn_cipher_type = 1;
         if (state->R != 0) {
-            DSD_FPRINTF(stderr, "Key: %lld; ", state->R);
+            DSD_FPRINTF(stderr, "Key: %s; ", DSD_SECRET_REDACTED);
         }
     } else if (cipher != 0x00) {
         DSD_FPRINTF(stderr, "Reserved Comms: %d; ", cipher);

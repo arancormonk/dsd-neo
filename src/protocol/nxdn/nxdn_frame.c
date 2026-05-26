@@ -47,6 +47,7 @@
 
 #ifdef LIMAZULUTWEAKS
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include "dsd-neo/core/secret_redaction.h"
 #endif
 
 // #define NXDN_DEBUG_LICH         //print LICH debug info on err on payload == 1
@@ -466,7 +467,7 @@ nxdn_apply_limazulu_voice_tweak(const dsd_opts* opts, dsd_state* state, const nx
         DSD_FPRINTF(stderr, "\n Freq: %ld - Freq Hash: %d", freq, limazulu);
     }
     if (state->rkey_array[limazulu] != 0) {
-        DSD_FPRINTF(stderr, " - Key Loaded: %lld", state->rkey_array[limazulu]);
+        DSD_FPRINTF(stderr, " - Key Loaded: %s", DSD_SECRET_REDACTED);
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 

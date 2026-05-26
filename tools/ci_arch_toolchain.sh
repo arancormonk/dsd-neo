@@ -117,7 +117,13 @@ docker run --rm \
     runuser --user ci --preserve-environment -- git config --global --add safe.directory /workspace
 
     export PATH="$CI_ARCH_TOOLCHAIN_PREFIX/bin:$PATH"
+    if [[ -z "${CI_ARCH_IWYU_SHA:-}" && -f /workspace/tools/ci-dependency-pins.env ]]; then
+      source /workspace/tools/ci-dependency-pins.env
+      CI_ARCH_IWYU_SHA="${IWYU_SHA:-}"
+      export CI_ARCH_IWYU_SHA
+    fi
     if [[ "${CI_ARCH_ENABLE_IWYU:-0}" == "1" ]]; then
+      : "${CI_ARCH_IWYU_SHA:?CI_ARCH_IWYU_SHA is required when IWYU is enabled}"
       iwyu_manifest="$CI_ARCH_TOOLCHAIN_PREFIX/.iwyu-manifest"
       rebuild_iwyu=0
       if [[ ! -x "$CI_ARCH_TOOLCHAIN_PREFIX/bin/include-what-you-use" ]]; then
@@ -136,11 +142,7 @@ docker run --rm \
         mkdir -p \"\$CI_ARCH_TOOLCHAIN_PREFIX\"
         export PATH=\"\$CI_ARCH_TOOLCHAIN_PREFIX/bin:\$PATH\"
 
-        git clone --depth 1 --branch clang_22 https://github.com/include-what-you-use/include-what-you-use /tmp/include-what-you-use
-        if [[ -n \"\${CI_ARCH_IWYU_SHA:-}\" ]]; then
-          git -C /tmp/include-what-you-use fetch --depth 1 origin \"\$CI_ARCH_IWYU_SHA\"
-          git -C /tmp/include-what-you-use checkout \"\$CI_ARCH_IWYU_SHA\"
-        fi
+        /workspace/tools/fetch-pinned-git.sh https://github.com/include-what-you-use/include-what-you-use \"\$CI_ARCH_IWYU_SHA\" /tmp/include-what-you-use
         cmake -S /tmp/include-what-you-use -B /tmp/include-what-you-use/build -G Ninja \
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_PREFIX_PATH=/usr/lib/cmake/llvm \

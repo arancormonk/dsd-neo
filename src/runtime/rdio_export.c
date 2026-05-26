@@ -600,15 +600,10 @@ dsd_rdio_open_temp_meta_file(const char* out_meta_path, char* temp_meta_path, si
     if (!out_meta_path || !temp_meta_path || temp_meta_path_size == 0 || !out_fp) {
         return -1;
     }
-    int tn = DSD_SNPRINTF(temp_meta_path, temp_meta_path_size, "%s.tmp", out_meta_path);
-    if (tn < 0 || (size_t)tn >= temp_meta_path_size) {
-        LOG_ERROR("Rdio export: sidecar temp path too long\n");
-        return -1;
-    }
 
-    FILE* fp = dsd_fopen_private(temp_meta_path, "wb");
+    FILE* fp = dsd_fopen_private_temp_for_replace(out_meta_path, temp_meta_path, temp_meta_path_size, "wb");
     if (!fp) {
-        LOG_ERROR("Rdio export: unable to open %s: %s\n", temp_meta_path, strerror(errno));
+        LOG_ERROR("Rdio export: unable to open temp sidecar for %s: %s\n", out_meta_path, strerror(errno));
         return -1;
     }
     *out_fp = fp;
@@ -647,13 +642,29 @@ dsd_rdio_finalize_meta_file(FILE* fp, const char* temp_meta_path, const char* ou
     if (!fp || !temp_meta_path || !out_meta_path) {
         return -1;
     }
+    if (fflush(fp) != 0) {
+        LOG_ERROR("Rdio export: failed flushing %s: %s\n", temp_meta_path, strerror(errno));
+        (void)fclose(fp);
+        (void)remove(temp_meta_path);
+        return -1;
+    }
+    int fd = dsd_fileno(fp);
+    if (fd >= 0) {
+        (void)dsd_fchmod(fd, 0600);
+        if (dsd_fsync(fd) != 0) {
+            LOG_ERROR("Rdio export: failed syncing %s: %s\n", temp_meta_path, strerror(errno));
+            (void)fclose(fp);
+            (void)remove(temp_meta_path);
+            return -1;
+        }
+    }
     if (fclose(fp) != 0) {
         LOG_ERROR("Rdio export: failed closing %s: %s\n", temp_meta_path, strerror(errno));
         (void)remove(temp_meta_path);
         return -1;
     }
 
-    if (rename(temp_meta_path, out_meta_path) != 0) {
+    if (dsd_replace_file_with_temp(temp_meta_path, out_meta_path) != 0) {
         LOG_ERROR("Rdio export: failed renaming %s -> %s: %s\n", temp_meta_path, out_meta_path, strerror(errno));
         (void)remove(temp_meta_path);
         return -1;

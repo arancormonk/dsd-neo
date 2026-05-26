@@ -14,6 +14,7 @@
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #define BSIZE 999
@@ -836,7 +837,7 @@ csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
             field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
         }
-        LOG_INFO("Key [%03lld] [%05lld]", keynumber, state->rkey_array[keynumber]);
+        LOG_INFO("Key [%03lld] loaded: %s", keynumber, DSD_SECRET_REDACTED);
         LOG_INFO("\n");
     }
     fclose(fp);
@@ -876,7 +877,7 @@ csv_key_import_hex_log_offsets(const dsd_state* state, unsigned long long keynum
     }
     // cppcheck-suppress knownConditionTrueFalse
     if (out1 != 0 || out2 != 0 || out3 != 0) {
-        LOG_INFO(" [%016llX] [%016llX] [%016llX]", out1, out2, out3);
+        LOG_INFO(" [additional key segments loaded: %s]", DSD_SECRET_REDACTED);
     }
 }
 
@@ -889,8 +890,7 @@ vertex_ks_find_or_add_index(vertex_map_tmp_t* tmp, unsigned long long key, const
     for (int i = 0; i < tmp->count; i++) {
         if (tmp->key[i] == key) {
             *out_idx = i;
-            LOG_WARNING("Vertex KS CSV '%s' line %d: duplicate key 0x%llX, replacing previous mapping.\n", path,
-                        row_count, key);
+            LOG_WARNING("Vertex KS CSV '%s' line %d: duplicate key, replacing previous mapping.\n", path, row_count);
             return 0;
         }
     }
@@ -921,7 +921,7 @@ vertex_ks_parse_row(const char* path, int row_count, char* line, vertex_map_tmp_
 
     unsigned long long key = 0ULL;
     if (parse_hex_u64_strict(key_tok, &key) != 1) {
-        LOG_ERROR("Vertex KS CSV '%s' line %d: invalid key '%s' (expected hex)\n", path, row_count, key_tok);
+        LOG_ERROR("Vertex KS CSV '%s' line %d: invalid key (expected hex)\n", path, row_count);
         return -1;
     }
 
@@ -935,9 +935,9 @@ vertex_ks_parse_row(const char* path, int row_count, char* line, vertex_map_tmp_
                                         &parsed_frame_step, err, sizeof err)
         != 1) {
         if (err[0] != '\0') {
-            LOG_ERROR("Vertex KS CSV '%s' line %d: invalid keystream spec '%s' (%s)\n", path, row_count, ks_tok, err);
+            LOG_ERROR("Vertex KS CSV '%s' line %d: invalid keystream spec (%s)\n", path, row_count, err);
         } else {
-            LOG_ERROR("Vertex KS CSV '%s' line %d: invalid keystream spec '%s'\n", path, row_count, ks_tok);
+            LOG_ERROR("Vertex KS CSV '%s' line %d: invalid keystream spec\n", path, row_count);
         }
         return -1;
     }
@@ -1024,7 +1024,7 @@ csvKeyImportHex(const dsd_opts* opts, dsd_state* state) //key import for hex key
         }
 
         if (keynumber < 0x1FFFFULL) {
-            LOG_INFO("Key [%04llX] [%016llX]", keynumber, state->rkey_array[keynumber]);
+            LOG_INFO("Key [%04llX] loaded: %s", keynumber, DSD_SECRET_REDACTED);
         } else {
             LOG_INFO("Key [%04llX] [out-of-range]", keynumber);
         }

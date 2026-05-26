@@ -364,6 +364,13 @@ run_check() {
 
 run_check "CMake install(TARGETS) runtime destinations" tools/check_install_runtime_destinations.sh
 
+if command -v rg > /dev/null 2>&1; then
+  run_check "secret redaction guardrail" tools/check_secret_redaction.sh
+  run_check "workflow Git pin guardrail" tools/check_workflow_git_pins.sh
+else
+  mark_missing_tool "rg" "repository security guardrails"
+fi
+
 # shellcheck disable=SC2329 # Invoked indirectly via run_check callback dispatch.
 run_clang_format_check() {
   local rc=0

@@ -19,6 +19,7 @@
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static void
@@ -97,11 +98,11 @@ dmr_pi_hytera_checksum(const uint8_t pi_byte[]) {
 static void
 dmr_pi_hytera_print_key(const dsd_state* state) {
     if (state->currentslot == 0 && state->R != 0) {
-        DSD_FPRINTF(stderr, "Key: %010llX; ", state->R);
+        DSD_FPRINTF(stderr, "Key: %s; ", DSD_SECRET_REDACTED);
     }
 
     if (state->currentslot == 1 && state->RR != 0) {
-        DSD_FPRINTF(stderr, "Key: %010llX; ", state->RR);
+        DSD_FPRINTF(stderr, "Key: %s; ", DSD_SECRET_REDACTED);
     }
 }
 

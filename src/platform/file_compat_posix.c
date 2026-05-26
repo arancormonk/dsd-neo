@@ -15,6 +15,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -112,6 +113,97 @@ dsd_fopen_private(const char* path, const char* mode) {
         close(fd);
     }
     return fp;
+}
+
+static void
+dsd_set_cloexec_best_effort(int fd) {
+#ifdef FD_CLOEXEC
+    int flags = fcntl(fd, F_GETFD);
+    if (flags >= 0) {
+        (void)fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    }
+#else
+    (void)fd;
+#endif
+}
+
+FILE*
+dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path, size_t tmp_path_size, const char* mode) {
+    if (!final_path || final_path[0] == '\0' || !tmp_path || tmp_path_size == 0 || !mode || mode[0] == 'r') {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    int n = DSD_SNPRINTF(tmp_path, tmp_path_size, "%s.tmp.XXXXXX", final_path);
+    if (n < 0 || (size_t)n >= tmp_path_size) {
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
+
+    int fd = mkstemp(tmp_path);
+    if (fd < 0) {
+        return NULL;
+    }
+    dsd_set_cloexec_best_effort(fd);
+    (void)fchmod(fd, (mode_t)0600);
+
+    FILE* fp = fdopen(fd, mode);
+    if (!fp) {
+        int saved_errno = errno ? errno : EINVAL;
+        close(fd);
+        (void)remove(tmp_path);
+        errno = saved_errno;
+        return NULL;
+    }
+    return fp;
+}
+
+static void
+dsd_fsync_parent_dir_best_effort(const char* path) {
+    if (!path || path[0] == '\0') {
+        return;
+    }
+
+    const char* slash = strrchr(path, '/');
+    char dir_buf[4096];
+    const char* dir = ".";
+    if (slash && slash != path) {
+        size_t len = (size_t)(slash - path);
+        if (len >= sizeof(dir_buf)) {
+            return;
+        }
+        DSD_MEMCPY(dir_buf, path, len);
+        dir_buf[len] = '\0';
+        dir = dir_buf;
+    } else if (slash == path) {
+        dir = "/";
+    }
+
+    int flags = O_RDONLY;
+#ifdef O_DIRECTORY
+    flags |= O_DIRECTORY;
+#endif
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    int fd = open(dir, flags);
+    if (fd >= 0) {
+        (void)fsync(fd);
+        (void)close(fd);
+    }
+}
+
+int
+dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
+    if (!tmp_path || tmp_path[0] == '\0' || !final_path || final_path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    if (rename(tmp_path, final_path) != 0) {
+        return -1;
+    }
+    dsd_fsync_parent_dir_best_effort(final_path);
+    return 0;
 }
 
 static int

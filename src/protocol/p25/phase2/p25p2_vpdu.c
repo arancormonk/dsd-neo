@@ -2917,7 +2917,7 @@ p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
             int t3 = (MAC[14 + len_a] << 8) | MAC[15 + len_a];
             int t4 = (MAC[16 + len_a] << 8) | MAC[17 + len_a];
             UNUSED4(t1, t2, t3, t4);
-            DSD_FPRINTF(stderr, " SG: %d; KEY: %04X; ALG: %02X;\n  ", sg, key, alg);
+            DSD_FPRINTF(stderr, " SG: %d; KEY ID: %04X; ALG: %02X;\n  ", sg, key, alg);
             int a = 0;
             int wgid = 0;
 
@@ -2949,7 +2949,7 @@ p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
             int t1 = (MAC[9 + len_a] << 16) | (MAC[10 + len_a] << 8) | MAC[11 + len_a];
             int t2 = (MAC[12 + len_a] << 16) | (MAC[13 + len_a] << 8) | MAC[14 + len_a];
             int t3 = (MAC[15 + len_a] << 16) | (MAC[16 + len_a] << 8) | MAC[17 + len_a];
-            DSD_FPRINTF(stderr, "  SG: %d KEY: %04X", sg, key);
+            DSD_FPRINTF(stderr, "  SG: %d KEY ID: %04X", sg, key);
             DSD_FPRINTF(stderr, " WUID: %d; WUID: %d; WUID: %d; ", t1, t2, t3);
             p25_patch_add_wuid(state, sg, (uint32_t)t1);
             p25_patch_add_wuid(state, sg, (uint32_t)t2);

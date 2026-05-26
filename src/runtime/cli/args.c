@@ -30,6 +30,7 @@
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/platform/platform.h"
@@ -1069,7 +1070,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 }                                                                                                      \
                 state->R = key;                                                                                        \
                 state->RR = key;                                                                                       \
-                LOG_NOTICE("RC4/DES Encryption Key Value set to 0x%llX \n", state->R);                                 \
+                LOG_NOTICE("RC4/DES encryption key loaded: %s\n", DSD_SECRET_REDACTED);                                \
                 opts->unmute_encrypted_p25 = 0;                                                                        \
                 state->keyloader = 0;                                                                                  \
             }                                                                                                          \
@@ -1078,7 +1079,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             state->tyt_bp = 1;                                                                                         \
             state->H = cli_parse_u64_or_default(optarg, 16, 0ULL);                                                     \
             state->H = state->H & 0xFFFF;                                                                              \
-            LOG_NOTICE("DMR TYT Basic 16-bit Key 0x%llX with Forced Application\n", state->H);                         \
+            LOG_NOTICE("DMR TYT Basic 16-bit key loaded with forced application: %s\n", DSD_SECRET_REDACTED);          \
             break;                                                                                                     \
         case '!': tyt_ap_pc4_keystream_creation(state, optarg); break;                                                 \
         case '@': retevis_rc2_keystream_creation(state, optarg); break;                                                \
@@ -1965,7 +1966,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 v = 255;                                                                                               \
             }                                                                                                          \
             state->K = v;                                                                                              \
-            LOG_NOTICE("Basic Privacy key number set to %ld (forced priority)\n", v);                                  \
+            LOG_NOTICE("Basic Privacy key loaded (forced priority): %s\n", DSD_SECRET_REDACTED);                       \
             break;                                                                                                     \
         }                                                                                                              \
         case 'D': {                                                                                                    \

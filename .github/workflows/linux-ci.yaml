@@ -70,7 +70,8 @@ jobs:
       - name: Build and install mbelib-neo
         run: |
           set -euxo pipefail
-          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
             -DCMAKE_INSTALL_PREFIX="$HOME/.local"
@@ -118,7 +119,8 @@ jobs:
       - name: Build and install mbelib-neo
         run: |
           set -euxo pipefail
-          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
             -DCMAKE_INSTALL_PREFIX="$HOME/.local"
@@ -174,10 +176,11 @@ jobs:
         id: dep-shas
         run: |
           set -euxo pipefail
+          source tools/ci-dependency-pins.env
           {
-            echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)"
-            echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)"
-            echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)"
+            echo "mbe_sha=$MBELIB_NEO_SHA"
+            echo "codec2_sha=$CODEC2_SHA"
+            echo "rtlsdr_sha=$RTL_SDR_SHA"
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
@@ -273,9 +276,7 @@ jobs:
             fi
             echo "Cached mbelib-neo does not match desired SHA; rebuilding"
           fi
-          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
-          git -C /tmp/mbelib-neo fetch --depth 1 origin "$want_sha"
-          git -C /tmp/mbelib-neo checkout "$want_sha"
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$want_sha" /tmp/mbelib-neo
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
@@ -299,9 +300,7 @@ jobs:
               exit 0
             fi
           fi
-          git clone --depth 1 https://github.com/arancormonk/codec2 /tmp/codec2
-          git -C /tmp/codec2 fetch --depth 1 origin "$want_sha"
-          git -C /tmp/codec2 checkout "$want_sha"
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/codec2 "$want_sha" /tmp/codec2
           cmake -S /tmp/codec2 -B /tmp/codec2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
           cmake --build /tmp/codec2/build -j
           cmake --install /tmp/codec2/build
@@ -325,9 +324,7 @@ jobs:
               exit 0
             fi
           fi
-          git clone --depth 1 https://github.com/arancormonk/rtl-sdr /tmp/rtl-sdr
-          git -C /tmp/rtl-sdr fetch --depth 1 origin "$want_sha"
-          git -C /tmp/rtl-sdr checkout "$want_sha"
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/rtl-sdr "$want_sha" /tmp/rtl-sdr
           cmake -S /tmp/rtl-sdr -B /tmp/rtl-sdr/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDETACH_KERNEL_DRIVER=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
           cmake --build /tmp/rtl-sdr/build -j
           cmake --install /tmp/rtl-sdr/build
@@ -365,6 +362,10 @@ jobs:
         run: |
           ./build/dev-release/apps/dsd-cli/dsd-neo -h
 
+      - name: Verify release hardening
+        run: |
+          tools/check_release_hardening.sh build/dev-release/apps/dsd-cli/dsd-neo build/dev-release
+
       - name: Show ccache stats
         if: always()
         run: ccache -s
@@ -379,7 +380,8 @@ jobs:
         run: |
           bash tools/ci_arch_toolchain.sh bash -lc '
             set -euxo pipefail
-            git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+            source tools/ci-dependency-pins.env
+            tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
             cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DBUILD_SHARED_LIBS=ON \
@@ -907,10 +909,11 @@ jobs:
         id: dep-shas
         run: |
           set -euxo pipefail
+          source tools/ci-dependency-pins.env
           {
-            echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)"
-            echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)"
-            echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)"
+            echo "mbe_sha=$MBELIB_NEO_SHA"
+            echo "codec2_sha=$CODEC2_SHA"
+            echo "rtlsdr_sha=$RTL_SDR_SHA"
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
@@ -1006,9 +1009,7 @@ jobs:
             fi
             echo "Cached mbelib-neo does not match desired SHA; rebuilding"
           fi
-          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
-          git -C /tmp/mbelib-neo fetch --depth 1 origin "$want_sha"
-          git -C /tmp/mbelib-neo checkout "$want_sha"
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$want_sha" /tmp/mbelib-neo
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
@@ -1032,9 +1033,7 @@ jobs:
               exit 0
             fi
           fi
-          git clone --depth 1 https://github.com/arancormonk/codec2 /tmp/codec2
-          git -C /tmp/codec2 fetch --depth 1 origin "$want_sha"
-          git -C /tmp/codec2 checkout "$want_sha"
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/codec2 "$want_sha" /tmp/codec2
           cmake -S /tmp/codec2 -B /tmp/codec2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
           cmake --build /tmp/codec2/build -j
           cmake --install /tmp/codec2/build
@@ -1058,9 +1057,7 @@ jobs:
               exit 0
             fi
           fi
-          git clone --depth 1 https://github.com/arancormonk/rtl-sdr /tmp/rtl-sdr
-          git -C /tmp/rtl-sdr fetch --depth 1 origin "$want_sha"
-          git -C /tmp/rtl-sdr checkout "$want_sha"
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/rtl-sdr "$want_sha" /tmp/rtl-sdr
           cmake -S /tmp/rtl-sdr -B /tmp/rtl-sdr/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDETACH_KERNEL_DRIVER=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
           cmake --build /tmp/rtl-sdr/build -j
           cmake --install /tmp/rtl-sdr/build
@@ -1254,9 +1251,10 @@ jobs:
         id: dep-shas
         run: |
           set -euxo pipefail
+          source tools/ci-dependency-pins.env
           {
-            echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)"
-            echo "iwyu_sha=$(git ls-remote https://github.com/include-what-you-use/include-what-you-use refs/heads/clang_22 | cut -f1)"
+            echo "mbe_sha=$MBELIB_NEO_SHA"
+            echo "iwyu_sha=$IWYU_SHA"
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
@@ -1333,9 +1331,7 @@ jobs:
               fi
             fi
             if [ ! -f "$pc1" ] && [ ! -f "$pc2" ]; then
-              git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
-              git -C /tmp/mbelib-neo fetch --depth 1 origin "$want_sha"
-              git -C /tmp/mbelib-neo checkout "$want_sha"
+              tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$want_sha" /tmp/mbelib-neo
               cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_SHARED_LIBS=ON \

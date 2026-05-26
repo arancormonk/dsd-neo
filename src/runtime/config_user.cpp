@@ -560,22 +560,7 @@ config_parent_dir(const char* save_path, char* dir, size_t dir_size) {
 }
 
 static int
-config_temp_path(const char* save_path, char* tmp, size_t tmp_size) {
-    if (!save_path || !tmp || tmp_size == 0) {
-        return -1;
-    }
-
-    int n = DSD_SNPRINTF(tmp, tmp_size, "%s.tmp", save_path);
-    if (n < 0 || n >= (int)tmp_size) {
-        return -1;
-    }
-    tmp[tmp_size - 1] = '\0';
-    return 0;
-}
-
-static int
-config_write_temp_file(const char* tmp, const dsdneoUserConfig* cfg) {
-    FILE* fp = dsd_fopen_private(tmp, "w");
+config_write_temp_file(FILE* fp, const dsdneoUserConfig* cfg) {
     if (!fp) {
         return -1;
     }
@@ -592,26 +577,26 @@ config_write_temp_file(const char* tmp, const dsdneoUserConfig* cfg) {
     int fd = dsd_fileno(fp);
     if (fd >= 0) {
         (void)dsd_fchmod(fd, 0600);
-        (void)dsd_fsync(fd);
+        if (dsd_fsync(fd) != 0) {
+            int saved_errno = errno;
+            fclose(fp);
+            errno = saved_errno;
+            return -1;
+        }
     }
 
-    fclose(fp);
+    if (fclose(fp) != 0) {
+        return -1;
+    }
     return 0;
 }
 
 static int
 config_replace_temp_file(const char* tmp, const char* save_path) {
-#if defined(_WIN32)
-    if (!MoveFileExA(tmp, save_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
+    if (dsd_replace_file_with_temp(tmp, save_path) != 0) {
         (void)remove(tmp);
         return -1;
     }
-#else
-    if (rename(tmp, save_path) != 0) {
-        (void)remove(tmp);
-        return -1;
-    }
-#endif
     return 0;
 }
 
@@ -636,11 +621,13 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
     }
 
     char tmp[2048];
-    if (config_temp_path(save_path, tmp, sizeof tmp) != 0) {
+    FILE* tmp_fp = dsd_fopen_private_temp_for_replace(save_path, tmp, sizeof tmp, "w");
+    if (!tmp_fp) {
         return -1;
     }
 
-    if (config_write_temp_file(tmp, cfg) != 0) {
+    if (config_write_temp_file(tmp_fp, cfg) != 0) {
+        (void)remove(tmp);
         return -1;
     }
 

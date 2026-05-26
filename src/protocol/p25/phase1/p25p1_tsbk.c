@@ -442,10 +442,10 @@ tsbk_handle_mfid_a4(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLO
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n MFID A4 (Harris) Group Regroup Explicit Encryption Command\n");
     if ((tga & 0x2) == 2) {
-        DSD_FPRINTF(stderr, "  SG: %d; KEY: %04X; WGID: %d; ", sg, key, add);
+        DSD_FPRINTF(stderr, "  SG: %d; KEY ID: %04X; WGID: %d; ", sg, key, add);
         p25_patch_add_wgid(state, sg, add);
     } else {
-        DSD_FPRINTF(stderr, "  SG: %d; KEY: %04X; WUID: %d; ", sg, key, add);
+        DSD_FPRINTF(stderr, "  SG: %d; KEY ID: %04X; WUID: %d; ", sg, key, add);
         p25_patch_add_wuid(state, sg, (uint32_t)add);
     }
     DSD_FPRINTF(stderr, (tga & 0x4) ? " Simulselect" : " Patch");

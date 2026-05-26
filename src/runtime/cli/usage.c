@@ -73,9 +73,8 @@ dsd_cli_usage_section_io(void) {
     printf("                tcp:192.168.7.5:7355 for custom address and port\n");
     printf("                udp for UDP direct audio input (default host 127.0.0.1; default port 7355)\n");
     printf("                udp:0.0.0.0:7355 to bind all interfaces for UDP input\n");
-    printf("                m17udp for M17 UDP/IP frame input (default port 17000; binds all interfaces)\n");
-    printf("                m17udp:0.0.0.0:17001 for M17 UDP/IP frame input (port override; bind host currently "
-           "ignored)\n");
+    printf("                m17udp for M17 UDP/IP frame input (default 127.0.0.1:17000)\n");
+    printf("                m17udp:0.0.0.0:17001 for M17 UDP/IP frame input on all interfaces\n");
     printf("                - for stdin raw PCM16LE mono input (set sample rate with -s)\n");
     printf("                filename.bin for OP25/FME capture bin files\n");
     printf("                filename.wav for 48K/1 wav files (SDR++, GQRX)\n");

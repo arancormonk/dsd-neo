@@ -408,8 +408,12 @@ Quick examples
   - `tools/osv_scan.sh` (OSV dependency and vendored C/C++ vulnerability scanning).
   - `tools/cmake_format_check.sh` (CMake formatting with gersemi; use `--fix` to rewrite).
   - `tools/gitleaks.sh` (secret scanning with SARIF output for GitHub code scanning).
+- Security guardrails:
+  - `tools/check_secret_redaction.sh` (blocks formatted key/keystream output without `DSD_SECRET_REDACTED`).
+  - `tools/check_workflow_git_pins.sh` (blocks floating public GitHub source checkouts in workflows and CI helper scripts).
+  - `tools/check_release_hardening.sh` (verifies Linux release PIE/RELRO/BIND_NOW and hardening compile flags).
 - Fuzzing: `tools/fuzz_smoke.sh` configures/builds the `fuzz-asan-debug` preset and runs bounded libFuzzer smoke passes.
-- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass (clang-format, CMake format, clang-tidy, cppcheck, IWYU, GCC fanalyzer, Semgrep, zizmor, OSV scan, shell/workflow lint) on changed paths.
+- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass (security guardrails, clang-format, CMake format, clang-tidy, cppcheck, IWYU, GCC fanalyzer, Semgrep, zizmor, OSV scan, shell/workflow lint) on changed paths.
 - Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`.
 - Manual preflight runner: `tools/preflight_ci.sh` runs the same CI-aligned checks as `pre-push` without pushing.
 - Full quality preflight: `tools/quality_preflight.sh` enables missing-tool failures, includes scan-build, and runs the full local guardrail set.

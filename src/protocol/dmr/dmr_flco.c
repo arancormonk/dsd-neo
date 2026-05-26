@@ -31,6 +31,7 @@
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
@@ -378,10 +379,10 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
     DSD_FPRINTF(stderr, " Hytera Enhanced; ");
 
     if (ctx->slot == 0 && ctx->state->R != 0) {
-        DSD_FPRINTF(stderr, "Key: %010llX; ", ctx->state->R);
+        DSD_FPRINTF(stderr, "Key: %s; ", DSD_SECRET_REDACTED);
     }
     if (ctx->slot == 1 && ctx->state->RR != 0) {
-        DSD_FPRINTF(stderr, "Key: %010llX; ", ctx->state->RR);
+        DSD_FPRINTF(stderr, "Key: %s; ", DSD_SECRET_REDACTED);
     }
 
     for (int i = 0; i < 8; i++) {
@@ -709,75 +710,63 @@ dmr_flco_print_tg_label(const dmr_flco_ctx* ctx) {
 }
 
 static void
-dmr_flco_print_dmr_basic_keys(dmr_flco_ctx* ctx) {
+dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx) {
     if (ctx->state->K != 0 && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 0
         && ctx->state->payload_algid == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %lld ", ctx->state->K);
+        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->state->K != 0 && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 1
         && ctx->state->payload_algidR == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %lld ", ctx->state->K);
+        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
 
 static void
-dmr_flco_print_hytera_basic_key_slot0(dmr_flco_ctx* ctx) {
+dmr_flco_print_hytera_basic_key_slot0(const dmr_flco_ctx* ctx) {
     if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 0
         && ctx->state->payload_algid == 0) {
         if (ctx->state->K2 != 0) {
             DSD_FPRINTF(stderr, "\\n ");
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %010llX ", ctx->state->K1);
-        if (ctx->state->K2 != 0) {
-            DSD_FPRINTF(stderr, "%016llX ", ctx->state->K2);
-        }
-        if (ctx->state->K4 != 0) {
-            DSD_FPRINTF(stderr, "%016llX %016llX", ctx->state->K3, ctx->state->K4);
-        }
+        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
 
 static void
-dmr_flco_print_hytera_basic_key_slot1(dmr_flco_ctx* ctx) {
+dmr_flco_print_hytera_basic_key_slot1(const dmr_flco_ctx* ctx) {
     if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 1
         && ctx->state->payload_algidR == 0) {
         if (ctx->state->K2 != 0) {
             DSD_FPRINTF(stderr, "\\n ");
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %010llX ", ctx->state->K1);
-        if (ctx->state->K2 != 0) {
-            DSD_FPRINTF(stderr, "%016llX ", ctx->state->K2);
-        }
-        if (ctx->state->K4 != 0) {
-            DSD_FPRINTF(stderr, "%016llX %016llX", ctx->state->K3, ctx->state->K4);
-        }
+        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
 
 static void
-dmr_flco_print_alg21_keys(dmr_flco_ctx* ctx) {
+dmr_flco_print_alg21_keys(const dmr_flco_ctx* ctx) {
     if (ctx->slot == 0 && ctx->state->payload_algid == 0x21 && ctx->state->R != 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %010llX ", ctx->state->R);
+        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && ctx->state->payload_algidR == 0x21 && ctx->state->RR != 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %010llX ", ctx->state->RR);
+        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
 
 static void
-dmr_flco_print_loaded_keys(dmr_flco_ctx* ctx) {
+dmr_flco_print_loaded_keys(const dmr_flco_ctx* ctx) {
     dmr_flco_print_dmr_basic_keys(ctx);
     dmr_flco_print_hytera_basic_key_slot0(ctx);
     dmr_flco_print_hytera_basic_key_slot1(ctx);
@@ -785,65 +774,57 @@ dmr_flco_print_loaded_keys(dmr_flco_ctx* ctx) {
 }
 
 static void
-dmr_flco_print_alg02_keys(dmr_flco_ctx* ctx) {
+dmr_flco_print_alg02_keys(const dmr_flco_ctx* ctx) {
     if (ctx->slot == 0 && ctx->state->payload_algid == 0x02 && ctx->state->R != 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %010llX ", ctx->state->R);
+        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && ctx->state->payload_algidR == 0x02 && ctx->state->RR != 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %010llX ", ctx->state->RR);
+        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
 
 static void
-dmr_flco_print_aes_24_25_keys(dmr_flco_ctx* ctx) {
+dmr_flco_print_aes_24_25_keys(const dmr_flco_ctx* ctx) {
     if (ctx->slot == 0 && (ctx->state->payload_algid == 0x25 || ctx->state->payload_algid == 0x24)
         && ctx->state->aes_key_loaded[0] == 1) {
         DSD_FPRINTF(stderr, "\\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %016llX %016llX ", ctx->state->A1[0], ctx->state->A2[0]);
-        if (ctx->state->payload_algid == 0x25) {
-            DSD_FPRINTF(stderr, "%016llX %016llX", ctx->state->A3[0], ctx->state->A4[0]);
-        }
+        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && (ctx->state->payload_algidR == 0x25 || ctx->state->payload_algidR == 0x24)
         && ctx->state->aes_key_loaded[1] == 1) {
         DSD_FPRINTF(stderr, "\\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %016llX %016llX ", ctx->state->A1[1], ctx->state->A2[1]);
-        if (ctx->state->payload_algidR == 0x25) {
-            DSD_FPRINTF(stderr, "%016llX %016llX", ctx->state->A3[1], ctx->state->A4[1]);
-        }
+        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
 
 static void
-dmr_flco_print_aes_36_37_keys(dmr_flco_ctx* ctx) {
+dmr_flco_print_aes_36_37_keys(const dmr_flco_ctx* ctx) {
     if (ctx->slot == 0 && (ctx->state->payload_algid == 0x36 || ctx->state->payload_algid == 0x37)
         && ctx->state->aes_key_loaded[0] == 1) {
         DSD_FPRINTF(stderr, "\\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %016llX %016llX %016llX %016llX", ctx->state->A1[0], ctx->state->A2[0],
-                    ctx->state->A3[0], ctx->state->A4[0]);
+        DSD_FPRINTF(stderr, "Key: %s", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && (ctx->state->payload_algidR == 0x36 || ctx->state->payload_algidR == 0x37)
         && ctx->state->aes_key_loaded[1] == 1) {
         DSD_FPRINTF(stderr, "\\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %016llX %016llX %016llX %016llX", ctx->state->A1[1], ctx->state->A2[1],
-                    ctx->state->A3[1], ctx->state->A4[1]);
+        DSD_FPRINTF(stderr, "Key: %s", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
 
 static void
-dmr_flco_print_extended_keys(dmr_flco_ctx* ctx) {
+dmr_flco_print_extended_keys(const dmr_flco_ctx* ctx) {
     dmr_flco_print_alg02_keys(ctx);
     dmr_flco_print_aes_24_25_keys(ctx);
     dmr_flco_print_aes_36_37_keys(ctx);

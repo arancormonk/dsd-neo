@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static inline uint64_t
@@ -353,7 +354,6 @@ retevis_rc2_keystream_creation(dsd_state* state, char* input) {
     state->rc2_context = malloc(sizeof(CryptoContext));
     DSD_MEMCPY(state->rc2_context, &rc2_ctx, sizeof(CryptoContext));
 
-    DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) 128-bit Key %016llX%016llX with Forced Application\n",
-                (unsigned long long)K1, (unsigned long long)K2);
+    DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) 128-bit key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
     state->retevis_ap = 1;
 }

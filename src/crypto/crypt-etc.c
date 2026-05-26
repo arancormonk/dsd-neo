@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
@@ -368,7 +369,7 @@ ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input) {
             lfsr = (int)parsed;
         }
     }
-    DSD_FPRINTF(stderr, "DMR Kenwood 15-bit Scrambler Key %05d with Forced Application\n", lfsr);
+    DSD_FPRINTF(stderr, "DMR Kenwood 15-bit scrambler key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
 
     for (int i = 0; i < 882; i++) {
         state->static_ks_bits[0][i] = lfsr & 0x1;
@@ -416,7 +417,7 @@ anytone_bp_keystream_creation(dsd_state* state, char* input) {
         state->static_ks_bits[1][i] = (kperm >> (15 - i)) & 1;
     }
 
-    DSD_FPRINTF(stderr, "DMR Anytone Basic 16-bit Key 0x%04X with Forced Application\n", key);
+    DSD_FPRINTF(stderr, "DMR Anytone Basic 16-bit key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
     state->any_bp = 1;
 }
 
@@ -455,22 +456,7 @@ straight_mod_xor_keystream_creation(dsd_state* state, const char* input) {
         state->static_ks_bits[1][i] = parsed_bits[i];
     }
 
-    DSD_FPRINTF(stderr, "AMBE Straight XOR %d-bit Keystream: ", parsed_mod);
-    int unpack_len = parsed_mod / 8;
-    if ((parsed_mod % 8) != 0) {
-        unpack_len++;
-    }
-    for (int i = 0; i < unpack_len; i++) {
-        uint8_t out = 0;
-        for (int j = 0; j < 8; j++) {
-            const int bi = (i * 8) + j;
-            out = (uint8_t)(out << 1);
-            if (bi < parsed_mod) {
-                out |= (uint8_t)(parsed_bits[bi] & 1U);
-            }
-        }
-        DSD_FPRINTF(stderr, "%02X", out);
-    }
+    DSD_FPRINTF(stderr, "AMBE Straight XOR %d-bit keystream loaded: %s", parsed_mod, DSD_SECRET_REDACTED);
     if (parsed_frame_mode == 1) {
         DSD_FPRINTF(stderr, " with Frame Align (offset=%d, step=%d)", parsed_frame_off, parsed_frame_step);
     }

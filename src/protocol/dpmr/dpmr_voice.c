@@ -34,6 +34,7 @@
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static void ScrambledPMRBit(uint32_t* LfsrValue, const uint8_t* BufferIn, uint8_t* BufferOut,
@@ -291,7 +292,7 @@ dpmr_print_ids(dsd_state* state, char called_id[8], char calling_id[8]) {
 }
 
 static void
-dpmr_print_scrambler_state(dsd_state* state) {
+dpmr_print_scrambler_state(const dsd_state* state) {
     if (state->dPMRVoiceFS2Frame.Version[0] != 3) {
         return;
     }
@@ -300,7 +301,7 @@ dpmr_print_scrambler_state(dsd_state* state) {
     DSD_FPRINTF(stderr, "%s", KNRM);
     if (state->R != 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, " Key %05lld ", state->R);
+        DSD_FPRINTF(stderr, " Key %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
 }

@@ -5,7 +5,8 @@ DSD-neo relies on layered checks because no single compiler, analyzer, or review
 ## Review Expectations
 
 - A human owns every submitted change and is responsible for understanding the behavior, failure modes, and module boundaries it touches.
-- Broad or risky changes need a second reviewer. Treat protocol parsing, crypto, runtime/threading, IO, workflow, dependency, and release changes as risky by default.
+- Broad or risky changes should get a second reviewer when one is available. Treat protocol parsing, crypto, runtime/threading, IO, workflow, dependency, and release changes as risky by default.
+- Solo-maintainer changes that cannot get a second reviewer must document the higher-risk areas touched, keep the diff focused, and pass the required local/CI guardrails before merge or release.
 - Copied, generated, or bulk-written code must be adapted to local conventions before review, not accepted as a black box.
 - Static-analysis suppressions must explain why the warning is a false positive or why the local exception is acceptable. Keep suppressions close to the narrowest affected code.
 - Do not add unrelated refactors to quality or security fixes. Smaller diffs make analyzer output and review results more reliable.
@@ -35,6 +36,7 @@ Run the smallest useful set before opening a PR, then broaden it when the change
 - CMake changes: `tools/cmake_format_check.sh`.
 - Workflow changes: `tools/workflow_lint.sh` and `tools/zizmor.sh`.
 - Dependency input changes: `tools/osv_scan.sh`.
+- Repository security guardrails: `tools/check_secret_redaction.sh` and `tools/check_workflow_git_pins.sh`.
 
 ## Project-Specific Guardrails
 
@@ -45,4 +47,6 @@ The repository intentionally blocks or flags patterns that are easy to reintrodu
 - Do not include bundled third-party headers directly outside approved wrappers and integration points.
 - Keep workflow scripts defensive: pass untrusted context through environment variables or action inputs, not direct expression interpolation in `run:` blocks.
 - Keep vcpkg overlay ports pinned by immutable `REF` and `SHA512`.
+- Do not print radio keys, keystreams, API keys, or derived key material in logs, terminal UI, or test diagnostics. Use `DSD_SECRET_REDACTED` for successful secret-load messages.
+- Keep CI GitHub source dependencies pinned through `tools/ci-dependency-pins.env` and `tools/fetch-pinned-git.sh`.
 - Keep analyzer and linter output actionable. Prefer fixing root causes over widening suppressions.

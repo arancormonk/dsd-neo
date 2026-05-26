@@ -41,6 +41,7 @@
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
@@ -936,10 +937,10 @@ nxdn_dcall_apply_decryption(dsd_state* state, const struct nxdn_dcall_data_conte
     }
 
     if (state->payload_algid == 1 && key != 0ULL) {
-        DSD_FPRINTF(stderr, " Key: %05llu;", (unsigned long long)key);
+        DSD_FPRINTF(stderr, " Key: %s;", DSD_SECRET_REDACTED);
         nxdn_pdu_scrambler_keystream_creation(ks, (int)(key & 0x7FFFU), ctx->total_bits);
     } else if (state->payload_algid == 2 && key != 0ULL) {
-        DSD_FPRINTF(stderr, " Key: %016llX;", (unsigned long long)key);
+        DSD_FPRINTF(stderr, " Key: %s;", DSD_SECRET_REDACTED);
         const int nblocks = (ctx->total_bytes + 7) / 8;
         uint8_t ks_bytes[NXDN_DCALL_MAX_BYTES];
         DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
@@ -949,7 +950,7 @@ nxdn_dcall_apply_decryption(dsd_state* state, const struct nxdn_dcall_data_conte
         if (state->payload_mi != 0ULL) {
             nxdn_lfsr128_expand_iv_from_mi64((uint64_t)state->payload_mi, state->aes_ivR);
         }
-        DSD_FPRINTF(stderr, " KS: %016llX;", (unsigned long long)aes_key_stub);
+        DSD_FPRINTF(stderr, " KS: %s;", DSD_SECRET_REDACTED);
         const int nblocks = (ctx->total_bytes + 15) / 16;
         uint8_t ks_bytes[NXDN_DCALL_MAX_BYTES];
         DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
@@ -1505,7 +1506,7 @@ nxdn_vcall_assgn_load_scrambler_key(dsd_state* state, const struct nxdn_vcall_as
     if (state->rkey_array[info->destination_id] != 0) {
         state->R = state->rkey_array[info->destination_id];
         DSD_FPRINTF(stderr, " %s", KYEL);
-        DSD_FPRINTF(stderr, " Key Loaded: %lld", state->rkey_array[info->destination_id]);
+        DSD_FPRINTF(stderr, " Key Loaded: %s", DSD_SECRET_REDACTED);
         state->payload_miN = state->R;
     }
     if (state->M == 1) {
@@ -2044,17 +2045,17 @@ nxdn_vcall_print_cipher(const dsd_state* state, const struct nxdn_vcall_info* in
     }
     if (info->cipher_type == 0x01U && state->R > 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Value: %05lld", state->R);
+        DSD_FPRINTF(stderr, "Value: %s", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
     if (info->cipher_type == 0x02U && state->R > 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Value: %016llX", state->R);
+        DSD_FPRINTF(stderr, "Value: %s", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
     if (info->cipher_type == 0x03U && state->R > 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "KS: %016llX", state->R);
+        DSD_FPRINTF(stderr, "KS: %s", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
 }

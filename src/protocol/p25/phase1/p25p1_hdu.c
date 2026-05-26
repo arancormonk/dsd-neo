@@ -43,6 +43,7 @@
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
@@ -510,10 +511,10 @@ hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-hdu_apply_unmute_policy(dsd_opts* opts, dsd_state* state) {
+hdu_apply_unmute_policy(dsd_opts* opts, const dsd_state* state) {
     if (state->R != 0
         && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
-        DSD_FPRINTF(stderr, " Key: %010llX", state->R);
+        DSD_FPRINTF(stderr, " Key: %s", DSD_SECRET_REDACTED);
         opts->unmute_encrypted_p25 = 1;
         return;
     }
@@ -521,10 +522,7 @@ hdu_apply_unmute_policy(dsd_opts* opts, dsd_state* state) {
     if ((state->payload_algid == 0x84 || state->payload_algid == 0x89) && state->aes_key_loaded[0] == 1) {
         DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %016llX %016llX ", state->A1[0], state->A2[0]);
-        if (state->payload_algid == 0x84) {
-            DSD_FPRINTF(stderr, "%016llX %016llX", state->A3[0], state->A4[0]);
-        }
+        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
         opts->unmute_encrypted_p25 = 1;
         return;

@@ -88,7 +88,7 @@ This can be useful when you want to keep transport out of DSD-neo (pipe into ano
 
 `m17udp` is a separate M17 frame transport, not raw PCM audio:
 
-- Input: `-i m17udp[:bind_addr:port]` (default port `17000`; current decoder bind listens on all interfaces)
+- Input: `-i m17udp[:bind_addr:port]` (defaults `127.0.0.1:17000`; use `0.0.0.0` only when LAN access is intended)
 - Output: `-o m17udp[:host:port]` (default `127.0.0.1:17000`)
 - Decode M17 UDP/IP input with `-fU`.
 
