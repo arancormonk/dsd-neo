@@ -9,6 +9,8 @@ on:
     paths-ignore:
       - ".*"
       - "**/*.md"
+  pull_request:
+    branches: [main, master]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -264,6 +266,7 @@ jobs:
           ./build/dev-release/apps/dsd-cli/dsd-neo -h || true
 
       - name: Stage portable tree
+        if: github.event_name != 'pull_request'
         id: stage
         shell: bash
         run: |
@@ -375,6 +378,7 @@ jobs:
           find "$STAGE/lib" -maxdepth 1 -type f -name '*.dylib' -exec basename {} \; | sort -f > "$STAGE/dylibs-manifest.txt"
 
       - name: Smoke test staged binary
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
@@ -383,6 +387,7 @@ jobs:
           "$STAGE/bin/dsd-neo" -h || true
 
       - name: Create DMG
+        if: github.event_name != 'pull_request'
         id: dmg
         shell: bash
         env:
@@ -414,6 +419,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Verify DMG contents (mount and run help)
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euxo pipefail
@@ -428,6 +434,7 @@ jobs:
           trap - EXIT
 
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.dmg.outputs.ART_NAME }}
@@ -435,6 +442,7 @@ jobs:
           retention-days: 7
 
       - name: Generate artifact SBOM
+        if: github.event_name != 'pull_request'
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with:
           file: ${{ steps.dmg.outputs.DMG_PATH }}

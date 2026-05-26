@@ -155,8 +155,6 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
-    # Do not run this full Release build on pull_request; keep it for push/dispatch
-    if: github.event_name != 'pull_request'
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -365,7 +363,7 @@ jobs:
 
       - name: Smoke test - show CLI help
         run: |
-          ./build/dev-release/apps/dsd-cli/dsd-neo -h || true
+          ./build/dev-release/apps/dsd-cli/dsd-neo -h
 
       - name: Show ccache stats
         if: always()
@@ -879,9 +877,6 @@ jobs:
   sanitize-linux:
     name: Linux • Debug • sanitizer (${{ matrix.name }})
     runs-on: ubuntu-latest
-    # Keep sanitizer coverage on push/manual runs. Pull requests get the
-    # non-sanitized debug build+ctest in backend-pr for faster feedback.
-    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:

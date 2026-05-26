@@ -65,17 +65,27 @@ typedef void* (*dsd_thread_fn)(void*);
 /**
  * @brief Create and start a new thread.
  *
- * On POSIX C builds this expands to pthread_create at the call site so static
- * analysis can preserve the concrete thread entry/argument pairing. C++ builds
- * use the wrapper function to avoid -Waddress when passing named thread entry
- * functions.
+ * On POSIX C/C++ builds this expands to pthread_create at the call site so
+ * static analysis can preserve the concrete thread entry/argument pairing.
+ * The C++ form uses a lambda to keep the null checks without triggering
+ * -Waddress when passing named thread entry functions.
  *
  * @param thread    Pointer to thread handle (output).
  * @param func      Thread entry function.
  * @param arg       Argument passed to thread function.
  * @return 0 on success, non-zero error code on failure.
  */
-#if !DSD_PLATFORM_WIN_NATIVE && !defined(DSD_NEO_THREADING_NO_INLINE_CREATE) && !defined(__cplusplus)
+#if !DSD_PLATFORM_WIN_NATIVE && !defined(DSD_NEO_THREADING_NO_INLINE_CREATE) && defined(__cplusplus)
+#define dsd_thread_create(thread, func, arg)                                                                           \
+    ([&]() -> int {                                                                                                    \
+        dsd_thread_t* const dsd_thread_handle__ = (thread);                                                            \
+        dsd_thread_fn const dsd_thread_func__ = (func);                                                                \
+        void* const dsd_thread_arg__ = (arg);                                                                          \
+        return (!dsd_thread_handle__ || !dsd_thread_func__)                                                            \
+                   ? EINVAL                                                                                            \
+                   : pthread_create(dsd_thread_handle__, NULL, dsd_thread_func__, dsd_thread_arg__);                   \
+    }())
+#elif !DSD_PLATFORM_WIN_NATIVE && !defined(DSD_NEO_THREADING_NO_INLINE_CREATE)
 #define dsd_thread_create(thread, func, arg)                                                                           \
     (((thread) == NULL || (func) == NULL) ? EINVAL : pthread_create((thread), NULL, (func), (arg)))
 #else

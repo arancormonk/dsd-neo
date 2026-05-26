@@ -217,10 +217,10 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 
     // If the nonblocking menu overlay is open, route keys to it first.
     if (ui_menu_is_open()) {
-        if (c != -1) {
-            ui_menu_handle_key(c, opts, state);
+        if (c == -1) {
+            return 1;
         }
-        return 1; // consume all keys while menu overlay is active
+        return (uint8_t)(ui_menu_handle_key(c, opts, state) || ui_menu_is_open());
     }
 
     if (ncurses_handle_escape_or_history(opts, state, c)) {
