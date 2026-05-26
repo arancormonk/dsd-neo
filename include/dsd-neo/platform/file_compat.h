@@ -102,6 +102,14 @@ int dsd_fstat(int fd, dsd_stat_t* st);
 int dsd_stat_path(const char* path, dsd_stat_t* st);
 
 /**
+ * @brief Check whether file status describes a regular file.
+ *
+ * @param st    File status struct.
+ * @return Non-zero if regular file, 0 otherwise.
+ */
+int dsd_stat_is_regular(const dsd_stat_t* st);
+
+/**
  * @brief Set file permissions (best effort on Windows).
  *
  * @param fd    File descriptor.

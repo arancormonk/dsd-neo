@@ -57,6 +57,11 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
 }
 
 int
+dsd_stat_is_regular(const dsd_stat_t* st) {
+    return st && ((st->st_mode & _S_IFMT) == _S_IFREG);
+}
+
+int
 dsd_fchmod(int fd, int mode) {
     (void)fd;
     (void)mode;

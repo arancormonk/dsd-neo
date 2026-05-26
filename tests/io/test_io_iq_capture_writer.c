@@ -5,10 +5,10 @@
 
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 #include "test_support.h"
@@ -181,9 +181,9 @@ test_max_bytes_alignment_cu8_and_cf32(void) {
         DSD_MEMSET(&stats, 0, sizeof(stats));
         dsd_iq_capture_close(writer, &stats);
 
-        struct stat st;
-        rc |= expect_true("stat cu8", stat(data_path, &st) == 0);
-        if (stat(data_path, &st) == 0) {
+        dsd_stat_t st;
+        rc |= expect_true("stat cu8", dsd_stat_path(data_path, &st) == 0);
+        if (dsd_stat_path(data_path, &st) == 0) {
             rc |= expect_u64("cu8 max aligned bytes", (uint64_t)st.st_size, 4);
         }
     }
@@ -214,9 +214,9 @@ test_max_bytes_alignment_cu8_and_cf32(void) {
         DSD_MEMSET(&stats, 0, sizeof(stats));
         dsd_iq_capture_close(writer, &stats);
 
-        struct stat st;
-        rc |= expect_true("stat cf32", stat(data_path, &st) == 0);
-        if (stat(data_path, &st) == 0) {
+        dsd_stat_t st;
+        rc |= expect_true("stat cf32", dsd_stat_path(data_path, &st) == 0);
+        if (dsd_stat_path(data_path, &st) == 0) {
             rc |= expect_u64("cf32 max aligned bytes", (uint64_t)st.st_size, 8);
         }
     }
@@ -263,9 +263,9 @@ test_odd_cu8_preserves_iq_alignment(void) {
     }
 
     {
-        struct stat st;
-        rc |= expect_true("stat odd", stat(data_path, &st) == 0);
-        if (stat(data_path, &st) == 0) {
+        dsd_stat_t st;
+        rc |= expect_true("stat odd", dsd_stat_path(data_path, &st) == 0);
+        if (dsd_stat_path(data_path, &st) == 0) {
             rc |= expect_true("odd file aligned to iq pair", (((uint64_t)st.st_size) % 2ULL) == 0ULL);
         }
     }
@@ -587,8 +587,8 @@ test_abort_removes_metadata(void) {
     dsd_iq_capture_abort(writer);
 
     {
-        struct stat st;
-        rc |= expect_true("metadata removed", stat(metadata_path, &st) != 0);
+        dsd_stat_t st;
+        rc |= expect_true("metadata removed", dsd_stat_path(metadata_path, &st) != 0);
     }
 
     return rc;

@@ -60,6 +60,11 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
 }
 
 int
+dsd_stat_is_regular(const dsd_stat_t* st) {
+    return st && S_ISREG(st->st_mode);
+}
+
+int
 dsd_fchmod(int fd, int mode) {
     return fchmod(fd, (mode_t)mode);
 }
@@ -151,7 +156,7 @@ dsd_open_resolved_local_entry(const char* name, char* out, size_t out_size, int*
         close(fd);
         return NULL;
     }
-    if (!S_ISREG(st.st_mode)) {
+    if (!dsd_stat_is_regular(&st)) {
         *saved_errno = EINVAL;
         close(fd);
         return NULL;

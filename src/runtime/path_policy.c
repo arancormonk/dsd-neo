@@ -17,11 +17,9 @@
 #if DSD_PLATFORM_WIN_NATIVE
 #include <fcntl.h>
 #include <io.h>
-#include <sys/stat.h>
 #include <windows.h>
 #else
 #include <fcntl.h>
-#include <sys/stat.h>
 #endif
 
 static int
@@ -153,7 +151,7 @@ path_require_regular_file(int fd) {
         errno = errno ? errno : EINVAL;
         return -1;
     }
-    if (!S_ISREG(st.st_mode)) {
+    if (!dsd_stat_is_regular(&st)) {
         errno = EINVAL;
         return -1;
     }

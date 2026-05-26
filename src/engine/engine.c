@@ -56,7 +56,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <time.h>
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -314,11 +313,11 @@ open_recording_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
     }
 
     if (opts->dmr_stereo_wav == 1 && opts->wav_out_f == NULL && opts->wav_out_fR == NULL) {
-        struct stat st;
+        dsd_stat_t st;
         char wav_file_directory[1024];
         DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
         wav_file_directory[sizeof wav_file_directory - 1] = '\0';
-        if (stat(wav_file_directory, &st) == -1) {
+        if (dsd_stat_path(wav_file_directory, &st) == -1) {
             LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
             dsd_mkdir(wav_file_directory, 0700);
         }

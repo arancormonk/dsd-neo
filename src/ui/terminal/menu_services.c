@@ -25,7 +25,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -74,8 +73,8 @@ svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
     }
     char wav_file_directory[1024];
     DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
-    struct stat st;
-    if (stat(wav_file_directory, &st) == -1) {
+    dsd_stat_t st;
+    if (dsd_stat_path(wav_file_directory, &st) == -1) {
         LOG_NOTICE("%s wav file directory does not exist\n", wav_file_directory);
         LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
         dsd_mkdir(wav_file_directory, 0700);
@@ -115,7 +114,7 @@ svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
         opts->symbolfile = NULL;
         return -1;
     }
-    if (!S_ISREG(sb.st_mode)) {
+    if (!dsd_stat_is_regular(&sb)) {
         LOG_ERROR("Error, %s is not a regular file\n", filename);
         fclose(opts->symbolfile);
         opts->symbolfile = NULL;
@@ -149,7 +148,7 @@ svc_replay_last_symbol(dsd_opts* opts, dsd_state* state) {
         opts->symbolfile = NULL;
         return -1;
     }
-    if (!S_ISREG(sb.st_mode)) {
+    if (!dsd_stat_is_regular(&sb)) {
         LOG_ERROR("Error, %s is not a regular file\n", opts->audio_in_dev);
         fclose(opts->symbolfile);
         opts->symbolfile = NULL;
@@ -345,8 +344,8 @@ svc_set_dsp_output_file(dsd_opts* opts, const char* filename) {
     }
     char dir[1024];
     DSD_SNPRINTF(dir, sizeof dir, "./DSP");
-    struct stat st;
-    if (stat(dir, &st) == -1) {
+    dsd_stat_t st;
+    if (dsd_stat_path(dir, &st) == -1) {
         dsd_mkdir(dir, 0700);
     }
     DSD_SNPRINTF(opts->dsp_out_file, sizeof opts->dsp_out_file, "%s/%s", dir, filename);
