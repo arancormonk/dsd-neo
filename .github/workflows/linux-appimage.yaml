@@ -65,7 +65,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --privileged --rm tonistiigi/binfmt --install aarch64 || true
+          source tools/ci-dependency-pins.env
+          docker run --privileged --rm "$TONISTIIGI_BINFMT_IMAGE" --install aarch64 || true
       - name: Prepare artifact naming
         id: names
         shell: bash

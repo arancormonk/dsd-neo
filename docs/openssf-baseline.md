@@ -23,9 +23,9 @@ enabled in GitHub.
   Required status checks, release tag verification, and workflow guardrails are
   the enforceable controls for solo-maintainer changes.
 - Deleting the protected `main` branch is disabled in GitHub branch protection.
-- Version release tags matching `v*.*.*` are protected by GitHub rulesets where
-  available: creation is restricted to the maintainer/admin role, deletion and
-  force updates are blocked, and signed tags are required when supported.
+- Version release tags matching `v*.*.*` are protected by a GitHub tag ruleset:
+  deletion and force updates are blocked, and signed tags are required.
+  Creation remains limited by repository write/admin permissions.
 
 ## Build, Release, and Secrets Controls
 

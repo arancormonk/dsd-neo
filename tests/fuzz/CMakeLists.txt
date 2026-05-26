@@ -56,6 +56,21 @@ dsd_neo_add_fuzzer(
 )
 
 dsd_neo_add_fuzzer(
+  dsd-neo_fuzz_core_csv_import
+  FUZZ_CORE_CSV_IMPORT
+  fuzz_core_csv_import.c
+  core_csv_import
+  dsd-neo_runtime
+  dsd-neo_crypto
+)
+target_sources(
+    dsd-neo_fuzz_core_csv_import
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/core/file/dsd_import.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+)
+
+dsd_neo_add_fuzzer(
   dsd-neo_fuzz_protocol_m17_lsf
   FUZZ_PROTOCOL_M17_LSF
   fuzz_protocol_m17_lsf.c

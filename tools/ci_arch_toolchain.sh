@@ -9,7 +9,7 @@ Run a command in an Arch Linux container with the rolling C/C++ quality
 toolchain used by local preflight checks.
 
 Environment:
-  CI_ARCH_IMAGE              Container image to use (default: archlinux:base-devel).
+  CI_ARCH_IMAGE              Container image to use (default: pinned ARCHLINUX_BASE_DEVEL_IMAGE).
   CI_ARCH_EXTRA_PACKAGES     Extra pacman packages to install before running.
   CI_ARCH_IWYU_SHA           Expected include-what-you-use commit SHA.
   CI_ARCH_TOOLCHAIN_PREFIX   Container path for cached Arch-only tools.
@@ -27,7 +27,11 @@ if ! command -v docker > /dev/null 2>&1; then
 fi
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
-IMAGE="${CI_ARCH_IMAGE:-archlinux:base-devel}"
+# shellcheck source=tools/ci-dependency-pins.env
+# shellcheck disable=SC1091
+source "$ROOT_DIR/tools/ci-dependency-pins.env"
+DEFAULT_ARCH_IMAGE="${ARCHLINUX_BASE_DEVEL_IMAGE:?ARCHLINUX_BASE_DEVEL_IMAGE is required}"
+IMAGE="${CI_ARCH_IMAGE:-$DEFAULT_ARCH_IMAGE}"
 ARCH_TOOLCHAIN_PREFIX="${CI_ARCH_TOOLCHAIN_PREFIX:-/workspace/.deps-arch-toolchain}"
 
 ARCH_PACKAGES=(

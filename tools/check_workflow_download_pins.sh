@@ -44,11 +44,26 @@ floating_appimage_images=$(
 )
 report_violation "Digestless AppImage container image reference detected:" "$floating_appimage_images"
 
+floating_ci_images=$(
+  rg -n '(archlinux:base-devel|tonistiigi/binfmt|ghcr[.]io/(gitleaks/gitleaks|google/osv-scanner):)' \
+    .github/workflows tools \
+    --glob '!tools/check_workflow_download_pins.sh' |
+    grep -v '@sha256:' ||
+    true
+)
+report_violation "Digestless CI container image reference detected:" "$floating_ci_images"
+
 # shellcheck source=tools/ci-dependency-pins.env
 # shellcheck disable=SC1091
 source tools/ci-dependency-pins.env
 
-for var in APPIMAGE_UBUNTU_2004_AMD64_IMAGE APPIMAGE_UBUNTU_2004_ARM64_IMAGE; do
+for var in \
+  APPIMAGE_UBUNTU_2004_AMD64_IMAGE \
+  APPIMAGE_UBUNTU_2004_ARM64_IMAGE \
+  ARCHLINUX_BASE_DEVEL_IMAGE \
+  TONISTIIGI_BINFMT_IMAGE \
+  GITLEAKS_IMAGE \
+  OSV_SCANNER_IMAGE; do
   value=${!var:-}
   if [[ ! "$value" =~ @sha256:[0-9a-f]{64}$ ]]; then
     echo "${var} must be pinned as image@sha256:<64 hex chars>; got '${value}'." >&2
