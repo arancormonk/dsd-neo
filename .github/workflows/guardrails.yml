@@ -32,6 +32,7 @@ jobs:
           tools/check_secret_redaction.sh
           tools/check_workflow_git_pins.sh
           tools/check_workflow_download_pins.sh
+          tools/check_vcpkg_overlay_pins.sh
 
   script-lint:
     name: shell/workflow lint

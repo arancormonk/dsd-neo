@@ -13,7 +13,7 @@ DSD-neo keeps release and CI dependencies explicit so analyzer results and binar
 
 ## Pinned CI Source Checkouts
 
-`tools/ci-dependency-pins.env` is the checked-in source of truth for CI-only GitHub source dependencies such as `mbelib-neo`, `codec2`, `rtl-sdr`, `include-what-you-use`, AppImage helper projects, CI container digests, and installer SHA256 values.
+`tools/ci-dependency-pins.env` is the checked-in source of truth for CI-only GitHub source dependencies such as `mbelib-neo`, `codec2`, `rtl-sdr`, `include-what-you-use`, AppImage helper projects, CI container digests, vcpkg overlay archive SHA512 values, and installer SHA256 values.
 
 To refresh one of these pins:
 
@@ -22,7 +22,7 @@ repo=https://github.com/arancormonk/mbelib-neo
 git ls-remote "$repo" HEAD
 ```
 
-Update the matching SHA in `tools/ci-dependency-pins.env`, then run `tools/check_workflow_git_pins.sh`, `tools/check_workflow_download_pins.sh`, and the affected CI/local build path. For `mbelib-neo` and `codec2`, keep the CI pin aligned with the vcpkg overlay `REF` unless there is a documented reason to test a different commit.
+Update the matching SHA in `tools/ci-dependency-pins.env`, then run `tools/check_workflow_git_pins.sh`, `tools/check_workflow_download_pins.sh`, `tools/check_vcpkg_overlay_pins.sh`, and the affected CI/local build path. For `mbelib-neo` and `codec2`, keep the matching `*_TARBALL_SHA512` values in the same file aligned with the GitHub archive used by the vcpkg overlay port.
 
 For AppImage helper projects, refresh the source SHA only after checking the upstream changes. Do not switch back to `releases/download/continuous` helper AppImages. If a container base image or CMake installer changes, update the digest or SHA256 in `tools/ci-dependency-pins.env` in the same change as the workflow update.
 
@@ -34,7 +34,7 @@ The robust control is to store an out-of-band verified AUR ED25519 host key in t
 
 ## vcpkg Overlay Ports
 
-Overlay ports under `vcpkg-ports/` must use immutable `REF` plus `SHA512`, not `HEAD_REF`, for normal CI and release builds.
+Overlay ports under `vcpkg-ports/` must use immutable `REF` plus `SHA512`, not `HEAD_REF`, for normal CI and release builds. For ports mirrored in `tools/ci-dependency-pins.env`, that pin file is the source of truth; the portfile literals are kept only so vcpkg ABI and binary-cache keys include the pinned source revision.
 
 To refresh a pinned GitHub source:
 
@@ -42,10 +42,18 @@ To refresh a pinned GitHub source:
 repo=arancormonk/mbelib-neo
 sha=$(git ls-remote "https://github.com/${repo}" refs/heads/main | cut -f1)
 echo "$sha"
-curl -fsSL "https://github.com/${repo}/archive/${sha}.tar.gz" | sha512sum
+tarball_sha512=$(curl -fsSL "https://github.com/${repo}/archive/${sha}.tar.gz" | sha512sum | awk '{print $1}')
+echo "$tarball_sha512"
 ```
 
-Update the matching `REF` and `SHA512` in the portfile, then run the affected vcpkg build or packaging workflow. Use the same process for `arancormonk/codec2`.
+Update the matching commit SHA and `*_TARBALL_SHA512` in `tools/ci-dependency-pins.env`, then mirror those values into the affected portfile with:
+
+```bash
+tools/check_vcpkg_overlay_pins.sh --fix
+tools/check_vcpkg_overlay_pins.sh
+```
+
+Run the affected vcpkg build or packaging workflow. Use the same process for `arancormonk/codec2`.
 
 ## Vulnerability Scanning
 

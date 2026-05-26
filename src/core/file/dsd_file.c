@@ -25,6 +25,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/mbe_api.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
@@ -1468,8 +1469,11 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         ks_idx += 7;
     }
 
-    mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
-                             state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+    mbe_process_result result;
+    dsd_mbe_init_result_from_errors(&result, state->errs, state->errs2, MBE_PROCESS_FLAG_C0_VALID);
+    (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
+                                         sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
+                                         state->prev_mp_enhanced, opts->uvquality, &result);
 
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
@@ -1503,8 +1507,11 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
 
     ks_idx = sdrtrunk_apply_keystream(imbe_d, 88, ks, ks_idx);
 
-    mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
-                             state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+    mbe_process_result result;
+    dsd_mbe_init_result_from_errors(&result, state->errs, state->errs2, MBE_PROCESS_FLAG_C0_VALID);
+    (void)dsd_mbe_process_imbe4400_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
+                                         sizeof(state->err_str), imbe_d, state->cur_mp, state->prev_mp,
+                                         state->prev_mp_enhanced, opts->uvquality, &result);
 
     if (dsd_frame_detail_enabled(opts)) {
         PrintIMBEData(opts, state, imbe_d);

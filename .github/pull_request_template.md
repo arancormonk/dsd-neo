@@ -28,7 +28,7 @@
 - [ ] `tools/cmake_format_check.sh` for CMake changes
 - [ ] `tools/zizmor.sh` for workflow changes
 - [ ] `tools/osv_scan.sh` for dependency input changes
-- [ ] `tools/check_secret_redaction.sh`, `tools/check_workflow_git_pins.sh`, and `tools/check_workflow_download_pins.sh` for security-sensitive workflow/release changes
+- [ ] `tools/check_secret_redaction.sh`, `tools/check_workflow_git_pins.sh`, `tools/check_workflow_download_pins.sh`, and `tools/check_vcpkg_overlay_pins.sh` for security-sensitive workflow/release changes
 
 ## Risk
 

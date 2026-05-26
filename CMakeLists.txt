@@ -462,7 +462,7 @@ endif()
 find_package(LibSndFile REQUIRED)
 
 # Require mbelib-neo 2.x (no legacy mbelib fallback). The 2.x ABI provides the
-# soft-decision frame decode and mbe_process_result APIs used by dsd-neo.
+# soft-decision frame decode and result-based processing APIs used by dsd-neo.
 set(_DSD_MBE_REQUIRED_VERSION 2.0)
 find_package(mbe-neo ${_DSD_MBE_REQUIRED_VERSION} CONFIG REQUIRED)
 if(TARGET mbe_neo::mbe_shared)
@@ -528,8 +528,9 @@ check_c_source_compiles(
 #include <mbelib.h>
 
 int main(void) {
-    mbe_soft_bit imbe_soft[8][23] = {{{0}}};
-    mbe_soft_bit ambe_soft[4][24] = {{{0}}};
+    const mbe_soft_bit imbe_soft[8][23] = {{{0}}};
+    const mbe_soft_bit ambe_soft[4][24] = {{{0}}};
+    const char ambe_fr[4][24] = {{0}};
     char imbe_d[88] = {0};
     char ambe_d[49] = {0};
     char err_str[16] = {0};
@@ -545,8 +546,11 @@ int main(void) {
     result.flags = MBE_PROCESS_FLAG_SOFT_INPUT;
     (void)mbe_decodeImbe7200x4400SoftFrame(imbe_soft, imbe_d, &result);
     (void)mbe_decodeAmbe3600x2450SoftFrame(ambe_soft, ambe_d, &result);
-    (void)mbe_processImbe4400DatafV2(audio, &result, imbe_d, &cur, &prev, &prev_enhanced, 3);
-    (void)mbe_processAmbe2450DatafV2(audio, &result, ambe_d, &cur, &prev, &prev_enhanced, 3);
+    (void)mbe_processImbe4400Dataf(audio, &result, imbe_d, &cur, &prev, &prev_enhanced, 3);
+    (void)mbe_processAmbe2450Dataf(audio, &result, ambe_d, &cur, &prev, &prev_enhanced, 3);
+    (void)mbe_processAmbe2400Dataf(audio, &result, ambe_d, &cur, &prev, &prev_enhanced, 3);
+    (void)mbe_processAmbe3600x2450Framef(audio, &result, ambe_fr, ambe_d, &cur, &prev, &prev_enhanced, 3);
+    (void)mbe_processAmbe3600x2450SoftFramef(audio, &result, ambe_soft, ambe_d, &cur, &prev, &prev_enhanced, 3);
     mbe_formatProcessResult(err_str, sizeof(err_str), &result);
     return (int)(sizeof(mbe_soft_bit) + sizeof(mbe_process_result));
 }
@@ -569,7 +573,7 @@ unset(_DSD_SAVED_CMAKE_REQUIRED_FLAGS)
 if(NOT DSD_HAVE_MBE_NEO_SOFT_API)
     message(
         FATAL_ERROR
-        "mbe-neo 2.x with the soft-decision/V2 API is required; update mbelib-neo"
+        "mbe-neo 2.x with the soft-decision/result API is required; update mbelib-neo"
     )
 endif()
 if(DSD_ENABLE_RTLSDR)
