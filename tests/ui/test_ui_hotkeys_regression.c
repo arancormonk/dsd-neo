@@ -42,6 +42,9 @@ static UiPostCapture g_cap;
 static int g_redraw_calls = 0;
 static int g_history_mode = 1;
 static int g_history_cycle_calls = 0;
+static int g_menu_open = 0;
+static int g_menu_handle_key_calls = 0;
+static int g_menu_last_key = ERR;
 
 int
 ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) { // NOLINT(misc-use-internal-linkage)
@@ -86,14 +89,15 @@ ui_history_cycle_mode(void) { // NOLINT(misc-use-internal-linkage)
 
 int
 ui_menu_is_open(void) { // NOLINT(misc-use-internal-linkage)
-    return 0;
+    return g_menu_open;
 }
 
 int
 ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)ch;
     (void)opts;
     (void)state;
+    g_menu_handle_key_calls++;
+    g_menu_last_key = ch;
     return 0;
 }
 
@@ -122,6 +126,9 @@ cap_reset(void) {
     g_redraw_calls = 0;
     g_history_cycle_calls = 0;
     g_history_mode = 1;
+    g_menu_open = 0;
+    g_menu_handle_key_calls = 0;
+    g_menu_last_key = ERR;
 }
 
 static uint32_t
@@ -141,6 +148,15 @@ main(void) {
         free(opts);
         return 1;
     }
+
+    /* Open menu overlay should receive keys before hotkeys and keep input consumed. */
+    cap_reset();
+    g_menu_open = 1;
+    assert(ncurses_input_handler(opts, state, DSD_KEY_HISTORY) == 1);
+    assert(g_menu_handle_key_calls == 1);
+    assert(g_menu_last_key == DSD_KEY_HISTORY);
+    assert(g_history_cycle_calls == 0);
+    assert(g_cap.calls == 0);
 
     /* 'h' must cycle immediately in UI thread (no command queue dependency). */
     cap_reset();
