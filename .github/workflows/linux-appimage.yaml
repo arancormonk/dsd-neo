@@ -316,6 +316,8 @@ jobs:
               mkdir -p "$(dirname "$OUTPUT")"
               export PATH="/usr/local/bin:$PATH"
 
+              # Helper projects use CMake launcher settings below; do not also inherit CC/CXX ccache wrappers.
+              unset CC CXX
               cmake_common_opts=(
                 -G Ninja
                 -DCMAKE_BUILD_TYPE=Release
