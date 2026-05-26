@@ -178,6 +178,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->input_volume_multiplier = 1;
     opts->rtl_udp_port =
         0; //set UDP port for RTL remote -- 0 by default, will be making this optional for some external/legacy use cases (edacs-fm, etc)
+    DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", "127.0.0.1");
     opts->rtl_dsp_bw_khz = 48;  // DSP baseband kHz (4,6,8,12,16,24,48). Not tuner IF BW.
     opts->rtlsdr_ppm_error = 0; //initialize ppm with 0 value;
     opts->rtlsdr_center_freq =

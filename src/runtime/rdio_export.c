@@ -26,6 +26,7 @@
 
 #ifdef USE_CURL
 #include <curl/curl.h>
+#include <curl/curlver.h>
 #endif
 
 #define DSD_RDIO_PATH_MAX         2048
@@ -781,7 +782,12 @@ dsd_rdio_configure_curl_request(CURL* curl, curl_mime* mime, const char* endpoin
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, (long)timeout_ms);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)timeout_ms);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+#else
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
+#endif
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "dsd-neo/rdio-export");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, dsd_rdio_discard_write_cb);
 }

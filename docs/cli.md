@@ -15,7 +15,8 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Trunking/scan: `-T`, `-Y`, `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
-- RTL retune control: `--rtl-udp-control <port>` (see `docs/udp-control.md`)
+- RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
+  `--rtl-udp-control-bind <ipv4>` for explicit remote exposure (see `docs/udp-control.md`)
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
 - Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `--dmr-vertex-ks-csv <file>`, `-4`, `-0`, `-3`
 - Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`, `--rtltcp-autotune`, `--rdio-mode off|dirwatch|api|both`
@@ -137,6 +138,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 For rdio-scanner API uploads that should not persist on disk, use API-only mode with a RAM-backed per-call WAV directory
 and post-upload deletion, for example `-7 /dev/shm/dsd-neo-rdio -P --rdio-mode api --rdio-api-delete-after-upload`.
+Rdio API uploads do not follow HTTP redirects; use the final trusted HTTP/HTTPS endpoint directly.
 DirWatch modes keep the WAV and JSON files because the watcher needs stable files to ingest.
 - `-L <file>` Append LRRP (location) data
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
@@ -248,7 +250,8 @@ Notes
 - Examples:
   - `-i rtl:0:851.375M:22:-2:24:0:2`
   - `-i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2`
-- External retune control (RTL/RTL‑TCP): `--rtl-udp-control <port>` (see `docs/udp-control.md`)
+- External retune control (RTL/RTL‑TCP): `--rtl-udp-control <port>` listens on `127.0.0.1` by default. Use
+  `--rtl-udp-control-bind <ipv4>` only when the unauthenticated listener must be reachable remotely.
 
 Advanced (env)
 

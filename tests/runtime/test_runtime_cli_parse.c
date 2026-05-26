@@ -2031,6 +2031,10 @@ test_rtl_udp_control_long_option_parse(void) {
         DSD_FPRINTF(stderr, "expected rtl_udp_port=9911, got %d\n", opts->rtl_udp_port);
         test_rc = 1;
     }
+    if (strcmp(opts->rtl_udp_bindaddr, "127.0.0.1") != 0) {
+        DSD_FPRINTF(stderr, "expected default rtl_udp_bindaddr=127.0.0.1, got %s\n", opts->rtl_udp_bindaddr);
+        test_rc = 1;
+    }
 
     freeState(state);
     free(opts);
@@ -2080,6 +2084,122 @@ test_rtl_udp_control_missing_port_returns_error(void) {
     free(opts);
     free(state);
     return 0;
+}
+
+static int
+test_rtl_udp_control_bind_long_option_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--rtl-udp-control";
+    char arg2[] = "9911";
+    char arg3[] = "--rtl-udp-control-bind";
+    char arg4[] = "0.0.0.0";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        test_rc = 1;
+    } else if (opts->rtl_udp_port != 9911 || strcmp(opts->rtl_udp_bindaddr, "0.0.0.0") != 0) {
+        DSD_FPRINTF(stderr, "expected rtl UDP control on 0.0.0.0:9911, got %s:%d\n", opts->rtl_udp_bindaddr,
+                    opts->rtl_udp_port);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_rtl_udp_control_invalid_bind_returns_error(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--rtl-udp-control-bind";
+    char arg2[] = "localhost";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "expected invalid --rtl-udp-control-bind error, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_rtl_udp_control_port_too_large_returns_error(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--rtl-udp-control=70000";
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "expected invalid --rtl-udp-control port error, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_rtl_udp_control_bind_missing_value_returns_error(void) {
+    return test_missing_required_long_option_value_returns_error("--rtl-udp-control-bind");
 }
 
 static int
@@ -3470,6 +3590,10 @@ main(void) {
     rc |= test_iq_replay_missing_value_returns_error();
     rc |= test_rtl_udp_control_long_option_parse();
     rc |= test_rtl_udp_control_missing_port_returns_error();
+    rc |= test_rtl_udp_control_bind_long_option_parse();
+    rc |= test_rtl_udp_control_invalid_bind_returns_error();
+    rc |= test_rtl_udp_control_port_too_large_returns_error();
+    rc |= test_rtl_udp_control_bind_missing_value_returns_error();
     rc |= test_dmr_baofeng_pc5_long_option_parse();
     rc |= test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes();
     rc |= test_dmr_csi_ee72_long_option_parse();

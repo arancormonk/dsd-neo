@@ -170,6 +170,7 @@ static struct udp_control* g_udp_ctrl = NULL;
 static int rtl_dsp_bw_hz;
 static short int volume_multiplier;
 static uint16_t port;
+static char udp_control_bindaddr[64] = "127.0.0.1";
 
 namespace {
 
@@ -4368,6 +4369,7 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
     dongle.dev_index = opts->rtl_dev_index;
     LOG_INFO("Setting DSP baseband to %d Hz\n", rtl_dsp_bw_hz);
     LOG_INFO("Setting RTL Power Squelch Level to %.1f dB\n", pwr_to_dB(opts->rtl_squelch_level));
+    port = 0;
     if (opts->rtl_udp_port != 0) {
         int p = opts->rtl_udp_port;
         if (p < 0) {
@@ -4377,6 +4379,12 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
             p = 65535;
         }
         port = (uint16_t)p;
+    }
+    if (opts->rtl_udp_bindaddr[0] != '\0') {
+        DSD_SNPRINTF(udp_control_bindaddr, sizeof udp_control_bindaddr, "%s", opts->rtl_udp_bindaddr);
+        udp_control_bindaddr[sizeof udp_control_bindaddr - 1] = '\0';
+    } else {
+        DSD_SNPRINTF(udp_control_bindaddr, sizeof udp_control_bindaddr, "%s", "127.0.0.1");
     }
     if (opts->rtl_gain_value > 0) {
         dongle.gain = opts->rtl_gain_value * 10;
@@ -4470,13 +4478,16 @@ start_threads_and_async(void) {
         }
     }
     if (port != 0) {
-        g_udp_ctrl = udp_control_start(
-            port,
+        g_udp_ctrl = udp_control_start_bound(
+            udp_control_bindaddr, port,
             [](uint32_t new_freq_hz, void* /*user_data*/) {
                 /* Marshal onto controller thread: single programming path */
                 schedule_manual_retune(new_freq_hz);
             },
             NULL);
+        if (!g_udp_ctrl) {
+            LOG_ERROR("Failed to start RTL UDP retune control on %s:%u\n", udp_control_bindaddr, (unsigned)port);
+        }
     }
 }
 
@@ -5483,8 +5494,12 @@ stream_open_start_rtltcp_pipeline(const dsd_opts* opts) {
         g_stream->demod_thread_started.store(1, std::memory_order_release);
     }
     if (port != 0) {
-        g_udp_ctrl = udp_control_start(
-            port, [](uint32_t new_freq_hz, void* /*user_data*/) { schedule_manual_retune(new_freq_hz); }, NULL);
+        g_udp_ctrl = udp_control_start_bound(
+            udp_control_bindaddr, port,
+            [](uint32_t new_freq_hz, void* /*user_data*/) { schedule_manual_retune(new_freq_hz); }, NULL);
+        if (!g_udp_ctrl) {
+            LOG_ERROR("Failed to start RTL UDP retune control on %s:%u\n", udp_control_bindaddr, (unsigned)port);
+        }
     }
     return 0;
 }

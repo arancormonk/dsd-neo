@@ -324,6 +324,7 @@ struct dsd_opts {
     char output_name[1024];
     char rigctlhostname[1024];
     char rdio_api_url[1024];
+    char rtl_udp_bindaddr[64];
     char udp_hostname[1024];
     char udp_in_bindaddr[1024];
     char m17_hostname[1024];

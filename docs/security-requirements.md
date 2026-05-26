@@ -102,7 +102,8 @@ The project does not:
 
 Users should protect local config and key files with OS permissions, avoid
 passing sensitive keys through shared shell history, and prefer encrypted
-transport when using remote rdio API or network audio endpoints.
+transport when using remote rdio API or network audio endpoints. Rdio API
+uploads do not follow redirects; configure the final trusted endpoint directly.
 
 ## Secure Design Controls
 
@@ -127,8 +128,8 @@ The project applies the following controls:
   GCC `-fanalyzer`, include-what-you-use, and lizard
 - Gitleaks and GitHub secret scanning for credential leakage
 - OSV-Scanner and dependency review for dependency vulnerabilities
-- pinned GitHub Actions, pinned CI source checkouts, and zizmor workflow
-  security checks
+- pinned GitHub Actions, pinned CI source checkouts, pinned workflow downloads,
+  and zizmor workflow security checks
 - branch protection requiring status checks before merge
 
 ## Solo Maintainer Operating Mode
