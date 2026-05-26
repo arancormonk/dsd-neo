@@ -22,6 +22,7 @@ jobs:
     name: OpenSSF Scorecard
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       checks: read
       contents: read
       issues: read
@@ -33,6 +34,47 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      - name: Wait for Linux CI checks
+        if: github.event_name == 'push'
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 2700))
+
+          while true; do
+            run_state="$(
+              gh run list \
+                --repo "$GH_REPO" \
+                --workflow linux-ci.yaml \
+                --commit "$HEAD_SHA" \
+                --event push \
+                --limit 1 \
+                --json status,conclusion \
+                --jq '.[0] // empty | [.status, (.conclusion // "")] | @tsv'
+            )"
+
+            if [ -n "$run_state" ]; then
+              IFS=$'\t' read -r status conclusion <<< "$run_state"
+              if [ "$status" = completed ]; then
+                echo "linux-ci completed with conclusion: ${conclusion:-unknown}"
+                break
+              fi
+              echo "linux-ci is $status; waiting before Scorecard..."
+            else
+              echo "linux-ci push run for $HEAD_SHA is not visible yet; waiting..."
+            fi
+
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "Timed out waiting for linux-ci to complete for $HEAD_SHA" >&2
+              exit 1
+            fi
+
+            sleep 30
+          done
 
       - name: Run Scorecard
         uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a
