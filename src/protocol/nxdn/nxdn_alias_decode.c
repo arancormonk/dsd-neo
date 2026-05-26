@@ -7,21 +7,22 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
-#include <errno.h>
-#include <iconv.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 
 #if !defined(DSD_HAVE_ICONV)
 #define DSD_HAVE_ICONV 0
 #endif
 
 #if DSD_HAVE_ICONV
+#include <errno.h>
+#include <iconv.h>
 #endif
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static uint8_t
 nxdn_bits_to_u8(const uint8_t* bits, size_t start, uint32_t len) {
