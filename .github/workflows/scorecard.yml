@@ -18,25 +18,14 @@ permissions:
   pull-requests: read
 
 jobs:
-  scorecard:
-    name: OpenSSF Scorecard
+  wait-for-linux-ci:
+    name: Wait for Linux CI
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       actions: read
-      checks: read
-      contents: read
-      issues: read
-      id-token: write
-      pull-requests: read
-      security-events: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
       - name: Wait for Linux CI checks
-        if: github.event_name == 'push'
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -60,8 +49,12 @@ jobs:
             if [ -n "$run_state" ]; then
               IFS=$'\t' read -r status conclusion <<< "$run_state"
               if [ "$status" = completed ]; then
-                echo "linux-ci completed with conclusion: ${conclusion:-unknown}"
-                break
+                if [ "$conclusion" = success ]; then
+                  echo "linux-ci completed with conclusion: success"
+                  break
+                fi
+                echo "linux-ci completed with non-success conclusion: ${conclusion:-unknown}" >&2
+                exit 1
               fi
               echo "linux-ci is $status; waiting before Scorecard..."
             else
@@ -75,6 +68,24 @@ jobs:
 
             sleep 30
           done
+
+  scorecard:
+    name: OpenSSF Scorecard
+    needs: [wait-for-linux-ci]
+    if: always() && (github.event_name != 'push' || needs.wait-for-linux-ci.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+      issues: read
+      id-token: write
+      pull-requests: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Run Scorecard
         uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a
