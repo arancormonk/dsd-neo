@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/timing.h>
 
 #if DSD_PLATFORM_WIN_NATIVE
