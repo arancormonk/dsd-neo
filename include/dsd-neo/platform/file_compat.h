@@ -93,6 +93,15 @@ int dsd_fsync(int fd);
 int dsd_fstat(int fd, dsd_stat_t* st);
 
 /**
+ * @brief Get file status for a path.
+ *
+ * @param path  File path.
+ * @param st    Output stat struct.
+ * @return 0 on success, -1 on error.
+ */
+int dsd_stat_path(const char* path, dsd_stat_t* st);
+
+/**
  * @brief Set file permissions (best effort on Windows).
  *
  * @param fd    File descriptor.

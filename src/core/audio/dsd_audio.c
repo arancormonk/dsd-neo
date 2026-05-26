@@ -46,15 +46,6 @@
 #include "dsd-neo/dsp/resampler.h"
 
 static int
-dsd_stat_path(const char* path, dsd_stat_t* st) {
-#if DSD_PLATFORM_WIN_NATIVE
-    return _stat(path, st);
-#else
-    return stat(path, st);
-#endif
-}
-
-static int
 dsd_stat_is_regular(const dsd_stat_t* st) {
 #if DSD_PLATFORM_WIN_NATIVE
     return ((st->st_mode & _S_IFMT) == _S_IFREG);

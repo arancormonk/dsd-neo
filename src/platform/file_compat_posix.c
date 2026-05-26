@@ -55,6 +55,11 @@ dsd_fstat(int fd, dsd_stat_t* st) {
 }
 
 int
+dsd_stat_path(const char* path, dsd_stat_t* st) {
+    return stat(path, st);
+}
+
+int
 dsd_fchmod(int fd, int mode) {
     return fchmod(fd, (mode_t)mode);
 }

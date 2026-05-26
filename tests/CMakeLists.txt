@@ -728,6 +728,7 @@ if(MSVC)
         PRIVATE CURSES_LIBRARY
     )
 endif()
+target_link_libraries(dsd-neo_test_ui_menu_navigation PRIVATE dsd-neo_platform)
 add_test(NAME UI_MENU_NAVIGATION COMMAND dsd-neo_test_ui_menu_navigation)
 
 add_executable(
@@ -748,6 +749,10 @@ if(MSVC)
         PRIVATE CURSES_LIBRARY
     )
 endif()
+target_link_libraries(
+    dsd-neo_test_ui_menu_paging_viewport
+    PRIVATE dsd-neo_platform
+)
 add_test(
     NAME UI_MENU_PAGING_VIEWPORT
     COMMAND dsd-neo_test_ui_menu_paging_viewport

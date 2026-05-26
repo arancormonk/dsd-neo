@@ -20,6 +20,7 @@
 
 #include <curses.h>
 #include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/keymap.h>
@@ -27,7 +28,6 @@
 #include <dsd-neo/ui/menu_defs.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdio.h>
-#include <sys/stat.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -365,8 +365,8 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
     // from CLI arguments discover the Config menu for saving defaults.
     const char* cfg_path = dsd_user_config_default_path();
     if (cfg_path && *cfg_path) {
-        struct stat st;
-        if (stat(cfg_path, &st) != 0) {
+        dsd_stat_t st;
+        if (dsd_stat_path(cfg_path, &st) != 0) {
             ui_statusf("No default config; use Config menu to save to %s", cfg_path);
         }
     }
