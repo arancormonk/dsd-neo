@@ -246,27 +246,29 @@ if(DSD_ENABLE_HARDENING AND CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         )
     endif()
 
-    check_c_compiler_flag(
-        "-fstack-clash-protection"
-        DSD_C_HAS_STACK_CLASH_PROTECTION
-    )
-    check_cxx_compiler_flag(
-        "-fstack-clash-protection"
-        DSD_CXX_HAS_STACK_CLASH_PROTECTION
-    )
-    if(DSD_C_HAS_STACK_CLASH_PROTECTION)
-        target_compile_options(
-            dsd-neo_hardening
-            INTERFACE
-                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:C>>:-fstack-clash-protection>"
+    if(NOT APPLE)
+        check_c_compiler_flag(
+            "-fstack-clash-protection"
+            DSD_C_HAS_STACK_CLASH_PROTECTION
         )
-    endif()
-    if(DSD_CXX_HAS_STACK_CLASH_PROTECTION)
-        target_compile_options(
-            dsd-neo_hardening
-            INTERFACE
-                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:CXX>>:-fstack-clash-protection>"
+        check_cxx_compiler_flag(
+            "-fstack-clash-protection"
+            DSD_CXX_HAS_STACK_CLASH_PROTECTION
         )
+        if(DSD_C_HAS_STACK_CLASH_PROTECTION)
+            target_compile_options(
+                dsd-neo_hardening
+                INTERFACE
+                    "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:C>>:-fstack-clash-protection>"
+            )
+        endif()
+        if(DSD_CXX_HAS_STACK_CLASH_PROTECTION)
+            target_compile_options(
+                dsd-neo_hardening
+                INTERFACE
+                    "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:CXX>>:-fstack-clash-protection>"
+            )
+        endif()
     endif()
 
     if(UNIX AND NOT APPLE)
