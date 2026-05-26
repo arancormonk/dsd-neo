@@ -172,6 +172,10 @@ input_ring_commit(struct input_ring_state* r, size_t produced) {
  */
 void
 input_ring_write(struct input_ring_state* r, const float* data, size_t count) {
+    if (!r || !data || count == 0) {
+        return;
+    }
+
     int need_signal = input_ring_is_empty(r);
     while (count > 0 && !exitflag) {
         uint64_t discard_generation = input_ring_discard_generation(r);
