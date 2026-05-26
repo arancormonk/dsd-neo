@@ -126,28 +126,22 @@ contribute_to_heuristics(int rf_mod, P25Heuristics* heuristics, AnalogSignal* an
 #endif
 
     for (i = 0; i < count; i++) {
-        int use;
         int prev_dibit;
 
         if (use_prev_dibit) {
             if (i == 0 || analog_signal_array[i].sequence_broken) {
                 // The sequence of dibits was broken here so we don't have reliable information on the actual
                 // value of the previous dibit. Don't use this value.
-                use = 0;
-            } else {
-                use = 1;
-                // The previous dibit is the corrected_dibit of the previous element
-                prev_dibit = analog_signal_array[i - 1].corrected_dibit;
+                continue;
             }
+            // The previous dibit is the corrected_dibit of the previous element
+            prev_dibit = analog_signal_array[i - 1].corrected_dibit;
         } else {
-            use = 1;
             prev_dibit = 0;
         }
 
-        if (use) {
-            update_p25_heuristics(heuristics, prev_dibit, analog_signal_array[i].dibit,
-                                  analog_signal_array[i].corrected_dibit, analog_signal_array[i].value);
-        }
+        update_p25_heuristics(heuristics, prev_dibit, analog_signal_array[i].dibit,
+                              analog_signal_array[i].corrected_dibit, analog_signal_array[i].value);
     }
 }
 

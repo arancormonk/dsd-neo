@@ -341,7 +341,7 @@ LFSR128d(dsd_state* state) {
         lfsr = state->payload_miR;
     }
 
-    unsigned long long int next_mi;
+    unsigned long long int next_mi = 0;
 
     //start packing aes_iv
     if (state->currentslot == 0) {
