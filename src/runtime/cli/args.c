@@ -35,10 +35,7 @@
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/runtime/call_alert.h"
 
-#if defined(__MINGW32__) || defined(__MINGW64__)
-#include <getopt.h>
-#include <unistd.h>
-#elif !DSD_PLATFORM_WIN_NATIVE
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
 #endif
 

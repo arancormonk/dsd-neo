@@ -3,35 +3,21 @@
 #ifndef DSD_NEO_CORE_SAFE_API_H
 #define DSD_NEO_CORE_SAFE_API_H
 
-#if (defined(__MINGW32__) || defined(__MINGW64__)) && !defined(__USE_MINGW_ANSI_STDIO)
-#define __USE_MINGW_ANSI_STDIO 1
-#endif
-
 #include <stdarg.h>
 #include <stdio.h>
 #if !defined(__GNUC__) && !defined(__clang__)
 #include <string.h>
 #endif
 
-#if defined(__MINGW32__) || defined(__MINGW64__)
-#define DSD_NEO_MINGW 1
-#else
-#define DSD_NEO_MINGW 0
-#endif
-
-#if (defined(__GNUC__) || defined(__clang__)) && !DSD_NEO_MINGW
+#if defined(__GNUC__) || defined(__clang__)
 #define DSD_NEO_USE_STDIO_BUILTINS 1
 #else
 #define DSD_NEO_USE_STDIO_BUILTINS 0
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
-#if DSD_NEO_MINGW
-#define DSD_NEO_PRINTF_FORMAT(fmt_index, first_arg) __attribute__((format(gnu_printf, fmt_index, first_arg)))
-#else
 #define DSD_NEO_PRINTF_FORMAT(fmt_index, first_arg) __attribute__((format(printf, fmt_index, first_arg)))
-#endif
-#define DSD_NEO_SCANF_FORMAT(fmt_index, first_arg) __attribute__((format(scanf, fmt_index, first_arg)))
+#define DSD_NEO_SCANF_FORMAT(fmt_index, first_arg)  __attribute__((format(scanf, fmt_index, first_arg)))
 #else
 #define DSD_NEO_PRINTF_FORMAT(fmt_index, first_arg)
 #define DSD_NEO_SCANF_FORMAT(fmt_index, first_arg)
@@ -306,6 +292,5 @@ dsd_safe_sscanf(const char* src, const char* fmt, ...) {
 #undef DSD_NEO_SCANF_FORMAT
 #undef DSD_NEO_ANALYZER
 #undef DSD_NEO_USE_STDIO_BUILTINS
-#undef DSD_NEO_MINGW
 
 #endif // DSD_NEO_CORE_SAFE_API_H

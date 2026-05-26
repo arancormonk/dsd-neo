@@ -1094,11 +1094,7 @@ target_include_directories(
 )
 add_test(NAME RUNTIME_CALL_ALERT COMMAND dsd-neo_test_runtime_call_alert)
 
-if(
-    NOT APPLE
-    AND (NOT WIN32 OR MINGW)
-    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-)
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_core_call_alert_history
         core/test_core_call_alert_history.c
@@ -1544,7 +1540,7 @@ file(
     "mode.decode = \"p25p1\"\n"
 )
 
-if(WIN32 AND NOT MINGW)
+if(WIN32)
     set(_DSD_BOOTSTRAP_DEFAULT_CFG_ROOT "${_DSD_BOOTSTRAP_FIXTURE_DIR}/appdata")
     set(_DSD_BOOTSTRAP_DEFAULT_CFG_ENV "APPDATA")
 else()

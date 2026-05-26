@@ -10,8 +10,8 @@ list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 # Platform detection and configuration
 include(Platform)
 # Curses/PDCurses selection - set early before find_package
-if(MINGW OR NOT WIN32)
-    # Prefer ncurses wide-character support (POSIX + MinGW/vcpkg ships ncursesw)
+if(NOT WIN32)
+    # Prefer ncurses wide-character support on POSIX.
     set(CURSES_NEED_NCURSES TRUE)
     set(CURSES_NEED_WIDE TRUE)
 endif()
@@ -24,21 +24,6 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-# Ensure that non-ASCII UTF-8 string literals (used for UI glyphs and help text)
-# are interpreted consistently across compilers. This primarily affects MinGW
-# builds on Windows where the default input charset may not be UTF-8, causing
-# mojibake like "â€“" instead of "–".
-if(MINGW)
-    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-        add_compile_options(
-            $<$<COMPILE_LANGUAGE:C>:-finput-charset=UTF-8>
-            $<$<COMPILE_LANGUAGE:C>:-fexec-charset=UTF-8>
-            $<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>
-            $<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>
-        )
-    endif()
-endif()
 
 # MSVC: enable C11 atomics for <stdatomic.h>
 #
@@ -546,9 +531,9 @@ message(
 message(STATUS "Radio pipeline available: ${DSD_HAS_RADIO}")
 
 # Curses library selection:
-# - MSVC/native Windows: PDCurses
-# - MinGW/POSIX: ncurses via CMake's FindCurses
-if(WIN32 AND NOT MINGW)
+# - Windows: PDCurses
+# - POSIX: ncurses via CMake's FindCurses
+if(WIN32)
     find_package(PDCurses REQUIRED)
     set(CURSES_LIBRARIES PDCurses::PDCurses)
     set(CURSES_INCLUDE_DIRS ${PDCURSES_INCLUDE_DIRS})
@@ -585,9 +570,9 @@ if(WIN32 AND NOT MINGW)
     message(STATUS "PDCurses wide-character API: ${DSD_HAS_PDCURSES_WIDE_API}")
 else()
     find_package(Curses REQUIRED)
-    # Some ncurses installs (notably vcpkg's ncursesw on MinGW) do not provide a
-    # top-level curses.h shim in the include root. Our code includes <curses.h>,
-    # so add the ncursesw subdir when needed.
+    # Some ncurses installs do not provide a top-level curses.h shim in the
+    # include root. Our code includes <curses.h>, so add the ncursesw subdir
+    # when needed.
     if(CURSES_NEED_WIDE)
         foreach(_curses_inc IN LISTS CURSES_INCLUDE_DIRS)
             if(

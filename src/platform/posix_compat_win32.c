@@ -18,8 +18,7 @@
 #include <windows.h>
 
 #if DSD_COMPILER_MSVC
-/* Minimal getopt(3) implementation for MSVC builds. MinGW provides
- * getopt via its POSIX layer, so we only enable this for MSVC. */
+/* Minimal getopt(3) implementation for MSVC builds. */
 char* optarg = NULL;
 int optind = 1;
 int opterr = 1;
