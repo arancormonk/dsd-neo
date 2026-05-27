@@ -72,7 +72,7 @@ init_basic(dsd_opts* o, dsd_state* s) {
     DSD_MEMSET(o, 0, sizeof(*o));
     DSD_MEMSET(s, 0, sizeof(*s));
     o->p25_trunk = 1;
-    o->trunk_hangtime = 0.2; // short for tests
+    o->trunk_hangtime = 0.2f; // short for tests
     o->p25_prefer_candidates = 1;
     s->p25_cc_freq = 851000000;
     // Cache tunables at init
@@ -219,7 +219,7 @@ main(void) {
     DSD_MEMSET(&o8, 0, sizeof(o8));
     DSD_MEMSET(&s8, 0, sizeof(s8));
     o8.p25_trunk = 1;
-    o8.trunk_hangtime = 0.2;
+    o8.trunk_hangtime = 0.2f;
     o8.p25_prefer_candidates = 1;
     s8.p25_cc_freq = 851000000;
     s8.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;

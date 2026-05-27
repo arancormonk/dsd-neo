@@ -16,8 +16,8 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/sndfile_fwd.h>
 
-#include <sndfile.h>
 #include <stddef.h>
 #include <stdint.h>
 

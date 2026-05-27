@@ -44,7 +44,7 @@ init_basic(dsd_opts* o, dsd_state* s) {
     DSD_MEMSET(o, 0, sizeof(*o));
     DSD_MEMSET(s, 0, sizeof(*s));
     o->p25_trunk = 1;
-    o->trunk_hangtime = 0.2; // short for test
+    o->trunk_hangtime = 0.2f; // short for test
     o->p25_prefer_candidates = 1;
     s->p25_cc_freq = 851000000;
     p25_sm_init(o, s);

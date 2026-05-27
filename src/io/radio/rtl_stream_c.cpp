@@ -95,6 +95,7 @@ int dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, in
                                       uint32_t* out_generation_before, uint32_t* out_generation_after,
                                       int* out_request_rc, int* out_consumed);
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
+int dsd_rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev);
 #endif
 }
 
@@ -267,6 +268,11 @@ rtl_stream_test_get_replay_state(const RtlSdrContext* ctx, rtl_stream_test_repla
         return -2;
     }
     return dsd_rtl_stream_test_get_replay_state(out_state);
+}
+
+extern "C" int
+rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev) {
+    return dsd_rtl_stream_test_steady_state_watermark_enabled(audio_in_dev);
 }
 #endif
 

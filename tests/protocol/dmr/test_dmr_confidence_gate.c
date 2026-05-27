@@ -20,7 +20,7 @@ init_state(dsd_state* state) {
 
 static void
 test_non_idle_data_does_not_lock_from_fresh_start(void) {
-    dsd_state state;
+    static dsd_state state;
     init_state(&state);
 
     for (int i = 0; i < 8; i++) {
@@ -33,7 +33,7 @@ test_non_idle_data_does_not_lock_from_fresh_start(void) {
 
 static void
 test_idle_data_can_lock_color_code(void) {
-    dsd_state state;
+    static dsd_state state;
     init_state(&state);
 
     assert(dmr_confidence_note_data_burst(&state, 3, 9) == DMR_CONFIDENCE_PENDING);
@@ -45,7 +45,7 @@ test_idle_data_can_lock_color_code(void) {
 
 static void
 test_locked_color_code_rejects_mismatch(void) {
-    dsd_state state;
+    static dsd_state state;
     init_state(&state);
 
     assert(dmr_confidence_note_data_burst(&state, 3, 9) == DMR_CONFIDENCE_PENDING);
@@ -57,7 +57,7 @@ test_locked_color_code_rejects_mismatch(void) {
 
 static void
 test_voice_requires_voice_sync_before_open(void) {
-    dsd_state state;
+    static dsd_state state;
     init_state(&state);
 
     assert(dmr_confidence_note_voice_burst(&state, 1, 3) == DMR_CONFIDENCE_PENDING);
@@ -73,7 +73,7 @@ test_voice_requires_voice_sync_before_open(void) {
 
 static void
 test_reset_clears_gate_state(void) {
-    dsd_state state;
+    static dsd_state state;
     init_state(&state);
 
     dmr_confidence_note_voice_sync(&state, 0);

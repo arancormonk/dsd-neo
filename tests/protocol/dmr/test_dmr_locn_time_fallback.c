@@ -195,7 +195,7 @@ main(void) {
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     size_t psz = 0;
-    if (sz > 0 && (unsigned long)sz <= (unsigned long)(SIZE_MAX - 1)) {
+    if (sz > 0 && (size_t)sz <= SIZE_MAX - 1U) {
         psz = (size_t)sz;
     }
     char* buf = calloc(psz + 1u, 1u);

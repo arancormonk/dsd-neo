@@ -339,6 +339,14 @@ typedef struct rtl_stream_test_replay_state {
  * stream/context is unavailable.
  */
 int rtl_stream_test_get_replay_state(const RtlSdrContext* ctx, rtl_stream_test_replay_state* out_state);
+
+/**
+ * @brief Return whether steady-state demod watermarks are enabled for a source.
+ *
+ * This protects live rtl_tcp from reintroducing demod-side refill pauses after
+ * the startup prebuffer.
+ */
+int rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev);
 #endif
 
 /**

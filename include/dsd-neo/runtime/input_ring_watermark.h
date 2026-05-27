@@ -19,8 +19,9 @@
  * increase it (more buffering), while quiet periods decrease it (lower
  * latency).
  *
- * When disabled (non-TCP modes), all checks return "consume" immediately,
- * preserving existing behavior for USB and other backends.
+ * When disabled, all checks return "consume" immediately. Live radio paths
+ * should normally use startup prebuffering and producer-side backpressure
+ * instead of enabling this demod-side refill throttle.
  *
  * See input_ring_watermark.cpp for the implementation.
  */
@@ -76,7 +77,7 @@ struct input_ring_state;
  * Owned by the demod thread.  Not shared across threads.
  */
 struct input_ring_watermark {
-    int enabled;             /**< 0 = disabled (non-TCP modes, passthrough). */
+    int enabled;             /**< 0 = disabled (passthrough).                */
     size_t low_watermark;    /**< Low threshold in float elements.           */
     size_t target_watermark; /**< Target threshold in float elements.        */
     int paused;              /**< 1 = demod paused waiting for refill.       */
@@ -110,7 +111,7 @@ struct input_ring_watermark {
  * the enabled parameter.
  *
  * @param wm          Watermark state to initialise (must not be NULL).
- * @param enabled     1 for TCP mode (watermark active), 0 for passthrough.
+ * @param enabled     Non-zero for active watermarking, 0 for passthrough.
  * @param sample_rate Current sample rate in Hz (e.g. 1536000).
  */
 void watermark_init(struct input_ring_watermark* wm, int enabled, uint32_t sample_rate);

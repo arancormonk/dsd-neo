@@ -19,11 +19,11 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -329,7 +329,7 @@ static void
 set_p25p2_threshold(int threshold) {
     char value[16];
     DSD_SNPRINTF(value, sizeof(value), "%d", threshold);
-    setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
+    dsd_setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
     dsd_neo_config_init(NULL);
 }
 
@@ -363,7 +363,7 @@ static int
 test_ess_soft_accepts_deep_erasure(void) {
     printf("Test 12: ESS accepts deep soft erasure success... ");
     dsd_opts opts;
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_ess_soft_inputs(&state);
     reset_ess_stubs();
@@ -392,7 +392,7 @@ static int
 test_ess_soft_failure_counts_once(void) {
     printf("Test 13: ESS hard/soft failure counts once... ");
     dsd_opts opts;
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_ess_soft_inputs(&state);
     reset_ess_stubs();

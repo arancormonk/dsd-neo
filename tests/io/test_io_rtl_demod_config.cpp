@@ -262,6 +262,16 @@ expect_live_symbol_controls_guarded(void) {
 }
 
 static int
+expect_steady_state_watermark_disabled(const char* label, const char* audio_in_dev) {
+    int enabled = rtl_stream_test_steady_state_watermark_enabled(audio_in_dev);
+    if (enabled != 0) {
+        DSD_FPRINTF(stderr, "%s: steady-state watermark enabled=%d want=0\n", label, enabled);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_cqpsk_toggle_restores_fsk_channel_profile(void) {
     int rc = 0;
 
@@ -473,6 +483,9 @@ main(void) {
 
     rc |= expect_live_symbol_controls_guarded();
     rc |= expect_cqpsk_toggle_restores_fsk_channel_profile();
+    rc |= expect_steady_state_watermark_disabled("rtl_tcp keeps demod watermark disabled", "rtltcp:127.0.0.1:1234");
+    rc |= expect_steady_state_watermark_disabled("rtlsdr keeps demod watermark disabled", "rtl");
+    rc |= expect_steady_state_watermark_disabled("soapy keeps demod watermark disabled", "soapy:driver=test");
 
     return rc;
 }

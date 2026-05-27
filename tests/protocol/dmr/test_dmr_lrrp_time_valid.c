@@ -190,7 +190,7 @@ main(void) {
     long esz = ftell(ef);
     fseek(ef, 0, SEEK_SET);
     size_t pesz = 0;
-    if (esz > 0 && (unsigned long)esz <= (unsigned long)(SIZE_MAX - 1)) {
+    if (esz > 0 && (size_t)esz <= SIZE_MAX - 1U) {
         pesz = (size_t)esz;
     }
     char* ebuf = calloc(pesz + 1u, 1u);
@@ -212,7 +212,7 @@ main(void) {
     long osz = ftell(of);
     fseek(of, 0, SEEK_SET);
     size_t posz = 0;
-    if (osz > 0 && (unsigned long)osz <= (unsigned long)(SIZE_MAX - 1)) {
+    if (osz > 0 && (size_t)osz <= SIZE_MAX - 1U) {
         posz = (size_t)osz;
     }
     char* obuf = calloc(posz + 1u, 1u);

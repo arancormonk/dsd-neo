@@ -198,7 +198,7 @@ main(void) {
     long esize = ftell(ef);
     fseek(ef, 0, SEEK_SET);
     size_t pesize = 0;
-    if (esize > 0 && (unsigned long)esize <= (unsigned long)(SIZE_MAX - 1)) {
+    if (esize > 0 && (size_t)esize <= SIZE_MAX - 1U) {
         pesize = (size_t)esize;
     }
     char* ebuf = calloc(pesize + 1u, 1u);
@@ -222,7 +222,7 @@ main(void) {
     long osize = ftell(of);
     fseek(of, 0, SEEK_SET);
     size_t posize = 0;
-    if (osize > 0 && (unsigned long)osize <= (unsigned long)(SIZE_MAX - 1)) {
+    if (osize > 0 && (size_t)osize <= SIZE_MAX - 1U) {
         posize = (size_t)osize;
     }
     char* obuf = calloc(posize + 1u, 1u);
