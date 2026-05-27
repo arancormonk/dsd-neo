@@ -139,6 +139,72 @@ dsd_mbe_store_result(int* errs, int* errs2, char* err_str, size_t err_str_size, 
     }
 }
 
+static void
+dsd_mbe_clear_status(int* errs, int* errs2, char* err_str, size_t err_str_size) {
+    if (errs) {
+        *errs = 0;
+    }
+    if (errs2) {
+        *errs2 = 0;
+    }
+    if (err_str && err_str_size > 0) {
+        err_str[0] = '\0';
+    }
+}
+
+static int
+dsd_mbe_store_decode_status(int ret, int* errs, int* errs2, const mbe_process_result* result) {
+    if (ret < 0) {
+        dsd_mbe_clear_status(errs, errs2, NULL, 0);
+        return ret;
+    }
+
+    dsd_mbe_store_result(errs, errs2, NULL, 0, result);
+    return ret;
+}
+
+static int
+dsd_mbe_store_process_status(int ret, float* aout_buf, int* errs, int* errs2, char* err_str, size_t err_str_size,
+                             const mbe_process_result* result) {
+    if (ret < 0) {
+        if (aout_buf) {
+            mbe_synthesizeSilencef(aout_buf);
+        }
+        dsd_mbe_clear_status(errs, errs2, err_str, err_str_size);
+        return ret;
+    }
+
+    dsd_mbe_store_result(errs, errs2, err_str, err_str_size, result);
+    return ret;
+}
+
+int
+dsd_mbe_decode_imbe7200_frame(int* errs, int* errs2, const char imbe_fr[8][23], char imbe_d[88],
+                              mbe_process_result* result) {
+    mbe_process_result local_result;
+    mbe_process_result* decode_result = result ? result : &local_result;
+    int ret = mbe_decodeImbe7200x4400Frame(imbe_fr, imbe_d, decode_result);
+    return dsd_mbe_store_decode_status(ret, errs, errs2, decode_result);
+}
+
+int
+dsd_mbe_decode_imbe7100_frame(int* errs, int* errs2, const char imbe_fr[7][24], char imbe_d[88],
+                              mbe_process_result* result) {
+    mbe_process_result local_result;
+    mbe_process_result* decode_result = result ? result : &local_result;
+    int ret = mbe_decodeImbe7100x4400Frame(imbe_fr, imbe_d, decode_result);
+    return dsd_mbe_store_decode_status(ret, errs, errs2, decode_result);
+}
+
+int
+dsd_mbe_decode_ambe2450_frame(int* errs, int* errs2, const char ambe_fr[4][24], char ambe_d[49],
+                              mbe_process_result* result) {
+    mbe_process_result local_result;
+    mbe_process_result* decode_result = result ? result : &local_result;
+    int ret = mbe_decodeAmbe3600x2450Frame(ambe_fr, ambe_d, decode_result);
+    return dsd_mbe_store_decode_status(ret, errs, errs2, decode_result);
+}
+
 int
 dsd_mbe_process_imbe4400_dataf(float* aout_buf, int* errs, int* errs2, char* err_str, size_t err_str_size,
                                const char imbe_d[88], mbe_parms* cur_mp, mbe_parms* prev_mp,
@@ -151,8 +217,7 @@ dsd_mbe_process_imbe4400_dataf(float* aout_buf, int* errs, int* errs2, char* err
     }
 
     int ret = mbe_processImbe4400Dataf(aout_buf, process_result, imbe_d, cur_mp, prev_mp, prev_mp_enhanced, uvquality);
-    dsd_mbe_store_result(errs, errs2, err_str, err_str_size, process_result);
-    return ret;
+    return dsd_mbe_store_process_status(ret, aout_buf, errs, errs2, err_str, err_str_size, process_result);
 }
 
 int
@@ -167,8 +232,7 @@ dsd_mbe_process_ambe2450_dataf(float* aout_buf, int* errs, int* errs2, char* err
     }
 
     int ret = mbe_processAmbe2450Dataf(aout_buf, process_result, ambe_d, cur_mp, prev_mp, prev_mp_enhanced, uvquality);
-    dsd_mbe_store_result(errs, errs2, err_str, err_str_size, process_result);
-    return ret;
+    return dsd_mbe_store_process_status(ret, aout_buf, errs, errs2, err_str, err_str_size, process_result);
 }
 
 int
@@ -183,8 +247,7 @@ dsd_mbe_process_ambe2400_dataf(float* aout_buf, int* errs, int* errs2, char* err
     }
 
     int ret = mbe_processAmbe2400Dataf(aout_buf, process_result, ambe_d, cur_mp, prev_mp, prev_mp_enhanced, uvquality);
-    dsd_mbe_store_result(errs, errs2, err_str, err_str_size, process_result);
-    return ret;
+    return dsd_mbe_store_process_status(ret, aout_buf, errs, errs2, err_str, err_str_size, process_result);
 }
 
 int
@@ -194,8 +257,7 @@ dsd_mbe_process_ambe3600x2400_framef(float* aout_buf, int* errs, int* errs2, cha
     mbe_process_result result;
     int ret = mbe_processAmbe3600x2400Framef(aout_buf, &result, (const char (*)[24])ambe_fr, ambe_d, cur_mp, prev_mp,
                                              prev_mp_enhanced, uvquality);
-    dsd_mbe_store_result(errs, errs2, err_str, err_str_size, &result);
-    return ret;
+    return dsd_mbe_store_process_status(ret, aout_buf, errs, errs2, err_str, err_str_size, &result);
 }
 
 static int
@@ -205,16 +267,16 @@ decode_imbe7200_frame(dsd_state* state, char imbe_fr[8][23], dsd_vocoder_soft_bi
         mbe_soft_bit soft_fr[8][23];
 
         copy_imbe7200_soft_frame(imbe_soft_fr, soft_fr);
-        mbe_initProcessResult(result);
-        (void)mbe_decodeImbe7200x4400SoftFrame((const mbe_soft_bit(*)[23])soft_fr, imbe_d, result);
+        int ret = mbe_decodeImbe7200x4400SoftFrame((const mbe_soft_bit(*)[23])soft_fr, imbe_d, result);
+        if (ret < 0) {
+            dsd_mbe_clear_status(&state->errs, &state->errs2, NULL, 0);
+            return 0;
+        }
         dsd_mbe_store_result(&state->errs, &state->errs2, NULL, 0, result);
         return 1;
     }
 
-    mbe_initProcessResult(result);
-    (void)mbe_decodeImbe7200x4400Frame((const char (*)[23])imbe_fr, imbe_d, result);
-    dsd_mbe_store_result(&state->errs, &state->errs2, NULL, 0, result);
-    return 1;
+    return dsd_mbe_decode_imbe7200_frame(&state->errs, &state->errs2, (const char (*)[23])imbe_fr, imbe_d, result) >= 0;
 }
 
 static int
@@ -224,16 +286,16 @@ decode_ambe2450_frame(int* errs, int* errs2, char ambe_fr[4][24], dsd_vocoder_so
         mbe_soft_bit soft_fr[4][24];
 
         copy_ambe_soft_frame(ambe_soft_fr, soft_fr);
-        mbe_initProcessResult(result);
-        (void)mbe_decodeAmbe3600x2450SoftFrame((const mbe_soft_bit(*)[24])soft_fr, ambe_d, result);
+        int ret = mbe_decodeAmbe3600x2450SoftFrame((const mbe_soft_bit(*)[24])soft_fr, ambe_d, result);
+        if (ret < 0) {
+            dsd_mbe_clear_status(errs, errs2, NULL, 0);
+            return 0;
+        }
         dsd_mbe_store_result(errs, errs2, NULL, 0, result);
         return 1;
     }
 
-    mbe_initProcessResult(result);
-    (void)mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, ambe_d, result);
-    dsd_mbe_store_result(errs, errs2, NULL, 0, result);
-    return 1;
+    return dsd_mbe_decode_ambe2450_frame(errs, errs2, (const char (*)[24])ambe_fr, ambe_d, result) >= 0;
 }
 
 static void
@@ -569,6 +631,11 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
                   mbe_frame_ctx_t* frame_ctx) {
     mbe_process_result imbe_result;
     int have_imbe_result = decode_imbe7200_frame(state, imbe_fr, imbe_soft_fr, frame_ctx->imbe_d, &imbe_result);
+    if (!have_imbe_result) {
+        dsd_mbe_store_process_status(MBE_STATUS_INVALID_BITS, state->audio_out_temp_buf, &state->errs, &state->errs2,
+                                     state->err_str, sizeof(state->err_str), NULL);
+        return;
+    }
 
     //P25p1 Multi Crypt Handler (DES1, DES3, DES-XL and AES)
     if (mbe_p25p1_multicrypt_enabled(state)) {
@@ -602,9 +669,13 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
 static void
 mbe_process_provoice(dsd_opts* opts, dsd_state* state, char imbe7100_fr[7][24], mbe_frame_ctx_t* frame_ctx) {
     mbe_process_result imbe_result;
-    mbe_initProcessResult(&imbe_result);
-    (void)mbe_decodeImbe7100x4400Frame((const char (*)[24])imbe7100_fr, frame_ctx->imbe_d, &imbe_result);
-    dsd_mbe_store_result(&state->errs, &state->errs2, NULL, 0, &imbe_result);
+    if (dsd_mbe_decode_imbe7100_frame(&state->errs, &state->errs2, (const char (*)[24])imbe7100_fr, frame_ctx->imbe_d,
+                                      &imbe_result)
+        < 0) {
+        dsd_mbe_store_process_status(MBE_STATUS_INVALID_BITS, state->audio_out_temp_buf, &state->errs, &state->errs2,
+                                     state->err_str, sizeof(state->err_str), NULL);
+        return;
+    }
 
     if (dsd_frame_detail_enabled(opts)) {
         PrintIMBEData(opts, state, frame_ctx->imbe_d);
@@ -849,6 +920,11 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
     mbe_process_result ambe_result;
     int have_ambe_result =
         decode_ambe2450_frame(&state->errs, &state->errs2, ambe_fr, ambe_soft_fr, frame_ctx->ambe_d, &ambe_result);
+    if (!have_ambe_result) {
+        dsd_mbe_store_process_status(MBE_STATUS_INVALID_BITS, state->audio_out_temp_buf, &state->errs, &state->errs2,
+                                     state->err_str, sizeof(state->err_str), NULL);
+        return;
+    }
 
     if ((state->nxdn_cipher_type == 0x01 && state->R != 0) || (state->M == 1 && state->R > 0)) {
         mbe_apply_nxdn_cipher1(state, frame_ctx->ambe_d);
@@ -1381,6 +1457,11 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
     mbe_process_result ambe_result;
     int have_ambe_result =
         decode_ambe2450_frame(&state->errs, &state->errs2, ambe_fr, ambe_soft_fr, frame_ctx->ambe_d, &ambe_result);
+    if (!have_ambe_result) {
+        dsd_mbe_store_process_status(MBE_STATUS_INVALID_BITS, state->audio_out_temp_buf, &state->errs, &state->errs2,
+                                     state->err_str, sizeof(state->err_str), NULL);
+        return;
+    }
 
     mbeslot_left_autoload_keys(opts, state);
     mbeslot_left_apply_basic_privacy(state, frame_ctx);
@@ -1400,6 +1481,11 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
     mbe_process_result ambe_result;
     int have_ambe_result =
         decode_ambe2450_frame(&state->errsR, &state->errs2R, ambe_fr, ambe_soft_fr, frame_ctx->ambe_d, &ambe_result);
+    if (!have_ambe_result) {
+        dsd_mbe_store_process_status(MBE_STATUS_INVALID_BITS, state->audio_out_temp_bufR, &state->errsR, &state->errs2R,
+                                     state->err_strR, sizeof(state->err_strR), NULL);
+        return;
+    }
 
     mbeslot_right_autoload_keys(opts, state);
     mbeslot_right_apply_basic_privacy(state, frame_ctx);

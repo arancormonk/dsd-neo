@@ -44,33 +44,43 @@ save_ambe2450_x2(dsd_opts* opts, dsd_state* state, char ambe_d[49]) {
     state->errs2 = saved_errs2;
 }
 
-//P25p1 IMBE 7200 or AMBE+2 EFR
 static void
-soft_demod_imbe7200(dsd_state* state, char imbe_fr7200[8][23], char imbe_d[88]) {
-    state->errs = mbe_eccImbe7200x4400C0(imbe_fr7200);
-    state->errs2 = state->errs;
-    mbe_demodulateImbe7200x4400Data(imbe_fr7200);
-    state->errs2 += mbe_eccImbe7200x4400Data(imbe_fr7200, imbe_d);
+stage_left_audio_for_output(const dsd_opts* opts, dsd_state* state) {
+    if (opts->floating_point == 1) {
+        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
+    } else {
+        processAudio(opts, state);
+    }
+}
+
+//P25p1 IMBE 7200 or AMBE+2 EFR
+static int
+soft_demod_imbe7200(dsd_state* state, char imbe_fr7200[8][23], char imbe_d[88], mbe_process_result* result) {
+    int ret =
+        dsd_mbe_decode_imbe7200_frame(&state->errs, &state->errs2, (const char (*)[23])imbe_fr7200, imbe_d, result);
+    if (ret < 0) {
+        return ret;
+    }
     state->debug_audio_errors += state->errs2;
+    return ret;
 }
 
 //ProVoice IMBE 7100
-static void
-soft_demod_imbe7100(dsd_state* state, char imbe_fr7100[7][24], char imbe_d[88]) {
-    state->errs = mbe_eccImbe7100x4400C0(imbe_fr7100);
-    state->errs2 = state->errs;
-    mbe_demodulateImbe7100x4400Data(imbe_fr7100);
-    state->errs2 += mbe_eccImbe7100x4400Data(imbe_fr7100, imbe_d);
+static int
+soft_demod_imbe7100(dsd_state* state, char imbe_fr7100[7][24], char imbe_d[88], mbe_process_result* result) {
+    int ret =
+        dsd_mbe_decode_imbe7100_frame(&state->errs, &state->errs2, (const char (*)[24])imbe_fr7100, imbe_d, result);
+    if (ret < 0) {
+        return ret;
+    }
     state->debug_audio_errors += state->errs2;
+    return ret;
 }
 
 //AMBE+2 EHR
-static void
-soft_demod_ambe2_ehr(dsd_state* state, char ambe2_ehr[4][24], char ambe_d[49]) {
-    state->errs = mbe_eccAmbe3600x2450C0(ambe2_ehr);
-    state->errs2 = state->errs;
-    mbe_demodulateAmbe3600x2450Data(ambe2_ehr);
-    state->errs2 += mbe_eccAmbe3600x2450Data(ambe2_ehr, ambe_d);
+static int
+soft_demod_ambe2_ehr(int* errs, int* errs2, char ambe2_ehr[4][24], char ambe_d[49], mbe_process_result* result) {
+    return dsd_mbe_decode_ambe2450_frame(errs, errs2, (const char (*)[24])ambe2_ehr, ambe_d, result);
 }
 
 //AMBE One Shot (DSTAR)
@@ -79,11 +89,7 @@ soft_demod_ambe_dstar(const dsd_opts* opts, dsd_state* state, char ambe_fr[4][24
     (void)dsd_mbe_process_ambe3600x2400_framef(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                                sizeof(state->err_str), ambe_fr, ambe_d, state->cur_mp, state->prev_mp,
                                                state->prev_mp_enhanced, opts->uvquality);
-    if (opts->floating_point == 1) {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-    } else {
-        processAudio(opts, state);
-    }
+    stage_left_audio_for_output(opts, state);
 }
 
 //AMBE+2 One Shot (X2-TDMA)
@@ -105,20 +111,15 @@ soft_demod_ambe_x2(const dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], 
         err_str = state->err_strR;
     }
 
-    *errs = mbe_eccAmbe3600x2450C0(ambe_fr);
-    *errs2 = *errs;
-    mbe_demodulateAmbe3600x2450Data(ambe_fr);
-    *errs2 += mbe_eccAmbe3600x2450Data(ambe_fr, ambe_d);
-
     mbe_process_result result;
-    dsd_mbe_init_result_from_errors(&result, *errs, *errs2, MBE_PROCESS_FLAG_C0_VALID);
+    if (dsd_mbe_decode_ambe2450_frame(errs, errs2, (const char (*)[24])ambe_fr, ambe_d, &result) < 0) {
+        mbe_synthesizeSilencef(state->audio_out_temp_buf);
+        stage_left_audio_for_output(opts, state);
+        return;
+    }
     (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, errs, errs2, err_str, sizeof(state->err_str),
                                          ambe_d, cur_mp, prev_mp, prev_mp_enhanced, opts->uvquality, &result);
-    if (opts->floating_point == 1) {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-    } else {
-        processAudio(opts, state);
-    }
+    stage_left_audio_for_output(opts, state);
 }
 
 static void
@@ -165,9 +166,11 @@ play_synthesized_voice_by_output(dsd_opts* opts, dsd_state* state) {
 
 static void
 handle_soft_mbe_p25p1(const dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char imbe_d[88]) {
-    soft_demod_imbe7200(state, imbe_fr, imbe_d);
     mbe_process_result result;
-    dsd_mbe_init_result_from_errors(&result, state->errs, state->errs2, MBE_PROCESS_FLAG_C0_VALID);
+    if (soft_demod_imbe7200(state, imbe_fr, imbe_d, &result) < 0) {
+        mbe_synthesizeSilencef(state->audio_out_temp_buf);
+        return;
+    }
     (void)dsd_mbe_process_imbe4400_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                          sizeof(state->err_str), imbe_d, state->cur_mp, state->prev_mp,
                                          state->prev_mp_enhanced, opts->uvquality, &result);
@@ -176,10 +179,11 @@ handle_soft_mbe_p25p1(const dsd_opts* opts, dsd_state* state, char imbe_fr[8][23
 
 static void
 handle_soft_mbe_provoice(const dsd_opts* opts, dsd_state* state, char imbe7100_fr[7][24], char imbe_d[88]) {
-    soft_demod_imbe7100(state, imbe7100_fr, imbe_d);
-    mbe_convertImbe7100to7200(imbe_d);
     mbe_process_result result;
-    dsd_mbe_init_result_from_errors(&result, state->errs, state->errs2, MBE_PROCESS_FLAG_C0_VALID);
+    if (soft_demod_imbe7100(state, imbe7100_fr, imbe_d, &result) < 0) {
+        mbe_synthesizeSilencef(state->audio_out_temp_buf);
+        return;
+    }
     (void)dsd_mbe_process_imbe4400_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                          sizeof(state->err_str), imbe_d, state->cur_mp, state->prev_mp,
                                          state->prev_mp_enhanced, opts->uvquality, &result);
@@ -223,20 +227,24 @@ handle_soft_mbe_x2(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], char a
 
 static void
 handle_soft_mbe_ambe2_ehr(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], char ambe_d[49]) {
-    soft_demod_ambe2_ehr(state, ambe_fr, ambe_d);
+    int* errs = state->currentslot == 1 ? &state->errsR : &state->errs;
+    int* errs2 = state->currentslot == 1 ? &state->errs2R : &state->errs2;
+    float* audio_buf = state->currentslot == 1 ? state->audio_out_temp_bufR : state->audio_out_temp_buf;
+
+    mbe_process_result result;
+    if (soft_demod_ambe2_ehr(errs, errs2, ambe_fr, ambe_d, &result) < 0) {
+        mbe_synthesizeSilencef(audio_buf);
+        return;
+    }
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
     }
 
     if (state->currentslot == 0) {
-        mbe_process_result result;
-        dsd_mbe_init_result_from_errors(&result, state->errs, state->errs2, MBE_PROCESS_FLAG_C0_VALID);
         (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                              sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
                                              state->prev_mp_enhanced, opts->uvquality, &result);
     } else if (state->currentslot == 1) {
-        mbe_process_result result;
-        dsd_mbe_init_result_from_errors(&result, state->errsR, state->errs2R, MBE_PROCESS_FLAG_C0_VALID);
         (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR,
                                              sizeof(state->err_strR), ambe_d, state->cur_mp2, state->prev_mp2,
                                              state->prev_mp_enhanced2, opts->uvquality, &result);

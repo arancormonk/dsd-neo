@@ -1469,11 +1469,12 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
 
     char ambe_d[49];
     DSD_MEMSET(ambe_d, 0, sizeof(ambe_d));
-    state->errs = mbe_eccAmbe3600x2450C0(ambe_fr);
-    state->errs2 = state->errs;
-    mbe_demodulateAmbe3600x2450Data(ambe_fr);
-    state->errs2 += mbe_eccAmbe3600x2450Data(ambe_fr, ambe_d);
-    state->debug_audio_errors += state->errs2;
+    mbe_process_result result;
+    int decode_ret =
+        dsd_mbe_decode_ambe2450_frame(&state->errs, &state->errs2, (const char (*)[24])ambe_fr, ambe_d, &result);
+    if (decode_ret >= 0) {
+        state->debug_audio_errors += state->errs2;
+    }
 
     ks_idx = sdrtrunk_apply_keystream(ambe_d, 49, ks, ks_idx);
 
@@ -1482,8 +1483,14 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         ks_idx += 7;
     }
 
-    mbe_process_result result;
-    dsd_mbe_init_result_from_errors(&result, state->errs, state->errs2, MBE_PROCESS_FLAG_C0_VALID);
+    if (decode_ret < 0) {
+        mbe_synthesizeSilencef(state->audio_out_temp_buf);
+        if (decode_audio_is_allowed(is_enc, ks_available)) {
+            run_decode_audio_output_path(opts, state);
+        }
+        return ks_idx;
+    }
+
     (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                          sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
                                          state->prev_mp_enhanced, opts->uvquality, &result);
@@ -1512,16 +1519,23 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
 
     char imbe_d[88];
     DSD_MEMSET(imbe_d, 0, sizeof(imbe_d));
-    state->errs = mbe_eccImbe7200x4400C0(imbe_fr);
-    state->errs2 = state->errs;
-    mbe_demodulateImbe7200x4400Data(imbe_fr);
-    state->errs2 += mbe_eccImbe7200x4400Data(imbe_fr, imbe_d);
-    state->debug_audio_errors += state->errs2;
+    mbe_process_result result;
+    int decode_ret =
+        dsd_mbe_decode_imbe7200_frame(&state->errs, &state->errs2, (const char (*)[23])imbe_fr, imbe_d, &result);
+    if (decode_ret >= 0) {
+        state->debug_audio_errors += state->errs2;
+    }
 
     ks_idx = sdrtrunk_apply_keystream(imbe_d, 88, ks, ks_idx);
 
-    mbe_process_result result;
-    dsd_mbe_init_result_from_errors(&result, state->errs, state->errs2, MBE_PROCESS_FLAG_C0_VALID);
+    if (decode_ret < 0) {
+        mbe_synthesizeSilencef(state->audio_out_temp_buf);
+        if (decode_audio_is_allowed(is_enc, ks_available)) {
+            run_decode_audio_output_path(opts, state);
+        }
+        return ks_idx;
+    }
+
     (void)dsd_mbe_process_imbe4400_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                          sizeof(state->err_str), imbe_d, state->cur_mp, state->prev_mp,
                                          state->prev_mp_enhanced, opts->uvquality, &result);
