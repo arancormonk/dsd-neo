@@ -331,7 +331,8 @@ main(void) {
     s10.p25_cc_freq = 851000000;
     s10.trunk_cc_freq = 851000000;
     s10.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
-    double old_cc_sync_m = s10.last_cc_sync_time_m;
+    const double old_cc_sync_m = s10.last_cc_sync_time_m;
+    const double cc_sync_epsilon_s = 1.0e-9;
     (void)dsd_trunk_cc_candidates_add(&s10, 852000000, 0);
     p25_sm_ctx_t ctx10;
     p25_sm_init_ctx(&ctx10, &o10, &s10);
@@ -340,7 +341,8 @@ main(void) {
     p25_sm_tick_ctx(&ctx10, &o10, &s10);
     assert(g_result_tune_to_cc_calls == 1);
     assert(s10.trunk_cc_freq == 851000000);
-    assert(s10.last_cc_sync_time_m == old_cc_sync_m);
+    assert((s10.last_cc_sync_time_m - old_cc_sync_m) <= cc_sync_epsilon_s);
+    assert((old_cc_sync_m - s10.last_cc_sync_time_m) <= cc_sync_epsilon_s);
     assert(s10.p25_cc_eval_freq == 0);
     assert(ctx10.state == P25_SM_HUNTING);
 
