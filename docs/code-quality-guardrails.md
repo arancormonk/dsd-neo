@@ -20,7 +20,7 @@ Use this checklist when a change touches parser/decoder logic, external input, c
 - For new public APIs, verify headers live under `include/dsd-neo/<module>/` and are included as `<dsd-neo/...>`.
 - For new dependencies, document the dependency in CMake, README/install notes, and third-party notices as applicable.
 - For workflow changes, keep `GITHUB_TOKEN` permissions least-privilege and avoid interpolating untrusted GitHub context directly into shell scripts.
-- For release changes, verify SBOM, artifact, and attestation steps still run on tag builds.
+- For release changes, verify SBOM, artifact, attestation, and release-hardening checks still run on tag builds.
 - For release tags, verify the tag is annotated and signed by a trusted key before publishing.
 - For dependency or workflow changes, also check the supply-chain policy in `docs/supply-chain-guardrails.md`.
 

@@ -252,6 +252,11 @@ jobs:
         run: |
           ./build/dev-release/apps/dsd-cli/dsd-neo -h || true
 
+      - name: Verify release hardening
+        shell: bash
+        run: |
+          tools/check_release_hardening.sh build/dev-release/apps/dsd-cli/dsd-neo build/dev-release
+
   package-portable-dmg:
     name: Package portable DMG
     runs-on: macos-latest
@@ -607,6 +612,16 @@ jobs:
 
           # Emit manifest for auditing
           find "$STAGE/lib" -maxdepth 1 -type f -name '*.dylib' -exec basename {} \; | sort -f > "$STAGE/dylibs-manifest.txt"
+
+      - name: Verify staged release hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools/check_release_hardening.sh dist/dsd-neo-macos/bin/dsd-neo build/dev-release
+          find dist/dsd-neo-macos/lib -maxdepth 1 -type f -name '*.dylib' -print0 |
+            while IFS= read -r -d '' lib; do
+              tools/check_release_hardening.sh "$lib" build/dev-release
+            done
 
       - name: Smoke test staged binary
         shell: bash

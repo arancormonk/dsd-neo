@@ -58,6 +58,9 @@ SBOMs and GitHub artifact attestations for packaged Linux AppImage, macOS DMG,
 and Windows ZIP assets when the corresponding workflow completes successfully.
 Release publication jobs use `contents: write` only in trusted upstream
 release/nightly paths and publish with the workflow `GITHUB_TOKEN`.
+Packaging workflows also verify release hardening before upload: Linux ELF
+PIE/RELRO/BIND_NOW, macOS Mach-O PIE and staged dylib `@rpath` install names,
+and Windows PE ASLR/NX/high-entropy virtual addresses.
 
 Download assets from the release page, then verify an artifact attestation with
 GitHub CLI when available:

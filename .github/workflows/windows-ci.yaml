@@ -79,6 +79,14 @@ jobs:
         shell: pwsh
         run: cmake --build --preset win-msvc-release
 
+      - name: Verify release hardening (MSVC)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path 'build/win-msvc-release/apps/dsd-cli' -Recurse -Filter 'dsd-neo.exe' |
+            Select-Object -First 1
+          if ($null -eq $exe) { throw "dsd-neo.exe not found under build/win-msvc-release/apps/dsd-cli" }
+          ./tools/check_release_hardening.ps1 $exe.FullName
+
       - name: Show sccache stats
         shell: pwsh
         run: |
@@ -177,6 +185,14 @@ jobs:
         shell: pwsh
         run: cmake --build --preset win-msvc-release
 
+      - name: Verify built release hardening (MSVC)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path 'build/win-msvc-release/apps/dsd-cli' -Recurse -Filter 'dsd-neo.exe' |
+            Select-Object -First 1
+          if ($null -eq $exe) { throw "dsd-neo.exe not found under build/win-msvc-release/apps/dsd-cli" }
+          ./tools/check_release_hardening.ps1 $exe.FullName
+
       - name: Show sccache stats
         shell: pwsh
         run: |
@@ -215,6 +231,17 @@ jobs:
           foreach ($f in $required) {
             $p = Join-Path $docDir $f
             if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }
+          }
+
+      - name: Verify staged release hardening (MSVC)
+        shell: pwsh
+        run: |
+          $bin = 'dist/dsd-neo-msvc/bin'
+          if (!(Test-Path $bin)) { throw "Staged bin directory not found: $bin" }
+          $artifacts = @(Get-ChildItem -Path $bin -File | Where-Object { $_.Extension -in @('.exe', '.dll') })
+          if ($artifacts.Count -eq 0) { throw "No staged PE artifacts found under $bin" }
+          foreach ($artifact in $artifacts) {
+            ./tools/check_release_hardening.ps1 $artifact.FullName
           }
 
       - name: Smoke test staged binary (MSVC)

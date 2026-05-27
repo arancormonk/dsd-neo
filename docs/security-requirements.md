@@ -115,8 +115,8 @@ The project applies the following controls:
 - project safe API wrappers for memory, string, and formatting calls
 - broad CTest coverage across runtime, platform, DSP, IO, engine, FEC, crypto,
   protocol, core, and UI modules
-- default-on Release-like compiler/linker hardening for supported Clang/GCC
-  targets, with Linux release verification in CI
+- default-on Release-like compiler/linker hardening for supported Clang, GCC,
+  and MSVC targets, with release verification in CI
 - exclusive private sibling temp files for atomic user config, IQ metadata, and
   Rdio sidecar replacement
 - redaction guardrails for key/keystream output paths
