@@ -252,7 +252,7 @@ p25p2_xcch_close_slot_mbe_out(dsd_opts* opts, dsd_state* state, int slot) {
 
 static void
 p25p2_xcch_blank_slot_call_string(dsd_state* state, int slot) {
-    DSD_SPRINTF(state->call_string[slot], "%s", P25P2_EMPTY_CALL_STRING);
+    DSD_SNPRINTF(state->call_string[slot], sizeof(state->call_string[slot]), "%s", P25P2_EMPTY_CALL_STRING);
 }
 
 static void

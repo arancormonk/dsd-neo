@@ -449,8 +449,8 @@ dmrMSData(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "| Color Code=XX ");
     }
 
-    DSD_SPRINTF(state->slot1light, "%s", "");
-    DSD_SPRINTF(state->slot2light, "%s", "");
+    DSD_SNPRINTF(state->slot1light, sizeof(state->slot1light), "%s", "");
+    DSD_SNPRINTF(state->slot2light, sizeof(state->slot2light), "%s", "");
 
     //process data
     state->dmr_stereo = 1;

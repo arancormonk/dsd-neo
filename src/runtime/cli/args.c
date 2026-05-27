@@ -188,7 +188,7 @@ cli_parse_long_base(const char* in, int base, long* out) {
     errno = 0;
     char* end = NULL;
     long v = strtol(in, &end, base);
-    if (errno != 0 || end == in) {
+    if (errno != 0 || end == in || (end && *end != '\0')) {
         return 0;
     }
     *out = v;
@@ -204,32 +204,89 @@ cli_parse_long_or_default(const char* in, int base, long fallback) {
     return value;
 }
 
-static unsigned long long
-cli_parse_u64_or_default(const char* in, int base, unsigned long long fallback) {
-    if (!in || in[0] == '\0') {
-        return fallback;
+static int
+cli_parse_ulong_base(const char* in, int base, unsigned long* out) {
+    if (!in || !out || in[0] == '\0') {
+        return 0;
+    }
+    errno = 0;
+    char* end = NULL;
+    unsigned long value = strtoul(in, &end, base);
+    if (errno != 0 || end == in || (end && *end != '\0')) {
+        return 0;
+    }
+    *out = value;
+    return 1;
+}
+
+static int
+cli_parse_u64_base(const char* in, int base, unsigned long long* out) {
+    if (!in || !out || in[0] == '\0') {
+        return 0;
     }
     errno = 0;
     char* end = NULL;
     unsigned long long value = strtoull(in, &end, base);
-    if (errno != 0 || end == in) {
-        return fallback;
+    if (errno != 0 || end == in || (end && *end != '\0')) {
+        return 0;
     }
-    return value;
+    *out = value;
+    return 1;
 }
 
-static double
-cli_parse_double_or_default(const char* in, double fallback) {
-    if (!in || in[0] == '\0') {
-        return fallback;
+static int
+cli_parse_double_strict(const char* in, double* out) {
+    if (!in || !out || in[0] == '\0') {
+        return 0;
     }
     errno = 0;
     char* end = NULL;
     double value = strtod(in, &end);
-    if (errno != 0 || end == in) {
-        return fallback;
+    if (errno != 0 || end == in || (end && *end != '\0')) {
+        return 0;
     }
-    return value;
+    *out = value;
+    return 1;
+}
+
+static int
+cli_parse_long_option(const char* option_name, const char* in, int base, long* out, int* out_exit_rc) {
+    if (cli_parse_long_base(in, base, out)) {
+        return 1;
+    }
+    LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    cli_set_exit_rc(out_exit_rc, 1);
+    return 0;
+}
+
+static int
+cli_parse_ulong_option(const char* option_name, const char* in, int base, unsigned long* out, int* out_exit_rc) {
+    if (cli_parse_ulong_base(in, base, out)) {
+        return 1;
+    }
+    LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    cli_set_exit_rc(out_exit_rc, 1);
+    return 0;
+}
+
+static int
+cli_parse_u64_option(const char* option_name, const char* in, int base, unsigned long long* out, int* out_exit_rc) {
+    if (cli_parse_u64_base(in, base, out)) {
+        return 1;
+    }
+    LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    cli_set_exit_rc(out_exit_rc, 1);
+    return 0;
+}
+
+static int
+cli_parse_double_option(const char* option_name, const char* in, double* out, int* out_exit_rc) {
+    if (cli_parse_double_strict(in, out)) {
+        return 1;
+    }
+    LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    cli_set_exit_rc(out_exit_rc, 1);
+    return 0;
 }
 
 static int
@@ -263,7 +320,49 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
 // one-shot LCN calculator. Short-option parsing has been migrated here
 // to centralize all CLI handling in runtime.
 
-#define DSD_PARSE_ARGS_NEXT_ARG() (arg_advance = 2, argv[i + 1])
+static const char*
+cli_next_arg(char** argv, int i, int* arg_advance) {
+    *arg_advance = 2;
+    return argv[i + 1];
+}
+
+#define DSD_PARSE_ARGS_NEXT_ARG() cli_next_arg(argv, i, &arg_advance)
+
+#define DSD_CLI_PARSE_DOUBLE_OR_RETURN(option_name, value, target)                                                     \
+    do {                                                                                                               \
+        double dsd_cli_parsed_value = 0.0;                                                                             \
+        if (!cli_parse_double_option((option_name), (value), &dsd_cli_parsed_value, out_exit_rc)) {                    \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        (target) = dsd_cli_parsed_value;                                                                               \
+    } while (0)
+
+#define DSD_CLI_PARSE_LONG_OR_RETURN(option_name, value, base, target)                                                 \
+    do {                                                                                                               \
+        long dsd_cli_parsed_value = 0;                                                                                 \
+        if (!cli_parse_long_option((option_name), (value), (base), &dsd_cli_parsed_value, out_exit_rc)) {              \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        (target) = dsd_cli_parsed_value;                                                                               \
+    } while (0)
+
+#define DSD_CLI_PARSE_ULONG_OR_RETURN(option_name, value, base, target)                                                \
+    do {                                                                                                               \
+        unsigned long dsd_cli_parsed_value = 0;                                                                        \
+        if (!cli_parse_ulong_option((option_name), (value), (base), &dsd_cli_parsed_value, out_exit_rc)) {             \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        (target) = dsd_cli_parsed_value;                                                                               \
+    } while (0)
+
+#define DSD_CLI_PARSE_U64_OR_RETURN(option_name, value, base, target)                                                  \
+    do {                                                                                                               \
+        unsigned long long dsd_cli_parsed_value = 0;                                                                   \
+        if (!cli_parse_u64_option((option_name), (value), (base), &dsd_cli_parsed_value, out_exit_rc)) {               \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        (target) = dsd_cli_parsed_value;                                                                               \
+    } while (0)
 
 #define DSD_PARSE_ARGS_PRESCAN_BLOCK()                                                                                 \
     for (int i = 1, arg_advance = 1; i < argc; i += arg_advance) {                                                     \
@@ -435,7 +534,7 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-vc-grace") == 0 && i + 1 < argc) {                                                  \
-            opts->p25_vc_grace_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                        \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-vc-grace", DSD_PARSE_ARGS_NEXT_ARG(), opts->p25_vc_grace_s);         \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_vc_grace_s);                                               \
             dsd_setenv("DSD_NEO_P25_VC_GRACE", buf, 1);                                                                \
@@ -443,7 +542,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-min-follow-dwell") == 0 && i + 1 < argc) {                                          \
-            opts->p25_min_follow_dwell_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-min-follow-dwell", DSD_PARSE_ARGS_NEXT_ARG(),                        \
+                                           opts->p25_min_follow_dwell_s);                                              \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_min_follow_dwell_s);                                       \
             dsd_setenv("DSD_NEO_P25_MIN_FOLLOW_DWELL", buf, 1);                                                        \
@@ -451,7 +551,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-grant-voice-timeout") == 0 && i + 1 < argc) {                                       \
-            opts->p25_grant_voice_to_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                  \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-grant-voice-timeout", DSD_PARSE_ARGS_NEXT_ARG(),                     \
+                                           opts->p25_grant_voice_to_s);                                                \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_grant_voice_to_s);                                         \
             dsd_setenv("DSD_NEO_P25_GRANT_VOICE_TO", buf, 1);                                                          \
@@ -459,7 +560,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-retune-backoff") == 0 && i + 1 < argc) {                                            \
-            opts->p25_retune_backoff_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                  \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-retune-backoff", DSD_PARSE_ARGS_NEXT_ARG(),                          \
+                                           opts->p25_retune_backoff_s);                                                \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_retune_backoff_s);                                         \
             dsd_setenv("DSD_NEO_P25_RETUNE_BACKOFF", buf, 1);                                                          \
@@ -467,7 +569,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-mac-hold") == 0 && i + 1 < argc) {                                                  \
-            double v = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                                    \
+            double v = 0.0;                                                                                            \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-mac-hold", DSD_PARSE_ARGS_NEXT_ARG(), v);                            \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", v);                                                                  \
             dsd_setenv("DSD_NEO_P25_MAC_HOLD", buf, 1);                                                                \
@@ -475,7 +578,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-ring-hold") == 0 && i + 1 < argc) {                                                 \
-            double v = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                                    \
+            double v = 0.0;                                                                                            \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-ring-hold", DSD_PARSE_ARGS_NEXT_ARG(), v);                           \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", v);                                                                  \
             dsd_setenv("DSD_NEO_P25_RING_HOLD", buf, 1);                                                               \
@@ -483,7 +587,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-cc-grace") == 0 && i + 1 < argc) {                                                  \
-            double v = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                                    \
+            double v = 0.0;                                                                                            \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-cc-grace", DSD_PARSE_ARGS_NEXT_ARG(), v);                            \
             if (v < 0) {                                                                                               \
                 v = 0;                                                                                                 \
             }                                                                                                          \
@@ -497,7 +602,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-force-release-extra") == 0 && i + 1 < argc) {                                       \
-            opts->p25_force_release_extra_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);             \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-force-release-extra", DSD_PARSE_ARGS_NEXT_ARG(),                     \
+                                           opts->p25_force_release_extra_s);                                           \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_force_release_extra_s);                                    \
             dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA", buf, 1);                                                     \
@@ -505,7 +611,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-force-release-margin") == 0 && i + 1 < argc) {                                      \
-            opts->p25_force_release_margin_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);            \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-force-release-margin", DSD_PARSE_ARGS_NEXT_ARG(),                    \
+                                           opts->p25_force_release_margin_s);                                          \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_force_release_margin_s);                                   \
             dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", buf, 1);                                                    \
@@ -513,7 +620,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-p1-err-hold-pct") == 0 && i + 1 < argc) {                                           \
-            opts->p25_p1_err_hold_pct = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                   \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-p1-err-hold-pct", DSD_PARSE_ARGS_NEXT_ARG(),                         \
+                                           opts->p25_p1_err_hold_pct);                                                 \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.1f", opts->p25_p1_err_hold_pct);                                          \
             dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", buf, 1);                                                          \
@@ -521,7 +629,8 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-p1-err-hold-sec") == 0 && i + 1 < argc) {                                           \
-            opts->p25_p1_err_hold_s = cli_parse_double_or_default(DSD_PARSE_ARGS_NEXT_ARG(), 0.0);                     \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-p1-err-hold-sec", DSD_PARSE_ARGS_NEXT_ARG(),                         \
+                                           opts->p25_p1_err_hold_s);                                                   \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_p1_err_hold_s);                                            \
             dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_S", buf, 1);                                                            \
@@ -635,7 +744,7 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
         if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {                                                  \
             const char* sv = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             if (sv && *sv) {                                                                                           \
-                opts->rtl_auto_ppm_snr_db = (float)cli_parse_double_or_default(sv, 0.0);                               \
+                DSD_CLI_PARSE_DOUBLE_OR_RETURN("--auto-ppm-snr", sv, opts->rtl_auto_ppm_snr_db);                       \
                 char buf[32];                                                                                          \
                 DSD_SNPRINTF(buf, sizeof buf, "%.2f", opts->rtl_auto_ppm_snr_db);                                      \
                 dsd_setenv("DSD_NEO_AUTO_PPM_SNR_DB", buf, 1);                                                         \
@@ -829,6 +938,24 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
                                                     sizeof calc_csv_path, out_exit_rc)) {                              \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
+        long calc_long_check = 0;                                                                                      \
+        double calc_double_check = 0.0;                                                                                \
+        if (calc_step_cli                                                                                              \
+            && !cli_parse_long_option("--calc-step", calc_step_cli, 10, &calc_long_check, out_exit_rc)) {              \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        if (calc_ccf_cli                                                                                               \
+            && !cli_parse_double_option("--calc-cc-freq", calc_ccf_cli, &calc_double_check, out_exit_rc)) {            \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        if (calc_ccl_cli                                                                                               \
+            && !cli_parse_long_option("--calc-cc-lcn", calc_ccl_cli, 10, &calc_long_check, out_exit_rc)) {             \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        if (calc_start_cli                                                                                             \
+            && !cli_parse_long_option("--calc-start-lcn", calc_start_cli, 10, &calc_long_check, out_exit_rc)) {        \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
         dsd_setenv("DSD_NEO_DMR_T3_CALC_CSV", calc_csv_path, 1);                                                       \
         if (calc_step_cli) {                                                                                           \
             dsd_setenv("DSD_NEO_DMR_T3_STEP_HZ", calc_step_cli, 1);                                                    \
@@ -880,7 +1007,11 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
                                                                                                                        \
     /* Apply input volume and warn threshold */                                                                        \
     if (input_vol_cli) {                                                                                               \
-        int mv = (int)cli_parse_long_or_default(input_vol_cli, 10, 0);                                                 \
+        long parsed_mv = 0;                                                                                            \
+        if (!cli_parse_long_option("--input-volume", input_vol_cli, 10, &parsed_mv, out_exit_rc)) {                    \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        int mv = (int)parsed_mv;                                                                                       \
         if (mv < 1) {                                                                                                  \
             mv = 1;                                                                                                    \
         }                                                                                                              \
@@ -897,7 +1028,10 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
         LOG_NOTICE("Input volume multiplier (env): %dx\n", opts->input_volume_multiplier);                             \
     }                                                                                                                  \
     if (input_warn_db_cli) {                                                                                           \
-        double thr = cli_parse_double_or_default(input_warn_db_cli, 0.0);                                              \
+        double thr = 0.0;                                                                                              \
+        if (!cli_parse_double_option("--input-level-warn-db", input_warn_db_cli, &thr, out_exit_rc)) {                 \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
         if (thr < -200.0) {                                                                                            \
             thr = -200.0;                                                                                              \
         }                                                                                                              \
@@ -933,7 +1067,11 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
         }                                                                                                              \
     }                                                                                                                  \
     if (rdio_system_id_cli) {                                                                                          \
-        int sid = (int)cli_parse_long_or_default(rdio_system_id_cli, 10, 0);                                           \
+        long parsed_sid = 0;                                                                                           \
+        if (!cli_parse_long_option("--rdio-system-id", rdio_system_id_cli, 10, &parsed_sid, out_exit_rc)) {            \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        int sid = (int)parsed_sid;                                                                                     \
         if (sid < 0) {                                                                                                 \
             sid = 0;                                                                                                   \
         }                                                                                                              \
@@ -954,7 +1092,12 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
         LOG_NOTICE("Rdio API key configured\n");                                                                       \
     }                                                                                                                  \
     if (rdio_upload_timeout_cli) {                                                                                     \
-        int timeout_ms = (int)cli_parse_long_or_default(rdio_upload_timeout_cli, 10, 0);                               \
+        long parsed_timeout_ms = 0;                                                                                    \
+        if (!cli_parse_long_option("--rdio-upload-timeout-ms", rdio_upload_timeout_cli, 10, &parsed_timeout_ms,        \
+                                   out_exit_rc)) {                                                                     \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        int timeout_ms = (int)parsed_timeout_ms;                                                                       \
         if (timeout_ms < 100) {                                                                                        \
             timeout_ms = 100;                                                                                          \
         }                                                                                                              \
@@ -965,7 +1108,12 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
         LOG_NOTICE("Rdio upload timeout: %d ms\n", opts->rdio_upload_timeout_ms);                                      \
     }                                                                                                                  \
     if (rdio_upload_retries_cli) {                                                                                     \
-        int retries = (int)cli_parse_long_or_default(rdio_upload_retries_cli, 10, 0);                                  \
+        long parsed_retries = 0;                                                                                       \
+        if (!cli_parse_long_option("--rdio-upload-retries", rdio_upload_retries_cli, 10, &parsed_retries,              \
+                                   out_exit_rc)) {                                                                     \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        int retries = (int)parsed_retries;                                                                             \
         if (retries < 0) {                                                                                             \
             retries = 0;                                                                                               \
         }                                                                                                              \
@@ -1112,7 +1260,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             state->m17dat[49] = '\0';                                                                                  \
             break;                                                                                                     \
         case 'I':                                                                                                      \
-            state->tg_hold = (uint32_t)cli_parse_long_or_default(optarg, 10, 0);                                       \
+            DSD_CLI_PARSE_LONG_OR_RETURN("-I", optarg, 10, state->tg_hold);                                            \
             LOG_NOTICE("TG Hold set to %u \n", state->tg_hold);                                                        \
             break;                                                                                                     \
         case '8':                                                                                                      \
@@ -1160,7 +1308,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         case '2':                                                                                                      \
             state->tyt_bp = 1;                                                                                         \
-            state->H = cli_parse_u64_or_default(optarg, 16, 0ULL);                                                     \
+            DSD_CLI_PARSE_U64_OR_RETURN("-2", optarg, 16, state->H);                                                   \
             state->H = state->H & 0xFFFF;                                                                              \
             LOG_NOTICE("DMR TYT Basic 16-bit key loaded with forced application: %s\n", DSD_SECRET_REDACTED);          \
             break;                                                                                                     \
@@ -1219,7 +1367,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         case 'z': {                                                                                                    \
             /* TDMA voice slot preference */                                                                           \
             /* 0 = prefer slot 1, 1 = prefer slot 2, 2 = auto */                                                       \
-            int pref = (int)cli_parse_long_or_default(optarg, 10, 0);                                                  \
+            long parsed_pref = 0;                                                                                      \
+            if (!cli_parse_long_option("-z", optarg, 10, &parsed_pref, out_exit_rc)) {                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            int pref = (int)parsed_pref;                                                                               \
             if (pref < 0) {                                                                                            \
                 pref = 0;                                                                                              \
             }                                                                                                          \
@@ -1313,7 +1465,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         case 'V': {                                                                                                    \
             /* Enable TDMA voice synthesis for selected slot(s) */                                                     \
             /* 1 = Slot 1, 2 = Slot 2, 3 = Both */                                                                     \
-            int v = (int)cli_parse_long_or_default(optarg, 10, 0);                                                     \
+            long parsed_v = 0;                                                                                         \
+            if (!cli_parse_long_option("-V", optarg, 10, &parsed_v, out_exit_rc)) {                                    \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            int v = (int)parsed_v;                                                                                     \
             if (v < 0) {                                                                                               \
                 v = 0;                                                                                                 \
             }                                                                                                          \
@@ -1412,14 +1568,14 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         case 'U':                                                                                                      \
             /* Enable rigctl/TCP and set port */                                                                       \
             opts->use_rigctl = 1;                                                                                      \
-            opts->rigctlportno = (int)cli_parse_long_or_default(optarg, 10, 0);                                        \
+            DSD_CLI_PARSE_LONG_OR_RETURN("-U", optarg, 10, opts->rigctlportno);                                        \
             if (opts->rigctlportno <= 0) {                                                                             \
                 opts->rigctlportno = 4532; /* SDR++ default */                                                         \
             }                                                                                                          \
             break;                                                                                                     \
         case 'B':                                                                                                      \
             /* Set rigctl setmod bandwidth (Hz) */                                                                     \
-            opts->setmod_bw = (int)cli_parse_long_or_default(optarg, 10, 0);                                           \
+            DSD_CLI_PARSE_LONG_OR_RETURN("-B", optarg, 10, opts->setmod_bw);                                           \
             if (opts->setmod_bw < 0) {                                                                                 \
                 opts->setmod_bw = 0;                                                                                   \
             }                                                                                                          \
@@ -1455,7 +1611,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         case 'g': {                                                                                                    \
             /* Digital output gain (matches legacy main.c semantics). \
                    0 = auto gain; >0 fixes gain in the 0..50 range. */                                                \
-            float g = (float)cli_parse_double_or_default(optarg, 0.0);                                                 \
+            double parsed_g = 0.0;                                                                                     \
+            if (!cli_parse_double_option("-g", optarg, &parsed_g, out_exit_rc)) {                                      \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            float g = (float)parsed_g;                                                                                 \
             if (g < 0.0f) {                                                                                            \
                 /* Historical behavior: negative disables manual gain without changing autogain. */                    \
                 LOG_NOTICE("Disabling audio out gain setting\n");                                                      \
@@ -1483,7 +1643,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->dmr_mono = 1;                                                                                    \
                 LOG_NOTICE("DMR Mono (1997 method) enabled\n");                                                        \
             } else {                                                                                                   \
-                float ga = (float)cli_parse_double_or_default(optarg, 0.0);                                            \
+                double parsed_ga = 0.0;                                                                                \
+                if (!cli_parse_double_option("-n", optarg, &parsed_ga, out_exit_rc)) {                                 \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                float ga = (float)parsed_ga;                                                                           \
                 if (ga < 0.0f) {                                                                                       \
                     ga = 0.0f;                                                                                         \
                 } else if (ga > 100.0f) {                                                                              \
@@ -1541,7 +1705,10 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         case 'v': {                                                                                                    \
             /* Filtering bitmap (PBF/LPF/HPF/HPFD) -- accepts hex or dec */                                            \
-            unsigned long bm = strtoul(optarg, NULL, 0);                                                               \
+            unsigned long bm = 0;                                                                                      \
+            if (!cli_parse_ulong_option("-v", optarg, 0, &bm, out_exit_rc)) {                                          \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             opts->use_pbf = (bm & 0x1) ? 1 : 0;                                                                        \
             opts->use_lpf = (bm & 0x2) ? 1 : 0;                                                                        \
             opts->use_hpf = (bm & 0x4) ? 1 : 0;                                                                        \
@@ -1942,7 +2109,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             }                                                                                                          \
             break;                                                                                                     \
         case 'u':                                                                                                      \
-            opts->uvquality = (int)cli_parse_long_or_default(optarg, 0, 0);                                            \
+            DSD_CLI_PARSE_LONG_OR_RETURN("-u", optarg, 0, opts->uvquality);                                            \
             if (opts->uvquality < 1) {                                                                                 \
                 opts->uvquality = 1;                                                                                   \
             } else if (opts->uvquality > 64) {                                                                         \
@@ -1952,7 +2119,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         case 's': {                                                                                                    \
             /* Sample rate for WAV/RAW input files */                                                                  \
-            int sr = (int)cli_parse_long_or_default(optarg, 10, 0);                                                    \
+            long parsed_sr = 0;                                                                                        \
+            if (!cli_parse_long_option("-s", optarg, 10, &parsed_sr, out_exit_rc)) {                                   \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            int sr = (int)parsed_sr;                                                                                   \
             int old_effective_rate = dsd_opts_effective_input_rate(opts);                                              \
             if (sr < 8000) {                                                                                           \
                 sr = 8000;                                                                                             \
@@ -2007,7 +2178,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         case 'l': opts->use_cosine_filter = 0; break;                                                                  \
         case 't':                                                                                                      \
             /* Trunking/scan hangtime seconds (0 = immediate release) */                                               \
-            opts->trunk_hangtime = (float)cli_parse_double_or_default(optarg, 0.0);                                    \
+            DSD_CLI_PARSE_DOUBLE_OR_RETURN("-t", optarg, opts->trunk_hangtime);                                        \
             if (opts->trunk_hangtime < 0.0f) {                                                                         \
                 opts->trunk_hangtime = 2.0f;                                                                           \
             }                                                                                                          \
@@ -2021,27 +2192,37 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             /* Manually set P25p2 WACN/SYSID/NAC via hex string, e.g., BEE00ABC123 */                                  \
             const char* s = optarg;                                                                                    \
             size_t len = strlen(s);                                                                                    \
-            if (len >= 11) {                                                                                           \
+            if (len == 11) {                                                                                           \
                 char wb[6] = {0}, sb[4] = {0}, nb[4] = {0};                                                            \
                 DSD_MEMCPY(wb, s, 5);                                                                                  \
                 DSD_MEMCPY(sb, s + 5, 3);                                                                              \
                 DSD_MEMCPY(nb, s + 8, 3);                                                                              \
-                unsigned long w = strtoul(wb, NULL, 16);                                                               \
-                unsigned long sy = strtoul(sb, NULL, 16);                                                              \
-                unsigned long na = strtoul(nb, NULL, 16);                                                              \
+                unsigned long w = 0;                                                                                   \
+                unsigned long sy = 0;                                                                                  \
+                unsigned long na = 0;                                                                                  \
+                if (!cli_parse_ulong_option("-X WACN", wb, 16, &w, out_exit_rc)                                        \
+                    || !cli_parse_ulong_option("-X SYSID", sb, 16, &sy, out_exit_rc)                                   \
+                    || !cli_parse_ulong_option("-X NAC", nb, 16, &na, out_exit_rc)) {                                  \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
                 state->p2_wacn = w & 0xFFFFF;                                                                          \
                 state->p2_sysid = sy & 0xFFF;                                                                          \
                 state->p2_cc = na & 0xFFF;                                                                             \
                 LOG_NOTICE("P25p2 manual WACN/SYSID/NAC set: %05lX/%03lX/%03lX\n", state->p2_wacn, state->p2_sysid,    \
                            state->p2_cc);                                                                              \
             } else {                                                                                                   \
-                LOG_WARNING("-X expects 11 hex chars (WACN[5]+SYSID[3]+NAC[3]), e.g., BEE00ABC123\n");                 \
+                LOG_ERROR("-X expects exactly 11 hex chars (WACN[5]+SYSID[3]+NAC[3]), e.g., BEE00ABC123\n");           \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             break;                                                                                                     \
         }                                                                                                              \
         case 'b': {                                                                                                    \
             /* Manually enter Basic Privacy key number (decimal 0..255) */                                             \
-            long v = strtol(optarg, NULL, 10);                                                                         \
+            long v = 0;                                                                                                \
+            if (!cli_parse_long_option("-b", optarg, 10, &v, out_exit_rc)) {                                           \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             if (v < 0) {                                                                                               \
                 v = 0;                                                                                                 \
             }                                                                                                          \
@@ -2054,7 +2235,10 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }                                                                                                              \
         case 'D': {                                                                                                    \
             /* Manually set DMR TIII Location Area n-bit length */                                                     \
-            long n = strtol(optarg, NULL, 10);                                                                         \
+            long n = 0;                                                                                                \
+            if (!cli_parse_long_option("-D", optarg, 10, &n, out_exit_rc)) {                                           \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             if (n < 0) {                                                                                               \
                 n = 0;                                                                                                 \
             }                                                                                                          \

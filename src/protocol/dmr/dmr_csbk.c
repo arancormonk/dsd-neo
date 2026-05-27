@@ -371,11 +371,11 @@ dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, int* csbk_o, int* data_call
 
 static void
 dmr_cspdu_pf0_update_slot_call_string(dsd_state* state, int slot, int csbk_o, int data_call, int emergency) {
-    DSD_SPRINTF(state->call_string[slot], " Trunked ");
+    DSD_SNPRINTF(state->call_string[slot], sizeof(state->call_string[slot]), " Trunked ");
     if (csbk_o == 49 || csbk_o == 50) {
-        DSD_SPRINTF(state->call_string[slot], "   Group ");
+        DSD_SNPRINTF(state->call_string[slot], sizeof(state->call_string[slot]), "   Group ");
     } else if (!data_call) {
-        DSD_SPRINTF(state->call_string[slot], " Private ");
+        DSD_SNPRINTF(state->call_string[slot], sizeof(state->call_string[slot]), " Private ");
     }
     if (emergency && !data_call) {
         dsd_append(state->call_string[slot], sizeof state->call_string[slot], " Emergency  ");
@@ -422,7 +422,8 @@ static void
 dmr_cspdu_pf0_set_active_channel(dsd_state* state, uint8_t lcn, uint16_t channel, uint32_t target) {
     char suf[24];
     dmr_format_chan_suffix(lcn, suf, sizeof suf);
-    DSD_SPRINTF(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", channel, suf, target);
+    DSD_SNPRINTF(state->active_channel[lcn], sizeof(state->active_channel[lcn]), "Active Ch: %04X%s TG: %d; ", channel,
+                 suf, target);
 }
 
 static void
@@ -867,7 +868,7 @@ dmr_cspdu_pf0_handle_c_ahoy(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o,
     DSD_FPRINTF(stderr, " C_AHOY - ");
     UNUSED3(ahoy_bf, svc_flag, als_flag);
     DSD_MEMSET(ahoy_str, 0, sizeof(ahoy_str));
-    DSD_SPRINTF(ahoy_str, "AHOY TGT: %d; SRC: %d; ", ahoy_target, ahoy_source);
+    DSD_SNPRINTF(ahoy_str, sizeof(ahoy_str), "AHOY TGT: %d; SRC: %d; ", ahoy_target, ahoy_source);
 
     DSD_FPRINTF(stderr, ahoy_gi == 0 ? "Private " : "Group ");
     dsd_append(ahoy_str, sizeof ahoy_str, ahoy_gi == 0 ? "Private; " : "Group; ");
@@ -1936,7 +1937,7 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
 
     DSD_FPRINTF(stderr, "\n  ");
     DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
-    DSD_SPRINTF(state->active_channel[0], "Cap+ ");
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Cap+ ");
     state->last_active_time = time(NULL);
     dmr_cspdu_cap_plus_3e_calc_window(ctx);
 
@@ -1956,7 +1957,7 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
             if (tg != 0) {
                 k++;
             }
-            DSD_SPRINTF(cap_active, "LSN:%d TG:%d; ", i + 1, tg);
+            DSD_SNPRINTF(cap_active, sizeof(cap_active), "LSN:%d TG:%d; ", i + 1, tg);
             dsd_append(state->active_channel[i + 1], sizeof state->active_channel[0], cap_active);
             continue;
         }
@@ -1972,7 +1973,7 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
                 x++;
             }
             if (opts->trunk_tune_private_calls == 1) {
-                DSD_SPRINTF(cap_active, "LSN:%d PC:%d; ", i + 1, tg);
+                DSD_SNPRINTF(cap_active, sizeof(cap_active), "LSN:%d PC:%d; ", i + 1, tg);
                 dsd_append(state->active_channel[i + 1], sizeof state->active_channel[0], cap_active);
             }
             continue;
@@ -1989,9 +1990,9 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
 static void
 dmr_cspdu_cap_plus_3e_set_branding(dsd_state* state) {
     state->dmr_mfid = 0x10;
-    DSD_SPRINTF(state->dmr_branding, "%s", "Motorola");
-    DSD_SPRINTF(state->dmr_branding_sub, "%s", "Cap+ ");
-    DSD_SPRINTF(state->dmr_site_parms, "%s", "");
+    DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
+    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "%s", "Cap+ ");
+    DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%s", "");
 }
 
 static void
@@ -2137,8 +2138,8 @@ dmr_cspdu_handle_cap_plus(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
 static void
 dmr_cspdu_con_plus_set_branding(dsd_state* state) {
     state->dmr_mfid = 0x06;
-    DSD_SPRINTF(state->dmr_branding, "%s", "Motorola");
-    DSD_SPRINTF(state->dmr_branding_sub, "Con+ ");
+    DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
+    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "Con+ ");
 }
 
 static void
@@ -2256,7 +2257,8 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
     dmr_cspdu_con_plus_set_branding(state);
 
     dmr_format_chan_suffix(g.tslot, suf, sizeof suf);
-    DSD_SPRINTF(state->active_channel[g.tslot], "Active Ch: %04X%s TG: %d; ", g.lcn, suf, g.grp_addr);
+    DSD_SNPRINTF(state->active_channel[g.tslot], sizeof(state->active_channel[g.tslot]), "Active Ch: %04X%s TG: %d; ",
+                 g.lcn, suf, g.grp_addr);
     state->last_active_time = time(NULL);
 
     if (opts->trunk_enable == 0 && state->trunk_chan_map[g.lcn] != 0) {
@@ -2302,7 +2304,8 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     }
 
     dmr_format_chan_suffix(tslot, suf, sizeof suf);
-    DSD_SPRINTF(state->active_channel[tslot], "Active Ch: %04X%s TG: %d; ", lcn, suf, dtarget);
+    DSD_SNPRINTF(state->active_channel[tslot], sizeof(state->active_channel[tslot]), "Active Ch: %04X%s TG: %d; ", lcn,
+                 suf, dtarget);
     state->last_active_time = time(NULL);
     if (opts->trunk_enable == 0 && state->trunk_chan_map[lcn] != 0) {
         state->trunk_vc_freq[0] = state->trunk_chan_map[lcn];
@@ -2409,9 +2412,9 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
     const int t_tg_count = 18;
 
     if (xpt_seq == 0) {
-        DSD_SPRINTF(state->active_channel[0], "XPT ");
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "XPT ");
     } else {
-        DSD_SPRINTF(state->active_channel[xpt_seq], "%s", "");
+        DSD_SNPRINTF(state->active_channel[xpt_seq], sizeof(state->active_channel[xpt_seq]), "%s", "");
     }
     state->last_active_time = time(NULL);
 
@@ -2432,11 +2435,11 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
             DSD_FPRINTF(stderr, " %03d;  ", tg);
             t_tg[slot_idx] = (uint8_t)tg;
             if (xpt_ch[i] == 3) {
-                DSD_SPRINTF(xpt_active, "LSN:%d TG:%d; ", slot_idx + 1, tg);
+                DSD_SNPRINTF(xpt_active, sizeof(xpt_active), "LSN:%d TG:%d; ", slot_idx + 1, tg);
             } else if (xpt_ch[i] == 2) {
-                DSD_SPRINTF(xpt_active, "LSN:%d PC:%d; ", slot_idx + 1, tg);
+                DSD_SNPRINTF(xpt_active, sizeof(xpt_active), "LSN:%d PC:%d; ", slot_idx + 1, tg);
             } else {
-                DSD_SPRINTF(xpt_active, "LSN:%d UK:%d; ", slot_idx + 1, tg);
+                DSD_SNPRINTF(xpt_active, sizeof(xpt_active), "LSN:%d UK:%d; ", slot_idx + 1, tg);
             }
             dsd_append(state->active_channel[xpt_seq], sizeof state->active_channel[0], xpt_active);
             continue;
@@ -2528,7 +2531,7 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     }
 
     dmr_cspdu_xpt_print_and_collect(opts, state, cs_pdu_bits, xpt_seq, xpt_bank, xpt_ch, t_tg);
-    DSD_SPRINTF(state->dmr_site_parms, "Free LCN - %d ", xpt_free);
+    DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "Free LCN - %d ", xpt_free);
     dmr_cspdu_xpt_update_cc_from_input(opts, state);
 
     if (opts->trunk_tune_group_calls == 1) {
@@ -2545,7 +2548,7 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
         dmr_cspdu_xpt_try_tune(opts, state, t_tg, xpt_bank);
     }
 
-    DSD_SPRINTF(state->dmr_branding_sub, "XPT ");
+    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
 }
 
 static void
@@ -2575,7 +2578,7 @@ dmr_cspdu_xpt_handle_adjacent(uint8_t cs_pdu_bits[], dsd_state* state, int csbk_
             DSD_FPRINTF(stderr, "Site:%d Free:%d; ", xpt_site_id[i], xpt_site_rp[i]);
         }
     }
-    DSD_SPRINTF(state->dmr_branding_sub, "XPT ");
+    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
 }
 
 static void
@@ -2748,32 +2751,32 @@ dmr_syscode_decode_model(uint8_t model, uint8_t* cs_pdu_bits, uint16_t* net, uin
     *net = 0;
     *site = 0;
     *site_bits = 0;
-    DSD_SPRINTF(model_str, "%s", " ");
+    DSD_SNPRINTF(model_str, sizeof(model_str), "%s", " ");
 
     switch (model) {
         case 0:
             *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 9);
             *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[51], 3);
             *site_bits = 3;
-            DSD_SPRINTF(model_str, "%s", "Tiny");
+            DSD_SNPRINTF(model_str, sizeof(model_str), "%s", "Tiny");
             break;
         case 1:
             *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 7);
             *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[49], 5);
             *site_bits = 5;
-            DSD_SPRINTF(model_str, "%s", "Small");
+            DSD_SNPRINTF(model_str, sizeof(model_str), "%s", "Small");
             break;
         case 2:
             *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 4);
             *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[46], 8);
             *site_bits = 8;
-            DSD_SPRINTF(model_str, "%s", "Large");
+            DSD_SNPRINTF(model_str, sizeof(model_str), "%s", "Large");
             break;
         default:
             *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 2);
             *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[44], 10);
             *site_bits = 10;
-            DSD_SPRINTF(model_str, "%s", "Huge");
+            DSD_SNPRINTF(model_str, sizeof(model_str), "%s", "Huge");
             break;
     }
 }
@@ -2783,13 +2786,13 @@ dmr_syscode_set_partition_label(uint8_t par, char* par_str, size_t par_str_sz) {
     if (!par_str || par_str_sz == 0) {
         return;
     }
-    DSD_SPRINTF(par_str, "%s", "Res");
+    DSD_SNPRINTF(par_str, sizeof(par_str), "%s", "Res");
     if (par == 1) {
-        DSD_SPRINTF(par_str, "%s", "A");
+        DSD_SNPRINTF(par_str, sizeof(par_str), "%s", "A");
     } else if (par == 2) {
-        DSD_SPRINTF(par_str, "%s", "B");
+        DSD_SNPRINTF(par_str, sizeof(par_str), "%s", "B");
     } else if (par == 3) {
-        DSD_SPRINTF(par_str, "%s", "AB");
+        DSD_SNPRINTF(par_str, sizeof(par_str), "%s", "AB");
     }
 }
 
@@ -2808,7 +2811,7 @@ dmr_syscode_effective_split_n(dsd_opts* opts, dsd_state* state, int csbk_fid, ui
             opts->dmr_dmrla_is_set = 1;
             opts->dmr_dmrla_n = 0;
         }
-        DSD_SPRINTF(state->dmr_branding, "%s", "Motorola");
+        DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
     }
     if (opts->dmr_dmrla_is_set == 1) {
         n = opts->dmr_dmrla_n;
@@ -2932,10 +2935,11 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
     if (type == 0) {
         dmr_syscode_print_type0(opts, cs_pdu_bits, model_str, net, site, n, sub_mask, par_str, syscode, is_capmax);
         if (n != 0) {
-            DSD_SPRINTF(state->dmr_site_parms, "TIII %s:%d-%d.%d;%04X; ", model_str, net, (site >> n),
-                        (site & sub_mask), syscode);
+            DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d.%d;%04X; ", model_str,
+                         net, (site >> n), (site & sub_mask), syscode);
         } else {
-            DSD_SPRINTF(state->dmr_site_parms, "TIII %s:%d-%d;%04X; ", model_str, net, site, syscode);
+            DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d;%04X; ", model_str, net,
+                         site, syscode);
         }
     } else if (type == 1) {
         dmr_syscode_print_type1(model_str, net, site, n, sub_mask, syscode);

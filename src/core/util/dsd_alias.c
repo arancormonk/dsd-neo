@@ -518,7 +518,8 @@ l3h_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, 
     DSD_SNPRINTF(str, ptr + 1, "%s", ttemp);
 
     if (state->event_history_s[slot].Event_History_Items[0].source_id == tsrc && tsrc != 0) {
-        DSD_SPRINTF(state->event_history_s[slot].Event_History_Items[0].alias, "%s", str);
+        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].alias,
+                     sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s", str);
     }
 
     //The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
@@ -554,7 +555,8 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
     uint16_t nac = state->nac;
 
     if (state->event_history_s[slot].Event_History_Items[0].source_id == rid) {
-        DSD_SPRINTF(state->event_history_s[slot].Event_History_Items[0].alias, "%s", alias);
+        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].alias,
+                     sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s", alias);
     }
 
     if (rid != 0) {
@@ -803,7 +805,7 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
 
     char alias_string[500];
     DSD_MEMSET(alias_string, 0, sizeof(alias_string));
-    DSD_SPRINTF(alias_string, "%s", "");
+    DSD_SNPRINTF(alias_string, sizeof(alias_string), "%s", "");
 
     const uint16_t end = dmr_talker_alias_effective_len(state->dmr_pdu_sf[slot], char_size, max_chars);
 
@@ -819,8 +821,10 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
     uint32_t source = dmr_talker_alias_source_for_slot(state, slot);
 
     if (state->event_history_s[slot].Event_History_Items[0].source_id == source) {
-        DSD_SPRINTF(state->event_history_s[slot].Event_History_Items[0].alias, "%s; ", alias_string);
+        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].alias,
+                     sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s; ", alias_string);
     }
-    DSD_SPRINTF(state->generic_talker_alias[slot], "Talker Alias: %s; ", alias_string);
+    DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "Talker Alias: %s; ",
+                 alias_string);
     state->generic_talker_alias_src[slot] = source;
 }

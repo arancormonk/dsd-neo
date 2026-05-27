@@ -292,6 +292,7 @@ jobs:
                 -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
               cmake --build build/appimage -j
               ./build/appimage/apps/dsd-cli/dsd-neo -h || true
+              /work/tools/check_release_hardening.sh /work/build/appimage/apps/dsd-cli/dsd-neo /work/build/appimage
 
               rm -rf AppDir
               cmake --install build/appimage --prefix AppDir/usr

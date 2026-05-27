@@ -623,7 +623,7 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
             dsd_sleep_ms(1000);
             continue;
         }
-        DSD_SPRINTF(opts->audio_in_dev, "%s", "pulse");
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "pulse");
         LOG_ERROR("TCP Connection Failure - Using %s Audio Input.\n", opts->audio_in_dev);
         opts->audio_in_type = AUDIO_IN_PULSE;
         return 0;
@@ -946,13 +946,13 @@ dsd_engine_setup_parse_rtl_input(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
     if (rtl_ok != 1) {
         LOG_ERROR("RTL Support not enabled/compiled, falling back to Pulse Audio Input.\n");
-        DSD_SPRINTF(opts->audio_in_dev, "%s", "pulse");
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "pulse");
         opts->audio_in_type = AUDIO_IN_PULSE;
     }
 #else
     UNUSED(rtl_ok);
     LOG_ERROR("RTL Support not enabled/compiled, falling back to Pulse Audio Input.\n");
-    DSD_SPRINTF(opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "pulse");
     opts->audio_in_type = AUDIO_IN_PULSE;
 #endif
     UNUSED(vendor);
@@ -997,7 +997,7 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
     int err = udp_socket_connect(opts, state);
     if (err < 0) {
         LOG_ERROR("Error Configuring UDP Socket for UDP Blaster Audio :( \n");
-        DSD_SPRINTF(opts->audio_out_dev, "%s", "pulse");
+        DSD_SNPRINTF(opts->audio_out_dev, sizeof(opts->audio_out_dev), "%s", "pulse");
         opts->audio_out_type = 0;
     }
 

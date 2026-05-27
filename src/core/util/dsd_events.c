@@ -778,9 +778,9 @@ watchdog_event_current_build_event_edacs(const dsd_state* state, const watchdog_
     char lid_str[20];
     DSD_MEMSET(lid_str, 0, sizeof(lid_str));
     if (state->lastsrc != 0 && state->lastsrc != 0x800) {
-        DSD_SPRINTF(lid_str, "LID: %05d;", state->lastsrc);
+        DSD_SNPRINTF(lid_str, sizeof(lid_str), "LID: %05d;", state->lastsrc);
     } else {
-        DSD_SPRINTF(lid_str, "LID: __UNK;");
+        DSD_SNPRINTF(lid_str, sizeof(lid_str), "LID: __UNK;");
     }
 
     DSD_SNPRINTF(event_string, event_size, "%s %s %s AFS: %s (%04d); %s LCN: %02d; Site: %d; %s; ", datestr, timestr,
@@ -792,11 +792,11 @@ watchdog_event_current_build_event_dmr(const dsd_state* state, uint8_t slot, con
                                        const char* datestr, const char* timestr, const char* sys_string,
                                        char* event_string, size_t event_size) {
     if (ctx->sys_id1) {
-        DSD_SPRINTF(event_string, "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; SYS: %X; ", datestr, timestr, sys_string,
-                    ctx->target_id, ctx->source_id, ctx->sys_id2, ctx->sys_id1);
+        DSD_SNPRINTF(event_string, sizeof(event_string), "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; SYS: %X; ", datestr,
+                     timestr, sys_string, ctx->target_id, ctx->source_id, ctx->sys_id2, ctx->sys_id1);
     } else {
-        DSD_SPRINTF(event_string, "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; ", datestr, timestr, sys_string,
-                    ctx->target_id, ctx->source_id, ctx->sys_id2);
+        DSD_SNPRINTF(event_string, sizeof(event_string), "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; ", datestr, timestr,
+                     sys_string, ctx->target_id, ctx->source_id, ctx->sys_id2);
     }
 
     if (ctx->enc) {
@@ -804,7 +804,7 @@ watchdog_event_current_build_event_dmr(const dsd_state* state, uint8_t slot, con
     }
     if (ctx->alg_id != 0) {
         char ess_str[30];
-        DSD_SPRINTF(ess_str, "ALG: %02X; KID: %02X; ", ctx->alg_id, ctx->key_id);
+        DSD_SNPRINTF(ess_str, sizeof(ess_str), "ALG: %02X; KID: %02X; ", ctx->alg_id, ctx->key_id);
         watchdog_event_str_append(event_string, event_size, ess_str);
     }
 
@@ -840,17 +840,18 @@ watchdog_event_current_build_event_p25(const dsd_state* state, uint8_t slot, con
                                        const char* datestr, const char* timestr, const char* sys_string,
                                        char* event_string, size_t event_size) {
     if (ctx->sys_id1) {
-        DSD_SPRINTF(event_string, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; NET_STS: %05X:%03X:%d.%d; ", datestr,
-                    timestr, sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3, ctx->sys_id1, ctx->sys_id2,
-                    ctx->sys_id4, ctx->sys_id5);
+        DSD_SNPRINTF(event_string, sizeof(event_string),
+                     "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; NET_STS: %05X:%03X:%d.%d; ", datestr, timestr,
+                     sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3, ctx->sys_id1, ctx->sys_id2, ctx->sys_id4,
+                     ctx->sys_id5);
     } else {
-        DSD_SPRINTF(event_string, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; ", datestr, timestr, sys_string,
-                    ctx->target_id, ctx->source_id, ctx->sys_id3);
+        DSD_SNPRINTF(event_string, sizeof(event_string), "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; ", datestr, timestr,
+                     sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3);
     }
 
     if (ctx->alg_id != 0 && ctx->alg_id != 0x80) {
         char ess_str[30];
-        DSD_SPRINTF(ess_str, "ENC; ALG: %02X; KID: %04X; ", ctx->alg_id, ctx->key_id);
+        DSD_SNPRINTF(ess_str, sizeof(ess_str), "ENC; ALG: %02X; KID: %04X; ", ctx->alg_id, ctx->key_id);
         watchdog_event_str_append(event_string, event_size, ess_str);
     }
     if (ctx->svc_opts & 0x80) {

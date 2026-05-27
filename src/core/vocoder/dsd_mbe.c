@@ -1632,7 +1632,7 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
     const int want_static_wav = (opts->wav_out_f != NULL && opts->static_wav_file == 1) ? 1 : 0;
 
     for (int i = state->optind; i < argc; i++) {
-        DSD_SPRINTF(opts->mbe_in_file, "%s", argv[i]);
+        DSD_SNPRINTF(opts->mbe_in_file, sizeof(opts->mbe_in_file), "%s", argv[i]);
         openMbeInFile(opts, state);
         if (opts->mbe_in_f == NULL) {
             continue;

@@ -2,6 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+expected_release_signing_fingerprint="5FAF0C47C8E1F95D33CD83B1E42E43ADD853F280"
+protected_main_ref="refs/remotes/origin/main"
 
 project_version="$(
   sed -nE 's/^[[:space:]]*project\([[:space:]]*dsd-neo[[:space:]]+VERSION[[:space:]]+([0-9]+[.][0-9]+[.][0-9]+).*$/\1/p' \
@@ -59,6 +61,25 @@ if ! git rev-parse -q --verify "refs/tags/${tag}^{tag}" > /dev/null; then
   exit 1
 fi
 
+if ! git fetch --force origin "+refs/heads/main:${protected_main_ref}" > /dev/null 2>&1; then
+  echo "Failed to fetch protected main branch from origin." >&2
+  exit 1
+fi
+
+if [[ "$(git rev-parse --is-shallow-repository 2> /dev/null || echo false)" == "true" ]]; then
+  if ! git fetch --force --unshallow origin "+refs/heads/main:${protected_main_ref}" > /dev/null 2>&1; then
+    echo "Failed to fetch enough history to validate ${tag} against origin/main." >&2
+    exit 1
+  fi
+fi
+
+tag_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
+main_commit="$(git rev-parse "${protected_main_ref}^{commit}")"
+if ! git merge-base --is-ancestor "${tag_commit}" "${main_commit}"; then
+  echo "Release tag ${tag} target ${tag_commit} is not contained in origin/main ${main_commit}." >&2
+  exit 1
+fi
+
 trusted_key="${repo_root}/release-keys/arancormonk-2026.pgp"
 if [[ ! -f "${trusted_key}" ]]; then
   echo "Trusted release key not found: ${trusted_key}" >&2
@@ -73,15 +94,18 @@ trap cleanup_gnupg_home EXIT
 chmod 700 "${gnupg_home}"
 
 GNUPGHOME="${gnupg_home}" gpg --batch --import "${trusted_key}" > /dev/null
-ownertrust="$(
+imported_primary_fingerprint="$(
   GNUPGHOME="${gnupg_home}" gpg --batch --with-colons --fingerprint --list-keys |
-    awk -F: '$1 == "pub" { trust_next_fpr = 1; next } trust_next_fpr && $1 == "fpr" { print $10 ":6:"; trust_next_fpr = 0 }'
+    awk -F: '$1 == "pub" { want_fpr = 1; next } want_fpr && $1 == "fpr" { print $10; want_fpr = 0 }'
 )"
-if [[ -z "${ownertrust}" ]]; then
-  echo "Trusted release key import did not produce any public key fingerprints." >&2
+if [[ "${imported_primary_fingerprint}" != "${expected_release_signing_fingerprint}" ]]; then
+  echo "Release key fingerprint mismatch." >&2
+  echo "Expected: ${expected_release_signing_fingerprint}" >&2
+  echo "Imported: ${imported_primary_fingerprint:-<none>}" >&2
   exit 1
 fi
-printf '%s\n' "${ownertrust}" | GNUPGHOME="${gnupg_home}" gpg --batch --import-ownertrust > /dev/null
+printf '%s:6:\n' "${expected_release_signing_fingerprint}" |
+  GNUPGHOME="${gnupg_home}" gpg --batch --import-ownertrust > /dev/null
 if ! GNUPGHOME="${gnupg_home}" git verify-tag "${tag}" > /dev/null; then
   echo "Release tag ${tag} is not signed by a trusted DSD-neo release key." >&2
   exit 1

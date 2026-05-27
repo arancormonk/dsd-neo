@@ -1133,6 +1133,14 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_dsd_time PRIVATE dsd-neo_core)
 add_test(NAME CORE_DSD_TIME COMMAND dsd-neo_test_core_dsd_time)
 
+add_executable(dsd-neo_test_core_safe_api core/test_core_safe_api.c)
+target_include_directories(
+    dsd-neo_test_core_safe_api
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_safe_api PRIVATE dsd-neo_safe_api)
+add_test(NAME CORE_SAFE_API COMMAND dsd-neo_test_core_safe_api)
+
 add_executable(dsd-neo_test_core_csv_import core/test_core_csv_import.c)
 target_include_directories(
     dsd-neo_test_core_csv_import

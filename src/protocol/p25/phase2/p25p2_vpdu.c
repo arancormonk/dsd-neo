@@ -470,7 +470,8 @@ p25_set_mfid90_active_channel_single(dsd_state* state, int channel, int group) {
     }
     char suffix[32];
     p25_format_chan_suffix(state, (uint16_t)channel, -1, suffix, sizeof(suffix));
-    DSD_SPRINTF(state->active_channel[0], "MFID90 Active Ch: %04X%s SG: %d; ", channel, suffix, group);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MFID90 Active Ch: %04X%s SG: %d; ",
+                 channel, suffix, group);
     state->last_active_time = time(NULL);
 }
 
@@ -485,8 +486,9 @@ p25_set_mfid90_active_channel_update(dsd_state* state, int channel1, int group1,
         char suffix2[32];
         p25_format_chan_suffix(state, (uint16_t)channel1, -1, suffix1, sizeof(suffix1));
         p25_format_chan_suffix(state, (uint16_t)channel2, -1, suffix2, sizeof(suffix2));
-        DSD_SPRINTF(state->active_channel[0], "MFID90 Active Ch: %04X%s SG: %d; Ch: %04X%s SG: %d; ", channel1, suffix1,
-                    group1, channel2, suffix2, group2);
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
+                     "MFID90 Active Ch: %04X%s SG: %d; Ch: %04X%s SG: %d; ", channel1, suffix1, group1, channel2,
+                     suffix2, group2);
     } else {
         p25_set_mfid90_active_channel_single(state, channel1, group1);
         return;
@@ -670,7 +672,8 @@ static void
 p25p2_vpdu_set_active_group_single(dsd_state* state, int channel, int group) {
     char suffix[32];
     p25_format_chan_suffix(state, (uint16_t)channel, -1, suffix, sizeof suffix);
-    DSD_SPRINTF(state->active_channel[0], "Active Ch: %04X%s TG: %d; ", channel, suffix, group);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TG: %d; ", channel,
+                 suffix, group);
     state->last_active_time = time(NULL);
 }
 
@@ -681,8 +684,9 @@ p25p2_vpdu_set_active_group_pair(dsd_state* state, int channel1, int group1, int
         char suffix2[32];
         p25_format_chan_suffix(state, (uint16_t)channel1, -1, suffix1, sizeof suffix1);
         p25_format_chan_suffix(state, (uint16_t)channel2, -1, suffix2, sizeof suffix2);
-        DSD_SPRINTF(state->active_channel[0], "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ", channel1, suffix1,
-                    group1, channel2, suffix2, group2);
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
+                     "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ", channel1, suffix1, group1, channel2, suffix2,
+                     group2);
         state->last_active_time = time(NULL);
         return;
     }
@@ -698,8 +702,9 @@ p25p2_vpdu_set_active_group_triple(dsd_state* state, int channel1, int group1, i
     p25_format_chan_suffix(state, (uint16_t)channel1, -1, suffix1, sizeof suffix1);
     p25_format_chan_suffix(state, (uint16_t)channel2, -1, suffix2, sizeof suffix2);
     p25_format_chan_suffix(state, (uint16_t)channel3, -1, suffix3, sizeof suffix3);
-    DSD_SPRINTF(state->active_channel[0], "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ", channel1,
-                suffix1, group1, channel2, suffix2, group2, channel3, suffix3, group3);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
+                 "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ", channel1, suffix1, group1,
+                 channel2, suffix2, group2, channel3, suffix3, group3);
     state->last_active_time = time(NULL);
 }
 
@@ -821,7 +826,7 @@ p25p2_vpdu_mark_enc_lockout(dsd_opts* opts, dsd_state* state, int slot, int talk
 
 static void
 p25p2_vpdu_set_group_call_banner(dsd_state* state, int slot, int svc) {
-    DSD_SPRINTF(state->call_string[slot], "   Group ");
+    DSD_SNPRINTF(state->call_string[slot], sizeof(state->call_string[slot]), "   Group ");
     if (svc & 0x80) {
         dsd_append(state->call_string[slot], sizeof state->call_string[slot], " Emergency  ");
     } else if (svc & 0x40) {
@@ -833,7 +838,7 @@ p25p2_vpdu_set_group_call_banner(dsd_state* state, int slot, int svc) {
 
 static void
 p25p2_vpdu_set_private_call_banner(dsd_state* state, int slot, int svc) {
-    DSD_SPRINTF(state->call_string[slot], " Private ");
+    DSD_SNPRINTF(state->call_string[slot], sizeof(state->call_string[slot]), " Private ");
     if (svc & 0x80) {
         dsd_append(state->call_string[slot], sizeof state->call_string[slot], " Emergency  ");
     } else if (svc & 0x40) {
@@ -1271,7 +1276,8 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
         if (p25p2_vpdu_channel_is_valid(channel)) {
             char suffix[32];
             p25_format_chan_suffix(state, (uint16_t)channel, -1, suffix, sizeof suffix);
-            DSD_SPRINTF(state->active_channel[0], "Active Tele Ch: %04X%s TGT: %u; ", channel, suffix, target);
+            DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Tele Ch: %04X%s TGT: %u; ",
+                         channel, suffix, target);
         }
         state->last_active_time = time(NULL);
 
@@ -1333,7 +1339,8 @@ p25p2_vpdu_iter_block_06(p25p2_vpdu_ctx* ctx) {
 
         char suffix[32];
         p25_format_chan_suffix(state, (uint16_t)channel, -1, suffix, sizeof suffix);
-        DSD_SPRINTF(state->active_channel[0], "Active Ch: %04X%s TGT: %d; ", channel, suffix, target);
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TGT: %d; ", channel,
+                     suffix, target);
         state->last_active_time = time(NULL);
 
         if (opts->trunk_tune_private_calls == 0) {
@@ -1401,8 +1408,9 @@ p25p2_vpdu_iter_block_07(p25p2_vpdu_ctx* ctx) {
             char suffix2[32];
             p25_format_chan_suffix(state, (uint16_t)channelt1, -1, suffix1, sizeof suffix1);
             p25_format_chan_suffix(state, (uint16_t)channelt2, -1, suffix2, sizeof suffix2);
-            DSD_SPRINTF(state->active_channel[0], "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ", channelt1, suffix1,
-                        group1, channelt2, suffix2, group2);
+            DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
+                         "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ", channelt1, suffix1, group1, channelt2,
+                         suffix2, group2);
         }
         state->last_active_time = time(NULL);
 
@@ -1633,7 +1641,8 @@ p25p2_vpdu_iter_block_11(p25p2_vpdu_ctx* ctx) {
         {
             char suf_dat[32];
             p25_format_chan_suffix(state, (uint16_t)channelt, -1, suf_dat, sizeof suf_dat);
-            DSD_SPRINTF(state->active_channel[0], "Active Data Ch: %04X%s TGT: %d; ", channelt, suf_dat, target);
+            DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Data Ch: %04X%s TGT: %d; ",
+                         channelt, suf_dat, target);
         }
         state->last_active_time = time(NULL);
 
@@ -1877,7 +1886,8 @@ p25p2_vpdu_iter_block_17(p25p2_vpdu_ctx* ctx) {
         long int freq = process_channel_to_freq(opts, state, channel);
         char suf[32];
         p25_format_chan_suffix(state, (uint16_t)channel, -1, suf, sizeof suf);
-        DSD_SPRINTF(state->active_channel[slot], "MFID90 GRG VCH Upd: %04X%s SG: %d; ", channel, suf, sg);
+        DSD_SNPRINTF(state->active_channel[slot], sizeof(state->active_channel[slot]),
+                     "MFID90 GRG VCH Upd: %04X%s SG: %d; ", channel, suf, sg);
         state->last_active_time = time(NULL);
         DSD_FPRINTF(stderr, "\n");
         // Route through SM for tuning consideration

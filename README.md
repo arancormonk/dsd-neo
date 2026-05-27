@@ -412,7 +412,8 @@ Quick examples
   - `tools/check_secret_redaction.sh` (blocks formatted key/keystream output without `DSD_SECRET_REDACTED`).
   - `tools/check_workflow_git_pins.sh` (blocks floating public GitHub source checkouts in workflows and CI helper scripts).
   - `tools/check_workflow_download_pins.sh` (blocks mutable release helper downloads and digestless AppImage container refs).
-  - `tools/check_release_hardening.sh` (verifies Linux release PIE/RELRO/BIND_NOW and hardening compile flags).
+  - `tools/check_release_hardening.sh` (verifies Linux ELF PIE/RELRO/BIND_NOW, macOS Mach-O PIE/@rpath, and hardening compile flags).
+  - `tools/check_release_hardening.ps1` (verifies Windows PE ASLR, NX, and high-entropy VA hardening).
 - Fuzzing: `tools/fuzz_smoke.sh` configures/builds the `fuzz-asan-debug` preset and runs bounded libFuzzer smoke passes.
 - Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass (security guardrails including workflow source/download pins, clang-format, CMake format, clang-tidy, cppcheck, IWYU, GCC fanalyzer, Semgrep, zizmor, OSV scan, shell/workflow lint) on changed paths.
 - Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`.

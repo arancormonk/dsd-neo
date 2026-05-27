@@ -20,7 +20,8 @@ main(void) {
     assert(dsd_parse_freq_hz("1") == 1u);
     assert(dsd_parse_freq_hz("1.4") == 1u);
     assert(dsd_parse_freq_hz("1.6") == 2u);
-    assert(dsd_parse_freq_hz("123abc") == 123u);
+    assert(dsd_parse_freq_hz("123abc") == 0u);
+    assert(dsd_parse_freq_hz("1kjunk") == 0u);
 
     assert(dsd_parse_freq_hz("1k") == 1000u);
     assert(dsd_parse_freq_hz("1K") == 1000u);

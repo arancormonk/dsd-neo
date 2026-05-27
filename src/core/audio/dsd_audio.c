@@ -966,7 +966,7 @@ dsd_audio_select_radio_or_pulse_input(dsd_opts* opts) {
         return -1;
     }
     opts->audio_in_type = AUDIO_IN_PULSE;
-    DSD_SPRINTF(opts->audio_in_dev, "pulse");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "pulse");
     return 0;
 #endif
 }

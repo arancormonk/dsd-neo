@@ -120,8 +120,8 @@ p25_mpdu_prepare_state(dsd_opts* opts, dsd_state* state) {
     state->currentslot = 0;
 
     p25_status_accum_ensure_started(state);
-    DSD_SPRINTF(state->call_string[0], "%s", "                     ");
-    DSD_SPRINTF(state->call_string[1], "%s", "                     ");
+    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "                     ");
+    DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "                     ");
 
     if ((time(NULL) - state->last_active_time) > 3) {
         DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));

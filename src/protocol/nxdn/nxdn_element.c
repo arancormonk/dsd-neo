@@ -286,8 +286,8 @@ nxdn_element_handle_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* el
 static void
 nxdn_element_handle_tx_release(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     UNUSED(elements_bits);
-    DSD_SPRINTF(state->call_string[0], "%s", "");
-    DSD_SPRINTF(state->nxdn_call_type, "%s", "");
+    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "");
+    DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", "");
     nxdn_reset_data_call_state(state);
     NXDN_decode_VCALL(opts, state, elements);
 }
@@ -304,8 +304,8 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
     nxdn_reset_data_call_state(state);
     NXDN_decode_VCALL(opts, state, elements);
     nxdn_alias_reset(state);
-    DSD_SPRINTF(state->call_string[0], "%s", "");
-    DSD_SPRINTF(state->nxdn_call_type, "%s", "");
+    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "");
+    DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", "");
 
     if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && state->p25_cc_freq != 0
         && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
@@ -321,7 +321,7 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
         if (state->M == 0) {
             state->nxdn_cipher_type = 0;
         }
-        DSD_SPRINTF(state->nxdn_call_type, "%s", "");
+        DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", "");
     }
 }
 
@@ -1087,18 +1087,18 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
     if (category_bit == 0) {
         sys_code = ((location_id & 0x3FFFFF) >> 12); //10 bits
         site_code = location_id & 0x3FF;             //12 bits
-        DSD_SPRINTF(category, "%s", "Global");
+        DSD_SNPRINTF(category, sizeof(category), "%s", "Global");
     } else if (category_bit == 2) {
         sys_code = ((location_id & 0x3FFFFF) >> 8); //14 bits
         site_code = location_id & 0xFF;             //8 bits
-        DSD_SPRINTF(category, "%s", "Regional");
+        DSD_SNPRINTF(category, sizeof(category), "%s", "Regional");
     } else if (category_bit == 1) {
         sys_code = ((location_id & 0x3FFFFF) >> 5); //17 bits
         site_code = location_id & 0x1F;             //5 bits
-        DSD_SPRINTF(category, "%s", "Local");
+        DSD_SNPRINTF(category, sizeof(category), "%s", "Local");
     } else {
         //err, or we shouldn't ever get here
-        DSD_SPRINTF(category, "%s", "Reserved/Err");
+        DSD_SNPRINTF(category, sizeof(category), "%s", "Reserved/Err");
     }
 
     //type 0 is for current site, type 1 is for adjacent sites
@@ -1110,7 +1110,7 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
         if (sys_code != 0) {
             state->nxdn_location_sys_code = sys_code;
         }
-        DSD_SPRINTF(state->nxdn_location_category, "%s", category);
+        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", category);
         DSD_FPRINTF(stderr, "\n Location Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
                     site_code);
     } else {
@@ -1495,7 +1495,7 @@ nxdn_vcall_assgn_setup_tuned_call(dsd_opts* opts, dsd_state* state, const struct
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     state->lastsynctype = DSD_SYNC_NONE;
     DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", NXDN_Call_Type_To_Str(info->call_type));
-    DSD_SPRINTF(state->call_string[0], "%s", NXDN_Call_Type_To_Str(info->call_type));
+    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", NXDN_Call_Type_To_Str(info->call_type));
     if (info->cc_option & 0x80U) {
         dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
     }
@@ -1938,7 +1938,7 @@ nxdn_vcall_print_color(uint8_t message_type) {
 
 static void
 nxdn_vcall_update_call_string(dsd_state* state, const struct nxdn_vcall_info* info) {
-    DSD_SPRINTF(state->call_string[0], "%s", NXDN_Call_Type_To_Str(info->call_type));
+    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", NXDN_Call_Type_To_Str(info->call_type));
     if (info->cc_option & 0x80U) {
         dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
     }
@@ -1986,7 +1986,7 @@ nxdn_vcall_print_summary(dsd_state* state, const struct nxdn_vcall_info* info) {
 
     nxdn_vcall_update_call_string(state, info);
     DSD_FPRINTF(stderr, "%s - ", NXDN_Call_Type_To_Str(info->call_type));
-    DSD_SPRINTF(state->nxdn_call_type, "%s", NXDN_Call_Type_To_Str(info->call_type));
+    DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", NXDN_Call_Type_To_Str(info->call_type));
     nxdn_vcall_print_voice_option(info);
     DSD_FPRINTF(stderr, "Src=%u - Dst/TG=%u ", info->source_unit_id & 0xFFFF, info->destination_id & 0xFFFF);
     if (info->idas) {
@@ -2085,7 +2085,7 @@ nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
         state->nxdn_last_rid = 0;
         state->nxdn_last_tg = 0;
         state->gi[0] = -1;
-        DSD_SPRINTF(state->generic_talker_alias[0], "%s", "");
+        DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "");
         nxdn_alias_reset(state);
     }
 
@@ -2122,8 +2122,9 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
     char gn[50] = {0};
     const int locked = nxdn_vcall_lockout_label(state, info->destination_id, gm, gn);
     if (info->destination_id != 0 && locked == 0) {
-        DSD_SPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
-                    "Target: %d; has been locked out; Encryption Lock Out Enabled.", info->destination_id);
+        DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
+                     sizeof(state->event_history_s[0].Event_History_Items[0].internal_str),
+                     "Target: %d; has been locked out; Encryption Lock Out Enabled.", info->destination_id);
         watchdog_event_current(opts, state, 0);
     }
 
@@ -2267,7 +2268,7 @@ nxdn_scch_print_payload_label(const dsd_opts* opts, const struct nxdn_scch_info*
 
 static void
 nxdn_scch_prepare_type_d(dsd_state* state, const struct nxdn_scch_info* info) {
-    DSD_SPRINTF(state->nxdn_location_category, "Type-D");
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "Type-D");
     state->nxdn_last_ran = info->area;
     state->last_cc_sync_time = info->now;
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
@@ -2383,11 +2384,11 @@ nxdn_scch_update_busy_display(dsd_state* state, const struct nxdn_scch_info* inf
     }
     if (info->rep1 != 0U && info->rep1 != 31U) {
         if (info->gu == 0U) {
-            DSD_SPRINTF(state->active_channel[info->rep1], "Active Group Ch: %d TG: %d-%d; ", info->rep1, info->rep2,
-                        info->id);
+            DSD_SNPRINTF(state->active_channel[info->rep1], sizeof(state->active_channel[info->rep1]),
+                         "Active Group Ch: %d TG: %d-%d; ", info->rep1, info->rep2, info->id);
         } else {
-            DSD_SPRINTF(state->active_channel[info->rep1], "Active Private Ch: %d TGT: %d-%d; ", info->rep1, info->rep2,
-                        info->id);
+            DSD_SNPRINTF(state->active_channel[info->rep1], sizeof(state->active_channel[info->rep1]),
+                         "Active Private Ch: %d TGT: %d-%d; ", info->rep1, info->rep2, info->id);
         }
         state->last_active_time = info->now;
     }
@@ -2414,8 +2415,8 @@ nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);
         DSD_FPRINTF(stderr, "Repeater 1: %d; ", info->rep1);
         DSD_FPRINTF(stderr, "Repeater 2: %d; ", info->rep2);
-        DSD_SPRINTF(state->active_channel[info->rep1], "%s", "");
-        DSD_SPRINTF(state->active_channel[info->rep2], "%s", "");
+        DSD_SNPRINTF(state->active_channel[info->rep1], sizeof(state->active_channel[info->rep1]), "%s", "");
+        DSD_SNPRINTF(state->active_channel[info->rep2], sizeof(state->active_channel[info->rep2]), "%s", "");
     } else if (info->id == 2045U) {
         DSD_FPRINTF(stderr, "Halt Repeater Message - ");
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);

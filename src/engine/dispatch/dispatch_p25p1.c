@@ -257,7 +257,7 @@ p25p1_handle_hdu(dsd_opts* opts, dsd_state* state) {
     state->lastp25type = 2;
     state->dmrburstL = 25;
     state->currentslot = 0;
-    DSD_SPRINTF(state->fsubtype, " HDU          ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " HDU          ");
     processHDU(opts, state);
 }
 
@@ -274,7 +274,7 @@ p25p1_handle_ldu1(dsd_opts* opts, dsd_state* state) {
     state->lastp25type = 1;
     state->dmrburstL = 26;
     state->currentslot = 0;
-    DSD_SPRINTF(state->fsubtype, " LDU1         ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " LDU1         ");
     state->numtdulc = 0;
     processLDU1(opts, state);
 }
@@ -297,7 +297,7 @@ p25p1_handle_ldu2(dsd_opts* opts, dsd_state* state) {
     }
 
     state->lastp25type = 2;
-    DSD_SPRINTF(state->fsubtype, " LDU2         ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " LDU2         ");
     state->numtdulc = 0;
     processLDU2(opts, state);
 }
@@ -317,7 +317,7 @@ p25p1_handle_tdulc(dsd_opts* opts, dsd_state* state) {
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     state->lastp25type = 0;
     state->err_str[0] = 0;
-    DSD_SPRINTF(state->fsubtype, " TDULC        ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " TDULC        ");
     p25p1_clear_call_termination_gps(state);
     state->numtdulc++;
 
@@ -345,7 +345,7 @@ p25p1_handle_tdu(dsd_opts* opts, dsd_state* state) {
     state->lastsrc = 0;
     state->lastp25type = 0;
     state->err_str[0] = 0;
-    DSD_SPRINTF(state->fsubtype, " TDU          ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " TDU          ");
     p25p1_clear_call_termination_gps(state);
     processTDU(opts, state);
 }
@@ -368,7 +368,7 @@ p25p1_handle_tsbk(dsd_opts* opts, dsd_state* state) {
     state->lasttg = 0;
     state->lastsrc = 0;
     state->lastp25type = 3;
-    DSD_SPRINTF(state->fsubtype, " TSBK         ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " TSBK         ");
     processTSBK(opts, state);
 }
 
@@ -388,14 +388,14 @@ p25p1_handle_mpdu(dsd_opts* opts, dsd_state* state) {
     }
 
     state->lastp25type = 4;
-    DSD_SPRINTF(state->fsubtype, " MPDU         ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " MPDU         ");
     processMPDU(opts, state);
 }
 
 static void
 p25p1_handle_unknown_duid(dsd_opts* opts, dsd_state* state, const char duid[3]) {
     state->lastp25type = 0;
-    DSD_SPRINTF(state->fsubtype, "              ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), "              ");
 
     if (opts->errorbars == 1) {
         printFrameInfo(opts, state);

@@ -146,8 +146,8 @@ dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
     }
 
     if (*ctx->IrrecoverableErrors == 0 && ctx->flco == 0x09 && ctx->fid == 0x68) {
-        DSD_SPRINTF(ctx->state->dmr_branding, "%s", "  Hytera");
-        DSD_SPRINTF(ctx->state->dmr_branding_sub, "XPT ");
+        DSD_SNPRINTF(ctx->state->dmr_branding, sizeof(ctx->state->dmr_branding), "%s", "  Hytera");
+        DSD_SNPRINTF(ctx->state->dmr_branding_sub, sizeof(ctx->state->dmr_branding_sub), "XPT ");
     }
 
     if (strcmp(ctx->state->dmr_branding_sub, "XPT ") == 0) {
@@ -335,7 +335,7 @@ dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
         DSD_FPRINTF(stderr, "Free LCN %d; ", ctx->xpt_free);
     }
     DSD_FPRINTF(stderr, "%s ", KNRM);
-    DSD_SPRINTF(ctx->state->dmr_site_parms, "Free LCN - %d ", ctx->xpt_free);
+    DSD_SNPRINTF(ctx->state->dmr_site_parms, sizeof(ctx->state->dmr_site_parms), "Free LCN - %d ", ctx->xpt_free);
     return 1;
 }
 
@@ -449,7 +449,7 @@ dmr_flco_reset_td_lc_slot0(dmr_flco_ctx* ctx) {
     ctx->state->dmr_alias_block_len[0] = 0;
     ctx->state->dmr_alias_char_size[0] = 0;
     ctx->state->dmr_alias_format[0] = 0;
-    DSD_SPRINTF(ctx->state->generic_talker_alias[0], "%s", "");
+    DSD_SNPRINTF(ctx->state->generic_talker_alias[0], sizeof(ctx->state->generic_talker_alias[0]), "%s", "");
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
     ctx->state->dmr_embedded_gps[0][0] = '\0';
     ctx->state->dmr_lrrp_gps[0][0] = '\0';
@@ -470,7 +470,7 @@ dmr_flco_reset_td_lc_slot1(dmr_flco_ctx* ctx) {
     ctx->state->dmr_alias_block_len[1] = 0;
     ctx->state->dmr_alias_char_size[1] = 0;
     ctx->state->dmr_alias_format[1] = 0;
-    DSD_SPRINTF(ctx->state->generic_talker_alias[1], "%s", "");
+    DSD_SNPRINTF(ctx->state->generic_talker_alias[1], sizeof(ctx->state->generic_talker_alias[1]), "%s", "");
     DSD_MEMSET(ctx->state->dmr_pdu_sf[1], 0, sizeof(ctx->state->dmr_pdu_sf[1]));
     ctx->state->dmr_embedded_gps[1][0] = '\0';
     ctx->state->dmr_lrrp_gps[1][0] = '\0';
@@ -547,25 +547,30 @@ dmr_flco_print_regular_header(dmr_flco_ctx* ctx) {
 static void
 dmr_flco_print_call_class(dmr_flco_ctx* ctx) {
     if (ctx->fid == 0x68) {
-        DSD_SPRINTF(ctx->state->call_string[ctx->slot_idx], " Hytera  ");
+        DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]),
+                     " Hytera  ");
     } else if (ctx->flco == 0x4 || ctx->flco == 0x5 || ctx->flco == 0x7 || ctx->flco == 0x23) {
-        DSD_SPRINTF(ctx->state->call_string[ctx->slot_idx], "%s", "");
+        DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]), "%s", "");
         DSD_FPRINTF(stderr, "Cap+ ");
         if (ctx->flco == 0x4) {
-            DSD_SPRINTF(ctx->state->call_string[ctx->slot_idx], "   Group ");
+            DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]),
+                         "   Group ");
             DSD_FPRINTF(stderr, "Group ");
             ctx->state->gi[ctx->slot] = 0;
         } else {
-            DSD_SPRINTF(ctx->state->call_string[ctx->slot_idx], " Private ");
+            DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]),
+                         " Private ");
             DSD_FPRINTF(stderr, "Private ");
             ctx->state->gi[ctx->slot] = 1;
         }
     } else if (ctx->flco == 0x3) {
-        DSD_SPRINTF(ctx->state->call_string[ctx->slot_idx], " Private ");
+        DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]),
+                     " Private ");
         DSD_FPRINTF(stderr, "Private ");
         ctx->state->gi[ctx->slot] = 1;
     } else {
-        DSD_SPRINTF(ctx->state->call_string[ctx->slot_idx], "   Group ");
+        DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]),
+                     "   Group ");
         DSD_FPRINTF(stderr, "Group ");
         ctx->state->gi[ctx->slot] = 0;
     }
@@ -638,8 +643,9 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
     char gn[50] = {0};
     dmr_flco_prepare_enc_lockout_labels(ctx, &lo, gm, sizeof(gm), gn, sizeof(gn));
     if (ctx->target != 0 && lo == 0) {
-        DSD_SPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str,
-                    "Target: %d; has been locked out; Encryption Lock Out Enabled.", ctx->target);
+        DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str,
+                     sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str),
+                     "Target: %d; has been locked out; Encryption Lock Out Enabled.", ctx->target);
         watchdog_event_current(ctx->opts, ctx->state, ctx->slot);
     }
     dmr_flco_emit_enc_lockout_action(ctx, gm, gn);
@@ -833,7 +839,8 @@ dmr_flco_print_extended_keys(const dmr_flco_ctx* ctx) {
 static void
 dmr_flco_finalize(dmr_flco_ctx* ctx) {
     if (ctx->type == 2) {
-        DSD_SPRINTF(ctx->state->call_string[ctx->slot], "%s", "                     ");
+        DSD_SNPRINTF(ctx->state->call_string[ctx->slot], sizeof(ctx->state->call_string[ctx->slot]), "%s",
+                     "                     ");
     }
     if (ctx->unk == 1 || ctx->pf == 1) {
         DSD_FPRINTF(stderr, " FLCO=0x%02X FID=0x%02X ", ctx->flco, ctx->fid);
@@ -1133,27 +1140,27 @@ static void
 dmr_slco_fill_sys_fields(const dsd_opts* opts, uint8_t slco_bits[], dmr_slco_data* data) {
     uint8_t model = (uint8_t)ConvertBitIntoBytes(&slco_bits[4], 2);
     uint16_t site_bits = 0;
-    DSD_SPRINTF(data->model_str, "%s", "");
+    DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "");
 
     if (model == 0) {
         data->net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 9);
         data->site = (uint16_t)ConvertBitIntoBytes(&slco_bits[15], 3);
-        DSD_SPRINTF(data->model_str, "%s", "Tiny");
+        DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Tiny");
         site_bits = 3;
     } else if (model == 1) {
         data->net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 7);
         data->site = (uint16_t)ConvertBitIntoBytes(&slco_bits[13], 5);
-        DSD_SPRINTF(data->model_str, "%s", "Small");
+        DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Small");
         site_bits = 5;
     } else if (model == 2) {
         data->net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 4);
         data->site = (uint16_t)ConvertBitIntoBytes(&slco_bits[10], 8);
-        DSD_SPRINTF(data->model_str, "%s", "Large");
+        DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Large");
         site_bits = 8;
     } else if (model == 3) {
         data->net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 2);
         data->site = (uint16_t)ConvertBitIntoBytes(&slco_bits[8], 10);
-        DSD_SPRINTF(data->model_str, "%s", "Huge");
+        DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Huge");
         site_bits = 10;
     }
 
@@ -1172,16 +1179,16 @@ dmr_slco_fill_activity_strings(uint8_t slco_bits[], dmr_slco_data* data) {
     uint8_t ts2_act = (uint8_t)ConvertBitIntoBytes(&slco_bits[8], 4);
     char ts1_fb[16];
     const char* ts1 = dmr_activity_type_label(ts1_act, ts1_fb, sizeof(ts1_fb));
-    DSD_SPRINTF(data->ts1_str, "%s", ts1);
+    DSD_SNPRINTF(data->ts1_str, sizeof(data->ts1_str), "%s", ts1);
 
     if (ts2_act == 0x0 || ts2_act == 0x2 || ts2_act == 0x3 || ts2_act == 0x8 || ts2_act == 0x9 || ts2_act == 0xA
         || ts2_act == 0xB || ts2_act == 0xC || ts2_act == 0xD) {
         char ts2_fb[16];
         const char* ts2 = dmr_activity_type_label(ts2_act, ts2_fb, sizeof(ts2_fb));
-        DSD_SPRINTF(data->ts2_str, "%s", ts2);
+        DSD_SNPRINTF(data->ts2_str, sizeof(data->ts2_str), "%s", ts2);
     } else {
         // Preserve existing behavior: TS2 unknown fallback prints TS1 activity value.
-        DSD_SPRINTF(data->ts2_str, "Res %X", ts1_act);
+        DSD_SNPRINTF(data->ts2_str, sizeof(data->ts2_str), "Res %X", ts1_act);
     }
 
     data->ts1_hash = (uint8_t)ConvertBitIntoBytes(&slco_bits[12], 8);
@@ -1211,10 +1218,11 @@ dmr_slco_decode(uint8_t slco_bits[], const dsd_opts* opts, dmr_slco_data* data) 
 static void
 dmr_slco_print_tiii_site_parms(dsd_state* state, const dmr_slco_data* data, uint16_t syscode) {
     if (data->n != 0) {
-        DSD_SPRINTF(state->dmr_site_parms, "TIII %s:%d-%d.%d;%04X; ", data->model_str, data->net,
-                    (data->site >> data->n), (data->site & data->sub_mask), syscode);
+        DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d.%d;%04X; ", data->model_str,
+                     data->net, (data->site >> data->n), (data->site & data->sub_mask), syscode);
     } else {
-        DSD_SPRINTF(state->dmr_site_parms, "TIII %s:%d-%d;%04X; ", data->model_str, data->net, data->site, syscode);
+        DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d;%04X; ", data->model_str,
+                     data->net, data->site, syscode);
     }
 }
 
@@ -1295,8 +1303,8 @@ static void
 dmr_slco_handle_xpt(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data) {
     DSD_FPRINTF(stderr, " SLCO Hytera XPT - Free LCN %d - PRI LCN %d - PRI HASH: %02X", data->xpt_free, data->xpt_pri,
                 data->xpt_hash);
-    DSD_SPRINTF(state->dmr_branding_sub, "XPT ");
-    DSD_SPRINTF(state->dmr_site_parms, "Free LCN - %d ", data->xpt_free);
+    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
+    DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "Free LCN - %d ", data->xpt_free);
 
     if (state->tg_hold != 0 && opts->trunk_enable == 1 && state->dmrburstL == 16 && state->dmrburstR == 16
         && dmr_slco_tg_hold_not_on_slot(state)) {
@@ -1312,7 +1320,7 @@ static void
 dmr_slco_handle_con_plus_control(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data) {
     DSD_FPRINTF(stderr, " SLCO Connect Plus Control Channel - Net ID: %d Site ID: %d", data->con_netid,
                 data->con_siteid);
-    DSD_SPRINTF(state->dmr_site_parms, "%d-%d ", data->con_netid, data->con_siteid);
+    DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%d-%d ", data->con_netid, data->con_siteid);
 
     if (opts->use_rigctl == 1 && opts->trunk_is_tuned == 0) {
         long int ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
@@ -1370,7 +1378,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
     } else if (data.slco == 0x9) {
         DSD_FPRINTF(stderr, " SLCO Connect Plus Traffic Channel - Net ID: %d Site ID: %d", data.con_netid,
                     data.con_siteid);
-        DSD_SPRINTF(state->dmr_site_parms, "%d-%d ", data.con_netid, data.con_siteid);
+        DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%d-%d ", data.con_netid, data.con_siteid);
     } else if (data.slco == 0xA) {
         dmr_slco_handle_con_plus_control(opts, state, &data);
     } else if (data.slco == 0xF) {

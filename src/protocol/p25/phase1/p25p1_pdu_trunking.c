@@ -315,7 +315,8 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
 
     char suf1[32];
     p25_format_chan_suffix(state, channelt, -1, suf1, sizeof(suf1));
-    DSD_SPRINTF(state->active_channel[0], "Active Ch: %04X%s TG: %d; ", channelt, suf1, group);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TG: %d; ", channelt,
+                 suf1, group);
     state->last_active_time = time(NULL);
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
@@ -371,7 +372,8 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
 
     char suf2[32];
     p25_format_chan_suffix(state, channelt, -1, suf2, sizeof(suf2));
-    DSD_SPRINTF(state->active_channel[0], "Active Ch: %04X%s TGT: %u; ", channelt, suf2, (uint32_t)target);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TGT: %u; ", channelt,
+                 suf2, (uint32_t)target);
 
     p25p1_pdu_print_group_label(state, (uint32_t)target);
 
@@ -438,7 +440,8 @@ p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, co
     freq = process_channel_to_freq(opts, state, channel);
 
     if (channel != 0 && channel != 0xFFFF) {
-        DSD_SPRINTF(state->active_channel[0], "Active Tele Ch: %04X TGT: %u; ", channel, target);
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Tele Ch: %04X TGT: %u; ",
+                     channel, target);
     }
     state->last_active_time = time(NULL);
 
@@ -488,7 +491,8 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
 
     char suf3[32];
     p25_format_chan_suffix(state, channelt, -1, suf3, sizeof(suf3));
-    DSD_SPRINTF(state->active_channel[0], "MFID90 Ch: %04X%s SG: %d ", channelt, suf3, group);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MFID90 Ch: %04X%s SG: %d ", channelt,
+                 suf3, group);
     state->last_active_time = time(NULL);
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);

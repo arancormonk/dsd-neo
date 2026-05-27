@@ -233,100 +233,122 @@ function(_dsd_flags_define_fortify out_var lang)
     set(${out_var} "${_dsd_fortify_defined}" PARENT_SCOPE)
 endfunction()
 
-if(DSD_ENABLE_HARDENING AND CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-    set(_dsd_release_like_config
-        "$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>"
-    )
+set(_dsd_release_like_config
+    "$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>"
+)
 
-    _dsd_flags_define_fortify(_dsd_c_flags_define_fortify C)
-    if(NOT _dsd_c_flags_define_fortify)
-        target_compile_definitions(
-            dsd-neo_hardening
-            INTERFACE
-                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:C>>:_FORTIFY_SOURCE=2>"
-        )
-    endif()
-    _dsd_flags_define_fortify(_dsd_cxx_flags_define_fortify CXX)
-    if(NOT _dsd_cxx_flags_define_fortify)
-        target_compile_definitions(
-            dsd-neo_hardening
-            INTERFACE
-                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:CXX>>:_FORTIFY_SOURCE=2>"
-        )
-    endif()
-
-    include(CheckCCompilerFlag)
-    include(CheckCXXCompilerFlag)
-    check_c_compiler_flag(
-        "-fstack-protector-strong"
-        DSD_C_HAS_STACK_PROTECTOR_STRONG
+if(DSD_ENABLE_HARDENING)
+    if(
+        CMAKE_C_COMPILER_ID MATCHES "Clang|GNU"
+        AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU"
     )
-    check_cxx_compiler_flag(
-        "-fstack-protector-strong"
-        DSD_CXX_HAS_STACK_PROTECTOR_STRONG
-    )
-    if(DSD_C_HAS_STACK_PROTECTOR_STRONG)
-        target_compile_options(
-            dsd-neo_hardening
-            INTERFACE
-                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:C>>:-fstack-protector-strong>"
-        )
-    endif()
-    if(DSD_CXX_HAS_STACK_PROTECTOR_STRONG)
-        target_compile_options(
-            dsd-neo_hardening
-            INTERFACE
-                "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:CXX>>:-fstack-protector-strong>"
-        )
-    endif()
+        _dsd_flags_define_fortify(_dsd_c_flags_define_fortify C)
+        if(NOT _dsd_c_flags_define_fortify)
+            target_compile_definitions(
+                dsd-neo_hardening
+                INTERFACE
+                    "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:C>>:_FORTIFY_SOURCE=2>"
+            )
+        endif()
+        _dsd_flags_define_fortify(_dsd_cxx_flags_define_fortify CXX)
+        if(NOT _dsd_cxx_flags_define_fortify)
+            target_compile_definitions(
+                dsd-neo_hardening
+                INTERFACE
+                    "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:CXX>>:_FORTIFY_SOURCE=2>"
+            )
+        endif()
 
-    if(NOT APPLE)
+        include(CheckCCompilerFlag)
+        include(CheckCXXCompilerFlag)
         check_c_compiler_flag(
-            "-fstack-clash-protection"
-            DSD_C_HAS_STACK_CLASH_PROTECTION
+            "-fstack-protector-strong"
+            DSD_C_HAS_STACK_PROTECTOR_STRONG
         )
         check_cxx_compiler_flag(
-            "-fstack-clash-protection"
-            DSD_CXX_HAS_STACK_CLASH_PROTECTION
+            "-fstack-protector-strong"
+            DSD_CXX_HAS_STACK_PROTECTOR_STRONG
         )
-        if(DSD_C_HAS_STACK_CLASH_PROTECTION)
+        if(DSD_C_HAS_STACK_PROTECTOR_STRONG)
             target_compile_options(
                 dsd-neo_hardening
                 INTERFACE
-                    "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:C>>:-fstack-clash-protection>"
+                    "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:C>>:-fstack-protector-strong>"
             )
         endif()
-        if(DSD_CXX_HAS_STACK_CLASH_PROTECTION)
+        if(DSD_CXX_HAS_STACK_PROTECTOR_STRONG)
             target_compile_options(
                 dsd-neo_hardening
                 INTERFACE
-                    "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:CXX>>:-fstack-clash-protection>"
+                    "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:CXX>>:-fstack-protector-strong>"
             )
         endif()
-    endif()
 
-    if(UNIX AND NOT APPLE)
-        include(CheckLinkerFlag)
-        check_linker_flag(C "-Wl,-z,relro" DSD_LD_HAS_RELRO)
-        check_linker_flag(C "-Wl,-z,now" DSD_LD_HAS_NOW)
-        check_linker_flag(C "-pie" DSD_LD_HAS_PIE)
-        if(DSD_LD_HAS_RELRO)
-            target_link_options(
-                dsd-neo_hardening
-                INTERFACE "$<${_dsd_release_like_config}:-Wl,-z,relro>"
+        if(NOT APPLE)
+            check_c_compiler_flag(
+                "-fstack-clash-protection"
+                DSD_C_HAS_STACK_CLASH_PROTECTION
             )
-        endif()
-        if(DSD_LD_HAS_NOW)
-            target_link_options(
-                dsd-neo_hardening
-                INTERFACE "$<${_dsd_release_like_config}:-Wl,-z,now>"
+            check_cxx_compiler_flag(
+                "-fstack-clash-protection"
+                DSD_CXX_HAS_STACK_CLASH_PROTECTION
             )
+            if(DSD_C_HAS_STACK_CLASH_PROTECTION)
+                target_compile_options(
+                    dsd-neo_hardening
+                    INTERFACE
+                        "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:C>>:-fstack-clash-protection>"
+                )
+            endif()
+            if(DSD_CXX_HAS_STACK_CLASH_PROTECTION)
+                target_compile_options(
+                    dsd-neo_hardening
+                    INTERFACE
+                        "$<$<AND:${_dsd_release_like_config},$<COMPILE_LANGUAGE:CXX>>:-fstack-clash-protection>"
+                )
+            endif()
         endif()
-        if(DSD_LD_HAS_PIE)
+
+        if(UNIX AND NOT APPLE)
+            include(CheckLinkerFlag)
+            check_linker_flag(C "-Wl,-z,relro" DSD_LD_HAS_RELRO)
+            check_linker_flag(C "-Wl,-z,now" DSD_LD_HAS_NOW)
+            check_linker_flag(C "-pie" DSD_LD_HAS_PIE)
+            if(DSD_LD_HAS_RELRO)
+                target_link_options(
+                    dsd-neo_hardening
+                    INTERFACE "$<${_dsd_release_like_config}:-Wl,-z,relro>"
+                )
+            endif()
+            if(DSD_LD_HAS_NOW)
+                target_link_options(
+                    dsd-neo_hardening
+                    INTERFACE "$<${_dsd_release_like_config}:-Wl,-z,now>"
+                )
+            endif()
+            if(DSD_LD_HAS_PIE)
+                target_link_options(
+                    dsd-neo_hardening
+                    INTERFACE
+                        "$<$<AND:${_dsd_release_like_config},$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>>:-pie>"
+                )
+            endif()
+        endif()
+    elseif(MSVC)
+        set(_dsd_linkable_target
+            "$<AND:$<NOT:$<STREQUAL:$<TARGET_PROPERTY:TYPE>,STATIC_LIBRARY>>,$<NOT:$<STREQUAL:$<TARGET_PROPERTY:TYPE>,OBJECT_LIBRARY>>>"
+        )
+        target_link_options(
+            dsd-neo_hardening
+            INTERFACE
+                "$<$<AND:${_dsd_release_like_config},${_dsd_linkable_target}>:/DYNAMICBASE>"
+                "$<$<AND:${_dsd_release_like_config},${_dsd_linkable_target}>:/NXCOMPAT>"
+        )
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
             target_link_options(
                 dsd-neo_hardening
                 INTERFACE
-                    "$<$<AND:${_dsd_release_like_config},$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>>:-pie>"
+                    "$<$<AND:${_dsd_release_like_config},${_dsd_linkable_target}>:/HIGHENTROPYVA>"
             )
         endif()
     endif()

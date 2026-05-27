@@ -348,7 +348,8 @@ tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_by
     long int freq = process_channel_to_freq(opts, state, channel);
     char suf[32];
     p25_format_chan_suffix(state, (uint16_t)channel, -1, suf, sizeof suf);
-    DSD_SPRINTF(state->active_channel[0], "MFID90 GRG Grant: %04X%s SG: %d; ", channel, suf, sg);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MFID90 GRG Grant: %04X%s SG: %d; ",
+                 channel, suf, sg);
     state->last_active_time = time(NULL);
     DSD_FPRINTF(stderr, "\n");
     if (opts->p25_trunk == 1 && freq != 0) {
@@ -369,7 +370,8 @@ tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t 
     char suf1[32], suf2[32];
     p25_format_chan_suffix(state, (uint16_t)ch1, -1, suf1, sizeof suf1);
     p25_format_chan_suffix(state, (uint16_t)ch2, -1, suf2, sizeof suf2);
-    DSD_SPRINTF(state->active_channel[0], "MFID90 GRG Upd: %04X%s SG: %d; ", ch1, suf1, sg1);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MFID90 GRG Upd: %04X%s SG: %d; ", ch1,
+                 suf1, sg1);
     state->last_active_time = time(NULL);
     DSD_FPRINTF(stderr, "\n");
     if (opts->p25_trunk == 1 && ch1 != 0 && freq1 != 0) {

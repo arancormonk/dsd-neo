@@ -18,6 +18,11 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
+
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <unistd.h>
+#endif
 
 static int
 pick_missing_dir(char* out, size_t out_sz) {
@@ -127,6 +132,136 @@ test_channel_import_missing_file(void) {
     free_test_state(state);
     return 0;
 }
+
+static int
+test_lcn_import_caps_frequency_count(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    char tmpl[] = "dsd-neo-test-lcn-overflow-XXXXXX";
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    FILE* fp = dsd_fopen_private(tmpl, "w");
+    if (!fp) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    DSD_FPRINTF(fp, "lcn\n");
+    for (int i = 0; i < 30; ++i) {
+        DSD_FPRINTF(fp, "%s%d", i == 0 ? "" : ",", 851000000 + i);
+    }
+    DSD_FPRINTF(fp, "\n");
+    fclose(fp);
+
+    DSD_SNPRINTF(opts->lcn_in_file, sizeof opts->lcn_in_file, "%s", tmpl);
+    int rc = csvLCNImport(opts, state);
+
+    int failed = 0;
+    if (rc != 0) {
+        failed = 1;
+    }
+    if (state->lcn_freq_count != 26) {
+        failed = 1;
+    }
+    for (int i = 0; i < 26; ++i) {
+        if (state->trunk_lcn_freq[i] != 851000000 + i) {
+            failed = 1;
+            break;
+        }
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
+static int
+test_channel_import_rejects_directory(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    char dir[] = "dsd-neo-test-csv-dir-XXXXXX";
+    if (dsd_mkdtemp(dir) == NULL) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    state->lcn_freq_count = 456;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", dir);
+    int rc = csvChanImport(opts, state);
+    int failed = (rc == 0 || state->lcn_freq_count != 456);
+
+    (void)remove(dir);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
+#if !DSD_PLATFORM_WIN_NATIVE
+static int
+test_channel_import_rejects_final_symlink(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    const char* target = "dsd-neo-test-csv-symlink-target.csv";
+    const char* link_name = "dsd-neo-test-csv-symlink-link.csv";
+    (void)remove(link_name);
+    (void)remove(target);
+
+    FILE* fp = dsd_fopen_private(target, "w");
+    if (!fp) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    DSD_FPRINTF(fp, "channel,freq\n1,851000000\n");
+    fclose(fp);
+
+    if (symlink(target, link_name) != 0) {
+        (void)remove(target);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    state->lcn_freq_count = 456;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", link_name);
+    int rc = csvChanImport(opts, state);
+    int failed = (rc == 0 || state->lcn_freq_count != 456);
+
+    (void)remove(link_name);
+    (void)remove(target);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+#endif
 
 static int
 test_group_import_large_exact_file(void) {
@@ -649,6 +784,17 @@ main(void) {
     if (test_channel_import_missing_file() != 0) {
         return 1;
     }
+    if (test_lcn_import_caps_frequency_count() != 0) {
+        return 1;
+    }
+    if (test_channel_import_rejects_directory() != 0) {
+        return 1;
+    }
+#if !DSD_PLATFORM_WIN_NATIVE
+    if (test_channel_import_rejects_final_symlink() != 0) {
+        return 1;
+    }
+#endif
     if (test_group_import_large_exact_file() != 0) {
         return 1;
     }

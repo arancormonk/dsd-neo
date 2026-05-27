@@ -439,8 +439,8 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "%s\n", KNRM);
     }
     tdulc_print_lcw_payload(opts, LCW_bytes);
-    DSD_SPRINTF(state->call_string[0], "%s", "                     ");
-    DSD_SPRINTF(state->call_string[1], "%s", "                     ");
+    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "                     ");
+    DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "                     ");
     if (opts->floating_point == 1) {
         state->aout_gain = opts->audio_gain;
     }

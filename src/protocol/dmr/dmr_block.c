@@ -300,7 +300,7 @@ static void
 dmr_dheader_handle_response(uint8_t slot, const dmr_dheader_fields* f) {
     char rsp_string[200];
     DSD_MEMSET(rsp_string, 0, sizeof(rsp_string));
-    DSD_SPRINTF(rsp_string, "DATA RESP TGT: %d; SRC: %d; ", f->target, f->source);
+    DSD_SNPRINTF(rsp_string, sizeof(rsp_string), "DATA RESP TGT: %d; SRC: %d; ", f->target, f->source);
     if (f->r_class == 0 && f->r_type == 1) {
         dsd_append(rsp_string, sizeof rsp_string, "ACK - Success");
     }
@@ -531,7 +531,7 @@ dmr_dheader_sanitize_blocks(dsd_state* state, uint8_t slot) {
 static void
 dmr_dheader_reset_irrecoverable(dsd_state* state, uint8_t slot) {
     state->data_header_valid[slot] = 0;
-    DSD_SPRINTF(state->dmr_lrrp_gps[slot], "%s", "");
+    DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "%s", "");
     state->data_p_head[slot] = 0;
     state->data_conf_data[slot] = 0;
     state->data_block_counter[slot] = 1;
@@ -598,7 +598,8 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         state->data_header_valid[slot] = 1;
     }
     if (f.dpf != 1 && f.dpf != 15) {
-        DSD_SPRINTF(state->dmr_lrrp_gps[slot], "Data Call - %s TGT: %d SRC: %d ", f.sap_string, f.target, f.source);
+        DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "Data Call - %s TGT: %d SRC: %d ",
+                     f.sap_string, f.target, f.source);
         if (f.a == 1) {
             dsd_append(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "- RSP REQ ");
         }
@@ -702,7 +703,7 @@ dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, cons
     ctx->add_res = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[96], 7);
     ctx->add_ok = ctx->cs_bits[103];
     DSD_MEMSET(ctx->udt_string, 0, sizeof(ctx->udt_string));
-    DSD_SPRINTF(ctx->udt_string, "UDT SRC: %d; TGT: %d; ", ctx->udt_source, ctx->udt_target);
+    DSD_SNPRINTF(ctx->udt_string, sizeof(ctx->udt_string), "UDT SRC: %d; TGT: %d; ", ctx->udt_source, ctx->udt_target);
     DSD_FPRINTF(stderr, "%s", KCYN);
     DSD_FPRINTF(stderr, "\n ");
     DSD_FPRINTF(stderr, "Slot %d - SRC: %d; TGT: %d; UDT ", ctx->slot + 1, ctx->udt_source, ctx->udt_target);
@@ -829,7 +830,8 @@ dmr_udt_handle_iso7(dmr_udt_ctx* ctx) {
     int end = ctx->payload_bits / 7;
     DSD_FPRINTF(stderr, "ISO7 Text: ");
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "ISO7 Text; ");
-    DSD_SPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message, "%s", " ");
+    DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message,
+                 sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message), "%s", " ");
     for (int i = 0; i < end; i++) {
         uint8_t iso7c = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[(i * 7) + 96], 7);
         if (iso7c >= 0x20 && iso7c <= 0x7E) {
@@ -846,7 +848,8 @@ dmr_udt_handle_iso8(dmr_udt_ctx* ctx) {
     int end = ctx->payload_bits / 8;
     DSD_FPRINTF(stderr, "ISO8 Text: ");
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "ISO8 Text; ");
-    DSD_SPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message, "%s", " ");
+    DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message,
+                 sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message), "%s", " ");
     for (int i = 0; i < end; i++) {
         uint8_t iso8c = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[(i * 8) + 96], 8);
         if (iso8c >= 0x20 && iso8c <= 0x7E) {
@@ -863,7 +866,8 @@ dmr_udt_handle_utf16(dmr_udt_ctx* ctx) {
     int end = ctx->payload_bits / 16;
     DSD_FPRINTF(stderr, "UTF16 Text: ");
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "UTF16 Text; ");
-    DSD_SPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message, "%s", " ");
+    DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message,
+                 sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message), "%s", " ");
     dmr_udt_emit_utf16_text(ctx, 96, end);
 }
 
@@ -901,7 +905,9 @@ dmr_udt_handle_mixed_utf16(dmr_udt_ctx* ctx) {
     DSD_FPRINTF(stderr, "Address: %d; ", address);
     DSD_FPRINTF(stderr, "UTF16 Text: ");
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "Mixed Add/Text; ");
-    DSD_SPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message, "Address: %d;", address);
+    DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message,
+                 sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message), "Address: %d;",
+                 address);
     dmr_udt_emit_utf16_text(ctx, 96 + 32, end);
 }
 
@@ -1311,9 +1317,9 @@ dmr_block_type1_handle_encrypted_notice(dmr_block_assembler_ctx* ctx) {
     }
 
     DSD_MEMSET(enc_str, 0, sizeof(enc_str));
-    DSD_SPRINTF(enc_str, "DATA TGT: %lld; SRC: %lld; ENC PDU; ALG: %02X; KID: %02X;",
-                ctx->state->dmr_lrrp_source[ctx->slot], ctx->state->dmr_lrrp_target[ctx->slot], alg, kid);
-    DSD_SPRINTF(ctx->state->dmr_lrrp_gps[ctx->slot], "%s", enc_str);
+    DSD_SNPRINTF(enc_str, sizeof(enc_str), "DATA TGT: %lld; SRC: %lld; ENC PDU; ALG: %02X; KID: %02X;",
+                 ctx->state->dmr_lrrp_source[ctx->slot], ctx->state->dmr_lrrp_target[ctx->slot], alg, kid);
+    DSD_SNPRINTF(ctx->state->dmr_lrrp_gps[ctx->slot], sizeof(ctx->state->dmr_lrrp_gps[ctx->slot]), "%s", enc_str);
     watchdog_event_datacall(ctx->opts, ctx->state, ctx->state->dmr_lrrp_source[ctx->slot],
                             ctx->state->dmr_lrrp_target[ctx->slot], enc_str, ctx->slot);
 }
@@ -1369,15 +1375,16 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
     } else if (mnis_type == 0x01) {
         utf8_to_text(ctx->state, 0, len - offset, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
         dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
-        DSD_SPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s, "%s",
-                    ctx->state->dmr_lrrp_gps[ctx->slot]);
+        DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s,
+                     sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s), "%s",
+                     ctx->state->dmr_lrrp_gps[ctx->slot]);
     }
 
     if (mnis_type != 0x11 && mnis_type != 0x01) {
         char mnis_str[200];
         DSD_MEMSET(mnis_str, 200, sizeof(mnis_str));
-        DSD_SPRINTF(mnis_str, "MNIS TGT: %lld; SRC: %lld;", ctx->state->dmr_lrrp_source[ctx->slot],
-                    ctx->state->dmr_lrrp_target[ctx->slot]);
+        DSD_SNPRINTF(mnis_str, sizeof(mnis_str), "MNIS TGT: %lld; SRC: %lld;", ctx->state->dmr_lrrp_source[ctx->slot],
+                     ctx->state->dmr_lrrp_target[ctx->slot]);
         watchdog_event_datacall(ctx->opts, ctx->state, ctx->state->dmr_lrrp_source[ctx->slot],
                                 ctx->state->dmr_lrrp_target[ctx->slot], mnis_str, ctx->slot);
     } else if (mnis_type == 0x11 || mnis_type == 0x01) {
@@ -1404,7 +1411,8 @@ dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx, int offset) {
     dmr_block_type1_print_mnis_type(mnis_type);
     mnis_unk = (ctx->state->dmr_pdu_sf[ctx->slot][5] << 8) | ctx->state->dmr_pdu_sf[ctx->slot][6];
     DSD_FPRINTF(stderr, " ???: %04X", mnis_unk);
-    DSD_SPRINTF(ctx->state->dmr_lrrp_gps[ctx->slot], "MNIS SRC: %d; DST: %d; ", msrc, mdst);
+    DSD_SNPRINTF(ctx->state->dmr_lrrp_gps[ctx->slot], sizeof(ctx->state->dmr_lrrp_gps[ctx->slot]),
+                 "MNIS SRC: %d; DST: %d; ", msrc, mdst);
     dmr_block_type1_handle_mnis_payload(ctx, len, mnis_type, offset, msrc, mdst);
 }
 
@@ -1419,7 +1427,7 @@ dmr_block_type1_handle_unknown_pdu(dmr_block_assembler_ctx* ctx) {
         target = ctx->state->dmr_lrrp_target[safe_slot];
     }
     DSD_MEMSET(unk_str, 200, sizeof(unk_str));
-    DSD_SPRINTF(unk_str, "DATA TGT: %lld; SRC: %lld; Unknown PDU Format;", source, target);
+    DSD_SNPRINTF(unk_str, sizeof(unk_str), "DATA TGT: %lld; SRC: %lld; Unknown PDU Format;", source, target);
     watchdog_event_datacall(ctx->opts, ctx->state, source, target, unk_str, safe_slot);
 }
 
@@ -1768,10 +1776,10 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->data_dbsn_expected, 0, sizeof(state->data_dbsn_expected));
     DSD_MEMSET(state->data_dbsn_have, 0, sizeof(state->data_dbsn_have));
     //reset some strings -- resetting call string here causes random blink on ncurses terminal (cap+)
-    // DSD_SPRINTF(state->call_string[0], "%s", "                     "); //21 spaces
-    // DSD_SPRINTF(state->call_string[1], "%s", "                     "); //21 spaces
-    DSD_SPRINTF(state->dmr_lrrp_gps[0], "%s", "");
-    DSD_SPRINTF(state->dmr_lrrp_gps[1], "%s", "");
+    // DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "                     "); //21 spaces
+    // DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "                     "); //21 spaces
+    DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "%s", "");
+    DSD_SNPRINTF(state->dmr_lrrp_gps[1], sizeof(state->dmr_lrrp_gps[1]), "%s", "");
 }
 
 // Safe append helper for bounded concatenation

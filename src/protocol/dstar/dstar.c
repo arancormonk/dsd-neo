@@ -375,7 +375,7 @@ dstar_sd_handle_aprs(dsd_state* state, const uint8_t* sd_bytes) {
     int start;
 
     DSD_FPRINTF(stderr, "\n APRS - ");
-    DSD_SPRINTF(state->dstar_gps, "APRS - ");
+    DSD_SNPRINTF(state->dstar_gps, sizeof(state->dstar_gps), "APRS - ");
     DSD_MEMSET(aprs, 0, sizeof(aprs));
     DSD_MEMSET(temp, 0, sizeof(temp));
     DSD_MEMSET(tempa, 0, sizeof(tempa));
@@ -383,13 +383,15 @@ dstar_sd_handle_aprs(dsd_state* state, const uint8_t* sd_bytes) {
     dstar_sd_collect_aprs_bytes(sd_bytes, aprs);
     start = dstar_sd_find_aprs_start(aprs);
     if (start == -1) {
-        DSD_SPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s, "%s", state->dstar_gps);
+        DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
+                     sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dstar_gps);
         return;
     }
 
     dstar_sd_print_aprs_lat(state, sd_bytes, aprs, &start, temp);
     dstar_sd_print_aprs_lon(state, aprs, &start, temp, tempa);
-    DSD_SPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s, "%s", state->dstar_gps);
+    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
+                 sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dstar_gps);
 }
 
 static void
@@ -398,7 +400,8 @@ dstar_sd_handle_text_message(dsd_state* state, dstar_sd_ctx* ctx) {
     DSD_FPRINTF(stderr, " TEXT: ");
     dstar_sd_emit_truncated_ascii(ctx->sd_bytes, ctx->strt, 1);
     DSD_MEMCPY(state->dstar_txt, ctx->strt, sizeof(ctx->strt));
-    DSD_SPRINTF(state->event_history_s[0].Event_History_Items[0].text_message, "%s", state->dstar_txt);
+    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].text_message,
+                 sizeof(state->event_history_s[0].Event_History_Items[0].text_message), "%s", state->dstar_txt);
 }
 
 static void

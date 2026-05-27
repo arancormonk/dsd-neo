@@ -18,9 +18,9 @@ static void
 dmr_update_branding(dsd_state* state) {
     // 0x10 intentionally does not update branding.
     if (state->dmr_mfid == 0x68) {
-        DSD_SPRINTF(state->dmr_branding, "%s", "  Hytera");
+        DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "  Hytera");
     } else if (state->dmr_mfid == 0x58) {
-        DSD_SPRINTF(state->dmr_branding, "%s", "    Tait");
+        DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "    Tait");
     }
 }
 
@@ -37,8 +37,8 @@ dmr_is_ms_or_rc_data_synctype(int synctype) {
 
 static void
 dmr_set_slot_lights(dsd_state* state) {
-    DSD_SPRINTF(state->slot1light, " slot1 ");
-    DSD_SPRINTF(state->slot2light, " slot2 ");
+    DSD_SNPRINTF(state->slot1light, sizeof(state->slot1light), " slot1 ");
+    DSD_SNPRINTF(state->slot2light, sizeof(state->slot2light), " slot2 ");
 }
 
 static void
@@ -68,7 +68,7 @@ dmr_bootstrap_ms_if_enabled(dsd_opts* opts, dsd_state* state) {
 
 static void
 dmr_handle_voice(dsd_opts* opts, dsd_state* state) {
-    DSD_SPRINTF(state->fsubtype, " VOICE        ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
     if (opts->dmr_stereo == 0 && state->synctype < DSD_SYNC_DMR_MS_VOICE) {
         dmr_set_slot_lights(state);
         dmr_bootstrap_ms_if_enabled(opts, state);

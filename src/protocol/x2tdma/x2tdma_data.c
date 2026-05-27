@@ -116,12 +116,12 @@ x2tdma_set_fsubtype_from_bursttype(dsd_state* state, const char bursttype[5]) {
 
     for (int i = 0; i < (int)(sizeof bursttype_map / sizeof bursttype_map[0]); i++) {
         if (strcmp(bursttype, bursttype_map[i].bursttype) == 0) {
-            DSD_SPRINTF(state->fsubtype, "%s", bursttype_map[i].subtype);
+            DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), "%s", bursttype_map[i].subtype);
             return;
         }
     }
 
-    DSD_SPRINTF(state->fsubtype, "              ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), "              ");
 }
 
 static void

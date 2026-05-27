@@ -8,7 +8,8 @@ https://github.com/arancormonk/dsd-neo/releases
 
 Release tags use the form `vX.Y.Z`. The tag must match the project version
 declared by CMake and must be an annotated tag signed by the trusted DSD-neo
-release key, or the release workflow fails before packaging.
+release key, and must point at a commit already contained in `origin/main`, or
+the release workflow fails before packaging.
 
 Nightly assets are published from the moving `nightly` tag on trusted upstream
 main-branch builds. They are intended for testing rather than stable
@@ -35,6 +36,13 @@ gpg --import release-keys/arancormonk-2026.pgp
 git tag -v vX.Y.Z
 ```
 
+The release workflow pins this exact primary key fingerprint before trusting the
+checked-in key file:
+
+```text
+5FAF 0C47 C8E1 F95D 33CD 83B1 E42E 43AD D853 F280
+```
+
 `DSD_Author.pgp` is retained only for upstream attribution and is not a
 DSD-neo release-signing trust root.
 
@@ -50,6 +58,9 @@ SBOMs and GitHub artifact attestations for packaged Linux AppImage, macOS DMG,
 and Windows ZIP assets when the corresponding workflow completes successfully.
 Release publication jobs use `contents: write` only in trusted upstream
 release/nightly paths and publish with the workflow `GITHUB_TOKEN`.
+Packaging workflows also verify release hardening before upload: Linux ELF
+PIE/RELRO/BIND_NOW, macOS Mach-O PIE and staged dylib `@rpath` install names,
+and Windows PE ASLR/NX/high-entropy virtual addresses.
 
 Download assets from the release page, then verify an artifact attestation with
 GitHub CLI when available:

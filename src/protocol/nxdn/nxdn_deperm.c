@@ -788,8 +788,9 @@ nxdn_update_sacch2_identity_state(dsd_state* state, const struct nxdn_sacch2_fie
     state->nxdn_last_ran = 7;
     state->nxdn_last_tg = 777;
     state->nxdn_last_rid = 777;
-    DSD_SPRINTF(state->generic_talker_alias[0], "%s", "JPN DCR");
-    DSD_SPRINTF(state->event_history_s[0].Event_History_Items[0].alias, "%s; ", "JPN DCR");
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "JPN DCR");
+    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
+                 sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", "JPN DCR");
     if (fields->sf_fb) {
         state->payload_miN = 0;
     }
@@ -1681,7 +1682,7 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
         }
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        DSD_SPRINTF(state->nxdn_call_type, "%s", "");
+        DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", "");
     }
 
     if (nxdn_message_type_resets_gain(MessageType)) {

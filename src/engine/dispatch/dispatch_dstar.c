@@ -26,11 +26,11 @@ dsd_dispatch_handle_dstar(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->synctype == DSD_SYNC_DSTAR_VOICE_POS || state->synctype == DSD_SYNC_DSTAR_VOICE_NEG) {
-        DSD_SPRINTF(state->fsubtype, " VOICE        ");
+        DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
         processDSTAR(opts, state);
         return;
     }
 
-    DSD_SPRINTF(state->fsubtype, " DATA         ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " DATA         ");
     processDSTAR_HD(opts, state);
 }
