@@ -9,8 +9,8 @@
  */
 
 #include <cstdio>
-#include <cstdlib>
 #include <dsd-neo/fec/Hamming.hpp>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/config.h>
 #include "dsd-neo/core/safe_api.h"
@@ -27,7 +27,7 @@ static int g_fail_count = 0;
 
 static void
 set_soft_hard_override(int enabled) {
-    setenv("DSD_NEO_P25_SOFT_HARD_OVERRIDE", enabled ? "1" : "0", 1);
+    dsd_setenv("DSD_NEO_P25_SOFT_HARD_OVERRIDE", enabled ? "1" : "0", 1);
     dsd_neo_config_init(nullptr);
 }
 

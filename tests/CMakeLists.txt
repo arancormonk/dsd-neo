@@ -632,7 +632,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_ui_hotkeys_regression
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/tests/ui ${PROJECT_SOURCE_DIR}/include
 )
 target_link_libraries(
     dsd-neo_test_ui_hotkeys_regression
@@ -4330,6 +4330,10 @@ if(DSD_HAS_RADIO)
     add_executable(
         dsd-neo_test_io_rtl_demod_config
         io/test_io_rtl_demod_config.cpp
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_demod_config
+        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
     )
     target_include_directories(
         dsd-neo_test_io_rtl_demod_config

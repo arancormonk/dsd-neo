@@ -9,13 +9,17 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "test_support.h"
 
+#if !defined(_WIN32)
 #include <fcntl.h> // IWYU pragma: keep
+#endif
 
 static int
 count_occurrences(const char* haystack, const char* needle) {

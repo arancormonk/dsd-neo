@@ -16,7 +16,7 @@
 
 #if defined(__has_include)
 #if __has_include(<sndfile.h>)
-#include <sndfile.h>
+#include <sndfile.h> // IWYU pragma: export
 #else
 typedef struct sf_private_tag SNDFILE;
 typedef struct SF_INFO SF_INFO;

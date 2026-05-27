@@ -711,6 +711,20 @@ radio_source_is_rtl_family(const dsd_opts* opts) {
                : 0;
 }
 
+static int
+stream_steady_state_watermark_enabled(const dsd_opts* opts) {
+    UNUSED(opts);
+    /*
+     * Do not pace live demodulation with the input-ring watermark. rtl_tcp
+     * already has a startup prebuffer, socket buffering, reader-side
+     * backpressure, metrics, and stall/reconnect checks. Re-enabling this
+     * watermark makes normal real-time jitter trigger intentional demod stalls
+     * until hundreds of milliseconds, and eventually 1.5 seconds, of IQ data
+     * refills.
+     */
+    return 0;
+}
+
 static const char*
 rtl_perf_source_name(void) {
     const dsd_opts* opts = (g_stream && g_stream->opts) ? g_stream->opts : NULL;
@@ -832,7 +846,7 @@ stream_refresh_watermark_for_current_rate(void) {
     if (!g_stream) {
         return;
     }
-    watermark_init(&g_stream->watermark, radio_source_is_rtltcp(g_stream->opts) ? 1 : 0, load_dongle_rate());
+    watermark_init(&g_stream->watermark, stream_steady_state_watermark_enabled(g_stream->opts), load_dongle_rate());
 }
 
 static const char*
@@ -4730,9 +4744,7 @@ stream_prepare_internals(const dsd_opts* opts) {
     g_stream->replay_eof_sync_inited = 1;
     stream_reset_replay_eof_state(g_stream);
 
-    /* Initialize watermark-based flow control (TCP lag resilience).
-     * Enabled only for rtl_tcp connections; passthrough for USB/other. */
-    watermark_init(&g_stream->watermark, radio_source_is_rtltcp(opts) ? 1 : 0, load_dongle_rate());
+    stream_refresh_watermark_for_current_rate();
 
     return 0;
 }
@@ -7324,6 +7336,15 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->replay_loop_restart_last_frequency_hz =
         g_replay_loop_restart_last_frequency_hz.load(std::memory_order_acquire);
     return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev) {
+    dsd_opts opts = {};
+    if (audio_in_dev && audio_in_dev[0] != '\0') {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", audio_in_dev);
+    }
+    return stream_steady_state_watermark_enabled(&opts);
 }
 #endif
 

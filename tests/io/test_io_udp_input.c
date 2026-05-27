@@ -4,24 +4,23 @@
  * synthesize samples when idle (it should block until data arrives).
  */
 
-#include <arpa/inet.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <errno.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
-#include <sys/socket.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/resampler.h"
-#include "dsd-neo/platform/platform.h"
-
-#if !DSD_PLATFORM_WIN_NATIVE
-#endif
 
 static int
 get_bound_port(dsd_socket_t sock) {
@@ -188,7 +187,7 @@ main(void) {
         goto cleanup;
     }
 
-    const int16_t v[] = {0, 1, -1, 32767, (int16_t)0x8000, 1234, -1234, 2222, -2222};
+    const int16_t v[] = {0, 1, -1, INT16_MAX, INT16_MIN, 1234, -1234, 2222, -2222};
     if (send_pcm16le(tx, "127.0.0.1", port, v, sizeof(v) / sizeof(v[0])) != 0) {
         DSD_FPRINTF(stderr, "failed to send initial UDP PCM\n");
         goto cleanup;
