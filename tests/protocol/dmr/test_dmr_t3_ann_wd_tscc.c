@@ -11,6 +11,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -230,6 +231,7 @@ main(void) {
     rc |= expect_true("tscc switch clears active channel", state.active_channel[0][0] == '\0');
     rc |= expect_true("tscc switch clears last call", state.lasttg == 0 && state.lastsrc == 0);
 
+    dsd_state_ext_free_all(&state);
     init_env(&opts, &state);
     state.trunk_chan_map[old_ch] = old_cc;
     state.trunk_chan_map[next_ch] = next_cc;
@@ -244,6 +246,7 @@ main(void) {
     rc |= expect_true("deferred tscc switch restores old CC", state.trunk_cc_freq == old_cc);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_state_ext_free_all(&state);
     if (rc == 0) {
         printf("DMR_T3_ANN_WD_TSCC: OK\n");
     }

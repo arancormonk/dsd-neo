@@ -2073,6 +2073,17 @@ demod_input_span_commit_direct(DemodInputSpan* span) {
         return;
     }
     input_ring_read_commit(&input_ring, span->reserved_count);
+    span->reserved_count = 0U;
+    span->direct_input_span = 0;
+}
+
+static void
+demod_input_span_commit_reserved(DemodInputSpan* span) {
+    if (!span || span->reserved_count == 0U) {
+        return;
+    }
+    input_ring_read_commit(&input_ring, span->reserved_count);
+    span->reserved_count = 0U;
     span->direct_input_span = 0;
 }
 
@@ -2125,7 +2136,7 @@ demod_copy_wrapped_input_block(struct demod_state* d, const DemodInputSpan* span
 }
 
 static int
-demod_read_input_block(struct demod_state* d, DemodInputSpan* span) {
+demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
     demod_input_span_init(span);
     if (!d || !span) {
         return 0;
@@ -2138,9 +2149,17 @@ demod_read_input_block(struct demod_state* d, DemodInputSpan* span) {
     span->direct_input_span =
         (span->ring_p1 && span->ring_n1 == (size_t)span->got && (!span->ring_p2 || span->ring_n2 == 0)) ? 1 : 0;
     span->reserved_count = (size_t)span->got;
+    return 1;
+}
+
+static int
+demod_prepare_input_block(struct demod_state* d, DemodInputSpan* span) {
+    if (!d || !span) {
+        return 0;
+    }
     if (!span->direct_input_span) {
         int copied = demod_copy_wrapped_input_block(d, span);
-        input_ring_read_commit(&input_ring, span->reserved_count);
+        demod_input_span_commit_reserved(span);
         span->got = copied;
         if (span->got <= 0) {
             return 0;
@@ -3107,9 +3126,18 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
     if (!demod_read_input_block(d, span)) {
         return 0;
     }
+    if (!demod_enter_processing_block(&controller)) {
+        demod_input_span_commit_reserved(span);
+        return 0;
+    }
+    if (!demod_prepare_input_block(d, span)) {
+        demod_leave_processing_block(&controller);
+        return 0;
+    }
     if (controller.retune_in_progress.load(std::memory_order_acquire)
         || g_ring_purge_pending.load(std::memory_order_acquire)) {
         demod_input_span_commit_direct(span);
+        demod_leave_processing_block(&controller);
         return 0;
     }
     int input_pairs = 0;
@@ -3118,25 +3146,28 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
     iq_block_abs_stats(span->input_block, span->got, &input_mean_abs, &input_max_abs, &input_pairs);
     if (retune_settle_should_discard(d, input_mean_abs, input_max_abs, input_pairs)) {
         demod_input_span_commit_direct(span);
+        demod_leave_processing_block(&controller);
         return 0;
     }
     *retune_diag = demod_capture_retune_diag(input_mean_abs, input_max_abs, input_pairs);
     demod_autogain_update(d, input_mean_abs, input_max_abs);
-    d->lowpassed = span->input_block;
-    d->lp_len = span->got;
     if (!controller.cold_start_ready.load(std::memory_order_acquire)) {
-        demod_input_span_release_direct(d, span);
+        demod_input_span_commit_direct(span);
+        demod_leave_processing_block(&controller);
         return 0;
     }
     if (controller.retune_in_progress.load(std::memory_order_acquire)) {
-        demod_input_span_release_direct(d, span);
+        demod_input_span_commit_direct(span);
+        demod_leave_processing_block(&controller);
         return 0;
     }
+    d->lowpassed = span->input_block;
+    d->lp_len = span->got;
     return 1;
 }
 
 static int
-demod_prepare_iteration_processing(struct demod_state* d, DemodInputSpan* span, int* replay_active,
+demod_prepare_iteration_processing(const struct demod_state* d, const DemodInputSpan* span, int* replay_active,
                                    uint64_t* consumed_gen) {
     if (!d || !span || !replay_active || !consumed_gen) {
         return 0;
@@ -3145,10 +3176,6 @@ demod_prepare_iteration_processing(struct demod_state* d, DemodInputSpan* span, 
     *replay_active = stream_is_replay_active();
     if (*replay_active && g_stream) {
         *consumed_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
-    }
-    if (!demod_enter_processing_block(&controller)) {
-        demod_input_span_release_direct(d, span);
-        return 0;
     }
     return 1;
 }
@@ -3171,6 +3198,8 @@ static DSD_THREAD_RETURN_TYPE
         int replay_active = 0;
         uint64_t consumed_gen = 0ULL;
         if (!demod_prepare_iteration_processing(d, &span, &replay_active, &consumed_gen)) {
+            demod_input_span_release_direct(d, &span);
+            demod_leave_processing_block(&controller);
             continue;
         }
         int perf_on = rtl_perf_enabled();
