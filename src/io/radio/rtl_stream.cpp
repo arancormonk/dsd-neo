@@ -149,7 +149,7 @@ RtlSdrOrchestrator::tune(uint32_t center_freq_hz) {
         return last_error_code_;
     }
     int rc = dsd_rtl_stream_tune(opts_, (long int)center_freq_hz);
-    if (rc < 0) {
+    if (rc != 0) {
         last_error_code_ = rc;
         return rc;
     }

@@ -14,11 +14,11 @@
 
 static dsd_trunk_tuning_hooks g_trunk_tuning_hooks = {0};
 
-static void
+static dsd_trunk_tune_result
 dsd_trunk_tuning_fallback_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)ted_sps;
     if (!opts || !state || freq <= 0) {
-        return;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
 
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
@@ -31,9 +31,10 @@ dsd_trunk_tuning_fallback_tune_to_freq(dsd_opts* opts, dsd_state* state, long in
     state->p25_last_vc_tune_time = state->last_vc_sync_time;
     state->last_vc_sync_time_m = nowm;
     state->p25_last_vc_tune_time_m = nowm;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-static void
+static dsd_trunk_tune_result
 dsd_trunk_tuning_fallback_return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts) {
         opts->p25_is_tuned = 0;
@@ -45,18 +46,20 @@ dsd_trunk_tuning_fallback_return_to_cc(dsd_opts* opts, dsd_state* state) {
         state->last_vc_sync_time = 0;
         state->last_vc_sync_time_m = 0.0;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-static void
+static dsd_trunk_tune_result
 dsd_trunk_tuning_fallback_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)opts;
     (void)ted_sps;
     if (!state || freq <= 0) {
-        return;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
     state->trunk_cc_freq = freq;
     state->last_cc_sync_time = time(NULL);
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 void
@@ -64,29 +67,38 @@ dsd_trunk_tuning_hooks_set(dsd_trunk_tuning_hooks hooks) {
     g_trunk_tuning_hooks = hooks;
 }
 
-void
+dsd_trunk_tune_result
 dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    if (g_trunk_tuning_hooks.tune_to_freq_result) {
+        return g_trunk_tuning_hooks.tune_to_freq_result(opts, state, freq, ted_sps);
+    }
     if (g_trunk_tuning_hooks.tune_to_freq) {
         g_trunk_tuning_hooks.tune_to_freq(opts, state, freq, ted_sps);
-        return;
+        return DSD_TRUNK_TUNE_RESULT_OK;
     }
-    dsd_trunk_tuning_fallback_tune_to_freq(opts, state, freq, ted_sps);
+    return dsd_trunk_tuning_fallback_tune_to_freq(opts, state, freq, ted_sps);
 }
 
-void
+dsd_trunk_tune_result
 dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    if (g_trunk_tuning_hooks.tune_to_cc_result) {
+        return g_trunk_tuning_hooks.tune_to_cc_result(opts, state, freq, ted_sps);
+    }
     if (g_trunk_tuning_hooks.tune_to_cc) {
         g_trunk_tuning_hooks.tune_to_cc(opts, state, freq, ted_sps);
-        return;
+        return DSD_TRUNK_TUNE_RESULT_OK;
     }
-    dsd_trunk_tuning_fallback_tune_to_cc(opts, state, freq, ted_sps);
+    return dsd_trunk_tuning_fallback_tune_to_cc(opts, state, freq, ted_sps);
 }
 
-void
+dsd_trunk_tune_result
 dsd_trunk_tuning_hook_return_to_cc(dsd_opts* opts, dsd_state* state) {
+    if (g_trunk_tuning_hooks.return_to_cc_result) {
+        return g_trunk_tuning_hooks.return_to_cc_result(opts, state);
+    }
     if (g_trunk_tuning_hooks.return_to_cc) {
         g_trunk_tuning_hooks.return_to_cc(opts, state);
-        return;
+        return DSD_TRUNK_TUNE_RESULT_OK;
     }
-    dsd_trunk_tuning_fallback_return_to_cc(opts, state);
+    return dsd_trunk_tuning_fallback_return_to_cc(opts, state);
 }

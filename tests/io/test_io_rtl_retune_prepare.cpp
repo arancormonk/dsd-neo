@@ -17,6 +17,8 @@ extern "C" uint64_t rtl_device_test_coalesce_capture_mute_duration(uint64_t* pen
 extern "C" int rtl_device_test_complete_fragmented_capture_discard(int byte_count, unsigned int partial_byte_count);
 extern "C" void rtl_device_test_end_capture_reconfigure_with_odd_carry(int* out_hold, int* out_mute,
                                                                        int* out_mute_byte_phase);
+extern "C" int rtl_device_test_begin_capture_reconfigure_without_writer(int* out_hold);
+extern "C" int rtl_device_test_usb_reconfigure_discards_samples(size_t input_bytes, size_t* out_ring_used);
 extern "C" void rtl_device_test_replay_dispatch_reset_event_state(int* phase, int* have_carry, uint8_t* carry_byte);
 extern "C" int rtl_device_test_replay_event_boundary_drained(size_t ring_used, uint64_t submitted_gen,
                                                              uint64_t consumed_gen);
@@ -75,8 +77,8 @@ main(void) {
 
     int failed = 0;
     failed |= expect_int_eq("prepare reconfigure input rc", rc, 0);
-    failed |= expect_size_eq("queued output preserved for drain policy", used_after, 8U);
-    failed |= expect_generation_eq("output generation left for drain policy", generation_before, generation_after);
+    failed |= expect_size_eq("retune gate clears queued output", used_after, 0U);
+    failed |= expect_generation_changed("retune gate bumps output generation", generation_before, generation_after);
 
     rc = rtl_stream_test_retune_output_pending(0U, 3, &ring_pending, &cache_pending, &drained);
     failed |= expect_int_eq("retune pending helper rc", rc, 0);
@@ -95,6 +97,22 @@ main(void) {
     failed |= expect_size_eq("retune drain sees drained ring", ring_pending, 0U);
     failed |= expect_int_eq("retune drain sees drained cache", cache_pending, 0);
     failed |= expect_int_eq("retune drain reports drained", drained, 1);
+
+    cache_pending = -1;
+    rc = rtl_stream_test_tune_result_output_drain(RTL_STREAM_TUNE_TIMEOUT, 5U, 3, &used_after, &cache_pending,
+                                                  &generation_before, &generation_after);
+    failed |= expect_int_eq("timeout tune drain helper rc", rc, 0);
+    failed |= expect_size_eq("timeout tune drains queued output", used_after, 0U);
+    failed |= expect_int_eq("timeout tune clears cached symbols", cache_pending, 0);
+    failed |= expect_generation_changed("timeout tune bumps output generation", generation_before, generation_after);
+
+    cache_pending = -1;
+    rc = rtl_stream_test_tune_result_output_drain(RTL_STREAM_TUNE_DEFERRED, 5U, 3, &used_after, &cache_pending,
+                                                  &generation_before, &generation_after);
+    failed |= expect_int_eq("deferred tune drain helper rc", rc, 0);
+    failed |= expect_size_eq("deferred tune leaves queued output", used_after, 5U);
+    failed |= expect_int_eq("deferred tune leaves cached symbols", cache_pending, 3);
+    failed |= expect_generation_eq("deferred tune keeps output generation", generation_before, generation_after);
 
     cache_pending = -1;
     rc = rtl_stream_test_clear_output(7U, 3, &used_after, &cache_pending, &generation_before, &generation_after);
@@ -158,6 +176,16 @@ main(void) {
     failed |= expect_int_eq("end reconfigure clears hold after completion", hold, 0);
     failed |= expect_int_eq("end reconfigure schedules odd carry mute byte", mute, 1);
     failed |= expect_int_eq("end reconfigure preserves carry until scheduled mute drains", mute_byte_phase, 1);
+
+    hold = -1;
+    failed |= expect_int_eq("begin reconfigure without writer helper",
+                            rtl_device_test_begin_capture_reconfigure_without_writer(&hold), 0);
+    failed |= expect_int_eq("begin reconfigure without writer activates hold", hold, 1);
+
+    size_t held_ring_used = 99U;
+    failed |= expect_int_eq("usb reconfigure discard helper",
+                            rtl_device_test_usb_reconfigure_discards_samples(16U, &held_ring_used), 0);
+    failed |= expect_size_eq("usb reconfigure discards samples", held_ring_used, 0U);
 
     // Replay RESET events clear phase/carry state only after pending output drains.
     int replay_phase = 3;

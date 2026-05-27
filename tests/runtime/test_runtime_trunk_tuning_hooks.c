@@ -63,17 +63,17 @@ main(void) {
     g_last_cc_freq = 0;
     g_last_ted_sps = -1;
 
-    dsd_trunk_tuning_hook_tune_to_freq(&opts, &state, 852000000, 123);
+    assert(dsd_trunk_tuning_hook_tune_to_freq(&opts, &state, 852000000, 123) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_tune_to_freq_calls == 1);
     assert(g_last_freq == 852000000);
     assert(g_last_ted_sps == 123);
 
-    dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 851000000, 456);
+    assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 851000000, 456) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_tune_to_cc_calls == 1);
     assert(g_last_cc_freq == 851000000);
     assert(g_last_ted_sps == 456);
 
-    dsd_trunk_tuning_hook_return_to_cc(&opts, &state);
+    assert(dsd_trunk_tuning_hook_return_to_cc(&opts, &state) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_return_to_cc_calls == 1);
 
     // Verify fallback behavior when hooks are not installed
@@ -81,20 +81,26 @@ main(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    dsd_trunk_tuning_hook_tune_to_freq(&opts, &state, 853000000, 0);
+    assert(dsd_trunk_tuning_hook_tune_to_freq(&opts, &state, 853000000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(opts.p25_is_tuned == 1);
     assert(opts.trunk_is_tuned == 1);
     assert(state.p25_vc_freq[0] == 853000000);
     assert(state.trunk_vc_freq[0] == 853000000);
 
-    dsd_trunk_tuning_hook_return_to_cc(&opts, &state);
+    assert(dsd_trunk_tuning_hook_return_to_cc(&opts, &state) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(opts.p25_is_tuned == 0);
     assert(opts.trunk_is_tuned == 0);
     assert(state.p25_vc_freq[0] == 0);
     assert(state.trunk_vc_freq[0] == 0);
 
-    dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 851500000, 0);
+    assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 851500000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(state.trunk_cc_freq == 851500000);
+    assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 0, 0) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_OK));
+    assert(dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_PENDING));
+    assert(!dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_DEFERRED));
+    assert(!dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_TIMEOUT));
+    assert(!dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_FAILED));
 
     return 0;
 }

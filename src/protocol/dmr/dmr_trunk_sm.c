@@ -84,11 +84,26 @@ set_state(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dmr_sm_state_e new_state, con
 
 static void
 do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    int had_force_release = 0;
     if (!ctx) {
         return;
     }
 
+    if (state) {
+        had_force_release = (state->trunk_sm_force_release != 0) ? 1 : 0;
+        state->trunk_sm_force_release = 0;
+    }
+
     sm_log(opts, reason);
+
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state);
+    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+        sm_log(opts, "release-tune-deferred");
+        if (state && had_force_release) {
+            state->trunk_sm_force_release = 1;
+        }
+        return;
+    }
 
     for (int s = 0; s < 2; s++) {
         ctx->slots[s].voice_active = 0;
@@ -112,9 +127,33 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         state->p25_sm_release_count++;
     }
 
-    dsd_trunk_tuning_hook_return_to_cc(opts, state);
-
     set_state(ctx, opts, DMR_SM_ON_CC, reason);
+}
+
+static int
+dmr_sm_resolve_tunable_grant(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev,
+                             long* out_freq) {
+    if (opts->trunk_enable != 1 || state->trunk_cc_freq == 0) {
+        return 0;
+    }
+
+    long freq = resolve_freq(state, ev->freq_hz, ev->lpcn);
+    if (freq <= 0) {
+        sm_log(opts, "grant-no-freq");
+        return 0;
+    }
+
+    if (ev->freq_hz <= 0 && ev->lpcn > 0 && !lpcn_is_trusted(opts, state, ev->lpcn)) {
+        return 0;
+    }
+
+    if (ctx->state == DMR_SM_TUNED && ctx->vc_freq_hz == freq) {
+        sm_log(opts, "grant-same-freq");
+        return 0;
+    }
+
+    *out_freq = freq;
+    return 1;
 }
 
 /* ============================================================================
@@ -127,31 +166,19 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
         return;
     }
 
-    if (opts->trunk_enable != 1) {
-        return;
-    }
-    if (state->trunk_cc_freq == 0) {
-        return;
-    }
-
-    long freq = resolve_freq(state, ev->freq_hz, ev->lpcn);
-    if (freq <= 0) {
-        sm_log(opts, "grant-no-freq");
-        return;
-    }
-
-    if (ev->freq_hz <= 0 && ev->lpcn > 0) {
-        if (!lpcn_is_trusted(opts, state, ev->lpcn)) {
-            return;
-        }
-    }
-
-    if (ctx->state == DMR_SM_TUNED && ctx->vc_freq_hz == freq) {
-        sm_log(opts, "grant-same-freq");
+    long freq = 0;
+    if (!dmr_sm_resolve_tunable_grant(ctx, opts, state, ev, &freq)) {
         return;
     }
 
     double now_m = now_monotonic();
+
+    dsd_trunk_tune_result tune_result =
+        dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0); // DMR: no TED SPS override
+    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+        sm_log(opts, "grant-tune-deferred");
+        return;
+    }
 
     ctx->vc_freq_hz = freq;
     ctx->vc_lpcn = ev->lpcn;
@@ -167,7 +194,6 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     }
 
     dmr_reset_blocks(opts, state);
-    dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0); // DMR: no TED SPS override
 
     state->last_t3_tune_time_m = now_m;
     state->p25_sm_tune_count++;
@@ -233,7 +259,6 @@ handle_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
     }
 
     if (state && state->trunk_sm_force_release != 0) {
-        state->trunk_sm_force_release = 0;
         do_release(ctx, opts, state, "release-forced");
         return;
     }
@@ -309,6 +334,11 @@ grant_timeout_expired(const dmr_sm_ctx_t* ctx, double now_m, double grant_timeou
 
 static void
 tick_tuned(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double hangtime, double grant_timeout) {
+    if (state && state->trunk_sm_force_release != 0) {
+        do_release(ctx, opts, state, "release-forced");
+        return;
+    }
+
     clear_stale_voice_slots(ctx, now_m);
 
     if (has_voice_activity(ctx)) {

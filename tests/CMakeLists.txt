@@ -2933,6 +2933,31 @@ target_link_libraries(
 )
 add_test(NAME DMR_T3_MOVE_RELEASE COMMAND dsd-neo_test_dmr_t3_move_release)
 
+# DMR Tier III Ann_WD_TSCC switch must preserve return-to-CC cleanup
+add_executable(
+    dsd-neo_test_dmr_t3_ann_wd_tscc
+    protocol/dmr/test_dmr_t3_ann_wd_tscc.c
+    ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_t3_ann_wd_tscc
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/protocol/dmr
+        ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_ann_wd_tscc
+    PRIVATE dsd-neo_platform dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DMR_T3_ANN_WD_TSCC COMMAND dsd-neo_test_dmr_t3_ann_wd_tscc)
+
 # DMR Tier III regression: return-to-CC must work with trunk_enable only
 add_executable(
     dsd-neo_test_dmr_t3_return_to_cc_regression
@@ -2942,6 +2967,10 @@ add_executable(
 target_include_directories(
     dsd-neo_test_dmr_t3_return_to_cc_regression
     PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_return_to_cc_regression
+    PRIVATE dsd-neo_feature_radio
 )
 add_test(
     NAME DMR_T3_RETURN_TO_CC_REGRESSION
