@@ -560,7 +560,7 @@ edacs_prepare_voice_wav_output(dsd_opts* opts, dsd_state* state, int is_digital)
 
     opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
                                                 &state->event_history_s[0]);
-    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 48000, 0);
+    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 48000, 0);
 }
 
 static void
@@ -2124,7 +2124,7 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
             opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
                                                         &state->event_history_s[0]);
         }
-        opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
+        opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
     }
 
     //set here so that when returning to the CC, it doesn't go into an immediate hunt if not immediately acquired

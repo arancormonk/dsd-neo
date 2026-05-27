@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -29,8 +30,8 @@ uint8_t p25_decode_es_header_2(const dsd_opts* opts, const dsd_state* state, uin
 void p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t* sap, int* ptr);
 void p25_decode_pdu_header(dsd_opts* opts, dsd_state* state, const uint8_t* input);
 void p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
-void p25_decode_rsp(uint8_t C, uint8_t T, uint8_t S, char* rsp_string);
-void p25_decode_sap(uint8_t SAP, char* sap_string);
+void p25_decode_rsp(uint8_t C, uint8_t T, uint8_t S, char* rsp_string, size_t rsp_string_size);
+void p25_decode_sap(uint8_t SAP, char* sap_string, size_t sap_string_size);
 
 #ifdef __cplusplus
 }

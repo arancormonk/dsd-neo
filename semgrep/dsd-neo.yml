@@ -64,6 +64,33 @@ rules:
         - /src/third_party/**
     pattern: DSD_SPRINTF(...)
 
+  - id: dsd-neo.no-sizeof-function-parameter-in-dsd-snprintf
+    languages: [c, cpp]
+    severity: ERROR
+    message: Function parameters have pointer size in C; pass the explicit destination capacity to DSD_SNPRINTF.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+        - /tests/**
+      exclude:
+        - /include/dsd-neo/core/safe_api.h
+        - /src/third_party/**
+    pattern-either:
+      - patterns:
+          - pattern-inside: |
+              $RET $FUNC(..., $TYPE *$DST, ...) {
+                ...
+              }
+          - pattern: DSD_SNPRINTF($DST, sizeof($DST), ...)
+      - patterns:
+          - pattern-inside: |
+              $RET $FUNC(..., $TYPE $DST[$N], ...) {
+                ...
+              }
+          - pattern: DSD_SNPRINTF($DST, sizeof($DST), ...)
+
   - id: dsd-neo.no-direct-third-party-include
     languages: [c, cpp]
     severity: ERROR

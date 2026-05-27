@@ -36,7 +36,6 @@ struct udp_control {
     dsd_socket_t sockfd;
     dsd_thread_t thread;
     udp_control_retune_cb cb;
-    void* user_data;
     std::atomic<int> stop_flag;
 };
 
@@ -87,7 +86,7 @@ static DSD_THREAD_RETURN_TYPE
         if (n == 5 && buffer[0] == 0) {
             unsigned int new_freq = udp_chars_to_int(buffer);
             if (ctrl->cb) {
-                ctrl->cb(new_freq, ctrl->user_data);
+                ctrl->cb(new_freq);
             }
             LOG_INFO("\nTuning to: %u [Hz] \n", new_freq);
         }
@@ -103,16 +102,15 @@ static DSD_THREAD_RETURN_TYPE
  *
  * @param udp_port UDP port to bind and listen on (0 disables/start no-op).
  * @param cb Callback invoked upon receiving a valid retune command.
- * @param user_data Opaque pointer passed to the callback.
  * @return Opaque handle on success; NULL on failure.
  */
 extern "C" udp_control*
-udp_control_start(int udp_port, udp_control_retune_cb cb, void* user_data) {
-    return udp_control_start_bound("127.0.0.1", udp_port, cb, user_data);
+udp_control_start(int udp_port, udp_control_retune_cb cb) {
+    return udp_control_start_bound("127.0.0.1", udp_port, cb);
 }
 
 extern "C" udp_control*
-udp_control_start_bound(const char* bindaddr, int udp_port, udp_control_retune_cb cb, void* user_data) {
+udp_control_start_bound(const char* bindaddr, int udp_port, udp_control_retune_cb cb) {
     if (udp_port <= 0 || udp_port > 65535) {
         return NULL;
     }
@@ -155,7 +153,6 @@ udp_control_start_bound(const char* bindaddr, int udp_port, udp_control_retune_c
     ctrl->bindaddr[sizeof ctrl->bindaddr - 1] = '\0';
     ctrl->sockfd = sockfd;
     ctrl->cb = cb;
-    ctrl->user_data = user_data;
     ctrl->stop_flag.store(0);
     int rc = dsd_thread_create(&ctrl->thread, udp_thread_fn, ctrl);
     if (rc != 0) {

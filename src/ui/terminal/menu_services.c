@@ -80,8 +80,8 @@ svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
         dsd_mkdir(wav_file_directory, 0700);
     }
     DSD_FPRINTF(stderr, "\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
-    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
-    opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);
+    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
+    opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
     opts->dmr_stereo_wav = 1;
     return (opts->wav_out_f && opts->wav_out_fR) ? 0 : -1;
 }

@@ -26,9 +26,8 @@ struct udp_control;
  * @brief Callback invoked on valid retune command.
  *
  * @param new_frequency_hz Parsed requested center frequency in Hz.
- * @param user_data Opaque pointer passed from the start function.
  */
-typedef void (*udp_control_retune_cb)(uint32_t new_frequency_hz, void* user_data);
+typedef void (*udp_control_retune_cb)(uint32_t new_frequency_hz);
 
 /**
  * @brief Start UDP control thread.
@@ -39,10 +38,9 @@ typedef void (*udp_control_retune_cb)(uint32_t new_frequency_hz, void* user_data
  *
  * @param udp_port UDP port to bind and listen on (0 disables/start no-op).
  * @param cb Callback invoked upon receiving a valid retune command.
- * @param user_data Opaque pointer passed to the callback.
  * @return Opaque handle on success; NULL on failure.
  */
-struct udp_control* udp_control_start(int udp_port, udp_control_retune_cb cb, void* user_data);
+struct udp_control* udp_control_start(int udp_port, udp_control_retune_cb cb);
 
 /**
  * @brief Start UDP control thread bound to a specific IPv4 address.
@@ -53,11 +51,9 @@ struct udp_control* udp_control_start(int udp_port, udp_control_retune_cb cb, vo
  * @param bindaddr Numeric IPv4 address to bind.
  * @param udp_port UDP port to bind and listen on (0 disables/start no-op).
  * @param cb Callback invoked upon receiving a valid retune command.
- * @param user_data Opaque pointer passed to the callback.
  * @return Opaque handle on success; NULL on failure.
  */
-struct udp_control* udp_control_start_bound(const char* bindaddr, int udp_port, udp_control_retune_cb cb,
-                                            void* user_data);
+struct udp_control* udp_control_start_bound(const char* bindaddr, int udp_port, udp_control_retune_cb cb);
 
 /**
  * @brief Stop UDP control thread and free resources.

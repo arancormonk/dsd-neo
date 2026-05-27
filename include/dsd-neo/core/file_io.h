@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_fwd.h>
 
 #include <sndfile.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -43,7 +44,7 @@ void openWavOutFile(dsd_opts* opts, dsd_state* state);
 void openWavOutFileL(dsd_opts* opts, dsd_state* state);
 void openWavOutFileR(dsd_opts* opts, dsd_state* state);
 void openWavOutFileLR(dsd_opts* opts, dsd_state* state);
-SNDFILE* open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uint8_t ext);
+SNDFILE* open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext);
 void openWavOutFileRaw(dsd_opts* opts, dsd_state* state);
 void openSymbolOutFile(dsd_opts* opts, dsd_state* state);
 SNDFILE* close_wav_file(SNDFILE* wav_file);

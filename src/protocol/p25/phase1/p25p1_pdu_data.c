@@ -106,33 +106,36 @@ p25_parse_sap34_syscfg(dsd_opts* opts, dsd_state* state, const uint8_t* p, int p
 }
 
 void
-p25_decode_rsp(uint8_t C, uint8_t T, uint8_t S, char* rsp_string) {
+p25_decode_rsp(uint8_t C, uint8_t T, uint8_t S, char* rsp_string, size_t rsp_string_size) {
+    if (rsp_string == NULL || rsp_string_size == 0) {
+        return;
+    }
 
     if (C == 0) {
-        DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " ACK (Success);");
+        DSD_SNPRINTF(rsp_string, rsp_string_size, " ACK (Success);");
     } else if (C == 2) {
-        DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " SACK (Retry);");
+        DSD_SNPRINTF(rsp_string, rsp_string_size, " SACK (Retry);");
     } else if (C == 1) {
         if (T == 0) {
-            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (Illegal Format);");
+            DSD_SNPRINTF(rsp_string, rsp_string_size, " NACK (Illegal Format);");
         } else if (T == 1) {
-            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (CRC32 Failure);");
+            DSD_SNPRINTF(rsp_string, rsp_string_size, " NACK (CRC32 Failure);");
         } else if (T == 2) {
-            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (Memory Full);");
+            DSD_SNPRINTF(rsp_string, rsp_string_size, " NACK (Memory Full);");
         } else if (T == 3) {
-            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (FSN Sequence Error);");
+            DSD_SNPRINTF(rsp_string, rsp_string_size, " NACK (FSN Sequence Error);");
         } else if (T == 4) {
-            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (Undeliverable);");
+            DSD_SNPRINTF(rsp_string, rsp_string_size, " NACK (Undeliverable);");
         } else if (T == 5) {
-            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (NS/VR Sequence Error);"); //depreciated
+            DSD_SNPRINTF(rsp_string, rsp_string_size, " NACK (NS/VR Sequence Error);"); //depreciated
         } else if (T == 6) {
-            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (Invalid User on System);");
+            DSD_SNPRINTF(rsp_string, rsp_string_size, " NACK (Invalid User on System);");
         }
     }
 
     //catch all for everything else
     else {
-        DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " Unknown RSP;");
+        DSD_SNPRINTF(rsp_string, rsp_string_size, " Unknown RSP;");
     }
 
     DSD_FPRINTF(stderr, " Response Packet:%s C: %X; T: %X; S: %X; ", rsp_string, C, T, S);
@@ -180,8 +183,12 @@ p25_sap_label(uint8_t sap) {
 }
 
 void
-p25_decode_sap(uint8_t SAP, char* sap_string) {
-    DSD_SNPRINTF(sap_string, sizeof(sap_string), "%s", p25_sap_label(SAP));
+p25_decode_sap(uint8_t SAP, char* sap_string, size_t sap_string_size) {
+    if (sap_string == NULL || sap_string_size == 0) {
+        return;
+    }
+
+    DSD_SNPRINTF(sap_string, sap_string_size, "%s", p25_sap_label(SAP));
 
     DSD_FPRINTF(stderr, "SAP: 0x%02X;%s ", SAP, sap_string);
 }
@@ -380,7 +387,7 @@ p25_decode_es_header(const dsd_opts* opts, dsd_state* state, uint8_t* input, uin
     uint8_t aux_sap =
         (uint8_t)ConvertBitIntoBytes(&bits[98], 6); //the SAP of the message that is encrypted immediately after
     char aux_sap_string[99];
-    p25_decode_sap(aux_sap, aux_sap_string);
+    p25_decode_sap(aux_sap, aux_sap_string, sizeof aux_sap_string);
     DSD_FPRINTF(stderr, "%s", KNRM);
     UNUSED(aux_res);
 
@@ -454,7 +461,7 @@ p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* inp
     DSD_FPRINTF(stderr, "\n Extended Addressing Header; MFID: %02X; SRC LLID: %d; RES: %08X; CRC: %04X; ", ea_mfid,
                 ea_llid, ea_res, ea_crc);
     char ea_sap_string[99];
-    p25_decode_sap(ea_sap, ea_sap_string);
+    p25_decode_sap(ea_sap, ea_sap_string, sizeof ea_sap_string);
     UNUSED(ea_sap_string);
 
     //Print to Data Call String for Ncurses Terminal
@@ -513,13 +520,14 @@ p25_read_pdu_header_fields(const uint8_t* input) {
 }
 
 static void
-p25_decode_pdu_header_strings(const P25PduHeaderFields* h, char* sap_string, char* rsp_string) {
-    DSD_SNPRINTF(sap_string, sizeof(sap_string), "%s", " ");
-    DSD_SNPRINTF(rsp_string, sizeof(rsp_string), "%s", " ");
+p25_decode_pdu_header_strings(const P25PduHeaderFields* h, char* sap_string, size_t sap_string_size, char* rsp_string,
+                              size_t rsp_string_size) {
+    DSD_SNPRINTF(sap_string, sap_string_size, "%s", " ");
+    DSD_SNPRINTF(rsp_string, rsp_string_size, "%s", " ");
     if (h->fmt != 3) {
-        p25_decode_sap(h->sap, sap_string);
+        p25_decode_sap(h->sap, sap_string, sap_string_size);
     } else {
-        p25_decode_rsp(h->rsp_class, h->rsp_type, h->rsp_status, rsp_string);
+        p25_decode_rsp(h->rsp_class, h->rsp_type, h->rsp_status, rsp_string, rsp_string_size);
     }
 }
 
@@ -572,7 +580,7 @@ p25_decode_pdu_header(dsd_opts* opts, dsd_state* state, const uint8_t* input) {
     DSD_FPRINTF(stderr, " P25 Data - AN: %d; IO: %d; FMT: %02X; ", h.an, h.io, h.fmt);
     char sap_string[40];
     char rsp_string[40];
-    p25_decode_pdu_header_strings(&h, sap_string, rsp_string);
+    p25_decode_pdu_header_strings(&h, sap_string, sizeof sap_string, rsp_string, sizeof rsp_string);
     p25_log_pdu_header_fields(&h);
     p25_update_pdu_header_state(opts, state, &h, sap_string, rsp_string);
 }

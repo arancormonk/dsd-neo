@@ -31,9 +31,10 @@ static int g_beeper_count;
 static int g_last_beeper_id;
 
 struct sf_private_tag*
-open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uint8_t ext) {
+open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
     UNUSED(dir);
     UNUSED(temp_filename);
+    UNUSED(temp_filename_size);
     UNUSED(sample_rate);
     UNUSED(ext);
     return NULL;
@@ -226,6 +227,59 @@ test_edacs_service_string_appends_past_pointer_size(void) {
     return rc;
 }
 
+static int
+test_dmr_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.lastsrc = 123456U;
+    state.lasttg = 50061U;
+    state.gi[0] = 0;
+    state.dmr_color_code = 7U;
+    state.dmr_t3_syscode = 0xABCU;
+
+    watchdog_event_current(&opts, &state, 0);
+
+    const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
+    int rc = 0;
+    rc |= expect_has_substr("dmr event date/time prefix", item->event_string, "2026-04-30 00:00:00");
+    rc |= expect_has_substr("dmr event voice prefix", item->event_string,
+                            "TEST TGT: 00050061; SRC: 00123456; CC: 07; SYS: ABC;");
+    rc |= expect_has_substr("dmr event call class", item->event_string, "Group;");
+    return rc;
+}
+
+static int
+test_p25_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    state.lastsynctype = DSD_SYNC_P25P2_POS;
+    state.lastsrc = 5790062U;
+    state.lasttg = 50061U;
+    state.gi[0] = 0;
+    state.nac = 0x293;
+    state.p2_wacn = 0x45564U;
+    state.p2_sysid = 0x006U;
+    state.p2_rfssid = 10U;
+    state.p2_siteid = 10U;
+
+    watchdog_event_current(&opts, &state, 0);
+
+    const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
+    int rc = 0;
+    rc |= expect_has_substr("p25 event date/time prefix", item->event_string, "2026-04-30 00:00:00");
+    rc |= expect_has_substr("p25 event voice prefix", item->event_string,
+                            "TEST TGT: 00050061; SRC: 05790062; NAC: 293; NET_STS: 45564:006:10.10;");
+    rc |= expect_has_substr("p25 event call class", item->event_string, "Group;");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -235,6 +289,8 @@ main(void) {
     rc |= test_source_less_data_call_does_not_suppress_next_voice_start_alert();
     rc |= test_voice_end_alert_still_emits_for_voice_history();
     rc |= test_edacs_service_string_appends_past_pointer_size();
+    rc |= test_dmr_event_string_keeps_full_prefix_after_sprintf_hardening();
+    rc |= test_p25_event_string_keeps_full_prefix_after_sprintf_hardening();
 
     if (rc == 0) {
         printf("CORE_CALL_ALERT_HISTORY: OK\n");

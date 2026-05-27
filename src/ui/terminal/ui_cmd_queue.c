@@ -2499,8 +2499,8 @@ ui_cmd_handle_wav_start_legacy(dsd_opts* opts, dsd_state* state, const struct Ui
     }
     LOG_NOTICE("Per Call Wav File Enabled to Directory: %s\n", opts->wav_out_dir);
     srand(ui_cmd_rng_seed_now());
-    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
-    opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);
+    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
+    opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
     opts->dmr_stereo_wav = 1;
     return 1;
 }
