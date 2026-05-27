@@ -2751,32 +2751,32 @@ dmr_syscode_decode_model(uint8_t model, uint8_t* cs_pdu_bits, uint16_t* net, uin
     *net = 0;
     *site = 0;
     *site_bits = 0;
-    DSD_SNPRINTF(model_str, sizeof(model_str), "%s", " ");
+    DSD_SNPRINTF(model_str, model_str_sz, "%s", " ");
 
     switch (model) {
         case 0:
             *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 9);
             *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[51], 3);
             *site_bits = 3;
-            DSD_SNPRINTF(model_str, sizeof(model_str), "%s", "Tiny");
+            DSD_SNPRINTF(model_str, model_str_sz, "%s", "Tiny");
             break;
         case 1:
             *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 7);
             *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[49], 5);
             *site_bits = 5;
-            DSD_SNPRINTF(model_str, sizeof(model_str), "%s", "Small");
+            DSD_SNPRINTF(model_str, model_str_sz, "%s", "Small");
             break;
         case 2:
             *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 4);
             *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[46], 8);
             *site_bits = 8;
-            DSD_SNPRINTF(model_str, sizeof(model_str), "%s", "Large");
+            DSD_SNPRINTF(model_str, model_str_sz, "%s", "Large");
             break;
         default:
             *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 2);
             *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[44], 10);
             *site_bits = 10;
-            DSD_SNPRINTF(model_str, sizeof(model_str), "%s", "Huge");
+            DSD_SNPRINTF(model_str, model_str_sz, "%s", "Huge");
             break;
     }
 }
@@ -2786,13 +2786,13 @@ dmr_syscode_set_partition_label(uint8_t par, char* par_str, size_t par_str_sz) {
     if (!par_str || par_str_sz == 0) {
         return;
     }
-    DSD_SNPRINTF(par_str, sizeof(par_str), "%s", "Res");
+    DSD_SNPRINTF(par_str, par_str_sz, "%s", "Res");
     if (par == 1) {
-        DSD_SNPRINTF(par_str, sizeof(par_str), "%s", "A");
+        DSD_SNPRINTF(par_str, par_str_sz, "%s", "A");
     } else if (par == 2) {
-        DSD_SNPRINTF(par_str, sizeof(par_str), "%s", "B");
+        DSD_SNPRINTF(par_str, par_str_sz, "%s", "B");
     } else if (par == 3) {
-        DSD_SNPRINTF(par_str, sizeof(par_str), "%s", "AB");
+        DSD_SNPRINTF(par_str, par_str_sz, "%s", "AB");
     }
 }
 

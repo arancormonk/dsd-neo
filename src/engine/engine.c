@@ -321,8 +321,8 @@ open_recording_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
             LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
             dsd_mkdir(wav_file_directory, 0700);
         }
-        opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
-        opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);
+        opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
+        opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
     } else if (opts->static_wav_file == 1 && opts->wav_out_f == NULL && opts->wav_out_file[0] != '\0') {
         openWavOutFileLR(opts, state);
     }

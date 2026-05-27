@@ -4478,13 +4478,10 @@ start_threads_and_async(void) {
         }
     }
     if (port != 0) {
-        g_udp_ctrl = udp_control_start_bound(
-            udp_control_bindaddr, port,
-            [](uint32_t new_freq_hz, void* /*user_data*/) {
-                /* Marshal onto controller thread: single programming path */
-                schedule_manual_retune(new_freq_hz);
-            },
-            NULL);
+        g_udp_ctrl = udp_control_start_bound(udp_control_bindaddr, port, [](uint32_t new_freq_hz) {
+            /* Marshal onto controller thread: single programming path */
+            schedule_manual_retune(new_freq_hz);
+        });
         if (!g_udp_ctrl) {
             LOG_ERROR("Failed to start RTL UDP retune control on %s:%u\n", udp_control_bindaddr, (unsigned)port);
         }
@@ -5494,9 +5491,8 @@ stream_open_start_rtltcp_pipeline(const dsd_opts* opts) {
         g_stream->demod_thread_started.store(1, std::memory_order_release);
     }
     if (port != 0) {
-        g_udp_ctrl = udp_control_start_bound(
-            udp_control_bindaddr, port,
-            [](uint32_t new_freq_hz, void* /*user_data*/) { schedule_manual_retune(new_freq_hz); }, NULL);
+        g_udp_ctrl = udp_control_start_bound(udp_control_bindaddr, port,
+                                             [](uint32_t new_freq_hz) { schedule_manual_retune(new_freq_hz); });
         if (!g_udp_ctrl) {
             LOG_ERROR("Failed to start RTL UDP retune control on %s:%u\n", udp_control_bindaddr, (unsigned)port);
         }

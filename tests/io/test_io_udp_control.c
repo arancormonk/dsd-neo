@@ -23,9 +23,11 @@ typedef struct callback_state {
     uint32_t freq;
 } callback_state;
 
+static callback_state g_callback_state;
+
 static void
-retune_cb(uint32_t new_frequency_hz, void* user_data) {
-    callback_state* state = (callback_state*)user_data;
+retune_cb(uint32_t new_frequency_hz) {
+    callback_state* state = &g_callback_state;
     dsd_mutex_lock(&state->mu);
     state->called = 1;
     state->freq = new_frequency_hz;
@@ -110,46 +112,45 @@ test_loopback_delivery(void) {
         return 1;
     }
 
-    callback_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
-    if (dsd_mutex_init(&state.mu) != 0 || dsd_cond_init(&state.cv) != 0) {
+    DSD_MEMSET(&g_callback_state, 0, sizeof(g_callback_state));
+    if (dsd_mutex_init(&g_callback_state.mu) != 0 || dsd_cond_init(&g_callback_state.cv) != 0) {
         DSD_FPRINTF(stderr, "failed to initialize callback synchronization\n");
         return 1;
     }
 
-    struct udp_control* ctrl = udp_control_start_bound("127.0.0.1", port, retune_cb, &state);
+    struct udp_control* ctrl = udp_control_start_bound("127.0.0.1", port, retune_cb);
     if (!ctrl) {
         DSD_FPRINTF(stderr, "udp_control_start_bound failed on 127.0.0.1:%d\n", port);
-        dsd_cond_destroy(&state.cv);
-        dsd_mutex_destroy(&state.mu);
+        dsd_cond_destroy(&g_callback_state.cv);
+        dsd_mutex_destroy(&g_callback_state.mu);
         return 1;
     }
 
     uint32_t expected = 851375000u;
     int test_rc = 0;
-    if (send_retune_packet(port, expected) != 0 || !wait_for_callback(&state, 2000)) {
+    if (send_retune_packet(port, expected) != 0 || !wait_for_callback(&g_callback_state, 2000)) {
         DSD_FPRINTF(stderr, "retune callback was not invoked\n");
         test_rc = 1;
-    } else if (state.freq != expected) {
-        DSD_FPRINTF(stderr, "expected callback frequency %u, got %u\n", expected, state.freq);
+    } else if (g_callback_state.freq != expected) {
+        DSD_FPRINTF(stderr, "expected callback frequency %u, got %u\n", expected, g_callback_state.freq);
         test_rc = 1;
     }
 
     udp_control_stop(ctrl);
-    dsd_cond_destroy(&state.cv);
-    dsd_mutex_destroy(&state.mu);
+    dsd_cond_destroy(&g_callback_state.cv);
+    dsd_mutex_destroy(&g_callback_state.mu);
     return test_rc;
 }
 
 static int
 test_invalid_bind_address_fails(void) {
-    struct udp_control* ctrl = udp_control_start_bound("localhost", 9911, retune_cb, NULL);
+    struct udp_control* ctrl = udp_control_start_bound("localhost", 9911, retune_cb);
     if (ctrl) {
         DSD_FPRINTF(stderr, "expected non-numeric bind address to fail\n");
         udp_control_stop(ctrl);
         return 1;
     }
-    ctrl = udp_control_start(0, retune_cb, NULL);
+    ctrl = udp_control_start(0, retune_cb);
     if (ctrl) {
         DSD_FPRINTF(stderr, "expected port 0 to disable UDP control\n");
         udp_control_stop(ctrl);

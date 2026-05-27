@@ -1531,8 +1531,10 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 dsd_mkdir(wav_file_directory, 0700);                                                                   \
             }                                                                                                          \
             LOG_NOTICE("Per Call Wav File Enabled.\n");                                                                \
-            opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);                           \
-            opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);                         \
+            opts->wav_out_f =                                                                                          \
+                open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);              \
+            opts->wav_out_fR =                                                                                         \
+                open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);            \
             opts->dmr_stereo_wav = 1;                                                                                  \
             break;                                                                                                     \
         case '7':                                                                                                      \

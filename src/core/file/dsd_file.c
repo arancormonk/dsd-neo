@@ -622,18 +622,28 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 
 //temp filename should not have the .wav extension, will be renamed with one after event is closed
 SNDFILE*
-open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uint8_t ext) {
+open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
+    if (temp_filename == NULL || temp_filename_size == 0) {
+        return NULL;
+    }
+
     uint16_t random_number = rand();
     char datestr[9];
     char timestr[7];
     getDate_buf(datestr);
     getTime_buf(timestr);
 
+    int written = 0;
     if (ext == 0) {
-        DSD_SNPRINTF(temp_filename, sizeof(temp_filename), "%s/TEMP_%s_%s_%04X", dir, datestr, timestr, random_number);
+        written =
+            DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%04X", dir, datestr, timestr, random_number);
     } else {
-        DSD_SNPRINTF(temp_filename, sizeof(temp_filename), "%s/TEMP_%s_%s_%04X.wav", dir, datestr, timestr,
-                     random_number);
+        written = DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%04X.wav", dir, datestr, timestr,
+                               random_number);
+    }
+    if (written < 0 || (size_t)written >= temp_filename_size) {
+        LOG_ERROR("Error - wav output temp filename is too long\n");
+        return NULL;
     }
 
     /* stack buffers; no free */

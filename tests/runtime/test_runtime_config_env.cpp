@@ -1753,6 +1753,12 @@ test_tuner_autogain_env(void) {
 
 static int
 test_auto_ppm_env(void) {
+    /*
+     * Auto-PPM env parsing spans an enable flag, signal/power thresholds, zero-lock
+     * limits, and freeze behavior. This test reloads config snapshots for accepted
+     * values, range rejections, and malformed numeric input so the parser keeps
+     * rejecting unsafe values while preserving documented defaults.
+     */
     setenv("DSD_NEO_AUTO_PPM", "1", 1);
     setenv("DSD_NEO_AUTO_PPM_SNR_DB", "10.0", 1);
     setenv("DSD_NEO_AUTO_PPM_PWR_DB", "-50.0", 1);
