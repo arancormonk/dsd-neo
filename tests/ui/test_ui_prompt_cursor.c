@@ -56,14 +56,16 @@ ui_statusf(const char* fmt, ...) { // NOLINT(misc-use-internal-linkage)
 
 static int
 start_curses_render_test(void) {
-#ifndef _WIN32
+#ifdef _WIN32
+    /* PDCurses console builds reject FILE redirection under CTest. */
+    return 0;
+#else
     const char* term = getenv("TERM");
     if (term == NULL || term[0] == '\0') {
         (void)setenv("TERM", "xterm-256color", 1);
     }
     (void)setenv("LINES", "24", 1);
     (void)setenv("COLUMNS", "80", 1);
-#endif
     g_term_in = tmpfile();
     g_term_out = tmpfile();
     if (!g_term_in || !g_term_out) {
@@ -75,6 +77,7 @@ start_curses_render_test(void) {
     }
     (void)set_term(g_screen);
     return 1;
+#endif
 }
 
 static void

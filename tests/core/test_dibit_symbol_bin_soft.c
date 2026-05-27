@@ -126,7 +126,7 @@ llr_matches_bit(int16_t llr, int bit) {
 static int
 test_symbol_bin_soft_matches_returned_dibit(int dibit) {
     dsd_opts opts;
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
@@ -193,7 +193,7 @@ seek_start(FILE* f, const char* label) {
 static int
 test_soft_symbol_capture_record(void) {
     dsd_opts opts;
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
@@ -252,7 +252,7 @@ test_soft_symbol_capture_record(void) {
 static int
 test_symbol_replay_soft_metric_overrides_fallback(void) {
     dsd_opts opts;
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
@@ -296,7 +296,7 @@ test_symbol_replay_soft_metric_overrides_fallback(void) {
 static int
 test_direct_symbol_capture_writer_formats(void) {
     dsd_opts opts;
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
