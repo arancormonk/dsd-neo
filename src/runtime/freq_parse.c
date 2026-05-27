@@ -36,7 +36,7 @@ static int
 parse_positive_double(const char* text, double* value) {
     char* end = NULL;
     double parsed = strtod(text, &end);
-    if (end == text || parsed <= 0.0) {
+    if (end == text || (end && *end != '\0') || parsed <= 0.0) {
         return 0;
     }
 

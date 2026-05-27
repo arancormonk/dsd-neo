@@ -55,8 +55,8 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     }
 
     //reset some strings -- since its a tdu, blank out any call strings, only want during actual call
-    DSD_SPRINTF(state->call_string[0], "%s", "                     "); //21 spaces
-    DSD_SPRINTF(state->call_string[1], "%s", "                     "); //21 spaces
+    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "                     "); //21 spaces
+    DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "                     "); //21 spaces
 
     //reset gain
     if (opts->floating_point == 1) {

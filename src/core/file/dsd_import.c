@@ -7,6 +7,7 @@
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/path_policy.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,7 +18,37 @@
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#define BSIZE 999
+#define BSIZE               999
+#define CSV_IMPORT_PATH_MAX 2048
+
+static int
+csv_rkey_index(unsigned long long keynumber, unsigned long long offset, size_t* out_index) {
+    const size_t capacity = sizeof(((dsd_state*)0)->rkey_array) / sizeof(((dsd_state*)0)->rkey_array[0]);
+    const unsigned long long capacity_ull = (unsigned long long)capacity;
+    if (out_index == NULL || keynumber >= capacity_ull || offset >= capacity_ull) {
+        return 0;
+    }
+    if (keynumber > capacity_ull - 1ULL - offset) {
+        return 0;
+    }
+    *out_index = (size_t)(keynumber + offset);
+    return 1;
+}
+
+static FILE*
+csv_open_user_read_file(const char* label, const char* requested, char* resolved, size_t resolved_size) {
+    if (!label || !requested || requested[0] == '\0' || !resolved || resolved_size == 0) {
+        LOG_ERROR("CSV import path is missing.\n");
+        return NULL;
+    }
+
+    FILE* fp = dsd_path_fopen_user_read_file(requested, resolved, resolved_size);
+    if (fp == NULL) {
+        LOG_ERROR("Unable to open %s '%s'\n", label, requested);
+        return NULL;
+    }
+    return fp;
+}
 
 static inline void
 trim_eol(char* s) {
@@ -574,7 +605,7 @@ group_commit_entry(dsd_state* state, const dsd_tg_policy_entry* entry, int is_ra
 
 int
 csvGroupImportPath(const char* group_file_path, dsd_state* state) {
-    char filename[1024] = "filename.csv";
+    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
     char buffer[BSIZE];
     FILE* fp = NULL;
     unsigned int row_count = 0;
@@ -586,10 +617,8 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
         return -1;
     }
 
-    DSD_SNPRINTF(filename, sizeof filename, "%s", group_file_path);
-    fp = fopen(filename, "r");
+    fp = csv_open_user_read_file("group file", group_file_path, filename, sizeof filename);
     if (fp == NULL) {
-        LOG_ERROR("Unable to open group file '%s'\n", filename);
         return -1;
     }
 
@@ -659,20 +688,21 @@ csvGroupImport(const dsd_opts* opts, dsd_state* state) {
 //LCN import for EDACS, migrated to channel map (channel map does both)
 int
 csvLCNImport(const dsd_opts* opts, dsd_state* state) {
-    char filename[1024] = "filename.csv";
-    DSD_SNPRINTF(filename, sizeof filename, "%s", opts->lcn_in_file);
-    //filename[1023] = '\0'; //necessary?
+    if (!opts || !state || opts->lcn_in_file[0] == '\0') {
+        return -1;
+    }
+
+    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
     char buffer[BSIZE];
-    FILE* fp;
-    fp = fopen(filename, "r");
+    FILE* fp = csv_open_user_read_file("lcn file", opts->lcn_in_file, filename, sizeof filename);
     if (fp == NULL) {
-        LOG_ERROR("Unable to open lcn file '%s'\n", filename);
         return -1;
     }
     int row_count = 0;
+    int warned_capacity = 0;
+    const int lcn_capacity = (int)(sizeof(state->trunk_lcn_freq) / sizeof(state->trunk_lcn_freq[0]));
 
     while (fgets(buffer, BSIZE, fp)) {
-        int field_count = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
@@ -680,19 +710,32 @@ csvLCNImport(const dsd_opts* opts, dsd_state* state) {
         char* saveptr = NULL;
         const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
+            int lcn_index = state->lcn_freq_count;
+            if (lcn_index < 0) {
+                lcn_index = 0;
+                state->lcn_freq_count = 0;
+            }
+            if (lcn_index >= lcn_capacity) {
+                if (!warned_capacity) {
+                    LOG_WARNING("LCN file '%s' has more than %d frequencies; ignoring extra fields.\n", filename,
+                                lcn_capacity);
+                    warned_capacity = 1;
+                }
+                field = dsd_strtok_r(NULL, ",", &saveptr);
+                continue;
+            }
 
             long int freq = 0;
             if (parse_dec_long_strict(field, &freq)) {
-                state->trunk_lcn_freq[field_count] = freq;
+                state->trunk_lcn_freq[lcn_index] = freq;
             } else {
-                state->trunk_lcn_freq[field_count] = 0;
+                state->trunk_lcn_freq[lcn_index] = 0;
             }
             state->lcn_freq_count++; //keep tally of number of Frequencies imported
-            LOG_INFO("LCN [%d] [%ld]", field_count + 1, state->trunk_lcn_freq[field_count]);
+            LOG_INFO("LCN [%d] [%ld]", lcn_index + 1, state->trunk_lcn_freq[lcn_index]);
             LOG_INFO("\n");
 
             field = dsd_strtok_r(NULL, ",", &saveptr);
-            field_count++;
         }
         LOG_INFO("LCN Count %d\n", state->lcn_freq_count);
     }
@@ -740,14 +783,15 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
 int
 csvChanImport(const dsd_opts* opts, dsd_state* state) //channel map import
 {
-    char filename[1024] = "filename.csv";
-    DSD_SNPRINTF(filename, sizeof filename, "%s", opts->chan_in_file);
+    if (!opts || !state || opts->chan_in_file[0] == '\0') {
+        return -1;
+    }
+
+    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
 
     char buffer[BSIZE];
-    FILE* fp;
-    fp = fopen(filename, "r");
+    FILE* fp = csv_open_user_read_file("channel map file", opts->chan_in_file, filename, sizeof filename);
     if (fp == NULL) {
-        LOG_ERROR("Unable to open channel map file '%s'\n", filename);
         return -1;
     }
     int row_count = 0;
@@ -780,14 +824,15 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) //channel map import
 int
 csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
 {
-    char filename[1024] = "filename.csv";
-    DSD_SNPRINTF(filename, sizeof filename, "%s", opts->key_in_file);
+    if (!opts || !state || opts->key_in_file[0] == '\0') {
+        return -1;
+    }
+
+    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
 
     char buffer[BSIZE];
-    FILE* fp;
-    fp = fopen(filename, "r");
+    FILE* fp = csv_open_user_read_file("key file", opts->key_in_file, filename, sizeof filename);
     if (fp == NULL) {
-        LOG_ERROR("Unable to open file '%s'\n", filename);
         return -1;
     }
     int row_count = 0;
@@ -829,8 +874,9 @@ csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
                 if (!parse_dec_u64_strict(field, &keyvalue)) {
                     keyvalue = 0;
                 }
-                if (keynumber < 0x1FFFFULL) {
-                    state->rkey_array[keynumber] = keyvalue & 0xFFFFFFFFFF; // doesn't exceed 40-bit value
+                size_t key_index = 0;
+                if (csv_rkey_index(keynumber, 0ULL, &key_index)) {
+                    state->rkey_array[key_index] = keyvalue & 0xFFFFFFFFFF; // doesn't exceed 40-bit value
                 }
             }
 
@@ -850,8 +896,8 @@ csv_key_import_hex_store_value(dsd_state* state, unsigned long long keynumber, u
     if (!state || !field) {
         return;
     }
-    unsigned long long idx = keynumber + offset;
-    if (idx >= 0x1FFFFULL) {
+    size_t idx = 0;
+    if (!csv_rkey_index(keynumber, offset, &idx)) {
         return;
     }
     unsigned long long v = 0;
@@ -863,22 +909,39 @@ csv_key_import_hex_store_value(dsd_state* state, unsigned long long keynumber, u
 static void
 csv_key_import_hex_log_offsets(const dsd_state* state, unsigned long long keynumber) {
     unsigned long long out1 = 0, out2 = 0, out3 = 0;
-    unsigned long long idx1 = keynumber + 0x101ULL;
-    unsigned long long idx2 = keynumber + 0x201ULL;
-    unsigned long long idx3 = keynumber + 0x301ULL;
-    if (idx1 < 0x1FFFFULL) {
+    size_t idx1 = 0, idx2 = 0, idx3 = 0;
+    if (csv_rkey_index(keynumber, 0x101ULL, &idx1)) {
         out1 = state->rkey_array[idx1];
     }
-    if (idx2 < 0x1FFFFULL) {
+    if (csv_rkey_index(keynumber, 0x201ULL, &idx2)) {
         out2 = state->rkey_array[idx2];
     }
-    if (idx3 < 0x1FFFFULL) {
+    if (csv_rkey_index(keynumber, 0x301ULL, &idx3)) {
         out3 = state->rkey_array[idx3];
     }
     // cppcheck-suppress knownConditionTrueFalse
     if (out1 != 0 || out2 != 0 || out3 != 0) {
         LOG_INFO(" [additional key segments loaded: %s]", DSD_SECRET_REDACTED);
     }
+}
+
+static unsigned long long
+csv_key_import_hex_parse_row(dsd_state* state, char* buffer) {
+    static const unsigned long long offsets[] = {0x0ULL, 0x101ULL, 0x201ULL, 0x301ULL};
+    unsigned long long keynumber = 0;
+    char* saveptr = NULL;
+    const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
+    for (int field_count = 0; field != NULL; field_count++) {
+        if (field_count == 0) {
+            if (!parse_hex_u64_strict(field, &keynumber)) {
+                keynumber = 0;
+            }
+        } else if (field_count <= (int)(sizeof(offsets) / sizeof(offsets[0]))) {
+            csv_key_import_hex_store_value(state, keynumber, offsets[field_count - 1], field);
+        }
+        field = dsd_strtok_r(NULL, ",", &saveptr);
+    }
+    return keynumber;
 }
 
 static int
@@ -985,54 +1048,33 @@ vertex_ks_apply_to_state(dsd_state* state, const vertex_map_tmp_t* tmp, const ch
 int
 csvKeyImportHex(const dsd_opts* opts, dsd_state* state) //key import for hex keys
 {
-    char filename[1024] = "filename.csv";
-    DSD_SNPRINTF(filename, sizeof filename, "%s", opts->key_in_file);
+    if (!opts || !state || opts->key_in_file[0] == '\0') {
+        return -1;
+    }
+
+    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
     char buffer[BSIZE];
-    FILE* fp;
-    fp = fopen(filename, "r");
+    FILE* fp = csv_open_user_read_file("key file", opts->key_in_file, filename, sizeof filename);
     if (fp == NULL) {
-        LOG_ERROR("Unable to open file '%s'\n", filename);
         return -1;
     }
     int row_count = 0;
-    unsigned long long int keynumber = 0;
 
     while (fgets(buffer, BSIZE, fp)) {
-        int field_count = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
-        char* saveptr = NULL;
-        const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
-        while (field) {
-            switch (field_count) {
-                case 0:
-                    if (!parse_hex_u64_strict(field, &keynumber)) {
-                        keynumber = 0;
-                    }
-                    break;
-                case 1: csv_key_import_hex_store_value(state, keynumber, 0x0ULL, field); break;
-                case 2: csv_key_import_hex_store_value(state, keynumber, 0x101ULL, field); break;
-                case 3: csv_key_import_hex_store_value(state, keynumber, 0x201ULL, field); break;
-                case 4: csv_key_import_hex_store_value(state, keynumber, 0x301ULL, field); break;
-                default: break;
-            }
-
-            field = dsd_strtok_r(NULL, ",", &saveptr);
-            field_count++;
-        }
-
-        if (keynumber < 0x1FFFFULL) {
+        unsigned long long keynumber = csv_key_import_hex_parse_row(state, buffer);
+        size_t key_index = 0;
+        if (csv_rkey_index(keynumber, 0ULL, &key_index)) {
             LOG_INFO("Key [%04llX] loaded: %s", keynumber, DSD_SECRET_REDACTED);
+            // If longer key is loaded (or clash with the 0x101, 0x201, 0x301 offset), then print the full key listing.
+            csv_key_import_hex_log_offsets(state, keynumber);
         } else {
             LOG_INFO("Key [%04llX] [out-of-range]", keynumber);
         }
 
-        // If longer key is loaded (or clash with the 0x101, 0x201, 0x301 offset), then print the full key listing.
-        if (keynumber < 0x1FFFFULL) {
-            csv_key_import_hex_log_offsets(state, keynumber);
-        }
         LOG_INFO("\n");
     }
     fclose(fp);
@@ -1046,9 +1088,9 @@ csvVertexKsImport(dsd_state* state, const char* path) {
         return -1;
     }
 
-    FILE* fp = fopen(path, "r");
+    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
+    FILE* fp = csv_open_user_read_file("Vertex KS mapping file", path, filename, sizeof filename);
     if (fp == NULL) {
-        LOG_ERROR("Unable to open Vertex KS mapping file '%s'\n", path);
         return -1;
     }
 
@@ -1074,7 +1116,7 @@ csvVertexKsImport(dsd_state* state, const char* path) {
         if (line == NULL || line[0] == '\0') {
             continue;
         }
-        if (vertex_ks_parse_row(path, row_count, line, tmp) != 0) {
+        if (vertex_ks_parse_row(filename, row_count, line, tmp) != 0) {
             rc = -1;
             break;
         }
@@ -1083,12 +1125,12 @@ csvVertexKsImport(dsd_state* state, const char* path) {
     fclose(fp);
 
     if (rc == 0 && tmp->count == 0) {
-        LOG_ERROR("Vertex KS CSV '%s' contains no mappings.\n", path);
+        LOG_ERROR("Vertex KS CSV '%s' contains no mappings.\n", filename);
         rc = -1;
     }
 
     if (rc == 0) {
-        vertex_ks_apply_to_state(state, tmp, path);
+        vertex_ks_apply_to_state(state, tmp, filename);
     }
 
     free(tmp);

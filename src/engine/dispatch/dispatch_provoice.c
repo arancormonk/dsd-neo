@@ -24,6 +24,6 @@ dsd_dispatch_handle_provoice(dsd_opts* opts, dsd_state* state) {
     if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
         openMbeOutFile(opts, state);
     }
-    DSD_SPRINTF(state->fsubtype, " VOICE        ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
     processProVoice(opts, state);
 }

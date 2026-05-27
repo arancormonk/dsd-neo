@@ -276,20 +276,20 @@ dmr_data_collect_sync(dmr_data_sync_ctx* ctx) {
 
     if (strcmp(ctx->sync, DMR_BS_DATA_SYNC) == 0) {
         if (ctx->state->currentslot == 0) {
-            DSD_SPRINTF(ctx->state->slot1light, "[slot1]");
-            DSD_SPRINTF(ctx->state->slot2light, " slot2 ");
+            DSD_SNPRINTF(ctx->state->slot1light, sizeof(ctx->state->slot1light), "[slot1]");
+            DSD_SNPRINTF(ctx->state->slot2light, sizeof(ctx->state->slot2light), " slot2 ");
         } else {
-            DSD_SPRINTF(ctx->state->slot1light, " slot1 ");
-            DSD_SPRINTF(ctx->state->slot2light, "[slot2]");
+            DSD_SNPRINTF(ctx->state->slot1light, sizeof(ctx->state->slot1light), " slot1 ");
+            DSD_SNPRINTF(ctx->state->slot2light, sizeof(ctx->state->slot2light), "[slot2]");
         }
     } else if (strcmp(ctx->sync, DMR_DIRECT_MODE_TS1_DATA_SYNC) == 0) {
         ctx->state->currentslot = 0;
-        DSD_SPRINTF(ctx->state->slot1light, "[sLoT1]");
-        DSD_SPRINTF(ctx->state->slot2light, "[DMODE]");
+        DSD_SNPRINTF(ctx->state->slot1light, sizeof(ctx->state->slot1light), "[sLoT1]");
+        DSD_SNPRINTF(ctx->state->slot2light, sizeof(ctx->state->slot2light), "[DMODE]");
     } else if (strcmp(ctx->sync, DMR_DIRECT_MODE_TS2_DATA_SYNC) == 0) {
         ctx->state->currentslot = 1;
-        DSD_SPRINTF(ctx->state->slot1light, "[DMODE]");
-        DSD_SPRINTF(ctx->state->slot2light, "[sLoT2]");
+        DSD_SNPRINTF(ctx->state->slot1light, sizeof(ctx->state->slot1light), "[DMODE]");
+        DSD_SNPRINTF(ctx->state->slot2light, sizeof(ctx->state->slot2light), "[sLoT2]");
     }
 
     if (ctx->state->dmr_ms_mode == 0) {

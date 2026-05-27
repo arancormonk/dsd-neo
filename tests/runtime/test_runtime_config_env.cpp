@@ -1302,6 +1302,19 @@ test_protocol_env_knobs(void) {
     }
     unsetenv("DSD_NEO_INPUT_VOLUME");
 
+    setenv("DSD_NEO_INPUT_WARN_DB", "-20junk", 1);
+    dsd_neo_config_init(NULL);
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->input_warn_db_is_set, 0, 1204, "input_warn_db_is_set trailing junk");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_double_close(cfg->input_warn_db, -40.0, 1e-9, 1205, "input_warn_db default trailing junk");
+    if (rc != 0) {
+        return rc;
+    }
+    unsetenv("DSD_NEO_INPUT_WARN_DB");
+
     return 0;
 }
 
@@ -1387,6 +1400,21 @@ test_dmr_t3_tools_env(void) {
         return rc;
     }
 
+    unsetenv("DSD_NEO_DMR_T3_STEP_HZ");
+    unsetenv("DSD_NEO_DMR_T3_CC_FREQ");
+
+    setenv("DSD_NEO_DMR_T3_STEP_HZ", "12500junk", 1);
+    setenv("DSD_NEO_DMR_T3_CC_FREQ", "851.0junk", 1);
+    dsd_neo_config_init(NULL);
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->dmr_t3_step_hz_is_set, 0, 1274, "dmr_t3_step_hz_is_set trailing junk");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->dmr_t3_cc_freq_is_set, 0, 1275, "dmr_t3_cc_freq_is_set trailing junk");
+    if (rc != 0) {
+        return rc;
+    }
     unsetenv("DSD_NEO_DMR_T3_STEP_HZ");
     unsetenv("DSD_NEO_DMR_T3_CC_FREQ");
     return 0;
@@ -1507,6 +1535,15 @@ test_tcp_misc_env(void) {
     unsetenv("DSD_NEO_TCP_MAX_TIMEOUTS");
     unsetenv("DSD_NEO_RIGCTL_RCVTIMEO");
     unsetenv("DSD_NEO_TCP_PREBUF_MS");
+
+    setenv("DSD_NEO_TCP_BUFSZ", "8192junk", 1);
+    dsd_neo_config_init(NULL);
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->tcp_bufsz_is_set, 0, 1327, "tcp_bufsz_is_set trailing junk");
+    if (rc != 0) {
+        return rc;
+    }
+    unsetenv("DSD_NEO_TCP_BUFSZ");
     return 0;
 }
 
@@ -1808,6 +1845,15 @@ test_auto_ppm_env(void) {
 
     unsetenv("DSD_NEO_AUTO_PPM_PWR_DB");
     unsetenv("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ");
+
+    setenv("DSD_NEO_AUTO_PPM_PWR_DB", "-20junk", 1);
+    dsd_neo_config_init(NULL);
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->auto_ppm_pwr_db_is_set, 0, 1474, "auto_ppm_pwr_db_is_set trailing junk");
+    if (rc != 0) {
+        return rc;
+    }
+    unsetenv("DSD_NEO_AUTO_PPM_PWR_DB");
     return 0;
 }
 

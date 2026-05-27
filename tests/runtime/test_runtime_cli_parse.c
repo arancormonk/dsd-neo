@@ -190,6 +190,52 @@ test_unknown_option_returns_error_and_does_not_exit(void) {
 }
 
 static int
+expect_numeric_parse_error(const char* option, const char* value) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char* argv[] = {arg0, (char*)option, (char*)value, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    int failed = (rc != DSD_PARSE_ERROR || exit_rc != 1);
+    if (failed) {
+        DSD_FPRINTF(stderr, "expected numeric parse error for %s %s, got rc=%d exit_rc=%d\n", option, value, rc,
+                    exit_rc);
+    }
+
+    close_parse_outputs(opts);
+    freeState(state);
+    free(opts);
+    free(state);
+    return failed;
+}
+
+static int
+test_numeric_options_reject_trailing_junk(void) {
+    int rc = 0;
+    rc |= expect_numeric_parse_error("--rdio-upload-timeout-ms", "5000junk");
+    rc |= expect_numeric_parse_error("--rdio-upload-retries", "3junk");
+    rc |= expect_numeric_parse_error("--input-volume", "4junk");
+    rc |= expect_numeric_parse_error("--input-level-warn-db", "-12.5junk");
+    rc |= expect_numeric_parse_error("-U", "4532junk");
+    rc |= expect_numeric_parse_error("-s", "48000junk");
+    rc |= expect_numeric_parse_error("-b", "12junk");
+    rc |= expect_numeric_parse_error("-D", "4junk");
+    return rc;
+}
+
+static int
 test_H_loads_aes256_key_for_both_slots(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -3557,6 +3603,7 @@ main(void) {
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();
     rc |= test_unknown_option_returns_error_and_does_not_exit();
+    rc |= test_numeric_options_reject_trailing_junk();
     rc |= test_H_loads_aes256_key_for_both_slots();
     rc |= test_1_loads_rc4_key_for_both_slots_and_allows_spaces();
     rc |= test_1_loads_rc4_key_allows_0x_prefix();

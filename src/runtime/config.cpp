@@ -418,9 +418,10 @@ env_parse_int_range(const char* v, int min_val, int max_val, int* out) {
     if (!env_is_set(v) || !out) {
         return 0;
     }
+    errno = 0;
     char* end = NULL;
     long x = strtol(v, &end, 10);
-    if (end == v) {
+    if (end == v || (end && *end != '\0') || errno == ERANGE) {
         return 0;
     }
     if (x < (long)min_val || x > (long)max_val) {
@@ -446,13 +447,29 @@ env_parse_int_strict(const char* v, int* out) {
 }
 
 static int
+env_parse_long_strict(const char* v, long* out) {
+    if (!env_is_set(v) || !out) {
+        return 0;
+    }
+    errno = 0;
+    char* end = NULL;
+    long x = strtol(v, &end, 10);
+    if (end == v || (end && *end != '\0') || errno == ERANGE) {
+        return 0;
+    }
+    *out = x;
+    return 1;
+}
+
+static int
 env_parse_long_range(const char* v, long min_val, long max_val, long* out) {
     if (!env_is_set(v) || !out) {
         return 0;
     }
+    errno = 0;
     char* end = NULL;
     long x = strtol(v, &end, 10);
-    if (end == v) {
+    if (end == v || (end && *end != '\0') || errno == ERANGE) {
         return 0;
     }
     if (x < min_val || x > max_val) {
@@ -482,9 +499,10 @@ env_parse_double_range(const char* v, double min_val, double max_val, double* ou
     if (!env_is_set(v) || !out) {
         return 0;
     }
+    errno = 0;
     char* end = NULL;
     double x = strtod(v, &end);
-    if (end == v) {
+    if (end == v || (end && *end != '\0') || errno == ERANGE) {
         return 0;
     }
     if (x < min_val || x > max_val) {
@@ -827,9 +845,8 @@ config_init_input_and_dmr_t3(dsdneoRuntimeConfig& c) {
     const char* t3ccf = getenv("DSD_NEO_DMR_T3_CC_FREQ");
     c.dmr_t3_cc_freq_is_set = 0;
     if (env_is_set(t3ccf)) {
-        char* end = NULL;
-        double v = strtod(t3ccf, &end);
-        if (end != t3ccf) {
+        double v = 0.0;
+        if (env_parse_double_strict(t3ccf, &v)) {
             long hz = (v < 1e5) ? (long)std::llround(v * 1000000.0) : (long)std::llround(v);
             if (hz > 0) {
                 c.dmr_t3_cc_freq_hz = hz;
@@ -850,8 +867,8 @@ config_init_tcp_and_rigctl(dsdneoRuntimeConfig& c) {
     const char* tbs = getenv("DSD_NEO_TCP_BUFSZ");
     c.tcp_bufsz_is_set = 0;
     if (env_is_set(tbs)) {
-        long v = strtol(tbs, NULL, 10);
-        if (v > 4096 && v < (32L * 1024L * 1024L)) {
+        long v = 0;
+        if (env_parse_long_strict(tbs, &v) && v > 4096 && v < (32L * 1024L * 1024L)) {
             c.tcp_bufsz_bytes = (int)v;
             c.tcp_bufsz_is_set = 1;
         }
@@ -881,8 +898,8 @@ config_init_tcp_and_rigctl(dsdneoRuntimeConfig& c) {
     const char* trb = getenv("DSD_NEO_TCP_RCVBUF");
     c.tcp_rcvbuf_is_set = 0;
     if (env_is_set(trb)) {
-        long v = strtol(trb, NULL, 10);
-        if (v > 0 && v <= INT_MAX) {
+        long v = 0;
+        if (env_parse_long_strict(trb, &v) && v > 0 && v <= INT_MAX) {
             c.tcp_rcvbuf_bytes = (int)v;
             c.tcp_rcvbuf_is_set = 1;
         }
@@ -1024,9 +1041,8 @@ config_init_auto_ppm(dsdneoRuntimeConfig& c) {
     const char* apwr = getenv("DSD_NEO_AUTO_PPM_PWR_DB");
     c.auto_ppm_pwr_db_is_set = 0;
     if (env_is_set(apwr)) {
-        char* end = NULL;
-        double v = strtod(apwr, &end);
-        if (end != apwr && v <= 0.0) {
+        double v = 0.0;
+        if (env_parse_double_strict(apwr, &v) && v <= 0.0) {
             c.auto_ppm_pwr_db = v;
             c.auto_ppm_pwr_db_is_set = 1;
         }

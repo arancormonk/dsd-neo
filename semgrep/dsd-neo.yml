@@ -49,6 +49,21 @@ rules:
       - pattern: posix_spawn(...)
       - pattern: posix_spawnp(...)
 
+  - id: dsd-neo.no-deprecated-dsd-sprintf
+    languages: [c, cpp]
+    severity: ERROR
+    message: Use DSD_SNPRINTF with an explicit destination size instead of deprecated DSD_SPRINTF.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+        - /tests/**
+      exclude:
+        - /include/dsd-neo/core/safe_api.h
+        - /src/third_party/**
+    pattern: DSD_SPRINTF(...)
+
   - id: dsd-neo.no-direct-third-party-include
     languages: [c, cpp]
     severity: ERROR

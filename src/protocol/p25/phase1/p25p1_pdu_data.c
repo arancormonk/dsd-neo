@@ -109,30 +109,30 @@ void
 p25_decode_rsp(uint8_t C, uint8_t T, uint8_t S, char* rsp_string) {
 
     if (C == 0) {
-        DSD_SPRINTF(rsp_string, " ACK (Success);");
+        DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " ACK (Success);");
     } else if (C == 2) {
-        DSD_SPRINTF(rsp_string, " SACK (Retry);");
+        DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " SACK (Retry);");
     } else if (C == 1) {
         if (T == 0) {
-            DSD_SPRINTF(rsp_string, " NACK (Illegal Format);");
+            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (Illegal Format);");
         } else if (T == 1) {
-            DSD_SPRINTF(rsp_string, " NACK (CRC32 Failure);");
+            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (CRC32 Failure);");
         } else if (T == 2) {
-            DSD_SPRINTF(rsp_string, " NACK (Memory Full);");
+            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (Memory Full);");
         } else if (T == 3) {
-            DSD_SPRINTF(rsp_string, " NACK (FSN Sequence Error);");
+            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (FSN Sequence Error);");
         } else if (T == 4) {
-            DSD_SPRINTF(rsp_string, " NACK (Undeliverable);");
+            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (Undeliverable);");
         } else if (T == 5) {
-            DSD_SPRINTF(rsp_string, " NACK (NS/VR Sequence Error);"); //depreciated
+            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (NS/VR Sequence Error);"); //depreciated
         } else if (T == 6) {
-            DSD_SPRINTF(rsp_string, " NACK (Invalid User on System);");
+            DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " NACK (Invalid User on System);");
         }
     }
 
     //catch all for everything else
     else {
-        DSD_SPRINTF(rsp_string, " Unknown RSP;");
+        DSD_SNPRINTF(rsp_string, sizeof(rsp_string), " Unknown RSP;");
     }
 
     DSD_FPRINTF(stderr, " Response Packet:%s C: %X; T: %X; S: %X; ", rsp_string, C, T, S);
@@ -181,7 +181,7 @@ p25_sap_label(uint8_t sap) {
 
 void
 p25_decode_sap(uint8_t SAP, char* sap_string) {
-    DSD_SPRINTF(sap_string, "%s", p25_sap_label(SAP));
+    DSD_SNPRINTF(sap_string, sizeof(sap_string), "%s", p25_sap_label(SAP));
 
     DSD_FPRINTF(stderr, "SAP: 0x%02X;%s ", SAP, sap_string);
 }
@@ -396,7 +396,8 @@ p25_decode_es_header(const dsd_opts* opts, dsd_state* state, uint8_t* input, uin
     if (encrypted) {
         char ess_str[200];
         DSD_MEMSET(ess_str, 0, sizeof(ess_str));
-        DSD_SPRINTF(ess_str, "ALG: %02X; KID: %04X; SAP:%02X;%s", alg_id, key_id, aux_sap, aux_sap_string);
+        DSD_SNPRINTF(ess_str, sizeof(ess_str), "ALG: %02X; KID: %04X; SAP:%02X;%s", alg_id, key_id, aux_sap,
+                     aux_sap_string);
         dsd_append(state->dmr_lrrp_gps[0], sizeof state->dmr_lrrp_gps[0], ess_str);
     }
 
@@ -460,7 +461,7 @@ p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* inp
     state->lastsrc = ea_llid;
     char ea_str[200];
     DSD_MEMSET(ea_str, 0, sizeof(ea_str));
-    DSD_SPRINTF(ea_str, "EXT ADD SRC: %d; SAP:%02X;%s", ea_llid, ea_sap, ea_sap_string);
+    DSD_SNPRINTF(ea_str, sizeof(ea_str), "EXT ADD SRC: %d; SAP:%02X;%s", ea_llid, ea_sap, ea_sap_string);
     dsd_append(state->dmr_lrrp_gps[0], sizeof state->dmr_lrrp_gps[0], ea_str);
 
     *sap = ea_sap;
@@ -513,8 +514,8 @@ p25_read_pdu_header_fields(const uint8_t* input) {
 
 static void
 p25_decode_pdu_header_strings(const P25PduHeaderFields* h, char* sap_string, char* rsp_string) {
-    DSD_SPRINTF(sap_string, "%s", " ");
-    DSD_SPRINTF(rsp_string, "%s", " ");
+    DSD_SNPRINTF(sap_string, sizeof(sap_string), "%s", " ");
+    DSD_SNPRINTF(rsp_string, sizeof(rsp_string), "%s", " ");
     if (h->fmt != 3) {
         p25_decode_sap(h->sap, sap_string);
     } else {
@@ -545,9 +546,11 @@ p25_update_pdu_header_state(dsd_opts* opts, dsd_state* state, const P25PduHeader
     }
 
     if (h->fmt != 3) {
-        DSD_SPRINTF(state->dmr_lrrp_gps[0], "Data Call:%s SAP:%02X; LLID: %d; ", sap_string, h->sap, h->address);
+        DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "Data Call:%s SAP:%02X; LLID: %d; ",
+                     sap_string, h->sap, h->address);
     } else {
-        DSD_SPRINTF(state->dmr_lrrp_gps[0], "Data Call Response:%s LLID: %d; ", rsp_string, h->address);
+        DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "Data Call Response:%s LLID: %d; ",
+                     rsp_string, h->address);
         state->lastsrc = 0xFFFFFF;
         watchdog_event_datacall(opts, state, state->lastsrc, state->lasttg, state->dmr_lrrp_gps[0], 0);
         state->lastsrc = 0;

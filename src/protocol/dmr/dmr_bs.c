@@ -311,7 +311,7 @@ handle_dmr_bs_frame_sync_miss(const dmr_bs_ctx* ctx, uint8_t* vc1, uint8_t* vc2)
     if (ctx->internalslot == 0 && *vc1 > 6) {
         char light[18];
         DSD_FPRINTF(stderr, "%s ", ctx->timestr);
-        DSD_SPRINTF(light, "%s", " [SLOT1]  slot2  ");
+        DSD_SNPRINTF(light, 18, "%s", " [SLOT1]  slot2  ");
         DSD_FPRINTF(stderr, "Sync:  DMR %s", light);
         DSD_FPRINTF(stderr, "%s", KCYN);
         DSD_FPRINTF(stderr, "| Frame Sync Err: %d", *vc1);
@@ -324,7 +324,7 @@ handle_dmr_bs_frame_sync_miss(const dmr_bs_ctx* ctx, uint8_t* vc1, uint8_t* vc2)
     if (ctx->internalslot == 1 && *vc2 > 6) {
         char light[18];
         DSD_FPRINTF(stderr, "%s ", ctx->timestr);
-        DSD_SPRINTF(light, "%s", "  slot1  [SLOT2] ");
+        DSD_SNPRINTF(light, 18, "%s", "  slot1  [SLOT2] ");
         DSD_FPRINTF(stderr, "Sync:  DMR %s", light);
         DSD_FPRINTF(stderr, "%s", KCYN);
         DSD_FPRINTF(stderr, "| Frame Sync Err: %d", *vc2);
@@ -395,7 +395,7 @@ prepare_dmr_bs_voice_slot(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ct
     if (ctx->internalslot == 0) {
         state->dmrburstL = 16;
         vc = ctx->vc1;
-        DSD_SPRINTF(light, "%s", " [SLOT1]  slot2  ");
+        DSD_SNPRINTF(light, 18, "%s", " [SLOT1]  slot2  ");
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
@@ -403,7 +403,7 @@ prepare_dmr_bs_voice_slot(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ct
     } else {
         state->dmrburstR = 16;
         vc = ctx->vc2;
-        DSD_SPRINTF(light, "%s", "  slot1  [SLOT2] ");
+        DSD_SNPRINTF(light, 18, "%s", "  slot1  [SLOT2] ");
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
             openMbeOutFileR(opts, state);
         }
@@ -411,9 +411,9 @@ prepare_dmr_bs_voice_slot(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ct
     }
 
     if (opts->inverted_dmr == 0) {
-        DSD_SPRINTF(polarity, "%s", "+");
+        DSD_SNPRINTF(polarity, 3, "%s", "+");
     } else {
-        DSD_SPRINTF(polarity, "%s", "-");
+        DSD_SNPRINTF(polarity, 3, "%s", "-");
     }
 
     return vc;
@@ -819,21 +819,21 @@ static void
 prepare_dmr_bs_bootstrap_slot_output(dsd_opts* opts, dsd_state* state, uint8_t internalslot, char light[18],
                                      char polarity[3]) {
     if (internalslot == 0) {
-        DSD_SPRINTF(light, "%s", " [SLOT1]  slot2  ");
+        DSD_SNPRINTF(light, 18, "%s", " [SLOT1]  slot2  ");
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
     } else {
-        DSD_SPRINTF(light, "%s", "  slot1  [SLOT2] ");
+        DSD_SNPRINTF(light, 18, "%s", "  slot1  [SLOT2] ");
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
             openMbeOutFileR(opts, state);
         }
     }
 
     if (opts->inverted_dmr == 0) {
-        DSD_SPRINTF(polarity, "%s", "+");
+        DSD_SNPRINTF(polarity, 3, "%s", "+");
     } else {
-        DSD_SPRINTF(polarity, "%s", "-");
+        DSD_SNPRINTF(polarity, 3, "%s", "-");
     }
 }
 
@@ -958,8 +958,8 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
     dmr_bs_ctx ctx;
     init_dmr_bs_ctx(state, &ctx);
 
-    DSD_SPRINTF(state->slot1light, " slot1 ");
-    DSD_SPRINTF(state->slot2light, " slot2 ");
+    DSD_SNPRINTF(state->slot1light, sizeof(state->slot1light), " slot1 ");
+    DSD_SNPRINTF(state->slot2light, sizeof(state->slot2light), " slot2 ");
 
     state->color_code_ok = 0;
     state->dmr_emb_err[0] = 0;

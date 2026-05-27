@@ -630,9 +630,10 @@ open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uint8_t ext)
     getTime_buf(timestr);
 
     if (ext == 0) {
-        DSD_SPRINTF(temp_filename, "%s/TEMP_%s_%s_%04X", dir, datestr, timestr, random_number);
+        DSD_SNPRINTF(temp_filename, sizeof(temp_filename), "%s/TEMP_%s_%s_%04X", dir, datestr, timestr, random_number);
     } else {
-        DSD_SPRINTF(temp_filename, "%s/TEMP_%s_%s_%04X.wav", dir, datestr, timestr, random_number);
+        DSD_SNPRINTF(temp_filename, sizeof(temp_filename), "%s/TEMP_%s_%s_%04X.wav", dir, datestr, timestr,
+                     random_number);
     }
 
     /* stack buffers; no free */
@@ -949,14 +950,16 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
             char datestr[9];
             getTime_buf(timestr);
             getDate_buf(datestr);
-            DSD_SPRINTF(opts->symbol_out_file, "%s_%s_dibit_capture.bin", datestr, timestr);
+            DSD_SNPRINTF(opts->symbol_out_file, sizeof(opts->symbol_out_file), "%s_%s_dibit_capture.bin", datestr,
+                         timestr);
             openSymbolOutFile(opts, state);
 
             //add a system event to echo in the event history
             state->event_history_s[0].Event_History_Items[0].color_pair = 4;
             char event_str[2000];
             DSD_MEMSET(event_str, 0, sizeof(event_str));
-            DSD_SPRINTF(event_str, "DSD-neo Dibit Capture File Rotated: %s;", opts->symbol_out_file);
+            DSD_SNPRINTF(event_str, sizeof(event_str), "DSD-neo Dibit Capture File Rotated: %s;",
+                         opts->symbol_out_file);
             watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
             state->lastsrc =
                 0; //this could wipe a call, but usually on TDMA cc's, slot 1 is the control channel, so may never be set when this is run

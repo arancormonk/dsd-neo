@@ -12,6 +12,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,9 +90,10 @@ parse_int(const char* v, long defv) {
     if (!v || !*v) {
         return defv;
     }
+    errno = 0;
     char* end = NULL;
     long x = strtol(v, &end, 10);
-    if (end == v) {
+    if (end == v || (end && *end != '\0') || errno == ERANGE) {
         return defv;
     }
     return x;

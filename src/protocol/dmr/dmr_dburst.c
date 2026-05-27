@@ -163,7 +163,7 @@ dmr_dburst_apply_base_profile(dmr_data_burst_ctx* ctx) {
         ctx->crcmask = p->crcmask;
         ctx->pdu_len = p->pdu_len;
         if (p->subtype != NULL) {
-            DSD_SPRINTF(ctx->state->fsubtype, "%s", p->subtype);
+            DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), "%s", p->subtype);
         }
         return;
     }
@@ -177,7 +177,7 @@ dmr_dburst_apply_base_profile(dmr_data_burst_ctx* ctx) {
 
     ctx->is_full = 1;
     ctx->pdu_len = 25;
-    DSD_SPRINTF(ctx->state->fsubtype, " _UNK ");
+    DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " _UNK ");
 }
 
 static void
@@ -186,27 +186,27 @@ dmr_dburst_apply_dynamic_profile(dmr_data_burst_ctx* ctx) {
         if (ctx->state->data_conf_data[ctx->slot] == 1) {
             ctx->pdu_len = 10;
             ctx->pdu_start = 2;
-            DSD_SPRINTF(ctx->state->fsubtype, " R12C ");
+            DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " R12C ");
         }
         if (ctx->state->data_header_format[ctx->slot] == 0) {
             ctx->is_udt = 1;
             if (ctx->state->data_conf_data[ctx->slot] == 1) {
-                DSD_SPRINTF(ctx->state->fsubtype, " UDTC ");
+                DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " UDTC ");
             } else {
-                DSD_SPRINTF(ctx->state->fsubtype, " UDTU ");
+                DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " UDTU ");
             }
         }
     } else if (ctx->databurst == 0x08) {
         if (ctx->state->data_conf_data[ctx->slot] == 1) {
             ctx->pdu_len = 16;
             ctx->pdu_start = 2;
-            DSD_SPRINTF(ctx->state->fsubtype, " R34C ");
+            DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " R34C ");
         }
     } else if (ctx->databurst == 0x0A) {
         if (ctx->state->data_conf_data[ctx->slot] == 1) {
             ctx->pdu_len = 22;
             ctx->pdu_start = 2;
-            DSD_SPRINTF(ctx->state->fsubtype, " R_1C ");
+            DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " R_1C ");
         }
     }
 }

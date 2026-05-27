@@ -415,7 +415,7 @@ frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
         state->dmrburstR = 17;
         state->payload_algidR = 0;
         state->dmr_stereo = 1;
-        DSD_SPRINTF(state->ftype, "P25 Phase 1");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "P25 Phase 1");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "+P25p1", ctx->synctest_pos + 1, ctx->modulation);
         }
@@ -434,7 +434,7 @@ frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
         state->dmrburstR = 17;
         state->payload_algidR = 0;
         state->dmr_stereo = 1;
-        DSD_SPRINTF(state->ftype, "P25 Phase 1");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "P25 Phase 1");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "-P25p1 ", ctx->synctest_pos + 1, ctx->modulation);
         }
@@ -461,7 +461,7 @@ frame_sync_try_x2tdma(frame_sync_match_ctx* ctx) {
 
     if ((strcmp(ctx->synctest, X2TDMA_BS_DATA_SYNC) == 0) || (strcmp(ctx->synctest, X2TDMA_MS_DATA_SYNC) == 0)) {
         frame_sync_set_basic_lock(ctx);
-        DSD_SPRINTF(state->ftype, "X2-TDMA");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "X2-TDMA");
         if (opts->inverted_x2tdma == 0) {
             if (opts->errorbars == 1) {
                 printFrameSync(opts, state, "+X2-TDMA ", ctx->synctest_pos + 1, ctx->modulation);
@@ -483,7 +483,7 @@ frame_sync_try_x2tdma(frame_sync_match_ctx* ctx) {
 
     if ((strcmp(ctx->synctest, X2TDMA_BS_VOICE_SYNC) == 0) || (strcmp(ctx->synctest, X2TDMA_MS_VOICE_SYNC) == 0)) {
         frame_sync_set_basic_lock(ctx);
-        DSD_SPRINTF(state->ftype, "X2-TDMA");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "X2-TDMA");
         if (opts->inverted_x2tdma == 0) {
             if (opts->errorbars == 1) {
                 printFrameSync(opts, state, "+X2-TDMA ", ctx->synctest_pos + 1, ctx->modulation);
@@ -602,7 +602,7 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
 
     if (opts->inverted_dpmr == 0 && strcmp(ctx->synctest12, DPMR_FRAME_SYNC_2) == 0) {
         frame_sync_set_basic_lock(ctx);
-        DSD_SPRINTF(state->ftype, "dPMR ");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "+dPMR ", ctx->synctest_pos + 1, ctx->modulation);
         }
@@ -613,7 +613,7 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
 
     if (opts->inverted_dpmr == 1 && strcmp(ctx->synctest12, INV_DPMR_FRAME_SYNC_2) == 0) {
         frame_sync_set_basic_lock(ctx);
-        DSD_SPRINTF(state->ftype, "dPMR ");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "-dPMR ", ctx->synctest_pos + 1, ctx->modulation);
         }
@@ -804,7 +804,7 @@ frame_sync_try_dmr_ms_data(frame_sync_match_ctx* ctx) {
     }
 
     frame_sync_prepare_dmr_sync(ctx);
-    DSD_SPRINTF(state->ftype, "DMR MS");
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR MS");
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
         dmr_resample_on_sync(opts, state);
@@ -825,7 +825,7 @@ frame_sync_try_dmr_ms_voice(frame_sync_match_ctx* ctx) {
     }
 
     frame_sync_prepare_dmr_sync(ctx);
-    DSD_SPRINTF(state->ftype, "DMR MS");
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR MS");
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
         dmr_resample_on_sync(opts, state);
@@ -847,7 +847,7 @@ frame_sync_try_dmr_bs_data(frame_sync_match_ctx* ctx) {
 
     frame_sync_prepare_dmr_sync(ctx);
     state->directmode = 0;
-    DSD_SPRINTF(state->ftype, "DMR ");
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR ");
     if (opts->inverted_dmr == 0) {
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "+DMR ", ctx->synctest_pos + 1, ctx->modulation);
@@ -877,7 +877,7 @@ frame_sync_try_dmr_dm_ts1_data(frame_sync_match_ctx* ctx) {
 
     frame_sync_prepare_dmr_sync(ctx);
     state->directmode = 1;
-    DSD_SPRINTF(state->ftype, "DMR ");
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR ");
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
         dsd_mark_cc_sync(state);
@@ -904,7 +904,7 @@ frame_sync_try_dmr_dm_ts2_data(frame_sync_match_ctx* ctx) {
 
     frame_sync_prepare_dmr_sync(ctx);
     state->directmode = 1;
-    DSD_SPRINTF(state->ftype, "DMR ");
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR ");
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
         dsd_mark_cc_sync(state);
@@ -931,7 +931,7 @@ frame_sync_try_dmr_bs_voice(frame_sync_match_ctx* ctx) {
 
     frame_sync_prepare_dmr_sync(ctx);
     state->directmode = 0;
-    DSD_SPRINTF(state->ftype, "DMR ");
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR ");
     if (opts->inverted_dmr == 0) {
         if (state->lastsynctype != DSD_SYNC_DMR_BS_VOICE_POS) {
             state->firstframe = 1;
@@ -961,7 +961,7 @@ frame_sync_try_dmr_dm_ts1_voice(frame_sync_match_ctx* ctx) {
 
     frame_sync_prepare_dmr_sync(ctx);
     state->directmode = 1;
-    DSD_SPRINTF(state->ftype, "DMR ");
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR ");
     if (opts->inverted_dmr == 0) {
         if (state->lastsynctype != DSD_SYNC_DMR_BS_VOICE_POS) {
             state->firstframe = 1;
@@ -987,7 +987,7 @@ frame_sync_try_dmr_dm_ts2_voice(frame_sync_match_ctx* ctx) {
 
     frame_sync_prepare_dmr_sync(ctx);
     state->directmode = 1;
-    DSD_SPRINTF(state->ftype, "DMR ");
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR ");
     if (opts->inverted_dmr == 0) {
         if (state->lastsynctype != DSD_SYNC_DMR_BS_VOICE_POS) {
             state->firstframe = 1;
@@ -1054,7 +1054,7 @@ frame_sync_try_provoice(frame_sync_match_ctx* ctx) {
     if ((strcmp(ctx->synctest32, PROVOICE_SYNC) == 0) || (strcmp(ctx->synctest32, PROVOICE_EA_SYNC) == 0)) {
         frame_sync_note_cc_sync(ctx);
         frame_sync_set_basic_lock(ctx);
-        DSD_SPRINTF(state->ftype, "ProVoice ");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "+PV   ", ctx->synctest_pos + 1, ctx->modulation);
         }
@@ -1066,7 +1066,7 @@ frame_sync_try_provoice(frame_sync_match_ctx* ctx) {
     if ((strcmp(ctx->synctest32, INV_PROVOICE_SYNC) == 0) || (strcmp(ctx->synctest32, INV_PROVOICE_EA_SYNC) == 0)) {
         frame_sync_note_cc_sync(ctx);
         frame_sync_set_basic_lock(ctx);
-        DSD_SPRINTF(state->ftype, "ProVoice ");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
         printFrameSync(opts, state, "-PV   ", ctx->synctest_pos + 1, ctx->modulation);
         state->lastsynctype = DSD_SYNC_PROVOICE_NEG;
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 32);
@@ -1111,7 +1111,7 @@ frame_sync_try_dstar(frame_sync_match_ctx* ctx) {
 
     if (strcmp(ctx->synctest, DSTAR_SYNC) == 0) {
         frame_sync_set_basic_lock(ctx);
-        DSD_SPRINTF(state->ftype, "DSTAR ");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DSTAR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "+DSTAR VOICE ", ctx->synctest_pos + 1, ctx->modulation);
         }
@@ -1122,7 +1122,7 @@ frame_sync_try_dstar(frame_sync_match_ctx* ctx) {
 
     if (strcmp(ctx->synctest, INV_DSTAR_SYNC) == 0) {
         frame_sync_set_basic_lock(ctx);
-        DSD_SPRINTF(state->ftype, "DSTAR ");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DSTAR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "-DSTAR VOICE ", ctx->synctest_pos + 1, ctx->modulation);
         }
@@ -1133,7 +1133,7 @@ frame_sync_try_dstar(frame_sync_match_ctx* ctx) {
 
     if (strcmp(ctx->synctest, DSTAR_HD) == 0) {
         frame_sync_set_basic_lock(ctx);
-        DSD_SPRINTF(state->ftype, "DSTAR_HD ");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DSTAR_HD ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "+DSTAR HEADER", ctx->synctest_pos + 1, ctx->modulation);
         }
@@ -1144,7 +1144,7 @@ frame_sync_try_dstar(frame_sync_match_ctx* ctx) {
 
     if (strcmp(ctx->synctest, INV_DSTAR_HD) == 0) {
         frame_sync_set_basic_lock(ctx);
-        DSD_SPRINTF(state->ftype, " DSTAR_HD");
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " DSTAR_HD");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "-DSTAR HEADER", ctx->synctest_pos + 1, ctx->modulation);
         }
@@ -1227,7 +1227,7 @@ frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
     if (strcmp(ctx->synctest32, INV_PROVOICE_CONV_SHORT) == 0) {
         if (state->lastsynctype == DSD_SYNC_PROVOICE_NEG) {
             frame_sync_set_basic_lock(ctx);
-            DSD_SPRINTF(state->ftype, "ProVoice ");
+            DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
             uint8_t pvc_txa = 0;
             uint8_t pvc_rxa = 0;
             frame_sync_pvconv_decode_addrs(ctx, '1', &pvc_txa, &pvc_rxa);
@@ -1248,7 +1248,7 @@ frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
     if (strcmp(ctx->synctest32, PROVOICE_CONV_SHORT) == 0) {
         if (state->lastsynctype == DSD_SYNC_PROVOICE_POS) {
             frame_sync_set_basic_lock(ctx);
-            DSD_SPRINTF(state->ftype, "ProVoice ");
+            DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
             uint8_t pvc_txa = 0;
             uint8_t pvc_rxa = 0;
             frame_sync_pvconv_decode_addrs(ctx, '3', &pvc_txa, &pvc_rxa);

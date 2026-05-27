@@ -385,8 +385,8 @@ x2tdma_decode_signal_j3(x2tdma_voice_ctx* ctx, dsd_state* state) {
         state->keyid[14] = (1 & (ctx->syncdata[17] >> 1)) + 48; // bit 1
         state->keyid[15] = (1 & ctx->syncdata[17]) + 48;        // bit 0
     } else {
-        DSD_SPRINTF(state->algid, "________");
-        DSD_SPRINTF(state->keyid, "________________");
+        DSD_SNPRINTF(state->algid, sizeof(state->algid), "________");
+        DSD_SNPRINTF(state->keyid, sizeof(state->keyid), "________________");
     }
 }
 
@@ -464,15 +464,15 @@ static void
 x2tdma_update_next_slot_lights(const x2tdma_voice_ctx* ctx, dsd_state* state) {
     if ((strcmp(ctx->sync, X2TDMA_BS_DATA_SYNC) == 0) || (ctx->msMode == 1)) {
         if (state->currentslot == 0) {
-            DSD_SPRINTF(state->slot1light, " slot1 ");
+            DSD_SNPRINTF(state->slot1light, sizeof(state->slot1light), " slot1 ");
         } else {
-            DSD_SPRINTF(state->slot0light, " slot0 ");
+            DSD_SNPRINTF(state->slot0light, sizeof(state->slot0light), " slot0 ");
         }
     } else if (strcmp(ctx->sync, X2TDMA_BS_VOICE_SYNC) == 0) {
         if (state->currentslot == 0) {
-            DSD_SPRINTF(state->slot1light, " SLOT1 ");
+            DSD_SNPRINTF(state->slot1light, sizeof(state->slot1light), " SLOT1 ");
         } else {
-            DSD_SPRINTF(state->slot0light, " SLOT0 ");
+            DSD_SNPRINTF(state->slot0light, sizeof(state->slot0light), " SLOT0 ");
         }
     }
 }

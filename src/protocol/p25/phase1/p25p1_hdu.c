@@ -470,8 +470,9 @@ hdu_record_enc_lockout(dsd_opts* opts, dsd_state* state, int ttg) {
         return;
     }
 
-    DSD_SPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
-                "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
+                 sizeof(state->event_history_s[0].Event_History_Items[0].internal_str),
+                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
     dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
     if (opts->event_out_file[0] != 0) {
         dsd_p25_optional_hook_write_event_to_log_file(opts, state, 0, /*swrite*/ 0,

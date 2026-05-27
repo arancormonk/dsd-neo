@@ -56,7 +56,9 @@ static void DSD_ATTR_USED
 utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     uint8_t slot = state->currentslot;
     if (wr == 1) {
-        DSD_SPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", ""); //full text string
+        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message,
+                     sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s",
+                     ""); //full text string
     }
     for (uint16_t i = 0; i < len; i += 2) {
         uint16_t ch16 = (uint16_t)input[i + 0];
@@ -108,7 +110,9 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     DSD_FPRINTF(stderr, "\n UTF8 Text: ");
 
     if (wr == 1) {
-        DSD_SPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", ""); //full text string
+        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message,
+                     sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s",
+                     ""); //full text string
     }
 
     for (uint16_t i = 0; i < len; i++) {
@@ -148,7 +152,9 @@ dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PD
     {
         utf8_to_text(state, 0, len - offset, DMR_PDU + offset);
         dmr_locn(opts, state, len, DMR_PDU);
-        DSD_SPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s, "%s", state->dmr_lrrp_gps[slot]);
+        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
+                     sizeof(state->event_history_s[slot].Event_History_Items[0].gps_s), "%s",
+                     state->dmr_lrrp_gps[slot]);
         state->event_history_s[slot].Event_History_Items[0].color_pair =
             4; //Remus, add this line to a decode to change its line color
     } else {
@@ -163,7 +169,7 @@ dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PD
     uint32_t target = state->dmr_lrrp_target[slot];
     char comp_string[500];
     DSD_MEMSET(comp_string, 0, sizeof(comp_string));
-    DSD_SPRINTF(comp_string, "Short Data SRC: %d; TGT: %d; ", source, target);
+    DSD_SNPRINTF(comp_string, sizeof(comp_string), "Short Data SRC: %d; TGT: %d; ", source, target);
     watchdog_event_datacall(opts, state, source, target, comp_string, slot);
 }
 
@@ -279,8 +285,8 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     uint8_t slot = (state->currentslot == 1) ? 1 : 0;
     char comp_string[500];
     DSD_MEMSET(comp_string, 0, sizeof(comp_string));
-    DSD_SPRINTF(comp_string, "IPC: %d; OP: %d; SRC: %d:%d (%s):(%s); DST: %d:%d (%s):(%s); ", ipid, opcode, said, spid,
-                src_idx_desc, src_port_desc, daid, dpid, dst_idx_desc, dst_port_desc);
+    DSD_SNPRINTF(comp_string, sizeof(comp_string), "IPC: %d; OP: %d; SRC: %d:%d (%s):(%s); DST: %d:%d (%s):(%s); ",
+                 ipid, opcode, said, spid, src_idx_desc, src_port_desc, daid, dpid, dst_idx_desc, dst_port_desc);
     watchdog_event_datacall(opts, state, said, daid, comp_string, slot);
 }
 
@@ -359,7 +365,7 @@ decode_ip_pdu_handle_udp_tms(const dsd_opts* opts, dsd_state* state, uint8_t slo
         }
     }
 
-    DSD_SPRINTF(state->dmr_lrrp_gps[slot], "TMS SRC: %d; DST: %d; ", src24, dst24);
+    DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "TMS SRC: %d; DST: %d; ", src24, dst24);
     if (tms_ack != 0) {
         dsd_append(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "Acknowledgment;");
         DSD_FPRINTF(stderr, "Acknowledgment;");
@@ -391,7 +397,8 @@ decode_ip_pdu_handle_udp_vtx_tms(const dsd_opts* opts, dsd_state* state, uint8_t
     size_t text_len = 0u;
 
     DSD_FPRINTF(stderr, "VTX STD TMS;");
-    DSD_SPRINTF(state->dmr_lrrp_gps[slot], "VTX TMS SRC: %d; DST: %d; ", src24, dst24);
+    DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "VTX TMS SRC: %d; DST: %d; ", src24,
+                 dst24);
 
     if (opts->payload == 1) {
         size_t diag_len = ((size_t)payload_len < vtx_diag_hdr_len) ? (size_t)payload_len : vtx_diag_hdr_len;
@@ -423,7 +430,8 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
     switch (port) {
         case 231:
             DSD_FPRINTF(stderr, "Cellocator;");
-            DSD_SPRINTF(state->dmr_lrrp_gps[slot], "Cellocator SRC: %d; DST: %d;", src24, dst24);
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "Cellocator SRC: %d; DST: %d;",
+                         src24, dst24);
             if (payload_len > 0) {
                 decode_cellocator(opts, state, payload, (int)payload_len);
             }
@@ -435,12 +443,14 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
             return 1;
         case 4004:
             DSD_FPRINTF(stderr, "XCMP;");
-            DSD_SPRINTF(state->dmr_lrrp_gps[slot], "XCMP SRC: %d; DST: %d;", src24, dst24);
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "XCMP SRC: %d; DST: %d;", src24,
+                         dst24);
             state->event_history_s[slot].Event_History_Items[0].color_pair = 4;
             return 1;
         case 4005: {
             DSD_FPRINTF(stderr, "ARS;");
-            DSD_SPRINTF(state->dmr_lrrp_gps[slot], "ARS SRC: %d; DST: %d; ", src24, dst24);
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "ARS SRC: %d; DST: %d; ", src24,
+                         dst24);
             uint16_t ars_len = (payload_len < 10) ? payload_len : 10;
             utf8_to_text(state, 0, ars_len, payload);
             return 1;
@@ -448,23 +458,28 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
         case 4007: decode_ip_pdu_handle_udp_tms(opts, state, slot, src24, dst24, payload_len, payload); return 1;
         case 4008:
             DSD_FPRINTF(stderr, "Telemetry;");
-            DSD_SPRINTF(state->dmr_lrrp_gps[slot], "Telemetry SRC: %d; DST: %d;", src24, dst24);
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "Telemetry SRC: %d; DST: %d;",
+                         src24, dst24);
             return 1;
         case 4009:
             DSD_FPRINTF(stderr, "OTAP;");
-            DSD_SPRINTF(state->dmr_lrrp_gps[slot], "OTAP SRC: %d; DST: %d;", src24, dst24);
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "OTAP SRC: %d; DST: %d;", src24,
+                         dst24);
             return 1;
         case 4012:
             DSD_FPRINTF(stderr, "Battery Management;");
-            DSD_SPRINTF(state->dmr_lrrp_gps[slot], "Batt. Man. SRC: %d; DST: %d;", src24, dst24);
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "Batt. Man. SRC: %d; DST: %d;",
+                         src24, dst24);
             return 1;
         case 4013:
             DSD_FPRINTF(stderr, "Job Ticket Server;");
-            DSD_SPRINTF(state->dmr_lrrp_gps[slot], "JTS SRC: %d; DST: %d;", src24, dst24);
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "JTS SRC: %d; DST: %d;", src24,
+                         dst24);
             return 1;
         case 4069:
             DSD_FPRINTF(stderr, "TRBOnet SCADA;");
-            DSD_SPRINTF(state->dmr_lrrp_gps[slot], "SCADA SRC: %d; DST: %d;", src24, dst24);
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "SCADA SRC: %d; DST: %d;", src24,
+                         dst24);
             return 1;
         default: break;
     }
@@ -479,7 +494,8 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
         case 5007: decode_ip_pdu_handle_udp_vtx_tms(opts, state, slot, src24, dst24, payload_len, payload); return 1;
         case 5016:
             DSD_FPRINTF(stderr, "ETSI TMS;");
-            DSD_SPRINTF(state->dmr_lrrp_gps[slot], "ETSI TMS SRC: %d; DST: %d; ", src24, dst24);
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "ETSI TMS SRC: %d; DST: %d; ",
+                         src24, dst24);
             utf16_to_text(state, 1, payload_len, payload);
             return 1;
         case 5017: {
@@ -490,8 +506,9 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
             return 1;
         }
         case 49198:
-            DSD_SPRINTF(state->dmr_lrrp_gps[slot], "P25 Tier 2 LOCN SRC(IP): %d.%d.%d.%d; DST(IP): %d.%d.%d.%d; ",
-                        input[12], input[13], input[14], input[15], input[16], input[17], input[18], input[19]);
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
+                         "P25 Tier 2 LOCN SRC(IP): %d.%d.%d.%d; DST(IP): %d.%d.%d.%d; ", input[12], input[13],
+                         input[14], input[15], input[16], input[17], input[18], input[19]);
             DSD_FPRINTF(stderr, "P25 Tier 2 Location Service;");
             dmr_lrrp(opts, state, payload_len, src24, dst24, payload, 1);
             return 1;
@@ -509,8 +526,9 @@ decode_ip_pdu_handle_udp_service(dsd_opts* opts, dsd_state* state, uint8_t slot,
     if (decode_ip_pdu_handle_udp_service_ext(opts, state, slot, src24, dst24, port, payload_len, payload, input)) {
         return;
     }
-    DSD_SPRINTF(state->dmr_lrrp_gps[slot], "IP SRC: %d.%d.%d.%d:%d; DST: %d.%d.%d.%d:%d; Unknown UDP Port;", input[12],
-                input[13], input[14], input[15], port, input[16], input[17], input[18], input[19], port);
+    DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
+                 "IP SRC: %d.%d.%d.%d:%d; DST: %d.%d.%d.%d:%d; Unknown UDP Port;", input[12], input[13], input[14],
+                 input[15], port, input[16], input[17], input[18], input[19], port);
     DSD_FPRINTF(stderr, "Unknown UDP Port;");
 }
 
@@ -518,7 +536,7 @@ static void DSD_ATTR_USED
 decode_ip_pdu_handle_udp(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
                          size_t effective_len, size_t ip_header_len, uint8_t* input) {
     if (effective_len < ip_header_len + 8u) {
-        DSD_SPRINTF(state->dmr_lrrp_gps[slot], "Truncated UDP;");
+        DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "Truncated UDP;");
         watchdog_event_datacall(opts, state, src24, dst24, state->dmr_lrrp_gps[slot], slot);
         return;
     }
@@ -579,8 +597,9 @@ decode_ip_pdu_dispatch(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t p
         decode_ip_pdu_handle_udp(opts, state, slot, src24, dst24, effective_len, ip_header_len, input);
         return;
     }
-    DSD_SPRINTF(state->dmr_lrrp_gps[slot], "IP SRC: %d.%d.%d.%d; DST: %d.%d.%d.%d; Unknown IP Protocol: %d; ",
-                input[12], input[13], input[14], input[15], input[16], input[17], input[18], input[19], prot);
+    DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
+                 "IP SRC: %d.%d.%d.%d; DST: %d.%d.%d.%d; Unknown IP Protocol: %d; ", input[12], input[13], input[14],
+                 input[15], input[16], input[17], input[18], input[19], prot);
     DSD_FPRINTF(stderr, "Unknown IP Protocol: %02X;", prot);
 }
 
