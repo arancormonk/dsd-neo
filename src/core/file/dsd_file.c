@@ -50,6 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "../mbe_result_context.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -1476,6 +1477,8 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         state->debug_audio_errors += state->errs2;
     }
 
+    char decoded_ambe_d[49];
+    DSD_MEMCPY(decoded_ambe_d, ambe_d, sizeof(decoded_ambe_d));
     ks_idx = sdrtrunk_apply_keystream(ambe_d, 49, ks, ks_idx);
 
     //DMRA or P25 KS, skip the left over 7 bits from a byte
@@ -1490,6 +1493,8 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         }
         return ks_idx;
     }
+
+    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, ambe_d, &result);
 
     (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                          sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
@@ -1526,6 +1531,8 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
         state->debug_audio_errors += state->errs2;
     }
 
+    char decoded_imbe_d[88];
+    DSD_MEMCPY(decoded_imbe_d, imbe_d, sizeof(decoded_imbe_d));
     ks_idx = sdrtrunk_apply_keystream(imbe_d, 88, ks, ks_idx);
 
     if (decode_ret < 0) {
@@ -1535,6 +1542,8 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
         }
         return ks_idx;
     }
+
+    (void)dsd_mbe_strip_imbe_context_if_changed(decoded_imbe_d, imbe_d, &result);
 
     (void)dsd_mbe_process_imbe4400_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                          sizeof(state->err_str), imbe_d, state->cur_mp, state->prev_mp,

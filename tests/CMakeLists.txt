@@ -1251,7 +1251,7 @@ target_include_directories(
     dsd-neo_test_core_mbe_transform_context
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/core/vocoder
+        ${PROJECT_SOURCE_DIR}/src/core
         ${_PUBLIC_INCLUDES}
 )
 target_link_libraries(
