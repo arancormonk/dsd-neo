@@ -111,7 +111,7 @@ typedef struct {
 
 // Config profile selection context
 typedef struct {
-    UiCtx* c;
+    dsd_state* state;
     char path[1024];
     const char** labels;
     const char** names;

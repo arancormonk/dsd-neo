@@ -226,11 +226,11 @@ chooser_done_config_profile(void* u, int sel) {
         if (dsd_user_config_load_profile(pctx->path, profile, &cfg) != 0) {
             ui_statusf("Failed to load profile %s from %s", profile, pctx->path);
         } else {
-            if (pctx->c && pctx->c->state) {
-                pctx->c->state->config_autosave_enabled = 0;
-                DSD_SNPRINTF(pctx->c->state->config_autosave_path, sizeof pctx->c->state->config_autosave_path, "%s",
+            if (pctx->state) {
+                pctx->state->config_autosave_enabled = 0;
+                DSD_SNPRINTF(pctx->state->config_autosave_path, sizeof pctx->state->config_autosave_path, "%s",
                              pctx->path);
-                pctx->c->state->config_autosave_path[sizeof pctx->c->state->config_autosave_path - 1] = '\0';
+                pctx->state->config_autosave_path[sizeof pctx->state->config_autosave_path - 1] = '\0';
             }
             ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
             ui_statusf("Profile loaded: %s", profile);

@@ -28,6 +28,7 @@
 #include <xmmintrin.h>
 #endif
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_callbacks.h"
@@ -156,8 +157,8 @@ config_profile_free_context(ProfileSelCtx* pctx) {
 }
 
 static ProfileSelCtx*
-config_profile_create_context(UiCtx* c, const char* path, const char** names, int count) {
-    if (!c || !path || !*path || !names || count <= 0) {
+config_profile_create_context(dsd_state* state, const char* path, const char** names, int count) {
+    if (!state || !path || !*path || !names || count <= 0) {
         return NULL;
     }
 
@@ -165,7 +166,7 @@ config_profile_create_context(UiCtx* c, const char* path, const char** names, in
     if (!pctx) {
         return NULL;
     }
-    pctx->c = c;
+    pctx->state = state;
     pctx->n = count;
     int n = DSD_SNPRINTF(pctx->path, sizeof pctx->path, "%s", path);
     if (n < 0 || n >= (int)sizeof pctx->path) {
@@ -217,7 +218,7 @@ act_config_load_profile(void* v) {
         return;
     }
 
-    ProfileSelCtx* pctx = config_profile_create_context(c, path, names, count);
+    ProfileSelCtx* pctx = config_profile_create_context(c->state, path, names, count);
     if (!pctx) {
         ui_statusf("Out of memory");
         return;

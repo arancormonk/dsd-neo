@@ -348,12 +348,12 @@ free_test_profile_context(ProfileSelCtx* pctx) {
 }
 
 static ProfileSelCtx*
-make_test_profile_context(UiCtx* ctx, const char* path) {
+make_test_profile_context(dsd_state* state, const char* path) {
     ProfileSelCtx* pctx = (ProfileSelCtx*)calloc(1, sizeof(*pctx));
     if (!pctx) {
         return NULL;
     }
-    pctx->c = ctx;
+    pctx->state = state;
     pctx->n = 2;
     int n = DSD_SNPRINTF(pctx->path, sizeof pctx->path, "%s", path ? path : "");
     if (n < 0 || n >= (int)sizeof pctx->path) {
@@ -407,12 +407,10 @@ test_ui_profile_selection_applies_overlay_and_disables_autosave(void) {
     }
     dsd_opts* opts = runtime.opts;
     dsd_state* state = runtime.state;
-    UiCtx ctx = {opts, state};
-
     state->config_autosave_enabled = 1;
     DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", path);
 
-    ProfileSelCtx* pctx = make_test_profile_context(&ctx, path);
+    ProfileSelCtx* pctx = make_test_profile_context(state, path);
     if (!pctx) {
         DSD_FPRINTF(stderr, "FAIL: could not allocate profile test context\n");
         free_test_runtime(&runtime);
