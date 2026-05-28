@@ -32,7 +32,7 @@ target_sources(
 target_include_directories(
     dsd-neo_core
     PUBLIC ${PROJECT_SOURCE_DIR}/include
-    PRIVATE ${_PUBLIC_INCLUDES}
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/core ${_PUBLIC_INCLUDES}
 )
 
 target_link_libraries(

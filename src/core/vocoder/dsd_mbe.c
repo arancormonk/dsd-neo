@@ -46,10 +46,10 @@
 #include <mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "../mbe_result_context.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd_mbe_result.h"
 
 static void
 p25p2_record_voice_err(dsd_state* state, int voice_err) {
@@ -638,6 +638,9 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
         return;
     }
 
+    char decoded_imbe_d[88];
+    DSD_MEMCPY(decoded_imbe_d, frame_ctx->imbe_d, sizeof(decoded_imbe_d));
+
     //P25p1 Multi Crypt Handler (DES1, DES3, DES-XL and AES)
     if (mbe_p25p1_multicrypt_enabled(state)) {
         mbe_apply_p25p1_multicrypt(state, frame_ctx->imbe_d);
@@ -647,6 +650,8 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
     if (state->payload_algid == 0xAA && state->R != 0) {
         mbe_apply_p25p1_rc4(state, frame_ctx->imbe_d);
     }
+
+    (void)dsd_mbe_strip_imbe_context_if_changed(decoded_imbe_d, frame_ctx->imbe_d, &imbe_result);
 
     process_imbe4400_params(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                             sizeof(state->err_str), frame_ctx->imbe_d, state->cur_mp, state->prev_mp,
@@ -940,7 +945,7 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
         mbe_apply_nxdn_cipher23(state, frame_ctx->ambe_d);
     }
 
-    (void)dsd_mbe_strip_c0_context_if_ambe_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
+    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
 
     process_ambe2450_params(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                             sizeof(state->err_str), frame_ctx->ambe_d, state->cur_mp, state->prev_mp,
@@ -1481,7 +1486,7 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
     mbeslot_left_apply_p25p2_rc4(state, frame_ctx);
     mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
     mbe_slot_apply_straight_ks_left(state, frame_ctx->ambe_d);
-    (void)dsd_mbe_strip_c0_context_if_ambe_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
+    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_left(opts, state, frame_ctx->ambe_d, &ambe_result, have_ambe_result);
 }
 
@@ -1509,7 +1514,7 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
     mbeslot_right_apply_p25p2_rc4(state, frame_ctx);
     mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
     mbe_slot_apply_straight_ks_right(state, frame_ctx->ambe_d);
-    (void)dsd_mbe_strip_c0_context_if_ambe_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
+    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_right(opts, state, frame_ctx->ambe_d, &ambe_result, have_ambe_result);
 }
 

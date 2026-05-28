@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "dsd_mbe_result.h"
+#include "mbe_result_context.h"
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
@@ -44,6 +44,13 @@ copy_ambe49(char dst[49], const char src[49]) {
 }
 
 static void
+copy_imbe88(char dst[88], const char src[88]) {
+    for (int i = 0; i < 88; i++) {
+        dst[i] = src[i];
+    }
+}
+
+static void
 set_ambe2450_b0(char ambe_d[49], int b0) {
     ambe_d[0] = (char)((b0 >> 6) & 1);
     ambe_d[1] = (char)((b0 >> 5) & 1);
@@ -60,6 +67,16 @@ init_result(mbe_process_result* result, int total_errors, int c0_errors, unsigne
     result->total_errors = total_errors;
     result->flags = flags;
     result->c0_errors = c0_errors;
+    result->protected_errors = total_errors - c0_errors;
+}
+
+static void
+init_imbe_result(mbe_process_result* result, int total_errors, int c0_errors, int c4_errors, unsigned flags) {
+    mbe_initProcessResult(result);
+    result->total_errors = total_errors;
+    result->flags = flags;
+    result->c0_errors = c0_errors;
+    result->c4_errors = c4_errors;
     result->protected_errors = total_errors - c0_errors;
 }
 
@@ -81,7 +98,7 @@ test_unchanged_preserves_c0_context(void) {
     copy_ambe49(after, before);
     init_result(&result, 5, 1, MBE_PROCESS_FLAG_C0_VALID | MBE_PROCESS_FLAG_SOFT_INPUT | MBE_PROCESS_FLAG_TONE);
 
-    rc |= expect_eq_int("unchanged-return", dsd_mbe_strip_c0_context_if_ambe_changed(before, after, &result), 0);
+    rc |= expect_eq_int("unchanged-return", dsd_mbe_strip_ambe_context_if_changed(before, after, &result), 0);
     rc |= expect_flag("unchanged-c0", result.flags, MBE_PROCESS_FLAG_C0_VALID, 1);
     rc |= expect_flag("unchanged-soft", result.flags, MBE_PROCESS_FLAG_SOFT_INPUT, 1);
     rc |= expect_flag("unchanged-tone", result.flags, MBE_PROCESS_FLAG_TONE, 1);
@@ -104,7 +121,7 @@ test_changed_strips_only_c0_context(void) {
     after[48] ^= 1;
     init_result(&result, 6, 2, MBE_PROCESS_FLAG_C0_VALID | MBE_PROCESS_FLAG_SOFT_INPUT | MBE_PROCESS_FLAG_TONE);
 
-    rc |= expect_eq_int("changed-return", dsd_mbe_strip_c0_context_if_ambe_changed(before, after, &result), 1);
+    rc |= expect_eq_int("changed-return", dsd_mbe_strip_ambe_context_if_changed(before, after, &result), 1);
     rc |= expect_flag("changed-c0", result.flags, MBE_PROCESS_FLAG_C0_VALID, 0);
     rc |= expect_flag("changed-soft", result.flags, MBE_PROCESS_FLAG_SOFT_INPUT, 1);
     rc |= expect_flag("changed-tone", result.flags, MBE_PROCESS_FLAG_TONE, 1);
@@ -126,7 +143,7 @@ test_changed_without_c0_context_keeps_legacy_shape(void) {
     after[0] = 1;
     init_result(&result, 7, 3, MBE_PROCESS_FLAG_SOFT_INPUT);
 
-    rc |= expect_eq_int("legacy-return", dsd_mbe_strip_c0_context_if_ambe_changed(before, after, &result), 1);
+    rc |= expect_eq_int("legacy-return", dsd_mbe_strip_ambe_context_if_changed(before, after, &result), 1);
     rc |= expect_flag("legacy-c0", result.flags, MBE_PROCESS_FLAG_C0_VALID, 0);
     rc |= expect_flag("legacy-soft", result.flags, MBE_PROCESS_FLAG_SOFT_INPUT, 1);
     rc |= expect_eq_int("legacy-c0-errors", result.c0_errors, 0);
@@ -141,7 +158,65 @@ test_null_result_is_safe(void) {
     char before[49] = {0};
     char after[49] = {0};
     after[1] = 1;
-    return expect_eq_int("null-result", dsd_mbe_strip_c0_context_if_ambe_changed(before, after, NULL), 0);
+    return expect_eq_int("null-ambe-result", dsd_mbe_strip_ambe_context_if_changed(before, after, NULL), 0)
+           | expect_eq_int("null-imbe-result", dsd_mbe_strip_imbe_context_if_changed(NULL, NULL, NULL), 0);
+}
+
+static int
+test_imbe_unchanged_preserves_c0_c4_context(void) {
+    int rc = 0;
+    char before[88] = {0};
+    char after[88] = {0};
+    mbe_process_result result;
+
+    before[3] = 1;
+    before[47] = 1;
+    before[86] = 1;
+    copy_imbe88(after, before);
+    init_imbe_result(&result, 9, 2, 3,
+                     MBE_PROCESS_FLAG_C0_VALID | MBE_PROCESS_FLAG_C4_VALID | MBE_PROCESS_FLAG_SOFT_INPUT
+                         | MBE_PROCESS_FLAG_REPEAT);
+
+    rc |= expect_eq_int("imbe-unchanged-return", dsd_mbe_strip_imbe_context_if_changed(before, after, &result), 0);
+    rc |= expect_flag("imbe-unchanged-c0", result.flags, MBE_PROCESS_FLAG_C0_VALID, 1);
+    rc |= expect_flag("imbe-unchanged-c4", result.flags, MBE_PROCESS_FLAG_C4_VALID, 1);
+    rc |= expect_flag("imbe-unchanged-soft", result.flags, MBE_PROCESS_FLAG_SOFT_INPUT, 1);
+    rc |= expect_flag("imbe-unchanged-repeat", result.flags, MBE_PROCESS_FLAG_REPEAT, 1);
+    rc |= expect_eq_int("imbe-unchanged-c0-errors", result.c0_errors, 2);
+    rc |= expect_eq_int("imbe-unchanged-c4-errors", result.c4_errors, 3);
+    rc |= expect_eq_int("imbe-unchanged-protected", result.protected_errors, 7);
+    rc |= expect_eq_int("imbe-unchanged-total", result.total_errors, 9);
+
+    return rc;
+}
+
+static int
+test_imbe_changed_strips_c0_c4_context(void) {
+    int rc = 0;
+    char before[88] = {0};
+    char after[88] = {0};
+    mbe_process_result result;
+
+    before[5] = 1;
+    before[40] = 1;
+    copy_imbe88(after, before);
+    after[87] ^= 1;
+    init_imbe_result(&result, 11, 4, 2,
+                     MBE_PROCESS_FLAG_C0_VALID | MBE_PROCESS_FLAG_C4_VALID | MBE_PROCESS_FLAG_SOFT_INPUT
+                         | MBE_PROCESS_FLAG_TONE | MBE_PROCESS_FLAG_MUTE);
+
+    rc |= expect_eq_int("imbe-changed-return", dsd_mbe_strip_imbe_context_if_changed(before, after, &result), 1);
+    rc |= expect_flag("imbe-changed-c0", result.flags, MBE_PROCESS_FLAG_C0_VALID, 0);
+    rc |= expect_flag("imbe-changed-c4", result.flags, MBE_PROCESS_FLAG_C4_VALID, 0);
+    rc |= expect_flag("imbe-changed-soft", result.flags, MBE_PROCESS_FLAG_SOFT_INPUT, 1);
+    rc |= expect_flag("imbe-changed-tone", result.flags, MBE_PROCESS_FLAG_TONE, 1);
+    rc |= expect_flag("imbe-changed-mute", result.flags, MBE_PROCESS_FLAG_MUTE, 1);
+    rc |= expect_eq_int("imbe-changed-c0-errors", result.c0_errors, 0);
+    rc |= expect_eq_int("imbe-changed-c4-errors", result.c4_errors, 0);
+    rc |= expect_eq_int("imbe-changed-protected", result.protected_errors, 11);
+    rc |= expect_eq_int("imbe-changed-total", result.total_errors, 11);
+
+    return rc;
 }
 
 static int
@@ -173,7 +248,7 @@ test_changed_frame_restores_total_error_repeat_fallback(void) {
     rc |= expect_eq_int("c0-no-repeat", result_has_marker(&c0_result, 'R'), 0);
 
     init_result(&fallback_result, 4, 0, MBE_PROCESS_FLAG_C0_VALID);
-    rc |= expect_eq_int("fallback-strip", dsd_mbe_strip_c0_context_if_ambe_changed(before, after, &fallback_result), 1);
+    rc |= expect_eq_int("fallback-strip", dsd_mbe_strip_ambe_context_if_changed(before, after, &fallback_result), 1);
     rc |= expect_eq_int("fallback-process", process_ambe2450(after, &fallback_result) < 0, 0);
     rc |= expect_eq_int("fallback-repeat", result_has_marker(&fallback_result, 'R'), 1);
 
@@ -188,6 +263,8 @@ main(void) {
     rc |= test_changed_strips_only_c0_context();
     rc |= test_changed_without_c0_context_keeps_legacy_shape();
     rc |= test_null_result_is_safe();
+    rc |= test_imbe_unchanged_preserves_c0_c4_context();
+    rc |= test_imbe_changed_strips_c0_c4_context();
     rc |= test_changed_frame_restores_total_error_repeat_fallback();
 
     if (rc == 0) {
