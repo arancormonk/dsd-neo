@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -71,12 +72,39 @@ expect_eq(const char* tag, int got, int want) {
 }
 
 static int
+expect_str(const char* tag, const char* got, const char* want) {
+    if (!got || strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got ? got : "(null)", want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
         DSD_FPRINTF(stderr, "%s: expected true\n", tag);
         return 1;
     }
     return 0;
+}
+
+int p25_mfid90_base_station_id_decode(const uint8_t tsbk_byte[12], char* cwid, size_t cwid_size, uint16_t* channel);
+
+static void
+pack_mfid90_cwid_values(uint8_t tsbk[12], const uint8_t values[8]) {
+    for (int field = 0; field < 8; field++) {
+        uint8_t value = (uint8_t)(values[field] & 0x3Fu);
+        int bit_start = field * 6;
+        for (int bit = 0; bit < 6; bit++) {
+            int bit_index = bit_start + bit;
+            int byte = 2 + (bit_index / 8);
+            int shift = 7 - (bit_index % 8);
+            if (((value >> (5 - bit)) & 1u) != 0u) {
+                tsbk[byte] = (uint8_t)(tsbk[byte] | (uint8_t)(1u << shift));
+            }
+        }
+    }
 }
 
 static int
@@ -107,6 +135,41 @@ main(void) {
     int rc = 0;
     static dsd_state st;
     DSD_MEMSET(&st, 0, sizeof st);
+
+    // Test 0: MFID90 Base Station ID decodes eight 6-bit CWID chars and channel.
+    {
+        uint8_t tsbk[12];
+        DSD_MEMSET(tsbk, 0, sizeof tsbk);
+        uint8_t values[8] = {
+            (uint8_t)('A' - 43), (uint8_t)('B' - 43), (uint8_t)('C' - 43), (uint8_t)('D' - 43),
+            (uint8_t)('E' - 43), (uint8_t)('F' - 43), (uint8_t)('G' - 43), (uint8_t)('H' - 43),
+        };
+        pack_mfid90_cwid_values(tsbk, values);
+        tsbk[8] = 0x1A;
+        tsbk[9] = 0xBC;
+
+        char cwid[9];
+        uint16_t channel = 0;
+        int count = p25_mfid90_base_station_id_decode(tsbk, cwid, sizeof cwid, &channel);
+        rc |= expect_eq("BSI cwid count", count, 8);
+        rc |= expect_str("BSI cwid", cwid, "ABCDEFGH");
+        rc |= expect_eq("BSI channel", channel, 0x1ABC);
+    }
+
+    // Test 0b: zero-valued CWID fields are omitted, matching sdrtrunk semantics.
+    {
+        uint8_t tsbk[12];
+        DSD_MEMSET(tsbk, 0, sizeof tsbk);
+        uint8_t values[8] = {(uint8_t)('A' - 43), 0, (uint8_t)('C' - 43), 0, 0, 0, 0, 0};
+        pack_mfid90_cwid_values(tsbk, values);
+
+        char cwid[9];
+        uint16_t channel = 0;
+        int count = p25_mfid90_base_station_id_decode(tsbk, cwid, sizeof cwid, &channel);
+        rc |= expect_eq("BSI zero cwid count", count, 2);
+        rc |= expect_str("BSI zero cwid", cwid, "AC");
+        rc |= expect_eq("BSI zero channel", channel, 0);
+    }
 
     // Test 1: MFID90 GRG Add Command pattern (sg=100, ga1=200, ga2=300, ga3=400)
     // Simulates the field extraction from p25p1_tsbk.c opcode 0x00 handler

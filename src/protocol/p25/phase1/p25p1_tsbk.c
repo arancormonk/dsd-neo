@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+#include "../p25_mfid90_utils.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -400,15 +401,31 @@ tsbk_handle_mfid90_emergency(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
 }
 
 static void
-tsbk_handle_mfid90_system_info(const dsd_opts* opts, const dsd_state* state,
-                               const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
-    DSD_FPRINTF(stderr, "\n MFID90 (Moto) System Information (BSI)\n");
-    DSD_FPRINTF(stderr, "  Data: %02X %02X %02X %02X %02X %02X %02X %02X", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
-                tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
-    if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
+tsbk_handle_mfid90_base_station_id(const dsd_opts* opts, const dsd_state* state,
+                                   const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    char cwid[9];
+    uint16_t channel = 0;
+    (void)p25_mfid90_base_station_id_decode(tsbk_byte, cwid, sizeof cwid, &channel);
+
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Control Channel Base Station ID\n");
+    DSD_FPRINTF(stderr, "  CHAN [%04X]", channel);
+    if (channel != 0) {
+        char suf[32];
+        p25_format_chan_suffix(state, channel, -1, suf, sizeof suf);
+        DSD_FPRINTF(stderr, "%s", suf);
+        if (state && channel < DSD_TRUNK_CHAN_MAP_SIZE && state->trunk_chan_map[channel] > 0) {
+            DSD_FPRINTF(stderr, " Freq: %.6lf MHz", (double)state->trunk_chan_map[channel] / 1000000.0);
+        }
+    }
+    if (cwid[0] != '\0') {
+        DSD_FPRINTF(stderr, " CWID: %s", cwid);
+    } else {
+        DSD_FPRINTF(stderr, " CWID: none");
+    }
+    if (opts && state && opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
         char callsign[7];
         p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
-        DSD_FPRINTF(stderr, " [Callsign: %s]", callsign);
+        DSD_FPRINTF(stderr, " Network Callsign: %s", callsign);
     }
     DSD_FPRINTF(stderr, "\n");
 }
@@ -424,7 +441,7 @@ tsbk_handle_mfid90(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSB
         case 0x03: tsbk_handle_mfid90_grant_update(opts, state, tsbk_byte); break;
         case 0x09: tsbk_handle_mfid90_scan_marker(tsbk_byte); break;
         case 0x0A: tsbk_handle_mfid90_emergency(tsbk_byte); break;
-        case 0x0B: tsbk_handle_mfid90_system_info(opts, state, tsbk_byte); break;
+        case 0x0B: tsbk_handle_mfid90_base_station_id(opts, state, tsbk_byte); break;
         default: break;
     }
     DSD_FPRINTF(stderr, "%s", KNRM);

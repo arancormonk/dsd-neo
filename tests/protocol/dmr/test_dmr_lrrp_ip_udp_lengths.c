@@ -251,6 +251,43 @@ build_ipv4_udp_vertex_tms(uint8_t* out, size_t cap, uint8_t ihl_words) {
     return ip_total_len;
 }
 
+static size_t
+build_ipv4_udp_empty_payload(uint8_t* out, size_t cap, uint16_t dst_port) {
+    DSD_MEMSET(out, 0, cap);
+
+    const size_t ip_header_len = 20u;
+    const size_t udp_len = 8u;
+    const size_t ip_total_len = ip_header_len + udp_len;
+    if (cap < ip_total_len) {
+        return 0;
+    }
+
+    out[0] = (uint8_t)((4u << 4) | 5u);
+    out[2] = (uint8_t)((ip_total_len >> 8) & 0xFFu);
+    out[3] = (uint8_t)(ip_total_len & 0xFFu);
+    out[8] = 0x40;
+    out[9] = 0x11;
+
+    out[12] = 1;
+    out[13] = 2;
+    out[14] = 3;
+    out[15] = 4;
+    out[16] = 5;
+    out[17] = 6;
+    out[18] = 7;
+    out[19] = 8;
+
+    const size_t udp_off = ip_header_len;
+    out[udp_off + 0] = 0x30;
+    out[udp_off + 1] = 0x39;
+    out[udp_off + 2] = (uint8_t)((dst_port >> 8) & 0xFFu);
+    out[udp_off + 3] = (uint8_t)(dst_port & 0xFFu);
+    out[udp_off + 4] = (uint8_t)((udp_len >> 8) & 0xFFu);
+    out[udp_off + 5] = (uint8_t)(udp_len & 0xFFu);
+
+    return ip_total_len;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -296,6 +333,14 @@ main(void) {
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], "VTX TMS SRC:", "vtx5007 label");
         rc |= expect_has_substr(st.event_history_s[0].Event_History_Items[0].text_message, "HI", "vtx5007 text");
+    }
+
+    // Case 4: EF Johnson Atlas Data Registration Server on UDP/9361 should be labeled.
+    {
+        size_t plen = build_ipv4_udp_empty_payload(pkt, sizeof pkt, 9361);
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "P25 Atlas SRC(IP): 1.2.3.4; DST(IP): 5.6.7.8;", "atlas9361 label");
     }
 
     free(st.event_history_s);
