@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "../p25_extended_function.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -3746,6 +3747,26 @@ p25p2_vpdu_iter_block_53(p25p2_vpdu_ctx* ctx) {
     int slot VPDU_MAYBE_UNUSED = ctx->slot;
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
+
+    if (MAC[1 + len_a] == 0x64) {
+        uint8_t class_id = (uint8_t)MAC[2 + len_a];
+        uint8_t operand = (uint8_t)MAC[3 + len_a];
+        uint32_t argument = (uint32_t)((MAC[4 + len_a] << 16) | (MAC[5 + len_a] << 8) | MAC[6 + len_a]);
+        uint32_t target = (uint32_t)((MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a]);
+
+        DSD_FPRINTF(stderr, "\n Extended Function Command - Abbreviated");
+        DSD_FPRINTF(stderr, "\n  Class: %02X Operand: %02X Arg/Src: %06X Target: %u", class_id, operand, argument,
+                    target);
+        if (class_id == 0) {
+            DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label(operand));
+            if (p25_extended_function_operand_is_ack(operand)) {
+                DSD_FPRINTF(stderr, " Ack");
+            }
+        } else {
+            DSD_FPRINTF(stderr, " Other Command");
+        }
+        DSD_FPRINTF(stderr, ";");
+    }
 
     if (MAC[1 + len_a] == 0x69) {
         int rfssid = MAC[2 + len_a];
