@@ -128,9 +128,9 @@ main(int argc, char** argv) {
     // Mark IDEN 1 as TDMA to exercise slot detection; choose odd channel number => slot 1
     int iden = 1;
     // Populate new dual-array
-    state.p25_iden_tdma[iden].base_freq = 851000000;
-    state.p25_iden_tdma[iden].chan_type = 1;
-    state.p25_iden_tdma[iden].chan_spac = 1250;
+    state.p25_iden_tdma[iden].base_freq = 851000000L / 5L;
+    state.p25_iden_tdma[iden].chan_type = 3;
+    state.p25_iden_tdma[iden].chan_spac = 100;
     state.p25_iden_tdma[iden].trust = 2;
     state.p25_iden_tdma[iden].populated = 1;
     state.p25_chan_tdma_explicit[iden] = 2; // TDMA known
@@ -143,6 +143,7 @@ main(int argc, char** argv) {
     // Expect one tune and active slot set to 1 for TDMA
     rc |= expect_eq("tune_count after grant", state.p25_sm_tune_count, 1);
     rc |= expect_eq("active slot", state.p25_p2_active_slot, 1);
+    rc |= expect_eq("vc freq", state.p25_vc_freq[0], 851000000);
 
     // Release path: ensure it increments release count. Force no active slots to avoid deferral.
     state.p25_p2_audio_allowed[0] = 0;
