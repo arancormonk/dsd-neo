@@ -99,24 +99,24 @@ dmr_ms_decode_tact(const char cachdata[25], uint8_t tact_bits[7]) {
 }
 
 static void
-dmr_ms_fill_ambe_from_stream(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], int payload_offset,
-                             int dibit_count) {
+dmr_ms_fill_ambe_from_stream(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], int payload_offset, int dibit_count,
+                             int interleave_offset) {
     for (int i = 0; i < dibit_count; i++) {
         int dibit = dmr_ms_read_dibit(opts, state, 1);
         state->dmr_stereo_payload[payload_offset + i] = dibit;
-        dmr_ms_store_ambe_dibit(ambe_fr, i, dibit);
+        dmr_ms_store_ambe_dibit(ambe_fr, interleave_offset + i, dibit);
     }
 }
 
 static void
 dmr_ms_fill_ambe_from_payload(const dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], int payload_offset,
-                              int dibit_count, int write_back) {
+                              int dibit_count, int interleave_offset, int write_back) {
     for (int i = 0; i < dibit_count; i++) {
         int dibit = dmr_ms_apply_inversion(opts, state->dmr_stereo_payload[payload_offset + i], 1);
         if (write_back != 0) {
             state->dmr_stereo_payload[payload_offset + i] = dibit;
         }
-        dmr_ms_store_ambe_dibit(ambe_fr, i, dibit);
+        dmr_ms_store_ambe_dibit(ambe_fr, interleave_offset + i, dibit);
     }
 }
 
@@ -293,10 +293,10 @@ dmr_ms_collect_bootstrap_cach(const dsd_opts* opts, const dsd_state* state, char
 
 static void
 dmr_ms_decode_bootstrap_voice(dsd_opts* opts, dsd_state* state, dmr_ms_voice_frames* frames) {
-    dmr_ms_fill_ambe_from_payload(opts, state, frames->ambe_fr, 12, 36, 1);
-    dmr_ms_fill_ambe_from_payload(opts, state, frames->ambe_fr2, 48, 18, 0);
-    dmr_ms_fill_ambe_from_stream(opts, state, frames->ambe_fr2, 90, 18);
-    dmr_ms_fill_ambe_from_stream(opts, state, frames->ambe_fr3, 108, 36);
+    dmr_ms_fill_ambe_from_payload(opts, state, frames->ambe_fr, 12, 36, 0, 1);
+    dmr_ms_fill_ambe_from_payload(opts, state, frames->ambe_fr2, 48, 18, 0, 0);
+    dmr_ms_fill_ambe_from_stream(opts, state, frames->ambe_fr2, 90, 18, 18);
+    dmr_ms_fill_ambe_from_stream(opts, state, frames->ambe_fr3, 108, 36, 0);
 }
 
 static void
@@ -339,12 +339,12 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         dmr_ms_read_cach(opts, state, cachdata);
         (void)dmr_ms_decode_tact(cachdata, tact_bits);
 
-        dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr, 12, 36);
-        dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 48, 18);
+        dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr, 12, 36, 0);
+        dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 48, 18, 0);
         dmr_ms_collect_sync_bits(opts, state, syncdata, vc, internalslot);
         uint8_t power = dmr_ms_decode_embedded_color_code(state, syncdata, emb_pdu);
-        dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 90, 18);
-        dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr3, 108, 36);
+        dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 90, 18, 18);
+        dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr3, 108, 36, 0);
         dmr_ms_dump_dsp_output(opts, state);
 
         state->dmr_ms_mode = 1;

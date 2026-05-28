@@ -1244,6 +1244,26 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_core_mbe_transform_context
+    core/test_core_mbe_transform_context.c
+)
+target_include_directories(
+    dsd-neo_test_core_mbe_transform_context
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/core/vocoder
+        ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_core_mbe_transform_context
+    PRIVATE dsd-neo_core
+)
+add_test(
+    NAME CORE_MBE_TRANSFORM_CONTEXT
+    COMMAND dsd-neo_test_core_mbe_transform_context
+)
+
+add_executable(
     dsd-neo_test_core_straight_keystream_validation
     core/test_core_straight_keystream_validation.c
 )
