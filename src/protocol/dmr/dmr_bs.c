@@ -116,9 +116,9 @@ reset_dmr_bs_loop_buffers(dmr_bs_ctx* ctx) {
 
 static void
 read_dmr_bs_ambe_segment_stream(dsd_opts* opts, dsd_state* state, char frame[4][24], int payload_offset,
-                                int dibit_count, char* redundancy_out) {
-    const int *w = dmr_ambe_interleave_w, *x = dmr_ambe_interleave_x, *y = dmr_ambe_interleave_y,
-              *z = dmr_ambe_interleave_z;
+                                int dibit_count, int interleave_offset, char* redundancy_out) {
+    const int *w = dmr_ambe_interleave_w + interleave_offset, *x = dmr_ambe_interleave_x + interleave_offset,
+              *y = dmr_ambe_interleave_y + interleave_offset, *z = dmr_ambe_interleave_z + interleave_offset;
     for (int i = 0; i < dibit_count; i++) {
         int dibit = getDibit(opts, state);
         state->dmr_stereo_payload[payload_offset + i] = dibit;
@@ -135,10 +135,10 @@ read_dmr_bs_ambe_segment_stream(dsd_opts* opts, dsd_state* state, char frame[4][
 }
 
 static void
-unpack_dmr_bs_ambe_segment_from_payload(const dsd_state* state, char frame[4][24], int payload_offset,
-                                        int dibit_count) {
-    const int *w = dmr_ambe_interleave_w, *x = dmr_ambe_interleave_x, *y = dmr_ambe_interleave_y,
-              *z = dmr_ambe_interleave_z;
+unpack_dmr_bs_ambe_segment_from_payload(const dsd_state* state, char frame[4][24], int payload_offset, int dibit_count,
+                                        int interleave_offset) {
+    const int *w = dmr_ambe_interleave_w + interleave_offset, *x = dmr_ambe_interleave_x + interleave_offset,
+              *y = dmr_ambe_interleave_y + interleave_offset, *z = dmr_ambe_interleave_z + interleave_offset;
     for (int i = 0; i < dibit_count; i++) {
         int dibit = state->dmr_stereo_payload[payload_offset + i];
         frame[*w][*x] = (1 & (dibit >> 1));
@@ -803,8 +803,8 @@ decode_dmr_bs_bootstrap_cach_and_tact(dsd_state* state, dmr_bs_bootstrap_ctx* ct
 
 static int
 collect_dmr_bs_bootstrap_prefetched_voice(const dsd_state* state, dmr_bs_bootstrap_ctx* ctx) {
-    unpack_dmr_bs_ambe_segment_from_payload(state, ctx->ambe_fr, 12, 36);
-    unpack_dmr_bs_ambe_segment_from_payload(state, ctx->ambe_fr2, 48, 18);
+    unpack_dmr_bs_ambe_segment_from_payload(state, ctx->ambe_fr, 12, 36, 0);
+    unpack_dmr_bs_ambe_segment_from_payload(state, ctx->ambe_fr2, 48, 18, 0);
     extract_dmr_bs_sync_from_payload(state, 66, ctx->sync);
 
     if (strcmp(ctx->sync, DMR_BS_VOICE_SYNC) != 0) {
@@ -902,17 +902,17 @@ process_dmr_bs_iteration(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
         return DMR_BS_ACTION_END;
     }
 
-    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr, 12, 36, ctx->redundancyA);
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr, 12, 36, 0, ctx->redundancyA);
     if (is_dmr_bs_redundant_carrier(ctx)) {
         return DMR_BS_ACTION_END;
     }
     DSD_MEMCPY(ctx->redundancyB, ctx->redundancyA, sizeof(ctx->redundancyA));
 
-    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 48, 18, NULL);
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 48, 18, 0, NULL);
     read_dmr_bs_sync_segment(opts, state, ctx);
     build_dmr_bs_emb_pdu(ctx);
-    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 90, 18, NULL);
-    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr3, 108, 36, NULL);
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 90, 18, 18, NULL);
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr3, 108, 36, 0, NULL);
 
     note_dmr_bs_voice_sync(state, ctx);
 
@@ -994,8 +994,8 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
         goto END;
     }
 
-    read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr2, 90, 18, NULL);
-    read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr3, 108, 36, NULL);
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr2, 90, 18, 18, NULL);
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr3, 108, 36, 0, NULL);
 
     if (opts->use_dsp_output == 1) {
         write_dmr_bs_dsp_output(opts, state, ctx.internalslot);

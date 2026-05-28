@@ -49,6 +49,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd_mbe_result.h"
 
 static void
 p25p2_record_voice_err(dsd_state* state, int voice_err) {
@@ -926,6 +927,9 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
         return;
     }
 
+    char decoded_ambe_d[49];
+    DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
+
     if ((state->nxdn_cipher_type == 0x01 && state->R != 0) || (state->M == 1 && state->R > 0)) {
         mbe_apply_nxdn_cipher1(state, frame_ctx->ambe_d);
     }
@@ -935,6 +939,8 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
              || (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1)) {
         mbe_apply_nxdn_cipher23(state, frame_ctx->ambe_d);
     }
+
+    (void)dsd_mbe_strip_c0_context_if_ambe_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
 
     process_ambe2450_params(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                             sizeof(state->err_str), frame_ctx->ambe_d, state->cur_mp, state->prev_mp,
@@ -1463,6 +1469,9 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
         return;
     }
 
+    char decoded_ambe_d[49];
+    DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
+
     mbeslot_left_autoload_keys(opts, state);
     mbeslot_left_apply_basic_privacy(state, frame_ctx);
     mbeslot_left_apply_vertex_standard(state, frame_ctx);
@@ -1472,6 +1481,7 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
     mbeslot_left_apply_p25p2_rc4(state, frame_ctx);
     mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
     mbe_slot_apply_straight_ks_left(state, frame_ctx->ambe_d);
+    (void)dsd_mbe_strip_c0_context_if_ambe_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_left(opts, state, frame_ctx->ambe_d, &ambe_result, have_ambe_result);
 }
 
@@ -1487,6 +1497,9 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
         return;
     }
 
+    char decoded_ambe_d[49];
+    DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
+
     mbeslot_right_autoload_keys(opts, state);
     mbeslot_right_apply_basic_privacy(state, frame_ctx);
     mbeslot_right_apply_vertex_standard(state, frame_ctx);
@@ -1496,6 +1509,7 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
     mbeslot_right_apply_p25p2_rc4(state, frame_ctx);
     mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
     mbe_slot_apply_straight_ks_right(state, frame_ctx->ambe_d);
+    (void)dsd_mbe_strip_c0_context_if_ambe_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_right(opts, state, frame_ctx->ambe_d, &ambe_result, have_ambe_result);
 }
 
