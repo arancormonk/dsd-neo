@@ -527,12 +527,12 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
 }
 
 static int
-p25_grant_configure_channel_profile(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot) {
+p25_grant_configure_channel_profile_for_tdma(int vc_is_tdma, const dsd_opts* opts, dsd_state* state, int slot) {
     int ted_sps = p25_ted_sps_for_bw(opts, 4800);
-    if (!ctx || !state) {
+    if (!state) {
         return ted_sps;
     }
-    if (ctx->vc_is_tdma) {
+    if (vc_is_tdma) {
         ted_sps = p25_ted_sps_for_bw(opts, 6000);
         state->p25_p2_active_slot = slot;
         // P25P2 TDMA always uses CQPSK modulation.
@@ -543,6 +543,57 @@ p25_grant_configure_channel_profile(const p25_sm_ctx_t* ctx, const dsd_opts* opt
     state->samplesPerSymbol = ted_sps;
     state->symbolCenter = dsd_opts_symbol_center(ted_sps);
     return ted_sps;
+}
+
+typedef struct {
+    int p25_p2_active_slot;
+    int rf_mod;
+    int samples_per_symbol;
+    int symbol_center;
+    int vc_cqpsk_override;
+} p25_grant_profile_snapshot_t;
+
+static p25_grant_profile_snapshot_t
+p25_grant_profile_snapshot_capture(const dsd_state* state) {
+    p25_grant_profile_snapshot_t snapshot = {-1, 0, 0, 0, -1};
+    if (!state) {
+        return snapshot;
+    }
+    snapshot.p25_p2_active_slot = state->p25_p2_active_slot;
+    snapshot.rf_mod = state->rf_mod;
+    snapshot.samples_per_symbol = state->samplesPerSymbol;
+    snapshot.symbol_center = state->symbolCenter;
+    snapshot.vc_cqpsk_override = state->p25_vc_cqpsk_override;
+    return snapshot;
+}
+
+static void
+p25_grant_profile_snapshot_restore(dsd_state* state, const p25_grant_profile_snapshot_t* snapshot) {
+    if (!state || !snapshot) {
+        return;
+    }
+    state->p25_p2_active_slot = snapshot->p25_p2_active_slot;
+    state->rf_mod = snapshot->rf_mod;
+    state->samplesPerSymbol = snapshot->samples_per_symbol;
+    state->symbolCenter = snapshot->symbol_center;
+    state->p25_vc_cqpsk_override = snapshot->vc_cqpsk_override;
+}
+
+static int
+p25_grant_try_tune_vc(const p25_sm_event_t* ev, dsd_opts* opts, dsd_state* state, long freq, int slot,
+                      int* out_ted_sps) {
+    const int vc_is_tdma = is_tdma_channel(state, ev->channel);
+    p25_grant_profile_snapshot_t snapshot = p25_grant_profile_snapshot_capture(state);
+    const int ted_sps = p25_grant_configure_channel_profile_for_tdma(vc_is_tdma, opts, state, slot);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, ted_sps);
+    if (dsd_trunk_tune_result_is_ok(tune_result)) {
+        *out_ted_sps = ted_sps;
+        return 1;
+    }
+
+    p25_grant_profile_snapshot_restore(state, &snapshot);
+    sm_log(opts, state, tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "grant-tune-deferred" : "grant-tune-failed");
+    return 0;
 }
 
 static void
@@ -561,6 +612,18 @@ p25_grant_debug_log_tdma(const dsd_opts* opts, const dsd_state* state, const p25
                 "tune_count=%u grant_count=%u\n",
                 ev->channel & 0xFFFF, freq, state->p25_p2_active_slot, state->rf_mod, state->samplesPerSymbol,
                 state->symbolCenter, ted_sps, ctx->tune_count, ctx->grant_count);
+}
+
+static int
+p25_grant_handle_duplicate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
+                           const dsd_tg_policy_call_route* route, const dsd_tg_policy_decision* decision, long freq,
+                           int target_id, double now_m) {
+    if (ctx->state != P25_SM_TUNED || ctx->vc_freq_hz != freq || ctx->vc_tg != target_id) {
+        return 0;
+    }
+    (void)dsd_tg_policy_note_active_call(state, route, decision, now_m);
+    sm_log(opts, state, "grant-same-freq");
+    return 1;
 }
 
 /* ============================================================================
@@ -600,9 +663,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
 
     // Skip if already tuned to same frequency AND same TG (avoid bounce on duplicate grants)
     // Different TG/call type should still trigger a new tune
-    if (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz == freq && ctx->vc_tg == target_id) {
-        (void)dsd_tg_policy_note_active_call(state, &route, &decision, now_m);
-        sm_log(opts, state, "grant-same-freq");
+    if (p25_grant_handle_duplicate(ctx, opts, state, &route, &decision, freq, target_id, now_m)) {
         return;
     }
 
@@ -610,11 +671,11 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         return;
     }
 
+    if (!p25_grant_try_tune_vc(ev, opts, state, freq, slot, &ted_sps)) {
+        return;
+    }
     p25_grant_store_vc_context(ctx, state, ev, freq, target_id, now_m);
     p25_grant_clear_slot_state(ctx);
-    ted_sps = p25_grant_configure_channel_profile(ctx, opts, state, slot);
-
-    dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, ted_sps);
     ctx->tune_count++;
     ctx->grant_count++;
     p25_grant_debug_log_tdma(opts, state, ctx, ev, freq, ted_sps);
@@ -816,10 +877,74 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
  * Release to CC
  * ============================================================================ */
 
+static int
+p25_release_should_return_to_cc(const p25_sm_ctx_t* ctx, const dsd_opts* opts) {
+    const int opts_tuned = (opts && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
+    return (ctx && (ctx->state == P25_SM_TUNED || opts_tuned)) ? 1 : 0;
+}
+
+static int
+p25_release_return_to_cc_accepted(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int had_force_release,
+                                  double* out_tune_start_m) {
+    if (ctx->vc_is_tdma && opts && state) {
+        dsd_p25_optional_hook_p25p2_flush_partial_audio(opts, state);
+    }
+
+    *out_tune_start_m = now_monotonic();
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state);
+    if (dsd_trunk_tune_result_is_ok(tune_result)) {
+        return 1;
+    }
+
+    sm_log(opts, state, tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "release-cc-deferred" : "release-cc-failed");
+    if (state && had_force_release) {
+        state->p25_sm_force_release = 1;
+    }
+    return 0;
+}
+
+static void
+p25_release_clear_context(p25_sm_ctx_t* ctx) {
+    p25_grant_clear_slot_state(ctx);
+    ctx->vc_freq_hz = 0;
+    ctx->vc_channel = 0;
+    ctx->vc_tg = 0;
+    ctx->vc_src = 0;
+    ctx->t_tune_m = 0.0;
+    ctx->t_voice_m = 0.0;
+    ctx->release_count++;
+    ctx->cc_return_count++;
+}
+
+static void
+p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
+    if (state) {
+        (void)dsd_tg_policy_clear_active_call(state, -1);
+        state->p25_p2_audio_allowed[0] = 0;
+        state->p25_p2_audio_allowed[1] = 0;
+        state->p25_p2_active_slot = -1;
+        state->p25_vc_freq[0] = 0;
+        state->p25_vc_freq[1] = 0;
+        state->trunk_vc_freq[0] = 0;
+        state->trunk_vc_freq[1] = 0;
+        state->payload_algid = 0;
+        state->payload_algidR = 0;
+        state->payload_keyid = 0;
+        state->payload_keyidR = 0;
+        state->payload_miP = 0;
+        state->payload_miN = 0;
+        state->p25_sm_release_count++;
+    }
+    if (opts) {
+        opts->p25_is_tuned = 0;
+        opts->trunk_is_tuned = 0;
+    }
+}
+
 static void
 do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
     double tune_start_m = 0.0;
-    int opts_tuned = 0;
+    int had_force_release = 0;
     if (!ctx) {
         return;
     }
@@ -832,64 +957,27 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     }
 
     if (state) {
+        had_force_release = (state->p25_sm_force_release != 0) ? 1 : 0;
         // Clear any pending forced-release request; we're handling teardown now.
         state->p25_sm_force_release = 0;
     }
 
-    // Only do a hardware return-to-CC when we are (or believe we are) tuned to
-    // a voice channel. This makes repeated release requests idempotent.
-    opts_tuned = (opts && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
-    if (ctx->state != P25_SM_TUNED && !opts_tuned) {
+    if (!p25_release_should_return_to_cc(ctx, opts)) {
         atomic_store(&g_p25_sm_release_lock, 0);
         return;
     }
 
     sm_log(opts, state, reason);
 
-    p25_grant_clear_slot_state(ctx);
-    ctx->vc_freq_hz = 0;
-    ctx->vc_channel = 0;
-    ctx->vc_tg = 0;
-    ctx->vc_src = 0;
-    ctx->t_tune_m = 0.0;
-    ctx->t_voice_m = 0.0;
-
-    ctx->release_count++;
-    ctx->cc_return_count++;
-    if (state) {
-        (void)dsd_tg_policy_clear_active_call(state, -1);
+    // Return to CC. On failure/defer, leave VC state untouched so the watchdog
+    // can retry through the same state machine instead of pretending the tuner moved.
+    if (!p25_release_return_to_cc_accepted(ctx, opts, state, had_force_release, &tune_start_m)) {
+        atomic_store(&g_p25_sm_release_lock, 0);
+        return;
     }
 
-    // P25p2 short-call robustness: flush any partially buffered audio before
-    // clearing slot gates and retuning, so short transmissions that end before
-    // a full superframe still produce audible output.
-    if (ctx->vc_is_tdma && opts && state) {
-        dsd_p25_optional_hook_p25p2_flush_partial_audio(opts, state);
-    }
-
-    // Clear legacy state fields
-    if (state) {
-        state->p25_p2_audio_allowed[0] = 0;
-        state->p25_p2_audio_allowed[1] = 0;
-        state->p25_p2_active_slot = -1;
-        state->p25_vc_freq[0] = 0;
-        state->p25_vc_freq[1] = 0;
-        state->trunk_vc_freq[0] = 0;
-        state->trunk_vc_freq[1] = 0;
-        // Clear encryption state
-        state->payload_algid = 0;
-        state->payload_algidR = 0;
-        state->payload_keyid = 0;
-        state->payload_keyidR = 0;
-        state->payload_miP = 0;
-        state->payload_miN = 0;
-        // Update release counter
-        state->p25_sm_release_count++;
-    }
-
-    // Return to CC
-    tune_start_m = now_monotonic();
-    dsd_trunk_tuning_hook_return_to_cc(opts, state);
+    p25_release_clear_context(ctx);
+    p25_release_clear_decoder_state(opts, state);
     p25_sm_start_cc_grace_after_tune(ctx, state, tune_start_m);
 
     // Transition to ON_CC state
@@ -966,7 +1054,12 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
 
     // First try discovered CC candidates (if preference enabled)
     if (opts && opts->p25_prefer_candidates == 1 && next_cc_candidate(state, &cand, now_m)) {
-        dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
+        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+            sm_log(opts, state,
+                   tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "hunt-cand-deferred" : "hunt-cand-failed");
+            return;
+        }
         state->p25_cc_eval_freq = cand;
         state->p25_cc_eval_start_m = now_m;
         p25_sm_start_cc_grace_after_tune(ctx, state, now_m);
@@ -977,7 +1070,12 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
 
     // Fall back to user-provided LCN list
     if (next_lcn_freq(state, &cand)) {
-        dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
+        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+            sm_log(opts, state,
+                   tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "hunt-lcn-deferred" : "hunt-lcn-failed");
+            return;
+        }
         p25_sm_start_cc_grace_after_tune(ctx, state, now_m);
         set_state(ctx, opts, state, P25_SM_ON_CC, "hunt-lcn");
         sm_log(opts, state, "hunt-lcn-tune");
@@ -1157,9 +1255,10 @@ p25_sm_tick_handle_forced_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
     if (!ctx || !state || state->p25_sm_force_release == 0) {
         return 0;
     }
-    state->p25_sm_force_release = 0;
     if (ctx->state == P25_SM_TUNED) {
         do_release(ctx, opts, state, "release-forced");
+    } else {
+        state->p25_sm_force_release = 0;
     }
     return 1;
 }
@@ -1297,39 +1396,79 @@ p25_sm_tick_tuned_check_hangtime(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
     }
 }
 
-static void
-p25_sm_tick_try_cqpsk_retry(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double dt_tune) {
 #ifdef USE_RADIO
-    if (!(opts && state && opts->audio_in_type == AUDIO_IN_RTL && ctx->vc_is_tdma && !ctx->vc_cqpsk_retry_done
-          && dt_tune >= 0.8 && state->p25_vc_cqpsk_pref != 1)) {
-        return;
+static int
+p25_cqpsk_retry_candidate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, double dt_tune) {
+    if (!ctx || !opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
     }
+    if (!ctx->vc_is_tdma || ctx->vc_cqpsk_retry_done || dt_tune < 0.8 || state->p25_vc_cqpsk_pref == 1) {
+        return 0;
+    }
+    return 1;
+}
+
+static int
+p25_cqpsk_retry_runtime_allowed(p25_sm_ctx_t* ctx, const dsd_opts* opts, long vc_freq_hz) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
         dsd_neo_config_init(opts);
         cfg = dsd_neo_get_config();
     }
-    if ((cfg && cfg->cqpsk_is_set) || ctx->vc_freq_hz <= 0) {
-        return;
+    if ((cfg && cfg->cqpsk_is_set) || vc_freq_hz <= 0) {
+        return 0;
     }
 
     int cqpsk = 0, fll = 0, ted = 0;
     dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
-    if (cqpsk) {
-        ctx->vc_cqpsk_retry_done = 1;
+    if (!cqpsk) {
+        return 1;
+    }
+    ctx->vc_cqpsk_retry_done = 1;
+    return 0;
+}
+
+static int
+p25_cqpsk_retry_tune(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int ted_sps) {
+    int prev_override = state->p25_vc_cqpsk_override;
+    int prev_sps = state->samplesPerSymbol;
+    int prev_center = state->symbolCenter;
+    state->p25_vc_cqpsk_override = 1;
+    state->samplesPerSymbol = ted_sps;
+    state->symbolCenter = dsd_opts_symbol_center(ted_sps);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, ctx->vc_freq_hz, ted_sps);
+    if (dsd_trunk_tune_result_is_ok(tune_result)) {
+        return 1;
+    }
+
+    state->p25_vc_cqpsk_override = prev_override;
+    state->samplesPerSymbol = prev_sps;
+    state->symbolCenter = prev_center;
+    sm_log(opts, state, tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "cqpsk-retry-deferred" : "cqpsk-retry-failed");
+    return 0;
+}
+#endif
+
+static void
+p25_sm_tick_try_cqpsk_retry(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double dt_tune) {
+#ifdef USE_RADIO
+    if (!p25_cqpsk_retry_candidate(ctx, opts, state, dt_tune)) {
         return;
     }
 
-    state->p25_vc_cqpsk_override = 1;
+    if (!p25_cqpsk_retry_runtime_allowed(ctx, opts, ctx->vc_freq_hz)) {
+        return;
+    }
+
+    int ted_sps = p25_ted_sps_for_bw(opts, 6000);
+    if (!p25_cqpsk_retry_tune(ctx, opts, state, ted_sps)) {
+        return;
+    }
     ctx->vc_cqpsk_retry_done = 1;
     // Restart the tune timer for retry to avoid immediate timeout from the new attempt.
     ctx->t_tune_m = now_m;
     ctx->t_voice_m = 0.0;
     p25_sm_clear_slot_activity(ctx);
-    int ted_sps = p25_ted_sps_for_bw(opts, 6000);
-    state->samplesPerSymbol = ted_sps;
-    state->symbolCenter = dsd_opts_symbol_center(ted_sps);
-    dsd_trunk_tuning_hook_tune_to_freq(opts, state, ctx->vc_freq_hz, ted_sps);
     sm_log(opts, state, "cqpsk-retry-on");
 #else
     (void)ctx;

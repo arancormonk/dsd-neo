@@ -25,6 +25,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/platform/sockets.h"
+#include "dsd-neo/runtime/trunk_tuning_hooks.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -37,6 +38,19 @@
  */
 static int g_setfreq_calls = 0;
 static long int g_last_setfreq_hz = 0;
+static bool g_setfreq_result = true;
+static bool g_setmod_result = true;
+static int g_frame_sync_reset_calls = 0;
+static int g_p25p2_frame_reset_calls = 0;
+static int g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+static int g_rtl_cqpsk_enable = 0;
+static int g_rtl_symbol_rate_hz = 4800;
+static int g_rtl_symbol_levels = 4;
+static int g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+static int g_rtl_ted_sps = 5;
+static int g_rtl_ted_sps_override = 0;
+static int g_drain_audio_calls = 0;
+static int g_rtl_tune_calls = 0;
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -47,11 +61,15 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_frame_sync_reset_mod_state(void) {}
+dsd_frame_sync_reset_mod_state(void) {
+    g_frame_sync_reset_calls++;
+}
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_p2_frame_reset(void) {}
+p25_p2_frame_reset(void) {
+    g_p25p2_frame_reset_calls++;
+}
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -63,6 +81,7 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_drain_audio_output(dsd_opts* opts) {
     (void)opts;
+    g_drain_audio_calls++;
 }
 
 bool
@@ -70,53 +89,97 @@ SetFreq(dsd_socket_t sockfd, long int freq) {
     (void)sockfd;
     g_setfreq_calls++;
     g_last_setfreq_hz = freq;
-    return true;
+    return g_setfreq_result;
 }
 
 bool
 SetModulation(dsd_socket_t sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
-    return true;
+    return g_setmod_result;
 }
 
 uint32_t
 rtl_stream_output_rate(const RtlSdrContext* ctx) {
     (void)ctx;
-    return 0;
+    return 48000;
 }
 
 int
 rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     (void)center_freq_hz;
-    return 0;
+    g_rtl_tune_calls++;
+    return g_rtl_tune_result;
 }
 
 void
 rtl_stream_toggle_cqpsk(int onoff) {
-    (void)onoff;
+    g_rtl_cqpsk_enable = onoff ? 1 : 0;
+    if (g_rtl_cqpsk_enable) {
+        g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    }
+}
+
+int
+rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
+    if (cqpsk_enable) {
+        *cqpsk_enable = g_rtl_cqpsk_enable;
+    }
+    if (fll_enable) {
+        *fll_enable = 0;
+    }
+    if (ted_enable) {
+        *ted_enable = 0;
+    }
+    return 0;
+}
+
+int
+rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    if (out_symbol_rate_hz) {
+        *out_symbol_rate_hz = g_rtl_symbol_rate_hz;
+    }
+    if (out_levels) {
+        *out_levels = g_rtl_symbol_levels;
+    }
+    if (out_channel_profile) {
+        *out_channel_profile = g_rtl_channel_profile;
+    }
+    return 0;
 }
 
 int
 rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
-    (void)symbol_rate_hz;
-    (void)levels;
-    (void)channel_profile;
+    g_rtl_symbol_rate_hz = symbol_rate_hz;
+    g_rtl_symbol_levels = levels;
+    g_rtl_channel_profile = channel_profile;
     return 0;
+}
+
+int
+rtl_stream_get_ted_sps(void) {
+    return g_rtl_ted_sps;
+}
+
+int
+rtl_stream_get_ted_sps_override(void) {
+    return g_rtl_ted_sps_override;
 }
 
 void
 rtl_stream_set_ted_sps(int sps) {
-    (void)sps;
+    g_rtl_ted_sps_override = sps;
 }
 
 void
-rtl_stream_clear_ted_sps_override(void) {}
+rtl_stream_clear_ted_sps_override(void) {
+    g_rtl_ted_sps_override = 0;
+}
 
 void
 rtl_stream_set_ted_sps_no_override(int sps) {
-    (void)sps;
+    g_rtl_ted_sps = sps;
 }
 
 uint64_t
@@ -190,6 +253,162 @@ main(void) {
     assert(state->samplesPerSymbol == 17);
     assert(state->symbolCenter == 8);
     assert(state->rf_mod == 2);
+
+    /* Rigctl modulation remains best-effort: a modulation failure must not
+     * report tune failure after the frequency command succeeds. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->setmod_bw = 12500;
+    g_setfreq_calls = 0;
+    g_last_setfreq_hz = 0;
+    g_setmod_result = false;
+    g_setfreq_result = true;
+    g_frame_sync_reset_calls = 0;
+    assert(dsd_engine_trunk_tune_to_freq(opts, state, 853000000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_setfreq_calls == 1);
+    assert(g_last_setfreq_hz == 853000000);
+    assert(opts->trunk_is_tuned == 1);
+    assert(state->trunk_vc_freq[0] == 853000000);
+    assert(g_frame_sync_reset_calls == 1);
+
+    /* RTL input driven by rigctl still needs the generic output drain because
+     * the RTL stream backend will not run its retune drain policy. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->use_rigctl = 1;
+    g_setfreq_calls = 0;
+    g_last_setfreq_hz = 0;
+    g_setfreq_result = true;
+    g_drain_audio_calls = 0;
+    g_rtl_tune_calls = 0;
+    assert(dsd_engine_trunk_tune_to_freq(opts, state, 853500000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_drain_audio_calls == 1);
+    assert(g_setfreq_calls == 1);
+    assert(g_last_setfreq_hz == 853500000);
+    assert(g_rtl_tune_calls == 0);
+
+    /* If the frequency command itself fails, the decoder must not advance state
+     * or reset DSP acquisition state for a channel it did not tune to. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->setmod_bw = 12500;
+    g_setmod_result = false;
+    g_setfreq_result = false;
+    g_frame_sync_reset_calls = 0;
+    assert(dsd_engine_trunk_tune_to_freq(opts, state, 854000000, 0) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(opts->trunk_is_tuned == 0);
+    assert(state->trunk_vc_freq[0] == 0);
+    assert(g_frame_sync_reset_calls == 0);
+
+#ifdef USE_RADIO
+    /* Native RTL stream retunes keep relying on rtl_stream_tune() for
+     * hardware-side drain/clear behavior instead of also draining here. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_drain_audio_calls = 0;
+    g_rtl_tune_calls = 0;
+    assert(dsd_engine_trunk_tune_to_freq(opts, state, 854500000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_drain_audio_calls == 0);
+    assert(g_rtl_tune_calls == 1);
+
+    /* Deferred RTL voice retunes must roll back the demod profile/TED changes
+     * prepared for the requested channel. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->p25_trunk = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 1;
+    state->p25_p2_active_slot = 0;
+    state->p25_vc_cqpsk_override = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+    g_rtl_ted_sps = 5;
+    g_rtl_ted_sps_override = 0;
+    g_frame_sync_reset_calls = 0;
+    g_p25p2_frame_reset_calls = 0;
+    assert(dsd_engine_trunk_tune_to_freq(opts, state, 855000000, 4) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    assert(opts->trunk_is_tuned == 0);
+    assert(state->trunk_vc_freq[0] == 0);
+    assert(state->p25_vc_cqpsk_override == 1);
+    assert(g_rtl_cqpsk_enable == 0);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+    assert(g_rtl_ted_sps == 5);
+    assert(g_rtl_ted_sps_override == 0);
+    assert(g_frame_sync_reset_calls == 0);
+    assert(g_p25p2_frame_reset_calls == 0);
+
+    /* Pending RTL retunes keep the requested demod profile and trunk state
+     * because the queued controller request may still complete after timeout. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->p25_trunk = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 1;
+    state->p25_p2_active_slot = 0;
+    state->p25_vc_cqpsk_override = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+    g_rtl_ted_sps = 5;
+    g_rtl_ted_sps_override = 0;
+    g_frame_sync_reset_calls = 0;
+    g_p25p2_frame_reset_calls = 0;
+    assert(dsd_engine_trunk_tune_to_freq(opts, state, 855000000, 8) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(opts->trunk_is_tuned == 1);
+    assert(state->trunk_vc_freq[0] == 855000000);
+    assert(state->p25_vc_cqpsk_override == -1);
+    assert(g_rtl_cqpsk_enable == 1);
+    assert(g_rtl_symbol_rate_hz == 6000);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(g_rtl_ted_sps == 5);
+    assert(g_rtl_ted_sps_override == 8);
+    assert(g_frame_sync_reset_calls == 1);
+    assert(g_p25p2_frame_reset_calls == 1);
+
+    /* Pending RTL CC retunes likewise keep the requested CC profile and tracked
+     * CC state aligned with the queued hardware request. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->p25_trunk = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 0;
+    state->p25_cc_is_tdma = 1;
+    state->trunk_cc_freq = 851000000;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+    g_rtl_ted_sps = 5;
+    g_rtl_ted_sps_override = 0;
+    g_frame_sync_reset_calls = 0;
+    assert(dsd_engine_trunk_tune_to_cc(opts, state, 852000000, 4) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(state->rf_mod == 1);
+    assert(state->trunk_cc_freq == 852000000);
+    assert(g_rtl_cqpsk_enable == 1);
+    assert(g_rtl_symbol_rate_hz == 6000);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(g_rtl_ted_sps == 4);
+    assert(g_rtl_ted_sps_override == 0);
+    assert(g_frame_sync_reset_calls == 1);
+#endif
 
     printf("DMR_T3_RETURN_TO_CC_REGRESSION: OK\n");
     free(state);

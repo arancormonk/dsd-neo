@@ -9,6 +9,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -207,22 +208,24 @@ dsd_time_monotonic_ns(void) {
     return 0ULL;
 }
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)opts;
     (void)state;
     (void)freq;
     (void)ted_sps;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)opts;
     (void)state;
     (void)freq;
     (void)ted_sps;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void

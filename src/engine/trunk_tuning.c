@@ -22,11 +22,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-#ifdef USE_RADIO
-#endif
-#ifdef USE_RADIO
-#endif
+#include "dsd-neo/runtime/trunk_tuning_hooks.h"
 
 static int DSD_ATTR_USED
 dsd_engine_rtl_demod_rate(const dsd_state* state) {
@@ -107,6 +103,60 @@ dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
 }
 
 #ifdef USE_RADIO
+typedef struct {
+    int active;
+    int rf_mod;
+    int p25_vc_cqpsk_override;
+    int rtl_cqpsk_enable;
+    int rtl_symbol_rate_hz;
+    int rtl_symbol_levels;
+    int rtl_channel_profile;
+    int rtl_ted_sps;
+    int rtl_ted_sps_override;
+} dsd_engine_rtl_profile_snapshot;
+
+static void
+dsd_engine_rtl_profile_snapshot_capture(const dsd_opts* opts, const dsd_state* state,
+                                        dsd_engine_rtl_profile_snapshot* snapshot) {
+    if (!snapshot) {
+        return;
+    }
+    DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    snapshot->active = 1;
+    snapshot->rf_mod = state->rf_mod;
+    snapshot->p25_vc_cqpsk_override = state->p25_vc_cqpsk_override;
+    (void)rtl_stream_dsp_get(&snapshot->rtl_cqpsk_enable, NULL, NULL);
+    (void)rtl_stream_get_symbol_profile_full(&snapshot->rtl_symbol_rate_hz, &snapshot->rtl_symbol_levels,
+                                             &snapshot->rtl_channel_profile);
+    snapshot->rtl_ted_sps = rtl_stream_get_ted_sps();
+    snapshot->rtl_ted_sps_override = rtl_stream_get_ted_sps_override();
+}
+
+static void
+dsd_engine_rtl_profile_snapshot_restore(dsd_state* state, const dsd_engine_rtl_profile_snapshot* snapshot) {
+    if (!state || !snapshot || !snapshot->active) {
+        return;
+    }
+    state->rf_mod = snapshot->rf_mod;
+    state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
+    rtl_stream_toggle_cqpsk(snapshot->rtl_cqpsk_enable);
+    if (snapshot->rtl_ted_sps > 0) {
+        rtl_stream_set_ted_sps_no_override(snapshot->rtl_ted_sps);
+    }
+    if (snapshot->rtl_ted_sps_override > 0) {
+        rtl_stream_set_ted_sps(snapshot->rtl_ted_sps_override);
+    } else {
+        rtl_stream_clear_ted_sps_override();
+    }
+    if (snapshot->rtl_symbol_rate_hz > 0 && (snapshot->rtl_symbol_levels == 2 || snapshot->rtl_symbol_levels == 4)) {
+        (void)rtl_stream_set_symbol_profile(snapshot->rtl_symbol_rate_hz, snapshot->rtl_symbol_levels,
+                                            snapshot->rtl_channel_profile);
+    }
+}
+
 static void
 dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, int ted_sps) {
     if (opts->p25_trunk == 1) {
@@ -134,7 +184,15 @@ dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, int ted_
 #endif
 
 static void
-dsd_engine_maybe_drain_audio(dsd_opts* opts) {
+dsd_engine_maybe_drain_audio(dsd_opts* opts, const dsd_state* state) {
+#ifdef USE_RADIO
+    if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && opts->use_rigctl != 1 && state->rtl_ctx) {
+        return;
+    }
+#else
+    (void)state;
+#endif
+
     /* Avoid blocking drain when invoked from SM tick context. */
     if (!p25_sm_in_tick()) {
         dsd_drain_audio_output(opts);
@@ -157,7 +215,7 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     state->p25_last_vc_tune_time_m = state->last_vc_sync_time_m;
 }
 
-static void
+static dsd_trunk_tune_result
 dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int freq) {
     if (opts->use_rigctl == 1) {
         if (opts->setmod_bw != 0) {
@@ -165,18 +223,39 @@ dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int fr
                 DSD_FPRINTF(stderr, "Rigctl modulation update failed for bandwidth %d.\n", opts->setmod_bw);
             }
         }
-        SetFreq(opts->rigctl_sockfd, freq);
-        return;
+        if (!SetFreq(opts->rigctl_sockfd, freq)) {
+            DSD_FPRINTF(stderr, "Rigctl frequency update failed for %ld Hz.\n", freq);
+            return DSD_TRUNK_TUNE_RESULT_FAILED;
+        }
+        return DSD_TRUNK_TUNE_RESULT_OK;
     }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
-        return;
+        return DSD_TRUNK_TUNE_RESULT_OK;
     }
 #ifdef USE_RADIO
     if (state->rtl_ctx) {
-        rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
+        int rc = rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
+        if (rc == RTL_STREAM_TUNE_OK) {
+            return DSD_TRUNK_TUNE_RESULT_OK;
+        }
+        if (rc == RTL_STREAM_TUNE_DEFERRED) {
+            return DSD_TRUNK_TUNE_RESULT_DEFERRED;
+        }
+        if (rc == RTL_STREAM_TUNE_TIMEOUT) {
+            /*
+             * Live RTL retunes are owned by the controller thread. A timeout
+             * means the caller stopped waiting, not that the queued request was
+             * cancelled. Commit the requested DSP/trunk state as pending because
+             * hardware may still move to this frequency after this call returns.
+             */
+            return DSD_TRUNK_TUNE_RESULT_PENDING;
+        }
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    return DSD_TRUNK_TUNE_RESULT_FAILED;
 #else
     (void)state;
+    return DSD_TRUNK_TUNE_RESULT_FAILED;
 #endif
 }
 
@@ -264,14 +343,13 @@ dsd_engine_maybe_apply_ted_override(const dsd_opts* opts, const dsd_state* state
  * @param opts Decoder options (tuning targets and sockets).
  * @param state Decoder state to reset.
  */
-void
+dsd_trunk_tune_result
 dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
+    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     if (!opts || !state) {
-        return;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
     // Audio drain is handled by dsd_engine_trunk_tune_to_cc() before the hardware retune.
-
-    dsd_engine_reset_return_to_cc_state(opts, state);
 
     // Tune back to the control channel when known (best-effort). Prefer the
     // explicit CC when available; otherwise fall back to any tracked CC.
@@ -281,11 +359,17 @@ dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
     const int trunk_enabled = (opts->trunk_enable == 1 || opts->p25_trunk == 1);
     if (trunk_enabled && cc != 0) {
         const int cc_sps = dsd_engine_compute_cc_sps(opts, state);
-        dsd_engine_trunk_tune_to_cc(opts, state, cc, cc_sps);
+        tune_result = dsd_engine_trunk_tune_to_cc(opts, state, cc, cc_sps);
+        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+            return tune_result;
+        }
     }
+
+    dsd_engine_reset_return_to_cc_state(opts, state);
 
     /* Keep symbol timing aligned with the current control-channel mode. */
     dsd_engine_apply_cc_symbol_timing(opts, state);
+    return tune_result;
 }
 
 /**
@@ -299,10 +383,14 @@ dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
  * @param freq Target frequency in Hz.
  * @param ted_sps TED samples-per-symbol to set (0 = no override).
  */
-void
+dsd_trunk_tune_result
 dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
+#ifdef USE_RADIO
+    dsd_engine_rtl_profile_snapshot rtl_snapshot;
+#endif
     if (!opts || !state || freq <= 0) {
-        return;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
 
     /* Trunking (P25): the SM sets state->rf_mod based on the grant (0=C4FM FDMA,
@@ -313,21 +401,9 @@ dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, i
      *
      * Respect explicit CQPSK forcing via runtime config/env (DSD_NEO_CQPSK). */
 #ifdef USE_RADIO
+    dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
     dsd_engine_prepare_vc_rtl_chain(opts, state);
 #endif
-
-    // Reset modulation auto-detect state (ham tracking, vote counters) to ensure
-    // fresh acquisition on the new channel and avoid carrying stale decisions.
-    dsd_frame_sync_reset_mod_state();
-
-    // Reset P25P2 frame processing state when tuning to a voice channel.
-    // This is critical: without resetting the global bit buffers (p2bit, p2xbit),
-    // ESS buffers (ess_a, ess_b), and counters (vc_counter, ts_counter), the
-    // decoder will process new channel data using stale buffers from the previous
-    // channel, causing decode failures. The symptom is: first P25P2 tune works,
-    // but subsequent voice channel grants fail to lock with tanking EVM/SNR.
-    // Only reset for P25P2 (ted_sps matching the TDMA symbol rate), not P25P1 or other modes.
-    dsd_engine_maybe_reset_p25p2_state(opts, state, ted_sps);
 
     // NOTE: We intentionally do NOT call rtl_stream_reset_costas() here.
     //
@@ -354,9 +430,30 @@ dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, i
     dsd_engine_maybe_apply_ted_override(opts, state, freq, ted_sps);
 #endif
 
-    dsd_engine_maybe_drain_audio(opts);
-    dsd_engine_tune_with_backend(opts, state, freq);
+    dsd_engine_maybe_drain_audio(opts, state);
+    result = dsd_engine_tune_with_backend(opts, state, freq);
+    if (!dsd_trunk_tune_result_is_ok(result)) {
+#ifdef USE_RADIO
+        dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
+#endif
+        return result;
+    }
+
+    // Reset modulation auto-detect state (ham tracking, vote counters) after a
+    // confirmed tune so the decoder and tuner state do not diverge on failure.
+    dsd_frame_sync_reset_mod_state();
+
+    // Reset P25P2 frame processing state when tuning to a voice channel.
+    // This is critical: without resetting the global bit buffers (p2bit, p2xbit),
+    // ESS buffers (ess_a, ess_b), and counters (vc_counter, ts_counter), the
+    // decoder will process new channel data using stale buffers from the previous
+    // channel, causing decode failures. The symptom is: first P25P2 tune works,
+    // but subsequent voice channel grants fail to lock with tanking EVM/SNR.
+    // Only reset for P25P2 (ted_sps matching the TDMA symbol rate), not P25P1 or other modes.
+    dsd_engine_maybe_reset_p25p2_state(opts, state, ted_sps);
+
     dsd_engine_update_vc_tune_state(opts, state, freq);
+    return result;
 }
 
 /**
@@ -371,38 +468,42 @@ dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, i
  * @param ted_sps TED samples-per-symbol to set (0 = no change). Caller should
  *        pass the CC SPS (4 for P25P2 TDMA CC, 5 for P25P1 CC).
  */
-void
+dsd_trunk_tune_result
 dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
+#ifdef USE_RADIO
+    dsd_engine_rtl_profile_snapshot rtl_snapshot;
+#endif
     if (!opts || !state || freq <= 0) {
-        return;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
 #ifndef USE_RADIO
     (void)ted_sps;
+#else
+    dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
 #endif
-    // Reset modulation auto-detect state for fresh acquisition.
-    dsd_frame_sync_reset_mod_state();
 
     // NOTE: Costas/TED reset is deferred to the controller thread after the hardware
     // retune completes. See dsd_engine_trunk_tune_to_freq for the full rationale.
 
-    dsd_engine_maybe_drain_audio(opts);
-    if (opts->use_rigctl == 1) {
-        if (opts->setmod_bw != 0) {
-            if (!SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
-                DSD_FPRINTF(stderr, "Rigctl modulation update failed for bandwidth %d.\n", opts->setmod_bw);
-            }
-        }
-        SetFreq(opts->rigctl_sockfd, freq);
-    } else if (opts->audio_in_type == AUDIO_IN_RTL) {
+    dsd_engine_maybe_drain_audio(opts, state);
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
         dsd_engine_prepare_cc_rtl_chain(opts, state, ted_sps);
-        if (state->rtl_ctx) {
-            rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
-        }
 #endif
     }
+    result = dsd_engine_tune_with_backend(opts, state, freq);
+    if (!dsd_trunk_tune_result_is_ok(result)) {
+#ifdef USE_RADIO
+        dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
+#endif
+        return result;
+    }
+    // Reset modulation auto-detect state for fresh acquisition after a confirmed tune.
+    dsd_frame_sync_reset_mod_state();
     // Do not set p25_is_tuned/trunk_is_tuned here; this is a CC hunt action.
     state->trunk_cc_freq = (long int)freq;
     state->last_cc_sync_time = time(NULL);
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    return result;
 }

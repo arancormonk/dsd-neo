@@ -37,6 +37,7 @@ int dsd_rtl_stream_monitor_read(float* out, size_t count, int* out_got);
 unsigned int dsd_rtl_stream_monitor_rate(void);
 void dsd_rtl_stream_set_resampler_target(int target_hz);
 int dsd_rtl_stream_get_ted_sps(void);
+int dsd_rtl_stream_get_ted_sps_override(void);
 void dsd_rtl_stream_set_ted_sps(int sps);
 void dsd_rtl_stream_clear_ted_sps_override(void);
 void dsd_rtl_stream_set_ted_sps_no_override(int sps);
@@ -87,6 +88,9 @@ int dsd_rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t*
                                                   uint32_t* out_generation_before, uint32_t* out_generation_after);
 int dsd_rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,
                                               int* out_cache_pending, int* out_drained);
+int dsd_rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samples, int cached_symbols,
+                                                 size_t* out_used_after, int* out_cache_pending_after,
+                                                 uint32_t* out_generation_before, uint32_t* out_generation_after);
 int dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                      int* out_cache_pending_after, uint32_t* out_generation_before,
                                      uint32_t* out_generation_after);
@@ -212,7 +216,7 @@ rtl_stream_destroy(RtlSdrContext* ctx) {
  *
  * @param ctx Stream context.
  * @param center_freq_hz New center frequency in Hz.
- * @return 0 on success; otherwise <0 on error.
+ * @return rtl_stream_tune_result: 0 on success, 1 when deferred, negative on error/timeout.
  */
 extern "C" int
 rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
@@ -243,6 +247,15 @@ rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols,
                                       int* out_cache_pending, int* out_drained) {
     return dsd_rtl_stream_test_retune_output_pending(queued_samples, cached_symbols, out_ring_pending,
                                                      out_cache_pending, out_drained);
+}
+
+extern "C" int
+rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samples, int cached_symbols,
+                                         size_t* out_used_after, int* out_cache_pending_after,
+                                         uint32_t* out_generation_before, uint32_t* out_generation_after) {
+    return dsd_rtl_stream_test_tune_result_output_drain(tune_result, queued_samples, cached_symbols, out_used_after,
+                                                        out_cache_pending_after, out_generation_before,
+                                                        out_generation_after);
 }
 
 extern "C" int
@@ -413,6 +426,11 @@ rtl_stream_set_resampler_target(int target_hz) {
 extern "C" int
 rtl_stream_get_ted_sps(void) {
     return dsd_rtl_stream_get_ted_sps();
+}
+
+extern "C" int
+rtl_stream_get_ted_sps_override(void) {
+    return dsd_rtl_stream_get_ted_sps_override();
 }
 
 extern "C" void

@@ -41,6 +41,13 @@ typedef enum DSD_ATTR_PACKED rtl_stream_channel_profile {
     RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK = 5,
 } rtl_stream_channel_profile;
 
+typedef enum DSD_ATTR_PACKED rtl_stream_tune_result {
+    RTL_STREAM_TUNE_OK = 0,
+    RTL_STREAM_TUNE_DEFERRED = 1,
+    RTL_STREAM_TUNE_FAILED = -1,
+    RTL_STREAM_TUNE_TIMEOUT = -2,
+} rtl_stream_tune_result;
+
 /* Lifecycle */
 /**
  * @brief Create a new RTL-SDR stream context from an immutable options snapshot.
@@ -102,7 +109,7 @@ int rtl_stream_destroy(RtlSdrContext* ctx);
  * @brief Tune to a new center frequency.
  * @param ctx Stream context.
  * @param center_freq_hz New center frequency in Hz.
- * @return 0 on success; otherwise <0 on error.
+ * @return rtl_stream_tune_result: 0 on success, 1 when deferred, negative on error/timeout.
  */
 int rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz);
 /**
@@ -297,6 +304,13 @@ int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symb
                                           int* out_cache_pending, int* out_drained);
 
 /**
+ * @brief Seed output/cache counts, apply tune-result drain policy, and report the result.
+ */
+int rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samples, int cached_symbols,
+                                             size_t* out_used_after, int* out_cache_pending_after,
+                                             uint32_t* out_generation_before, uint32_t* out_generation_after);
+
+/**
  * @brief Seed output/cache counts, clear output, and report the resulting state.
  */
 int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
@@ -367,6 +381,13 @@ int rtl_stream_ted_bias(const RtlSdrContext* ctx);
  * @return Nominal SPS (>=2); 0 when unavailable.
  */
 int rtl_stream_get_ted_sps(void);
+
+/**
+ * @brief Get the pending Gardner TED samples-per-symbol override.
+ *
+ * @return Override SPS when set; 0 when normal rate-derived SPS is active.
+ */
+int rtl_stream_get_ted_sps_override(void);
 
 /**
  * @brief Set the Gardner TED samples-per-symbol.

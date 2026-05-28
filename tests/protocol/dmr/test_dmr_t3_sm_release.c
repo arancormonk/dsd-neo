@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -19,21 +20,31 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-// Stubs
-void
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) { // NOLINT(misc-use-internal-linkage)
-    (void)freq;
+static dsd_trunk_tune_result g_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+static dsd_trunk_tune_result g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+static int g_return_to_cc_calls = 0;
+
+static dsd_trunk_tune_result
+test_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)ted_sps;
+    if (g_tune_to_freq_result != DSD_TRUNK_TUNE_RESULT_OK) {
+        return g_tune_to_freq_result;
+    }
     if (opts) {
         opts->trunk_is_tuned = 1;
     }
     if (state) {
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-void
-return_to_cc(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+static dsd_trunk_tune_result
+test_return_to_cc(dsd_opts* opts, dsd_state* state) {
+    g_return_to_cc_calls++;
+    if (g_return_to_cc_result != DSD_TRUNK_TUNE_RESULT_OK) {
+        return g_return_to_cc_result;
+    }
     if (opts) {
         opts->trunk_is_tuned = 0;
     }
@@ -41,6 +52,7 @@ return_to_cc(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-lin
         state->trunk_vc_freq[0] = 0;
         state->trunk_vc_freq[1] = 0;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 void
@@ -60,6 +72,10 @@ main(int argc, char** argv) {
     opts.trunk_enable = 1;
     opts.trunk_hangtime = 0.5f;
     state.trunk_cc_freq = 851000000;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_result = test_tune_to_freq,
+        .return_to_cc_result = test_return_to_cc,
+    });
 
     // Initialize and get context
     dmr_sm_init(&opts, &state);
@@ -67,7 +83,15 @@ main(int argc, char** argv) {
     assert(ctx != NULL);
     assert(ctx->state == DMR_SM_ON_CC);
 
+    // Deferred grants must not advance the DMR SM or shared tuned state.
+    g_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    dmr_sm_emit_group_grant(&opts, &state, 852000000, 0, 100, 1234);
+    assert(opts.trunk_is_tuned == 0);
+    assert(state.trunk_vc_freq[0] == 0);
+    assert(ctx->state == DMR_SM_ON_CC);
+
     // Grant to tune to VC
+    g_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
     long vc = 852000000;
     dmr_sm_emit_group_grant(&opts, &state, vc, 0, 100, 1234);
     assert(opts.trunk_is_tuned == 1);
@@ -95,8 +119,39 @@ main(int argc, char** argv) {
     double now_m = ctx->t_voice_m; // Get current monotonic time reference
     ctx->t_voice_m = now_m - 10.0; // 10 seconds ago, well past hangtime
 
-    // Tick should now release
+    // A deferred return-to-CC must leave the VC state untouched for retry.
+    g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
     dmr_sm_tick(&opts, &state);
+    assert(opts.trunk_is_tuned == 1);
+    assert(state.trunk_vc_freq[0] == vc);
+    assert(ctx->state == DMR_SM_TUNED);
+
+    // Tick should now release once return-to-CC succeeds.
+    g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dmr_sm_tick(&opts, &state);
+    assert(opts.trunk_is_tuned == 0);
+    assert(ctx->state == DMR_SM_ON_CC);
+
+    // Forced releases must retry after a deferred CC retune even if voice stays active.
+    dmr_sm_emit_group_grant(&opts, &state, vc, 0, 100, 1234);
+    assert(opts.trunk_is_tuned == 1);
+    assert(ctx->state == DMR_SM_TUNED);
+    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    assert(ctx->slots[0].voice_active == 1);
+
+    state.trunk_sm_force_release = 1;
+    g_return_to_cc_calls = 0;
+    g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    dmr_sm_emit_release(&opts, &state, 0);
+    assert(g_return_to_cc_calls == 1);
+    assert(state.trunk_sm_force_release == 1);
+    assert(opts.trunk_is_tuned == 1);
+    assert(ctx->state == DMR_SM_TUNED);
+
+    g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dmr_sm_tick(&opts, &state);
+    assert(g_return_to_cc_calls == 2);
+    assert(state.trunk_sm_force_release == 0);
     assert(opts.trunk_is_tuned == 0);
     assert(ctx->state == DMR_SM_ON_CC);
 

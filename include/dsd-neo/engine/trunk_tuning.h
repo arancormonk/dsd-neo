@@ -16,14 +16,15 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
-void dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
-void dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state);
+dsd_trunk_tune_result dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
+dsd_trunk_tune_result dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
+dsd_trunk_tune_result dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

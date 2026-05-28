@@ -1128,7 +1128,10 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
     if (state->trunk_cc_freq == 0) {
         return;
     }
-    dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0);
+    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+        return;
+    }
     opts->p25_is_tuned = 0;
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;

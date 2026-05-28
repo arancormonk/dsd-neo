@@ -563,11 +563,16 @@ edacs_prepare_voice_wav_output(dsd_opts* opts, dsd_state* state, int is_digital)
     opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 48000, 0);
 }
 
-static void
+static int
 edacs_tune_to_lcn(dsd_opts* opts, dsd_state* state, int lcn) {
     // LCN index is zero-based in trunk_lcn_freq[].
-    dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+    dsd_trunk_tune_result tune_result =
+        dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+        return 0;
+    }
     state->edacs_tuned_lcn = lcn;
+    return 1;
 }
 
 static void
@@ -577,8 +582,10 @@ edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digi
         return;
     }
 
+    if (!edacs_tune_to_lcn(opts, state, lcn)) {
+        return;
+    }
     edacs_prepare_voice_wav_output(opts, state, is_digital);
-    edacs_tune_to_lcn(opts, state, lcn);
     if (is_digital == 0) {
         edacs_analog(opts, state, call_target, (unsigned char)lcn);
     }
@@ -2127,18 +2134,15 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
         opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
     }
 
-    //set here so that when returning to the CC, it doesn't go into an immediate hunt if not immediately acquired
-    state->last_cc_sync_time = now;
-    state->last_vc_sync_time = now;
-    state->last_cc_sync_time_m = nowm;
-    state->last_vc_sync_time_m = nowm;
-
     //jump back to CC here
     long int cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
     if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && cc != 0
         && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
         // Use centralized io/control tuning API
-        dsd_trunk_tuning_hook_tune_to_cc(opts, state, cc, 0);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cc, 0);
+        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+            return;
+        }
         opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
 
@@ -2155,4 +2159,10 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
+
+    //set here so that when returning to the CC, it doesn't go into an immediate hunt if not immediately acquired
+    state->last_cc_sync_time = now;
+    state->last_vc_sync_time = now;
+    state->last_cc_sync_time_m = nowm;
+    state->last_vc_sync_time_m = nowm;
 }

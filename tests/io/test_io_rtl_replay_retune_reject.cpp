@@ -159,6 +159,13 @@ test_replay_retune_rejected_quickly(void) {
     rc |= expect_int_eq("retune rejected during replay", retune_rc, -1);
     rc |= expect_true("retune call returned quickly", elapsed_ms < 100ULL);
 
+    t0 = dsd_time_monotonic_ns();
+    retune_rc = rtl_stream_tune(ctx, 851625000U);
+    elapsed_ns = dsd_time_monotonic_ns() - t0;
+    elapsed_ms = elapsed_ns / 1000000ULL;
+    rc |= expect_int_eq("rtl_stream_tune reports deferred replay retune", retune_rc, RTL_STREAM_TUNE_DEFERRED);
+    rc |= expect_true("rtl_stream_tune deferred quickly", elapsed_ms < 100ULL);
+
     rc |= expect_int_eq("rtl_stream_stop", rtl_stream_stop(ctx), 0);
     rc |= expect_int_eq("rtl_stream_destroy", rtl_stream_destroy(ctx), 0);
     return rc;

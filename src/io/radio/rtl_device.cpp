@@ -709,7 +709,7 @@ rtl_handle_u8_ring_generation_stale(const struct rtl_device* s, const unsigned c
 }
 
 static inline void
-rtl_finalize_u8_ring_write(struct rtl_device* s, const unsigned char* src, size_t done, size_t need,
+rtl_finalize_u8_ring_write(struct rtl_device* s, const unsigned char* src, size_t len, size_t done, size_t need,
                            struct rtl_capture_u8_byte_carry* carry, int* phase, int fs4_shift_active,
                            int count_full_reserve, int ring_exhausted, int generation_stale) {
     if (!s || !src || !carry || !phase) {
@@ -724,7 +724,7 @@ rtl_finalize_u8_ring_write(struct rtl_device* s, const unsigned char* src, size_
         if (count_full_reserve) {
             s->reserve_full_events++;
         }
-    } else if (need == 1U && !carry->valid) {
+    } else if (need == 1U && done < len && !carry->valid) {
         rtl_capture_u8_byte_carry_save(carry, src[done]);
     }
 
@@ -786,8 +786,8 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
         input_ring_commit(s->input_ring, produced);
     }
 
-    rtl_finalize_u8_ring_write(s, src, done, need, &carry, &phase, fs4_shift_active, count_full_reserve, ring_exhausted,
-                               generation_stale);
+    rtl_finalize_u8_ring_write(s, src, len, done, need, &carry, &phase, fs4_shift_active, count_full_reserve,
+                               ring_exhausted, generation_stale);
     if (perf_on) {
         uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
         uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
@@ -5221,7 +5221,7 @@ rtl_device_set_iq_capture_writer(struct rtl_device* dev, struct dsd_iq_capture_w
 
 void
 rtl_device_begin_capture_reconfigure(struct rtl_device* dev) {
-    if (!dev || !dev->iq_capture_writer) {
+    if (!dev) {
         return;
     }
     dev->capture_reconfigure_hold.store(RTL_CAPTURE_RECONFIGURE_ACTIVE, std::memory_order_release);
@@ -5261,6 +5261,50 @@ rtl_device_test_end_capture_reconfigure_with_odd_carry(int* out_hold, int* out_m
     if (out_mute_byte_phase) {
         *out_mute_byte_phase = dev.mute_byte_phase.load(std::memory_order_acquire);
     }
+}
+
+extern "C" int
+rtl_device_test_begin_capture_reconfigure_without_writer(int* out_hold) {
+    rtl_device dev{};
+    rtl_device_init_common_state(&dev);
+    rtl_device_begin_capture_reconfigure(&dev);
+    if (out_hold) {
+        *out_hold = dev.capture_reconfigure_hold.load(std::memory_order_acquire);
+    }
+    rtl_device_cleanup_common_state(&dev);
+    return 0;
+}
+
+extern "C" int
+rtl_device_test_usb_reconfigure_discards_samples(size_t input_bytes, size_t* out_ring_used) {
+    if (!out_ring_used || input_bytes == 0U || input_bytes > 256U) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, 512U) != 0) {
+        return -2;
+    }
+    unsigned char* buf = static_cast<unsigned char*>(calloc(input_bytes, sizeof(unsigned char)));
+    if (!buf) {
+        input_ring_destroy(&ring);
+        return -3;
+    }
+    for (size_t i = 0; i < input_bytes; i++) {
+        buf[i] = (unsigned char)(127U + (i & 1U));
+    }
+
+    rtl_device dev{};
+    rtl_device_init_common_state(&dev);
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_USB;
+    rtl_device_begin_capture_reconfigure(&dev);
+    rtlsdr_callback(buf, (uint32_t)input_bytes, &dev);
+    *out_ring_used = input_ring_used(&ring);
+    rtl_device_end_capture_reconfigure(&dev);
+    rtl_device_cleanup_common_state(&dev);
+    free(buf);
+    input_ring_destroy(&ring);
+    return 0;
 }
 #endif
 

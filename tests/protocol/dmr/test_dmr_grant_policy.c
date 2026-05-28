@@ -16,6 +16,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -111,6 +112,8 @@ GetCurrentFreq(dsd_socket_t sockfd) {
 struct RtlSdrContext;
 
 struct RtlSdrContext* g_rtl_ctx = 0; // NOLINT(misc-use-internal-linkage)
+static int g_dmr_reset_blocks_calls = 0;
+static int g_result_tune_to_freq_calls = 0;
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -151,6 +154,7 @@ void
 dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    g_dmr_reset_blocks_calls++;
 }
 
 uint8_t
@@ -198,6 +202,31 @@ build_grant(uint8_t* bits, uint8_t* bytes, uint8_t opcode, uint16_t lpcn, uint32
     bits[28] = (uint8_t)(slot & 1U);
     write_bits_u32(bits, 32U, target & 0x00FFFFFFU, 24U);
     write_bits_u32(bits, 56U, source & 0x00FFFFFFU, 24U);
+}
+
+static void
+build_cap_plus_3e_single_group(uint8_t* bits, uint8_t* bytes, uint8_t rest_lsn, uint8_t active_lsn, uint8_t target) {
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
+    bytes[0] = 0x3EU;
+    bytes[1] = 0x10U;
+
+    write_bits_u32(bits, 16U, 3U, 2U); // single-block Cap+ channel status
+    bits[18] = 0U;                     // TS1 status bank
+    write_bits_u32(bits, 20U, rest_lsn & 0x0FU, 4U);
+    bits[24U + (active_lsn - 1U)] = 1U; // bank-one active group bitmap
+    write_bits_u32(bits, 32U, target, 8U);
+}
+
+static dsd_trunk_tune_result
+cap_plus_result_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    (void)ted_sps;
+    g_result_tune_to_freq_calls++;
+    opts->rtlsdr_center_freq = freq;
+    opts->trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+    state->last_vc_sync_time = time(NULL);
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static int
@@ -251,6 +280,27 @@ main(void) {
     rc |= expect_true("seed private allow source", seed_exact(st, 9002U, "A", "ALLOW-SRC") == 0);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("private known source allowed", opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq);
+
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_result = cap_plus_result_tune_to_freq,
+    });
+    static dsd_opts cap_opts;
+    static dsd_state cap_st;
+    init_env(&cap_opts, &cap_st);
+    const long cap_old_freq = 851000000L;
+    const long cap_grant_freq = 853000000L;
+    cap_opts.rtlsdr_center_freq = cap_old_freq;
+    cap_st.trunk_cc_freq = cap_old_freq;
+    cap_st.trunk_chan_map[1] = cap_grant_freq;
+    cap_st.last_vc_sync_time = time(NULL) - 10;
+    g_dmr_reset_blocks_calls = 0;
+    g_result_tune_to_freq_calls = 0;
+    build_cap_plus_3e_single_group(bits, bytes, 1U, 1U, 42U);
+    dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("cap+ 3e tune hook called", g_result_tune_to_freq_calls == 1);
+    rc |= expect_true("cap+ 3e tune updates rtl center", cap_opts.rtlsdr_center_freq == cap_grant_freq);
+    rc |= expect_true("cap+ 3e reset uses pre-tune center", g_dmr_reset_blocks_calls == 1);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
 
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");

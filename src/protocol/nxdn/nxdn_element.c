@@ -309,7 +309,10 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
 
     if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && state->p25_cc_freq != 0
         && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
-        dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->p25_cc_freq, 0);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->p25_cc_freq, 0);
+        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+            return;
+        }
         opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
 
@@ -1487,10 +1490,13 @@ nxdn_vcall_assgn_frequency(dsd_opts* opts, dsd_state* state, const struct nxdn_v
     return 0;
 }
 
-static void
+static int
 nxdn_vcall_assgn_setup_tuned_call(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info,
                                   long int freq) {
-    dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
+    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+        return 0;
+    }
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     state->lastsynctype = DSD_SYNC_NONE;
@@ -1499,6 +1505,7 @@ nxdn_vcall_assgn_setup_tuned_call(dsd_opts* opts, dsd_state* state, const struct
     if (info->cc_option & 0x80U) {
         dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
     }
+    return 1;
 }
 
 static void
@@ -1514,23 +1521,31 @@ nxdn_vcall_assgn_load_scrambler_key(dsd_state* state, const struct nxdn_vcall_as
     }
 }
 
+static int
+nxdn_vcall_assgn_can_tune(const dsd_opts* opts, const dsd_state* state, int policy_allowed, int hold_matches,
+                          long int freq) {
+    if (!opts || !state || opts->p25_trunk != 1 || !policy_allowed || state->p25_cc_freq == 0 || freq == 0) {
+        return 0;
+    }
+    return (opts->p25_is_tuned == 0 || hold_matches) ? 1 : 0;
+}
+
 static void
 nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info, long int freq) {
     nxdn_print_group_label(state, info->destination_id != 0U ? info->destination_id : info->source_unit_id);
     if (info->destination_id != 0U) {
         nxdn_print_group_label(state, info->source_unit_id);
     }
-    if (state->tg_hold != 0 && state->tg_hold == info->destination_id) {
-        opts->p25_is_tuned = 0;
-    }
-
     const int is_private_call = (info->call_type == 4U) ? 1 : 0;
     const int data_call = (info->message_type == 0x0DU || info->message_type == 0x0EU) ? 1 : 0;
+    const int hold_matches = (state->tg_hold != 0 && state->tg_hold == info->destination_id) ? 1 : 0;
     dsd_tg_policy_decision policy_decision;
     const int policy_allowed = nxdn_policy_tune_allowed(opts, state, info->destination_id, info->source_unit_id,
                                                         is_private_call, data_call, 1, &policy_decision);
-    if (opts->p25_trunk == 1 && policy_allowed && state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
-        nxdn_vcall_assgn_setup_tuned_call(opts, state, info, freq);
+    if (nxdn_vcall_assgn_can_tune(opts, state, policy_allowed, hold_matches, freq)) {
+        if (!nxdn_vcall_assgn_setup_tuned_call(opts, state, info, freq)) {
+            return;
+        }
         nxdn_vcall_assgn_load_scrambler_key(state, info);
     } else if (opts->p25_trunk == 1) {
         nxdn_policy_log_block(opts, is_private_call, info->destination_id, info->source_unit_id, &policy_decision);
@@ -2334,9 +2349,6 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
 
     nxdn_scch_update_control_channel_from_map(state, info);
     nxdn_print_group_label(state, info->id);
-    if (state->tg_hold != 0 && state->tg_hold == info->id) {
-        opts->p25_is_tuned = 0;
-    }
 
     const long int freq = nxdn_channel_to_frequency(opts, state, info->rep1);
     if (freq == 0) {
@@ -2349,7 +2361,10 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
         nxdn_policy_tune_allowed(opts, state, info->id, 0, is_private_call, 0, 0, &policy_decision);
     if (opts->p25_trunk == 1 && policy_allowed && state->p25_cc_freq != 0
         && ((info->now - state->last_vc_sync_time) > 1) && freq != 0) {
-        dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
+        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+            return;
+        }
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         state->lastsynctype = DSD_SYNC_NONE;

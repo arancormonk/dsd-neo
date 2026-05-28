@@ -1360,8 +1360,13 @@ dmr_cspdu_pf0_c_bcast_try_switch_tscc(dsd_opts* opts, dsd_state* state, long f1,
     }
 
     if (next > 0 && next != cur) {
+        const long previous_cc = state->trunk_cc_freq;
         state->trunk_cc_freq = next;
-        dsd_trunk_tuning_hook_return_to_cc(opts, state);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state);
+        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+            state->trunk_cc_freq = previous_cc;
+            return;
+        }
         DSD_FPRINTF(stderr, "\n Switched to announced TSCC: %.6lf MHz\n", (double)next / 1000000.0);
     }
 }
@@ -2019,6 +2024,12 @@ dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dm
             continue;
         }
 
+        const long int grant_freq = state->trunk_chan_map[j + 1];
+        const uint32_t old_rtl_center_freq = opts->rtlsdr_center_freq;
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0);
+        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+            break;
+        }
         if (state->tg_hold != 0) {
             if ((j & 1) == 0) {
                 state->lasttg = ctx->t_tg[j];
@@ -2026,10 +2037,9 @@ dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dm
                 state->lasttgR = ctx->t_tg[j];
             }
         }
-        if (opts->rtlsdr_center_freq != (uint32_t)state->trunk_chan_map[j + 1]) {
+        if (old_rtl_center_freq != (uint32_t)grant_freq) {
             dmr_reset_blocks(opts, state);
         }
-        dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[j + 1], 0);
         break;
     }
 }
@@ -2285,6 +2295,9 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     dsd_tg_policy_decision policy_decision;
     int policy_allowed;
     char suf[24];
+    char prev_active_channel[sizeof state->active_channel[0]];
+    time_t prev_last_active_time;
+    time_t now;
 
     if (csbk_o != 0x06) {
         return;
@@ -2304,23 +2317,33 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     }
 
     dmr_format_chan_suffix(tslot, suf, sizeof suf);
+    DSD_SNPRINTF(prev_active_channel, sizeof prev_active_channel, "%s", state->active_channel[tslot]);
+    prev_last_active_time = state->last_active_time;
+    now = time(NULL);
     DSD_SNPRINTF(state->active_channel[tslot], sizeof(state->active_channel[tslot]), "Active Ch: %04X%s TG: %d; ", lcn,
                  suf, dtarget);
-    state->last_active_time = time(NULL);
+    state->last_active_time = now;
     if (opts->trunk_enable == 0 && state->trunk_chan_map[lcn] != 0) {
         state->trunk_vc_freq[0] = state->trunk_chan_map[lcn];
         state->trunk_vc_freq[1] = state->trunk_chan_map[lcn];
     }
 
     dmr_csbk_print_group_label(state, dtarget);
-    if (opts->trunk_tune_data_calls != 1 || (time(NULL) - state->last_vc_sync_time <= 2)) {
+    if (opts->trunk_tune_data_calls != 1 || (now - state->last_vc_sync_time <= 2)) {
         return;
     }
 
     policy_allowed = dmr_policy_tune_allowed(opts, state, dtarget, 0, 0, 1, &policy_decision);
     if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && policy_allowed) {
         if (state->trunk_chan_map[lcn] != 0) {
-            dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[lcn], 0);
+            dsd_trunk_tune_result tune_result =
+                dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[lcn], 0);
+            if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+                DSD_SNPRINTF(state->active_channel[tslot], sizeof(state->active_channel[tslot]), "%s",
+                             prev_active_channel);
+                state->last_active_time = prev_last_active_time;
+                return;
+            }
             state->is_con_plus = 1;
             dmr_reset_blocks(opts, state);
         }
