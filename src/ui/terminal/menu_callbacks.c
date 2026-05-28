@@ -197,6 +197,49 @@ cb_config_load(void* v, const char* path) {
     ui_statusf("Config loaded from %s", path);
 }
 
+static void
+config_profile_free_context(ProfileSelCtx* pctx) {
+    if (!pctx) {
+        return;
+    }
+    if (pctx->names) {
+        for (int i = 0; i < pctx->n; i++) {
+            free((void*)pctx->names[i]);
+        }
+    }
+    free((void*)pctx->labels);
+    free((void*)pctx->names);
+    free(pctx);
+}
+
+void
+chooser_done_config_profile(void* u, int sel) {
+    ProfileSelCtx* pctx = (ProfileSelCtx*)u;
+    if (!pctx) {
+        return;
+    }
+
+    if (sel >= 0 && sel < pctx->n && pctx->names && pctx->names[sel] && pctx->path[0] != '\0') {
+        const char* profile = pctx->names[sel];
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        if (dsd_user_config_load_profile(pctx->path, profile, &cfg) != 0) {
+            ui_statusf("Failed to load profile %s from %s", profile, pctx->path);
+        } else {
+            if (pctx->state) {
+                pctx->state->config_autosave_enabled = 0;
+                DSD_SNPRINTF(pctx->state->config_autosave_path, sizeof pctx->state->config_autosave_path, "%s",
+                             pctx->path);
+                pctx->state->config_autosave_path[sizeof pctx->state->config_autosave_path - 1] = '\0';
+            }
+            ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+            ui_statusf("Profile loaded: %s", profile);
+        }
+    }
+
+    config_profile_free_context(pctx);
+}
+
 void
 cb_config_save_as(void* v, const char* path) {
     const UiCtx* c = mutable_ui_ctx_from_callback(v);

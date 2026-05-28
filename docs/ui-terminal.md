@@ -30,6 +30,12 @@ Group policy reload:
 - In the Trunking/Import menu path, importing a group list (`-G` CSV) performs a full policy reload. On parse failure,
   the currently loaded list remains active.
 
+Config profiles:
+
+- In the Config menu, `Load Profile...` lists `[profile.NAME]` sections from the active config path, or the default
+  config path when no config has been loaded yet. Loading a profile applies it to the running session and disables
+  autosave, matching CLI `--profile NAME` behavior.
+
 ## DSP Status
 
 The DSP status panel shows RTL DSP loop state when RTL input support is available. In CQPSK mode, the CMA equalizer

@@ -1511,7 +1511,10 @@ set_source_files_properties(
 )
 target_include_directories(
     dsd-neo_test_runtime_config_apply
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal
+        ${CURSES_INCLUDE_DIRS}
 )
 set(_DSD_RUNTIME_CONFIG_APPLY_LIBS
     dsd-neo_ui_terminal

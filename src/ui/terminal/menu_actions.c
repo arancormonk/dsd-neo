@@ -28,6 +28,7 @@
 #include <xmmintrin.h>
 #endif
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_callbacks.h"
@@ -111,6 +112,119 @@ act_config_load(void* v) {
         def = dsd_user_config_default_path();
     }
     ui_prompt_open_string_async("Load config from path", (def && *def) ? def : "", 512, cb_config_load, v);
+}
+
+static int
+config_profile_copy_source_path(const UiCtx* c, char* path, size_t path_size) {
+    if (!path || path_size == 0) {
+        return 0;
+    }
+    path[0] = '\0';
+
+    const char* src = NULL;
+    if (c && c->state && c->state->config_autosave_path[0] != '\0') {
+        src = c->state->config_autosave_path;
+    } else {
+        src = dsd_user_config_default_path();
+    }
+    if (!src || !*src) {
+        ui_statusf("No config path for profiles");
+        return 0;
+    }
+
+    int n = DSD_SNPRINTF(path, path_size, "%s", src);
+    if (n < 0 || n >= (int)path_size) {
+        path[path_size - 1] = '\0';
+        ui_statusf("Config path too long for profiles");
+        return 0;
+    }
+    return 1;
+}
+
+static void
+config_profile_free_context(ProfileSelCtx* pctx) {
+    if (!pctx) {
+        return;
+    }
+    if (pctx->names) {
+        for (int i = 0; i < pctx->n; i++) {
+            free((void*)pctx->names[i]);
+        }
+    }
+    free((void*)pctx->labels);
+    free((void*)pctx->names);
+    free(pctx);
+}
+
+static ProfileSelCtx*
+config_profile_create_context(dsd_state* state, const char* path, const char** names, int count) {
+    if (!state || !path || !*path || !names || count <= 0) {
+        return NULL;
+    }
+
+    ProfileSelCtx* pctx = (ProfileSelCtx*)calloc(1, sizeof(ProfileSelCtx));
+    if (!pctx) {
+        return NULL;
+    }
+    pctx->state = state;
+    pctx->n = count;
+    int n = DSD_SNPRINTF(pctx->path, sizeof pctx->path, "%s", path);
+    if (n < 0 || n >= (int)sizeof pctx->path) {
+        config_profile_free_context(pctx);
+        return NULL;
+    }
+
+    pctx->labels = (const char**)calloc((size_t)count, sizeof(char*));
+    pctx->names = (const char**)calloc((size_t)count, sizeof(char*));
+    if (!pctx->labels || !pctx->names) {
+        config_profile_free_context(pctx);
+        return NULL;
+    }
+
+    for (int i = 0; i < count; i++) {
+        pctx->names[i] = dsd_strdup(names[i] ? names[i] : "");
+        if (!pctx->names[i]) {
+            config_profile_free_context(pctx);
+            return NULL;
+        }
+        pctx->labels[i] = pctx->names[i];
+    }
+
+    return pctx;
+}
+
+void
+act_config_load_profile(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->state) {
+        return;
+    }
+
+    char path[1024];
+    if (!config_profile_copy_source_path(c, path, sizeof path)) {
+        return;
+    }
+
+    const char* names[32];
+    char names_buf[1024];
+    int count =
+        dsd_user_config_list_profiles(path, names, names_buf, sizeof names_buf, (int)(sizeof names / sizeof names[0]));
+    if (count < 0) {
+        ui_statusf("Failed to read profiles from %s", path);
+        return;
+    }
+    if (count == 0) {
+        ui_statusf("No profiles found in %s", path);
+        return;
+    }
+
+    ProfileSelCtx* pctx = config_profile_create_context(c->state, path, names, count);
+    if (!pctx) {
+        ui_statusf("Out of memory");
+        return;
+    }
+
+    ui_chooser_start("Load Profile", pctx->labels, pctx->n, chooser_done_config_profile, pctx);
 }
 
 void

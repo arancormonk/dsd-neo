@@ -31,7 +31,11 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/file_compat.h"
+#include "dsd-neo/platform/posix_compat.h"
 #include "dsd-neo/runtime/call_alert.h"
+#include "menu_actions.h"
+#include "menu_callbacks.h"
+#include "menu_internal.h"
 #include "test_support.h"
 
 #ifdef USE_RADIO
@@ -162,6 +166,44 @@ free_test_runtime(test_runtime* runtime) {
 }
 
 static int
+create_temp_config_file(const char* contents, char* out_path, size_t out_path_sz) {
+    if (!contents || !out_path || out_path_sz == 0) {
+        DSD_FPRINTF(stderr, "FAIL: invalid temp config request\n");
+        return 1;
+    }
+
+    char path[DSD_TEST_PATH_MAX] = {0};
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_ui_profile_config");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "FAIL: dsd_test_mkstemp failed for temp config\n");
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "FAIL: fopen write failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    int write_failed = fputs(contents, fp) < 0;
+    int close_failed = fclose(fp) != 0;
+    if (write_failed || close_failed) {
+        DSD_FPRINTF(stderr, "FAIL: write failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    int n = DSD_SNPRINTF(out_path, out_path_sz, "%s", path);
+    if (n < 0 || n >= (int)out_path_sz) {
+        DSD_FPRINTF(stderr, "FAIL: temp config path too long\n");
+        (void)remove(path);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 create_temp_wav_file(const char* prefix, int sample_rate, int channels, char* out_path, size_t out_path_sz) {
     if (!prefix || !out_path || out_path_sz == 0 || sample_rate <= 0 || channels <= 0 || channels > 2) {
         DSD_FPRINTF(stderr, "FAIL: invalid temp wav request\n");
@@ -287,6 +329,145 @@ test_basic_pulse_config_apply(void) {
     rc |= expect_true("pulse input preserved", strncmp(opts->audio_in_dev, "pulse", 5) == 0);
     rc |= expect_true("pulse output preserved", strncmp(opts->audio_out_dev, "pulse", 5) == 0);
     free_test_runtime(&runtime);
+    return rc;
+}
+
+static void
+free_test_profile_context(ProfileSelCtx* pctx) {
+    if (!pctx) {
+        return;
+    }
+    if (pctx->names) {
+        for (int i = 0; i < pctx->n; i++) {
+            free((void*)pctx->names[i]);
+        }
+    }
+    free((void*)pctx->labels);
+    free((void*)pctx->names);
+    free(pctx);
+}
+
+static ProfileSelCtx*
+make_test_profile_context(dsd_state* state, const char* path) {
+    ProfileSelCtx* pctx = (ProfileSelCtx*)calloc(1, sizeof(*pctx));
+    if (!pctx) {
+        return NULL;
+    }
+    pctx->state = state;
+    pctx->n = 2;
+    int n = DSD_SNPRINTF(pctx->path, sizeof pctx->path, "%s", path ? path : "");
+    if (n < 0 || n >= (int)sizeof pctx->path) {
+        free_test_profile_context(pctx);
+        return NULL;
+    }
+    pctx->labels = (const char**)calloc((size_t)pctx->n, sizeof(char*));
+    pctx->names = (const char**)calloc((size_t)pctx->n, sizeof(char*));
+    if (!pctx->labels || !pctx->names) {
+        free_test_profile_context(pctx);
+        return NULL;
+    }
+    pctx->names[0] = dsd_strdup("alpha");
+    pctx->names[1] = dsd_strdup("beta");
+    if (!pctx->names[0] || !pctx->names[1]) {
+        free_test_profile_context(pctx);
+        return NULL;
+    }
+    pctx->labels[0] = pctx->names[0];
+    pctx->labels[1] = pctx->names[1];
+    return pctx;
+}
+
+static int
+test_ui_profile_selection_applies_overlay_and_disables_autosave(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[output]\n"
+                             "backend = \"null\"\n"
+                             "ncurses_ui = false\n"
+                             "\n"
+                             "[mode]\n"
+                             "decode = \"p25p1\"\n"
+                             "\n"
+                             "[profile.alpha]\n"
+                             "mode.decode = \"ysf\"\n"
+                             "\n"
+                             "[profile.beta]\n"
+                             "mode.decode = \"dmr\"\n"
+                             "output.ncurses_ui = true\n";
+
+    char path[DSD_TEST_PATH_MAX] = {0};
+    if (create_temp_config_file(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        (void)remove(path);
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    state->config_autosave_enabled = 1;
+    DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", path);
+
+    ProfileSelCtx* pctx = make_test_profile_context(state, path);
+    if (!pctx) {
+        DSD_FPRINTF(stderr, "FAIL: could not allocate profile test context\n");
+        free_test_runtime(&runtime);
+        (void)remove(path);
+        return 1;
+    }
+
+    chooser_done_config_profile(pctx, 1);
+    ui_drain_cmds(opts, state);
+
+    int rc = 0;
+    rc |= expect_int_eq("UI profile load disables autosave", state->config_autosave_enabled, 0);
+    rc |= expect_true("UI profile load retains config path", strcmp(state->config_autosave_path, path) == 0);
+    rc |= expect_true("UI profile overlay applies DMR mode",
+                      opts->frame_dmr == 1 && opts->frame_p25p1 == 0 && opts->frame_p25p2 == 0 && opts->frame_ysf == 0);
+    rc |= expect_int_eq("UI profile overlay applies ncurses flag", opts->use_ncurses_terminal, 1);
+
+    free_test_runtime(&runtime);
+    (void)remove(path);
+    return rc;
+}
+
+static int
+test_ui_profile_menu_no_profiles_does_not_apply_base_config(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[output]\n"
+                             "backend = \"null\"\n"
+                             "ncurses_ui = true\n";
+
+    char path[DSD_TEST_PATH_MAX] = {0};
+    if (create_temp_config_file(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        (void)remove(path);
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    UiCtx ctx = {opts, state};
+
+    state->config_autosave_enabled = 1;
+    DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", path);
+
+    act_config_load_profile(&ctx);
+    ui_drain_cmds(opts, state);
+
+    int rc = 0;
+    rc |= expect_int_eq("no-profile UI load leaves autosave enabled", state->config_autosave_enabled, 1);
+    rc |= expect_true("no-profile UI load retains config path", strcmp(state->config_autosave_path, path) == 0);
+    rc |= expect_int_eq("no-profile UI load does not apply base ncurses flag", opts->use_ncurses_terminal, 0);
+
+    free_test_runtime(&runtime);
+    (void)remove(path);
     return rc;
 }
 
@@ -931,6 +1112,8 @@ int
 main(void) {
     int rc = 0;
     rc |= test_basic_pulse_config_apply();
+    rc |= test_ui_profile_selection_applies_overlay_and_disables_autosave();
+    rc |= test_ui_profile_menu_no_profiles_does_not_apply_base_config();
     rc |= test_stereo_file_hot_swap_rolls_back_to_live_input();
     rc |= test_call_alert_off_selection_survives_ui_command_path();
     rc |= test_return_cc_uses_pulse_rate_not_stale_file_rate();
