@@ -549,7 +549,7 @@ jobs:
     needs: [build-linux, validate-release-tag]
     runs-on: ubuntu-latest
     container:
-      image: archlinux:base-devel@sha256:6db772fd1dd128b9cf7b7231ca5284af70879596fe4ec754c911cfc4ac30d5eb
+      image: archlinux:base-devel@sha256:25074821d28e54a0bbbd87a88d392f1489be9bd815ee5c60744be6e57fd500d8
     env:
       AUR_MAKEPKG_USER: aurbuilder
     defaults:
@@ -704,7 +704,7 @@ jobs:
     needs: [build-linux, validate-release-tag]
     runs-on: ubuntu-latest
     container:
-      image: archlinux:base-devel@sha256:6db772fd1dd128b9cf7b7231ca5284af70879596fe4ec754c911cfc4ac30d5eb
+      image: archlinux:base-devel@sha256:25074821d28e54a0bbbd87a88d392f1489be9bd815ee5c60744be6e57fd500d8
     env:
       AUR_MAKEPKG_USER: aurbuilder
     defaults:
