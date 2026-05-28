@@ -25,6 +25,7 @@ void cb_keys_hex(void* v, const char* p);
 // ---- Config callbacks ----
 void cb_config_load(void* v, const char* path);
 void cb_config_save_as(void* v, const char* path);
+void chooser_done_config_profile(void* u, int sel);
 
 // ---- Typed value callbacks ----
 void cb_setmod_bw(void* v, int ok, int bw);

@@ -160,6 +160,9 @@ dsd-neo --config config.ini --profile p25_trunk
 dsd-neo --config config.ini --list-profiles
 ```
 
+The ncurses Config menu also supports `Load Profile...`, which lists profiles from
+the active config path and applies the selected overlay to the running session.
+
 ### Behavior
 
 - Base config is loaded first.

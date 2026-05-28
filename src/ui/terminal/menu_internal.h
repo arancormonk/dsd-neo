@@ -109,6 +109,15 @@ typedef struct {
     int n;
 } PulseSelCtx;
 
+// Config profile selection context
+typedef struct {
+    UiCtx* c;
+    char path[1024];
+    const char** labels;
+    const char** names;
+    int n;
+} ProfileSelCtx;
+
 static inline int
 ui_scroll_page_step_from_rows(int page_rows) {
     if (page_rows <= 1) {
