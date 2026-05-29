@@ -578,11 +578,11 @@ int main(void) {
     (void)mbe_decodeAmbe3600x2450Frame(ambe_fr, ambe_d, &result);
     (void)mbe_decodeImbe7200x4400SoftFrame(imbe_soft, imbe_d, &result);
     (void)mbe_decodeAmbe3600x2450SoftFrame(ambe_soft, ambe_d, &result);
-    (void)mbe_processImbe4400Dataf(audio, &result, imbe_d, &cur, &prev, &prev_enhanced, 3);
-    (void)mbe_processAmbe2450Dataf(audio, &result, ambe_d, &cur, &prev, &prev_enhanced, 3);
-    (void)mbe_processAmbe2400Dataf(audio, &result, ambe_d, &cur, &prev, &prev_enhanced, 3);
-    (void)mbe_processAmbe3600x2450Framef(audio, &result, ambe_fr, ambe_d, &cur, &prev, &prev_enhanced, 3);
-    (void)mbe_processAmbe3600x2450SoftFramef(audio, &result, ambe_soft, ambe_d, &cur, &prev, &prev_enhanced, 3);
+    (void)mbe_processImbe4400Dataf(audio, &result, imbe_d, &cur, &prev, &prev_enhanced);
+    (void)mbe_processAmbe2450Dataf(audio, &result, ambe_d, &cur, &prev, &prev_enhanced);
+    (void)mbe_processAmbe2400Dataf(audio, &result, ambe_d, &cur, &prev, &prev_enhanced);
+    (void)mbe_processAmbe3600x2450Framef(audio, &result, ambe_fr, ambe_d, &cur, &prev, &prev_enhanced);
+    (void)mbe_processAmbe3600x2450SoftFramef(audio, &result, ambe_soft, ambe_d, &cur, &prev, &prev_enhanced);
     mbe_synthesizeSilencef(audio);
     mbe_formatProcessResult(err_str, sizeof(err_str), &result);
     return (int)(sizeof(mbe_soft_bit) + sizeof(mbe_process_result));

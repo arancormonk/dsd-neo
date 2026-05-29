@@ -92,7 +92,7 @@ class Stream;
 #ifdef USE_RTLSDR
 #include <rtl-sdr.h>
 #else
-struct rtlsdr_dev;
+#include <dsd-neo/core/parse.h>
 typedef struct rtlsdr_dev rtlsdr_dev_t;
 
 #ifndef RTLSDR_TUNER_E4000
@@ -181,8 +181,15 @@ rtlsdr_set_tuner_gain_mode(rtlsdr_dev_t* dev, int manual) {
 static int
 rtlsdr_get_tuner_gains(rtlsdr_dev_t* dev, int* gains) {
     (void)dev;
-    (void)gains;
-    return rtlsdr_stub_status();
+    int count = rtlsdr_stub_status();
+    if (count <= 0) {
+        return count;
+    }
+    if (gains != nullptr) {
+        gains[0] = 0;
+        return 1;
+    }
+    return count;
 }
 
 static int
@@ -3533,8 +3540,12 @@ nearest_gain(rtlsdr_dev_t* dev, int target_gain) {
         return 0;
     }
     count = rtlsdr_get_tuner_gains(dev, gains);
+    if (count <= 0) {
+        free(gains);
+        return 0;
+    }
     nearest = gains[0];
-    for (i = 0; i < count; i++) {
+    for (i = 1; i < count; i++) {
         int err1 = abs(target_gain - nearest);
         int err2 = abs(target_gain - gains[i]);
         if (err2 < err1) {

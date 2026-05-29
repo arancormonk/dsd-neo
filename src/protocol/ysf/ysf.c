@@ -896,7 +896,7 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
 
         (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                              sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
-                                             state->prev_mp_enhanced, opts->uvquality, NULL);
+                                             state->prev_mp_enhanced, NULL);
 
         if (dsd_frame_detail_enabled(opts)) {
             PrintAMBEData(opts, state, ambe_d);

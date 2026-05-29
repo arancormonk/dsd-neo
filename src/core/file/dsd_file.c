@@ -1500,7 +1500,7 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
 
     (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                          sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
-                                         state->prev_mp_enhanced, opts->uvquality, &result);
+                                         state->prev_mp_enhanced, &result);
 
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
@@ -1549,7 +1549,7 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
 
     (void)dsd_mbe_process_imbe4400_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                          sizeof(state->err_str), imbe_d, state->cur_mp, state->prev_mp,
-                                         state->prev_mp_enhanced, opts->uvquality, &result);
+                                         state->prev_mp_enhanced, &result);
 
     if (dsd_frame_detail_enabled(opts)) {
         PrintIMBEData(opts, state, imbe_d);

@@ -2110,15 +2110,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 LOG_NOTICE("Enabling 6000 sps P25p2 all optimizations.\n");                                            \
             }                                                                                                          \
             break;                                                                                                     \
-        case 'u':                                                                                                      \
-            DSD_CLI_PARSE_LONG_OR_RETURN("-u", optarg, 0, opts->uvquality);                                            \
-            if (opts->uvquality < 1) {                                                                                 \
-                opts->uvquality = 1;                                                                                   \
-            } else if (opts->uvquality > 64) {                                                                         \
-                opts->uvquality = 64;                                                                                  \
-            }                                                                                                          \
-            LOG_NOTICE("Setting unvoice speech quality to %i waves per band.\n", opts->uvquality);                     \
-            break;                                                                                                     \
         case 's': {                                                                                                    \
             /* Sample rate for WAV/RAW input files */                                                                  \
             long parsed_sr = 0;                                                                                        \
@@ -2283,7 +2274,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_sps = 0;
     int cli_manual_timing_center = 0;
     while ((c = getopt(argc, argv,
-                       "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:u:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:"
+                       "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:"
                        "89:Ek:I:J:Oj^"))
            != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();

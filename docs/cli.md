@@ -11,7 +11,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`, `-nm`
 - Modes: `-fa | -fs | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
-- Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-u 3`, `-q`
+- Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
@@ -204,7 +204,6 @@ Notes
 - Inversions: `-xx` X2 non‑inverted, `-xr` DMR inverted, `-xd` dPMR inverted, `-xz` M17 inverted
 - Disable DMR/dPMR/NXDN/M17 input filtering: `-l`
 - Analog filter bitmap (advanced): `-v <hex>` (bitmask for HPF/LPF/PBF)
-- Unvoiced speech quality: `-u <1–64>` (default 3)
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
 - Relax CRC checks: `-F` (P25p2 MAC_SIGNAL, DMR RAS/CRC, NXDN SACCH/FACCH/CAC/F2U, M17 LSF/PKT)
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`)

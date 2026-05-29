@@ -124,7 +124,6 @@ struct dsd_opts {
     /* When set by CLI (-mc/-mg/-mq/-m2), pin demod path and disable
        auto modulation switching/overrides. 0=auto (default), 1=locked. */
     int mod_cli_lock;
-    int uvquality;
     int inverted_x2tdma;
     int inverted_dmr;
     int ssize;
