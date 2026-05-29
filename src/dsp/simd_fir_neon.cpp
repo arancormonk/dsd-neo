@@ -221,7 +221,6 @@ simd_hb_decim2_complex_neon(const float* in, int in_len, float* out, float* hist
         xq = scratch[2 * ii + 1];
     };
 
-    /* Process 2 output samples at a time */
     int n = 0;
     for (; n + 1 < out_ch_len; n += 2) {
         float32x4_t acc = vdupq_n_f32(0.0f);
@@ -239,7 +238,6 @@ simd_hb_decim2_complex_neon(const float* in, int in_len, float* out, float* hist
         float32x4_t center_val = vld1q_f32(center_arr);
         acc = vfmaq_f32(acc, tap_c, center_val);
 
-        /* Half-band: only even tap indices */
         for (int e = 0; e < center; e += 2) {
             float ce = taps[e];
             if (ce == 0.0f) {
@@ -267,7 +265,6 @@ simd_hb_decim2_complex_neon(const float* in, int in_len, float* out, float* hist
         vst1q_f32(out + (n << 1), acc);
     }
 
-    /* Scalar epilogue */
     for (; n < out_ch_len; n++) {
         int center_idx = left_len + (n << 1);
         float accI = 0.0f;

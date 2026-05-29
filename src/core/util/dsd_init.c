@@ -629,6 +629,49 @@ init_state_mbe_contexts(dsd_state* state) {
 }
 
 static void
+init_state_vendor_crypto_defaults(dsd_state* state) {
+    state->tyt_ap = 0;
+    state->tyt_bp = 0;
+    state->tyt_ep = 0;
+    state->baofeng_ap = 0;
+    state->csi_ee = 0;
+    DSD_MEMSET(state->csi_ee_key, 0, sizeof(state->csi_ee_key));
+    state->retevis_ap = 0;
+
+    state->ken_sc = 0;
+    state->any_bp = 0;
+    state->straight_ks = 0;
+    state->straight_mod = 0;
+    state->straight_frame_mode = 0;
+    state->straight_frame_off = 0;
+    state->straight_frame_step = 0;
+
+    DSD_MEMSET(state->ks_octetL, 0, sizeof(state->ks_octetL));
+    DSD_MEMSET(state->ks_octetR, 0, sizeof(state->ks_octetR));
+    DSD_MEMSET(state->ks_bitstreamL, 0, sizeof(state->ks_bitstreamL));
+    DSD_MEMSET(state->ks_bitstreamR, 0, sizeof(state->ks_bitstreamR));
+    state->octet_counter = 0;
+    state->bit_counterL = 0;
+    state->bit_counterR = 0;
+
+    DSD_MEMSET(state->static_ks_bits, 0, sizeof(state->static_ks_bits));
+    DSD_MEMSET(state->static_ks_counter, 0, sizeof(state->static_ks_counter));
+    DSD_MEMSET(state->vertex_ks_key, 0, sizeof(state->vertex_ks_key));
+    DSD_MEMSET(state->vertex_ks_bits, 0, sizeof(state->vertex_ks_bits));
+    DSD_MEMSET(state->vertex_ks_mod, 0, sizeof(state->vertex_ks_mod));
+    DSD_MEMSET(state->vertex_ks_frame_mode, 0, sizeof(state->vertex_ks_frame_mode));
+    DSD_MEMSET(state->vertex_ks_frame_off, 0, sizeof(state->vertex_ks_frame_off));
+    DSD_MEMSET(state->vertex_ks_frame_step, 0, sizeof(state->vertex_ks_frame_step));
+    state->vertex_ks_count = 0;
+    state->vertex_ks_active_idx[0] = -1;
+    state->vertex_ks_active_idx[1] = -1;
+    state->vertex_ks_counter[0] = 0;
+    state->vertex_ks_counter[1] = 0;
+    state->vertex_ks_warned[0] = 0;
+    state->vertex_ks_warned[1] = 0;
+}
+
+static void
 init_state_protocol_defaults_a(dsd_state* state) {
     // Initialize P25 neighbor/candidate UI helpers
     state->p25_nb_count = 0;
@@ -708,46 +751,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->dropL = 256;
     state->dropR = 256;
 
-    state->tyt_ap = 0;
-    state->tyt_bp = 0;
-    state->tyt_ep = 0;
-    state->baofeng_ap = 0;
-    state->csi_ee = 0;
-    DSD_MEMSET(state->csi_ee_key, 0, sizeof(state->csi_ee_key));
-    state->retevis_ap = 0;
-
-    state->ken_sc = 0;
-    state->any_bp = 0;
-    state->straight_ks = 0;
-    state->straight_mod = 0;
-    state->straight_frame_mode = 0;
-    state->straight_frame_off = 0;
-    state->straight_frame_step = 0;
-
-    //ks array storage and counters
-    DSD_MEMSET(state->ks_octetL, 0, sizeof(state->ks_octetL));
-    DSD_MEMSET(state->ks_octetR, 0, sizeof(state->ks_octetR));
-    DSD_MEMSET(state->ks_bitstreamL, 0, sizeof(state->ks_bitstreamL));
-    DSD_MEMSET(state->ks_bitstreamR, 0, sizeof(state->ks_bitstreamR));
-    state->octet_counter = 0;
-    state->bit_counterL = 0;
-    state->bit_counterR = 0;
-
-    DSD_MEMSET(state->static_ks_bits, 0, sizeof(state->static_ks_bits));
-    DSD_MEMSET(state->static_ks_counter, 0, sizeof(state->static_ks_counter));
-    DSD_MEMSET(state->vertex_ks_key, 0, sizeof(state->vertex_ks_key));
-    DSD_MEMSET(state->vertex_ks_bits, 0, sizeof(state->vertex_ks_bits));
-    DSD_MEMSET(state->vertex_ks_mod, 0, sizeof(state->vertex_ks_mod));
-    DSD_MEMSET(state->vertex_ks_frame_mode, 0, sizeof(state->vertex_ks_frame_mode));
-    DSD_MEMSET(state->vertex_ks_frame_off, 0, sizeof(state->vertex_ks_frame_off));
-    DSD_MEMSET(state->vertex_ks_frame_step, 0, sizeof(state->vertex_ks_frame_step));
-    state->vertex_ks_count = 0;
-    state->vertex_ks_active_idx[0] = -1;
-    state->vertex_ks_active_idx[1] = -1;
-    state->vertex_ks_counter[0] = 0;
-    state->vertex_ks_counter[1] = 0;
-    state->vertex_ks_warned[0] = 0;
-    state->vertex_ks_warned[1] = 0;
+    init_state_vendor_crypto_defaults(state);
 }
 
 static void
@@ -805,6 +809,26 @@ init_state_protocol_defaults_b(dsd_state* state) {
 }
 
 static void
+init_state_p25_patch_defaults(dsd_state* state) {
+    state->p25_patch_count = 0;
+    for (int p = 0; p < 8; p++) {
+        state->p25_patch_sgid[p] = 0;
+        state->p25_patch_is_patch[p] = 0;
+        state->p25_patch_active[p] = 0;
+        state->p25_patch_last_update[p] = 0;
+        state->p25_patch_wgid_count[p] = 0;
+        state->p25_patch_wuid_count[p] = 0;
+        for (int q = 0; q < 8; q++) {
+            state->p25_patch_wgid[p][q] = 0;
+            state->p25_patch_wuid[p][q] = 0;
+        }
+        state->p25_patch_key[p] = 0;
+        state->p25_patch_alg[p] = 0;
+        state->p25_patch_ssn[p] = 0;
+    }
+}
+
+static void
 init_state_p25_and_trunk_defaults(dsd_state* state) {
     //P2 variables
     state->p2_wacn = 0;
@@ -858,23 +882,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
 
-    // Initialize P25 regroup/patch tracking
-    state->p25_patch_count = 0;
-    for (int p = 0; p < 8; p++) {
-        state->p25_patch_sgid[p] = 0;
-        state->p25_patch_is_patch[p] = 0;
-        state->p25_patch_active[p] = 0;
-        state->p25_patch_last_update[p] = 0;
-        state->p25_patch_wgid_count[p] = 0;
-        state->p25_patch_wuid_count[p] = 0;
-        for (int q = 0; q < 8; q++) {
-            state->p25_patch_wgid[p][q] = 0;
-            state->p25_patch_wuid[p][q] = 0;
-        }
-        state->p25_patch_key[p] = 0;
-        state->p25_patch_alg[p] = 0;
-        state->p25_patch_ssn[p] = 0;
-    }
+    init_state_p25_patch_defaults(state);
 
     //edacs - may need to make these user configurable instead for stability on non-ea systems
     state->ea_mode = -1; //init on -1, 0 is standard, 1 is ea

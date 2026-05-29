@@ -192,6 +192,27 @@ hb_complex_accumulate_scalar(const float* scratch, const float* taps, int left_l
     return acc;
 }
 
+static inline float
+load_real(const float* scratch, int idx) {
+    return scratch[idx];
+}
+
+static inline float
+hb_real_accumulate_scalar(const float* scratch, const float* taps, int hist_len, int center, int n) {
+    const int center_idx = hist_len + (n << 1);
+    float acc = taps[center] * load_real(scratch, center_idx);
+
+    for (int e = 0; e < center; e += 2) {
+        const float ce = taps[e];
+        if (ce == 0.0f) {
+            continue;
+        }
+        const int d = center - e;
+        acc += ce * (load_real(scratch, center_idx - d) + load_real(scratch, center_idx + d));
+    }
+    return acc;
+}
+
 static inline void
 update_iq_history(const float* in, int sample_count, float* hist_i, float* hist_q, int hist_len) {
     if (sample_count >= hist_len) {
@@ -211,6 +232,18 @@ update_iq_history(const float* in, int sample_count, float* hist_i, float* hist_
         hist_i[keep + k] = in[k << 1];
         hist_q[keep + k] = in[(k << 1) + 1];
     }
+}
+
+static inline void
+update_real_history(const float* in, int in_len, float* hist, int hist_len) {
+    if (in_len >= hist_len) {
+        DSD_MEMCPY(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
+        return;
+    }
+
+    const int keep = hist_len - in_len;
+    DSD_MEMMOVE(hist, hist + in_len, (size_t)keep * sizeof(float));
+    DSD_MEMCPY(hist + keep, in, (size_t)in_len * sizeof(float));
 }
 
 } // namespace
@@ -350,16 +383,12 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
     const int pad = center + 1; /* stride-2 centers, 8-output vectorization */
     const int scratch_len = total_len + pad;
 
-    /* Resize thread-local buffer if needed (amortized O(1)) */
     if (tls_scratch_real.size() < (size_t)scratch_len) {
         tls_scratch_real.resize((size_t)scratch_len);
     }
     float* scratch = tls_scratch_real.data();
 
-    /* Copy history */
     DSD_MEMCPY(scratch, hist, (size_t)hist_len * sizeof(float));
-
-    /* Copy input */
     DSD_MEMCPY(scratch + hist_len, in, (size_t)in_len * sizeof(float));
 
     /* Tail padding to preserve last sample behavior */
@@ -367,9 +396,6 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
     for (int k = 0; k < pad; k++) {
         scratch[hist_len + in_len + k] = last;
     }
-
-    /* Branch-free sample access (index is always valid due to padding) */
-    auto get_sample = [&](int idx) -> float { return scratch[idx]; };
 
     /* Process 8 output samples at a time */
     int n = 0;
@@ -389,8 +415,9 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
         int ci6 = hist_len + ((n + 6) << 1);
         int ci7 = hist_len + ((n + 7) << 1);
 
-        __m256 center_val = _mm256_set_ps(get_sample(ci7), get_sample(ci6), get_sample(ci5), get_sample(ci4),
-                                          get_sample(ci3), get_sample(ci2), get_sample(ci1), get_sample(ci0));
+        __m256 center_val = _mm256_set_ps(load_real(scratch, ci7), load_real(scratch, ci6), load_real(scratch, ci5),
+                                          load_real(scratch, ci4), load_real(scratch, ci3), load_real(scratch, ci2),
+                                          load_real(scratch, ci1), load_real(scratch, ci0));
         acc = _mm256_fmadd_ps(tap_c, center_val, acc);
 
         /* Half-band: only even indices */
@@ -403,11 +430,13 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
             __m256 tap_e = _mm256_set1_ps(ce);
 
             __m256 sum_m =
-                _mm256_set_ps(get_sample(ci7 - d), get_sample(ci6 - d), get_sample(ci5 - d), get_sample(ci4 - d),
-                              get_sample(ci3 - d), get_sample(ci2 - d), get_sample(ci1 - d), get_sample(ci0 - d));
+                _mm256_set_ps(load_real(scratch, ci7 - d), load_real(scratch, ci6 - d), load_real(scratch, ci5 - d),
+                              load_real(scratch, ci4 - d), load_real(scratch, ci3 - d), load_real(scratch, ci2 - d),
+                              load_real(scratch, ci1 - d), load_real(scratch, ci0 - d));
             __m256 sum_p =
-                _mm256_set_ps(get_sample(ci7 + d), get_sample(ci6 + d), get_sample(ci5 + d), get_sample(ci4 + d),
-                              get_sample(ci3 + d), get_sample(ci2 + d), get_sample(ci1 + d), get_sample(ci0 + d));
+                _mm256_set_ps(load_real(scratch, ci7 + d), load_real(scratch, ci6 + d), load_real(scratch, ci5 + d),
+                              load_real(scratch, ci4 + d), load_real(scratch, ci3 + d), load_real(scratch, ci2 + d),
+                              load_real(scratch, ci1 + d), load_real(scratch, ci0 + d));
             __m256 sum = _mm256_add_ps(sum_m, sum_p);
             acc = _mm256_fmadd_ps(tap_e, sum, acc);
         }
@@ -417,31 +446,10 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
 
     /* Scalar epilogue */
     for (; n < out_len; n++) {
-        int center_idx = hist_len + (n << 1);
-        float acc = 0.0f;
-
-        acc += taps[center] * get_sample(center_idx);
-
-        for (int e = 0; e < center; e += 2) {
-            float ce = taps[e];
-            if (ce == 0.0f) {
-                continue;
-            }
-            int d = center - e;
-            acc += ce * (get_sample(center_idx - d) + get_sample(center_idx + d));
-        }
-
-        out[n] = acc;
+        out[n] = hb_real_accumulate_scalar(scratch, taps, hist_len, center, n);
     }
 
-    /* Update history: read from original `in` buffer, not scratch */
-    if (in_len >= hist_len) {
-        DSD_MEMCPY(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
-    } else {
-        int need = hist_len - in_len;
-        DSD_MEMMOVE(hist, hist + in_len, (size_t)need * sizeof(float));
-        DSD_MEMCPY(hist + need, in, (size_t)in_len * sizeof(float));
-    }
+    update_real_history(in, in_len, hist, hist_len);
 
     _mm256_zeroupper();
     return out_len;

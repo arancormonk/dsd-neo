@@ -1079,7 +1079,7 @@ tg_policy_probe_group_file(const char* path, int* has_existing_header, int* exis
         return;
     }
 
-    rf = fopen(path, "r");
+    rf = dsd_fopen_existing_regular_file(path, "r");
     if (!rf) {
         *file_missing_or_empty = 1;
         return;

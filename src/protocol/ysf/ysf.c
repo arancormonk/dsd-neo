@@ -183,117 +183,60 @@ ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft,
 }
 
 static void
+ysf_copy_text_field(char* dst, const char* src, size_t len) {
+    DSD_MEMCPY(dst, src, len);
+    dst[len] = '\0';
+}
+
+static void
+ysf_print_text_field(const char* label, const char* src, size_t len, const char* suffix) {
+    char text[11];
+    ysf_copy_text_field(text, src, len);
+    DSD_FPRINTF(stderr, "%s", label);
+    DSD_FPRINTF(stderr, "%s%s", text, suffix);
+}
+
+static void
+ysf_store_text_field(const char* label, const char* src, size_t len, char* dst, const char* suffix) {
+    ysf_print_text_field(label, src, len, suffix);
+    ysf_copy_text_field(dst, src, len);
+}
+
+static void
+ysf_dch_decode2_destination(dsd_state* state, const char dch_bytes[20], uint8_t cm) {
+    if (cm != 1) {
+        ysf_print_text_field("DST: ", dch_bytes, 10, " ");
+    } else {
+        ysf_print_text_field("DST RID: ", dch_bytes, 5, " ");
+        ysf_print_text_field("SRC RID: ", dch_bytes + 5, 5, " ");
+    }
+    ysf_copy_text_field(state->ysf_tgt, dch_bytes, 10);
+}
+
+static void
+ysf_dch_decode2_remarks(const char* label1, char* dst1, const char* label2, char* dst2, const char dch_bytes[20]) {
+    ysf_store_text_field(label1, dch_bytes, 5, dst1, " ");
+    ysf_store_text_field(label2, dch_bytes + 5, 5, dst2, " ");
+}
+
+static void
 ysf_dch_decode2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, uint8_t input[]) {
-    //TODO: Per Call WAV files using these strings
-    int i;
     char dch_bytes[20];
     DSD_MEMSET(dch_bytes, 0, sizeof(dch_bytes));
-    char string[11];
-    char rem1[6];
-    char rem2[6];
 
-    UNUSED4(bn, bt, fn, ft);
+    UNUSED3(bn, bt, ft);
 
-    for (i = 0; i < 10; i++) {
+    for (int i = 0; i < 10; i++) {
         dch_bytes[i] = (char)ConvertBitIntoBytes(&input[(size_t)i * 8u], 8);
     }
 
     switch (fn) {
-        case 0:
-            //Destination / Target
-            if (cm != 1) {
-                DSD_MEMCPY(string, dch_bytes, 10);
-                string[10] = '\0';
-                DSD_FPRINTF(stderr, "DST: ");
-                DSD_FPRINTF(stderr, "%s ", string);
-            } else //Radio ID Mode -- updated in the 1V02 spec manual
-            {
-                DSD_MEMCPY(rem1, dch_bytes, 5);
-                rem1[5] = '\0';
-                DSD_FPRINTF(stderr, "DST RID: ");
-                DSD_FPRINTF(stderr, "%s ", rem1);
-
-                DSD_MEMCPY(rem2, dch_bytes + 5, 5);
-                rem2[5] = '\0';
-                DSD_FPRINTF(stderr, "SRC RID: ");
-                DSD_FPRINTF(stderr, "%s ", rem2);
-            }
-
-            DSD_MEMCPY(state->ysf_tgt, dch_bytes, 10);
-            state->ysf_tgt[10] = '\0';
-
-            break;
-        case 1:
-            //Source
-            DSD_MEMCPY(string, dch_bytes, 10);
-            string[10] = '\0';
-            DSD_FPRINTF(stderr, "SRC: ");
-            DSD_FPRINTF(stderr, "%s", string);
-
-            DSD_MEMCPY(state->ysf_src, dch_bytes, 10);
-            state->ysf_src[10] = '\0';
-
-            break;
-        case 2:
-            //Uplink
-            DSD_MEMCPY(string, dch_bytes, 10);
-            string[10] = '\0';
-            DSD_FPRINTF(stderr, "U/L: ");
-            DSD_FPRINTF(stderr, "%s", string);
-
-            DSD_MEMCPY(state->ysf_upl, dch_bytes, 10);
-            state->ysf_upl[10] = '\0';
-
-            break;
-        case 3:
-            //Downlink
-            DSD_MEMCPY(string, dch_bytes, 10);
-            string[10] = '\0';
-            DSD_FPRINTF(stderr, "D/L: ");
-            DSD_FPRINTF(stderr, "%s", string);
-
-            state->ysf_dnl[10] = '\0';
-            DSD_MEMCPY(state->ysf_dnl, dch_bytes, 10);
-
-            break;
-        case 4:
-            //Remarks 1 and 2
-            DSD_MEMCPY(rem1, dch_bytes, 5);
-            rem1[5] = '\0';
-            DSD_FPRINTF(stderr, "RM1: ");
-            DSD_FPRINTF(stderr, "%s ", rem1);
-
-            DSD_MEMCPY(rem2, dch_bytes + 5, 5);
-            rem2[5] = '\0';
-            DSD_FPRINTF(stderr, "RM2: ");
-            DSD_FPRINTF(stderr, "%s ", rem2);
-
-            DSD_MEMCPY(state->ysf_rm1, dch_bytes, 5);
-            state->ysf_rm1[5] = '\0';
-
-            DSD_MEMCPY(state->ysf_rm2, dch_bytes + 5, 5);
-            state->ysf_rm2[5] = '\0';
-
-            break;
-        case 5:
-            //Remarks 3 and 4
-            DSD_MEMCPY(rem1, dch_bytes, 5);
-            rem1[5] = '\0';
-            DSD_FPRINTF(stderr, "RM3: ");
-            DSD_FPRINTF(stderr, "%s ", rem1);
-
-            DSD_MEMCPY(rem2, dch_bytes + 5, 5);
-            rem2[5] = '\0';
-            DSD_FPRINTF(stderr, "RM4: ");
-            DSD_FPRINTF(stderr, "%s ", rem2);
-
-            DSD_MEMCPY(state->ysf_rm3, dch_bytes, 5);
-            state->ysf_rm3[5] = '\0';
-
-            DSD_MEMCPY(state->ysf_rm4, dch_bytes + 5, 5);
-            state->ysf_rm4[5] = '\0';
-            break;
-
+        case 0: ysf_dch_decode2_destination(state, dch_bytes, cm); break;
+        case 1: ysf_store_text_field("SRC: ", dch_bytes, 10, state->ysf_src, ""); break;
+        case 2: ysf_store_text_field("U/L: ", dch_bytes, 10, state->ysf_upl, ""); break;
+        case 3: ysf_store_text_field("D/L: ", dch_bytes, 10, state->ysf_dnl, ""); break;
+        case 4: ysf_dch_decode2_remarks("RM1: ", state->ysf_rm1, "RM2: ", state->ysf_rm2, dch_bytes); break;
+        case 5: ysf_dch_decode2_remarks("RM3: ", state->ysf_rm3, "RM4: ", state->ysf_rm4, dch_bytes); break;
         default: break;
     }
 }

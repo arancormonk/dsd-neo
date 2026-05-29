@@ -50,7 +50,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/timing.h"
+#include "dsd-neo/platform/platform.h"
 #include "dsd-neo/runtime/call_alert.h"
 
 #ifdef USE_RADIO
@@ -68,15 +68,6 @@ static dsd_mutex_t g_mu;
 static atomic_int g_mu_init = 0;
 static atomic_int g_overflow = 0;
 static atomic_int g_overflow_warn_gate = 0;
-
-static unsigned int
-ui_cmd_rng_seed_now(void) {
-    uint64_t now_ns = dsd_time_monotonic_ns();
-    uintptr_t addr = (uintptr_t)&now_ns;
-    unsigned int seed = (unsigned int)(now_ns ^ (now_ns >> 32));
-    seed ^= (unsigned int)(addr >> 4);
-    return seed ? seed : 1U;
-}
 
 static void
 ensure_mu_init(void) {
@@ -109,6 +100,8 @@ static inline int
 q_is_empty_unlocked(void) {
     return g_head == g_tail;
 }
+
+static void ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 3, 4);
 
 static void
 ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
@@ -2474,7 +2467,7 @@ ui_cmd_handle_replay_last_legacy(dsd_opts* opts, dsd_state* state, const struct 
         return 1;
     }
     if (dsd_stat_is_regular(&sb)) {
-        opts->symbolfile = fopen(opts->audio_in_dev, "rb");
+        opts->symbolfile = dsd_fopen_existing_regular_file(opts->audio_in_dev, "rb");
         if (opts->symbolfile) {
             opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
             state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
@@ -2498,7 +2491,6 @@ ui_cmd_handle_wav_start_legacy(dsd_opts* opts, dsd_state* state, const struct Ui
         dsd_mkdir(wav_file_directory, 0700);
     }
     LOG_NOTICE("Per Call Wav File Enabled to Directory: %s\n", opts->wav_out_dir);
-    srand(ui_cmd_rng_seed_now());
     opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
     opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
     opts->dmr_stereo_wav = 1;

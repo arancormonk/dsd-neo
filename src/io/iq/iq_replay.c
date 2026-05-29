@@ -14,12 +14,15 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
+#include "dsd-neo/platform/platform.h"
 
 struct dsd_iq_replay_source {
     FILE* fp;
     uint64_t total_bytes;
     uint64_t remaining_bytes;
 };
+
+static void set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 3, 4);
 
 static void
 set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) {
@@ -110,7 +113,7 @@ read_file_all(const char* path, char** out_data, size_t* out_size, char* err_buf
     *out_data = NULL;
     *out_size = 0;
 
-    FILE* fp = fopen(path, "rb");
+    FILE* fp = dsd_fopen_existing_regular_file(path, "rb");
     if (!fp) {
         set_error(err_buf, err_buf_size, "failed to open metadata file '%s': %s", path, strerror(errno));
         return DSD_IQ_ERR_IO;
@@ -1999,7 +2002,7 @@ dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_repla
         dsd_iq_replay_config_clear(&cfg);
         return DSD_IQ_ERR_ALLOC;
     }
-    src->fp = fopen(cfg.data_path, "rb");
+    src->fp = dsd_fopen_existing_regular_file(cfg.data_path, "rb");
     if (!src->fp) {
         set_error(err_buf, err_buf_size, "failed to open replay data '%s': %s", cfg.data_path, strerror(errno));
         free(src);

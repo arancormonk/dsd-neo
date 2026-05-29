@@ -23,6 +23,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -40,7 +41,6 @@
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -183,7 +183,8 @@ ldu2_maybe_apply_early_unmute(dsd_opts* opts, const dsd_state* state, const char
     char algid_bits[9];
     char kid_bits[17];
     ldu2_extract_ess_fields(hex_data, mi_bits, algid_bits, kid_bits);
-    int algid_early = (int)strtol(algid_bits, NULL, 2);
+    uint32_t algid_early_bits = 0;
+    int algid_early = (dsd_parse_binary_u32_n(algid_bits, 8, &algid_early_bits) == 0) ? (int)algid_early_bits : 0;
 
     if (state->R != 0 && (algid_early == 0xAA || algid_early == 0x81 || algid_early == 0x9F)) {
         opts->unmute_encrypted_p25 = 1;
@@ -325,8 +326,10 @@ ldu2_run_fec_and_heuristics(dsd_state* state, P25Heuristics* heur, char hex_data
 static void
 ldu2_decode_post_fec_fields(const dsd_state* state, Ldu2Frame* frame) {
     ldu2_extract_ess_fields((const char (*)[6])frame->hex_data, frame->mi, frame->algid, frame->kid);
-    frame->algidhex = (int)strtol(frame->algid, NULL, 2);
-    frame->kidhex = (int)strtol(frame->kid, NULL, 2);
+    uint32_t algidhex = 0;
+    uint32_t kidhex = 0;
+    frame->algidhex = (dsd_parse_binary_u32_n(frame->algid, 8, &algidhex) == 0) ? (int)algidhex : 0;
+    frame->kidhex = (dsd_parse_binary_u32_n(frame->kid, 16, &kidhex) == 0) ? (int)kidhex : 0;
     frame->mihex1 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[0], 32);
     frame->mihex2 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[32], 32);
     frame->mihex3 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[64], 8);

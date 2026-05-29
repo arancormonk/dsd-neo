@@ -23,14 +23,11 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
+#include "p25_test_shim.h"
+
 // Shim: decode an MBT with pre-seeded iden tables
 int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
                                   int spac, long* out_cc, long* out_wacn, int* out_sysid);
-
-// Extended shim: also returns neighbor table entries after decode
-int p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
-                                     int spac, long* out_cc, long* out_wacn, int* out_sysid, int* out_nb_count,
-                                     long* out_nb_freqs);
 
 static void
 sm_noop_init(dsd_opts* opts, dsd_state* state) {
@@ -281,8 +278,9 @@ main(void) {
         (void)cc;
         (void)w;
         (void)sid;
-        int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), iden, type, tdma, base5, spac125, &cc, &w,
-                                                  &sid, &nb_count, nb_freqs);
+        p25_test_iden_config cfg = {iden, type, tdma, base5, spac125};
+        p25_test_mbt_outputs outputs = {&cc, &w, &sid, &nb_count, nb_freqs};
+        int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &cfg, &outputs);
         if (sh != 0) {
             return 30;
         }

@@ -336,24 +336,38 @@ p25p1_hamming_search_masked_candidates(const char* bits, const int* reliab, cons
     }
 }
 
+namespace {
+
+struct p25p1_golay_seed_result {
+    int* best_penalty;
+    int* best_fixed;
+    char* best_data;
+    int* found_valid;
+    char* hard_data;
+    int* hard_valid;
+    int* hard_corrected;
+    int* hard_penalty;
+};
+
+} // namespace
+
 static void
 p25p1_golay6_seed_hard(const char* orig, const int* reliab, const DSDGolay24* golay, const char* hex_copy,
-                       int hard_fixed, int* best_penalty, int* best_fixed, char best_data[6], int* found_valid,
-                       char hard_data[6], int* hard_valid, int* hard_corrected, int* hard_penalty) {
+                       int hard_fixed, const p25p1_golay_seed_result* out) {
     char decoded[18];
     DSD_MEMCPY(decoded, hex_copy, 6);
     char enc_parity[12];
     golay->encode_6(hex_copy, enc_parity);
     DSD_MEMCPY(decoded + 6, enc_parity, 12);
 
-    *hard_valid = 1;
-    *hard_corrected = (hard_fixed > 0);
-    *hard_penalty = compute_penalty(orig, decoded, reliab, 18);
-    *best_penalty = *hard_penalty;
-    *best_fixed = count_differences(orig, decoded, 18);
-    DSD_MEMCPY(hard_data, hex_copy, 6);
-    DSD_MEMCPY(best_data, hex_copy, 6);
-    *found_valid = 1;
+    *out->hard_valid = 1;
+    *out->hard_corrected = (hard_fixed > 0);
+    *out->hard_penalty = compute_penalty(orig, decoded, reliab, 18);
+    *out->best_penalty = *out->hard_penalty;
+    *out->best_fixed = count_differences(orig, decoded, 18);
+    DSD_MEMCPY(out->hard_data, hex_copy, 6);
+    DSD_MEMCPY(out->best_data, hex_copy, 6);
+    *out->found_valid = 1;
 }
 
 static void
@@ -400,22 +414,21 @@ p25p1_golay6_search(const char* orig, const int* reliab, const int* least_rel, D
 
 static void
 p25p1_golay12_seed_hard(const char* orig, const int* reliab, const DSDGolay24* golay, const char* dodeca_copy,
-                        int hard_fixed, int* best_penalty, int* best_fixed, char best_data[12], int* found_valid,
-                        char hard_data[12], int* hard_valid, int* hard_corrected, int* hard_penalty) {
+                        int hard_fixed, const p25p1_golay_seed_result* out) {
     char decoded[24];
     DSD_MEMCPY(decoded, dodeca_copy, 12);
     char enc_parity[12];
     golay->encode_12(dodeca_copy, enc_parity);
     DSD_MEMCPY(decoded + 12, enc_parity, 12);
 
-    *hard_valid = 1;
-    *hard_corrected = (hard_fixed > 0);
-    *hard_penalty = compute_penalty(orig, decoded, reliab, 24);
-    *best_penalty = *hard_penalty;
-    *best_fixed = count_differences(orig, decoded, 24);
-    DSD_MEMCPY(hard_data, dodeca_copy, 12);
-    DSD_MEMCPY(best_data, dodeca_copy, 12);
-    *found_valid = 1;
+    *out->hard_valid = 1;
+    *out->hard_corrected = (hard_fixed > 0);
+    *out->hard_penalty = compute_penalty(orig, decoded, reliab, 24);
+    *out->best_penalty = *out->hard_penalty;
+    *out->best_fixed = count_differences(orig, decoded, 24);
+    DSD_MEMCPY(out->hard_data, dodeca_copy, 12);
+    DSD_MEMCPY(out->best_data, dodeca_copy, 12);
+    *out->found_valid = 1;
 }
 
 static void
@@ -526,8 +539,9 @@ check_and_fix_golay_24_6_soft(char* data, const char* parity, const int* reliab,
     int hard_penalty = 999999;
 
     if (hard_result == 0) {
-        p25p1_golay6_seed_hard(orig, reliab, &golay, hex_copy, hard_fixed, &best_penalty, &best_fixed, best_data,
-                               &found_valid, hard_data, &hard_valid, &hard_corrected, &hard_penalty);
+        p25p1_golay_seed_result seed = {&best_penalty, &best_fixed, best_data,       &found_valid,
+                                        hard_data,     &hard_valid, &hard_corrected, &hard_penalty};
+        p25p1_golay6_seed_hard(orig, reliab, &golay, hex_copy, hard_fixed, &seed);
     }
 
     int least_rel[8];
@@ -584,8 +598,9 @@ check_and_fix_golay_24_12_soft(char* data, const char* parity, const int* reliab
     int hard_penalty = 999999;
 
     if (hard_result == 0) {
-        p25p1_golay12_seed_hard(orig, reliab, &golay, dodeca_copy, hard_fixed, &best_penalty, &best_fixed, best_data,
-                                &found_valid, hard_data, &hard_valid, &hard_corrected, &hard_penalty);
+        p25p1_golay_seed_result seed = {&best_penalty, &best_fixed, best_data,       &found_valid,
+                                        hard_data,     &hard_valid, &hard_corrected, &hard_penalty};
+        p25p1_golay12_seed_hard(orig, reliab, &golay, dodeca_copy, hard_fixed, &seed);
     }
 
     int least_rel[8];

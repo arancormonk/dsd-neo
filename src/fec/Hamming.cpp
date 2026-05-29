@@ -85,7 +85,12 @@ Hamming_10_6_3::encode(const std::bitset<6>& input) {
 
 int
 Hamming_10_6_3_TableImpl::decode(int input, int* output) {
-    assert(input < 1024 && input >= 0);
+    if (!output || input < 0 || input >= 1024) {
+        if (output) {
+            *output = 0;
+        }
+        return 2;
+    }
 
     // Making use of a table...
     Hamming_10_6_3_TableImpl_data* table = data();
@@ -101,7 +106,9 @@ Hamming_10_6_3_TableImpl::decode(int input, int* output) {
 
 int
 Hamming_10_6_3_TableImpl::encode(int input) {
-    assert(input < 64 && input >= 0);
+    if (input < 0 || input >= 64) {
+        return 0;
+    }
 
     // Making use of a table...
     Hamming_10_6_3_TableImpl_data* table = data();

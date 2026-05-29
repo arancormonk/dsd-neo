@@ -299,20 +299,31 @@ decode_ambe2450_frame(int* errs, int* errs2, char ambe_fr[4][24], dsd_vocoder_so
     return dsd_mbe_decode_ambe2450_frame(errs, errs2, (const char (*)[24])ambe_fr, ambe_d, result) >= 0;
 }
 
+typedef struct {
+    float* aout_buf;
+    int* errs;
+    int* errs2;
+    char* err_str;
+    size_t err_str_size;
+    mbe_parms* cur_mp;
+    mbe_parms* prev_mp;
+    mbe_parms* prev_mp_enhanced;
+} mbe_process_params;
+
 static void
-process_imbe4400_params(float* aout_buf, int* errs, int* errs2, char* err_str, size_t err_str_size,
-                        const char imbe_d[88], mbe_parms* cur_mp, mbe_parms* prev_mp, mbe_parms* prev_mp_enhanced,
-                        int uvquality, mbe_process_result* result, int have_result) {
-    (void)dsd_mbe_process_imbe4400_dataf(aout_buf, errs, errs2, err_str, err_str_size, imbe_d, cur_mp, prev_mp,
-                                         prev_mp_enhanced, uvquality, have_result ? result : NULL);
+process_imbe4400_params(const mbe_process_params* params, const char imbe_d[88], int uvquality,
+                        mbe_process_result* result, int have_result) {
+    (void)dsd_mbe_process_imbe4400_dataf(params->aout_buf, params->errs, params->errs2, params->err_str,
+                                         params->err_str_size, imbe_d, params->cur_mp, params->prev_mp,
+                                         params->prev_mp_enhanced, uvquality, have_result ? result : NULL);
 }
 
 static void
-process_ambe2450_params(float* aout_buf, int* errs, int* errs2, char* err_str, size_t err_str_size,
-                        const char ambe_d[49], mbe_parms* cur_mp, mbe_parms* prev_mp, mbe_parms* prev_mp_enhanced,
-                        int uvquality, mbe_process_result* result, int have_result) {
-    (void)dsd_mbe_process_ambe2450_dataf(aout_buf, errs, errs2, err_str, err_str_size, ambe_d, cur_mp, prev_mp,
-                                         prev_mp_enhanced, uvquality, have_result ? result : NULL);
+process_ambe2450_params(const mbe_process_params* params, const char ambe_d[49], int uvquality,
+                        mbe_process_result* result, int have_result) {
+    (void)dsd_mbe_process_ambe2450_dataf(params->aout_buf, params->errs, params->errs2, params->err_str,
+                                         params->err_str_size, ambe_d, params->cur_mp, params->prev_mp,
+                                         params->prev_mp_enhanced, uvquality, have_result ? result : NULL);
 }
 
 void
@@ -653,9 +664,9 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
 
     (void)dsd_mbe_strip_imbe_context_if_changed(decoded_imbe_d, frame_ctx->imbe_d, &imbe_result);
 
-    process_imbe4400_params(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
-                            sizeof(state->err_str), frame_ctx->imbe_d, state->cur_mp, state->prev_mp,
-                            state->prev_mp_enhanced, opts->uvquality, &imbe_result, have_imbe_result);
+    mbe_process_params process = {state->audio_out_temp_buf, &state->errs,  &state->errs2,  state->err_str,
+                                  sizeof(state->err_str),    state->cur_mp, state->prev_mp, state->prev_mp_enhanced};
+    process_imbe4400_params(&process, frame_ctx->imbe_d, opts->uvquality, &imbe_result, have_imbe_result);
     update_p25_p1_voice_err_hist(state);
 
     if (dsd_frame_detail_enabled(opts)) {
@@ -690,9 +701,9 @@ mbe_process_provoice(dsd_opts* opts, dsd_state* state, char imbe7100_fr[7][24], 
         }
     }
 
-    process_imbe4400_params(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
-                            sizeof(state->err_str), frame_ctx->imbe_d, state->cur_mp, state->prev_mp,
-                            state->prev_mp_enhanced, opts->uvquality, &imbe_result, 1);
+    mbe_process_params process = {state->audio_out_temp_buf, &state->errs,  &state->errs2,  state->err_str,
+                                  sizeof(state->err_str),    state->cur_mp, state->prev_mp, state->prev_mp_enhanced};
+    process_imbe4400_params(&process, frame_ctx->imbe_d, opts->uvquality, &imbe_result, 1);
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         update_p25_p1_voice_err_hist(state);
     }
@@ -893,9 +904,9 @@ mbe_slot_apply_straight_ks_right(dsd_state* state, char ambe_d[49]) {
 static void
 mbe_finalize_slot_left(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_process_result* ambe_result,
                        int have_ambe_result) {
-    process_ambe2450_params(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
-                            sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced,
-                            opts->uvquality, ambe_result, have_ambe_result);
+    mbe_process_params process = {state->audio_out_temp_buf, &state->errs,  &state->errs2,  state->err_str,
+                                  sizeof(state->err_str),    state->cur_mp, state->prev_mp, state->prev_mp_enhanced};
+    process_ambe2450_params(&process, ambe_d, opts->uvquality, ambe_result, have_ambe_result);
     p25p2_record_voice_err(state, state->errs2);
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
@@ -908,9 +919,10 @@ mbe_finalize_slot_left(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_pr
 static void
 mbe_finalize_slot_right(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_process_result* ambe_result,
                         int have_ambe_result) {
-    process_ambe2450_params(state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR,
-                            sizeof(state->err_strR), ambe_d, state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2,
-                            opts->uvquality, ambe_result, have_ambe_result);
+    mbe_process_params process = {
+        state->audio_out_temp_bufR, &state->errsR,  &state->errs2R,  state->err_strR,
+        sizeof(state->err_strR),    state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2};
+    process_ambe2450_params(&process, ambe_d, opts->uvquality, ambe_result, have_ambe_result);
     p25p2_record_voice_err(state, state->errs2R);
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
@@ -947,9 +959,9 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
 
     (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
 
-    process_ambe2450_params(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
-                            sizeof(state->err_str), frame_ctx->ambe_d, state->cur_mp, state->prev_mp,
-                            state->prev_mp_enhanced, opts->uvquality, &ambe_result, have_ambe_result);
+    mbe_process_params process = {state->audio_out_temp_buf, &state->errs,  &state->errs2,  state->err_str,
+                                  sizeof(state->err_str),    state->cur_mp, state->prev_mp, state->prev_mp_enhanced};
+    process_ambe2450_params(&process, frame_ctx->ambe_d, opts->uvquality, &ambe_result, have_ambe_result);
     p25p2_record_voice_err(state, state->errs2);
 
     if (dsd_frame_detail_enabled(opts)) {

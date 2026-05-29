@@ -55,7 +55,7 @@ dsd_audio_file_has_wav_family_header(const char* path) {
         return 0;
     }
 
-    FILE* fp = fopen(path, "rb");
+    FILE* fp = dsd_fopen_existing_regular_file(path, "rb");
     if (!fp) {
         return 0;
     }
@@ -1052,7 +1052,7 @@ dsd_audio_open_symbol_input(dsd_opts* opts, dsd_state* state, int symbol_type, c
         return 0;
     }
 
-    opts->symbolfile = fopen(opts->audio_in_dev, "rb");
+    opts->symbolfile = dsd_fopen_existing_regular_file(opts->audio_in_dev, "rb");
     if (opts->symbolfile == NULL) {
         LOG_ERROR("Error, couldn't open %s file %s\n", label, opts->audio_in_dev);
         return -1;

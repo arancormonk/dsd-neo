@@ -33,6 +33,7 @@ target_sources(
     dsd-neo_platform
     PRIVATE
         audio_concealment.c
+        nonce.c
         ${PROJECT_SOURCE_DIR}/src/io/radio/tcp_quality_metrics.cpp
         ${PROJECT_SOURCE_DIR}/src/runtime/input_ring_watermark.cpp
 )

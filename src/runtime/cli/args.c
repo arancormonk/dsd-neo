@@ -2210,7 +2210,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 state->p2_wacn = w & 0xFFFFF;                                                                          \
                 state->p2_sysid = sy & 0xFFF;                                                                          \
                 state->p2_cc = na & 0xFFF;                                                                             \
-                LOG_NOTICE("P25p2 manual WACN/SYSID/NAC set: %05lX/%03lX/%03lX\n", state->p2_wacn, state->p2_sysid,    \
+                LOG_NOTICE("P25p2 manual WACN/SYSID/NAC set: %05llX/%03llX/%03llX\n", state->p2_wacn, state->p2_sysid, \
                            state->p2_cc);                                                                              \
             } else {                                                                                                   \
                 LOG_ERROR("-X expects exactly 11 hex chars (WACN[5]+SYSID[3]+NAC[3]), e.g., BEE00ABC123\n");           \

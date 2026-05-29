@@ -19,7 +19,6 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <assert.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
@@ -317,8 +316,6 @@ invert_dibit(int dibit) {
         default: break;
     }
 
-    // Error, shouldn't be here
-    assert(0);
     return -1;
 }
 

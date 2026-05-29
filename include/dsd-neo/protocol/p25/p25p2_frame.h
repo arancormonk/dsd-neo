@@ -14,6 +14,10 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#if defined(DSD_NEO_P25P2_TEST_STUB)
+#include <stdint.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -21,6 +25,10 @@ extern "C" {
 void p25_p2_frame_reset(void);
 void process_ESS(dsd_opts* opts, dsd_state* state);
 void process_2V(dsd_opts* opts, dsd_state* state);
+
+#if defined(DSD_NEO_P25P2_TEST_STUB)
+int p25p2_duid_lookup_soft_test(uint8_t received, const uint8_t reliab8[8]);
+#endif
 
 #ifdef __cplusplus
 }

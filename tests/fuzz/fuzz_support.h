@@ -11,10 +11,21 @@
 #include "test_support.h"
 
 #include <errno.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
 #define DSD_NEO_FUZZ_MAX_INPUT 65536U
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size);
+
+#ifdef __cplusplus
+}
+#endif
 
 static inline size_t
 dsd_fuzz_bounded_size(size_t size) {

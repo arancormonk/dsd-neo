@@ -170,6 +170,13 @@ dsd_mkdir(const char* path, int mode) {
     return _mkdir(path);
 }
 
+int
+dsd_open_serial_write(const char* path) {
+    (void)path;
+    errno = ENOSYS;
+    return -1;
+}
+
 void*
 dsd_aligned_alloc(size_t alignment, size_t size) {
     return _aligned_malloc(size, alignment);

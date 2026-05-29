@@ -10,8 +10,6 @@
  * because it matches expected P25 outputs where ITPP did not.
  */
 
-#include <assert.h>
-
 #define POLY 0xAE3
 
 class Golay24 {
@@ -255,21 +253,54 @@ class Golay24 {
  */
 class DSDGolay24 : public Golay24 {
   public:
+    static bool
+    bit_is_valid(char bit) {
+        return bit == 0 || bit == 1;
+    }
+
+    static bool
+    word_bits_are_valid(const char* word, unsigned int length) {
+        if (!word || length > 12) {
+            return false;
+        }
+        for (unsigned int i = 0; i < length; i++) {
+            if (!bit_is_valid(word[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool
+    parity_bits_are_valid(const char* parity) {
+        if (!parity) {
+            return false;
+        }
+        for (unsigned int i = 0; i < 12; i++) {
+            if (!bit_is_valid(parity[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     static unsigned int
     adapt_to_codeword(const char* word, unsigned int length, const char* parity) {
+        if (!word_bits_are_valid(word, length) || !parity_bits_are_valid(parity)) {
+            return 0;
+        }
+
         unsigned int codeword = 0;
 
         // Data needs to be packed with the 12 bits of parity as the most significant
         // bits and 12 bits of data as the less significant. All these discovered by trial and error.
         for (unsigned int i = 0; i < 12; i++) {
             unsigned int pbit = (unsigned int)(unsigned char)parity[11 - i];
-            assert(pbit == 0 || pbit == 1);
             codeword <<= 1;
             codeword |= pbit;
         }
         for (unsigned int i = 0; i < length; i++) {
             unsigned int bit = (unsigned int)(unsigned char)word[length - 1 - i];
-            assert(bit == 0 || bit == 1);
             codeword <<= 1;
             codeword |= bit;
         }
@@ -283,6 +314,10 @@ class DSDGolay24 : public Golay24 {
 
     static void
     adapt_to_word(unsigned int codeword, char* word, unsigned int length) {
+        if (!word || length > 12) {
+            return;
+        }
+
         // put back in word the bits from codeword
         for (unsigned int i = 0, mask = 1 << (12 - length); i < length; i++, mask <<= 1) {
             word[i] = (codeword & mask) != 0 ? 1 : 0;
@@ -291,12 +326,15 @@ class DSDGolay24 : public Golay24 {
 
     static unsigned int
     adapt_from_word(const char* word, unsigned int length) {
+        if (!word_bits_are_valid(word, length)) {
+            return 0;
+        }
+
         unsigned int codeword = 0;
 
         // encode the hex bits into a codeword
         for (unsigned int i = 0; i < length; i++) {
             unsigned int bit = (unsigned int)(unsigned char)word[length - 1 - i];
-            assert(bit == 0 || bit == 1);
             codeword <<= 1;
             codeword |= bit;
         }
@@ -321,6 +359,13 @@ class DSDGolay24 : public Golay24 {
      */
     static int
     decode_6(char* hex, const char* parity, int* fixed_errors) {
+        if (fixed_errors) {
+            *fixed_errors = 0;
+        }
+        if (!fixed_errors || !word_bits_are_valid(hex, 6) || !parity_bits_are_valid(parity)) {
+            return 1;
+        }
+
         unsigned int codeword = adapt_to_codeword(hex, 6, parity);
         // codeword now contains:
         // bits  0- 5: zeros
@@ -350,6 +395,13 @@ class DSDGolay24 : public Golay24 {
 
     static int
     decode_12(char* dodeca, const char* parity, int* fixed_errors) {
+        if (fixed_errors) {
+            *fixed_errors = 0;
+        }
+        if (!fixed_errors || !word_bits_are_valid(dodeca, 12) || !parity_bits_are_valid(parity)) {
+            return 1;
+        }
+
         unsigned int codeword = adapt_to_codeword(dodeca, 12, parity);
         // codeword contains:
         // bits  0-11: dodeca bits
@@ -378,6 +430,10 @@ class DSDGolay24 : public Golay24 {
 
     static void
     encode_6(const char* hex, char* out_parity) {
+        if (!out_parity || !word_bits_are_valid(hex, 6)) {
+            return;
+        }
+
         unsigned int data = adapt_from_word(hex, 6);
         unsigned int codeword = Golay24::encode(data);
 
@@ -389,6 +445,10 @@ class DSDGolay24 : public Golay24 {
 
     static void
     encode_12(const char* dodeca, char* out_parity) {
+        if (!out_parity || !word_bits_are_valid(dodeca, 12)) {
+            return;
+        }
+
         unsigned int data = adapt_from_word(dodeca, 12);
         unsigned int codeword = Golay24::encode(data);
 

@@ -167,9 +167,7 @@ sm_noop_api(void) {
     return api;
 }
 
-// Shim to invoke VPDU and capture tuned flag and vc0
-void p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, int p25_trunk, long p25_cc_freq,
-                                      int iden, int type, int tdma, long base, int spac, long* out_vc0, int* out_tuned);
+#include "p25_test_shim.h"
 
 static int
 expect_true(const char* tag, int cond) {
@@ -203,9 +201,8 @@ main(void) {
     long vc0 = -1;
     int tuned = -1;
     // Seed only iden=0 (not matching channel’s iden=1). Expect no tuning and vc0 remains 0.
-    p25_test_invoke_mac_vpdu_capture(mac, 10, /*trunk*/ 1, /*cc*/ 851000000,
-                                     /*iden*/ 0, /*type*/ 1, /*tdma*/ 0, /*base*/ 851000000 / 5, /*spac*/ 100, &vc0,
-                                     &tuned);
+    p25_test_iden_config cfg = {/*iden*/ 0, /*type*/ 1, /*tdma*/ 0, /*base*/ 851000000 / 5, /*spac*/ 100};
+    p25_test_invoke_mac_vpdu_capture(mac, 10, /*trunk*/ 1, /*cc*/ 851000000, &cfg, &vc0, &tuned);
     rc |= expect_true("not tuned", tuned == 0);
     rc |= expect_true("vc0 not set", vc0 == 0);
     return rc;

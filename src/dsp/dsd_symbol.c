@@ -31,6 +31,7 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -1507,7 +1508,7 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
         opts->symbolfile = NULL;
         DSD_FPRINTF(stderr, "\nEnd of %s\n", opts->audio_in_dev);
         if (state->debug_mode == 1) {
-            opts->symbolfile = fopen(opts->audio_in_dev, "rb");
+            opts->symbolfile = dsd_fopen_existing_regular_file(opts->audio_in_dev, "rb");
             opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
             state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
             state->symbol_replay_header_checked = 0;

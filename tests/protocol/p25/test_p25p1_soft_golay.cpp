@@ -74,8 +74,8 @@ static void
 test_golay_6_two_errors() {
     DSDGolay24 golay;
     char orig_data[6] = {1, 1, 0, 0, 1, 1};
-    char data[6];
-    char parity[12];
+    char data[6] = {0};
+    char parity[12] = {0};
 
     DSD_MEMCPY(data, orig_data, 6);
     golay.encode_6(data, parity);
@@ -122,8 +122,8 @@ static void
 test_golay_12_two_errors() {
     DSDGolay24 golay;
     char orig_data[12] = {0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 1};
-    char data[12];
-    char parity[12];
+    char data[12] = {0};
+    char parity[12] = {0};
 
     DSD_MEMCPY(data, orig_data, 12);
     golay.encode_12(data, parity);
@@ -151,8 +151,8 @@ test_golay_12_three_errors() {
     /* Test 3 errors - within Golay(24,12) hard decode capability */
     DSDGolay24 golay;
     char orig_data[12] = {1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 0};
-    char data[12];
-    char parity[12];
+    char data[12] = {0};
+    char parity[12] = {0};
 
     DSD_MEMCPY(data, orig_data, 12);
     golay.encode_12(data, parity);

@@ -49,6 +49,122 @@ rules:
       - pattern: posix_spawn(...)
       - pattern: posix_spawnp(...)
 
+  - id: dsd-neo.no-production-assert
+    languages: [c, cpp]
+    severity: ERROR
+    message: >
+      Use explicit runtime validation or unreachable handling in production code instead of assert(), which can compile
+      out under NDEBUG.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /src/third_party/**
+    pattern: assert(...)
+
+  - id: dsd-neo.no-weak-process-rng
+    languages: [c, cpp]
+    severity: ERROR
+    message: >
+      Do not use process-global rand()/srand(); use a purpose-specific RNG, nonce, or unique-name helper.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /src/third_party/**
+    pattern-either:
+      - pattern: rand(...)
+      - pattern: srand(...)
+
+  - id: dsd-neo.no-atoi-family
+    languages: [c, cpp]
+    severity: ERROR
+    message: Use checked strto* parsing or a project parse helper instead of atoi/atol/atoll/atof.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /src/third_party/**
+    pattern-either:
+      - pattern: atoi(...)
+      - pattern: atol(...)
+      - pattern: atoll(...)
+      - pattern: atof(...)
+      - pattern: std::atoi(...)
+      - pattern: std::atol(...)
+      - pattern: std::atoll(...)
+      - pattern: std::atof(...)
+
+  - id: dsd-neo.no-unchecked-strto-endptr
+    languages: [c, cpp]
+    severity: ERROR
+    message: Check the strto* end pointer and range instead of passing NULL for endptr.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /src/third_party/**
+    pattern-either:
+      - pattern: strtol($S, NULL, $B)
+      - pattern: strtoul($S, NULL, $B)
+      - pattern: strtoll($S, NULL, $B)
+      - pattern: strtoull($S, NULL, $B)
+      - pattern: strtod($S, NULL)
+      - pattern: strtof($S, NULL)
+      - pattern: strtol($S, nullptr, $B)
+      - pattern: strtoul($S, nullptr, $B)
+      - pattern: strtoll($S, nullptr, $B)
+      - pattern: strtoull($S, nullptr, $B)
+      - pattern: strtod($S, nullptr)
+      - pattern: strtof($S, nullptr)
+      - pattern: std::strtol($S, NULL, $B)
+      - pattern: std::strtoul($S, NULL, $B)
+      - pattern: std::strtoll($S, NULL, $B)
+      - pattern: std::strtoull($S, NULL, $B)
+      - pattern: std::strtod($S, NULL)
+      - pattern: std::strtof($S, NULL)
+      - pattern: std::strtol($S, nullptr, $B)
+      - pattern: std::strtoul($S, nullptr, $B)
+      - pattern: std::strtoll($S, nullptr, $B)
+      - pattern: std::strtoull($S, nullptr, $B)
+      - pattern: std::strtod($S, nullptr)
+      - pattern: std::strtof($S, nullptr)
+
+  - id: dsd-neo.no-raw-file-open
+    languages: [c, cpp]
+    severity: ERROR
+    message: Use project file/path compatibility helpers instead of raw file open/temp APIs in project-owned code.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /src/third_party/**
+        - /src/platform/file_compat_posix.c
+        - /src/platform/file_compat_win32.c
+        - /src/platform/posix_compat_posix.c
+        - /src/platform/posix_compat_win32.c
+        - /src/runtime/path_policy.c
+    pattern-either:
+      - pattern: fopen(...)
+      - pattern: freopen(...)
+      - pattern: open(...)
+      - pattern: creat(...)
+      - pattern: tmpfile(...)
+      - pattern: tmpnam(...)
+      - pattern: mktemp(...)
+      - pattern: mkstemp(...)
+      - pattern: mkstemps(...)
+
   - id: dsd-neo.no-deprecated-dsd-sprintf
     languages: [c, cpp]
     severity: ERROR

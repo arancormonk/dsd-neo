@@ -45,26 +45,39 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     DSD_SNPRINTF(dst + len, dstsz - len, "%s", src);
 }
 
+typedef struct {
+    uint8_t fmt;
+    uint8_t sap;
+    uint8_t mfid;
+    uint8_t io;
+    uint32_t llid;
+    uint8_t blks;
+    uint8_t pad;
+    uint8_t offset;
+    int payload_len;
+    int encrypted;
+    const char* summary;
+} p25_pdu_json_fields;
+
 static void
-p25_emit_pdu_json_if_enabled(uint8_t fmt, uint8_t sap, uint8_t mfid, uint8_t io, uint32_t llid, uint8_t blks,
-                             uint8_t pad, uint8_t offset, int payload_len, int encrypted, const char* summary) {
+p25_emit_pdu_json_if_enabled(const p25_pdu_json_fields* fields) {
     const dsdneoRuntimeConfig* rc = dsd_neo_get_config();
-    if (!rc || !rc->pdu_json_enable) {
+    if (!fields || !rc || !rc->pdu_json_enable) {
         return;
     }
 
     /* Skip trunking control SAPs to reduce noise unless explicitly desired later */
-    if (sap == 61 || sap == 63) {
+    if (fields->sap == 61 || fields->sap == 63) {
         return;
     }
 
     time_t ts = time(NULL);
     char sum[160];
-    if (summary && summary[0] != '\0') {
+    if (fields->summary && fields->summary[0] != '\0') {
         /* ensure no embedded quotes break JSON (very minimal escape) */
         int j = 0;
-        for (int i = 0; summary[i] != '\0' && j < (int)sizeof(sum) - 1; i++) {
-            char ch = summary[i];
+        for (int i = 0; fields->summary[i] != '\0' && j < (int)sizeof(sum) - 1; i++) {
+            char ch = fields->summary[i];
             if (ch == '"') {
                 continue; /* drop quotes */
             }
@@ -80,7 +93,8 @@ p25_emit_pdu_json_if_enabled(uint8_t fmt, uint8_t sap, uint8_t mfid, uint8_t io,
     DSD_FPRINTF(stderr,
                 "{\"ts\":%ld,\"proto\":\"p25\",\"fmt\":%u,\"sap\":%u,\"mfid\":%u,\"io\":%u,\"llid\":%u,"
                 "\"blks\":%u,\"pad\":%u,\"offset\":%u,\"len\":%d,\"enc\":%d,\"summary\":\"%s\"}",
-                (long)ts, fmt, sap, mfid, io, llid, blks, pad, offset, payload_len, encrypted ? 1 : 0, sum);
+                (long)ts, fields->fmt, fields->sap, fields->mfid, fields->io, fields->llid, fields->blks, fields->pad,
+                fields->offset, fields->payload_len, fields->encrypted ? 1 : 0, sum);
 }
 
 static void
@@ -626,8 +640,9 @@ p25_pdu_payload_span(int len, int ptr) {
 
 static void
 p25_emit_pdu_json_for_fields(const P25PduDataFields* pdu, int len, int encrypted, const char* summary) {
-    p25_emit_pdu_json_if_enabled(pdu->fmt, pdu->sap, pdu->mfid, pdu->io, pdu->llid, pdu->blks, pdu->pad, pdu->offset,
-                                 len, encrypted, summary);
+    p25_pdu_json_fields fields = {pdu->fmt, pdu->sap,    pdu->mfid, pdu->io,   pdu->llid, pdu->blks,
+                                  pdu->pad, pdu->offset, len,       encrypted, summary};
+    p25_emit_pdu_json_if_enabled(&fields);
 }
 
 static void

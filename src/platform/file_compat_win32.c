@@ -115,6 +115,77 @@ dsd_fopen_private(const char* path, const char* mode) {
     return fp;
 }
 
+static int
+dsd_existing_regular_mode_flags(const char* mode, int* out_flags) {
+    if (!mode || mode[0] != 'r' || strchr(mode, '+') != NULL || !out_flags) {
+        errno = EINVAL;
+        return -1;
+    }
+    *out_flags = _O_RDONLY | _O_NOINHERIT | ((strchr(mode, 'b') != NULL) ? _O_BINARY : _O_TEXT);
+    return 0;
+}
+
+static int
+dsd_existing_regular_attrs_ok(const char* path) {
+    DWORD attrs = GetFileAttributesA(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0
+        || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+static int
+dsd_open_existing_regular_fd_win32(const char* path, const char* mode) {
+    if (!path || path[0] == '\0' || !mode || mode[0] != 'r' || strchr(mode, '+') != NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (dsd_existing_regular_attrs_ok(path) != 0) {
+        return -1;
+    }
+
+    int flags = 0;
+    if (dsd_existing_regular_mode_flags(mode, &flags) != 0) {
+        return -1;
+    }
+    int fd = _open(path, flags);
+    if (fd < 0) {
+        return -1;
+    }
+
+    dsd_stat_t st;
+    if (_fstat(fd, &st) != 0) {
+        int saved_errno = errno ? errno : EINVAL;
+        _close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+    if (!dsd_stat_is_regular(&st)) {
+        _close(fd);
+        errno = EINVAL;
+        return -1;
+    }
+    return fd;
+}
+
+FILE*
+dsd_fopen_existing_regular_file(const char* path, const char* mode) {
+    int fd = dsd_open_existing_regular_fd_win32(path, mode);
+    if (fd < 0) {
+        return NULL;
+    }
+
+    FILE* fp = _fdopen(fd, mode);
+    if (!fp) {
+        int saved_errno = errno ? errno : EINVAL;
+        _close(fd);
+        errno = saved_errno;
+    }
+    return fp;
+}
+
 FILE*
 dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path, size_t tmp_path_size, const char* mode) {
     if (!final_path || final_path[0] == '\0' || !tmp_path || tmp_path_size == 0 || !mode || mode[0] == 'r') {

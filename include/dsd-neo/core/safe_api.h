@@ -163,6 +163,8 @@ dsd_safe_memset_impl(void* dst, size_t dst_size, int value, size_t count) {
 #endif
 }
 
+static inline int dsd_safe_vfprintf(FILE* stream, const char* fmt, va_list ap) DSD_NEO_PRINTF_FORMAT(2, 0);
+
 static inline int
 dsd_safe_vfprintf(FILE* stream, const char* fmt, va_list ap) {
     if (stream == NULL || fmt == NULL) {
@@ -194,6 +196,9 @@ dsd_safe_fprintf(FILE* stream, const char* fmt, ...) {
     return rc;
 }
 
+static inline int dsd_safe_vsnprintf(char* dst, size_t dst_size, const char* fmt, va_list ap)
+    DSD_NEO_PRINTF_FORMAT(3, 0);
+
 static inline int
 dsd_safe_vsnprintf(char* dst, size_t dst_size, const char* fmt, va_list ap) {
     if (dst == NULL || dst_size == 0U || fmt == NULL) {
@@ -222,6 +227,9 @@ dsd_safe_snprintf(char* dst, size_t dst_size, const char* fmt, ...) {
     return rc;
 }
 
+static inline int dsd_safe_vsprintf_impl(char* dst, size_t dst_size, const char* fmt, va_list ap)
+    DSD_NEO_PRINTF_FORMAT(3, 0);
+
 static inline int
 dsd_safe_vsprintf_impl(char* dst, size_t dst_size, const char* fmt, va_list ap) {
     if (dst == NULL || fmt == NULL) {
@@ -245,6 +253,8 @@ dsd_safe_sprintf_impl(char* dst, size_t dst_size, const char* fmt, ...) {
     va_end(ap);
     return rc;
 }
+
+static inline int dsd_safe_vsscanf(const char* src, const char* fmt, va_list ap) DSD_NEO_SCANF_FORMAT(2, 0);
 
 static inline int
 dsd_safe_vsscanf(const char* src, const char* fmt, va_list ap) {

@@ -81,7 +81,7 @@ p25_cc_try_load_cache(const dsd_opts* opts, dsd_state* state) {
     if (!p25_cc_build_cache_path(state, fpath, sizeof(fpath))) {
         return;
     }
-    FILE* fp = fopen(fpath, "r");
+    FILE* fp = dsd_fopen_existing_regular_file(fpath, "r");
     if (!fp) {
         state->p25_cc_cache_loaded = 1;
         return;
