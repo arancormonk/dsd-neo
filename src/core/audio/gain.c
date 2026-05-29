@@ -4,7 +4,7 @@
  */
 
 /*
- * Shared gain and autogain helpers for float and short audio paths.
+ * Shared gain and autogain helpers for audio paths.
  *
  * This module centralizes gain logic so that the core mixers in
  * dsd_audio2.c can act as thin orchestrators that delegate to these
@@ -42,16 +42,6 @@ audio_apply_gain_f32(float* buf, size_t n, float gain) {
     }
     for (size_t i = 0; i < n; i++) {
         buf[i] *= gain;
-    }
-}
-
-void
-audio_apply_gain_s16(short* buf, size_t n, float gain) {
-    if (!buf) {
-        return;
-    }
-    for (size_t i = 0; i < n; i++) {
-        buf[i] = (short)(buf[i] * gain);
     }
 }
 

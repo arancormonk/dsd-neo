@@ -62,18 +62,12 @@ void playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state); // float mono
 
 /** @brief Play synthesized voice (short mono output slot 1). */
 void playSynthesizedVoice(dsd_opts* opts, dsd_state* state); // short mono output slot 1
-/** @brief Play synthesized voice (short mono output slot 2). */
-void playSynthesizedVoiceR(dsd_opts* opts, dsd_state* state); // short mono output slot 2
 /** @brief Play synthesized voice (short mono mix). */
 void playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state); // short mono mix
-/** @brief Play synthesized voice (short mono output slot 2 alternate path). */
-void playSynthesizedVoiceMSR(dsd_opts* opts, dsd_state* state); // short mono output slot 2 (alt path)
 /** @brief Play synthesized voice (short stereo mix). */
 void playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state); // short stereo mix
 /** @brief Play synthesized voice (short stereo mix 3v2 DMR). */
 void playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state); // short stereo mix 3v2 DMR
-/** @brief Play synthesized voice (short stereo mix 4v2 P25p2). */
-void playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state); // short stereo mix 4v2 P25p2
 /** @brief Play synthesized voice (short stereo mix 18V superframe). */
 void playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state); // short stereo mix 18V Superframe
 
@@ -90,13 +84,7 @@ void analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len
 
 /** @brief Multiply float buffer by gain factor in-place. */
 void audio_apply_gain_f32(float* buf, size_t n, float gain);
-/** @brief Multiply int16 buffer by gain factor in-place. */
-void audio_apply_gain_s16(short* buf, size_t n, float gain);
 
-/** @brief Simple legacy 8k→48k upsampler (6:1) with linear interpolation. */
-void upsampleS(short invalue, short prev, short outbuf[6]);
-/** @brief Float 8k→48k upsampler (6:1) with linear interpolation. */
-void upsampleF(float invalue, float prev, float outbuf[6]);
 /** @brief Legacy analog monitor 6x upsampler (sample repetition). */
 void upsample(dsd_state* state, float invalue);
 
@@ -160,10 +148,6 @@ void dsd_audio_apply_input_sample_rate(dsd_opts* opts, dsd_state* state, int old
 int dsd_audio_open_mono_file_input(const char* path, int configured_sample_rate_hz, SNDFILE** out_file,
                                    SF_INFO** out_info, int* out_sample_rate_hz, int* out_opened_as_container);
 
-/** @brief Convert float samples to int16 with scaling. */
-void audio_float_to_s16(const float* in, short* out, size_t n, float scale);
-/** @brief Convert int16 samples to float with scaling. */
-void audio_s16_to_float(const short* in, float* out, size_t n, float scale);
 /** @brief Duplicate mono float samples into interleaved stereo buffer. */
 void audio_mono_to_stereo_f32(const float* in, float* out, size_t n);
 /** @brief Duplicate mono int16 samples into interleaved stereo buffer. */
@@ -206,8 +190,6 @@ int dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_l
 /** @brief Legacy UI beeper helper (used by ncurses call-alert and events). */
 void beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);
 
-/** @brief Open output audio device at requested speed. */
-void openAudioOutDevice(dsd_opts* opts, int speed);
 /** @brief Open input audio device based on opts. Returns 0 on success. */
 int openAudioInDevice(dsd_opts* opts, dsd_state* state);
 
@@ -215,9 +197,6 @@ int openAudioInDevice(dsd_opts* opts, dsd_state* state);
 void parse_audio_input_string(dsd_opts* opts, char* input);
 /** @brief Parse audio output device string and update opts. */
 void parse_audio_output_string(dsd_opts* opts, char* input);
-
-/** @brief Print available audio devices to stdout. */
-int audio_list_devices(void);
 
 #ifdef __cplusplus
 }

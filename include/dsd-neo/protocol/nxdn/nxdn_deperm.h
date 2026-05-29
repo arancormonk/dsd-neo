@@ -25,32 +25,24 @@ extern "C" {
 
 void nxdn_descramble(uint8_t dibits[], int len);
 
-void nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]);
 void nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144]);
 
-void nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]);
 void nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]);
 
-void nxdn_deperm_sacch2(const dsd_opts* opts, dsd_state* state, uint8_t bits[60]);
 void nxdn_deperm_sacch2_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]);
 
-void nxdn_deperm_pich_tch(const dsd_opts* opts, dsd_state* state, uint8_t bits[144], uint8_t lich);
 void nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
                                uint8_t lich);
 
-void nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uint8_t type);
 void nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348], const uint8_t reliab[348],
                                   uint8_t type);
 
-void nxdn_deperm_facch3_udch2(dsd_opts* opts, dsd_state* state, uint8_t bits[288], uint8_t type);
 void nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
                                    uint8_t type);
 
-void nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t direction);
 void nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60],
                            uint8_t direction);
 
-void nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]);
 void nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]);
 
 void nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType);

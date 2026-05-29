@@ -50,16 +50,6 @@ dsd_degrees_glyph(void) {
     return "";
 }
 
-char*
-getTime(void) {
-    return NULL;
-}
-
-char*
-getDate(void) {
-    return NULL;
-}
-
 void
 getTime_buf(char out[7]) {
     DSD_SNPRINTF(out, 7, "%s", "000000");

@@ -29,7 +29,6 @@ void dmr_talker_alias_lc_blocks(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 void dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, uint8_t char_size,
                                 uint16_t max_chars);
 
-void apx_embedded_alias_test_phase1(dsd_opts* opts, dsd_state* state);
 void apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits);
 void apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits);
 void apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits);

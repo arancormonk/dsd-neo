@@ -812,63 +812,6 @@ close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* w
     return wav_file;
 }
 
-SNDFILE*
-close_and_delete_wav_file(SNDFILE* wav_file, const char* wav_out_filename) {
-    sf_close(wav_file);
-    wav_file = NULL;
-    remove(wav_out_filename);
-    return wav_file;
-}
-
-void
-openWavOutFile(dsd_opts* opts, dsd_state* state) {
-    UNUSED(state);
-
-    SF_INFO info;
-    info.samplerate = 8000; //8000
-    info.channels = 1;
-    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-    opts->wav_out_f = sf_open(opts->wav_out_file, SFM_RDWR, &info); //RDWR will append to file instead of overwrite file
-
-    if (opts->wav_out_f == NULL) {
-        LOG_ERROR("Error - could not open wav output file %s\n", opts->wav_out_file);
-        return;
-    }
-}
-
-void
-openWavOutFileL(dsd_opts* opts, dsd_state* state) {
-    UNUSED(state);
-
-    SF_INFO info;
-    info.samplerate = 8000;
-    info.channels = 1;
-    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-    opts->wav_out_f = sf_open(opts->wav_out_file, SFM_RDWR, &info); //RDWR will append to file instead of overwrite file
-
-    if (opts->wav_out_f == NULL) {
-        LOG_ERROR("Error - could not open wav output file %s\n", opts->wav_out_file);
-        return;
-    }
-}
-
-void
-openWavOutFileR(dsd_opts* opts, dsd_state* state) {
-    UNUSED(state);
-
-    SF_INFO info;
-    info.samplerate = 8000; //8000
-    info.channels = 1;
-    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-    opts->wav_out_fR =
-        sf_open(opts->wav_out_fileR, SFM_RDWR, &info); //RDWR will append to file instead of overwrite file
-
-    if (opts->wav_out_f == NULL) {
-        LOG_ERROR("Error - could not open wav output file %s\n", opts->wav_out_fileR);
-        return;
-    }
-}
-
 void
 openWavOutFileLR(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
@@ -898,34 +841,6 @@ openWavOutFileRaw(dsd_opts* opts, dsd_state* state) {
         LOG_ERROR("Error - could not open raw wav output file %s\n", opts->wav_out_file_raw);
         return;
     }
-}
-
-void
-closeWavOutFile(dsd_opts* opts, dsd_state* state) {
-    UNUSED(state);
-
-    sf_close(opts->wav_out_f);
-}
-
-void
-closeWavOutFileL(dsd_opts* opts, dsd_state* state) {
-    UNUSED(state);
-
-    sf_close(opts->wav_out_f);
-}
-
-void
-closeWavOutFileR(dsd_opts* opts, dsd_state* state) {
-    UNUSED(state);
-
-    sf_close(opts->wav_out_fR);
-}
-
-void
-closeWavOutFileRaw(dsd_opts* opts, dsd_state* state) {
-    UNUSED(state);
-
-    sf_close(opts->wav_out_raw);
 }
 
 void

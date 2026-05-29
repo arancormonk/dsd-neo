@@ -13,24 +13,6 @@
 #include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <stdint.h>
 
-/**
- * Reads a dibit (two bits) from the stream of data. Takes into account the periodic occurrence of status
- * bits that show up every 36 dibits. Status bits are collected for advisory classification and skipped for
- * payload output.
- * \param opts A pointer the the DSD options.
- * \param state A pointer the the DSD state structure.
- * \param output A pointer to be filled with the dibit read. Two bytes used for each dibit.
- * \param status_count Variable used to keep track of the status symbols in the dibit stream. There is one
- * status every 36 dibits. With this counter we can skip the status.
- * \param analog_signal A pointer with the actual analog value read from the input signal and that has been
- * interpreted as the dibit we are returning in output.
- * \param did_read_status Address were a boolean is returned. This is set to true when one status symbol was
- * read (and skipped). This indicates that the sequence on dibits has been broken and is used by the P25
- * heuristics.
- * \param reliab Output: reliability 0-255 (for soft decode). May be NULL.
- */
-int read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal,
-               int* did_read_status, int* reliab);
 int read_dibit_soft(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal,
                     int* did_read_status, int* reliab, int16_t llr[2]);
 

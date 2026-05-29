@@ -17,7 +17,6 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
-#include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
 #include <stdint.h>
@@ -62,43 +61,6 @@ static uint8_t moto_alias_lut[256] = {
     0xA4, 0x0F, 0xEC, 0xB6, 0xA5, 0xA6, 0x3C, 0x7F, 0x6B, 0xB4, 0x21, 0xAD, 0xAE, 0xC4, 0xC8, 0xC5, 0x5D, 0xDE, 0xE0,
     0x1D, 0x19, 0x4B, 0xC6, 0x0C, 0x3F, 0x5A, 0xC7, 0xE1, 0x59, 0x55, 0x54, 0x4A, 0x43, 0x42, 0xE2, 0xE3, 0xFA, 0x00,
     0xE4, 0xE5, 0x18, 0x41, 0x0B, 0x0A, 0xE6, 0xFC, 0xFD};
-
-static void
-apx_phase1_pack_lcw(uint64_t upper_bits, uint8_t lower_bits, uint8_t* lcw) {
-    DSD_MEMSET(lcw, 0, ((size_t)72) * sizeof(*lcw));
-    for (uint64_t i = 0; i < 64; i++) {
-        lcw[i] = (upper_bits >> (63 - i)) & 1;
-    }
-    for (uint64_t i = 0; i < 8; i++) {
-        lcw[i + 64] = (lower_bits >> (7 - i)) & 1;
-    }
-}
-
-static void
-apx_phase1_send_lcw(dsd_opts* opts, dsd_state* state, uint64_t upper_bits, uint8_t lower_bits) {
-    uint8_t lcw[72];
-    apx_phase1_pack_lcw(upper_bits, lower_bits, lcw);
-    p25_lcw(opts, state, lcw, 0);
-}
-
-void
-apx_embedded_alias_test_phase1(dsd_opts* opts, dsd_state* state) {
-    static const uint64_t phase1_upper[] = {0x15902D2806010005, 0x1790010BEE0740F0, 0x17900200DD2D2168,
-                                            0x17900301B52FFBFB, 0x1790040E53FE86BE, 0x17900508FD5AB910,
-                                            0x1790060376F9D800};
-    static const uint8_t phase1_lower[] = {0xDE, 0x4E, 0x1A, 0xFE, 0xF7, 0xB2, 0x00};
-    static const size_t phase1_count = sizeof(phase1_upper) / sizeof(phase1_upper[0]);
-
-    for (size_t i = 0; i < phase1_count; i++) {
-        apx_phase1_send_lcw(opts, state, phase1_upper[i], phase1_lower[i]);
-    }
-
-    //Harris Phase 1 GPS
-    state->lastsrc = 1000;
-    apx_phase1_send_lcw(opts, state, 0x2AA41D4C24262328, 0xAF);
-    apx_phase1_send_lcw(opts, state, 0x2BA44E0DB2660108, 0x14);
-    state->lastsrc = 0;
-}
 
 void
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {

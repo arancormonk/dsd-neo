@@ -24,7 +24,6 @@ extern "C" {
 
 void decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input);
 void decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
-void decode_ars(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
 
 #ifdef __cplusplus
 }

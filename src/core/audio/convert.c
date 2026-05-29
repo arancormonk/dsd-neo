@@ -4,38 +4,12 @@
  */
 
 /*
- * Lightweight audio conversion helpers (float⇄short and mono→stereo).
+ * Lightweight audio conversion helpers (mono→stereo).
  */
 
 #include <dsd-neo/core/audio.h>
 
 #include <stddef.h>
-
-void
-audio_float_to_s16(const float* in, short* out, size_t n, float scale) {
-    if (!in || !out) {
-        return;
-    }
-    for (size_t i = 0; i < n; i++) {
-        float v = in[i] * scale;
-        if (v > 32767.0f) {
-            v = 32767.0f;
-        } else if (v < -32768.0f) {
-            v = -32768.0f;
-        }
-        out[i] = (short)v;
-    }
-}
-
-void
-audio_s16_to_float(const short* in, float* out, size_t n, float scale) {
-    if (!in || !out) {
-        return;
-    }
-    for (size_t i = 0; i < n; i++) {
-        out[i] = (float)in[i] * scale;
-    }
-}
 
 void
 audio_mono_to_stereo_f32(const float* in, float* out, size_t n) {

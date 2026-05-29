@@ -21,7 +21,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
@@ -368,11 +367,6 @@ parse_audio_output_string(dsd_opts* opts, char* input) {
         DSD_FPRINTF(stderr, "Audio Output Device: %s; ", opts->pa_output_idx);
         DSD_FPRINTF(stderr, "\n");
     }
-}
-
-int
-audio_list_devices(void) {
-    return dsd_audio_list_devices();
 }
 
 static float
@@ -807,54 +801,6 @@ end_psv:
         DSD_MEMSET(state->audio_out_buf, 0, 100 * sizeof(short));
         state->audio_out_idx2 = 0;
     }
-}
-
-void
-playSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
-
-    if (state->audio_out_idxR > opts->delay) {
-        // output synthesized speech to sound card
-        if (opts->audio_out == 1 && opts->audio_out_type == 0) {
-            /* Use audio abstraction layer */
-            if (opts->audio_out_streamR) {
-                dsd_audio_write(opts->audio_out_streamR, (state->audio_out_buf_pR - state->audio_out_idxR),
-                                (size_t)state->audio_out_idxR);
-            }
-            state->audio_out_idxR = 0;
-        } else if (
-            opts->audio_out == 1
-            && opts->audio_out_type
-                   == 8) //UDP Audio Out -- Not sure how this would handle, but R never gets called anymore, so just here for symmetry
-        {
-            dsd_udp_audio_hook_blast(opts, state, (size_t)state->audio_out_idxR * sizeof(short),
-                                     (state->audio_out_buf_pR - state->audio_out_idxR));
-            state->audio_out_idxR = 0;
-        } else {
-            state->audio_out_idxR = 0; //failsafe for audio_out == 0
-        }
-    }
-
-    if (state->audio_out_idx2R >= 800000) {
-        state->audio_out_float_buf_pR = state->audio_out_float_bufR + 100;
-        state->audio_out_buf_pR = state->audio_out_bufR + 100;
-        DSD_MEMSET(state->audio_out_float_bufR, 0, 100 * sizeof(float));
-        DSD_MEMSET(state->audio_out_bufR, 0, 100 * sizeof(short));
-        state->audio_out_idx2R = 0;
-    }
-}
-
-void
-openAudioOutDevice(dsd_opts* opts, int speed) {
-    UNUSED(speed);
-
-    /* Handle device type detection */
-    if (strncmp(opts->audio_out_dev, "pulse", 5) == 0 || strncmp(opts->audio_out_dev, "pa:", 3) == 0) {
-        opts->audio_out_type = 0; /* Audio stream output */
-    }
-    if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
-        opts->audio_in_type = AUDIO_IN_PULSE;
-    }
-    DSD_FPRINTF(stderr, "Audio Out Device: %s\n", opts->audio_out_dev);
 }
 
 static void

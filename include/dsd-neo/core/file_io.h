@@ -41,9 +41,6 @@ void read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state);
 void openMbeInFile(dsd_opts* opts, dsd_state* state);
 void openMbeOutFile(dsd_opts* opts, dsd_state* state);
 void openMbeOutFileR(dsd_opts* opts, dsd_state* state);
-void openWavOutFile(dsd_opts* opts, dsd_state* state);
-void openWavOutFileL(dsd_opts* opts, dsd_state* state);
-void openWavOutFileR(dsd_opts* opts, dsd_state* state);
 void openWavOutFileLR(dsd_opts* opts, dsd_state* state);
 SNDFILE* open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext);
 void openWavOutFileRaw(dsd_opts* opts, dsd_state* state);
@@ -51,15 +48,10 @@ void openSymbolOutFile(dsd_opts* opts, dsd_state* state);
 SNDFILE* close_wav_file(SNDFILE* wav_file);
 SNDFILE* close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
                                    const char* dir, const Event_History_I* event_struct);
-SNDFILE* close_and_delete_wav_file(SNDFILE* wav_file, const char* wav_out_filename);
 void closeMbeOutFile(dsd_opts* opts, dsd_state* state);
 void closeMbeOutFileR(dsd_opts* opts, dsd_state* state);
 void closeSymbolOutFile(dsd_opts* opts, dsd_state* state);
 void rotate_symbol_out_file(dsd_opts* opts, dsd_state* state);
-void closeWavOutFile(dsd_opts* opts, dsd_state* state);
-void closeWavOutFileL(dsd_opts* opts, dsd_state* state);
-void closeWavOutFileR(dsd_opts* opts, dsd_state* state);
-void closeWavOutFileRaw(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }
