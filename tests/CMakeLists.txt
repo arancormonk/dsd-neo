@@ -1463,6 +1463,24 @@ endif()
 add_test(NAME ENGINE_CLEANUP_AUDIO COMMAND dsd-neo_test_engine_cleanup_audio)
 
 add_executable(
+    dsd-neo_test_engine_trunk_retune_regression
+    engine/test_engine_trunk_retune_regression.c
+    ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
+)
+target_include_directories(
+    dsd-neo_test_engine_trunk_retune_regression
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_engine_trunk_retune_regression
+    PRIVATE dsd-neo_feature_radio
+)
+add_test(
+    NAME ENGINE_TRUNK_RETUNE_REGRESSION
+    COMMAND dsd-neo_test_engine_trunk_retune_regression
+)
+
+add_executable(
     dsd-neo_test_runtime_config_user
     runtime/test_runtime_config_user.cpp
 )
@@ -2982,25 +3000,6 @@ target_link_libraries(
     PRIVATE dsd-neo_platform dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DMR_T3_ANN_WD_TSCC COMMAND dsd-neo_test_dmr_t3_ann_wd_tscc)
-
-# DMR Tier III regression: return-to-CC must work with trunk_enable only
-add_executable(
-    dsd-neo_test_dmr_t3_return_to_cc_regression
-    protocol/dmr/test_dmr_t3_return_to_cc_regression.c
-    ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
-)
-target_include_directories(
-    dsd-neo_test_dmr_t3_return_to_cc_regression
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(
-    dsd-neo_test_dmr_t3_return_to_cc_regression
-    PRIVATE dsd-neo_feature_radio
-)
-add_test(
-    NAME DMR_T3_RETURN_TO_CC_REGRESSION
-    COMMAND dsd-neo_test_dmr_t3_return_to_cc_regression
-)
 
 # DSP block tests
 add_executable(dsd-neo_test_dsp_halfband dsp/test_dsp_halfband.cpp)

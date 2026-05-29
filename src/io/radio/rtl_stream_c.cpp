@@ -31,6 +31,14 @@ int dsd_rtl_stream_get_output_kind(void);
 int dsd_rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels);
 int dsd_rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
 int dsd_rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
+void dsd_rtl_stream_prepare_retune_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                           int ted_sps, int persist_ted_override);
+void dsd_rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
+                                                      int levels, int channel_profile, int ted_sps,
+                                                      int persist_ted_override);
+void dsd_rtl_stream_apply_pending_retune_profile(void);
+void dsd_rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz);
+void dsd_rtl_stream_clear_pending_retune_profile(void);
 int dsd_rtl_stream_request_fsk_reacquire(void);
 uint32_t dsd_rtl_stream_output_generation(void);
 int dsd_rtl_stream_monitor_read(float* out, size_t count, int* out_got);
@@ -98,6 +106,12 @@ int dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, in
                                       size_t* out_used_after, int* out_cache_pending_after,
                                       uint32_t* out_generation_before, uint32_t* out_generation_after,
                                       int* out_request_rc, int* out_consumed);
+int dsd_rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* out_second_profile,
+                                                       uint32_t* out_first_freq_hz, uint32_t* out_second_freq_hz,
+                                                       uint32_t* out_first_request_id, uint32_t* out_second_request_id);
+int dsd_rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* out_profile_freq_hz,
+                                                            uint32_t* out_manual_freq_hz, uint32_t* out_request_id,
+                                                            uint32_t* out_coalesced_request_id);
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
 int dsd_rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev);
 #endif
@@ -276,6 +290,23 @@ rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached
 }
 
 extern "C" int
+rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* out_second_profile,
+                                               uint32_t* out_first_freq_hz, uint32_t* out_second_freq_hz,
+                                               uint32_t* out_first_request_id, uint32_t* out_second_request_id) {
+    return dsd_rtl_stream_test_retune_profile_request_binding(out_first_profile, out_second_profile, out_first_freq_hz,
+                                                              out_second_freq_hz, out_first_request_id,
+                                                              out_second_request_id);
+}
+
+extern "C" int
+rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* out_profile_freq_hz,
+                                                    uint32_t* out_manual_freq_hz, uint32_t* out_request_id,
+                                                    uint32_t* out_coalesced_request_id) {
+    return dsd_rtl_stream_test_retune_profile_coalesced_no_profile(out_profile, out_profile_freq_hz, out_manual_freq_hz,
+                                                                   out_request_id, out_coalesced_request_id);
+}
+
+extern "C" int
 rtl_stream_test_get_replay_state(const RtlSdrContext* ctx, rtl_stream_test_replay_state* out_state) {
     if (!ctx || !ctx->stream || !out_state) {
         return -2;
@@ -364,6 +395,35 @@ rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int
 extern "C" int
 rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
     return dsd_rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+}
+
+extern "C" void
+rtl_stream_prepare_retune_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
+                                  int persist_ted_override) {
+    dsd_rtl_stream_prepare_retune_profile(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                          persist_ted_override);
+}
+
+extern "C" void
+rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz, int levels,
+                                             int channel_profile, int ted_sps, int persist_ted_override) {
+    dsd_rtl_stream_prepare_retune_profile_for_target(target_freq_hz, cqpsk_enable, symbol_rate_hz, levels,
+                                                     channel_profile, ted_sps, persist_ted_override);
+}
+
+extern "C" void
+rtl_stream_apply_pending_retune_profile(void) {
+    dsd_rtl_stream_apply_pending_retune_profile();
+}
+
+extern "C" void
+rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
+    dsd_rtl_stream_apply_pending_retune_profile_for_target(target_freq_hz);
+}
+
+extern "C" void
+rtl_stream_clear_pending_retune_profile(void) {
+    dsd_rtl_stream_clear_pending_retune_profile();
 }
 
 extern "C" int

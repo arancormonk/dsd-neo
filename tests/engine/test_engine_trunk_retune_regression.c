@@ -4,9 +4,11 @@
  */
 
 /*
- * Regression: DMR Tier III return-to-CC must retune even when only
- * trunk_enable is set (p25_trunk disabled), and must not apply P25-only
- * CC symbol/modulation overrides when no P25 CC is active.
+ * Regression coverage for trunk retune edge cases:
+ * - protocol-agnostic return-to-CC must retune when only trunk_enable is set
+ * - non-P25 trunking must not apply P25-only CC symbol/modulation overrides
+ * - RTL P25 voice/CC retunes must queue demod profile changes until the
+ *   controller reaches the hardware retune boundary
  */
 
 #include <assert.h>
@@ -51,6 +53,14 @@ static int g_rtl_ted_sps = 5;
 static int g_rtl_ted_sps_override = 0;
 static int g_drain_audio_calls = 0;
 static int g_rtl_tune_calls = 0;
+static int g_rtl_pending_active = 0;
+static int g_rtl_pending_cqpsk = -1;
+static int g_rtl_pending_symbol_rate_hz = 0;
+static int g_rtl_pending_symbol_levels = 0;
+static int g_rtl_pending_channel_profile = -1;
+static int g_rtl_pending_ted_sps = 0;
+static int g_rtl_pending_ted_override = 0;
+static uint32_t g_rtl_pending_target_freq_hz = 0;
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -105,11 +115,39 @@ rtl_stream_output_rate(const RtlSdrContext* ctx) {
     return 48000;
 }
 
+static void
+apply_pending_retune_profile(uint32_t target_freq_hz) {
+    if (!g_rtl_pending_active) {
+        return;
+    }
+    if (g_rtl_pending_target_freq_hz != 0) {
+        if (target_freq_hz == 0 || g_rtl_pending_target_freq_hz != target_freq_hz) {
+            return;
+        }
+    }
+    if (g_rtl_pending_cqpsk >= 0) {
+        g_rtl_cqpsk_enable = g_rtl_pending_cqpsk ? 1 : 0;
+    }
+    if (g_rtl_pending_symbol_rate_hz > 0 && (g_rtl_pending_symbol_levels == 2 || g_rtl_pending_symbol_levels == 4)) {
+        g_rtl_symbol_rate_hz = g_rtl_pending_symbol_rate_hz;
+        g_rtl_symbol_levels = g_rtl_pending_symbol_levels;
+        g_rtl_channel_profile = g_rtl_pending_channel_profile;
+    }
+    if (g_rtl_pending_ted_sps > 0) {
+        g_rtl_ted_sps = g_rtl_pending_ted_sps;
+        g_rtl_ted_sps_override = g_rtl_pending_ted_override ? g_rtl_pending_ted_sps : 0;
+    }
+    g_rtl_pending_active = 0;
+    g_rtl_pending_target_freq_hz = 0;
+}
+
 int
 rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
-    (void)center_freq_hz;
     g_rtl_tune_calls++;
+    if (g_rtl_tune_result == RTL_STREAM_TUNE_OK) {
+        apply_pending_retune_profile(center_freq_hz);
+    }
     return g_rtl_tune_result;
 }
 
@@ -155,6 +193,42 @@ rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profil
     g_rtl_symbol_levels = levels;
     g_rtl_channel_profile = channel_profile;
     return 0;
+}
+
+void
+rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz, int levels,
+                                             int channel_profile, int ted_sps, int persist_ted_override) {
+    g_rtl_pending_cqpsk = cqpsk_enable;
+    g_rtl_pending_symbol_rate_hz = symbol_rate_hz;
+    g_rtl_pending_symbol_levels = levels;
+    g_rtl_pending_channel_profile = channel_profile;
+    g_rtl_pending_ted_sps = ted_sps;
+    g_rtl_pending_ted_override = persist_ted_override ? 1 : 0;
+    g_rtl_pending_target_freq_hz = target_freq_hz;
+    g_rtl_pending_active = 1;
+}
+
+void
+rtl_stream_prepare_retune_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
+                                  int persist_ted_override) {
+    rtl_stream_prepare_retune_profile_for_target(0, cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                                 persist_ted_override);
+}
+
+void
+rtl_stream_apply_pending_retune_profile(void) {
+    apply_pending_retune_profile(0);
+}
+
+void
+rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
+    apply_pending_retune_profile(target_freq_hz);
+}
+
+void
+rtl_stream_clear_pending_retune_profile(void) {
+    g_rtl_pending_active = 0;
+    g_rtl_pending_target_freq_hz = 0;
 }
 
 int
@@ -290,6 +364,39 @@ main(void) {
     assert(g_last_setfreq_hz == 853500000);
     assert(g_rtl_tune_calls == 0);
 
+    /* RTL audio retuned by rigctl has no native RTL controller boundary, so the
+     * queued P25 VC demod profile must be applied after SetFreq succeeds. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->use_rigctl = 1;
+    opts->p25_trunk = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 1;
+    state->p25_p2_active_slot = 0;
+    state->p25_vc_cqpsk_override = 1;
+    g_setfreq_calls = 0;
+    g_last_setfreq_hz = 0;
+    g_setfreq_result = true;
+    g_rtl_tune_calls = 0;
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+    g_rtl_ted_sps = 5;
+    g_rtl_ted_sps_override = 0;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_trunk_tune_to_freq(opts, state, 853750000, 8) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_setfreq_calls == 1);
+    assert(g_last_setfreq_hz == 853750000);
+    assert(g_rtl_tune_calls == 0);
+    assert(g_rtl_pending_active == 0);
+    assert(g_rtl_cqpsk_enable == 1);
+    assert(g_rtl_symbol_rate_hz == 6000);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(g_rtl_ted_sps == 8);
+    assert(g_rtl_ted_sps_override == 8);
+
     /* If the frequency command itself fails, the decoder must not advance state
      * or reset DSP acquisition state for a channel it did not tune to. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -336,6 +443,7 @@ main(void) {
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
     g_rtl_ted_sps = 5;
     g_rtl_ted_sps_override = 0;
+    g_rtl_pending_active = 0;
     g_frame_sync_reset_calls = 0;
     g_p25p2_frame_reset_calls = 0;
     assert(dsd_engine_trunk_tune_to_freq(opts, state, 855000000, 4) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
@@ -347,11 +455,13 @@ main(void) {
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
     assert(g_rtl_ted_sps == 5);
     assert(g_rtl_ted_sps_override == 0);
+    assert(g_rtl_pending_active == 0);
     assert(g_frame_sync_reset_calls == 0);
     assert(g_p25p2_frame_reset_calls == 0);
 
-    /* Pending RTL retunes keep the requested demod profile and trunk state
-     * because the queued controller request may still complete after timeout. */
+    /* Pending RTL retunes keep active demod settings unchanged until the
+     * controller reaches the retune boundary, while preserving the requested
+     * profile for that queued hardware request. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->audio_in_type = AUDIO_IN_RTL;
@@ -367,22 +477,29 @@ main(void) {
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
     g_rtl_ted_sps = 5;
     g_rtl_ted_sps_override = 0;
+    g_rtl_pending_active = 0;
     g_frame_sync_reset_calls = 0;
     g_p25p2_frame_reset_calls = 0;
     assert(dsd_engine_trunk_tune_to_freq(opts, state, 855000000, 8) == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(opts->trunk_is_tuned == 1);
     assert(state->trunk_vc_freq[0] == 855000000);
     assert(state->p25_vc_cqpsk_override == -1);
-    assert(g_rtl_cqpsk_enable == 1);
-    assert(g_rtl_symbol_rate_hz == 6000);
-    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(g_rtl_cqpsk_enable == 0);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
     assert(g_rtl_ted_sps == 5);
-    assert(g_rtl_ted_sps_override == 8);
+    assert(g_rtl_ted_sps_override == 0);
+    assert(g_rtl_pending_active == 1);
+    assert(g_rtl_pending_cqpsk == 1);
+    assert(g_rtl_pending_symbol_rate_hz == 6000);
+    assert(g_rtl_pending_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(g_rtl_pending_ted_sps == 8);
+    assert(g_rtl_pending_ted_override == 1);
     assert(g_frame_sync_reset_calls == 1);
     assert(g_p25p2_frame_reset_calls == 1);
 
-    /* Pending RTL CC retunes likewise keep the requested CC profile and tracked
-     * CC state aligned with the queued hardware request. */
+    /* Pending RTL CC retunes likewise leave the active demod settings alone
+     * until the controller applies the queued control-channel profile. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->audio_in_type = AUDIO_IN_RTL;
@@ -398,19 +515,64 @@ main(void) {
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
     g_rtl_ted_sps = 5;
     g_rtl_ted_sps_override = 0;
+    g_rtl_pending_active = 0;
     g_frame_sync_reset_calls = 0;
     assert(dsd_engine_trunk_tune_to_cc(opts, state, 852000000, 4) == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(state->rf_mod == 1);
     assert(state->trunk_cc_freq == 852000000);
+    assert(g_rtl_cqpsk_enable == 0);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+    assert(g_rtl_ted_sps == 5);
+    assert(g_rtl_ted_sps_override == 0);
+    assert(g_rtl_pending_active == 1);
+    assert(g_rtl_pending_cqpsk == 1);
+    assert(g_rtl_pending_symbol_rate_hz == 6000);
+    assert(g_rtl_pending_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(g_rtl_pending_ted_sps == 4);
+    assert(g_rtl_pending_ted_override == 0);
+    assert(g_frame_sync_reset_calls == 1);
+
+    /* Simulcast P25P2 voice return to a P25P1 CQPSK control channel applies
+     * the 4800 sps CQPSK profile only after the RTL retune succeeds. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    opts->mod_qpsk = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_freq = 851000000;
+    state->trunk_cc_freq = 851000000;
+    state->p25_cc_is_tdma = 0;
+    state->p25_p2_active_slot = 0;
+    state->rf_mod = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_symbol_rate_hz = 6000;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    g_rtl_ted_sps = 8;
+    g_rtl_ted_sps_override = 8;
+    g_rtl_pending_active = 0;
+    g_frame_sync_reset_calls = 0;
+    assert(dsd_engine_return_to_cc(opts, state) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(opts->trunk_is_tuned == 0);
+    assert(opts->p25_is_tuned == 0);
+    assert(state->rf_mod == 1);
+    assert(state->samplesPerSymbol == 10);
+    assert(g_rtl_pending_active == 0);
     assert(g_rtl_cqpsk_enable == 1);
-    assert(g_rtl_symbol_rate_hz == 6000);
+    assert(g_rtl_symbol_rate_hz == 4800);
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
-    assert(g_rtl_ted_sps == 4);
+    assert(g_rtl_ted_sps == 10);
     assert(g_rtl_ted_sps_override == 0);
     assert(g_frame_sync_reset_calls == 1);
 #endif
 
-    printf("DMR_T3_RETURN_TO_CC_REGRESSION: OK\n");
+    printf("ENGINE_TRUNK_RETUNE_REGRESSION: OK\n");
     free(state);
     free(opts);
     return 0;

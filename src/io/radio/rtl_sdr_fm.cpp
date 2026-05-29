@@ -79,6 +79,7 @@ unsigned int dsd_rtl_stream_output_rate(void);
 int dsd_rtl_stream_ted_bias(void);
 int dsd_rtl_stream_set_rtltcp_autotune(int onoff);
 int dsd_rtl_stream_get_rtltcp_autotune(void);
+void dsd_rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz);
 #ifdef __cplusplus
 }
 #endif
@@ -174,6 +175,18 @@ static char udp_control_bindaddr[64] = "127.0.0.1";
 
 namespace {
 
+struct RtlRetuneProfile {
+    int active;
+    int cqpsk_enable;
+    int symbol_rate_hz;
+    int levels;
+    int channel_profile;
+    int ted_sps;
+    int ted_override;
+    uint32_t request_id;
+    uint32_t target_freq_hz;
+};
+
 struct dongle_state {
     dsd_thread_t thread;
     int dev_index;
@@ -201,6 +214,7 @@ struct controller_state {
     /* Marshalled retune request from external threads (UDP/API). */
     std::atomic<int> manual_retune_pending;
     uint32_t manual_retune_freq;
+    RtlRetuneProfile manual_retune_profile;
     /* Marshalled PPM correction updates stay on the controller thread so
      * device controls remain serialized with retunes/hops. */
     std::atomic<int> ppm_change_pending;
@@ -265,6 +279,8 @@ static std::atomic<uint32_t> g_retune_settle_seq{0};
 static std::atomic<int> g_retune_settle_blocks_remaining{0};
 static std::atomic<uint32_t> g_rtl_output_generation{1};
 static std::atomic<int> g_fsk_reacquire_pending{0};
+static std::mutex g_pending_retune_profile_mutex;
+static RtlRetuneProfile g_pending_retune_profile;
 static std::atomic<uint32_t> g_replay_event_retune_count{0};
 static std::atomic<uint32_t> g_replay_event_mute_count{0};
 static std::atomic<uint32_t> g_replay_event_reset_count{0};
@@ -279,6 +295,13 @@ static int controller_apply_replay_settings(struct controller_state* s, const ds
                                             const dsd_iq_replay_config* cfg);
 static const int kRetuneDiagBlocks = 20;
 static uint32_t rtl_stream_bump_output_generation(void);
+static void rtl_stream_clear_retune_profile(RtlRetuneProfile* profile);
+static int rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t request_id,
+                                                  uint32_t target_freq_hz);
+static void rtl_stream_store_pending_retune_profile(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
+                                                    int levels, int channel_profile, int ted_sps,
+                                                    int persist_ted_override);
+static void rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center_freq_hz);
 static void rtl_fsk_metrics_reset_snapshot(void);
 static void rtl_decode_health_reset(void);
 static void rtl_publish_fsk_metrics_from_demod(const struct demod_state* d);
@@ -3426,12 +3449,14 @@ rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d) {
 static void
 controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz,
                                int mark_reconfigure, DemodRetuneResetReason reset_reason,
-                               uint32_t previous_center_freq_hz, int previous_rate_out_hz) {
+                               uint32_t previous_center_freq_hz, int previous_rate_out_hz,
+                               const RtlRetuneProfile* retune_profile) {
     if (!s || center_freq_hz == 0) {
         return;
     }
     s->last_applied_freq_hz.store(center_freq_hz, std::memory_order_release);
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output);
+    rtl_stream_apply_retune_profile(retune_profile, center_freq_hz);
     rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
     DemodRetuneResetPlan reset_plan = demod_retune_reset_plan(reset_reason, previous_center_freq_hz, center_freq_hz,
                                                               previous_rate_out_hz, demod.rate_out);
@@ -3454,9 +3479,9 @@ controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts,
 static void
 controller_finalize_reconfigure(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz,
                                 DemodRetuneResetReason reset_reason, uint32_t previous_center_freq_hz,
-                                int previous_rate_out_hz) {
+                                int previous_rate_out_hz, const RtlRetuneProfile* retune_profile) {
     controller_finalize_rate_chain(s, opts, center_freq_hz, 1, reset_reason, previous_center_freq_hz,
-                                   previous_rate_out_hz);
+                                   previous_rate_out_hz, retune_profile);
 }
 
 static inline void
@@ -3507,13 +3532,14 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     rtl_device_record_capture_retune(rtl_device_handle, center_freq_hz, load_dongle_frequency(), load_dongle_rate(),
                                      retune_reset_reason_name(reset_reason));
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz, reset_reason,
-                                    previous_center_freq_hz, previous_rate_out_hz);
+                                    previous_center_freq_hz, previous_rate_out_hz, NULL);
     controller_arm_retune_mute("post-reset");
     rtl_device_end_capture_reconfigure(rtl_device_handle);
 }
 
 static int
-controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz, int ppm_error) {
+controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz, int ppm_error,
+                             const RtlRetuneProfile* retune_profile) {
     if (!s || center_freq_hz == 0) {
         return -1;
     }
@@ -3532,7 +3558,7 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
     rtl_device_record_capture_retune(rtl_device_handle, center_freq_hz, load_dongle_frequency(), load_dongle_rate(),
                                      retune_reset_reason_name(reset_reason));
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz, reset_reason,
-                                    previous_center_freq_hz, previous_rate_out_hz);
+                                    previous_center_freq_hz, previous_rate_out_hz, retune_profile);
     controller_arm_retune_mute("post-reset");
     rtl_device_end_capture_reconfigure(rtl_device_handle);
     controller_end_reconfigure(s);
@@ -3592,7 +3618,7 @@ rtl_replay_on_reset_event(const dsd_iq_event* event, void* user) {
     controller_enter_reconfigure_gate(&controller);
     controller_request_input_purge();
     controller_finalize_reconfigure(&controller, g_stream ? g_stream->opts : NULL, center_hz, reset_reason,
-                                    previous_center_hz, previous_rate_out_hz);
+                                    previous_center_hz, previous_rate_out_hz, NULL);
     controller_end_reconfigure(&controller);
     replay_wait_for_input_purge_applied();
     drain_output_on_retune();
@@ -3693,7 +3719,7 @@ controller_apply_initial_settings(struct controller_state* s, const dsd_opts* op
         return -1;
     }
 
-    controller_finalize_rate_chain(s, opts, (uint32_t)s->freqs[0], 0, DemodRetuneResetReason::FreshStream, 0U, 0);
+    controller_finalize_rate_chain(s, opts, (uint32_t)s->freqs[0], 0, DemodRetuneResetReason::FreshStream, 0U, 0, NULL);
     s->cold_start_ready.store(1, std::memory_order_release);
     return 0;
 }
@@ -3731,7 +3757,7 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
 
     uint32_t center_hz =
         (uint32_t)((cfg->center_frequency_hz > 0) ? cfg->center_frequency_hz : cfg->capture_center_frequency_hz);
-    controller_finalize_rate_chain(s, opts, center_hz, 0, DemodRetuneResetReason::FreshStream, 0U, 0);
+    controller_finalize_rate_chain(s, opts, center_hz, 0, DemodRetuneResetReason::FreshStream, 0U, 0, NULL);
     s->cold_start_ready.store(1, std::memory_order_release);
     return 0;
 }
@@ -3744,6 +3770,9 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
  */
 namespace {
 struct ControllerRetuneWork {
+    int manual_pending;
+    uint32_t manual_freq_hz;
+    RtlRetuneProfile manual_profile;
     int requested_ppm;
     uint32_t requested_ppm_request_id;
     int ppm_pending;
@@ -3767,6 +3796,9 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
     if (!s || !work) {
         return 0;
     }
+    work->manual_pending = 0;
+    work->manual_freq_hz = 0;
+    rtl_stream_clear_retune_profile(&work->manual_profile);
     dsd_mutex_lock(&s->hop_m);
     while (!s->manual_retune_pending.load(std::memory_order_acquire)
            && !s->ppm_change_pending.load(std::memory_order_acquire) && !exitflag
@@ -3776,6 +3808,12 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
     if (exitflag || (g_stream && g_stream->should_exit.load())) {
         dsd_mutex_unlock(&s->hop_m);
         return 0;
+    }
+    work->manual_pending = s->manual_retune_pending.exchange(0, std::memory_order_acq_rel);
+    if (work->manual_pending) {
+        work->manual_freq_hz = s->manual_retune_freq;
+        work->manual_profile = s->manual_retune_profile;
+        rtl_stream_clear_retune_profile(&s->manual_retune_profile);
     }
     work->requested_ppm = s->pending_ppm_error.load(std::memory_order_acquire);
     work->requested_ppm_request_id = s->pending_ppm_request_seq.load(std::memory_order_acquire);
@@ -3801,13 +3839,12 @@ controller_signal_manual_retune_complete(struct controller_state* s) {
 
 static int
 controller_process_manual_retune(struct controller_state* s, const ControllerRetuneWork* work) {
-    if (!s || !work || !s->manual_retune_pending.load(std::memory_order_acquire)) {
+    if (!s || !work || !work->manual_pending) {
         return 0;
     }
-    uint32_t target_hz = s->manual_retune_freq;
-    s->manual_retune_pending.store(0, std::memory_order_release);
+    uint32_t target_hz = work->manual_freq_hz;
     int target_ppm = work->ppm_changed ? work->requested_ppm : work->current_ppm;
-    int ppm_rc = controller_apply_reconfigure(s, target_hz, target_ppm);
+    int ppm_rc = controller_apply_reconfigure(s, target_hz, target_ppm, &work->manual_profile);
     if (work->ppm_changed && ppm_rc != 0) {
         note_failed_ppm_request(work->requested_ppm, work->requested_ppm_request_id, work->current_ppm, ppm_rc);
     }
@@ -3891,7 +3928,7 @@ static DSD_THREAD_RETURN_TYPE
             continue;
         }
         s->freq_now = (s->freq_now + 1) % s->freq_len;
-        controller_apply_reconfigure(s, (uint32_t)s->freqs[s->freq_now], work.current_ppm);
+        controller_apply_reconfigure(s, (uint32_t)s->freqs[s->freq_now], work.current_ppm, NULL);
         drain_output_on_retune();
     }
     DSD_THREAD_RETURN;
@@ -4435,6 +4472,7 @@ controller_init(struct controller_state* s) {
     dsd_mutex_init(&s->hop_m);
     s->manual_retune_pending.store(0);
     s->manual_retune_freq = 0;
+    rtl_stream_clear_retune_profile(&s->manual_retune_profile);
     s->ppm_change_pending.store(0);
     s->pending_ppm_error.store(0);
     s->ppm_request_publish_seq.store(0);
@@ -4550,19 +4588,29 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
  * @return Request ID that will be completed once the queued retune finishes.
  */
 static uint32_t
-schedule_manual_retune(uint32_t target_freq_hz) {
-    dsd_mutex_lock(&controller.hop_m);
-    uint32_t request_id = controller.retune_request_id.load(std::memory_order_acquire);
-    int pending = controller.manual_retune_pending.load(std::memory_order_acquire);
+schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target_freq_hz) {
+    if (!s) {
+        return 0U;
+    }
+    dsd_mutex_lock(&s->hop_m);
+    uint32_t request_id = s->retune_request_id.load(std::memory_order_acquire);
+    int pending = s->manual_retune_pending.load(std::memory_order_acquire);
     if (!pending) {
-        request_id = controller.retune_request_id.fetch_add(1, std::memory_order_acq_rel) + 1;
-        controller.manual_retune_pending.store(1, std::memory_order_release);
+        request_id = s->retune_request_id.fetch_add(1, std::memory_order_acq_rel) + 1;
+        s->manual_retune_pending.store(1, std::memory_order_release);
+        rtl_stream_clear_retune_profile(&s->manual_retune_profile);
     }
     /* Update/override target frequency even when coalescing into an existing pending retune. */
-    controller.manual_retune_freq = target_freq_hz;
-    dsd_cond_signal(&controller.hop);
-    dsd_mutex_unlock(&controller.hop_m);
+    s->manual_retune_freq = target_freq_hz;
+    (void)rtl_stream_take_pending_retune_profile(&s->manual_retune_profile, request_id, target_freq_hz);
+    dsd_cond_signal(&s->hop);
+    dsd_mutex_unlock(&s->hop_m);
     return request_id;
+}
+
+static uint32_t
+schedule_manual_retune(uint32_t target_freq_hz) {
+    return schedule_manual_retune_on_controller(&controller, target_freq_hz);
 }
 
 static void
@@ -6936,6 +6984,151 @@ rtl_stream_toggle_cqpsk(int onoff) {
     }
 }
 
+static int
+rtl_stream_clamp_retune_ted_sps(int sps) {
+    if (sps < 2) {
+        return 2;
+    }
+    if (sps > 64) {
+        return 64;
+    }
+    return sps;
+}
+
+static void
+rtl_stream_clear_retune_profile(RtlRetuneProfile* profile) {
+    if (profile) {
+        *profile = RtlRetuneProfile{};
+    }
+}
+
+static int
+rtl_stream_retune_profile_matches_target(const RtlRetuneProfile* profile, uint32_t target_freq_hz) {
+    if (!profile || !profile->active) {
+        return 0;
+    }
+    if (profile->target_freq_hz == 0U) {
+        return 1;
+    }
+    if (target_freq_hz == 0U) {
+        return 0;
+    }
+    return profile->target_freq_hz == target_freq_hz;
+}
+
+static int
+rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t request_id, uint32_t target_freq_hz) {
+    if (!out_profile) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    if (!rtl_stream_retune_profile_matches_target(&g_pending_retune_profile, target_freq_hz)) {
+        return 0;
+    }
+
+    rtl_stream_clear_retune_profile(out_profile);
+    *out_profile = g_pending_retune_profile;
+    out_profile->active = 1;
+    out_profile->request_id = request_id;
+    if (out_profile->target_freq_hz == 0U) {
+        out_profile->target_freq_hz = target_freq_hz;
+    }
+    rtl_stream_clear_retune_profile(&g_pending_retune_profile);
+    return 1;
+}
+
+static void
+rtl_stream_store_pending_retune_profile(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz, int levels,
+                                        int channel_profile, int ted_sps, int persist_ted_override) {
+    if (levels != 2 && levels != 4) {
+        levels = 4;
+    }
+    if (ted_sps > 0) {
+        ted_sps = rtl_stream_clamp_retune_ted_sps(ted_sps);
+    }
+
+    RtlRetuneProfile profile{};
+    profile.active = 1;
+    profile.cqpsk_enable = cqpsk_enable;
+    profile.symbol_rate_hz = symbol_rate_hz;
+    profile.levels = levels;
+    profile.channel_profile = channel_profile;
+    profile.ted_sps = ted_sps;
+    profile.ted_override = persist_ted_override ? 1 : 0;
+    profile.target_freq_hz = target_freq_hz;
+
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    g_pending_retune_profile = profile;
+}
+
+extern "C" void
+dsd_rtl_stream_prepare_retune_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                      int ted_sps, int persist_ted_override) {
+    rtl_stream_store_pending_retune_profile(0U, cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                            persist_ted_override);
+}
+
+extern "C" void
+dsd_rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
+                                                 int levels, int channel_profile, int ted_sps,
+                                                 int persist_ted_override) {
+    rtl_stream_store_pending_retune_profile(target_freq_hz, cqpsk_enable, symbol_rate_hz, levels, channel_profile,
+                                            ted_sps, persist_ted_override);
+}
+
+extern "C" void
+dsd_rtl_stream_clear_pending_retune_profile(void) {
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    rtl_stream_clear_retune_profile(&g_pending_retune_profile);
+}
+
+static void
+rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center_freq_hz) {
+    if (!profile || !profile->active) {
+        return;
+    }
+    if (profile->target_freq_hz != 0U) {
+        if (center_freq_hz == 0U || profile->target_freq_hz != center_freq_hz) {
+            return;
+        }
+    }
+
+    int cqpsk = profile->cqpsk_enable;
+    if (cqpsk >= 0) {
+        rtl_stream_toggle_cqpsk(cqpsk);
+    }
+
+    int symbol_rate_hz = profile->symbol_rate_hz;
+    int levels = profile->levels;
+    int channel_profile = profile->channel_profile;
+    if (symbol_rate_hz > 0 && (levels == 2 || levels == 4)) {
+        (void)dsd_rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+    }
+
+    int ted_sps = profile->ted_sps;
+    if (ted_sps <= 0) {
+        return;
+    }
+    ted_sps = rtl_stream_clamp_retune_ted_sps(ted_sps);
+    if (ted_sps != demod.ted_sps) {
+        demod.costas_reset_pending = 1;
+    }
+    demod.ted_sps = ted_sps;
+    demod.ted_sps_override = profile->ted_override ? ted_sps : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_apply_pending_retune_profile(void) {
+    dsd_rtl_stream_apply_pending_retune_profile_for_target(0U);
+}
+
+extern "C" void
+dsd_rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
+    RtlRetuneProfile profile{};
+    (void)rtl_stream_take_pending_retune_profile(&profile, 0U, target_freq_hz);
+    rtl_stream_apply_retune_profile(&profile, target_freq_hz);
+}
+
 extern "C" void
 rtl_stream_toggle_fll(int onoff) {
     if (rtl_stream_symbol_output_active()) {
@@ -7536,6 +7729,98 @@ dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int ca
     g_fsk_reacquire_pending.store(0, std::memory_order_release);
     fsk_reacquire_test_reset_output_state();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* out_second_profile,
+                                                   uint32_t* out_first_freq_hz, uint32_t* out_second_freq_hz,
+                                                   uint32_t* out_first_request_id, uint32_t* out_second_request_id) {
+    if (!out_first_profile || !out_second_profile || !out_first_freq_hz || !out_second_freq_hz || !out_first_request_id
+        || !out_second_request_id) {
+        return -1;
+    }
+    *out_first_profile = -1;
+    *out_second_profile = -1;
+    *out_first_freq_hz = 0U;
+    *out_second_freq_hz = 0U;
+    *out_first_request_id = 0U;
+    *out_second_request_id = 0U;
+
+    controller_state test_controller = {};
+    controller_init(&test_controller);
+    dsd_rtl_stream_clear_pending_retune_profile();
+
+    dsd_rtl_stream_prepare_retune_profile_for_target(855000000U, 1, 6000, 4, RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK, 8,
+                                                     1);
+    uint32_t unrelated_request_id = schedule_manual_retune_on_controller(&test_controller, 851000000U);
+    uint32_t first_request_id = schedule_manual_retune_on_controller(&test_controller, 855000000U);
+    ControllerRetuneWork first = {};
+    if (!controller_wait_for_retune_work(&test_controller, &first) || !first.manual_pending) {
+        controller_cleanup(&test_controller);
+        return -2;
+    }
+
+    dsd_rtl_stream_prepare_retune_profile_for_target(851000000U, 0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_P25_C4FM, 5, 0);
+    uint32_t second_request_id = schedule_manual_retune_on_controller(&test_controller, 851000000U);
+    ControllerRetuneWork second = {};
+    if (!controller_wait_for_retune_work(&test_controller, &second) || !second.manual_pending) {
+        controller_cleanup(&test_controller);
+        return -3;
+    }
+
+    *out_first_profile = first.manual_profile.channel_profile;
+    *out_second_profile = second.manual_profile.channel_profile;
+    *out_first_freq_hz = first.manual_profile.target_freq_hz;
+    *out_second_freq_hz = second.manual_profile.target_freq_hz;
+    *out_first_request_id = first.manual_profile.request_id;
+    *out_second_request_id = second.manual_profile.request_id;
+
+    controller_cleanup(&test_controller);
+    if (unrelated_request_id != first_request_id || *out_first_request_id != first_request_id
+        || *out_second_request_id != second_request_id) {
+        return -4;
+    }
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* out_profile_freq_hz,
+                                                        uint32_t* out_manual_freq_hz, uint32_t* out_request_id,
+                                                        uint32_t* out_coalesced_request_id) {
+    if (!out_profile || !out_profile_freq_hz || !out_manual_freq_hz || !out_request_id || !out_coalesced_request_id) {
+        return -1;
+    }
+    *out_profile = -1;
+    *out_profile_freq_hz = 0U;
+    *out_manual_freq_hz = 0U;
+    *out_request_id = 0U;
+    *out_coalesced_request_id = 0U;
+
+    controller_state test_controller = {};
+    controller_init(&test_controller);
+    dsd_rtl_stream_clear_pending_retune_profile();
+
+    dsd_rtl_stream_prepare_retune_profile_for_target(855000000U, 1, 6000, 4, RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK, 8,
+                                                     1);
+    uint32_t first_request_id = schedule_manual_retune_on_controller(&test_controller, 855000000U);
+    uint32_t second_request_id = schedule_manual_retune_on_controller(&test_controller, 855000000U);
+    ControllerRetuneWork work = {};
+    if (!controller_wait_for_retune_work(&test_controller, &work) || !work.manual_pending) {
+        controller_cleanup(&test_controller);
+        return -2;
+    }
+
+    *out_profile = work.manual_profile.channel_profile;
+    *out_profile_freq_hz = work.manual_profile.target_freq_hz;
+    *out_manual_freq_hz = work.manual_freq_hz;
+    *out_request_id = work.manual_profile.request_id;
+    *out_coalesced_request_id = second_request_id;
+
+    controller_cleanup(&test_controller);
+    if (second_request_id != first_request_id) {
+        return -3;
+    }
     return 0;
 }
 

@@ -201,6 +201,66 @@ int rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels,
 int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
 
 /**
+ * @brief Queue a symbol/CQPSK/TED profile to apply at the next RTL retune boundary.
+ *
+ * Trunking code may know the destination channel profile before the controller
+ * thread has actually programmed the tuner. This helper records that profile
+ * without mutating the active demodulator; the controller applies it after the
+ * hardware frequency change and before retune DSP state reset.
+ *
+ * @param cqpsk_enable 0/1 to force CQPSK off/on, negative to leave unchanged.
+ * @param symbol_rate_hz Symbol rate in Hz, e.g. 4800 or 6000.
+ * @param levels Number of symbol levels, 2 or 4.
+ * @param channel_profile rtl_stream_channel_profile profile id.
+ * @param ted_sps TED samples-per-symbol to apply; <=0 leaves TED SPS unchanged.
+ * @param persist_ted_override Non-zero keeps ted_sps as an override after retune.
+ */
+void rtl_stream_prepare_retune_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                       int ted_sps, int persist_ted_override);
+
+/**
+ * @brief Queue a symbol/CQPSK/TED profile for a specific RTL retune target.
+ *
+ * This is the preferred trunking helper when the destination frequency is
+ * already known. The native RTL controller consumes the profile only for a
+ * matching target frequency, so unrelated retunes cannot steal the queued
+ * demodulator settings before the intended tune request is scheduled.
+ *
+ * @param target_freq_hz Intended center frequency in Hz; zero leaves the profile unbound.
+ * @param cqpsk_enable 0/1 to force CQPSK off/on, negative to leave unchanged.
+ * @param symbol_rate_hz Symbol rate in Hz, e.g. 4800 or 6000.
+ * @param levels Number of symbol levels, 2 or 4.
+ * @param channel_profile rtl_stream_channel_profile profile id.
+ * @param ted_sps TED samples-per-symbol to apply; <=0 leaves TED SPS unchanged.
+ * @param persist_ted_override Non-zero keeps ted_sps as an override after retune.
+ */
+void rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
+                                                  int levels, int channel_profile, int ted_sps,
+                                                  int persist_ted_override);
+
+/**
+ * @brief Apply and clear the queued retune profile immediately.
+ *
+ * Use this when RTL audio is retuned by an external backend rather than the
+ * native RTL controller, so there is no controller retune boundary to consume
+ * the queued profile.
+ */
+void rtl_stream_apply_pending_retune_profile(void);
+
+/**
+ * @brief Apply and clear a queued retune profile for a specific external retune target.
+ *
+ * Use this when an external backend, such as rigctl, has completed a frequency
+ * change and the queued profile was bound to that target.
+ */
+void rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz);
+
+/**
+ * @brief Clear any queued retune profile that has not yet been consumed.
+ */
+void rtl_stream_clear_pending_retune_profile(void);
+
+/**
  * @brief Request fresh acquisition for the active RTL FSK symbol modem.
  *
  * The request is consumed by the demod thread before the next FSK block so the
@@ -323,6 +383,20 @@ int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size
 int rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                   int* out_cache_pending_after, uint32_t* out_generation_before,
                                   uint32_t* out_generation_after, int* out_request_rc, int* out_consumed);
+
+/**
+ * @brief Verify queued retune profiles are copied onto their scheduled requests.
+ */
+int rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* out_second_profile,
+                                                   uint32_t* out_first_freq_hz, uint32_t* out_second_freq_hz,
+                                                   uint32_t* out_first_request_id, uint32_t* out_second_request_id);
+
+/**
+ * @brief Verify a coalesced no-profile retune preserves an already-bound profile.
+ */
+int rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* out_profile_freq_hz,
+                                                        uint32_t* out_manual_freq_hz, uint32_t* out_request_id,
+                                                        uint32_t* out_coalesced_request_id);
 
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;
