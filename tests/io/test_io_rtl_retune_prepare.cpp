@@ -145,6 +145,41 @@ main(void) {
     failed |= expect_size_eq("inactive fsk reacquire leaves queued ring", used_after, 9U);
     failed |= expect_int_eq("inactive fsk reacquire leaves cached symbols", cache_pending, 4);
 
+    int first_profile = -1;
+    int second_profile = -1;
+    uint32_t first_freq_hz = 0U;
+    uint32_t second_freq_hz = 0U;
+    uint32_t first_request_id = 0U;
+    uint32_t second_request_id = 0U;
+    rc = rtl_stream_test_retune_profile_request_binding(&first_profile, &second_profile, &first_freq_hz,
+                                                        &second_freq_hz, &first_request_id, &second_request_id);
+    failed |= expect_int_eq("retune profile request binding helper rc", rc, 0);
+    failed |= expect_int_eq("first retune keeps CQPSK profile", first_profile, RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    failed |= expect_int_eq("second retune keeps C4FM profile", second_profile, RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+    failed |= expect_int_eq("first retune profile keeps frequency", (int)first_freq_hz, 855000000);
+    failed |= expect_int_eq("second retune profile keeps frequency", (int)second_freq_hz, 851000000);
+    failed |= expect_int_eq("first retune profile keeps request id", (int)first_request_id, 1);
+    failed |= expect_int_eq("second retune profile keeps request id", (int)second_request_id, 2);
+
+    int coalesced_profile = -1;
+    uint32_t coalesced_profile_freq_hz = 0U;
+    uint32_t coalesced_manual_freq_hz = 0U;
+    uint32_t coalesced_request_id = 0U;
+    uint32_t coalesced_returned_request_id = 0U;
+    rc = rtl_stream_test_retune_profile_coalesced_no_profile(&coalesced_profile, &coalesced_profile_freq_hz,
+                                                             &coalesced_manual_freq_hz, &coalesced_request_id,
+                                                             &coalesced_returned_request_id);
+    failed |= expect_int_eq("coalesced retune profile helper rc", rc, 0);
+    failed |= expect_int_eq("coalesced no-profile retune keeps profile", coalesced_profile,
+                            RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    failed |=
+        expect_int_eq("coalesced no-profile retune keeps profile frequency", (int)coalesced_profile_freq_hz, 855000000);
+    failed |=
+        expect_int_eq("coalesced no-profile retune keeps manual frequency", (int)coalesced_manual_freq_hz, 855000000);
+    failed |= expect_int_eq("coalesced no-profile retune keeps request id", (int)coalesced_request_id, 1);
+    failed |= expect_int_eq("coalesced no-profile retune returns coalesced request id",
+                            (int)coalesced_returned_request_id, 1);
+
     // Fragmented mute spans are coalesced so capture metadata stays IQ-pair aligned.
     uint64_t pending_mute = 0U;
     uint64_t emitted = rtl_device_test_coalesce_capture_mute_duration(&pending_mute, 1U, 2U);

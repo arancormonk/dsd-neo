@@ -140,6 +140,7 @@ dsd_engine_rtl_profile_snapshot_restore(dsd_state* state, const dsd_engine_rtl_p
     if (!state || !snapshot || !snapshot->active) {
         return;
     }
+    rtl_stream_clear_pending_retune_profile();
     state->rf_mod = snapshot->rf_mod;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
     rtl_stream_toggle_cqpsk(snapshot->rtl_cqpsk_enable);
@@ -158,7 +159,10 @@ dsd_engine_rtl_profile_snapshot_restore(dsd_state* state, const dsd_engine_rtl_p
 }
 
 static void
-dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, int ted_sps) {
+dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int target_freq_hz, int ted_sps) {
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
     if (opts->p25_trunk == 1) {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         if (!cfg) {
@@ -167,18 +171,22 @@ dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, int ted_
         }
         const int want_cqpsk = (state->p25_cc_is_tdma == 1 || opts->mod_qpsk == 1) ? 1 : 0;
         state->rf_mod = want_cqpsk ? 1 : 0;
-        if (!(cfg && cfg->cqpsk_is_set)) {
-            rtl_stream_toggle_cqpsk(want_cqpsk);
-        }
-        {
-            const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-            const int profile = want_cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
-            (void)rtl_stream_set_symbol_profile(sym_rate, 4, profile);
-        }
+        const int cqpsk_request = (cfg && cfg->cqpsk_is_set) ? -1 : want_cqpsk;
+        const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
+        const int profile = want_cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+        rtl_stream_prepare_retune_profile_for_target((uint32_t)target_freq_hz, cqpsk_request, sym_rate, 4, profile,
+                                                     ted_sps, 0);
+        return;
     }
     if (ted_sps > 0) {
-        rtl_stream_clear_ted_sps_override();
-        rtl_stream_set_ted_sps_no_override(ted_sps);
+        int symbol_rate_hz = 0;
+        int levels = 0;
+        int channel_profile = RTL_STREAM_CHANNEL_PROFILE_WIDE;
+        (void)rtl_stream_get_symbol_profile_full(&symbol_rate_hz, &levels, &channel_profile);
+        rtl_stream_prepare_retune_profile_for_target((uint32_t)target_freq_hz, -1, symbol_rate_hz, levels,
+                                                     channel_profile, ted_sps, 0);
+    } else {
+        rtl_stream_clear_pending_retune_profile();
     }
 }
 #endif
@@ -227,6 +235,11 @@ dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int fr
             DSD_FPRINTF(stderr, "Rigctl frequency update failed for %ld Hz.\n", freq);
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
+#ifdef USE_RADIO
+        if (opts->audio_in_type == AUDIO_IN_RTL) {
+            rtl_stream_apply_pending_retune_profile_for_target((uint32_t)freq);
+        }
+#endif
         return DSD_TRUNK_TUNE_RESULT_OK;
     }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
@@ -292,8 +305,12 @@ dsd_engine_resolve_vc_cqpsk(const dsd_state* state, int rf_mod) {
 }
 
 static void
-dsd_engine_prepare_vc_rtl_chain(const dsd_opts* opts, dsd_state* state) {
-    if (opts->audio_in_type != AUDIO_IN_RTL || opts->p25_trunk != 1) {
+dsd_engine_prepare_vc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int target_freq_hz, int ted_sps) {
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    if (opts->p25_trunk != 1) {
+        rtl_stream_clear_pending_retune_profile();
         return;
     }
 
@@ -304,24 +321,21 @@ dsd_engine_prepare_vc_rtl_chain(const dsd_opts* opts, dsd_state* state) {
     }
 
     int want_cqpsk = dsd_engine_resolve_vc_cqpsk(state, state->rf_mod);
-    if (!(cfg && cfg->cqpsk_is_set)) {
-        rtl_stream_toggle_cqpsk(want_cqpsk);
-    }
-
-    int sym_rate = (state->p25_p2_active_slot != -1) ? 6000 : 4800;
-    int profile = want_cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
-    (void)rtl_stream_set_symbol_profile(sym_rate, 4, profile);
+    int cqpsk_request = (cfg && cfg->cqpsk_is_set) ? -1 : want_cqpsk;
+    const int sym_rate = (state->p25_p2_active_slot != -1) ? 6000 : 4800;
+    const int profile = want_cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+    rtl_stream_prepare_retune_profile_for_target((uint32_t)target_freq_hz, cqpsk_request, sym_rate, 4, profile, ted_sps,
+                                                 ted_sps > 0 ? 1 : 0);
 
     /* One-shot override is consumed by this tune attempt. */
     state->p25_vc_cqpsk_override = -1;
 }
 
 static void
-dsd_engine_maybe_apply_ted_override(const dsd_opts* opts, const dsd_state* state, long int freq, int ted_sps) {
+dsd_engine_log_queued_ted_override(const dsd_opts* opts, const dsd_state* state, long int freq, int ted_sps) {
     if (opts->audio_in_type != AUDIO_IN_RTL || ted_sps <= 0) {
         return;
     }
-    rtl_stream_set_ted_sps(ted_sps);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
         dsd_neo_config_init(NULL);
@@ -402,7 +416,7 @@ dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, i
      * Respect explicit CQPSK forcing via runtime config/env (DSD_NEO_CQPSK). */
 #ifdef USE_RADIO
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
-    dsd_engine_prepare_vc_rtl_chain(opts, state);
+    dsd_engine_prepare_vc_rtl_chain(opts, state, freq, ted_sps);
 #endif
 
     // NOTE: We intentionally do NOT call rtl_stream_reset_costas() here.
@@ -423,11 +437,11 @@ dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, i
     // This matches OP25's architecture where configure_tdma/set_omega are called
     // synchronously with the frequency change, not asynchronously before it.
 
-    // Set TED samples-per-symbol override if provided by caller.
-    // The state machine determines the correct SPS for the current DSP rate and channel type
-    // and passes it directly.
+    // TED samples-per-symbol, CQPSK mode, and symbol profile changes were queued
+    // with the RTL controller above. They are applied after the hardware retune
+    // completes so old-frequency samples are never processed with new-channel timing.
 #ifdef USE_RADIO
-    dsd_engine_maybe_apply_ted_override(opts, state, freq, ted_sps);
+    dsd_engine_log_queued_ted_override(opts, state, freq, ted_sps);
 #endif
 
     dsd_engine_maybe_drain_audio(opts, state);
@@ -489,7 +503,7 @@ dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int
     dsd_engine_maybe_drain_audio(opts, state);
     if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
-        dsd_engine_prepare_cc_rtl_chain(opts, state, ted_sps);
+        dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
 #endif
     }
     result = dsd_engine_tune_with_backend(opts, state, freq);
