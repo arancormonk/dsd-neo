@@ -227,7 +227,7 @@ process_ambe2450(char ambe_d[49], mbe_process_result* result) {
     mbe_parms prev_enhanced = {0};
 
     mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-    return mbe_processAmbe2450Dataf(out, result, ambe_d, &cur, &prev, &prev_enhanced, 8);
+    return mbe_processAmbe2450Dataf(out, result, ambe_d, &cur, &prev, &prev_enhanced);
 }
 
 static int

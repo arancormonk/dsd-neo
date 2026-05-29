@@ -88,7 +88,7 @@ static void
 soft_demod_ambe_dstar(const dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], char ambe_d[49]) {
     (void)dsd_mbe_process_ambe3600x2400_framef(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                                sizeof(state->err_str), ambe_fr, ambe_d, state->cur_mp, state->prev_mp,
-                                               state->prev_mp_enhanced, opts->uvquality);
+                                               state->prev_mp_enhanced);
     stage_left_audio_for_output(opts, state);
 }
 
@@ -118,7 +118,7 @@ soft_demod_ambe_x2(const dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], 
         return;
     }
     (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, errs, errs2, err_str, sizeof(state->err_str),
-                                         ambe_d, cur_mp, prev_mp, prev_mp_enhanced, opts->uvquality, &result);
+                                         ambe_d, cur_mp, prev_mp, prev_mp_enhanced, &result);
     stage_left_audio_for_output(opts, state);
 }
 
@@ -165,7 +165,7 @@ play_synthesized_voice_by_output(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-handle_soft_mbe_p25p1(const dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char imbe_d[88]) {
+handle_soft_mbe_p25p1(dsd_state* state, char imbe_fr[8][23], char imbe_d[88]) {
     mbe_process_result result;
     if (soft_demod_imbe7200(state, imbe_fr, imbe_d, &result) < 0) {
         mbe_synthesizeSilencef(state->audio_out_temp_buf);
@@ -173,12 +173,12 @@ handle_soft_mbe_p25p1(const dsd_opts* opts, dsd_state* state, char imbe_fr[8][23
     }
     (void)dsd_mbe_process_imbe4400_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                          sizeof(state->err_str), imbe_d, state->cur_mp, state->prev_mp,
-                                         state->prev_mp_enhanced, opts->uvquality, &result);
+                                         state->prev_mp_enhanced, &result);
     update_p25_p1_voice_err_hist(state);
 }
 
 static void
-handle_soft_mbe_provoice(const dsd_opts* opts, dsd_state* state, char imbe7100_fr[7][24], char imbe_d[88]) {
+handle_soft_mbe_provoice(dsd_state* state, char imbe7100_fr[7][24], char imbe_d[88]) {
     mbe_process_result result;
     if (soft_demod_imbe7100(state, imbe7100_fr, imbe_d, &result) < 0) {
         mbe_synthesizeSilencef(state->audio_out_temp_buf);
@@ -186,7 +186,7 @@ handle_soft_mbe_provoice(const dsd_opts* opts, dsd_state* state, char imbe7100_f
     }
     (void)dsd_mbe_process_imbe4400_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                          sizeof(state->err_str), imbe_d, state->cur_mp, state->prev_mp,
-                                         state->prev_mp_enhanced, opts->uvquality, &result);
+                                         state->prev_mp_enhanced, &result);
 }
 
 static void
@@ -243,11 +243,11 @@ handle_soft_mbe_ambe2_ehr(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24],
     if (state->currentslot == 0) {
         (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                              sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
-                                             state->prev_mp_enhanced, opts->uvquality, &result);
+                                             state->prev_mp_enhanced, &result);
     } else if (state->currentslot == 1) {
         (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR,
                                              sizeof(state->err_strR), ambe_d, state->cur_mp2, state->prev_mp2,
-                                             state->prev_mp_enhanced2, opts->uvquality, &result);
+                                             state->prev_mp_enhanced2, &result);
     }
 }
 
@@ -260,9 +260,9 @@ soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][
     DSD_MEMSET(imbe_d, 0, sizeof(imbe_d));
 
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
-        handle_soft_mbe_p25p1(opts, state, imbe_fr, imbe_d);
+        handle_soft_mbe_p25p1(state, imbe_fr, imbe_d);
     } else if (DSD_SYNC_IS_PROVOICE(state->synctype)) {
-        handle_soft_mbe_provoice(opts, state, imbe7100_fr, imbe_d);
+        handle_soft_mbe_provoice(state, imbe7100_fr, imbe_d);
     } else if (state->synctype == DSD_SYNC_DSTAR_VOICE_POS || state->synctype == DSD_SYNC_DSTAR_VOICE_NEG) {
         handle_soft_mbe_dstar(opts, state, ambe_fr, ambe_d);
     } else if (DSD_SYNC_IS_X2TDMA(state->synctype)) {

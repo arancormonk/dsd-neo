@@ -237,7 +237,6 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fE             Decode only EDACS EA/ProVoice with ESK 0xA0\n");
     printf("  -fm             Decode only dPMR\n");
     printf("  -l            Disable DMR, dPMR, NXDN, M17 input filtering\n");
-    printf("  -u <num>      Unvoiced speech quality (default=3)\n");
     printf("  -xx           Expect non-inverted X2-TDMA signal\n");
     printf("  -xr           Expect inverted DMR signal\n");
     printf("  -xd           Expect inverted ICOM dPMR signal\n");
