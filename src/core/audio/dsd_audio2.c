@@ -140,14 +140,6 @@ dsd_audio_reset_short_mono_left_working_state(dsd_state* state) {
 }
 
 static void
-dsd_audio_reset_short_mono_right_working_state(dsd_state* state) {
-    state->audio_out_idxR = 0;
-    DSD_MEMSET(state->s_r, 0, sizeof(state->s_r));
-    DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));
-    dsd_audio_maybe_reset_output_ring_right(state);
-}
-
-static void
 dsd_audio_reset_short_stereo_working_state(dsd_state* state) {
     state->audio_out_idx = 0;
     state->audio_out_idxR = 0;
@@ -373,72 +365,12 @@ dsd_duplicate_active_float_quad_to_stereo(float stereo[4][320], int* encL, int* 
 }
 
 static void
-dsd_duplicate_active_s16_quad_to_stereo(short stereo[4][320], int* encL, int* encR) {
-    if (!*encL && *encR) {
-        for (int j = 0; j < 4; j++) {
-            for (int i = 0; i < 320; i += 2) {
-                stereo[j][i + 1] = stereo[j][i + 0];
-            }
-        }
-        *encR = 0;
-        return;
-    }
-    if (*encL && !*encR) {
-        for (int j = 0; j < 4; j++) {
-            for (int i = 0; i < 320; i += 2) {
-                stereo[j][i + 0] = stereo[j][i + 1];
-            }
-        }
-        *encL = 0;
-    }
-}
-
-static void
 dsd_output_float_first_two_then_nonzero(dsd_opts* opts, dsd_state* state, const float* block0, const float* block1,
                                         const float* block2, const float* block3, size_t frames, int channels) {
     const float* first_two[] = {block0, block1};
     const float* trailing[] = {block2, block3};
     dsd_output_float_blocks(opts, state, first_two, 2, frames, channels, 0);
     dsd_output_float_blocks(opts, state, trailing, 2, frames, channels, 1);
-}
-
-static void
-dsd_output_s16_first_two_then_nonzero(dsd_opts* opts, dsd_state* state, const short* block0, const short* block1,
-                                      const short* block2, const short* block3, size_t frames, int channels) {
-    const short* first_two[] = {block0, block1};
-    const short* trailing[] = {block2, block3};
-    dsd_output_s16_blocks(opts, state, first_two, 2, frames, channels, 0);
-    dsd_output_s16_blocks(opts, state, trailing, 2, frames, channels, 1);
-}
-
-static short
-dsd_mix_mono_slot_sample_s16(short left, short right, int encL, int encR) {
-    int l = encL ? 0 : left;
-    int r = encR ? 0 : right;
-    int m = 0;
-    if (l && !r) {
-        m = l;
-    } else if (!l && r) {
-        m = r;
-    } else if (l && r) {
-        m = (l + r) / 2;
-    }
-    if (m > 32767) {
-        m = 32767;
-    } else if (m < -32768) {
-        m = -32768;
-    }
-    return (short)m;
-}
-
-static void
-dsd_ss4_build_mono_buffers(const dsd_state* state, int encL, int encR, short mono[4][160]) {
-    for (int i = 0; i < 160; i++) {
-        mono[0][i] = dsd_mix_mono_slot_sample_s16(state->s_l4[0][i], state->s_r4[0][i], encL, encR);
-        mono[1][i] = dsd_mix_mono_slot_sample_s16(state->s_l4[1][i], state->s_r4[1][i], encL, encR);
-        mono[2][i] = dsd_mix_mono_slot_sample_s16(state->s_l4[2][i], state->s_r4[2][i], encL, encR);
-        mono[3][i] = dsd_mix_mono_slot_sample_s16(state->s_l4[3][i], state->s_r4[3][i], encL, encR);
-    }
 }
 
 static void
@@ -488,31 +420,6 @@ dsd_hpf_short_triplet_if_enabled(const dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-dsd_hpf_short_quad_if_enabled(const dsd_opts* opts, dsd_state* state) {
-    if (opts->use_hpf_d != 1) {
-        return;
-    }
-    short empty[160];
-    DSD_MEMSET(empty, 0, sizeof(empty));
-    hpf_dL(state, state->s_l4[0], 160);
-    hpf_dL(state, state->s_l4[1], 160);
-    if (memcmp(empty, state->s_l4[2], sizeof(empty)) != 0) {
-        hpf_dL(state, state->s_l4[2], 160);
-    }
-    if (memcmp(empty, state->s_l4[3], sizeof(empty)) != 0) {
-        hpf_dL(state, state->s_l4[3], 160);
-    }
-    hpf_dR(state, state->s_r4[0], 160);
-    hpf_dR(state, state->s_r4[1], 160);
-    if (memcmp(empty, state->s_r4[2], sizeof(empty)) != 0) {
-        hpf_dR(state, state->s_r4[2], 160);
-    }
-    if (memcmp(empty, state->s_r4[3], sizeof(empty)) != 0) {
-        hpf_dR(state, state->s_r4[3], 160);
-    }
-}
-
-static void
 dsd_hpf_short_18_if_enabled(const dsd_opts* opts, dsd_state* state) {
     if (opts->use_hpf_d != 1) {
         return;
@@ -520,22 +427,6 @@ dsd_hpf_short_18_if_enabled(const dsd_opts* opts, dsd_state* state) {
     for (int j = 0; j < 18; j++) {
         hpf_dL(state, state->s_l4[j], 160);
         hpf_dR(state, state->s_r4[j], 160);
-    }
-}
-
-static void
-dsd_write_s16_wav_first_two_then_nonzero(dsd_opts* opts, const short* block0, const short* block1, const short* block2,
-                                         const short* block3, size_t samples_per_block) {
-    if (opts->wav_out_f == NULL || opts->static_wav_file != 1) {
-        return;
-    }
-    sf_write_short(opts->wav_out_f, block0, samples_per_block);
-    sf_write_short(opts->wav_out_f, block1, samples_per_block);
-    if (!dsd_is_all_zero_s16(block2, samples_per_block)) {
-        sf_write_short(opts->wav_out_f, block2, samples_per_block);
-    }
-    if (!dsd_is_all_zero_s16(block3, samples_per_block)) {
-        sf_write_short(opts->wav_out_f, block3, samples_per_block);
     }
 }
 
@@ -985,29 +876,6 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     dsd_audio_reset_short_mono_left_working_state(state);
 }
 
-//Mono - Short (SB16LE) - Drop-in replacement for playSyntesizedVoiceR, but easier to manipulate
-void
-playSynthesizedVoiceMSR(dsd_opts* opts, dsd_state* state) {
-    size_t len = state->audio_out_idxR;
-    if (len > 960) {
-        len = 960; // clamp to buffer capacity
-    }
-
-    short mono_samp_buf[960];
-    short* mono_samp = mono_samp_buf;
-    DSD_MEMSET(mono_samp, 0, len * sizeof(short));
-
-    if (opts->slot2_on != 0) {
-        dsd_load_short_mono_samples(mono_samp, len, state->s_r, &state->audio_out_buf_pR);
-        if (opts->use_hpf_d == 1) {
-            hpf_dR(state, mono_samp, (int)len);
-        }
-        dsd_output_s16_block(opts, state, mono_samp, len, 1);
-        dsd_write_static_wav_from_mono(opts, mono_samp, len);
-    }
-    dsd_audio_reset_short_mono_right_working_state(state);
-}
-
 //Stereo Mix - Short (SB16LE) -- When Playing Short FDMA samples when setup for stereo output
 void
 playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
@@ -1093,61 +961,6 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     }
 
 SS3_END:
-    dsd_audio_reset_short_stereo_working_state(state);
-}
-
-//short stereo mix 4v2 P25p2
-void
-playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
-
-    //NOTE: This runs once for every two timeslots, if we are in the BS voice loop
-    //it doesn't matter if both slots have voice, or if one does, the slot without voice
-    //will play silence while this runs if no voice present
-
-    int encL, encR;
-    short stereo[4][320];
-
-    DSD_MEMSET(stereo, 0, sizeof(stereo));
-
-    // P25p2 per-slot gate: mirror FS4 float behavior using centralized
-    // p25_p2_audio_allowed flags so ENC lockout on one slot never mutes the
-    // clear slot in short/16-bit output modes either.
-    dsd_set_p25p2_slot_mute_flags(state, &encL, &encR);
-
-    //TODO: add option to bypass enc with a toggle as well
-
-    //CHEAT: Using the slot on/off, use that to set encL or encR back on
-    //as a simple way to turn off voice synthesis in a particular slot
-    //its not really 'disabled', we just aren't playing it
-    dsd_apply_slot_hard_mute_flags(opts, &encL, &encR);
-    dsd_apply_dual_tg_audio_gate(opts, state, &encL, &encR);
-    dsd_hpf_short_quad_if_enabled(opts, state);
-
-    for (int j = 0; j < 4; j++) {
-        audio_mix_interleave_stereo_s16(state->s_l4[j], state->s_r4[j], 160, encL, encR, stereo[j]);
-    }
-    dsd_duplicate_active_s16_quad_to_stereo(stereo, &encL, &encR);
-
-    //at this point, if both channels are still flagged as enc, then we can skip all playback/writing functions
-    if (encL && encR) {
-        goto SS4_END;
-    }
-
-    // Handle mono output by collapsing active slot(s) into a single channel
-    if (opts->pulse_digi_out_channels == 1) {
-        short mono[4][160];
-        DSD_MEMSET(mono, 0, sizeof(mono));
-        dsd_ss4_build_mono_buffers(state, encL, encR, mono);
-        dsd_output_s16_first_two_then_nonzero(opts, state, mono[0], mono[1], mono[2], mono[3], 160, 1);
-        dsd_write_s16_wav_first_two_then_nonzero(opts, mono[0], mono[1], mono[2], mono[3], 160);
-        goto SS4_END;
-    }
-
-    // Stereo output (2ch)
-    dsd_output_s16_first_two_then_nonzero(opts, state, stereo[0], stereo[1], stereo[2], stereo[3], 160, 2);
-    dsd_write_s16_wav_first_two_then_nonzero(opts, stereo[0], stereo[1], stereo[2], stereo[3], 320);
-
-SS4_END:
     dsd_audio_reset_short_stereo_working_state(state);
 }
 

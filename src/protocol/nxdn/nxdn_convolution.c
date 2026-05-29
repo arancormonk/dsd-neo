@@ -98,33 +98,6 @@ CNXDNConvolution_chainback(unsigned char* out, unsigned int nBits) {
 }
 
 void
-CNXDNConvolution_encode(const unsigned char* in, unsigned char* out, unsigned int nBits) {
-
-    uint8_t d1 = 0U;
-    uint8_t d2 = 0U;
-    uint8_t d3 = 0U;
-    uint8_t d4 = 0U;
-    uint32_t k = 0U;
-    for (unsigned int i = 0U; i < nBits; i++) {
-        uint8_t d = READ_BIT1(in, i) ? 1U : 0U;
-
-        uint8_t g1 = (d + d3 + d4) & 1;
-        uint8_t g2 = (d + d1 + d2 + d4) & 1;
-
-        d4 = d3;
-        d3 = d2;
-        d2 = d1;
-        d1 = d;
-
-        WRITE_BIT1(out, k, g1 != 0U);
-        k++;
-
-        WRITE_BIT1(out, k, g2 != 0U);
-        k++;
-    }
-}
-
-void
 CNXDNConvolution_start(void) {
 
     m_oldMetrics = m_metrics1;

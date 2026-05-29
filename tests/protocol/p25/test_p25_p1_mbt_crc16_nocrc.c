@@ -107,7 +107,7 @@ main(void) {
      * Test 2: CRC16 passes on the raw captured headers
      *
      * The CRC16 in the captured headers is valid — the mismatch in
-     * processMPDU() happens because the FEC decoding (p25_12_soft)
+     * processMPDU() happens because the FEC decoding path
      * or the majority-vote across 3 header repetitions corrupts the
      * header bits before the CRC check runs. The raw over-the-air
      * data has correct CRC16.

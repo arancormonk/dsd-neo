@@ -95,6 +95,6 @@ main(void) {
         return 2;
     }
 
-    DSD_FPRINTF(stderr, "p25_12 soft list tests OK\n");
+    DSD_FPRINTF(stderr, "P25 1/2-rate LLR list tests OK\n");
     return 0;
 }

@@ -127,12 +127,6 @@ read_dibit_soft(dsd_opts* opts, dsd_state* state, char* output, int* status_coun
     return dibit;
 }
 
-int
-read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal, int* did_read_status,
-           int* reliab) {
-    return read_dibit_soft(opts, state, output, status_count, analog_signal, did_read_status, reliab, NULL);
-}
-
 void
 read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* buffer, unsigned int count, int* status_count,
                               AnalogSignal* analog_signal_array, int* analog_signal_index) {

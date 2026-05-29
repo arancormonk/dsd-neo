@@ -206,7 +206,7 @@ main(void) {
      * Test case 4: Simulated FEC artifact + majority-vote = double failure
      *
      * Take a captured header, flip 1 bit in the CRC field (simulating a
-     * minor FEC error from p25_12_soft), verify rep 0 CRC fails.  Then
+     * minor FEC error from the P25 1/2-rate LLR path), verify rep 0 CRC fails.  Then
      * majority-vote with data block and next-frame reps — verify the
      * majority-voted result also fails.  This shows that even with FEC
      * artifacts, majority-vote makes things worse, not better.

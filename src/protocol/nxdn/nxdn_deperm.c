@@ -136,20 +136,6 @@ nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame) {
 }
 
 static void
-nxdn_depermute(const uint8_t* input, size_t len, const uint16_t* perm, uint8_t* deperm) {
-    for (size_t i = 0; i < len; i++) {
-        deperm[perm[i]] = input[i];
-    }
-}
-
-static void
-nxdn_depermute_u8(const uint8_t* input, size_t len, const uint8_t* perm, uint8_t* deperm) {
-    for (size_t i = 0; i < len; i++) {
-        deperm[perm[i]] = input[i];
-    }
-}
-
-static void
 nxdn_depermute_rel(const uint8_t* input, const uint8_t* reliab, size_t len, const uint16_t* perm, uint8_t* deperm,
                    uint8_t* deperm_rel) {
     for (size_t i = 0; i < len; i++) {
@@ -164,18 +150,6 @@ nxdn_depermute_rel_u8(const uint8_t* input, const uint8_t* reliab, size_t len, c
     for (size_t i = 0; i < len; i++) {
         deperm[perm[i]] = input[i];
         deperm_rel[perm[i]] = reliab[i];
-    }
-}
-
-static void
-nxdn_depuncture_12_5(const uint8_t* deperm, uint8_t* depunc) {
-    size_t out = 0;
-    static const uint8_t map[] = {0, 1, 2, 3, 4, 0xFFU, 5, 6, 7, 8, 9, 0xFFU};
-
-    for (size_t p = 0; p < 60U; p += 10U) {
-        for (size_t i = 0; i < sizeof(map); i++) {
-            depunc[out++] = (map[i] == 0xFFU) ? 0U : deperm[p + map[i]];
-        }
     }
 }
 
@@ -198,18 +172,6 @@ nxdn_depuncture_12_5_rel(const uint8_t* deperm, const uint8_t* deperm_rel, uint8
 }
 
 static void
-nxdn_depuncture_16_9(const uint8_t* deperm, uint8_t* depunc) {
-    size_t out = 0;
-
-    for (size_t i = 0; i < 144U; i += 3U) {
-        depunc[out++] = deperm[i + 0U];
-        depunc[out++] = 0;
-        depunc[out++] = deperm[i + 1U];
-        depunc[out++] = deperm[i + 2U];
-    }
-}
-
-static void
 nxdn_depuncture_16_9_rel(const uint8_t* deperm, const uint8_t* deperm_rel, uint8_t* depunc, uint8_t* depunc_rel) {
     size_t out = 0;
 
@@ -222,19 +184,6 @@ nxdn_depuncture_16_9_rel(const uint8_t* deperm, const uint8_t* deperm_rel, uint8
         depunc_rel[out++] = deperm_rel[i + 1U];
         depunc[out] = deperm[i + 2U];
         depunc_rel[out++] = deperm_rel[i + 2U];
-    }
-}
-
-static void
-nxdn_depuncture_12_group(const uint8_t* deperm, size_t groups, uint8_t* depunc) {
-    size_t out = 0;
-    static const uint8_t map[] = {0, 1, 2, 0xFFU, 3, 4, 5, 6, 7, 8, 9, 0xFFU, 10, 11};
-
-    for (size_t group = 0; group < groups; group++) {
-        const size_t base = group * 12U;
-        for (size_t i = 0; i < sizeof(map); i++) {
-            depunc[out++] = (map[i] == 0xFFU) ? 0U : deperm[base + map[i]];
-        }
     }
 }
 
@@ -256,17 +205,6 @@ nxdn_depuncture_12_group_rel(const uint8_t* deperm, const uint8_t* deperm_rel, s
             }
         }
     }
-}
-
-static void
-nxdn_conv_decode_hard(const uint8_t* depunc, size_t depunc_len, uint8_t* m_data, int chainback_bits) {
-    CNXDNConvolution_start();
-    for (size_t i = 0; i < depunc_len / 2U; i++) {
-        const uint8_t s0 = depunc[i * 2U] << 1;
-        const uint8_t s1 = depunc[(i * 2U) + 1U] << 1;
-        CNXDNConvolution_decode(s0, s1);
-    }
-    CNXDNConvolution_chainback(m_data, chainback_bits);
 }
 
 static void
@@ -901,35 +839,6 @@ nxdn_store_facch3_udch2_block(struct nxdn_facch3_udch2_message* message, size_t 
 }
 
 static void
-nxdn_decode_facch3_udch2_block_hard(const uint8_t* bits, size_t block, struct nxdn_facch3_udch2_message* message) {
-    uint8_t deperm[144];
-    uint8_t depunc[192];
-    uint8_t trellis_buf[96];
-    uint8_t m_data[12];
-
-    DSD_MEMSET(deperm, 0, sizeof(deperm));
-    DSD_MEMSET(depunc, 0, sizeof(depunc));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-    DSD_MEMSET(m_data, 0, sizeof(m_data));
-
-    nxdn_depermute_u8(bits + (block * 144U), 144U, PERM_16_9, deperm);
-    nxdn_depuncture_16_9(deperm, depunc);
-    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 92);
-    nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
-
-    message->crc[block] = crc12f(trellis_buf, 84);
-    message->check[block] = nxdn_bits_to_u16(trellis_buf + 84, 12);
-    if (message->crc[block] != message->check[block]) {
-        message->crc[block] = 1;
-        message->check[block] = 0;
-        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
-        message->crc[block] = crc12f(trellis_buf, 84);
-        message->check[block] = nxdn_bits_to_u16(trellis_buf + 84, 12);
-    }
-    nxdn_store_facch3_udch2_block(message, block, trellis_buf, m_data);
-}
-
-static void
 nxdn_decode_facch3_udch2_block_soft(const uint8_t* bits, const uint8_t* reliab, size_t block,
                                     struct nxdn_facch3_udch2_message* message) {
     uint8_t deperm[144];
@@ -1001,30 +910,6 @@ nxdn_print_udch2_hex_data(const uint8_t* bytes) {
 }
 
 static void
-nxdn_print_udch2_ascii_data(const uint8_t* bytes) {
-    DSD_FPRINTF(stderr, "\n UDCH2 Data: ASCII - ");
-    for (int i = 0; i < 22; i++) {
-        if (i == 10 || i == 11) {
-            continue;
-        }
-        if (bytes[i] <= 0x7E && bytes[i] >= 0x20) {
-            DSD_FPRINTF(stderr, "%c", bytes[i]);
-        } else {
-            DSD_FPRINTF(stderr, " ");
-        }
-    }
-}
-
-static void
-nxdn_print_udch2_hard_data(const struct nxdn_facch3_udch2_message* message) {
-    nxdn_print_udch2_hex_data(message->bytes);
-    nxdn_print_udch2_ascii_data(message->bytes);
-    if (message->crc[0] != message->check[0] && message->crc[1] != message->check[1]) {
-        nxdn_print_crc_error_colored();
-    }
-}
-
-static void
 nxdn_print_udch2_soft_data(const struct nxdn_facch3_udch2_message* message) {
     nxdn_print_udch2_hex_data(message->bytes);
     if (nxdn_facch3_udch2_crc_failed(message)) {
@@ -1051,26 +936,6 @@ nxdn_print_facch3_udch2_payload_header(uint8_t type) {
 }
 
 static void
-nxdn_print_facch3_udch2_payload_hard(const dsd_opts* opts, const struct nxdn_facch3_udch2_message* message,
-                                     uint8_t type) {
-    if (opts->payload != 1) {
-        return;
-    }
-
-    nxdn_print_facch3_udch2_payload_header(type);
-    DSD_FPRINTF(stderr, " Payload \n  ");
-    for (int i = 0; i < 24; i++) {
-        if (i == 12) {
-            DSD_FPRINTF(stderr, "\n  ");
-        }
-        DSD_FPRINTF(stderr, "[%02X]", message->bytes[i]);
-    }
-    if (nxdn_facch3_udch2_crc_failed(message)) {
-        nxdn_print_crc_error_colored();
-    }
-}
-
-static void
 nxdn_print_facch3_udch2_payload_soft(const dsd_opts* opts, const struct nxdn_facch3_udch2_message* message,
                                      uint8_t type) {
     if (opts->payload != 1) {
@@ -1091,17 +956,6 @@ nxdn_print_facch3_udch2_payload_soft(const dsd_opts* opts, const struct nxdn_fac
     if (nxdn_facch3_udch2_crc_failed(message)) {
         nxdn_print_crc_error_colored();
     }
-}
-
-static void
-nxdn_handle_facch3_udch2_hard(dsd_opts* opts, dsd_state* state, const struct nxdn_facch3_udch2_message* message,
-                              uint8_t type) {
-    nxdn_print_facch3_udch2_name(type);
-    nxdn_decode_facch3_udch2_content(opts, state, message);
-    if (type == 0) {
-        nxdn_print_udch2_hard_data(message);
-    }
-    nxdn_print_facch3_udch2_payload_hard(opts, message, type);
 }
 
 static void
@@ -1189,61 +1043,8 @@ nxdn_descramble(uint8_t dibits[], int len) {
     }
 }
 
-void
-nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
-    uint8_t deperm[144];     //144
-    uint8_t depunc[192];     //192
-    uint8_t trellis_buf[96]; //96
-    uint16_t crc = 1;        //crc calculated by function
-    uint16_t check = 0;      //crc from payload for comparison
-
-    DSD_MEMSET(deperm, 0, sizeof(deperm));
-    DSD_MEMSET(depunc, 0, sizeof(depunc));
-
-    nxdn_depermute_u8(bits, 144U, PERM_16_9, deperm);
-    nxdn_depuncture_16_9(deperm, depunc);
-
-    // Switch to the convolutional decoder
-    uint8_t m_data[20]; //13
-    DSD_MEMSET(m_data, 0, sizeof(m_data));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-
-    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 92);
-    nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
-
-    crc = crc12f(trellis_buf, 84); //80
-    check = nxdn_bits_to_u16(trellis_buf + 84, 12);
-
-    //debug
-
-    // Retry with the alternate trellis decoder after a CRC mismatch.
-    if (crc != check) {
-        //debug
-        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
-        crc = crc12f(trellis_buf, 84);
-        check = nxdn_bits_to_u16(trellis_buf + 84, 12);
-    }
-
-    if (crc == check) {
-        state->data_header_format[0] = 3;
-        NXDN_Elements_Content_decode(opts, state, 1, trellis_buf, sizeof(trellis_buf));
-    }
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "\n");
-        DSD_FPRINTF(stderr, " FACCH1 Payload ");
-        for (int i = 0; i < 12; i++) {
-            DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
-        }
-        if (crc != check) {
-            DSD_FPRINTF(stderr, "%s", KRED);
-            DSD_FPRINTF(stderr, " (CRC ERR)");
-            DSD_FPRINTF(stderr, "%s", KNRM);
-        }
-    }
-}
-
 /*
- * Soft-decision variant of nxdn_deperm_facch.
+ * Soft-decision FACCH depermute/decode path.
  * Uses per-bit reliability values to weight the convolution decoder.
  */
 void
@@ -1302,52 +1103,8 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     }
 }
 
-//sacch
-void
-nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
-    //see about initializing these variables
-    uint8_t deperm[60];      //60
-    uint8_t depunc[72];      //72
-    uint8_t trellis_buf[32]; //32
-
-    DSD_MEMSET(deperm, 0, sizeof(deperm));
-    DSD_MEMSET(depunc, 0, sizeof(depunc));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-
-    uint8_t crc = 1;   //value computed by crc6 on payload
-    uint8_t check = 0; //value pulled from last 6 bits
-
-    nxdn_depermute_u8(bits, 60U, PERM_12_5, deperm);
-    nxdn_depuncture_12_5(deperm, depunc);
-
-    // Decode through the convolutional decoder.
-    uint8_t m_data[5]; //5
-
-    DSD_MEMSET(m_data, 0, sizeof(m_data));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-
-    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 32);
-    nxdn_unpack_bytes_msb(m_data, 4U, trellis_buf);
-
-    crc = crc6(trellis_buf, 26); //32
-    check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
-
-    //debug
-
-    // Retry with the alternate trellis decoder after a CRC mismatch.
-    if (crc != check) {
-        //debug
-
-        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
-        crc = crc6(trellis_buf, 26); //32
-        check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
-    }
-
-    nxdn_handle_sacch(opts, state, trellis_buf, m_data, crc, check);
-}
-
 /*
- * Soft-decision variant of nxdn_deperm_sacch.
+ * Soft-decision SACCH depermute/decode path.
  * Uses per-bit reliability values to weight the convolution decoder.
  */
 void
@@ -1389,273 +1146,6 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
     }
 
     nxdn_handle_sacch(opts, state, trellis_buf, m_data, crc, check);
-}
-
-// SACCH2 for JPN DCR
-//SEE: https://web.archive.org/web/20150417175725/http://arib.or.jp/english/html/overview/doc/1-STD-T98v1_4.pdf
-void
-nxdn_deperm_sacch2(const dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
-    //see about initializing these variables
-    uint8_t deperm[60];      //60
-    uint8_t depunc[72];      //72
-    uint8_t trellis_buf[32]; //32
-
-    DSD_MEMSET(deperm, 0, sizeof(deperm));
-    DSD_MEMSET(depunc, 0, sizeof(depunc));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-
-    uint8_t crc = 1;   //value computed by crc6 on payload
-    uint8_t check = 0; //value pulled from last 6 bits
-
-    nxdn_depermute_u8(bits, 60U, PERM_12_5, deperm);
-    nxdn_depuncture_12_5(deperm, depunc);
-
-    // Switch to the convolutional decoder
-    uint8_t m_data[5]; //5
-
-    DSD_MEMSET(m_data, 0, sizeof(m_data));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-
-    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 32);
-    nxdn_unpack_bytes_msb(m_data, 4U, trellis_buf);
-
-    crc = crc6(trellis_buf, 26);
-    check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
-
-    //debug
-
-    // If the crc fails, attempt again with the other trellis decoder
-    if (crc != check) {
-        //debug
-
-        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
-        crc = crc6(trellis_buf, 26); //32
-        check = (uint8_t)nxdn_bits_to_u16(trellis_buf + 26, 6);
-    }
-
-    nxdn_handle_sacch2(opts, state, trellis_buf, m_data, crc, check);
-}
-
-//PICH or TCH 144 bit (JPN DCR)
-//SEE: https://web.archive.org/web/20150417175725/http://arib.or.jp/english/html/overview/doc/1-STD-T98v1_4.pdf
-void
-nxdn_deperm_pich_tch(const dsd_opts* opts, dsd_state* state, uint8_t bits[144], uint8_t lich) {
-    uint8_t deperm[144];     //144
-    uint8_t depunc[192];     //192
-    uint8_t trellis_buf[96]; //96
-    uint16_t crc = 1;        //crc calculated by function
-    uint16_t check = 0;      //crc from payload for comparison
-
-    DSD_MEMSET(deperm, 0, sizeof(deperm));
-    DSD_MEMSET(depunc, 0, sizeof(depunc));
-
-    nxdn_depermute_u8(bits, 144U, PERM_16_9, deperm);
-    nxdn_depuncture_16_9(deperm, depunc);
-
-    // Switch to the convolutional decoder
-    uint8_t m_data[20]; //13
-    DSD_MEMSET(m_data, 0, sizeof(m_data));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-
-    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 92);
-    nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
-
-    crc = crc12f(trellis_buf, 84); //80
-    check = nxdn_bits_to_u16(trellis_buf + 84, 12);
-
-    //debug
-
-    // If the crc fails, attempt again with the other trellis decoder
-    if (crc != check) {
-        //debug
-
-        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
-        crc = crc12f(trellis_buf, 84);
-        check = nxdn_bits_to_u16(trellis_buf + 84, 12);
-    }
-
-    nxdn_handle_pich_tch(opts, state, trellis_buf, m_data, crc, check, lich);
-}
-
-void
-nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uint8_t type) {
-    uint8_t deperm[348];      //348
-    uint8_t depunc[406];      //406
-    uint8_t trellis_buf[208]; //199
-    uint16_t crc = 0;
-    uint16_t check = 0;
-
-    DSD_MEMSET(deperm, 0, sizeof(deperm));
-    DSD_MEMSET(depunc, 0, sizeof(depunc));
-
-    nxdn_depermute(bits, 348U, PERM_12_29, deperm);
-    nxdn_depuncture_12_group(deperm, 29U, depunc);
-
-    // Switch to the convolutional decoder
-    uint8_t m_data[26]; //26
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-    DSD_MEMSET(m_data, 0, sizeof(m_data));
-
-    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 199);
-    nxdn_unpack_bytes_msb(m_data, 26U, trellis_buf);
-
-    crc = crc15(trellis_buf, 199);
-    check = nxdn_bits_to_u16(trellis_buf + 184, 15);
-
-    //debug
-
-    // If the crc fails, attempt again with the other trellis decoder
-    if (crc != check) {
-        //debug
-
-        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 26U, depunc, 199);
-        crc = crc15(trellis_buf, 199);
-        check = nxdn_bits_to_u16(trellis_buf + 184, 15);
-    }
-
-    nxdn_handle_facch2_udch(opts, state, trellis_buf, m_data, crc, check, type);
-}
-
-void
-nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
-    uint8_t deperm[300];      //300
-    uint8_t depunc[350];      //350
-    uint8_t trellis_buf[176]; //176
-    uint16_t crc = 0;
-
-    DSD_MEMSET(deperm, 0, sizeof(deperm));
-    DSD_MEMSET(depunc, 0, sizeof(depunc));
-
-    nxdn_depermute(bits, 300U, PERM_12_25, deperm);
-    nxdn_depuncture_12_group(deperm, 25U, depunc);
-
-    // Switch to the convolutional decoder
-    uint8_t m_data[22]; //26
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-    DSD_MEMSET(m_data, 0, sizeof(m_data));
-
-    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 171);
-    nxdn_unpack_bytes_msb(m_data, 22U, trellis_buf);
-
-    crc = crc16cac(trellis_buf, 171);
-
-    //debug
-
-    if (crc != 0) {
-        //debug
-        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 22U, depunc, 171);
-        crc = crc16cac(trellis_buf, 171);
-    }
-
-    nxdn_handle_cac(opts, state, trellis_buf, m_data, crc);
-}
-
-//Type-D "IDAS"
-void
-nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t direction) {
-    DSD_FPRINTF(stderr, "%s", KYEL);
-    DSD_FPRINTF(stderr, " SCCH");
-
-    //see about initializing these variables
-    uint8_t deperm[60];      //60
-    uint8_t depunc[72];      //72
-    uint8_t trellis_buf[32]; //32
-
-    DSD_MEMSET(deperm, 0, sizeof(deperm));
-    DSD_MEMSET(depunc, 0, sizeof(depunc));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-
-    uint8_t crc = 0;   //value computed by crc7 on payload
-    uint8_t check = 0; //value pulled from last 7 bits
-
-    nxdn_depermute_u8(bits, 60U, PERM_12_5, deperm);
-    nxdn_depuncture_12_5(deperm, depunc);
-
-    // Switch to the convolutional decoder
-    uint8_t m_data[5]; //5
-
-    DSD_MEMSET(m_data, 0, sizeof(m_data));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-
-    nxdn_conv_decode_hard(depunc, sizeof(depunc), m_data, 32);
-    nxdn_unpack_bytes_msb(m_data, 4U, trellis_buf);
-
-    crc = crc7_scch(trellis_buf, 25);
-    check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
-
-    //debug
-
-    // If the crc fails, attempt again with the other trellis decoder
-    if (crc != check) {
-        //debug
-
-        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
-        crc = crc7_scch(trellis_buf, 25);
-        check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
-    }
-
-    //check the sf early for scrambler reset, if required
-    const uint8_t sf = (trellis_buf[0] << 1) | trellis_buf[1];
-    const int part_of_frame = nxdn_sacch_part_of_frame(sf);
-
-    //reset scrambler seed to key value on new superframe
-
-    //reset scrambler seed to key value on new superframe
-    if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) {
-        nxdn_reset_payload_seed_if_forced(state);
-    }
-
-    /*
-	4.3.2. Mapping to Functional Channel
-		When Subscriber Unit performs voice communication in RTCH2, SCCH is allocated as
-		described below.
-
-		SCCH has super Frame Structure with 4 frame unit during communication, and has non
-		super Frame Structure with single frame unit at the start time and end time of sending.
-		Allocation of the other channel is not specified particularly.
-	*/
-
-    //English Translation: Superframe when voice, Non Superframe when not voice
-
-    //What I've found is that by not using the superframe structure, and decoding each 'unit'
-    //individually instead, we can get more expedient decoding on elements without having to
-    //sacrifice an entire superframe for one bad CRC, also each element cleanly divides into a
-    //single 'unit' except for enc parms IV, which can be stored seperately if needed
-
-    //NOTE: scch has its own message format, and thus, doesn't go to content element decoding
-    //like everything else does
-
-    if (crc == check) {
-        NXDN_decode_scch(opts, state, trellis_buf, direction);
-    }
-
-    DSD_FPRINTF(stderr, "%s", KNRM);
-
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "\n SCCH Payload ");
-        for (int i = 0; i < 4; i++) {
-            DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
-        }
-
-        if (crc != check) {
-            DSD_FPRINTF(stderr, "%s", KRED);
-            DSD_FPRINTF(stderr, " (CRC ERR)");
-            DSD_FPRINTF(stderr, "%s", KNRM);
-        }
-    }
-
-    DSD_FPRINTF(stderr, "%s", KNRM);
-}
-
-void
-nxdn_deperm_facch3_udch2(dsd_opts* opts, dsd_state* state, uint8_t bits[288], uint8_t type) {
-    struct nxdn_facch3_udch2_message message;
-    DSD_MEMSET(&message, 0, sizeof(message));
-    for (size_t block = 0; block < 2U; block++) {
-        nxdn_decode_facch3_udch2_block_hard(bits, block, &message);
-    }
-
-    nxdn_handle_facch3_udch2_hard(opts, state, &message, type);
 }
 
 void
@@ -1883,7 +1373,7 @@ LFSR128n(dsd_state* state) {
 }
 
 /*
- * Soft-decision variant of nxdn_deperm_cac.
+ * Soft-decision CAC depermute/decode path.
  */
 void
 nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]) {
@@ -1920,7 +1410,7 @@ nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const 
 }
 
 /*
- * Soft-decision variant of nxdn_deperm_facch2_udch.
+ * Soft-decision FACCH2/UDCH depermute/decode path.
  */
 void
 nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348], const uint8_t reliab[348],
@@ -1961,7 +1451,7 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
 }
 
 /*
- * Soft-decision variant of nxdn_deperm_scch.
+ * Soft-decision SCCH depermute/decode path.
  */
 void
 nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
@@ -2029,7 +1519,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
 }
 
 /*
- * Soft-decision variant of nxdn_deperm_sacch2.
+ * Soft-decision SACCH2 depermute/decode path.
  */
 void
 nxdn_deperm_sacch2_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
@@ -2071,7 +1561,7 @@ nxdn_deperm_sacch2_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[60]
 }
 
 /*
- * Soft-decision variant of nxdn_deperm_pich_tch.
+ * Soft-decision PICH/TCH depermute/decode path.
  */
 void
 nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
@@ -2112,7 +1602,7 @@ nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[1
 }
 
 /*
- * Soft-decision variant of nxdn_deperm_facch3_udch2.
+ * Soft-decision FACCH3/UDCH2 depermute/decode path.
  * Processes two 144-bit blocks with separate CRCs (same structure as original).
  */
 void

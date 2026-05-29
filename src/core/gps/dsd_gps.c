@@ -913,15 +913,6 @@ decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     //will need to establish a len value for data and contents
 }
 
-void
-decode_ars(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
-    //TODO: This
-    UNUSED(opts);
-    UNUSED(state);
-    UNUSED(input);
-    UNUSED(len);
-}
-
 static int
 nmea_hex_nibble(uint8_t c) {
     if (c >= (uint8_t)'0' && c <= (uint8_t)'9') {
