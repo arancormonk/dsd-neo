@@ -26,6 +26,7 @@
 #include <dsd-neo/fec/viterbi.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/nonce.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
@@ -80,15 +81,9 @@ clip_float_to_short(float v) {
     return (short)lrintf(v);
 }
 
-static unsigned int
-m17_seed_now(void) {
-    const time_t now = time(NULL);
-    const uintptr_t addr = (uintptr_t)&now;
-    const clock_t ticks = clock();
-    unsigned int seed = (unsigned int)now;
-    seed ^= (unsigned int)(addr >> 4);
-    seed ^= (unsigned int)ticks;
-    return seed;
+static void
+m17_assign_stream_id(uint8_t sid[2]) {
+    dsd_nonce_fill(sid, 2);
 }
 
 //from M17_Implementations / libM17 -- sp5wwp -- should have just looked here to begin with
@@ -2006,9 +2001,7 @@ m17_str_reset_tx_idle_state(m17_str_ctx* ctx) {
     ctx->state->carrier = 0;
     ctx->state->synctype = DSD_SYNC_NONE;
 
-    srand(m17_seed_now());
-    ctx->sid[0] = rand() & 0xFF;
-    ctx->sid[1] = rand() & 0xFF;
+    m17_assign_stream_id(ctx->sid);
 
     m17_attach_lsf_crc(ctx->m17_lsf, ctx->lsf_packed, &ctx->crc_cmp);
     m17_encode_lsf_for_rf(ctx->m17_lsf, ctx->m17_lsfs);
@@ -2133,9 +2126,7 @@ m17_str_init(m17_str_ctx* ctx, dsd_opts* opts, dsd_state* state) {
     m17_send_dead_air_frames(opts, state, ctx->nil, 25);
     ctx->use_ip = m17_open_udp_if_enabled(opts, state);
 
-    srand(m17_seed_now());
-    ctx->sid[0] = rand() & 0xFF;
-    ctx->sid[1] = rand() & 0xFF;
+    m17_assign_stream_id(ctx->sid);
 
 #ifdef USE_CODEC2
     if (ctx->st == 2) {
@@ -2453,9 +2444,7 @@ m17_pkt_send_mpkt_if_enabled(m17_pkt_ctx* ctx) {
         }
     }
 
-    srand(m17_seed_now());
-    ctx->sid[0] = rand() & 0xFF;
-    ctx->sid[1] = rand() & 0xFF;
+    m17_assign_stream_id(ctx->sid);
     for (int j = 0; j < 2; j++) {
         for (int i = 0; i < 8; i++) {
             ctx->m17_ip_frame[k++] = (ctx->sid[j] >> (7 - i)) & 1;

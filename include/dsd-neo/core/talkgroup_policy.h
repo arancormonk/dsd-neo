@@ -132,6 +132,11 @@ int dsd_tg_policy_append_exact(dsd_state* state, const dsd_tg_policy_entry* entr
 int dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode);
 int dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry, const char* metadata);
 
+#ifdef DSD_NEO_TEST_HOOKS
+void dsd_tg_policy_test_alloc_reset(void);
+void dsd_tg_policy_test_alloc_fail_after(long fail_after);
+#endif
+
 int dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,
                                  const dsd_tg_policy_call_route* candidate_route,
                                  const dsd_tg_policy_decision* candidate, double now_mono_s);

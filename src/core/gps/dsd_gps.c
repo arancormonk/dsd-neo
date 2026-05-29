@@ -129,18 +129,35 @@ nmea_harris_print_src_prefix(uint16_t header, uint32_t src, int slot) {
     }
 }
 
+typedef struct {
+    uint8_t add_hash;
+    double latitude;
+    double longitude;
+    unsigned int position_error;
+    uint8_t pos_err;
+    int speed_kph;
+    int direction_deg;
+    const char* deg_glyph;
+    const char* latstr;
+    const char* lonstr;
+} lip_state_strings;
+
 static void DSD_ATTR_USED
-lip_store_state_strings(dsd_state* state, int slot, uint8_t add_hash, double latitude, double longitude,
-                        unsigned int position_error, uint8_t pos_err, int speed_kph, int direction_deg,
-                        const char* deg_glyph, const char* latstr, const char* lonstr) {
-    if (pos_err != 0x7U) {
+lip_store_state_strings(dsd_state* state, int slot, const lip_state_strings* gps) {
+    if (!state || !gps) {
+        return;
+    }
+
+    if (gps->pos_err != 0x7U) {
         DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
-                     "%03d; LIP: %.5lf%s%s %.5lf%s%s; Err: %dm; Spd: %d km/h; Dir: %d%s", add_hash, latitude, deg_glyph,
-                     latstr, longitude, deg_glyph, lonstr, position_error, speed_kph, direction_deg, deg_glyph);
+                     "%03d; LIP: %.5lf%s%s %.5lf%s%s; Err: %dm; Spd: %d km/h; Dir: %d%s", gps->add_hash, gps->latitude,
+                     gps->deg_glyph, gps->latstr, gps->longitude, gps->deg_glyph, gps->lonstr, gps->position_error,
+                     gps->speed_kph, gps->direction_deg, gps->deg_glyph);
     } else {
         DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
-                     "%03d; LIP: %.5lf%s%s %.5lf%s%s Unknown Pos Err; Spd: %d km/h; Dir %d%s", add_hash, latitude,
-                     deg_glyph, latstr, longitude, deg_glyph, lonstr, speed_kph, direction_deg, deg_glyph);
+                     "%03d; LIP: %.5lf%s%s %.5lf%s%s Unknown Pos Err; Spd: %d km/h; Dir %d%s", gps->add_hash,
+                     gps->latitude, gps->deg_glyph, gps->latstr, gps->longitude, gps->deg_glyph, gps->lonstr,
+                     gps->speed_kph, gps->direction_deg, gps->deg_glyph);
     }
 
     DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
@@ -148,6 +165,27 @@ lip_store_state_strings(dsd_state* state, int slot, uint8_t add_hash, double lat
 }
 
 static int nmea_hex_nibble(uint8_t c);
+
+static void DSD_ATTR_USED
+lip_emit_position_metadata(const dsd_opts* opts, dsd_state* state, int slot, const lip_state_strings* gps,
+                           double lat_sf, double lon_sf, uint8_t reason, uint8_t time_elapsed) {
+    if (gps->pos_err == 0x7U) {
+        DSD_FPRINTF(stderr, "\n  Position Error: Unknown or Invalid;");
+    } else {
+        DSD_FPRINTF(stderr, "\n  Position Error: Less than %dm;", gps->position_error);
+    }
+
+    if (reason != 0U) {
+        DSD_FPRINTF(stderr, " Reserved: %d;", reason);
+    } else {
+        DSD_FPRINTF(stderr, " Request Response; ");
+    }
+
+    lip_print_time_elapsed(time_elapsed);
+    lip_store_state_strings(state, slot, gps);
+    gps_write_lrrp_compact(opts, gps->add_hash, lat_sf * gps->latitude, lon_sf * gps->longitude, gps->speed_kph,
+                           gps->direction_deg);
+}
 
 static uint8_t
 nmea_validate_checksum(const uint8_t* input, int len_bytes, uint8_t* end_value, uint8_t* checksum_calc,
@@ -303,31 +341,26 @@ lip_protocol_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* inpu
         //6.3.63 Position Error (2 * 10^pos_err) via tiny LUT
         static const uint32_t pow10_lut[8] = {1u, 10u, 100u, 1000u, 10000u, 100000u, 1000000u, 10000000u};
         unsigned int position_error = (unsigned int)(2u * pow10_lut[pos_err & 7U]);
-        if (pos_err == 0x7U) {
-            DSD_FPRINTF(stderr, "\n  Position Error: Unknown or Invalid;");
-        } else {
-            DSD_FPRINTF(stderr, "\n  Position Error: Less than %dm;", position_error);
-        }
-
-        //Reason For Sending 6.6.11.3.3 Table 6.80
-        if (reason != 0U) {
-            DSD_FPRINTF(stderr, " Reserved: %d;", reason);
-        } else {
-            DSD_FPRINTF(stderr, " Request Response; ");
-        }
-
-        //6.3.78 Time elapsed
-        lip_print_time_elapsed(time_elapsed);
-
-        lip_store_state_strings(state, slot, add_hash, latitude, longitude, position_error, pos_err, vt, dt, deg_glyph,
-                                latstr, lonstr);
-
-        //save to LRRP report for mapping/logging
-        gps_write_lrrp_compact(opts, add_hash, lat_sf * latitude, lon_sf * longitude, vt, dt);
-
+        lip_state_strings gps = {add_hash, latitude, longitude, position_error, pos_err,
+                                 vt,       dt,       deg_glyph, latstr,         lonstr};
+        lip_emit_position_metadata(opts, state, slot, &gps, lat_sf, lon_sf, reason, time_elapsed);
     } else {
         DSD_FPRINTF(stderr, " Position Calculation Error;");
     }
+}
+
+static void DSD_ATTR_USED
+nmea_store_and_report(const dsd_opts* opts, dsd_state* state, int slot, uint32_t src, float latitude, float longitude,
+                      float speed_kph, uint16_t cog, int type, const char* deg_glyph) {
+    DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "GPS: (%f%s, %f%s)", latitude,
+                 deg_glyph, longitude, deg_glyph);
+    DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
+                 sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "(%f%s, %f%s)", latitude, deg_glyph,
+                 longitude, deg_glyph);
+
+    int speed_int = (int)speed_kph;
+    int azimuth = (type == 2) ? (int)cog : 0;
+    gps_write_lrrp_compact(opts, src, latitude, longitude, speed_int, azimuth);
 }
 
 void
@@ -419,19 +452,7 @@ nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, u
         default: break;
     }
 
-    //save to ncurses string
-    DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "GPS: (%f%s, %f%s)", latitude,
-                 deg_glyph, longitude, deg_glyph);
-
-    //save to event history string
-    DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
-                 sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "(%f%s, %f%s)", latitude, deg_glyph,
-                 longitude, deg_glyph);
-
-    //save to LRRP report for mapping/logging
-    int speed_kph = (int)fkph;                     //rounded integer format for log reports
-    int azimuth = (type == 2) ? (int)nmea_cog : 0; //long format only
-    gps_write_lrrp_compact(opts, src, latitude, longitude, speed_kph, azimuth);
+    nmea_store_and_report(opts, state, slot, src, latitude, longitude, fkph, nmea_cog, type, deg_glyph);
 }
 
 //restructured the Harris GPS to flow more like the DMR UDT NMEA Format when possible
@@ -526,6 +547,15 @@ nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32
 }
 
 //fallback version (if desired/required)
+static void DSD_ATTR_USED
+harris_gps_store_and_report(const dsd_opts* opts, dsd_state* state, int slot, uint32_t src, float lat_dec,
+                            float lon_dec, int speed_kph, int azimuth, const char* deg_glyph) {
+    uint8_t slot_idx = (slot >= 2) ? 1 : (uint8_t)slot;
+    DSD_SNPRINTF(state->dmr_embedded_gps[slot_idx], sizeof state->dmr_embedded_gps[slot_idx], "GPS: (%f%s, %f%s)",
+                 lat_dec, deg_glyph, lon_dec, deg_glyph);
+    gps_write_lrrp_compact(opts, src, lat_dec, lon_dec, speed_kph, azimuth);
+}
+
 void
 harris_gps(const dsd_opts* opts, dsd_state* state, int slot, const uint8_t* input) {
 
@@ -617,15 +647,7 @@ harris_gps(const dsd_opts* opts, dsd_state* state, int slot, const uint8_t* inpu
     //speed and direction
     DSD_FPRINTF(stderr, " DIR: %03d%s;", a, deg_glyph);
 
-    //save to array for ncurses (guard slot index)
-    {
-        uint8_t slot_idx = (slot >= 2) ? 1 : slot;
-        DSD_SNPRINTF(state->dmr_embedded_gps[slot_idx], sizeof state->dmr_embedded_gps[slot_idx], "GPS: (%f%s, %f%s)",
-                     lat_dec, deg_glyph, lon_dec, deg_glyph);
-    }
-
-    //save to LRRP report for mapping/logging
-    gps_write_lrrp_compact(opts, (uint32_t)src, lat_dec, lon_dec, s, a);
+    harris_gps_store_and_report(opts, state, slot, (uint32_t)src, lat_dec, lon_dec, s, a, deg_glyph);
 
     //NOTE: Thanks to DSheirer (SDRTrunk) for helping me work out a few of the things in here
     //not entirely convinced on some of these calcs (speed, angle, and TS) but sure these bits
@@ -633,13 +655,50 @@ harris_gps(const dsd_opts* opts, dsd_state* state, int slot, const uint8_t* inpu
 }
 
 //externalize embedded GPS - Confirmed working now on NE, NW, SE, and SW coordinates
+typedef struct {
+    double latitude;
+    double longitude;
+    double lat_sf;
+    double lon_sf;
+    unsigned int position_error;
+    uint8_t pos_err;
+    const char* deg_glyph;
+    const char* latstr;
+    const char* lonstr;
+} dmr_embedded_gps_fix;
+
+static void
+dmr_embedded_gps_store_clear_fix(const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                 const dmr_embedded_gps_fix* fix) {
+    if (fix->pos_err <= 0x5) {
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
+                     "GPS: %.5lf%s%s %.5lf%s%s Err: %dm", fix->latitude, fix->deg_glyph, fix->latstr, fix->longitude,
+                     fix->deg_glyph, fix->lonstr, fix->position_error);
+    } else if (fix->pos_err == 0x6) {
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
+                     "GPS: %.5lf%s%s %.5lf%s%s Err: >200km", fix->latitude, fix->deg_glyph, fix->latstr, fix->longitude,
+                     fix->deg_glyph, fix->lonstr);
+    } else {
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
+                     "GPS: %.5lf%s%s %.5lf%s%s Unknown Pos Err", fix->latitude, fix->deg_glyph, fix->latstr,
+                     fix->longitude, fix->deg_glyph, fix->lonstr);
+    }
+
+    uint32_t src = (slot == 0U) ? (uint32_t)state->lasttg : ((slot == 1U) ? (uint32_t)state->lasttgR : 0U);
+    if (state->event_history_s[slot].Event_History_Items[0].source_id == src) {
+        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
+                     sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "%s",
+                     state->dmr_embedded_gps[slot]);
+    }
+    gps_write_lrrp_compact(opts, src, fix->lat_sf * fix->latitude, fix->lon_sf * fix->longitude, 0, 0);
+}
+
 void
 dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]) {
     UNUSED(opts);
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " Embedded GPS:");
-    uint8_t slot = state->currentslot;
     uint8_t pf = lc_bits[0];
     uint8_t res_a = lc_bits[1];
     uint8_t res_b = (uint8_t)ConvertBitIntoBytes(&lc_bits[16], 4);
@@ -705,37 +764,10 @@ dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]
                 DSD_FPRINTF(stderr, "\n  Position Error: Less than %dm", position_error);
             }
 
-            //save to array for ncurses
-            if (pos_err <= 0x5) {
-                DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
-                             "GPS: %.5lf%s%s %.5lf%s%s Err: %dm", latitude, deg_glyph, latstr, longitude, deg_glyph,
-                             lonstr, position_error);
-            } else if (pos_err == 0x6) {
-                DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
-                             "GPS: %.5lf%s%s %.5lf%s%s Err: >200km", latitude, deg_glyph, latstr, longitude, deg_glyph,
-                             lonstr);
-            } else {
-                DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
-                             "GPS: %.5lf%s%s %.5lf%s%s Unknown Pos Err", latitude, deg_glyph, latstr, longitude,
-                             deg_glyph, lonstr);
-            }
-
-            uint32_t src = 0U;
-            if (slot == 0U) {
-                src = state->lasttg;
-            } else if (slot == 1U) {
-                src = state->lasttgR;
-            }
-
-            //save to event history string
-            if (state->event_history_s[slot].Event_History_Items[0].source_id == src) {
-                DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
-                             sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "%s",
-                             state->dmr_embedded_gps[slot]);
-            }
-
-            //save to LRRP report for mapping/logging
-            gps_write_lrrp_compact(opts, src, lat_sf * latitude, lon_sf * longitude, 0, 0);
+            dmr_embedded_gps_fix fix = {latitude, longitude, lat_sf, lon_sf, position_error,
+                                        pos_err,  deg_glyph, latstr, lonstr};
+            uint8_t slot = state->currentslot;
+            dmr_embedded_gps_store_clear_fix(opts, state, slot, &fix);
         }
     }
 

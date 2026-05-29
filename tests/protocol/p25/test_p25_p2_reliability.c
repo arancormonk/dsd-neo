@@ -20,6 +20,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -43,7 +44,6 @@ extern int ess_a[2][168];
 extern int16_t ess_a_llr[2][168];
 extern void p25_p2_frame_reset(void);
 extern void process_ESS(dsd_opts* opts, dsd_state* state);
-extern int p25p2_duid_lookup_soft_test(uint8_t received, const uint8_t reliab8[8]);
 
 static int g_ess_hard_rc = 0;
 static int g_ess_soft_min_success = -1;

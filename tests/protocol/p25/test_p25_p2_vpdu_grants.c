@@ -11,20 +11,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-// Test shim wrapper
-void p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, int p25_trunk, long p25_cc_freq,
-                                      int iden, int type, int tdma, long base, int spac, long* out_vc0, int* out_tuned);
-
-// Stubs for alias helpers and rigctl referenced along the path
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
+#include "p25_test_shim.h"
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -146,7 +142,8 @@ main(void) {
         mac[8] = 0x67; // group id (arbitrary)
         long vc = 0;
         int tuned = 0;
-        p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, iden, type, tdma, base, spac, &vc, &tuned);
+        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
         rc |= expect_true("A3 tuned", tuned == 1);
         rc |= expect_eq_long("A3 vc", vc, 851125000);
     }
@@ -167,7 +164,8 @@ main(void) {
         mac[9] = 0x02; // source
         long vc = 0;
         int tuned = 0;
-        p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, iden, type, tdma, base, spac, &vc, &tuned);
+        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
         rc |= expect_true("UU tuned", tuned == 1);
         rc |= expect_eq_long("UU vc", vc, 851125000);
     }

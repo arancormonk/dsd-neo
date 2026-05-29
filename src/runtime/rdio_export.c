@@ -483,7 +483,7 @@ dsd_rdio_wav_duration_s(const char* wav_path) {
         return 0;
     }
 
-    FILE* fp = fopen(wav_path, "rb");
+    FILE* fp = dsd_fopen_existing_regular_file(wav_path, "rb");
     if (!fp) {
         return 0;
     }

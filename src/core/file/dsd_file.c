@@ -27,6 +27,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/mbe_api.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -35,6 +36,7 @@
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/nonce.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
@@ -431,7 +433,7 @@ openMbeInFile(dsd_opts* opts, dsd_state* state) {
     char cookie[5];
     state->mbe_file_type = -1;
 
-    opts->mbe_in_f = fopen(opts->mbe_in_file, "rb");
+    opts->mbe_in_f = dsd_fopen_existing_regular_file(opts->mbe_in_file, "rb");
     if (opts->mbe_in_f == NULL) {
         LOG_ERROR("Error: could not open %s\n", opts->mbe_in_file);
         return;
@@ -520,7 +522,7 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     char datestr[9]; //stack buffer for date string
 
     //random element of filename, so two files won't overwrite one another
-    uint16_t random_number = rand() & 0xFFFF;
+    uint16_t random_number = dsd_nonce_u16();
 
     getTime_buf(timestr);
     getDate_buf(datestr);
@@ -575,7 +577,7 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     char datestr[9]; //stack buffer for date string
 
     //random element of filename, so two files won't overwrite one another
-    uint16_t random_number = rand() & 0xFFFF;
+    uint16_t random_number = dsd_nonce_u16();
 
     getTime_buf(timestr);
     getDate_buf(datestr);
@@ -628,7 +630,7 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
         return NULL;
     }
 
-    uint16_t random_number = rand();
+    uint16_t random_number = dsd_nonce_u16();
     char datestr[9];
     char timestr[7];
     getDate_buf(datestr);
@@ -704,7 +706,7 @@ wav_rename_build_metadata(const Event_History* event_item, wav_rename_metadata* 
     }
     getDateF_buf(event_time, metadata->datestr);
     getTimeF_buf(event_time, metadata->timestr);
-    metadata->random_number = rand();
+    metadata->random_number = dsd_nonce_u16();
     metadata->source_id = event_item ? event_item->source_id : 0U;
     metadata->target_id = event_item ? event_item->target_id : 0U;
     DSD_MEMSET(metadata->sys_str, 0, sizeof(metadata->sys_str));
@@ -748,7 +750,7 @@ wav_file_get_size_or_negative(const char* filename) {
         return -1;
     }
 
-    FILE* file = fopen(filename, "r");
+    FILE* file = dsd_fopen_existing_regular_file(filename, "r");
     if (file == NULL) {
         return -1;
     }
@@ -1650,7 +1652,10 @@ sdrtrunk_json_handle_version(const dsd_opts* opts, const char* token, char** str
     if (!value) {
         return 1;
     }
-    ctx->version = (uint16_t)strtol(value, NULL, 10);
+    uint16_t version = 0;
+    if (dsd_parse_uint16_strict(value, 10, UINT16_MAX, &version) == 0) {
+        ctx->version = version;
+    }
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Version: %d;", ctx->version);
     }
@@ -1713,7 +1718,8 @@ sdrtrunk_json_handle_to_from(dsd_state* state, const char* token, char** str_sav
     if (strncmp("to", token, 2) == 0) {
         char* value = sdrtrunk_json_next_value(str_saveptr);
         if (value) {
-            state->lasttg = (uint32_t)strtol(value, NULL, 10);
+            uint32_t parsed = 0;
+            state->lasttg = (dsd_parse_uint32_strict(value, 10, UINT32_MAX, &parsed) == 0) ? parsed : 0U;
             DSD_FPRINTF(stderr, "\n To: %s", value);
         }
         return 1;
@@ -1721,7 +1727,8 @@ sdrtrunk_json_handle_to_from(dsd_state* state, const char* token, char** str_sav
     if (strncmp("from", token, 4) == 0) {
         char* value = sdrtrunk_json_next_value(str_saveptr);
         if (value) {
-            state->lastsrc = (uint32_t)strtol(value, NULL, 10);
+            uint32_t parsed = 0;
+            state->lastsrc = (dsd_parse_uint32_strict(value, 10, UINT32_MAX, &parsed) == 0) ? parsed : 0U;
             DSD_FPRINTF(stderr, "\n From: %s", value);
         }
         return 1;
@@ -1739,7 +1746,10 @@ sdrtrunk_json_handle_alg(const dsd_opts* opts, const char* token, char** str_sav
     if (!value) {
         return 1;
     }
-    ctx->alg_id = (uint8_t)strtol(value, NULL, 10);
+    uint8_t alg_id = 0;
+    if (dsd_parse_uint8_strict(value, 10, UINT8_MAX, &alg_id) == 0) {
+        ctx->alg_id = alg_id;
+    }
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Alg ID: %02X;", ctx->alg_id);
     }
@@ -1757,7 +1767,10 @@ sdrtrunk_json_handle_key_id(const dsd_opts* opts, const char* token, char** str_
     if (!value) {
         return 1;
     }
-    ctx->key_id = (uint16_t)strtol(value, NULL, 10);
+    uint16_t key_id = 0;
+    if (dsd_parse_uint16_strict(value, 10, UINT16_MAX, &key_id) == 0) {
+        ctx->key_id = key_id;
+    }
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Key ID: %04X;", ctx->key_id);
     }
@@ -1831,7 +1844,9 @@ sdrtrunk_json_handle_mi(dsd_opts* opts, dsd_state* state, const char* token, cha
 
     char iv_str[20];
     sdrtrunk_json_extract_iv(value, iv_str);
-    unsigned long long int iv_hex = strtoull(iv_str, NULL, 16);
+    uint64_t iv_parsed = 0;
+    unsigned long long int iv_hex =
+        (dsd_parse_uint64_strict(iv_str, 16, UINT64_MAX, &iv_parsed) == 0) ? (unsigned long long int)iv_parsed : 0ULL;
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n IV: %016llX;", iv_hex);
     }
@@ -1912,7 +1927,9 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
     char time_str[20];
     DSD_MEMSET(time_str, 0, sizeof(time_str));
     DSD_STRNCPY(time_str, value, 10);
-    time_t event_time = (time_t)strtol(time_str, NULL, 10);
+    long event_seconds = 0;
+    (void)dsd_parse_long_strict(time_str, 10, 0L, LONG_MAX, &event_seconds);
+    time_t event_time = (time_t)event_seconds;
     state->event_history_s[0].Event_History_Items[0].event_time = event_time;
 
     char timestr[9];

@@ -371,7 +371,12 @@ if(DSD_ENABLE_WARNINGS)
                 -Wunused-parameter
                 -Wempty-body
                 -Wunused-label
+                -Wformat=2
+                -Wvla
                 $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
+                $<$<COMPILE_LANGUAGE:C>:-Wstrict-prototypes>
+                $<$<COMPILE_LANGUAGE:C>:-Wmissing-prototypes>
+                $<$<COMPILE_LANGUAGE:C>:-Wold-style-definition>
                 -Wmisleading-indentation
                 -Wparentheses
                 -Wunused-value

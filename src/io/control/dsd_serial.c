@@ -3,11 +3,10 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
-#if !DSD_PLATFORM_WIN_NATIVE
-#include <fcntl.h>
-#endif
 #include <stdio.h>
 #include <sys/types.h>
 #if !DSD_PLATFORM_WIN_NATIVE
@@ -77,7 +76,7 @@ openSerial(dsd_opts* opts, dsd_state* state) {
 
     DSD_FPRINTF(stderr, "Opening serial port %s and setting baud to %i\n", opts->serial_dev, opts->serial_baud);
     opts->serial_fd = -1;
-    int fd = open(opts->serial_dev, O_WRONLY);
+    int fd = dsd_open_serial_write(opts->serial_dev);
     if (fd == -1) {
         LOG_ERROR("Error, couldn't open %s\n", opts->serial_dev);
         return;
@@ -136,7 +135,7 @@ resumeScan(dsd_opts* opts, dsd_state* state) {
     if (opts->serial_fd > 0) {
         char cmd[16];
         DSD_SNPRINTF(cmd, sizeof cmd, "\rKEY00\r");
-        ssize_t written = write(opts->serial_fd, cmd, 7);
+        ssize_t written = dsd_write(opts->serial_fd, cmd, 7);
         if (written != 7) {
             LOG_WARN("resumeScan: sent %zd/7 bytes on serial FD", written);
         }

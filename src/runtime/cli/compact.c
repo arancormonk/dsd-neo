@@ -38,83 +38,78 @@ compact_has_next_non_option(int i, int argc, char** argv) {
     return (i + 1 < argc && argv[i + 1] != NULL && argv[i + 1][0] != '-');
 }
 
+static const char* const k_skip_exact_no_arg[] = {
+    "--auto-ppm",          "--rtltcp-autotune",      "--iq-loop",       "--rdio-api-delete-after-upload",
+    "--enc-lockout",       "--enc-follow",           "--no-config",     "--print-config",
+    "--interactive-setup", "--dump-config-template", "--strict-config", "--list-profiles",
+};
+
+static const char* const k_skip_exact_next_any[] = {
+    "--input-volume",
+    "--input-level-warn-db",
+    "--frame-log",
+    "--rdio-mode",
+    "--rdio-system-id",
+    "--rdio-api-url",
+    "--rdio-api-key",
+    "--rdio-upload-timeout-ms",
+    "--rdio-upload-retries",
+    "--dmr-baofeng-pc5",
+    "--dmr-csi-ee72",
+    "--dmr-vertex-ks-csv",
+    "--auto-ppm-snr",
+    "--profile",
+    "--p25-vc-grace",
+    "--p25-min-follow-dwell",
+    "--p25-grant-voice-timeout",
+    "--p25-retune-backoff",
+    "--p25-mac-hold",
+    "--p25-ring-hold",
+    "--p25-cc-grace",
+    "--p25-force-release-extra",
+    "--p25-force-release-margin",
+    "--p25-p1-err-hold-pct",
+    "--p25-p1-err-hold-sec",
+    "--calc-lcn",
+    "--calc-step",
+    "--calc-cc-freq",
+    "--calc-cc-lcn",
+    "--calc-start-lcn",
+};
+
+static const char* const k_skip_exact_next_nonnull[] = {
+    "--iq-capture", "--iq-capture-format", "--iq-capture-max-mb", "--symbol-capture-format",
+    "--iq-replay",  "--iq-replay-rate",    "--iq-info",
+};
+
+static const char* const k_skip_exact_next_nonopt[] = {
+    "--rtl-udp-control",
+    "--rtl-udp-control-bind",
+    "--config",
+    "--validate-config",
+};
+
+static const char* const k_skip_prefix[] = {
+    "--rtl-udp-control=",
+    "--rtl-udp-control-bind=",
+    "--iq-capture=",
+    "--iq-capture-format=",
+    "--iq-capture-max-mb=",
+    "--symbol-capture-format=",
+    "--iq-replay=",
+    "--iq-replay-rate=",
+    "--iq-info=",
+    "--dmr-baofeng-pc5=",
+    "--dmr-csi-ee72=",
+    "--dmr-vertex-ks-csv=",
+    "--config=",
+};
+
 int
 dsd_cli_compact_args(int argc, char** argv) {
     if (argc <= 0 || argv == NULL) {
         return 0;
     }
-
-    /*
-     * These buckets mirror the long-option parser by operand shape.
-     * The compact pass strips only options that getopt() cannot process later.
-     * Each list keeps the skip rule explicit so optional operands stay visible.
-     */
-    static const char* const k_skip_exact_no_arg[] = {
-        "--auto-ppm",          "--rtltcp-autotune",      "--iq-loop",       "--rdio-api-delete-after-upload",
-        "--enc-lockout",       "--enc-follow",           "--no-config",     "--print-config",
-        "--interactive-setup", "--dump-config-template", "--strict-config", "--list-profiles",
-    };
-
-    static const char* const k_skip_exact_next_any[] = {
-        "--input-volume",
-        "--input-level-warn-db",
-        "--frame-log",
-        "--rdio-mode",
-        "--rdio-system-id",
-        "--rdio-api-url",
-        "--rdio-api-key",
-        "--rdio-upload-timeout-ms",
-        "--rdio-upload-retries",
-        "--dmr-baofeng-pc5",
-        "--dmr-csi-ee72",
-        "--dmr-vertex-ks-csv",
-        "--auto-ppm-snr",
-        "--profile",
-        "--p25-vc-grace",
-        "--p25-min-follow-dwell",
-        "--p25-grant-voice-timeout",
-        "--p25-retune-backoff",
-        "--p25-mac-hold",
-        "--p25-ring-hold",
-        "--p25-cc-grace",
-        "--p25-force-release-extra",
-        "--p25-force-release-margin",
-        "--p25-p1-err-hold-pct",
-        "--p25-p1-err-hold-sec",
-        "--calc-lcn",
-        "--calc-step",
-        "--calc-cc-freq",
-        "--calc-cc-lcn",
-        "--calc-start-lcn",
-    };
-
-    static const char* const k_skip_exact_next_nonnull[] = {
-        "--iq-capture", "--iq-capture-format", "--iq-capture-max-mb", "--symbol-capture-format",
-        "--iq-replay",  "--iq-replay-rate",    "--iq-info",
-    };
-
-    static const char* const k_skip_exact_next_nonopt[] = {
-        "--rtl-udp-control",
-        "--rtl-udp-control-bind",
-        "--config",
-        "--validate-config",
-    };
-
-    static const char* const k_skip_prefix[] = {
-        "--rtl-udp-control=",
-        "--rtl-udp-control-bind=",
-        "--iq-capture=",
-        "--iq-capture-format=",
-        "--iq-capture-max-mb=",
-        "--symbol-capture-format=",
-        "--iq-replay=",
-        "--iq-replay-rate=",
-        "--iq-info=",
-        "--dmr-baofeng-pc5=",
-        "--dmr-csi-ee72=",
-        "--dmr-vertex-ks-csv=",
-        "--config=",
-    };
 
     // Remove recognized long options so short-option getopt() sees remaining tokens.
     // Keep argv[0] as the program name and compact in place for legacy callers.

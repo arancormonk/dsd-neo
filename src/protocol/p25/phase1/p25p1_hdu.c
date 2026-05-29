@@ -22,6 +22,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -39,7 +40,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -611,11 +611,13 @@ processHDU(dsd_opts* opts, dsd_state* state) {
 
     hdu_extract_mi_algid_kid((const char (*)[6])hex_data, mi, algid, kid);
 
-    state->p25kid = strtol(kid, NULL, 2);
+    uint32_t kid_parsed = 0;
+    state->p25kid = (dsd_parse_binary_u32_n(kid, 16, &kid_parsed) == 0) ? (int)kid_parsed : 0;
     hdu_consume_trailing_dibits_and_status(opts, state);
 
-    algidhex = strtol(algid, NULL, 2);
-    kidhex = strtol(kid, NULL, 2);
+    uint32_t algid_parsed = 0;
+    algidhex = (dsd_parse_binary_u32_n(algid, 8, &algid_parsed) == 0) ? (int)algid_parsed : 0;
+    kidhex = (dsd_parse_binary_u32_n(kid, 16, &kid_parsed) == 0) ? (int)kid_parsed : 0;
     mihex1 = (unsigned long long int)ConvertBitIntoBytes(&mi[0], 32);
     mihex2 = (unsigned long long int)ConvertBitIntoBytes(&mi[32], 32);
     mihex3 = (unsigned long long int)ConvertBitIntoBytes(&mi[64], 8);

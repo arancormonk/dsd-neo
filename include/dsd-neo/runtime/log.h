@@ -44,7 +44,7 @@ typedef enum DSD_ATTR_PACKED {
 #ifdef __cplusplus
 extern "C" {
 #endif
-void dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...);
+void dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) DSD_ATTR_FORMAT(printf, 2, 3);
 #ifdef __cplusplus
 }
 #endif

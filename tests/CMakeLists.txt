@@ -2023,7 +2023,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_p25_mbt_adj_rfss
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25
 )
 target_link_libraries(
     dsd-neo_test_p25_mbt_adj_rfss
@@ -2262,6 +2262,7 @@ target_include_directories(
     dsd-neo_test_p25_p1_tsbk_clamp
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25
         ${PROJECT_SOURCE_DIR}/tests/protocol/p25
 )
 target_link_libraries(
@@ -2398,6 +2399,7 @@ target_include_directories(
     dsd-neo_test_p25_p2_vpdu_grants
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25
         ${PROJECT_SOURCE_DIR}/tests/protocol/p25
 )
 target_link_libraries(dsd-neo_test_p25_p2_vpdu_grants PRIVATE dsd-neo_proto_p25)

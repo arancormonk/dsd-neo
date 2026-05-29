@@ -14,8 +14,8 @@ Usage: tools/lizard.sh [--strict] [--ccn N] [--length N] [--arguments N] [--] [p
 Options:
   --strict       Fail when threshold warnings are emitted.
   --ccn N        Cyclomatic complexity warning threshold (default: 15).
-  --length N     Function length warning threshold (default: 1000; strict: 120).
-  --arguments N  Parameter count warning threshold (default: 100; strict: 13).
+  --length N     Function length warning threshold (default: 1000; strict: 100).
+  --arguments N  Parameter count warning threshold (default: 100; strict: 10).
 
 Arguments:
   paths...       Optional paths to scan. Default: src include apps
@@ -89,8 +89,8 @@ if [[ $STRICT -eq 1 ]]; then
   # Keep the current maximum CCN as the strict ceiling, but make length and
   # parameter-count budgets useful enough to catch future growth.
   [[ $CCN_SET -eq 0 ]] && CCN=15
-  [[ $LENGTH_SET -eq 0 ]] && LENGTH=120
-  [[ $ARGUMENTS_SET -eq 0 ]] && ARGUMENTS=13
+  [[ $LENGTH_SET -eq 0 ]] && LENGTH=100
+  [[ $ARGUMENTS_SET -eq 0 ]] && ARGUMENTS=10
 fi
 
 if ! command -v lizard > /dev/null 2>&1; then

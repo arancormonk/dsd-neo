@@ -115,6 +115,47 @@ dsd_fopen_private(const char* path, const char* mode) {
     return fp;
 }
 
+FILE*
+dsd_fopen_existing_regular_file(const char* path, const char* mode) {
+    if (!path || path[0] == '\0' || !mode || mode[0] != 'r' || strchr(mode, '+') != NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    int flags = O_RDONLY;
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    int fd = open(path, flags);
+    if (fd < 0) {
+        return NULL;
+    }
+
+    dsd_stat_t st;
+    if (fstat(fd, &st) != 0) {
+        int saved_errno = errno ? errno : EINVAL;
+        close(fd);
+        errno = saved_errno;
+        return NULL;
+    }
+    if (!dsd_stat_is_regular(&st)) {
+        close(fd);
+        errno = EINVAL;
+        return NULL;
+    }
+
+    FILE* fp = fdopen(fd, mode);
+    if (!fp) {
+        int saved_errno = errno ? errno : EINVAL;
+        close(fd);
+        errno = saved_errno;
+    }
+    return fp;
+}
+
 static void
 dsd_set_cloexec_best_effort(int fd) {
 #ifdef FD_CLOEXEC

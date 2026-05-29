@@ -7,6 +7,8 @@
 
 #include "fuzz_support.h"
 
+uint64_t ConvertBitIntoBytes(const uint8_t* bits, uint32_t n);
+
 uint64_t
 ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
     uint64_t value = 0ULL;

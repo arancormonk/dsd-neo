@@ -563,10 +563,22 @@ decode_ip_pdu_handle_udp(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_
     decode_ip_pdu_handle_udp_service(opts, state, slot, src24, dst24, dst_port, payload_len, payload, input);
 }
 
+typedef struct {
+    uint8_t version;
+    uint8_t ihl;
+    uint8_t tos;
+    uint16_t tlen;
+    uint16_t iden;
+    uint8_t ipf;
+    uint16_t offset;
+    uint8_t ttl;
+    uint8_t prot;
+    uint16_t hsum;
+    uint16_t len;
+} dmr_ip_pdu_header;
+
 static void DSD_ATTR_USED
-decode_ip_pdu_print_header(const dsd_opts* opts, uint8_t version, uint8_t ihl, uint8_t tos, uint16_t tlen,
-                           uint16_t iden, uint8_t ipf, uint16_t offset, uint8_t ttl, uint8_t prot, uint16_t hsum,
-                           uint16_t len) {
+decode_ip_pdu_print_header(const dsd_opts* opts, const dmr_ip_pdu_header* hdr) {
     if (opts->payload != 1) {
         return;
     }
@@ -574,7 +586,8 @@ decode_ip_pdu_print_header(const dsd_opts* opts, uint8_t version, uint8_t ihl, u
         stderr,
         "\n IPv%d; IHL: %d; Type of Service: %d; Total Len: %d; IP ID: %04X; Flags: %X;\n Fragment Offset: %d; TTL: "
         "%d; Protocol: 0x%02X; Checksum: %04X; PDU Len: %d;",
-        version, ihl, tos, tlen, iden, ipf, offset, ttl, prot, hsum, len);
+        hdr->version, hdr->ihl, hdr->tos, hdr->tlen, hdr->iden, hdr->ipf, hdr->offset, hdr->ttl, hdr->prot, hdr->hsum,
+        hdr->len);
 }
 
 static void
@@ -653,7 +666,8 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
             effective_len = (size_t)tlen;
         }
     }
-    decode_ip_pdu_print_header(opts, version, ihl, tos, tlen, iden, ipf, offset, ttl, prot, hsum, len);
+    dmr_ip_pdu_header hdr = {version, ihl, tos, tlen, iden, ipf, offset, ttl, prot, hsum, len};
+    decode_ip_pdu_print_header(opts, &hdr);
 
     uint32_t src24 = (uint32_t)((input[13] << 16) | (input[14] << 8) | input[15]);
     uint32_t dst24 = (uint32_t)((input[17] << 16) | (input[18] << 8) | input[19]);
@@ -1149,20 +1163,27 @@ dmr_lrrp_build_summary(char* out, size_t out_sz, const dmr_lrrp_parse_result* be
     }
 }
 
+typedef struct {
+    uint32_t source;
+    uint32_t dest;
+    uint8_t is_request;
+    uint8_t is_response;
+    uint8_t lrrp_type;
+} dmr_lrrp_emit_context;
+
 static void
 dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dmr_lrrp_parse_result* best,
-                      uint8_t payload_len, uint8_t pdu_crc_ok, uint32_t source, uint32_t dest, uint8_t is_request,
-                      uint8_t is_response, uint8_t lrrp_type) {
+                      uint8_t payload_len, uint8_t pdu_crc_ok, const dmr_lrrp_emit_context* ctx) {
     if (payload_len == 0) {
         DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot],
-                     "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", source, lrrp_type, dest);
+                     "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", ctx->source, ctx->lrrp_type, ctx->dest);
         DSD_FPRINTF(stderr, "\n %s", state->dmr_lrrp_gps[slot]);
         return;
     }
     dmr_lrrp_scaled s = dmr_lrrp_compute_scaled(best);
     DSD_FPRINTF(stderr, "%s", KYEL);
     dmr_lrrp_print_details(best, &s, pdu_crc_ok);
-    dmr_lrrp_write_file_if_needed(opts, best, &s, pdu_crc_ok, source);
+    dmr_lrrp_write_file_if_needed(opts, best, &s, pdu_crc_ok, ctx->source);
 
     char lrrpstr[100];
     char velstr[20];
@@ -1170,8 +1191,8 @@ dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, uint8_t slot, cons
     lrrpstr[0] = '\0';
     velstr[0] = '\0';
     degstr[0] = '\0';
-    dmr_lrrp_build_summary(lrrpstr, sizeof lrrpstr, best, &s, source, dest, is_request, is_response, lrrp_type,
-                           pdu_crc_ok);
+    dmr_lrrp_build_summary(lrrpstr, sizeof lrrpstr, best, &s, ctx->source, ctx->dest, ctx->is_request, ctx->is_response,
+                           ctx->lrrp_type, pdu_crc_ok);
     if (best->vel_set) {
         DSD_SNPRINTF(velstr, sizeof velstr, " %.2lf km/h", best->velocity_mph * 1.60934);
     }
@@ -1217,8 +1238,8 @@ dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, 
     if (!source) {
         source = (uint32_t)state->dmr_lrrp_source[state->currentslot];
     }
-    dmr_lrrp_emit_payload(opts, state, slot, &best, payload_len, pdu_crc_ok, source, dest, is_request, is_response,
-                          lrrp_type);
+    dmr_lrrp_emit_context emit_ctx = {source, dest, is_request, is_response, lrrp_type};
+    dmr_lrrp_emit_payload(opts, state, slot, &best, payload_len, pdu_crc_ok, &emit_ctx);
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 

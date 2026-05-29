@@ -14,9 +14,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-extern void dsd_tg_policy_test_alloc_reset(void);
-extern void dsd_tg_policy_test_alloc_fail_after(long fail_after);
-
 static int
 expect_true(const char* tag, int cond) {
     if (!cond) {

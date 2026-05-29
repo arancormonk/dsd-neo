@@ -80,6 +80,8 @@ static DSD_THREAD_RETURN_TYPE
 #endif
     writer_thread_fn(void* arg);
 
+static void set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 3, 4);
+
 static void
 set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) {
     if (!err_buf || err_buf_size == 0 || !fmt) {

@@ -17,6 +17,7 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 #ifdef USE_RTLSDR
 
@@ -41,6 +42,8 @@ ui_print_label_pad(const char* label) {
         addch(' ');
     }
 }
+
+static void ui_print_kv_line(const char* label, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 2, 3);
 
 static void
 ui_print_kv_line(const char* label, const char* fmt, ...) {

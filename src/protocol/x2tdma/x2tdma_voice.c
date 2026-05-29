@@ -18,13 +18,14 @@
 
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
+#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -548,8 +549,10 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
 
     if (ctx.mutecurrentslot == 0) {
         if (opts->p25enc == 1) {
-            int algidhex = strtol(state->algid, NULL, 2);
-            int kidhex = strtol(state->keyid, NULL, 2);
+            uint32_t algidbits = 0;
+            uint32_t kidbits = 0;
+            int algidhex = (dsd_parse_binary_u32_n(state->algid, 8, &algidbits) == 0) ? (int)algidbits : 0;
+            int kidhex = (dsd_parse_binary_u32_n(state->keyid, 16, &kidbits) == 0) ? (int)kidbits : 0;
             DSD_FPRINTF(stderr, "mi: %s algid: $%x kid: $%x\n", ctx.mi, algidhex, kidhex);
         }
     }

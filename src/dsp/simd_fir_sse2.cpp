@@ -224,17 +224,13 @@ simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist
         xq = scratch[2 * ii + 1];
     };
 
-    /* Process 2 output samples at a time */
     int n = 0;
     for (; n + 1 < out_ch_len; n += 2) {
         __m128 acc = _mm_setzero_ps();
 
-        /* Center tap */
         float cc = taps[center];
         __m128 tap_c = _mm_set1_ps(cc);
 
-        /* Output n: input index = 2*n, center_idx = left_len + 2*n */
-        /* Output n+1: input index = 2*(n+1), center_idx = left_len + 2*(n+1) */
         int center_idx0 = left_len + (n << 1);
         int center_idx1 = left_len + ((n + 1) << 1);
 

@@ -17,9 +17,25 @@ int p25_test_mbt_iden_bridge(const unsigned char* mbt, int mbt_len, long* out_ba
                              int* out_tdma, long* out_freq);
 int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
                                   int spac, long* out_cc, long* out_wacn, int* out_sysid);
-int p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
-                                     int spac, long* out_cc, long* out_wacn, int* out_sysid, int* out_nb_count,
-                                     long* out_nb_freqs);
+
+typedef struct {
+    int iden;
+    int type;
+    int tdma;
+    long base;
+    int spac;
+} p25_test_iden_config;
+
+typedef struct {
+    long* cc;
+    long* wacn;
+    int* sysid;
+    int* nb_count;
+    long* nb_freqs;
+} p25_test_mbt_outputs;
+
+int p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, const p25_test_iden_config* iden_cfg,
+                                     const p25_test_mbt_outputs* outputs);
 void p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len);
 int p25_test_p1_ldu_gate(int algid, unsigned long long R, int aes_loaded);
 int p25_test_p2_gate(int algid, unsigned long long key, int aes_loaded);
@@ -29,7 +45,7 @@ void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int 
 void p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len, int p25_trunk, long p25_cc_freq,
                                          int iden, int type, int tdma, long base, int spac);
 void p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, int p25_trunk, long p25_cc_freq,
-                                      int iden, int type, int tdma, long base, int spac, long* out_vc0, int* out_tuned);
+                                      const p25_test_iden_config* iden_cfg, long* out_vc0, int* out_tuned);
 int p25_test_p2_early_enc_handle(dsd_opts* opts, dsd_state* state, int slot);
 
 #ifdef __cplusplus

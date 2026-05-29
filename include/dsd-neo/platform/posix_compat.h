@@ -92,6 +92,14 @@ int getopt(int argc, char* const argv[], const char* optstring);
  */
 int dsd_mkdir(const char* path, int mode);
 
+/**
+ * @brief Open a serial/control device for write-only output.
+ *
+ * @param path Device path selected by the user.
+ * @return File descriptor on success, -1 on error.
+ */
+int dsd_open_serial_write(const char* path);
+
 /* ============================================================================
  * Aligned Memory Allocation
  * ============================================================================ */

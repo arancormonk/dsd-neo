@@ -184,6 +184,19 @@ int dsd_resolve_existing_local_file(const char* requested, char* out, size_t out
 FILE* dsd_fopen_existing_local_file(const char* requested, char* out, size_t out_size);
 
 /**
+ * @brief Open an existing regular file by path for read-only access.
+ *
+ * The final path is opened without following symlinks/reparse points where the
+ * platform exposes that protection. Only read modes such as "r" and "rb" are
+ * accepted.
+ *
+ * @param path  Existing file path.
+ * @param mode  fopen-compatible read-only mode.
+ * @return Read stream for the existing regular file, or NULL with errno set.
+ */
+FILE* dsd_fopen_existing_regular_file(const char* path, const char* mode);
+
+/**
  * @brief Read from a file descriptor.
  *
  * @param fd        File descriptor.

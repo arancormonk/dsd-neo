@@ -709,18 +709,31 @@ p25p2_vpdu_set_active_group_triple(dsd_state* state, int channel1, int group1, i
     state->last_active_time = time(NULL);
 }
 
+typedef struct {
+    int channel;
+    int group;
+    long int freq;
+    int svc_bits;
+} p25p2_vpdu_group_candidate;
+
+typedef struct {
+    int policy_encrypted_override;
+    int policy_data_override;
+    int emit_enc_lockout;
+    int stop_on_tune;
+} p25p2_vpdu_candidate_policy;
+
 static int
-p25p2_vpdu_try_group_candidate(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state, int channel,
-                               int group, long int freq, int svc_bits, int policy_encrypted_override,
-                               int policy_data_override, int emit_enc_lockout, int stop_on_tune) {
+p25p2_vpdu_try_group_candidate(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
+                               const p25p2_vpdu_group_candidate* candidate, const p25p2_vpdu_candidate_policy* policy) {
     int tuned = 0;
-    p25p2_vpdu_print_group_label(state, (uint32_t)group);
-    if (p25p2_vpdu_can_tune(opts, state, freq)) {
-        p25p2_mac_handle(mac_res, opts, state, channel, svc_bits, group, /*src*/ 0, policy_encrypted_override,
-                         policy_data_override, emit_enc_lockout);
-        tuned = (stop_on_tune && opts->p25_is_tuned != 0) ? 1 : 0;
+    p25p2_vpdu_print_group_label(state, (uint32_t)candidate->group);
+    if (p25p2_vpdu_can_tune(opts, state, candidate->freq)) {
+        p25p2_mac_handle(mac_res, opts, state, candidate->channel, candidate->svc_bits, candidate->group, /*src*/ 0,
+                         policy->policy_encrypted_override, policy->policy_data_override, policy->emit_enc_lockout);
+        tuned = (policy->stop_on_tune && opts->p25_is_tuned != 0) ? 1 : 0;
     }
-    p25p2_vpdu_update_playback_if_match(opts, state, group, freq);
+    p25p2_vpdu_update_playback_if_match(opts, state, candidate->group, candidate->freq);
     return tuned;
 }
 
@@ -968,18 +981,12 @@ p25p2_vpdu_block07_enc_blocked(const dsd_opts* opts, const dsd_state* state, int
 
 static void
 p25p2_vpdu_block07_try_candidates(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
-                                  int channel1, int group1, long int freq1, int svc1, int channel2, int group2,
-                                  long int freq2, int svc2) {
-    int loop = (channel1 == channel2) ? 1 : 2;
-    const int channels[2] = {channel1, channel2};
-    const int groups[2] = {group1, group2};
-    const long int freqs[2] = {freq1, freq2};
-    const int svcs[2] = {svc1, svc2};
+                                  const p25p2_vpdu_group_candidate candidates[2]) {
+    int loop = (candidates[0].channel == candidates[1].channel) ? 1 : 2;
+    const p25p2_vpdu_candidate_policy policy = {-1, -1, 1, 0};
 
     for (int j = 0; j < loop; j++) {
-        (void)p25p2_vpdu_try_group_candidate(mac_res, opts, state, channels[j], groups[j], freqs[j], svcs[j],
-                                             /*policy_encrypted*/ -1, /*policy_data*/ -1, /*emit_enc_lockout*/ 1,
-                                             /*stop_on_tune*/ 0);
+        (void)p25p2_vpdu_try_group_candidate(mac_res, opts, state, &candidates[j], &policy);
     }
 }
 
@@ -1005,9 +1012,9 @@ static void
 p25p2_vpdu_block08_try_candidates(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
                                   const int* channels, const int* groups, const long int* freqs, const int* svcs) {
     for (int j = 0; j < 3; j++) {
-        int tuned = p25p2_vpdu_try_group_candidate(mac_res, opts, state, channels[j], groups[j], freqs[j], svcs[j],
-                                                   /*policy_encrypted*/ -1, /*policy_data*/ -1,
-                                                   /*emit_enc_lockout*/ 1, /*stop_on_tune*/ 1);
+        p25p2_vpdu_group_candidate candidate = {channels[j], groups[j], freqs[j], svcs[j]};
+        const p25p2_vpdu_candidate_policy policy = {-1, -1, 1, 1};
+        int tuned = p25p2_vpdu_try_group_candidate(mac_res, opts, state, &candidate, &policy);
         if (tuned) {
             break;
         }
@@ -1168,9 +1175,9 @@ p25p2_vpdu_iter_block_03(p25p2_vpdu_ctx* ctx) {
             int tunable_group = (j == 0) ? group1 : group2;
             long int tunable_freq = (j == 0) ? freq1 : freq2;
             int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, tunable_group) ? 1 : 0;
-            int tuned = p25p2_vpdu_try_group_candidate(&mac_res, opts, state, tunable_chan, tunable_group, tunable_freq,
-                                                       /*svc_bits*/ 0, policy_encrypted,
-                                                       /*policy_data*/ 0, /*emit_enc_lockout*/ 0, /*stop_on_tune*/ 1);
+            p25p2_vpdu_group_candidate candidate = {tunable_chan, tunable_group, tunable_freq, 0};
+            p25p2_vpdu_candidate_policy policy = {policy_encrypted, 0, 0, 1};
+            int tuned = p25p2_vpdu_try_group_candidate(&mac_res, opts, state, &candidate, &policy);
             if (tuned) {
                 break;
             }
@@ -1423,8 +1430,9 @@ p25p2_vpdu_iter_block_07(p25p2_vpdu_ctx* ctx) {
             ctx->skip_rest = 1;
             goto BLOCK_END;
         }
-        p25p2_vpdu_block07_try_candidates(&mac_res, opts, state, channelt1, group1, freq1t, svc1, channelt2, group2,
-                                          freq2t, svc2);
+        p25p2_vpdu_group_candidate candidates[2] = {{channelt1, group1, freq1t, svc1},
+                                                    {channelt2, group2, freq2t, svc2}};
+        p25p2_vpdu_block07_try_candidates(&mac_res, opts, state, candidates);
     }
 
     if (len_b < 0) {
@@ -1543,9 +1551,9 @@ p25p2_vpdu_iter_block_09(p25p2_vpdu_ctx* ctx) {
             int tunable_chan = (j == 0) ? channel1 : channel2;
             int tunable_group = (j == 0) ? group1 : group2;
             long int tunable_freq = (j == 0) ? freq1 : freq2;
-            int tuned = p25p2_vpdu_try_group_candidate(&mac_res, opts, state, tunable_chan, tunable_group, tunable_freq,
-                                                       /*svc_bits*/ 0, /*policy_encrypted*/ 0,
-                                                       /*policy_data*/ 0, /*emit_enc_lockout*/ 0, /*stop_on_tune*/ 1);
+            p25p2_vpdu_group_candidate candidate = {tunable_chan, tunable_group, tunable_freq, 0};
+            const p25p2_vpdu_candidate_policy policy = {0, 0, 0, 1};
+            int tuned = p25p2_vpdu_try_group_candidate(&mac_res, opts, state, &candidate, &policy);
             if (tuned) {
                 break;
             }

@@ -174,10 +174,8 @@ rtl_perf_record_consumer_read(uint64_t elapsed_ns, size_t output_samples) {
 }
 
 extern "C" void
-rtl_perf_maybe_log(const char* source, uint32_t sample_rate_hz, int output_kind, size_t input_used,
-                   size_t input_capacity, uint64_t input_drops, size_t output_used, size_t output_capacity,
-                   int symbol_cache_pending, double snr_db, double cfo_hz, int carrier_lock) {
-    if (!rtl_perf_enabled()) {
+rtl_perf_maybe_log(const rtl_perf_log_snapshot* snapshot) {
+    if (!snapshot || !rtl_perf_enabled()) {
         return;
     }
 
@@ -213,11 +211,12 @@ rtl_perf_maybe_log(const char* source, uint32_t sample_rate_hz, int output_kind,
                 "%" PRIu64 ",%s,%" PRIu32 ",%d,%zu,%zu,%" PRIu64 ",%zu,%zu,%d,%" PRIu64 ",%" PRIu64 ",%" PRIu64
                 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
                 ",%" PRIu64 ",%" PRIu64 ",%.3f,%.3f,%d\n",
-                (uint64_t)(now_ns / 1000000ULL), source ? source : "unknown", sample_rate_hz, output_kind, input_used,
-                input_capacity, input_drops, output_used, output_capacity, symbol_cache_pending, ingest_blocks,
-                ingest_samples, ingest_drops, ingest_ns, demod_blocks, demod_input_samples, demod_output_samples,
-                full_demod_ns, post_metrics_ns, output_write_ns, consumer_reads, consumer_samples, consumer_read_ns,
-                snr_db, cfo_hz, carrier_lock);
+                (uint64_t)(now_ns / 1000000ULL), snapshot->source ? snapshot->source : "unknown",
+                snapshot->sample_rate_hz, snapshot->output_kind, snapshot->input_used, snapshot->input_capacity,
+                snapshot->input_drops, snapshot->output_used, snapshot->output_capacity, snapshot->symbol_cache_pending,
+                ingest_blocks, ingest_samples, ingest_drops, ingest_ns, demod_blocks, demod_input_samples,
+                demod_output_samples, full_demod_ns, post_metrics_ns, output_write_ns, consumer_reads, consumer_samples,
+                consumer_read_ns, snapshot->snr_db, snapshot->cfo_hz, snapshot->carrier_lock);
     fflush(g_perf_file);
     g_perf_next_log_ns = now_ns + g_perf_interval_ns;
 }

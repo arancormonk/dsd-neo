@@ -9,6 +9,8 @@
 #endif
 
 #include <dsd-neo/platform/posix_compat.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -38,6 +40,15 @@ dsd_unsetenv(const char* name) {
 int
 dsd_mkdir(const char* path, int mode) {
     return mkdir(path, (mode_t)mode);
+}
+
+int
+dsd_open_serial_write(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    return open(path, O_WRONLY | O_NOCTTY);
 }
 
 void*

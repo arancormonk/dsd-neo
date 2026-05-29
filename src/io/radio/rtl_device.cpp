@@ -109,7 +109,10 @@ static int
 rtlsdr_stub_status(void) {
     const char* env = getenv("DSD_NEO_RTLSDR_STUB_STATUS");
     if (env && *env != '\0') {
-        return atoi(env);
+        int parsed = 0;
+        if (dsd_parse_int_strict(env, 10, INT_MIN, INT_MAX, &parsed) == 0) {
+            return parsed;
+        }
     }
     return -1;
 }
@@ -118,9 +121,9 @@ static uint32_t
 rtlsdr_stub_sample_rate(void) {
     const char* env = getenv("DSD_NEO_RTLSDR_STUB_SAMPLE_RATE_HZ");
     if (env && *env != '\0') {
-        long parsed = strtol(env, NULL, 10);
-        if (parsed > 0L) {
-            return (uint32_t)parsed;
+        uint32_t parsed = 0;
+        if (dsd_parse_uint32_strict(env, 10, UINT32_MAX, &parsed) == 0 && parsed > 0U) {
+            return parsed;
         }
     }
     return 0U;
@@ -130,7 +133,10 @@ static int
 rtlsdr_stub_tuner_type(void) {
     const char* env = getenv("DSD_NEO_RTLSDR_STUB_TUNER_TYPE");
     if (env && *env != '\0') {
-        return atoi(env);
+        int parsed = RTLSDR_TUNER_UNKNOWN;
+        if (dsd_parse_int_strict(env, 10, INT_MIN, INT_MAX, &parsed) == 0) {
+            return parsed;
+        }
     }
     return RTLSDR_TUNER_UNKNOWN;
 }
@@ -670,29 +676,46 @@ rtl_accumulate_ring_drops(struct input_ring_state* ring, size_t dropped) {
     ring->producer_drops.fetch_add((uint64_t)dropped);
 }
 
+namespace {
+
+struct rtl_u8_write_cursor {
+    unsigned char* src;
+    size_t* done;
+    size_t* need;
+    struct rtl_capture_u8_byte_carry* carry;
+    int* phase;
+    int fs4_shift_active;
+    int combine_rotate_active;
+    int use_two_pass;
+};
+
+} // namespace
+
 static inline void
-rtl_write_u8_reserved_segment(const struct rtl_device* s, unsigned char* src, size_t* io_done, size_t* io_need,
-                              struct rtl_capture_u8_byte_carry* carry, float* dst, size_t produced_bytes,
-                              int fs4_shift_active, int combine_rotate_active, int use_two_pass, int* phase) {
-    if (!s || !src || !io_done || !io_need || !carry || !dst || !phase || produced_bytes == 0U) {
+rtl_write_u8_reserved_segment(const struct rtl_device* s, const rtl_u8_write_cursor* cursor, float* dst,
+                              size_t produced_bytes) {
+    if (!s || !cursor || !cursor->src || !cursor->done || !cursor->need || !cursor->carry || !dst || !cursor->phase
+        || produced_bytes == 0U) {
         return;
     }
 
     unsigned char pair[2];
-    size_t prefix = rtl_capture_u8_byte_carry_consume_prefix(src + *io_done, *io_need, carry, pair);
+    size_t prefix =
+        rtl_capture_u8_byte_carry_consume_prefix(cursor->src + *cursor->done, *cursor->need, cursor->carry, pair);
     size_t from_prefix = 0U;
     if (prefix != 0U) {
-        rtl_process_u8_chunk(s, pair, dst, 2U, fs4_shift_active, combine_rotate_active, use_two_pass, phase);
-        *io_done += prefix;
-        *io_need -= prefix;
+        rtl_process_u8_chunk(s, pair, dst, 2U, cursor->fs4_shift_active, cursor->combine_rotate_active,
+                             cursor->use_two_pass, cursor->phase);
+        *cursor->done += prefix;
+        *cursor->need -= prefix;
         from_prefix = 2U;
     }
     if (produced_bytes > from_prefix) {
         size_t body = produced_bytes - from_prefix;
-        rtl_process_u8_chunk(s, src + *io_done, dst + from_prefix, body, fs4_shift_active, combine_rotate_active,
-                             use_two_pass, phase);
-        *io_done += body;
-        *io_need -= body;
+        rtl_process_u8_chunk(s, cursor->src + *cursor->done, dst + from_prefix, body, cursor->fs4_shift_active,
+                             cursor->combine_rotate_active, cursor->use_two_pass, cursor->phase);
+        *cursor->done += body;
+        *cursor->need -= body;
     }
 }
 
@@ -708,30 +731,47 @@ rtl_handle_u8_ring_generation_stale(const struct rtl_device* s, const unsigned c
     return 1;
 }
 
+namespace {
+
+struct rtl_u8_finalize_state {
+    const unsigned char* src;
+    size_t len;
+    size_t done;
+    size_t need;
+    struct rtl_capture_u8_byte_carry* carry;
+    int* phase;
+    int fs4_shift_active;
+    int count_full_reserve;
+    int ring_exhausted;
+    int generation_stale;
+};
+
+} // namespace
+
 static inline void
-rtl_finalize_u8_ring_write(struct rtl_device* s, const unsigned char* src, size_t len, size_t done, size_t need,
-                           struct rtl_capture_u8_byte_carry* carry, int* phase, int fs4_shift_active,
-                           int count_full_reserve, int ring_exhausted, int generation_stale) {
-    if (!s || !src || !carry || !phase) {
+rtl_finalize_u8_ring_write(struct rtl_device* s, const rtl_u8_finalize_state* final_state) {
+    if (!s || !final_state || !final_state->src || !final_state->carry || !final_state->phase) {
         return;
     }
 
-    if (generation_stale) {
-        rtl_clear_capture_alignment_after_discard(s, carry);
-    } else if (ring_exhausted) {
-        size_t dropped = rtl_drop_u8_bytes_preserve_alignment(src + done, need, carry, phase, fs4_shift_active);
+    if (final_state->generation_stale) {
+        rtl_clear_capture_alignment_after_discard(s, final_state->carry);
+    } else if (final_state->ring_exhausted) {
+        size_t dropped =
+            rtl_drop_u8_bytes_preserve_alignment(final_state->src + final_state->done, final_state->need,
+                                                 final_state->carry, final_state->phase, final_state->fs4_shift_active);
         rtl_accumulate_ring_drops(s->input_ring, dropped);
-        if (count_full_reserve) {
+        if (final_state->count_full_reserve) {
             s->reserve_full_events++;
         }
-    } else if (need == 1U && done < len && !carry->valid) {
-        rtl_capture_u8_byte_carry_save(carry, src[done]);
+    } else if (final_state->need == 1U && final_state->done < final_state->len && !final_state->carry->valid) {
+        rtl_capture_u8_byte_carry_save(final_state->carry, final_state->src[final_state->done]);
     }
 
-    if (!generation_stale) {
-        s->iq_byte_carry = *carry;
-        if (fs4_shift_active) {
-            s->rot_phase = *phase;
+    if (!final_state->generation_stale) {
+        s->iq_byte_carry = *final_state->carry;
+        if (final_state->fs4_shift_active) {
+            s->rot_phase = *final_state->phase;
         }
     }
 }
@@ -773,10 +813,10 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
             break;
         }
 
-        rtl_write_u8_reserved_segment(s, src, &done, &need, &carry, p1, w1, fs4_shift_active, combine_rotate_active,
-                                      use_two_pass, &phase);
-        rtl_write_u8_reserved_segment(s, src, &done, &need, &carry, p2, w2, fs4_shift_active, combine_rotate_active,
-                                      use_two_pass, &phase);
+        rtl_u8_write_cursor cursor = {
+            src, &done, &need, &carry, &phase, fs4_shift_active, combine_rotate_active, use_two_pass};
+        rtl_write_u8_reserved_segment(s, &cursor, p1, w1);
+        rtl_write_u8_reserved_segment(s, &cursor, p2, w2);
 
         if (!input_ring_discard_generation_matches(s->input_ring, discard_generation)) {
             generation_stale =
@@ -786,8 +826,9 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
         input_ring_commit(s->input_ring, produced);
     }
 
-    rtl_finalize_u8_ring_write(s, src, len, done, need, &carry, &phase, fs4_shift_active, count_full_reserve,
-                               ring_exhausted, generation_stale);
+    rtl_u8_finalize_state final_state = {
+        src, len, done, need, &carry, &phase, fs4_shift_active, count_full_reserve, ring_exhausted, generation_stale};
+    rtl_finalize_u8_ring_write(s, &final_state);
     if (perf_on) {
         uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
         uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
@@ -1391,18 +1432,31 @@ replay_reserve_and_submit_chunk(struct rtl_device* s, const float* src, size_t s
     return 0;
 }
 
+namespace {
+
+struct replay_thread_io_state {
+    int* phase;
+    int* have_carry;
+    uint8_t* carry_byte;
+    uint64_t* complex_written;
+    uint64_t* data_offset;
+    uint32_t* event_cursor;
+    uint64_t* start_ns;
+    int realtime;
+};
+
+} // namespace
+
 static inline int
 replay_thread_process_inputs_valid(const struct rtl_device* s, const uint8_t* raw_block, const float* f32_block,
-                                   const int* phase, const int* have_carry, const uint8_t* carry_byte,
-                                   const uint64_t* complex_written, const uint64_t* data_offset,
-                                   const uint32_t* event_cursor, const uint64_t* start_ns) {
+                                   const replay_thread_io_state* io) {
     if (!s || !raw_block || !f32_block) {
         return 0;
     }
-    if (!phase || !have_carry || !carry_byte) {
+    if (!io || !io->phase || !io->have_carry || !io->carry_byte) {
         return 0;
     }
-    if (!complex_written || !data_offset || !event_cursor || !start_ns) {
+    if (!io->complex_written || !io->data_offset || !io->event_cursor || !io->start_ns) {
         return 0;
     }
     return 1;
@@ -1410,11 +1464,9 @@ replay_thread_process_inputs_valid(const struct rtl_device* s, const uint8_t* ra
 
 static inline int
 replay_thread_read_or_handle_empty(struct rtl_device* s, uint8_t* raw_block, size_t read_limit,
-                                   uint64_t* io_data_offset, uint64_t* io_complex_written, uint64_t* io_start_ns,
-                                   int realtime, int* io_phase, int* io_have_carry, uint8_t* io_carry_byte,
-                                   uint32_t* io_event_cursor, size_t* out_bytes) {
-    if (!s || !raw_block || !io_data_offset || !io_complex_written || !io_start_ns || !io_phase || !io_have_carry
-        || !io_carry_byte || !io_event_cursor || !out_bytes) {
+                                   replay_thread_io_state* io, size_t* out_bytes) {
+    if (!s || !raw_block || !io || !io->data_offset || !io->complex_written || !io->start_ns || !io->phase
+        || !io->have_carry || !io->carry_byte || !io->event_cursor || !out_bytes) {
         return 0;
     }
     *out_bytes = 0U;
@@ -1423,39 +1475,35 @@ replay_thread_read_or_handle_empty(struct rtl_device* s, uint8_t* raw_block, siz
         return 0;
     }
     if (*out_bytes == 0U) {
-        if (!replay_handle_empty_read(s, io_complex_written, io_start_ns, realtime, io_phase, io_have_carry,
-                                      io_carry_byte, io_data_offset, io_event_cursor)) {
+        if (!replay_handle_empty_read(s, io->complex_written, io->start_ns, io->realtime, io->phase, io->have_carry,
+                                      io->carry_byte, io->data_offset, io->event_cursor)) {
             return 0;
         }
         return 2;
     }
-    *io_data_offset += (uint64_t)(*out_bytes);
+    *io->data_offset += (uint64_t)(*out_bytes);
     return 1;
 }
 
 static int
 replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw_block_bytes, float* f32_block,
-                            int* io_phase, int* io_have_carry, uint8_t* io_carry_byte, uint64_t* io_complex_written,
-                            uint64_t* io_data_offset, uint32_t* io_event_cursor, uint64_t* io_start_ns, int realtime) {
-    if (!replay_thread_process_inputs_valid(s, raw_block, f32_block, io_phase, io_have_carry, io_carry_byte,
-                                            io_complex_written, io_data_offset, io_event_cursor, io_start_ns)) {
+                            replay_thread_io_state* io) {
+    if (!replay_thread_process_inputs_valid(s, raw_block, f32_block, io)) {
         return 0;
     }
 
-    if (!replay_dispatch_pending_events(s, io_event_cursor, *io_data_offset, io_phase, io_have_carry, io_carry_byte,
-                                        io_complex_written)) {
+    if (!replay_dispatch_pending_events(s, io->event_cursor, *io->data_offset, io->phase, io->have_carry,
+                                        io->carry_byte, io->complex_written)) {
         return 0;
     }
 
-    size_t read_limit = replay_next_read_limit(s, *io_data_offset, *io_event_cursor, raw_block_bytes);
+    size_t read_limit = replay_next_read_limit(s, *io->data_offset, *io->event_cursor, raw_block_bytes);
     if (read_limit == 0U) {
         return 2;
     }
 
     size_t out_bytes = 0U;
-    int read_status = replay_thread_read_or_handle_empty(s, raw_block, read_limit, io_data_offset, io_complex_written,
-                                                         io_start_ns, realtime, io_phase, io_have_carry, io_carry_byte,
-                                                         io_event_cursor, &out_bytes);
+    int read_status = replay_thread_read_or_handle_empty(s, raw_block, read_limit, io, &out_bytes);
     if (read_status == 0) {
         return 0;
     }
@@ -1463,13 +1511,14 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
         return 2;
     }
 
-    int produced = replay_convert_block_to_f32(s, raw_block, out_bytes, f32_block, raw_block_bytes, io_phase,
-                                               io_have_carry, io_carry_byte);
+    int produced = replay_convert_block_to_f32(s, raw_block, out_bytes, f32_block, raw_block_bytes, io->phase,
+                                               io->have_carry, io->carry_byte);
     if (produced <= 0) {
         return 2;
     }
 
-    if (replay_enqueue_f32_no_drop(s, f32_block, (size_t)produced, io_complex_written, *io_start_ns, realtime) != 0) {
+    if (replay_enqueue_f32_no_drop(s, f32_block, (size_t)produced, io->complex_written, *io->start_ns, io->realtime)
+        != 0) {
         return 0;
     }
     return 1;
@@ -1939,9 +1988,9 @@ static DSD_THREAD_RETURN_TYPE
     int realtime = s->replay_cfg.realtime ? 1 : 0;
 
     while (!replay_forced_stop_requested(s)) {
-        int step =
-            replay_thread_process_block(s, raw_block, raw_block_bytes, f32_block, &phase, &have_carry, &carry_byte,
-                                        &complex_written, &data_offset, &event_cursor, &start_ns, realtime);
+        replay_thread_io_state io = {&phase,       &have_carry,   &carry_byte, &complex_written,
+                                     &data_offset, &event_cursor, &start_ns,   realtime};
+        int step = replay_thread_process_block(s, raw_block, raw_block_bytes, f32_block, &io);
         if (step == 0) {
             break;
         }
@@ -3914,11 +3963,8 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     return dev;
 }
 
-struct rtl_device*
-rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring, int combine_rotate_enabled) {
-    if (!input_ring) {
-        return NULL;
-    }
+static struct rtl_device*
+rtl_device_alloc_soapy_base(struct input_ring_state* input_ring, int combine_rotate_enabled) {
     struct rtl_device* dev = static_cast<rtl_device*>(calloc(1, sizeof(struct rtl_device)));
     if (!dev) {
         return NULL;
@@ -3927,22 +3973,34 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
     dev->dev = NULL;
     dev->dev_index = -1;
     dev->input_ring = input_ring;
-    dev->thread_started = 0;
-    dev->mute = 0;
-    dev->mute_byte_phase = 0;
     dev->combine_rotate_enabled = combine_rotate_enabled;
     dev->backend = RTL_BACKEND_SOAPY;
-    dev->soapy_dev = NULL;
-    dev->soapy_stream = NULL;
     dev->soapy_format = SOAPY_FMT_NONE;
-    dev->soapy_mtu_elems = 0;
-    dev->rot_phase = 0;
     rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
     dev->sockfd = DSD_INVALID_SOCKET;
     dev->host[0] = '\0';
-    dev->port = 0;
     dev->run.store(0);
     dev->agc_mode = 1;
+    return dev;
+}
+
+struct rtl_device*
+rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring, int combine_rotate_enabled) {
+    if (!input_ring) {
+        return NULL;
+    }
+    struct rtl_device* dev = rtl_device_alloc_soapy_base(input_ring, combine_rotate_enabled);
+    if (!dev) {
+        return NULL;
+    }
+    dev->thread_started = 0;
+    dev->mute = 0;
+    dev->mute_byte_phase = 0;
+    dev->soapy_dev = NULL;
+    dev->soapy_stream = NULL;
+    dev->soapy_mtu_elems = 0;
+    dev->rot_phase = 0;
+    dev->port = 0;
     dev->offset_tuning = 0;
     dev->testmode_on = 0;
     dev->rtl_xtal_hz = 0;

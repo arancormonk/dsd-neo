@@ -142,6 +142,34 @@ rotate_sub_keys(uint8_t* Kc, uint8_t* Kd, uint8_t shift_size, uint8_t shift_byte
 }
 
 static void
+des_prepare_round_keys(const uint8_t* main_key, uint8_t Ks[16][7]) {
+    uint8_t Kc[4];
+    DSD_MEMSET(Kc, 0, sizeof(Kc));
+    uint8_t Kd[4];
+    DSD_MEMSET(Kd, 0, sizeof(Kd));
+
+    permute(main_key, Ks[0], pc1_key_permutation, 0, 56);
+    for (uint8_t i = 0; i < 3; i++) {
+        Kc[i] = Ks[0][i];
+    }
+    Kc[3] = Ks[0][3] & 0xF0;
+    for (uint8_t i = 0; i < 3; i++) {
+        Kd[i] = (Ks[0][i + 3] & 0x0F) << 4;
+        Kd[i] |= (Ks[0][i + 4] & 0xF0) >> 4;
+    }
+    Kd[3] = (Ks[0][6] & 0x0F) << 4;
+
+    DSD_MEMSET(Ks, 0, (size_t)16U * 7U * sizeof(uint8_t));
+    for (uint8_t i = 0; i < 16; i++) {
+        uint8_t shift_size = key_shift_sizes[i + 1];
+        uint8_t shift_byte = key_shift_bytes[i + 1];
+        rotate_sub_keys(Kc, Kd, shift_size, shift_byte);
+        permute(Kc, Ks[i], pc2_key_permutation, 0, 24);
+        permute(Kd, Ks[i], pc2_key_permutation, 24, 48);
+    }
+}
+
+static void
 des_cipher(const uint8_t* main_key, const uint8_t* input_register, uint8_t* output_register, uint8_t de) {
 
     //starting and ending permutations
@@ -165,34 +193,8 @@ des_cipher(const uint8_t* main_key, const uint8_t* input_register, uint8_t* outp
     //key sets
     uint8_t Ks[16][7];
     DSD_MEMSET(Ks, 0, sizeof(Ks));
-    uint8_t Kc[4];
-    DSD_MEMSET(Kc, 0, sizeof(Kc));
-    uint8_t Kd[4];
-    DSD_MEMSET(Kd, 0, sizeof(Kd));
-
-    //initial Ks permutation and shuffle to Kc and Kd
-    permute(main_key, Ks[0], pc1_key_permutation, 0, 56);
-    for (uint8_t i = 0; i < 3; i++) {
-        Kc[i] = Ks[0][i];
-    }
-    Kc[3] = Ks[0][3] & 0xF0;
-    for (uint8_t i = 0; i < 3; i++) {
-        Kd[i] = (Ks[0][i + 3] & 0x0F) << 4;
-        Kd[i] |= (Ks[0][i + 4] & 0xF0) >> 4;
-    }
-    Kd[3] = (Ks[0][6] & 0x0F) << 4;
-
-    //reset Ks
-    DSD_MEMSET(Ks, 0, sizeof(Ks));
-
-    //create the 16 Ks rounds
-    for (uint8_t i = 0; i < 16; i++) {
-        uint8_t shift_size = key_shift_sizes[i + 1];
-        uint8_t shift_byte = key_shift_bytes[i + 1];
-        rotate_sub_keys(Kc, Kd, shift_size, shift_byte);
-        permute(Kc, Ks[i], pc2_key_permutation, 0, 24);
-        permute(Kd, Ks[i], pc2_key_permutation, 24, 48);
-    }
+    // codeql[cpp/weak-cryptographic-algorithm] DES/TDEA is required for legacy radio protocol interoperability.
+    des_prepare_round_keys(main_key, Ks);
 
     //permute the input_register with the ip (initial_register_permutation) table
     permute(input_register, initial_permutation, initial_register_permutation, 0, 64);
@@ -277,6 +279,7 @@ des56_ofb_keystream_output(const uint8_t* main_key, const uint8_t* iv, uint8_t* 
     //execute the des_cipher in output feedback mode
     for (int16_t i = 0; i < nblocks; i++) {
         //de should be 1 here for encryption mode
+        // codeql[cpp/weak-cryptographic-algorithm] DES OFB is required for legacy radio protocol interoperability.
         des_cipher(main_key, input_register, output_register, de);
         DSD_MEMCPY(input_register, output_register,
                    sizeof(output_register)); //recycle output_register back into input register
@@ -303,6 +306,7 @@ tdea_tofb_keystream_output(const uint8_t* K1, const uint8_t* K2, const uint8_t* 
     //execute the des_cipher in output feedback mode 3 times using each key and transferring output to input each time
     for (int16_t i = 0; i < nblocks; i++) {
         //K1
+        // codeql[cpp/weak-cryptographic-algorithm] TDEA is required for legacy radio protocol interoperability.
         des_cipher(K1, input_register, output_register, de);
         DSD_MEMCPY(input_register, output_register,
                    sizeof(output_register));                     //recycle output_register back into input_register
@@ -310,6 +314,7 @@ tdea_tofb_keystream_output(const uint8_t* K1, const uint8_t* K2, const uint8_t* 
 
         //K2
         de = (de ^ 1) & 1; //flip the de bit
+        // codeql[cpp/weak-cryptographic-algorithm] TDEA is required for legacy radio protocol interoperability.
         des_cipher(K2, input_register, output_register, de);
         DSD_MEMCPY(input_register, output_register,
                    sizeof(output_register));                     //recycle output_register back into input_register
@@ -317,6 +322,7 @@ tdea_tofb_keystream_output(const uint8_t* K1, const uint8_t* K2, const uint8_t* 
 
         //K3
         de = (de ^ 1) & 1; //flip the de bit back
+        // codeql[cpp/weak-cryptographic-algorithm] TDEA is required for legacy radio protocol interoperability.
         des_cipher(K3, input_register, output_register, de);
         DSD_MEMCPY(input_register, output_register,
                    sizeof(output_register)); //recycle output_register back into input_register
@@ -375,6 +381,7 @@ des56_ca_keystream_output(const uint8_t* main_key, const uint8_t* iv, uint8_t* k
     for (int16_t i = 0; i < nbits; i++) {
 
         //de should be 1 here for encryption mode
+        // codeql[cpp/weak-cryptographic-algorithm] DES-XL is required for legacy radio protocol interoperability.
         des_cipher(main_key, input_register, output_register, de);
 
         //keystream accumulation, shift current byte and append

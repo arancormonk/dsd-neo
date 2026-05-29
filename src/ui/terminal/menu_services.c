@@ -102,7 +102,7 @@ svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
     if (!opts || !filename || !*filename) {
         return -1;
     }
-    opts->symbolfile = fopen(filename, "rb");
+    opts->symbolfile = dsd_fopen_existing_regular_file(filename, "rb");
     if (!opts->symbolfile) {
         LOG_ERROR("Error, couldn't open %s\n", filename);
         return -1;
@@ -136,7 +136,7 @@ svc_replay_last_symbol(dsd_opts* opts, dsd_state* state) {
     if (!opts) {
         return -1;
     }
-    opts->symbolfile = fopen(opts->audio_in_dev, "rb");
+    opts->symbolfile = dsd_fopen_existing_regular_file(opts->audio_in_dev, "rb");
     if (!opts->symbolfile) {
         LOG_ERROR("Error, couldn't open %s\n", opts->audio_in_dev);
         return -1;

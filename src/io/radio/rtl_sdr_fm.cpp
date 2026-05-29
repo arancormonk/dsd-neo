@@ -3108,10 +3108,21 @@ demod_perf_log_block(int perf_on, uint64_t perf_output_start_ns, uint64_t perf_f
     rtl_perf_record_demod_block(perf_full_demod_ns, perf_metrics_ns, perf_output_write_ns, (size_t)got,
                                 perf_output_samples);
     double snr_db = demod_perf_pick_snr_db(d);
-    rtl_perf_maybe_log(rtl_perf_source_name(), load_dongle_rate(), d->output_kind, input_ring_used(&input_ring),
-                       input_ring.capacity, input_ring.producer_drops.load(std::memory_order_relaxed),
-                       ring_used(&output), output.capacity, -1, snr_db, dsd_rtl_stream_get_cfo_hz(),
-                       dsd_rtl_stream_get_carrier_lock());
+    rtl_perf_log_snapshot snapshot = {
+        rtl_perf_source_name(),
+        load_dongle_rate(),
+        d->output_kind,
+        input_ring_used(&input_ring),
+        input_ring.capacity,
+        input_ring.producer_drops.load(std::memory_order_relaxed),
+        ring_used(&output),
+        output.capacity,
+        -1,
+        snr_db,
+        dsd_rtl_stream_get_cfo_hz(),
+        dsd_rtl_stream_get_carrier_lock(),
+    };
+    rtl_perf_maybe_log(&snapshot);
 }
 
 static int
@@ -4153,28 +4164,50 @@ snr_qpsk_error_diag(const float* xy, int n, double aD) {
     return e2;
 }
 
+namespace {
+
+struct snr_eye_gfsk_window {
+    int two_sps;
+    int c1;
+    int c2;
+    int win;
+    float q2;
+};
+
+} // namespace
+
+namespace {
+
+struct snr_eye_gfsk_sums {
+    double sumL;
+    double sumH;
+    int cntL;
+    int cntH;
+};
+
+} // namespace
+
 static int
-snr_eye_gfsk_collect_binary(const float* eb, int nfb, int two_sps, int c1, int c2, int win, float q2, double* sumL,
-                            double* sumH, int* cntL, int* cntH) {
-    *sumL = 0.0;
-    *sumH = 0.0;
-    *cntL = 0;
-    *cntH = 0;
+snr_eye_gfsk_collect_binary(const float* eb, int nfb, const snr_eye_gfsk_window* window, snr_eye_gfsk_sums* sums) {
+    sums->sumL = 0.0;
+    sums->sumH = 0.0;
+    sums->cntL = 0;
+    sums->cntH = 0;
     for (int i = 0; i < nfb; i++) {
-        int phase = i % two_sps;
-        if (!snr_eye_phase_in_window(phase, c1, c2, win)) {
+        int phase = i % window->two_sps;
+        if (!snr_eye_phase_in_window(phase, window->c1, window->c2, window->win)) {
             continue;
         }
         float v = eb[i];
-        if (v <= q2) {
-            *sumL += v;
-            (*cntL)++;
+        if (v <= window->q2) {
+            sums->sumL += v;
+            sums->cntL++;
         } else {
-            *sumH += v;
-            (*cntH)++;
+            sums->sumH += v;
+            sums->cntH++;
         }
     }
-    return (*cntL > 0 && *cntH > 0) ? 1 : 0;
+    return (sums->cntL > 0 && sums->cntH > 0) ? 1 : 0;
 }
 
 static double
@@ -4302,21 +4335,20 @@ dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
     if (!snr_eye_median(qv, mct, &q2)) {
         return -100.0;
     }
-    double sumL = 0.0;
-    double sumH = 0.0;
-    int cntL = 0;
-    int cntH = 0;
-    if (!snr_eye_gfsk_collect_binary(eb, nfb, two_sps, c1, c2, win, q2, &sumL, &sumH, &cntL, &cntH)) {
+    snr_eye_gfsk_window window = {two_sps, c1, c2, win, q2};
+    snr_eye_gfsk_sums sums;
+    if (!snr_eye_gfsk_collect_binary(eb, nfb, &window, &sums)) {
         return -100.0;
     }
-    double muL = sumL / (double)cntL, muH = sumH / (double)cntH;
-    int total = cntL + cntH;
+    double muL = sums.sumL / (double)sums.cntL, muH = sums.sumH / (double)sums.cntH;
+    int total = sums.cntL + sums.cntH;
     double noise_var = snr_eye_gfsk_noise_variance(eb, nfb, two_sps, c1, c2, win, q2, muL, muH, total);
     if (noise_var <= 1e-9) {
         return -100.0;
     }
-    double mu_all = (muL * (double)cntL + muH * (double)cntH) / (double)total;
-    double ssum = (double)cntL * (muL - mu_all) * (muL - mu_all) + (double)cntH * (muH - mu_all) * (muH - mu_all);
+    double mu_all = (muL * (double)sums.cntL + muH * (double)sums.cntH) / (double)total;
+    double ssum =
+        (double)sums.cntL * (muL - mu_all) * (muL - mu_all) + (double)sums.cntH * (muH - mu_all) * (muH - mu_all);
     double sig_var = ssum / (double)total;
     if (sig_var <= 1e-9) {
         return -100.0;

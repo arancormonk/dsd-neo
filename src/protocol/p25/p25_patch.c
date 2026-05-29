@@ -14,6 +14,7 @@
 #include <time.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 #define P25_PATCH_TTL_SECONDS 20
 
@@ -198,6 +199,8 @@ p25_patch_add_wuid(dsd_state* state, int sgid, uint32_t wuid) {
         state->p25_patch_wuid_count[idx] = cnt + 1;
     }
 }
+
+static void p25_patch_append(char* out, size_t cap, int* n, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 4, 5);
 
 static void
 p25_patch_append(char* out, size_t cap, int* n, const char* fmt, ...) {
