@@ -546,7 +546,6 @@ static int
 test_sdcall_des_data_decrypts_and_resets(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    Event_History_I* events = (Event_History_I*)calloc(1, sizeof(*events));
     uint8_t header_bits[96];
     uint8_t first_bits[80];
     uint8_t final_bits[80];
@@ -556,10 +555,15 @@ test_sdcall_des_data_decrypts_and_resets(void) {
     };
     const uint8_t key_id = 0x05U;
     const uint64_t des_key = 0x0123456789ABCDEFULL;
-    if (!opts || !state || !events) {
-        DSD_FPRINTF(stderr, "alloc-failed: %s%s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "",
-                    !events ? " event_history" : "");
-        free(events);
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    state->event_history_s = (Event_History_I*)calloc(1, sizeof(*state->event_history_s));
+    if (state->event_history_s == NULL) {
+        DSD_FPRINTF(stderr, "alloc-failed: event_history\n");
         free(state);
         free(opts);
         return 1;
@@ -570,7 +574,6 @@ test_sdcall_des_data_decrypts_and_resets(void) {
     reset_datacall_capture();
     reset_crypto_stub_capture();
     g_des_fill_enabled = 1;
-    state->event_history_s = events;
     state->keyloader = 1;
     state->rkey_array[key_id] = des_key;
 
@@ -590,7 +593,7 @@ test_sdcall_des_data_decrypts_and_resets(void) {
     rc |= expect_u64("sdcall-des-key", (uint64_t)g_des_key, des_key);
     rc |= expect_int("sdcall-des-type", g_des_type, 1);
     rc |= expect_int("sdcall-des-len", g_des_len, 2);
-    rc |= expect_string("sdcall-des-event", events[0].Event_History_Items[0].text_message,
+    rc |= expect_string("sdcall-des-event", state->event_history_s[0].Event_History_Items[0].text_message,
                         "Unknown Data Call Format: 1234;");
     rc |= expect_string("sdcall-des-watchdog", g_datacall_event, "DATA CALL SRC: 4660; TGT: 17767;");
     rc |= expect_int("sdcall-des-src", (int)g_datacall_src, 0x1234);
@@ -602,7 +605,7 @@ test_sdcall_des_data_decrypts_and_resets(void) {
     rc |= expect_int("sdcall-des-alg-reset", state->payload_algid, 0);
     rc |= expect_int("sdcall-des-keyid-reset", state->payload_keyid, 0);
 
-    free(events);
+    free(state->event_history_s);
     free(state);
     free(opts);
     return rc;
@@ -612,7 +615,6 @@ static int
 test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    Event_History_I* events = (Event_History_I*)calloc(1, sizeof(*events));
     uint8_t header_bits[160];
     uint8_t first_bits[80];
     uint8_t final_bits[80];
@@ -626,10 +628,15 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     };
     const uint8_t key_id = 0x11U;
     const uint64_t iv = 0x0102030405060708ULL;
-    if (!opts || !state || !events) {
-        DSD_FPRINTF(stderr, "alloc-failed: %s%s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "",
-                    !events ? " event_history" : "");
-        free(events);
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    state->event_history_s = (Event_History_I*)calloc(1, sizeof(*state->event_history_s));
+    if (state->event_history_s == NULL) {
+        DSD_FPRINTF(stderr, "alloc-failed: event_history\n");
         free(state);
         free(opts);
         return 1;
@@ -640,7 +647,6 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     reset_datacall_capture();
     reset_crypto_stub_capture();
     g_aes_fill_enabled = 1;
-    state->event_history_s = events;
     state->keyloader = 0;
     state->K1 = 0x0102030405060708ULL;
     state->K2 = 0x1112131415161718ULL;
@@ -664,7 +670,7 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     rc |= expect_int("dcall-aes-type", g_aes_type, 2);
     rc |= expect_int("dcall-aes-blocks", g_aes_blocks, 1);
     rc |= expect_bytes("dcall-aes-key", g_aes_key, expected_key, sizeof(expected_key));
-    rc |= expect_string("dcall-aes-event", events[0].Event_History_Items[0].text_message,
+    rc |= expect_string("dcall-aes-event", state->event_history_s[0].Event_History_Items[0].text_message,
                         "Unknown Data Call Format: ABCD;");
     rc |= expect_string("dcall-aes-watchdog", g_datacall_event, "DATA CALL SRC: 513; TGT: 770;");
     rc |= expect_int("dcall-aes-src", (int)g_datacall_src, 0x0201);
@@ -675,7 +681,7 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     rc |= expect_u64("dcall-aes-mi-reset", (uint64_t)state->payload_mi, 0ULL);
     rc |= expect_bytes("dcall-aes-iv-reset", state->aes_ivR, zero_iv, sizeof(zero_iv));
 
-    free(events);
+    free(state->event_history_s);
     free(state);
     free(opts);
     return rc;
