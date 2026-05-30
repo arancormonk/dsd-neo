@@ -25,7 +25,6 @@
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
-#pragma GCC diagnostic ignored "-Wmissing-variable-declarations"
 #endif
 
 static size_t g_mbe_calls;
