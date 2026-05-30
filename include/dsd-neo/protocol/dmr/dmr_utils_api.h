@@ -18,7 +18,7 @@ extern "C" {
  * @brief Minimal DMR utility CRC/bit helper API used by tests.
  */
 
-/** @brief Pack a bit buffer into bytes (little-endian bits). */
+/** @brief Pack a bit buffer into an integer, consuming bits MSB-first. */
 uint64_t ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength);
 
 /** @brief DMR SlotType Hamming(17,12,3) decode/correction helper. */

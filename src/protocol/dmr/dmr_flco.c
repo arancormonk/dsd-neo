@@ -134,9 +134,8 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
 }
 
 static void
-dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
-    if (*ctx->IrrecoverableErrors == 0 && ctx->CRCCorrect == 1 && ctx->pf == 1 && ctx->fid == 0x20
-        && (ctx->so & 0x40) == 0x40) {
+dmr_flco_detect_kenwood_sc(dmr_flco_ctx* ctx, int crc_ok) {
+    if (crc_ok && ctx->pf == 1 && ctx->fid == 0x20 && (ctx->so & 0x40) == 0x40) {
         ctx->pf = 0;
         ctx->fid = 0;
         ctx->is_kenwood_sc = 1;
@@ -144,12 +143,37 @@ dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
             ctx->so ^= 0x40;
         }
     }
+}
 
+static void
+dmr_flco_detect_kirisun_le(dmr_flco_ctx* ctx, int crc_ok) {
+    if (crc_ok && ctx->fid == 0x0A) {
+        ctx->opts->dmr_le = ((ctx->so & 0x40U) != 0U) ? 3 : 0;
+    }
+}
+
+static void
+dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx) {
     if (*ctx->IrrecoverableErrors == 0 && ctx->flco == 0x09 && ctx->fid == 0x68) {
         DSD_SNPRINTF(ctx->state->dmr_branding, sizeof(ctx->state->dmr_branding), "%s", "  Hytera");
         DSD_SNPRINTF(ctx->state->dmr_branding_sub, sizeof(ctx->state->dmr_branding_sub), "XPT ");
     }
+}
 
+static void
+dmr_flco_detect_invalid_hytera_enhanced(dmr_flco_ctx* ctx) {
+    if (ctx->fid == 0x68 && ctx->flco == 0x02 && *ctx->IrrecoverableErrors == 0) {
+        *ctx->IrrecoverableErrors = 1;
+    }
+}
+
+static void
+dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
+    const int crc_ok = (*ctx->IrrecoverableErrors == 0 && ctx->CRCCorrect == 1);
+    dmr_flco_detect_kenwood_sc(ctx, crc_ok);
+    dmr_flco_detect_kirisun_le(ctx, crc_ok);
+    dmr_flco_detect_hytera_xpt(ctx);
+    dmr_flco_detect_invalid_hytera_enhanced(ctx);
     if (strcmp(ctx->state->dmr_branding_sub, "XPT ") == 0) {
         ctx->is_xpt = 1;
     }
@@ -405,6 +429,7 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
             ctx->state->payload_miR = mi;
         }
         ctx->opts->dmr_le = 2;
+        *ctx->IrrecoverableErrors = 0;
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " (Checksum Err);");

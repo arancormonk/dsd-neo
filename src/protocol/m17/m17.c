@@ -2579,14 +2579,24 @@ m17_decode_pkt_print_callsign9(unsigned long long int v) {
 }
 
 static void
-m17_decode_pkt_print_sms(const uint8_t* input, int len) {
-    DSD_FPRINTF(stderr, "\n SMS: ");
+m17_decode_pkt_print_text(const char* label, const uint8_t* input, int len) {
+    DSD_FPRINTF(stderr, "%s", label);
     for (int i = 1; i < len; i++) {
         DSD_FPRINTF(stderr, "%c", input[i]);
         if ((i % 71) == 0) {
             DSD_FPRINTF(stderr, "\n      ");
         }
     }
+}
+
+static void
+m17_decode_pkt_print_sms(const uint8_t* input, int len) {
+    m17_decode_pkt_print_text("\n SMS: ", input, len);
+}
+
+static void
+m17_decode_pkt_print_tle(const uint8_t* input, int len) {
+    m17_decode_pkt_print_text(" TLE:\n", input, len);
 }
 
 static void
@@ -2662,8 +2672,11 @@ m17_decode_pkt_print_gnss(const uint8_t* input) {
 static void
 m17_decode_pkt_print_meta_or_arb(const uint8_t* input, int len, uint8_t protocol) {
     DSD_FPRINTF(stderr, " ");
-    if (protocol == 0x80) {
-        DSD_FPRINTF(stderr, "%d/%d; ", (input[1] >> 4), input[1] & 0xF);
+    if (protocol == 0x80 || protocol == 0x83) {
+        uint8_t segment_num = 1U;
+        uint8_t segment_len = 1U;
+        (void)m17_meta_text_segment_info(protocol, input[1], &segment_num, &segment_len);
+        DSD_FPRINTF(stderr, "%d/%d; ", segment_num, segment_len);
         for (int i = 2; i < len; i++) {
             DSD_FPRINTF(stderr, "%c", input[i]);
         }
@@ -2697,17 +2710,21 @@ decodeM17PKT(const dsd_opts* opts, const dsd_state* state, const uint8_t* input,
     }
 
     //check for encryption, if encrypted, skip decode and report as encrypted
-    if (state->m17_enc != 0) {
+    if (state->m17_enc != 0 && protocol != 0x69 && (protocol < 0x80 || protocol > 0x83)) {
         DSD_FPRINTF(stderr, " *Encrypted*");
         return;
     }
 
     switch (protocol) {
         case 0x05: m17_decode_pkt_print_sms(input, len); break;
+        case 0x07: m17_decode_pkt_print_tle(input, len); break;
         case 0x82: m17_decode_pkt_print_extended_csd(input); break;
-        case 0x81: m17_decode_pkt_print_gnss(input); break;
+        case 0x81:
+        case 0x91: m17_decode_pkt_print_gnss(input); break;
         case 0x80:
-        case 0x89: m17_decode_pkt_print_meta_or_arb(input, len, protocol); break;
+        case 0x83:
+        case 0x89:
+        case 0x99: m17_decode_pkt_print_meta_or_arb(input, len, protocol); break;
         default: m17_decode_pkt_print_hex(input, len); break;
     }
 }

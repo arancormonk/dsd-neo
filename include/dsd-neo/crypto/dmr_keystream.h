@@ -23,8 +23,8 @@ extern "C" {
 #endif
 
 void tyt_ep_aes_keystream_creation(dsd_state* state, char* input);
-void tyt_ap_pc4_keystream_creation(dsd_state* state, char* input);
-void retevis_rc2_keystream_creation(dsd_state* state, char* input);
+void tyt_ap_pc4_keystream_creation(dsd_state* state, const char* input);
+void retevis_rc2_keystream_creation(dsd_state* state, const char* input);
 int baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input);
 int connect_systems_ee72_key_creation(dsd_state* state, const char* input);
 void ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input);

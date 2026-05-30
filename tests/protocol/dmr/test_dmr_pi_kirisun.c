@@ -82,6 +82,24 @@ test_pi_kirisun_requires_crc_ok(void) {
 }
 
 static void
+test_pi_refreshes_sync_time_when_trunk_tuned(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_is_tuned = 1;
+    state.currentslot = 0;
+    uint8_t pi[10] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    dmr_pi(&opts, &state, pi, 1, 0);
+
+    assert(state.last_vc_sync_time > 0);
+    assert(state.last_cc_sync_time > 0);
+    assert(state.last_vc_sync_time_m > 0.0);
+    assert(state.last_cc_sync_time_m > 0.0);
+}
+
+static void
 test_alg_refresh_advances_kirisun_mi(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -167,6 +185,7 @@ main(void) {
 
     test_pi_kirisun_slot0_sets_fields_and_le_mode();
     test_pi_kirisun_requires_crc_ok();
+    test_pi_refreshes_sync_time_when_trunk_tuned();
     test_alg_refresh_advances_kirisun_mi();
     test_sbrc_kirisun_gate_rejects_non_kirisun_calls();
     test_sbrc_kirisun_gate_accepts_kirisun_calls();

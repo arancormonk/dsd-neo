@@ -39,7 +39,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -598,10 +597,12 @@ nxdn_decode_control_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_
     }
 
     if (ctx->facch & 1) {
-        nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_a, (uint8_t*)ctx->facch_reliab_a);
+        nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_a, (uint8_t*)ctx->facch_reliab_a,
+                               ctx->facch == 3 ? 1U : 0U);
     }
-    if ((ctx->facch & 2) && memcmp(ctx->facch_bits_a, ctx->facch_bits_b, 144) != 0) {
-        nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_b, (uint8_t*)ctx->facch_reliab_b);
+    if (ctx->facch & 2) {
+        nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_b, (uint8_t*)ctx->facch_reliab_b,
+                               ctx->facch == 3 ? 2U : 0U);
     }
 }
 

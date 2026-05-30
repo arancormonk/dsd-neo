@@ -24,6 +24,7 @@
 // Forward under test
 extern void dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[],
                         uint32_t CRCCorrect, uint32_t IrrecoverableErrors);
+extern void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
 
 // Provide local stubs to avoid pulling full core/audio deps during link
 void
@@ -228,10 +229,40 @@ set_bits(uint8_t* bits, int start, uint32_t value, int nbits) {
     }
 }
 
+static void
+test_reset_blocks_restores_integer_defaults(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.data_block_counter[0] = 42;
+    state.data_block_counter[1] = 43;
+    state.data_header_blocks[0] = 44;
+    state.data_header_blocks[1] = 45;
+    state.data_header_format[0] = 2;
+    state.data_header_format[1] = 3;
+    state.data_dbsn_have[0] = 1;
+    state.data_dbsn_expected[0] = 9;
+
+    dmr_reset_blocks(&opts, &state);
+
+    assert(state.data_block_counter[0] == 1);
+    assert(state.data_block_counter[1] == 1);
+    assert(state.data_header_blocks[0] == 1);
+    assert(state.data_header_blocks[1] == 1);
+    assert(state.data_header_format[0] == 7);
+    assert(state.data_header_format[1] == 7);
+    assert(state.data_dbsn_have[0] == 0);
+    assert(state.data_dbsn_expected[0] == 0);
+}
+
 int
 main(int argc, char** argv) {
     (void)argc;
     (void)argv;
+    test_reset_blocks_restores_integer_defaults();
+
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -283,6 +314,24 @@ main(int argc, char** argv) {
     assert(state.data_header_sap[state.currentslot] == 4);    // SAP=4 stored
     assert(state.dmr_lrrp_target[state.currentslot] != 0);
     assert(state.dmr_lrrp_source[state.currentslot] != 0);
+
+    // UDT NMEA with encoded UAB=2 yields decoded UAB=3, which is reserved/unknown.
+    // dsd-neo keeps the announced count and marks it for CRC-based end detection.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    opts.aggressive_framesync = 1;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_bits(bits, 4, 0U, 4);    // DPF=0 UDT
+    set_bits(bits, 8, 0U, 4);    // SAP=0 UDT
+    set_bits(bits, 12, 0x5U, 4); // UDT format=NMEA LOCN
+    set_bits(bits, 16, 0x123456U, 24);
+    set_bits(bits, 40, 0x654321U, 24);
+    set_bits(bits, 70, 2U, 2); // UAB encoded value 2 -> decoded count 3
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.data_header_format[0] == 0);
+    assert(state.data_header_valid[0] == 1);
+    assert(state.data_header_blocks[0] == 3);
+    assert(state.udt_uab_reserved[0] == 1);
 
     // Vertex proprietary extended header (MFID 0x77), slot 0.
     DSD_MEMSET(&state, 0, sizeof(state));

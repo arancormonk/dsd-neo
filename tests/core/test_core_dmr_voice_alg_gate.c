@@ -7,6 +7,7 @@
 #include <dsd-neo/core/state.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_eq(const char* tag, int got, int want) {

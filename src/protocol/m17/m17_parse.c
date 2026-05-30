@@ -10,28 +10,85 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 #include "dsd-neo/core/safe_api.h"
+
+typedef struct {
+    uint8_t protocol;
+    const char* name;
+} m17_packet_protocol_label;
 
 const char*
 m17_packet_protocol_name(uint8_t protocol) {
-    switch (protocol) {
-        case 0x00: return "Raw";
-        case 0x01: return "AX.25";
-        case 0x02: return "APRS";
-        case 0x03: return "6LoWPAN";
-        case 0x04: return "IPv4";
-        case 0x05: return "SMS";
-        case 0x06: return "Winlink";
-        case 0x07: return "TLE";
-        case 0x80: return "Meta Text Data";
-        case 0x81: return "Meta GNSS Position Data";
-        case 0x82: return "Meta Extended CSD";
-        case 0x89: return "1600 Arbitrary Data";
-        default: break;
+    static const m17_packet_protocol_label labels[] = {
+        {0x00, "Raw"},
+        {0x01, "AX.25"},
+        {0x02, "APRS"},
+        {0x03, "6LoWPAN"},
+        {0x04, "IPv4"},
+        {0x05, "SMS"},
+        {0x06, "Winlink"},
+        {0x07, "TLE"},
+        {0x69, "OTA Key Delivery"},
+        {0x80, "Meta Text Data V2"},
+        {0x81, "Meta GNSS Position Data"},
+        {0x82, "Meta Extended CSD"},
+        {0x83, "Meta Text Data V3"},
+        {0x89, "1600 Arbitrary Data"},
+        {0x91, "PDU GNSS Position Data"},
+        {0x99, "1600 Arbitrary Data"},
+    };
+
+    for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++) {
+        if (labels[i].protocol == protocol) {
+            return labels[i].name;
+        }
     }
     return NULL;
+}
+
+static uint8_t
+m17_meta_text_v2_bitmap_len(uint8_t bitmap) {
+    switch (bitmap) {
+        case 0x1U: return 1U;
+        case 0x3U: return 2U;
+        case 0x7U: return 3U;
+        case 0xFU: return 4U;
+        default: return 1U;
+    }
+}
+
+static uint8_t
+m17_meta_text_v2_bitmap_segment(uint8_t bitmap) {
+    switch (bitmap) {
+        case 0x1U: return 1U;
+        case 0x2U: return 2U;
+        case 0x4U: return 3U;
+        case 0x8U: return 4U;
+        default: return 1U;
+    }
+}
+
+int
+m17_meta_text_segment_info(uint8_t protocol, uint8_t control, uint8_t* segment_num, uint8_t* segment_len) {
+    if (segment_num == NULL || segment_len == NULL) {
+        return -1;
+    }
+
+    if (protocol == 0x80U) {
+        *segment_len = m17_meta_text_v2_bitmap_len((uint8_t)(control >> 4U));
+        *segment_num = m17_meta_text_v2_bitmap_segment((uint8_t)(control & 0xFU));
+        return 0;
+    }
+
+    if (protocol == 0x83U) {
+        *segment_len = (uint8_t)((control >> 4U) & 0xFU);
+        *segment_num = (uint8_t)(control & 0xFU);
+        return 0;
+    }
+
+    return -2;
 }
 
 static int

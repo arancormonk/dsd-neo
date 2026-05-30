@@ -89,6 +89,7 @@ getDateS_buf(char out[11]) {
 
 // Under test
 void decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input);
+void utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input);
 
 static int
 expect_has_substr(const char* buf, const char* needle, const char* tag) {
@@ -341,6 +342,26 @@ main(void) {
         st.dmr_lrrp_gps[0][0] = '\0';
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], "P25 Atlas SRC(IP): 1.2.3.4; DST(IP): 5.6.7.8;", "atlas9361 label");
+    }
+
+    // Case 5: Short/empty UDP TMS payload should be reported as truncated, not indexed past the payload.
+    {
+        size_t plen = build_ipv4_udp_empty_payload(pkt, sizeof pkt, 4007);
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "Truncated;", "tms4007 short payload");
+    }
+
+    // Case 6: UTF-8 event text appends one bounded character at a time.
+    {
+        const uint8_t text[] = {'A', 'B', 'C'};
+        st.event_history_s[0].Event_History_Items[0].text_message[0] = '\0';
+        utf8_to_text(&st, 1, (uint16_t)sizeof text, text);
+        if (strcmp(st.event_history_s[0].Event_History_Items[0].text_message, "ABC") != 0) {
+            DSD_FPRINTF(stderr, "utf8 text append: got '%s'\n",
+                        st.event_history_s[0].Event_History_Items[0].text_message);
+            rc |= 1;
+        }
     }
 
     free(st.event_history_s);

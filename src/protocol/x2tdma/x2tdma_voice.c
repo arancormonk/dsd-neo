@@ -30,6 +30,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "x2tdma_frame.h"
 
 typedef struct {
     char ambe_fr[4][24];
@@ -202,14 +203,14 @@ x2tdma_dump_dibits(const char dibits[], int count) {
 
 static void
 x2tdma_update_mute_and_lights(x2tdma_voice_ctx* ctx, dsd_state* state) {
-    if ((strcmp(ctx->sync, X2TDMA_BS_DATA_SYNC) == 0) || (strcmp(ctx->sync, X2TDMA_MS_DATA_SYNC) == 0)) {
+    if (dsd_x2tdma_sync_is_data(ctx->sync)) {
         ctx->mutecurrentslot = 1;
         if (state->currentslot == 0) {
             DSD_SNPRINTF(state->slot0light, sizeof state->slot0light, "%s", "[slot0]");
         } else {
             DSD_SNPRINTF(state->slot1light, sizeof state->slot1light, "%s", "[slot1]");
         }
-    } else if ((strcmp(ctx->sync, X2TDMA_BS_VOICE_SYNC) == 0) || (strcmp(ctx->sync, X2TDMA_MS_VOICE_SYNC) == 0)) {
+    } else if (dsd_x2tdma_sync_is_voice(ctx->sync)) {
         ctx->mutecurrentslot = 0;
         if (state->currentslot == 0) {
             DSD_SNPRINTF(state->slot0light, sizeof state->slot0light, "%s", "[SLOT0]");
@@ -532,11 +533,15 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
     int* dibit_p;
     x2tdma_voice_ctx ctx;
 
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
     ctx.lcformat[8] = 0;
     ctx.mfid[8] = 0;
     ctx.lcinfo[56] = 0;
     ctx.mutecurrentslot = 0;
+    ctx.eeei = 0;
+    ctx.aiei = 0;
     ctx.msMode = 0;
+    dsd_x2tdma_init_mi_placeholder(ctx.mi);
 
     dibit_p = state->dibit_buf_p - 144;
     for (j = 0; j < 6; j++) {

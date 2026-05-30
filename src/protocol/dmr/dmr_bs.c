@@ -538,7 +538,7 @@ run_dmr_bs_slot_vc6_post_voice(dsd_opts* opts, dsd_state* state, const dmr_bs_ct
 
 static void
 update_dmr_bs_sync_times_if_tuned(const dsd_opts* opts, dsd_state* state) {
-    if (opts->p25_is_tuned == 1) {
+    if (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) {
         time_t now = time(NULL);
         double nowm = dsd_time_now_monotonic_s();
         state->last_vc_sync_time = now;
@@ -879,7 +879,7 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
         DSD_FPRINTF(stderr, "\n");
     }
 
-    if (opts->p25_is_tuned == 1) {
+    if (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) {
         state->last_vc_sync_time = time(NULL);
         state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
     }

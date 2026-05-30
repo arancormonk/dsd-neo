@@ -66,6 +66,16 @@ int m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result
  */
 const char* m17_packet_protocol_name(uint8_t protocol);
 
+/**
+ * Decode M17 meta text segment control.
+ *
+ * Protocol 0x80 uses a bitmap control byte for up to four segments.
+ * Protocol 0x83 uses high/low nibbles as length/segment directly.
+ *
+ * @return 0 on success, negative if protocol is not a supported meta text type.
+ */
+int m17_meta_text_segment_info(uint8_t protocol, uint8_t control, uint8_t* segment_num, uint8_t* segment_len);
+
 #ifdef __cplusplus
 }
 #endif

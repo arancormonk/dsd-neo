@@ -1379,6 +1379,9 @@ dmr_block_type2_set_lb_pf(dmr_block_assembler_ctx* ctx) {
         int msg_bytes = (1 + ctx->blockcounter) * ctx->block_len;
         int mbits = (int)(ctx->blockcounter * 96);
         ctx->lb = 0;
+        if (mbits < 16) {
+            return;
+        }
 
         DSD_MEMSET(ctx->dmr_pdu_sf_bits, 0, sizeof(ctx->dmr_pdu_sf_bits));
         dmr_unpack_bytes_to_bits(ctx->state->dmr_pdu_sf[ctx->slot], msg_bytes, ctx->dmr_pdu_sf_bits);
@@ -1598,12 +1601,14 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->data_p_head, 0, sizeof(state->data_p_head));
     DSD_MEMSET(state->data_conf_data, 0, sizeof(state->data_conf_data));
     DSD_MEMSET(state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));
-    DSD_MEMSET(state->data_block_counter, 1, sizeof(state->data_block_counter));
+    state->data_block_counter[0] = 1;
+    state->data_block_counter[1] = 1;
     DSD_MEMSET(state->data_block_poc, 0, sizeof(state->data_block_poc));
     DSD_MEMSET(state->data_byte_ctr, 0, sizeof(state->data_byte_ctr));
     DSD_MEMSET(state->udt_uab_reserved, 0, sizeof(state->udt_uab_reserved));
     DSD_MEMSET(state->data_ks_start, 0, sizeof(state->data_ks_start));
-    DSD_MEMSET(state->data_header_blocks, 1, sizeof(state->data_header_blocks));
+    state->data_header_blocks[0] = 1;
+    state->data_header_blocks[1] = 1;
     DSD_MEMSET(state->data_block_crc_valid, 0, sizeof(state->data_block_crc_valid));
     DSD_MEMSET(state->dmr_lrrp_source, 0, sizeof(state->dmr_lrrp_source));
     DSD_MEMSET(state->dmr_lrrp_target, 0, sizeof(state->dmr_lrrp_target));

@@ -6,13 +6,13 @@
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
-#include <dsd-neo/protocol/provoice/provoice_const.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "provoice_frame.h"
 
 typedef struct {
     dsd_opts* opts;
@@ -26,6 +26,16 @@ provoice_next_dibit(provoice_reader* reader) {
     int dibit = getDibit(reader->opts, reader->state);
     reader->raw_bits[reader->bit_count++] = (uint8_t)dibit;
     return dibit;
+}
+
+static int
+provoice_next_dibit_callback(void* user, int* out_dibit) {
+    provoice_reader* reader = (provoice_reader*)user;
+    if (reader == NULL || out_dibit == NULL) {
+        return -1;
+    }
+    *out_dibit = provoice_next_dibit(reader);
+    return 0;
 }
 
 static void
@@ -54,63 +64,6 @@ provoice_print_call_info(const dsd_opts* opts, const dsd_state* state) {
                     state->lastsrc & 0x7F, state->edacs_tuned_lcn);
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
-}
-
-static void
-provoice_load_interleave_segment(provoice_reader* reader, char frame[7][24], const int** w, const int** x, int count) {
-    int i;
-    for (i = 0; i < count; i++) {
-        int dibit = provoice_next_dibit(reader);
-        frame[**w][**x] = (char)dibit;
-        (*w)++;
-        (*x)++;
-    }
-}
-
-static void
-provoice_load_imbe_frame_pair(provoice_reader* reader, char frame1[7][24], char frame2[7][24]) {
-    int i;
-    const int* w = provoice_interleave_w;
-    const int* x = provoice_interleave_x;
-
-    for (i = 0; i < 11; i++) {
-        provoice_load_interleave_segment(reader, frame1, &w, &x, 6);
-        w -= 6;
-        x -= 6;
-        provoice_load_interleave_segment(reader, frame2, &w, &x, 6);
-    }
-
-    provoice_load_interleave_segment(reader, frame1, &w, &x, 6);
-    w -= 6;
-    x -= 6;
-    provoice_load_interleave_segment(reader, frame2, &w, &x, 4);
-
-    provoice_read_raw_bits(reader, 2);
-    provoice_load_interleave_segment(reader, frame2, &w, &x, 2);
-
-    for (i = 0; i < 3; i++) {
-        provoice_load_interleave_segment(reader, frame1, &w, &x, 6);
-        w -= 6;
-        x -= 6;
-        provoice_load_interleave_segment(reader, frame2, &w, &x, 6);
-    }
-
-    provoice_load_interleave_segment(reader, frame1, &w, &x, 5);
-    w -= 5;
-    x -= 5;
-    provoice_load_interleave_segment(reader, frame2, &w, &x, 5);
-
-    for (i = 0; i < 7; i++) {
-        provoice_load_interleave_segment(reader, frame1, &w, &x, 6);
-        w -= 6;
-        x -= 6;
-        provoice_load_interleave_segment(reader, frame2, &w, &x, 6);
-    }
-
-    provoice_load_interleave_segment(reader, frame1, &w, &x, 5);
-    w -= 5;
-    x -= 5;
-    provoice_load_interleave_segment(reader, frame2, &w, &x, 5);
 }
 
 static void
@@ -156,8 +109,8 @@ void
 processProVoice(dsd_opts* opts, dsd_state* state) {
     uint8_t raw_bits[800];
     uint8_t raw_bytes[100];
-    char imbe7100_fr1[7][24];
-    char imbe7100_fr2[7][24];
+    char imbe7100_fr1[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
+    char imbe7100_fr2[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
     unsigned long long int initial;
     unsigned long long int secondary;
     uint16_t lid;
@@ -185,7 +138,10 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, " %016llX", secondary);
     }
 
-    provoice_load_imbe_frame_pair(&reader, imbe7100_fr1, imbe7100_fr2);
+    if (dsd_provoice_load_imbe_frame_pair(provoice_next_dibit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0) {
+        DSD_FPRINTF(stderr, "\n");
+        return;
+    }
     provoice_decode_imbe_pair(opts, state, imbe7100_fr1, imbe7100_fr2);
 
     provoice_read_raw_bits(&reader, 2);
@@ -195,7 +151,10 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "\n BF: %04X ", bf);
     }
 
-    provoice_load_imbe_frame_pair(&reader, imbe7100_fr1, imbe7100_fr2);
+    if (dsd_provoice_load_imbe_frame_pair(provoice_next_dibit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0) {
+        DSD_FPRINTF(stderr, "\n");
+        return;
+    }
     provoice_decode_imbe_pair(opts, state, imbe7100_fr1, imbe7100_fr2);
 
     provoice_read_raw_bits(&reader, 2);

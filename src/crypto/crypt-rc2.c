@@ -320,7 +320,7 @@ decrypt_rc2(CryptoContext* ctx, uint8_t bits[49]) {
 
 /* Key creation for Retevis AP */
 void
-retevis_rc2_keystream_creation(dsd_state* state, char* input) {
+retevis_rc2_keystream_creation(dsd_state* state, const char* input) {
     if (state == NULL || input == NULL) {
         return;
     }

@@ -11,7 +11,6 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/bit_packing.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
@@ -60,7 +59,7 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) 
                      sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s",
                      ""); //full text string
     }
-    for (uint16_t i = 0; i < len; i += 2) {
+    for (uint16_t i = 0; (uint16_t)(i + 1U) < len; i += 2) {
         uint16_t ch16 = (uint16_t)input[i + 0];
         ch16 <<= 8;
         ch16 |= (uint16_t)input[i + 1];
@@ -131,8 +130,9 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
 
         //this is the long version, complete message for logging purposes
         if (wr == 1 && c < 0x7F && c >= 0x20) {
+            const char c_str[2] = {c, '\0'};
             dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
-                       sizeof state->event_history_s[slot].Event_History_Items[0].text_message, &c);
+                       sizeof state->event_history_s[slot].Event_History_Items[0].text_message, c_str);
         }
     }
 
@@ -220,16 +220,25 @@ dmr_udp_comp_port_idx_desc(uint16_t pid) {
 }
 
 static uint16_t
-dmr_udp_comp_resolve_port_ptr(const uint8_t* pdu, uint16_t* spid, uint16_t* dpid) {
+dmr_udp_comp_resolve_port_ptr(const uint8_t* pdu, uint16_t len, uint16_t* spid, uint16_t* dpid) {
     uint16_t ptr = 5;
     if (*spid == 0 && *dpid == 0) {
+        if (len < 9) {
+            return len;
+        }
         *spid = (uint16_t)((pdu[5] << 8) | pdu[6]);
         *dpid = (uint16_t)((pdu[7] << 8) | pdu[8]);
         ptr = 9;
     } else if (*spid == 0) {
+        if (len < 7) {
+            return len;
+        }
         *spid = (uint16_t)((pdu[5] << 8) | pdu[6]);
         ptr = 7;
     } else if (*dpid == 0) {
+        if (len < 7) {
+            return len;
+        }
         *dpid = (uint16_t)((pdu[5] << 8) | pdu[6]);
         ptr = 7;
     }
@@ -249,8 +258,12 @@ dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t spi
     }
     if (spid == 2 || dpid == 2) {
         uint8_t bits[127 * 8];
+        uint16_t decode_len = len;
+        if (decode_len > 127U) {
+            decode_len = 127U;
+        }
         DSD_MEMSET(bits, 0, sizeof(bits));
-        unpack_byte_array_into_bit_array(pdu + ptr, bits, len * sizeof(uint8_t));
+        unpack_byte_array_into_bit_array(pdu + ptr, bits, (int)decode_len);
         lip_protocol_decoder(opts, state, bits);
         return;
     }
@@ -259,8 +272,9 @@ dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t spi
 
 void
 dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU) {
-    UNUSED(opts);
-    UNUSED(state);
+    if (DMR_PDU == NULL || len < 5U) {
+        return;
+    }
     uint16_t ipid = (uint16_t)((DMR_PDU[0] << 8) | DMR_PDU[1]);
     uint16_t said = (uint16_t)((DMR_PDU[2] >> 4) & 0xF);
     uint16_t daid = (uint16_t)((DMR_PDU[2] >> 0) & 0xF);
@@ -269,7 +283,7 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     uint8_t opcode = (uint8_t)((op1 << 1) | op2);
     uint16_t spid = (uint16_t)((DMR_PDU[3] >> 0) & 0x7F);
     uint16_t dpid = (uint16_t)((DMR_PDU[4] >> 0) & 0x7F);
-    uint16_t ptr = dmr_udp_comp_resolve_port_ptr(DMR_PDU, &spid, &dpid);
+    uint16_t ptr = dmr_udp_comp_resolve_port_ptr(DMR_PDU, len, &spid, &dpid);
 
     const char* src_idx_desc = dmr_udp_comp_src_idx_desc(said);
     const char* dst_idx_desc = dmr_udp_comp_dst_idx_desc(daid);
@@ -325,6 +339,95 @@ decode_ip_pdu_handle_icmp(dsd_opts* opts, dsd_state* state, size_t effective_len
 }
 
 static void DSD_ATTR_USED
+decode_ip_pdu_note_truncated_tms(dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24) {
+    DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "TMS SRC: %d; DST: %d; Truncated;",
+                 src24, dst24);
+    DSD_FPRINTF(stderr, "TMS Truncated;");
+}
+
+static int DSD_ATTR_USED
+decode_ip_pdu_tms_truncated(dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24) {
+    decode_ip_pdu_note_truncated_tms(state, slot, src24, dst24);
+    return -1;
+}
+
+static int DSD_ATTR_USED
+decode_ip_pdu_parse_udp_tms_address(dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
+                                    uint16_t payload_len, uint8_t* payload, int* tms_ptr) {
+    uint8_t tms_adl = payload[(*tms_ptr)++];
+    if (tms_adl == 0) {
+        return 0;
+    }
+
+    (*tms_ptr)--;
+    if (tms_adl < 4U || (size_t)(*tms_ptr) + (size_t)tms_adl >= (size_t)payload_len) {
+        return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
+    }
+    payload[*tms_ptr] = 0;
+    DSD_FPRINTF(stderr, "Address Len: %d; Address: ", tms_adl);
+    utf16_to_text(state, 1, tms_adl - 4, payload + *tms_ptr);
+    payload[*tms_ptr] = tms_adl;
+    *tms_ptr += tms_adl;
+    *tms_ptr += 1;
+    DSD_FPRINTF(stderr, "; ");
+    return 0;
+}
+
+static int DSD_ATTR_USED
+decode_ip_pdu_skip_udp_tms_extensions(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24,
+                                      uint32_t dst24, uint16_t payload_len, const uint8_t* payload, int* tms_ptr) {
+    if ((size_t)*tms_ptr >= (size_t)payload_len) {
+        return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
+    }
+
+    uint8_t tms_more = payload[*tms_ptr] >> 7;
+    while (tms_more) {
+        if ((size_t)*tms_ptr >= (size_t)payload_len) {
+            return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
+        }
+        uint8_t tms_b1 = payload[(*tms_ptr)++];
+        if (opts->payload == 1) {
+            if ((size_t)*tms_ptr >= (size_t)payload_len) {
+                return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
+            }
+            uint8_t tms_b2 = payload[*tms_ptr];
+            DSD_FPRINTF(stderr, "B1: %02X; B2: %02X; ", tms_b1, tms_b2);
+        }
+        tms_more = tms_b1 >> 7;
+        if (tms_more) {
+            if ((size_t)*tms_ptr >= (size_t)payload_len) {
+                return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
+            }
+            (*tms_ptr)++;
+        }
+    }
+    return 0;
+}
+
+static int DSD_ATTR_USED
+decode_ip_pdu_prepare_tms_text_span(dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
+                                    uint16_t payload_len, int* tms_ptr, int* tms_len) {
+    if ((*tms_ptr % 2) == 0) {
+        (*tms_ptr)++;
+    }
+    if (*tms_len > 3) {
+        int consumed = *tms_ptr - 3;
+        if (consumed >= *tms_len) {
+            return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
+        }
+        *tms_len -= consumed;
+    }
+    *tms_ptr -= 2;
+    if (*tms_ptr < 0 || (size_t)*tms_ptr >= (size_t)payload_len) {
+        return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
+    }
+    if ((size_t)*tms_len > ((size_t)payload_len - (size_t)*tms_ptr)) {
+        *tms_len = (int)((size_t)payload_len - (size_t)*tms_ptr);
+    }
+    return 0;
+}
+
+static void DSD_ATTR_USED
 decode_ip_pdu_handle_udp_tms(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
                              uint16_t payload_len, uint8_t* payload) {
     int tms_len = 0;
@@ -333,6 +436,10 @@ decode_ip_pdu_handle_udp_tms(const dsd_opts* opts, dsd_state* state, uint8_t slo
     }
     DSD_FPRINTF(stderr, " TMS ");
     DSD_FPRINTF(stderr, "Len: %d; ", tms_len);
+    if (payload_len < 4U) {
+        decode_ip_pdu_note_truncated_tms(state, slot, src24, dst24);
+        return;
+    }
 
     int tms_ptr = 2;
     uint8_t tms_hdr = payload[tms_ptr++];
@@ -340,29 +447,10 @@ decode_ip_pdu_handle_udp_tms(const dsd_opts* opts, dsd_state* state, uint8_t slo
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "HDR: %02X; ", tms_hdr);
     }
-    uint8_t tms_adl = payload[tms_ptr++];
-    if (tms_adl != 0) {
-        tms_ptr--;
-        payload[tms_ptr] = 0;
-        DSD_FPRINTF(stderr, "Address Len: %d; Address: ", tms_adl);
-        utf16_to_text(state, 1, tms_adl - 4, payload + tms_ptr);
-        payload[tms_ptr] = tms_adl;
-        tms_ptr += tms_adl;
-        tms_ptr += 1;
-        DSD_FPRINTF(stderr, "; ");
-    }
-
-    uint8_t tms_more = payload[tms_ptr] >> 7;
-    while (tms_more) {
-        uint8_t tms_b1 = payload[tms_ptr++];
-        if (opts->payload == 1) {
-            uint8_t tms_b2 = payload[tms_ptr];
-            DSD_FPRINTF(stderr, "B1: %02X; B2: %02X; ", tms_b1, tms_b2);
-        }
-        tms_more = tms_b1 >> 7;
-        if (tms_more) {
-            tms_ptr++;
-        }
+    if (decode_ip_pdu_parse_udp_tms_address(state, slot, src24, dst24, payload_len, payload, &tms_ptr) != 0
+        || decode_ip_pdu_skip_udp_tms_extensions(opts, state, slot, src24, dst24, payload_len, payload, &tms_ptr)
+               != 0) {
+        return;
     }
 
     DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "TMS SRC: %d; DST: %d; ", src24, dst24);
@@ -372,13 +460,9 @@ decode_ip_pdu_handle_udp_tms(const dsd_opts* opts, dsd_state* state, uint8_t slo
         return;
     }
 
-    if ((tms_ptr % 2) == 0) {
-        tms_ptr++;
+    if (decode_ip_pdu_prepare_tms_text_span(state, slot, src24, dst24, payload_len, &tms_ptr, &tms_len) != 0) {
+        return;
     }
-    if (tms_len > 3) {
-        tms_len -= (tms_ptr - 3);
-    }
-    tms_ptr -= 2;
     uint8_t temp = payload[tms_ptr];
     payload[tms_ptr] = 0;
     if (opts->payload == 1) {
@@ -500,8 +584,12 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
             return 1;
         case 5017: {
             uint8_t bits[127 * 12 * 8];
+            uint16_t decode_len = payload_len;
+            if (decode_len > (uint16_t)(sizeof(bits) / 8U)) {
+                decode_len = (uint16_t)(sizeof(bits) / 8U);
+            }
             DSD_MEMSET(bits, 0, sizeof(bits));
-            unpack_byte_array_into_bit_array(payload, bits, payload_len * sizeof(uint8_t));
+            unpack_byte_array_into_bit_array(payload, bits, (int)decode_len);
             lip_protocol_decoder(opts, state, bits);
             return 1;
         }

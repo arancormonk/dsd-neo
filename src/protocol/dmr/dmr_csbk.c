@@ -419,11 +419,17 @@ dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_
 }
 
 static void
-dmr_cspdu_pf0_set_active_channel(dsd_state* state, uint8_t lcn, uint16_t channel, uint32_t target) {
+dmr_cspdu_pf0_set_active_channel(dsd_state* state, uint8_t lcn, uint16_t channel, uint32_t target, int csbk_o) {
     char suf[24];
     dmr_format_chan_suffix(lcn, suf, sizeof suf);
-    DSD_SNPRINTF(state->active_channel[lcn], sizeof(state->active_channel[lcn]), "Active Ch: %04X%s TG: %d; ", channel,
-                 suf, target);
+    const char* kind = "Active Private Ch";
+    if (csbk_o == 49 || csbk_o == 50) {
+        kind = "Active Group Ch";
+    } else if (dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)) {
+        kind = "Active Data Ch";
+    }
+    DSD_SNPRINTF(state->active_channel[lcn], sizeof(state->active_channel[lcn]), "%s: %04X%s TG: %u; ", kind, channel,
+                 suf, (unsigned)target);
 }
 
 static void
@@ -460,11 +466,11 @@ dmr_cspdu_pf0_print_frequency(uint16_t lpchannum, long int freq) {
 
 static void
 dmr_cspdu_pf0_update_active_channels(dsd_state* state, uint8_t lcn, uint16_t lpchannum, uint16_t mbc_lpchannum,
-                                     uint32_t target) {
+                                     uint32_t target, int csbk_o) {
     if (lpchannum != 0 && lpchannum != 0xFFF) {
-        dmr_cspdu_pf0_set_active_channel(state, lcn, lpchannum, target);
+        dmr_cspdu_pf0_set_active_channel(state, lcn, lpchannum, target, csbk_o);
     } else if (lpchannum == 0xFFF) {
-        dmr_cspdu_pf0_set_active_channel(state, lcn, mbc_lpchannum, target);
+        dmr_cspdu_pf0_set_active_channel(state, lcn, mbc_lpchannum, target, csbk_o);
     }
 }
 
@@ -556,7 +562,7 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     uint16_t mbc_lpchannum = dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, &freq);
     dmr_cspdu_pf0_print_frequency(lpchannum, freq);
 
-    dmr_cspdu_pf0_update_active_channels(state, lcn, lpchannum, mbc_lpchannum, target);
+    dmr_cspdu_pf0_update_active_channels(state, lcn, lpchannum, mbc_lpchannum, target, csbk_o);
     state->last_active_time = time(NULL);
 
     int data_call = 0;

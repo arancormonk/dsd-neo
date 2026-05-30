@@ -20,13 +20,13 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "x2tdma_frame.h"
 
 static int
 x2tdma_read_dibit(const dsd_opts* opts, int** dibit_p) {
@@ -137,7 +137,7 @@ x2tdma_read_sync(const dsd_opts* opts, int** dibit_p, char sync[25], char syncda
 
 static void
 x2tdma_mark_slot_on_data_sync(dsd_state* state, const char sync[25]) {
-    if ((strcmp(sync, X2TDMA_BS_DATA_SYNC) == 0) || (strcmp(sync, X2TDMA_MS_DATA_SYNC) == 0)) {
+    if (dsd_x2tdma_sync_is_data(sync)) {
         if (state->currentslot == 0) {
             DSD_SNPRINTF(state->slot0light, sizeof state->slot0light, "%s", "[slot0]");
         } else {

@@ -19,7 +19,6 @@
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
-#include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdbool.h>
@@ -28,6 +27,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "ysf_frame.h"
 
 static uint8_t fr_interleave[144] = {
     0,   7,   12,  19,  24,  31,  36,  43,  48,  55,  60,  67, // [  0 -  11] yellow message
@@ -156,7 +156,7 @@ ysf_dch_decode_text(dsd_state* state, const char dch_bytes[20], uint8_t fn, uint
         }
     }
 
-    if (fn == ft) {
+    if (fn == ft && dsd_ysf_event_text_should_print(state)) {
         DSD_FPRINTF(stderr, " %s", state->event_history_s[0].Event_History_Items[0].text_message);
     }
 }
@@ -261,15 +261,11 @@ static int
 ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
               uint8_t input[]) {
 
-    int i, j, k, err;
+    int i, j, err;
     uint8_t trellis_buf[100];
-    uint8_t temp[210];
     uint8_t m_data[100];
-    uint8_t bits[210];
     DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-    DSD_MEMSET(temp, 0, sizeof(temp));
     DSD_MEMSET(m_data, 0, sizeof(m_data));
-    DSD_MEMSET(bits, 0, sizeof(bits));
     err = 0;
 
     //dibit de-interleave block length M = 9 dibits and depth N = 20
@@ -281,39 +277,7 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
         }
     }
 
-    k = 0;
-    //convert dibits to bits
-    for (i = 0; i < 100; i++) {
-        bits[k++] = (buf[i] >> 1) & 1;
-        bits[k++] = (buf[i] >> 0) & 1;
-    }
-
-    //setup for the convolutional decoder
-    for (i = 0; i < 200; i++) {
-        temp[i] = bits[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (i = 0; i < 100; i++) {
-        uint8_t s0 = temp[(2 * i) + 0];
-        uint8_t s1 = temp[(2 * i) + 1];
-
-        CNXDNConvolution_decode(s0, s1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 96);
-
-    //96/8 = 12, last 4 (96-100) are trailing zeroes
-    for (i = 0; i < 12; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    uint32_t v_error = dsd_ysf_soft_viterbi_decode(buf, 100U, 13U, 8U, 96U, trellis_buf, m_data);
 
     uint16_t crc = crc16ysf(trellis_buf, 96);
     if (crc != 0) {
@@ -340,6 +304,7 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
     }
 
     if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, " D2-Ve: %1.1f; ", (float)v_error / (float)0xFFFF);
         DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "DCH2: ");
         for (i = 0; i < 12; i++) {
@@ -354,15 +319,11 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
 static int
 ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
              uint8_t input[]) {
-    int i, j, k, err;
+    int i, j, err;
     uint8_t trellis_buf[190];
-    uint8_t temp[370];
     uint8_t m_data[100];
-    uint8_t bits[370];
     DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-    DSD_MEMSET(temp, 0, sizeof(temp));
     DSD_MEMSET(m_data, 0, sizeof(m_data));
-    DSD_MEMSET(bits, 0, sizeof(bits));
     err = 0;
 
     //dibit de-interleave block length M = 9 dibits and depth N = 20
@@ -374,39 +335,7 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
         }
     }
 
-    k = 0;
-    //convert dibits to bits
-    for (i = 0; i < 180; i++) {
-        bits[k++] = (buf[i] >> 1) & 1;
-        bits[k++] = (buf[i] >> 0) & 1;
-    }
-
-    //setup for the convolutional decoder
-    for (i = 0; i < 360; i++) {
-        temp[i] = bits[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (i = 0; i < 180; i++) {
-        uint8_t s0 = temp[(2 * i) + 0];
-        uint8_t s1 = temp[(2 * i) + 1];
-
-        CNXDNConvolution_decode(s0, s1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 176);
-
-    //176/8 = 22, last 4 (176-180) are trailing zeroes
-    for (i = 0; i < 22; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
+    uint32_t v_error = dsd_ysf_soft_viterbi_decode(buf, 180U, 23U, 8U, 176U, trellis_buf, m_data);
 
     uint16_t crc = crc16ysf(trellis_buf, 176);
     if (crc != 0) {
@@ -433,6 +362,7 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
     }
 
     if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, " D1-Ve: %1.1f; ", (float)v_error / (float)0xFFFF);
         DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "DCH1: ");
         for (i = 0; i < 22; i++) {
@@ -445,16 +375,12 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
 
 //modified version of nxdn_deperm_facch1
 static int
-ysf_conv_fich(uint8_t input[], uint8_t dest[32]) {
-    int i, j, k, err;
+ysf_conv_fich(uint8_t input[], uint8_t dest[32], uint32_t* v_error_out) {
+    int i, j, err;
     uint8_t trellis_buf[100];
-    uint8_t temp[210];
     uint8_t m_data[100];
-    uint8_t bits[210];
     DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-    DSD_MEMSET(temp, 0, sizeof(temp));
     DSD_MEMSET(m_data, 0, sizeof(m_data));
-    DSD_MEMSET(bits, 0, sizeof(bits));
     err = 0;
 
     //dibit de-interleave block length M = 5 dibits and depth N = 10
@@ -466,38 +392,9 @@ ysf_conv_fich(uint8_t input[], uint8_t dest[32]) {
         }
     }
 
-    k = 0;
-    //convert dibits to bits
-    for (i = 0; i < 100; i++) {
-        bits[k++] = (buf[i] >> 1) & 1;
-        bits[k++] = (buf[i] >> 0) & 1;
-    }
-
-    //setup for the convolutional decoder
-    for (i = 0; i < 200; i++) { //192
-        temp[i] = bits[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (i = 0; i < 100; i++) {
-        uint8_t s0 = temp[(2 * i) + 0];
-        uint8_t s1 = temp[(2 * i) + 1];
-
-        CNXDNConvolution_decode(s0, s1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 96);
-
-    //96/8 = 12, last 4 (96-100) are trailing zeroes
-    for (i = 0; i < 12; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
+    uint32_t v_error = dsd_ysf_soft_viterbi_decode(buf, 100U, 13U, 8U, 96U, trellis_buf, m_data);
+    if (v_error_out != NULL) {
+        *v_error_out = v_error;
     }
 
     uint8_t fich_bits[12 * 4];
@@ -506,7 +403,7 @@ ysf_conv_fich(uint8_t input[], uint8_t dest[32]) {
 
     // run golay 24_12 error correction
     for (i = 0; i < 4; i++) {
-        DSD_MEMSET(temp, 0, sizeof(temp_b));
+        DSD_MEMSET(temp_b, 0, sizeof(temp_b));
         g[i] = false;
 
         for (j = 0; j < 24; j++) {
@@ -626,6 +523,7 @@ typedef struct {
     uint8_t st;
     uint8_t sc;
     int err;
+    uint32_t v_error;
     uint8_t fich_decode[32];
 } ysf_fich_info;
 
@@ -678,12 +576,13 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info, uint8_t* l
     info->dt = 9;
     info->st = 9;
     info->sc = 69;
+    info->v_error = UINT32_MAX;
 
     for (int i = 0; i < 100; i++) {
         fichrawdibits[i] = getDibit(opts, state);
     }
 
-    info->err = ysf_conv_fich(fichrawdibits, info->fich_decode);
+    info->err = ysf_conv_fich(fichrawdibits, info->fich_decode, &info->v_error);
     if (info->err == 0) {
         info->fi = (uint8_t)ConvertBitIntoBytes(&info->fich_decode[0], 2);
         info->cm = (uint8_t)ConvertBitIntoBytes(&info->fich_decode[4], 2);
@@ -795,6 +694,9 @@ ysf_print_fich_errors(const ysf_fich_info* info) {
 static void
 ysf_print_fich_payload(const dsd_opts* opts, const ysf_fich_info* info) {
     if (opts->payload == 1) {
+        if (info->v_error != UINT32_MAX) {
+            DSD_FPRINTF(stderr, " F-Ve: %1.1f; ", (float)info->v_error / (float)0xFFFF);
+        }
         DSD_FPRINTF(stderr, " FICH: ");
         for (int i = 0; i < 4; i++) {
             DSD_FPRINTF(stderr, "[%02X]", (uint8_t)ConvertBitIntoBytes(&info->fich_decode[(size_t)i * 8], 8));

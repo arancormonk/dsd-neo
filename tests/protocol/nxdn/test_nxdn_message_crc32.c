@@ -102,21 +102,6 @@ nxdn_alias_reset(dsd_state* state) {
     (void)state;
 }
 
-int
-nxdn_dcr_decode_csm_alias(const uint8_t trellis_bits[96], char* out, size_t out_sz) {
-    (void)trellis_bits;
-    if (out != NULL && out_sz > 0U) {
-        out[0] = '\0';
-    }
-    return 0;
-}
-
-uint8_t
-nxdn_scch_crc7_check_from_trellis(const uint8_t trellis_bits[32]) {
-    (void)trellis_bits;
-    return 0U;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {

@@ -1,6 +1,6 @@
 add_library(dsd-neo_proto_ysf)
 
-target_sources(dsd-neo_proto_ysf PRIVATE ysf.c)
+target_sources(dsd-neo_proto_ysf PRIVATE ysf.c ysf_frame.c)
 
 target_include_directories(
     dsd-neo_proto_ysf

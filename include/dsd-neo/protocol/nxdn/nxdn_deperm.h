@@ -25,7 +25,8 @@ extern "C" {
 
 void nxdn_descramble(uint8_t dibits[], int len);
 
-void nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144]);
+void nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
+                            uint8_t frame);
 
 void nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]);
 
@@ -65,6 +66,23 @@ uint32_t nxdn_message_crc32(const uint8_t* input, int len);
  * Read the 7-bit SCCH CRC check field from decoded trellis bits.
  */
 uint8_t nxdn_scch_crc7_check_from_trellis(const uint8_t trellis_bits[32]);
+
+/**
+ * Read/compute FACCH-family decoded-bit CRC fields after Viterbi offset correction.
+ */
+uint16_t nxdn_facch_crc12_payload_from_trellis(const uint8_t trellis_bits[96]);
+uint16_t nxdn_facch_crc12_check_from_trellis(const uint8_t trellis_bits[96]);
+
+/**
+ * Read/compute FACCH2/UDCH decoded-bit CRC fields after Viterbi offset correction.
+ */
+uint16_t nxdn_facch2_udch_crc15_payload_from_trellis(const uint8_t trellis_bits[208]);
+uint16_t nxdn_facch2_udch_crc15_check_from_trellis(const uint8_t trellis_bits[208]);
+
+/**
+ * Validate the expected SACCH superframe segment order.
+ */
+int nxdn_sacch_segment_sequence_is_valid(uint8_t crc_ok, int previous_part_of_frame, int part_of_frame);
 
 /**
  * Decode DCR SB0 Call Sign Memory (CSM) digits from trellis bits.

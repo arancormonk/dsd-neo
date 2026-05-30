@@ -780,6 +780,53 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
     state->lcn_freq_count++; // keep tally of number of Frequencies imported
 }
 
+static unsigned long long
+csv_key_import_dec_normalize_keynumber(const char* field) {
+    unsigned long long keynumber = 0;
+    if (!parse_dec_u64_strict(field, &keynumber)) {
+        return 0;
+    }
+
+    if (keynumber <= 0xFFFFULL) {
+        return keynumber;
+    }
+
+    uint8_t hash_bits[24];
+    keynumber &= 0xFFFFFFULL; // truncate to 24-bits (max allowed)
+    for (int i = 0; i < 24; i++) {
+        hash_bits[i] = (uint8_t)(((keynumber << i) & 0x800000ULL) >> 23); // load into array for CRC16
+    }
+    const uint16_t hash = compute_crc_ccitt16_bits(hash_bits, 24);
+    LOG_INFO("Hashed ");
+    return hash & 0xFFFFULL; // make sure its no larger than 16-bits
+}
+
+static void
+csv_key_import_dec_store_value(dsd_state* state, unsigned long long keynumber, const char* field) {
+    unsigned long long keyvalue = 0;
+    const int parsed_keyvalue = parse_dec_u64_strict(field, &keyvalue);
+    if (!parsed_keyvalue) {
+        keyvalue = 0;
+    }
+
+    size_t key_index = 0;
+    if (csv_rkey_index(keynumber, 0ULL, &key_index)) {
+        state->rkey_array[key_index] = keyvalue & 0xFFFFFFFFFFULL; // doesn't exceed 40-bit value
+        state->rkey_array_loaded[key_index] = parsed_keyvalue ? 1U : 0U;
+    }
+}
+
+static void
+csv_key_import_dec_apply_field(dsd_state* state, int field_count, const char* field, unsigned long long* keynumber) {
+    if (field_count == 0) {
+        *keynumber = csv_key_import_dec_normalize_keynumber(field);
+        return;
+    }
+    if (field_count == 1) {
+        csv_key_import_dec_store_value(state, *keynumber, field);
+    }
+}
+
 int
 csvChanImport(const dsd_opts* opts, dsd_state* state) //channel map import
 {
@@ -837,14 +884,8 @@ csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
     }
     int row_count = 0;
 
-    unsigned long long int keynumber = 0;
-    unsigned long long int keyvalue = 0;
-
-    uint16_t hash = 0;
-    uint8_t hash_bits[24];
-    DSD_MEMSET(hash_bits, 0, sizeof(hash_bits));
-
     while (fgets(buffer, BSIZE, fp)) {
+        unsigned long long int keynumber = 0;
         int field_count = 0;
         row_count++;
         if (row_count == 1) {
@@ -853,35 +894,7 @@ csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
         char* saveptr = NULL;
         const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
-
-            if (field_count == 0) {
-                if (!parse_dec_u64_strict(field, &keynumber)) {
-                    keynumber = 0;
-                }
-                if (keynumber > 0xFFFF) //if larger than 16-bits, get its hash instead
-                {
-                    keynumber = keynumber & 0xFFFFFF; //truncate to 24-bits (max allowed)
-                    for (int i = 0; i < 24; i++) {
-                        hash_bits[i] = ((keynumber << i) & 0x800000) >> 23; //load into array for CRC16
-                    }
-                    hash = compute_crc_ccitt16_bits(hash_bits, 24);
-                    keynumber = hash & 0xFFFF; //make sure its no larger than 16-bits
-                    LOG_INFO("Hashed ");
-                }
-            }
-
-            if (field_count == 1) {
-                const int parsed_keyvalue = parse_dec_u64_strict(field, &keyvalue);
-                if (!parsed_keyvalue) {
-                    keyvalue = 0;
-                }
-                size_t key_index = 0;
-                if (csv_rkey_index(keynumber, 0ULL, &key_index)) {
-                    state->rkey_array[key_index] = keyvalue & 0xFFFFFFFFFF; // doesn't exceed 40-bit value
-                    state->rkey_array_loaded[key_index] = parsed_keyvalue ? 1U : 0U;
-                }
-            }
-
+            csv_key_import_dec_apply_field(state, field_count, field, &keynumber);
             field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
         }

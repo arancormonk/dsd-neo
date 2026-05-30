@@ -195,7 +195,7 @@ tyt16_ambe2_codeword_keystream(const dsd_state* state, char ambe_fr[4][24], int 
 }
 
 void
-tyt_ap_pc4_keystream_creation(dsd_state* state, char* input) {
+tyt_ap_pc4_keystream_creation(dsd_state* state, const char* input) {
     if (state == NULL || input == NULL) {
         return;
     }

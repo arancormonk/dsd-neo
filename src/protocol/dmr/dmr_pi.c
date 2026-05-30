@@ -24,7 +24,7 @@
 
 static void
 dmr_pi_update_sync_times_if_tuned(const dsd_opts* opts, dsd_state* state) {
-    if (opts->p25_is_tuned == 1) {
+    if (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) {
         state->last_vc_sync_time = time(NULL);
         state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         state->last_cc_sync_time = time(NULL);

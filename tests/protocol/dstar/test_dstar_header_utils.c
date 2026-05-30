@@ -4,9 +4,20 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
+
+static const uint8_t k_slow_data_scrambler[24] = {
+    0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1,
+};
 
 static void
 convolution_encode(const int* bits, size_t bit_count, int* symbols) {
@@ -50,6 +61,20 @@ test_scrambler_roundtrip(void) {
     dstar_scramble_header_bits(scrambled, recovered, DSD_DSTAR_HEADER_CODED_BITS);
 
     assert(memcmp(original, recovered, sizeof(original)) == 0);
+}
+
+static void
+test_scrambler_reference_prefix(void) {
+    static const int expected[32] = {
+        0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0,
+    };
+    int zeroes[DSD_DSTAR_HEADER_CODED_BITS];
+    int scrambled[DSD_DSTAR_HEADER_CODED_BITS];
+
+    DSD_MEMSET(zeroes, 0, sizeof(zeroes));
+    dstar_scramble_header_bits(zeroes, scrambled, DSD_DSTAR_HEADER_CODED_BITS);
+
+    assert(memcmp(expected, scrambled, sizeof(expected)) == 0);
 }
 
 static void
@@ -102,11 +127,125 @@ test_crc16(void) {
     assert(dstar_crc16(payload, sizeof(payload) - 1) == 0x906e);
 }
 
+static void
+pack_slow_data_bytes(const uint8_t bytes[60], uint8_t bits[480]) {
+    DSD_MEMSET(bits, 0, 480);
+    for (int byte_idx = 0; byte_idx < 60; byte_idx++) {
+        uint8_t byte = bytes[59 - byte_idx];
+        for (int bit = 0; bit < 8; bit++) {
+            int packed_pos = byte_idx * 8 + bit;
+            int input_pos = 479 - packed_pos;
+            uint8_t payload_bit = (uint8_t)((byte >> (7 - bit)) & 1U);
+            bits[input_pos] = payload_bit ^ k_slow_data_scrambler[input_pos % 24];
+        }
+    }
+}
+
+static void
+set_compacted_slow_data_bytes(uint8_t bytes[60], const uint8_t compact[51]) {
+    int compact_idx = 0;
+
+    for (int byte_idx = 1; byte_idx < 60 && compact_idx < 51; byte_idx++) {
+        if (byte_idx % 6 == 0) {
+            continue;
+        }
+        bytes[byte_idx] = compact[compact_idx++];
+    }
+}
+
+static void
+test_slow_data_text_keeps_byte_after_marker(void) {
+    dsd_opts opts;
+    dsd_state state;
+    Event_History_I* history;
+    uint8_t bytes[60];
+    uint8_t bits[480];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    history = (Event_History_I*)calloc(2u, sizeof(*history));
+    assert(history != NULL);
+    state.event_history_s = history;
+    DSD_MEMSET(bytes, 0x20, sizeof(bytes));
+
+    bytes[0] = 0x40;
+    bytes[1] = 'A';
+    bytes[2] = 'B';
+    bytes[3] = 'C';
+    bytes[4] = 'D';
+    bytes[5] = 'E';
+    bytes[6] = 'x';
+    bytes[7] = 'G';
+
+    pack_slow_data_bytes(bytes, bits);
+    processDSTAR_SD(&opts, &state, bits);
+
+    assert(state.dstar_txt[5] == 'E');
+    assert(state.dstar_txt[6] == ' ');
+    assert(state.dstar_txt[7] == 'G');
+    free(history);
+}
+
+static void
+test_slow_data_aprs_latitude_uses_compacted_direction(void) {
+    dsd_opts opts;
+    dsd_state state;
+    Event_History_I* history;
+    uint8_t bytes[60];
+    uint8_t compact[51];
+    uint8_t bits[480];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    history = (Event_History_I*)calloc(2u, sizeof(*history));
+    assert(history != NULL);
+    state.event_history_s = history;
+    DSD_MEMSET(bytes, 0x20, sizeof(bytes));
+    DSD_MEMSET(compact, 0x20, sizeof(compact));
+
+    bytes[0] = 0x35;
+    compact[0] = '$';
+    compact[1] = '$';
+    compact[2] = 'C';
+    compact[3] = 'R';
+    compact[4] = 'C';
+    compact[30] = '!';
+    compact[31] = '4';
+    compact[32] = '1';
+    compact[33] = '3';
+    compact[34] = '0';
+    compact[35] = '.';
+    compact[36] = '5';
+    compact[37] = '9';
+    compact[38] = 'N';
+    compact[41] = '0';
+    compact[42] = '8';
+    compact[43] = '7';
+    compact[44] = '3';
+    compact[45] = '0';
+    compact[46] = '.';
+    compact[47] = '1';
+    compact[48] = '5';
+    compact[49] = 'W';
+    set_compacted_slow_data_bytes(bytes, compact);
+
+    pack_slow_data_bytes(bytes, bits);
+    processDSTAR_SD(&opts, &state, bits);
+
+    assert(strstr(state.dstar_gps, "Lat: 41d 30m 59s N ") != NULL);
+    assert(strstr(state.dstar_gps, "Lon: 087d 30m 15s W ") != NULL);
+    assert(strcmp(state.event_history_s[0].Event_History_Items[0].gps_s, state.dstar_gps) == 0);
+    free(history);
+}
+
 int
 main(void) {
     test_scrambler_roundtrip();
+    test_scrambler_reference_prefix();
     test_interleave_roundtrip();
     test_decode_pipeline();
     test_crc16();
+    test_slow_data_text_keeps_byte_after_marker();
+    test_slow_data_aprs_latitude_uses_compacted_direction();
     return 0;
 }
