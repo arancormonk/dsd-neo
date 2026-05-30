@@ -21,6 +21,7 @@ target_sources(
         symbol_levels.c
         dsd_symbol.c
         p25p1_heuristics.c
+        frame_sync_level.c
         dsd_frame_sync.c
         frame_sync_policy.c
         sync_hamming.c

@@ -52,6 +52,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/timing.h"
+#include "frame_sync_level.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/core/power.h>
@@ -1831,8 +1832,7 @@ frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runt
         rt->lbuf2[i] = rt->lbuf[i];
     }
     qsort(rt->lbuf2, rt->t_max, sizeof(float), comp);
-    rt->lmin = (rt->lbuf2[1] + rt->lbuf2[2] + rt->lbuf2[3]) / 3.0f;
-    rt->lmax = (rt->lbuf2[rt->t_max - 3] + rt->lbuf2[rt->t_max - 2] + rt->lbuf2[rt->t_max - 1]) / 3.0f;
+    dsd_frame_sync_estimate_sorted_window_levels(rt->lbuf2, rt->t_max, &rt->lmin, &rt->lmax);
 
     if (state->rf_mod == 1) {
         dsd_state_push_minmax_window(state, opts->msize, rt->lmin, rt->lmax);

@@ -30,12 +30,26 @@ struct m17_lsf_result {
     unsigned long long dst;
     unsigned long long src;
 
+    /* Raw type word and decoded LSF layout version. */
+    uint16_t type_word;
+    uint8_t version;
+
     /* Decoded type fields from the LSF type word. */
     uint8_t dt;
     uint8_t et;
     uint8_t es;
     uint8_t cn;
     uint8_t rs;
+
+    /*
+     * V3 type-word fields. For V2, payload_contents mirrors dt and
+     * meta_contents mirrors the legacy meta protocol selector.
+     */
+    uint8_t payload_contents;
+    uint8_t encryption_type;
+    uint8_t signature;
+    uint8_t meta_contents;
+    uint8_t meta_is_iv;
 
     /* Decoded callsign strings (base-40) for dst/src. */
     char dst_csd[10];
@@ -44,6 +58,20 @@ struct m17_lsf_result {
     /* Optional 14-byte Meta/IV field when present. */
     uint8_t has_meta;
     uint8_t meta[14];
+};
+
+struct m17_gnss_result {
+    uint8_t data_source;
+    uint8_t station_type;
+    uint8_t validity;
+    uint8_t radius_exponent;
+    uint16_t bearing_deg;
+    double latitude_deg;
+    double longitude_deg;
+    float radius_m;
+    float speed_kmh;
+    float altitude_m;
+    uint16_t reserved;
 };
 
 /**
@@ -56,6 +84,17 @@ struct m17_lsf_result {
  * @return 0 on success, negative on error (e.g., invalid args or length).
  */
 int m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* out);
+
+/**
+ * Parse an M17 GNSS metadata/PDU packet payload.
+ *
+ * @param input  Full packet payload including protocol byte 0x81 or 0x91.
+ * @param len    Number of bytes available; must be at least 15.
+ * @param out    Result struct to fill on success.
+ *
+ * @return 0 on success, negative on error.
+ */
+int m17_parse_gnss_v2(const uint8_t* input, size_t len, struct m17_gnss_result* out);
 
 /**
  * Return a human-readable name for an M17 packet protocol identifier.

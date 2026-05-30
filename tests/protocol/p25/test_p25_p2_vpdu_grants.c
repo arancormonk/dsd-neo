@@ -170,6 +170,50 @@ main(void) {
         rc |= expect_eq_long("UU vc", vc, 851125000);
     }
 
+    // Case C: Group Voice Channel Grant Update Multiple - Explicit (opcode 0x25)
+    {
+        unsigned char mac[24];
+        DSD_MEMSET(mac, 0, sizeof mac);
+        mac[1] = 0x25;
+        mac[2] = 0x00; // svc1
+        mac[3] = 0x10;
+        mac[4] = 0x0A; // channel T1 0x100A
+        mac[5] = 0x00;
+        mac[6] = 0x00; // channel R1 unused
+        mac[7] = 0x12;
+        mac[8] = 0x34; // group1
+        mac[9] = 0x00; // svc2
+        mac[10] = 0x10;
+        mac[11] = 0x0B; // channel T2 0x100B
+        mac[12] = 0x00;
+        mac[13] = 0x00; // channel R2 unused
+        mac[14] = 0x56;
+        mac[15] = 0x78; // group2
+        long vc = 0;
+        int tuned = 0;
+        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
+        rc |= expect_true("0x25 tuned", tuned == 1);
+        rc |= expect_eq_long("0x25 vc", vc, 851125000);
+    }
+
+    // Case D: SNDCP Data Channel Announcement resolves both T and R channels (opcode 0xD6)
+    {
+        unsigned char mac[24];
+        DSD_MEMSET(mac, 0, sizeof mac);
+        mac[1] = 0xD6;
+        mac[4] = 0x10;
+        mac[5] = 0x0A; // CHAN-T 0x100A
+        mac[6] = 0x10;
+        mac[7] = 0x0B; // CHAN-R 0x100B
+        long freq_t = 0;
+        long freq_r = 0;
+        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_invoke_mac_vpdu_channel_cache(mac, 24, &cfg, 0x100A, 0x100B, &freq_t, &freq_r);
+        rc |= expect_eq_long("0xD6 CHAN-T cache", freq_t, 851125000);
+        rc |= expect_eq_long("0xD6 CHAN-R cache", freq_r, 851137500);
+    }
+
     return rc;
 }
 

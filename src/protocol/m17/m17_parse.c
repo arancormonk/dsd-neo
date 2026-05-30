@@ -124,6 +124,48 @@ m17_extract_meta_bytes(const uint8_t* lsf_bits, uint8_t meta[14]) {
     return meta_sum;
 }
 
+static void
+m17_lsf_map_v3_encryption(uint8_t encryption_type, uint8_t* et, uint8_t* es) {
+    if (et == NULL || es == NULL) {
+        return;
+    }
+
+    *et = 0U;
+    *es = 0U;
+
+    switch (encryption_type) {
+        case 0x1U:
+            *et = 1U;
+            *es = 0U;
+            break;
+        case 0x2U:
+            *et = 1U;
+            *es = 1U;
+            break;
+        case 0x3U:
+            *et = 1U;
+            *es = 2U;
+            break;
+        case 0x4U:
+            *et = 2U;
+            *es = 0U;
+            break;
+        case 0x5U:
+            *et = 2U;
+            *es = 1U;
+            break;
+        case 0x6U:
+            *et = 2U;
+            *es = 2U;
+            break;
+        case 0x7U:
+            *et = 3U;
+            *es = 3U;
+            break;
+        default: break;
+    }
+}
+
 int
 m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* out) {
     if (out == NULL || lsf_bits == NULL) {
@@ -141,12 +183,33 @@ m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* ou
 
     out->dst = lsf_dst;
     out->src = lsf_src;
+    out->type_word = lsf_type;
 
-    out->dt = (uint8_t)((lsf_type >> 1) & 0x3);
-    out->et = (uint8_t)((lsf_type >> 3) & 0x3);
-    out->es = (uint8_t)((lsf_type >> 5) & 0x3);
-    out->cn = (uint8_t)((lsf_type >> 7) & 0xF);
-    out->rs = (uint8_t)((lsf_type >> 11) & 0x1F);
+    const uint8_t version_check = (uint8_t)(lsf_type >> 12U);
+    if (version_check == 0U) {
+        out->version = 2U;
+        out->dt = (uint8_t)((lsf_type >> 1U) & 0x3U);
+        out->et = (uint8_t)((lsf_type >> 3U) & 0x3U);
+        out->es = (uint8_t)((lsf_type >> 5U) & 0x3U);
+        out->cn = (uint8_t)((lsf_type >> 7U) & 0xFU);
+        out->rs = (uint8_t)((lsf_type >> 11U) & 0x1FU);
+        out->payload_contents = out->dt;
+        out->encryption_type = out->et;
+        out->signature = (uint8_t)(out->rs & 0x1U);
+        out->meta_contents = out->es;
+        out->meta_is_iv = (out->et == 2U) ? 1U : 0U;
+    } else {
+        out->version = 3U;
+        out->payload_contents = (uint8_t)((lsf_type >> 12U) & 0xFU);
+        out->encryption_type = (uint8_t)((lsf_type >> 9U) & 0x7U);
+        out->signature = (uint8_t)((lsf_type >> 8U) & 0x1U);
+        out->meta_contents = (uint8_t)((lsf_type >> 4U) & 0xFU);
+        out->cn = (uint8_t)(lsf_type & 0xFU);
+        out->dt = out->payload_contents;
+        out->rs = 0U;
+        out->meta_is_iv = (out->meta_contents == 0xFU) ? 1U : 0U;
+        m17_lsf_map_v3_encryption(out->encryption_type, &out->et, &out->es);
+    }
 
     /* Decode base-40 CSD strings for destination and source. */
     DSD_MEMSET(out->dst_csd, 0, sizeof(out->dst_csd));
@@ -166,5 +229,54 @@ m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* ou
         out->has_meta = 0U;
     }
 
+    return 0;
+}
+
+static int32_t
+m17_s24_to_i32(uint32_t raw) {
+    raw &= 0xFFFFFFU;
+    if ((raw & 0x800000U) == 0U) {
+        return (int32_t)raw;
+    }
+
+    const uint32_t magnitude = ((~raw) & 0xFFFFFFU) + 1U;
+    return -(int32_t)magnitude;
+}
+
+int
+m17_parse_gnss_v2(const uint8_t* input, size_t len, struct m17_gnss_result* out) {
+    if (input == NULL || out == NULL) {
+        return -1;
+    }
+    if (len < 15U) {
+        return -2;
+    }
+    if (input[0] != 0x81U && input[0] != 0x91U) {
+        return -3;
+    }
+
+    DSD_MEMSET(out, 0, sizeof(*out));
+
+    out->data_source = (uint8_t)(input[1] >> 4U);
+    out->station_type = (uint8_t)(input[1] & 0xFU);
+    out->validity = (uint8_t)(input[2] >> 4U);
+    out->radius_exponent = (uint8_t)((input[2] >> 1U) & 0x7U);
+    out->bearing_deg = (uint16_t)(((uint16_t)(input[2] & 0x1U) << 8U) | input[3]);
+
+    const uint32_t latitude_raw = ((uint32_t)input[4] << 16U) | ((uint32_t)input[5] << 8U) | input[6];
+    const uint32_t longitude_raw = ((uint32_t)input[7] << 16U) | ((uint32_t)input[8] << 8U) | input[9];
+    const int32_t latitude = m17_s24_to_i32(latitude_raw);
+    const int32_t longitude = m17_s24_to_i32(longitude_raw);
+
+    out->latitude_deg = ((double)latitude * 90.0) / 8388607.0;
+    out->longitude_deg = ((double)longitude * 180.0) / 8388607.0;
+
+    const uint16_t altitude = (uint16_t)(((uint16_t)input[10] << 8U) | input[11]);
+    const uint16_t speed = (uint16_t)(((uint16_t)input[12] << 4U) | (input[13] >> 4U));
+    out->reserved = (uint16_t)(((uint16_t)(input[13] & 0xFU) << 8U) | input[14]);
+
+    out->radius_m = (float)(1U << out->radius_exponent);
+    out->speed_kmh = (float)speed * 0.5f;
+    out->altitude_m = ((float)altitude * 0.5f) - 500.0f;
     return 0;
 }

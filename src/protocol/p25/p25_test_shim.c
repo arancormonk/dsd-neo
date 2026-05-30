@@ -499,6 +499,61 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     p25_test_free_state(state);
 }
 
+void
+p25_test_invoke_mac_vpdu_channel_cache(const unsigned char* mac_bytes, int mac_len,
+                                       const p25_test_iden_config* iden_cfg, int channel_a, int channel_b,
+                                       long* out_freq_a, long* out_freq_b) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        p25_test_free_state(state);
+        if (out_freq_a) {
+            *out_freq_a = 0;
+        }
+        if (out_freq_b) {
+            *out_freq_b = 0;
+        }
+        return;
+    }
+
+    state->synctype = DSD_SYNC_P25P2_POS;
+    int iden = iden_cfg ? iden_cfg->iden : 0;
+    state->p25_chan_iden = iden & 0xF;
+
+    if (iden_cfg && iden_cfg->tdma) {
+        state->p25_iden_tdma[state->p25_chan_iden].base_freq = iden_cfg->base;
+        state->p25_iden_tdma[state->p25_chan_iden].chan_type = iden_cfg->type & 0xF;
+        state->p25_iden_tdma[state->p25_chan_iden].chan_spac = iden_cfg->spac;
+        state->p25_iden_tdma[state->p25_chan_iden].trust = 2;
+        state->p25_iden_tdma[state->p25_chan_iden].populated = 1;
+        state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 2;
+    } else if (iden_cfg) {
+        state->p25_iden_fdma[state->p25_chan_iden].base_freq = iden_cfg->base;
+        state->p25_iden_fdma[state->p25_chan_iden].chan_type = iden_cfg->type & 0xF;
+        state->p25_iden_fdma[state->p25_chan_iden].chan_spac = iden_cfg->spac;
+        state->p25_iden_fdma[state->p25_chan_iden].trust = 2;
+        state->p25_iden_fdma[state->p25_chan_iden].populated = 1;
+        state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 1;
+    }
+
+    unsigned long long int MAC[24] = {0};
+    int n = mac_len < 24 ? mac_len : 24;
+    for (int i = 0; i < n; i++) {
+        MAC[i] = mac_bytes[i];
+    }
+    process_MAC_VPDU(opts, state, 0, MAC);
+
+    if (out_freq_a) {
+        *out_freq_a = (channel_a >= 0 && channel_a < DSD_TRUNK_CHAN_MAP_SIZE) ? state->trunk_chan_map[channel_a] : 0;
+    }
+    if (out_freq_b) {
+        *out_freq_b = (channel_b >= 0 && channel_b < DSD_TRUNK_CHAN_MAP_SIZE) ? state->trunk_chan_map[channel_b] : 0;
+    }
+    free(opts);
+    p25_test_free_state(state);
+}
+
 /* (xcch test wrapper provided as a separate TU in tests/) */
 
 // Test helper: emulate the early ENC lockout decision used in P25p2 SACCH/FACCH

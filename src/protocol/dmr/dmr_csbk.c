@@ -525,6 +525,7 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     }
     res.freq_hz = freq;
     res.lpcn = lpchannum;
+    res.opcode = (uint8_t)csbk_o;
     res.target = target;
     res.source = source;
     dmr_csbk_handle(&res, opts, state);

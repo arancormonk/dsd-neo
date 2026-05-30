@@ -387,6 +387,39 @@ expect_eq_int(const char* tag, int got, int want) {
     return 0;
 }
 
+static int
+expect_true(const char* tag, int ok) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "%s: condition failed\n", tag);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_eq_float(const char* tag, float got, float want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %.3f want %.3f\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_blank_call_string(const char* tag, const char* value) {
+    for (int i = 0; i < 21; i++) {
+        if (value[i] != ' ') {
+            DSD_FPRINTF(stderr, "%s: byte %d got 0x%02X want 0x20\n", tag, i, (unsigned char)value[i]);
+            return 1;
+        }
+    }
+    if (value[21] != '\0') {
+        DSD_FPRINTF(stderr, "%s: byte 21 got 0x%02X want NUL\n", tag, (unsigned char)value[21]);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -407,6 +440,8 @@ main(void) {
     opts.trunk_tune_group_calls = 1;
     opts.trunk_tune_enc_calls = 1;
     opts.p25_is_tuned = 0;
+    opts.floating_point = 1;
+    opts.audio_gain = 3.5F;
     state.p25_cc_freq = 851000000;
     state.tg_hold = 0;
     int lastsrc = 0x00ABCDEF;
@@ -419,6 +454,12 @@ main(void) {
     state.p25_iden_fdma[1].trust = 2;
     state.p25_iden_fdma[1].populated = 1;
     state.p25_chan_tdma_explicit[1] = 1; // FDMA known
+    state.p25_call_emergency[0] = 1;
+    state.p25_call_priority[0] = 7;
+    state.p25_call_is_packet[0] = 1;
+    state.aout_gain = 0.25F;
+    DSD_SNPRINTF(state.call_string[0], sizeof(state.call_string[0]), "%s", "left active");
+    DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "right active");
     g_called = 0;
     processTDULC(&opts, &state);
     rc |= expect_eq_int("grant called", g_called, 1);
@@ -426,6 +467,16 @@ main(void) {
     rc |= expect_eq_int("grant svc", g_svc, 0x00);
     rc |= expect_eq_int("grant tg", g_tg, 0x4567);
     rc |= expect_eq_int("grant src", g_src, lastsrc);
+    rc |= expect_eq_int("tdulc duid count", (int)state.p25_p1_duid_tdulc, 1);
+    rc |= expect_eq_int("tdulc emergency cleared", state.p25_call_emergency[0], 0);
+    rc |= expect_eq_int("tdulc priority cleared", state.p25_call_priority[0], 0);
+    rc |= expect_eq_int("tdulc packet cleared", state.p25_call_is_packet[0], 0);
+    rc |= expect_blank_call_string("tdulc left call string blanked", state.call_string[0]);
+    rc |= expect_blank_call_string("tdulc right call string blanked", state.call_string[1]);
+    rc |= expect_eq_float("tdulc gain reset", state.aout_gain, opts.audio_gain);
+    rc |= expect_true("tdulc wall time recorded", state.p25_p1_last_tdu != 0);
+    rc |= expect_true("tdulc monotonic time recorded", state.p25_p1_last_tdu_m > 0.0);
+    rc |= expect_true("tdulc vc sync time refreshed", state.last_vc_sync_time_m > 0.0);
 
     // Case 2: Retune disabled → no grant
     build_lcw_words(0x44, 0x00, 0x00, 0x1234, 0x100A, 0x0000);

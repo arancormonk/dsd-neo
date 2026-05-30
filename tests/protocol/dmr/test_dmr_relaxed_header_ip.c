@@ -10,7 +10,9 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/rs_12_9.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/unicode.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -24,7 +26,13 @@
 // Forward under test
 extern void dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[],
                         uint32_t CRCCorrect, uint32_t IrrecoverableErrors);
+extern void dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uint8_t block_len,
+                                uint8_t databurst, uint8_t type);
 extern void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
+
+static unsigned int g_decode_ip_calls;
+static uint16_t g_decode_ip_last_len;
+static uint8_t g_decode_ip_first_byte;
 
 // Provide local stubs to avoid pulling full core/audio deps during link
 void
@@ -156,8 +164,9 @@ void
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
-    (void)len;
-    (void)input;
+    g_decode_ip_calls++;
+    g_decode_ip_last_len = len;
+    g_decode_ip_first_byte = input ? input[0] : 0U;
 }
 
 void
@@ -230,6 +239,44 @@ set_bits(uint8_t* bits, int start, uint32_t value, int nbits) {
 }
 
 static void
+pack_type1_crc_bits(const uint8_t* bytes, size_t count, uint8_t* bits) {
+    for (size_t i = 0, j = 0; i < count; i += 2, j += 16) {
+        if ((i + 1U) < count) {
+            bits[j + 0U] = (bytes[i + 1U] >> 7) & 0x01;
+            bits[j + 1U] = (bytes[i + 1U] >> 6) & 0x01;
+            bits[j + 2U] = (bytes[i + 1U] >> 5) & 0x01;
+            bits[j + 3U] = (bytes[i + 1U] >> 4) & 0x01;
+            bits[j + 4U] = (bytes[i + 1U] >> 3) & 0x01;
+            bits[j + 5U] = (bytes[i + 1U] >> 2) & 0x01;
+            bits[j + 6U] = (bytes[i + 1U] >> 1) & 0x01;
+            bits[j + 7U] = (bytes[i + 1U] >> 0) & 0x01;
+        }
+
+        bits[j + 8U] = (bytes[i] >> 7) & 0x01;
+        bits[j + 9U] = (bytes[i] >> 6) & 0x01;
+        bits[j + 10U] = (bytes[i] >> 5) & 0x01;
+        bits[j + 11U] = (bytes[i] >> 4) & 0x01;
+        bits[j + 12U] = (bytes[i] >> 3) & 0x01;
+        bits[j + 13U] = (bytes[i] >> 2) & 0x01;
+        bits[j + 14U] = (bytes[i] >> 1) & 0x01;
+        bits[j + 15U] = (bytes[i] >> 0) & 0x01;
+    }
+}
+
+static void
+append_type1_crc32(uint8_t* bytes, size_t count) {
+    assert(count >= 8U);
+    uint8_t bits[8 * 24 * 129];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    pack_type1_crc_bits(bytes, count, bits);
+    uint32_t crc = ComputeCrc32Bit(bits, (uint32_t)((count * 8U) - 32U));
+    bytes[count - 4U] = (uint8_t)((crc >> 24U) & 0xFFU);
+    bytes[count - 3U] = (uint8_t)((crc >> 16U) & 0xFFU);
+    bytes[count - 2U] = (uint8_t)((crc >> 8U) & 0xFFU);
+    bytes[count - 1U] = (uint8_t)(crc & 0xFFU);
+}
+
+static void
 test_reset_blocks_restores_integer_defaults(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -257,11 +304,42 @@ test_reset_blocks_restores_integer_defaults(void) {
     assert(state.data_dbsn_expected[0] == 0);
 }
 
+static void
+test_crc_valid_type1_pdu_dispatches_in_strict_mode(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.aggressive_framesync = 1;
+    opts.dmr_crc_relaxed_default = 0;
+    state.currentslot = 0;
+    state.data_header_valid[0] = 1;
+    state.data_header_blocks[0] = 1;
+    state.data_header_format[0] = 2;
+    state.data_header_sap[0] = 4;
+    state.data_block_counter[0] = 1;
+
+    uint8_t block[12] = {0x45, 0x00, 0x00, 0x14, 0x12, 0x34, 0x00, 0x00, 0, 0, 0, 0};
+    append_type1_crc32(block, sizeof(block));
+
+    g_decode_ip_calls = 0;
+    g_decode_ip_last_len = 0;
+    g_decode_ip_first_byte = 0;
+
+    dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0, 1);
+
+    assert(g_decode_ip_calls == 1U);
+    assert(g_decode_ip_last_len == 20U);
+    assert(g_decode_ip_first_byte == 0x45U);
+}
+
 int
 main(int argc, char** argv) {
     (void)argc;
     (void)argv;
     test_reset_blocks_restores_integer_defaults();
+    test_crc_valid_type1_pdu_dispatches_in_strict_mode();
 
     static dsd_opts opts;
     static dsd_state state;

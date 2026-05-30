@@ -94,6 +94,17 @@ ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     return v;
 }
 
+uint8_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes) {
+    (void)opts;
+    (void)state;
+    (void)input;
+    (void)slot;
+    (void)len_bytes;
+    return 0;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {

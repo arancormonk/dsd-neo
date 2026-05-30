@@ -193,6 +193,44 @@ M17logEncryption(uint8_t et, uint8_t es) {
 }
 
 static void
+M17logV3PayloadContents(uint8_t payload_contents) {
+    switch (payload_contents) {
+        case 0x1U: LOG_INFO(" Stream Data"); break;
+        case 0x2U: LOG_INFO(" Voice (3200bps)"); break;
+        case 0x3U: LOG_INFO(" Voice (1600bps)"); break;
+        case 0xFU: LOG_INFO(" Packet Data"); break;
+        default: LOG_INFO(" Reserved: %X", payload_contents); break;
+    }
+}
+
+static void
+M17logV3Encryption(uint8_t encryption_type) {
+    if (encryption_type == 0U) {
+        return;
+    }
+
+    LOG_INFO(" ENC:");
+    switch (encryption_type) {
+        case 0x1U: LOG_INFO(" Scrambler (8-bit);"); break;
+        case 0x2U: LOG_INFO(" Scrambler (16-bit);"); break;
+        case 0x3U: LOG_INFO(" Scrambler (24-bit);"); break;
+        case 0x4U: LOG_INFO(" AES-CTR (128-bit);"); break;
+        case 0x5U: LOG_INFO(" AES-CTR (192-bit);"); break;
+        case 0x6U: LOG_INFO(" AES-CTR (256-bit);"); break;
+        case 0x7U: LOG_INFO(" Reserved Enc (0x7);"); break;
+        default: break;
+    }
+}
+
+static uint8_t
+M17streamDataTypeFromLSF(const struct m17_lsf_result* res) {
+    if (res->version == 3U && res->payload_contents == 0xFU) {
+        return 20U;
+    }
+    return res->dt;
+}
+
+static void
 M17printLICH(const uint8_t* lich_decoded) {
     DSD_FPRINTF(stderr, " LICH: ");
     for (int i = 0; i < 6; i++) {
@@ -295,7 +333,7 @@ M17decodeLSF(dsd_state* state) {
     }
 
     //store this so we can reference it for playing voice and/or decoding data, dst/src etc
-    state->m17_str_dt = res.dt;
+    state->m17_str_dt = M17streamDataTypeFromLSF(&res);
     state->m17_dst = res.dst;
     state->m17_src = res.src;
     state->m17_can = res.cn;
@@ -306,20 +344,30 @@ M17decodeLSF(dsd_state* state) {
     LOG_INFO(" CAN: %d", res.cn);
     M17decodeCSD(state, res.dst, res.src);
 
-    M17logDataType(res.dt);
+    if (res.version == 3U) {
+        M17logV3PayloadContents(res.payload_contents);
+    } else {
+        M17logDataType(res.dt);
+    }
 
-    if (res.rs != 0) {
+    if (res.version == 3U && res.signature != 0U) {
+        LOG_INFO(" Signed (secp256r1);");
+    } else if (res.version != 3U && res.rs != 0U) {
         LOG_INFO(" RS: %02X", res.rs);
     }
     LOG_INFO("\n");
-    M17logEncryption(res.et, res.es);
+    if (res.version == 3U) {
+        M17logV3Encryption(res.encryption_type);
+    } else {
+        M17logEncryption(res.et, res.es);
+    }
 
     state->m17_enc = res.et;
     state->m17_enc_st = res.es;
 
-    if (res.rs == 0x10) {
+    if (res.version != 3U && res.rs == 0x10U) {
         LOG_INFO(" OTAKD Data Packet;");
-    } else if (res.rs == 0x11) {
+    } else if (res.version != 3U && res.rs == 0x11U) {
         LOG_INFO(" OTAKD Embedded LSF;\n");
         return;
     }
@@ -332,15 +380,23 @@ M17decodeLSF(dsd_state* state) {
 
     //debug
 
-    //pack meta bits into 14 bytes
-    if (res.has_meta != 0U) {
+    //pack meta bits into 14 bytes, using state->m17_meta as the AES-IV buffer for M17
+    DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
+    if (res.has_meta != 0U || res.meta_is_iv != 0U) {
         DSD_MEMCPY(state->m17_meta, res.meta, sizeof(res.meta));
-    } else {
-        DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
     }
 
     //Decode Meta Data when not ENC (if meta field is populated with something)
-    if (res.et == 0 && res.has_meta != 0U) {
+    if (res.version == 3U && res.meta_contents != 0U && res.meta_contents != 0xFU && res.has_meta != 0U) {
+        uint8_t meta[15];
+        meta[0] = (uint8_t)(res.meta_contents + 0x80U); //add identifier for pkt decoder
+        for (int i = 0; i < 14; i++) {
+            meta[i + 1] = state->m17_meta[i];
+        }
+        LOG_INFO("\n ");
+        //Note: We don't have opts here, so in the future, if we need it, we will need to pass it here
+        decodeM17PKT(NULL, state, meta, 15); //decode META
+    } else if (res.version != 3U && res.et == 0U && res.has_meta != 0U) {
         uint8_t meta[15];
         meta[0] = (uint8_t)(res.es + 0x80U); //add identifier for pkt decoder
         for (int i = 0; i < 14; i++) {
@@ -358,6 +414,11 @@ M17decodeLSF(dsd_state* state) {
         for (int i = 0; i < 16; i++) {
             LOG_INFO("%02X", state->m17_meta[i]);
         }
+    }
+
+    if (res.version == 3U) {
+        LOG_INFO("\n FT: %04X; PAY: %X; ENC: %X; SIG: %X; META: %X;", res.type_word, res.payload_contents,
+                 res.encryption_type, res.signature, res.meta_contents);
     }
 }
 
@@ -2623,9 +2684,7 @@ m17_decode_pkt_print_gnss_source(uint8_t data_source) {
     switch (data_source) {
         case 0: DSD_FPRINTF(stderr, " M17 Client;"); break;
         case 1: DSD_FPRINTF(stderr, " OpenRTX;"); break;
-        case 0x69: DSD_FPRINTF(stderr, " FME Data Source;"); break;
-        case 0xFF: DSD_FPRINTF(stderr, " Other Data Source;"); break;
-        default: DSD_FPRINTF(stderr, " Reserved Data Source: %02X;", data_source); break;
+        default: DSD_FPRINTF(stderr, " Other Data Source: %0X;", data_source); break;
     }
 }
 
@@ -2640,33 +2699,36 @@ m17_decode_pkt_print_station_type(uint8_t station_type) {
 }
 
 static void
-m17_decode_pkt_print_gnss(const uint8_t* input) {
-    const uint8_t data_source = input[1];
-    const uint8_t station_type = input[2];
-    const uint8_t lat_deg_int = input[3];
-    const uint32_t lat_deg_dec = (input[4] << 8) + input[5];
-    const uint8_t lon_deg_int = input[6];
-    const uint32_t lon_deg_dec = (input[7] << 8) + input[8];
-    const uint8_t indicators = input[9];
-
-    DSD_FPRINTF(stderr, "\n Latitude: %03d.%05d ", lat_deg_int, lat_deg_dec * 65535);
-    DSD_FPRINTF(stderr, "%c;", (indicators & 1) ? 'S' : 'N');
-    DSD_FPRINTF(stderr, " Longitude: %03d.%05d ", lon_deg_int, lon_deg_dec * 65535);
-    DSD_FPRINTF(stderr, "%c;", (indicators & 2) ? 'W' : 'E');
-
-    if (indicators & 4) {
-        const uint16_t altitude = (input[10] << 8) + input[11];
-        DSD_FPRINTF(stderr, " Altitude: %d;", altitude + 1500);
-    }
-    if (indicators & 8) {
-        const uint16_t bearing = (input[12] << 8) + input[13];
-        const uint8_t speed = input[14];
-        DSD_FPRINTF(stderr, " Speed: %d MPH;", speed);
-        DSD_FPRINTF(stderr, " Bearing: %d Degrees;", bearing);
+m17_decode_pkt_print_gnss(const uint8_t* input, int len) {
+    struct m17_gnss_result gnss;
+    const size_t input_len = (len > 0) ? (size_t)len : 0U;
+    if (m17_parse_gnss_v2(input, input_len, &gnss) != 0) {
+        DSD_FPRINTF(stderr, " Invalid GNSS packet;");
+        return;
     }
 
-    m17_decode_pkt_print_gnss_source(data_source);
-    m17_decode_pkt_print_station_type(station_type);
+    if ((gnss.validity & 0x8U) != 0U) {
+        DSD_FPRINTF(stderr, "\n GPS: (%f, %f);", gnss.latitude_deg, gnss.longitude_deg);
+    } else {
+        DSD_FPRINTF(stderr, "\n GPS Not Valid;");
+    }
+
+    if ((gnss.validity & 0x4U) != 0U) {
+        DSD_FPRINTF(stderr, " Altitude: %.1f m;", gnss.altitude_m);
+    }
+    if ((gnss.validity & 0x2U) != 0U) {
+        DSD_FPRINTF(stderr, " Speed: %.1f km/h;", gnss.speed_kmh);
+        DSD_FPRINTF(stderr, " Bearing: %u Degrees;", gnss.bearing_deg);
+    }
+    if ((gnss.validity & 0x1U) != 0U) {
+        DSD_FPRINTF(stderr, "\n      Radius: %.1f;", gnss.radius_m);
+    }
+    if (gnss.reserved != 0U) {
+        DSD_FPRINTF(stderr, " Reserved: %03X;", gnss.reserved);
+    }
+
+    m17_decode_pkt_print_gnss_source(gnss.data_source);
+    m17_decode_pkt_print_station_type(gnss.station_type);
 }
 
 static void
@@ -2720,7 +2782,7 @@ decodeM17PKT(const dsd_opts* opts, const dsd_state* state, const uint8_t* input,
         case 0x07: m17_decode_pkt_print_tle(input, len); break;
         case 0x82: m17_decode_pkt_print_extended_csd(input); break;
         case 0x81:
-        case 0x91: m17_decode_pkt_print_gnss(input); break;
+        case 0x91: m17_decode_pkt_print_gnss(input, len); break;
         case 0x80:
         case 0x83:
         case 0x89:

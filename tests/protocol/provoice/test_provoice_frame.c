@@ -176,9 +176,22 @@ test_frame_pair_loader_reports_short_input(void) {
     assert(reader.next == DSD_PROVOICE_FRAME_PAIR_DIBITS - 1);
 }
 
+static void
+test_frame_pair_loader_rejects_invalid_arguments(void) {
+    char frame1[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
+    char frame2[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
+    test_reader reader = {0};
+
+    assert(dsd_provoice_load_imbe_frame_pair(0, &reader, frame1, frame2) == -1);
+    assert(dsd_provoice_load_imbe_frame_pair(read_counting_dibit, &reader, 0, frame2) == -1);
+    assert(dsd_provoice_load_imbe_frame_pair(read_counting_dibit, &reader, frame1, 0) == -1);
+    assert(reader.next == 0);
+}
+
 int
 main(void) {
     test_frame_pair_loader_zero_fills_and_preserves_schedule();
     test_frame_pair_loader_reports_short_input();
+    test_frame_pair_loader_rejects_invalid_arguments();
     return 0;
 }

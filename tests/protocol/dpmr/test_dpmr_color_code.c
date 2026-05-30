@@ -46,8 +46,10 @@ test_all_reference_color_codes(void) {
 static void
 test_dibit_lsb_mask_is_preserved(void) {
     uint8_t bits[24];
-    bits_from_u24(0x575F77u & ~0x555555u, bits);
-    assert(GetdPmrColorCode(bits) == 0);
+    for (uint32_t i = 0; i < (uint32_t)(sizeof(k_color_cases) / sizeof(k_color_cases[0])); i++) {
+        bits_from_u24(k_color_cases[i].code & ~0x555555u, bits);
+        assert(GetdPmrColorCode(bits) == k_color_cases[i].color);
+    }
 }
 
 static void

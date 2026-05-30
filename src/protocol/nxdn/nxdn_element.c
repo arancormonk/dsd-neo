@@ -75,6 +75,8 @@ static void nxdn_element_handle_call_assignment(dsd_opts* opts, dsd_state* state
                                                 size_t elements_bits);
 static void nxdn_element_handle_alias(const dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                       size_t elements_bits);
+static void nxdn_element_handle_dst_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+                                         size_t elements_bits);
 static void nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                          size_t elements_bits);
 static void nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
@@ -97,6 +99,7 @@ static void nxdn_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* M
 static void nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static int nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, const uint8_t* Message, size_t message_bits);
 static void NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+static void NXDN_decode_VCALL_ARIB(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static void NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static void NXDN_decode_Alias(const dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static void NXDN_decode_ALIAS_ARIB(const dsd_opts* opts, dsd_state* state, const uint8_t* Message);
@@ -250,6 +253,74 @@ nxdn_element_handle_alias(const dsd_opts* opts, dsd_state* state, const uint8_t*
     NXDN_decode_Alias(opts, state, elements);
 }
 
+static const char*
+nxdn_dst_info_segment_label(uint8_t start, uint8_t end) {
+    if (start != 0U && end != 0U) {
+        return "Full";
+    }
+    if (start != 0U) {
+        return "First";
+    }
+    if (end != 0U) {
+        return "Last";
+    }
+    return "Next";
+}
+
+static void
+nxdn_element_handle_dst_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    enum {
+        NXDN_DST_INFO_HEADER_BITS = 16U,
+        NXDN_DST_INFO_MAX_CHARS = 25U,
+    };
+
+    if (elements_bits < NXDN_DST_INFO_HEADER_BITS) {
+        DSD_FPRINTF(stderr, " DST_ID_INFO Too Short (%zu bits); ", elements_bits);
+        return;
+    }
+
+    char station_id_string[NXDN_DST_INFO_MAX_CHARS + 1U];
+    DSD_MEMSET(station_id_string, 0, sizeof(station_id_string));
+
+    const uint8_t start = elements[8] & 1U;
+    const uint8_t end = elements[9] & 1U;
+    const uint8_t option = (uint8_t)ConvertBitIntoBytes(&elements[8], 8);
+    const uint8_t num_chars_field = (uint8_t)ConvertBitIntoBytes(&elements[10], 6);
+    size_t requested_chars = (start == 0U) ? 25U : (size_t)num_chars_field + 1U;
+    const size_t available_chars = (elements_bits - NXDN_DST_INFO_HEADER_BITS) / 8U;
+
+    if (requested_chars > NXDN_DST_INFO_MAX_CHARS) {
+        requested_chars = NXDN_DST_INFO_MAX_CHARS;
+    }
+    if (requested_chars > available_chars) {
+        requested_chars = available_chars;
+    }
+
+    for (size_t i = 0; i < requested_chars; i++) {
+        uint8_t c = (uint8_t)ConvertBitIntoBytes(&elements[NXDN_DST_INFO_HEADER_BITS + (i * 8U)], 8);
+        if (c >= 0x20U && c <= 0x7EU) {
+            station_id_string[i] = (char)c;
+        }
+    }
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Station Identification Information - %s ID: %s ", nxdn_dst_info_segment_label(start, end),
+                station_id_string);
+
+    if (start != 0U && end != 0U) {
+        char event_string[55];
+        DSD_SNPRINTF(event_string, sizeof(event_string), "NXDN Digital Station ID: %s", station_id_string);
+        watchdog_event_datacall(opts, state, 65520U, 0U, event_string, 0U);
+    }
+
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n Option: %02X; Start: %u; End %u; Characters: %zu or Sequence: %02X;", option, start,
+                    end, requested_chars, option & 0x3FU);
+    }
+
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
 static void
 nxdn_element_mark_control_sync(const dsd_opts* opts, dsd_state* state) {
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
@@ -346,6 +417,7 @@ nxdn_element_dispatch_handler(uint8_t message_type) {
         {0x0D, nxdn_element_handle_call_assignment},
         {0x04, nxdn_element_handle_call_assignment},
         {0x0E, nxdn_element_handle_call_assignment},
+        {0x17, nxdn_element_handle_dst_info},
         {0x1A, nxdn_element_handle_cch_info},
         {0x18, nxdn_element_handle_site_info},
         {0x1B, nxdn_element_handle_adj_site},
@@ -411,10 +483,9 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
         return;
     }
 
-    // ARIB TX release uses extended type 0xE8 with a base type of 0x28.
-    // Dispatch it through TX_REL handling so release-time cleanup runs.
-    if (MessageTypeExt == 0xE8U) {
-        MessageTypeDispatch = 0x08U;
+    if (MessageTypeExt == 0xE1U || MessageTypeExt == 0xE8U) {
+        NXDN_decode_VCALL_ARIB(opts, state, ElementsContent);
+        return;
     }
 
     if (MessageTypeDispatch == 0x19U) {
@@ -1901,6 +1972,8 @@ NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
 
 struct nxdn_vcall_info {
     uint8_t message_type;
+    uint8_t mfid;
+    uint8_t has_mfid;
     uint8_t cc_option;
     uint8_t call_type;
     uint8_t voice_call_option;
@@ -1913,16 +1986,17 @@ struct nxdn_vcall_info {
 };
 
 static void
-nxdn_vcall_parse(dsd_state* state, const uint8_t* Message, struct nxdn_vcall_info* info) {
+nxdn_vcall_parse_fields(dsd_state* state, const uint8_t* Message, struct nxdn_vcall_info* info, uint8_t message_type,
+                        size_t body_offset, int apply_type_d_truncation) {
     DSD_MEMSET(info, 0, sizeof(*info));
-    info->message_type = nxdn_message_type_from_bits(Message);
-    info->cc_option = (uint8_t)ConvertBitIntoBytes(&Message[8], 8);
-    info->call_type = (uint8_t)ConvertBitIntoBytes(&Message[16], 3);
-    info->voice_call_option = (uint8_t)ConvertBitIntoBytes(&Message[19], 5);
-    info->source_unit_id = (uint16_t)ConvertBitIntoBytes(&Message[24], 16);
-    info->destination_id = (uint16_t)ConvertBitIntoBytes(&Message[40], 16);
-    info->cipher_type = (uint8_t)ConvertBitIntoBytes(&Message[56], 2);
-    info->key_id = (uint8_t)ConvertBitIntoBytes(&Message[58], 6);
+    info->message_type = message_type;
+    info->cc_option = (uint8_t)ConvertBitIntoBytes(&Message[body_offset], 8);
+    info->call_type = (uint8_t)ConvertBitIntoBytes(&Message[body_offset + 8U], 3);
+    info->voice_call_option = (uint8_t)ConvertBitIntoBytes(&Message[body_offset + 11U], 5);
+    info->source_unit_id = (uint16_t)ConvertBitIntoBytes(&Message[body_offset + 16U], 16);
+    info->destination_id = (uint16_t)ConvertBitIntoBytes(&Message[body_offset + 32U], 16);
+    info->cipher_type = (uint8_t)ConvertBitIntoBytes(&Message[body_offset + 48U], 2);
+    info->key_id = (uint8_t)ConvertBitIntoBytes(&Message[body_offset + 50U], 6);
 
     state->NxdnElementsContent.CCOption = info->cc_option;
     state->NxdnElementsContent.CallType = info->call_type;
@@ -1932,12 +2006,36 @@ nxdn_vcall_parse(dsd_state* state, const uint8_t* Message, struct nxdn_vcall_inf
     state->NxdnElementsContent.CipherType = info->cipher_type;
     state->NxdnElementsContent.KeyID = info->key_id;
 
-    info->idas = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
+    info->idas = (apply_type_d_truncation && strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
     if (info->idas != 0U) {
         info->rep1 = (uint8_t)((info->source_unit_id >> 11) & 0x1FU);
         info->source_unit_id &= 0x7FFU;
         info->destination_id &= 0x7FFU;
     }
+}
+
+static void
+nxdn_vcall_parse(dsd_state* state, const uint8_t* Message, struct nxdn_vcall_info* info) {
+    nxdn_vcall_parse_fields(state, Message, info, nxdn_message_type_from_bits(Message), 8U, 1);
+}
+
+static uint8_t
+nxdn_arib_vcall_normalized_message_type(uint8_t message_type) {
+    if (message_type == 0x21U) {
+        return 0x01U;
+    }
+    if (message_type == 0x28U) {
+        return 0x08U;
+    }
+    return message_type;
+}
+
+static void
+nxdn_vcall_parse_arib(dsd_state* state, const uint8_t* Message, struct nxdn_vcall_info* info) {
+    const uint8_t message_type = nxdn_message_type_from_bits(Message);
+    nxdn_vcall_parse_fields(state, Message, info, nxdn_arib_vcall_normalized_message_type(message_type), 16U, 0);
+    info->mfid = (uint8_t)ConvertBitIntoBytes(&Message[8], 8);
+    info->has_mfid = 1U;
 }
 
 static void
@@ -1989,6 +2087,9 @@ static void
 nxdn_vcall_print_summary(dsd_state* state, const struct nxdn_vcall_info* info) {
     nxdn_vcall_print_color(info->message_type);
     DSD_FPRINTF(stderr, "\n ");
+    if (info->has_mfid != 0U) {
+        DSD_FPRINTF(stderr, "MFID: %02X; ", info->mfid);
+    }
     if (info->cc_option & 0x80U) {
         DSD_FPRINTF(stderr, "Emergency ");
     }
@@ -2153,14 +2254,26 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
 }
 
 static void
+nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
+    nxdn_vcall_print_summary(state, info);
+    nxdn_vcall_load_key(opts, state, info);
+    nxdn_vcall_print_cipher(state, info);
+    nxdn_vcall_apply_state(state, info);
+    nxdn_vcall_run_enc_lockout(opts, state, info);
+}
+
+static void
 NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     struct nxdn_vcall_info info;
     nxdn_vcall_parse(state, Message, &info);
-    nxdn_vcall_print_summary(state, &info);
-    nxdn_vcall_load_key(opts, state, &info);
-    nxdn_vcall_print_cipher(state, &info);
-    nxdn_vcall_apply_state(state, &info);
-    nxdn_vcall_run_enc_lockout(opts, state, &info);
+    nxdn_vcall_process(opts, state, &info);
+}
+
+static void
+NXDN_decode_VCALL_ARIB(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
+    struct nxdn_vcall_info info;
+    nxdn_vcall_parse_arib(state, Message, &info);
+    nxdn_vcall_process(opts, state, &info);
 }
 
 static unsigned long long int

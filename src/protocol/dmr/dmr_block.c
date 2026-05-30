@@ -1304,7 +1304,7 @@ dmr_block_type1_process_payload(dmr_block_assembler_ctx* ctx, int offset) {
     }
     if (enc_check == 1 && decrypted_pdu == 0) {
         dmr_block_type1_handle_encrypted_notice(ctx);
-    } else if (ctx->opts->aggressive_framesync == 0 || ctx->opts->dmr_crc_relaxed_default) {
+    } else if (ctx->crc_correct || ctx->opts->aggressive_framesync == 0 || ctx->opts->dmr_crc_relaxed_default) {
         dmr_block_type1_handle_sap(ctx, offset);
     }
 }

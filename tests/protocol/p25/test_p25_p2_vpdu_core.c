@@ -376,6 +376,37 @@ run_cases(void) {
         rc |= expect_eq_long("p2_sccb_implicit_partial_iden_lcn_ch2", lcn_freqs[1], 851000000 + 5 * 100 * 125);
     }
 
+    // Case 12: extended private voice (0x22) derives source from the SUID tail.
+    {
+        dsd_opts opts;
+        dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        state.currentslot = 0;
+
+        MAC[1] = 0x22;
+        MAC[2] = 0x00; // SVC
+        MAC[3] = 0x01;
+        MAC[4] = 0x23;
+        MAC[5] = 0x45; // target
+        MAC[6] = 0x01;
+        MAC[7] = 0x02;
+        MAC[8] = 0x03; // abbreviated source bytes, should be superseded
+        MAC[9] = 0x10;
+        MAC[10] = 0x20;
+        MAC[11] = 0x30;
+        MAC[12] = 0x40;
+        MAC[13] = 0xAA;
+        MAC[14] = 0xBB;
+        MAC[15] = 0xCC; // SUID tail source
+
+        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+        rc |= expect_eq_long("p2_private_ext_target", state.lasttg, 0x012345);
+        rc |= expect_eq_long("p2_private_ext_suid_source", state.lastsrc, 0xAABBCC);
+        dsd_state_ext_free_all(&state);
+    }
+
     return rc;
 }
 

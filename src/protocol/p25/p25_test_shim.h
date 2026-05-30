@@ -46,6 +46,9 @@ void p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac
                                          int iden, int type, int tdma, long base, int spac);
 void p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, int p25_trunk, long p25_cc_freq,
                                       const p25_test_iden_config* iden_cfg, long* out_vc0, int* out_tuned);
+void p25_test_invoke_mac_vpdu_channel_cache(const unsigned char* mac_bytes, int mac_len,
+                                            const p25_test_iden_config* iden_cfg, int channel_a, int channel_b,
+                                            long* out_freq_a, long* out_freq_b);
 int p25_test_p2_early_enc_handle(dsd_opts* opts, dsd_state* state, int slot);
 
 #ifdef __cplusplus

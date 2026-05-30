@@ -121,6 +121,38 @@ test_decode_pipeline(void) {
 }
 
 static void
+test_soft_decode_pipeline(void) {
+    int info_bits[DSD_DSTAR_HEADER_INFO_BITS];
+    int coded[DSD_DSTAR_HEADER_CODED_BITS];
+    int interleaved[DSD_DSTAR_HEADER_CODED_BITS];
+    int scrambled[DSD_DSTAR_HEADER_CODED_BITS];
+    uint16_t soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
+    uint16_t soft_descrambled[DSD_DSTAR_HEADER_CODED_BITS];
+    uint16_t soft_deinterleaved[DSD_DSTAR_HEADER_CODED_BITS];
+    int decoded[DSD_DSTAR_HEADER_INFO_BITS];
+
+    for (size_t i = 0; i < DSD_DSTAR_HEADER_INFO_BITS; i++) {
+        info_bits[i] = (int)((i * 5 + 2) & 0x1);
+    }
+
+    convolution_encode(info_bits, DSD_DSTAR_HEADER_INFO_BITS, coded);
+    dstar_interleave_header_bits(coded, interleaved, DSD_DSTAR_HEADER_CODED_BITS);
+    dstar_scramble_header_bits(interleaved, scrambled, DSD_DSTAR_HEADER_CODED_BITS);
+
+    for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
+        soft_rx[i] = scrambled[i] ? 0xF000U : 0x1000U;
+    }
+
+    dstar_scramble_soft_costs(soft_rx, soft_descrambled, DSD_DSTAR_HEADER_CODED_BITS);
+    dstar_deinterleave_soft_costs(soft_descrambled, soft_deinterleaved, DSD_DSTAR_HEADER_CODED_BITS);
+    size_t out_len = dstar_header_viterbi_decode_soft(soft_deinterleaved, DSD_DSTAR_HEADER_CODED_BITS, decoded,
+                                                      DSD_DSTAR_HEADER_INFO_BITS);
+
+    assert(out_len == DSD_DSTAR_HEADER_INFO_BITS);
+    assert(memcmp(info_bits, decoded, sizeof(info_bits)) == 0);
+}
+
+static void
 test_crc16(void) {
     const uint8_t payload[] = "123456789";
     // CRC-16/X25 known value from the spec.
@@ -244,6 +276,7 @@ main(void) {
     test_scrambler_reference_prefix();
     test_interleave_roundtrip();
     test_decode_pipeline();
+    test_soft_decode_pipeline();
     test_crc16();
     test_slow_data_text_keeps_byte_after_marker();
     test_slow_data_aprs_latitude_uses_compacted_direction();

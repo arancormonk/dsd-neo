@@ -49,11 +49,22 @@ test_custom_afs_format_expands_for_large_agency_field(void) {
     assert(strcmp(buffer, "123:1:2") == 0);
 }
 
+static void
+test_custom_afs_format_expands_for_large_subfleet_field(void) {
+    dsd_state state = make_state(1, 1, 9);
+    char buffer[8] = {0};
+
+    assert(getAfsStringLength(&state) == 7);
+    assert(getAfsString(&state, buffer, 1, 1, 123) == 7);
+    assert(strcmp(buffer, "1:1:123") == 0);
+}
+
 int
 main(void) {
     test_default_afs_format();
     test_custom_afs_format_uses_decimal_fields();
     test_custom_afs_format_expands_for_large_agency_field();
+    test_custom_afs_format_expands_for_large_subfleet_field();
     printf("EDACS_AFS: OK\n");
     return 0;
 }

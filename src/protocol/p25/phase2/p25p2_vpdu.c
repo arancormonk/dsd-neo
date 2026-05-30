@@ -947,16 +947,18 @@ p25p2_vpdu_handle_unit_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int 
     p25p2_vpdu_clear_slot_banner(state, slot);
 }
 
-static void
+static long int
 p25p2_vpdu_block07_print_entry(const dsd_opts* opts, dsd_state* state, int svc, int channel_t, int channel_r, int group,
                                int slot_idx) {
+    long int freq_t = 0;
     DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc, channel_t, channel_r, group,
                 group);
     p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
-    (void)process_channel_to_freq(opts, state, channel_t);
+    freq_t = process_channel_to_freq(opts, state, channel_t);
     if (p25p2_vpdu_channel_is_valid(channel_r)) {
         (void)process_channel_to_freq(opts, state, channel_r);
     }
+    return freq_t;
 }
 
 static int
@@ -1408,8 +1410,8 @@ p25p2_vpdu_iter_block_07(p25p2_vpdu_ctx* ctx) {
         UNUSED(freq1r);
 
         DSD_FPRINTF(stderr, "\n Group Voice Channel Grant Update Multiple - Explicit");
-        p25p2_vpdu_block07_print_entry(opts, state, svc1, channelt1, channelr1, group1, /*slot_idx*/ 0);
-        p25p2_vpdu_block07_print_entry(opts, state, svc2, channelt2, channelr2, group2, /*slot_idx*/ 1);
+        freq1t = p25p2_vpdu_block07_print_entry(opts, state, svc1, channelt1, channelr1, group1, /*slot_idx*/ 0);
+        freq2t = p25p2_vpdu_block07_print_entry(opts, state, svc2, channelt2, channelr2, group2, /*slot_idx*/ 1);
 
         {
             char suffix1[32];
@@ -1779,7 +1781,7 @@ p25p2_vpdu_iter_block_14(p25p2_vpdu_ctx* ctx) {
             (void)process_channel_to_freq(opts, state, channelt);
         }
         if (channelr != 0) {
-            (void)process_channel_to_freq(opts, state, channelt);
+            (void)process_channel_to_freq(opts, state, channelr);
         }
     }
 
@@ -3356,7 +3358,7 @@ p25p2_vpdu_iter_block_46(p25p2_vpdu_ctx* ctx) {
         int src = (MAC[6 + len_a] << 16) | (MAC[7 + len_a] << 8) | MAC[8 + len_a];
         unsigned long long int src_suid = 0;
 
-        if (MAC[1 + len_a] == 0x21) {
+        if (MAC[1 + len_a] == 0x22) {
             src_suid = (MAC[9 + len_a] << 48ULL) | (MAC[10 + len_a] << 40ULL) | (MAC[11 + len_a] << 32ULL)
                        | (MAC[12 + len_a] << 24ULL) | (MAC[13 + len_a] << 16ULL) | (MAC[14 + len_a] << 8ULL)
                        | (MAC[15 + len_a] << 0ULL);

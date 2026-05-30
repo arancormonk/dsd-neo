@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -157,15 +158,20 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)slot;
 }
 
+static char g_datacall_event[80];
+static uint32_t g_datacall_src;
+static uint32_t g_datacall_dst;
+static uint8_t g_datacall_slot;
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)data_string;
-    (void)slot;
+    g_datacall_src = src;
+    g_datacall_dst = dst;
+    g_datacall_slot = slot;
+    DSD_SNPRINTF(g_datacall_event, sizeof(g_datacall_event), "%s", data_string ? data_string : "");
 }
 
 void
@@ -239,10 +245,24 @@ set_message_type(uint8_t* bits, uint8_t type) {
 }
 
 static void
+set_extended_message_type(uint8_t* bits, uint8_t type) {
+    bits[0] = (uint8_t)((type >> 7U) & 1U);
+    bits[1] = (uint8_t)((type >> 6U) & 1U);
+    set_message_type(bits, (uint8_t)(type & 0x3FU));
+}
+
+static void
 write_bits_u64(uint8_t* bits, size_t start, uint64_t value, size_t nbits) {
     for (size_t i = 0U; i < nbits; i++) {
         size_t shift = (nbits - 1U) - i;
         bits[start + i] = (uint8_t)((value >> shift) & 1U);
+    }
+}
+
+static void
+write_ascii_bits(uint8_t* bits, size_t start, const char* text) {
+    for (size_t i = 0U; text[i] != '\0'; i++) {
+        write_bits_u64(bits, start + (i * 8U), (uint8_t)text[i], 8U);
     }
 }
 
@@ -259,6 +279,15 @@ static int
 expect_u64(const char* tag, uint64_t got, uint64_t want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got 0x%llX want 0x%llX\n", tag, (unsigned long long)got, (unsigned long long)want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_string(const char* tag, const char* got, const char* want) {
+    if (strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -375,6 +404,127 @@ test_short_dcall_data_is_rejected(uint8_t message_type, const char* tag_prefix) 
     return rc;
 }
 
+static int
+test_dst_id_info_complete_event(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(g_datacall_event, 0, sizeof(g_datacall_event));
+    g_datacall_src = 0;
+    g_datacall_dst = 0;
+    g_datacall_slot = 0xFFU;
+
+    set_message_type(bits, 0x17U);
+    bits[8] = 1U;
+    bits[9] = 1U;
+    write_bits_u64(bits, 10U, 4U, 6U);
+    write_ascii_bits(bits, 16U, "RADIO");
+
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+
+    int rc = 0;
+    rc |= expect_string("dst-id-event", g_datacall_event, "NXDN Digital Station ID: RADIO");
+    rc |= expect_int("dst-id-src", (int)g_datacall_src, 65520);
+    rc |= expect_int("dst-id-dst", (int)g_datacall_dst, 0);
+    rc |= expect_int("dst-id-slot", (int)g_datacall_slot, 0);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static void
+write_arib_vcall_fields(uint8_t* bits, uint8_t message_type, uint8_t mfid, uint8_t cc_option, uint8_t call_type,
+                        uint8_t voice_call_option, uint16_t source, uint16_t destination, uint8_t cipher_type,
+                        uint8_t key_id) {
+    set_extended_message_type(bits, message_type);
+    write_bits_u64(bits, 8U, mfid, 8U);
+    write_bits_u64(bits, 16U, cc_option, 8U);
+    write_bits_u64(bits, 24U, call_type, 3U);
+    write_bits_u64(bits, 27U, voice_call_option, 5U);
+    write_bits_u64(bits, 32U, source, 16U);
+    write_bits_u64(bits, 48U, destination, 16U);
+    write_bits_u64(bits, 64U, cipher_type, 2U);
+    write_bits_u64(bits, 66U, key_id, 6U);
+}
+
+static int
+test_arib_vcall_uses_shifted_fields(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+
+    write_arib_vcall_fields(bits, 0xE1U, 0xABU, 0xA0U, 1U, 2U, 0x1234U, 0x4567U, 1U, 0x2AU);
+
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+
+    int rc = 0;
+    rc |= expect_int("arib-vcall-cc-option", state->NxdnElementsContent.CCOption, 0xA0);
+    rc |= expect_int("arib-vcall-call-type", state->NxdnElementsContent.CallType, 1);
+    rc |= expect_int("arib-vcall-voice-option", state->NxdnElementsContent.VoiceCallOption, 2);
+    rc |= expect_int("arib-vcall-src", state->NxdnElementsContent.SourceUnitID, 0x1234);
+    rc |= expect_int("arib-vcall-dst", state->NxdnElementsContent.DestinationID, 0x4567);
+    rc |= expect_int("arib-vcall-cipher", state->NxdnElementsContent.CipherType, 1);
+    rc |= expect_int("arib-vcall-key", state->NxdnElementsContent.KeyID, 0x2A);
+    rc |= expect_int("arib-vcall-last-rid", state->nxdn_last_rid, 0x1234);
+    rc |= expect_int("arib-vcall-last-tg", state->nxdn_last_tg, 0x4567);
+    rc |= expect_int("arib-vcall-key-state", state->nxdn_key, 0x2A);
+    rc |= expect_int("arib-vcall-gi", state->gi[0], 0);
+    rc |= expect_int("arib-vcall-encrypted", state->dmr_encL, 1);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_arib_tx_release_uses_shifted_fields_and_clears_call(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+
+    write_arib_vcall_fields(bits, 0xE8U, 0xABU, 0x40U, 4U, 0U, 0x2222U, 0x3333U, 0U, 0x05U);
+    state->nxdn_last_rid = 0x7777U;
+    state->nxdn_last_tg = 0x8888U;
+    state->gi[0] = 1;
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "stale");
+
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+
+    int rc = 0;
+    rc |= expect_int("arib-release-cc-option", state->NxdnElementsContent.CCOption, 0x40);
+    rc |= expect_int("arib-release-call-type", state->NxdnElementsContent.CallType, 4);
+    rc |= expect_int("arib-release-src", state->NxdnElementsContent.SourceUnitID, 0x2222);
+    rc |= expect_int("arib-release-dst", state->NxdnElementsContent.DestinationID, 0x3333);
+    rc |= expect_int("arib-release-key", state->NxdnElementsContent.KeyID, 0x05);
+    rc |= expect_int("arib-release-last-rid", state->nxdn_last_rid, 0);
+    rc |= expect_int("arib-release-last-tg", state->nxdn_last_tg, 0);
+    rc |= expect_int("arib-release-gi", state->gi[0], -1);
+    rc |= expect_int("arib-release-alias", state->generic_talker_alias[0][0], '\0');
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -384,6 +534,9 @@ main(void) {
     rc |= test_sdcall_iv_type_d_min_length_is_accepted();
     rc |= test_short_dcall_data_is_rejected(0x39U, "sdcall-data-short");
     rc |= test_short_dcall_data_is_rejected(0x0BU, "dcall-data-short");
+    rc |= test_dst_id_info_complete_event();
+    rc |= test_arib_vcall_uses_shifted_fields();
+    rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();
 
     if (rc == 0) {
         printf("NXDN_ELEMENT_BOUNDS: OK\n");

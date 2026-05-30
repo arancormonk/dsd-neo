@@ -1906,7 +1906,7 @@ edacs_handle_standard_mode(dsd_opts* opts, dsd_state* state, unsigned long long 
 static void
 edacs_print_mode_selection_hint(unsigned long long int msg_1, unsigned long long int msg_2) {
     DSD_FPRINTF(stderr, " Detected EDACS: Use -fh, -fH, -fe, or -fE for std, esk, ea, or ea-esk to specify the type");
-    DSD_FPRINTF(stderr, "\\n");
+    DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " MSG_1 [%07llX]", msg_1);
     DSD_FPRINTF(stderr, " MSG_2 [%07llX]", msg_2);
 }
@@ -2037,6 +2037,9 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
     const double nowm = dsd_time_now_monotonic_s();
 
     DSD_FPRINTF(stderr, "EOT; \n");
+
+    // Give the control channel time to cancel the grant before retuning back to it.
+    skipDibit(opts, state, 240 * 8);
 
     //watchdog event at this point
     state->lastsynctype = DSD_SYNC_EDACS_NEG;

@@ -11,9 +11,11 @@
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 int
 getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) {
@@ -63,6 +65,59 @@ build_regular_flco(uint8_t* bits, uint8_t flco, uint8_t fid, uint8_t so, uint32_
     write_bits_u64(bits, 16U, so, 8U);
     write_bits_u64(bits, 24U, target & 0x00FFFFFFU, 24U);
     write_bits_u64(bits, 48U, source & 0x00FFFFFFU, 24U);
+}
+
+static int
+capture_regular_flco(uint8_t type, char* out, size_t out_size) {
+    if (out == NULL || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_flco_output") != 0) {
+        return -1;
+    }
+
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, type);
+
+    int rc = dsd_test_capture_stderr_end(&cap);
+    if (rc != 0) {
+        (void)remove(cap.path);
+        return -1;
+    }
+
+    FILE* fp = fopen(cap.path, "rb");
+    if (fp == NULL) {
+        (void)remove(cap.path);
+        return -1;
+    }
+    size_t nread = fread(out, 1, out_size - 1U, fp);
+    if (ferror(fp)) {
+        fclose(fp);
+        (void)remove(cap.path);
+        return -1;
+    }
+    out[nread] = '\0';
+    fclose(fp);
+    (void)remove(cap.path);
+    return 0;
+}
+
+static void
+test_flco_output_uses_real_newlines(void) {
+    char out[2048];
+    assert(capture_regular_flco(1U, out, sizeof(out)) == 0);
+    assert(strchr(out, '\n') != NULL);
+    assert(strstr(out, "\\n") == NULL);
 }
 
 static void
@@ -115,6 +170,7 @@ test_hytera_enhanced_flco_uses_secondary_checksum(void) {
 
 int
 main(void) {
+    test_flco_output_uses_real_newlines();
     test_kirisun_flco_sets_late_entry_mode();
     test_hytera_enhanced_flco_uses_secondary_checksum();
     printf("DMR FLCO privacy modes: OK\n");

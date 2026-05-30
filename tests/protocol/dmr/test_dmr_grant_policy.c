@@ -281,6 +281,17 @@ main(void) {
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("private known source allowed", opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq);
 
+    opts->trunk_use_allow_list = 0;
+    return_to_cc(opts, st);
+    build_grant(bits, bytes, 50U, lpcn, 1200U, 2200U, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("broadcast voice grant is normalized to group", dmr_sm_get_ctx()->vc_tg == 1200);
+
+    return_to_cc(opts, st);
+    build_grant(bits, bytes, 52U, lpcn, 1300U, 2300U, 1U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("data grant enabled for tuning is normalized to group", dmr_sm_get_ctx()->vc_tg == 1300);
+
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
         .tune_to_freq_result = cap_plus_result_tune_to_freq,
     });

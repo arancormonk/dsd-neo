@@ -103,6 +103,44 @@ test_ysf_soft_viterbi_matches_reference_offset(void) {
 }
 
 static void
+test_ysf_soft_viterbi_full_rate_reference_offset(void) {
+    enum {
+        decoded_bit_count = 180,
+        payload_bit_count = 176,
+        decoded_byte_count = 23,
+    };
+
+    uint8_t decoded[decoded_bit_count];
+    uint8_t dibits[decoded_bit_count];
+    uint8_t out_bits[payload_bit_count + 8];
+    uint8_t out_bytes[payload_bit_count / 8];
+    uint8_t expected_bytes[22];
+
+    for (size_t i = 0; i < decoded_bit_count; i++) {
+        decoded[i] = (uint8_t)(((i * 7U) + 3U) & 1U);
+    }
+    decoded[176] = 0U;
+    decoded[177] = 0U;
+    decoded[178] = 0U;
+    decoded[179] = 0U;
+
+    encode_k5_bits_to_dibits(decoded, decoded_bit_count, dibits);
+
+    DSD_MEMSET(out_bits, 0xA5, sizeof(out_bits));
+    uint32_t error = dsd_ysf_soft_viterbi_decode(dibits, decoded_bit_count, decoded_byte_count, 8U, payload_bit_count,
+                                                 out_bits, out_bytes);
+    assert(error != UINT32_MAX);
+    assert(bits_equal(out_bits, decoded, payload_bit_count));
+    for (size_t i = payload_bit_count; i < sizeof(out_bits); i++) {
+        assert(out_bits[i] == 0xA5);
+    }
+
+    DSD_MEMSET(expected_bytes, 0, sizeof(expected_bytes));
+    pack_bits_to_bytes(decoded, expected_bytes, 22);
+    assert(memcmp(out_bytes, expected_bytes, sizeof(expected_bytes)) == 0);
+}
+
+static void
 test_ysf_soft_viterbi_rejects_invalid_args(void) {
     uint8_t dibits[100];
     uint8_t out_bits[96];
@@ -152,6 +190,7 @@ test_ysf_event_text_print_guard(void) {
 int
 main(void) {
     test_ysf_soft_viterbi_matches_reference_offset();
+    test_ysf_soft_viterbi_full_rate_reference_offset();
     test_ysf_soft_viterbi_rejects_invalid_args();
     test_ysf_event_text_print_guard();
     return 0;

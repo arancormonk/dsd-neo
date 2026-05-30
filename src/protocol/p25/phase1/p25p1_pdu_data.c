@@ -13,6 +13,7 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
@@ -44,6 +45,8 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     }
     DSD_SNPRINTF(dst + len, dstsz - len, "%s", src);
 }
+
+enum { P25_PDU_MAX_DECODE_BYTES = 18 * 129 };
 
 typedef struct {
     uint8_t fmt;
@@ -615,7 +618,7 @@ p25_read_pdu_data_fields(const uint8_t* input) {
     P25PduDataFields pdu;
     pdu.sap = input[1] & 0x3F;
     pdu.fmt = input[0] & 0x1F;
-    pdu.io = (input[0] >> 1) & 0x1;
+    pdu.io = (input[0] >> 5) & 0x1;
     pdu.mfid = input[2];
     pdu.llid = (input[3] << 16) | (input[4] << 8) | input[5];
     pdu.blks = input[6] & 0x7F;
@@ -634,8 +637,14 @@ p25_pdu_payload_len(int len, uint8_t pad) {
 
 static int
 p25_pdu_payload_span(int len, int ptr) {
-    int plen = (len > ptr) ? (len - ptr + 1) : len;
-    return (plen > 0) ? plen : 0;
+    int consumed_after_header = ptr - 12;
+    if (consumed_after_header < 0) {
+        consumed_after_header = 0;
+    }
+    if (len <= consumed_after_header) {
+        return 0;
+    }
+    return len - consumed_after_header;
 }
 
 static void
@@ -669,6 +678,9 @@ p25_handle_sap34_syscfg_data(dsd_opts* opts, dsd_state* state, const P25PduDataF
 
 static void
 p25_store_lrrp_text_for_history(dsd_state* state) {
+    if (state == NULL || state->event_history_s == NULL) {
+        return;
+    }
     if (state->event_history_s[0].Event_History_Items[0].text_message[0] == '\0') {
         return;
     }
@@ -682,11 +694,39 @@ p25_store_lrrp_text_for_history(dsd_state* state) {
 }
 
 static void
-p25_handle_sap48_location_data(dsd_state* state, const P25PduDataFields* pdu, const uint8_t* payload, int len, int ptr,
-                               int encrypted) {
-    utf8_to_text(state, 1, (uint16_t)(len - ptr + 1), payload);
+p25_handle_sap48_location_data(dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu, const uint8_t* payload,
+                               int len, int ptr, int encrypted) {
+    int span = p25_pdu_payload_span(len, ptr);
+    if (span <= 0) {
+        p25_emit_pdu_json_for_fields(pdu, len, encrypted, "");
+        return;
+    }
+    if (span > P25_PDU_MAX_DECODE_BYTES) {
+        span = P25_PDU_MAX_DECODE_BYTES;
+    }
+
+    uint8_t nmea_valid = 0;
+    if (payload[0] == (uint8_t)'$' || payload[0] == (uint8_t)'!') {
+        uint8_t payload_bits[P25_PDU_MAX_DECODE_BYTES * 8];
+        DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
+        unpack_byte_array_into_bit_array(payload, payload_bits, span);
+
+        uint8_t slot = (state->currentslot >= 2) ? 1U : (uint8_t)state->currentslot;
+        state->dmr_lrrp_source[slot] = (uint32_t)state->lastsrc;
+        state->dmr_lrrp_target[slot] = (uint32_t)state->lasttg;
+        nmea_valid = nmea_sentence_checker(opts, state, payload_bits, slot, span);
+    }
+
+    if (!nmea_valid) {
+        uint8_t write_history = (state != NULL && state->event_history_s != NULL) ? 1U : 0U;
+        utf8_to_text(state, write_history, (uint16_t)span, payload);
+    }
     p25_store_lrrp_text_for_history(state);
-    p25_emit_pdu_json_for_fields(pdu, len, encrypted, state->event_history_s[0].Event_History_Items[0].text_message);
+    const char* summary = "";
+    if (state != NULL && state->event_history_s != NULL) {
+        summary = state->event_history_s[0].Event_History_Items[0].text_message;
+    }
+    p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
 }
 
 static void
@@ -698,7 +738,7 @@ p25_decode_clear_pdu_payload(dsd_opts* opts, dsd_state* state, const P25PduDataF
         case 4: decode_ip_pdu(opts, state, (uint16_t)(len + 1), payload); break;
         case 32: p25_handle_sap32_regauth_data(opts, state, pdu, payload, len, ptr, encrypted); break;
         case 34: p25_handle_sap34_syscfg_data(opts, state, pdu, payload, len, ptr, encrypted); break;
-        case 48: p25_handle_sap48_location_data(state, pdu, payload, len, ptr, encrypted); break;
+        case 48: p25_handle_sap48_location_data(opts, state, pdu, payload, len, ptr, encrypted); break;
         default: break;
     }
 }

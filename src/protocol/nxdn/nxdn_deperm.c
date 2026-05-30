@@ -1001,10 +1001,10 @@ struct nxdn_message_label {
     const char* label;
 };
 
-static const char*
+const char*
 nxdn_message_type_label(uint8_t message_type) {
     static const struct nxdn_message_label labels[] = {
-        {0x10, " IDLE"},
+        {0x00, " CALL_RESP"},
         {0x01, " VCALL"},
         {0x02, " VCALL_REC_REQ"},
         {0x03, " VCALL_IV"},
@@ -1019,6 +1019,8 @@ nxdn_message_type_label(uint8_t message_type) {
         {0x0C, " DCALL_ACK"},
         {0x0D, " DCALL_ASSGN_DUP"},
         {0x0E, " DCALL_ASSGN"},
+        {0x0F, " HEAD_DLY"},
+        {0x10, " IDLE"},
         {0x11, " DISC"},
         {0x17, " DST_ID_INFO"},
         {0x18, " SITE_INFO"},
@@ -1028,17 +1030,35 @@ nxdn_message_type_label(uint8_t message_type) {
         {0x1C, " FAIL_STAT_INFO"},
         {0x20, " REG_RESP"},
         {0x22, " REG_C_RESP"},
+        {0x23, " REG_COMM"},
         {0x24, " GRP_REG_RESP"},
+        {0x28, " AUTH_INQ_REQ"},
+        {0x29, " AUTH_INQ_RESP"},
+        {0x2A, " AUTH_INQ_REQ2"},
+        {0x2B, " AUTH_INQ_RESP2"},
+        {0x30, " STAT_INQ_REQ"},
+        {0x31, " STAT_INQ_RESP"},
         {0x32, " STAT_REQ"},
         {0x33, " STAT_RESP"},
+        {0x34, " REM_CON_REQ"},
+        {0x35, " REM_CON_RESP"},
+        {0x36, " REM_CON_E_REQ"},
+        {0x37, " REM_CON_E_RESP"},
         {0x38, " SDCALL_REQ_HEADER"},
         {0x39, " SDCALL_REQ_DATA"},
         {0x3A, " SDCALL_IV"},
         {0x3B, " SDCALL_RESP"},
         {0x3F, " ALIAS"},
-        {0xE1, " VCALL (ARIB)"},
-        {0xE7, " ALIAS_ARIB"},
-        {0xE8, " TX_REL (ARIB)"},
+        {0x81, ""},
+        {0x88, ""},
+        {0x90, ""},
+        {0xE1, " VCALL_STD_B54"},
+        {0xE2, " GPS_HEADER"},
+        {0xE3, " GPS_DATA"},
+        {0xE4, " BEARER_HEADER"},
+        {0xE5, " BEARER_DATA"},
+        {0xE7, " ALIAS_STD_B54"},
+        {0xE8, " TX_REL_STD_B54"},
     };
 
     for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++) {
@@ -1189,7 +1209,9 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     DSD_FPRINTF(stderr, "%s", KYEL);
     const char* label = nxdn_message_type_label(MessageType);
     if (label != NULL) {
-        DSD_FPRINTF(stderr, "%s", label);
+        if (label[0] != '\0') {
+            DSD_FPRINTF(stderr, "%s", label);
+        }
     } else {
         DSD_FPRINTF(stderr, " Unknown Message Type: %02X;", MessageType);
     }

@@ -2429,6 +2429,23 @@ target_link_libraries(
 )
 add_test(NAME P25_P1_TSBK_CLAMP COMMAND dsd-neo_test_p25_p1_tsbk_clamp)
 
+# P25 P1 TSBK sequence dispatch (multiple blocks in one TSDU)
+add_executable(
+    dsd-neo_test_p25_p1_tsbk_sequence
+    protocol/p25/test_p25_p1_tsbk_sequence.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_tsbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_12.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_crc.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_tsbk_sequence
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25
+        ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+)
+add_test(NAME P25_P1_TSBK_SEQUENCE COMMAND dsd-neo_test_p25_p1_tsbk_sequence)
+
 # P25 P1 TDULC parse → LCW retune (format 0x44)
 add_executable(dsd-neo_test_p25_p1_tdulc protocol/p25/test_p25_p1_tdulc.c)
 target_include_directories(
@@ -3499,7 +3516,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_flco_privacy_modes
-    PRIVATE dsd-neo_proto_dmr
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
 )
 add_test(
     NAME DMR_FLCO_PRIVACY_MODES
@@ -3533,6 +3550,16 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 add_test(NAME DMR_BS_SYNC_TIMES COMMAND dsd-neo_test_dmr_bs_sync_times)
+
+add_executable(
+    dsd-neo_test_dmr_frame_layout
+    protocol/dmr/test_dmr_frame_layout.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_frame_layout
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME DMR_FRAME_LAYOUT COMMAND dsd-neo_test_dmr_frame_layout)
 
 add_executable(
     dsd-neo_test_dmr_confidence_gate
@@ -4188,6 +4215,21 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_policy ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME FRAME_SYNC_POLICY COMMAND dsd-neo_test_frame_sync_policy)
+
+# Frame sync level-window estimator parity with the legacy sync scanner.
+add_executable(
+    dsd-neo_test_frame_sync_level_window
+    dsp/test_frame_sync_level_window.c
+)
+target_include_directories(
+    dsd-neo_test_frame_sync_level_window
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_level_window ${DSD_NEO_TEST_MATH_LIB})
+add_test(
+    NAME FRAME_SYNC_LEVEL_WINDOW
+    COMMAND dsd-neo_test_frame_sync_level_window
+)
 
 # DMR sync warm start threshold initialization test
 add_executable(dsd-neo_test_sync_warm_start dsp/test_sync_warm_start.c)

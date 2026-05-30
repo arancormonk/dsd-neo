@@ -96,10 +96,10 @@ typedef struct {
 static void
 dmr_flco_print_type_color(uint8_t type, const char* type1_color, const char* type2_color, const char* type3_color) {
     if (type == 1) {
-        DSD_FPRINTF(stderr, "%s \\n", type1_color);
+        DSD_FPRINTF(stderr, "%s \n", type1_color);
     }
     if (type == 2) {
-        DSD_FPRINTF(stderr, "%s \\n", type2_color);
+        DSD_FPRINTF(stderr, "%s \n", type2_color);
     }
     if (type == 3) {
         DSD_FPRINTF(stderr, "%s", type3_color);
@@ -265,7 +265,7 @@ dmr_flco_handle_motorola_or_tait(dmr_flco_ctx* ctx) {
     }
 
     if (ctx->type == 2 && ctx->flco == 0x30) {
-        DSD_FPRINTF(stderr, "%s \\n", KRED);
+        DSD_FPRINTF(stderr, "%s \n", KRED);
         dmr_print_slot_tag(ctx->state);
         DSD_FPRINTF(stderr, " Data Terminator (TD_LC) ");
         DSD_FPRINTF(stderr, "%s", KNRM);
@@ -314,7 +314,7 @@ dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
     (void)ConvertBitIntoBytes(&ctx->lc_bits[20], 4);
     (void)ConvertBitIntoBytes(&ctx->lc_bits[48], 8);
 
-    DSD_FPRINTF(stderr, "%s \\n", KGRN);
+    DSD_FPRINTF(stderr, "%s \n", KGRN);
     dmr_print_slot_tag(ctx->state);
     DSD_FPRINTF(stderr, " ");
     if (ctx->opts->payload == 1) {
@@ -336,7 +336,7 @@ dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
     DSD_FPRINTF(stderr, "Call Alert ");
 
     if (ctx->opts->payload == 1) {
-        DSD_FPRINTF(stderr, "\\n  ");
+        DSD_FPRINTF(stderr, "\n  ");
         DSD_FPRINTF(stderr, "%s", KYEL);
     }
 
@@ -433,7 +433,7 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " (Checksum Err);");
-        DSD_FPRINTF(stderr, "\\n");
+        DSD_FPRINTF(stderr, "\n");
     }
 
     DSD_FPRINTF(stderr, "%s ", KNRM);
@@ -761,7 +761,7 @@ dmr_flco_print_hytera_basic_key_slot0(const dmr_flco_ctx* ctx) {
     if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 0
         && ctx->state->payload_algid == 0) {
         if (ctx->state->K2 != 0) {
-            DSD_FPRINTF(stderr, "\\n ");
+            DSD_FPRINTF(stderr, "\n ");
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
@@ -774,7 +774,7 @@ dmr_flco_print_hytera_basic_key_slot1(const dmr_flco_ctx* ctx) {
     if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 1
         && ctx->state->payload_algidR == 0) {
         if (ctx->state->K2 != 0) {
-            DSD_FPRINTF(stderr, "\\n ");
+            DSD_FPRINTF(stderr, "\n ");
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
@@ -822,14 +822,14 @@ static void
 dmr_flco_print_aes_24_25_keys(const dmr_flco_ctx* ctx) {
     if (ctx->slot == 0 && (ctx->state->payload_algid == 0x25 || ctx->state->payload_algid == 0x24)
         && ctx->state->aes_key_loaded[0] == 1) {
-        DSD_FPRINTF(stderr, "\\n ");
+        DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && (ctx->state->payload_algidR == 0x25 || ctx->state->payload_algidR == 0x24)
         && ctx->state->aes_key_loaded[1] == 1) {
-        DSD_FPRINTF(stderr, "\\n ");
+        DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
@@ -840,14 +840,14 @@ static void
 dmr_flco_print_aes_36_37_keys(const dmr_flco_ctx* ctx) {
     if (ctx->slot == 0 && (ctx->state->payload_algid == 0x36 || ctx->state->payload_algid == 0x37)
         && ctx->state->aes_key_loaded[0] == 1) {
-        DSD_FPRINTF(stderr, "\\n ");
+        DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key: %s", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && (ctx->state->payload_algidR == 0x36 || ctx->state->payload_algidR == 0x37)
         && ctx->state->aes_key_loaded[1] == 1) {
-        DSD_FPRINTF(stderr, "\\n ");
+        DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key: %s", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
@@ -873,7 +873,7 @@ dmr_flco_finalize(dmr_flco_ctx* ctx) {
     }
     if (*ctx->IrrecoverableErrors != 0) {
         if (ctx->type != 3) {
-            DSD_FPRINTF(stderr, "\\n");
+            DSD_FPRINTF(stderr, "\n");
         }
         DSD_FPRINTF(stderr, "%s", KRED);
         dmr_print_slot_tag(ctx->state);
