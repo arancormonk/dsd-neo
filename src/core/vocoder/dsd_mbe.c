@@ -326,6 +326,33 @@ process_ambe2450_params(const mbe_process_params* params, const char ambe_d[49],
                                          params->prev_mp_enhanced, have_result ? result : NULL);
 }
 
+static int
+keyring_rkey_index_valid(const dsd_state* state, int index) {
+    return state != NULL && index >= 0 && (size_t)index < (sizeof(state->rkey_array) / sizeof(state->rkey_array[0]));
+}
+
+static uint8_t
+keyring_aes_segment_count(const dsd_state* state, int key_id) {
+    static const int offsets[4] = {0x000, 0x101, 0x201, 0x301};
+    uint8_t present = 0U;
+    uint8_t nonzero = 0U;
+
+    for (size_t i = 0; i < 4U; i++) {
+        const int index = key_id + offsets[i];
+        if (!keyring_rkey_index_valid(state, index)) {
+            continue;
+        }
+        if (state->rkey_array_loaded[index] != 0U) {
+            present++;
+        }
+        if (state->rkey_array[index] != 0ULL) {
+            nonzero++;
+        }
+    }
+
+    return present != 0U ? present : nonzero;
+}
+
 void
 keyring(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
@@ -344,6 +371,7 @@ keyring(dsd_opts* opts, dsd_state* state) {
         state->A2[0] = state->rkey_array[state->payload_keyid + 0x101];
         state->A3[0] = state->rkey_array[state->payload_keyid + 0x201];
         state->A4[0] = state->rkey_array[state->payload_keyid + 0x301];
+        state->aes_key_segments[0] = keyring_aes_segment_count(state, state->payload_keyid);
 
         //check to see if there is a value loaded or not
         if (state->A1[0] == 0 && state->A2[0] == 0 && state->A3[0] == 0 && state->A4[0] == 0) {
@@ -358,6 +386,7 @@ keyring(dsd_opts* opts, dsd_state* state) {
         state->A2[1] = state->rkey_array[state->payload_keyidR + 0x101];
         state->A3[1] = state->rkey_array[state->payload_keyidR + 0x201];
         state->A4[1] = state->rkey_array[state->payload_keyidR + 0x301];
+        state->aes_key_segments[1] = keyring_aes_segment_count(state, state->payload_keyidR);
 
         //check to see if there is a value loaded or not
         if (state->A1[1] == 0 && state->A2[1] == 0 && state->A3[1] == 0 && state->A4[1] == 0) {
@@ -1138,7 +1167,7 @@ mbeslot_left_aes_enabled(const dsd_state* state) {
         case 0x36:
         case 0x37:
         case 0x84:
-        case 0x89: return state->aes_key_loaded[0] == 1;
+        case 0x89: return dsd_dmr_voice_slot_can_decrypt(state, 0, state->payload_algid, state->R);
         default: return 0;
     }
 }
@@ -1152,7 +1181,7 @@ mbeslot_right_aes_enabled(const dsd_state* state) {
         case 0x36:
         case 0x37:
         case 0x84:
-        case 0x89: return state->aes_key_loaded[1] == 1;
+        case 0x89: return dsd_dmr_voice_slot_can_decrypt(state, 1, state->payload_algidR, state->RR);
         default: return 0;
     }
 }
@@ -1583,7 +1612,7 @@ mbe_post_left_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* fram
         return;
     }
 
-    if (dsd_dmr_voice_alg_can_decrypt(state->payload_algid, state->R, state->aes_key_loaded[0])
+    if (dsd_dmr_voice_slot_can_decrypt(state, 0, state->payload_algid, state->R)
         || (state->payload_algid == 0x07 && frame_ctx->vertex_ks_applied_l == 1)) {
         state->dmr_encL = 0;
     }
@@ -1619,7 +1648,7 @@ mbe_post_right_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* fra
         return;
     }
 
-    if (dsd_dmr_voice_alg_can_decrypt(state->payload_algidR, state->RR, state->aes_key_loaded[1])
+    if (dsd_dmr_voice_slot_can_decrypt(state, 1, state->payload_algidR, state->RR)
         || (state->payload_algidR == 0x07 && frame_ctx->vertex_ks_applied_r == 1)) {
         state->dmr_encR = 0;
     }

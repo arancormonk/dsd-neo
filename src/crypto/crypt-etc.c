@@ -61,19 +61,24 @@ ascii_tail_is_ws(const char* p) {
 }
 
 static int
-parse_hex_u16_digits(const char* p, uint16_t* out) {
-    uint32_t value = 0U;
-    int digits = 0;
+parse_hex_u16_truncating_strict(const char* token, uint16_t* out) {
+    if (token == NULL || out == NULL) {
+        return 0;
+    }
 
+    const char* p = skip_ascii_ws_const(token);
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+    }
+
+    uint16_t value = 0U;
+    int digits = 0;
     while (*p != '\0' && !isspace((unsigned char)*p)) {
         int nib = hex_nibble_value((int)*p);
         if (nib < 0) {
             return 0;
         }
-        value = (value << 4U) | (uint32_t)nib;
-        if (value > 0xFFFFU) {
-            return 0;
-        }
+        value = (uint16_t)((value << 4U) | (uint16_t)nib);
         digits++;
         p++;
     }
@@ -81,20 +86,8 @@ parse_hex_u16_digits(const char* p, uint16_t* out) {
     if (digits == 0 || !ascii_tail_is_ws(p)) {
         return 0;
     }
-    *out = (uint16_t)value;
+    *out = value;
     return 1;
-}
-
-static int
-parse_hex_u16_strict(const char* token, uint16_t* out) {
-    if (token == NULL || out == NULL) {
-        return 0;
-    }
-    const char* p = skip_ascii_ws_const(token);
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        p += 2;
-    }
-    return parse_hex_u16_digits(p, out);
 }
 
 static char*
@@ -386,7 +379,7 @@ anytone_bp_keystream_creation(dsd_state* state, char* input) {
     uint16_t key = 0;
     uint16_t kperm = 0;
 
-    (void)parse_hex_u16_strict(trim_ascii_ws(input), &key);
+    (void)parse_hex_u16_truncating_strict(trim_ascii_ws(input), &key);
     key &= 0xFFFF; //truncate to 16-bits
 
     //calculate key permutation using simple operations

@@ -2292,7 +2292,7 @@ test_dmr_baofeng_pc5_long_option_parse(void) {
 }
 
 static int
-test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes(void) {
+test_dmr_baofeng_pc5_256_long_option_uses_ascii_hex_key(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
@@ -2331,10 +2331,8 @@ test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes(void) {
 
     PC5Context expected;
     DSD_MEMSET(&expected, 0, sizeof(expected));
-    unsigned char key_bytes[32] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
-                                   0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
-                                   0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F};
-    create_keys_pc5(&expected, key_bytes, sizeof(key_bytes));
+    const unsigned char key_ascii[] = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F";
+    create_keys_pc5(&expected, key_ascii, strlen((const char*)key_ascii));
     expected.rounds = PC5_NBROUND;
 
     if (ctxpc5.rounds != expected.rounds || memcmp(ctxpc5.perm, expected.perm, sizeof(expected.perm)) != 0
@@ -2343,7 +2341,7 @@ test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes(void) {
         || memcmp(ctxpc5.rngxor, expected.rngxor, sizeof(expected.rngxor)) != 0
         || memcmp(ctxpc5.tab, expected.tab, sizeof(expected.tab)) != 0
         || memcmp(ctxpc5.inv, expected.inv, sizeof(expected.inv)) != 0) {
-        DSD_FPRINTF(stderr, "expected 64-hex PC5 input to decode to 32 binary key bytes\n");
+        DSD_FPRINTF(stderr, "expected 64-hex PC5 input to use dsd-fme ASCII hex key schedule\n");
         freeState(state);
         free(opts);
         free(state);
@@ -3642,7 +3640,7 @@ main(void) {
     rc |= test_rtl_udp_control_port_too_large_returns_error();
     rc |= test_rtl_udp_control_bind_missing_value_returns_error();
     rc |= test_dmr_baofeng_pc5_long_option_parse();
-    rc |= test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes();
+    rc |= test_dmr_baofeng_pc5_256_long_option_uses_ascii_hex_key();
     rc |= test_dmr_csi_ee72_long_option_parse();
     rc |= test_dmr_vertex_ks_csv_long_option_parse();
     rc |= test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv();

@@ -535,13 +535,12 @@ baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input) {
     }
 
     if (nhex == 64) {
-        uint8_t raw[32];
-        DSD_MEMSET(raw, 0, sizeof(raw));
-        if (pc5_parse_hex_bytes(hex, nhex, raw, sizeof(raw)) != 0) {
-            DSD_FPRINTF(stderr, "DMR PC5 key parse failed: invalid 256-bit key\n");
-            return -1;
-        }
-        create_keys_pc5(&ctxpc5, raw, sizeof(raw));
+        /*
+         * dsd-fme treats PC5-256 input as the 64 ASCII hex characters, unlike
+         * PC5-128 which is decoded to bytes and reversed. Keep that wire
+         * compatibility, while still validating/canonicalizing the input first.
+         */
+        create_keys_pc5(&ctxpc5, (const unsigned char*)hex, nhex);
         ctxpc5.rounds = PC5_NBROUND;
         DSD_FPRINTF(stderr, "DMR Baofeng AP (PC5) 256-bit key with forced application\n");
         state->baofeng_ap = 1;

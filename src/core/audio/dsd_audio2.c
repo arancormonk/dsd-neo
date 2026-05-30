@@ -467,19 +467,17 @@ dsd_dmr_ss3_init_enc_flags(const dsd_state* state, int* encL, int* encR) {
     if (*encL) {
         const int can_decrypt =
             forced_dmr_privacy
-            || ((state->payload_algid == 0)
-                    ? key_loaded
-                    : dsd_dmr_voice_alg_can_decrypt(state->payload_algid, state->R, state->aes_key_loaded[0]));
+            || ((state->payload_algid == 0) ? key_loaded
+                                            : dsd_dmr_voice_slot_can_decrypt(state, 0, state->payload_algid, state->R));
         if (can_decrypt) {
             *encL = 0;
         }
     }
     if (*encR) {
-        const int can_decrypt =
-            forced_dmr_privacy
-            || ((state->payload_algidR == 0)
-                    ? key_loaded
-                    : dsd_dmr_voice_alg_can_decrypt(state->payload_algidR, state->RR, state->aes_key_loaded[1]));
+        const int can_decrypt = forced_dmr_privacy
+                                || ((state->payload_algidR == 0)
+                                        ? key_loaded
+                                        : dsd_dmr_voice_slot_can_decrypt(state, 1, state->payload_algidR, state->RR));
         if (can_decrypt) {
             *encR = 0;
         }

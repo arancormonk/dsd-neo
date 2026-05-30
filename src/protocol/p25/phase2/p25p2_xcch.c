@@ -272,6 +272,7 @@ p25p2_xcch_clear_slot_keys(dsd_state* state, int slot) {
     state->A3[slot] = 0;
     state->A4[slot] = 0;
     state->aes_key_loaded[slot] = 0;
+    state->aes_key_segments[slot] = 0U;
 }
 
 static void

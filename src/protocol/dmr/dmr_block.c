@@ -11,15 +11,11 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/bp.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/crypto/aes.h>
-#include <dsd-neo/crypto/des.h>
-#include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -29,9 +25,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_block_crypto.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 
@@ -991,171 +987,15 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, ui
     dmr_udt_finalize(&ctx);
 }
 
-#ifdef DMR_PDU_DECRYPTION
-typedef struct {
-    int alg;
-    int kid;
-    int akl;
-    int start;
-    int end;
-    unsigned long long mi;
-    unsigned long long rkey;
-    uint8_t kaes[32];
-    uint8_t kiv[9];
-} dmr_block_dec_ctx;
-
-static void DSD_ATTR_USED
-dmr_block_dec_load_ctx(dsd_state* state, uint8_t slot, int blocks, uint8_t block_len, dmr_block_dec_ctx* ctx) {
-    const uint8_t empt[32] = {0};
-
-    DSD_MEMSET(ctx, 0, sizeof(*ctx));
-    ctx->start = (int)state->data_ks_start[slot];
-    ctx->end = ((blocks + 1) * block_len) - 4 - (int)state->data_block_poc[slot] - ctx->start;
-    if (ctx->end < 0) {
-        ctx->end = 3096;
-    }
-
-    if (state->currentslot == 0) {
-        ctx->alg = state->payload_algid;
-        ctx->kid = state->payload_keyid;
-        ctx->mi = (unsigned long long)state->payload_mi;
-        ctx->rkey = state->rkey_array[state->payload_keyid];
-    } else {
-        ctx->alg = state->payload_algidR;
-        ctx->kid = state->payload_keyidR;
-        ctx->mi = (unsigned long long)state->payload_miR;
-        ctx->rkey = state->rkey_array[state->payload_keyidR];
-    }
-
-    for (int i = 0; i < 8; i++) {
-        ctx->kaes[i + 0] = ((state->rkey_array[ctx->kid + 0x000] >> (56 - (i * 8))) & 0xFF);
-        ctx->kaes[i + 8] = ((state->rkey_array[ctx->kid + 0x101] >> (56 - (i * 8))) & 0xFF);
-        ctx->kaes[i + 16] = ((state->rkey_array[ctx->kid + 0x201] >> (56 - (i * 8))) & 0xFF);
-        ctx->kaes[i + 24] = ((state->rkey_array[ctx->kid + 0x301] >> (56 - (i * 8))) & 0xFF);
-    }
-    if (memcmp(ctx->kaes, empt, sizeof(ctx->kaes)) != 0) {
-        ctx->akl = 1;
-    }
-    if (ctx->rkey == 0 && state->R != 0) {
-        ctx->rkey = state->R;
-    }
-
-    ctx->kiv[0] = ((ctx->rkey & 0xFF00000000) >> 32);
-    ctx->kiv[1] = ((ctx->rkey & 0xFF000000) >> 24);
-    ctx->kiv[2] = ((ctx->rkey & 0xFF0000) >> 16);
-    ctx->kiv[3] = ((ctx->rkey & 0xFF00) >> 8);
-    ctx->kiv[4] = ((ctx->rkey & 0xFF) >> 0);
-    ctx->kiv[5] = ((ctx->mi & 0xFF000000) >> 24);
-    ctx->kiv[6] = ((ctx->mi & 0xFF0000) >> 16);
-    ctx->kiv[7] = ((ctx->mi & 0xFF00) >> 8);
-    ctx->kiv[8] = ((ctx->mi & 0xFF) >> 0);
-}
-
-static void
-dmr_block_dec_print_info(const dmr_block_dec_ctx* ctx) {
-    DSD_FPRINTF(stderr, "\\n PDU ALG: %02X; Key ID: %02X;", ctx->alg, ctx->kid);
-    if (ctx->alg != 0) {
-        DSD_FPRINTF(stderr, " MI(32): %08llX;", ctx->mi);
-    }
-    if (ctx->alg == 0) {
-        DSD_FPRINTF(stderr, " Moto BP;");
-    } else if (ctx->alg == 1) {
-        DSD_FPRINTF(stderr, " RC4;");
-    } else if (ctx->alg == 2) {
-        DSD_FPRINTF(stderr, " DES;");
-    } else if (ctx->alg == 4) {
-        DSD_FPRINTF(stderr, " AES128;");
-    } else if (ctx->alg == 5) {
-        DSD_FPRINTF(stderr, " AES256;");
-    }
-    if (ctx->rkey && ctx->alg != 0) {
-        DSD_FPRINTF(stderr, " Key: %s;", DSD_SECRET_REDACTED);
-    }
-}
-
-static void DSD_ATTR_USED
-dmr_block_dec_prepare_maes(dsd_state* state, uint8_t maes[16]) {
-    LFSR128d(state);
-    if (state->currentslot == 0) {
-        DSD_MEMCPY(maes, state->aes_iv, 16);
-    } else {
-        DSD_MEMCPY(maes, state->aes_ivR, 16);
-    }
-}
-
-static void DSD_ATTR_USED
-dmr_block_dec_generate_stream(dsd_state* state, uint8_t slot, const dmr_block_dec_ctx* ctx, uint8_t ob[129 * 24],
-                              uint8_t* decrypted_pdu) {
-    if (ctx->alg == 1 && ctx->rkey != 0) {
-        rc4_block_output(256, 9, (int)state->data_byte_ctr[slot], ctx->kiv, ob);
-        *decrypted_pdu = 1;
-    } else if (ctx->alg == 2 && ctx->rkey != 0) {
-        int nblocks = (state->data_byte_ctr[slot] / 8) + 1;
-        des_multi_keystream_output(ctx->mi, ctx->rkey, ob, 1, nblocks);
-        *decrypted_pdu = 1;
-    } else if ((ctx->alg == 4 || ctx->alg == 5) && ctx->akl == 1) {
-        uint8_t maes[16];
-        int nblocks = (state->data_byte_ctr[slot] / 16) + 1;
-        dmr_block_dec_prepare_maes(state, maes);
-        aes_ofb_keystream_output(maes, ctx->kaes, ob, (ctx->alg == 5) ? 2 : 0, nblocks);
-        *decrypted_pdu = 1;
-    }
-}
-
-static void DSD_ATTR_USED
-dmr_block_dec_apply_stream(dsd_state* state, uint8_t slot, const dmr_block_dec_ctx* ctx, const uint8_t ob[129 * 24]) {
-    for (int i = 0; i < ctx->end; i++) {
-        state->dmr_pdu_sf[slot][i + ctx->start] ^= ob[i % 3096];
-    }
-}
-
-static void DSD_ATTR_USED
-dmr_block_dec_apply_bp(dsd_state* state, uint8_t slot, const dmr_block_dec_ctx* ctx, uint8_t ob[129 * 24],
-                       uint8_t* decrypted_pdu) {
-    uint16_t bp_key = 0;
-
-    if (ctx->alg != 0 || state->K == 0) {
-        return;
-    }
-
-    bp_key = BPK[state->K];
-    ob[0] = (bp_key >> 8) & 0xFF;
-    ob[1] = (bp_key >> 0) & 0xFF;
-    DSD_FPRINTF(stderr, " Key: %s;", DSD_SECRET_REDACTED);
-    if (bp_key == 0) {
-        return;
-    }
-    for (int i = 0; i < ctx->end; i++) {
-        state->dmr_pdu_sf[slot][i + ctx->start] ^= ob[i % 2];
-    }
-    *decrypted_pdu = 1;
-}
-#endif
-
 static void DSD_ATTR_USED
 dmr_block_type1_decrypt_pdu(dsd_state* state, uint8_t slot, int blocks, uint8_t block_len, uint8_t* decrypted_pdu) {
 #ifdef DMR_PDU_DECRYPTION
-    dmr_block_dec_ctx ctx;
-    uint8_t ob[129 * 24];
-    uint8_t stream_ready = 0;
+    dmr_block_crypto_ctx ctx;
 
-    DSD_MEMSET(ob, 0, sizeof(ob));
-    dmr_block_dec_load_ctx(state, slot, blocks, block_len, &ctx);
-    dmr_block_dec_print_info(&ctx);
-    if (ctx.alg == 5) {
-        DSD_FPRINTF(stderr, "\\n");
-    }
+    dmr_block_crypto_load_ctx(state, slot, blocks, block_len, &ctx);
+    dmr_block_crypto_print_info(&ctx);
 
-    dmr_block_dec_generate_stream(state, slot, &ctx, ob, decrypted_pdu);
-    stream_ready = ((ctx.alg == 1 && ctx.rkey != 0) || (ctx.alg == 2 && ctx.rkey != 0) || (ctx.alg == 4 && ctx.akl != 0)
-                    || (ctx.alg == 5 && ctx.akl != 0))
-                       ? 1
-                       : 0;
-    if (stream_ready) {
-        dmr_block_dec_apply_stream(state, slot, &ctx, ob);
-    } else {
-        dmr_block_dec_apply_bp(state, slot, &ctx, ob, decrypted_pdu);
-    }
+    *decrypted_pdu = dmr_block_crypto_decrypt_payload(state, slot, &ctx);
 #else
     UNUSED(state);
     UNUSED(slot);

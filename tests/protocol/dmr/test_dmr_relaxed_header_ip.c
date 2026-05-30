@@ -131,6 +131,16 @@ aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output,
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+aes_ecb_decrypt_blocks(const uint8_t* input, const uint8_t* key, uint8_t* output, int type, int nblocks) {
+    (void)input;
+    (void)key;
+    (void)output;
+    (void)type;
+    (void)nblocks;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
                            int nblocks) {
     (void)mi;

@@ -293,14 +293,17 @@ dsd_cli_usage_section_advanced(void) {
     printf("                 \n");
     printf("  -2 <hex>      Manually Enter and Enforce TYT 16-bit BP Key Value (DMR) (Hex Value) \n");
     printf("                 \n");
-    printf("  -! <hex>      Manually Enter and Enforce TYT Advanced Privacy (PC4) AP Hex Key (see example below)\n");
+    printf("  -! <hex>      Manually Enter and Enforce TYT Advanced Privacy (PC4) 128 or 256 bit AP Hex Key "
+           "(see examples below)\n");
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
     printf("                 -! '736B9A9C5645288B 243AD5CB8701EF8A' \n");
+    printf("                 -! '1111111111111111 1111111111111111 1111111111111111 1111111111111111' \n");
     printf("                 \n");
-    printf(
-        "  -@ <hex>      Manually Enter and Enforce Retevis Advanced Privacy (RC2) AP Hex Key (see example below)\n");
+    printf("  -@ <hex>      Manually Enter and Enforce Retevis Advanced Privacy (RC2) 128 or 256 bit AP Hex Key "
+           "(see examples below)\n");
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
     printf("                 -@ '736B9A9C5645288B 243AD5CB8701EF8A' \n");
+    printf("                 -@ '1122334455667788 99AABBCCDDEEFF11 1122334455667788 99AABBCCDDEEFF11' \n");
     printf("                 \n");
     printf(
         "  -5 <hex>      Manually Enter and Enforce TYT Enhanced Privacy (AES-128) EP Hex Key (see example below)\n");

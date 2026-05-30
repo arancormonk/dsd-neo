@@ -500,6 +500,69 @@ target_link_libraries(dsd-neo_test_aes_ofb PRIVATE dsd-neo_crypto)
 
 add_test(NAME AES_OFB COMMAND dsd-neo_test_aes_ofb)
 
+add_executable(dsd-neo_test_rc4 crypto/test_rc4.c)
+target_include_directories(
+    dsd-neo_test_rc4
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_rc4 PRIVATE dsd-neo_crypto)
+
+add_test(NAME RC4 COMMAND dsd-neo_test_rc4)
+
+add_executable(dsd-neo_test_des crypto/test_des.c)
+target_include_directories(
+    dsd-neo_test_des
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_des PRIVATE dsd-neo_crypto)
+
+add_test(NAME DES COMMAND dsd-neo_test_des)
+
+add_executable(dsd-neo_test_pc4_tyt crypto/test_pc4_tyt.c)
+target_include_directories(
+    dsd-neo_test_pc4_tyt
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_pc4_tyt PRIVATE dsd-neo_crypto)
+
+add_test(NAME PC4_TYT COMMAND dsd-neo_test_pc4_tyt)
+
+add_executable(dsd-neo_test_rc2_retevis crypto/test_rc2_retevis.c)
+target_include_directories(
+    dsd-neo_test_rc2_retevis
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_rc2_retevis PRIVATE dsd-neo_crypto)
+
+add_test(NAME RC2_RETEVIS COMMAND dsd-neo_test_rc2_retevis)
+
+add_executable(dsd-neo_test_pc5_baofeng crypto/test_pc5_baofeng.c)
+target_include_directories(
+    dsd-neo_test_pc5_baofeng
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_pc5_baofeng PRIVATE dsd-neo_crypto)
+
+add_test(NAME PC5_BAOFENG COMMAND dsd-neo_test_pc5_baofeng)
+
+add_executable(dsd-neo_test_csi72 crypto/test_csi72.c)
+target_include_directories(
+    dsd-neo_test_csi72
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_csi72 PRIVATE dsd-neo_crypto)
+
+add_test(NAME CSI72 COMMAND dsd-neo_test_csi72)
+
+add_executable(dsd-neo_test_kirisun crypto/test_kirisun.c)
+target_include_directories(
+    dsd-neo_test_kirisun
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_kirisun PRIVATE dsd-neo_crypto)
+
+add_test(NAME KIRISUN COMMAND dsd-neo_test_kirisun)
+
 add_executable(
     dsd-neo_test_dstar_header_utils
     protocol/dstar/test_dstar_header_utils.c
@@ -3431,11 +3494,24 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_dmr_slottype_golay PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_SLOTTYPE_GOLAY COMMAND dsd-neo_test_dmr_slottype_golay)
 
+add_executable(
+    dsd-neo_test_dmr_block_crypto
+    protocol/dmr/test_dmr_block_crypto.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_block_crypto.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_block_crypto
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(dsd-neo_test_dmr_block_crypto PRIVATE dsd-neo_crypto)
+add_test(NAME DMR_BLOCK_CRYPTO COMMAND dsd-neo_test_dmr_block_crypto)
+
 # DMR relaxed header acceptance for SAP=4 (IP-based)
 add_executable(
     dsd-neo_test_dmr_relaxed_header_ip
     protocol/dmr/test_dmr_relaxed_header_ip.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_block.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_block_crypto.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_utils.c
 )
 target_include_directories(

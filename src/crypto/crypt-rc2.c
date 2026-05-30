@@ -8,6 +8,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "vendor_ap_key_parse.h"
 
 static inline uint64_t
 rol64(uint64_t x, int n) {
@@ -144,14 +145,6 @@ rc4_output(RC4State* state) {
     }
 
     return rndbyte;
-}
-
-/* Convert 64-bit integer to bytes (big-endian) */
-static void
-u64_to_bytes_be(uint64_t val, unsigned char* out) {
-    for (int i = 0; i < 8; i++) {
-        out[i] = (unsigned char)((val >> (56 - 8 * i)) & 0xFF);
-    }
 }
 
 // RC2 functions
@@ -328,32 +321,56 @@ decrypt_rc2(CryptoContext* ctx, uint8_t bits[49]) {
 /* Key creation for Retevis AP */
 void
 retevis_rc2_keystream_creation(dsd_state* state, char* input) {
-
-    unsigned char key1[16] = {0};
-    unsigned char key2[16] = {0};
-
-    char buf[1024];
-    DSD_SNPRINTF(buf, sizeof(buf), "%s", input);
-
-    char* pEnd;
-    uint64_t K1 = strtoull(buf, &pEnd, 16);
-    uint64_t K2 = strtoull(pEnd, &pEnd, 16);
-
-    u64_to_bytes_be(K1, &key1[0]);
-    u64_to_bytes_be(K2, &key1[8]);
-
-    for (int i = 0; i < 16; i++) {
-        key2[i] = key1[15 - i];
+    if (state == NULL || input == NULL) {
+        return;
     }
 
-    // Initialize RC2 context
-    static CryptoContext rc2_ctx;
-    create_keys_rc2(&rc2_ctx, key2, sizeof(key2));
+    dsd_vendor_ap_key parsed;
+    const int parse_rc = dsd_vendor_ap_key_parse(input, &parsed);
+    if (parse_rc != DSD_VENDOR_AP_KEY_OK) {
+        DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) key parse failed: expected 32 or 64 hex characters\n");
+        free(state->rc2_context);
+        state->rc2_context = NULL;
+        state->retevis_ap = 0;
+        return;
+    }
+
+    CryptoContext rc2_ctx;
+    DSD_MEMSET(&rc2_ctx, 0, sizeof(rc2_ctx));
+    if (parsed.nhex == 64U) {
+        create_keys_rc2(&rc2_ctx, parsed.hex, parsed.nhex);
+        DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) 256-bit key loaded with forced application: %s\n",
+                    DSD_SECRET_REDACTED);
+    } else {
+        unsigned char key1[16];
+        DSD_MEMSET(key1, 0, sizeof(key1));
+        unsigned char key2[16];
+        DSD_MEMSET(key2, 0, sizeof(key2));
+
+        if (dsd_vendor_ap_key_hex_to_bytes(parsed.hex, parsed.nhex, key1, sizeof(key1)) != 0) {
+            DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) key parse failed: invalid 128-bit key\n");
+            free(state->rc2_context);
+            state->rc2_context = NULL;
+            state->retevis_ap = 0;
+            return;
+        }
+        for (int i = 0; i < 16; i++) {
+            key2[i] = key1[15 - i];
+        }
+        create_keys_rc2(&rc2_ctx, key2, 16);
+        DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) 128-bit key loaded with forced application: %s\n",
+                    DSD_SECRET_REDACTED);
+    }
 
     // Store context in DSD state
+    free(state->rc2_context);
     state->rc2_context = malloc(sizeof(CryptoContext));
+    if (state->rc2_context == NULL) {
+        DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) key allocation failed\n");
+        state->retevis_ap = 0;
+        return;
+    }
     DSD_MEMCPY(state->rc2_context, &rc2_ctx, sizeof(CryptoContext));
 
-    DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) 128-bit key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
     state->retevis_ap = 1;
 }

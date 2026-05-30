@@ -44,6 +44,15 @@ bits_to_u8(const uint8_t* bits, int start) {
     return v;
 }
 
+static uint16_t
+anytone_expected_perm(uint16_t key) {
+    const uint16_t nib1 = (uint16_t)((~(key >> 12)) & 0xFU);
+    const uint16_t nib2 = (uint16_t)((((key >> 8) & 0xFU) + 8U) % 16U);
+    const uint16_t nib3 = (uint16_t)((~(key >> 4)) & 0xFU);
+    const uint16_t nib4 = (uint16_t)((((key >> 0) & 0xFU) + 8U) % 16U);
+    return (uint16_t)((nib1 << 12U) | (nib2 << 8U) | (nib3 << 4U) | nib4);
+}
+
 /*
  * Provide a local parser stub required by straight_mod_xor_keystream_creation.
  * This test only needs uppercase/lowercase contiguous hex parsing.
@@ -92,6 +101,25 @@ main(void) {
     if (!st) {
         DSD_FPRINTF(stderr, "allocation failed\n");
         return 1;
+    }
+
+    {
+        char arg[] = "0x12345";
+        const uint16_t expect = anytone_expected_perm(0x2345U);
+        anytone_bp_keystream_creation(st, arg);
+        rc |= expect_eq_int("anytone-enabled", st->any_bp, 1);
+        rc |= expect_eq_u8("anytone-truncated-byte0", bits_to_u8(st->static_ks_bits[0], 0), (expect >> 8U) & 0xFFU);
+        rc |= expect_eq_u8("anytone-truncated-byte1", bits_to_u8(st->static_ks_bits[0], 8), expect & 0xFFU);
+        rc |= expect_eq_u8("anytone-slot1-byte0", bits_to_u8(st->static_ks_bits[1], 0), (expect >> 8U) & 0xFFU);
+    }
+
+    DSD_MEMSET(st->static_ks_bits, 0, sizeof(st->static_ks_bits));
+    {
+        char arg[] = "1";
+        ken_dmr_scrambler_keystream_creation(st, arg);
+        rc |= expect_eq_int("kenwood-enabled", st->ken_sc, 1);
+        rc |= expect_eq_u8("kenwood-seed-byte0", bits_to_u8(st->static_ks_bits[0], 0), 0x80U);
+        rc |= expect_eq_u8("kenwood-slot1-byte0", bits_to_u8(st->static_ks_bits[1], 0), 0x80U);
     }
 
     st->straight_ks = 1;

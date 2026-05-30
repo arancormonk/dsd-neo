@@ -14,6 +14,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "vendor_ap_key_parse.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #define DSD_ATTR_UNUSED_FN __attribute__((unused))
@@ -195,28 +196,43 @@ tyt16_ambe2_codeword_keystream(const dsd_state* state, char ambe_fr[4][24], int 
 
 void
 tyt_ap_pc4_keystream_creation(dsd_state* state, char* input) {
-    unsigned char key1[16] = {0};
-    unsigned char key2[16] = {0};
-
-    char buf[1024];
-    DSD_SNPRINTF(buf, sizeof(buf), "%s", input);
-
-    char* pEnd;
-    uint64_t K1 = strtoull(buf, &pEnd, 16);
-    uint64_t K2 = strtoull(pEnd, &pEnd, 16);
-
-    u64_to_bytes_be(K1, &key1[0]);
-    u64_to_bytes_be(K2, &key1[8]);
-
-    for (int i = 0; i < 16; i++) {
-        key2[i] = key1[15 - i];
+    if (state == NULL || input == NULL) {
+        return;
     }
 
-    /* Create key schedule */
-    create_keys(&g_pc4_context, key2, sizeof(key2));
-    g_pc4_context.rounds = nbround;
+    dsd_vendor_ap_key parsed;
+    const int parse_rc = dsd_vendor_ap_key_parse(input, &parsed);
+    if (parse_rc != DSD_VENDOR_AP_KEY_OK) {
+        DSD_FPRINTF(stderr, "DMR TYT AP (PC4) key parse failed: expected 32 or 64 hex characters\n");
+        state->tyt_ap = 0;
+        return;
+    }
 
-    DSD_FPRINTF(stderr, "DMR TYT AP (PC4) 128-bit key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
+    if (parsed.nhex == 64U) {
+        create_keys(&g_pc4_context, parsed.hex, parsed.nhex);
+        g_pc4_context.rounds = nbround;
+
+        DSD_FPRINTF(stderr, "DMR TYT AP (PC4) 256-bit key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
+    } else {
+        unsigned char key1[16];
+        DSD_MEMSET(key1, 0, sizeof(key1));
+        unsigned char key2[16];
+        DSD_MEMSET(key2, 0, sizeof(key2));
+
+        if (dsd_vendor_ap_key_hex_to_bytes(parsed.hex, parsed.nhex, key1, sizeof(key1)) != 0) {
+            DSD_FPRINTF(stderr, "DMR TYT AP (PC4) key parse failed: invalid 128-bit key\n");
+            state->tyt_ap = 0;
+            return;
+        }
+        for (int i = 0; i < 16; i++) {
+            key2[i] = key1[15 - i];
+        }
+
+        create_keys(&g_pc4_context, key2, 16);
+        g_pc4_context.rounds = nbround;
+
+        DSD_FPRINTF(stderr, "DMR TYT AP (PC4) 128-bit key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
+    }
     state->tyt_ap = 1;
 }
 

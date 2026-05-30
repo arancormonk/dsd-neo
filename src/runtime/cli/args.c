@@ -1402,6 +1402,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     state->H = k1 & 0xFFFFFFFFFFULL;                                                                   \
                     state->K1 = state->H;                                                                              \
                     state->K2 = state->K3 = state->K4 = 0ULL;                                                          \
+                    state->aes_key_segments[0] = state->aes_key_segments[1] = 0U;                                      \
                     LOG_NOTICE("Hytera BP key loaded (40-bit)\n");                                                     \
                 } else if (nhex == 32) {                                                                               \
                     if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)) {           \
@@ -1419,6 +1420,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     state->A3[0] = state->A3[1] = 0ULL;                                                                \
                     state->A4[0] = state->A4[1] = 0ULL;                                                                \
                     state->aes_key_loaded[0] = state->aes_key_loaded[1] = (k1 != 0ULL || k2 != 0ULL) ? 1 : 0;          \
+                    state->aes_key_segments[0] = state->aes_key_segments[1] = 2U;                                      \
                                                                                                                        \
                     DSD_MEMSET(state->aes_key, 0, sizeof(state->aes_key));                                             \
                     for (int i = 0; i < 8; i++) {                                                                      \
@@ -1445,6 +1447,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     state->A4[0] = state->A4[1] = k4;                                                                  \
                     state->aes_key_loaded[0] = state->aes_key_loaded[1] =                                              \
                         (k1 != 0ULL || k2 != 0ULL || k3 != 0ULL || k4 != 0ULL) ? 1 : 0;                                \
+                    state->aes_key_segments[0] = state->aes_key_segments[1] = 4U;                                      \
                                                                                                                        \
                     DSD_MEMSET(state->aes_key, 0, sizeof(state->aes_key));                                             \
                     for (int i = 0; i < 8; i++) {                                                                      \

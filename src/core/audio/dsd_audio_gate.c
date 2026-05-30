@@ -64,8 +64,6 @@ dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loade
     static const uint8_t kAesLoadedAlgs[] = {
         0x24, // DMR AES-128
         0x25, // DMR AES-256
-        0x36, // Kirisun Advanced
-        0x37, // Kirisun Universal
         0x83, // P25 TDEA
         0x84, // P25 AES-256
         0x89  // P25 AES-128
@@ -78,6 +76,33 @@ dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loade
         return (aes_loaded == 1) ? 1 : 0;
     }
     return 0;
+}
+
+static int
+dsd_dmr_slot_valid(int slot) {
+    return slot == 0 || slot == 1;
+}
+
+static int
+dsd_dmr_kirisun_key_complete(const dsd_state* state, int slot) {
+    if (!state || !dsd_dmr_slot_valid(slot)) {
+        return 0;
+    }
+
+    const int all_zero =
+        state->A1[slot] == 0ULL && state->A2[slot] == 0ULL && state->A3[slot] == 0ULL && state->A4[slot] == 0ULL;
+    return state->aes_key_segments[slot] == 4U && !all_zero;
+}
+
+int
+dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key) {
+    if (!state || !dsd_dmr_slot_valid(slot)) {
+        return 0;
+    }
+    if (algid == 0x36 || algid == 0x37) {
+        return dsd_dmr_kirisun_key_complete(state, slot);
+    }
+    return dsd_dmr_voice_alg_can_decrypt(algid, r_key, state->aes_key_loaded[slot]);
 }
 
 int

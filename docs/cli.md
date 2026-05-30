@@ -323,8 +323,8 @@ Examples
 - dPMR/NXDN scrambler (decimal): `-R <dec>`
 - RC4/DES key (hex): `-1 <hex>`
 - TYT Basic Privacy (16‑bit, hex, enforced): `-2 <hex>`
-- TYT Advanced Privacy PC4 (hex stream): `-! '<hex…>'`
-- Retevis Advanced Privacy RC2 (hex stream): `-@ '<hex…>'`
+- TYT Advanced Privacy PC4 (128/256-bit hex stream, groups of 16): `-! '<hex…>'`
+- Retevis Advanced Privacy RC2 (128/256-bit hex stream, groups of 16): `-@ '<hex…>'`
 - TYT Enhanced Privacy AES‑128 (hex stream): `-5 '<hex…>'`
 - Baofeng AP PC5 key override (hex): `--dmr-baofeng-pc5 <hex>` (32 or 64 hex chars)
 - Connect Systems EE72 key override (hex): `--dmr-csi-ee72 <hex>` (18 hex chars)

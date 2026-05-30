@@ -871,12 +871,14 @@ csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
             }
 
             if (field_count == 1) {
-                if (!parse_dec_u64_strict(field, &keyvalue)) {
+                const int parsed_keyvalue = parse_dec_u64_strict(field, &keyvalue);
+                if (!parsed_keyvalue) {
                     keyvalue = 0;
                 }
                 size_t key_index = 0;
                 if (csv_rkey_index(keynumber, 0ULL, &key_index)) {
                     state->rkey_array[key_index] = keyvalue & 0xFFFFFFFFFF; // doesn't exceed 40-bit value
+                    state->rkey_array_loaded[key_index] = parsed_keyvalue ? 1U : 0U;
                 }
             }
 
@@ -903,6 +905,7 @@ csv_key_import_hex_store_value(dsd_state* state, unsigned long long keynumber, u
     unsigned long long v = 0;
     if (parse_hex_u64_strict(field, &v)) {
         state->rkey_array[idx] = v;
+        state->rkey_array_loaded[idx] = 1U;
     }
 }
 
