@@ -115,7 +115,7 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
 
     char prefix[7];
     for (int i = 0; i < 6; i++) {
-        prefix[i] = (char)ConvertBitIntoBytes(input + (i * 8), 8);
+        prefix[i] = (char)ConvertBitIntoBytes(input + ((size_t)i * 8U), 8);
     }
     prefix[6] = '\0';
     if (strcmp(prefix, "$GPRMC") != 0) {

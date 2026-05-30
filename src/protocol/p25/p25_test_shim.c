@@ -76,6 +76,61 @@ p25_test_seed_iden_config(dsd_state* state, const p25_test_iden_config* iden_cfg
 }
 
 static void
+p25_test_copy_mac_bytes(unsigned long long int mac[24], const unsigned char* mac_bytes, int mac_len) {
+    int n = mac_len < 24 ? mac_len : 24;
+    for (int i = 0; i < n; i++) {
+        mac[i] = mac_bytes[i];
+    }
+}
+
+static void
+p25_test_seed_channel_cache_iden(dsd_state* state, const p25_test_iden_config* iden_cfg) {
+    int iden = iden_cfg ? iden_cfg->iden : 0;
+    state->p25_chan_iden = iden & 0xF;
+    if (!iden_cfg) {
+        return;
+    }
+
+    if (iden_cfg->tdma) {
+        state->p25_iden_tdma[state->p25_chan_iden].base_freq = iden_cfg->base;
+        state->p25_iden_tdma[state->p25_chan_iden].chan_type = iden_cfg->type & 0xF;
+        state->p25_iden_tdma[state->p25_chan_iden].chan_spac = iden_cfg->spac;
+        state->p25_iden_tdma[state->p25_chan_iden].trust = 2;
+        state->p25_iden_tdma[state->p25_chan_iden].populated = 1;
+        state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 2;
+        return;
+    }
+
+    state->p25_iden_fdma[state->p25_chan_iden].base_freq = iden_cfg->base;
+    state->p25_iden_fdma[state->p25_chan_iden].chan_type = iden_cfg->type & 0xF;
+    state->p25_iden_fdma[state->p25_chan_iden].chan_spac = iden_cfg->spac;
+    state->p25_iden_fdma[state->p25_chan_iden].trust = 2;
+    state->p25_iden_fdma[state->p25_chan_iden].populated = 1;
+    state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 1;
+}
+
+static void
+p25_test_zero_channel_cache_outputs(long* out_freq_a, long* out_freq_b) {
+    if (out_freq_a) {
+        *out_freq_a = 0;
+    }
+    if (out_freq_b) {
+        *out_freq_b = 0;
+    }
+}
+
+static void
+p25_test_copy_channel_cache_outputs(const dsd_state* state, int channel_a, int channel_b, long* out_freq_a,
+                                    long* out_freq_b) {
+    if (out_freq_a) {
+        *out_freq_a = (channel_a >= 0 && channel_a < DSD_TRUNK_CHAN_MAP_SIZE) ? state->trunk_chan_map[channel_a] : 0;
+    }
+    if (out_freq_b) {
+        *out_freq_b = (channel_b >= 0 && channel_b < DSD_TRUNK_CHAN_MAP_SIZE) ? state->trunk_chan_map[channel_b] : 0;
+    }
+}
+
+static void
 p25_test_copy_mbt_outputs(const dsd_state* state, const p25_test_mbt_outputs* outputs) {
     if (!state || !outputs) {
         return;
@@ -423,10 +478,7 @@ p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len,
     }
 
     unsigned long long int MAC[24] = {0};
-    int n = mac_len < 24 ? mac_len : 24;
-    for (int i = 0; i < n; i++) {
-        MAC[i] = mac_bytes[i];
-    }
+    p25_test_copy_mac_bytes(MAC, mac_bytes, mac_len);
     process_MAC_VPDU(opts, state, 0, MAC);
     free(opts);
     p25_test_free_state(state);
@@ -509,48 +561,18 @@ p25_test_invoke_mac_vpdu_channel_cache(const unsigned char* mac_bytes, int mac_l
     if (!opts || !state) {
         free(opts);
         p25_test_free_state(state);
-        if (out_freq_a) {
-            *out_freq_a = 0;
-        }
-        if (out_freq_b) {
-            *out_freq_b = 0;
-        }
+        p25_test_zero_channel_cache_outputs(out_freq_a, out_freq_b);
         return;
     }
 
     state->synctype = DSD_SYNC_P25P2_POS;
-    int iden = iden_cfg ? iden_cfg->iden : 0;
-    state->p25_chan_iden = iden & 0xF;
-
-    if (iden_cfg && iden_cfg->tdma) {
-        state->p25_iden_tdma[state->p25_chan_iden].base_freq = iden_cfg->base;
-        state->p25_iden_tdma[state->p25_chan_iden].chan_type = iden_cfg->type & 0xF;
-        state->p25_iden_tdma[state->p25_chan_iden].chan_spac = iden_cfg->spac;
-        state->p25_iden_tdma[state->p25_chan_iden].trust = 2;
-        state->p25_iden_tdma[state->p25_chan_iden].populated = 1;
-        state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 2;
-    } else if (iden_cfg) {
-        state->p25_iden_fdma[state->p25_chan_iden].base_freq = iden_cfg->base;
-        state->p25_iden_fdma[state->p25_chan_iden].chan_type = iden_cfg->type & 0xF;
-        state->p25_iden_fdma[state->p25_chan_iden].chan_spac = iden_cfg->spac;
-        state->p25_iden_fdma[state->p25_chan_iden].trust = 2;
-        state->p25_iden_fdma[state->p25_chan_iden].populated = 1;
-        state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 1;
-    }
+    p25_test_seed_channel_cache_iden(state, iden_cfg);
 
     unsigned long long int MAC[24] = {0};
-    int n = mac_len < 24 ? mac_len : 24;
-    for (int i = 0; i < n; i++) {
-        MAC[i] = mac_bytes[i];
-    }
+    p25_test_copy_mac_bytes(MAC, mac_bytes, mac_len);
     process_MAC_VPDU(opts, state, 0, MAC);
 
-    if (out_freq_a) {
-        *out_freq_a = (channel_a >= 0 && channel_a < DSD_TRUNK_CHAN_MAP_SIZE) ? state->trunk_chan_map[channel_a] : 0;
-    }
-    if (out_freq_b) {
-        *out_freq_b = (channel_b >= 0 && channel_b < DSD_TRUNK_CHAN_MAP_SIZE) ? state->trunk_chan_map[channel_b] : 0;
-    }
+    p25_test_copy_channel_cache_outputs(state, channel_a, channel_b, out_freq_a, out_freq_b);
     free(opts);
     p25_test_free_state(state);
 }

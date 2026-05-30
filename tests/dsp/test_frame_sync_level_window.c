@@ -5,6 +5,8 @@
 
 #include "frame_sync_level.h"
 
+#include <dsd-neo/core/safe_api.h>
+
 #include <math.h>
 #include <stdio.h>
 
@@ -12,7 +14,7 @@ static int
 expect_close(const char* label, float expected, float actual) {
     const float delta = fabsf(expected - actual);
     if (delta > 0.0001f) {
-        fprintf(stderr, "%s: expected %.6f, got %.6f\n", label, (double)expected, (double)actual);
+        DSD_FPRINTF(stderr, "%s: expected %.6f, got %.6f\n", label, (double)expected, (double)actual);
         return 1;
     }
     return 0;

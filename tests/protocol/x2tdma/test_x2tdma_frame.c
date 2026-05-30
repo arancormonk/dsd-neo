@@ -42,10 +42,14 @@ test_ambe_interleave_schedule_shape(void) {
 
     int seen[4][24] = {{0}};
 
-    assert((int)(sizeof x2tdma_ambe_interleave_w / sizeof x2tdma_ambe_interleave_w[0]) == X2TDMA_AMBE_DIBITS);
-    assert((int)(sizeof x2tdma_ambe_interleave_x / sizeof x2tdma_ambe_interleave_x[0]) == X2TDMA_AMBE_DIBITS);
-    assert((int)(sizeof x2tdma_ambe_interleave_y / sizeof x2tdma_ambe_interleave_y[0]) == X2TDMA_AMBE_DIBITS);
-    assert((int)(sizeof x2tdma_ambe_interleave_z / sizeof x2tdma_ambe_interleave_z[0]) == X2TDMA_AMBE_DIBITS);
+    _Static_assert((int)(sizeof x2tdma_ambe_interleave_w / sizeof x2tdma_ambe_interleave_w[0]) == X2TDMA_AMBE_DIBITS,
+                   "x2tdma_ambe_interleave_w length");
+    _Static_assert((int)(sizeof x2tdma_ambe_interleave_x / sizeof x2tdma_ambe_interleave_x[0]) == X2TDMA_AMBE_DIBITS,
+                   "x2tdma_ambe_interleave_x length");
+    _Static_assert((int)(sizeof x2tdma_ambe_interleave_y / sizeof x2tdma_ambe_interleave_y[0]) == X2TDMA_AMBE_DIBITS,
+                   "x2tdma_ambe_interleave_y length");
+    _Static_assert((int)(sizeof x2tdma_ambe_interleave_z / sizeof x2tdma_ambe_interleave_z[0]) == X2TDMA_AMBE_DIBITS,
+                   "x2tdma_ambe_interleave_z length");
 
     for (int i = 0; i < X2TDMA_AMBE_DIBITS; i++) {
         const int row_a = x2tdma_ambe_interleave_w[i];

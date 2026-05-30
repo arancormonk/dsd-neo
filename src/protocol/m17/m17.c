@@ -61,6 +61,13 @@
 
 static void decodeM17PKT(const dsd_opts* opts, const dsd_state* state, const uint8_t* input, int len);
 static void M17decodeLSF(dsd_state* state);
+static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
+static void M17logLSFSummary(dsd_state* state, const struct m17_lsf_result* res);
+static int M17logOTAKD(const struct m17_lsf_result* res);
+static void M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
+static void M17decodeMetaPayload(dsd_state* state, uint8_t identifier);
+static void M17decodeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
+static void M17logLSFTrailer(const dsd_state* state, const struct m17_lsf_result* res);
 
 #ifdef USE_CODEC2
 #define M17_CODEC2_OPTS_PARAM  dsd_opts*
@@ -332,46 +339,73 @@ M17decodeLSF(dsd_state* state) {
         return;
     }
 
-    //store this so we can reference it for playing voice and/or decoding data, dst/src etc
-    state->m17_str_dt = M17streamDataTypeFromLSF(&res);
-    state->m17_dst = res.dst;
-    state->m17_src = res.src;
-    state->m17_can = res.cn;
-
-    /* Preserve legacy log formatting while routing through LOG_* macros. */
-    LOG_INFO("\n");
-
-    LOG_INFO(" CAN: %d", res.cn);
-    M17decodeCSD(state, res.dst, res.src);
-
-    if (res.version == 3U) {
-        M17logV3PayloadContents(res.payload_contents);
-    } else {
-        M17logDataType(res.dt);
-    }
-
-    if (res.version == 3U && res.signature != 0U) {
-        LOG_INFO(" Signed (secp256r1);");
-    } else if (res.version != 3U && res.rs != 0U) {
-        LOG_INFO(" RS: %02X", res.rs);
-    }
-    LOG_INFO("\n");
-    if (res.version == 3U) {
-        M17logV3Encryption(res.encryption_type);
-    } else {
-        M17logEncryption(res.et, res.es);
-    }
-
-    state->m17_enc = res.et;
-    state->m17_enc_st = res.es;
-
-    if (res.version != 3U && res.rs == 0x10U) {
-        LOG_INFO(" OTAKD Data Packet;");
-    } else if (res.version != 3U && res.rs == 0x11U) {
-        LOG_INFO(" OTAKD Embedded LSF;\n");
+    M17decodeLSFFields(state, &res);
+    M17logLSFSummary(state, &res);
+    if (M17logOTAKD(&res) != 0) {
         return;
     }
 
+    M17storeLSFMeta(state, &res);
+    M17decodeLSFMeta(state, &res);
+    M17logLSFTrailer(state, &res);
+}
+
+static void
+M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res) {
+    //store this so we can reference it for playing voice and/or decoding data, dst/src etc
+    state->m17_str_dt = M17streamDataTypeFromLSF(res);
+    state->m17_dst = res->dst;
+    state->m17_src = res->src;
+    state->m17_can = res->cn;
+    state->m17_enc = res->et;
+    state->m17_enc_st = res->es;
+}
+
+static void
+M17logLSFSummary(dsd_state* state, const struct m17_lsf_result* res) {
+    /* Preserve legacy log formatting while routing through LOG_* macros. */
+    LOG_INFO("\n");
+
+    LOG_INFO(" CAN: %d", res->cn);
+    M17decodeCSD(state, res->dst, res->src);
+
+    if (res->version == 3U) {
+        M17logV3PayloadContents(res->payload_contents);
+    } else {
+        M17logDataType(res->dt);
+    }
+
+    if (res->version == 3U && res->signature != 0U) {
+        LOG_INFO(" Signed (secp256r1);");
+    } else if (res->version != 3U && res->rs != 0U) {
+        LOG_INFO(" RS: %02X", res->rs);
+    }
+    LOG_INFO("\n");
+    if (res->version == 3U) {
+        M17logV3Encryption(res->encryption_type);
+    } else {
+        M17logEncryption(res->et, res->es);
+    }
+}
+
+static int
+M17logOTAKD(const struct m17_lsf_result* res) {
+    if (res->version == 3U) {
+        return 0;
+    }
+    if (res->rs == 0x10U) {
+        LOG_INFO(" OTAKD Data Packet;");
+        return 0;
+    }
+    if (res->rs == 0x11U) {
+        LOG_INFO(" OTAKD Embedded LSF;\n");
+        return 1;
+    }
+    return 0;
+}
+
+static void
+M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res) {
     //compare incoming META/IV value on AES, if timestamp 32-bits are not within a time 5 minute window, then throw a warning
     // long long int epoch = 1577836800LL;                                     //Jan 1, 2020, 00:00:00 UTC
     // uint32_t tsn = ( (time(NULL)-epoch) & 0xFFFFFFFF); //current LSB 32-bit value
@@ -382,43 +416,46 @@ M17decodeLSF(dsd_state* state) {
 
     //pack meta bits into 14 bytes, using state->m17_meta as the AES-IV buffer for M17
     DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
-    if (res.has_meta != 0U || res.meta_is_iv != 0U) {
-        DSD_MEMCPY(state->m17_meta, res.meta, sizeof(res.meta));
+    if (res->has_meta != 0U || res->meta_is_iv != 0U) {
+        DSD_MEMCPY(state->m17_meta, res->meta, sizeof(res->meta));
     }
+}
 
+static void
+M17decodeMetaPayload(dsd_state* state, uint8_t identifier) {
+    uint8_t meta[15];
+    meta[0] = identifier; //add identifier for pkt decoder
+    for (int i = 0; i < 14; i++) {
+        meta[i + 1] = state->m17_meta[i];
+    }
+    LOG_INFO("\n ");
+    //Note: We don't have opts here, so in the future, if we need it, we will need to pass it here
+    decodeM17PKT(NULL, state, meta, 15); //decode META
+}
+
+static void
+M17decodeLSFMeta(dsd_state* state, const struct m17_lsf_result* res) {
     //Decode Meta Data when not ENC (if meta field is populated with something)
-    if (res.version == 3U && res.meta_contents != 0U && res.meta_contents != 0xFU && res.has_meta != 0U) {
-        uint8_t meta[15];
-        meta[0] = (uint8_t)(res.meta_contents + 0x80U); //add identifier for pkt decoder
-        for (int i = 0; i < 14; i++) {
-            meta[i + 1] = state->m17_meta[i];
-        }
-        LOG_INFO("\n ");
-        //Note: We don't have opts here, so in the future, if we need it, we will need to pass it here
-        decodeM17PKT(NULL, state, meta, 15); //decode META
-    } else if (res.version != 3U && res.et == 0U && res.has_meta != 0U) {
-        uint8_t meta[15];
-        meta[0] = (uint8_t)(res.es + 0x80U); //add identifier for pkt decoder
-        for (int i = 0; i < 14; i++) {
-            meta[i + 1] = state->m17_meta[i];
-        }
-        LOG_INFO("\n ");
-        //Note: We don't have opts here, so in the future, if we need it, we will need to pass it here
-        decodeM17PKT(NULL, state, meta, 15); //decode META
+    if (res->version == 3U && res->meta_contents != 0U && res->meta_contents != 0xFU && res->has_meta != 0U) {
+        M17decodeMetaPayload(state, (uint8_t)(res->meta_contents + 0x80U));
+    } else if (res->version != 3U && res->et == 0U && res->has_meta != 0U) {
+        M17decodeMetaPayload(state, (uint8_t)(res->es + 0x80U));
     }
+}
 
+static void
+M17logLSFTrailer(const dsd_state* state, const struct m17_lsf_result* res) {
     // If no Meta (debug)
-
-    if (res.et == 2) {
+    if (res->et == 2) {
         LOG_INFO(" IV: ");
         for (int i = 0; i < 16; i++) {
             LOG_INFO("%02X", state->m17_meta[i]);
         }
     }
 
-    if (res.version == 3U) {
-        LOG_INFO("\n FT: %04X; PAY: %X; ENC: %X; SIG: %X; META: %X;", res.type_word, res.payload_contents,
-                 res.encryption_type, res.signature, res.meta_contents);
+    if (res->version == 3U) {
+        LOG_INFO("\n FT: %04X; PAY: %X; ENC: %X; SIG: %X; META: %X;", res->type_word, res->payload_contents,
+                 res->encryption_type, res->signature, res->meta_contents);
     }
 }
 
