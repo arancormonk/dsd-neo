@@ -193,6 +193,9 @@ int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int
  */
 int dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loaded);
 
+/** @brief Return 1 when missing DMR ALG ID can still be decrypted from loaded per-slot key material. */
+int dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot);
+
 /**
  * @brief Slot-aware DMR/P25-style decryptability check.
  *

@@ -544,6 +544,18 @@ ldu2_record_enc_lockout(dsd_opts* opts, dsd_state* state, int talkgroup) {
     }
 }
 
+static int
+ldu2_payload_has_decrypt_key(const dsd_state* state) {
+    int alg = state->payload_algid;
+    if ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0) {
+        return 1;
+    }
+    if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1) {
+        return 1;
+    }
+    return 0;
+}
+
 static void
 ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int irrecoverable_errors) {
     if (irrecoverable_errors != 0 || state->payload_algid == 0x80 || state->payload_algid == 0) {
@@ -553,11 +565,7 @@ ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int irrecoverable_error
         return;
     }
 
-    int enc_lo = 1;
-    if (state->payload_algid == 0xAA && state->R != 0) {
-        enc_lo = 0;
-    }
-    if (enc_lo == 0 || state->lasttg == 0) {
+    if (ldu2_payload_has_decrypt_key(state) || state->lasttg == 0) {
         return;
     }
 

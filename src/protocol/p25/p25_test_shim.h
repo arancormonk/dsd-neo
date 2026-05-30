@@ -38,6 +38,7 @@ int p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, cons
                                      const p25_test_mbt_outputs* outputs);
 void p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len);
 int p25_test_p1_ldu_gate(int algid, unsigned long long R, int aes_loaded);
+int p25_test_p1_ldu_lockout_required(int algid, unsigned long long R, int aes_loaded);
 int p25_test_p2_gate(int algid, unsigned long long key, int aes_loaded);
 int p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int chan16, long map_override,
                            long* out_freq);

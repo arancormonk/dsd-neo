@@ -45,6 +45,56 @@ main(void) {
     state->ess_b_llr[1][95] = 123;
     state->fourv_counter[0] = 2;
     state->p25_p1_soft_hamming_ok = 77U;
+    state->K = 42;
+    state->R = 0x1234567891ULL;
+    state->RR = 0x1234567892ULL;
+    state->H = 0x0000000000001234ULL;
+    state->K1 = 0x1111111111111111ULL;
+    state->K2 = 0x2222222222222222ULL;
+    state->K3 = 0x3333333333333333ULL;
+    state->K4 = 0x4444444444444444ULL;
+    state->M = 0x21;
+    state->payload_mi = 0x1111222233334444ULL;
+    state->payload_miR = 0x5555666677778888ULL;
+    state->payload_miN = 0x9999AAAABBBBCCCCULL;
+    state->payload_miP = 0xDDDDEEEEFFFF0001ULL;
+    state->payload_algid = 0x84;
+    state->payload_algidR = 0x89;
+    state->payload_keyid = 0x1234;
+    state->payload_keyidR = 0x5678;
+    state->dropL = 1;
+    state->dropR = 2;
+    state->nxdn_cipher_type = 3U;
+    state->nxdn_key = 9U;
+    state->nxdn_pn95_seed = 0x1FFU;
+    state->nxdn_new_iv = 1U;
+    state->aes_key[0] = 0xAAU;
+    state->aes_iv[0] = 0xBBU;
+    state->aes_ivR[0] = 0xCCU;
+    state->A1[0] = 0x1111111111111111ULL;
+    state->A2[1] = 0x2222222222222222ULL;
+    state->A3[0] = 0x3333333333333333ULL;
+    state->A4[1] = 0x4444444444444444ULL;
+    state->aes_key_loaded[0] = 1;
+    state->aes_key_segments[1] = 4U;
+    state->rkey_array[0x0123] = 0x1234567890ULL;
+    state->rkey_array_loaded[0x0123] = 1U;
+    state->keyloader = 1;
+    state->late_entry_mi_fragment[1][7][2] = 0x1111222233334444ULL;
+    state->csi_ee = 1;
+    state->csi_ee_key[0] = 0xDDU;
+    state->static_ks_bits[0][0] = 1U;
+    state->static_ks_counter[0] = 7;
+    state->vertex_ks_key[0] = 0x1234567891ULL;
+    state->vertex_ks_bits[0][0] = 1U;
+    state->vertex_ks_mod[0] = 8;
+    state->vertex_ks_frame_mode[0] = 1;
+    state->vertex_ks_frame_off[0] = 2;
+    state->vertex_ks_frame_step[0] = 3;
+    state->vertex_ks_count = 1;
+    state->vertex_ks_active_idx[0] = 0;
+    state->vertex_ks_counter[0] = 4;
+    state->vertex_ks_warned[0] = 1U;
     initState(state);
 
     if (state->rc2_context != NULL) {
@@ -54,6 +104,53 @@ main(void) {
         freeState(state);
         free(state);
         return 2;
+    }
+    if (state->K != 0 || state->R != 0ULL || state->RR != 0ULL || state->H != 0ULL || state->K1 != 0ULL
+        || state->K2 != 0ULL || state->K3 != 0ULL || state->K4 != 0ULL || state->M != 0) {
+        DSD_FPRINTF(stderr, "initState did not clear manual crypto key fields\n");
+        freeState(state);
+        free(state);
+        return 14;
+    }
+    if (state->payload_mi != 0ULL || state->payload_miR != 0ULL || state->payload_miN != 0ULL
+        || state->payload_miP != 0ULL || state->payload_algid != 0 || state->payload_algidR != 0
+        || state->payload_keyid != 0 || state->payload_keyidR != 0) {
+        DSD_FPRINTF(stderr, "initState did not clear payload crypto metadata\n");
+        freeState(state);
+        free(state);
+        return 15;
+    }
+    if (state->dropL != 256 || state->dropR != 256 || state->nxdn_cipher_type != 0U || state->nxdn_key != 0U
+        || state->nxdn_pn95_seed != 228U || state->nxdn_new_iv != 0U) {
+        DSD_FPRINTF(stderr, "initState did not restore crypto counter/cipher defaults\n");
+        freeState(state);
+        free(state);
+        return 16;
+    }
+    if (state->aes_key[0] != 0U || state->aes_iv[0] != 0U || state->aes_ivR[0] != 0U || state->A1[0] != 0ULL
+        || state->A2[1] != 0ULL || state->A3[0] != 0ULL || state->A4[1] != 0ULL || state->aes_key_loaded[0] != 0
+        || state->aes_key_segments[1] != 0U) {
+        DSD_FPRINTF(stderr, "initState did not clear AES key state\n");
+        freeState(state);
+        free(state);
+        return 17;
+    }
+    if (state->rkey_array[0x0123] != 0ULL || state->rkey_array_loaded[0x0123] != 0U || state->keyloader != 0
+        || state->late_entry_mi_fragment[1][7][2] != 0ULL) {
+        DSD_FPRINTF(stderr, "initState did not clear keyloader/keyring/late-entry state\n");
+        freeState(state);
+        free(state);
+        return 18;
+    }
+    if (state->csi_ee != 0 || state->csi_ee_key[0] != 0U || state->static_ks_bits[0][0] != 0U
+        || state->static_ks_counter[0] != 0 || state->vertex_ks_key[0] != 0ULL || state->vertex_ks_bits[0][0] != 0U
+        || state->vertex_ks_mod[0] != 0 || state->vertex_ks_frame_mode[0] != 0 || state->vertex_ks_frame_off[0] != 0
+        || state->vertex_ks_frame_step[0] != 0 || state->vertex_ks_count != 0 || state->vertex_ks_active_idx[0] != -1
+        || state->vertex_ks_counter[0] != 0 || state->vertex_ks_warned[0] != 0U) {
+        DSD_FPRINTF(stderr, "initState did not clear vendor static-keystream state\n");
+        freeState(state);
+        free(state);
+        return 19;
     }
     if (!state->dmr_reliab_buf || state->dmr_reliab_p != state->dmr_reliab_buf + 200 || !state->dmr_soft_buf
         || state->dmr_soft_p != state->dmr_soft_buf + 200) {

@@ -346,6 +346,14 @@ p25_test_p1_ldu_gate(int algid, unsigned long long R, int aes_loaded) {
     return 0;
 }
 
+int
+p25_test_p1_ldu_lockout_required(int algid, unsigned long long R, int aes_loaded) {
+    if (algid == 0 || algid == 0x80) {
+        return 0;
+    }
+    return p25_test_p1_ldu_gate(algid, R, aes_loaded) ? 0 : 1;
+}
+
 // Simplified P25p2 audio gating decision helper matching the logic in
 // process_SACCH_MAC_PDU (ACTIVE/PTT handling):
 //  - ALGID 0 or 0x80 (clear)

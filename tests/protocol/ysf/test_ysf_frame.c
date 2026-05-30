@@ -53,6 +53,57 @@ pack_bits_to_bytes(const uint8_t* input, uint8_t* output, size_t len) {
     }
 }
 
+static uint8_t
+expected_ysf_pn95_bit(size_t bit_index) {
+    uint16_t lfsr = 0x1C9U;
+    bit_index %= 512U;
+
+    for (size_t i = 0; i < bit_index; i++) {
+        uint16_t feedback = (uint16_t)(((lfsr >> 4U) ^ lfsr) & 1U);
+        lfsr = (uint16_t)((lfsr >> 1U) | (feedback << 8U));
+    }
+
+    return (uint8_t)(lfsr & 1U);
+}
+
+static void
+test_ysf_pn95_seed_bit_order_and_reset(void) {
+    static const uint8_t expected_prefix[16] = {1U, 0U, 0U, 1U, 0U, 0U, 1U, 1U, 1U, 1U, 0U, 1U, 0U, 1U, 1U, 1U};
+    uint8_t dch2_bits[80];
+    uint8_t dch_bits[160];
+    uint8_t roundtrip_bits[160];
+
+    for (size_t i = 0; i < sizeof(expected_prefix); i++) {
+        assert(dsd_ysf_pn95_bit(i) == expected_prefix[i]);
+    }
+
+    for (size_t i = 0; i < 512U; i++) {
+        assert(dsd_ysf_pn95_bit(i) == expected_ysf_pn95_bit(i));
+    }
+    assert(dsd_ysf_pn95_bit(512U) == expected_prefix[0]);
+
+    for (size_t i = 0; i < sizeof(dch2_bits); i++) {
+        dch2_bits[i] = (uint8_t)((i + 1U) & 1U);
+    }
+    for (size_t i = 0; i < sizeof(dch_bits); i++) {
+        dch_bits[i] = (uint8_t)(((i * 3U) + 1U) & 1U);
+        roundtrip_bits[i] = dch_bits[i];
+    }
+
+    dsd_ysf_dewhiten_bits(dch2_bits, sizeof(dch2_bits));
+    dsd_ysf_dewhiten_bits(dch_bits, sizeof(dch_bits));
+    dsd_ysf_dewhiten_bits(roundtrip_bits, sizeof(roundtrip_bits));
+    dsd_ysf_dewhiten_bits(roundtrip_bits, sizeof(roundtrip_bits));
+
+    for (size_t i = 0; i < sizeof(dch2_bits); i++) {
+        assert(dch2_bits[i] == (uint8_t)(((i + 1U) & 1U) ^ expected_ysf_pn95_bit(i)));
+    }
+    for (size_t i = 0; i < sizeof(dch_bits); i++) {
+        assert(dch_bits[i] == (uint8_t)((((i * 3U) + 1U) & 1U) ^ expected_ysf_pn95_bit(i)));
+        assert(roundtrip_bits[i] == (uint8_t)(((i * 3U) + 1U) & 1U));
+    }
+}
+
 static void
 test_ysf_soft_viterbi_matches_reference_offset(void) {
     enum {
@@ -189,6 +240,7 @@ test_ysf_event_text_print_guard(void) {
 
 int
 main(void) {
+    test_ysf_pn95_seed_bit_order_and_reset();
     test_ysf_soft_viterbi_matches_reference_offset();
     test_ysf_soft_viterbi_full_rate_reference_offset();
     test_ysf_soft_viterbi_rejects_invalid_args();

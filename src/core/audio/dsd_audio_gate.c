@@ -94,6 +94,16 @@ dsd_dmr_kirisun_key_complete(const dsd_state* state, int slot) {
 }
 
 int
+dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot) {
+    if (!state || !dsd_dmr_slot_valid(slot)) {
+        return 0;
+    }
+
+    const unsigned long long r_key = (slot == 0) ? state->R : state->RR;
+    return (r_key != 0ULL || state->K != 0ULL || state->K1 != 0ULL) ? 1 : 0;
+}
+
+int
 dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key) {
     if (!state || !dsd_dmr_slot_valid(slot)) {
         return 0;

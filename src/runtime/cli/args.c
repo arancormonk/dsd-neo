@@ -1503,6 +1503,13 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     cli_set_exit_rc(out_exit_rc, 1);                                                                   \
                     return DSD_PARSE_ERROR;                                                                            \
                 }                                                                                                      \
+                if (state->K1 != 0ULL || state->K2 != 0ULL || state->K3 != 0ULL || state->K4 != 0ULL) {                \
+                    opts->dmr_mute_encL = 0;                                                                           \
+                    opts->dmr_mute_encR = 0;                                                                           \
+                } else {                                                                                               \
+                    opts->dmr_mute_encL = 1;                                                                           \
+                    opts->dmr_mute_encR = 1;                                                                           \
+                }                                                                                                      \
                 state->keyloader = 0;                                                                                  \
             }                                                                                                          \
             break;                                                                                                     \
@@ -2254,6 +2261,13 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 v = 255;                                                                                               \
             }                                                                                                          \
             state->K = v;                                                                                              \
+            if (state->K != 0) {                                                                                       \
+                opts->dmr_mute_encL = 0;                                                                               \
+                opts->dmr_mute_encR = 0;                                                                               \
+            } else {                                                                                                   \
+                opts->dmr_mute_encL = 1;                                                                               \
+                opts->dmr_mute_encR = 1;                                                                               \
+            }                                                                                                          \
             LOG_NOTICE("Basic Privacy key loaded (forced priority): %s\n", DSD_SECRET_REDACTED);                       \
             break;                                                                                                     \
         }                                                                                                              \

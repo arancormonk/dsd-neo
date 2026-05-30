@@ -40,6 +40,10 @@
 static void DeInterleave6x12DPmrBit(const uint8_t* BufferIn, uint8_t* BufferOut);
 static uint8_t CRC7BitdPMR(const uint8_t* BufferIn, uint32_t BitLength);
 static void ConvertAirInterfaceID(uint32_t AI_ID, char ID[8]);
+#ifdef DSD_NEO_TEST_HOOKS
+void dsd_test_dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state,
+                                     char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]);
+#endif
 
 typedef struct {
     uint8_t CCH[NB_OF_DPMR_VOICE_FRAME_TO_DECODE][72];
@@ -346,6 +350,14 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
         }
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_test_dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state,
+                                char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]) {
+    dpmr_play_voice_frames(opts, state, ambe_fr);
+}
+#endif
 
 #ifdef dPMR_PRINT_DEBUG_INFO
 static void

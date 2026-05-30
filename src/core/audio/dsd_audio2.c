@@ -462,12 +462,11 @@ dsd_dmr_ss3_init_enc_flags(const dsd_state* state, int* encL, int* encR) {
     *encL = (state->dmr_so >> 6) & 0x1;
     *encR = (state->dmr_soR >> 6) & 0x1;
     const int forced_dmr_privacy = dmr_forced_privacy_unmute_enabled(state);
-    const int key_loaded = (state->K != 0 || state->K1 != 0);
 
     if (*encL) {
         const int can_decrypt =
             forced_dmr_privacy
-            || ((state->payload_algid == 0) ? key_loaded
+            || ((state->payload_algid == 0) ? dsd_dmr_missing_alg_key_can_decrypt(state, 0)
                                             : dsd_dmr_voice_slot_can_decrypt(state, 0, state->payload_algid, state->R));
         if (can_decrypt) {
             *encL = 0;
@@ -476,7 +475,7 @@ dsd_dmr_ss3_init_enc_flags(const dsd_state* state, int* encL, int* encR) {
     if (*encR) {
         const int can_decrypt = forced_dmr_privacy
                                 || ((state->payload_algidR == 0)
-                                        ? key_loaded
+                                        ? dsd_dmr_missing_alg_key_can_decrypt(state, 1)
                                         : dsd_dmr_voice_slot_can_decrypt(state, 1, state->payload_algidR, state->RR));
         if (can_decrypt) {
             *encR = 0;

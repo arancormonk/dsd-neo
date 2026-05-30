@@ -15,6 +15,8 @@ enum {
     DSD_YSF_MAX_DECODE_BYTES = 64,
     DSD_YSF_BITS_PER_DIBIT = 2,
     DSD_YSF_BITS_PER_BYTE = 8,
+    DSD_YSF_PN95_TABLE_BITS = 512,
+    DSD_YSF_PN95_SEED = 0x1C9,
 };
 
 static const uint8_t DSD_YSF_PUNCTURE_NONE[4] = {1U, 1U, 1U, 1U};
@@ -43,6 +45,41 @@ ysf_pack_bit_array_into_byte_array(const uint8_t* input, uint8_t* output, size_t
             byte = (uint8_t)((byte << 1U) | (input[(i * DSD_YSF_BITS_PER_BYTE) + bit] & 1U));
         }
         output[i] = byte;
+    }
+}
+
+static uint8_t
+ysf_pn95_next(uint16_t* lfsr) {
+    uint8_t bit = (uint8_t)(*lfsr & 1U);
+    uint16_t feedback = (uint16_t)(((*lfsr >> 4U) ^ *lfsr) & 1U);
+    *lfsr = (uint16_t)((*lfsr >> 1U) | (feedback << 8U));
+    return bit;
+}
+
+uint8_t
+dsd_ysf_pn95_bit(size_t bit_index) {
+    uint16_t lfsr = DSD_YSF_PN95_SEED;
+    bit_index %= DSD_YSF_PN95_TABLE_BITS;
+
+    for (size_t i = 0; i < bit_index; i++) {
+        (void)ysf_pn95_next(&lfsr);
+    }
+
+    return ysf_pn95_next(&lfsr);
+}
+
+void
+dsd_ysf_dewhiten_bits(uint8_t* bits, size_t bit_count) {
+    if (bits == NULL) {
+        return;
+    }
+
+    size_t offset = 0U;
+    while (offset < bit_count) {
+        uint16_t lfsr = DSD_YSF_PN95_SEED;
+        for (size_t i = 0U; i < DSD_YSF_PN95_TABLE_BITS && offset < bit_count; i++, offset++) {
+            bits[offset] = (uint8_t)(bits[offset] ^ ysf_pn95_next(&lfsr));
+        }
     }
 }
 

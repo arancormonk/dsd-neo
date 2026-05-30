@@ -59,6 +59,23 @@ main(void) {
     rc |= expect_eq("unknown", dsd_dmr_voice_alg_can_decrypt(0x7E, 0x123ULL, 1), 0);
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    rc |= expect_eq("missing-alg-no-key-slot0", dsd_dmr_missing_alg_key_can_decrypt(&state, 0), 0);
+    state.R = 0x1234567891ULL;
+    rc |= expect_eq("missing-alg-r-key-slot0", dsd_dmr_missing_alg_key_can_decrypt(&state, 0), 1);
+    rc |= expect_eq("missing-alg-r-key-slot1", dsd_dmr_missing_alg_key_can_decrypt(&state, 1), 0);
+    state.R = 0;
+    state.RR = 0x1234567891ULL;
+    rc |= expect_eq("missing-alg-rr-key-slot1", dsd_dmr_missing_alg_key_can_decrypt(&state, 1), 1);
+    state.RR = 0;
+    state.K = 42;
+    rc |= expect_eq("missing-alg-bp-key-slot0", dsd_dmr_missing_alg_key_can_decrypt(&state, 0), 1);
+    rc |= expect_eq("missing-alg-bp-key-slot1", dsd_dmr_missing_alg_key_can_decrypt(&state, 1), 1);
+    state.K = 0;
+    state.K1 = 0x0123456789ULL;
+    rc |= expect_eq("missing-alg-hbp-key-slot0", dsd_dmr_missing_alg_key_can_decrypt(&state, 0), 1);
+    rc |= expect_eq("missing-alg-hbp-key-slot1", dsd_dmr_missing_alg_key_can_decrypt(&state, 1), 1);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
     state.M = 0x24;
     state.currentslot = 0;
     state.dmr_so = 0x40;

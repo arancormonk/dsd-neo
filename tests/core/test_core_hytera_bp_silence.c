@@ -101,6 +101,58 @@ main(void) {
     rc |= expect_eq_int("silence-rejected", dmr_ambe49_is_default_silence(not_silence), 0);
 
     {
+        char zero_tail[49] = {0};
+        zero_tail[0] = 1;
+        char active[49] = {0};
+        active[0] = 1;
+        active[24] = 1;
+        rc |= expect_eq_int("voice-stream-skip-silence", dmr_ambe49_should_skip_voice_stream(silence), 1);
+        rc |= expect_eq_int("voice-stream-skip-zero-tail", dmr_ambe49_should_skip_voice_stream(zero_tail), 1);
+        rc |= expect_eq_int("voice-stream-keep-active", dmr_ambe49_should_skip_voice_stream(active), 0);
+    }
+
+    {
+        uint8_t ks_bits[128] = {0};
+        for (int i = 0; i < 128; i++) {
+            ks_bits[i] = (uint8_t)(i & 1);
+        }
+
+        char frame[49];
+        char expected[49];
+        for (int i = 0; i < 49; i++) {
+            frame[i] = (char)((i + 1) & 1);
+            expected[i] = (char)(frame[i] ^ (char)(ks_bits[i] & 1U));
+        }
+        frame[24] = 1;
+        expected[24] = (char)(frame[24] ^ (char)(ks_bits[24] & 1U));
+
+        long int bit_counter = 0;
+        int applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x24, frame);
+        rc |= expect_eq_int("voice-stream-applied", applied, 1);
+        rc |= expect_eq_int("voice-stream-aes-counter", (int)bit_counter, 56);
+        rc |= expect_eq_frame("voice-stream-aes-frame", frame, expected);
+    }
+
+    {
+        uint8_t ks_bits[128] = {1};
+        char frame[49];
+        char original[49];
+        DSD_MEMCPY(frame, silence, sizeof(frame));
+        DSD_MEMCPY(original, silence, sizeof(original));
+        long int bit_counter = 0;
+        int applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x24, frame);
+        rc |= expect_eq_int("voice-stream-silence-skipped", applied, 0);
+        rc |= expect_eq_int("voice-stream-silence-aes-counter", (int)bit_counter, 56);
+        rc |= expect_eq_frame("voice-stream-silence-frame", frame, original);
+
+        bit_counter = 0;
+        applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x02, frame);
+        rc |= expect_eq_int("voice-stream-hytera-silence-skipped", applied, 0);
+        rc |= expect_eq_int("voice-stream-hytera-counter", (int)bit_counter, 49);
+        rc |= expect_eq_frame("voice-stream-hytera-frame", frame, original);
+    }
+
+    {
         char frame[49] = {0};
         char expected[49] = {0};
         int applied = dmr_basic_privacy_apply_frame49(42ULL, frame);

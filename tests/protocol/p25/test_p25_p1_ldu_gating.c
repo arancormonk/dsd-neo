@@ -108,6 +108,7 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) { // NOLINT(
 }
 
 int p25_test_p1_ldu_gate(int algid, unsigned long long R, int aes_loaded);
+int p25_test_p1_ldu_lockout_required(int algid, unsigned long long R, int aes_loaded);
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
@@ -144,6 +145,16 @@ main(void) {
 
     // Unknown non-zero ALGID => mute
     rc |= expect_eq_int("Unknown algid", p25_test_p1_ldu_gate(0x7E, 0, 0), 0);
+
+    // Trunk ENC lockout should not reject decryptable voice modes.
+    rc |= expect_eq_int("clear no lockout", p25_test_p1_ldu_lockout_required(0x80, 0, 0), 0);
+    rc |= expect_eq_int("RC4 key no lockout", p25_test_p1_ldu_lockout_required(0xAA, 0x123, 0), 0);
+    rc |= expect_eq_int("DES key no lockout", p25_test_p1_ldu_lockout_required(0x81, 0x1, 0), 0);
+    rc |= expect_eq_int("DES-XL key no lockout", p25_test_p1_ldu_lockout_required(0x9F, 0x999, 0), 0);
+    rc |= expect_eq_int("AES-256 key no lockout", p25_test_p1_ldu_lockout_required(0x84, 0, 1), 0);
+    rc |= expect_eq_int("AES-128 key no lockout", p25_test_p1_ldu_lockout_required(0x89, 0, 1), 0);
+    rc |= expect_eq_int("DES missing key lockout", p25_test_p1_ldu_lockout_required(0x81, 0, 0), 1);
+    rc |= expect_eq_int("AES missing key lockout", p25_test_p1_ldu_lockout_required(0x84, 0, 0), 1);
 
     return rc;
 }

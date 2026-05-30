@@ -89,6 +89,19 @@ expect_char_frame(const char* label, const char got[49], const char want[49]) {
 }
 
 static int
+expect_char_short_bits(const char* label, const char got[49], const short want[49]) {
+    for (int i = 0; i < 49; i++) {
+        int actual = ((unsigned char)got[i]) & 1U;
+        int expected = want[i] & 1;
+        if (actual != expected) {
+            DSD_FPRINTF(stderr, "%s: bit %d expected %d, got %d\n", label, i, expected, actual);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
 expect_pc4_schedule(const char* label, const PC4Context* got, const PC4Context* want) {
     if (got->rounds != want->rounds || memcmp(got->keys, want->keys, sizeof(want->keys)) != 0
         || memcmp(got->perm, want->perm, sizeof(want->perm)) != 0
@@ -335,6 +348,36 @@ test_tyt_ap_apply_skips_silence_and_zero_tail(void) {
 }
 
 static int
+test_tyt_ap_apply_decrypts_voice_frame(void) {
+    dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
+    char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
+    tyt_ap_pc4_keystream_creation(&state, input);
+
+    char frame[49];
+    short expected_input[49];
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((i * 7 + 1) & 1);
+        expected_input[i] = (short)(frame[i] & 1);
+    }
+    decrypt_frame_49(expected_input);
+
+    short expected[49];
+    for (int i = 0; i < 49; i++) {
+        expected[i] = (short)(g_pc4_context.bits[i] & 1);
+    }
+
+    DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
+    tyt_ap_pc4_keystream_creation(&state, input);
+
+    int rc = 0;
+    rc |= expect_int("tyt ap apply voice frame", tyt_ap_pc4_apply_frame49(&state, frame), 1);
+    rc |= expect_char_short_bits("tyt ap apply voice bits", frame, expected);
+    return rc;
+}
+
+static int
 test_tyt_ep_apply_skips_silence_and_zero_tail(void) {
     dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -384,6 +427,7 @@ main(void) {
     rc |= test_tyt_ap_rejects_malformed_keys();
     rc |= test_tyt_ep_aes_vector();
     rc |= test_tyt_ap_apply_skips_silence_and_zero_tail();
+    rc |= test_tyt_ap_apply_decrypts_voice_frame();
     rc |= test_tyt_ep_apply_skips_silence_and_zero_tail();
     return rc;
 }

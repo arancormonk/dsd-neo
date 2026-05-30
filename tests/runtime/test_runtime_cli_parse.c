@@ -295,12 +295,262 @@ test_H_loads_aes256_key_for_both_slots(void) {
         return 1;
     }
 
+    if (opts->dmr_mute_encL != 0 || opts->dmr_mute_encR != 0) {
+        DSD_FPRINTF(stderr, "expected -H to unmute encrypted DMR audio, got L/R=%d/%d\n", opts->dmr_mute_encL,
+                    opts->dmr_mute_encR);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
     const uint8_t expect_bytes[32] = {
         0x20, 0x02, 0x97, 0x36, 0xA5, 0xD9, 0x10, 0x42, 0xC9, 0x23, 0xEB, 0x06, 0x97, 0x48, 0x44, 0x33,
         0x00, 0x5E, 0xFC, 0x58, 0xA1, 0x90, 0x51, 0x95, 0xE2, 0x8E, 0x9C, 0x78, 0x36, 0xAA, 0x2D, 0xB8,
     };
     if (memcmp(state->aes_key, expect_bytes, sizeof(expect_bytes)) != 0) {
         DSD_FPRINTF(stderr, "expected aes_key bytes to match key, got mismatch\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_H_zero_key_keeps_dmr_encrypted_audio_muted(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    opts->dmr_mute_encL = 0;
+    opts->dmr_mute_encR = 0;
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-H";
+    char arg2[] = "0000000000";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->K1 != 0ULL || state->K2 != 0ULL || state->K3 != 0ULL || state->K4 != 0ULL) {
+        DSD_FPRINTF(stderr, "expected zero -H key, got K1..K4=%llX/%llX/%llX/%llX\n", state->K1, state->K2, state->K3,
+                    state->K4);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (opts->dmr_mute_encL != 1 || opts->dmr_mute_encR != 1) {
+        DSD_FPRINTF(stderr, "expected zero -H key to keep encrypted DMR muted, got L/R=%d/%d\n", opts->dmr_mute_encL,
+                    opts->dmr_mute_encR);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->keyloader != 0) {
+        DSD_FPRINTF(stderr, "expected -H to disable keyloader, got %d\n", state->keyloader);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_b_loads_basic_privacy_key_and_unmutes_dmr(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-b";
+    char arg2[] = "42";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->K != 42ULL || opts->dmr_mute_encL != 0 || opts->dmr_mute_encR != 0) {
+        DSD_FPRINTF(stderr, "expected -b 42 to set K=42 and unmute DMR, got K=%llu L/R=%d/%d\n", state->K,
+                    opts->dmr_mute_encL, opts->dmr_mute_encR);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_b_zero_key_keeps_dmr_encrypted_audio_muted(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    opts->dmr_mute_encL = 0;
+    opts->dmr_mute_encR = 0;
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-b";
+    char arg2[] = "0";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->K != 0ULL || opts->dmr_mute_encL != 1 || opts->dmr_mute_encR != 1) {
+        DSD_FPRINTF(stderr, "expected -b 0 to set K=0 and keep DMR muted, got K=%llu L/R=%d/%d\n", state->K,
+                    opts->dmr_mute_encL, opts->dmr_mute_encR);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_b_clamps_to_basic_privacy_table_max(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-b";
+    char arg2[] = "999";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->K != 255ULL || opts->dmr_mute_encL != 0 || opts->dmr_mute_encR != 0) {
+        DSD_FPRINTF(stderr, "expected -b 999 to clamp K=255 and unmute DMR, got K=%llu L/R=%d/%d\n", state->K,
+                    opts->dmr_mute_encL, opts->dmr_mute_encR);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_2_loads_tyt_basic_privacy_key_and_truncates_to_16_bits(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-2";
+    char arg2[] = "12345";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->tyt_bp != 1 || state->H != 0x2345ULL) {
+        DSD_FPRINTF(stderr, "expected -2 12345 to enable TYT BP and truncate H=2345, got tyt_bp=%d H=%llX\n",
+                    state->tyt_bp, state->H);
         freeState(state);
         free(opts);
         free(state);
@@ -3933,6 +4183,11 @@ main(void) {
     rc |= test_unknown_option_returns_error_and_does_not_exit();
     rc |= test_numeric_options_reject_trailing_junk();
     rc |= test_H_loads_aes256_key_for_both_slots();
+    rc |= test_H_zero_key_keeps_dmr_encrypted_audio_muted();
+    rc |= test_b_loads_basic_privacy_key_and_unmutes_dmr();
+    rc |= test_b_zero_key_keeps_dmr_encrypted_audio_muted();
+    rc |= test_b_clamps_to_basic_privacy_table_max();
+    rc |= test_2_loads_tyt_basic_privacy_key_and_truncates_to_16_bits();
     rc |= test_1_loads_rc4_key_for_both_slots_and_allows_spaces();
     rc |= test_1_loads_rc4_key_allows_0x_prefix();
     rc |= test_R_loads_nxdn_scrambler_key_and_disables_keyloader();

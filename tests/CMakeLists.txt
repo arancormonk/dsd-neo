@@ -626,6 +626,22 @@ target_include_directories(
 add_test(NAME DPMR_FRAME_LAYOUT COMMAND dsd-neo_test_dpmr_frame_layout)
 
 add_executable(
+    dsd-neo_test_dpmr_voice_bridge
+    protocol/dpmr/test_dpmr_voice_bridge.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
+)
+target_include_directories(
+    dsd-neo_test_dpmr_voice_bridge
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_dpmr_voice_bridge
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+add_test(NAME DPMR_VOICE_BRIDGE COMMAND dsd-neo_test_dpmr_voice_bridge)
+
+add_executable(
     dsd-neo_test_ysf_frame
     protocol/ysf/test_ysf_frame.c
     ${PROJECT_SOURCE_DIR}/src/protocol/ysf/ysf_frame.c

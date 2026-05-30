@@ -609,6 +609,39 @@ dmr_ambe49_has_zero_tail(const char ambe_d[49]) {
 }
 
 int
+dmr_ambe49_should_skip_voice_stream(const char ambe_d[49]) {
+    return dmr_ambe49_is_default_silence(ambe_d) == 1 || dmr_ambe49_has_zero_tail(ambe_d) == 1;
+}
+
+int
+dmr_voice_stream_apply_frame49(const uint8_t* ks_bits, long int* bit_counter, int algid, char ambe_d[49]) {
+    if (ks_bits == NULL || bit_counter == NULL || ambe_d == NULL) {
+        return 0;
+    }
+
+    if (*bit_counter < 0) {
+        *bit_counter = 0;
+    }
+
+    if (dmr_ambe49_should_skip_voice_stream(ambe_d) == 1) {
+        *bit_counter += 49;
+        if (algid != 0x02) {
+            *bit_counter += 7;
+        }
+        return 0;
+    }
+
+    for (int i = 0; i < 49; i++) {
+        ambe_d[i] ^= (char)(ks_bits[*bit_counter] & 1U);
+        (*bit_counter)++;
+    }
+    if (algid != 0x02) {
+        *bit_counter += 7;
+    }
+    return 1;
+}
+
+int
 hytera_bp_apply_frame49(unsigned long long k1, unsigned long long k2, unsigned long long k3, unsigned long long k4,
                         int* frame_counter, char ambe_d[49]) {
     if (frame_counter == NULL || ambe_d == NULL) {

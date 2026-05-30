@@ -18,6 +18,9 @@ extern "C" {
 uint32_t dsd_ysf_soft_viterbi_decode(const uint8_t* dibits, size_t dibit_count, size_t decoded_bytes,
                                      size_t offset_bits, size_t output_bits, uint8_t* out_bits, uint8_t* out_bytes);
 
+uint8_t dsd_ysf_pn95_bit(size_t bit_index);
+void dsd_ysf_dewhiten_bits(uint8_t* bits, size_t bit_count);
+
 bool dsd_ysf_event_text_should_print(const dsd_state* state);
 
 #ifdef __cplusplus
