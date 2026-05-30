@@ -58,7 +58,7 @@ static int
 test_hytera_enhanced_setup_slot_selection(void) {
     static const uint8_t expect[] = {0x13, 0x9A, 0xC2, 0xA2, 0x51, 0x9C, 0x63, 0x86, 0x6B, 0x62,
                                      0xF3, 0xE9, 0xAB, 0xB6, 0xB9, 0x09, 0xCA, 0x23, 0x33, 0xEE};
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 1;
 

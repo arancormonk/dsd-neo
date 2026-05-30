@@ -93,7 +93,7 @@ test_aes128_zero_mi_uses_reference_ecb_block_count(void) {
                                            0xD8, 0xCD, 0xB7, 0x80, 0x70, 0xB4, 0xC5, 0x5A};
     static const uint8_t plaintext[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
                                           0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    dsd_state state;
+    static dsd_state state;
     dmr_block_crypto_ctx ctx;
     const uint8_t slot = 0;
     const uint8_t start = 3;
@@ -138,7 +138,7 @@ test_aes256_zero_mi_uses_reference_ecb_block_count_and_manual_key_fallback(void)
                                            0xEA, 0xFC, 0x49, 0x90, 0x4B, 0x49, 0x60, 0x89};
     static const uint8_t plaintext[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
                                           0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    dsd_state state;
+    static dsd_state state;
     dmr_block_crypto_ctx ctx;
     const uint8_t slot = 1;
     const uint8_t start = 3;
@@ -174,7 +174,7 @@ static int
 test_aes_nonzero_mi_keeps_ofb_path(void) {
     uint8_t iv[16];
     uint8_t stream[48];
-    dsd_state state;
+    static dsd_state state;
     dmr_block_crypto_ctx ctx;
     const uint8_t slot = 0;
     const int kid = 0x33;
@@ -204,7 +204,7 @@ test_aes_nonzero_mi_keeps_ofb_path(void) {
 
 static int
 test_rc4_decrypts_window_with_key_id_lookup(void) {
-    dsd_state state;
+    static dsd_state state;
     dmr_block_crypto_ctx ctx;
     uint8_t plaintext[32];
     uint8_t stream[32];
@@ -233,7 +233,7 @@ test_rc4_decrypts_window_with_key_id_lookup(void) {
 
 static int
 test_des_decrypts_window_with_manual_key_fallback(void) {
-    dsd_state state;
+    static dsd_state state;
     dmr_block_crypto_ctx ctx;
     uint8_t plaintext[32];
     uint8_t stream[32];
@@ -262,7 +262,7 @@ test_des_decrypts_window_with_manual_key_fallback(void) {
 
 static int
 test_basic_privacy_decrypts_window(void) {
-    dsd_state state;
+    static dsd_state state;
     dmr_block_crypto_ctx ctx;
     uint8_t plaintext[32];
     uint8_t stream[2];
@@ -289,7 +289,7 @@ test_basic_privacy_decrypts_window(void) {
 
 static int
 test_aes_missing_key_still_normalizes_alg(void) {
-    dsd_state state;
+    static dsd_state state;
     dmr_block_crypto_ctx ctx;
     const uint8_t slot = 1;
     int rc = 0;

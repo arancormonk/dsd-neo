@@ -1589,13 +1589,14 @@ edacs_handle_standard_mt_b_individual_assignment(dsd_opts* opts, dsd_state* stat
     }
 
     dsd_tg_policy_decision decision;
-    dsd_state hold_neutral = *state;
-    hold_neutral.tg_hold = 0;
-    int policy_ok = (dsd_tg_policy_evaluate_private_call(opts, &hold_neutral, (uint32_t)source, (uint32_t)target, 0, 0,
+    uint32_t saved_tg_hold = state->tg_hold;
+    state->tg_hold = 0;
+    int policy_ok = (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 0,
                                                          DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
                                                          DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
                          == 0
                      && decision.tune_allowed);
+    state->tg_hold = saved_tg_hold;
     if (opts->trunk_use_allow_list == 1) {
         policy_ok = 0;
     }
@@ -1776,12 +1777,13 @@ edacs_handle_standard_mt_d_system_all_call(dsd_opts* opts, dsd_state* state, uns
     }
 
     dsd_tg_policy_decision decision;
-    dsd_state hold_neutral = *state;
-    hold_neutral.tg_hold = 0;
-    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, &hold_neutral, 0, (uint32_t)lid, 0, 0,
+    uint32_t saved_tg_hold = state->tg_hold;
+    state->tg_hold = 0;
+    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)lid, 0, 0,
                                                        DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
                          == 0
                      && decision.tune_allowed);
+    state->tg_hold = saved_tg_hold;
     if (opts->trunk_use_allow_list == 1) {
         policy_ok = 1;
     }

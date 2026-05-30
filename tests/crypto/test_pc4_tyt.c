@@ -171,7 +171,7 @@ load_tyt16_fixture(char frame[4][24]) {
 
 static int
 test_tyt16_codeword_keystream_vectors(void) {
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     state.H = 0xBEEFULL;
 
@@ -223,7 +223,7 @@ test_tyt_ap_128_key_schedule(void) {
     create_keys(&expected, key, sizeof(key));
     expected.rounds = nbround;
 
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
     char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
@@ -249,7 +249,7 @@ test_tyt_ap_256_key_schedule(void) {
     create_keys(&expected, key, sizeof(key));
     expected.rounds = nbround;
 
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
     char input[] = "0123456789ABCDEF FEDCBA9876543210 1111222233334444 5555666677778888";
@@ -275,7 +275,7 @@ test_tyt_ap_256_trailing_zero_chunks_key_schedule(void) {
     create_keys(&expected, key, sizeof(key));
     expected.rounds = nbround;
 
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
     char input[] = "0123456789ABCDEF FEDCBA9876543210 0000000000000000 0000000000000000";
@@ -291,14 +291,14 @@ static int
 test_tyt_ap_rejects_malformed_keys(void) {
     int rc = 0;
 
-    dsd_state bad_char_state;
+    static dsd_state bad_char_state;
     DSD_MEMSET(&bad_char_state, 0, sizeof(bad_char_state));
     bad_char_state.tyt_ap = 1;
     char bad_char_input[] = "736B9A9C5645288B 243AD5CB8701EF8Z";
     tyt_ap_pc4_keystream_creation(&bad_char_state, bad_char_input);
     rc |= expect_int("tyt ap bad hex disables flag", bad_char_state.tyt_ap, 0);
 
-    dsd_state bad_length_state;
+    static dsd_state bad_length_state;
     DSD_MEMSET(&bad_length_state, 0, sizeof(bad_length_state));
     bad_length_state.tyt_ap = 1;
     char bad_length_input[] = "736B9A9C5645288B";
@@ -311,7 +311,7 @@ test_tyt_ap_rejects_malformed_keys(void) {
 static int
 test_tyt_ep_aes_vector(void) {
     static const char expect[] = "0001100011000000101000001110110101000101101011001";
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
     char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
@@ -326,7 +326,7 @@ test_tyt_ep_aes_vector(void) {
 
 static int
 test_tyt_ap_apply_skips_silence_and_zero_tail(void) {
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     state.tyt_ap = 1;
 
@@ -349,7 +349,7 @@ test_tyt_ap_apply_skips_silence_and_zero_tail(void) {
 
 static int
 test_tyt_ap_apply_decrypts_voice_frame(void) {
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
     char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
@@ -379,7 +379,7 @@ test_tyt_ap_apply_decrypts_voice_frame(void) {
 
 static int
 test_tyt_ep_apply_skips_silence_and_zero_tail(void) {
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     state.tyt_ep = 1;
     for (int i = 0; i < 49; i++) {

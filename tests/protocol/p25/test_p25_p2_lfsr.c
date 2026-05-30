@@ -66,7 +66,7 @@ expect_bytes(const char* tag, const uint8_t* got, const uint8_t* want, int len) 
 static int
 test_p25_voice_lfsr_helpers(void) {
     int rc = 0;
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
 
     state.currentslot = 0;

@@ -49,6 +49,22 @@ rules:
       - pattern: posix_spawn(...)
       - pattern: posix_spawnp(...)
 
+  - id: dsd-neo.no-automatic-full-decoder-state
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Do not allocate dsd_state or dsd_opts as automatic locals; use heap allocation or intentional static storage so
+      large decoder objects never consume stack space.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+        - /tests/**
+      exclude:
+        - /src/third_party/**
+    pattern-regex: '^\s*(?!(?:static|thread_local)\b)(?:(?:const\s+)?(?:struct\s+)?(?:dsd_state|dsd_opts)\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:=|\{|,|\[|;)|(?:const\s+)?auto\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:dsd_state|dsd_opts)\s*(?:\{|\())'
+
   - id: dsd-neo.no-production-assert
     languages: [c, cpp]
     severity: ERROR

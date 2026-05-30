@@ -7855,11 +7855,8 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
 
 extern "C" int
 dsd_rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev) {
-    dsd_opts opts = {};
-    if (audio_in_dev && audio_in_dev[0] != '\0') {
-        DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", audio_in_dev);
-    }
-    return stream_steady_state_watermark_enabled(&opts);
+    UNUSED(audio_in_dev);
+    return stream_steady_state_watermark_enabled(NULL);
 }
 #endif
 

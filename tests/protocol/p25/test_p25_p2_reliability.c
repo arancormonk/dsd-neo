@@ -382,7 +382,7 @@ set_ess_payload_bits(dsd_state* state, int slot, int algid, int keyid, uint64_t 
 static int
 test_ess_soft_accepts_deep_erasure(void) {
     printf("Test 12: ESS accepts deep soft erasure success... ");
-    dsd_opts opts;
+    static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_ess_soft_inputs(&state);
@@ -411,7 +411,7 @@ test_ess_soft_accepts_deep_erasure(void) {
 static int
 test_ess_soft_failure_counts_once(void) {
     printf("Test 13: ESS hard/soft failure counts once... ");
-    dsd_opts opts;
+    static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_ess_soft_inputs(&state);
@@ -435,7 +435,7 @@ test_ess_soft_failure_counts_once(void) {
 static int
 test_ess_des_manual_key_preserves_audio_gate(void) {
     printf("Test 14: ESS DES manual key preserves audio gate... ");
-    dsd_opts opts;
+    static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_ess_soft_inputs(&state);

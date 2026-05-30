@@ -33,7 +33,7 @@ main(void) {
     rc |= expect_eq("aes128-missing", dsd_dmr_voice_alg_can_decrypt(0x24, 0x0ULL, 0), 0);
     rc |= expect_eq("kirisun-generic-needs-slot", dsd_dmr_voice_alg_can_decrypt(0x36, 0x0ULL, 1), 0);
 
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     state.aes_key_loaded[0] = 1;
     state.A1[0] = 0x1111111111111111ULL;

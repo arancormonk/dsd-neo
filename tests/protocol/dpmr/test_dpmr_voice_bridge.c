@@ -126,8 +126,8 @@ expect_u64(const char* tag, unsigned long long got, unsigned long long want) {
 
 static int
 test_first_group_scrambler_bridge_mutes_without_key(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -162,8 +162,8 @@ test_first_group_scrambler_bridge_mutes_without_key(void) {
 
 static int
 test_second_group_scrambler_bridge_unmutes_with_key(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));

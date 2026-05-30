@@ -227,8 +227,8 @@ expect_u8(const char* label, uint8_t got, uint8_t want) {
 static int
 test_p25_pdu_des_decrypt_vector(void) {
     static const uint8_t expect[] = {0x67, 0xAE, 0x7A, 0x29, 0x61, 0xDF, 0xA3, 0x45};
-    dsd_opts opts;
-    dsd_state st;
+    static dsd_opts opts;
+    static dsd_state st;
     uint8_t input[sizeof expect];
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
@@ -247,8 +247,8 @@ static int
 test_p25_pdu_rc4_decrypt_vector(void) {
     static const uint8_t expect[] = {0xFD, 0x03, 0xAB, 0x28, 0x7B, 0x5C, 0x1D, 0x19,
                                      0x5A, 0x3F, 0xE2, 0x45, 0xFE, 0x54, 0xDB, 0x10};
-    dsd_opts opts;
-    dsd_state st;
+    static dsd_opts opts;
+    static dsd_state st;
     uint8_t input[sizeof expect];
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
@@ -267,8 +267,8 @@ static int
 test_p25_pdu_aes128_decrypt_vector(void) {
     static const uint8_t expect[] = {0xEC, 0xAB, 0x6A, 0x30, 0x3A, 0x05, 0x65, 0x68,
                                      0xE0, 0x29, 0x0F, 0x56, 0x58, 0xA3, 0x07, 0xF3};
-    dsd_opts opts;
-    dsd_state st;
+    static dsd_opts opts;
+    static dsd_state st;
     uint8_t input[sizeof expect];
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
@@ -287,8 +287,8 @@ test_p25_pdu_aes128_decrypt_vector(void) {
 static int
 test_p25_pdu_missing_keys_stay_encrypted(void) {
     static const uint8_t expect[] = {0xC0, 0xDE, 0x12, 0x34};
-    dsd_opts opts;
-    dsd_state st;
+    static dsd_opts opts;
+    static dsd_state st;
     uint8_t des_input[sizeof expect];
     uint8_t rc4_input[sizeof expect];
     uint8_t aes_input[sizeof expect];

@@ -42,7 +42,7 @@ expect_float_close(const char* label, float got, float want, float tol) {
 
 static int
 test_agsm_applies_gain_to_entire_block(void) {
-    dsd_opts opts = {0};
+    static dsd_opts opts = {0};
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!state) {
         DSD_FPRINTF(stderr, "FAIL: alloc state\n");
@@ -71,7 +71,7 @@ test_agsm_applies_gain_to_entire_block(void) {
 
 static int
 test_agsm_handles_silence_without_invalid_values(void) {
-    dsd_opts opts = {0};
+    static dsd_opts opts = {0};
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!state) {
         DSD_FPRINTF(stderr, "FAIL: alloc state\n");

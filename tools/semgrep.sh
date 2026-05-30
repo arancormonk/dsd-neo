@@ -80,6 +80,29 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
   TARGETS=(src include apps tests tools .github/workflows)
 fi
 
+# Semgrep's default semgrepignore excludes test directories when they are
+# passed as directories. Expand directory targets to tracked files so repo
+# guardrails with /tests/** paths are enforced in full local/CI runs.
+if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  EXPANDED_TARGETS=()
+  for target in "${TARGETS[@]}"; do
+    if [[ -d "$target" ]]; then
+      DIR_TARGETS=()
+      while IFS= read -r path; do
+        DIR_TARGETS+=("$path")
+      done < <(git ls-files -- "$target")
+      if [[ ${#DIR_TARGETS[@]} -gt 0 ]]; then
+        EXPANDED_TARGETS+=("${DIR_TARGETS[@]}")
+      else
+        EXPANDED_TARGETS+=("$target")
+      fi
+    else
+      EXPANDED_TARGETS+=("$target")
+    fi
+  done
+  TARGETS=("${EXPANDED_TARGETS[@]}")
+fi
+
 LOG_FILE=".semgrep.local.out"
 
 ARGS=(

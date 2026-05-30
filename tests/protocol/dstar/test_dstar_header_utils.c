@@ -164,8 +164,8 @@ test_crc16(void) {
 
 static void
 test_slow_data_header_accepts_wire_crc_order(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     uint8_t bytes[60];
     uint8_t compact[51];
     uint8_t bits[480];
@@ -224,8 +224,8 @@ set_compacted_slow_data_bytes(uint8_t bytes[60], const uint8_t compact[51]) {
 
 static void
 test_slow_data_text_keeps_byte_after_marker(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     Event_History_I* history;
     uint8_t bytes[60];
     uint8_t bits[480];
@@ -257,8 +257,8 @@ test_slow_data_text_keeps_byte_after_marker(void) {
 
 static void
 test_slow_data_aprs_latitude_uses_compacted_direction(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     Event_History_I* history;
     uint8_t bytes[60];
     uint8_t compact[51];

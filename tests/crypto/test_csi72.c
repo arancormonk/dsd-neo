@@ -58,7 +58,7 @@ expect_frame_string(const char* label, char frame[4][24], const char* want) {
 static int
 test_ee72_key_parse(void) {
     static const uint8_t expect[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99};
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
 
     int parse_rc = connect_systems_ee72_key_creation(&state, "0x11 22 33 44 55 66 77 88 99");
@@ -72,7 +72,7 @@ test_ee72_key_parse(void) {
 
 static int
 test_ee72_rejects_invalid_length(void) {
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
 
     int parse_rc = connect_systems_ee72_key_creation(&state, "1122334455667788");
@@ -89,7 +89,7 @@ test_csi72_frame_transform_vector(void) {
     static const char expect[] =
         "010110011001100110011001010100101010101101001010101010100100101010101010010110101010101010101010";
 
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMCPY(state.csi_ee_key, key, sizeof(key));
     state.csi_ee = 1;

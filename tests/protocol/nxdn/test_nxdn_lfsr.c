@@ -48,7 +48,7 @@ test_lfsrn_voice_scrambler_vector(void) {
         0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1,
     };
 
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     state.payload_miN = 0x1234ULL;
 
@@ -75,7 +75,7 @@ test_lfsr128n_aes_iv_vector(void) {
     static const uint8_t expected[16] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
                                          0x20, 0xB1, 0x25, 0xE7, 0x79, 0xD0, 0xF3, 0x4E};
 
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     state.payload_miN = 0x0123456789ABCDEFULL;
     DSD_MEMSET(state.aes_iv, 0xA5, sizeof(state.aes_iv));

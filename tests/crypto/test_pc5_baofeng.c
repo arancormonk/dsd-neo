@@ -133,7 +133,7 @@ test_baofeng_128_key_schedule(void) {
     create_keys_pc5(&expected, key, sizeof(key));
     expected.rounds = PC5_NBROUND;
 
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
     int parse_rc = baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210");
@@ -153,7 +153,7 @@ test_baofeng_256_key_schedule_uses_ascii_hex(void) {
     create_keys_pc5(&expected, key_ascii, strlen((const char*)key_ascii));
     expected.rounds = PC5_NBROUND;
 
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
     int parse_rc = baofeng_ap_pc5_keystream_creation(
@@ -174,7 +174,7 @@ test_baofeng_256_key_schedule_preserves_ascii_case(void) {
     create_keys_pc5(&expected, key_ascii, strlen((const char*)key_ascii));
     expected.rounds = PC5_NBROUND;
 
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
     int parse_rc = baofeng_ap_pc5_keystream_creation(
@@ -189,7 +189,7 @@ test_baofeng_256_key_schedule_preserves_ascii_case(void) {
 
 static int
 test_baofeng_rejects_invalid_hex(void) {
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     int parse_rc = baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEZ FEDCBA9876543210");
 
@@ -201,7 +201,7 @@ test_baofeng_rejects_invalid_hex(void) {
 
 static int
 test_baofeng_apply_skips_silence_and_zero_tail(void) {
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
     (void)baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210");
@@ -230,7 +230,7 @@ test_baofeng_apply_skips_silence_and_zero_tail(void) {
 
 static int
 test_baofeng_apply_decrypts_voice_frame(void) {
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
     (void)baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210");

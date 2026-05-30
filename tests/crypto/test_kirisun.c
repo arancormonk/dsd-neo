@@ -34,7 +34,7 @@ test_kirisun_universal_vector(void) {
     static const uint8_t expect[] = {0x53, 0xBB, 0xE9, 0x2A, 0xB4, 0x79, 0x45, 0x62, 0x16, 0xBA, 0xDB, 0xD6, 0xF3, 0xA5,
                                      0x56, 0xB1, 0xA6, 0x6A, 0x85, 0xF2, 0x87, 0x7C, 0x5C, 0xF2, 0x9E, 0xC3, 0xE7, 0x2E,
                                      0xE3, 0x33, 0x3F, 0xFE, 0x58, 0x1E, 0x03, 0x26, 0xAE, 0xB3, 0x27, 0x84};
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
     state.payload_mi = 0x11223344ULL;
@@ -54,7 +54,7 @@ test_kirisun_advanced_vector(void) {
     static const uint8_t expect[] = {0x23, 0x87, 0x8D, 0xE2, 0xC6, 0x4A, 0x00, 0x84, 0x92, 0x3E, 0xE9, 0x93, 0x7C, 0x00,
                                      0x5E, 0xA2, 0xC1, 0x72, 0xE7, 0xFB, 0x00, 0xBB, 0xF8, 0x4B, 0x10, 0x74, 0xCC, 0x00,
                                      0x84, 0xF2, 0xFB, 0x42, 0x3B, 0x60, 0x00, 0xEA, 0xF8, 0xCD, 0xC1, 0x46};
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 1;
     state.payload_miR = 0xA1B2C3D4ULL;
@@ -71,7 +71,7 @@ test_kirisun_advanced_vector(void) {
 
 static int
 test_kirisun_incomplete_key_clears_loaded(void) {
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(state.ks_octetL, 0xA5, sizeof(state.ks_octetL));
     state.currentslot = 0;
@@ -90,7 +90,7 @@ test_kirisun_incomplete_key_clears_loaded(void) {
 
 static int
 test_kirisun_zero_word_clears_loaded(void) {
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(state.ks_octetL, 0xA5, sizeof(state.ks_octetL));
     state.currentslot = 0;
@@ -112,7 +112,7 @@ test_kirisun_zero_word_clears_loaded(void) {
 
 static int
 test_kirisun_all_zero_key_clears_loaded(void) {
-    dsd_state state;
+    static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(state.ks_octetL, 0xA5, sizeof(state.ks_octetL));
     state.currentslot = 0;

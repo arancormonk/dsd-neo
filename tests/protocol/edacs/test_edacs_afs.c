@@ -8,20 +8,21 @@
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-static dsd_state
-make_state(int a_bits, int f_bits, int s_bits) {
-    dsd_state state = {0};
-    state.edacs_a_bits = a_bits;
-    state.edacs_f_bits = f_bits;
-    state.edacs_s_bits = s_bits;
-    return state;
+static void
+init_state(dsd_state* state, int a_bits, int f_bits, int s_bits) {
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->edacs_a_bits = a_bits;
+    state->edacs_f_bits = f_bits;
+    state->edacs_s_bits = s_bits;
 }
 
 static void
 test_default_afs_format(void) {
-    dsd_state state = make_state(4, 4, 3);
+    static dsd_state state;
+    init_state(&state, 4, 4, 3);
     char buffer[7] = {0};
 
     assert(getAfsStringLength(&state) == 6);
@@ -31,7 +32,8 @@ test_default_afs_format(void) {
 
 static void
 test_custom_afs_format_uses_decimal_fields(void) {
-    dsd_state state = make_state(3, 5, 3);
+    static dsd_state state;
+    init_state(&state, 3, 5, 3);
     char buffer[7] = {0};
 
     assert(getAfsStringLength(&state) == 6);
@@ -41,7 +43,8 @@ test_custom_afs_format_uses_decimal_fields(void) {
 
 static void
 test_custom_afs_format_expands_for_large_agency_field(void) {
-    dsd_state state = make_state(8, 1, 2);
+    static dsd_state state;
+    init_state(&state, 8, 1, 2);
     char buffer[8] = {0};
 
     assert(getAfsStringLength(&state) == 7);
@@ -51,7 +54,8 @@ test_custom_afs_format_expands_for_large_agency_field(void) {
 
 static void
 test_custom_afs_format_expands_for_large_subfleet_field(void) {
-    dsd_state state = make_state(1, 1, 9);
+    static dsd_state state;
+    init_state(&state, 1, 1, 9);
     char buffer[8] = {0};
 
     assert(getAfsStringLength(&state) == 7);

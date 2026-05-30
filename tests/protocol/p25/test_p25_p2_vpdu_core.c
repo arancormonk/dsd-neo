@@ -138,7 +138,7 @@ static int
 run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int current_site, long* out_freqs,
                         int out_cap, int* out_rfss, int* out_site, int* out_lcn_count, long* out_lcn_freqs,
                         int out_lcn_cap) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = NULL;
     DSD_MEMSET(&opts, 0, sizeof opts);
     state = (dsd_state*)calloc(1, sizeof(*state));
@@ -378,8 +378,8 @@ run_cases(void) {
 
     // Case 12: extended private voice (0x22) derives source from the SUID tail.
     {
-        dsd_opts opts;
-        dsd_state state;
+        static dsd_opts opts;
+        static dsd_state state;
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
