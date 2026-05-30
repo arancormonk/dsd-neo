@@ -546,7 +546,7 @@ static int
 test_sdcall_des_data_decrypts_and_resets(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    Event_History_I events[1];
+    Event_History_I* events = (Event_History_I*)calloc(1, sizeof(*events));
     uint8_t header_bits[96];
     uint8_t first_bits[80];
     uint8_t final_bits[80];
@@ -556,13 +556,14 @@ test_sdcall_des_data_decrypts_and_resets(void) {
     };
     const uint8_t key_id = 0x05U;
     const uint64_t des_key = 0x0123456789ABCDEFULL;
-    if (!opts || !state) {
-        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+    if (!opts || !state || !events) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "",
+                    !events ? " event_history" : "");
+        free(events);
         free(state);
         free(opts);
         return 1;
     }
-    DSD_MEMSET(events, 0, sizeof(events));
     DSD_MEMSET(header_bits, 0, sizeof(header_bits));
     DSD_MEMSET(first_bits, 0, sizeof(first_bits));
     DSD_MEMSET(final_bits, 0, sizeof(final_bits));
@@ -601,6 +602,7 @@ test_sdcall_des_data_decrypts_and_resets(void) {
     rc |= expect_int("sdcall-des-alg-reset", state->payload_algid, 0);
     rc |= expect_int("sdcall-des-keyid-reset", state->payload_keyid, 0);
 
+    free(events);
     free(state);
     free(opts);
     return rc;
@@ -610,7 +612,7 @@ static int
 test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    Event_History_I events[1];
+    Event_History_I* events = (Event_History_I*)calloc(1, sizeof(*events));
     uint8_t header_bits[160];
     uint8_t first_bits[80];
     uint8_t final_bits[80];
@@ -624,13 +626,14 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     };
     const uint8_t key_id = 0x11U;
     const uint64_t iv = 0x0102030405060708ULL;
-    if (!opts || !state) {
-        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+    if (!opts || !state || !events) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "",
+                    !events ? " event_history" : "");
+        free(events);
         free(state);
         free(opts);
         return 1;
     }
-    DSD_MEMSET(events, 0, sizeof(events));
     DSD_MEMSET(header_bits, 0, sizeof(header_bits));
     DSD_MEMSET(first_bits, 0, sizeof(first_bits));
     DSD_MEMSET(final_bits, 0, sizeof(final_bits));
@@ -672,6 +675,7 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     rc |= expect_u64("dcall-aes-mi-reset", (uint64_t)state->payload_mi, 0ULL);
     rc |= expect_bytes("dcall-aes-iv-reset", state->aes_ivR, zero_iv, sizeof(zero_iv));
 
+    free(events);
     free(state);
     free(opts);
     return rc;
