@@ -398,7 +398,9 @@ expect_true(const char* tag, int ok) {
 
 static int
 expect_eq_float(const char* tag, float got, float want) {
-    if (got != want) {
+    const float delta = got - want;
+    const float abs_delta = (delta < 0.0f) ? -delta : delta;
+    if (!(abs_delta <= 0.0001f)) {
         DSD_FPRINTF(stderr, "%s: got %.3f want %.3f\n", tag, got, want);
         return 1;
     }

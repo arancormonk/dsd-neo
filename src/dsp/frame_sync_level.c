@@ -34,9 +34,6 @@ dsd_frame_sync_estimate_sorted_window_levels(const float* sorted_levels, int cou
         min_idx = 2;
         max_idx = count - 5;
     }
-    if (max_idx < 0) {
-        max_idx = 0;
-    }
     if (max_idx + 2 >= count) {
         max_idx = count - 3;
     }
