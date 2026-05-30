@@ -234,7 +234,7 @@ main(void) {
     assert(g_cap.n == 0);
 
     cap_reset();
-    assert(ncurses_input_handler(opts, state, DSD_KEY_FORCE_RC4) == 1);
+    assert(ncurses_input_handler(opts, state, '6') == 1);
     assert(g_cap.calls == 1);
     assert(g_cap.id == UI_CMD_FORCE_RC4_TOGGLE);
     assert(g_cap.n == 0);
