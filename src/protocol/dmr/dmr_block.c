@@ -1089,8 +1089,10 @@ dmr_block_type1_extract_crc32(const dsd_state* state, uint8_t slot_idx, uint16_t
     if (ctr < 4) {
         return 0u;
     }
-    return (state->dmr_pdu_sf[slot_idx][ctr - 4] << 24) | (state->dmr_pdu_sf[slot_idx][ctr - 3] << 16)
-           | (state->dmr_pdu_sf[slot_idx][ctr - 2] << 8) | (state->dmr_pdu_sf[slot_idx][ctr - 1] << 0);
+    return ((uint32_t)state->dmr_pdu_sf[slot_idx][ctr - 4] << 24U)
+           | ((uint32_t)state->dmr_pdu_sf[slot_idx][ctr - 3] << 16U)
+           | ((uint32_t)state->dmr_pdu_sf[slot_idx][ctr - 2] << 8U)
+           | ((uint32_t)state->dmr_pdu_sf[slot_idx][ctr - 1] << 0U);
 }
 
 static void DSD_ATTR_USED
