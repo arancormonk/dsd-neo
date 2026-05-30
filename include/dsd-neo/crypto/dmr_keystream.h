@@ -39,6 +39,7 @@ void straight_mod_xor_keystream_creation(dsd_state* state, const char* input);
 void straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49]);
 int dmr_ambe49_is_default_silence(const char ambe_d[49]);
 int dmr_ambe49_has_zero_tail(const char ambe_d[49]);
+int dmr_basic_privacy_apply_frame49(unsigned long long key_id, char ambe_d[49]);
 int tyt_ap_pc4_apply_frame49(const dsd_state* state, char ambe_d[49]);
 int tyt_ep_aes_apply_frame49(const dsd_state* state, char ambe_d[49]);
 int hytera_bp_apply_frame49(unsigned long long k1, unsigned long long k2, unsigned long long k3, unsigned long long k4,

@@ -232,6 +232,8 @@ test_numeric_options_reject_trailing_junk(void) {
     rc |= expect_numeric_parse_error("-s", "48000junk");
     rc |= expect_numeric_parse_error("-b", "12junk");
     rc |= expect_numeric_parse_error("-D", "4junk");
+    rc |= expect_numeric_parse_error("-R", "12junk");
+    rc |= expect_numeric_parse_error("-_", "12junk");
     return rc;
 }
 
@@ -397,6 +399,94 @@ test_1_loads_rc4_key_allows_0x_prefix(void) {
     free(opts);
     free(state);
     return 0;
+}
+
+static int
+test_R_loads_nxdn_scrambler_key_and_disables_keyloader(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    state->keyloader = 1;
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-R";
+    char arg2[] = "40000";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (state->R != 0x7FFFULL || state->keyloader != 0 || opts->symbol_out_file[0] != '\0') {
+        DSD_FPRINTF(stderr, "expected -R to clamp R and disable keyloader, got R=%llX keyloader=%d symbol='%s'\n",
+                    state->R, state->keyloader, opts->symbol_out_file);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+expect_pn95_seed_arg(const char* value, uint16_t want) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-_";
+    char arg2[32];
+    DSD_SNPRINTF(arg2, sizeof(arg2), "%s", value);
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int parse_rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    int failed = 0;
+    if (parse_rc != DSD_PARSE_CONTINUE || state->nxdn_pn95_seed != want) {
+        DSD_FPRINTF(stderr, "expected -_ %s to set seed %u, got rc=%d exit_rc=%d seed=%u\n", value, (unsigned)want,
+                    parse_rc, exit_rc, (unsigned)state->nxdn_pn95_seed);
+        failed = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return failed;
+}
+
+static int
+test_nxdn_pn95_seed_option_matches_reference_bounds(void) {
+    int rc = 0;
+    rc |= expect_pn95_seed_arg("1", 1U);
+    rc |= expect_pn95_seed_arg("0", 228U);
+    rc |= expect_pn95_seed_arg("512", 511U);
+    return rc;
 }
 
 static const char*
@@ -2428,7 +2518,7 @@ test_dmr_baofeng_pc5_256_long_option_uses_ascii_hex_key(void) {
         || memcmp(ctxpc5.rngxor, expected.rngxor, sizeof(expected.rngxor)) != 0
         || memcmp(ctxpc5.tab, expected.tab, sizeof(expected.tab)) != 0
         || memcmp(ctxpc5.inv, expected.inv, sizeof(expected.inv)) != 0) {
-        DSD_FPRINTF(stderr, "expected 64-hex PC5 input to use dsd-fme ASCII hex key schedule\n");
+        DSD_FPRINTF(stderr, "expected 64-hex PC5 input to use legacy ASCII hex key schedule\n");
         freeState(state);
         free(opts);
         free(state);
@@ -3845,6 +3935,8 @@ main(void) {
     rc |= test_H_loads_aes256_key_for_both_slots();
     rc |= test_1_loads_rc4_key_for_both_slots_and_allows_spaces();
     rc |= test_1_loads_rc4_key_allows_0x_prefix();
+    rc |= test_R_loads_nxdn_scrambler_key_and_disables_keyloader();
+    rc |= test_nxdn_pn95_seed_option_matches_reference_bounds();
     rc |= test_bootstrap_treats_lone_ini_as_config();
     rc |= test_bootstrap_accepts_explicit_config_path_outside_cwd();
     rc |= test_bootstrap_missing_explicit_config_keeps_autosave_path();

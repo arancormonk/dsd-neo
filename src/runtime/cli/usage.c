@@ -76,7 +76,7 @@ dsd_cli_usage_section_io(void) {
     printf("                m17udp for M17 UDP/IP frame input (default 127.0.0.1:17000)\n");
     printf("                m17udp:0.0.0.0:17001 for M17 UDP/IP frame input on all interfaces\n");
     printf("                - for stdin raw PCM16LE mono input (set sample rate with -s)\n");
-    printf("                filename.bin for OP25/FME capture bin files\n");
+    printf("                filename.bin for OP25-compatible capture bin files\n");
     printf("                filename.wav for 48K/1 wav files (SDR++, GQRX)\n");
     printf("                filename.wav -s 96000 for 96K/1 wav files (DSDPlus)\n");
     printf("                (Use single quotes '/directory/audio file.wav' when directories/spaces are present)\n");
@@ -288,6 +288,8 @@ dsd_cli_usage_section_advanced(void) {
     printf("                 -H '20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8' \n");
     printf("\n");
     printf("  -R <dec>      Manually Enter dPMR or NXDN EHR Scrambler Key Value (Decimal Value)\n");
+    printf("                 \n");
+    printf("  -_ <dec>      Manually Set NXDN PN95 Dibit Scrambler Seed (1-511)\n");
     printf("                 \n");
     printf("  -1 <hex>      Manually Enter RC4 or DES Key Value (DMR, P25, NXDN) (Hex Value) \n");
     printf("                 \n");

@@ -53,12 +53,6 @@ uint16_t crc16cac(const uint8_t buf[], int len);
 uint8_t crc7_scch(const uint8_t bits[], int len);
 uint32_t nxdn_message_crc32(const uint8_t* input, int len);
 
-static const uint8_t scramble_t[182] = { //values are the position values we need to invert in the descramble
-    2,   5,   6,   7,   10,  12,  14,  16,  17,  22,  23,  25,  26,  27,  28,  30,  33,  34,  36,  37,  38,  41,  45,
-    47,  52,  54,  56,  57,  59,  62,  63,  64,  65,  66,  67,  69,  70,  73,  76,  79,  81,  82,  84,  85,  86,  87,
-    88,  89,  92,  95,  96,  98,  100, 103, 104, 107, 108, 116, 117, 121, 122, 125, 127, 131, 132, 134, 137, 139, 140,
-    141, 142, 143, 144, 145, 147, 151, 153, 154, 158, 159, 160, 162, 164, 165, 168, 170, 171, 174, 175, 176, 177, 181};
-
 static int
 nxdn_dcr_is_sb0_message_type(uint8_t message_type) {
     // SACCH2 sf_mes 0x01 identifies call (SB0) traffic; other values are PDU/End/Idle.
@@ -1077,17 +1071,6 @@ nxdn_message_type_resets_call(uint8_t message_type) {
 static int
 nxdn_message_type_resets_gain(uint8_t message_type) {
     return message_type == 0x07U || nxdn_message_type_resets_call(message_type);
-}
-
-//decoding functions here
-void
-nxdn_descramble(uint8_t dibits[], int len) {
-    for (int i = 0; i < len; i++) {
-        if (scramble_t[i] >= len) {
-            break;
-        }
-        dibits[scramble_t[i]] ^= 0x2; // invert sign of scrambled dibits
-    }
 }
 
 /*

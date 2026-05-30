@@ -191,7 +191,7 @@ nxdn_collect_lich(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
         ctx->dbuf_reliab[i] = rel;
     }
 
-    nxdn_descramble(ctx->lich_dibits, 8);
+    nxdn_descramble_with_seed(ctx->lich_dibits, 8, state->nxdn_pn95_seed);
 
     ctx->lich = 0;
     for (int i = 0; i < 8; i++) {
@@ -376,7 +376,7 @@ nxdn_collect_payload_and_unpack(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx
         ctx->dbuf_reliab[i + 8] = rel;
     }
 
-    nxdn_descramble(ctx->dbuf, 182);
+    nxdn_descramble_with_seed(ctx->dbuf, 182, state->nxdn_pn95_seed);
 
     for (size_t i = 0; i < 182; i++) {
         size_t idx = i * 2;

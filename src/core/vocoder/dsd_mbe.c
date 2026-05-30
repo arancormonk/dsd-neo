@@ -21,7 +21,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
-#include <dsd-neo/core/bp.h>
 #include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/file_io.h>
@@ -447,15 +446,10 @@ play_imbe_file_frame(dsd_opts* opts, dsd_state* state, char imbe_d[88], char fil
 
 static void
 decrypt_ambe_with_pr_key(const dsd_state* state, char ambe_d[49]) {
-    if (state->K == 0) {
+    if (state == NULL) {
         return;
     }
-    unsigned long long int k = BPK[state->K];
-    k = (((k & 0xFF0F) << 32) + (k << 16) + k);
-    for (short int j = 0; j < 48; j++) {
-        int x = (((k << j) & 0x800000000000) >> 47);
-        ambe_d[j] ^= x;
-    }
+    (void)dmr_basic_privacy_apply_frame49(state->K, ambe_d);
 }
 
 static void
@@ -855,16 +849,6 @@ mbe_hash_tg_for_key(uint32_t tg) {
 }
 
 static void
-mbe_apply_bpk_to_ambe(uint8_t key_index, char ambe_d[49]) {
-    unsigned long long int k = BPK[key_index];
-    k = (((k & 0xFF0F) << 32) + (k << 16) + k);
-    for (short int j = 0; j < 48; j++) {
-        int x = (((k << j) & 0x800000000000) >> 47);
-        ambe_d[j] ^= x;
-    }
-}
-
-static void
 mbe_slot_apply_straight_ks_left(dsd_state* state, char ambe_d[49]) {
     if (state->straight_ks == 1 && state->straight_mod > 0) {
         state->dmr_so = 0;
@@ -982,7 +966,7 @@ static void
 mbeslot_left_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     if ((state->K > 0 && state->dmr_so & 0x40 && state->payload_keyid == 0 && state->dmr_fid == 0x10)
         || (state->K > 0 && state->M == 1)) {
-        mbe_apply_bpk_to_ambe((uint8_t)state->K, frame_ctx->ambe_d);
+        (void)dmr_basic_privacy_apply_frame49(state->K, frame_ctx->ambe_d);
     }
 
     if ((state->K1 > 0 && state->dmr_so & 0x40 && state->payload_keyid == 0 && state->dmr_fid == 0x68)
@@ -995,7 +979,7 @@ static void
 mbeslot_right_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     if ((state->K > 0 && state->dmr_soR & 0x40 && state->payload_keyidR == 0 && state->dmr_fidR == 0x10)
         || (state->K > 0 && state->M == 1)) {
-        mbe_apply_bpk_to_ambe((uint8_t)state->K, frame_ctx->ambe_d);
+        (void)dmr_basic_privacy_apply_frame49(state->K, frame_ctx->ambe_d);
     }
 
     if ((state->K1 > 0 && state->dmr_soR & 0x40 && state->payload_keyidR == 0 && state->dmr_fidR == 0x68)

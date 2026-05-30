@@ -9,8 +9,6 @@
  * m17_scramble Bit Array from SDR++
  * CRC16, CSD encoder from libM17 / M17-Implementations (thanks again, sp5wwp)
  *
- * LWVMOBILE
- * 2024-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
@@ -63,7 +61,6 @@ static void decodeM17PKT(const dsd_opts* opts, const dsd_state* state, const uin
 static void M17decodeLSF(dsd_state* state);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
 static void M17logLSFSummary(dsd_state* state, const struct m17_lsf_result* res);
-static int M17logOTAKD(const struct m17_lsf_result* res);
 static void M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
 static void M17decodeMetaPayload(dsd_state* state, uint8_t identifier);
 static void M17decodeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
@@ -339,11 +336,13 @@ M17decodeLSF(dsd_state* state) {
         return;
     }
 
-    M17decodeLSFFields(state, &res);
-    M17logLSFSummary(state, &res);
-    if (M17logOTAKD(&res) != 0) {
+    if (res.version != 3U && res.rs != 0U) {
+        LOG_INFO(" Unknown LSF TYPE;");
         return;
     }
+
+    M17decodeLSFFields(state, &res);
+    M17logLSFSummary(state, &res);
 
     M17storeLSFMeta(state, &res);
     M17decodeLSFMeta(state, &res);
@@ -375,7 +374,7 @@ M17logLSFSummary(dsd_state* state, const struct m17_lsf_result* res) {
         M17logDataType(res->dt);
     }
 
-    if (res->version == 3U && res->signature != 0U) {
+    if (res->signature != 0U) {
         LOG_INFO(" Signed (secp256r1);");
     } else if (res->version != 3U && res->rs != 0U) {
         LOG_INFO(" RS: %02X", res->rs);
@@ -386,22 +385,6 @@ M17logLSFSummary(dsd_state* state, const struct m17_lsf_result* res) {
     } else {
         M17logEncryption(res->et, res->es);
     }
-}
-
-static int
-M17logOTAKD(const struct m17_lsf_result* res) {
-    if (res->version == 3U) {
-        return 0;
-    }
-    if (res->rs == 0x10U) {
-        LOG_INFO(" OTAKD Data Packet;");
-        return 0;
-    }
-    if (res->rs == 0x11U) {
-        LOG_INFO(" OTAKD Embedded LSF;\n");
-        return 1;
-    }
-    return 0;
 }
 
 static void
@@ -721,8 +704,22 @@ M17printStreamBits(const uint8_t* trellis_buf) {
 }
 
 static void
+M17printSignatureBits(const uint8_t* trellis_buf) {
+    DSD_FPRINTF(stderr, "\n SIG: ");
+    for (int i = 2; i < 18; i++) {
+        DSD_FPRINTF(stderr, "[%02X]", (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8));
+    }
+}
+
+static void
 M17dispatchStreamPayload(M17_CODEC2_OPTS_PARAM opts, M17_CODEC2_STATE_PARAM state, const uint8_t* payload,
-                         const uint8_t* trellis_buf) {
+                         const uint8_t* trellis_buf, uint16_t frame_number) {
+    const int is_signature = m17_stream_frame_is_signature(frame_number);
+    if (is_signature != 0 && (state->m17_str_dt == 2U || state->m17_str_dt == 3U)) {
+        M17printSignatureBits(trellis_buf);
+        return;
+    }
+
     if (state->m17_str_dt == 2) {
         M17processCodec2_3200(opts, state, payload);
     } else if (state->m17_str_dt == 3) {
@@ -825,7 +822,7 @@ M17prepareStream(M17_CODEC2_OPTS_PARAM opts, dsd_state* state, const uint8_t* m1
         payload[i] = trellis_buf[i + 16];
     }
 
-    M17dispatchStreamPayload(opts, state, payload, trellis_buf);
+    M17dispatchStreamPayload(opts, state, payload, trellis_buf, fn);
 }
 
 void

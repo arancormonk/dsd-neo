@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: ISC
 #include <ctype.h>
+#include <dsd-neo/core/bp.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -174,6 +175,21 @@ unpack_bytes_to_bits(const uint8_t* input, uint8_t* output, int len) {
         output[k++] = (uint8_t)((input[i] >> 1) & 1U);
         output[k++] = (uint8_t)((input[i] >> 0) & 1U);
     }
+}
+
+int
+dmr_basic_privacy_apply_frame49(unsigned long long key_id, char ambe_d[49]) {
+    if (ambe_d == NULL || key_id == 0ULL || key_id >= (unsigned long long)(sizeof(BPK) / sizeof(BPK[0]))) {
+        return 0;
+    }
+
+    uint64_t k = BPK[(size_t)key_id];
+    k = (((k & 0xFF0FULL) << 32U) + (k << 16U) + k);
+    for (int j = 0; j < 48; j++) {
+        const int x = (int)(((k << (unsigned)j) & 0x800000000000ULL) >> 47U);
+        ambe_d[j] ^= (char)x;
+    }
+    return 1;
 }
 
 typedef struct {

@@ -38,6 +38,15 @@ expect_int(const char* tag, int got, int want) {
     return 0;
 }
 
+static int
+expect_u8_at(const char* tag, size_t index, uint8_t got, uint8_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s[%zu]: got 0x%02X want 0x%02X\n", tag, index, got, want);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -89,6 +98,48 @@ main(void) {
                          crc);
         rc |=
             expect_u16("facch2-crc15-check-ignores-tail", nxdn_facch2_udch_crc15_check_from_trellis(trellis_bits), crc);
+    }
+
+    {
+        static const uint8_t expected_default[32] = {0, 0, 2, 0, 0, 2, 2, 2, 0, 0, 2, 0, 2, 0, 2, 0,
+                                                     2, 2, 0, 0, 0, 0, 2, 2, 0, 2, 2, 2, 2, 0, 2, 0};
+
+        uint8_t dibits[32];
+        DSD_MEMSET(dibits, 0, sizeof(dibits));
+        nxdn_descramble(dibits, (int)sizeof(dibits));
+        for (size_t i = 0U; i < sizeof(dibits); i++) {
+            rc |= expect_u8_at("pn95-default-seed", i, dibits[i], expected_default[i]);
+        }
+    }
+
+    {
+        static const uint8_t expected_seed1[32] = {2, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0,
+                                                   0, 0, 2, 2, 0, 0, 0, 0, 2, 0, 0, 2, 2, 2, 0, 0};
+
+        uint8_t dibits[32];
+        DSD_MEMSET(dibits, 0, sizeof(dibits));
+        nxdn_descramble_with_seed(dibits, (int)sizeof(dibits), 1U);
+        for (size_t i = 0U; i < sizeof(dibits); i++) {
+            rc |= expect_u8_at("pn95-custom-seed-1", i, dibits[i], expected_seed1[i]);
+        }
+    }
+
+    {
+        static const uint8_t expected_default[32] = {0, 0, 2, 0, 0, 2, 2, 2, 0, 0, 2, 0, 2, 0, 2, 0,
+                                                     2, 2, 0, 0, 0, 0, 2, 2, 0, 2, 2, 2, 2, 0, 2, 0};
+        static const uint8_t expected_seed511[32] = {2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 2, 2,
+                                                     2, 2, 0, 2, 2, 2, 2, 2, 0, 0, 0, 2, 0, 2, 2, 2};
+
+        uint8_t dibits_zero_seed[32];
+        uint8_t dibits_clamped_seed[32];
+        DSD_MEMSET(dibits_zero_seed, 0, sizeof(dibits_zero_seed));
+        DSD_MEMSET(dibits_clamped_seed, 0, sizeof(dibits_clamped_seed));
+        nxdn_descramble_with_seed(dibits_zero_seed, (int)sizeof(dibits_zero_seed), 0U);
+        nxdn_descramble_with_seed(dibits_clamped_seed, (int)sizeof(dibits_clamped_seed), 512U);
+        for (size_t i = 0U; i < sizeof(dibits_zero_seed); i++) {
+            rc |= expect_u8_at("pn95-zero-seed-defaults", i, dibits_zero_seed[i], expected_default[i]);
+            rc |= expect_u8_at("pn95-seed-clamps", i, dibits_clamped_seed[i], expected_seed511[i]);
+        }
     }
 
     rc |= expect_int("sacch-sequence-start", nxdn_sacch_segment_sequence_is_valid(1U, 3, 0), 1);

@@ -289,5 +289,5 @@ dstar_crc16(const uint8_t* data, size_t len) {
         }
     }
     crc = (uint16_t)~crc;
-    return crc;
+    return (uint16_t)((crc << 8) | (crc >> 8));
 }

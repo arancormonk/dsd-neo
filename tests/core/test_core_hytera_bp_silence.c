@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/bp.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,6 +36,16 @@ fill_default_silence(char frame[49]) {
     static const uint64_t k_ambe_default_silence = 0xF801A99F8CE080ULL;
     for (int i = 0; i < 49; i++) {
         frame[i] = (char)((k_ambe_default_silence >> (55 - i)) & 1U);
+    }
+}
+
+static void
+legacy_basic_privacy_apply(unsigned long long key_id, char ambe_d[49]) {
+    uint64_t k = BPK[key_id];
+    k = (((k & 0xFF0FULL) << 32U) + (k << 16U) + k);
+    for (int j = 0; j < 48; j++) {
+        const int x = (int)(((k << (unsigned)j) & 0x800000000000ULL) >> 47U);
+        ambe_d[j] ^= (char)x;
     }
 }
 
@@ -88,6 +99,28 @@ main(void) {
     DSD_MEMCPY(not_silence, silence, sizeof(not_silence));
     not_silence[48] ^= 1;
     rc |= expect_eq_int("silence-rejected", dmr_ambe49_is_default_silence(not_silence), 0);
+
+    {
+        char frame[49] = {0};
+        char expected[49] = {0};
+        int applied = dmr_basic_privacy_apply_frame49(42ULL, frame);
+        legacy_basic_privacy_apply(42ULL, expected);
+        rc |= expect_eq_int("bp-applied", applied, 1);
+        rc |= expect_eq_frame("bp-bits", frame, expected);
+    }
+
+    {
+        char frame[49] = {0};
+        char expected[49] = {0};
+        frame[0] = expected[0] = 1;
+        int applied = dmr_basic_privacy_apply_frame49(0ULL, frame);
+        rc |= expect_eq_int("bp-zero-rejected", applied, 0);
+        rc |= expect_eq_frame("bp-zero-unchanged", frame, expected);
+
+        applied = dmr_basic_privacy_apply_frame49(256ULL, frame);
+        rc |= expect_eq_int("bp-oob-rejected", applied, 0);
+        rc |= expect_eq_frame("bp-oob-unchanged", frame, expected);
+    }
 
     {
         char frame[49];

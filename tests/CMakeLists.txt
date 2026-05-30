@@ -688,6 +688,7 @@ add_executable(
     dsd-neo_test_nxdn_deperm_windows
     protocol/nxdn/test_nxdn_deperm_windows.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_dcr_utils.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_descramble.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_deperm_windows

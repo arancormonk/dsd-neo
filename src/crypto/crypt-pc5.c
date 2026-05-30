@@ -261,6 +261,11 @@ pc5_init_permutations(PC5Context* ctx, uint8_t* numbers) {
 
 static void
 pc5_init_tail_numbers(PC5Context* ctx) {
+    /*
+     * Preserve the legacy schedule: compute an unused discard count here with
+     * one ARC4 byte, then immediately emit the 25 tail mask bits.
+     */
+    (void)pc5_arc4_output(ctx);
     for (int w = 0; w < 25; w++) {
         ctx->numbers[w] = (uint8_t)(pc5_arc4_output(ctx) % 2);
     }
@@ -296,7 +301,6 @@ create_keys_pc5(PC5Context* ctx, const unsigned char key1[], size_t size1) {
     pc5_discard_arc4(ctx);
     pc5_init_round_xor(ctx, ctx->rngxor2);
 
-    pc5_discard_arc4(ctx);
     pc5_init_tail_numbers(ctx);
 }
 
@@ -557,7 +561,7 @@ baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input) {
 
     if (nhex == 64) {
         /*
-         * dsd-fme treats PC5-256 input as the 64 ASCII hex characters, unlike
+         * PC5-256 uses the 64 ASCII hex characters as key material, unlike
          * PC5-128 which is decoded to bytes and reversed. Keep that wire
          * compatibility, while still validating/canonicalizing the input first.
          */

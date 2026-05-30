@@ -88,7 +88,7 @@ xor_stream_into_payload(dsd_state* state, uint8_t slot, int start, const uint8_t
 }
 
 static int
-test_aes128_zero_mi_uses_ecb_window(void) {
+test_aes128_zero_mi_uses_reference_ecb_block_count(void) {
     static const uint8_t ciphertext[16] = {0x69, 0xC4, 0xE0, 0xD8, 0x6A, 0x7B, 0x04, 0x30,
                                            0xD8, 0xCD, 0xB7, 0x80, 0x70, 0xB4, 0xC5, 0x5A};
     static const uint8_t plaintext[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
@@ -111,9 +111,8 @@ test_aes128_zero_mi_uses_ecb_window(void) {
     state.dmr_pdu_sf[slot][2] = 0xE2;
     DSD_MEMCPY(state.dmr_pdu_sf[slot] + start, ciphertext, sizeof(ciphertext));
     DSD_MEMCPY(state.dmr_pdu_sf[slot] + start + 16, ciphertext, sizeof(ciphertext));
-    state.dmr_pdu_sf[slot][start + 32] = 0xA0;
-    state.dmr_pdu_sf[slot][start + 33] = 0xA1;
-    state.dmr_pdu_sf[slot][start + 34] = 0xA2;
+    DSD_MEMCPY(state.dmr_pdu_sf[slot] + start + 32, ciphertext, sizeof(ciphertext));
+    state.dmr_pdu_sf[slot][start + 48] = 0xA0;
 
     g_lfsr_calls = 0;
     dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
@@ -128,14 +127,13 @@ test_aes128_zero_mi_uses_ecb_window(void) {
     rc |= expect_u8("aes128 prefix byte 2", state.dmr_pdu_sf[slot][2], 0xE2);
     rc |= expect_bytes("aes128 block 0", state.dmr_pdu_sf[slot] + start, plaintext, sizeof(plaintext));
     rc |= expect_bytes("aes128 block 1", state.dmr_pdu_sf[slot] + start + 16, plaintext, sizeof(plaintext));
-    rc |= expect_u8("aes128 trailing byte 0", state.dmr_pdu_sf[slot][start + 32], 0xA0);
-    rc |= expect_u8("aes128 trailing byte 1", state.dmr_pdu_sf[slot][start + 33], 0xA1);
-    rc |= expect_u8("aes128 trailing byte 2", state.dmr_pdu_sf[slot][start + 34], 0xA2);
+    rc |= expect_bytes("aes128 block 2", state.dmr_pdu_sf[slot] + start + 32, plaintext, sizeof(plaintext));
+    rc |= expect_u8("aes128 trailing byte", state.dmr_pdu_sf[slot][start + 48], 0xA0);
     return rc;
 }
 
 static int
-test_aes256_zero_mi_uses_manual_key_fallback(void) {
+test_aes256_zero_mi_uses_reference_ecb_block_count_and_manual_key_fallback(void) {
     static const uint8_t ciphertext[16] = {0x8E, 0xA2, 0xB7, 0xCA, 0x51, 0x67, 0x45, 0xBF,
                                            0xEA, 0xFC, 0x49, 0x90, 0x4B, 0x49, 0x60, 0x89};
     static const uint8_t plaintext[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
@@ -156,9 +154,8 @@ test_aes256_zero_mi_uses_manual_key_fallback(void) {
     state.K4 = 0x18191A1B1C1D1E1FULL;
     DSD_MEMCPY(state.dmr_pdu_sf[slot] + start, ciphertext, sizeof(ciphertext));
     DSD_MEMCPY(state.dmr_pdu_sf[slot] + start + 16, ciphertext, sizeof(ciphertext));
-    state.dmr_pdu_sf[slot][start + 32] = 0xB0;
-    state.dmr_pdu_sf[slot][start + 33] = 0xB1;
-    state.dmr_pdu_sf[slot][start + 34] = 0xB2;
+    DSD_MEMCPY(state.dmr_pdu_sf[slot] + start + 32, ciphertext, sizeof(ciphertext));
+    state.dmr_pdu_sf[slot][start + 48] = 0xB0;
 
     g_lfsr_calls = 0;
     dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
@@ -168,9 +165,8 @@ test_aes256_zero_mi_uses_manual_key_fallback(void) {
     rc |= expect_int("aes256 alg normalized", state.payload_algidR, 0x25);
     rc |= expect_bytes("aes256 block 0", state.dmr_pdu_sf[slot] + start, plaintext, sizeof(plaintext));
     rc |= expect_bytes("aes256 block 1", state.dmr_pdu_sf[slot] + start + 16, plaintext, sizeof(plaintext));
-    rc |= expect_u8("aes256 trailing byte 0", state.dmr_pdu_sf[slot][start + 32], 0xB0);
-    rc |= expect_u8("aes256 trailing byte 1", state.dmr_pdu_sf[slot][start + 33], 0xB1);
-    rc |= expect_u8("aes256 trailing byte 2", state.dmr_pdu_sf[slot][start + 34], 0xB2);
+    rc |= expect_bytes("aes256 block 2", state.dmr_pdu_sf[slot] + start + 32, plaintext, sizeof(plaintext));
+    rc |= expect_u8("aes256 trailing byte", state.dmr_pdu_sf[slot][start + 48], 0xB0);
     return rc;
 }
 
@@ -313,8 +309,8 @@ test_aes_missing_key_still_normalizes_alg(void) {
 int
 main(void) {
     int rc = 0;
-    rc |= test_aes128_zero_mi_uses_ecb_window();
-    rc |= test_aes256_zero_mi_uses_manual_key_fallback();
+    rc |= test_aes128_zero_mi_uses_reference_ecb_block_count();
+    rc |= test_aes256_zero_mi_uses_reference_ecb_block_count_and_manual_key_fallback();
     rc |= test_aes_nonzero_mi_keeps_ofb_path();
     rc |= test_rc4_decrypts_window_with_key_id_lookup();
     rc |= test_des_decrypts_window_with_manual_key_fallback();

@@ -48,6 +48,11 @@ m17_packet_protocol_name(uint8_t protocol) {
     return NULL;
 }
 
+int
+m17_stream_frame_is_signature(uint16_t frame_number) {
+    return frame_number >= 0x7FFCU;
+}
+
 static uint8_t
 m17_meta_text_v2_bitmap_len(uint8_t bitmap) {
     switch (bitmap) {
@@ -187,15 +192,16 @@ m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* ou
 
     const uint8_t version_check = (uint8_t)(lsf_type >> 12U);
     if (version_check == 0U) {
+        const uint8_t raw_rs = (uint8_t)((lsf_type >> 11U) & 0x1FU);
         out->version = 2U;
         out->dt = (uint8_t)((lsf_type >> 1U) & 0x3U);
         out->et = (uint8_t)((lsf_type >> 3U) & 0x3U);
         out->es = (uint8_t)((lsf_type >> 5U) & 0x3U);
         out->cn = (uint8_t)((lsf_type >> 7U) & 0xFU);
-        out->rs = (uint8_t)((lsf_type >> 11U) & 0x1FU);
+        out->rs = (uint8_t)(raw_rs >> 1U);
         out->payload_contents = out->dt;
         out->encryption_type = out->et;
-        out->signature = (uint8_t)(out->rs & 0x1U);
+        out->signature = (uint8_t)(raw_rs & 0x1U);
         out->meta_contents = out->es;
         out->meta_is_iv = (out->et == 2U) ? 1U : 0U;
     } else {

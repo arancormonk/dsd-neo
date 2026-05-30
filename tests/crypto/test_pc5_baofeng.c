@@ -105,7 +105,7 @@ build_pc5_128_key(uint64_t k1, uint64_t k2, unsigned char key2[16]) {
 
 static int
 test_pc5_decrypt_frame_vector(void) {
-    static const char expect[] = "0110111111011011011100101011000111000110001001010";
+    static const char expect[] = "0110111111011011011100101111011110110100000100110";
     unsigned char key[16];
     DSD_MEMSET(key, 0, sizeof(key));
     build_pc5_128_key(0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL, key);

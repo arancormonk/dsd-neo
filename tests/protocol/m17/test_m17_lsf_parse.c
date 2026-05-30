@@ -128,7 +128,7 @@ test_parse_lsf_v2(void) {
     err |= expect_eq_u8("et", res.et, et);
     err |= expect_eq_u8("es", res.es, es);
     err |= expect_eq_u8("cn", res.cn, cn);
-    err |= expect_eq_u8("rs", res.rs, rs);
+    err |= expect_eq_u8("rs", res.rs, 0U);
     err |= expect_eq_u8("payload_contents", res.payload_contents, dt);
     err |= expect_eq_u8("encryption_type", res.encryption_type, et);
     err |= expect_eq_u8("signature", res.signature, 1U);
@@ -204,6 +204,38 @@ test_parse_lsf_v3_meta(void) {
 }
 
 static int
+test_parse_lsf_v3_nonzero_iv(void) {
+    const uint64_t dst = 0x000000100001ULL;
+    const uint64_t src = 0x000000200002ULL;
+    const uint16_t lsf_type = (uint16_t)((0x2U << 12U) | (0x4U << 9U) | (0xFU << 4U) | 0x6U);
+
+    uint8_t meta[14];
+    DSD_MEMSET(meta, 0, sizeof(meta));
+    meta[0] = 0xABU;
+    meta[13] = 0xCDU;
+
+    uint8_t lsf_bits[240];
+    build_lsf_bits(lsf_bits, dst, src, lsf_type, meta);
+
+    struct m17_lsf_result res;
+    int rc = m17_parse_lsf(lsf_bits, sizeof(lsf_bits), &res);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "m17_parse_lsf v3 nonzero iv failed: rc=%d\n", rc);
+        return 1;
+    }
+
+    int err = 0;
+    err |= expect_eq_u8("v3 nonzero iv meta_is_iv", res.meta_is_iv, 1U);
+    err |= expect_eq_u8("v3 nonzero iv has_meta", res.has_meta, 1U);
+    if (res.meta[0] != meta[0] || res.meta[13] != meta[13]) {
+        DSD_FPRINTF(stderr, "v3 nonzero iv: got %02X %02X want %02X %02X\n", res.meta[0], res.meta[13], meta[0],
+                    meta[13]);
+        err |= 1;
+    }
+    return err;
+}
+
+static int
 test_parse_lsf_v3_zero_iv(void) {
     const uint64_t dst = 0x000000100001ULL;
     const uint64_t src = 0x000000200002ULL;
@@ -231,6 +263,15 @@ test_parse_lsf_v3_zero_iv(void) {
     err |= expect_eq_u8("v3 iv es", res.es, 0U);
     err |= expect_eq_u8("v3 iv meta_is_iv", res.meta_is_iv, 1U);
     err |= expect_eq_u8("v3 iv has_meta", res.has_meta, 0U);
+    return err;
+}
+
+static int
+test_stream_signature_frame_numbers(void) {
+    int err = 0;
+    err |= expect_eq_u8("stream signature below", (uint8_t)m17_stream_frame_is_signature(0x7FFBU), 0U);
+    err |= expect_eq_u8("stream signature first", (uint8_t)m17_stream_frame_is_signature(0x7FFCU), 1U);
+    err |= expect_eq_u8("stream signature last", (uint8_t)m17_stream_frame_is_signature(0x7FFFU), 1U);
     return err;
 }
 
@@ -310,7 +351,9 @@ main(void) {
     int err = 0;
     err |= test_parse_lsf_v2();
     err |= test_parse_lsf_v3_meta();
+    err |= test_parse_lsf_v3_nonzero_iv();
     err |= test_parse_lsf_v3_zero_iv();
+    err |= test_stream_signature_frame_numbers();
     err |= test_parse_gnss_v2();
 
     if (err == 0) {

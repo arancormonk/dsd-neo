@@ -24,6 +24,7 @@ extern "C" {
 #endif
 
 void nxdn_descramble(uint8_t dibits[], int len);
+void nxdn_descramble_with_seed(uint8_t dibits[], int len, uint16_t seed);
 
 void nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
                             uint8_t frame);

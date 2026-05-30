@@ -19,6 +19,9 @@ static const uint8_t k_slow_data_scrambler[24] = {
     0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1,
 };
 
+static void pack_slow_data_bytes(const uint8_t bytes[60], uint8_t bits[480]);
+static void set_compacted_slow_data_bytes(uint8_t bytes[60], const uint8_t compact[51]);
+
 static void
 convolution_encode(const int* bits, size_t bit_count, int* symbols) {
     int s0 = 0;
@@ -155,8 +158,42 @@ test_soft_decode_pipeline(void) {
 static void
 test_crc16(void) {
     const uint8_t payload[] = "123456789";
-    // CRC-16/X25 known value from the spec.
-    assert(dstar_crc16(payload, sizeof(payload) - 1) == 0x906e);
+    // D-STAR compares the byte-swapped CRC-16/X25 value against the extracted wire-order field.
+    assert(dstar_crc16(payload, sizeof(payload) - 1) == 0x6e90);
+}
+
+static void
+test_slow_data_header_accepts_wire_crc_order(void) {
+    dsd_opts opts;
+    dsd_state state;
+    uint8_t bytes[60];
+    uint8_t compact[51];
+    uint8_t bits[480];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(bytes, 0x20, sizeof(bytes));
+    DSD_MEMSET(compact, 0x20, sizeof(compact));
+
+    bytes[0] = 0x55;
+    compact[0] = 0x00;
+    compact[1] = 0x00;
+    compact[2] = 0x00;
+    DSD_MEMCPY(compact + 3, "RPT2TST ", 8);
+    DSD_MEMCPY(compact + 11, "RPT1TST ", 8);
+    DSD_MEMCPY(compact + 19, "CQCQCQ  ", 8);
+    DSD_MEMCPY(compact + 27, "N0CALL  /TST", 12);
+    compact[39] = 0xb0;
+    compact[40] = 0x43;
+
+    set_compacted_slow_data_bytes(bytes, compact);
+    pack_slow_data_bytes(bytes, bits);
+    processDSTAR_SD(&opts, &state, bits);
+
+    assert(strcmp(state.dstar_rpt2, "RPT2TST ") == 0);
+    assert(strcmp(state.dstar_rpt1, "RPT1TST ") == 0);
+    assert(strcmp(state.dstar_dst, "CQCQCQ  ") == 0);
+    assert(strcmp(state.dstar_src, "N0CALL  /TST") == 0);
 }
 
 static void
@@ -278,6 +315,7 @@ main(void) {
     test_decode_pipeline();
     test_soft_decode_pipeline();
     test_crc16();
+    test_slow_data_header_accepts_wire_crc_order();
     test_slow_data_text_keeps_byte_after_marker();
     test_slow_data_aprs_latitude_uses_compacted_direction();
     return 0;

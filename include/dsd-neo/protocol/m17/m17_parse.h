@@ -106,6 +106,12 @@ int m17_parse_gnss_v2(const uint8_t* input, size_t len, struct m17_gnss_result* 
 const char* m17_packet_protocol_name(uint8_t protocol);
 
 /**
+ * Return nonzero when an M17 stream frame number carries signature payload
+ * instead of voice/data payload.
+ */
+int m17_stream_frame_is_signature(uint16_t frame_number);
+
+/**
  * Decode M17 meta text segment control.
  *
  * Protocol 0x80 uses a bitmap control byte for up to four segments.

@@ -1333,6 +1333,20 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 state->keyloader = 0;                                                                                  \
             }                                                                                                          \
             break;                                                                                                     \
+        case '_': {                                                                                                    \
+            unsigned long seed = 0UL;                                                                                  \
+            if (!cli_parse_ulong_option("-_", optarg, 10, &seed, out_exit_rc)) {                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (seed > 0x1FFUL) {                                                                                      \
+                seed = 0x1FFUL;                                                                                        \
+            } else if (seed == 0UL) {                                                                                  \
+                seed = 228UL;                                                                                          \
+            }                                                                                                          \
+            state->nxdn_pn95_seed = (uint16_t)seed;                                                                    \
+            LOG_NOTICE("NXDN PN95 Seed Value set to: %03u\n", (unsigned)state->nxdn_pn95_seed);                        \
+            break;                                                                                                     \
+        }                                                                                                              \
         case '2':                                                                                                      \
             state->tyt_bp = 1;                                                                                         \
             DSD_CLI_PARSE_U64_OR_RETURN("-2", optarg, 16, state->H);                                                   \
@@ -1730,11 +1744,24 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);                                          \
             break;                                                                                                     \
         }                                                                                                              \
-        case 'R':                                                                                                      \
-            DSD_STRNCPY(opts->symbol_out_file, optarg, 1023);                                                          \
-            opts->symbol_out_file[1023] = '\0';                                                                        \
-            opts->symbol_out_file_is_auto = 0;                                                                         \
+        case 'R': {                                                                                                    \
+            long key = 0;                                                                                              \
+            if (!cli_parse_long_option("-R", optarg, 10, &key, out_exit_rc)) {                                         \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (key < 0) {                                                                                             \
+                LOG_ERROR("Invalid -R value \"%s\"\n", optarg ? optarg : "");                                          \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (key > 0x7FFFL) {                                                                                       \
+                key = 0x7FFFL;                                                                                         \
+            }                                                                                                          \
+            state->R = (unsigned long long)key;                                                                        \
+            state->keyloader = 0;                                                                                      \
+            LOG_NOTICE("NXDN/dPMR scrambler key loaded: %s\n", DSD_SECRET_REDACTED);                                   \
             break;                                                                                                     \
+        }                                                                                                              \
         case 'v': {                                                                                                    \
             /* Filtering bitmap (PBF/LPF/HPF/HPFD) -- accepts hex or dec */                                            \
             unsigned long bm = 0;                                                                                      \
@@ -2278,7 +2305,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_sps = 0;
     int cli_manual_timing_center = 0;
     while ((c = getopt(argc, argv,
-                       "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:"
+                       "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:_:"
                        "89:Ek:I:J:Oj^"))
            != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();

@@ -226,6 +226,25 @@ main(void) {
     assert(g_cap.id == UI_CMD_TG_HOLD_SET);
     assert(cap_u32() == 4004U);
 
+    /* Crypto-affecting legacy hotkeys should post the expected command intents. */
+    cap_reset();
+    assert(ncurses_input_handler(opts, state, DSD_KEY_FORCE_PRIV) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == UI_CMD_FORCE_PRIV_TOGGLE);
+    assert(g_cap.n == 0);
+
+    cap_reset();
+    assert(ncurses_input_handler(opts, state, DSD_KEY_FORCE_RC4) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == UI_CMD_FORCE_RC4_TOGGLE);
+    assert(g_cap.n == 0);
+
+    cap_reset();
+    assert(ncurses_input_handler(opts, state, DSD_KEY_TRUNK_ENC) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == UI_CMD_TRUNK_ENC_TOGGLE);
+    assert(g_cap.n == 0);
+
     printf("UI_HOTKEYS_REGRESSION: OK\n");
     free(state);
     free(opts);

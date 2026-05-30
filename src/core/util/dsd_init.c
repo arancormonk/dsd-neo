@@ -700,6 +700,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->nxdn_last_tg = 0;
     state->nxdn_cipher_type = 0;
     state->nxdn_key = 0;
+    state->nxdn_pn95_seed = 228;
     state->nxdn_call_type[0] = '\0';
     state->payload_miN = 0;
 

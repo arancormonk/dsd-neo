@@ -79,7 +79,7 @@ dmr_block_crypto_clamp_window(const dsd_state* state, uint8_t slot, dmr_block_cr
     }
     const int max_end = cap - ctx->start;
     if (ctx->end < 0 || ctx->end > max_end) {
-        /* dsd-fme falls back to 3096 on malformed lengths; clamp to the actual buffer instead. */
+        /* Preserve legacy malformed-length fallback semantics, bounded to the actual buffer. */
         ctx->end = max_end;
     }
 }
@@ -202,7 +202,11 @@ dmr_block_crypto_apply_aes_ofb(dsd_state* state, uint8_t slot, const dmr_block_c
 
 static uint8_t
 dmr_block_crypto_apply_aes_ecb(dsd_state* state, uint8_t slot, const dmr_block_crypto_ctx* ctx) {
-    const int nblocks = ctx->end / 16;
+    const int cap = (int)(sizeof(state->dmr_pdu_sf[slot]) / sizeof(state->dmr_pdu_sf[slot][0]));
+    const int available = (ctx->start < cap) ? (cap - ctx->start) : 0;
+    const int reference_blocks = (int)state->data_byte_ctr[slot] / DMR_AES_BLOCK_BYTES;
+    const int nblocks =
+        (reference_blocks < (available / DMR_AES_BLOCK_BYTES)) ? reference_blocks : (available / DMR_AES_BLOCK_BYTES);
     if (nblocks <= 0) {
         return 0;
     }
@@ -267,9 +271,8 @@ dmr_block_crypto_decrypt_payload(dsd_state* state, uint8_t slot, const dmr_block
         }
         if (ctx->mi == 0ULL) {
             /*
-             * dsd-fme prepares an AES IV before branching, but zero-MI DMR
-             * payloads are then decrypted with ECB, so Neo skips that unused
-             * LFSR work and normalizes the AlgID directly.
+             * Zero-MI DMR payloads use ECB, so skip unused IV/LFSR work and
+             * normalize the AlgID directly.
              */
             return dmr_block_crypto_apply_aes_ecb(state, slot, ctx);
         }
