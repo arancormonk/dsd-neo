@@ -273,10 +273,6 @@ apply_cmd_key_management_block_keys(dsd_opts* opts, dsd_state* state, const stru
                 } p;
 
                 DSD_MEMCPY(&p, c->data, sizeof p);
-                state->K1 = p.K1;
-                state->K2 = p.K2;
-                state->K3 = p.K3;
-                state->K4 = p.K4;
                 state->A1[0] = state->A1[1] = p.K1;
                 state->A2[0] = state->A2[1] = p.K2;
                 state->A3[0] = state->A3[1] = p.K3;
@@ -284,6 +280,11 @@ apply_cmd_key_management_block_keys(dsd_opts* opts, dsd_state* state, const stru
                 state->aes_key_loaded[0] = state->aes_key_loaded[1] =
                     (p.K1 != 0ULL || p.K2 != 0ULL || p.K3 != 0ULL || p.K4 != 0ULL) ? 1 : 0;
                 state->aes_key_segments[0] = state->aes_key_segments[1] = 4U;
+                state->H = 0ULL;
+                state->K1 = 0ULL;
+                state->K2 = 0ULL;
+                state->K3 = 0ULL;
+                state->K4 = 0ULL;
                 ui_cmd_reset_key_mute_state(opts, state);
             }
             return 1;

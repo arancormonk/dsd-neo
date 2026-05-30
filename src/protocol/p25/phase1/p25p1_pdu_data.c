@@ -304,11 +304,13 @@ p25_build_des_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16
     }
 
     *ks_idx = 8; // offset for OFB discard round
-    if (des_key) {
-        int nblocks = (len / 8) + 1;
-        // codeql[cpp/weak-cryptographic-algorithm] DES is required for legacy P25 interoperability.
-        des_multi_keystream_output(mi, des_key, ks_bytes, 1, nblocks);
+    if (des_key == 0) {
+        return 1;
     }
+
+    int nblocks = (len / 8) + 1;
+    // codeql[cpp/weak-cryptographic-algorithm] DES is required for legacy P25 interoperability.
+    des_multi_keystream_output(mi, des_key, ks_bytes, 1, nblocks);
 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n DES56 keystream ready");
@@ -334,10 +336,12 @@ p25_build_rc4_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16
     p25_store_u64_be((uint64_t)mi, rc4_kiv + 5);
 
     *ks_idx = 0;
-    if (rc4_key) {
-        // codeql[cpp/weak-cryptographic-algorithm] RC4/ADP is required for legacy P25 interoperability.
-        rc4_block_output(256, 13, len, rc4_kiv, ks_bytes);
+    if (rc4_key == 0) {
+        return 1;
     }
+
+    // codeql[cpp/weak-cryptographic-algorithm] RC4/ADP is required for legacy P25 interoperability.
+    rc4_block_output(256, 13, len, rc4_kiv, ks_bytes);
 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n RC4 keystream ready");
@@ -694,8 +698,8 @@ p25_store_lrrp_text_for_history(dsd_state* state) {
 }
 
 static void
-p25_handle_sap48_location_data(dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu, const uint8_t* payload,
-                               int len, int ptr, int encrypted) {
+p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu,
+                               const uint8_t* payload, int len, int ptr, int encrypted) {
     int span = p25_pdu_payload_span(len, ptr);
     if (span <= 0) {
         p25_emit_pdu_json_for_fields(pdu, len, encrypted, "");

@@ -57,6 +57,7 @@ static const char* const k_skip_exact_next_any[] = {
     "--dmr-baofeng-pc5",
     "--dmr-csi-ee72",
     "--dmr-vertex-ks-csv",
+    "--dmr-force-algid",
     "--auto-ppm-snr",
     "--profile",
     "--p25-vc-grace",
@@ -90,19 +91,13 @@ static const char* const k_skip_exact_next_nonopt[] = {
 };
 
 static const char* const k_skip_prefix[] = {
-    "--rtl-udp-control=",
-    "--rtl-udp-control-bind=",
-    "--iq-capture=",
-    "--iq-capture-format=",
-    "--iq-capture-max-mb=",
-    "--symbol-capture-format=",
-    "--iq-replay=",
-    "--iq-replay-rate=",
-    "--iq-info=",
-    "--dmr-baofeng-pc5=",
-    "--dmr-csi-ee72=",
-    "--dmr-vertex-ks-csv=",
-    "--config=",
+    "--rtl-udp-control=",   "--rtl-udp-control-bind=",
+    "--iq-capture=",        "--iq-capture-format=",
+    "--iq-capture-max-mb=", "--symbol-capture-format=",
+    "--iq-replay=",         "--iq-replay-rate=",
+    "--iq-info=",           "--dmr-baofeng-pc5=",
+    "--dmr-csi-ee72=",      "--dmr-vertex-ks-csv=",
+    "--dmr-force-algid=",   "--config=",
 };
 
 int

@@ -122,8 +122,8 @@ debug_write_imbe_c0_bits(dsd_state* state, const int* w, const int* x, const int
 
 static void
 update_ldu_encryption_flag(dsd_state* state) {
-    // Treat ALGID 0x00 and 0x80 as clear/unknown.
-    state->dmr_encL = (state->payload_algid != 0 && state->payload_algid != 0x80) ? 1 : 0;
+    // ALGID 0x00 is unknown until HDU/LDU2 confirms clear 0x80.
+    state->dmr_encL = (state->payload_algid != 0x80) ? 1 : 0;
 }
 
 static int

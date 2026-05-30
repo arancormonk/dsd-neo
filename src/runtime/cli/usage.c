@@ -344,6 +344,8 @@ dsd_cli_usage_section_advanced(void) {
     printf("                 \n");
     printf("  -0            Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR) \n");
     printf("                 \n");
+    printf("      --dmr-force-algid <hex>  Force DMR ALG ID over Missing PI header/LE Encryption Identifiers.\n");
+    printf("                 \n");
     printf("  -3            Disable DMR Late Entry Encryption Identifiers (VC6 Single Burst) \n");
     printf("                  Note: Disable this if false positives on Voice ENC occur. \n");
     printf("\n");

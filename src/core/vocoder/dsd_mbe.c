@@ -35,9 +35,6 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
-#include <dsd-neo/crypto/pc4.h>
-#include <dsd-neo/crypto/pc5.h>
-#include <dsd-neo/crypto/rc2.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -503,6 +500,8 @@ mbe_prepare_frame_state(dsd_opts* opts, dsd_state* state, mbe_frame_ctx_t* frame
     frame_ctx->vertex_ks_applied_l = 0;
     frame_ctx->vertex_ks_applied_r = 0;
 
+    (void)dsd_dmr_apply_forced_algid(state);
+
     //these conditions should ensure no clashing with the BP/HBP/Scrambler key loading machanisms already coded in
     if (state->currentslot == 0 && state->payload_algid != 0 && state->payload_algid != 0x80 && state->keyloader == 1) {
         keyring(opts, state);
@@ -806,75 +805,28 @@ mbe_apply_nxdn_cipher23(dsd_state* state, char ambe_d[49]) {
 
 static void
 mbe_apply_vendor_retevis(dsd_state* state, char ambe_d[49]) {
-    if (state->retevis_ap == 1) {
-        uint8_t frame1_cipher[49];
-        for (int i = 0; i < 49; i++) {
-            frame1_cipher[i] = ambe_d[i];
-        }
-        decrypt_rc2((CryptoContext*)state->rc2_context, frame1_cipher);
-        DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] = frame1_cipher[i];
-        }
-    }
+    (void)retevis_rc2_apply_frame49(state, ambe_d);
 }
 
 static void
 mbe_apply_vendor_tyt_ap(const dsd_state* state, char ambe_d[49]) {
-    if (state->tyt_ap == 1) {
-        short frame1_cipher[49];
-        for (int i = 0; i < 49; i++) {
-            frame1_cipher[i] = (short)(unsigned char)ambe_d[i];
-        }
-        decrypt_frame_49(frame1_cipher);
-        DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] = g_pc4_context.bits[i];
-        }
-    }
+    (void)tyt_ap_pc4_apply_frame49(state, ambe_d);
 }
 
 static void
 mbe_apply_vendor_baofeng(const dsd_state* state, char ambe_d[49]) {
-    if (state->baofeng_ap == 1) {
-        short frame1_cipher[49];
-        for (int i = 0; i < 49; i++) {
-            frame1_cipher[i] = (short)(unsigned char)ambe_d[i];
-        }
-        decrypt_frame_49_pc5(frame1_cipher);
-        DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] = (char)ctxpc5.bits[i];
-        }
-    }
+    (void)baofeng_pc5_apply_frame49(state, ambe_d);
 }
 
 static void
 mbe_apply_vendor_tyt_ep(const dsd_state* state, char ambe_d[49]) {
-    if (state->tyt_ep == 1) {
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] ^= (uint8_t)(g_pc4_context.bits[i] & 1);
-        }
-    }
+    (void)tyt_ep_aes_apply_frame49(state, ambe_d);
 }
 
 static void
 mbe_apply_vendor_static_scramblers(dsd_state* state, char ambe_d[49]) {
-    if (state->ken_sc == 1) {
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] ^= (uint8_t)(state->static_ks_bits[state->currentslot]
-                                                        [(state->static_ks_counter[state->currentslot]++) % 882]
-                                   & 1);
-        }
-    }
-
-    if (state->any_bp == 1) {
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] ^= (uint8_t)(state->static_ks_bits[state->currentslot]
-                                                        [(state->static_ks_counter[state->currentslot]++) % 16]
-                                   & 1);
-        }
-    }
+    (void)ken_dmr_scrambler_apply_frame49(state, state->currentslot, ambe_d);
+    (void)anytone_bp_apply_frame49(state, state->currentslot, ambe_d);
 }
 
 static void

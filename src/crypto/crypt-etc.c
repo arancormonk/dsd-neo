@@ -494,6 +494,51 @@ xor_keystream_bits_frame49(const uint8_t* ks_bits, int mod, int frame_mode, int 
     }
 }
 
+static int
+dmr_ambe49_should_skip_static_overlay(const char ambe_d[49]) {
+    return dmr_ambe49_is_default_silence(ambe_d) == 1 || dmr_ambe49_has_zero_tail(ambe_d) == 1;
+}
+
+static void
+dmr_static_advance_skipped_frame(int frame_mode, int* counter) {
+    if (counter == NULL) {
+        return;
+    }
+    *counter += (frame_mode == 1) ? 1 : 49;
+}
+
+int
+ken_dmr_scrambler_apply_frame49(dsd_state* state, int slot, char ambe_d[49]) {
+    if (state == NULL || ambe_d == NULL || state->ken_sc != 1) {
+        return 0;
+    }
+
+    slot = (slot == 1) ? 1 : 0;
+    if (dmr_ambe49_should_skip_static_overlay(ambe_d) == 1) {
+        dmr_static_advance_skipped_frame(0, &state->static_ks_counter[slot]);
+        return 0;
+    }
+
+    xor_keystream_bits_frame49(state->static_ks_bits[slot], 882, 0, 0, 0, &state->static_ks_counter[slot], ambe_d);
+    return 1;
+}
+
+int
+anytone_bp_apply_frame49(dsd_state* state, int slot, char ambe_d[49]) {
+    if (state == NULL || ambe_d == NULL || state->any_bp != 1) {
+        return 0;
+    }
+
+    slot = (slot == 1) ? 1 : 0;
+    if (dmr_ambe49_should_skip_static_overlay(ambe_d) == 1) {
+        dmr_static_advance_skipped_frame(0, &state->static_ks_counter[slot]);
+        return 0;
+    }
+
+    xor_keystream_bits_frame49(state->static_ks_bits[slot], 16, 0, 0, 0, &state->static_ks_counter[slot], ambe_d);
+    return 1;
+}
+
 void
 straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49]) {
     if (state == NULL || ambe_d == NULL) {
@@ -504,6 +549,11 @@ straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49]) {
     }
 
     slot = (slot == 1) ? 1 : 0;
+    if (dmr_ambe49_should_skip_static_overlay(ambe_d) == 1) {
+        dmr_static_advance_skipped_frame(state->straight_frame_mode, &state->static_ks_counter[slot]);
+        return;
+    }
+
     xor_keystream_bits_frame49(state->static_ks_bits[slot], state->straight_mod, state->straight_frame_mode,
                                state->straight_frame_off, state->straight_frame_step, &state->static_ks_counter[slot],
                                ambe_d);
@@ -525,6 +575,20 @@ dmr_ambe49_is_default_silence(const char ambe_d[49]) {
         }
     }
 
+    return 1;
+}
+
+int
+dmr_ambe49_has_zero_tail(const char ambe_d[49]) {
+    if (ambe_d == NULL) {
+        return 0;
+    }
+
+    for (int i = 24; i < 44; i++) {
+        if ((((unsigned char)ambe_d[i]) & 1U) != 0U) {
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -619,6 +683,11 @@ vertex_key_map_apply_frame49(dsd_state* state, int slot, unsigned long long key,
         }
         state->vertex_ks_active_idx[slot] = idx;
         state->vertex_ks_counter[slot] = 0;
+    }
+
+    if (dmr_ambe49_should_skip_static_overlay(ambe_d) == 1) {
+        dmr_static_advance_skipped_frame(state->vertex_ks_frame_mode[idx], &state->vertex_ks_counter[slot]);
+        return 1;
     }
 
     xor_keystream_bits_frame49(state->vertex_ks_bits[idx], state->vertex_ks_mod[idx], state->vertex_ks_frame_mode[idx],

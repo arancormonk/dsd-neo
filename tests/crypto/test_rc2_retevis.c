@@ -36,6 +36,32 @@ expect_bits_string(const char* label, const uint8_t* bits, const char* want) {
 }
 
 static int
+expect_char_frame(const char* label, const char got[49], const char want[49]) {
+    for (int i = 0; i < 49; i++) {
+        int got_bit = ((unsigned char)got[i]) & 1U;
+        int want_bit = ((unsigned char)want[i]) & 1U;
+        if (got_bit != want_bit) {
+            DSD_FPRINTF(stderr, "%s: bit %d expected %d, got %d\n", label, i, want_bit, got_bit);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+expect_char_bits(const char* label, const char got[49], const uint8_t want[49]) {
+    for (int i = 0; i < 49; i++) {
+        int got_bit = ((unsigned char)got[i]) & 1U;
+        int want_bit = want[i] & 1U;
+        if (got_bit != want_bit) {
+            DSD_FPRINTF(stderr, "%s: bit %d expected %d, got %d\n", label, i, want_bit, got_bit);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
 expect_rc2_schedule(const char* label, const CryptoContext* got, const CryptoContext* want) {
     if (got == NULL) {
         DSD_FPRINTF(stderr, "%s: missing context\n", label);
@@ -47,6 +73,14 @@ expect_rc2_schedule(const char* label, const CryptoContext* got, const CryptoCon
         return 1;
     }
     return 0;
+}
+
+static void
+fill_default_silence(char frame[49]) {
+    static const uint64_t k_ambe_default_silence = 0xF801A99F8CE080ULL;
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((k_ambe_default_silence >> (55 - i)) & 1U);
+    }
 }
 
 static void
@@ -167,6 +201,95 @@ test_retevis_256_trailing_zero_chunks_key_schedule(void) {
     return rc;
 }
 
+static int
+test_retevis_rejects_malformed_keys(void) {
+    int rc = 0;
+
+    dsd_state bad_char_state;
+    DSD_MEMSET(&bad_char_state, 0, sizeof(bad_char_state));
+    bad_char_state.retevis_ap = 1;
+    bad_char_state.rc2_context = malloc(sizeof(CryptoContext));
+    if (bad_char_state.rc2_context == NULL) {
+        DSD_FPRINTF(stderr, "allocation failed\n");
+        return 1;
+    }
+    char bad_char_input[] = "736B9A9C5645288B 243AD5CB8701EF8Z";
+    retevis_rc2_keystream_creation(&bad_char_state, bad_char_input);
+    rc |= expect_int("retevis bad hex disables flag", bad_char_state.retevis_ap, 0);
+    rc |= expect_int("retevis bad hex frees context", bad_char_state.rc2_context == NULL, 1);
+
+    dsd_state bad_length_state;
+    DSD_MEMSET(&bad_length_state, 0, sizeof(bad_length_state));
+    bad_length_state.retevis_ap = 1;
+    bad_length_state.rc2_context = malloc(sizeof(CryptoContext));
+    if (bad_length_state.rc2_context == NULL) {
+        DSD_FPRINTF(stderr, "allocation failed\n");
+        return 1;
+    }
+    char bad_length_input[] = "736B9A9C5645288B";
+    retevis_rc2_keystream_creation(&bad_length_state, bad_length_input);
+    rc |= expect_int("retevis bad length disables flag", bad_length_state.retevis_ap, 0);
+    rc |= expect_int("retevis bad length frees context", bad_length_state.rc2_context == NULL, 1);
+
+    return rc;
+}
+
+static int
+test_retevis_apply_skips_silence_and_zero_tail(void) {
+    dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
+    retevis_rc2_keystream_creation(&state, input);
+
+    int rc = 0;
+    char silence[49];
+    fill_default_silence(silence);
+    char original_silence[49];
+    DSD_MEMCPY(original_silence, silence, sizeof(original_silence));
+    rc |= expect_int("retevis skip silence applied", retevis_rc2_apply_frame49(&state, silence), 0);
+    rc |= expect_char_frame("retevis skip silence frame", silence, original_silence);
+
+    char zero_tail[49] = {0};
+    for (int i = 0; i < 24; i++) {
+        zero_tail[i] = (char)((i + 1) & 1);
+    }
+    for (int i = 44; i < 49; i++) {
+        zero_tail[i] = (char)(i & 1);
+    }
+    char original_zero_tail[49];
+    DSD_MEMCPY(original_zero_tail, zero_tail, sizeof(original_zero_tail));
+    rc |= expect_int("retevis skip zero-tail applied", retevis_rc2_apply_frame49(&state, zero_tail), 0);
+    rc |= expect_char_frame("retevis skip zero-tail frame", zero_tail, original_zero_tail);
+
+    free(state.rc2_context);
+    return rc;
+}
+
+static int
+test_retevis_apply_decrypts_voice_frame(void) {
+    dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
+    retevis_rc2_keystream_creation(&state, input);
+
+    char frame[49];
+    uint8_t expected[49];
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((i * 5 + 1) & 1);
+        expected[i] = (uint8_t)(frame[i] & 1);
+    }
+
+    CryptoContext expected_ctx = *(CryptoContext*)state.rc2_context;
+    decrypt_rc2(&expected_ctx, expected);
+
+    int rc = 0;
+    rc |= expect_int("retevis apply voice frame", retevis_rc2_apply_frame49(&state, frame), 1);
+    rc |= expect_char_bits("retevis apply voice bits", frame, expected);
+
+    free(state.rc2_context);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -174,5 +297,8 @@ main(void) {
     rc |= test_retevis_128_key_schedule();
     rc |= test_retevis_256_key_schedule();
     rc |= test_retevis_256_trailing_zero_chunks_key_schedule();
+    rc |= test_retevis_rejects_malformed_keys();
+    rc |= test_retevis_apply_skips_silence_and_zero_tail();
+    rc |= test_retevis_apply_decrypts_voice_frame();
     return rc;
 }

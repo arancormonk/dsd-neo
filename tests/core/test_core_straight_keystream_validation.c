@@ -44,6 +44,47 @@ bits_to_u8(const uint8_t* bits, int start) {
     return v;
 }
 
+static int
+expect_eq_frame(const char* tag, const char got[49], const char want[49]) {
+    for (int i = 0; i < 49; i++) {
+        unsigned actual = ((unsigned char)got[i]) & 1U;
+        unsigned expected = ((unsigned char)want[i]) & 1U;
+        if (actual != expected) {
+            DSD_FPRINTF(stderr, "%s: bit %d got %u want %u\n", tag, i, actual, expected);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+fill_default_silence(char frame[49]) {
+    static const uint64_t k_ambe_default_silence = 0xF801A99F8CE080ULL;
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((k_ambe_default_silence >> (55 - i)) & 1U);
+    }
+}
+
+static void
+fill_zero_tail(char frame[49]) {
+    for (int i = 0; i < 24; i++) {
+        frame[i] = (char)((i + 1) & 1U);
+    }
+    for (int i = 24; i < 44; i++) {
+        frame[i] = 0;
+    }
+    for (int i = 44; i < 49; i++) {
+        frame[i] = (char)(i & 1U);
+    }
+}
+
+static void
+apply_expected_static_bits(const uint8_t* bits, int mod, int start, char frame[49]) {
+    for (int i = 0; i < 49; i++) {
+        frame[i] ^= (char)(bits[(start + i) % mod] & 1U);
+    }
+}
+
 static uint16_t
 anytone_expected_perm(uint16_t key) {
     const uint16_t nib1 = (uint16_t)((~(key >> 12)) & 0xFU);
@@ -113,6 +154,29 @@ main(void) {
         rc |= expect_eq_u8("anytone-slot1-byte0", bits_to_u8(st->static_ks_bits[1], 0), (expect >> 8U) & 0xFFU);
     }
 
+    {
+        char zero_tail[49];
+        fill_zero_tail(zero_tail);
+        char original_zero_tail[49];
+        DSD_MEMCPY(original_zero_tail, zero_tail, sizeof(original_zero_tail));
+        st->static_ks_counter[1] = 7;
+        rc |= expect_eq_int("anytone skip zero-tail applied", anytone_bp_apply_frame49(st, 1, zero_tail), 0);
+        rc |= expect_eq_int("anytone skip zero-tail counter", st->static_ks_counter[1], 56);
+        rc |= expect_eq_frame("anytone skip zero-tail frame", zero_tail, original_zero_tail);
+
+        char active[49];
+        for (int i = 0; i < 49; i++) {
+            active[i] = (char)(i & 1U);
+        }
+        active[24] = 1;
+        char expected[49];
+        DSD_MEMCPY(expected, active, sizeof(expected));
+        apply_expected_static_bits(st->static_ks_bits[1], 16, 56 % 16, expected);
+        rc |= expect_eq_int("anytone active applied", anytone_bp_apply_frame49(st, 1, active), 1);
+        rc |= expect_eq_int("anytone active counter", st->static_ks_counter[1], 105);
+        rc |= expect_eq_frame("anytone active frame", active, expected);
+    }
+
     DSD_MEMSET(st->static_ks_bits, 0, sizeof(st->static_ks_bits));
     {
         char arg[] = "1";
@@ -120,6 +184,29 @@ main(void) {
         rc |= expect_eq_int("kenwood-enabled", st->ken_sc, 1);
         rc |= expect_eq_u8("kenwood-seed-byte0", bits_to_u8(st->static_ks_bits[0], 0), 0x80U);
         rc |= expect_eq_u8("kenwood-slot1-byte0", bits_to_u8(st->static_ks_bits[1], 0), 0x80U);
+    }
+
+    {
+        char silence[49];
+        fill_default_silence(silence);
+        char original_silence[49];
+        DSD_MEMCPY(original_silence, silence, sizeof(original_silence));
+        st->static_ks_counter[0] = 0;
+        rc |= expect_eq_int("kenwood skip silence applied", ken_dmr_scrambler_apply_frame49(st, 0, silence), 0);
+        rc |= expect_eq_int("kenwood skip silence counter", st->static_ks_counter[0], 49);
+        rc |= expect_eq_frame("kenwood skip silence frame", silence, original_silence);
+
+        char active[49];
+        for (int i = 0; i < 49; i++) {
+            active[i] = (char)(i & 1U);
+        }
+        active[24] = 1;
+        char expected[49];
+        DSD_MEMCPY(expected, active, sizeof(expected));
+        apply_expected_static_bits(st->static_ks_bits[0], 882, 49, expected);
+        rc |= expect_eq_int("kenwood active applied", ken_dmr_scrambler_apply_frame49(st, 0, active), 1);
+        rc |= expect_eq_int("kenwood active counter", st->static_ks_counter[0], 98);
+        rc |= expect_eq_frame("kenwood active frame", active, expected);
     }
 
     st->straight_ks = 1;
@@ -239,12 +326,22 @@ main(void) {
         char frame1[49];
         DSD_MEMSET(frame0, 0, sizeof(frame0));
         DSD_MEMSET(frame1, 0, sizeof(frame1));
+        frame0[24] = 1;
+        frame1[24] = 1;
         straight_mod_xor_keystream_creation(st, arg);
         straight_mod_xor_apply_frame49(st, 0, frame0);
         straight_mod_xor_apply_frame49(st, 0, frame1);
         rc |= expect_eq_u8("legacy-frame0-byte0", bits_to_u8((const uint8_t*)frame0, 0), 0xF0U);
         rc |= expect_eq_u8("legacy-frame1-byte0", bits_to_u8((const uint8_t*)frame1, 0), 0xE1U);
         rc |= expect_eq_int("legacy-counter", st->static_ks_counter[0], 98);
+
+        char silence[49];
+        fill_default_silence(silence);
+        char original_silence[49];
+        DSD_MEMCPY(original_silence, silence, sizeof(original_silence));
+        straight_mod_xor_apply_frame49(st, 0, silence);
+        rc |= expect_eq_frame("legacy-skip-silence-frame", silence, original_silence);
+        rc |= expect_eq_int("legacy-skip-silence-counter", st->static_ks_counter[0], 147);
     }
 
     // Frame mode: each AMBE frame starts at offset + n*step (mod len).
@@ -258,6 +355,10 @@ main(void) {
         DSD_MEMSET(frame1, 0, sizeof(frame1));
         DSD_MEMSET(frame2, 0, sizeof(frame2));
         DSD_MEMSET(frame_slot1, 0, sizeof(frame_slot1));
+        frame0[24] = 1;
+        frame1[24] = 1;
+        frame2[24] = 1;
+        frame_slot1[24] = 1;
         straight_mod_xor_keystream_creation(st, arg);
         straight_mod_xor_apply_frame49(st, 0, frame0);
         straight_mod_xor_apply_frame49(st, 0, frame1);
@@ -270,6 +371,14 @@ main(void) {
                            0xC3U); // independent slot counter
         rc |= expect_eq_int("frame-mode-counter-slot0", st->static_ks_counter[0], 3);
         rc |= expect_eq_int("frame-mode-counter-slot1", st->static_ks_counter[1], 1);
+
+        char zero_tail[49];
+        fill_zero_tail(zero_tail);
+        char original_zero_tail[49];
+        DSD_MEMCPY(original_zero_tail, zero_tail, sizeof(original_zero_tail));
+        straight_mod_xor_apply_frame49(st, 0, zero_tail);
+        rc |= expect_eq_frame("frame-mode-skip-zero-tail-frame", zero_tail, original_zero_tail);
+        rc |= expect_eq_int("frame-mode-skip-zero-tail-counter", st->static_ks_counter[0], 4);
     }
 
     // Large frame counters must not wrap 32-bit multiply in frame alignment.
@@ -277,6 +386,7 @@ main(void) {
         char arg[] = "49:123456789ABC80:2:48";
         char frame0[49];
         DSD_MEMSET(frame0, 0, sizeof(frame0));
+        frame0[24] = 1;
         straight_mod_xor_keystream_creation(st, arg);
         st->static_ks_counter[0] = 1000000000;
         straight_mod_xor_apply_frame49(st, 0, frame0);

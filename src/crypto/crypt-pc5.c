@@ -465,7 +465,7 @@ pc5_collect_hex_digits(const char* input, char* out, size_t out_cap) {
         if (w + 1 >= out_cap) {
             return 0;
         }
-        out[w++] = (char)toupper((unsigned char)*p);
+        out[w++] = *p;
     }
     out[w] = '\0';
     return w;
@@ -500,6 +500,27 @@ pc5_parse_hex_bytes(const char* hex, size_t nhex, uint8_t* out, size_t out_len) 
         out[i] = (uint8_t)((hi << 4) | lo);
     }
     return 0;
+}
+
+int
+baofeng_pc5_apply_frame49(const dsd_state* state, char ambe_d[49]) {
+    if (state == NULL || ambe_d == NULL || state->baofeng_ap != 1) {
+        return 0;
+    }
+    if (dmr_ambe49_is_default_silence(ambe_d) == 1 || dmr_ambe49_has_zero_tail(ambe_d) == 1) {
+        return 0;
+    }
+
+    short frame1_cipher[49];
+    for (int i = 0; i < 49; i++) {
+        frame1_cipher[i] = (short)(((unsigned char)ambe_d[i]) & 1U);
+    }
+    decrypt_frame_49_pc5(frame1_cipher);
+    DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
+    for (int i = 0; i < 49; i++) {
+        ambe_d[i] = (char)(ctxpc5.bits[i] & 1);
+    }
+    return 1;
 }
 
 int

@@ -1239,24 +1239,6 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     }
 }
 
-//voice descrambler
-void
-LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
-    int lfsr;
-    int pN[49] = {0};
-
-    lfsr = state->payload_miN & 0x7FFF;
-
-    for (int i = 0; i < 49; i++) {
-        pN[i] = lfsr & 0x1;
-        const int bit = ((lfsr >> 1) ^ (lfsr >> 0)) & 1;
-        lfsr = ((lfsr >> 1) | (bit << 14));
-        BufferOut[i] = BufferIn[i] ^ pN[i];
-    }
-
-    state->payload_miN = lfsr & 0x7FFF;
-}
-
 int
 load_i(const uint8_t val[], int len) {
     int acc = 0;
@@ -1337,44 +1319,6 @@ crc7_scch(const uint8_t bits[], int len) {
         s[6] = a;
     }
     return load_i(s, 7);
-}
-
-void
-LFSR128n(dsd_state* state) {
-    //generate a 128-bit IV from a 64-bit IV for AES blocks
-    unsigned long long int lfsr = state->payload_miN;
-
-    //start packing aes_iv
-    state->aes_iv[0] = (lfsr >> 56) & 0xFF;
-    state->aes_iv[1] = (lfsr >> 48) & 0xFF;
-    state->aes_iv[2] = (lfsr >> 40) & 0xFF;
-    state->aes_iv[3] = (lfsr >> 32) & 0xFF;
-    state->aes_iv[4] = (lfsr >> 24) & 0xFF;
-    state->aes_iv[5] = (lfsr >> 16) & 0xFF;
-    state->aes_iv[6] = (lfsr >> 8) & 0xFF;
-    state->aes_iv[7] = (lfsr >> 0) & 0xFF;
-
-    int x = 64;
-    //polynomial P(x) = 1 + X15 + X27 + X38 + X46 + X62 + X64
-    for (int cnt = 0; cnt < 64; cnt++) {
-        //63,61,45,37,27,14
-        // Polynomial is C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1
-        const unsigned long long bit =
-            ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
-        lfsr = (lfsr << 1) | bit;
-
-        // Continue packing aes_iv
-        state->aes_iv[x / 8] = (state->aes_iv[x / 8] << 1) + bit;
-        x++;
-    }
-
-    DSD_FPRINTF(stderr, "%s", KYEL);
-    DSD_FPRINTF(stderr, "\n");
-    DSD_FPRINTF(stderr, " IV(128): 0x");
-    for (x = 0; x < 16; x++) {
-        DSD_FPRINTF(stderr, "%02X", state->aes_iv[x]);
-    }
-    DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
 /*

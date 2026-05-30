@@ -5,6 +5,7 @@
  * is inactive.
  */
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -14,6 +15,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -188,6 +190,33 @@ main(void) {
     rc |= expect_eq("slot0 muted again", st.p25_p2_audio_allowed[0], 0);
     rc |= expect_eq("slot0 ring flushed again", st.p25_p2_audio_ring_count[0], 0);
     rc |= expect_eq("released to CC", g_return_to_cc_called, 1);
+
+    // Scenario 3: unit-to-unit encrypted fallback should honor recent opposite-slot MAC activity,
+    // matching the group-call fallback and avoiding a premature CC return while the other slot is active.
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x02; // Unit-to-unit voice channel message
+    MAC[2] = 0x40; // SVC with ENC bit set
+    MAC[3] = 0x00; // TGT high
+    MAC[4] = 0x12; // TGT mid
+    MAC[5] = 0x34; // TGT low
+    MAC[6] = 0x00; // SRC high
+    MAC[7] = 0x00; // SRC mid
+    MAC[8] = 0x02; // SRC low
+    opts.p25_is_tuned = 1;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_p2_audio_allowed[1] = 0;
+    st.p25_p2_audio_ring_count[0] = 1;
+    st.p25_p2_audio_ring_count[1] = 0;
+    st.p25_p2_last_mac_active[1] = time(NULL);
+    st.p25_p2_last_mac_active_m[1] = dsd_time_now_monotonic_s();
+    g_return_to_cc_called = 0;
+
+    process_MAC_VPDU(&opts, &st, 0, MAC);
+
+    rc |= expect_eq("unit slot0 muted", st.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq("unit slot0 ring flushed", st.p25_p2_audio_ring_count[0], 0);
+    rc |= expect_eq("unit recent other slot avoids release", g_return_to_cc_called, 0);
 
     dsd_state_ext_free_all(&st);
     return rc;

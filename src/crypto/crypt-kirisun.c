@@ -105,9 +105,9 @@ kir_load_slot_key(dsd_state* state, uint8_t slot, uint8_t out_key[32]) {
         return -1;
     }
 
-    const int all_zero =
-        state->A1[slot] == 0ULL && state->A2[slot] == 0ULL && state->A3[slot] == 0ULL && state->A4[slot] == 0ULL;
-    const int complete_key = state->aes_key_segments[slot] == 4U && !all_zero;
+    const int all_words_nonzero =
+        state->A1[slot] != 0ULL && state->A2[slot] != 0ULL && state->A3[slot] != 0ULL && state->A4[slot] != 0ULL;
+    const int complete_key = state->aes_key_segments[slot] == 4U && all_words_nonzero;
     state->aes_key_loaded[slot] = complete_key ? 1 : 0;
     if (!complete_key) {
         return -1;

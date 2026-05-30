@@ -39,6 +39,17 @@ test_des_ofb_known_vector(void) {
 }
 
 static int
+test_des_ofb_type_fallback_compatibility(void) {
+    static const uint8_t expect[] = {0x85, 0xE8, 0x13, 0x54, 0x0F, 0x0A, 0xB4, 0x05,
+                                     0x67, 0xAE, 0x7A, 0x29, 0x61, 0xDF, 0xA3, 0x45};
+    uint8_t output[sizeof(expect)];
+    DSD_MEMSET(output, 0, sizeof(output));
+
+    des_multi_keystream_output(0x0123456789ABCDEFULL, 0x133457799BBCDFF1ULL, output, 7, 2);
+    return expect_bytes("des ofb type fallback", output, expect, sizeof(expect));
+}
+
+static int
 test_des_xl_fast_forward_offsets(void) {
     static const uint8_t sync_expect[] = {0x77, 0x47, 0x26, 0xF8, 0xF9, 0x51, 0x86, 0xF4, 0x43, 0xB4, 0xC9, 0x57,
                                           0xDE, 0xEC, 0x35, 0xC6, 0xEB, 0xD8, 0x56, 0xEA, 0x68, 0xEC, 0x47, 0x60};
@@ -86,6 +97,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_des_ofb_known_vector();
+    rc |= test_des_ofb_type_fallback_compatibility();
     rc |= test_des_xl_fast_forward_offsets();
     rc |= test_tdea_tofb_known_vector_and_type_compatibility();
     return rc;

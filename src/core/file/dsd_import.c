@@ -103,26 +103,12 @@ hex_nibble_value(unsigned char c, int* out_nibble) {
 }
 
 static int
-parse_hex_u64_strict(const char* token, unsigned long long* out) {
-    if (token == NULL || out == NULL) {
-        return 0;
-    }
-
-    while (*token != '\0' && is_ascii_space((unsigned char)*token)) {
-        token++;
-    }
-    if (token[0] == '0' && (token[1] == 'x' || token[1] == 'X')) {
-        token += 2;
-    }
-    if (token[0] == '\0') {
-        return 0;
-    }
-
+parse_hex_digits_u64_strict(const unsigned char* token, const unsigned char* end, unsigned long long* out) {
     unsigned long long v = 0ULL;
     int digits = 0;
-    for (const unsigned char* p = (const unsigned char*)token; *p != '\0'; p++) {
+    for (const unsigned char* p = token; p != end; p++) {
         int nib = -1;
-        if (is_ascii_space(*p) || !hex_nibble_value(*p, &nib)) {
+        if (!hex_nibble_value(*p, &nib)) {
             return 0;
         }
         if (digits >= 16) {
@@ -131,12 +117,47 @@ parse_hex_u64_strict(const char* token, unsigned long long* out) {
         v = (v << 4) | (unsigned long long)nib;
         digits++;
     }
-
     if (digits == 0) {
         return 0;
     }
     *out = v;
     return 1;
+}
+
+static const char*
+skip_ascii_space(const char* token) {
+    while (*token != '\0' && is_ascii_space((unsigned char)*token)) {
+        token++;
+    }
+    return token;
+}
+
+static int
+parse_hex_u64_strict(const char* token, unsigned long long* out) {
+    if (token == NULL || out == NULL) {
+        return 0;
+    }
+
+    token = skip_ascii_space(token);
+    if (token[0] == '0' && (token[1] == 'x' || token[1] == 'X')) {
+        token += 2;
+    }
+
+    const unsigned char* p = (const unsigned char*)token;
+    const unsigned char* end = p;
+    while (*end != '\0' && !is_ascii_space(*end)) {
+        end++;
+    }
+    p = end;
+    while (*p != '\0') {
+        if (is_ascii_space(*p)) {
+            p++;
+            continue;
+        }
+        return 0;
+    }
+
+    return parse_hex_digits_u64_strict((const unsigned char*)token, end, out);
 }
 
 static int

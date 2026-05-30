@@ -272,13 +272,14 @@ p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len)
 // Simplified P25p1 LDU audio gating decision helper.
 // Returns 1 when audio should be allowed under the current encryption state,
 // or 0 when audio should remain muted. Mirrors the policy in p25p1_ldu2.c:
-//  - ALGID 0 or 0x80 (clear) => allow
+//  - ALGID 0 (unknown) => mute
+//  - ALGID 0x80 (clear) => allow
 //  - ALGID RC4/DES/DES-XL (0xAA/0x81/0x9F) => allow only when R != 0
 //  - ALGID AES-256/AES-128 (0x84/0x89) => allow only when aes_loaded != 0
 //  - Any other non-zero ALGID => mute
 int
 p25_test_p1_ldu_gate(int algid, unsigned long long R, int aes_loaded) {
-    if (algid == 0 || algid == 0x80) {
+    if (algid == 0x80) {
         return 1; // clear
     }
     if ((algid == 0xAA || algid == 0x81 || algid == 0x9F)) {

@@ -17,6 +17,7 @@
  */
 
 #include <dsd-neo/protocol/dpmr/dpmr_data.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct {
@@ -73,6 +74,44 @@ GetdPmrColorCode(uint8_t ChannelCodeBit[24]) {
         }
     }
     return -1;
+}
+
+void
+dpmr_scrambled_pmr_bits(uint32_t* lfsr_value, const uint8_t* input, uint8_t* output, uint32_t bit_count) {
+    if (lfsr_value == NULL || input == NULL || output == NULL) {
+        return;
+    }
+
+    uint8_t shift[9] = {0};
+    uint32_t value = *lfsr_value;
+
+    for (uint32_t i = 0; i < 9U; i++) {
+        shift[i] = (uint8_t)(value & 1U);
+        value >>= 1U;
+    }
+
+    for (uint32_t i = 0; i < bit_count; i++) {
+        output[i] = (uint8_t)((input[i] ^ shift[0]) & 0x01U);
+
+        const uint8_t feedback = (uint8_t)(shift[4] ^ shift[0]);
+        shift[0] = shift[1];
+        shift[1] = shift[2];
+        shift[2] = shift[3];
+        shift[3] = shift[4];
+        shift[4] = shift[5];
+        shift[5] = shift[6];
+        shift[6] = shift[7];
+        shift[7] = shift[8];
+        shift[8] = feedback;
+    }
+
+    value = 0;
+    for (uint32_t i = 9U; i > 0U; i--) {
+        value <<= 1U;
+        value |= (uint32_t)(shift[i - 1U] & 1U);
+    }
+
+    *lfsr_value = value;
 }
 
 /* End of file */

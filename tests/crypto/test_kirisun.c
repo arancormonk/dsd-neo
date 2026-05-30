@@ -21,15 +21,6 @@ expect_bytes(const char* label, const uint8_t* got, const uint8_t* want, size_t 
 }
 
 static int
-expect_bytes_changed(const char* label, const uint8_t* got, const uint8_t* previous, size_t len) {
-    if (memcmp(got, previous, len) == 0) {
-        DSD_FPRINTF(stderr, "%s: bytes did not change\n", label);
-        return 1;
-    }
-    return 0;
-}
-
-static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %d, want %d\n", label, got, want);
@@ -98,7 +89,7 @@ test_kirisun_incomplete_key_clears_loaded(void) {
 }
 
 static int
-test_kirisun_zero_word_in_complete_key(void) {
+test_kirisun_zero_word_clears_loaded(void) {
     dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(state.ks_octetL, 0xA5, sizeof(state.ks_octetL));
@@ -115,8 +106,8 @@ test_kirisun_zero_word_in_complete_key(void) {
     DSD_MEMSET(previous, 0xA5, sizeof(previous));
     kirisun_uni_keystream_creation(&state);
 
-    return expect_int("kirisun zero word remains loaded", state.aes_key_loaded[0], 1)
-           | expect_bytes_changed("kirisun zero word updates stream", state.ks_octetL, previous, sizeof(previous));
+    return expect_int("kirisun zero word clears loaded", state.aes_key_loaded[0], 0)
+           | expect_bytes("kirisun zero word leaves stream", state.ks_octetL, previous, sizeof(previous));
 }
 
 static int
@@ -143,7 +134,7 @@ main(void) {
     rc |= test_kirisun_universal_vector();
     rc |= test_kirisun_advanced_vector();
     rc |= test_kirisun_incomplete_key_clears_loaded();
-    rc |= test_kirisun_zero_word_in_complete_key();
+    rc |= test_kirisun_zero_word_clears_loaded();
     rc |= test_kirisun_all_zero_key_clears_loaded();
     return rc;
 }

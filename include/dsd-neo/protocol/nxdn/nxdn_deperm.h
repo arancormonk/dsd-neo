@@ -46,7 +46,7 @@ void nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], c
 
 void nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]);
 
-const char* nxdn_message_type_label(uint8_t MessageType);
+const char* nxdn_message_type_label(uint8_t message_type);
 void nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType);
 
 void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);

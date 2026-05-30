@@ -3,8 +3,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/bp.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
+#include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -67,6 +70,21 @@ seed_key_array(dsd_state* state, int kid, unsigned long long k1, unsigned long l
     state->rkey_array[kid + 0x101] = k2;
     state->rkey_array[kid + 0x201] = k3;
     state->rkey_array[kid + 0x301] = k4;
+}
+
+static void
+fill_pattern(uint8_t* out, size_t len, uint8_t seed) {
+    for (size_t i = 0; i < len; i++) {
+        out[i] = (uint8_t)(seed + (uint8_t)(i * 3U));
+    }
+}
+
+static void
+xor_stream_into_payload(dsd_state* state, uint8_t slot, int start, const uint8_t* plaintext, const uint8_t* stream,
+                        size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        state->dmr_pdu_sf[slot][start + (int)i] = (uint8_t)(plaintext[i] ^ stream[i]);
+    }
 }
 
 static int
@@ -189,6 +207,91 @@ test_aes_nonzero_mi_keeps_ofb_path(void) {
 }
 
 static int
+test_rc4_decrypts_window_with_key_id_lookup(void) {
+    dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    uint8_t plaintext[32];
+    uint8_t stream[32];
+    const uint8_t slot = 0;
+    const uint8_t start = 2;
+    const int kid = 0x44;
+    int rc = 0;
+
+    seed_window(&state, slot, start, 14);
+    state.payload_algid = 1;
+    state.payload_keyid = kid;
+    state.payload_mi = 0x01020304ULL;
+    state.rkey_array[kid] = 0x0123456789ULL;
+
+    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    rc |= expect_int("rc4 ctx end", ctx.end, 28);
+    fill_pattern(plaintext, (size_t)ctx.end, 0x31);
+    DSD_MEMSET(stream, 0, sizeof(stream));
+    rc4_block_output(256, 9, ctx.end, ctx.rc4_iv, stream);
+    xor_stream_into_payload(&state, slot, ctx.start, plaintext, stream, (size_t)ctx.end);
+
+    rc |= expect_int("rc4 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx), 1);
+    rc |= expect_bytes("rc4 plaintext", state.dmr_pdu_sf[slot] + ctx.start, plaintext, (size_t)ctx.end);
+    return rc;
+}
+
+static int
+test_des_decrypts_window_with_manual_key_fallback(void) {
+    dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    uint8_t plaintext[32];
+    uint8_t stream[32];
+    const uint8_t slot = 1;
+    const uint8_t start = 1;
+    int rc = 0;
+
+    seed_window(&state, slot, start, 19);
+    state.payload_algidR = 2;
+    state.payload_keyidR = 0x77;
+    state.payload_miR = 0x11223344ULL;
+    state.R = 0x0123456789ABCDEFULL;
+
+    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    rc |= expect_int("des ctx end", ctx.end, 24);
+    rc |= expect_int("des manual key fallback", ctx.rkey != 0ULL, 1);
+    fill_pattern(plaintext, (size_t)ctx.end, 0x52);
+    DSD_MEMSET(stream, 0, sizeof(stream));
+    des_multi_keystream_output(ctx.mi, ctx.rkey, stream, 1, (ctx.end / 8) + 1);
+    xor_stream_into_payload(&state, slot, ctx.start, plaintext, stream, (size_t)ctx.end);
+
+    rc |= expect_int("des decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx), 1);
+    rc |= expect_bytes("des plaintext", state.dmr_pdu_sf[slot] + ctx.start, plaintext, (size_t)ctx.end);
+    return rc;
+}
+
+static int
+test_basic_privacy_decrypts_window(void) {
+    dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    uint8_t plaintext[32];
+    uint8_t stream[2];
+    const uint8_t slot = 0;
+    const uint8_t start = 4;
+    int rc = 0;
+
+    seed_window(&state, slot, start, 24);
+    state.K = 1;
+    stream[0] = (uint8_t)((BPK[state.K] >> 8U) & 0xFFU);
+    stream[1] = (uint8_t)(BPK[state.K] & 0xFFU);
+
+    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    rc |= expect_int("bp ctx end", ctx.end, 16);
+    fill_pattern(plaintext, (size_t)ctx.end, 0x73);
+    for (int i = 0; i < ctx.end; i++) {
+        state.dmr_pdu_sf[slot][ctx.start + i] = (uint8_t)(plaintext[i] ^ stream[i % 2]);
+    }
+
+    rc |= expect_int("bp decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx), 1);
+    rc |= expect_bytes("bp plaintext", state.dmr_pdu_sf[slot] + ctx.start, plaintext, (size_t)ctx.end);
+    return rc;
+}
+
+static int
 test_aes_missing_key_still_normalizes_alg(void) {
     dsd_state state;
     dmr_block_crypto_ctx ctx;
@@ -213,6 +316,9 @@ main(void) {
     rc |= test_aes128_zero_mi_uses_ecb_window();
     rc |= test_aes256_zero_mi_uses_manual_key_fallback();
     rc |= test_aes_nonzero_mi_keeps_ofb_path();
+    rc |= test_rc4_decrypts_window_with_key_id_lookup();
+    rc |= test_des_decrypts_window_with_manual_key_fallback();
+    rc |= test_basic_privacy_decrypts_window();
     rc |= test_aes_missing_key_still_normalizes_alg();
     return rc;
 }

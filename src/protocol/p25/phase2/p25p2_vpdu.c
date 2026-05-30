@@ -928,12 +928,13 @@ p25p2_vpdu_handle_group_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int
 
 static void
 p25p2_vpdu_handle_unit_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int slot, int talkgroup) {
-    int other = slot ^ 1;
+    double mac_hold = p25p2_vpdu_cfg_mac_hold_s(state, 0.75);
+    double voice_hold = p25p2_vpdu_cfg_voice_hold_s(0.6);
     int other_audio = 0;
 
     p25p2_vpdu_mark_enc_lockout(opts, state, slot, talkgroup);
     p25p2_vpdu_gate_slot_audio(state, slot);
-    other_audio = state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
+    other_audio = p25p2_vpdu_other_slot_audio_with_history(state, slot, mac_hold, voice_hold);
     if (!other_audio) {
         DSD_FPRINTF(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); ");
         if (p25p2_vpdu_force_release_after_grace(opts, state)) {

@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -11,6 +12,7 @@
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +25,13 @@
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
 #endif
+
+void
+LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
+    (void)BufferIn;
+    (void)BufferOut;
+    (void)state;
+}
 
 static int
 pick_missing_dir(char* out, size_t out_sz) {
@@ -213,6 +222,129 @@ test_channel_import_rejects_directory(void) {
     int failed = (rc == 0 || state->lcn_freq_count != 456);
 
     (void)remove(dir);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
+static int
+test_decimal_key_import_and_group_hash(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    char tmpl[] = "dsd-neo-test-key-dec-XXXXXX";
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    FILE* fp = dsd_fopen_private(tmpl, "w");
+    if (!fp) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    DSD_FPRINTF(fp, "key id or tg id (dec),key number or value (dec)\n");
+    DSD_FPRINTF(fp, "2,70\n");
+    DSD_FPRINTF(fp, "672560,254\n");
+    fclose(fp);
+
+    DSD_SNPRINTF(opts->key_in_file, sizeof opts->key_in_file, "%s", tmpl);
+    int failed = 0;
+    if (csvKeyImportDec(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "decimal key import returned error\n");
+        failed = 1;
+    }
+    if (state->rkey_array[2] != 70ULL || state->rkey_array_loaded[2] != 1U) {
+        DSD_FPRINTF(stderr, "decimal key import mismatch for key 2\n");
+        failed = 1;
+    }
+    if (state->rkey_array[0x56F2] != 254ULL || state->rkey_array_loaded[0x56F2] != 1U) {
+        DSD_FPRINTF(stderr, "decimal key import mismatch for hashed key 0x56F2\n");
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
+static int
+test_hex_key_import_preserves_zero_segments_for_keyring(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    char tmpl[] = "dsd-neo-test-key-hex-XXXXXX";
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    FILE* fp = dsd_fopen_private(tmpl, "w");
+    if (!fp) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    DSD_FPRINTF(fp, "key id(hex),key value (hex)\n");
+    DSD_FPRINTF(fp, "C197,A753BC945DE5E0F1,0,D9DF2FAC6278FA93,0\n");
+    fclose(fp);
+
+    DSD_SNPRINTF(opts->key_in_file, sizeof opts->key_in_file, "%s", tmpl);
+    int failed = 0;
+    if (csvKeyImportHex(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "hex key import returned error\n");
+        failed = 1;
+    }
+
+    const int key_id = 0xC197;
+    if (state->rkey_array[key_id] != 0xA753BC945DE5E0F1ULL || state->rkey_array_loaded[key_id] != 1U) {
+        DSD_FPRINTF(stderr, "hex key import mismatch for base segment\n");
+        failed = 1;
+    }
+    if (state->rkey_array[key_id + 0x101] != 0ULL || state->rkey_array_loaded[key_id + 0x101] != 1U) {
+        DSD_FPRINTF(stderr, "hex key import mismatch for zero second segment\n");
+        failed = 1;
+    }
+    if (state->rkey_array[key_id + 0x201] != 0xD9DF2FAC6278FA93ULL || state->rkey_array_loaded[key_id + 0x201] != 1U) {
+        DSD_FPRINTF(stderr, "hex key import mismatch for third segment\n");
+        failed = 1;
+    }
+    if (state->rkey_array[key_id + 0x301] != 0ULL || state->rkey_array_loaded[key_id + 0x301] != 1U) {
+        DSD_FPRINTF(stderr, "hex key import mismatch for zero fourth segment\n");
+        failed = 1;
+    }
+
+    state->currentslot = 0;
+    state->payload_keyid = key_id;
+    keyring(opts, state);
+    if (state->R != 0xA753BC945DE5E0F1ULL || state->A1[0] != 0xA753BC945DE5E0F1ULL || state->A2[0] != 0ULL
+        || state->A3[0] != 0xD9DF2FAC6278FA93ULL || state->A4[0] != 0ULL || state->aes_key_segments[0] != 4U
+        || state->aes_key_loaded[0] != 1) {
+        DSD_FPRINTF(stderr, "keyring mismatch for imported hex key\n");
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
     free(opts);
     free_test_state(state);
     return failed;
@@ -629,6 +761,16 @@ bits_to_u8(const char* bits, int start) {
 }
 
 static int
+frame_all_zero(const char bits[49]) {
+    for (int i = 0; i < 49; i++) {
+        if ((bits[i] & 1) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
 test_vertex_import_missing_file(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!state) {
@@ -705,13 +847,20 @@ test_vertex_import_and_apply(void) {
     char frame0[49];
     char frame1[49];
     char frame_slot1[49];
+    char frame_skip[49];
     char frame2[49];
     char frame_zero_key[49];
     DSD_MEMSET(frame0, 0, sizeof(frame0));
     DSD_MEMSET(frame1, 0, sizeof(frame1));
     DSD_MEMSET(frame_slot1, 0, sizeof(frame_slot1));
+    DSD_MEMSET(frame_skip, 0, sizeof(frame_skip));
     DSD_MEMSET(frame2, 0, sizeof(frame2));
     DSD_MEMSET(frame_zero_key, 0, sizeof(frame_zero_key));
+    frame0[24] = 1;
+    frame1[24] = 1;
+    frame_slot1[24] = 1;
+    frame2[24] = 1;
+    frame_zero_key[24] = 1;
 
     // Repeated application advances only the configured frame-stepped mapping.
     if (vertex_key_map_apply_frame49(state, 0, 0x1234567891ULL, frame0) != 1) {
@@ -730,6 +879,16 @@ test_vertex_import_and_apply(void) {
         return 1;
     }
     if (bits_to_u8(frame0, 0) != 0xC3U || bits_to_u8(frame1, 0) != 0x1EU || bits_to_u8(frame_slot1, 0) != 0xC3U) {
+        (void)remove(tmpl);
+        free_test_state(state);
+        return 1;
+    }
+    if (vertex_key_map_apply_frame49(state, 0, 0x1234567891ULL, frame_skip) != 1) {
+        (void)remove(tmpl);
+        free_test_state(state);
+        return 1;
+    }
+    if (frame_all_zero(frame_skip) != 1 || state->vertex_ks_counter[0] != 3) {
         (void)remove(tmpl);
         free_test_state(state);
         return 1;
@@ -788,6 +947,12 @@ main(void) {
         return 1;
     }
     if (test_channel_import_rejects_directory() != 0) {
+        return 1;
+    }
+    if (test_decimal_key_import_and_group_hash() != 0) {
+        return 1;
+    }
+    if (test_hex_key_import_preserves_zero_segments_for_keyring() != 0) {
         return 1;
     }
 #if !DSD_PLATFORM_WIN_NATIVE

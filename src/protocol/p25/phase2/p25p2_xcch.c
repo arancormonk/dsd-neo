@@ -319,7 +319,7 @@ p25p2_xcch_log_slot_encryption(dsd_opts* opts, dsd_state* state, int slot) {
     }
 
     if (algid == 0x84 || algid == 0x89) {
-        LFSR128(state);
+        p25_lfsr128_slot(state, slot);
     }
 
     p25_sm_emit_enc(opts, state, slot, algid, keyid, tg);

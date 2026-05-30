@@ -18,6 +18,7 @@ extern "C" {
 #endif
 
 int32_t GetdPmrColorCode(uint8_t ChannelCodeBit[24]);
+void dpmr_scrambled_pmr_bits(uint32_t* lfsr_value, const uint8_t* input, uint8_t* output, uint32_t bit_count);
 
 #ifdef __cplusplus
 }

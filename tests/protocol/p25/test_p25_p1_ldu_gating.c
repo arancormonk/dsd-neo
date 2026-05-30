@@ -7,7 +7,8 @@
  * P25 Phase 1 LDU header gating tests.
  *
  * Validates early audio gating decisions based on ALGID and key presence:
- *  - Clear (0x00/0x80) => allow
+ *  - Unknown (0x00) => mute until HDU/LDU2 confirms clear
+ *  - Clear (0x80) => allow
  *  - RC4/DES/DES-XL (0xAA/0x81/0x9F) => allow only when R != 0
  *  - AES-256/AES-128 (0x84/0x89) => allow only when AES key loaded
  *  - Other non-zero ALGIDs => mute
@@ -121,8 +122,10 @@ int
 main(void) {
     int rc = 0;
 
-    // Clear audio allowed
-    rc |= expect_eq_int("ALGID 0 clear", p25_test_p1_ldu_gate(0x00, 0, 0), 1);
+    // Unknown ALGID remains muted until clear/encrypted metadata is decoded.
+    rc |= expect_eq_int("ALGID 0 unknown", p25_test_p1_ldu_gate(0x00, 0, 0), 0);
+
+    // Clear audio allowed.
     rc |= expect_eq_int("ALGID 0x80 clear", p25_test_p1_ldu_gate(0x80, 0, 0), 1);
 
     // RC4/DES/DES-XL: require R != 0

@@ -318,6 +318,27 @@ decrypt_rc2(CryptoContext* ctx, uint8_t bits[49]) {
     }
 }
 
+int
+retevis_rc2_apply_frame49(dsd_state* state, char ambe_d[49]) {
+    if (state == NULL || ambe_d == NULL || state->retevis_ap != 1 || state->rc2_context == NULL) {
+        return 0;
+    }
+    if (dmr_ambe49_is_default_silence(ambe_d) == 1 || dmr_ambe49_has_zero_tail(ambe_d) == 1) {
+        return 0;
+    }
+
+    uint8_t frame1_cipher[49];
+    for (int i = 0; i < 49; i++) {
+        frame1_cipher[i] = (uint8_t)(((unsigned char)ambe_d[i]) & 1U);
+    }
+    decrypt_rc2((CryptoContext*)state->rc2_context, frame1_cipher);
+    DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
+    for (int i = 0; i < 49; i++) {
+        ambe_d[i] = (char)(frame1_cipher[i] & 1U);
+    }
+    return 1;
+}
+
 /* Key creation for Retevis AP */
 void
 retevis_rc2_keystream_creation(dsd_state* state, const char* input) {

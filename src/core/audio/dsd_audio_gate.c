@@ -89,9 +89,8 @@ dsd_dmr_kirisun_key_complete(const dsd_state* state, int slot) {
         return 0;
     }
 
-    const int all_zero =
-        state->A1[slot] == 0ULL && state->A2[slot] == 0ULL && state->A3[slot] == 0ULL && state->A4[slot] == 0ULL;
-    return state->aes_key_segments[slot] == 4U && !all_zero;
+    return state->aes_key_segments[slot] == 4U && state->A1[slot] != 0ULL && state->A2[slot] != 0ULL
+           && state->A3[slot] != 0ULL && state->A4[slot] != 0ULL;
 }
 
 int
@@ -103,6 +102,26 @@ dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsi
         return dsd_dmr_kirisun_key_complete(state, slot);
     }
     return dsd_dmr_voice_alg_can_decrypt(algid, r_key, state->aes_key_loaded[slot]);
+}
+
+int
+dsd_dmr_apply_forced_algid(dsd_state* state) {
+    if (!state || state->M <= 1 || state->M == 0x16) {
+        return 0;
+    }
+
+    if (state->currentslot == 0 && (state->dmr_so & 0x40) != 0) {
+        state->payload_algid = state->M & 0xFF;
+        state->payload_keyid = 0xFF;
+        return 1;
+    }
+    if (state->currentslot == 1 && (state->dmr_soR & 0x40) != 0) {
+        state->payload_algidR = state->M & 0xFF;
+        state->payload_keyidR = 0xFF;
+        return 1;
+    }
+
+    return 0;
 }
 
 int

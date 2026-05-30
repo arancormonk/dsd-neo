@@ -741,6 +741,19 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             dmr_vertex_ks_csv_cli = argv[i] + 20;                                                                      \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-force-algid") == 0) {                                                               \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--dmr-force-algid requires a hex ALGID value\n");                                           \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            dmr_force_algid_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--dmr-force-algid=", 18) == 0) {                                                         \
+            dmr_force_algid_cli = argv[i] + 18;                                                                        \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {                                                  \
             const char* sv = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             if (sv && *sv) {                                                                                           \
@@ -1153,6 +1166,19 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
+    }                                                                                                                  \
+    if (dmr_force_algid_cli) {                                                                                         \
+        char hex[3];                                                                                                   \
+        size_t nhex = 0;                                                                                               \
+        unsigned long long alg = 0ULL;                                                                                 \
+        if (!cli_collect_hex_digits(dmr_force_algid_cli, hex, sizeof hex, &nhex) || nhex == 0 || nhex > 2              \
+            || !cli_parse_hex_u64_n(hex, nhex, &alg)) {                                                                \
+            LOG_ERROR("Invalid --dmr-force-algid value\n");                                                            \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        state->M = (int)(alg & 0xFFU);                                                                                 \
+        LOG_NOTICE("Force DMR ALG ID 0x%02X over Missing PI header/LE Encryption Identifiers (DMR)\n", state->M);      \
     }
 
 int
@@ -1180,6 +1206,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* dmr_baofeng_pc5_cli = NULL;
     const char* dmr_csi_ee72_cli = NULL;
     const char* dmr_vertex_ks_csv_cli = NULL;
+    const char* dmr_force_algid_cli = NULL;
     const char* iq_capture_cli = NULL;
     const char* iq_capture_format_cli = NULL;
     const char* iq_capture_max_mb_cli = NULL;
@@ -1864,21 +1891,23 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_NOTICE("Setting symbol rate to 9600 / second\n");                                                  \
-                LOG_NOTICE("Decoding EDACS Extended Addressing w/ ESK and ProVoice frames.\n");                        \
+                LOG_NOTICE("Decoding EDACS STD/NET w/ ESK and ProVoice frames.\n");                                    \
                 LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");                                         \
+                if (optarg[1] != 0) {                                                                                  \
+                    if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {                     \
+                        LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");                              \
+                        state->edacs_a_bits = 4;                                                                       \
+                        state->edacs_f_bits = 4;                                                                       \
+                        state->edacs_s_bits = 3;                                                                       \
+                    }                                                                                                  \
+                    LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,     \
+                               state->edacs_s_bits);                                                                   \
+                }                                                                                                      \
                 opts->rtl_dsp_bw_khz = 24;                                                                             \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
             } else if (optarg[0] == 'e') {                                                                             \
-                if (optarg[1] != 0) {                                                                                  \
-                    char abits[2] = {optarg[1], 0};                                                                    \
-                    char fbits[2] = {optarg[2], 0};                                                                    \
-                    char sbits[2] = {optarg[3], 0};                                                                    \
-                    state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
-                    state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
-                    state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
-                }                                                                                                      \
                 opts->frame_dstar = 0;                                                                                 \
                 opts->frame_x2tdma = 0;                                                                                \
                 opts->frame_p25p1 = 0;                                                                                 \
@@ -1907,29 +1936,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 LOG_NOTICE("Setting symbol rate to 9600 / second\n");                                                  \
                 LOG_NOTICE("Decoding EDACS EA/ProVoice frames.\n");                                                    \
                 LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");                                         \
-                if (optarg[1] != 0) {                                                                                  \
-                    if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {                     \
-                        LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");                              \
-                        state->edacs_a_bits = 4;                                                                       \
-                        state->edacs_f_bits = 4;                                                                       \
-                        state->edacs_s_bits = 3;                                                                       \
-                    }                                                                                                  \
-                    LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,     \
-                               state->edacs_s_bits);                                                                   \
-                }                                                                                                      \
                 opts->rtl_dsp_bw_khz = 24;                                                                             \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
             } else if (optarg[0] == 'E') {                                                                             \
-                if (optarg[1] != 0) {                                                                                  \
-                    char abits[2] = {optarg[1], 0};                                                                    \
-                    char fbits[2] = {optarg[2], 0};                                                                    \
-                    char sbits[2] = {optarg[3], 0};                                                                    \
-                    state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
-                    state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
-                    state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
-                }                                                                                                      \
                 opts->frame_dstar = 0;                                                                                 \
                 opts->frame_x2tdma = 0;                                                                                \
                 opts->frame_p25p1 = 0;                                                                                 \
@@ -1958,16 +1969,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 LOG_NOTICE("Setting symbol rate to 9600 / second\n");                                                  \
                 LOG_NOTICE("Decoding EDACS EA/ProVoice w/ ESK frames.\n");                                             \
                 LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");                                         \
-                if (optarg[1] != 0) {                                                                                  \
-                    if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {                     \
-                        LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");                              \
-                        state->edacs_a_bits = 4;                                                                       \
-                        state->edacs_f_bits = 4;                                                                       \
-                        state->edacs_s_bits = 3;                                                                       \
-                    }                                                                                                  \
-                    LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,     \
-                               state->edacs_s_bits);                                                                   \
-                }                                                                                                      \
                 opts->rtl_dsp_bw_khz = 24;                                                                             \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \

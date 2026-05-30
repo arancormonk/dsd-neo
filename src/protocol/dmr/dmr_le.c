@@ -7,6 +7,7 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -247,19 +248,7 @@ dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t
     uint8_t slot = state->currentslot;
     uint8_t slot_idx = (slot >= 2) ? 1 : slot;
 
-    //enforce RC4 due to missing PI header, but with valid SVC Opts
-    //ideally, this would be handled by VC-F single burst, but its not fully reliable compared to this
-    //due to multiple signalling occurring inside of it, depending on system type
-    if (state->M == 0x21) {
-        if (slot == 0 && state->dmr_so & 0x40) {
-            state->payload_algid = 0x21;
-            state->payload_keyid = 0xFF;
-        }
-        if (slot == 1 && state->dmr_soR & 0x40) {
-            state->payload_algidR = 0x21;
-            state->payload_keyidR = 0xFF;
-        }
-    }
+    (void)dsd_dmr_apply_forced_algid(state);
 
     //collect our fragments and place them into storage
     if (vc < 8) {

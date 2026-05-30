@@ -44,6 +44,9 @@ main(void) {
     state.A3[0] = 0x3333333333333333ULL;
     state.A4[0] = 0x0000000000000000ULL;
     state.aes_key_segments[0] = 4U;
+    rc |= expect_eq("kirisun-zero-word-key", dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x37, 0x0ULL), 0);
+
+    state.A4[0] = 0x4444444444444444ULL;
     rc |= expect_eq("kirisun-complete-key", dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x37, 0x0ULL), 1);
 
     state.A1[0] = 0ULL;
@@ -54,6 +57,34 @@ main(void) {
     // Unknown/vendor-specific algids remain gated (not falsely unmuted).
     rc |= expect_eq("vertex-unknown", dsd_dmr_voice_alg_can_decrypt(0x07, 0x123ULL, 1), 0);
     rc |= expect_eq("unknown", dsd_dmr_voice_alg_can_decrypt(0x7E, 0x123ULL, 1), 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.M = 0x24;
+    state.currentslot = 0;
+    state.dmr_so = 0x40;
+    rc |= expect_eq("force-algid-slot0-applies", dsd_dmr_apply_forced_algid(&state), 1);
+    rc |= expect_eq("force-algid-slot0-alg", state.payload_algid, 0x24);
+    rc |= expect_eq("force-algid-slot0-key", state.payload_keyid, 0xFF);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.M = 0x25;
+    state.currentslot = 1;
+    state.dmr_soR = 0x40;
+    rc |= expect_eq("force-algid-slot1-applies", dsd_dmr_apply_forced_algid(&state), 1);
+    rc |= expect_eq("force-algid-slot1-alg", state.payload_algidR, 0x25);
+    rc |= expect_eq("force-algid-slot1-key", state.payload_keyidR, 0xFF);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.M = 0x24;
+    state.currentslot = 0;
+    rc |= expect_eq("force-algid-needs-encrypted-so", dsd_dmr_apply_forced_algid(&state), 0);
+    rc |= expect_eq("force-algid-no-so-alg-unchanged", state.payload_algid, 0);
+
+    state.M = 1;
+    state.dmr_so = 0x40;
+    rc |= expect_eq("force-algid-bp-mode-ignored", dsd_dmr_apply_forced_algid(&state), 0);
+    state.M = 0x16;
+    rc |= expect_eq("force-algid-tyt16-mode-ignored", dsd_dmr_apply_forced_algid(&state), 0);
 
     if (rc == 0) {
         printf("CORE_DMR_VOICE_ALG_GATE: OK\n");

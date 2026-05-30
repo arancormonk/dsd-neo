@@ -12,10 +12,13 @@
 // The taps/width under test correspond to polynomial:
 //   x^44 + x^34 + x^20 + x^15 + x^9 + x^4 + 1 (MSB-first)
 
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static void
 gen_lfsr_keystream(uint32_t wacn, uint16_t sysid, uint16_t nac, uint8_t* out_bits, int nbits) {
@@ -40,6 +43,59 @@ pack_bits_msb8(const uint8_t* bits, int nbits, uint8_t* out_bytes) {
         }
         out_bytes[i] = v;
     }
+}
+
+static int
+expect_bytes(const char* tag, const uint8_t* got, const uint8_t* want, int len) {
+    if (memcmp(got, want, (size_t)len) == 0) {
+        return 0;
+    }
+
+    DSD_FPRINTF(stderr, "%s mismatch\n got: ", tag);
+    for (int i = 0; i < len; i++) {
+        DSD_FPRINTF(stderr, "%02X", got[i]);
+    }
+    DSD_FPRINTF(stderr, "\n exp: ");
+    for (int i = 0; i < len; i++) {
+        DSD_FPRINTF(stderr, "%02X", want[i]);
+    }
+    DSD_FPRINTF(stderr, "\n");
+    return 1;
+}
+
+static int
+test_p25_voice_lfsr_helpers(void) {
+    int rc = 0;
+    dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0;
+    state.payload_miP = 0x0123456789ABCDEFULL;
+    LFSRP(&state);
+    if (state.payload_miP != 0x20B125E779D0F34EULL) {
+        DSD_FPRINTF(stderr, "slot 0 LFSRP got 0x%016llX\n", state.payload_miP);
+        rc = 1;
+    }
+
+    state.currentslot = 1;
+    state.payload_miN = 0xFEDCBA9876543210ULL;
+    const uint8_t exp_slot1_iv[16] = {0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10,
+                                      0x20, 0xB0, 0xDA, 0x04, 0x85, 0xD4, 0xF0, 0xC2};
+    LFSR128(&state);
+    rc |= expect_bytes("slot 1 LFSR128", state.aes_ivR, exp_slot1_iv, 16);
+
+    state.currentslot = 1;
+    state.payload_miP = 0x1122334455667788ULL;
+    const uint8_t exp_slot0_iv[16] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                                      0xCA, 0x31, 0x57, 0x69, 0x15, 0x0C, 0x83, 0x08};
+    p25_lfsr128_slot(&state, 0);
+    rc |= expect_bytes("explicit slot 0 LFSR128", state.aes_iv, exp_slot0_iv, 16);
+    if (state.currentslot != 1) {
+        DSD_FPRINTF(stderr, "explicit slot helper changed currentslot to %d\n", state.currentslot);
+        rc = 1;
+    }
+
+    return rc;
 }
 
 int
@@ -133,5 +189,6 @@ main(void) {
     if (rc == 0) {
         DSD_FPRINTF(stderr, "P25p2 LFSR taps/sequence verified (4 vectors)\n");
     }
+    rc |= test_p25_voice_lfsr_helpers();
     return rc;
 }

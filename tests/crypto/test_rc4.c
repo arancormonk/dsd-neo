@@ -44,6 +44,17 @@ test_rc4_block_known_vector(void) {
 }
 
 static int
+test_rc4_block_drop_skips_prefix(void) {
+    const uint8_t key[] = {'K', 'e', 'y'};
+    const uint8_t expect[] = {0x77, 0x81, 0xB7, 0x34, 0xCA, 0x72, 0xA7};
+    uint8_t output[sizeof(expect)];
+    DSD_MEMSET(output, 0, sizeof(output));
+
+    rc4_block_output(2, (int)sizeof(key), (int)sizeof(output), key, output);
+    return expect_bytes("rc4 block drop prefix", output, expect, sizeof(expect));
+}
+
+static int
 test_hytera_enhanced_setup_slot_selection(void) {
     static const uint8_t expect[] = {0x13, 0x9A, 0xC2, 0xA2, 0x51, 0x9C, 0x63, 0x86, 0x6B, 0x62,
                                      0xF3, 0xE9, 0xAB, 0xB6, 0xB9, 0x09, 0xCA, 0x23, 0x33, 0xEE};
@@ -60,6 +71,7 @@ main(void) {
     int rc = 0;
     rc |= test_rc4_voice_known_vector();
     rc |= test_rc4_block_known_vector();
+    rc |= test_rc4_block_drop_skips_prefix();
     rc |= test_hytera_enhanced_setup_slot_selection();
     return rc;
 }

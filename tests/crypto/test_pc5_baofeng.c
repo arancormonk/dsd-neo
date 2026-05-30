@@ -35,6 +35,32 @@ expect_bits_string(const char* label, const short* bits, const char* want) {
 }
 
 static int
+expect_char_frame(const char* label, const char got[49], const char want[49]) {
+    for (int i = 0; i < 49; i++) {
+        int got_bit = ((unsigned char)got[i]) & 1U;
+        int want_bit = ((unsigned char)want[i]) & 1U;
+        if (got_bit != want_bit) {
+            DSD_FPRINTF(stderr, "%s: bit %d expected %d, got %d\n", label, i, want_bit, got_bit);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+expect_char_short_bits(const char* label, const char got[49], const short want[49]) {
+    for (int i = 0; i < 49; i++) {
+        int got_bit = ((unsigned char)got[i]) & 1U;
+        int want_bit = want[i] & 1;
+        if (got_bit != want_bit) {
+            DSD_FPRINTF(stderr, "%s: bit %d expected %d, got %d\n", label, i, want_bit, got_bit);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
 expect_pc5_schedule(const char* label, const PC5Context* got, const PC5Context* want) {
     if (got->rounds != want->rounds || memcmp(got->perm, want->perm, sizeof(want->perm)) != 0
         || memcmp(got->new1, want->new1, sizeof(want->new1)) != 0
@@ -48,6 +74,14 @@ expect_pc5_schedule(const char* label, const PC5Context* got, const PC5Context* 
         return 1;
     }
     return 0;
+}
+
+static void
+fill_default_silence(char frame[49]) {
+    static const uint64_t k_ambe_default_silence = 0xF801A99F8CE080ULL;
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((k_ambe_default_silence >> (55 - i)) & 1U);
+    }
 }
 
 static void
@@ -133,6 +167,27 @@ test_baofeng_256_key_schedule_uses_ascii_hex(void) {
 }
 
 static int
+test_baofeng_256_key_schedule_preserves_ascii_case(void) {
+    PC5Context expected;
+    DSD_MEMSET(&expected, 0, sizeof(expected));
+    const unsigned char key_ascii[] = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    create_keys_pc5(&expected, key_ascii, strlen((const char*)key_ascii));
+    expected.rounds = PC5_NBROUND;
+
+    dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
+    int parse_rc = baofeng_ap_pc5_keystream_creation(
+        &state, "0001020304050607 08090a0b0c0d0e0f 1011121314151617 18191a1b1c1d1e1f");
+
+    int rc = 0;
+    rc |= expect_int("baofeng 256 lowercase parse", parse_rc, 0);
+    rc |= expect_int("baofeng 256 lowercase flag", state.baofeng_ap, 1);
+    rc |= expect_pc5_schedule("baofeng 256 lowercase", &ctxpc5, &expected);
+    return rc;
+}
+
+static int
 test_baofeng_rejects_invalid_hex(void) {
     dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -144,12 +199,65 @@ test_baofeng_rejects_invalid_hex(void) {
     return rc;
 }
 
+static int
+test_baofeng_apply_skips_silence_and_zero_tail(void) {
+    dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
+    (void)baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210");
+
+    int rc = 0;
+    char silence[49];
+    fill_default_silence(silence);
+    char original_silence[49];
+    DSD_MEMCPY(original_silence, silence, sizeof(original_silence));
+    rc |= expect_int("baofeng skip silence applied", baofeng_pc5_apply_frame49(&state, silence), 0);
+    rc |= expect_char_frame("baofeng skip silence frame", silence, original_silence);
+
+    char zero_tail[49] = {0};
+    for (int i = 0; i < 24; i++) {
+        zero_tail[i] = (char)((i + 1) & 1);
+    }
+    for (int i = 44; i < 49; i++) {
+        zero_tail[i] = (char)(i & 1);
+    }
+    char original_zero_tail[49];
+    DSD_MEMCPY(original_zero_tail, zero_tail, sizeof(original_zero_tail));
+    rc |= expect_int("baofeng skip zero-tail applied", baofeng_pc5_apply_frame49(&state, zero_tail), 0);
+    rc |= expect_char_frame("baofeng skip zero-tail frame", zero_tail, original_zero_tail);
+    return rc;
+}
+
+static int
+test_baofeng_apply_decrypts_voice_frame(void) {
+    dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
+    (void)baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210");
+
+    char frame[49];
+    short expected[49];
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((i * 7 + 1) & 1);
+        expected[i] = (short)(frame[i] & 1);
+    }
+    decrypt_frame_49_pc5(expected);
+
+    int rc = 0;
+    rc |= expect_int("baofeng apply voice frame", baofeng_pc5_apply_frame49(&state, frame), 1);
+    rc |= expect_char_short_bits("baofeng apply voice bits", frame, expected);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_pc5_decrypt_frame_vector();
     rc |= test_baofeng_128_key_schedule();
     rc |= test_baofeng_256_key_schedule_uses_ascii_hex();
+    rc |= test_baofeng_256_key_schedule_preserves_ascii_case();
     rc |= test_baofeng_rejects_invalid_hex();
+    rc |= test_baofeng_apply_skips_silence_and_zero_tail();
+    rc |= test_baofeng_apply_decrypts_voice_frame();
     return rc;
 }

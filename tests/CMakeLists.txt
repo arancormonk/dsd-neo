@@ -605,6 +605,17 @@ target_include_directories(
 add_test(NAME DPMR_COLOR_CODE COMMAND dsd-neo_test_dpmr_color_code)
 
 add_executable(
+    dsd-neo_test_dpmr_scrambler
+    protocol/dpmr/test_dpmr_scrambler.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+)
+target_include_directories(
+    dsd-neo_test_dpmr_scrambler
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME DPMR_SCRAMBLER COMMAND dsd-neo_test_dpmr_scrambler)
+
+add_executable(
     dsd-neo_test_dpmr_frame_layout
     protocol/dpmr/test_dpmr_frame_layout.c
 )
@@ -683,6 +694,17 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 add_test(NAME NXDN_DEPERM_WINDOWS COMMAND dsd-neo_test_nxdn_deperm_windows)
+
+add_executable(
+    dsd-neo_test_nxdn_lfsr
+    protocol/nxdn/test_nxdn_lfsr.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_lfsr.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_lfsr
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME NXDN_LFSR COMMAND dsd-neo_test_nxdn_lfsr)
 
 add_executable(
     dsd-neo_test_nxdn_message_crc32

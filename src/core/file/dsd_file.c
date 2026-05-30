@@ -21,6 +21,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/bp.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -35,6 +36,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/rc4.h>
+#include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/nonce.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -1334,6 +1336,132 @@ sdrtrunk_apply_keystream(char* frame_bits, size_t frame_bits_len, const uint8_t*
     return ks_idx;
 }
 
+static uint8_t
+sdrtrunk_dmr_crc4_inverted(const uint8_t* bits, unsigned int len) {
+    enum {
+        CRC_BITS = 4U,
+    };
+
+    static const uint8_t poly[CRC_BITS + 1U] = {1, 0, 0, 1, 1};
+    uint8_t work[256];
+    if (!bits || len + CRC_BITS > sizeof(work)) {
+        return 0;
+    }
+
+    DSD_MEMSET(work, 0, sizeof(work));
+    DSD_MEMCPY(work, bits, len);
+    for (unsigned int i = 0; i < len; i++) {
+        if (work[i] == 0) {
+            continue;
+        }
+        for (unsigned int j = 0; j <= CRC_BITS; j++) {
+            work[i + j] ^= poly[j];
+        }
+    }
+
+    uint8_t crc = 0;
+    for (unsigned int i = 0; i < CRC_BITS; i++) {
+        crc = (uint8_t)((crc << 1U) | work[len + i]);
+    }
+    return (uint8_t)(crc ^ 0x0FU);
+}
+
+static unsigned long long
+sdrtrunk_dmr_lfsr32(unsigned long long mi) {
+    unsigned long long lfsr = mi;
+    for (uint8_t cnt = 0; cnt < 32; cnt++) {
+        const unsigned long long bit = ((lfsr >> 31U) ^ (lfsr >> 3U) ^ (lfsr >> 1U)) & 0x1U;
+        lfsr = (lfsr << 1U) | bit;
+    }
+    return lfsr & 0xFFFFFFFFULL;
+}
+
+static uint64_t
+sdrtrunk_dmr_pack_le_fragments(const dsd_state* state, uint8_t slot_idx, uint8_t vc_base) {
+    static const uint8_t shifts[9] = {32, 28, 24, 20, 16, 12, 8, 4, 0};
+    uint64_t packed = 0;
+    uint8_t shift_idx = 0;
+
+    for (uint8_t frag_col = 0; frag_col < 3; frag_col++) {
+        for (uint8_t frag_row = 0; frag_row < 3; frag_row++) {
+            packed |= (uint64_t)state->late_entry_mi_fragment[slot_idx][vc_base + frag_row][frag_col]
+                      << shifts[shift_idx++];
+        }
+    }
+
+    return packed;
+}
+
+static int
+sdrtrunk_dmr_decode_le_mi(const dsd_state* state, uint8_t slot_idx, unsigned long long* mi_final, uint8_t* mi_crc_ok) {
+    if (!state || !mi_final || !mi_crc_ok) {
+        return 0;
+    }
+
+    uint64_t mi_test = sdrtrunk_dmr_pack_le_fragments(state, slot_idx, 1);
+    uint64_t go_test = sdrtrunk_dmr_pack_le_fragments(state, slot_idx, 4);
+    uint64_t mi_corrected = 0;
+    uint64_t go_corrected = 0;
+    uint8_t mi_bits[36];
+    DSD_MEMSET(mi_bits, 0, sizeof(mi_bits));
+
+    int golay_all_pass = 1;
+    for (int triplet = 0; triplet < 3; triplet++) {
+        unsigned char mi_go_bits[24];
+        DSD_MEMSET(mi_go_bits, 0, sizeof(mi_go_bits));
+        for (int bit_idx = 0; bit_idx < 12; bit_idx++) {
+            mi_go_bits[bit_idx] = (unsigned char)(((mi_test << (bit_idx + triplet * 12)) & 0x800000000ULL) >> 35U);
+            mi_go_bits[bit_idx + 12] = (unsigned char)(((go_test << (bit_idx + triplet * 12)) & 0x800000000ULL) >> 35U);
+        }
+
+        if (!Golay_24_12_decode(mi_go_bits)) {
+            golay_all_pass = 0;
+        }
+        for (int bit_idx = 0; bit_idx < 12; bit_idx++) {
+            mi_corrected = (mi_corrected << 1U) | mi_go_bits[bit_idx];
+            go_corrected = (go_corrected << 1U) | mi_go_bits[bit_idx + 12];
+            mi_bits[bit_idx + (triplet * 12)] = mi_go_bits[bit_idx];
+        }
+    }
+
+    (void)go_corrected;
+    *mi_final = (mi_corrected >> 4U) & 0xFFFFFFFFULL;
+    const uint8_t mi_crc_ext = (uint8_t)convert_bits_into_output(&mi_bits[32], 4);
+    const uint8_t mi_crc_cmp = sdrtrunk_dmr_crc4_inverted(mi_bits, 32);
+    *mi_crc_ok = (uint8_t)(mi_crc_ext == mi_crc_cmp);
+    return golay_all_pass;
+}
+
+static void
+sdrtrunk_dmr_process_late_entry_mi(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+
+    const uint8_t slot_idx = (state->currentslot == 1) ? 1U : 0U;
+    if (slot_idx != 0U) {
+        return;
+    }
+
+    if (state->payload_mi != 0) {
+        state->payload_mi = sdrtrunk_dmr_lfsr32(state->payload_mi);
+    }
+
+    unsigned long long mi_final = 0;
+    uint8_t mi_crc_ok = 0;
+    const int golay_all_pass = sdrtrunk_dmr_decode_le_mi(state, slot_idx, &mi_final, &mi_crc_ok);
+    if (!golay_all_pass) {
+        return;
+    }
+
+    if (state->payload_mi != mi_final && mi_crc_ok == 1U) {
+        state->payload_mi = mi_final;
+    }
+    if (state->payload_algid == 0x21) {
+        state->payload_mi = sdrtrunk_dmr_lfsr32(state->payload_mi);
+    }
+}
+
 static void
 purge_audio_buffers_if_needed(dsd_state* state) {
     if (state->audio_out_idx2 >= 800000) {
@@ -1379,11 +1507,27 @@ decode_audio_is_allowed(uint8_t is_enc, uint8_t ks_available) {
 
 static uint16_t
 ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, const uint8_t* ks, uint16_t ks_idx,
-                    uint8_t dmra, uint8_t is_enc, uint8_t ks_available) {
+                    uint8_t dmra, uint8_t dmra_le, const int* ambe2_counter, uint8_t is_enc, uint8_t ks_available) {
     char ambe_fr[4][24];
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
     sdrtrunk_unpack_interleaved_voice_frame(ambe_str, 18, &ambe_fr[0][0], 24, dmr_ambe_interleave_w,
                                             dmr_ambe_interleave_x, dmr_ambe_interleave_y, dmr_ambe_interleave_z);
+
+    if (dmra_le != 0 && ambe2_counter != NULL) {
+        uint8_t c3[24];
+        DSD_MEMSET(c3, 0, sizeof(c3));
+        for (int i = 0; i < 24; i++) {
+            c3[i] = (uint8_t)ambe_fr[3][i];
+        }
+
+        state->currentslot = 0;
+        uint8_t c3_hex = (uint8_t)convert_bits_into_output(c3, 4);
+        state->late_entry_mi_fragment[0][(*ambe2_counter / 3) + 1][*ambe2_counter % 3] = c3_hex;
+
+        if (*ambe2_counter == 17) {
+            sdrtrunk_dmr_process_late_entry_mi(state);
+        }
+    }
 
     char ambe_d[49];
     DSD_MEMSET(ambe_d, 0, sizeof(ambe_d));
@@ -1486,6 +1630,7 @@ typedef struct {
     uint8_t is_enc;
     uint8_t ks_available;
     uint8_t is_dmra;
+    uint8_t dmra_le;
     uint8_t show_time;
     uint8_t alg_id;
     uint16_t key_id;
@@ -1496,6 +1641,7 @@ typedef struct {
     uint8_t ks_i[3000];
     uint16_t ks_idx_i;
     int imbe_counter;
+    int ambe2_counter;
 } sdrtrunk_json_context;
 
 static char*
@@ -1510,6 +1656,7 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->is_enc = 0;
     ctx->ks_available = 0;
     ctx->is_dmra = 1;
+    ctx->dmra_le = 0;
     ctx->show_time = 1;
     ctx->alg_id = 0;
     ctx->key_id = 0;
@@ -1520,6 +1667,7 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     DSD_MEMSET(ctx->ks_i, 0, sizeof(ctx->ks_i));
     ctx->ks_idx_i = 808;
     ctx->imbe_counter = 0;
+    ctx->ambe2_counter = 0;
 }
 
 static void
@@ -1530,6 +1678,66 @@ sdrtrunk_json_reset_event_state(dsd_state* state) {
     state->gi[0] = -1;
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
+}
+
+static void
+sdrtrunk_json_reset_crypto_state(dsd_state* state) {
+    state->payload_mi = 0;
+    state->payload_algid = 0;
+    state->payload_keyid = 0;
+    if (state->keyloader == 1) {
+        state->R = 0;
+        state->aes_key_loaded[0] = 0;
+    }
+}
+
+static void
+sdrtrunk_json_apply_forced_basic_privacy(const dsd_state* state, sdrtrunk_json_context* ctx) {
+    const unsigned long long key_idx = state->K;
+    if (key_idx == 0ULL || key_idx >= (unsigned long long)(sizeof(BPK) / sizeof(BPK[0]))) {
+        return;
+    }
+
+    uint64_t key = BPK[(size_t)key_idx];
+    key = (((key & 0xFF0FU) << 32U) + (key << 16U) + key);
+    key <<= 1U;
+    key += (key >> 48U) & 1U;
+    for (int i = 0; i < 18 * 49; i++) {
+        ctx->ks[i] = (uint8_t)((key >> (i % 49)) & 1U);
+    }
+    ctx->ks_available = 1;
+}
+
+static void
+sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
+    if (state->M >= 0x21 && state->M <= 0x25) {
+        ctx->is_dmra = 1;
+        ctx->dmra_le = 1;
+        ctx->is_enc = 1;
+        ctx->alg_id = (uint8_t)state->M;
+        state->payload_algid = ctx->alg_id;
+        ctx->rc4_db = 256;
+        ctx->rc4_mod = 9;
+        if (state->keyloader == 1 && state->lasttg != 0 && state->lasttg < 0x1FFFF
+            && state->rkey_array[state->lasttg] != 0) {
+            state->R = state->rkey_array[state->lasttg];
+        }
+        if (ctx->alg_id == 0x21 && state->R != 0 && state->payload_mi != 0) {
+            uint8_t iv64[8] = {0};
+            iv64[4] = (uint8_t)((state->payload_mi >> 24ULL) & 0xFFULL);
+            iv64[5] = (uint8_t)((state->payload_mi >> 16ULL) & 0xFFULL);
+            iv64[6] = (uint8_t)((state->payload_mi >> 8ULL) & 0xFFULL);
+            iv64[7] = (uint8_t)((state->payload_mi >> 0ULL) & 0xFFULL);
+            ctx->ks_available =
+                (uint8_t)sdrtrunk_build_voice_keystream_bits(state, ctx->alg_id, ctx->key_id, iv64, ctx->rc4_db,
+                                                             ctx->rc4_mod, ctx->protocol, ctx->ks, sizeof(ctx->ks));
+        }
+        return;
+    }
+
+    if (state->M == 1) {
+        sdrtrunk_json_apply_forced_basic_privacy(state, ctx);
+    }
 }
 
 static void
@@ -1805,8 +2013,13 @@ sdrtrunk_json_decode_imbe_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_co
 
 static void
 sdrtrunk_json_decode_ambe_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* value) {
-    ctx->ks_idx =
-        ambe2_str_to_decode(opts, state, value, ctx->ks, ctx->ks_idx, ctx->is_dmra, ctx->is_enc, ctx->ks_available);
+    ctx->ks_idx = ambe2_str_to_decode(opts, state, value, ctx->ks, ctx->ks_idx, ctx->is_dmra, ctx->dmra_le,
+                                      &ctx->ambe2_counter, ctx->is_enc, ctx->ks_available);
+    ctx->ambe2_counter++;
+    if (ctx->dmra_le != 0 && ctx->ambe2_counter == 18) {
+        ctx->ambe2_counter = 0;
+        ctx->ks_idx = 0;
+    }
 }
 
 static int
@@ -1865,6 +2078,7 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
     (void)sdrtrunk_json_handle_protocol(opts, state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_call_type(state, token, str_saveptr);
     (void)sdrtrunk_json_handle_encrypted(token, str_saveptr, ctx);
+    sdrtrunk_json_apply_forced_algid(state, ctx);
     (void)sdrtrunk_json_handle_to_from(state, token, str_saveptr);
     (void)sdrtrunk_json_handle_alg(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_key_id(opts, token, str_saveptr, ctx);
@@ -1884,6 +2098,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     sdrtrunk_json_context ctx;
     sdrtrunk_json_context_init(&ctx);
     sdrtrunk_json_reset_event_state(state);
+    sdrtrunk_json_reset_crypto_state(state);
     watchdog_event_history(opts, state, 0);
     watchdog_event_current(opts, state, 0);
 

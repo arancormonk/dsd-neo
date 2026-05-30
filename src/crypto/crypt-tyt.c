@@ -302,3 +302,40 @@ tyt_ep_aes_keystream_creation(dsd_state* state, char* input) {
     DSD_FPRINTF(stderr, "DMR TYT EP (AES-128) key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
     state->tyt_ep = 1;
 }
+
+int
+tyt_ap_pc4_apply_frame49(const dsd_state* state, char ambe_d[49]) {
+    if (state == NULL || ambe_d == NULL || state->tyt_ap != 1) {
+        return 0;
+    }
+    if (dmr_ambe49_is_default_silence(ambe_d) == 1 || dmr_ambe49_has_zero_tail(ambe_d) == 1) {
+        return 0;
+    }
+
+    short frame1_cipher[49];
+    for (int i = 0; i < 49; i++) {
+        frame1_cipher[i] = (short)(unsigned char)ambe_d[i];
+    }
+    decrypt_frame_49(frame1_cipher);
+
+    DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
+    for (int i = 0; i < 49; i++) {
+        ambe_d[i] = (char)(g_pc4_context.bits[i] & 1);
+    }
+    return 1;
+}
+
+int
+tyt_ep_aes_apply_frame49(const dsd_state* state, char ambe_d[49]) {
+    if (state == NULL || ambe_d == NULL || state->tyt_ep != 1) {
+        return 0;
+    }
+    if (dmr_ambe49_is_default_silence(ambe_d) == 1 || dmr_ambe49_has_zero_tail(ambe_d) == 1) {
+        return 0;
+    }
+
+    for (int i = 0; i < 49; i++) {
+        ambe_d[i] ^= (char)(g_pc4_context.bits[i] & 1);
+    }
+    return 1;
+}
