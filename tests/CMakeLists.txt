@@ -2485,7 +2485,9 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_p25_p1_sync_dispatch
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+        ${PROJECT_SOURCE_DIR}/include
 )
 add_test(NAME P25_P1_SYNC_DISPATCH COMMAND dsd-neo_test_p25_p1_sync_dispatch)
 

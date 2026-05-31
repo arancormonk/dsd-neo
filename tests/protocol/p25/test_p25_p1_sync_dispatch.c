@@ -5,6 +5,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "mbelib.h"
 
 #include <assert.h>
 #include <dsd-neo/core/dibit.h>
@@ -19,7 +20,6 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
-#include <mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

@@ -6,6 +6,8 @@
 // Minimal stub of mbelib.h for unit tests.
 #pragma once
 
-typedef struct mbe_parms {
+typedef struct mbe_parameters {
     int dummy;
 } mbe_parms;
+
+void mbe_initMbeParms(mbe_parms* cur_mp, mbe_parms* prev_mp, mbe_parms* prev_mp_enhanced);
