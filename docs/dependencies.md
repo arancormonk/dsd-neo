@@ -37,14 +37,17 @@ Vendored code retains upstream notices. License and attribution details are in
 
 Registry-managed vcpkg dependencies are pinned by the manifest
 `builtin-baseline`. At baseline `56bb2411609227288b70117ead2c47585ba07713`,
-the `openssl` port resolves to OpenSSL `3.6.2`; system-package builds enforce
-the project requirement through `find_package(OpenSSL 3.0 REQUIRED)`.
+the `openssl` port resolves to OpenSSL `3.6.2` and the `curl` port resolves to
+curl `8.19.0`; system-package builds enforce the OpenSSL requirement through
+`find_package(OpenSSL 3.0 REQUIRED)`.
 
 ## Packaging Dependencies
 
 Windows builds use vcpkg overlays under `vcpkg-ports/` and triplets under
-`vcpkg-triplets/`. Overlay ports must use immutable source references and hashes
-as described in `docs/supply-chain-guardrails.md`.
+`vcpkg-triplets/`. AppImage builds use pinned CI source checkouts for compiled
+dependencies that are not suitable from the Ubuntu 20.04 base image. Overlay
+ports and CI source checkouts must use immutable source references and hashes as
+described in `docs/supply-chain-guardrails.md`.
 
 ## Tooling Dependencies
 
