@@ -24,8 +24,10 @@ const uint8_t m17_scramble[369] = {
 
 const char m17_base40_alphabet[41] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/.";
 
-const uint8_t m17_puncture_pattern_1[62] = {1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1,
-                                            1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1,
-                                            0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1};
+const uint8_t m17_puncture_pattern_1[M17_PUNCTURE_P1_LEN] = {
+    1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0,
+    1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1};
 
-const uint8_t m17_puncture_pattern_3[62] = {1, 1, 1, 1, 1, 1, 1, 0};
+const uint8_t m17_puncture_pattern_2[M17_PUNCTURE_P2_LEN] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0};
+
+const uint8_t m17_puncture_pattern_3[M17_PUNCTURE_P3_LEN] = {1, 1, 1, 1, 1, 1, 1, 0};

@@ -7,6 +7,7 @@
   "homepage": "https://github.com/arancormonk/dsd-neo",
   "dependencies": [
     "mbe-neo",
+    "openssl",
     "libsndfile",
     "portaudio",
     {

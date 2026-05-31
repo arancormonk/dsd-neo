@@ -1,6 +1,9 @@
 add_library(dsd-neo_proto_m17)
 
-target_sources(dsd-neo_proto_m17 PRIVATE m17_tables.c m17_parse.c m17.c)
+target_sources(
+    dsd-neo_proto_m17
+    PRIVATE m17_algorithms.c m17_tables.c m17_parse.c m17.c
+)
 
 target_include_directories(
     dsd-neo_proto_m17

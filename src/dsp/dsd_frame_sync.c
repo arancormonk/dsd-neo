@@ -655,102 +655,156 @@ frame_sync_try_m17_preamble(frame_sync_match_ctx* ctx, int ham_pre, int ham_piv)
 }
 
 static int
-frame_sync_try_m17_pkt(frame_sync_match_ctx* ctx, int ham_pkt, int ham_brt, int is_inverted) {
+frame_sync_m17_eot_allowed_after(int lastsynctype) {
+    return lastsynctype == DSD_SYNC_M17_LSF_POS || lastsynctype == DSD_SYNC_M17_LSF_NEG
+           || lastsynctype == DSD_SYNC_M17_STR_POS || lastsynctype == DSD_SYNC_M17_STR_NEG
+           || lastsynctype == DSD_SYNC_M17_PKT_POS || lastsynctype == DSD_SYNC_M17_PKT_NEG
+           || lastsynctype == DSD_SYNC_M17_BRT_POS || lastsynctype == DSD_SYNC_M17_BRT_NEG;
+}
+
+static int
+frame_sync_try_m17_eot(frame_sync_match_ctx* ctx, int ham_eot, int ham_eot_inv, int is_inverted) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    const int ham = is_inverted ? ham_eot_inv : ham_eot;
+    if (ham > 1 || !frame_sync_m17_eot_allowed_after(state->lastsynctype)) {
+        return DSD_SYNC_NONE;
+    }
+
+    if (is_inverted) {
+        printFrameSync(opts, state, "-M17 EOT", ctx->synctest_pos + 1, ctx->modulation);
+        state->lastsynctype = DSD_SYNC_M17_EOT_NEG;
+    } else {
+        printFrameSync(opts, state, "+M17 EOT", ctx->synctest_pos + 1, ctx->modulation);
+        state->lastsynctype = DSD_SYNC_M17_EOT_POS;
+    }
+    frame_sync_set_basic_lock(ctx);
+    state->m17_polarity = 0;
+    DSD_FPRINTF(stderr, "\n");
+    return state->lastsynctype;
+}
+
+static int
+frame_sync_try_m17_packet(frame_sync_match_ctx* ctx, int ham_pkt, int ham_brt, int is_inverted) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
 
     if (ham_pkt <= 1 && !is_inverted) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS && state->lastsynctype != DSD_SYNC_M17_PKT_POS) {
+            return DSD_SYNC_NONE;
+        }
         printFrameSync(opts, state, "+M17 PKT", ctx->synctest_pos + 1, ctx->modulation);
         frame_sync_set_basic_lock(ctx);
-        if (state->lastsynctype == DSD_SYNC_M17_PKT_POS || state->lastsynctype == DSD_SYNC_M17_STR_POS) {
-            state->lastsynctype = DSD_SYNC_M17_PKT_POS;
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-            return DSD_SYNC_M17_PKT_POS;
-        }
         state->lastsynctype = DSD_SYNC_M17_PKT_POS;
-        DSD_FPRINTF(stderr, "\n");
-        return DSD_SYNC_NONE;
+        dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
+        return DSD_SYNC_M17_PKT_POS;
     }
 
     if (ham_brt <= 1 && is_inverted) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG && state->lastsynctype != DSD_SYNC_M17_PKT_NEG) {
+            return DSD_SYNC_NONE;
+        }
         printFrameSync(opts, state, "-M17 PKT", ctx->synctest_pos + 1, ctx->modulation);
         frame_sync_set_basic_lock(ctx);
-        if (state->lastsynctype == DSD_SYNC_M17_PKT_NEG || state->lastsynctype == DSD_SYNC_M17_STR_NEG) {
-            state->lastsynctype = DSD_SYNC_M17_PKT_NEG;
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-            return DSD_SYNC_M17_PKT_NEG;
-        }
         state->lastsynctype = DSD_SYNC_M17_PKT_NEG;
-        DSD_FPRINTF(stderr, "\n");
+        dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
+        return DSD_SYNC_M17_PKT_NEG;
     }
 
     return DSD_SYNC_NONE;
 }
 
 static int
-frame_sync_try_m17_str(frame_sync_match_ctx* ctx, int ham_str, int is_inverted) {
+frame_sync_try_m17_stream(frame_sync_match_ctx* ctx, int ham_str, int ham_lsf, int is_inverted) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (ham_str > 1) {
-        return DSD_SYNC_NONE;
-    }
 
-    if (!is_inverted) {
+    if (ham_str <= 1 && !is_inverted) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS && state->lastsynctype != DSD_SYNC_M17_STR_POS) {
+            return DSD_SYNC_NONE;
+        }
         printFrameSync(opts, state, "+M17 STR", ctx->synctest_pos + 1, ctx->modulation);
         frame_sync_set_basic_lock(ctx);
-        if (state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_STR_POS) {
-            state->lastsynctype = DSD_SYNC_M17_STR_POS;
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-            return DSD_SYNC_M17_STR_POS;
-        }
         state->lastsynctype = DSD_SYNC_M17_STR_POS;
-        DSD_FPRINTF(stderr, "\n");
-        return DSD_SYNC_NONE;
-    }
-
-    printFrameSync(opts, state, "-M17 LSF", ctx->synctest_pos + 1, ctx->modulation);
-    frame_sync_set_basic_lock(ctx);
-    if (state->lastsynctype == DSD_SYNC_M17_PRE_NEG) {
-        state->lastsynctype = DSD_SYNC_M17_LSF_NEG;
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-        return DSD_SYNC_M17_LSF_NEG;
-    }
-    state->lastsynctype = DSD_SYNC_M17_LSF_NEG;
-    DSD_FPRINTF(stderr, "\n");
-    return DSD_SYNC_NONE;
-}
-
-static int
-frame_sync_try_m17_lsf(frame_sync_match_ctx* ctx, int ham_lsf, int is_inverted) {
-    const dsd_opts* opts = ctx->opts;
-    dsd_state* state = ctx->state;
-    if (ham_lsf > 1) {
-        return DSD_SYNC_NONE;
+        return DSD_SYNC_M17_STR_POS;
     }
 
-    if (!is_inverted) {
-        printFrameSync(opts, state, "+M17 LSF", ctx->synctest_pos + 1, ctx->modulation);
-        frame_sync_set_basic_lock(ctx);
-        if (state->lastsynctype == DSD_SYNC_M17_PRE_POS) {
-            state->lastsynctype = DSD_SYNC_M17_LSF_POS;
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-            return DSD_SYNC_M17_LSF_POS;
+    if (ham_lsf <= 1 && is_inverted) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG && state->lastsynctype != DSD_SYNC_M17_STR_NEG) {
+            return DSD_SYNC_NONE;
         }
-        state->lastsynctype = DSD_SYNC_M17_LSF_POS;
-        DSD_FPRINTF(stderr, "\n");
-        return DSD_SYNC_NONE;
-    }
-
-    printFrameSync(opts, state, "-M17 STR", ctx->synctest_pos + 1, ctx->modulation);
-    frame_sync_set_basic_lock(ctx);
-    if (state->lastsynctype == DSD_SYNC_M17_LSF_NEG || state->lastsynctype == DSD_SYNC_M17_STR_NEG) {
+        printFrameSync(opts, state, "-M17 STR", ctx->synctest_pos + 1, ctx->modulation);
+        frame_sync_set_basic_lock(ctx);
         state->lastsynctype = DSD_SYNC_M17_STR_NEG;
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
         return DSD_SYNC_M17_STR_NEG;
     }
-    state->lastsynctype = DSD_SYNC_M17_STR_NEG;
-    DSD_FPRINTF(stderr, "\n");
+
     return DSD_SYNC_NONE;
+}
+
+static int
+frame_sync_accept_m17(frame_sync_match_ctx* ctx, const char* label, int synctype) {
+    printFrameSync(ctx->opts, ctx->state, label, ctx->synctest_pos + 1, ctx->modulation);
+    frame_sync_set_basic_lock(ctx);
+    ctx->state->lastsynctype = synctype;
+    dsd_sync_warm_start_thresholds_outer_only(ctx->opts, ctx->state, 8);
+    return synctype;
+}
+
+static int
+frame_sync_after_m17_preamble(const dsd_state* state, int is_inverted) {
+    return (!is_inverted && state->lastsynctype == DSD_SYNC_M17_PRE_POS)
+           || (is_inverted && state->lastsynctype == DSD_SYNC_M17_PRE_NEG);
+}
+
+static int
+frame_sync_after_m17_bert(const dsd_state* state, int is_inverted) {
+    return (!is_inverted && state->lastsynctype == DSD_SYNC_M17_BRT_POS)
+           || (is_inverted && state->lastsynctype == DSD_SYNC_M17_BRT_NEG);
+}
+
+static int
+frame_sync_try_m17_lsf_after_preamble(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int is_inverted) {
+    const int hamming = is_inverted ? ham_str : ham_lsf;
+    if (hamming > 1) {
+        return DSD_SYNC_NONE;
+    }
+
+    return is_inverted ? frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG)
+                       : frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
+}
+
+static int
+frame_sync_try_m17_bert_after_context(frame_sync_match_ctx* ctx, int ham_brt, int ham_pkt, int is_inverted) {
+    const int hamming = is_inverted ? ham_pkt : ham_brt;
+    if (hamming > 1) {
+        return DSD_SYNC_NONE;
+    }
+
+    return is_inverted ? frame_sync_accept_m17(ctx, "-M17 BRT", DSD_SYNC_M17_BRT_NEG)
+                       : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
+}
+
+static int
+frame_sync_try_m17_lsf_or_bert(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int ham_brt, int ham_pkt,
+                               int is_inverted) {
+    const dsd_state* state = ctx->state;
+    const int after_preamble = frame_sync_after_m17_preamble(state, is_inverted);
+    const int after_bert = frame_sync_after_m17_bert(state, is_inverted);
+    if (!after_preamble && !after_bert) {
+        return DSD_SYNC_NONE;
+    }
+
+    if (after_preamble) {
+        const int lsf_sync = frame_sync_try_m17_lsf_after_preamble(ctx, ham_lsf, ham_str, is_inverted);
+        if (lsf_sync != DSD_SYNC_NONE) {
+            return lsf_sync;
+        }
+    }
+
+    return frame_sync_try_m17_bert_after_context(ctx, ham_brt, ham_pkt, is_inverted);
 }
 
 static int
@@ -769,6 +823,8 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     int ham_str = dsd_sync_hamming_distance(ctx->synctest8, M17_STR, 8);
     int ham_pkt = dsd_sync_hamming_distance(ctx->synctest8, M17_PKT, 8);
     int ham_brt = dsd_sync_hamming_distance(ctx->synctest8, M17_BRT, 8);
+    int ham_eot = dsd_sync_hamming_distance(ctx->synctest8, M17_EOT, 8);
+    int ham_eot_inv = dsd_sync_hamming_distance(ctx->synctest8, M17_EOT_INV, 8);
     int is_inverted = opts->inverted_m17;
     if (!opts->inverted_m17 && state->m17_polarity == 2) {
         is_inverted = 1;
@@ -778,15 +834,19 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
-    sync_type = frame_sync_try_m17_pkt(ctx, ham_pkt, ham_brt, is_inverted);
+    sync_type = frame_sync_try_m17_eot(ctx, ham_eot, ham_eot_inv, is_inverted);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
-    sync_type = frame_sync_try_m17_str(ctx, ham_str, is_inverted);
+    sync_type = frame_sync_try_m17_lsf_or_bert(ctx, ham_lsf, ham_str, ham_brt, ham_pkt, is_inverted);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
-    return frame_sync_try_m17_lsf(ctx, ham_lsf, is_inverted);
+    sync_type = frame_sync_try_m17_stream(ctx, ham_str, ham_lsf, is_inverted);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
+    }
+    return frame_sync_try_m17_packet(ctx, ham_pkt, ham_brt, is_inverted);
 }
 
 static inline void

@@ -24,6 +24,8 @@
 #define M17_PIV_LSF                    "1313131311113313" /* Preamble + LSF */
 #define M17_BRT                        "31331111"
 #define M17_PKT                        "13113333"
+#define M17_EOT                        "11111131"
+#define M17_EOT_INV                    "33333313"
 
 #define FUSION_SYNC                    "31111311313113131131"
 #define INV_FUSION_SYNC                "13333133131331313313"

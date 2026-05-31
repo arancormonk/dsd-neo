@@ -11,6 +11,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/crypto/ecdsa.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/audio.h>
@@ -80,6 +81,44 @@ cli_collect_hex_digits(const char* in, char* out, size_t out_cap, size_t* out_le
     out[w] = '\0';
     if (out_len) {
         *out_len = w;
+    }
+    return 1;
+}
+
+static int
+cli_hex_digit_value(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+static int
+cli_parse_hex_bytes_exact(const char* in, uint8_t* out, size_t out_len) {
+    if (in == NULL || out == NULL || out_len == 0U) {
+        return 0;
+    }
+
+    char hex[(DSD_ECDSA_P256_PUBLIC_KEY_BYTES * 2U) + 1U];
+    size_t nhex = 0U;
+    if (out_len > DSD_ECDSA_P256_PUBLIC_KEY_BYTES || !cli_collect_hex_digits(in, hex, sizeof(hex), &nhex)
+        || nhex != out_len * 2U) {
+        return 0;
+    }
+
+    for (size_t i = 0U; i < out_len; i++) {
+        const int hi = cli_hex_digit_value(hex[i * 2U]);
+        const int lo = cli_hex_digit_value(hex[(i * 2U) + 1U]);
+        if (hi < 0 || lo < 0) {
+            return 0;
+        }
+        out[i] = (uint8_t)(((uint8_t)hi << 4U) | (uint8_t)lo);
     }
     return 1;
 }
@@ -754,6 +793,19 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             dmr_force_algid_cli = argv[i] + 18;                                                                        \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--m17-signature-public-key") == 0) {                                                      \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--m17-signature-public-key requires a 64-byte hex P-256 public key\n");                     \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            m17_signature_public_key_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--m17-signature-public-key=", 27) == 0) {                                                \
+            m17_signature_public_key_cli = argv[i] + 27;                                                               \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {                                                  \
             const char* sv = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             if (sv && *sv) {                                                                                           \
@@ -1179,6 +1231,17 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         }                                                                                                              \
         state->M = (int)(alg & 0xFFU);                                                                                 \
         LOG_NOTICE("Force DMR ALG ID 0x%02X over Missing PI header/LE Encryption Identifiers (DMR)\n", state->M);      \
+    }                                                                                                                  \
+    if (m17_signature_public_key_cli) {                                                                                \
+        if (!cli_parse_hex_bytes_exact(m17_signature_public_key_cli, state->m17_signature_public_key,                  \
+                                       sizeof(state->m17_signature_public_key))) {                                     \
+            LOG_ERROR("Invalid --m17-signature-public-key value\n");                                                   \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        state->m17_signature_public_key_loaded = 1U;                                                                   \
+        state->m17_signature_verification_status = 0U;                                                                 \
+        LOG_NOTICE("M17 signature public key loaded for secp256r1 verification\n");                                    \
     }
 
 int
@@ -1207,6 +1270,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* dmr_csi_ee72_cli = NULL;
     const char* dmr_vertex_ks_csv_cli = NULL;
     const char* dmr_force_algid_cli = NULL;
+    const char* m17_signature_public_key_cli = NULL;
     const char* iq_capture_cli = NULL;
     const char* iq_capture_format_cli = NULL;
     const char* iq_capture_max_mb_cli = NULL;

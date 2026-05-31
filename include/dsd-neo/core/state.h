@@ -1007,6 +1007,14 @@ struct dsd_state {
     int soft_symbol_frame_start; // Index where current frame started
     uint8_t m17_pbc_ct;          //pbc packet counter
     uint8_t m17_str_dt;          //stream contents
+    uint8_t m17_bert_locked;
+    uint16_t m17_bert_lfsr;
+    uint16_t m17_bert_lock_count;
+    uint16_t m17_bert_window_bits;
+    uint16_t m17_bert_window_errors;
+    uint32_t m17_bert_bits;
+    uint32_t m17_bert_errors;
+    uint32_t m17_bert_resyncs;
 
     uint8_t m17_can; //can value that was decoded from signal
     int m17_can_en;  //can value supplied to the encoding side
@@ -1020,17 +1028,31 @@ struct dsd_state {
     char m17_dst_str[50];
 
     uint8_t m17_meta[16]; //packed meta
-    uint8_t m17_enc;      //enc type
-    uint8_t m17_enc_st;   //scrambler or data subtye
-    int m17encoder_tx;    // If TX (encode + decode) M17 Stream is enabled
-    int m17encoder_eot;   //signal if we need to send the EOT frame
+    uint8_t m17_text_meta_control_or;
+    uint8_t m17_text_meta_expected_bitmap;
+    uint8_t m17_text_meta_received_bitmap;
+    uint8_t m17_text_meta[52];
+    uint8_t m17_enc;               //enc type
+    uint8_t m17_enc_st;            //scrambler or data subtye
+    uint8_t m17_payload_decrypted; //current encrypted payload was successfully decrypted
+    uint8_t m17_signature_advertised;
+    uint8_t m17_signature_digest[16];
+    uint8_t m17_signature[64];
+    uint8_t m17_signature_received_mask;
+    uint8_t m17_signature_complete;
+    uint8_t m17_signature_bad_sequence;
+    uint8_t m17_signature_public_key[64];
+    uint8_t m17_signature_public_key_loaded;
+    uint8_t m17_signature_verification_status;
+    int m17encoder_tx;  // If TX (encode + decode) M17 Stream is enabled
+    int m17encoder_eot; //signal if we need to send the EOT frame
 
     //misc str storage
     char str50a[50];
     char str50b[50];
     char str50c[50];
     char m17dat[50];  //user supplied m17 data input string
-    char m17sms[800]; //user supplied sms text string
+    char m17sms[824]; //user supplied sms text string
 
     // tyt_ap value 1 means active
     int tyt_ap;

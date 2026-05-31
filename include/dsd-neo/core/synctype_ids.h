@@ -49,16 +49,18 @@ extern "C" {
 /* ============================================================================
  * M17
  * ============================================================================ */
-#define DSD_SYNC_M17_STR_POS      8  /**< +M17 stream frame (non-inverted) */
-#define DSD_SYNC_M17_STR_NEG      9  /**< -M17 stream frame (inverted) */
-#define DSD_SYNC_M17_LSF_POS      16 /**< +M17 link setup frame (non-inverted) */
-#define DSD_SYNC_M17_LSF_NEG      17 /**< -M17 link setup frame (inverted) */
-#define DSD_SYNC_M17_BRT_POS      76 /**< +M17 BERT frame (non-inverted) - reserved */
-#define DSD_SYNC_M17_BRT_NEG      77 /**< -M17 BERT frame (inverted) - reserved */
-#define DSD_SYNC_M17_PKT_POS      86 /**< +M17 packet frame (non-inverted) */
-#define DSD_SYNC_M17_PKT_NEG      87 /**< -M17 packet frame (inverted) */
-#define DSD_SYNC_M17_PRE_POS      98 /**< +M17 preamble (non-inverted) */
-#define DSD_SYNC_M17_PRE_NEG      99 /**< -M17 preamble (inverted) */
+#define DSD_SYNC_M17_STR_POS      8   /**< +M17 stream frame (non-inverted) */
+#define DSD_SYNC_M17_STR_NEG      9   /**< -M17 stream frame (inverted) */
+#define DSD_SYNC_M17_LSF_POS      16  /**< +M17 link setup frame (non-inverted) */
+#define DSD_SYNC_M17_LSF_NEG      17  /**< -M17 link setup frame (inverted) */
+#define DSD_SYNC_M17_BRT_POS      76  /**< +M17 BERT frame (non-inverted) */
+#define DSD_SYNC_M17_BRT_NEG      77  /**< -M17 BERT frame (inverted) */
+#define DSD_SYNC_M17_PKT_POS      86  /**< +M17 packet frame (non-inverted) */
+#define DSD_SYNC_M17_PKT_NEG      87  /**< -M17 packet frame (inverted) */
+#define DSD_SYNC_M17_PRE_POS      98  /**< +M17 preamble (non-inverted) */
+#define DSD_SYNC_M17_PRE_NEG      99  /**< -M17 preamble (inverted) */
+#define DSD_SYNC_M17_EOT_POS      100 /**< +M17 end-of-transmission marker (non-inverted) */
+#define DSD_SYNC_M17_EOT_NEG      101 /**< -M17 end-of-transmission marker (inverted) */
 
 /* ============================================================================
  * DMR (Base Station)
@@ -162,7 +164,7 @@ extern "C" {
     ((s) == DSD_SYNC_M17_STR_POS || (s) == DSD_SYNC_M17_STR_NEG || (s) == DSD_SYNC_M17_LSF_POS                         \
      || (s) == DSD_SYNC_M17_LSF_NEG || (s) == DSD_SYNC_M17_BRT_POS || (s) == DSD_SYNC_M17_BRT_NEG                      \
      || (s) == DSD_SYNC_M17_PKT_POS || (s) == DSD_SYNC_M17_PKT_NEG || (s) == DSD_SYNC_M17_PRE_POS                      \
-     || (s) == DSD_SYNC_M17_PRE_NEG)
+     || (s) == DSD_SYNC_M17_PRE_NEG || (s) == DSD_SYNC_M17_EOT_POS || (s) == DSD_SYNC_M17_EOT_NEG)
 
 /** Check if synctype is NXDN */
 #define DSD_SYNC_IS_NXDN(s)       ((s) == DSD_SYNC_NXDN_POS || (s) == DSD_SYNC_NXDN_NEG)
@@ -187,10 +189,11 @@ extern "C" {
     ((s) == DSD_SYNC_P25P1_NEG || (s) == DSD_SYNC_X2TDMA_VOICE_NEG || (s) == DSD_SYNC_X2TDMA_DATA_NEG                  \
      || (s) == DSD_SYNC_DSTAR_VOICE_NEG || (s) == DSD_SYNC_DSTAR_HD_NEG || (s) == DSD_SYNC_M17_STR_NEG                 \
      || (s) == DSD_SYNC_M17_LSF_NEG || (s) == DSD_SYNC_M17_BRT_NEG || (s) == DSD_SYNC_M17_PKT_NEG                      \
-     || (s) == DSD_SYNC_M17_PRE_NEG || (s) == DSD_SYNC_DMR_BS_VOICE_NEG || (s) == DSD_SYNC_DMR_BS_DATA_NEG             \
-     || (s) == DSD_SYNC_PROVOICE_NEG || (s) == DSD_SYNC_EDACS_NEG || (s) == DSD_SYNC_NXDN_NEG                          \
-     || (s) == DSD_SYNC_YSF_NEG || (s) == DSD_SYNC_P25P2_NEG || (s) == DSD_SYNC_DPMR_FS1_NEG                           \
-     || (s) == DSD_SYNC_DPMR_FS2_NEG || (s) == DSD_SYNC_DPMR_FS3_NEG || (s) == DSD_SYNC_DPMR_FS4_NEG)
+     || (s) == DSD_SYNC_M17_PRE_NEG || (s) == DSD_SYNC_M17_EOT_NEG || (s) == DSD_SYNC_DMR_BS_VOICE_NEG                 \
+     || (s) == DSD_SYNC_DMR_BS_DATA_NEG || (s) == DSD_SYNC_PROVOICE_NEG || (s) == DSD_SYNC_EDACS_NEG                   \
+     || (s) == DSD_SYNC_NXDN_NEG || (s) == DSD_SYNC_YSF_NEG || (s) == DSD_SYNC_P25P2_NEG                               \
+     || (s) == DSD_SYNC_DPMR_FS1_NEG || (s) == DSD_SYNC_DPMR_FS2_NEG || (s) == DSD_SYNC_DPMR_FS3_NEG                   \
+     || (s) == DSD_SYNC_DPMR_FS4_NEG)
 
 /* ============================================================================
  * Safe String Mapping Function
@@ -204,7 +207,7 @@ extern "C" {
  *
  * This function safely maps synctype values to descriptive strings, handling
  * both the standard range (0-43) covered by the legacy SyncTypes[] array and
- * extended M17 types (76-77, 86-87, 98-99).
+ * extended M17 types (76-77, 86-87, 98-101).
  *
  * @param synctype The sync type value to convert.
  * @return A constant string describing the sync type, or "UNKNOWN" if the

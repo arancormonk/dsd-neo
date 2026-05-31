@@ -7,6 +7,7 @@ target_sources(
         crypt-aes.c
         crypt-csi72.c
         crypt-des.c
+        crypt-ecdsa.c
         crypt-etc.c
         crypt-kirisun.c
         crypt-pc4.c
@@ -22,7 +23,7 @@ target_include_directories(
     PRIVATE ${_PUBLIC_INCLUDES}
 )
 
-target_link_libraries(dsd-neo_crypto PRIVATE dsd-neo_warnings)
+target_link_libraries(dsd-neo_crypto PRIVATE dsd-neo_warnings OpenSSL::Crypto)
 
 install(
     TARGETS dsd-neo_crypto

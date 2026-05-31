@@ -24,6 +24,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
+#include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -1843,9 +1844,12 @@ ui_render_call_info_m17(dsd_state* state) {
         printw("| ");
 
         printw("DST: ");
-        if (state->m17_dst == 0xFFFFFFFFFFFF) {
+        const uint8_t dst_kind = m17_address_classify(state->m17_dst);
+        if (dst_kind == M17_ADDRESS_BROADCAST_KIND) {
             printw("BROADCAST ");
-        } else if (state->m17_dst >= 0xEE6B28000000) {
+        } else if (dst_kind == M17_ADDRESS_EXTENDED) {
+            printw("EXTENDED (%012llx) ", state->m17_dst);
+        } else if (dst_kind == M17_ADDRESS_RESERVED) {
             printw("RESERVED (%012llx) ", state->m17_dst);
         } else {
             printw("%s", state->m17_dst_str);
@@ -1855,7 +1859,12 @@ ui_render_call_info_m17(dsd_state* state) {
         printw("| ");
 
         printw("SRC: ");
-        if (state->m17_src >= 0xEE6B28000000) {
+        const uint8_t src_kind = m17_address_classify(state->m17_src);
+        if (src_kind == M17_ADDRESS_BROADCAST_KIND) {
+            printw("UNKNOWN FFFFFFFFFFFF");
+        } else if (src_kind == M17_ADDRESS_EXTENDED) {
+            printw("EXTENDED (%012llx)", state->m17_src);
+        } else if (src_kind == M17_ADDRESS_RESERVED) {
             printw("RESERVED (%012llx)", state->m17_src);
         } else {
             printw("%s", state->m17_src_str);
