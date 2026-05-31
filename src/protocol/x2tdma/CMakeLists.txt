@@ -1,6 +1,9 @@
 add_library(dsd-neo_proto_x2tdma)
 
-target_sources(dsd-neo_proto_x2tdma PRIVATE x2tdma_data.c x2tdma_voice.c)
+target_sources(
+    dsd-neo_proto_x2tdma
+    PRIVATE x2tdma_data.c x2tdma_frame.c x2tdma_voice.c
+)
 
 target_include_directories(
     dsd-neo_proto_x2tdma

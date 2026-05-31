@@ -1,6 +1,6 @@
 add_library(dsd-neo_proto_provoice)
 
-target_sources(dsd-neo_proto_provoice PRIVATE provoice.c)
+target_sources(dsd-neo_proto_provoice PRIVATE provoice.c provoice_frame.c)
 
 target_include_directories(
     dsd-neo_proto_provoice

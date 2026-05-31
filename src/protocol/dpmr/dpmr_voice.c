@@ -37,11 +37,13 @@
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
-static void ScrambledPMRBit(uint32_t* LfsrValue, const uint8_t* BufferIn, uint8_t* BufferOut,
-                            uint32_t NbOfBitToScramble);
 static void DeInterleave6x12DPmrBit(const uint8_t* BufferIn, uint8_t* BufferOut);
 static uint8_t CRC7BitdPMR(const uint8_t* BufferIn, uint32_t BitLength);
 static void ConvertAirInterfaceID(uint32_t AI_ID, char ID[8]);
+#ifdef DSD_NEO_TEST_HOOKS
+void dsd_test_dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state,
+                                     char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]);
+#endif
 
 typedef struct {
     uint8_t CCH[NB_OF_DPMR_VOICE_FRAME_TO_DECODE][72];
@@ -143,7 +145,7 @@ static void
 dpmr_decode_cch_frames(dsd_state* state, dpmr_voice_ctx_t* ctx) {
     for (uint32_t i = 0; i < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; i++) {
         uint32_t scrambler_lfsr = 0x1FF;
-        ScrambledPMRBit(&scrambler_lfsr, ctx->CCH[i], ctx->CCHDescrambled[i], 72);
+        dpmr_scrambled_pmr_bits(&scrambler_lfsr, ctx->CCH[i], ctx->CCHDescrambled[i], 72);
         DeInterleave6x12DPmrBit(ctx->CCHDescrambled[i], ctx->CCHDeInterleaved[i]);
 
         bool correctable = true;
@@ -349,6 +351,14 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_test_dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state,
+                                char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]) {
+    dpmr_play_voice_frames(opts, state, ambe_fr);
+}
+#endif
+
 #ifdef dPMR_PRINT_DEBUG_INFO
 static void
 dpmr_print_debug_cch(const dpmr_voice_ctx_t* ctx, const dsd_state* state) {
@@ -401,52 +411,6 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_print_debug_cch(&ctx, state);
 #endif
 } //End processdPMRvoice()
-
-/* Scrambler used for dPMR transmission (different of the
- * voice encryption scrambler), see ETSI TS 102 658 chapter
- * 7.3 for the polynomial description.
- * It is a X^9 + X^5 + 1 polynomial. */
-
-static void
-ScrambledPMRBit(uint32_t* LfsrValue, const uint8_t* BufferIn, uint8_t* BufferOut, uint32_t NbOfBitToScramble) {
-    uint8_t S[9] = {0};
-    uint32_t i;
-    uint32_t LFSRValue;
-
-    LFSRValue = *LfsrValue;
-
-    /* Load the initial LFSR value */
-    for (i = 0; i < 9; i++) {
-        S[i] = LFSRValue & 1;
-        LFSRValue >>= 1;
-    }
-
-    /* There are 72 bit to descramble for voice and 288 bit for data */
-    for (i = 0; i < NbOfBitToScramble; i++) {
-        BufferOut[i] = (BufferIn[i] ^ S[0]) & 0x01;
-
-        /* Shift registers */
-        uint8_t Temp = S[4] ^ S[0];
-        S[0] = S[1];
-        S[1] = S[2];
-        S[2] = S[3];
-        S[3] = S[4];
-        S[4] = S[5];
-        S[5] = S[6];
-        S[6] = S[7];
-        S[7] = S[8];
-        S[8] = Temp;
-    }
-
-    /* Save the final LFSR value */
-    LFSRValue = 0;
-    for (i = 9; i > 0; i--) {
-        LFSRValue <<= 1;
-        LFSRValue |= S[i - 1] & 1;
-    }
-
-    *LfsrValue = LFSRValue;
-} /* End ScrambleDPmrBit() */
 
 /* Scrambler used for dPMR scrambling / descrambling,
  * see ETSI TS 102 658 chapter 7.4 for the

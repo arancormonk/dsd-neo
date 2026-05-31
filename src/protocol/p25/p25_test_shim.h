@@ -38,6 +38,7 @@ int p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, cons
                                      const p25_test_mbt_outputs* outputs);
 void p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len);
 int p25_test_p1_ldu_gate(int algid, unsigned long long R, int aes_loaded);
+int p25_test_p1_ldu_lockout_required(int algid, unsigned long long R, int aes_loaded);
 int p25_test_p2_gate(int algid, unsigned long long key, int aes_loaded);
 int p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int chan16, long map_override,
                            long* out_freq);
@@ -46,6 +47,9 @@ void p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac
                                          int iden, int type, int tdma, long base, int spac);
 void p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, int p25_trunk, long p25_cc_freq,
                                       const p25_test_iden_config* iden_cfg, long* out_vc0, int* out_tuned);
+void p25_test_invoke_mac_vpdu_channel_cache(const unsigned char* mac_bytes, int mac_len,
+                                            const p25_test_iden_config* iden_cfg, int channel_a, int channel_b,
+                                            long* out_freq_a, long* out_freq_b);
 int p25_test_p2_early_enc_handle(dsd_opts* opts, dsd_state* state, int slot);
 
 #ifdef __cplusplus

@@ -51,6 +51,32 @@ p25p2_mac_guess_len_b(int type, const unsigned long long mac[24], int capacity) 
 }
 
 static int
+p25p2_mac_payload_len_override(const unsigned long long mac[24], int opcode_pos) {
+    if (opcode_pos < 0 || opcode_pos + 2 >= 24) {
+        return -1;
+    }
+
+    uint8_t opcode = (uint8_t)p25p2_mac_octet(mac, opcode_pos);
+    uint8_t mfid = (uint8_t)p25p2_mac_octet(mac, opcode_pos + 1);
+    if (mfid != 0x90u) {
+        return -1;
+    }
+
+    if (opcode == 0x81u) {
+        return (int)p25p2_mac_octet(mac, opcode_pos + 2);
+    }
+    if (opcode == 0x8Fu) {
+        int len = (int)p25p2_mac_octet(mac, opcode_pos + 2);
+        return p25p2_clamp_int(len, 0, 12);
+    }
+    if (opcode == 0xBFu) {
+        return 3;
+    }
+
+    return -1;
+}
+
+static int
 p25p2_mac_resolve_len_b(int type, const unsigned long long mac[24], int capacity, int len_b) {
     if (len_b != 0 && len_b <= capacity) {
         return len_b;
@@ -76,12 +102,25 @@ p25p2_mac_has_second_message(int type, int len_b) {
 }
 
 static int
-p25p2_mac_resolve_len_c(int type, const unsigned long long mac[24], int len_a, int len_b, int capacity) {
+p25p2_mac_resolve_len_c(int type, const unsigned long long mac[24], int len_b, int capacity) {
     if (!p25p2_mac_has_second_message(type, len_b)) {
         return 0;
     }
 
-    int len_c = p25p2_mac_len_for((uint8_t)mac[3 + len_a], (uint8_t)mac[1 + len_b]);
+    int next_opcode_pos = 1 + len_b;
+    if (next_opcode_pos >= 24) {
+        return 0;
+    }
+
+    int len_c = p25p2_mac_payload_len_override(mac, next_opcode_pos);
+    if (len_c >= 0) {
+        return len_c;
+    }
+    if (next_opcode_pos + 1 >= 24) {
+        return 0;
+    }
+
+    len_c = p25p2_mac_len_for((uint8_t)mac[next_opcode_pos + 1], (uint8_t)mac[next_opcode_pos]);
     if (len_c != 0) {
         return len_c;
     }
@@ -105,10 +144,13 @@ p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_res
     out->opcode = (uint8_t)mac[1];
 
     int len_a = 0;
-    int len_b = p25p2_mac_len_for(out->mfid, out->opcode);
+    int payload_len = p25p2_mac_payload_len_override(mac, 1);
+    int len_b = (payload_len >= 0) ? payload_len : p25p2_mac_len_for(out->mfid, out->opcode);
     const int capacity = p25p2_mac_capacity(type);
-    len_b = p25p2_mac_resolve_len_b(type, mac, capacity, len_b);
-    int len_c = p25p2_mac_resolve_len_c(type, mac, len_a, len_b, capacity);
+    if (payload_len < 0) {
+        len_b = p25p2_mac_resolve_len_b(type, mac, capacity, len_b);
+    }
+    int len_c = p25p2_mac_resolve_len_c(type, mac, len_b, capacity);
 
     out->len_a = len_a;
     out->len_b = len_b;

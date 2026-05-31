@@ -21,7 +21,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
-#include <dsd-neo/core/bp.h>
 #include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/file_io.h>
@@ -35,9 +34,6 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
-#include <dsd-neo/crypto/pc4.h>
-#include <dsd-neo/crypto/pc5.h>
-#include <dsd-neo/crypto/rc2.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -326,6 +322,33 @@ process_ambe2450_params(const mbe_process_params* params, const char ambe_d[49],
                                          params->prev_mp_enhanced, have_result ? result : NULL);
 }
 
+static int
+keyring_rkey_index_valid(const dsd_state* state, int index) {
+    return state != NULL && index >= 0 && (size_t)index < (sizeof(state->rkey_array) / sizeof(state->rkey_array[0]));
+}
+
+static uint8_t
+keyring_aes_segment_count(const dsd_state* state, int key_id) {
+    static const int offsets[4] = {0x000, 0x101, 0x201, 0x301};
+    uint8_t present = 0U;
+    uint8_t nonzero = 0U;
+
+    for (size_t i = 0; i < 4U; i++) {
+        const int index = key_id + offsets[i];
+        if (!keyring_rkey_index_valid(state, index)) {
+            continue;
+        }
+        if (state->rkey_array_loaded[index] != 0U) {
+            present++;
+        }
+        if (state->rkey_array[index] != 0ULL) {
+            nonzero++;
+        }
+    }
+
+    return present != 0U ? present : nonzero;
+}
+
 void
 keyring(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
@@ -344,6 +367,7 @@ keyring(dsd_opts* opts, dsd_state* state) {
         state->A2[0] = state->rkey_array[state->payload_keyid + 0x101];
         state->A3[0] = state->rkey_array[state->payload_keyid + 0x201];
         state->A4[0] = state->rkey_array[state->payload_keyid + 0x301];
+        state->aes_key_segments[0] = keyring_aes_segment_count(state, state->payload_keyid);
 
         //check to see if there is a value loaded or not
         if (state->A1[0] == 0 && state->A2[0] == 0 && state->A3[0] == 0 && state->A4[0] == 0) {
@@ -358,6 +382,7 @@ keyring(dsd_opts* opts, dsd_state* state) {
         state->A2[1] = state->rkey_array[state->payload_keyidR + 0x101];
         state->A3[1] = state->rkey_array[state->payload_keyidR + 0x201];
         state->A4[1] = state->rkey_array[state->payload_keyidR + 0x301];
+        state->aes_key_segments[1] = keyring_aes_segment_count(state, state->payload_keyidR);
 
         //check to see if there is a value loaded or not
         if (state->A1[1] == 0 && state->A2[1] == 0 && state->A3[1] == 0 && state->A4[1] == 0) {
@@ -421,15 +446,10 @@ play_imbe_file_frame(dsd_opts* opts, dsd_state* state, char imbe_d[88], char fil
 
 static void
 decrypt_ambe_with_pr_key(const dsd_state* state, char ambe_d[49]) {
-    if (state->K == 0) {
+    if (state == NULL) {
         return;
     }
-    unsigned long long int k = BPK[state->K];
-    k = (((k & 0xFF0F) << 32) + (k << 16) + k);
-    for (short int j = 0; j < 48; j++) {
-        int x = (((k << j) & 0x800000000000) >> 47);
-        ambe_d[j] ^= x;
-    }
+    (void)dmr_basic_privacy_apply_frame49(state->K, ambe_d);
 }
 
 static void
@@ -473,6 +493,8 @@ mbe_prepare_frame_state(dsd_opts* opts, dsd_state* state, mbe_frame_ctx_t* frame
     (void)imbe7100_soft_fr;
     frame_ctx->vertex_ks_applied_l = 0;
     frame_ctx->vertex_ks_applied_r = 0;
+
+    (void)dsd_dmr_apply_forced_algid(state);
 
     //these conditions should ensure no clashing with the BP/HBP/Scrambler key loading machanisms already coded in
     if (state->currentslot == 0 && state->payload_algid != 0 && state->payload_algid != 0x80 && state->keyloader == 1) {
@@ -777,75 +799,28 @@ mbe_apply_nxdn_cipher23(dsd_state* state, char ambe_d[49]) {
 
 static void
 mbe_apply_vendor_retevis(dsd_state* state, char ambe_d[49]) {
-    if (state->retevis_ap == 1) {
-        uint8_t frame1_cipher[49];
-        for (int i = 0; i < 49; i++) {
-            frame1_cipher[i] = ambe_d[i];
-        }
-        decrypt_rc2((CryptoContext*)state->rc2_context, frame1_cipher);
-        DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] = frame1_cipher[i];
-        }
-    }
+    (void)retevis_rc2_apply_frame49(state, ambe_d);
 }
 
 static void
 mbe_apply_vendor_tyt_ap(const dsd_state* state, char ambe_d[49]) {
-    if (state->tyt_ap == 1) {
-        short frame1_cipher[49];
-        for (int i = 0; i < 49; i++) {
-            frame1_cipher[i] = (short)(unsigned char)ambe_d[i];
-        }
-        decrypt_frame_49(frame1_cipher);
-        DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] = g_pc4_context.bits[i];
-        }
-    }
+    (void)tyt_ap_pc4_apply_frame49(state, ambe_d);
 }
 
 static void
 mbe_apply_vendor_baofeng(const dsd_state* state, char ambe_d[49]) {
-    if (state->baofeng_ap == 1) {
-        short frame1_cipher[49];
-        for (int i = 0; i < 49; i++) {
-            frame1_cipher[i] = (short)(unsigned char)ambe_d[i];
-        }
-        decrypt_frame_49_pc5(frame1_cipher);
-        DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] = (char)ctxpc5.bits[i];
-        }
-    }
+    (void)baofeng_pc5_apply_frame49(state, ambe_d);
 }
 
 static void
 mbe_apply_vendor_tyt_ep(const dsd_state* state, char ambe_d[49]) {
-    if (state->tyt_ep == 1) {
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] ^= (uint8_t)(g_pc4_context.bits[i] & 1);
-        }
-    }
+    (void)tyt_ep_aes_apply_frame49(state, ambe_d);
 }
 
 static void
 mbe_apply_vendor_static_scramblers(dsd_state* state, char ambe_d[49]) {
-    if (state->ken_sc == 1) {
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] ^= (uint8_t)(state->static_ks_bits[state->currentslot]
-                                                        [(state->static_ks_counter[state->currentslot]++) % 882]
-                                   & 1);
-        }
-    }
-
-    if (state->any_bp == 1) {
-        for (int i = 0; i < 49; i++) {
-            ambe_d[i] ^= (uint8_t)(state->static_ks_bits[state->currentslot]
-                                                        [(state->static_ks_counter[state->currentslot]++) % 16]
-                                   & 1);
-        }
-    }
+    (void)ken_dmr_scrambler_apply_frame49(state, state->currentslot, ambe_d);
+    (void)anytone_bp_apply_frame49(state, state->currentslot, ambe_d);
 }
 
 static void
@@ -871,16 +846,6 @@ mbe_hash_tg_for_key(uint32_t tg) {
     }
     hash = ComputeCrcCCITT16d(hash_bits, 24);
     return hash & 0xFFFF;
-}
-
-static void
-mbe_apply_bpk_to_ambe(uint8_t key_index, char ambe_d[49]) {
-    unsigned long long int k = BPK[key_index];
-    k = (((k & 0xFF0F) << 32) + (k << 16) + k);
-    for (short int j = 0; j < 48; j++) {
-        int x = (((k << j) & 0x800000000000) >> 47);
-        ambe_d[j] ^= x;
-    }
 }
 
 static void
@@ -1001,7 +966,7 @@ static void
 mbeslot_left_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     if ((state->K > 0 && state->dmr_so & 0x40 && state->payload_keyid == 0 && state->dmr_fid == 0x10)
         || (state->K > 0 && state->M == 1)) {
-        mbe_apply_bpk_to_ambe((uint8_t)state->K, frame_ctx->ambe_d);
+        (void)dmr_basic_privacy_apply_frame49(state->K, frame_ctx->ambe_d);
     }
 
     if ((state->K1 > 0 && state->dmr_so & 0x40 && state->payload_keyid == 0 && state->dmr_fid == 0x68)
@@ -1014,7 +979,7 @@ static void
 mbeslot_right_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     if ((state->K > 0 && state->dmr_soR & 0x40 && state->payload_keyidR == 0 && state->dmr_fidR == 0x10)
         || (state->K > 0 && state->M == 1)) {
-        mbe_apply_bpk_to_ambe((uint8_t)state->K, frame_ctx->ambe_d);
+        (void)dmr_basic_privacy_apply_frame49(state->K, frame_ctx->ambe_d);
     }
 
     if ((state->K1 > 0 && state->dmr_soR & 0x40 && state->payload_keyidR == 0 && state->dmr_fidR == 0x68)
@@ -1138,7 +1103,7 @@ mbeslot_left_aes_enabled(const dsd_state* state) {
         case 0x36:
         case 0x37:
         case 0x84:
-        case 0x89: return state->aes_key_loaded[0] == 1;
+        case 0x89: return dsd_dmr_voice_slot_can_decrypt(state, 0, state->payload_algid, state->R);
         default: return 0;
     }
 }
@@ -1152,7 +1117,7 @@ mbeslot_right_aes_enabled(const dsd_state* state) {
         case 0x36:
         case 0x37:
         case 0x84:
-        case 0x89: return state->aes_key_loaded[1] == 1;
+        case 0x89: return dsd_dmr_voice_slot_can_decrypt(state, 1, state->payload_algidR, state->RR);
         default: return 0;
     }
 }
@@ -1276,30 +1241,12 @@ mbeslot_right_init_keystream(dsd_opts* opts, dsd_state* state, const uint8_t aes
 
 static void
 mbeslot_left_apply_keystream_bits(dsd_state* state, char ambe_d[49]) {
-    int z = 0;
-    for (int i = 0; i < 6; i++) {
-        for (int j = 0; j < 8; j++) {
-            ambe_d[z++] ^= state->ks_bitstreamL[state->bit_counterL++];
-        }
-    }
-    ambe_d[48] ^= state->ks_bitstreamL[state->bit_counterL++];
-    if (state->payload_algid != 0x02) {
-        state->bit_counterL += 7;
-    }
+    (void)dmr_voice_stream_apply_frame49(state->ks_bitstreamL, &state->bit_counterL, state->payload_algid, ambe_d);
 }
 
 static void
 mbeslot_right_apply_keystream_bits(dsd_state* state, char ambe_d[49]) {
-    int z = 0;
-    for (int i = 0; i < 6; i++) {
-        for (int j = 0; j < 8; j++) {
-            ambe_d[z++] ^= state->ks_bitstreamR[state->bit_counterR++];
-        }
-    }
-    ambe_d[48] ^= state->ks_bitstreamR[state->bit_counterR++];
-    if (state->payload_algidR != 0x02) {
-        state->bit_counterR += 7;
-    }
+    (void)dmr_voice_stream_apply_frame49(state->ks_bitstreamR, &state->bit_counterR, state->payload_algidR, ambe_d);
 }
 
 static void
@@ -1365,6 +1312,11 @@ mbeslot_left_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     rckey[7] = ((state->payload_mi & 0xFF00) >> 8);
     rckey[8] = ((state->payload_mi & 0xFF) >> 0);
 
+    if (dmr_ambe49_should_skip_voice_stream(frame_ctx->ambe_d) == 1) {
+        state->dropL += 7;
+        return;
+    }
+
     pack_ambe(frame_ctx->ambe_d, cipher, 49);
     if (state->errs < 3) {
         rc4_voice_decrypt(state->dropL, 9, 7, rckey, cipher, plain);
@@ -1396,6 +1348,11 @@ mbeslot_right_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     rckey[6] = ((state->payload_miR & 0xFF0000) >> 16);
     rckey[7] = ((state->payload_miR & 0xFF00) >> 8);
     rckey[8] = ((state->payload_miR & 0xFF) >> 0);
+
+    if (dmr_ambe49_should_skip_voice_stream(frame_ctx->ambe_d) == 1) {
+        state->dropR += 7;
+        return;
+    }
 
     pack_ambe(frame_ctx->ambe_d, cipher, 49);
     if (state->errsR < 3) {
@@ -1577,13 +1534,13 @@ mbe_post_apply_forced_clear_gate(const dsd_state* state, int16_t* enc) {
 static void
 mbe_post_left_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     if (state->payload_algid == 0) {
-        if (state->R != 0 || state->K != 0 || state->K1 != 0) {
+        if (dsd_dmr_missing_alg_key_can_decrypt(state, 0)) {
             state->dmr_encL = 0;
         }
         return;
     }
 
-    if (dsd_dmr_voice_alg_can_decrypt(state->payload_algid, state->R, state->aes_key_loaded[0])
+    if (dsd_dmr_voice_slot_can_decrypt(state, 0, state->payload_algid, state->R)
         || (state->payload_algid == 0x07 && frame_ctx->vertex_ks_applied_l == 1)) {
         state->dmr_encL = 0;
     }
@@ -1613,13 +1570,13 @@ mbe_post_left_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fra
 static void
 mbe_post_right_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     if (state->payload_algidR == 0) {
-        if (state->RR != 0 || state->K != 0 || state->K1 != 0) {
+        if (dsd_dmr_missing_alg_key_can_decrypt(state, 1)) {
             state->dmr_encR = 0;
         }
         return;
     }
 
-    if (dsd_dmr_voice_alg_can_decrypt(state->payload_algidR, state->RR, state->aes_key_loaded[1])
+    if (dsd_dmr_voice_slot_can_decrypt(state, 1, state->payload_algidR, state->RR)
         || (state->payload_algidR == 0x07 && frame_ctx->vertex_ks_applied_r == 1)) {
         state->dmr_encR = 0;
     }

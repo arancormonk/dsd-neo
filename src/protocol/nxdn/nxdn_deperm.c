@@ -38,6 +38,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -51,12 +52,6 @@ uint16_t crc15(const uint8_t buf[], int len);
 uint16_t crc16cac(const uint8_t buf[], int len);
 uint8_t crc7_scch(const uint8_t bits[], int len);
 uint32_t nxdn_message_crc32(const uint8_t* input, int len);
-
-static const uint8_t scramble_t[182] = { //values are the position values we need to invert in the descramble
-    2,   5,   6,   7,   10,  12,  14,  16,  17,  22,  23,  25,  26,  27,  28,  30,  33,  34,  36,  37,  38,  41,  45,
-    47,  52,  54,  56,  57,  59,  62,  63,  64,  65,  66,  67,  69,  70,  73,  76,  79,  81,  82,  84,  85,  86,  87,
-    88,  89,  92,  95,  96,  98,  100, 103, 104, 107, 108, 116, 117, 121, 122, 125, 127, 131, 132, 134, 137, 139, 140,
-    141, 142, 143, 144, 145, 147, 151, 153, 154, 158, 159, 160, 162, 164, 165, 168, 170, 171, 174, 175, 176, 177, 181};
 
 static int
 nxdn_dcr_is_sb0_message_type(uint8_t message_type) {
@@ -278,22 +273,22 @@ static void
 nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
                                  uint8_t crc, uint8_t check) {
     nxdn_print_last_ran(state);
-    state->nxdn_part_of_frame = 0;
 
     uint8_t nsf_sacch[26];
     DSD_MEMSET(nsf_sacch, 0, sizeof(nsf_sacch));
     DSD_MEMCPY(nsf_sacch, trellis_buf + 8, 24U);
 
-    if (crc == check) {
+    const int sacch_crc_ok = (crc == check);
+    if (sacch_crc_ok) {
         state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
-    }
-
-    DSD_FPRINTF(stderr, "PF 1/1");
-    nxdn_reset_payload_seed_if_forced(state);
-
-    if (crc == check) {
+        state->nxdn_part_of_frame = 3;
+        DSD_FPRINTF(stderr, "PF 1/1");
+        nxdn_reset_payload_seed_if_forced(state);
         NXDN_Elements_Content_decode(opts, state, 1, nsf_sacch, sizeof(nsf_sacch));
     } else {
+        state->nxdn_part_of_frame = 0;
+        DSD_FPRINTF(stderr, "PF X/1");
+        nxdn_reset_payload_seed_if_forced(state);
         DSD_FPRINTF(stderr, " IDLE");
     }
 
@@ -306,10 +301,20 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
                              uint8_t crc, uint8_t check) {
     const uint8_t sf = (trellis_buf[0] << 1) | trellis_buf[1];
     const int part_of_frame = nxdn_sacch_part_of_frame(sf);
+    const int valid_sequence =
+        nxdn_sacch_segment_sequence_is_valid((uint8_t)(crc == check), state->nxdn_part_of_frame, part_of_frame);
+
+    if (!valid_sequence) {
+        nxdn_reset_sacch_segments(state);
+    }
 
     state->nxdn_part_of_frame = part_of_frame;
     nxdn_print_colored_last_ran(state);
-    DSD_FPRINTF(stderr, "PF %d/4", part_of_frame + 1);
+    if (valid_sequence) {
+        DSD_FPRINTF(stderr, "PF %d/4", part_of_frame + 1);
+    } else {
+        DSD_FPRINTF(stderr, "PF X/4");
+    }
     nxdn_prepare_sacch_payload_seed(state, part_of_frame);
 
     if (crc == check) {
@@ -344,6 +349,10 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
 static void
 nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint8_t crc,
                   uint8_t check) {
+    if (crc != check) {
+        nxdn_reset_sacch_segments(state);
+    }
+
     if (state->nxdn_sacch_non_superframe == 1) {
         nxdn_handle_sacch_non_superframe(opts, state, trellis_buf, m_data, crc, check);
     } else if (state->nxdn_sacch_non_superframe == 0) {
@@ -504,6 +513,18 @@ nxdn_print_facch2_udch_payload(const dsd_opts* opts, const uint8_t* m_data, uint
 static void
 nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
                         uint16_t crc, uint16_t check, uint8_t type) {
+    const uint8_t sf = (trellis_buf[0] << 1) | trellis_buf[1];
+    const int ran = nxdn_ran_from_trellis(trellis_buf);
+
+    if (crc == check) {
+        state->nxdn_last_ran = (unsigned int)ran;
+        nxdn_print_last_ran(state);
+        state->nxdn_part_of_frame = 3 - sf;
+    } else {
+        DSD_FPRINTF(stderr, "        ");
+        state->nxdn_part_of_frame = 0;
+    }
+
     DSD_FPRINTF(stderr, "%s", KYEL);
     nxdn_print_facch2_udch_name(type);
     DSD_FPRINTF(stderr, "%s", KNRM);
@@ -861,14 +882,14 @@ nxdn_decode_facch3_udch2_block_soft(const uint8_t* bits, const uint8_t* reliab, 
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 92);
     nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
 
-    message->crc[block] = crc12f(trellis_buf, 84);
-    message->check[block] = nxdn_bits_to_u16(trellis_buf + 84, 12);
+    message->crc[block] = nxdn_facch_crc12_payload_from_trellis(trellis_buf);
+    message->check[block] = nxdn_facch_crc12_check_from_trellis(trellis_buf);
     if (message->crc[block] != message->check[block]) {
         message->crc[block] = 1;
         message->check[block] = 0;
         nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
-        message->crc[block] = crc12f(trellis_buf, 84);
-        message->check[block] = nxdn_bits_to_u16(trellis_buf + 84, 12);
+        message->crc[block] = nxdn_facch_crc12_payload_from_trellis(trellis_buf);
+        message->check[block] = nxdn_facch_crc12_check_from_trellis(trellis_buf);
     }
     nxdn_store_facch3_udch2_block(message, block, trellis_buf, m_data);
 }
@@ -974,10 +995,10 @@ struct nxdn_message_label {
     const char* label;
 };
 
-static const char*
+const char*
 nxdn_message_type_label(uint8_t message_type) {
     static const struct nxdn_message_label labels[] = {
-        {0x10, " IDLE"},
+        {0x00, " CALL_RESP"},
         {0x01, " VCALL"},
         {0x02, " VCALL_REC_REQ"},
         {0x03, " VCALL_IV"},
@@ -992,6 +1013,8 @@ nxdn_message_type_label(uint8_t message_type) {
         {0x0C, " DCALL_ACK"},
         {0x0D, " DCALL_ASSGN_DUP"},
         {0x0E, " DCALL_ASSGN"},
+        {0x0F, " HEAD_DLY"},
+        {0x10, " IDLE"},
         {0x11, " DISC"},
         {0x17, " DST_ID_INFO"},
         {0x18, " SITE_INFO"},
@@ -1001,17 +1024,35 @@ nxdn_message_type_label(uint8_t message_type) {
         {0x1C, " FAIL_STAT_INFO"},
         {0x20, " REG_RESP"},
         {0x22, " REG_C_RESP"},
+        {0x23, " REG_COMM"},
         {0x24, " GRP_REG_RESP"},
+        {0x28, " AUTH_INQ_REQ"},
+        {0x29, " AUTH_INQ_RESP"},
+        {0x2A, " AUTH_INQ_REQ2"},
+        {0x2B, " AUTH_INQ_RESP2"},
+        {0x30, " STAT_INQ_REQ"},
+        {0x31, " STAT_INQ_RESP"},
         {0x32, " STAT_REQ"},
         {0x33, " STAT_RESP"},
+        {0x34, " REM_CON_REQ"},
+        {0x35, " REM_CON_RESP"},
+        {0x36, " REM_CON_E_REQ"},
+        {0x37, " REM_CON_E_RESP"},
         {0x38, " SDCALL_REQ_HEADER"},
         {0x39, " SDCALL_REQ_DATA"},
         {0x3A, " SDCALL_IV"},
         {0x3B, " SDCALL_RESP"},
-        {0x3F, " ALIAS"},
-        {0xE1, " VCALL (ARIB)"},
-        {0xE7, " ALIAS_ARIB"},
-        {0xE8, " TX_REL (ARIB)"},
+        {0x3F, ""},
+        {0x81, ""},
+        {0x88, ""},
+        {0x90, ""},
+        {0xE1, " VCALL_STD_B54"},
+        {0xE2, " GPS_HEADER"},
+        {0xE3, " GPS_DATA"},
+        {0xE4, " BEARER_HEADER"},
+        {0xE5, " BEARER_DATA"},
+        {0xE7, " ALIAS_STD_B54"},
+        {0xE8, " TX_REL_STD_B54"},
     };
 
     for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++) {
@@ -1032,23 +1073,13 @@ nxdn_message_type_resets_gain(uint8_t message_type) {
     return message_type == 0x07U || nxdn_message_type_resets_call(message_type);
 }
 
-//decoding functions here
-void
-nxdn_descramble(uint8_t dibits[], int len) {
-    for (int i = 0; i < len; i++) {
-        if (scramble_t[i] >= len) {
-            break;
-        }
-        dibits[scramble_t[i]] ^= 0x2; // invert sign of scrambled dibits
-    }
-}
-
 /*
  * Soft-decision FACCH depermute/decode path.
  * Uses per-bit reliability values to weight the convolution decoder.
  */
 void
-nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144]) {
+nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144], uint8_t frame) {
+    static uint8_t facch1_storage[12];
     uint8_t deperm[144];
     uint8_t deperm_rel[144];
     uint8_t depunc[192];
@@ -1074,18 +1105,24 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 92);
     nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
 
-    crc = crc12f(trellis_buf, 84);
-    check = nxdn_bits_to_u16(trellis_buf + 84, 12);
+    crc = nxdn_facch_crc12_payload_from_trellis(trellis_buf);
+    check = nxdn_facch_crc12_check_from_trellis(trellis_buf);
 
     // Fallback to hard-decision if soft decode fails
     if (crc != check) {
         nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
-        crc = crc12f(trellis_buf, 84);
-        check = nxdn_bits_to_u16(trellis_buf + 84, 12);
+        crc = nxdn_facch_crc12_payload_from_trellis(trellis_buf);
+        check = nxdn_facch_crc12_check_from_trellis(trellis_buf);
     }
 
-    if (crc == check) {
-        state->data_header_format[0] = 3;
+    const int duplicate = frame == 2U && memcmp(facch1_storage, m_data, sizeof(facch1_storage)) == 0;
+    DSD_MEMSET(facch1_storage, 0, sizeof(facch1_storage));
+    if (frame == 1U) {
+        DSD_MEMCPY(facch1_storage, m_data, sizeof(facch1_storage));
+    }
+
+    state->data_header_format[0] = 3;
+    if (crc == check && !duplicate) {
         NXDN_Elements_Content_decode(opts, state, 1, trellis_buf, sizeof(trellis_buf));
     }
 
@@ -1155,7 +1192,9 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     DSD_FPRINTF(stderr, "%s", KYEL);
     const char* label = nxdn_message_type_label(MessageType);
     if (label != NULL) {
-        DSD_FPRINTF(stderr, "%s", label);
+        if (label[0] != '\0') {
+            DSD_FPRINTF(stderr, "%s", label);
+        }
     } else {
         DSD_FPRINTF(stderr, " Unknown Message Type: %02X;", MessageType);
     }
@@ -1183,24 +1222,6 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     }
 }
 
-//voice descrambler
-void
-LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
-    int lfsr;
-    int pN[49] = {0};
-
-    lfsr = state->payload_miN & 0x7FFF;
-
-    for (int i = 0; i < 49; i++) {
-        pN[i] = lfsr & 0x1;
-        const int bit = ((lfsr >> 1) ^ (lfsr >> 0)) & 1;
-        lfsr = ((lfsr >> 1) | (bit << 14));
-        BufferOut[i] = BufferIn[i] ^ pN[i];
-    }
-
-    state->payload_miN = lfsr & 0x7FFF;
-}
-
 int
 load_i(const uint8_t val[], int len) {
     int acc = 0;
@@ -1226,57 +1247,6 @@ crc6(const uint8_t buf[], int len) {
         s[5] = a;
     }
     return load_i(s, 6);
-}
-
-uint16_t
-crc12f(const uint8_t buf[], int len) {
-    uint8_t s[12];
-    for (int i = 0; i < 12; i++) {
-        s[i] = 1;
-    }
-    for (int i = 0; i < len; i++) {
-        const uint8_t a = buf[i] ^ s[0];
-        s[0] = a ^ s[1];
-        s[1] = s[2];
-        s[2] = s[3];
-        s[3] = s[4];
-        s[4] = s[5];
-        s[5] = s[6];
-        s[6] = s[7];
-        s[7] = s[8];
-        s[8] = a ^ s[9];
-        s[9] = a ^ s[10];
-        s[10] = a ^ s[11];
-        s[11] = a;
-    }
-    return load_i(s, 12);
-}
-
-uint16_t
-crc15(const uint8_t buf[], int len) {
-    uint8_t s[15];
-    for (int i = 0; i < 15; i++) {
-        s[i] = 1;
-    }
-    for (int i = 0; i < len; i++) {
-        const uint8_t a = buf[i] ^ s[0];
-        s[0] = a ^ s[1];
-        s[1] = s[2];
-        s[2] = s[3];
-        s[3] = a ^ s[4];
-        s[4] = a ^ s[5];
-        s[5] = s[6];
-        s[6] = s[7];
-        s[7] = a ^ s[8];
-        s[8] = a ^ s[9];
-        s[9] = s[10];
-        s[10] = s[11];
-        s[11] = s[12];
-        s[12] = a ^ s[13];
-        s[13] = s[14];
-        s[14] = a;
-    }
-    return load_i(s, 15);
 }
 
 uint16_t
@@ -1332,44 +1302,6 @@ crc7_scch(const uint8_t bits[], int len) {
         s[6] = a;
     }
     return load_i(s, 7);
-}
-
-void
-LFSR128n(dsd_state* state) {
-    //generate a 128-bit IV from a 64-bit IV for AES blocks
-    unsigned long long int lfsr = state->payload_miN;
-
-    //start packing aes_iv
-    state->aes_iv[0] = (lfsr >> 56) & 0xFF;
-    state->aes_iv[1] = (lfsr >> 48) & 0xFF;
-    state->aes_iv[2] = (lfsr >> 40) & 0xFF;
-    state->aes_iv[3] = (lfsr >> 32) & 0xFF;
-    state->aes_iv[4] = (lfsr >> 24) & 0xFF;
-    state->aes_iv[5] = (lfsr >> 16) & 0xFF;
-    state->aes_iv[6] = (lfsr >> 8) & 0xFF;
-    state->aes_iv[7] = (lfsr >> 0) & 0xFF;
-
-    int x = 64;
-    //polynomial P(x) = 1 + X15 + X27 + X38 + X46 + X62 + X64
-    for (int cnt = 0; cnt < 64; cnt++) {
-        //63,61,45,37,27,14
-        // Polynomial is C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1
-        const unsigned long long bit =
-            ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
-        lfsr = (lfsr << 1) | bit;
-
-        // Continue packing aes_iv
-        state->aes_iv[x / 8] = (state->aes_iv[x / 8] << 1) + bit;
-        x++;
-    }
-
-    DSD_FPRINTF(stderr, "%s", KYEL);
-    DSD_FPRINTF(stderr, "\n");
-    DSD_FPRINTF(stderr, " IV(128): 0x");
-    for (x = 0; x < 16; x++) {
-        DSD_FPRINTF(stderr, "%02X", state->aes_iv[x]);
-    }
-    DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
 /*
@@ -1438,13 +1370,13 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 199);
     nxdn_unpack_bytes_msb(m_data, 26U, trellis_buf);
 
-    crc = crc15(trellis_buf, 199);
-    check = nxdn_bits_to_u16(trellis_buf + 184, 15);
+    crc = nxdn_facch2_udch_crc15_payload_from_trellis(trellis_buf);
+    check = nxdn_facch2_udch_crc15_check_from_trellis(trellis_buf);
 
     if (crc != check) {
         nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 26U, depunc, 199);
-        crc = crc15(trellis_buf, 199);
-        check = nxdn_bits_to_u16(trellis_buf + 184, 15);
+        crc = nxdn_facch2_udch_crc15_payload_from_trellis(trellis_buf);
+        check = nxdn_facch2_udch_crc15_check_from_trellis(trellis_buf);
     }
 
     nxdn_handle_facch2_udch(opts, state, trellis_buf, m_data, crc, check, type);
@@ -1589,13 +1521,13 @@ nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[1
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 92);
     nxdn_unpack_bytes_msb(m_data, 12U, trellis_buf);
 
-    crc = crc12f(trellis_buf, 84);
-    check = nxdn_bits_to_u16(trellis_buf + 84, 12);
+    crc = nxdn_facch_crc12_payload_from_trellis(trellis_buf);
+    check = nxdn_facch_crc12_check_from_trellis(trellis_buf);
 
     if (crc != check) {
         nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
-        crc = crc12f(trellis_buf, 84);
-        check = nxdn_bits_to_u16(trellis_buf + 84, 12);
+        crc = nxdn_facch_crc12_payload_from_trellis(trellis_buf);
+        check = nxdn_facch_crc12_check_from_trellis(trellis_buf);
     }
 
     nxdn_handle_pich_tch(opts, state, trellis_buf, m_data, crc, check, lich);

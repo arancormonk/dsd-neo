@@ -39,7 +39,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -192,7 +191,7 @@ nxdn_collect_lich(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
         ctx->dbuf_reliab[i] = rel;
     }
 
-    nxdn_descramble(ctx->lich_dibits, 8);
+    nxdn_descramble_with_seed(ctx->lich_dibits, 8, state->nxdn_pn95_seed);
 
     ctx->lich = 0;
     for (int i = 0; i < 8; i++) {
@@ -377,7 +376,7 @@ nxdn_collect_payload_and_unpack(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx
         ctx->dbuf_reliab[i + 8] = rel;
     }
 
-    nxdn_descramble(ctx->dbuf, 182);
+    nxdn_descramble_with_seed(ctx->dbuf, 182, state->nxdn_pn95_seed);
 
     for (size_t i = 0; i < 182; i++) {
         size_t idx = i * 2;
@@ -598,10 +597,12 @@ nxdn_decode_control_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_
     }
 
     if (ctx->facch & 1) {
-        nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_a, (uint8_t*)ctx->facch_reliab_a);
+        nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_a, (uint8_t*)ctx->facch_reliab_a,
+                               ctx->facch == 3 ? 1U : 0U);
     }
-    if ((ctx->facch & 2) && memcmp(ctx->facch_bits_a, ctx->facch_bits_b, 144) != 0) {
-        nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_b, (uint8_t*)ctx->facch_reliab_b);
+    if (ctx->facch & 2) {
+        nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_b, (uint8_t*)ctx->facch_reliab_b,
+                               ctx->facch == 3 ? 2U : 0U);
     }
 }
 

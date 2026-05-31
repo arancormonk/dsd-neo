@@ -208,6 +208,13 @@ LFSR128(dsd_state* state) {
     (void)state;
 }
 
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_lfsr128_slot(dsd_state* state, int slot) {
+    (void)state;
+    (void)slot;
+}
+
 /* RS decoders */
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -359,10 +366,23 @@ prepare_ess_soft_inputs(dsd_state* state) {
     }
 }
 
+static void
+set_ess_payload_bits(dsd_state* state, int slot, int algid, int keyid, uint64_t mi) {
+    uint64_t essb_hex1 = ((uint64_t)(algid & 0xFF) << 24) | ((uint64_t)(keyid & 0xFFFF) << 8) | ((mi >> 56) & 0xFFU);
+    uint64_t essb_hex2 = (mi & 0x00FFFFFFFFFFFFFFULL) << 8;
+
+    for (int i = 0; i < 32; i++) {
+        state->ess_b[slot][i] = (int)((essb_hex1 >> (31 - i)) & 1U);
+    }
+    for (int i = 0; i < 64; i++) {
+        state->ess_b[slot][32 + i] = (int)((essb_hex2 >> (63 - i)) & 1U);
+    }
+}
+
 static int
 test_ess_soft_accepts_deep_erasure(void) {
     printf("Test 12: ESS accepts deep soft erasure success... ");
-    dsd_opts opts;
+    static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_ess_soft_inputs(&state);
@@ -391,7 +411,7 @@ test_ess_soft_accepts_deep_erasure(void) {
 static int
 test_ess_soft_failure_counts_once(void) {
     printf("Test 13: ESS hard/soft failure counts once... ");
-    dsd_opts opts;
+    static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_ess_soft_inputs(&state);
@@ -409,6 +429,37 @@ test_ess_soft_failure_counts_once(void) {
     }
     printf("FAIL (ok=%u err=%u soft=%u calls=%d)\n", state.p25_p2_rs_ess_ok, state.p25_p2_rs_ess_err,
            state.p25_p2_soft_ess_ok, g_ess_soft_calls);
+    return 1;
+}
+
+static int
+test_ess_des_manual_key_preserves_audio_gate(void) {
+    printf("Test 14: ESS DES manual key preserves audio gate... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_ess_soft_inputs(&state);
+    reset_ess_stubs();
+    set_p25p2_threshold(64);
+
+    opts.p25_trunk = 1;
+    opts.p25_is_tuned = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.lasttg = 1234;
+    state.R = 0x0123456789ABCDEFULL;
+    state.dmrburstL = 20;
+    set_ess_payload_bits(&state, 0, 0x81, 0x2468, 0x1122334455667788ULL);
+
+    process_ESS(&opts, &state);
+
+    if (state.payload_algid == 0x81 && state.payload_keyid == 0x2468 && state.payload_miP == 0x1122334455667788ULL
+        && state.p25_p2_audio_allowed[0] == 1 && state.p25_p2_rs_ess_ok == 1) {
+        printf("PASS\n");
+        return 0;
+    }
+
+    printf("FAIL (alg=0x%02X keyid=0x%04X mi=0x%016llX gate=%d ok=%u)\n", state.payload_algid, state.payload_keyid,
+           state.payload_miP, state.p25_p2_audio_allowed[0], state.p25_p2_rs_ess_ok);
     return 1;
 }
 
@@ -581,6 +632,7 @@ main(void) {
 
     failures += test_ess_soft_accepts_deep_erasure();
     failures += test_ess_soft_failure_counts_once();
+    failures += test_ess_des_manual_key_preserves_audio_gate();
 
     printf("\n%d test(s) failed\n", failures);
     return failures > 0 ? 1 : 0;

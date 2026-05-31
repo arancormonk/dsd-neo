@@ -272,6 +272,7 @@ p25p2_xcch_clear_slot_keys(dsd_state* state, int slot) {
     state->A3[slot] = 0;
     state->A4[slot] = 0;
     state->aes_key_loaded[slot] = 0;
+    state->aes_key_segments[slot] = 0U;
 }
 
 static void
@@ -318,7 +319,7 @@ p25p2_xcch_log_slot_encryption(dsd_opts* opts, dsd_state* state, int slot) {
     }
 
     if (algid == 0x84 || algid == 0x89) {
-        LFSR128(state);
+        p25_lfsr128_slot(state, slot);
     }
 
     p25_sm_emit_enc(opts, state, slot, algid, keyid, tg);

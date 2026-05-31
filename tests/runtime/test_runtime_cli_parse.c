@@ -232,6 +232,8 @@ test_numeric_options_reject_trailing_junk(void) {
     rc |= expect_numeric_parse_error("-s", "48000junk");
     rc |= expect_numeric_parse_error("-b", "12junk");
     rc |= expect_numeric_parse_error("-D", "4junk");
+    rc |= expect_numeric_parse_error("-R", "12junk");
+    rc |= expect_numeric_parse_error("-_", "12junk");
     return rc;
 }
 
@@ -293,12 +295,262 @@ test_H_loads_aes256_key_for_both_slots(void) {
         return 1;
     }
 
+    if (opts->dmr_mute_encL != 0 || opts->dmr_mute_encR != 0) {
+        DSD_FPRINTF(stderr, "expected -H to unmute encrypted DMR audio, got L/R=%d/%d\n", opts->dmr_mute_encL,
+                    opts->dmr_mute_encR);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
     const uint8_t expect_bytes[32] = {
         0x20, 0x02, 0x97, 0x36, 0xA5, 0xD9, 0x10, 0x42, 0xC9, 0x23, 0xEB, 0x06, 0x97, 0x48, 0x44, 0x33,
         0x00, 0x5E, 0xFC, 0x58, 0xA1, 0x90, 0x51, 0x95, 0xE2, 0x8E, 0x9C, 0x78, 0x36, 0xAA, 0x2D, 0xB8,
     };
     if (memcmp(state->aes_key, expect_bytes, sizeof(expect_bytes)) != 0) {
         DSD_FPRINTF(stderr, "expected aes_key bytes to match key, got mismatch\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_H_zero_key_keeps_dmr_encrypted_audio_muted(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    opts->dmr_mute_encL = 0;
+    opts->dmr_mute_encR = 0;
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-H";
+    char arg2[] = "0000000000";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->K1 != 0ULL || state->K2 != 0ULL || state->K3 != 0ULL || state->K4 != 0ULL) {
+        DSD_FPRINTF(stderr, "expected zero -H key, got K1..K4=%llX/%llX/%llX/%llX\n", state->K1, state->K2, state->K3,
+                    state->K4);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (opts->dmr_mute_encL != 1 || opts->dmr_mute_encR != 1) {
+        DSD_FPRINTF(stderr, "expected zero -H key to keep encrypted DMR muted, got L/R=%d/%d\n", opts->dmr_mute_encL,
+                    opts->dmr_mute_encR);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->keyloader != 0) {
+        DSD_FPRINTF(stderr, "expected -H to disable keyloader, got %d\n", state->keyloader);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_b_loads_basic_privacy_key_and_unmutes_dmr(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-b";
+    char arg2[] = "42";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->K != 42ULL || opts->dmr_mute_encL != 0 || opts->dmr_mute_encR != 0) {
+        DSD_FPRINTF(stderr, "expected -b 42 to set K=42 and unmute DMR, got K=%llu L/R=%d/%d\n", state->K,
+                    opts->dmr_mute_encL, opts->dmr_mute_encR);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_b_zero_key_keeps_dmr_encrypted_audio_muted(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    opts->dmr_mute_encL = 0;
+    opts->dmr_mute_encR = 0;
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-b";
+    char arg2[] = "0";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->K != 0ULL || opts->dmr_mute_encL != 1 || opts->dmr_mute_encR != 1) {
+        DSD_FPRINTF(stderr, "expected -b 0 to set K=0 and keep DMR muted, got K=%llu L/R=%d/%d\n", state->K,
+                    opts->dmr_mute_encL, opts->dmr_mute_encR);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_b_clamps_to_basic_privacy_table_max(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-b";
+    char arg2[] = "999";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->K != 255ULL || opts->dmr_mute_encL != 0 || opts->dmr_mute_encR != 0) {
+        DSD_FPRINTF(stderr, "expected -b 999 to clamp K=255 and unmute DMR, got K=%llu L/R=%d/%d\n", state->K,
+                    opts->dmr_mute_encL, opts->dmr_mute_encR);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_2_loads_tyt_basic_privacy_key_and_truncates_to_16_bits(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-2";
+    char arg2[] = "12345";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->tyt_bp != 1 || state->H != 0x2345ULL) {
+        DSD_FPRINTF(stderr, "expected -2 12345 to enable TYT BP and truncate H=2345, got tyt_bp=%d H=%llX\n",
+                    state->tyt_bp, state->H);
         freeState(state);
         free(opts);
         free(state);
@@ -397,6 +649,94 @@ test_1_loads_rc4_key_allows_0x_prefix(void) {
     free(opts);
     free(state);
     return 0;
+}
+
+static int
+test_R_loads_nxdn_scrambler_key_and_disables_keyloader(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    state->keyloader = 1;
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-R";
+    char arg2[] = "40000";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (state->R != 0x7FFFULL || state->keyloader != 0 || opts->symbol_out_file[0] != '\0') {
+        DSD_FPRINTF(stderr, "expected -R to clamp R and disable keyloader, got R=%llX keyloader=%d symbol='%s'\n",
+                    state->R, state->keyloader, opts->symbol_out_file);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+expect_pn95_seed_arg(const char* value, uint16_t want) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-_";
+    char arg2[32];
+    DSD_SNPRINTF(arg2, sizeof(arg2), "%s", value);
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int parse_rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    int failed = 0;
+    if (parse_rc != DSD_PARSE_CONTINUE || state->nxdn_pn95_seed != want) {
+        DSD_FPRINTF(stderr, "expected -_ %s to set seed %u, got rc=%d exit_rc=%d seed=%u\n", value, (unsigned)want,
+                    parse_rc, exit_rc, (unsigned)state->nxdn_pn95_seed);
+        failed = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return failed;
+}
+
+static int
+test_nxdn_pn95_seed_option_matches_reference_bounds(void) {
+    int rc = 0;
+    rc |= expect_pn95_seed_arg("1", 1U);
+    rc |= expect_pn95_seed_arg("0", 228U);
+    rc |= expect_pn95_seed_arg("512", 511U);
+    return rc;
 }
 
 static const char*
@@ -1489,6 +1829,93 @@ test_open_mbe_missing_file_leaves_stream_null(void) {
 }
 
 static int
+test_sdrtrunk_json_forced_dmr_algid_uses_talkgroup_key(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    FILE* fp = tmpfile();
+    if (!fp) {
+        DSD_FPRINTF(stderr, "failed to create temporary SDRTrunk JSON input\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    static const char json[] =
+        "{\"protocol\":\"DMR\",\"call_type\":\"INDIVIDUAL\",\"encrypted\":\"false\",\"to\":\"1234\",\"from\":\"5678\","
+        "\"time\":\"1700000000000\"}";
+    if (fwrite(json, 1, sizeof(json) - 1U, fp) != sizeof(json) - 1U) {
+        DSD_FPRINTF(stderr, "failed to write temporary SDRTrunk JSON input\n");
+        fclose(fp);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (fseek(fp, 0L, SEEK_SET) != 0) {
+        DSD_FPRINTF(stderr, "failed to rewind temporary SDRTrunk JSON input\n");
+        fclose(fp);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    opts->mbe_in_f = fp;
+
+    const unsigned long long tg_key = 0x0102030405ULL;
+    state->M = 0x21;
+    state->keyloader = 1;
+    state->payload_mi = 0xAABBCCDDULL;
+    state->payload_algid = 0x99;
+    state->payload_keyid = 0x88;
+    state->R = 0x0A0B0C0D0EULL;
+    state->aes_key_loaded[0] = 1;
+    state->rkey_array[1234] = tg_key;
+
+    read_sdrtrunk_json_format(opts, state);
+
+    int test_rc = 0;
+    if (state->payload_mi != 0) {
+        DSD_FPRINTF(stderr, "expected forced SDRTrunk JSON playback to reset payload_mi, got 0x%llX\n",
+                    state->payload_mi);
+        test_rc = 1;
+    }
+    if (state->payload_algid != 0x21) {
+        DSD_FPRINTF(stderr, "expected forced SDRTrunk JSON ALGID 0x21, got 0x%02X\n", state->payload_algid);
+        test_rc = 1;
+    }
+    if (state->R != tg_key) {
+        DSD_FPRINTF(stderr, "expected forced SDRTrunk JSON TG key 0x%llX, got 0x%llX\n", tg_key, state->R);
+        test_rc = 1;
+    }
+    if (state->aes_key_loaded[0] != 0) {
+        DSD_FPRINTF(stderr, "expected keyloader SDRTrunk JSON reset to clear AES loaded state\n");
+        test_rc = 1;
+    }
+    if (state->lasttg != 1234U || state->lastsrc != 5678U || state->gi[0] != 1) {
+        DSD_FPRINTF(stderr, "unexpected SDRTrunk JSON call metadata tg=%d src=%d gi=%d\n", state->lasttg,
+                    state->lastsrc, state->gi[0]);
+        test_rc = 1;
+    }
+
+    fclose(fp);
+    opts->mbe_in_f = NULL;
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_rdio_long_options_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -2292,7 +2719,7 @@ test_dmr_baofeng_pc5_long_option_parse(void) {
 }
 
 static int
-test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes(void) {
+test_dmr_baofeng_pc5_256_long_option_uses_ascii_hex_key(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
@@ -2331,10 +2758,8 @@ test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes(void) {
 
     PC5Context expected;
     DSD_MEMSET(&expected, 0, sizeof(expected));
-    unsigned char key_bytes[32] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
-                                   0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
-                                   0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F};
-    create_keys_pc5(&expected, key_bytes, sizeof(key_bytes));
+    const unsigned char key_ascii[] = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F";
+    create_keys_pc5(&expected, key_ascii, strlen((const char*)key_ascii));
     expected.rounds = PC5_NBROUND;
 
     if (ctxpc5.rounds != expected.rounds || memcmp(ctxpc5.perm, expected.perm, sizeof(expected.perm)) != 0
@@ -2343,7 +2768,7 @@ test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes(void) {
         || memcmp(ctxpc5.rngxor, expected.rngxor, sizeof(expected.rngxor)) != 0
         || memcmp(ctxpc5.tab, expected.tab, sizeof(expected.tab)) != 0
         || memcmp(ctxpc5.inv, expected.inv, sizeof(expected.inv)) != 0) {
-        DSD_FPRINTF(stderr, "expected 64-hex PC5 input to decode to 32 binary key bytes\n");
+        DSD_FPRINTF(stderr, "expected 64-hex PC5 input to use legacy ASCII hex key schedule\n");
         freeState(state);
         free(opts);
         free(state);
@@ -2519,6 +2944,84 @@ test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv(void) {
 }
 
 static int
+test_dmr_force_algid_long_option_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--dmr-force-algid";
+    char arg2[] = "0x24";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (state->M != 0x24) {
+        DSD_FPRINTF(stderr, "expected forced ALGID 0x24, got 0x%02X\n", state->M);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_dmr_force_algid_long_option_rejects_invalid_value(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--dmr-force-algid=123";
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "expected parse error for invalid forced ALGID, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
 test_dmr_baofeng_pc5_long_option_rejects_invalid_key(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -2654,6 +3157,81 @@ test_f_ysf_preset_applies_cli_profile(void) {
     freeState(state);
     free(opts);
     free(state);
+    return test_rc;
+}
+
+static int
+test_f_edacs_presets_match_reference_modes(void) {
+    static const struct {
+        const char* arg;
+        int ea_mode;
+        unsigned short esk_mask;
+        int a_bits;
+        int f_bits;
+        int s_bits;
+    } cases[] = {
+        {"-fh", 0, 0x00, 4, 4, 3},    {"-fH", 0, 0xA0, 4, 4, 3},    {"-fe", 1, 0x00, 4, 4, 3},
+        {"-fE", 1, 0xA0, 4, 4, 3},    {"-fh344", 0, 0x00, 3, 4, 4}, {"-fH434", 0, 0xA0, 4, 3, 4},
+        {"-fH999", 0, 0xA0, 4, 4, 3}, {"-fe344", 1, 0x00, 4, 4, 3}, {"-fE434", 1, 0xA0, 4, 4, 3},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg1[16] = {0};
+        DSD_SNPRINTF(arg1, sizeof arg1, "%s", cases[i].arg);
+        char* argv[] = {arg0, arg1, NULL};
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE) {
+            DSD_FPRINTF(stderr, "expected %s rc=%d, got %d (exit_rc=%d)\n", cases[i].arg, DSD_PARSE_CONTINUE, rc,
+                        exit_rc);
+            test_rc = 1;
+        }
+
+        if (opts->frame_provoice != 1 || opts->frame_dmr != 0 || opts->frame_p25p1 != 0 || opts->frame_p25p2 != 0) {
+            DSD_FPRINTF(stderr, "unexpected %s frame flags provoice=%d dmr=%d p25p1=%d p25p2=%d\n", cases[i].arg,
+                        opts->frame_provoice, opts->frame_dmr, opts->frame_p25p1, opts->frame_p25p2);
+            test_rc = 1;
+        }
+        if (state->ea_mode != cases[i].ea_mode || state->esk_mask != cases[i].esk_mask) {
+            DSD_FPRINTF(stderr, "unexpected %s EDACS mode ea=%d esk=0x%X\n", cases[i].arg, state->ea_mode,
+                        state->esk_mask);
+            test_rc = 1;
+        }
+        if (state->edacs_a_bits != cases[i].a_bits || state->edacs_f_bits != cases[i].f_bits
+            || state->edacs_s_bits != cases[i].s_bits) {
+            DSD_FPRINTF(stderr, "unexpected %s AFS bits %d:%d:%d\n", cases[i].arg, state->edacs_a_bits,
+                        state->edacs_f_bits, state->edacs_s_bits);
+            test_rc = 1;
+        }
+        if (opts->pulse_digi_rate_out != 8000 || opts->pulse_digi_out_channels != 1 || opts->mod_gfsk != 1
+            || state->rf_mod != 2 || strcmp(opts->output_name, "EDACS/PV") != 0) {
+            DSD_FPRINTF(stderr, "unexpected %s EDACS profile rate=%d channels=%d gfsk=%d rf_mod=%d output=%s\n",
+                        cases[i].arg, opts->pulse_digi_rate_out, opts->pulse_digi_out_channels, opts->mod_gfsk,
+                        state->rf_mod, opts->output_name);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
     return test_rc;
 }
 
@@ -3605,8 +4183,15 @@ main(void) {
     rc |= test_unknown_option_returns_error_and_does_not_exit();
     rc |= test_numeric_options_reject_trailing_junk();
     rc |= test_H_loads_aes256_key_for_both_slots();
+    rc |= test_H_zero_key_keeps_dmr_encrypted_audio_muted();
+    rc |= test_b_loads_basic_privacy_key_and_unmutes_dmr();
+    rc |= test_b_zero_key_keeps_dmr_encrypted_audio_muted();
+    rc |= test_b_clamps_to_basic_privacy_table_max();
+    rc |= test_2_loads_tyt_basic_privacy_key_and_truncates_to_16_bits();
     rc |= test_1_loads_rc4_key_for_both_slots_and_allows_spaces();
     rc |= test_1_loads_rc4_key_allows_0x_prefix();
+    rc |= test_R_loads_nxdn_scrambler_key_and_disables_keyloader();
+    rc |= test_nxdn_pn95_seed_option_matches_reference_bounds();
     rc |= test_bootstrap_treats_lone_ini_as_config();
     rc |= test_bootstrap_accepts_explicit_config_path_outside_cwd();
     rc |= test_bootstrap_missing_explicit_config_keeps_autosave_path();
@@ -3618,6 +4203,7 @@ main(void) {
     rc |= test_bootstrap_cli_call_alert_restores_all_config_filtered_events();
     rc |= test_r_playback_optind_is_first_file_regardless_of_option_order();
     rc |= test_open_mbe_missing_file_leaves_stream_null();
+    rc |= test_sdrtrunk_json_forced_dmr_algid_uses_talkgroup_key();
     rc |= test_rdio_long_options_parse();
     rc |= test_frame_log_long_option_parse();
     rc |= test_input_source_soapy_roundtrip();
@@ -3642,13 +4228,16 @@ main(void) {
     rc |= test_rtl_udp_control_port_too_large_returns_error();
     rc |= test_rtl_udp_control_bind_missing_value_returns_error();
     rc |= test_dmr_baofeng_pc5_long_option_parse();
-    rc |= test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes();
+    rc |= test_dmr_baofeng_pc5_256_long_option_uses_ascii_hex_key();
     rc |= test_dmr_csi_ee72_long_option_parse();
     rc |= test_dmr_vertex_ks_csv_long_option_parse();
     rc |= test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv();
+    rc |= test_dmr_force_algid_long_option_parse();
+    rc |= test_dmr_force_algid_long_option_rejects_invalid_value();
     rc |= test_dmr_baofeng_pc5_long_option_rejects_invalid_key();
     rc |= test_f_auto_preset_applies_cli_profile();
     rc |= test_f_ysf_preset_applies_cli_profile();
+    rc |= test_f_edacs_presets_match_reference_modes();
     rc |= test_f_legacy_fr_mono_still_supported();
     rc |= test_f_dmr_preset_selects_gfsk();
     rc |= test_mg_before_f_dmr_keeps_gfsk_lock();

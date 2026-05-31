@@ -700,6 +700,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->nxdn_last_tg = 0;
     state->nxdn_cipher_type = 0;
     state->nxdn_key = 0;
+    state->nxdn_pn95_seed = 228;
     state->nxdn_call_type[0] = '\0';
     state->payload_miN = 0;
 
@@ -764,6 +765,7 @@ init_state_protocol_defaults_b(dsd_state* state) {
     DSD_MEMSET(state->A3, 0, sizeof(state->A3));
     DSD_MEMSET(state->A4, 0, sizeof(state->A4));
     DSD_MEMSET(state->aes_key_loaded, 0, sizeof(state->aes_key_loaded));
+    DSD_MEMSET(state->aes_key_segments, 0, sizeof(state->aes_key_segments));
 
     //xl specific, we need to know if the ESS is from HDU, or from LDU2
     state->xl_is_hdu = 0;
@@ -957,6 +959,7 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
 
     //multi-key array
     DSD_MEMSET(state->rkey_array, 0, sizeof(state->rkey_array));
+    DSD_MEMSET(state->rkey_array_loaded, 0, sizeof(state->rkey_array_loaded));
     state->keyloader = 0; //keyloader off
 
     //Remus DMR End Call Alert Beep

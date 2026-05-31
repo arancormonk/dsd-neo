@@ -261,6 +261,11 @@ pc5_init_permutations(PC5Context* ctx, uint8_t* numbers) {
 
 static void
 pc5_init_tail_numbers(PC5Context* ctx) {
+    /*
+     * Preserve the legacy schedule: compute an unused discard count here with
+     * one ARC4 byte, then immediately emit the 25 tail mask bits.
+     */
+    (void)pc5_arc4_output(ctx);
     for (int w = 0; w < 25; w++) {
         ctx->numbers[w] = (uint8_t)(pc5_arc4_output(ctx) % 2);
     }
@@ -296,7 +301,6 @@ create_keys_pc5(PC5Context* ctx, const unsigned char key1[], size_t size1) {
     pc5_discard_arc4(ctx);
     pc5_init_round_xor(ctx, ctx->rngxor2);
 
-    pc5_discard_arc4(ctx);
     pc5_init_tail_numbers(ctx);
 }
 
@@ -465,7 +469,7 @@ pc5_collect_hex_digits(const char* input, char* out, size_t out_cap) {
         if (w + 1 >= out_cap) {
             return 0;
         }
-        out[w++] = (char)toupper((unsigned char)*p);
+        out[w++] = *p;
     }
     out[w] = '\0';
     return w;
@@ -503,6 +507,27 @@ pc5_parse_hex_bytes(const char* hex, size_t nhex, uint8_t* out, size_t out_len) 
 }
 
 int
+baofeng_pc5_apply_frame49(const dsd_state* state, char ambe_d[49]) {
+    if (state == NULL || ambe_d == NULL || state->baofeng_ap != 1) {
+        return 0;
+    }
+    if (dmr_ambe49_is_default_silence(ambe_d) == 1 || dmr_ambe49_has_zero_tail(ambe_d) == 1) {
+        return 0;
+    }
+
+    short frame1_cipher[49];
+    for (int i = 0; i < 49; i++) {
+        frame1_cipher[i] = (short)(((unsigned char)ambe_d[i]) & 1U);
+    }
+    decrypt_frame_49_pc5(frame1_cipher);
+    DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
+    for (int i = 0; i < 49; i++) {
+        ambe_d[i] = (char)(ctxpc5.bits[i] & 1);
+    }
+    return 1;
+}
+
+int
 baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input) {
     if (!state || !input) {
         return -1;
@@ -535,13 +560,12 @@ baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input) {
     }
 
     if (nhex == 64) {
-        uint8_t raw[32];
-        DSD_MEMSET(raw, 0, sizeof(raw));
-        if (pc5_parse_hex_bytes(hex, nhex, raw, sizeof(raw)) != 0) {
-            DSD_FPRINTF(stderr, "DMR PC5 key parse failed: invalid 256-bit key\n");
-            return -1;
-        }
-        create_keys_pc5(&ctxpc5, raw, sizeof(raw));
+        /*
+         * PC5-256 uses the 64 ASCII hex characters as key material, unlike
+         * PC5-128 which is decoded to bytes and reversed. Keep that wire
+         * compatibility, while still validating/canonicalizing the input first.
+         */
+        create_keys_pc5(&ctxpc5, (const unsigned char*)hex, nhex);
         ctxpc5.rounds = PC5_NBROUND;
         DSD_FPRINTF(stderr, "DMR Baofeng AP (PC5) 256-bit key with forced application\n");
         state->baofeng_ap = 1;

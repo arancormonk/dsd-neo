@@ -1099,7 +1099,7 @@ p25p2_ess_apply_slot0(const dsd_opts* opts, dsd_state* state, unsigned long long
     }
 
     if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
-        LFSR128(state);
+        p25_lfsr128_slot(state, 0);
     }
 }
 
@@ -1134,7 +1134,7 @@ p25p2_ess_apply_slot1(const dsd_opts* opts, dsd_state* state, unsigned long long
     }
 
     if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) {
-        LFSR128(state);
+        p25_lfsr128_slot(state, 1);
     }
 }
 
@@ -1164,14 +1164,14 @@ p25p2_ess_select_slot_crypto(dsd_state* state, int* ttg, int* alg, unsigned long
     if (state->currentslot == 0) {
         *ttg = state->lasttg;
         *alg = state->payload_algid;
-        if (*alg == 0xAA) {
+        if (*alg == 0xAA || *alg == 0x81 || *alg == 0x9F) {
             *key = state->R;
         }
     }
     if (state->currentslot == 1) {
         *ttg = state->lasttgR;
         *alg = state->payload_algidR;
-        if (*alg == 0xAA) {
+        if (*alg == 0xAA || *alg == 0x81 || *alg == 0x9F) {
             *key = state->RR;
         }
     }
@@ -1245,10 +1245,10 @@ p25p2_ess_handle_decode_failure(dsd_state* state) {
         LFSRP(state);
     }
     if (state->currentslot == 0 && (state->payload_algid == 0x84 || state->payload_algid == 0x89)) {
-        LFSR128(state);
+        p25_lfsr128_slot(state, 0);
     }
     if (state->currentslot == 1 && (state->payload_algidR == 0x84 || state->payload_algidR == 0x89)) {
-        LFSR128(state);
+        p25_lfsr128_slot(state, 1);
     }
 }
 

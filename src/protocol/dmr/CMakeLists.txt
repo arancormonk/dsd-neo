@@ -6,6 +6,7 @@ target_sources(
         dmr_34.c
         dmr_34_viterbi.c
         dmr_block.c
+        dmr_block_crypto.c
         dmr_bs.c
         dmr_csbk_tables.c
         dmr_csbk_parse.c

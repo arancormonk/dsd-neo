@@ -14,12 +14,15 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 void processDSTAR(dsd_opts* opts, dsd_state* state);
 void processDSTAR_HD(dsd_opts* opts, dsd_state* state);
+void processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd);
 
 #ifdef __cplusplus
 }

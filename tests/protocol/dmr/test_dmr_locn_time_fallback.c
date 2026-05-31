@@ -118,6 +118,15 @@ expect_no_substr(const char* buf, const char* needle, const char* tag) {
     return 0;
 }
 
+static int
+expect_has_substr(const char* buf, const char* needle, const char* tag) {
+    if (!buf || !strstr(buf, needle)) {
+        DSD_FPRINTF(stderr, "%s: missing '%s'\n", tag, needle);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -127,7 +136,7 @@ main(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
     st.currentslot = 0;
-    st.dmr_lrrp_source[0] = 0x12345678; // any non-zero
+    st.dmr_lrrp_source[0] = 0x123456;
 
     // Temp LRRP output path
     char outtmpl[DSD_TEST_PATH_MAX];
@@ -185,6 +194,7 @@ main(void) {
     pdu[i++] = '9';
 
     dmr_locn(&opts, &st, (uint16_t)i, pdu);
+    rc |= expect_has_substr(st.dmr_lrrp_gps[0], "Source: 1193046", "LOCN source id not truncated");
 
     // Read LRRP file content
     FILE* f = fopen(outtmpl, "rb");

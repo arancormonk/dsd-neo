@@ -100,11 +100,16 @@ kir_md2ii_final(kir_md2ii_ctx* ctx, uint8_t* out, size_t out_len) {
 }
 
 static int
-kir_load_slot_key(const dsd_state* state, uint8_t slot, uint8_t out_key[32]) {
+kir_load_slot_key(dsd_state* state, uint8_t slot, uint8_t out_key[32]) {
     if (!state || !out_key || slot > 1U) {
         return -1;
     }
-    if (state->aes_key_loaded[slot] != 1) {
+
+    const int all_words_nonzero =
+        state->A1[slot] != 0ULL && state->A2[slot] != 0ULL && state->A3[slot] != 0ULL && state->A4[slot] != 0ULL;
+    const int complete_key = state->aes_key_segments[slot] == 4U && all_words_nonzero;
+    state->aes_key_loaded[slot] = complete_key ? 1 : 0;
+    if (!complete_key) {
         return -1;
     }
 

@@ -116,7 +116,7 @@ p25_iden_slot_is_ambiguous(const dsd_state* state, int iden) {
 
 static int
 p25_chan16_valid(uint16_t chan16) {
-    return chan16 != 0U && chan16 != 0xFFFFU;
+    return chan16 != 0xFFFFU;
 }
 
 static int
@@ -179,7 +179,7 @@ p25_channel_to_freq_impl(const dsd_opts* opts, dsd_state* state, int channel, in
     // Sanitize to 16-bit channel (iden:4 | chan:12)
     uint16_t chan16 = (uint16_t)channel;
 
-    //return 0 if channel value is 0 or 0xFFFF
+    //0x0000 is a valid channel when IDEN 0 exists; 0xFFFF is the sentinel.
     if (!p25_chan16_valid(chan16)) {
         return 0;
     }

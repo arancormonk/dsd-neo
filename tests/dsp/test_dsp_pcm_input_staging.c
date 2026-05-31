@@ -22,7 +22,7 @@ expect_close(const char* label, float actual, float expected, float tol) {
 
 int
 main(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.wav_sample_rate = 8000;

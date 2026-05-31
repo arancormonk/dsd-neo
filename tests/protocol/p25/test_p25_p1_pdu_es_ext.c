@@ -9,6 +9,9 @@
  * This drives p25_decode_extended_address and p25_decode_es_header paths.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_pdu.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -16,8 +19,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
+
+struct RtlSdrContext;
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -26,8 +33,6 @@
 
 #define setenv dsd_test_setenv
 
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
 void dsd_neo_config_init(const dsd_opts* opts);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
@@ -92,6 +97,17 @@ ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
         v = (v << 1) | (BufferIn[i] & 1);
     }
     return v;
+}
+
+uint8_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes) {
+    (void)opts;
+    (void)state;
+    (void)input;
+    (void)slot;
+    (void)len_bytes;
+    return 0;
 }
 
 void
@@ -190,8 +206,119 @@ parse_last_json(const char* buf, int len, int* out_sap) {
     return 0;
 }
 
+static int
+expect_bytes(const char* label, const uint8_t* got, const uint8_t* want, size_t len) {
+    if (memcmp(got, want, len) != 0) {
+        DSD_FPRINTF(stderr, "%s: byte mismatch\n", label);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_u8(const char* label, uint8_t got, uint8_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got 0x%02X want 0x%02X\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_p25_pdu_des_decrypt_vector(void) {
+    static const uint8_t expect[] = {0x67, 0xAE, 0x7A, 0x29, 0x61, 0xDF, 0xA3, 0x45};
+    static dsd_opts opts;
+    static dsd_state st;
+    uint8_t input[sizeof expect];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
+    DSD_MEMSET(input, 0, sizeof input);
+    st.R = 0x133457799BBCDFF1ULL;
+
+    uint8_t encrypted = p25_decrypt_pdu(&opts, &st, input, 0x81, 0x4321, 0x0123456789ABCDEFULL, (int)sizeof input);
+
+    int rc = 0;
+    rc |= expect_u8("P25 PDU DES decrypt flag", encrypted, 0);
+    rc |= expect_bytes("P25 PDU DES OFB discard vector", input, expect, sizeof expect);
+    return rc;
+}
+
+static int
+test_p25_pdu_rc4_decrypt_vector(void) {
+    static const uint8_t expect[] = {0xFD, 0x03, 0xAB, 0x28, 0x7B, 0x5C, 0x1D, 0x19,
+                                     0x5A, 0x3F, 0xE2, 0x45, 0xFE, 0x54, 0xDB, 0x10};
+    static dsd_opts opts;
+    static dsd_state st;
+    uint8_t input[sizeof expect];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
+    DSD_MEMSET(input, 0, sizeof input);
+    st.R = 0x0102030405ULL;
+
+    uint8_t encrypted = p25_decrypt_pdu(&opts, &st, input, 0xAA, 0x4321, 0x0123456789ABCDEFULL, (int)sizeof input);
+
+    int rc = 0;
+    rc |= expect_u8("P25 PDU RC4 decrypt flag", encrypted, 0);
+    rc |= expect_bytes("P25 PDU RC4 drop-256 vector", input, expect, sizeof expect);
+    return rc;
+}
+
+static int
+test_p25_pdu_aes128_decrypt_vector(void) {
+    static const uint8_t expect[] = {0xEC, 0xAB, 0x6A, 0x30, 0x3A, 0x05, 0x65, 0x68,
+                                     0xE0, 0x29, 0x0F, 0x56, 0x58, 0xA3, 0x07, 0xF3};
+    static dsd_opts opts;
+    static dsd_state st;
+    uint8_t input[sizeof expect];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
+    DSD_MEMSET(input, 0, sizeof input);
+    st.K1 = 0x0011223344556677ULL;
+    st.K2 = 0x8899AABBCCDDEEFFULL;
+
+    uint8_t encrypted = p25_decrypt_pdu(&opts, &st, input, 0x89, 0x4321, 0x0123456789ABCDEFULL, (int)sizeof input);
+
+    int rc = 0;
+    rc |= expect_u8("P25 PDU AES-128 decrypt flag", encrypted, 0);
+    rc |= expect_bytes("P25 PDU AES-128 OFB discard vector", input, expect, sizeof expect);
+    return rc;
+}
+
+static int
+test_p25_pdu_missing_keys_stay_encrypted(void) {
+    static const uint8_t expect[] = {0xC0, 0xDE, 0x12, 0x34};
+    static dsd_opts opts;
+    static dsd_state st;
+    uint8_t des_input[sizeof expect];
+    uint8_t rc4_input[sizeof expect];
+    uint8_t aes_input[sizeof expect];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
+    DSD_MEMCPY(des_input, expect, sizeof expect);
+    DSD_MEMCPY(rc4_input, expect, sizeof expect);
+    DSD_MEMCPY(aes_input, expect, sizeof expect);
+
+    uint8_t des_encrypted =
+        p25_decrypt_pdu(&opts, &st, des_input, 0x81, 0x4321, 0x0123456789ABCDEFULL, (int)sizeof des_input);
+    uint8_t rc4_encrypted =
+        p25_decrypt_pdu(&opts, &st, rc4_input, 0xAA, 0x4321, 0x0123456789ABCDEFULL, (int)sizeof rc4_input);
+    uint8_t aes_encrypted =
+        p25_decrypt_pdu(&opts, &st, aes_input, 0x89, 0x4321, 0x0123456789ABCDEFULL, (int)sizeof aes_input);
+
+    int rc = 0;
+    rc |= expect_u8("P25 PDU DES missing-key encrypted flag", des_encrypted, 1);
+    rc |= expect_u8("P25 PDU RC4 missing-key encrypted flag", rc4_encrypted, 1);
+    rc |= expect_u8("P25 PDU AES missing-key encrypted flag", aes_encrypted, 1);
+    rc |= expect_bytes("P25 PDU DES missing-key unchanged", des_input, expect, sizeof expect);
+    rc |= expect_bytes("P25 PDU RC4 missing-key unchanged", rc4_input, expect, sizeof expect);
+    rc |= expect_bytes("P25 PDU AES missing-key unchanged", aes_input, expect, sizeof expect);
+    return rc;
+}
+
 int
 main(void) {
+    int rc = 0;
+
     // Enable JSON emission
     setenv("DSD_NEO_PDU_JSON", "1", 1);
     dsd_neo_config_init(NULL);
@@ -284,10 +411,14 @@ main(void) {
     // Expect aux_sap=32 (RegAuth) after ES header
     if (sap != 32) {
         DSD_FPRINTF(stderr, "expected SAP 32 after ES header, got %d\n", sap);
-        return 1;
+        rc = 1;
     }
     (void)remove(cap.path);
-    return 0;
+    rc |= test_p25_pdu_des_decrypt_vector();
+    rc |= test_p25_pdu_rc4_decrypt_vector();
+    rc |= test_p25_pdu_aes128_decrypt_vector();
+    rc |= test_p25_pdu_missing_keys_stay_encrypted();
+    return rc;
 }
 
 #if defined(__GNUC__) && !defined(__cplusplus)

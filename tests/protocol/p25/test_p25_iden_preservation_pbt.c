@@ -145,13 +145,13 @@ test_property_p1_fdma_formula(void) {
         uint32_t iden = prng_range(0, 15);
         uint32_t base_freq = prng_range(1, 200000000);
         uint32_t chan_spac = prng_range(1, 1023);
-        uint32_t chan_type = prng_range(0, 15);     /* Ignored for FDMA denom, but stored */
-        uint32_t chan_number = prng_range(1, 4095); /* Avoid 0 (chan16=0 returns 0 early) */
+        uint32_t chan_type = prng_range(0, 15); /* Ignored for FDMA denom, but stored */
+        uint32_t chan_number = prng_range(0, 4095);
 
         /* Skip the sentinel value 0xFFFF (iden=15, chan_number=4095) which
          * returns 0 unconditionally as a protocol-level "no channel" marker */
         uint16_t chan16 = (uint16_t)((iden << 12) | (chan_number & 0xFFF));
-        if (chan16 == 0x0000 || chan16 == 0xFFFF) {
+        if (chan16 == 0xFFFF) {
             continue;
         }
 
@@ -217,12 +217,12 @@ test_property_p2_tdma_formula(void) {
         uint32_t base_freq = prng_range(1, 200000000);
         uint32_t chan_spac = prng_range(1, 1023);
         uint32_t chan_type = prng_range(0, 15);
-        uint32_t chan_number = prng_range(1, 4095); /* Avoid 0 (chan16=0 returns 0 early) */
+        uint32_t chan_number = prng_range(0, 4095);
 
         /* Skip the sentinel value 0xFFFF (iden=15, chan_number=4095) which
          * returns 0 unconditionally as a protocol-level "no channel" marker */
         uint16_t chan16 = (uint16_t)((iden << 12) | (chan_number & 0xFFF));
-        if (chan16 == 0x0000 || chan16 == 0xFFFF) {
+        if (chan16 == 0xFFFF) {
             continue;
         }
 
@@ -289,7 +289,7 @@ test_property_p3_cache_precedence(void) {
         uint32_t base_freq = prng_range(1, 200000000);
         uint32_t chan_spac = prng_range(1, 1023);
         uint32_t chan_type = prng_range(0, 15);
-        uint32_t chan_number = prng_range(1, 4095); /* Avoid 0 (returns 0 early) */
+        uint32_t chan_number = prng_range(0, 4095);
 
         /* Generate a random cached frequency (non-zero) */
         long cached_freq = (long)prng_range(100000000, 999999999);
@@ -303,6 +303,9 @@ test_property_p3_cache_precedence(void) {
 
         /* Construct 16-bit channel */
         uint16_t chan16 = (uint16_t)((iden << 12) | (chan_number & 0xFFF));
+        if (chan16 == 0xFFFF) {
+            continue;
+        }
         int channel = (int)chan16;
 
         /* Pre-populate the cache — this should take precedence */
@@ -347,7 +350,7 @@ test_property_p4_empty_slot_returns_zero(void) {
 
         /* Generate random channel parameters */
         uint32_t iden = prng_range(0, 15);
-        uint32_t chan_number = prng_range(1, 4095); /* Avoid 0 (returns 0 for different reason) */
+        uint32_t chan_number = prng_range(0, 4095);
 
         /* Leave both arrays unpopulated (populated=0, base_freq=0, chan_spac=0) */
         /* Set explicit hint to FDMA-only or TDMA-only randomly */

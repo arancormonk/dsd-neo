@@ -57,6 +57,8 @@ void LFSRP(dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void LFSR128(dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+void p25_lfsr128_slot(dsd_state* state, int slot);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 double dsd_time_now_monotonic_s(void);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 int ez_rs28_facch_soft(int* payload, int* parity, const int* erasures, int n_erasures);
@@ -173,6 +175,12 @@ LFSRP(dsd_state* state) {
 void
 LFSR128(dsd_state* state) {
     (void)state;
+}
+
+void
+p25_lfsr128_slot(dsd_state* state, int slot) {
+    (void)state;
+    (void)slot;
 }
 
 double

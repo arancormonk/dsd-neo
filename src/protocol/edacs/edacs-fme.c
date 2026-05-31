@@ -42,7 +42,6 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/edacs/edacs.h>
-#include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/edacs/edacs_bch.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -105,87 +104,6 @@ is_dotting_sequence_candidate(uint64_t sr) {
     int da = hamming_weight_u64(sr ^ a);
     int db = hamming_weight_u64(sr ^ b);
     return (da <= max_bit_errors || db <= max_bit_errors) ? 1 : 0;
-}
-
-static int
-isCustomAfsString(const dsd_state* state) {
-    return state->edacs_a_bits != 4 || state->edacs_f_bits != 4 || state->edacs_s_bits != 3;
-}
-
-//Get the string length we need for an AFS string, math-style
-int
-getAfsStringLength(const dsd_state* state) {
-    if (!isCustomAfsString(state)) {
-        return 6;
-    }
-
-    int length = 0;
-    length += (state->edacs_a_bits + 2) / 3;
-    length += (state->edacs_f_bits + 2) / 3;
-    length += (state->edacs_s_bits + 2) / 3;
-    length += 2; //colon separators
-
-    // This will be either 6 or 7
-    return length;
-}
-
-static int
-edacs_digits_for_bits(int bits) {
-    if (bits <= 3) {
-        return 1;
-    }
-    if (bits <= 6) {
-        return 2;
-    }
-    return 3;
-}
-
-static int
-edacs_append_decimal_field(char* buffer, size_t buf_len, size_t* printed_chars, int value, int digits, int add_colon) {
-    int written;
-    if (add_colon) {
-        written = DSD_SNPRINTF(buffer + *printed_chars, buf_len - *printed_chars, "%0*d:", digits, value);
-    } else {
-        written = DSD_SNPRINTF(buffer + *printed_chars, buf_len - *printed_chars, "%0*d", digits, value);
-    }
-    if (written < 0) {
-        return 0;
-    }
-    *printed_chars += (size_t)written;
-    if (*printed_chars >= buf_len) {
-        *printed_chars = buf_len - 1;
-    }
-    return 1;
-}
-
-//Format the AFS string, Florida-style
-int
-getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) {
-    if (!isCustomAfsString(state)) {
-        /* Fixed-width format: ensure we respect the theoretical length (6) plus NUL */
-        DSD_SNPRINTF(buffer, 6 + 1, "%02d-%02d%01d", a, f, s);
-        return 6;
-    }
-
-    size_t printed_chars = 0;
-    const size_t need = (size_t)getAfsStringLength(state);
-    const size_t buf_len = need + 1;
-
-    int a_digits = edacs_digits_for_bits(state->edacs_a_bits);
-    int f_digits = edacs_digits_for_bits(state->edacs_f_bits);
-    int s_digits = edacs_digits_for_bits(state->edacs_s_bits);
-
-    if (!edacs_append_decimal_field(buffer, buf_len, &printed_chars, a, a_digits, 1)) {
-        return 0;
-    }
-    if (!edacs_append_decimal_field(buffer, buf_len, &printed_chars, f, f_digits, 1)) {
-        return (int)printed_chars;
-    }
-    if (!edacs_append_decimal_field(buffer, buf_len, &printed_chars, s, s_digits, 0)) {
-        return (int)printed_chars;
-    }
-
-    return (int)printed_chars;
 }
 
 static char*
@@ -1671,13 +1589,14 @@ edacs_handle_standard_mt_b_individual_assignment(dsd_opts* opts, dsd_state* stat
     }
 
     dsd_tg_policy_decision decision;
-    dsd_state hold_neutral = *state;
-    hold_neutral.tg_hold = 0;
-    int policy_ok = (dsd_tg_policy_evaluate_private_call(opts, &hold_neutral, (uint32_t)source, (uint32_t)target, 0, 0,
+    uint32_t saved_tg_hold = state->tg_hold;
+    state->tg_hold = 0;
+    int policy_ok = (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 0,
                                                          DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
                                                          DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
                          == 0
                      && decision.tune_allowed);
+    state->tg_hold = saved_tg_hold;
     if (opts->trunk_use_allow_list == 1) {
         policy_ok = 0;
     }
@@ -1858,12 +1777,13 @@ edacs_handle_standard_mt_d_system_all_call(dsd_opts* opts, dsd_state* state, uns
     }
 
     dsd_tg_policy_decision decision;
-    dsd_state hold_neutral = *state;
-    hold_neutral.tg_hold = 0;
-    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, &hold_neutral, 0, (uint32_t)lid, 0, 0,
+    uint32_t saved_tg_hold = state->tg_hold;
+    state->tg_hold = 0;
+    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)lid, 0, 0,
                                                        DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
                          == 0
                      && decision.tune_allowed);
+    state->tg_hold = saved_tg_hold;
     if (opts->trunk_use_allow_list == 1) {
         policy_ok = 1;
     }
@@ -1988,7 +1908,7 @@ edacs_handle_standard_mode(dsd_opts* opts, dsd_state* state, unsigned long long 
 static void
 edacs_print_mode_selection_hint(unsigned long long int msg_1, unsigned long long int msg_2) {
     DSD_FPRINTF(stderr, " Detected EDACS: Use -fh, -fH, -fe, or -fE for std, esk, ea, or ea-esk to specify the type");
-    DSD_FPRINTF(stderr, "\\n");
+    DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " MSG_1 [%07llX]", msg_1);
     DSD_FPRINTF(stderr, " MSG_2 [%07llX]", msg_2);
 }
@@ -2119,6 +2039,9 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
     const double nowm = dsd_time_now_monotonic_s();
 
     DSD_FPRINTF(stderr, "EOT; \n");
+
+    // Give the control channel time to cancel the grant before retuning back to it.
+    skipDibit(opts, state, 240 * 8);
 
     //watchdog event at this point
     state->lastsynctype = DSD_SYNC_EDACS_NEG;

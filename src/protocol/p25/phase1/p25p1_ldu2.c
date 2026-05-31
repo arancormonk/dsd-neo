@@ -480,8 +480,7 @@ ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
     if (tsrc != 0) {
         const char* mode = "D";
         dsd_tg_policy_entry alias_entry;
-        if (state->payload_algid != 0x80 && state->payload_algid != 0 && opts->trunk_tune_enc_calls == 0
-            && state->R == 0) {
+        if (state->payload_algid != 0x80 && opts->trunk_tune_enc_calls == 0 && state->R == 0) {
             mode = "DE";
         }
         if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias_entry)
@@ -545,6 +544,18 @@ ldu2_record_enc_lockout(dsd_opts* opts, dsd_state* state, int talkgroup) {
     }
 }
 
+static int
+ldu2_payload_has_decrypt_key(const dsd_state* state) {
+    int alg = state->payload_algid;
+    if ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0) {
+        return 1;
+    }
+    if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1) {
+        return 1;
+    }
+    return 0;
+}
+
 static void
 ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int irrecoverable_errors) {
     if (irrecoverable_errors != 0 || state->payload_algid == 0x80 || state->payload_algid == 0) {
@@ -554,11 +565,7 @@ ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int irrecoverable_error
         return;
     }
 
-    int enc_lo = 1;
-    if (state->payload_algid == 0xAA && state->R != 0) {
-        enc_lo = 0;
-    }
-    if (enc_lo == 0 || state->lasttg == 0) {
+    if (ldu2_payload_has_decrypt_key(state) || state->lasttg == 0) {
         return;
     }
 
@@ -607,128 +614,4 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
 
     state->xl_is_hdu = 0;
     ldu2_maybe_enc_lockout(opts, state, frame.irrecoverable_errors);
-}
-
-//LFSR code courtesy of https://github.com/mattames/LFSR/
-void
-LFSRP(dsd_state* state) {
-    //rework for P2 TDMA support
-    unsigned long long int lfsr = 0;
-    if (state->currentslot == 0) {
-        lfsr = state->payload_miP;
-    }
-
-    if (state->currentslot == 1) {
-        lfsr = state->payload_miN;
-    }
-
-    int cnt = 0;
-    for (cnt = 0; cnt < 64; cnt++) {
-        // Polynomial is C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1
-        unsigned long long int bit =
-            ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
-        lfsr = (lfsr << 1) | (bit);
-    }
-
-    if (state->currentslot == 0) {
-        state->payload_miP = lfsr;
-    }
-
-    if (state->currentslot == 1) {
-        state->payload_miN = lfsr;
-    }
-
-    //print current ENC identifiers already known and new calculated MI
-    DSD_FPRINTF(stderr, "%s", KYEL);
-    if (state->currentslot == 0) {
-        DSD_FPRINTF(stderr, "\n LDU2/ESS_B FEC ERR - ALG: 0x%02X KEY ID: 0x%04X LFSR MI: 0x%016llX",
-                    state->payload_algid, state->payload_keyid, state->payload_miP);
-    }
-    if (state->currentslot == 1) {
-        DSD_FPRINTF(stderr, "\n LDU2/ESS_B FEC ERR - ALG: 0x%02X KEY ID: 0x%04X LFSR MI: 0x%016llX",
-                    state->payload_algidR, state->payload_keyidR, state->payload_miN);
-    }
-    DSD_FPRINTF(stderr, "%s", KNRM);
-}
-
-void
-LFSR128(dsd_state* state) {
-    //generate a 128-bit IV from a 64-bit IV for AES blocks
-    unsigned long long int lfsr = 0;
-
-    int slot = state->currentslot;
-
-    if (state->currentslot == 0) {
-        lfsr = state->payload_miP;
-    } else {
-        lfsr = state->payload_miN;
-    }
-
-    //start packing aes_iv
-    if (slot == 0) {
-        state->aes_iv[0] = (lfsr >> 56) & 0xFF;
-        state->aes_iv[1] = (lfsr >> 48) & 0xFF;
-        state->aes_iv[2] = (lfsr >> 40) & 0xFF;
-        state->aes_iv[3] = (lfsr >> 32) & 0xFF;
-        state->aes_iv[4] = (lfsr >> 24) & 0xFF;
-        state->aes_iv[5] = (lfsr >> 16) & 0xFF;
-        state->aes_iv[6] = (lfsr >> 8) & 0xFF;
-        state->aes_iv[7] = (lfsr >> 0) & 0xFF;
-    }
-    if (slot == 1) {
-        state->aes_ivR[0] = (lfsr >> 56) & 0xFF;
-        state->aes_ivR[1] = (lfsr >> 48) & 0xFF;
-        state->aes_ivR[2] = (lfsr >> 40) & 0xFF;
-        state->aes_ivR[3] = (lfsr >> 32) & 0xFF;
-        state->aes_ivR[4] = (lfsr >> 24) & 0xFF;
-        state->aes_ivR[5] = (lfsr >> 16) & 0xFF;
-        state->aes_ivR[6] = (lfsr >> 8) & 0xFF;
-        state->aes_ivR[7] = (lfsr >> 0) & 0xFF;
-    }
-
-    int cnt = 0;
-    int x = 64;
-    //polynomial P(x) = 1 + X15 + X27 + X38 + X46 + X62 + X64
-    for (cnt = 0; cnt < 64; cnt++) {
-        //63,61,45,37,27,14
-        // Polynomial is C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1
-        unsigned long long int bit =
-            ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
-        lfsr = (lfsr << 1) | bit;
-
-        // Continue packing aes_iv
-        if (slot == 0) {
-            state->aes_iv[x / 8] = (state->aes_iv[x / 8] << 1) + bit;
-        }
-        if (slot == 1) {
-            state->aes_ivR[x / 8] = (state->aes_ivR[x / 8] << 1) + bit;
-        }
-        x++;
-    }
-
-    if (state->currentslot == 0) {
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        if (state->dmrburstL != 27) { // If not LDU2
-            DSD_FPRINTF(stderr, "\n");
-        }
-        DSD_FPRINTF(stderr, "     ");
-        DSD_FPRINTF(stderr, " ALG ID: 0x%02X KEY ID: 0x%04X MI(128): 0x", state->payload_algid, state->payload_keyid);
-        for (x = 0; x < 16; x++) {
-            DSD_FPRINTF(stderr, "%02X", state->aes_iv[x]);
-        }
-        DSD_FPRINTF(stderr, "%s", KNRM);
-    }
-
-    if (state->currentslot == 1) {
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        if (state->dmrburstL != 27) { // If not LDU2, shouldn't matter on P25p2 for the second slot
-            DSD_FPRINTF(stderr, "\n");
-        }
-        DSD_FPRINTF(stderr, "     ");
-        DSD_FPRINTF(stderr, " ALG ID: 0x%02X KEY ID: 0x%04X MI(128): 0x", state->payload_algidR, state->payload_keyidR);
-        for (x = 0; x < 16; x++) {
-            DSD_FPRINTF(stderr, "%02X", state->aes_ivR[x]);
-        }
-        DSD_FPRINTF(stderr, "%s", KNRM);
-    }
 }

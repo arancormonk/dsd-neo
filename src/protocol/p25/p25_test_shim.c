@@ -76,6 +76,61 @@ p25_test_seed_iden_config(dsd_state* state, const p25_test_iden_config* iden_cfg
 }
 
 static void
+p25_test_copy_mac_bytes(unsigned long long int mac[24], const unsigned char* mac_bytes, int mac_len) {
+    int n = mac_len < 24 ? mac_len : 24;
+    for (int i = 0; i < n; i++) {
+        mac[i] = mac_bytes[i];
+    }
+}
+
+static void
+p25_test_seed_channel_cache_iden(dsd_state* state, const p25_test_iden_config* iden_cfg) {
+    int iden = iden_cfg ? iden_cfg->iden : 0;
+    state->p25_chan_iden = iden & 0xF;
+    if (!iden_cfg) {
+        return;
+    }
+
+    if (iden_cfg->tdma) {
+        state->p25_iden_tdma[state->p25_chan_iden].base_freq = iden_cfg->base;
+        state->p25_iden_tdma[state->p25_chan_iden].chan_type = iden_cfg->type & 0xF;
+        state->p25_iden_tdma[state->p25_chan_iden].chan_spac = iden_cfg->spac;
+        state->p25_iden_tdma[state->p25_chan_iden].trust = 2;
+        state->p25_iden_tdma[state->p25_chan_iden].populated = 1;
+        state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 2;
+        return;
+    }
+
+    state->p25_iden_fdma[state->p25_chan_iden].base_freq = iden_cfg->base;
+    state->p25_iden_fdma[state->p25_chan_iden].chan_type = iden_cfg->type & 0xF;
+    state->p25_iden_fdma[state->p25_chan_iden].chan_spac = iden_cfg->spac;
+    state->p25_iden_fdma[state->p25_chan_iden].trust = 2;
+    state->p25_iden_fdma[state->p25_chan_iden].populated = 1;
+    state->p25_chan_tdma_explicit[state->p25_chan_iden] |= 1;
+}
+
+static void
+p25_test_zero_channel_cache_outputs(long* out_freq_a, long* out_freq_b) {
+    if (out_freq_a) {
+        *out_freq_a = 0;
+    }
+    if (out_freq_b) {
+        *out_freq_b = 0;
+    }
+}
+
+static void
+p25_test_copy_channel_cache_outputs(const dsd_state* state, int channel_a, int channel_b, long* out_freq_a,
+                                    long* out_freq_b) {
+    if (out_freq_a) {
+        *out_freq_a = (channel_a >= 0 && channel_a < DSD_TRUNK_CHAN_MAP_SIZE) ? state->trunk_chan_map[channel_a] : 0;
+    }
+    if (out_freq_b) {
+        *out_freq_b = (channel_b >= 0 && channel_b < DSD_TRUNK_CHAN_MAP_SIZE) ? state->trunk_chan_map[channel_b] : 0;
+    }
+}
+
+static void
 p25_test_copy_mbt_outputs(const dsd_state* state, const p25_test_mbt_outputs* outputs) {
     if (!state || !outputs) {
         return;
@@ -272,13 +327,14 @@ p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len)
 // Simplified P25p1 LDU audio gating decision helper.
 // Returns 1 when audio should be allowed under the current encryption state,
 // or 0 when audio should remain muted. Mirrors the policy in p25p1_ldu2.c:
-//  - ALGID 0 or 0x80 (clear) => allow
+//  - ALGID 0 (unknown) => mute
+//  - ALGID 0x80 (clear) => allow
 //  - ALGID RC4/DES/DES-XL (0xAA/0x81/0x9F) => allow only when R != 0
 //  - ALGID AES-256/AES-128 (0x84/0x89) => allow only when aes_loaded != 0
 //  - Any other non-zero ALGID => mute
 int
 p25_test_p1_ldu_gate(int algid, unsigned long long R, int aes_loaded) {
-    if (algid == 0 || algid == 0x80) {
+    if (algid == 0x80) {
         return 1; // clear
     }
     if ((algid == 0xAA || algid == 0x81 || algid == 0x9F)) {
@@ -288,6 +344,14 @@ p25_test_p1_ldu_gate(int algid, unsigned long long R, int aes_loaded) {
         return (aes_loaded != 0) ? 1 : 0;
     }
     return 0;
+}
+
+int
+p25_test_p1_ldu_lockout_required(int algid, unsigned long long R, int aes_loaded) {
+    if (algid == 0 || algid == 0x80) {
+        return 0;
+    }
+    return p25_test_p1_ldu_gate(algid, R, aes_loaded) ? 0 : 1;
 }
 
 // Simplified P25p2 audio gating decision helper matching the logic in
@@ -422,10 +486,7 @@ p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len,
     }
 
     unsigned long long int MAC[24] = {0};
-    int n = mac_len < 24 ? mac_len : 24;
-    for (int i = 0; i < n; i++) {
-        MAC[i] = mac_bytes[i];
-    }
+    p25_test_copy_mac_bytes(MAC, mac_bytes, mac_len);
     process_MAC_VPDU(opts, state, 0, MAC);
     free(opts);
     p25_test_free_state(state);
@@ -495,6 +556,31 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     if (out_tuned) {
         *out_tuned = opts->p25_is_tuned;
     }
+    free(opts);
+    p25_test_free_state(state);
+}
+
+void
+p25_test_invoke_mac_vpdu_channel_cache(const unsigned char* mac_bytes, int mac_len,
+                                       const p25_test_iden_config* iden_cfg, int channel_a, int channel_b,
+                                       long* out_freq_a, long* out_freq_b) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        p25_test_free_state(state);
+        p25_test_zero_channel_cache_outputs(out_freq_a, out_freq_b);
+        return;
+    }
+
+    state->synctype = DSD_SYNC_P25P2_POS;
+    p25_test_seed_channel_cache_iden(state, iden_cfg);
+
+    unsigned long long int MAC[24] = {0};
+    p25_test_copy_mac_bytes(MAC, mac_bytes, mac_len);
+    process_MAC_VPDU(opts, state, 0, MAC);
+
+    p25_test_copy_channel_cache_outputs(state, channel_a, channel_b, out_freq_a, out_freq_b);
     free(opts);
     p25_test_free_state(state);
 }

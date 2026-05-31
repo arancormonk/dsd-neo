@@ -120,7 +120,7 @@ static void
 test_preserves_wav_input_when_tcp_backend_open_fails(void) {
     reset_fakes();
 
-    dsd_opts opts;
+    static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "/tmp/current.wav");
     opts.audio_in_type = AUDIO_IN_WAV;
@@ -154,7 +154,7 @@ static void
 test_preserves_existing_tcp_input_when_reopen_fails(void) {
     reset_fakes();
 
-    dsd_opts opts;
+    static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.wav_sample_rate = 8000;
@@ -189,7 +189,7 @@ static void
 test_preserves_existing_tcp_input_when_reconnect_fails_before_open(void) {
     reset_fakes();
 
-    dsd_opts opts;
+    static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.wav_sample_rate = 8000;
@@ -223,7 +223,7 @@ static void
 test_switches_tcp_backend_only_after_successful_open(void) {
     reset_fakes();
 
-    dsd_opts opts;
+    static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.wav_sample_rate = 8000;

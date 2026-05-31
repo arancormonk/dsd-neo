@@ -204,8 +204,10 @@ r34_traceback_state_rank(uint8_t back_state[R34_T][R34_S][R34_K], uint8_t back_r
     int r = rank;
     for (int t = R34_T - 1; t >= 0; t--) {
         states[t] = (uint8_t)s;
-        s = (int)back_state[t][s][r];
-        r = (int)back_rank[t][s][r];
+        int prev_s = (int)back_state[t][s][r];
+        int prev_r = (int)back_rank[t][s][r];
+        s = prev_s;
+        r = prev_r;
     }
 }
 

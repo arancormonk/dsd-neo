@@ -1537,6 +1537,7 @@ no_carrier_unload_keys_if_needed(dsd_state* state) {
     DSD_MEMSET(state->A3, 0, sizeof(state->A3));
     DSD_MEMSET(state->A4, 0, sizeof(state->A4));
     DSD_MEMSET(state->aes_key_loaded, 0, sizeof(state->aes_key_loaded));
+    DSD_MEMSET(state->aes_key_segments, 0, sizeof(state->aes_key_segments));
     state->H = 0;
 }
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: ISC
 #include <ctype.h>
+#include <dsd-neo/core/bp.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -61,19 +62,24 @@ ascii_tail_is_ws(const char* p) {
 }
 
 static int
-parse_hex_u16_digits(const char* p, uint16_t* out) {
-    uint32_t value = 0U;
-    int digits = 0;
+parse_hex_u16_truncating_strict(const char* token, uint16_t* out) {
+    if (token == NULL || out == NULL) {
+        return 0;
+    }
 
+    const char* p = skip_ascii_ws_const(token);
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+    }
+
+    uint16_t value = 0U;
+    int digits = 0;
     while (*p != '\0' && !isspace((unsigned char)*p)) {
         int nib = hex_nibble_value((int)*p);
         if (nib < 0) {
             return 0;
         }
-        value = (value << 4U) | (uint32_t)nib;
-        if (value > 0xFFFFU) {
-            return 0;
-        }
+        value = (uint16_t)((value << 4U) | (uint16_t)nib);
         digits++;
         p++;
     }
@@ -81,20 +87,8 @@ parse_hex_u16_digits(const char* p, uint16_t* out) {
     if (digits == 0 || !ascii_tail_is_ws(p)) {
         return 0;
     }
-    *out = (uint16_t)value;
+    *out = value;
     return 1;
-}
-
-static int
-parse_hex_u16_strict(const char* token, uint16_t* out) {
-    if (token == NULL || out == NULL) {
-        return 0;
-    }
-    const char* p = skip_ascii_ws_const(token);
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        p += 2;
-    }
-    return parse_hex_u16_digits(p, out);
 }
 
 static char*
@@ -181,6 +175,21 @@ unpack_bytes_to_bits(const uint8_t* input, uint8_t* output, int len) {
         output[k++] = (uint8_t)((input[i] >> 1) & 1U);
         output[k++] = (uint8_t)((input[i] >> 0) & 1U);
     }
+}
+
+int
+dmr_basic_privacy_apply_frame49(unsigned long long key_id, char ambe_d[49]) {
+    if (ambe_d == NULL || key_id == 0ULL || key_id >= (unsigned long long)(sizeof(BPK) / sizeof(BPK[0]))) {
+        return 0;
+    }
+
+    uint64_t k = BPK[(size_t)key_id];
+    k = (((k & 0xFF0FULL) << 32U) + (k << 16U) + k);
+    for (int j = 0; j < 48; j++) {
+        const int x = (int)(((k << (unsigned)j) & 0x800000000000ULL) >> 47U);
+        ambe_d[j] ^= (char)x;
+    }
+    return 1;
 }
 
 typedef struct {
@@ -386,7 +395,7 @@ anytone_bp_keystream_creation(dsd_state* state, char* input) {
     uint16_t key = 0;
     uint16_t kperm = 0;
 
-    (void)parse_hex_u16_strict(trim_ascii_ws(input), &key);
+    (void)parse_hex_u16_truncating_strict(trim_ascii_ws(input), &key);
     key &= 0xFFFF; //truncate to 16-bits
 
     //calculate key permutation using simple operations
@@ -501,6 +510,51 @@ xor_keystream_bits_frame49(const uint8_t* ks_bits, int mod, int frame_mode, int 
     }
 }
 
+static int
+dmr_ambe49_should_skip_static_overlay(const char ambe_d[49]) {
+    return dmr_ambe49_is_default_silence(ambe_d) == 1 || dmr_ambe49_has_zero_tail(ambe_d) == 1;
+}
+
+static void
+dmr_static_advance_skipped_frame(int frame_mode, int* counter) {
+    if (counter == NULL) {
+        return;
+    }
+    *counter += (frame_mode == 1) ? 1 : 49;
+}
+
+int
+ken_dmr_scrambler_apply_frame49(dsd_state* state, int slot, char ambe_d[49]) {
+    if (state == NULL || ambe_d == NULL || state->ken_sc != 1) {
+        return 0;
+    }
+
+    slot = (slot == 1) ? 1 : 0;
+    if (dmr_ambe49_should_skip_static_overlay(ambe_d) == 1) {
+        dmr_static_advance_skipped_frame(0, &state->static_ks_counter[slot]);
+        return 0;
+    }
+
+    xor_keystream_bits_frame49(state->static_ks_bits[slot], 882, 0, 0, 0, &state->static_ks_counter[slot], ambe_d);
+    return 1;
+}
+
+int
+anytone_bp_apply_frame49(dsd_state* state, int slot, char ambe_d[49]) {
+    if (state == NULL || ambe_d == NULL || state->any_bp != 1) {
+        return 0;
+    }
+
+    slot = (slot == 1) ? 1 : 0;
+    if (dmr_ambe49_should_skip_static_overlay(ambe_d) == 1) {
+        dmr_static_advance_skipped_frame(0, &state->static_ks_counter[slot]);
+        return 0;
+    }
+
+    xor_keystream_bits_frame49(state->static_ks_bits[slot], 16, 0, 0, 0, &state->static_ks_counter[slot], ambe_d);
+    return 1;
+}
+
 void
 straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49]) {
     if (state == NULL || ambe_d == NULL) {
@@ -511,6 +565,11 @@ straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49]) {
     }
 
     slot = (slot == 1) ? 1 : 0;
+    if (dmr_ambe49_should_skip_static_overlay(ambe_d) == 1) {
+        dmr_static_advance_skipped_frame(state->straight_frame_mode, &state->static_ks_counter[slot]);
+        return;
+    }
+
     xor_keystream_bits_frame49(state->static_ks_bits[slot], state->straight_mod, state->straight_frame_mode,
                                state->straight_frame_off, state->straight_frame_step, &state->static_ks_counter[slot],
                                ambe_d);
@@ -532,6 +591,53 @@ dmr_ambe49_is_default_silence(const char ambe_d[49]) {
         }
     }
 
+    return 1;
+}
+
+int
+dmr_ambe49_has_zero_tail(const char ambe_d[49]) {
+    if (ambe_d == NULL) {
+        return 0;
+    }
+
+    for (int i = 24; i < 44; i++) {
+        if ((((unsigned char)ambe_d[i]) & 1U) != 0U) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int
+dmr_ambe49_should_skip_voice_stream(const char ambe_d[49]) {
+    return dmr_ambe49_is_default_silence(ambe_d) == 1 || dmr_ambe49_has_zero_tail(ambe_d) == 1;
+}
+
+int
+dmr_voice_stream_apply_frame49(const uint8_t* ks_bits, long int* bit_counter, int algid, char ambe_d[49]) {
+    if (ks_bits == NULL || bit_counter == NULL || ambe_d == NULL) {
+        return 0;
+    }
+
+    if (*bit_counter < 0) {
+        *bit_counter = 0;
+    }
+
+    if (dmr_ambe49_should_skip_voice_stream(ambe_d) == 1) {
+        *bit_counter += 49;
+        if (algid != 0x02) {
+            *bit_counter += 7;
+        }
+        return 0;
+    }
+
+    for (int i = 0; i < 49; i++) {
+        ambe_d[i] ^= (char)(ks_bits[*bit_counter] & 1U);
+        (*bit_counter)++;
+    }
+    if (algid != 0x02) {
+        *bit_counter += 7;
+    }
     return 1;
 }
 
@@ -626,6 +732,11 @@ vertex_key_map_apply_frame49(dsd_state* state, int slot, unsigned long long key,
         }
         state->vertex_ks_active_idx[slot] = idx;
         state->vertex_ks_counter[slot] = 0;
+    }
+
+    if (dmr_ambe49_should_skip_static_overlay(ambe_d) == 1) {
+        dmr_static_advance_skipped_frame(state->vertex_ks_frame_mode[idx], &state->vertex_ks_counter[slot]);
+        return 1;
     }
 
     xor_keystream_bits_frame49(state->vertex_ks_bits[idx], state->vertex_ks_mod[idx], state->vertex_ks_frame_mode[idx],

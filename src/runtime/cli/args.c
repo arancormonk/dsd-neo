@@ -741,6 +741,19 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             dmr_vertex_ks_csv_cli = argv[i] + 20;                                                                      \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-force-algid") == 0) {                                                               \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--dmr-force-algid requires a hex ALGID value\n");                                           \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            dmr_force_algid_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--dmr-force-algid=", 18) == 0) {                                                         \
+            dmr_force_algid_cli = argv[i] + 18;                                                                        \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {                                                  \
             const char* sv = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             if (sv && *sv) {                                                                                           \
@@ -1153,6 +1166,19 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
+    }                                                                                                                  \
+    if (dmr_force_algid_cli) {                                                                                         \
+        char hex[3];                                                                                                   \
+        size_t nhex = 0;                                                                                               \
+        unsigned long long alg = 0ULL;                                                                                 \
+        if (!cli_collect_hex_digits(dmr_force_algid_cli, hex, sizeof hex, &nhex) || nhex == 0 || nhex > 2              \
+            || !cli_parse_hex_u64_n(hex, nhex, &alg)) {                                                                \
+            LOG_ERROR("Invalid --dmr-force-algid value\n");                                                            \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        state->M = (int)(alg & 0xFFU);                                                                                 \
+        LOG_NOTICE("Force DMR ALG ID 0x%02X over Missing PI header/LE Encryption Identifiers (DMR)\n", state->M);      \
     }
 
 int
@@ -1180,6 +1206,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* dmr_baofeng_pc5_cli = NULL;
     const char* dmr_csi_ee72_cli = NULL;
     const char* dmr_vertex_ks_csv_cli = NULL;
+    const char* dmr_force_algid_cli = NULL;
     const char* iq_capture_cli = NULL;
     const char* iq_capture_format_cli = NULL;
     const char* iq_capture_max_mb_cli = NULL;
@@ -1306,6 +1333,20 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 state->keyloader = 0;                                                                                  \
             }                                                                                                          \
             break;                                                                                                     \
+        case '_': {                                                                                                    \
+            unsigned long seed = 0UL;                                                                                  \
+            if (!cli_parse_ulong_option("-_", optarg, 10, &seed, out_exit_rc)) {                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (seed > 0x1FFUL) {                                                                                      \
+                seed = 0x1FFUL;                                                                                        \
+            } else if (seed == 0UL) {                                                                                  \
+                seed = 228UL;                                                                                          \
+            }                                                                                                          \
+            state->nxdn_pn95_seed = (uint16_t)seed;                                                                    \
+            LOG_NOTICE("NXDN PN95 Seed Value set to: %03u\n", (unsigned)state->nxdn_pn95_seed);                        \
+            break;                                                                                                     \
+        }                                                                                                              \
         case '2':                                                                                                      \
             state->tyt_bp = 1;                                                                                         \
             DSD_CLI_PARSE_U64_OR_RETURN("-2", optarg, 16, state->H);                                                   \
@@ -1402,6 +1443,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     state->H = k1 & 0xFFFFFFFFFFULL;                                                                   \
                     state->K1 = state->H;                                                                              \
                     state->K2 = state->K3 = state->K4 = 0ULL;                                                          \
+                    state->aes_key_segments[0] = state->aes_key_segments[1] = 0U;                                      \
                     LOG_NOTICE("Hytera BP key loaded (40-bit)\n");                                                     \
                 } else if (nhex == 32) {                                                                               \
                     if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)) {           \
@@ -1419,6 +1461,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     state->A3[0] = state->A3[1] = 0ULL;                                                                \
                     state->A4[0] = state->A4[1] = 0ULL;                                                                \
                     state->aes_key_loaded[0] = state->aes_key_loaded[1] = (k1 != 0ULL || k2 != 0ULL) ? 1 : 0;          \
+                    state->aes_key_segments[0] = state->aes_key_segments[1] = 2U;                                      \
                                                                                                                        \
                     DSD_MEMSET(state->aes_key, 0, sizeof(state->aes_key));                                             \
                     for (int i = 0; i < 8; i++) {                                                                      \
@@ -1445,6 +1488,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     state->A4[0] = state->A4[1] = k4;                                                                  \
                     state->aes_key_loaded[0] = state->aes_key_loaded[1] =                                              \
                         (k1 != 0ULL || k2 != 0ULL || k3 != 0ULL || k4 != 0ULL) ? 1 : 0;                                \
+                    state->aes_key_segments[0] = state->aes_key_segments[1] = 4U;                                      \
                                                                                                                        \
                     DSD_MEMSET(state->aes_key, 0, sizeof(state->aes_key));                                             \
                     for (int i = 0; i < 8; i++) {                                                                      \
@@ -1458,6 +1502,13 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     LOG_ERROR("-H expects 10, 32, or 64 hex characters (spaces allowed)\n");                           \
                     cli_set_exit_rc(out_exit_rc, 1);                                                                   \
                     return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                if (state->K1 != 0ULL || state->K2 != 0ULL || state->K3 != 0ULL || state->K4 != 0ULL) {                \
+                    opts->dmr_mute_encL = 0;                                                                           \
+                    opts->dmr_mute_encR = 0;                                                                           \
+                } else {                                                                                               \
+                    opts->dmr_mute_encL = 1;                                                                           \
+                    opts->dmr_mute_encR = 1;                                                                           \
                 }                                                                                                      \
                 state->keyloader = 0;                                                                                  \
             }                                                                                                          \
@@ -1700,11 +1751,24 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);                                          \
             break;                                                                                                     \
         }                                                                                                              \
-        case 'R':                                                                                                      \
-            DSD_STRNCPY(opts->symbol_out_file, optarg, 1023);                                                          \
-            opts->symbol_out_file[1023] = '\0';                                                                        \
-            opts->symbol_out_file_is_auto = 0;                                                                         \
+        case 'R': {                                                                                                    \
+            long key = 0;                                                                                              \
+            if (!cli_parse_long_option("-R", optarg, 10, &key, out_exit_rc)) {                                         \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (key < 0) {                                                                                             \
+                LOG_ERROR("Invalid -R value \"%s\"\n", optarg ? optarg : "");                                          \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (key > 0x7FFFL) {                                                                                       \
+                key = 0x7FFFL;                                                                                         \
+            }                                                                                                          \
+            state->R = (unsigned long long)key;                                                                        \
+            state->keyloader = 0;                                                                                      \
+            LOG_NOTICE("NXDN/dPMR scrambler key loaded: %s\n", DSD_SECRET_REDACTED);                                   \
             break;                                                                                                     \
+        }                                                                                                              \
         case 'v': {                                                                                                    \
             /* Filtering bitmap (PBF/LPF/HPF/HPFD) -- accepts hex or dec */                                            \
             unsigned long bm = 0;                                                                                      \
@@ -1861,21 +1925,23 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_NOTICE("Setting symbol rate to 9600 / second\n");                                                  \
-                LOG_NOTICE("Decoding EDACS Extended Addressing w/ ESK and ProVoice frames.\n");                        \
+                LOG_NOTICE("Decoding EDACS STD/NET w/ ESK and ProVoice frames.\n");                                    \
                 LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");                                         \
+                if (optarg[1] != 0) {                                                                                  \
+                    if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {                     \
+                        LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");                              \
+                        state->edacs_a_bits = 4;                                                                       \
+                        state->edacs_f_bits = 4;                                                                       \
+                        state->edacs_s_bits = 3;                                                                       \
+                    }                                                                                                  \
+                    LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,     \
+                               state->edacs_s_bits);                                                                   \
+                }                                                                                                      \
                 opts->rtl_dsp_bw_khz = 24;                                                                             \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
             } else if (optarg[0] == 'e') {                                                                             \
-                if (optarg[1] != 0) {                                                                                  \
-                    char abits[2] = {optarg[1], 0};                                                                    \
-                    char fbits[2] = {optarg[2], 0};                                                                    \
-                    char sbits[2] = {optarg[3], 0};                                                                    \
-                    state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
-                    state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
-                    state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
-                }                                                                                                      \
                 opts->frame_dstar = 0;                                                                                 \
                 opts->frame_x2tdma = 0;                                                                                \
                 opts->frame_p25p1 = 0;                                                                                 \
@@ -1904,29 +1970,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 LOG_NOTICE("Setting symbol rate to 9600 / second\n");                                                  \
                 LOG_NOTICE("Decoding EDACS EA/ProVoice frames.\n");                                                    \
                 LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");                                         \
-                if (optarg[1] != 0) {                                                                                  \
-                    if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {                     \
-                        LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");                              \
-                        state->edacs_a_bits = 4;                                                                       \
-                        state->edacs_f_bits = 4;                                                                       \
-                        state->edacs_s_bits = 3;                                                                       \
-                    }                                                                                                  \
-                    LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,     \
-                               state->edacs_s_bits);                                                                   \
-                }                                                                                                      \
                 opts->rtl_dsp_bw_khz = 24;                                                                             \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
             } else if (optarg[0] == 'E') {                                                                             \
-                if (optarg[1] != 0) {                                                                                  \
-                    char abits[2] = {optarg[1], 0};                                                                    \
-                    char fbits[2] = {optarg[2], 0};                                                                    \
-                    char sbits[2] = {optarg[3], 0};                                                                    \
-                    state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
-                    state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
-                    state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
-                }                                                                                                      \
                 opts->frame_dstar = 0;                                                                                 \
                 opts->frame_x2tdma = 0;                                                                                \
                 opts->frame_p25p1 = 0;                                                                                 \
@@ -1955,16 +2003,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 LOG_NOTICE("Setting symbol rate to 9600 / second\n");                                                  \
                 LOG_NOTICE("Decoding EDACS EA/ProVoice w/ ESK frames.\n");                                             \
                 LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");                                         \
-                if (optarg[1] != 0) {                                                                                  \
-                    if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {                     \
-                        LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");                              \
-                        state->edacs_a_bits = 4;                                                                       \
-                        state->edacs_f_bits = 4;                                                                       \
-                        state->edacs_s_bits = 3;                                                                       \
-                    }                                                                                                  \
-                    LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,     \
-                               state->edacs_s_bits);                                                                   \
-                }                                                                                                      \
                 opts->rtl_dsp_bw_khz = 24;                                                                             \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
@@ -2223,6 +2261,13 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 v = 255;                                                                                               \
             }                                                                                                          \
             state->K = v;                                                                                              \
+            if (state->K != 0) {                                                                                       \
+                opts->dmr_mute_encL = 0;                                                                               \
+                opts->dmr_mute_encR = 0;                                                                               \
+            } else {                                                                                                   \
+                opts->dmr_mute_encL = 1;                                                                               \
+                opts->dmr_mute_encR = 1;                                                                               \
+            }                                                                                                          \
             LOG_NOTICE("Basic Privacy key loaded (forced priority): %s\n", DSD_SECRET_REDACTED);                       \
             break;                                                                                                     \
         }                                                                                                              \
@@ -2274,7 +2319,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_sps = 0;
     int cli_manual_timing_center = 0;
     while ((c = getopt(argc, argv,
-                       "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:"
+                       "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:_:"
                        "89:Ek:I:J:Oj^"))
            != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();

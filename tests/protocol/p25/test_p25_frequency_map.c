@@ -125,6 +125,13 @@ main(void) {
         rc |= expect_eq_long("FDMA ch=10", fA, 851000000 + 10 * 100 * 125);
     }
 
+    // Case 1b: full channel value 0x0000 is valid when IDEN 0 exists.
+    {
+        long f = 0;
+        p25_test_frequency_for(0, /*type*/ 1, /*tdma*/ 0, 769000000 / 5, 100, 0x0000, 0, &f);
+        rc |= expect_eq_long("FDMA full channel zero", f, 769000000);
+    }
+
     // Case 2: TDMA mapping with slots-per-carrier division (type=4 => denom=4)
     {
         long f = 0;

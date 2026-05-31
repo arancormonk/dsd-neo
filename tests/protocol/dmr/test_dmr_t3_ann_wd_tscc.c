@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -192,6 +193,38 @@ build_ann_wd_tscc(uint8_t* bits, uint8_t* bytes, uint16_t ch1, uint16_t ch2, uin
     write_bits_u32(bits, 68U, ch2 & 0x0FFFU, 12U);
 }
 
+static void
+build_t3_grant(uint8_t* bits, uint8_t* bytes, uint8_t opcode, uint16_t lpcn, uint8_t slot, uint32_t target,
+               uint32_t source) {
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
+    bytes[0] = (uint8_t)(opcode & 0x3FU);
+    write_bits_u32(bits, 16U, lpcn & 0x0FFFU, 12U);
+    bits[28] = (uint8_t)(slot & 1U);
+    write_bits_u32(bits, 32U, target & 0x00FFFFFFU, 24U);
+    write_bits_u32(bits, 56U, source & 0x00FFFFFFU, 24U);
+}
+
+static void
+build_c_aloha_small(uint8_t* bits, uint8_t* bytes, uint16_t net, uint16_t site) {
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
+    bytes[0] = 25U; /* C_ALOHA_SYS_PARMS */
+    write_bits_u32(bits, 40U, 1U, 2U);
+    write_bits_u32(bits, 42U, net & 0x007FU, 7U);
+    write_bits_u32(bits, 49U, site & 0x001FU, 5U);
+    write_bits_u32(bits, 54U, 2U, 2U);
+}
+
+static int
+expect_active_channel_contains(const char* tag, const char* actual, const char* expected) {
+    if (strstr(actual, expected) == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: %s: expected '%s' in '%s'\n", tag, expected, actual);
+        return 1;
+    }
+    return 0;
+}
+
 extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
 
 int
@@ -244,6 +277,41 @@ main(void) {
     rc |= expect_true("deferred tscc switch calls return-to-cc", g_return_to_cc_calls == 1);
     rc |= expect_true("deferred tscc switch does not reset", g_dmr_reset_blocks_calls == 0);
     rc |= expect_true("deferred tscc switch restores old CC", state.trunk_cc_freq == old_cc);
+
+    dsd_state_ext_free_all(&state);
+    init_env(&opts, &state);
+    build_t3_grant(bits, bytes, 49U, 0x0123U, 0U, 1001U, 2002U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |=
+        expect_active_channel_contains("group grant active-channel kind", state.active_channel[0], "Active Group Ch:");
+
+    dsd_state_ext_free_all(&state);
+    init_env(&opts, &state);
+    build_t3_grant(bits, bytes, 52U, 0x0124U, 1U, 1002U, 2003U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_active_channel_contains("data grant active-channel kind", state.active_channel[1], "Active Data Ch:");
+
+    dsd_state_ext_free_all(&state);
+    init_env(&opts, &state);
+    build_t3_grant(bits, bytes, 48U, 0x0125U, 0U, 1003U, 2004U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_active_channel_contains("private grant active-channel kind", state.active_channel[0],
+                                         "Active Private Ch:");
+
+    dsd_state_ext_free_all(&state);
+    init_env(&opts, &state);
+    build_c_aloha_small(bits, bytes, 2U, 27U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_true("C_ALOHA applies default DMRLA split",
+                      strcmp(state.dmr_site_parms, "TIII Small:3-1.28;105B; ") == 0);
+
+    dsd_state_ext_free_all(&state);
+    init_env(&opts, &state);
+    opts.dmr_dmrla_is_set = 1;
+    opts.dmr_dmrla_n = 0;
+    build_c_aloha_small(bits, bytes, 2U, 27U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_true("C_ALOHA honors raw DMRLA override", strcmp(state.dmr_site_parms, "TIII Small:2-27;105B; ") == 0);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_state_ext_free_all(&state);

@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_tiii_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
@@ -96,10 +97,10 @@ typedef struct {
 static void
 dmr_flco_print_type_color(uint8_t type, const char* type1_color, const char* type2_color, const char* type3_color) {
     if (type == 1) {
-        DSD_FPRINTF(stderr, "%s \\n", type1_color);
+        DSD_FPRINTF(stderr, "%s \n", type1_color);
     }
     if (type == 2) {
-        DSD_FPRINTF(stderr, "%s \\n", type2_color);
+        DSD_FPRINTF(stderr, "%s \n", type2_color);
     }
     if (type == 3) {
         DSD_FPRINTF(stderr, "%s", type3_color);
@@ -134,9 +135,8 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
 }
 
 static void
-dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
-    if (*ctx->IrrecoverableErrors == 0 && ctx->CRCCorrect == 1 && ctx->pf == 1 && ctx->fid == 0x20
-        && (ctx->so & 0x40) == 0x40) {
+dmr_flco_detect_kenwood_sc(dmr_flco_ctx* ctx, int crc_ok) {
+    if (crc_ok && ctx->pf == 1 && ctx->fid == 0x20 && (ctx->so & 0x40) == 0x40) {
         ctx->pf = 0;
         ctx->fid = 0;
         ctx->is_kenwood_sc = 1;
@@ -144,12 +144,37 @@ dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
             ctx->so ^= 0x40;
         }
     }
+}
 
+static void
+dmr_flco_detect_kirisun_le(dmr_flco_ctx* ctx, int crc_ok) {
+    if (crc_ok && ctx->fid == 0x0A) {
+        ctx->opts->dmr_le = ((ctx->so & 0x40U) != 0U) ? 3 : 0;
+    }
+}
+
+static void
+dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx) {
     if (*ctx->IrrecoverableErrors == 0 && ctx->flco == 0x09 && ctx->fid == 0x68) {
         DSD_SNPRINTF(ctx->state->dmr_branding, sizeof(ctx->state->dmr_branding), "%s", "  Hytera");
         DSD_SNPRINTF(ctx->state->dmr_branding_sub, sizeof(ctx->state->dmr_branding_sub), "XPT ");
     }
+}
 
+static void
+dmr_flco_detect_invalid_hytera_enhanced(dmr_flco_ctx* ctx) {
+    if (ctx->fid == 0x68 && ctx->flco == 0x02 && *ctx->IrrecoverableErrors == 0) {
+        *ctx->IrrecoverableErrors = 1;
+    }
+}
+
+static void
+dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
+    const int crc_ok = (*ctx->IrrecoverableErrors == 0 && ctx->CRCCorrect == 1);
+    dmr_flco_detect_kenwood_sc(ctx, crc_ok);
+    dmr_flco_detect_kirisun_le(ctx, crc_ok);
+    dmr_flco_detect_hytera_xpt(ctx);
+    dmr_flco_detect_invalid_hytera_enhanced(ctx);
     if (strcmp(ctx->state->dmr_branding_sub, "XPT ") == 0) {
         ctx->is_xpt = 1;
     }
@@ -241,7 +266,7 @@ dmr_flco_handle_motorola_or_tait(dmr_flco_ctx* ctx) {
     }
 
     if (ctx->type == 2 && ctx->flco == 0x30) {
-        DSD_FPRINTF(stderr, "%s \\n", KRED);
+        DSD_FPRINTF(stderr, "%s \n", KRED);
         dmr_print_slot_tag(ctx->state);
         DSD_FPRINTF(stderr, " Data Terminator (TD_LC) ");
         DSD_FPRINTF(stderr, "%s", KNRM);
@@ -290,7 +315,7 @@ dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
     (void)ConvertBitIntoBytes(&ctx->lc_bits[20], 4);
     (void)ConvertBitIntoBytes(&ctx->lc_bits[48], 8);
 
-    DSD_FPRINTF(stderr, "%s \\n", KGRN);
+    DSD_FPRINTF(stderr, "%s \n", KGRN);
     dmr_print_slot_tag(ctx->state);
     DSD_FPRINTF(stderr, " ");
     if (ctx->opts->payload == 1) {
@@ -312,7 +337,7 @@ dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
     DSD_FPRINTF(stderr, "Call Alert ");
 
     if (ctx->opts->payload == 1) {
-        DSD_FPRINTF(stderr, "\\n  ");
+        DSD_FPRINTF(stderr, "\n  ");
         DSD_FPRINTF(stderr, "%s", KYEL);
     }
 
@@ -405,10 +430,11 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
             ctx->state->payload_miR = mi;
         }
         ctx->opts->dmr_le = 2;
+        *ctx->IrrecoverableErrors = 0;
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " (Checksum Err);");
-        DSD_FPRINTF(stderr, "\\n");
+        DSD_FPRINTF(stderr, "\n");
     }
 
     DSD_FPRINTF(stderr, "%s ", KNRM);
@@ -736,7 +762,7 @@ dmr_flco_print_hytera_basic_key_slot0(const dmr_flco_ctx* ctx) {
     if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 0
         && ctx->state->payload_algid == 0) {
         if (ctx->state->K2 != 0) {
-            DSD_FPRINTF(stderr, "\\n ");
+            DSD_FPRINTF(stderr, "\n ");
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
@@ -749,7 +775,7 @@ dmr_flco_print_hytera_basic_key_slot1(const dmr_flco_ctx* ctx) {
     if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 1
         && ctx->state->payload_algidR == 0) {
         if (ctx->state->K2 != 0) {
-            DSD_FPRINTF(stderr, "\\n ");
+            DSD_FPRINTF(stderr, "\n ");
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
@@ -797,14 +823,14 @@ static void
 dmr_flco_print_aes_24_25_keys(const dmr_flco_ctx* ctx) {
     if (ctx->slot == 0 && (ctx->state->payload_algid == 0x25 || ctx->state->payload_algid == 0x24)
         && ctx->state->aes_key_loaded[0] == 1) {
-        DSD_FPRINTF(stderr, "\\n ");
+        DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && (ctx->state->payload_algidR == 0x25 || ctx->state->payload_algidR == 0x24)
         && ctx->state->aes_key_loaded[1] == 1) {
-        DSD_FPRINTF(stderr, "\\n ");
+        DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
@@ -815,14 +841,14 @@ static void
 dmr_flco_print_aes_36_37_keys(const dmr_flco_ctx* ctx) {
     if (ctx->slot == 0 && (ctx->state->payload_algid == 0x36 || ctx->state->payload_algid == 0x37)
         && ctx->state->aes_key_loaded[0] == 1) {
-        DSD_FPRINTF(stderr, "\\n ");
+        DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key: %s", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && (ctx->state->payload_algidR == 0x36 || ctx->state->payload_algidR == 0x37)
         && ctx->state->aes_key_loaded[1] == 1) {
-        DSD_FPRINTF(stderr, "\\n ");
+        DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
         DSD_FPRINTF(stderr, "Key: %s", DSD_SECRET_REDACTED);
         DSD_FPRINTF(stderr, "%s ", KNRM);
@@ -848,7 +874,7 @@ dmr_flco_finalize(dmr_flco_ctx* ctx) {
     }
     if (*ctx->IrrecoverableErrors != 0) {
         if (ctx->type != 3) {
-            DSD_FPRINTF(stderr, "\\n");
+            DSD_FPRINTF(stderr, "\n");
         }
         DSD_FPRINTF(stderr, "%s", KRED);
         dmr_print_slot_tag(ctx->state);
@@ -1143,6 +1169,7 @@ static void
 dmr_slco_fill_sys_fields(const dsd_opts* opts, uint8_t slco_bits[], dmr_slco_data* data) {
     uint8_t model = (uint8_t)ConvertBitIntoBytes(&slco_bits[4], 2);
     uint16_t site_bits = 0;
+    uint16_t default_n = dmr_tiii_model_default_split_n(model);
     DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "");
 
     if (model == 0) {
@@ -1167,13 +1194,8 @@ dmr_slco_fill_sys_fields(const dsd_opts* opts, uint8_t slco_bits[], dmr_slco_dat
         site_bits = 10;
     }
 
-    if (opts->dmr_dmrla_is_set == 1) {
-        data->n = opts->dmr_dmrla_n;
-    }
-    if (data->n > site_bits) {
-        data->n = site_bits;
-    }
-    data->sub_mask = (data->n == 0) ? 0U : (uint16_t)((1U << data->n) - 1U);
+    data->n = dmr_tiii_effective_split_n(default_n, opts->dmr_dmrla_is_set, opts->dmr_dmrla_n, site_bits);
+    data->sub_mask = dmr_tiii_subsite_mask(data->n);
 }
 
 static void
@@ -1221,8 +1243,11 @@ dmr_slco_decode(uint8_t slco_bits[], const dsd_opts* opts, dmr_slco_data* data) 
 static void
 dmr_slco_print_tiii_site_parms(dsd_state* state, const dmr_slco_data* data, uint16_t syscode) {
     if (data->n != 0) {
+        uint16_t display_net = dmr_tiii_display_net(data->net, data->n);
+        uint16_t display_site = dmr_tiii_display_site(data->site, data->n);
+        uint16_t display_subsite = dmr_tiii_display_subsite(data->site, data->sub_mask, data->n);
         DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d.%d;%04X; ", data->model_str,
-                     data->net, (data->site >> data->n), (data->site & data->sub_mask), syscode);
+                     display_net, display_site, display_subsite, syscode);
     } else {
         DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d;%04X; ", data->model_str,
                      data->net, data->site, syscode);
@@ -1233,8 +1258,11 @@ static void
 dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco_bits[], const dmr_slco_data* data) {
     uint16_t syscode = (uint16_t)ConvertBitIntoBytes(&slco_bits[4], 14);
     if (data->n != 0) {
+        uint16_t display_net = dmr_tiii_display_net(data->net, data->n);
+        uint16_t display_site = dmr_tiii_display_site(data->site, data->n);
+        uint16_t display_subsite = dmr_tiii_display_subsite(data->site, data->sub_mask, data->n);
         DSD_FPRINTF(stderr, " SLC_C_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Reg Req: %d; CSC: %d;", data->model_str,
-                    data->net, (data->site >> data->n), (data->site & data->sub_mask), data->reg, data->csc);
+                    display_net, display_site, display_subsite, data->reg, data->csc);
     } else {
         DSD_FPRINTF(stderr, " SLC_C_SYS_PARMS: %s; Net ID: %d; Site ID: %d; Reg Req: %d;", data->model_str, data->net,
                     data->site, data->reg);
@@ -1254,8 +1282,11 @@ static void
 dmr_slco_handle_p_sys_parms(dsd_state* state, uint8_t slco_bits[], const dmr_slco_data* data) {
     uint16_t syscode = (uint16_t)ConvertBitIntoBytes(&slco_bits[4], 14);
     if (data->n != 0) {
+        uint16_t display_net = dmr_tiii_display_net(data->net, data->n);
+        uint16_t display_site = dmr_tiii_display_site(data->site, data->n);
+        uint16_t display_subsite = dmr_tiii_display_subsite(data->site, data->sub_mask, data->n);
         DSD_FPRINTF(stderr, " SLC_P_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Comp CC: %d;", data->model_str,
-                    data->net, (data->site >> data->n), (data->site & data->sub_mask), data->reg);
+                    display_net, display_site, display_subsite, data->reg);
     } else {
         DSD_FPRINTF(stderr, " SLC_P_SYS_PARMS: %s; Net ID: %d; Site ID: %d;", data->model_str, data->net, data->site);
     }

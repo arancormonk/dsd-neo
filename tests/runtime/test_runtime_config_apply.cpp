@@ -67,6 +67,16 @@ expect_int_eq(const char* label, int got, int want) {
 }
 
 static int
+expect_u64_eq(const char* label, uint64_t got, uint64_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "FAIL: %s (got %016llX want %016llX)\n", label, (unsigned long long)got,
+                    (unsigned long long)want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_float_ne(const char* label, float lhs, float rhs) {
     if (fabsf(lhs - rhs) <= 1e-6f) {
         DSD_FPRINTF(stderr, "FAIL: %s (both %.6f)\n", label, lhs);
@@ -584,6 +594,66 @@ test_call_alert_off_selection_survives_ui_command_path(void) {
     rc |= expect_int_eq(
         "call alert toggle with empty selection suppresses data event",
         dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_DATA), 0);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+static int
+test_ui_aes_key_command_clears_manual_hytera_fields(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    state->H = 0x000000AABBCCDDEEULL;
+    state->K1 = 0x1111111111111111ULL;
+    state->K2 = 0x2222222222222222ULL;
+    state->K3 = 0x3333333333333333ULL;
+    state->K4 = 0x4444444444444444ULL;
+    state->keyloader = 1;
+    state->payload_keyid = 7;
+    state->payload_keyidR = 8;
+    opts->dmr_mute_encL = 1;
+    opts->dmr_mute_encR = 1;
+
+    struct AesKeyPayload {
+        uint64_t K1, K2, K3, K4;
+    } p = {
+        0x20029736A5D91042ULL,
+        0xC923EB0697484433ULL,
+        0x005EFC58A1905195ULL,
+        0xE28E9C7836AA2DB8ULL,
+    };
+
+    ui_post_cmd(UI_CMD_KEY_AES_SET, &p, sizeof p);
+    ui_drain_cmds(opts, state);
+
+    int rc = 0;
+    rc |= expect_u64_eq("UI AES A1 slot 0", state->A1[0], p.K1);
+    rc |= expect_u64_eq("UI AES A2 slot 0", state->A2[0], p.K2);
+    rc |= expect_u64_eq("UI AES A3 slot 0", state->A3[0], p.K3);
+    rc |= expect_u64_eq("UI AES A4 slot 0", state->A4[0], p.K4);
+    rc |= expect_u64_eq("UI AES A1 slot 1", state->A1[1], p.K1);
+    rc |= expect_u64_eq("UI AES A2 slot 1", state->A2[1], p.K2);
+    rc |= expect_u64_eq("UI AES A3 slot 1", state->A3[1], p.K3);
+    rc |= expect_u64_eq("UI AES A4 slot 1", state->A4[1], p.K4);
+    rc |= expect_int_eq("UI AES loaded slot 0", state->aes_key_loaded[0], 1);
+    rc |= expect_int_eq("UI AES loaded slot 1", state->aes_key_loaded[1], 1);
+    rc |= expect_int_eq("UI AES segment count slot 0", (int)state->aes_key_segments[0], 4);
+    rc |= expect_int_eq("UI AES segment count slot 1", (int)state->aes_key_segments[1], 4);
+    rc |= expect_u64_eq("UI AES clears H", state->H, 0ULL);
+    rc |= expect_u64_eq("UI AES clears K1", state->K1, 0ULL);
+    rc |= expect_u64_eq("UI AES clears K2", state->K2, 0ULL);
+    rc |= expect_u64_eq("UI AES clears K3", state->K3, 0ULL);
+    rc |= expect_u64_eq("UI AES clears K4", state->K4, 0ULL);
+    rc |= expect_int_eq("UI AES disables keyloader", state->keyloader, 0);
+    rc |= expect_int_eq("UI AES clears slot 0 payload key ID", state->payload_keyid, 0);
+    rc |= expect_int_eq("UI AES clears slot 1 payload key ID", state->payload_keyidR, 0);
+    rc |= expect_int_eq("UI AES unmutes encrypted left", opts->dmr_mute_encL, 0);
+    rc |= expect_int_eq("UI AES unmutes encrypted right", opts->dmr_mute_encR, 0);
 
     free_test_runtime(&runtime);
     return rc;
@@ -1116,6 +1186,7 @@ main(void) {
     rc |= test_ui_profile_menu_no_profiles_does_not_apply_base_config();
     rc |= test_stereo_file_hot_swap_rolls_back_to_live_input();
     rc |= test_call_alert_off_selection_survives_ui_command_path();
+    rc |= test_ui_aes_key_command_clears_manual_hytera_fields();
     rc |= test_return_cc_uses_pulse_rate_not_stale_file_rate();
     rc |= test_file_config_apply_keeps_live_pulse_timing();
     rc |= test_file_config_apply_keeps_live_socket_timing();

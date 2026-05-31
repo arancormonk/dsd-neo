@@ -94,10 +94,13 @@ test_vendor_privacy_long_opts_are_removed(void) {
     char arg3[] = "--dmr-csi-ee72=112233445566778899";
     char arg4[] = "--dmr-vertex-ks-csv";
     char arg5[] = "vertex_map.csv";
-    char arg6[] = "-fi";
-    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, NULL};
+    char arg6[] = "--dmr-force-algid=24";
+    char arg7[] = "--dmr-force-algid";
+    char arg8[] = "25";
+    char arg9[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, NULL};
 
-    int new_argc = dsd_cli_compact_args(7, argv);
+    int new_argc = dsd_cli_compact_args(10, argv);
     if (new_argc != 2) {
         DSD_FPRINTF(stderr, "expected new_argc=2, got %d\n", new_argc);
         return 1;

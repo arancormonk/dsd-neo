@@ -8,7 +8,7 @@
  * @brief P25 encryption LFSR helper interfaces.
  *
  * Declares the P25-specific LFSR helpers implemented in
- * `src/protocol/p25/phase1/p25p1_ldu2.c`.
+ * `src/protocol/p25/p25_lfsr.c`.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_LFSR_H_H
@@ -22,6 +22,7 @@ extern "C" {
 
 void LFSRP(dsd_state* state);
 void LFSR128(dsd_state* state);
+void p25_lfsr128_slot(dsd_state* state, int slot);
 
 #ifdef __cplusplus
 }

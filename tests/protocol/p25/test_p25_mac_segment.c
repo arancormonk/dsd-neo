@@ -185,10 +185,71 @@ run_case(int type, uint8_t opcode, int expectB, int expectC) {
     return 0;
 }
 
+static int
+run_payload_len_case(const char* tag, int type, uint8_t opcode, uint8_t mfid, uint8_t payload_len, int expectB,
+                     int expectC) {
+    setenv("DSD_NEO_PDU_JSON", "1", 1);
+    dsd_neo_config_init(NULL);
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, tag) != 0) {
+        DSD_FPRINTF(stderr, "Failed to capture stderr: %s\n", strerror(errno));
+        return 200;
+    }
+
+    unsigned char mac[24];
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[0] = 1;
+    mac[1] = opcode;
+    mac[2] = mfid;
+    mac[3] = payload_len;
+    p25_test_process_mac_vpdu(type, mac, 24);
+
+    dsd_test_capture_stderr_end(&cap);
+
+    FILE* f = fopen(cap.path, "r");
+    if (!f) {
+        DSD_FPRINTF(stderr, "Failed to open %s\n", cap.path);
+        return 201;
+    }
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    int lenB = -1, lenC = -1;
+    if (parse_len_fields(buf, &lenB, &lenC) != 0) {
+        DSD_FPRINTF(stderr, "%s JSON parse failed: %s\n", tag, buf);
+        return 202;
+    }
+    if (lenB != expectB) {
+        DSD_FPRINTF(stderr, "%s lenB mismatch got B=%d want B=%d (C=%d)\n", tag, lenB, expectB, lenC);
+        return 203;
+    }
+    if (lenC != expectC) {
+        DSD_FPRINTF(stderr, "%s lenC mismatch got C=%d want C=%d\n", tag, lenC, expectC);
+        return 204;
+    }
+    (void)remove(cap.path);
+    return 0;
+}
+
 int
 main(void) {
     // FACCH capacity = 16 octets (after opcode). Choose opcode 0x23 (base table 0), MCO=35 → infer 34 → cap 16.
     int rc = run_case(/*FACCH*/ 0, 0x23, /*B*/ 16, /*C*/ 0);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_payload_len_case("p25_moto_81_len", /*FACCH*/ 0, 0x81, 0x90, 0x06, /*B*/ 6, /*C*/ 10);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_payload_len_case("p25_moto_8f_len", /*FACCH*/ 0, 0x8F, 0x90, 0x0B, /*B*/ 11, /*C*/ 5);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_payload_len_case("p25_moto_bf_len", /*FACCH*/ 0, 0xBF, 0x90, 0x00, /*B*/ 3, /*C*/ 13);
     if (rc != 0) {
         return rc;
     }

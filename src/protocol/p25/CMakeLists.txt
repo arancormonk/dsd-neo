@@ -7,6 +7,7 @@ target_sources(
         p25_callsign.c
         p25_crc.c
         p25_frequency.c
+        p25_lfsr.c
         p25_lcw.c
         p25_trunk_sm.c
         p25_trunk_sm_api.c

@@ -36,20 +36,8 @@
 #ifdef USE_RTLSDR
 #endif
 
-static int16_t
-saturating_llr_add(int acc, int value) {
-    acc += value;
-    if (acc > INT16_MAX) {
-        return INT16_MAX;
-    }
-    if (acc < INT16_MIN) {
-        return INT16_MIN;
-    }
-    return (int16_t)acc;
-}
-
 enum {
-    TSBK_REPETITIONS = 3,
+    TSBK_MAX_BLOCKS = 3,
     TSBK_DIBITS_PER_REP = 98,
     TSBK_DIBITS_WITH_STATUS = 101,
     TSBK_SOFT_BITS_PER_REP = 196,
@@ -60,11 +48,7 @@ enum {
 typedef struct {
     uint8_t tsbk_dibit[TSBK_DIBITS_PER_REP];
     int16_t tsbk_llr[TSBK_SOFT_BITS_PER_REP];
-    int16_t rep_llr[TSBK_REPETITIONS][TSBK_SOFT_BITS_PER_REP];
     uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK];
-    uint8_t rep_bits[TSBK_REPETITIONS][TSBK_BITS_PER_BLOCK];
-    uint8_t rep_bytes[TSBK_REPETITIONS][TSBK_BYTES_PER_BLOCK];
-    int rep_crc[TSBK_REPETITIONS];
     int tsbk_decoded_bits[TSBK_BITS_PER_BLOCK];
 } tsbk_decode_ctx_t;
 
@@ -94,9 +78,6 @@ tsbk_prepare_frame_state(dsd_opts* opts, dsd_state* state) {
 static void
 tsbk_init_decode_ctx(tsbk_decode_ctx_t* ctx) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
-    for (int i = 0; i < TSBK_REPETITIONS; i++) {
-        ctx->rep_crc[i] = -2;
-    }
 }
 
 static void
@@ -106,17 +87,6 @@ tsbk_bits_from_bytes(const uint8_t bytes[TSBK_BYTES_PER_BLOCK], int bits[TSBK_BI
         for (int bit = 0; bit < 8; bit++) {
             bits[bit_index++] = ((bytes[b] << bit) & 0x80) >> 7;
         }
-    }
-}
-
-static void
-tsbk_bytes_from_bits(const uint8_t bits[TSBK_BITS_PER_BLOCK], uint8_t bytes[TSBK_BYTES_PER_BLOCK]) {
-    for (int i = 0; i < TSBK_BYTES_PER_BLOCK; i++) {
-        int byte = 0;
-        for (int x = 0; x < 8; x++) {
-            byte = (byte << 1) | (bits[(i * 8) + x] & 1);
-        }
-        bytes[i] = (uint8_t)byte;
     }
 }
 
@@ -167,102 +137,12 @@ tsbk_read_repetition_samples(dsd_opts* opts, dsd_state* state, int* skipdibit, u
 }
 
 static int
-tsbk_collect_repetitions(dsd_opts* opts, dsd_state* state, tsbk_decode_ctx_t* ctx) {
-    int skipdibit = 36 - 14;
-    int reps_got = 0;
-
-    for (int rep = 0; rep < TSBK_REPETITIONS; rep++) {
-        tsbk_read_repetition_samples(opts, state, &skipdibit, ctx->tsbk_dibit, ctx->tsbk_llr);
-        tsbk_decode_repetition_bytes(ctx->tsbk_dibit, ctx->tsbk_llr, ctx->tsbk_byte);
-
-        DSD_MEMCPY(ctx->rep_llr[rep], ctx->tsbk_llr, sizeof(ctx->tsbk_llr));
-        tsbk_bits_from_bytes(ctx->tsbk_byte, ctx->tsbk_decoded_bits);
-        for (int i = 0; i < TSBK_BITS_PER_BLOCK; i++) {
-            ctx->rep_bits[rep][i] = (uint8_t)(ctx->tsbk_decoded_bits[i] & 1);
-        }
-        DSD_MEMCPY(ctx->rep_bytes[rep], ctx->tsbk_byte, TSBK_BYTES_PER_BLOCK);
-        ctx->rep_crc[rep] = crc16_lb_bridge(ctx->tsbk_decoded_bits, 80);
-
-        reps_got++;
-        if (((ctx->tsbk_byte[0] >> 7) & 0x1) != 0) {
-            break;
-        }
-    }
-
-    return reps_got;
-}
-
-static void
-tsbk_build_majority_bits(uint8_t rep_bits[TSBK_REPETITIONS][TSBK_BITS_PER_BLOCK], int reps,
-                         uint8_t maj_bits[TSBK_BITS_PER_BLOCK]) {
-    DSD_MEMSET(maj_bits, 0, TSBK_BITS_PER_BLOCK);
-    int thresh = (reps >= 2) ? ((reps + 1) / 2) : 1;
-    for (int i = 0; i < TSBK_BITS_PER_BLOCK; i++) {
-        int sum = 0;
-        for (int r = 0; r < reps; r++) {
-            sum += (int)rep_bits[r][i];
-        }
-        maj_bits[i] = (uint8_t)((sum >= thresh) ? 1 : 0);
-    }
-}
-
-static int
-tsbk_select_passing_repetition(const int rep_crc[TSBK_REPETITIONS], int reps) {
-    for (int r = 0; r < reps; r++) {
-        if (rep_crc[r] == 0) {
-            return r;
-        }
-    }
-    return -1;
-}
-
-static int
-tsbk_try_combined_soft_decode(dsd_state* state, tsbk_decode_ctx_t* ctx, int reps) {
-    int16_t combined_llr[TSBK_SOFT_BITS_PER_REP];
-    DSD_MEMSET(combined_llr, 0, sizeof(combined_llr));
-    for (int i = 0; i < TSBK_SOFT_BITS_PER_REP; i++) {
-        int acc = 0;
-        for (int r = 0; r < reps; r++) {
-            acc = saturating_llr_add(acc, ctx->rep_llr[r][i]);
-        }
-        combined_llr[i] = (int16_t)acc;
-    }
-
-    p25_12_candidate_t candidates[P25_12_MAX_CANDIDATES];
-    int candidate_count = p25_12_soft_llr_list(NULL, combined_llr, candidates, P25_12_MAX_CANDIDATES);
-    int selected = tsbk_select_crc_candidate(candidates, candidate_count, -1);
-    if (selected < 0) {
-        return -1;
-    }
-
-    DSD_MEMCPY(ctx->tsbk_byte, candidates[selected].bytes, TSBK_BYTES_PER_BLOCK);
-    state->p25_p1_soft_combined_ok++;
-    return 0;
-}
-
-static int
-tsbk_finalize_decode(dsd_state* state, tsbk_decode_ctx_t* ctx, int reps_got) {
-    uint8_t maj_bits[TSBK_BITS_PER_BLOCK];
-    int reps = (reps_got > 0) ? reps_got : 1;
-    tsbk_build_majority_bits(ctx->rep_bits, reps, maj_bits);
-
-    int sel_idx = tsbk_select_passing_repetition(ctx->rep_crc, reps);
-    if (sel_idx >= 0) {
-        DSD_MEMCPY(ctx->tsbk_byte, ctx->rep_bytes[sel_idx], TSBK_BYTES_PER_BLOCK);
-        return 0;
-    }
-
-    if (reps > 1 && tsbk_try_combined_soft_decode(state, ctx, reps) == 0) {
-        return 0;
-    }
-
-    int maj_bits_int[TSBK_BITS_PER_BLOCK];
-    for (int i = 0; i < TSBK_BITS_PER_BLOCK; i++) {
-        maj_bits_int[i] = (int)maj_bits[i];
-    }
-    int err = crc16_lb_bridge(maj_bits_int, 80);
-    tsbk_bytes_from_bits(maj_bits, ctx->tsbk_byte);
-    return err;
+tsbk_decode_block(dsd_opts* opts, dsd_state* state, int* skipdibit, tsbk_decode_ctx_t* ctx) {
+    tsbk_init_decode_ctx(ctx);
+    tsbk_read_repetition_samples(opts, state, skipdibit, ctx->tsbk_dibit, ctx->tsbk_llr);
+    tsbk_decode_repetition_bytes(ctx->tsbk_dibit, ctx->tsbk_llr, ctx->tsbk_byte);
+    tsbk_bits_from_bytes(ctx->tsbk_byte, ctx->tsbk_decoded_bits);
+    return crc16_lb_bridge(ctx->tsbk_decoded_bits, 80);
 }
 
 static void
@@ -554,19 +434,27 @@ tsbk_dispatch_message(dsd_opts* opts, dsd_state* state, const tsbk_decode_ctx_t*
 
 void
 processTSBK(dsd_opts* opts, dsd_state* state) {
-    tsbk_decode_ctx_t ctx;
-    unsigned long long int PDU[24];
-    DSD_MEMSET(PDU, 0, sizeof(PDU));
     tsbk_prepare_frame_state(opts, state);
-    tsbk_init_decode_ctx(&ctx);
-    int reps_got = tsbk_collect_repetitions(opts, state, &ctx);
-    int err = tsbk_finalize_decode(state, &ctx, reps_got);
-    tsbk_update_fec_counters(state, err);
 
-    int MFID = ctx.tsbk_byte[1];
-    int protectbit = (ctx.tsbk_byte[0] >> 6) & 0x1;
-    tsbk_build_mac_like_pdu(ctx.tsbk_byte, PDU);
-    tsbk_dispatch_message(opts, state, &ctx, err, MFID, protectbit, PDU);
+    int skipdibit = 36 - 14;
+    for (int block = 0; block < TSBK_MAX_BLOCKS; block++) {
+        tsbk_decode_ctx_t ctx;
+        unsigned long long int PDU[24];
+        DSD_MEMSET(PDU, 0, sizeof(PDU));
+
+        int err = tsbk_decode_block(opts, state, &skipdibit, &ctx);
+        tsbk_update_fec_counters(state, err);
+
+        int MFID = ctx.tsbk_byte[1];
+        int protectbit = (ctx.tsbk_byte[0] >> 6) & 0x1;
+        int last_block = (ctx.tsbk_byte[0] >> 7) & 0x1;
+        tsbk_build_mac_like_pdu(ctx.tsbk_byte, PDU);
+        tsbk_dispatch_message(opts, state, &ctx, err, MFID, protectbit, PDU);
+
+        if (last_block) {
+            break;
+        }
+    }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
     DSD_FPRINTF(stderr, "\n");

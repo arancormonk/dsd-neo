@@ -309,6 +309,7 @@ struct dsd_state {
     uint64_t late_entry_mi_fragment[2][8][3];
     // Multi-key array
     unsigned long long int rkey_array[0x1FFFF];
+    unsigned char rkey_array_loaded[0x1FFFF];
     // Temporary audio buffers
     float audio_out_temp_buf[160];
     float* audio_out_temp_buf_p;
@@ -456,6 +457,7 @@ struct dsd_state {
 
     //AES Key Segments
     int aes_key_loaded[2];
+    uint8_t aes_key_segments[2];
 
     //xl specific, we need to know if the ESS is from HDU, or from LDU2
     int xl_is_hdu;
@@ -615,6 +617,7 @@ struct dsd_state {
 
     //NXDN DES and AES, signal new VCALL_IV and new IV
     uint8_t nxdn_new_iv; //1 when a new IV comes in, else 0
+    uint16_t nxdn_pn95_seed;
 
     short int dmr_encL;
     short int dmr_encR;

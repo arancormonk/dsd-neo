@@ -22,6 +22,9 @@ extern "C" {
 /** @brief Generate AES OFB keystream blocks for the given IV/key. */
 void aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks);
 
+/** @brief Decrypt whole AES ECB blocks. Supports in-place input/output buffers. */
+void aes_ecb_decrypt_blocks(const uint8_t* input, const uint8_t* key, uint8_t* output, int type, int nblocks);
+
 #ifdef __cplusplus
 }
 #endif

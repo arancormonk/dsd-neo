@@ -64,8 +64,6 @@ dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loade
     static const uint8_t kAesLoadedAlgs[] = {
         0x24, // DMR AES-128
         0x25, // DMR AES-256
-        0x36, // Kirisun Advanced
-        0x37, // Kirisun Universal
         0x83, // P25 TDEA
         0x84, // P25 AES-256
         0x89  // P25 AES-128
@@ -77,6 +75,62 @@ dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loade
     if (dsd_alg_list_contains(kAesLoadedAlgs, sizeof(kAesLoadedAlgs) / sizeof(kAesLoadedAlgs[0]), algid)) {
         return (aes_loaded == 1) ? 1 : 0;
     }
+    return 0;
+}
+
+static int
+dsd_dmr_slot_valid(int slot) {
+    return slot == 0 || slot == 1;
+}
+
+static int
+dsd_dmr_kirisun_key_complete(const dsd_state* state, int slot) {
+    if (!state || !dsd_dmr_slot_valid(slot)) {
+        return 0;
+    }
+
+    return state->aes_key_segments[slot] == 4U && state->A1[slot] != 0ULL && state->A2[slot] != 0ULL
+           && state->A3[slot] != 0ULL && state->A4[slot] != 0ULL;
+}
+
+int
+dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot) {
+    if (!state || !dsd_dmr_slot_valid(slot)) {
+        return 0;
+    }
+
+    const unsigned long long r_key = (slot == 0) ? state->R : state->RR;
+    return (r_key != 0ULL || state->K != 0ULL || state->K1 != 0ULL) ? 1 : 0;
+}
+
+int
+dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key) {
+    if (!state || !dsd_dmr_slot_valid(slot)) {
+        return 0;
+    }
+    if (algid == 0x36 || algid == 0x37) {
+        return dsd_dmr_kirisun_key_complete(state, slot);
+    }
+    return dsd_dmr_voice_alg_can_decrypt(algid, r_key, state->aes_key_loaded[slot]);
+}
+
+int
+dsd_dmr_apply_forced_algid(dsd_state* state) {
+    if (!state || state->M <= 1 || state->M == 0x16) {
+        return 0;
+    }
+
+    if (state->currentslot == 0 && (state->dmr_so & 0x40) != 0) {
+        state->payload_algid = state->M & 0xFF;
+        state->payload_keyid = 0xFF;
+        return 1;
+    }
+    if (state->currentslot == 1 && (state->dmr_soR & 0x40) != 0) {
+        state->payload_algidR = state->M & 0xFF;
+        state->payload_keyidR = 0xFF;
+        return 1;
+    }
+
     return 0;
 }
 

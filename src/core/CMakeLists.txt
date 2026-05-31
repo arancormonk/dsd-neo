@@ -20,6 +20,7 @@ target_sources(
         util/dsd_misc.c
         util/dsd_init.c
         util/dsd_events.c
+        util/edacs_afs.c
         util/dsd_alias.c
         util/dsd_reset.c
         util/talkgroup_policy.c

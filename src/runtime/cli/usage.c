@@ -76,7 +76,7 @@ dsd_cli_usage_section_io(void) {
     printf("                m17udp for M17 UDP/IP frame input (default 127.0.0.1:17000)\n");
     printf("                m17udp:0.0.0.0:17001 for M17 UDP/IP frame input on all interfaces\n");
     printf("                - for stdin raw PCM16LE mono input (set sample rate with -s)\n");
-    printf("                filename.bin for OP25/FME capture bin files\n");
+    printf("                filename.bin for OP25-compatible capture bin files\n");
     printf("                filename.wav for 48K/1 wav files (SDR++, GQRX)\n");
     printf("                filename.wav -s 96000 for 96K/1 wav files (DSDPlus)\n");
     printf("                (Use single quotes '/directory/audio file.wav' when directories/spaces are present)\n");
@@ -289,18 +289,23 @@ dsd_cli_usage_section_advanced(void) {
     printf("\n");
     printf("  -R <dec>      Manually Enter dPMR or NXDN EHR Scrambler Key Value (Decimal Value)\n");
     printf("                 \n");
+    printf("  -_ <dec>      Manually Set NXDN PN95 Dibit Scrambler Seed (1-511)\n");
+    printf("                 \n");
     printf("  -1 <hex>      Manually Enter RC4 or DES Key Value (DMR, P25, NXDN) (Hex Value) \n");
     printf("                 \n");
     printf("  -2 <hex>      Manually Enter and Enforce TYT 16-bit BP Key Value (DMR) (Hex Value) \n");
     printf("                 \n");
-    printf("  -! <hex>      Manually Enter and Enforce TYT Advanced Privacy (PC4) AP Hex Key (see example below)\n");
+    printf("  -! <hex>      Manually Enter and Enforce TYT Advanced Privacy (PC4) 128 or 256 bit AP Hex Key "
+           "(see examples below)\n");
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
     printf("                 -! '736B9A9C5645288B 243AD5CB8701EF8A' \n");
+    printf("                 -! '1111111111111111 1111111111111111 1111111111111111 1111111111111111' \n");
     printf("                 \n");
-    printf(
-        "  -@ <hex>      Manually Enter and Enforce Retevis Advanced Privacy (RC2) AP Hex Key (see example below)\n");
+    printf("  -@ <hex>      Manually Enter and Enforce Retevis Advanced Privacy (RC2) 128 or 256 bit AP Hex Key "
+           "(see examples below)\n");
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
     printf("                 -@ '736B9A9C5645288B 243AD5CB8701EF8A' \n");
+    printf("                 -@ '1122334455667788 99AABBCCDDEEFF11 1122334455667788 99AABBCCDDEEFF11' \n");
     printf("                 \n");
     printf(
         "  -5 <hex>      Manually Enter and Enforce TYT Enhanced Privacy (AES-128) EP Hex Key (see example below)\n");
@@ -340,6 +345,8 @@ dsd_cli_usage_section_advanced(void) {
     printf("  -4            Force Privacy Key over Encryption Identifiers (DMR MBP/HBP and NXDN Scrambler) \n");
     printf("                 \n");
     printf("  -0            Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR) \n");
+    printf("                 \n");
+    printf("      --dmr-force-algid <hex>  Force DMR ALG ID over Missing PI header/LE Encryption Identifiers.\n");
     printf("                 \n");
     printf("  -3            Disable DMR Late Entry Encryption Identifiers (VC6 Single Burst) \n");
     printf("                  Note: Disable this if false positives on Voice ENC occur. \n");

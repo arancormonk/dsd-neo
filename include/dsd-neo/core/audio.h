@@ -168,6 +168,9 @@ int dsd_p25p2_mixer_gate(const dsd_state* state, int* encL, int* encR);
 /** @brief Return 1 when P25p2 decode should queue audio for the slot under decrypt and media policy. */
 int dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg);
 
+/** @brief Apply a forced DMR ALGID to encrypted current-slot metadata. Returns 1 when applied. */
+int dsd_dmr_apply_forced_algid(dsd_state* state);
+
 /** @brief Flush partially buffered P25p2 SS18 audio on call end/release. */
 void dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state);
 
@@ -182,10 +185,25 @@ int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int
 /**
  * @brief Return 1 when a DMR/P25-style voice ALGID has sufficient key material to decrypt.
  *
- * This helper intentionally only covers known/implemented families. Unknown ALGIDs
- * return 0 so callers keep audio muted rather than falsely unmuting garble.
+ * This helper intentionally only covers known/implemented families that can be
+ * checked from a scalar key-loaded flag. ALGIDs with slot-specific key
+ * completeness rules, such as Kirisun 0x36/0x37, require
+ * dsd_dmr_voice_slot_can_decrypt(). Unknown ALGIDs return 0 so callers keep
+ * audio muted rather than falsely unmuting garble.
  */
 int dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loaded);
+
+/** @brief Return 1 when missing DMR ALG ID can still be decrypted from loaded per-slot key material. */
+int dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot);
+
+/**
+ * @brief Slot-aware DMR/P25-style decryptability check.
+ *
+ * Use this when ALGID rules depend on per-slot key metadata. Kirisun 0x36/0x37
+ * requires a complete four-segment key, while AES-128/AES-256 families continue
+ * to use the broader per-slot AES loaded flag.
+ */
+int dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key);
 
 /** @brief Legacy UI beeper helper (used by ncurses call-alert and events). */
 void beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);

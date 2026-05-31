@@ -39,6 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_tiii_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -419,11 +420,17 @@ dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_
 }
 
 static void
-dmr_cspdu_pf0_set_active_channel(dsd_state* state, uint8_t lcn, uint16_t channel, uint32_t target) {
+dmr_cspdu_pf0_set_active_channel(dsd_state* state, uint8_t lcn, uint16_t channel, uint32_t target, int csbk_o) {
     char suf[24];
     dmr_format_chan_suffix(lcn, suf, sizeof suf);
-    DSD_SNPRINTF(state->active_channel[lcn], sizeof(state->active_channel[lcn]), "Active Ch: %04X%s TG: %d; ", channel,
-                 suf, target);
+    const char* kind = "Active Private Ch";
+    if (csbk_o == 49 || csbk_o == 50) {
+        kind = "Active Group Ch";
+    } else if (dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)) {
+        kind = "Active Data Ch";
+    }
+    DSD_SNPRINTF(state->active_channel[lcn], sizeof(state->active_channel[lcn]), "%s: %04X%s TG: %u; ", kind, channel,
+                 suf, (unsigned)target);
 }
 
 static void
@@ -460,11 +467,11 @@ dmr_cspdu_pf0_print_frequency(uint16_t lpchannum, long int freq) {
 
 static void
 dmr_cspdu_pf0_update_active_channels(dsd_state* state, uint8_t lcn, uint16_t lpchannum, uint16_t mbc_lpchannum,
-                                     uint32_t target) {
+                                     uint32_t target, int csbk_o) {
     if (lpchannum != 0 && lpchannum != 0xFFF) {
-        dmr_cspdu_pf0_set_active_channel(state, lcn, lpchannum, target);
+        dmr_cspdu_pf0_set_active_channel(state, lcn, lpchannum, target, csbk_o);
     } else if (lpchannum == 0xFFF) {
-        dmr_cspdu_pf0_set_active_channel(state, lcn, mbc_lpchannum, target);
+        dmr_cspdu_pf0_set_active_channel(state, lcn, mbc_lpchannum, target, csbk_o);
     }
 }
 
@@ -519,6 +526,7 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     }
     res.freq_hz = freq;
     res.lpcn = lpchannum;
+    res.opcode = (uint8_t)csbk_o;
     res.target = target;
     res.source = source;
     dmr_csbk_handle(&res, opts, state);
@@ -556,7 +564,7 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     uint16_t mbc_lpchannum = dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, &freq);
     dmr_cspdu_pf0_print_frequency(lpchannum, freq);
 
-    dmr_cspdu_pf0_update_active_channels(state, lcn, lpchannum, mbc_lpchannum, target);
+    dmr_cspdu_pf0_update_active_channels(state, lcn, lpchannum, mbc_lpchannum, target, csbk_o);
     state->last_active_time = time(NULL);
 
     int data_call = 0;
@@ -2821,7 +2829,7 @@ dmr_syscode_set_partition_label(uint8_t par, char* par_str, size_t par_str_sz) {
 
 static uint16_t
 dmr_syscode_effective_split_n(dsd_opts* opts, dsd_state* state, int csbk_fid, uint16_t site_bits, uint8_t* is_capmax) {
-    uint16_t n = 0;
+    uint16_t default_n = site_bits;
 
     if (is_capmax) {
         *is_capmax = 0;
@@ -2834,15 +2842,10 @@ dmr_syscode_effective_split_n(dsd_opts* opts, dsd_state* state, int csbk_fid, ui
             opts->dmr_dmrla_is_set = 1;
             opts->dmr_dmrla_n = 0;
         }
+        default_n = 0;
         DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
     }
-    if (opts->dmr_dmrla_is_set == 1) {
-        n = opts->dmr_dmrla_n;
-    }
-    if (n > site_bits) {
-        n = site_bits;
-    }
-    return n;
+    return dmr_tiii_effective_split_n(default_n, opts->dmr_dmrla_is_set, opts->dmr_dmrla_n, site_bits);
 }
 
 static void
@@ -2862,8 +2865,11 @@ dmr_syscode_print_type0(const dsd_opts* opts, uint8_t* cs_pdu_bits, const char* 
     uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
 
     if (n != 0) {
-        DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Cat: %s;", model_str, net, (site >> n),
-                    (site & sub_mask), par_str);
+        uint16_t display_net = dmr_tiii_display_net(net, n);
+        uint16_t display_site = dmr_tiii_display_site(site, n);
+        uint16_t display_subsite = dmr_tiii_display_subsite(site, sub_mask, n);
+        DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Cat: %s;", model_str, display_net,
+                    display_site, display_subsite, par_str);
     } else {
         DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %d; Site ID: %d;", model_str, net, site);
     }
@@ -2911,7 +2917,10 @@ static void
 dmr_syscode_print_type1(const char* model_str, uint16_t net, uint16_t site, uint16_t n, uint16_t sub_mask,
                         uint16_t syscode) {
     if (n != 0) {
-        DSD_FPRINTF(stderr, " %s; Net ID: %d; Site ID: %d.%d;", model_str, net, (site >> n), (site & sub_mask));
+        uint16_t display_net = dmr_tiii_display_net(net, n);
+        uint16_t display_site = dmr_tiii_display_site(site, n);
+        uint16_t display_subsite = dmr_tiii_display_subsite(site, sub_mask, n);
+        DSD_FPRINTF(stderr, " %s; Net ID: %d; Site ID: %d.%d;", model_str, display_net, display_site, display_subsite);
     } else {
         DSD_FPRINTF(stderr, " %s; Net ID: %d; Site ID: %d;", model_str, net, site);
     }
@@ -2951,15 +2960,18 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
     dmr_syscode_decode_model(model, cs_pdu_bits, &net, &site, &site_bits, model_str, sizeof(model_str));
 
     n = dmr_syscode_effective_split_n(opts, state, csbk_fid, site_bits, &is_capmax);
-    sub_mask = (n == 0) ? 0U : (uint16_t)((1U << n) - 1U);
+    sub_mask = dmr_tiii_subsite_mask(n);
     par = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[54], 2);
     dmr_syscode_set_partition_label(par, par_str, sizeof(par_str));
 
     if (type == 0) {
         dmr_syscode_print_type0(opts, cs_pdu_bits, model_str, net, site, n, sub_mask, par_str, syscode, is_capmax);
         if (n != 0) {
+            uint16_t display_net = dmr_tiii_display_net(net, n);
+            uint16_t display_site = dmr_tiii_display_site(site, n);
+            uint16_t display_subsite = dmr_tiii_display_subsite(site, sub_mask, n);
             DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d.%d;%04X; ", model_str,
-                         net, (site >> n), (site & sub_mask), syscode);
+                         display_net, display_site, display_subsite, syscode);
         } else {
             DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d;%04X; ", model_str, net,
                          site, syscode);

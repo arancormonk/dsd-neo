@@ -12,6 +12,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -102,21 +103,6 @@ nxdn_alias_reset(dsd_state* state) {
     (void)state;
 }
 
-int
-nxdn_dcr_decode_csm_alias(const uint8_t trellis_bits[96], char* out, size_t out_sz) {
-    (void)trellis_bits;
-    if (out != NULL && out_sz > 0U) {
-        out[0] = '\0';
-    }
-    return 0;
-}
-
-uint8_t
-nxdn_scch_crc7_check_from_trellis(const uint8_t trellis_bits[32]) {
-    (void)trellis_bits;
-    return 0U;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
@@ -154,6 +140,20 @@ expect_u32(const char* tag, uint32_t got, uint32_t want) {
     return 0;
 }
 
+static int
+expect_label(const char* tag, uint8_t message_type, const char* want) {
+    const char* got = nxdn_message_type_label(message_type);
+    if ((got == NULL) != (want == NULL)) {
+        DSD_FPRINTF(stderr, "%s: got %s want %s\n", tag, got == NULL ? "(null)" : got, want == NULL ? "(null)" : want);
+        return 1;
+    }
+    if (got != NULL && strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -176,6 +176,16 @@ main(void) {
 
     rc |= expect_u32("crc-len0", nxdn_message_crc32((uint8_t*)"ignored", 0), 0xFFFFFFFFU);
     rc |= expect_u32("crc-null", nxdn_message_crc32(NULL, 8), 0xFFFFFFFFU);
+
+    rc |= expect_label("label-head-dly", 0x0FU, " HEAD_DLY");
+    rc |= expect_label("label-reg-comm", 0x23U, " REG_COMM");
+    rc |= expect_label("label-auth-inq", 0x28U, " AUTH_INQ_REQ");
+    rc |= expect_label("label-arib-vcall", 0xE1U, " VCALL_STD_B54");
+    rc |= expect_label("label-arib-bearer", 0xE4U, " BEARER_HEADER");
+    rc |= expect_label("label-dcr-vcall-silent", 0x81U, "");
+    rc |= expect_label("label-dcr-tx-rel-silent", 0x88U, "");
+    rc |= expect_label("label-dcr-idle-silent", 0x90U, "");
+    rc |= expect_label("label-unknown", 0xFEU, NULL);
 
     return rc;
 }

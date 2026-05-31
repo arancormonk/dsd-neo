@@ -79,6 +79,9 @@ fake_blaster(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* da
 int
 main(void) {
     dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){0});
+    assert(dsd_m17_udp_socket_is_valid(DSD_INVALID_SOCKET) == 0);
+    assert(dsd_m17_udp_socket_is_valid((dsd_socket_t)0) == 1);
+    assert(dsd_m17_udp_socket_is_valid((dsd_socket_t)123) == 1);
     assert(dsd_m17_udp_hook_udp_bind(NULL, 0) == DSD_INVALID_SOCKET);
     assert(dsd_m17_udp_hook_connect(NULL, NULL) == -1);
     assert(dsd_m17_udp_hook_receiver(NULL, NULL) == -1);

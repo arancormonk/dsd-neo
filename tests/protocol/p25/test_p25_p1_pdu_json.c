@@ -33,6 +33,8 @@ const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 // Use a local shim that sets up real opts/state in a separate TU.
 void p25_test_p1_pdu_data_decode(const unsigned char* input, int len);
 
+static int g_utf8_calls = 0;
+
 // Stubs referenced by PDU data path
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -68,6 +70,7 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     (void)wr;
     (void)len;
     (void)input;
+    g_utf8_calls++;
 }
 
 void
@@ -98,6 +101,29 @@ ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
         v = (v << 1) | (BufferIn[i] & 1);
     }
     return v;
+}
+
+uint8_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    if (input == NULL || len_bytes < 6) {
+        return 0;
+    }
+
+    char prefix[7];
+    for (int i = 0; i < 6; i++) {
+        prefix[i] = (char)ConvertBitIntoBytes(input + ((size_t)i * 8U), 8);
+    }
+    prefix[6] = '\0';
+    if (strcmp(prefix, "$GPRMC") != 0) {
+        return 0;
+    }
+
+    DSD_FPRINTF(stderr, "$GPRMC,123519");
+    return 1;
 }
 
 void
@@ -270,11 +296,27 @@ main(void) {
         p25_test_p1_pdu_data_decode(pdu, total_len);
     }
 
-    // Case 2: SAP 34 SysCfg
+    // Case 2: SAP 48 Location Service with a valid NMEA sentence.
+    {
+        uint8_t pdu[128];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x10; // fmt=16, io=0
+        pdu[1] = 48;   // SAP 48
+        pdu[2] = 0x01; // MFID
+        pdu[6] = 0x02; // blks
+        pdu[7] = 0x00; // pad
+        pdu[9] = 0x00; // offset
+        static const char nmea[] = "$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A\r\n";
+        DSD_MEMCPY(pdu + 12, nmea, sizeof(nmea) - 1);
+        int total_len = 12 + (int)(sizeof(nmea) - 1) + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
+    // Case 3: SAP 34 SysCfg
     {
         uint8_t pdu[64];
         DSD_MEMSET(pdu, 0, sizeof(pdu));
-        pdu[0] = 0x12; // fmt=18, io=1
+        pdu[0] = 0x30; // fmt=16, io=1, low bit 1 clear to catch IO-bit regressions
         pdu[1] = 34;   // SAP 34
         pdu[2] = 0x55; // MFID
         pdu[3] = 0x00;
@@ -316,8 +358,8 @@ main(void) {
     int sap = -1, mfid = -1, io = -1, jlen = -1;
     char summary[128];
     int er = parse_last_json(buf, (int)nread, &sap, &mfid, &io, &jlen, summary, sizeof(summary));
-    free(buf);
     if (er != 0) {
+        free(buf);
         DSD_FPRINTF(stderr, "parse_last_json er=%d\n", er);
         return 103;
     }
@@ -326,6 +368,9 @@ main(void) {
     rc |= expect_eq_int("SysCfg io", io, 1);
     rc |= expect_eq_int("SysCfg len", jlen, 3);
     rc |= expect_str_contains("SysCfg summary", summary, "SysCfg");
+    rc |= expect_str_contains("SAP48 NMEA output", buf, "$GPRMC,123519");
+    rc |= expect_eq_int("SAP48 NMEA avoids UTF8 fallback", g_utf8_calls, 0);
+    free(buf);
 
     (void)remove(cap.path);
     return rc;

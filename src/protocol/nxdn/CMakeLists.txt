@@ -6,9 +6,11 @@ target_sources(
         nxdn_alias_decode.c
         nxdn_convolution.c
         nxdn_dcr_utils.c
+        nxdn_descramble.c
         nxdn_deperm.c
         nxdn_element.c
         nxdn_frame.c
+        nxdn_lfsr.c
         nxdn_trunk_diag.c
         nxdn_voice.c
 )
