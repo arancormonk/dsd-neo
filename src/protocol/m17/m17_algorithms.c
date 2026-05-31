@@ -310,6 +310,10 @@ m17_packet_frame_count_for_app_bytes(uint16_t app_bytes, uint8_t* last_frame_byt
     return (int)frames;
 }
 
+_Static_assert((((M17_PACKET_MAX_FRAMES - 1U) * M17_PACKET_CHUNK_BYTES) + M17_PACKET_CHUNK_BYTES - M17_PACKET_CRC_BYTES)
+                   == M17_PACKET_MAX_APPLICATION_BYTES,
+               "M17 packet frame bounds must match maximum application bytes");
+
 int
 m17_packet_app_bytes_from_eof(uint8_t full_frames, uint8_t last_frame_bytes, uint16_t* app_bytes) {
     if (full_frames >= M17_PACKET_MAX_FRAMES || last_frame_bytes == 0U || last_frame_bytes > M17_PACKET_CHUNK_BYTES) {
@@ -323,9 +327,6 @@ m17_packet_app_bytes_from_eof(uint8_t full_frames, uint8_t last_frame_bytes, uin
     }
 
     const uint16_t app = (uint16_t)(total_bytes - M17_PACKET_CRC_BYTES);
-    if (app > M17_PACKET_MAX_APPLICATION_BYTES) {
-        return -1;
-    }
     if (app_bytes != NULL) {
         *app_bytes = app;
     }

@@ -496,7 +496,7 @@ test_fec_stage_helpers(void) {
 }
 
 static int
-test_golay_and_lich_helpers(void) {
+test_golay_helpers(void) {
     int err = 0;
 
     Golay_24_12_init();
@@ -524,6 +524,15 @@ test_golay_and_lich_helpers(void) {
     for (int i = 0; i < M17_LICH_GOLAY_DATA_BITS; i++) {
         err |= expect_u32("Golay systematic data bit", encoded[i], data[i]);
     }
+
+    return err;
+}
+
+static int
+test_lich_helpers(void) {
+    int err = 0;
+
+    Golay_24_12_init();
 
     uint8_t lsf[M17_LSF_TYPE1_BITS];
     uint8_t lsf_type1[M17_LSF_TYPE1_FLUSH_BITS];
@@ -832,7 +841,7 @@ test_prbs9_receiver(void) {
 }
 
 static int
-test_scrambler_and_aes_helpers(void) {
+test_scrambler_helpers(void) {
     int err = 0;
 
     err |= expect_int("scrambler subtype 0 key bits", m17_scrambler_key_bits_for_subtype(0U), 8);
@@ -895,6 +904,28 @@ test_scrambler_and_aes_helpers(void) {
     err |= expect_int("scrambler reserved subtype rejected",
                       m17_scrambler_apply_bits(3U, 1U, 0U, zero_bits, scrambled_bits, M17_STREAM_PAYLOAD_BITS), -1);
 
+    uint8_t input_bytes[M17_SIGNATURE_DIGEST_BYTES];
+    uint8_t input_bits[M17_STREAM_PAYLOAD_BITS];
+    for (size_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
+        input_bytes[i] = (uint8_t)(0xA0U + (uint8_t)i);
+    }
+    bytes_to_bits(input_bytes, input_bits, sizeof(input_bytes));
+    err |= expect_int("scrambler arbitrary input",
+                      m17_scrambler_apply_bits(0U, 0xA5U, 0U, input_bits, scrambled_bits, M17_STREAM_PAYLOAD_BITS), 0);
+    err |= expect_int(
+        "scrambler arbitrary recover",
+        m17_scrambler_apply_bits(0U, 0xA5U, 0U, scrambled_bits, descrambled_bits, M17_STREAM_PAYLOAD_BITS), 0);
+    for (int i = 0; i < M17_STREAM_PAYLOAD_BITS; i++) {
+        err |= expect_u32("scrambler arbitrary recovered bit", descrambled_bits[i], input_bits[i]);
+    }
+
+    return err;
+}
+
+static int
+test_aes_helpers(void) {
+    int err = 0;
+
     err |= expect_int("AES subtype 0 key bytes", m17_aes_key_bytes_for_subtype(0U), M17_AES_128_KEY_BYTES);
     err |= expect_int("AES subtype 1 key bytes", m17_aes_key_bytes_for_subtype(1U), M17_AES_192_KEY_BYTES);
     err |= expect_int("AES subtype 2 key bytes", m17_aes_key_bytes_for_subtype(2U), M17_AES_256_KEY_BYTES);
@@ -918,21 +949,6 @@ test_scrambler_and_aes_helpers(void) {
     err |= expect_u32("AES final FN counter low", counter[15], 0xFFU);
     err |= expect_u32("AES nonce timestamp", m17_aes_nonce_timestamp(nonce), 0x00010203U);
 
-    uint8_t input_bytes[M17_SIGNATURE_DIGEST_BYTES];
-    uint8_t input_bits[M17_STREAM_PAYLOAD_BITS];
-    for (size_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
-        input_bytes[i] = (uint8_t)(0xA0U + (uint8_t)i);
-    }
-    bytes_to_bits(input_bytes, input_bits, sizeof(input_bytes));
-    err |= expect_int("scrambler arbitrary input",
-                      m17_scrambler_apply_bits(0U, 0xA5U, 0U, input_bits, scrambled_bits, M17_STREAM_PAYLOAD_BITS), 0);
-    err |= expect_int(
-        "scrambler arbitrary recover",
-        m17_scrambler_apply_bits(0U, 0xA5U, 0U, scrambled_bits, descrambled_bits, M17_STREAM_PAYLOAD_BITS), 0);
-    for (int i = 0; i < M17_STREAM_PAYLOAD_BITS; i++) {
-        err |= expect_u32("scrambler arbitrary recovered bit", descrambled_bits[i], input_bits[i]);
-    }
-
     return err;
 }
 
@@ -947,13 +963,15 @@ main(void) {
     err |= test_base40_encode();
     err |= test_randomizer_and_puncturing_tables();
     err |= test_fec_stage_helpers();
-    err |= test_golay_and_lich_helpers();
+    err |= test_golay_helpers();
+    err |= test_lich_helpers();
     err |= test_stream_content_helpers();
     err |= test_packet_and_bert_frame_helpers();
     err |= test_prbs9_sequence();
     err |= test_prbs9_fill_bits();
     err |= test_prbs9_receiver();
-    err |= test_scrambler_and_aes_helpers();
+    err |= test_scrambler_helpers();
+    err |= test_aes_helpers();
 
     if (err == 0) {
         printf("M17_ALGORITHMS: OK\n");

@@ -51,6 +51,38 @@ expect_bytes(const char* label, const uint8_t* got, const uint8_t* want, size_t 
     return 0;
 }
 
+static int
+is_hex_digit(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+}
+
+static int
+expect_commit_id(const char* label, const char* value) {
+    if (strlen(value) != 40U) {
+        DSD_FPRINTF(stderr, "%s: invalid commit id length\n", label);
+        return 1;
+    }
+    for (size_t i = 0U; i < 40U; i++) {
+        if (!is_hex_digit(value[i])) {
+            DSD_FPRINTF(stderr, "%s: invalid commit id character\n", label);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+expect_sync_symbols(const char* label, uint16_t sync_word, const int8_t want[M17_SYNC_SYMBOLS]) {
+    int err = 0;
+    uint8_t dibits[M17_SYNC_SYMBOLS];
+
+    m17_fill_sync_dibits_from_word(sync_word, dibits);
+    for (int i = 0; i < M17_SYNC_SYMBOLS; i++) {
+        err |= expect_int(label, m17_symbol_from_dibit(dibits[i]), want[i]);
+    }
+    return err;
+}
+
 static void
 bytes_to_bits(const uint8_t* bytes, uint8_t* bits, size_t byte_count) {
     for (size_t byte = 0U; byte < byte_count; byte++) {
@@ -138,6 +170,19 @@ build_stream_frame_hash(uint16_t frame_number, const uint8_t payload_bytes[16], 
     m17_payload_encode_bits(combined, randomized);
     m17_frame_build_dibits(M17_SYNC_STREAM_WORD, randomized, dibits);
     err |= expect_frame_hash(label, dibits, want);
+    return err;
+}
+
+static int
+test_reference_vector_metadata(void) {
+    int err = 0;
+
+    err |= expect_commit_id("reference gr-m17 commit", M17_REF_GR_M17_COMMIT);
+    err |= expect_commit_id("reference m17-cxx-demod commit", M17_REF_M17_IMPLEMENTATIONS_COMMIT);
+    err |= expect_commit_id("reference libm17 commit", M17_REF_LIBM17_COMMIT);
+    err |= expect_int("reference GNU Radio version present", M17_REF_GNURADIO_VERSION[0] != '\0', 1);
+    err |= expect_sync_symbols("reference stream sync", M17_SYNC_STREAM_WORD, M17_REF_STREAM_SYNC_SYMBOLS);
+    err |= expect_sync_symbols("reference packet sync", M17_SYNC_PACKET_WORD, M17_REF_PACKET_SYNC_SYMBOLS);
     return err;
 }
 
@@ -304,6 +349,7 @@ test_signature_reference(void) {
 int
 main(void) {
     int err = 0;
+    err |= test_reference_vector_metadata();
     err |= test_lsf_reference();
     err |= test_stream_reference();
     err |= test_packet_reference();
