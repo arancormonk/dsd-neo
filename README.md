@@ -27,8 +27,6 @@ Project homepage: https://github.com/arancormonk/dsd-neo
 - Arch Linux (AUR): [dsd-neo](https://aur.archlinux.org/packages/dsd-neo) for stable releases,
   or [dsd-neo-git](https://aur.archlinux.org/packages/dsd-neo-git) for main-branch snapshots.
 
-On Windows, the native MSVC ZIP is the supported download for best integration with the Windows console and audio stack.
-
 ## Project Status
 
 This project is an active work in progress as we decouple from the upstream fork and continue modularization. Expect breaking changes to build presets, options, CLI flags, and internal library boundaries while this stabilization work proceeds. The main branch may be volatile; for deployments, prefer building a known commit. Issues and PRs are welcome—please include logs and reproduction details when reporting regressions.
@@ -37,7 +35,8 @@ This project is an active work in progress as we decouple from the upstream fork
 
 - A performance‑enhanced fork of [lwvmobile/dsd-fme](https://github.com/lwvmobile/dsd-fme), which is a fork of [szechyjs/dsd](https://github.com/szechyjs/dsd)
 - Modularized fork with clear boundaries: `runtime`, `platform`, `dsp`, `io`, `engine`, `fec`, `crypto`, `protocol`, `core`, plus `ui` and a CLI app.
-- Protocol coverage: DMR, dPMR, D‑STAR, NXDN, P25 Phase 1/2, X2‑TDMA, EDACS, ProVoice, M17, YSF.
+- Protocol coverage: DMR, dPMR, D‑STAR, NXDN, P25 Phase 1/2, X2‑TDMA, EDACS, ProVoice, M17
+  (RF/UDP LSF, stream, packet, BERT), YSF.
 - Requires [arancormonk/mbelib-neo](https://github.com/arancormonk/mbelib-neo) 2.x for IMBE/AMBE vocoder primitives.
 - Public headers live under `include/dsd-neo/...` and are included as `#include <dsd-neo/<module>/<header>>`.
 
@@ -48,7 +47,7 @@ This project is an active work in progress as we decouple from the upstream fork
   - Direct RTL‑SDR USB, plus RTL‑TCP (`-i rtltcp[:host:port]`) and SoapySDR (`-i soapy[:args]`) for non-RTL radios (for example Airspy/SDRplay/HackRF/LimeSDR).
   - Generic TCP PCM16LE input (`-i tcp[:host:port]`, SDR++/GRC 7355 audio streams).
   - UDP audio in/out: receive PCM16LE over UDP as an input, and send decoded audio to UDP sinks for easy piping to other apps or hosts (decoded voice is typically 8 kHz; see `docs/network-audio.md`).
-  - M17 UDP/IP in/out: dedicated M17 frame input/output over UDP (`-i m17udp[:bind:17000]`, `-o m17udp[:host:17000]`).
+  - M17 UDP/IP in/out: dedicated M17 stream and packet frame input/output over UDP (`-i m17udp[:bind:17000]`, `-o m17udp[:host:17000]`).
   - RF I/Q capture/replay workflow with metadata (`--iq-capture`, `--iq-info`, `--iq-replay`) for reproducible decode debugging and regression replay.
 
 - Built‑in trunking workflow
@@ -77,9 +76,11 @@ This project is an active work in progress as we decouple from the upstream fork
     - Optional auto‑PPM correction from the timing error detector for long unattended runs.
   - Device control from the UI: toggle bias‑tee, switch AGC/manual gain, adjust bandwidth and squelch, and retune quickly.
 
-- M17 encode tooling
+- Enhanced M17 support
 
-  - Generate M17 signals for test/airgap workflows: stream voice (`-fZ`), packet (`-fP`), and BERT (`-fB`) encoders.
+  - RF and UDP/IP paths cover LSF, stream, packet, BERT, EOT, UDP/IP control, and MPKT frames.
+  - Decode support includes current LSF TYPE fields, CAN filtering, address classes, meta text/GNSS/extended callsign, SMS/TLE packets, 823-byte packet assembly/CRC, BERT PRBS9 checks, scrambler/AES-CTR receive, and optional signed-stream verification.
+  - Encoders generate stream voice (`-fZ`), packet (`-fP`), and BERT (`-fB`) RF frames for test/airgap workflows; see [docs/m17-support.md](docs/m17-support.md) for scope and non-goals.
 
 - Expanded DSP controls for power users
 
@@ -91,7 +92,7 @@ This project is an active work in progress as we decouple from the upstream fork
 
 ### How this compares at a glance
 
-- Versus DSD‑FME: similar protocol coverage and UI heritage, but DSD‑neo adds network‑friendly I/O (UDP audio in), refined RTL‑TCP handling (prebuffer, tuned defaults), optional auto‑PPM, and packaged cross‑platform binaries.
+- Versus DSD‑FME: similar protocol coverage and UI heritage, but DSD‑neo adds a broader M17 implementation than FME's simplified stream decoder: RF/UDP LSF, packet, BERT, EOT, MPKT, packet CRC assembly, AES-CTR receive, signed-stream verification, and stream/packet/BERT encoders. It also adds network‑friendly I/O (UDP audio in), refined RTL‑TCP handling (prebuffer, tuned defaults), optional auto‑PPM, and packaged cross‑platform binaries.
 - Versus the original DSD: more protocols (notably P25 Phase 2, M17, YSF, EDACS), built‑in trunking, network inputs, device control, and an interactive UI.
 
 ## Build From Source
@@ -101,16 +102,16 @@ Requirements
 - C compiler with C11 and C++ compiler with C++14 support.
 - CMake ≥ 3.20.
 - Dependencies:
-  - Required: libsndfile; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
+  - Required: libsndfile; OpenSSL 3.x libcrypto; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
   - Optional: librtlsdr (RTL‑SDR support), SoapySDR (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl (rdio API uploads), PortAudio on non-Windows builds, help2man (man page generation).
   - Vocoder: mbelib-neo 2.x (`mbe-neo` CMake package) is required.
 
 OS package hints
 
 - Ubuntu/Debian (apt):
-  - `sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev`
+  - `sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libssl-dev libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev`
 - macOS (Homebrew):
-  - `brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr soapysdr codec2`
+  - `brew install cmake ninja openssl libsndfile ncurses pulseaudio librtlsdr soapysdr codec2`
 - Windows:
   - Preferred binary: the native MSVC ZIP.
   - Source builds use CMake presets with vcpkg; set `VCPKG_ROOT` and use `win-msvc-*` presets in `CMakePresets.json`.
@@ -140,8 +141,8 @@ Build recipes (copy/paste)
 # From the repository root.
 #
 # OS deps (examples):
-# - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev
-# - macOS:         brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr soapysdr codec2
+# - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libssl-dev libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev
+# - macOS:         brew install cmake ninja openssl libsndfile ncurses pulseaudio librtlsdr soapysdr codec2
 #
 # Install is optional; you can run directly from the build tree.
 
@@ -160,8 +161,8 @@ cmake --install build/dev-release --prefix "$HOME/.local"
 
 ```bash
 # OS deps (examples):
-# - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev
-# - macOS:         brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr soapysdr codec2
+# - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libssl-dev libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev
+# - macOS:         brew install cmake ninja openssl libsndfile ncurses pulseaudio librtlsdr soapysdr codec2
 
 cmake --preset dev-debug
 cmake --build --preset dev-debug -j
@@ -360,6 +361,7 @@ Quick examples
 ## Documentation
 
 - CLI usage and options: `docs/cli.md`
+- M17 support scope and non-goals: `docs/m17-support.md`
 - IQ capture/replay format and workflow: `docs/iq-capture-replay.md`
 - SoapySDR non-RTL setup and usage: `docs/soapysdr.md`
 - User config system (INI): `docs/config-system.md`
@@ -388,7 +390,7 @@ Quick examples
 - DSP: `src/dsp`, headers `<dsd-neo/dsp/...>` — demod pipeline, resampler, filters, FLL/TED, SIMD helpers.
 - IO: `src/io`, headers `<dsd-neo/io/...>` — radio (RTL‑SDR, RTL‑TCP, SoapySDR), IQ capture/replay, network audio (TCP/UDP PCM and M17 UDP), and control (UDP/rigctl/serial).
 - FEC: `src/fec`, headers `<dsd-neo/fec/...>` — BCH, Golay, Hamming, RS, BPTC, CRC/FCS.
-- Crypto: `src/crypto`, headers `<dsd-neo/crypto/...>` — RC2/RC4/DES/AES and helpers.
+- Crypto: `src/crypto`, headers `<dsd-neo/crypto/...>` — RC2/RC4/DES/AES, ECDSA, and helpers.
 - Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF.
 - Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), `src/third_party/pffft` (STATIC target `dsd-neo_pffft`).
 

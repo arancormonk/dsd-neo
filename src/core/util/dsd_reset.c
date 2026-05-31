@@ -154,6 +154,14 @@ reset_sync_tracking_state(dsd_state* state) {
 
     /* Reset M17 polarity auto-detection: 0=unknown */
     state->m17_polarity = 0;
+    state->m17_bert_locked = 0;
+    state->m17_bert_lfsr = 1;
+    state->m17_bert_lock_count = 0;
+    state->m17_bert_window_bits = 0;
+    state->m17_bert_window_errors = 0;
+    state->m17_bert_bits = 0;
+    state->m17_bert_errors = 0;
+    state->m17_bert_resyncs = 0;
 
     /* Reset multi-rate SPS hunting state */
     state->sps_hunt_counter = 0;

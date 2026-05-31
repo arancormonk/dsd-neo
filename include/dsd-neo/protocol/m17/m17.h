@@ -21,6 +21,7 @@ extern "C" {
 void processM17STR(dsd_opts* opts, dsd_state* state);
 void processM17PKT(dsd_opts* opts, dsd_state* state);
 void processM17LSF(dsd_opts* opts, dsd_state* state);
+void processM17BRT(dsd_opts* opts, dsd_state* state);
 void processM17IPF(dsd_opts* opts, dsd_state* state);
 void encodeM17STR(dsd_opts* opts, dsd_state* state);
 void encodeM17BRT(dsd_opts* opts, dsd_state* state);

@@ -225,6 +225,8 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fy           Decode only YSF\n");
     printf("  -fz             Decode only M17\n");
     printf("  -fU             Decode only M17 UDP/IP Frame***\n");
+    printf(
+        "      --m17-signature-public-key <hex>  M17 secp256r1 public key X||Y for signed voice-stream verification\n");
     printf("  -fi             Decode only NXDN48 (6.25 kHz) / IDAS\n");
     printf("  -fn             Decode only NXDN96 (12.5 kHz)\n");
     printf("  -fp             Decode only ProVoice\n");

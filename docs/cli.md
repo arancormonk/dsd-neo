@@ -206,6 +206,8 @@ Notes
 - Analog filter bitmap (advanced): `-v <hex>` (bitmask for HPF/LPF/PBF)
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
 - Relax CRC checks: `-F` (P25p2 MAC_SIGNAL, DMR RAS/CRC, NXDN SACCH/FACCH/CAC/F2U, M17 LSF/PKT)
+- M17 signed voice-stream verification: `--m17-signature-public-key <hex>` accepts a 64-byte secp256r1 public key as
+  raw `X||Y` hex.
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`)
 - DMR Tier III Location Area n‑bits: `-D <0–10>`
 - Env (C4FM timing layers):
@@ -303,6 +305,9 @@ Troubleshooting:
 - Stream encoder: `-fZ` with `-M M17:CAN:SRC:DST[:INPUT_RATE[:VOX]]`
 - BERT encoder: `-fB`
 - Packet encoder: `-fP`
+
+The local encoders emit unencrypted, unsigned frames. M17 CSMA channel access is not implemented; see
+`docs/m17-support.md`.
 
 M17 `-M` details
 

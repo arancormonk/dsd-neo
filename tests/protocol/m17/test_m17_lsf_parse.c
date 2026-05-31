@@ -14,6 +14,7 @@
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -92,11 +93,12 @@ test_parse_lsf_v2(void) {
     // Type word fields (packed into lsf_type as in m17_parse_lsf).
     const uint8_t dt = 2U;
     const uint8_t et = 1U;
-    const uint8_t es = 3U;
+    const uint8_t es = 2U;
     const uint8_t cn = 9U;
     const uint8_t rs = 1U;
 
     uint16_t lsf_type = 0;
+    lsf_type |= 1U;
     lsf_type |= (uint16_t)((uint16_t)dt << 1);
     lsf_type |= (uint16_t)((uint16_t)et << 3);
     lsf_type |= (uint16_t)((uint16_t)es << 5);
@@ -124,6 +126,7 @@ test_parse_lsf_v2(void) {
     err |= expect_eq_u64("src", res.src, src);
     err |= expect_eq_u64("type_word", res.type_word, lsf_type);
     err |= expect_eq_u8("version", res.version, 2U);
+    err |= expect_eq_u8("packet_stream", res.packet_stream, 1U);
     err |= expect_eq_u8("dt", res.dt, dt);
     err |= expect_eq_u8("et", res.et, et);
     err |= expect_eq_u8("es", res.es, es);
@@ -134,6 +137,11 @@ test_parse_lsf_v2(void) {
     err |= expect_eq_u8("signature", res.signature, 1U);
     err |= expect_eq_u8("meta_contents", res.meta_contents, es);
     err |= expect_eq_u8("meta_is_iv", res.meta_is_iv, 0U);
+    err |= expect_eq_u8("dst kind", res.dst_address_kind, M17_ADDRESS_STANDARD);
+    err |= expect_eq_u8("src kind", res.src_address_kind, M17_ADDRESS_STANDARD);
+    err |= expect_eq_u8("dst valid", res.dst_is_valid, 1U);
+    err |= expect_eq_u8("src valid", res.src_is_valid, 1U);
+    err |= expect_eq_u8("type reserved valid", res.type_reserved_valid, 1U);
     err |= expect_eq_u8("has_meta", res.has_meta, 1U);
 
     if (res.meta[0] != meta[0] || res.meta[1] != meta[1]) {
@@ -145,69 +153,42 @@ test_parse_lsf_v2(void) {
 }
 
 static int
-test_parse_lsf_v3_meta(void) {
-    // Choose arbitrary but distinct dst/src values within the valid range.
-    const uint64_t dst = 0x0000ABCDEF12ULL;
-    const uint64_t src = 0x000012345678ULL;
-
-    const uint8_t payload_contents = 0xFU;
-    const uint8_t encryption_type = 0x5U;
-    const uint8_t signature = 1U;
-    const uint8_t meta_contents = 0x3U;
-    const uint8_t can = 0xAU;
-
-    uint16_t lsf_type = 0;
-    lsf_type |= (uint16_t)((uint16_t)payload_contents << 12);
-    lsf_type |= (uint16_t)((uint16_t)encryption_type << 9);
-    lsf_type |= (uint16_t)((uint16_t)signature << 8);
-    lsf_type |= (uint16_t)((uint16_t)meta_contents << 4);
-    lsf_type |= can;
-
+test_parse_lsf_big_endian_layout(void) {
+    const uint64_t dst = 0x010203040506ULL;
+    const uint64_t src = 0x112233445566ULL;
+    const uint16_t lsf_type = 0x05AAU;
     uint8_t meta[14];
     DSD_MEMSET(meta, 0, sizeof(meta));
-    meta[0] = 0x11U;
-    meta[13] = 0xEEU;
+    meta[0] = 0x80U;
+    meta[1] = 0x01U;
+    meta[13] = 0x7FU;
 
     uint8_t lsf_bits[240];
     build_lsf_bits(lsf_bits, dst, src, lsf_type, meta);
 
     struct m17_lsf_result res;
-    int rc = m17_parse_lsf(lsf_bits, sizeof(lsf_bits), &res);
+    const int rc = m17_parse_lsf(lsf_bits, sizeof(lsf_bits), &res);
     if (rc != 0) {
-        DSD_FPRINTF(stderr, "m17_parse_lsf v3 failed: rc=%d\n", rc);
+        DSD_FPRINTF(stderr, "m17_parse_lsf big-endian failed: rc=%d\n", rc);
         return 1;
     }
 
     int err = 0;
-    err |= expect_eq_u64("v3 dst", res.dst, dst);
-    err |= expect_eq_u64("v3 src", res.src, src);
-    err |= expect_eq_u64("v3 type_word", res.type_word, lsf_type);
-    err |= expect_eq_u8("v3 version", res.version, 3U);
-    err |= expect_eq_u8("v3 payload_contents", res.payload_contents, payload_contents);
-    err |= expect_eq_u8("v3 encryption_type", res.encryption_type, encryption_type);
-    err |= expect_eq_u8("v3 signature", res.signature, signature);
-    err |= expect_eq_u8("v3 meta_contents", res.meta_contents, meta_contents);
-    err |= expect_eq_u8("v3 cn", res.cn, can);
-    err |= expect_eq_u8("v3 dt", res.dt, payload_contents);
-    err |= expect_eq_u8("v3 et", res.et, 2U);
-    err |= expect_eq_u8("v3 es", res.es, 1U);
-    err |= expect_eq_u8("v3 rs", res.rs, 0U);
-    err |= expect_eq_u8("v3 meta_is_iv", res.meta_is_iv, 0U);
-    err |= expect_eq_u8("v3 has_meta", res.has_meta, 1U);
-
-    if (res.meta[0] != meta[0] || res.meta[13] != meta[13]) {
-        DSD_FPRINTF(stderr, "v3 meta: got %02X %02X want %02X %02X\n", res.meta[0], res.meta[13], meta[0], meta[13]);
-        err |= 1;
-    }
-
+    err |= expect_eq_u64("big-endian dst", res.dst, dst);
+    err |= expect_eq_u64("big-endian src", res.src, src);
+    err |= expect_eq_u64("big-endian type", res.type_word, lsf_type);
+    err |= expect_eq_u8("big-endian meta first", res.meta[0], meta[0]);
+    err |= expect_eq_u8("big-endian meta second", res.meta[1], meta[1]);
+    err |= expect_eq_u8("big-endian meta last", res.meta[13], meta[13]);
     return err;
 }
 
 static int
-test_parse_lsf_v3_nonzero_iv(void) {
+test_parse_lsf_spec_reserved_bits(void) {
     const uint64_t dst = 0x000000100001ULL;
     const uint64_t src = 0x000000200002ULL;
-    const uint16_t lsf_type = (uint16_t)((0x2U << 12U) | (0x4U << 9U) | (0xFU << 4U) | 0x6U);
+    const uint16_t lsf_type =
+        (uint16_t)((0xBU << 12U) | (1U << 11U) | (0x7U << 7U) | (0x2U << 5U) | (0x1U << 3U) | (0x3U << 1U) | 1U);
 
     uint8_t meta[14];
     DSD_MEMSET(meta, 0, sizeof(meta));
@@ -218,60 +199,148 @@ test_parse_lsf_v3_nonzero_iv(void) {
     build_lsf_bits(lsf_bits, dst, src, lsf_type, meta);
 
     struct m17_lsf_result res;
-    int rc = m17_parse_lsf(lsf_bits, sizeof(lsf_bits), &res);
+    const int rc = m17_parse_lsf(lsf_bits, sizeof(lsf_bits), &res);
     if (rc != 0) {
-        DSD_FPRINTF(stderr, "m17_parse_lsf v3 nonzero iv failed: rc=%d\n", rc);
+        DSD_FPRINTF(stderr, "m17_parse_lsf reserved bits failed: rc=%d\n", rc);
         return 1;
     }
 
     int err = 0;
-    err |= expect_eq_u8("v3 nonzero iv meta_is_iv", res.meta_is_iv, 1U);
-    err |= expect_eq_u8("v3 nonzero iv has_meta", res.has_meta, 1U);
-    if (res.meta[0] != meta[0] || res.meta[13] != meta[13]) {
-        DSD_FPRINTF(stderr, "v3 nonzero iv: got %02X %02X want %02X %02X\n", res.meta[0], res.meta[13], meta[0],
-                    meta[13]);
-        err |= 1;
-    }
+    err |= expect_eq_u8("spec reserved version", res.version, 2U);
+    err |= expect_eq_u8("spec reserved packet_stream", res.packet_stream, 1U);
+    err |= expect_eq_u8("spec reserved dt", res.dt, 3U);
+    err |= expect_eq_u8("spec reserved et", res.et, 1U);
+    err |= expect_eq_u8("spec reserved es", res.es, 2U);
+    err |= expect_eq_u8("spec reserved cn", res.cn, 7U);
+    err |= expect_eq_u8("spec reserved signature", res.signature, 1U);
+    err |= expect_eq_u8("spec reserved rs", res.rs, 0xBU);
+    err |= expect_eq_u8("spec reserved payload_contents", res.payload_contents, res.dt);
+    err |= expect_eq_u8("spec reserved encryption_type", res.encryption_type, res.et);
+    err |= expect_eq_u8("spec reserved meta_contents", res.meta_contents, res.es);
+    err |= expect_eq_u8("spec reserved meta_is_iv", res.meta_is_iv, 0U);
+    err |= expect_eq_u8("spec reserved has_meta", res.has_meta, 1U);
+    err |= expect_eq_u8("spec reserved type invalid", res.type_reserved_valid, 0U);
+    err |= expect_eq_u8("spec reserved meta first", res.meta[0], meta[0]);
+    err |= expect_eq_u8("spec reserved meta last", res.meta[13], meta[13]);
     return err;
 }
 
 static int
-test_parse_lsf_v3_zero_iv(void) {
-    const uint64_t dst = 0x000000100001ULL;
-    const uint64_t src = 0x000000200002ULL;
-    const uint16_t lsf_type = (uint16_t)((0x2U << 12) | (0x4U << 9) | (0xFU << 4) | 0x6U);
-
-    uint8_t meta[14];
-    DSD_MEMSET(meta, 0, sizeof(meta));
-
-    uint8_t lsf_bits[240];
-    build_lsf_bits(lsf_bits, dst, src, lsf_type, meta);
-
-    struct m17_lsf_result res;
-    int rc = m17_parse_lsf(lsf_bits, sizeof(lsf_bits), &res);
-    if (rc != 0) {
-        DSD_FPRINTF(stderr, "m17_parse_lsf v3 iv failed: rc=%d\n", rc);
-        return 1;
-    }
-
+test_lsf_address_and_meta_helpers(void) {
     int err = 0;
-    err |= expect_eq_u8("v3 iv version", res.version, 3U);
-    err |= expect_eq_u8("v3 iv payload_contents", res.payload_contents, 0x2U);
-    err |= expect_eq_u8("v3 iv encryption_type", res.encryption_type, 0x4U);
-    err |= expect_eq_u8("v3 iv meta_contents", res.meta_contents, 0xFU);
-    err |= expect_eq_u8("v3 iv et", res.et, 2U);
-    err |= expect_eq_u8("v3 iv es", res.es, 0U);
-    err |= expect_eq_u8("v3 iv meta_is_iv", res.meta_is_iv, 1U);
-    err |= expect_eq_u8("v3 iv has_meta", res.has_meta, 0U);
+    err |= expect_eq_u8("address reserved", m17_address_classify(0ULL), M17_ADDRESS_RESERVED);
+    err |= expect_eq_u8("address standard", m17_address_classify(0x9FDD51ULL), M17_ADDRESS_STANDARD);
+    err |= expect_eq_u8("address extended", m17_address_classify(M17_ADDRESS_EXTENDED_MIN), M17_ADDRESS_EXTENDED);
+    err |= expect_eq_u8("address broadcast", m17_address_classify(M17_ADDRESS_BROADCAST), M17_ADDRESS_BROADCAST_KIND);
+    err |= expect_eq_u8("destination standard valid", (uint8_t)m17_address_is_valid_destination(0x9FDD51ULL), 1U);
+    err |= expect_eq_u8("destination extended valid",
+                        (uint8_t)m17_address_is_valid_destination(M17_ADDRESS_EXTENDED_MIN), 1U);
+    err |= expect_eq_u8("destination broadcast valid", (uint8_t)m17_address_is_valid_destination(M17_ADDRESS_BROADCAST),
+                        1U);
+    err |= expect_eq_u8("destination zero invalid", (uint8_t)m17_address_is_valid_destination(0ULL), 0U);
+    err |= expect_eq_u8("source standard valid", (uint8_t)m17_address_is_valid_source(0x9FDD51ULL), 1U);
+    err |= expect_eq_u8("source extended invalid", (uint8_t)m17_address_is_valid_source(M17_ADDRESS_EXTENDED_MIN), 0U);
+    err |= expect_eq_u8("source broadcast invalid", (uint8_t)m17_address_is_valid_source(M17_ADDRESS_BROADCAST), 0U);
+    err |= expect_eq_u8("null meta text", m17_null_meta_protocol_for_subtype(0U), 0x80U);
+    err |= expect_eq_u8("null meta gnss", m17_null_meta_protocol_for_subtype(1U), 0x81U);
+    err |= expect_eq_u8("null meta ext", m17_null_meta_protocol_for_subtype(2U), 0x82U);
+    err |= expect_eq_u8("null meta reserved", m17_null_meta_protocol_for_subtype(3U), 0U);
+    err |= expect_eq_u8("CAN disabled allows", (uint8_t)m17_can_filter_allows(-1, 9U), 1U);
+    err |= expect_eq_u8("CAN match allows", (uint8_t)m17_can_filter_allows(9, 9U), 1U);
+    err |= expect_eq_u8("CAN mismatch rejects", (uint8_t)m17_can_filter_allows(9, 8U), 0U);
+    err |= expect_eq_u8("CAN invalid configured rejects", (uint8_t)m17_can_filter_allows(16, 0U), 0U);
+
+    char csd[10];
+    DSD_MEMSET(csd, 0, sizeof(csd));
+    if (m17_address_decode_csd(0x9FDD51ULL, csd) != 0 || strcmp(csd, "AB1CD") != 0) {
+        DSD_FPRINTF(stderr, "address decode AB1CD: got '%s'\n", csd);
+        err |= 1;
+    }
+    err |= expect_eq_u64("address decode extended rejected",
+                         (uint64_t)m17_address_decode_csd(M17_ADDRESS_EXTENDED_MIN, csd), (uint64_t)-2);
+
     return err;
 }
 
 static int
 test_stream_signature_frame_numbers(void) {
     int err = 0;
-    err |= expect_eq_u8("stream signature below", (uint8_t)m17_stream_frame_is_signature(0x7FFBU), 0U);
-    err |= expect_eq_u8("stream signature first", (uint8_t)m17_stream_frame_is_signature(0x7FFCU), 1U);
-    err |= expect_eq_u8("stream signature last", (uint8_t)m17_stream_frame_is_signature(0x7FFFU), 1U);
+    err |= expect_eq_u8("stream signature below", (uint8_t)m17_stream_frame_is_signature(M17_STREAM_SIGNATURE_FN0 - 1U),
+                        0U);
+    err |= expect_eq_u8("stream signature first", (uint8_t)m17_stream_frame_is_signature(M17_STREAM_SIGNATURE_FN0), 1U);
+    err |=
+        expect_eq_u8("stream signature second", (uint8_t)m17_stream_frame_is_signature(M17_STREAM_SIGNATURE_FN1), 1U);
+    err |= expect_eq_u8("stream signature third", (uint8_t)m17_stream_frame_is_signature(M17_STREAM_SIGNATURE_FN2), 1U);
+    err |= expect_eq_u8("stream signature low 0x7fff",
+                        (uint8_t)m17_stream_frame_is_signature(M17_STREAM_FRAME_COUNTER_MAX), 0U);
+    err |= expect_eq_u8("stream signature eot non-signature",
+                        (uint8_t)m17_stream_frame_is_signature(M17_STREAM_FRAME_END_MASK), 0U);
+    err |= expect_eq_u8("stream signature final", (uint8_t)m17_stream_frame_is_signature(M17_STREAM_SIGNATURE_FN3), 1U);
+    err |= expect_eq_u64("stream signature index first",
+                         (uint64_t)m17_stream_signature_frame_index(M17_STREAM_SIGNATURE_FN0), 0ULL);
+    err |= expect_eq_u64("stream signature index final",
+                         (uint64_t)m17_stream_signature_frame_index(M17_STREAM_SIGNATURE_FN3), 3ULL);
+    return err;
+}
+
+static int
+test_signature_digest(void) {
+    uint8_t digest[M17_SIGNATURE_DIGEST_BYTES];
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    m17_signature_digest_init(digest);
+    for (uint8_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
+        payload[i] = (uint8_t)(i + 1U);
+    }
+    m17_signature_digest_update(digest, payload);
+
+    int err = 0;
+    for (uint8_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES - 1U; i++) {
+        err |= expect_eq_u8("digest rotated first update", digest[i], (uint8_t)(i + 2U));
+    }
+    err |= expect_eq_u8("digest rotated first byte to tail", digest[M17_SIGNATURE_DIGEST_BYTES - 1U], 1U);
+
+    DSD_MEMSET(payload, 0xFF, sizeof(payload));
+    m17_signature_digest_update(digest, payload);
+    err |= expect_eq_u8("digest second update head", digest[0], (uint8_t)(3U ^ 0xFFU));
+    return err;
+}
+
+static int
+test_signature_collector(void) {
+    int err = 0;
+    struct m17_signature_collector collector;
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    m17_signature_collector_reset(&collector);
+
+    for (uint8_t frame = 0U; frame < 4U; frame++) {
+        for (uint8_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
+            payload[i] = (uint8_t)(frame * M17_SIGNATURE_DIGEST_BYTES + i);
+        }
+        const uint16_t fn = (frame == 0U)   ? M17_STREAM_SIGNATURE_FN0
+                            : (frame == 1U) ? M17_STREAM_SIGNATURE_FN1
+                            : (frame == 2U) ? M17_STREAM_SIGNATURE_FN2
+                                            : M17_STREAM_SIGNATURE_FN3;
+        const int rc = m17_signature_collector_push(&collector, fn, payload);
+        err |= expect_eq_u64("signature collector rc", (uint64_t)rc, frame == 3U ? 1ULL : 0ULL);
+    }
+
+    err |= expect_eq_u8("signature collector mask", collector.received_mask, 0x0FU);
+    err |= expect_eq_u8("signature collector complete", collector.complete, 1U);
+    err |= expect_eq_u8("signature collector bad sequence", collector.bad_sequence, 0U);
+    for (uint8_t i = 0U; i < M17_SIGNATURE_BYTES; i++) {
+        err |= expect_eq_u8("signature byte", collector.signature[i], i);
+    }
+
+    m17_signature_collector_reset(&collector);
+    DSD_MEMSET(payload, 0xA5, sizeof(payload));
+    err |= expect_eq_u64("signature invalid fn",
+                         (uint64_t)m17_signature_collector_push(&collector, M17_STREAM_FRAME_COUNTER_MAX, payload),
+                         (uint64_t)-2);
+    err |= expect_eq_u64("signature out of order",
+                         (uint64_t)m17_signature_collector_push(&collector, M17_STREAM_SIGNATURE_FN1, payload),
+                         (uint64_t)-3);
+    err |= expect_eq_u8("signature out of order bad sequence", collector.bad_sequence, 1U);
+    err |= expect_eq_u8("signature out of order incomplete", collector.complete, 0U);
     return err;
 }
 
@@ -322,7 +391,7 @@ test_parse_gnss_v2(void) {
     const uint32_t longitude_raw = 0xC00000U;
     const uint16_t altitude = 3000U;
     const uint16_t speed = 0x123U;
-    const uint16_t reserved = 0x456U;
+    const uint16_t reserved = 0x000U;
 
     uint8_t input[15];
     DSD_MEMSET(input, 0, sizeof(input));
@@ -362,6 +431,7 @@ test_parse_gnss_v2(void) {
     err |= expect_close_double("gnss speed", res.speed_kmh, 145.5, 0.000001);
     err |= expect_close_double("gnss altitude", res.altitude_m, 1000.0, 0.000001);
     err |= expect_eq_u64("gnss reserved", res.reserved, reserved);
+    err |= expect_eq_u8("gnss invalid-zero mask", res.invalid_zero_fields, 0U);
 
     input[0] = 0x91U;
     rc = m17_parse_gnss_v2(input, sizeof(input), &res);
@@ -383,6 +453,118 @@ test_parse_gnss_v2(void) {
         err |= 1;
     }
 
+    input[0] = 0x81U;
+    input[13] |= 0x01U;
+    rc = m17_parse_gnss_v2(input, sizeof(input), &res);
+    if (rc != -4) {
+        DSD_FPRINTF(stderr, "m17_parse_gnss_v2 reserved bits: got rc=%d want -4\n", rc);
+        err |= 1;
+    }
+    input[13] &= 0xF0U;
+
+    input[2] = (uint8_t)((0x2U << 4U) | 0x01U);
+    input[3] = 0x68U; // 360 degrees is invalid when velocity is marked valid.
+    rc = m17_parse_gnss_v2(input, sizeof(input), &res);
+    if (rc != -5) {
+        DSD_FPRINTF(stderr, "m17_parse_gnss_v2 invalid bearing: got rc=%d want -5\n", rc);
+        err |= 1;
+    }
+
+    input[2] = (uint8_t)(3U << 1U);
+    input[3] = 0x01U;
+    rc = m17_parse_gnss_v2(input, sizeof(input), &res);
+    if (rc != 0 || res.invalid_zero_fields != 0xFU || res.latitude_deg != 0.0 || res.longitude_deg != 0.0
+        || res.altitude_m != 0.0f || res.speed_kmh != 0.0f || res.bearing_deg != 0U || res.radius_m != 0.0f) {
+        DSD_FPRINTF(stderr, "m17_parse_gnss_v2 invalid-field zeroing failed: rc=%d mask=%02X\n", rc,
+                    res.invalid_zero_fields);
+        err |= 1;
+    }
+
+    return err;
+}
+
+static void
+write_be48(uint8_t* out, uint64_t value) {
+    for (int i = 0; i < 6; i++) {
+        out[i] = (uint8_t)(value >> (40U - ((uint32_t)i * 8U)));
+    }
+}
+
+static int
+test_text_meta_blocks(void) {
+    uint8_t meta[M17_META_BYTES];
+    struct m17_meta_text_block block;
+    struct m17_meta_text_assembler assembler;
+    char text[M17_TEXT_MAX_BYTES + 1U];
+    uint8_t text_len = 0U;
+    int err = 0;
+
+    DSD_MEMSET(meta, ' ', sizeof(meta));
+    meta[0] = 0x00U;
+    err |= expect_eq_u64("text no-data parse", (uint64_t)m17_meta_text_parse_block(meta, &block), 0ULL);
+    err |= expect_eq_u8("text no-data flag", block.has_text, 0U);
+
+    m17_meta_text_assembler_reset(&assembler);
+    DSD_MEMSET(meta, ' ', sizeof(meta));
+    meta[0] = 0x31U;
+    DSD_MEMCPY(meta + 1, "ABCDEFGHIJKLM", M17_TEXT_BLOCK_BYTES);
+    err |= expect_eq_u64("text block1 parse", (uint64_t)m17_meta_text_parse_block(meta, &block), 0ULL);
+    err |= expect_eq_u8("text block1 total", block.total_blocks, 2U);
+    err |= expect_eq_u8("text block1 index", block.block_index, 0U);
+    err |= expect_eq_u64("text block1 incomplete",
+                         (uint64_t)m17_meta_text_assembler_push(&assembler, &block, text, &text_len), 0ULL);
+
+    DSD_MEMSET(meta, ' ', sizeof(meta));
+    meta[0] = 0x32U;
+    DSD_MEMCPY(meta + 1, "NO", 2U);
+    err |= expect_eq_u64("text block2 parse", (uint64_t)m17_meta_text_parse_block(meta, &block), 0ULL);
+    err |= expect_eq_u64("text block2 complete",
+                         (uint64_t)m17_meta_text_assembler_push(&assembler, &block, text, &text_len), 1ULL);
+    err |= expect_eq_u8("text complete len", text_len, 15U);
+    if (strcmp(text, "ABCDEFGHIJKLMNO") != 0) {
+        DSD_FPRINTF(stderr, "text complete got '%s'\n", text);
+        err |= 1;
+    }
+
+    DSD_MEMSET(meta, ' ', sizeof(meta));
+    meta[0] = 0x12U;
+    err |= expect_eq_u64("text invalid segment", (uint64_t)m17_meta_text_parse_block(meta, &block), (uint64_t)-2);
+
+    return err;
+}
+
+static int
+test_extended_callsign_meta(void) {
+    uint8_t input[15];
+    DSD_MEMSET(input, 0, sizeof(input));
+    input[0] = 0x82U;
+    write_be48(input + 1, 0x9FDD51ULL);
+    write_be48(input + 7, 0x9FDD51ULL);
+
+    struct m17_extended_callsign_result ext;
+    int rc = m17_parse_extended_callsign_meta(input, sizeof(input), &ext);
+    int err = 0;
+    if (rc != 0 || strcmp(ext.field1_csd, "AB1CD") != 0 || strcmp(ext.field2_csd, "AB1CD") != 0
+        || ext.has_field2 != 1U) {
+        DSD_FPRINTF(stderr, "extended callsign parse failed: rc=%d field1='%s' field2='%s'\n", rc, ext.field1_csd,
+                    ext.field2_csd);
+        err |= 1;
+    }
+
+    input[14] = 0x01U;
+    rc = m17_parse_extended_callsign_meta(input, sizeof(input), &ext);
+    if (rc != -4) {
+        DSD_FPRINTF(stderr, "extended callsign reserved tail: got rc=%d want -4\n", rc);
+        err |= 1;
+    }
+    input[14] = 0x00U;
+
+    write_be48(input + 1, M17_ADDRESS_BROADCAST);
+    rc = m17_parse_extended_callsign_meta(input, sizeof(input), &ext);
+    if (rc != -5) {
+        DSD_FPRINTF(stderr, "extended callsign invalid field1: got rc=%d want -5\n", rc);
+        err |= 1;
+    }
     return err;
 }
 
@@ -390,12 +572,16 @@ int
 main(void) {
     int err = 0;
     err |= test_parse_lsf_v2();
-    err |= test_parse_lsf_v3_meta();
-    err |= test_parse_lsf_v3_nonzero_iv();
-    err |= test_parse_lsf_v3_zero_iv();
+    err |= test_parse_lsf_big_endian_layout();
+    err |= test_parse_lsf_spec_reserved_bits();
+    err |= test_lsf_address_and_meta_helpers();
     err |= test_stream_signature_frame_numbers();
+    err |= test_signature_digest();
+    err |= test_signature_collector();
     err |= test_stream_1600_arbitrary_assemble();
     err |= test_parse_gnss_v2();
+    err |= test_text_meta_blocks();
+    err |= test_extended_callsign_meta();
 
     if (err == 0) {
         printf("M17_LSF_PARSE: OK\n");

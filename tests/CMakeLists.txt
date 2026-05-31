@@ -500,6 +500,15 @@ target_link_libraries(dsd-neo_test_aes_ofb PRIVATE dsd-neo_crypto)
 
 add_test(NAME AES_OFB COMMAND dsd-neo_test_aes_ofb)
 
+add_executable(dsd-neo_test_ecdsa crypto/test_ecdsa.c)
+target_include_directories(
+    dsd-neo_test_ecdsa
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_ecdsa PRIVATE dsd-neo_crypto)
+
+add_test(NAME ECDSA_P256 COMMAND dsd-neo_test_ecdsa)
+
 add_executable(dsd-neo_test_rc4 crypto/test_rc4.c)
 target_include_directories(
     dsd-neo_test_rc4
@@ -3131,6 +3140,19 @@ target_include_directories(
 add_test(NAME M17_PROTOCOL_NAMES COMMAND dsd-neo_test_m17_protocol_names)
 
 add_executable(
+    dsd-neo_test_m17_algorithms
+    protocol/m17/test_m17_algorithms.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_algorithms.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_tables.c
+)
+target_include_directories(
+    dsd-neo_test_m17_algorithms
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/m17
+)
+target_link_libraries(dsd-neo_test_m17_algorithms PRIVATE dsd-neo_fec)
+add_test(NAME M17_ALGORITHMS COMMAND dsd-neo_test_m17_algorithms)
+
+add_executable(
     dsd-neo_test_m17_sync_dispatch
     protocol/m17/test_m17_sync_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_m17.c
@@ -3143,6 +3165,23 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/engine/dispatch
 )
 add_test(NAME M17_SYNC_DISPATCH COMMAND dsd-neo_test_m17_sync_dispatch)
+
+add_executable(
+    dsd-neo_test_m17_reference_vectors
+    protocol/m17/test_m17_reference_vectors.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_algorithms.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_parse.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_tables.c
+)
+target_include_directories(
+    dsd-neo_test_m17_reference_vectors
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/m17
+)
+target_link_libraries(
+    dsd-neo_test_m17_reference_vectors
+    PRIVATE dsd-neo_fec dsd-neo_crypto
+)
+add_test(NAME M17_REFERENCE_VECTORS COMMAND dsd-neo_test_m17_reference_vectors)
 
 add_executable(
     dsd-neo_test_dmr_t3_sm_clamp
@@ -3573,6 +3612,17 @@ if(DSD_HAS_RADIO)
         NAME FRAME_SYNC_P25P2_RTL
         COMMAND dsd-neo_test_frame_sync_p25p2_rtl
     )
+
+    add_executable(dsd-neo_test_frame_sync_m17 dsp/test_frame_sync_m17.c)
+    target_include_directories(
+        dsd-neo_test_frame_sync_m17
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_m17
+      ${DSD_NEO_TEST_MATH_LIB}
+      ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(NAME M17_FRAME_SYNC COMMAND dsd-neo_test_frame_sync_m17)
 endif()
 
 # Costas loop (CQPSK carrier recovery)

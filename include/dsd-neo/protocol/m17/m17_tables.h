@@ -29,9 +29,14 @@ extern const uint8_t m17_scramble[369];
 /* Base-40 alphabet used for CSD/CALLSIGN encoding/decoding. */
 extern const char m17_base40_alphabet[41];
 
-/* Puncture patterns used by LSF depuncturing logic. */
-extern const uint8_t m17_puncture_pattern_1[62];
-extern const uint8_t m17_puncture_pattern_3[62];
+#define M17_PUNCTURE_P1_LEN 61
+#define M17_PUNCTURE_P2_LEN 12
+#define M17_PUNCTURE_P3_LEN 8
+
+/* Puncture patterns used by M17 FEC paths. */
+extern const uint8_t m17_puncture_pattern_1[M17_PUNCTURE_P1_LEN];
+extern const uint8_t m17_puncture_pattern_2[M17_PUNCTURE_P2_LEN];
+extern const uint8_t m17_puncture_pattern_3[M17_PUNCTURE_P3_LEN];
 
 #ifdef __cplusplus
 }

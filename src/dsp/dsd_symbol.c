@@ -387,7 +387,8 @@ symbol_is_m17_sync(int lastsynctype) {
     return lastsynctype == DSD_SYNC_M17_STR_POS || lastsynctype == DSD_SYNC_M17_STR_NEG
            || lastsynctype == DSD_SYNC_M17_LSF_POS || lastsynctype == DSD_SYNC_M17_LSF_NEG
            || lastsynctype == DSD_SYNC_M17_PKT_POS || lastsynctype == DSD_SYNC_M17_PKT_NEG
-           || lastsynctype == DSD_SYNC_M17_PRE_POS || lastsynctype == DSD_SYNC_M17_PRE_NEG;
+           || lastsynctype == DSD_SYNC_M17_PRE_POS || lastsynctype == DSD_SYNC_M17_PRE_NEG
+           || lastsynctype == DSD_SYNC_M17_EOT_POS || lastsynctype == DSD_SYNC_M17_EOT_NEG;
 }
 
 static inline float

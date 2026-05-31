@@ -1051,11 +1051,19 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
     state->m17_str_dt = 9;
+    state->m17_bert_locked = 0;
+    state->m17_bert_lfsr = 1;
+    state->m17_bert_lock_count = 0;
+    state->m17_bert_window_bits = 0;
+    state->m17_bert_window_errors = 0;
+    state->m17_bert_bits = 0;
+    state->m17_bert_errors = 0;
+    state->m17_bert_resyncs = 0;
 
     //misc str storage
     DSD_MEMSET(state->str50b, 0, 50 * sizeof(char));
     DSD_MEMSET(state->str50c, 0, 50 * sizeof(char));
-    DSD_MEMSET(state->m17sms, 0, 800 * sizeof(char));
+    DSD_MEMSET(state->m17sms, 0, sizeof(state->m17sms));
     state->m17dat[0] = '\0';
 
     state->m17_dst = 0;
@@ -1071,9 +1079,23 @@ init_state_string_and_m17_defaults(dsd_state* state) {
 
     state->m17_enc = 0;
     state->m17_enc_st = 0;
+    state->m17_payload_decrypted = 0;
+    state->m17_signature_advertised = 0;
+    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
+    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
+    state->m17_signature_received_mask = 0;
+    state->m17_signature_complete = 0;
+    state->m17_signature_bad_sequence = 0;
+    DSD_MEMSET(state->m17_signature_public_key, 0, sizeof(state->m17_signature_public_key));
+    state->m17_signature_public_key_loaded = 0;
+    state->m17_signature_verification_status = 0;
     state->m17encoder_tx = 0;
     state->m17encoder_eot = 0;
     DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
+    state->m17_text_meta_control_or = 0;
+    state->m17_text_meta_expected_bitmap = 0;
+    state->m17_text_meta_received_bitmap = 0;
+    DSD_MEMSET(state->m17_text_meta, 0, sizeof(state->m17_text_meta));
 }
 
 static void

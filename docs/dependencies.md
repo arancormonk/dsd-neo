@@ -10,6 +10,7 @@ Required dependencies are:
 - C compiler with C11 support
 - C++ compiler with C++14 support
 - CMake 3.20 or newer
+- OpenSSL 3.x libcrypto
 - `mbe-neo` 2.x CMake package from mbelib-neo
 - libsndfile
 - curses backend: ncursesw/PDCurses
@@ -33,6 +34,11 @@ Vendored compiled third-party components are:
 
 Vendored code retains upstream notices. License and attribution details are in
 `THIRD_PARTY.md`.
+
+Registry-managed vcpkg dependencies are pinned by the manifest
+`builtin-baseline`. At baseline `56bb2411609227288b70117ead2c47585ba07713`,
+the `openssl` port resolves to OpenSSL `3.6.2`; system-package builds enforce
+the project requirement through `find_package(OpenSSL 3.0 REQUIRED)`.
 
 ## Packaging Dependencies
 

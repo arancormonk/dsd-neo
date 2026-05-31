@@ -13,6 +13,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_AES_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CRYPTO_AES_H_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -21,6 +22,12 @@ extern "C" {
 
 /** @brief Generate AES OFB keystream blocks for the given IV/key. */
 void aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks);
+
+/** @brief Generate AES CTR keystream blocks for the given initial counter/key. */
+void aes_ctr_keystream_output(const uint8_t* counter, const uint8_t* key, uint8_t* output, int type, int nblocks);
+
+/** @brief XOR AES CTR keystream bytes with data in place. */
+void aes_ctr_xcrypt_bytes(const uint8_t* counter, const uint8_t* key, uint8_t* data, int type, size_t len);
 
 /** @brief Decrypt whole AES ECB blocks. Supports in-place input/output buffers. */
 void aes_ecb_decrypt_blocks(const uint8_t* input, const uint8_t* key, uint8_t* output, int type, int nblocks);

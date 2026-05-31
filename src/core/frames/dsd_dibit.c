@@ -977,7 +977,8 @@ is_four_level_neg_synctype(int synctype) {
         case DSD_SYNC_M17_BRT_NEG:
         case DSD_SYNC_M17_PKT_NEG:
         case DSD_SYNC_P25P2_NEG:
-        case DSD_SYNC_M17_PRE_NEG: return 1;
+        case DSD_SYNC_M17_PRE_NEG:
+        case DSD_SYNC_M17_EOT_NEG: return 1;
         default: break;
     }
     return 0;

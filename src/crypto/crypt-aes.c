@@ -351,6 +351,20 @@ Cipher(state_t* state, const uint8_t* RoundKey, uint8_t Nr) {
 }
 
 static void
+aes_increment_counter_be(uint8_t counter[AES_BLOCKLEN]) {
+    if (counter == NULL) {
+        return;
+    }
+
+    for (int i = AES_BLOCKLEN - 1; i >= 0; i--) {
+        counter[i]++;
+        if (counter[i] != 0U) {
+            break;
+        }
+    }
+}
+
+static void
 InvCipher(state_t* state, const uint8_t* RoundKey, uint8_t Nr) {
     AddRoundKey(Nr, state, RoundKey);
 
@@ -362,6 +376,60 @@ InvCipher(state_t* state, const uint8_t* RoundKey, uint8_t Nr) {
             break;
         }
         InvMixColumns(state);
+    }
+}
+
+void
+aes_ctr_keystream_output(const uint8_t* counter, const uint8_t* key, uint8_t* output, int type, int nblocks) {
+    if (counter == NULL || key == NULL || output == NULL || nblocks <= 0) {
+        return;
+    }
+
+    aes_params_t params = aes_params_for_type(type);
+    struct AES_ctx ctx;
+    uint8_t counter_block[AES_BLOCKLEN];
+
+    DSD_MEMSET(ctx.RoundKey, 0, ((size_t)AES_ROUND_KEY_BYTES) * sizeof(uint8_t));
+    KeyExpansion(ctx.RoundKey, key, params.nk, params.nr);
+    DSD_MEMCPY(counter_block, counter, sizeof(counter_block));
+
+    for (int i = 0; i < nblocks; i++) {
+        uint8_t stream[AES_BLOCKLEN];
+        const size_t offset = (size_t)i * AES_BLOCKLEN;
+        DSD_MEMCPY(stream, counter_block, sizeof(stream));
+        Cipher((state_t*)stream, ctx.RoundKey, params.nr);
+        DSD_MEMCPY(output + offset, stream, sizeof(stream));
+        aes_increment_counter_be(counter_block);
+    }
+}
+
+void
+aes_ctr_xcrypt_bytes(const uint8_t* counter, const uint8_t* key, uint8_t* data, int type, size_t len) {
+    if (counter == NULL || key == NULL || data == NULL || len == 0U) {
+        return;
+    }
+
+    aes_params_t params = aes_params_for_type(type);
+    struct AES_ctx ctx;
+    uint8_t counter_block[AES_BLOCKLEN];
+
+    DSD_MEMSET(ctx.RoundKey, 0, ((size_t)AES_ROUND_KEY_BYTES) * sizeof(uint8_t));
+    KeyExpansion(ctx.RoundKey, key, params.nk, params.nr);
+    DSD_MEMCPY(counter_block, counter, sizeof(counter_block));
+
+    for (size_t offset = 0U; offset < len; offset += AES_BLOCKLEN) {
+        uint8_t stream[AES_BLOCKLEN];
+        DSD_MEMCPY(stream, counter_block, sizeof(stream));
+        Cipher((state_t*)stream, ctx.RoundKey, params.nr);
+
+        size_t block_len = len - offset;
+        if (block_len > AES_BLOCKLEN) {
+            block_len = AES_BLOCKLEN;
+        }
+        for (size_t i = 0U; i < block_len; i++) {
+            data[offset + i] ^= stream[i];
+        }
+        aes_increment_counter_be(counter_block);
     }
 }
 

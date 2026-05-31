@@ -487,6 +487,7 @@ endif()
 
 # Dependencies
 find_package(LibSndFile REQUIRED)
+find_package(OpenSSL 3.0 REQUIRED)
 
 # Require mbelib-neo 2.x (no legacy mbelib fallback). The 2.x ABI provides the
 # soft-decision frame decode and result-based processing APIs used by dsd-neo.

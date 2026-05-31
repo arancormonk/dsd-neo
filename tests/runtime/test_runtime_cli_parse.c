@@ -8,6 +8,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/crypto/ecdsa.h>
 #include <dsd-neo/crypto/pc5.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -3022,6 +3023,99 @@ test_dmr_force_algid_long_option_rejects_invalid_value(void) {
 }
 
 static int
+test_m17_signature_public_key_long_option_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--m17-signature-public-key";
+    char arg2[] = "0x253DD9CE177042A6056F069C096A68F9937E5EC82F76F49BDCB78EE10B691373A "
+                  "48911B59C269EAA33BC428FE598CE87ADD4ED6D1B4E0EFAFB2558456DFC35DE";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    static const uint8_t expected[DSD_ECDSA_P256_PUBLIC_KEY_BYTES] = {
+        0x25U, 0x3DU, 0xD9U, 0xCEU, 0x17U, 0x70U, 0x42U, 0xA6U, 0x05U, 0x6FU, 0x06U, 0x9CU, 0x09U, 0x6AU, 0x68U, 0xF9U,
+        0x93U, 0x7EU, 0x5EU, 0xC8U, 0x2FU, 0x76U, 0xF4U, 0x9BU, 0xDCU, 0xB7U, 0x8EU, 0xE1U, 0x0BU, 0x69U, 0x13U, 0x73U,
+        0xA4U, 0x89U, 0x11U, 0xB5U, 0x9CU, 0x26U, 0x9EU, 0xAAU, 0x33U, 0xBCU, 0x42U, 0x8FU, 0xE5U, 0x98U, 0xCEU, 0x87U,
+        0xADU, 0xD4U, 0xEDU, 0x6DU, 0x1BU, 0x4EU, 0x0EU, 0xFAU, 0xFBU, 0x25U, 0x58U, 0x45U, 0x6DU, 0xFCU, 0x35U, 0xDEU,
+    };
+    if (state->m17_signature_public_key_loaded != 1U
+        || memcmp(state->m17_signature_public_key, expected, sizeof(expected)) != 0) {
+        DSD_FPRINTF(stderr, "expected parsed M17 signature public key bytes to match\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_m17_signature_public_key_long_option_rejects_invalid_value(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--m17-signature-public-key=1234";
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1 || state->m17_signature_public_key_loaded != 0U) {
+        DSD_FPRINTF(stderr, "expected parse error for invalid M17 signature public key, got rc=%d exit_rc=%d\n", rc,
+                    exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_m17_signature_public_key_missing_value_returns_error(void) {
+    return test_missing_required_long_option_value_returns_error("--m17-signature-public-key");
+}
+
+static int
 test_dmr_baofeng_pc5_long_option_rejects_invalid_key(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -4234,6 +4328,9 @@ main(void) {
     rc |= test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv();
     rc |= test_dmr_force_algid_long_option_parse();
     rc |= test_dmr_force_algid_long_option_rejects_invalid_value();
+    rc |= test_m17_signature_public_key_long_option_parse();
+    rc |= test_m17_signature_public_key_long_option_rejects_invalid_value();
+    rc |= test_m17_signature_public_key_missing_value_returns_error();
     rc |= test_dmr_baofeng_pc5_long_option_rejects_invalid_key();
     rc |= test_f_auto_preset_applies_cli_profile();
     rc |= test_f_ysf_preset_applies_cli_profile();
