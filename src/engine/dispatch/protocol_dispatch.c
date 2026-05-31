@@ -6,28 +6,63 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
-#include <string.h>
+
+#include <stddef.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "protocol_dispatch_impl.h"
 
-static const dsd_protocol_handler*
-dsd_find_protocol_handler(int synctype) {
-    const dsd_protocol_handler* handler = dsd_protocol_handlers;
-    const dsd_protocol_handler* fallback = NULL;
+static int
+dsd_dispatch_known_frame(dsd_opts* opts, dsd_state* state) {
+    const int synctype = state->synctype;
 
-    while (handler->name != NULL) {
-        if (handler->matches_synctype != NULL && handler->matches_synctype(synctype)) {
-            return handler;
-        }
-        if (fallback == NULL && strcmp(handler->name, "P25P1") == 0) {
-            fallback = handler;
-        }
-        handler++;
+    if (dsd_dispatch_matches_nxdn(synctype)) {
+        dsd_dispatch_handle_nxdn(opts, state);
+        return 1;
+    }
+    if (dsd_dispatch_matches_dstar(synctype)) {
+        dsd_dispatch_handle_dstar(opts, state);
+        return 1;
+    }
+    if (dsd_dispatch_matches_dmr(synctype)) {
+        dsd_dispatch_handle_dmr(opts, state);
+        return 1;
+    }
+    if (dsd_dispatch_matches_x2tdma(synctype)) {
+        dsd_dispatch_handle_x2tdma(opts, state);
+        return 1;
+    }
+    if (dsd_dispatch_matches_provoice(synctype)) {
+        dsd_dispatch_handle_provoice(opts, state);
+        return 1;
+    }
+    if (dsd_dispatch_matches_edacs(synctype)) {
+        dsd_dispatch_handle_edacs(opts, state);
+        return 1;
+    }
+    if (dsd_dispatch_matches_ysf(synctype)) {
+        dsd_dispatch_handle_ysf(opts, state);
+        return 1;
+    }
+    if (dsd_dispatch_matches_m17(synctype)) {
+        dsd_dispatch_handle_m17(opts, state);
+        return 1;
+    }
+    if (dsd_dispatch_matches_p25p2(synctype)) {
+        dsd_dispatch_handle_p25p2(opts, state);
+        return 1;
+    }
+    if (dsd_dispatch_matches_dpmr(synctype)) {
+        dsd_dispatch_handle_dpmr(opts, state);
+        return 1;
+    }
+    if (dsd_dispatch_matches_p25p1(synctype)) {
+        dsd_dispatch_handle_p25p1(opts, state);
+        return 1;
     }
 
-    return fallback;
+    return 0;
 }
 
 void
@@ -41,10 +76,11 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         state->minref = state->min;
     }
 
-    const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
-    if (handler != NULL && handler->handle_frame != NULL) {
-        handler->handle_frame(opts, state);
+    if (dsd_dispatch_known_frame(opts, state)) {
+        return;
     }
+
+    dsd_dispatch_handle_p25p1(opts, state);
 }
 
 const dsd_protocol_handler dsd_protocol_handlers[] = {
