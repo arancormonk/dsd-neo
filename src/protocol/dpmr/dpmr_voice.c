@@ -25,6 +25,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/dpmr/dpmr_const.h>
 #include <dsd-neo/protocol/dpmr/dpmr_data.h>
@@ -75,7 +76,11 @@ dpmr_read_dibit(dsd_opts* opts, dsd_state* state) {
     return dibit;
 }
 
-static void
+/*
+ * Mark processdPMRvoice helper roots used by the public decoder entrypoint.
+ * CodeQL's manual C/C++ database can miss this local call chain.
+ */
+static void DSD_ATTR_USED
 dpmr_read_first_cch(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx) {
     for (uint32_t i = 0; i < 36; i++) {
         uint32_t dibit = dpmr_read_dibit(opts, state);
@@ -84,7 +89,7 @@ dpmr_read_first_cch(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dpmr_read_tch_group(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx, uint32_t frame_base) {
     for (uint32_t j = 0; j < 4; j++) {
         const int* w = dpmr_ambe_interleave_w;
@@ -107,7 +112,7 @@ dpmr_read_tch_group(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx, uin
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dpmr_read_first_cc(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx) {
     uint32_t k = 0;
     for (uint32_t i = 0; i < 12; i++) {
@@ -118,7 +123,7 @@ dpmr_read_first_cc(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx) {
     state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)GetdPmrColorCode(ctx->CC[0]);
 }
 
-static void
+static void DSD_ATTR_USED
 dpmr_read_second_cch(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx) {
     uint32_t k = 0;
     for (uint32_t i = 0; i < 36; i++) {
@@ -141,7 +146,7 @@ dpmr_extract_cch_crc(const uint8_t cch_bits[48]) {
     return crc;
 }
 
-static void
+static void DSD_ATTR_USED
 dpmr_decode_cch_frames(dsd_state* state, dpmr_voice_ctx_t* ctx) {
     for (uint32_t i = 0; i < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; i++) {
         uint32_t scrambler_lfsr = 0x1FF;
@@ -184,7 +189,7 @@ dpmr_decode_cch_frames(dsd_state* state, dpmr_voice_ctx_t* ctx) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dpmr_extract_previous_ids(const dsd_state* state, char called_id[8], char calling_id[8]) {
     dsd_strncpy_s(called_id, 8, (const char*)state->dPMRVoiceFS2Frame.CalledID, 7);
     called_id[7] = '\0';
@@ -241,7 +246,7 @@ dpmr_mark_unknown_superframe_part(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dpmr_update_superframe_part(dpmr_voice_ctx_t* ctx, dsd_opts* opts, dsd_state* state, char called_id[8],
                             char calling_id[8]) {
     if (((ctx->CrcOk[0] || ctx->HammingCorrectable[0][0]) && (ctx->CCH_FrameNumber[0] == 0))
@@ -257,7 +262,7 @@ dpmr_update_superframe_part(dpmr_voice_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     dpmr_mark_unknown_superframe_part(opts, state);
 }
 
-static void
+static void DSD_ATTR_USED
 dpmr_print_ids(dsd_state* state, char called_id[8], char calling_id[8]) {
     DSD_FPRINTF(stderr, "\n");
     if (state->dPMRVoiceFS2Frame.CalledIDOk) {
@@ -293,7 +298,7 @@ dpmr_print_ids(dsd_state* state, char called_id[8], char calling_id[8]) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dpmr_print_scrambler_state(const dsd_state* state) {
     if (state->dPMRVoiceFS2Frame.Version[0] != 3) {
         return;

@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
@@ -187,7 +188,11 @@ p25p1_handle_nid_decode_failure(const dsd_opts* opts, dsd_state* state, char dui
     state->debug_header_critical_errors++;
 }
 
-static void
+/*
+ * Mark the static helper roots used by the public dispatch entrypoint. CodeQL's
+ * manual C/C++ database can miss this local call chain and report all children.
+ */
+static void DSD_ATTR_USED
 p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state, char duid[3]) {
     char bch_code[63];
     uint8_t bch_reliab[63];
@@ -406,7 +411,7 @@ p25p1_handle_unknown_duid(dsd_opts* opts, dsd_state* state, const char duid[3]) 
     p25_status_accum_classify(state, opts);
 }
 
-static void
+static void DSD_ATTR_USED
 p25p1_dispatch_by_duid(dsd_opts* opts, dsd_state* state, const char duid[3]) {
     if (strcmp(duid, "00") == 0) {
         p25p1_handle_hdu(opts, state);

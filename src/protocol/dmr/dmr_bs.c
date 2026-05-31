@@ -24,6 +24,7 @@
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -91,7 +92,11 @@ typedef struct {
     char timestr[9];
 } dmr_bs_bootstrap_ctx;
 
-static void
+/*
+ * Mark dmrBS helper roots used by the public decoder entrypoint. CodeQL's
+ * manual C/C++ database can miss this local call chain and report all children.
+ */
+static void DSD_ATTR_USED
 init_dmr_bs_ctx(const dsd_state* state, dmr_bs_ctx* ctx) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->cc = 25;
@@ -709,7 +714,7 @@ run_dmr_bs_post_skip(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     return DMR_BS_ACTION_CONTINUE;
 }
 
-static void
+static void DSD_ATTR_USED
 finalize_dmr_bs(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
     state->dmr_stereo = 0;
     state->errs = 0;
@@ -893,7 +898,7 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
     }
 }
 
-static dmr_bs_action
+static dmr_bs_action DSD_ATTR_USED
 process_dmr_bs_iteration(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     getTimeC_buf(ctx->timestr);
     reset_dmr_bs_loop_buffers(ctx);
