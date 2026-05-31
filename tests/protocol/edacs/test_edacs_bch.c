@@ -10,11 +10,18 @@
 
 static void
 test_bch_preserves_message_bits(void) {
-    static const uint32_t messages[] = {0x0000000U, 0x0000001U, 0x0123456U, 0x0ABCDEFU, 0x0FFFFFFFU};
+    static const struct {
+        uint32_t message;
+        unsigned long long int codeword;
+    } cases[] = {
+        {0x0000000U, 0x0000000000ULL}, {0x0000001U, 0x0000001539ULL},   {0x0123456U, 0x01234563E4ULL},
+        {0x0ABCDEFU, 0x0ABCDEFEB8ULL}, {0x0FFFFFFFU, 0x0FFFFFFFA9AULL},
+    };
 
-    for (size_t i = 0; i < sizeof(messages) / sizeof(messages[0]); i++) {
-        unsigned long long int codeword = edacs_bch(messages[i]);
-        assert(((codeword >> 12) & 0x0FFFFFFFULL) == messages[i]);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        unsigned long long int codeword = edacs_bch(cases[i].message);
+        assert(codeword == cases[i].codeword);
+        assert(((codeword >> 12) & 0x0FFFFFFFULL) == cases[i].message);
         assert((codeword & ~0xFFFFFFFFFFULL) == 0ULL);
     }
 }

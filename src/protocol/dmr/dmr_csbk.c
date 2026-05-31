@@ -39,6 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_tiii_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -2828,7 +2829,7 @@ dmr_syscode_set_partition_label(uint8_t par, char* par_str, size_t par_str_sz) {
 
 static uint16_t
 dmr_syscode_effective_split_n(dsd_opts* opts, dsd_state* state, int csbk_fid, uint16_t site_bits, uint8_t* is_capmax) {
-    uint16_t n = 0;
+    uint16_t default_n = site_bits;
 
     if (is_capmax) {
         *is_capmax = 0;
@@ -2841,15 +2842,10 @@ dmr_syscode_effective_split_n(dsd_opts* opts, dsd_state* state, int csbk_fid, ui
             opts->dmr_dmrla_is_set = 1;
             opts->dmr_dmrla_n = 0;
         }
+        default_n = 0;
         DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
     }
-    if (opts->dmr_dmrla_is_set == 1) {
-        n = opts->dmr_dmrla_n;
-    }
-    if (n > site_bits) {
-        n = site_bits;
-    }
-    return n;
+    return dmr_tiii_effective_split_n(default_n, opts->dmr_dmrla_is_set, opts->dmr_dmrla_n, site_bits);
 }
 
 static void
@@ -2869,8 +2865,11 @@ dmr_syscode_print_type0(const dsd_opts* opts, uint8_t* cs_pdu_bits, const char* 
     uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
 
     if (n != 0) {
-        DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Cat: %s;", model_str, net, (site >> n),
-                    (site & sub_mask), par_str);
+        uint16_t display_net = dmr_tiii_display_net(net, n);
+        uint16_t display_site = dmr_tiii_display_site(site, n);
+        uint16_t display_subsite = dmr_tiii_display_subsite(site, sub_mask, n);
+        DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Cat: %s;", model_str, display_net,
+                    display_site, display_subsite, par_str);
     } else {
         DSD_FPRINTF(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %d; Site ID: %d;", model_str, net, site);
     }
@@ -2918,7 +2917,10 @@ static void
 dmr_syscode_print_type1(const char* model_str, uint16_t net, uint16_t site, uint16_t n, uint16_t sub_mask,
                         uint16_t syscode) {
     if (n != 0) {
-        DSD_FPRINTF(stderr, " %s; Net ID: %d; Site ID: %d.%d;", model_str, net, (site >> n), (site & sub_mask));
+        uint16_t display_net = dmr_tiii_display_net(net, n);
+        uint16_t display_site = dmr_tiii_display_site(site, n);
+        uint16_t display_subsite = dmr_tiii_display_subsite(site, sub_mask, n);
+        DSD_FPRINTF(stderr, " %s; Net ID: %d; Site ID: %d.%d;", model_str, display_net, display_site, display_subsite);
     } else {
         DSD_FPRINTF(stderr, " %s; Net ID: %d; Site ID: %d;", model_str, net, site);
     }
@@ -2958,15 +2960,18 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
     dmr_syscode_decode_model(model, cs_pdu_bits, &net, &site, &site_bits, model_str, sizeof(model_str));
 
     n = dmr_syscode_effective_split_n(opts, state, csbk_fid, site_bits, &is_capmax);
-    sub_mask = (n == 0) ? 0U : (uint16_t)((1U << n) - 1U);
+    sub_mask = dmr_tiii_subsite_mask(n);
     par = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[54], 2);
     dmr_syscode_set_partition_label(par, par_str, sizeof(par_str));
 
     if (type == 0) {
         dmr_syscode_print_type0(opts, cs_pdu_bits, model_str, net, site, n, sub_mask, par_str, syscode, is_capmax);
         if (n != 0) {
+            uint16_t display_net = dmr_tiii_display_net(net, n);
+            uint16_t display_site = dmr_tiii_display_site(site, n);
+            uint16_t display_subsite = dmr_tiii_display_subsite(site, sub_mask, n);
             DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d.%d;%04X; ", model_str,
-                         net, (site >> n), (site & sub_mask), syscode);
+                         display_net, display_site, display_subsite, syscode);
         } else {
             DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d;%04X; ", model_str, net,
                          site, syscode);

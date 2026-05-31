@@ -29,24 +29,6 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "ysf_frame.h"
 
-static uint8_t fr_interleave[144] = {
-    0,   7,   12,  19,  24,  31,  36,  43,  48,  55,  60,  67, // [  0 -  11] yellow message
-    72,  79,  84,  91,  96,  103, 108, 115, 120, 127, 132,     // [ 12 -  22] yellow FEC
-    139, 1,   6,   13,  18,  25,  30,  37,  42,  49,  54,  61, // [ 23 -  34] orange message
-    66,  73,  78,  85,  90,  97,  102, 109, 114, 121, 126,     // [ 35 -  45] orange FEC
-    133, 138, 2,   9,   14,  21,  26,  33,  38,  45,  50,  57, // [ 46 -  57] red message
-    62,  69,  74,  81,  86,  93,  98,  105, 110, 117, 122,     // [ 58 -  68] red FEC
-    129, 134, 141, 3,   8,   15,  20,  27,  32,  39,  44,  51, // [ 69 -  80] pink message
-    56,  63,  68,  75,  80,  87,  92,  99,  104, 111, 116,     // [ 81 -  91] pink FEC
-    123, 128, 135, 140, 4,   11,  16,  23,  28,  35,  40,      // [ 92 - 102] dark blue message
-    47,  52,  59,  64,                                         // [103 - 106] dark blue FEC
-    71,  76,  83,  88,  95,  100, 107, 112, 119, 124, 131,     // [107 - 117] light blue message
-    136, 143, 5,   10,                                         // [118 - 121] light blue FEC
-    17,  22,  29,  34,  41,  46,  53,  58,  65,  70,  77,      // [122 - 132] green message
-    82,  89,  94,  101,                                        // [133 - 136] green FEC
-    106, 113, 118, 125, 130, 137, 142,                         // [137 - 143] unprotected
-};
-
 //half-rate (from NXDN)
 static const int YnW[36] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
                             0, 1, 0, 1, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2};
@@ -818,29 +800,6 @@ ysf_read_full_rate_imbe_raw(dsd_opts* opts, dsd_state* state, uint8_t imbe_raw[1
 }
 
 static void
-ysf_unpack_full_rate_imbe(const uint8_t imbe_raw[144], uint8_t imbe_vch[144], char imbe_fr[8][23]) {
-    int k = 0;
-
-    for (int j = 0; j < 144; j++) {
-        imbe_vch[j] = imbe_raw[fr_interleave[j]];
-    }
-
-    for (int n = 0; n < 4; n++) {
-        for (int m = 22; m >= 0; m--) {
-            imbe_fr[n][m] = (char)imbe_vch[k++];
-        }
-    }
-    for (int n = 4; n < 7; n++) {
-        for (int m = 14; m >= 0; m--) {
-            imbe_fr[n][m] = (char)imbe_vch[k++];
-        }
-    }
-    for (int m = 6; m >= 0; m--) {
-        imbe_fr[7][m] = (char)imbe_vch[k++];
-    }
-}
-
-static void
 ysf_decode_full_rate_voice_slot(dsd_opts* opts, dsd_state* state) {
     uint8_t imbe_raw[144];
     uint8_t imbe_vch[144];
@@ -852,7 +811,7 @@ ysf_decode_full_rate_voice_slot(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(imbe_fr, 0, sizeof(imbe_fr));
 
     ysf_read_full_rate_imbe_raw(opts, state, imbe_raw);
-    ysf_unpack_full_rate_imbe(imbe_raw, imbe_vch, imbe_fr);
+    dsd_ysf_unpack_full_rate_imbe(imbe_raw, imbe_vch, imbe_fr);
 
     state->synctype = DSD_SYNC_P25P1_POS;
     processMbeFrame(opts, state, imbe_fr, NULL, NULL);

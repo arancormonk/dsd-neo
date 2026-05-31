@@ -276,6 +276,46 @@ test_stream_signature_frame_numbers(void) {
 }
 
 static int
+test_stream_1600_arbitrary_assemble(void) {
+    uint8_t accumulator[48];
+    uint8_t out_packet[49];
+    DSD_MEMSET(accumulator, 0, sizeof(accumulator));
+    DSD_MEMSET(out_packet, 0, sizeof(out_packet));
+
+    int err = 0;
+    for (uint16_t frame_number = 0; frame_number < 6U; frame_number++) {
+        uint8_t chunk[8];
+        for (uint8_t i = 0; i < 8U; i++) {
+            chunk[i] = (uint8_t)((frame_number * 8U) + i + 1U);
+        }
+
+        const int rc = m17_stream_1600_arbitrary_assemble(accumulator, frame_number, chunk, out_packet);
+        err |= expect_eq_u64("stream arbitrary assemble rc", (uint64_t)rc, (frame_number == 5U) ? 1ULL : 0ULL);
+    }
+
+    err |= expect_eq_u8("stream arbitrary protocol", out_packet[0], 0x99U);
+    for (uint8_t i = 0; i < 48U; i++) {
+        err |= expect_eq_u8("stream arbitrary payload", out_packet[i + 1U], (uint8_t)(i + 1U));
+        err |= expect_eq_u8("stream arbitrary accumulator reset", accumulator[i], 0U);
+    }
+
+    uint8_t chunk[8] = {0xAAU, 0xBBU, 0xCCU, 0xDDU, 0xEEU, 0xF0U, 0x12U, 0x34U};
+    int rc = m17_stream_1600_arbitrary_assemble(accumulator, 12U, chunk, out_packet);
+    err |= expect_eq_u64("stream arbitrary wrapped rc", (uint64_t)rc, 0ULL);
+    for (uint8_t i = 0; i < 8U; i++) {
+        err |= expect_eq_u8("stream arbitrary wrapped chunk", accumulator[i], chunk[i]);
+    }
+
+    rc = m17_stream_1600_arbitrary_assemble(NULL, 0U, chunk, out_packet);
+    if (rc != -1) {
+        DSD_FPRINTF(stderr, "stream arbitrary null accumulator: got %d want -1\n", rc);
+        err |= 1;
+    }
+
+    return err;
+}
+
+static int
 test_parse_gnss_v2(void) {
     const uint16_t bearing = 300U;
     const uint32_t latitude_raw = 0x400000U;
@@ -354,6 +394,7 @@ main(void) {
     err |= test_parse_lsf_v3_nonzero_iv();
     err |= test_parse_lsf_v3_zero_iv();
     err |= test_stream_signature_frame_numbers();
+    err |= test_stream_1600_arbitrary_assemble();
     err |= test_parse_gnss_v2();
 
     if (err == 0) {

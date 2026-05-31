@@ -33,6 +33,7 @@ typedef struct {
 
 void dsd_m17_udp_hooks_set(dsd_m17_udp_hooks hooks);
 
+int dsd_m17_udp_socket_is_valid(dsd_socket_t sock);
 dsd_socket_t dsd_m17_udp_hook_udp_bind(char* hostname, int portno);
 int dsd_m17_udp_hook_connect(dsd_opts* opts, dsd_state* state);
 int dsd_m17_udp_hook_receiver(dsd_opts* opts, void* data);

@@ -26,6 +26,9 @@
 void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, const uint8_t* ElementsContent,
                                   size_t elements_bits);
 
+static int g_alias_prop_calls;
+static uint8_t g_alias_prop_crc_ok;
+
 /*
  * Link stubs:
  * Pulling nxdn_element.c directly into this test would duplicate large decoder
@@ -82,7 +85,7 @@ nxdn_message_crc32(const uint8_t* input, int len) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_alias_decode_arib(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
+nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
     (void)opts;
     (void)state;
     (void)message_bits;
@@ -91,11 +94,12 @@ nxdn_alias_decode_arib(dsd_opts* opts, dsd_state* state, const uint8_t* message_
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_alias_decode_prop(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
+nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
     (void)opts;
     (void)state;
     (void)message_bits;
-    (void)crc_ok;
+    g_alias_prop_calls++;
+    g_alias_prop_crc_ok = crc_ok;
 }
 
 void
@@ -346,6 +350,15 @@ write_data_call_header_fields(uint8_t* bits, uint8_t message_type, uint8_t ciphe
 }
 
 static void
+write_standard_alias_marker(uint8_t* bits) {
+    write_bits_u64(bits, 8U, 0x68U, 8U);
+    write_bits_u64(bits, 16U, 0x8204U, 16U);
+    write_bits_u64(bits, 32U, 1U, 4U);
+    write_bits_u64(bits, 36U, 1U, 4U);
+    write_ascii_bits(bits, 40U, "TEST");
+}
+
+static void
 write_data_payload_frame(uint8_t* bits, uint8_t message_type, uint8_t pf_num, uint8_t blk_num, const uint8_t* payload,
                          size_t payload_len) {
     set_message_type(bits, message_type);
@@ -471,6 +484,40 @@ test_sdcall_iv_type_d_min_length_is_accepted(void) {
     NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
 
     int rc = expect_u64("sdcall-iv-type-d-min-len", (uint64_t)state->payload_mi, iv22);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_prop_form_alias_requires_marker(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+
+    int rc = 0;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x3FU);
+    g_alias_prop_calls = 0;
+    g_alias_prop_crc_ok = 0U;
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+    rc |= expect_int("prop-form-no-marker", g_alias_prop_calls, 0);
+
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x3FU);
+    write_standard_alias_marker(bits);
+    g_alias_prop_calls = 0;
+    g_alias_prop_crc_ok = 0U;
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+    rc |= expect_int("prop-form-marker", g_alias_prop_calls, 1);
+    rc |= expect_int("prop-form-marker-crc", g_alias_prop_crc_ok, 1);
+
     free(state);
     free(opts);
     return rc;
@@ -892,6 +939,7 @@ main(void) {
     rc |= test_sdcall_header_short_is_ignored();
     rc |= test_sdcall_iv_short_type_c_is_ignored();
     rc |= test_sdcall_iv_type_d_min_length_is_accepted();
+    rc |= test_prop_form_alias_requires_marker();
     rc |= test_short_dcall_data_is_rejected(0x39U, "sdcall-data-short");
     rc |= test_short_dcall_data_is_rejected(0x0BU, "dcall-data-short");
     rc |= test_dst_id_info_complete_event();

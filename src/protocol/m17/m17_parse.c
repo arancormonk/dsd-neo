@@ -53,6 +53,25 @@ m17_stream_frame_is_signature(uint16_t frame_number) {
     return frame_number >= 0x7FFCU;
 }
 
+int
+m17_stream_1600_arbitrary_assemble(uint8_t accumulator[48], uint16_t frame_number, const uint8_t chunk[8],
+                                   uint8_t out_packet[49]) {
+    if (accumulator == NULL || chunk == NULL || out_packet == NULL) {
+        return -1;
+    }
+
+    const size_t slot = (size_t)(frame_number % 6U);
+    DSD_MEMCPY(accumulator + (slot * 8U), chunk, 8U);
+    if (slot != 5U) {
+        return 0;
+    }
+
+    out_packet[0] = 0x99U;
+    DSD_MEMCPY(out_packet + 1, accumulator, 48U);
+    DSD_MEMSET(accumulator, 0, 48U);
+    return 1;
+}
+
 static uint8_t
 m17_meta_text_v2_bitmap_len(uint8_t bitmap) {
     switch (bitmap) {

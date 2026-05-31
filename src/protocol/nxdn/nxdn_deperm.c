@@ -1042,7 +1042,7 @@ nxdn_message_type_label(uint8_t message_type) {
         {0x39, " SDCALL_REQ_DATA"},
         {0x3A, " SDCALL_IV"},
         {0x3B, " SDCALL_RESP"},
-        {0x3F, " ALIAS"},
+        {0x3F, ""},
         {0x81, ""},
         {0x88, ""},
         {0x90, ""},

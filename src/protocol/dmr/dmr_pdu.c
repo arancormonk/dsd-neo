@@ -1471,7 +1471,7 @@ dmr_locn_write_file(const dsd_opts* opts, const dsd_state* state, double latitud
 }
 
 static void DSD_ATTR_USED
-dmr_locn_emit(dsd_state* state, uint8_t slot, uint8_t source, const dmr_locn_data* d, double latitude,
+dmr_locn_emit(dsd_state* state, uint8_t slot, uint32_t source, const dmr_locn_data* d, double latitude,
               double longitude) {
     const char* deg_glyph = dsd_degrees_glyph();
     char locnstr[50];
@@ -1482,14 +1482,14 @@ dmr_locn_emit(dsd_state* state, uint8_t slot, uint8_t source, const dmr_locn_dat
     lonstr[0] = '\0';
 
     DSD_FPRINTF(stderr, "%s", KYEL);
-    DSD_FPRINTF(stderr, "\n NMEA / LOCN; Source: %d;", source);
+    DSD_FPRINTF(stderr, "\n NMEA / LOCN; Source: %u;", (unsigned)source);
     if (d->time) {
         DSD_FPRINTF(stderr, " 20%02X/%02X/%02X %02X:%02X:%02X", d->year, d->month, d->day, d->hour, d->minute,
                     d->second);
     }
     DSD_FPRINTF(stderr, " (%.5lf%s, %.5lf%s);", latitude, deg_glyph, longitude, deg_glyph);
 
-    DSD_SNPRINTF(locnstr, sizeof locnstr, "NMEA / LOCN; Source: %d ", source);
+    DSD_SNPRINTF(locnstr, sizeof locnstr, "NMEA / LOCN; Source: %u ", (unsigned)source);
     DSD_SNPRINTF(latstr, sizeof latstr, "(%.5lf%s, ", latitude, deg_glyph);
     DSD_SNPRINTF(lonstr, sizeof lonstr, "%.5lf%s)", longitude, deg_glyph);
     DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "%s%s%s", locnstr, latstr, lonstr);
@@ -1498,7 +1498,7 @@ dmr_locn_emit(dsd_state* state, uint8_t slot, uint8_t source, const dmr_locn_dat
 void
 dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU) {
     uint8_t slot = state->currentslot;
-    uint8_t source = state->dmr_lrrp_source[slot];
+    uint32_t source = (uint32_t)state->dmr_lrrp_source[slot];
     dmr_locn_data d;
     DSD_MEMSET(&d, 0, sizeof(d));
     d.lat_sign = 1;

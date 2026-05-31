@@ -205,6 +205,17 @@ build_t3_grant(uint8_t* bits, uint8_t* bytes, uint8_t opcode, uint16_t lpcn, uin
     write_bits_u32(bits, 56U, source & 0x00FFFFFFU, 24U);
 }
 
+static void
+build_c_aloha_small(uint8_t* bits, uint8_t* bytes, uint16_t net, uint16_t site) {
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
+    bytes[0] = 25U; /* C_ALOHA_SYS_PARMS */
+    write_bits_u32(bits, 40U, 1U, 2U);
+    write_bits_u32(bits, 42U, net & 0x007FU, 7U);
+    write_bits_u32(bits, 49U, site & 0x001FU, 5U);
+    write_bits_u32(bits, 54U, 2U, 2U);
+}
+
 static int
 expect_active_channel_contains(const char* tag, const char* actual, const char* expected) {
     if (strstr(actual, expected) == NULL) {
@@ -286,6 +297,21 @@ main(void) {
     dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
     rc |= expect_active_channel_contains("private grant active-channel kind", state.active_channel[0],
                                          "Active Private Ch:");
+
+    dsd_state_ext_free_all(&state);
+    init_env(&opts, &state);
+    build_c_aloha_small(bits, bytes, 2U, 27U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_true("C_ALOHA applies default DMRLA split",
+                      strcmp(state.dmr_site_parms, "TIII Small:3-1.28;105B; ") == 0);
+
+    dsd_state_ext_free_all(&state);
+    init_env(&opts, &state);
+    opts.dmr_dmrla_is_set = 1;
+    opts.dmr_dmrla_n = 0;
+    build_c_aloha_small(bits, bytes, 2U, 27U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_true("C_ALOHA honors raw DMRLA override", strcmp(state.dmr_site_parms, "TIII Small:2-27;105B; ") == 0);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_state_ext_free_all(&state);

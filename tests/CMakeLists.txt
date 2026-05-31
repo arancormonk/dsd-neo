@@ -578,6 +578,17 @@ target_link_libraries(
 add_test(NAME DSTAR_HEADER_UTILS COMMAND dsd-neo_test_dstar_header_utils)
 
 add_executable(
+    dsd-neo_test_dstar_sync_dispatch
+    protocol/dstar/test_dstar_sync_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_dstar.c
+)
+target_include_directories(
+    dsd-neo_test_dstar_sync_dispatch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME DSTAR_SYNC_DISPATCH COMMAND dsd-neo_test_dstar_sync_dispatch)
+
+add_executable(
     dsd-neo_test_provoice_frame
     protocol/provoice/test_provoice_frame.c
 )
@@ -592,6 +603,20 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_provoice
 )
 add_test(NAME PROVOICE_FRAME COMMAND dsd-neo_test_provoice_frame)
+
+add_executable(
+    dsd-neo_test_provoice_sync_dispatch
+    protocol/provoice/test_provoice_sync_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_provoice.c
+)
+target_include_directories(
+    dsd-neo_test_provoice_sync_dispatch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME PROVOICE_SYNC_DISPATCH
+    COMMAND dsd-neo_test_provoice_sync_dispatch
+)
 
 add_executable(
     dsd-neo_test_dpmr_color_code
@@ -624,6 +649,17 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 add_test(NAME DPMR_FRAME_LAYOUT COMMAND dsd-neo_test_dpmr_frame_layout)
+
+add_executable(
+    dsd-neo_test_dpmr_sync_dispatch
+    protocol/dpmr/test_dpmr_sync_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_dpmr.c
+)
+target_include_directories(
+    dsd-neo_test_dpmr_sync_dispatch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME DPMR_SYNC_DISPATCH COMMAND dsd-neo_test_dpmr_sync_dispatch)
 
 add_executable(
     dsd-neo_test_dpmr_voice_bridge
@@ -666,6 +702,17 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/protocol/x2tdma
 )
 add_test(NAME X2TDMA_FRAME COMMAND dsd-neo_test_x2tdma_frame)
+
+add_executable(
+    dsd-neo_test_x2tdma_sync_dispatch
+    protocol/x2tdma/test_x2tdma_sync_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_x2tdma.c
+)
+target_include_directories(
+    dsd-neo_test_x2tdma_sync_dispatch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME X2TDMA_SYNC_DISPATCH COMMAND dsd-neo_test_x2tdma_sync_dispatch)
 
 add_executable(
     dsd-neo_test_nxdn_trunk_diag
@@ -750,6 +797,17 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_nxdn
 )
 add_test(NAME NXDN_ELEMENT_BOUNDS COMMAND dsd-neo_test_nxdn_element_bounds)
+
+add_executable(
+    dsd-neo_test_nxdn_sync_dispatch
+    protocol/nxdn/test_nxdn_sync_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_nxdn.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_sync_dispatch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME NXDN_SYNC_DISPATCH COMMAND dsd-neo_test_nxdn_sync_dispatch)
 
 add_executable(dsd-neo_test_runtime_rings runtime/test_runtime_rings.cpp)
 target_include_directories(
@@ -2419,6 +2477,18 @@ target_include_directories(
 )
 add_test(NAME P25_P1_AUDIO_DISPATCH COMMAND dsd-neo_test_p25_p1_audio_dispatch)
 
+# P25 P1 sync constants and dispatcher routing
+add_executable(
+    dsd-neo_test_p25_p1_sync_dispatch
+    protocol/p25/test_p25_p1_sync_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_sync_dispatch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME P25_P1_SYNC_DISPATCH COMMAND dsd-neo_test_p25_p1_sync_dispatch)
+
 # (Optional) DMR Tier III MBC smoke test is disabled by default.
 # Enable locally if needed.
 # add_executable(dsd-neo_test_dmr_mbc protocol/dmr/test_mbc.c)
@@ -3043,6 +3113,20 @@ target_include_directories(
 add_test(NAME M17_PROTOCOL_NAMES COMMAND dsd-neo_test_m17_protocol_names)
 
 add_executable(
+    dsd-neo_test_m17_sync_dispatch
+    protocol/m17/test_m17_sync_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_m17.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+target_include_directories(
+    dsd-neo_test_m17_sync_dispatch
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+)
+add_test(NAME M17_SYNC_DISPATCH COMMAND dsd-neo_test_m17_sync_dispatch)
+
+add_executable(
     dsd-neo_test_dmr_t3_sm_clamp
     protocol/dmr/test_dmr_t3_sm_clamp.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
@@ -3196,6 +3280,16 @@ target_link_libraries(
     PRIVATE dsd-neo_platform dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DMR_T3_ANN_WD_TSCC COMMAND dsd-neo_test_dmr_t3_ann_wd_tscc)
+
+add_executable(
+    dsd-neo_test_dmr_t3_site_format
+    protocol/dmr/test_dmr_t3_site_format.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_t3_site_format
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+add_test(NAME DMR_T3_SITE_FORMAT COMMAND dsd-neo_test_dmr_t3_site_format)
 
 # DSP block tests
 add_executable(dsd-neo_test_dsp_halfband dsp/test_dsp_halfband.cpp)
@@ -3599,6 +3693,17 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 add_test(NAME DMR_FRAME_LAYOUT COMMAND dsd-neo_test_dmr_frame_layout)
+
+add_executable(
+    dsd-neo_test_dmr_sync_dispatch
+    protocol/dmr/test_dmr_sync_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_dmr.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_sync_dispatch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME DMR_SYNC_DISPATCH COMMAND dsd-neo_test_dmr_sync_dispatch)
 
 add_executable(
     dsd-neo_test_dmr_confidence_gate
@@ -4184,6 +4289,19 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_edacs_afs PRIVATE dsd-neo_core)
 add_test(NAME EDACS_AFS COMMAND dsd-neo_test_edacs_afs)
+
+add_executable(
+    dsd-neo_test_edacs_sync_dispatch
+    protocol/edacs/test_edacs_sync_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_edacs.c
+)
+target_include_directories(
+    dsd-neo_test_edacs_sync_dispatch
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+)
+add_test(NAME EDACS_SYNC_DISPATCH COMMAND dsd-neo_test_edacs_sync_dispatch)
 
 # EDACS grant policy behavior (hold-compatible grant profile and private unknown-block mode).
 # Protocol-specific EDACS grant-parser harness is deferred; this locks the shared evaluator contract.

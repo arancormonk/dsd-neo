@@ -68,6 +68,8 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
 static void DSD_ATTR_USED
 dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "                     ");
+    DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "                     ");
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
 

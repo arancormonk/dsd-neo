@@ -287,15 +287,16 @@ test_slow_data_aprs_latitude_uses_compacted_direction(void) {
     compact[36] = '5';
     compact[37] = '9';
     compact[38] = 'N';
-    compact[41] = '0';
-    compact[42] = '8';
-    compact[43] = '7';
-    compact[44] = '3';
-    compact[45] = '0';
-    compact[46] = '.';
-    compact[47] = '1';
-    compact[48] = '5';
-    compact[49] = 'W';
+    compact[39] = '/';
+    compact[40] = '0';
+    compact[41] = '8';
+    compact[42] = '7';
+    compact[43] = '3';
+    compact[44] = '0';
+    compact[45] = '.';
+    compact[46] = '1';
+    compact[47] = '5';
+    compact[48] = 'W';
     set_compacted_slow_data_bytes(bytes, compact);
 
     pack_slow_data_bytes(bytes, bits);

@@ -112,6 +112,19 @@ const char* m17_packet_protocol_name(uint8_t protocol);
 int m17_stream_frame_is_signature(uint16_t frame_number);
 
 /**
+ * Assemble M17 1600 bps stream arbitrary-data chunks into a 0x99 payload.
+ *
+ * Each stream frame carries 8 arbitrary-data bytes. The frame number modulo 6
+ * selects the chunk slot. When slot 5 is received, out_packet is filled with a
+ * protocol byte followed by 48 assembled payload bytes.
+ *
+ * @return 1 when out_packet was completed, 0 when only a chunk was stored,
+ *         negative on invalid arguments.
+ */
+int m17_stream_1600_arbitrary_assemble(uint8_t accumulator[48], uint16_t frame_number, const uint8_t chunk[8],
+                                       uint8_t out_packet[49]);
+
+/**
  * Decode M17 meta text segment control.
  *
  * Protocol 0x80 uses a bitmap control byte for up to four segments.

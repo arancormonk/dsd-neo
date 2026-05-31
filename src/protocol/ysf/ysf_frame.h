@@ -23,6 +23,8 @@ void dsd_ysf_dewhiten_bits(uint8_t* bits, size_t bit_count);
 
 bool dsd_ysf_event_text_should_print(const dsd_state* state);
 
+void dsd_ysf_unpack_full_rate_imbe(const uint8_t imbe_raw[144], uint8_t imbe_vch[144], char imbe_fr[8][23]);
+
 #ifdef __cplusplus
 }
 #endif

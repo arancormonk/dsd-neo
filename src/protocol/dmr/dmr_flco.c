@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_tiii_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
@@ -1168,6 +1169,7 @@ static void
 dmr_slco_fill_sys_fields(const dsd_opts* opts, uint8_t slco_bits[], dmr_slco_data* data) {
     uint8_t model = (uint8_t)ConvertBitIntoBytes(&slco_bits[4], 2);
     uint16_t site_bits = 0;
+    uint16_t default_n = dmr_tiii_model_default_split_n(model);
     DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "");
 
     if (model == 0) {
@@ -1192,13 +1194,8 @@ dmr_slco_fill_sys_fields(const dsd_opts* opts, uint8_t slco_bits[], dmr_slco_dat
         site_bits = 10;
     }
 
-    if (opts->dmr_dmrla_is_set == 1) {
-        data->n = opts->dmr_dmrla_n;
-    }
-    if (data->n > site_bits) {
-        data->n = site_bits;
-    }
-    data->sub_mask = (data->n == 0) ? 0U : (uint16_t)((1U << data->n) - 1U);
+    data->n = dmr_tiii_effective_split_n(default_n, opts->dmr_dmrla_is_set, opts->dmr_dmrla_n, site_bits);
+    data->sub_mask = dmr_tiii_subsite_mask(data->n);
 }
 
 static void
@@ -1246,8 +1243,11 @@ dmr_slco_decode(uint8_t slco_bits[], const dsd_opts* opts, dmr_slco_data* data) 
 static void
 dmr_slco_print_tiii_site_parms(dsd_state* state, const dmr_slco_data* data, uint16_t syscode) {
     if (data->n != 0) {
+        uint16_t display_net = dmr_tiii_display_net(data->net, data->n);
+        uint16_t display_site = dmr_tiii_display_site(data->site, data->n);
+        uint16_t display_subsite = dmr_tiii_display_subsite(data->site, data->sub_mask, data->n);
         DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d.%d;%04X; ", data->model_str,
-                     data->net, (data->site >> data->n), (data->site & data->sub_mask), syscode);
+                     display_net, display_site, display_subsite, syscode);
     } else {
         DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d;%04X; ", data->model_str,
                      data->net, data->site, syscode);
@@ -1258,8 +1258,11 @@ static void
 dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco_bits[], const dmr_slco_data* data) {
     uint16_t syscode = (uint16_t)ConvertBitIntoBytes(&slco_bits[4], 14);
     if (data->n != 0) {
+        uint16_t display_net = dmr_tiii_display_net(data->net, data->n);
+        uint16_t display_site = dmr_tiii_display_site(data->site, data->n);
+        uint16_t display_subsite = dmr_tiii_display_subsite(data->site, data->sub_mask, data->n);
         DSD_FPRINTF(stderr, " SLC_C_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Reg Req: %d; CSC: %d;", data->model_str,
-                    data->net, (data->site >> data->n), (data->site & data->sub_mask), data->reg, data->csc);
+                    display_net, display_site, display_subsite, data->reg, data->csc);
     } else {
         DSD_FPRINTF(stderr, " SLC_C_SYS_PARMS: %s; Net ID: %d; Site ID: %d; Reg Req: %d;", data->model_str, data->net,
                     data->site, data->reg);
@@ -1279,8 +1282,11 @@ static void
 dmr_slco_handle_p_sys_parms(dsd_state* state, uint8_t slco_bits[], const dmr_slco_data* data) {
     uint16_t syscode = (uint16_t)ConvertBitIntoBytes(&slco_bits[4], 14);
     if (data->n != 0) {
+        uint16_t display_net = dmr_tiii_display_net(data->net, data->n);
+        uint16_t display_site = dmr_tiii_display_site(data->site, data->n);
+        uint16_t display_subsite = dmr_tiii_display_subsite(data->site, data->sub_mask, data->n);
         DSD_FPRINTF(stderr, " SLC_P_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Comp CC: %d;", data->model_str,
-                    data->net, (data->site >> data->n), (data->site & data->sub_mask), data->reg);
+                    display_net, display_site, display_subsite, data->reg);
     } else {
         DSD_FPRINTF(stderr, " SLC_P_SYS_PARMS: %s; Net ID: %d; Site ID: %d;", data->model_str, data->net, data->site);
     }

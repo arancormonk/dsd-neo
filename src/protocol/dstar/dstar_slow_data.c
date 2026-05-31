@@ -267,7 +267,7 @@ dstar_sd_print_aprs_lat(dsd_state* state, const uint8_t* aprs, int* start, char*
 
 static void
 dstar_sd_print_aprs_lon(dsd_state* state, const uint8_t* aprs, int* start, char* temp, char* tempa) {
-    *start += 3;
+    *start += 2;
     DSD_MEMCPY(tempa, aprs + *start, 3);
     *start += 3;
     DSD_FPRINTF(stderr, "Lon: %sd ", tempa);

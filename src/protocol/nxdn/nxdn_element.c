@@ -247,9 +247,41 @@ nxdn_element_handle_call_assignment(dsd_opts* opts, dsd_state* state, const uint
     NXDN_decode_VCALL_ASSGN(opts, state, elements);
 }
 
+static int
+nxdn_element_is_standard_alias(const uint8_t* elements, size_t elements_bits) {
+    if (elements == NULL || elements_bits < 32U) {
+        return 0;
+    }
+
+    const uint8_t mfid = (uint8_t)ConvertBitIntoBytes(&elements[8], 8);
+    const uint16_t subtype = (uint16_t)ConvertBitIntoBytes(&elements[16], 16);
+    return (mfid == 0x68U && subtype == 0x8204U) ? 1 : 0;
+}
+
+static void
+nxdn_element_print_prop_form(const dsd_opts* opts, const uint8_t* elements, size_t elements_bits) {
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, " PROP_FORM");
+    if (opts != NULL && opts->payload == 1 && elements != NULL && elements_bits >= 72U) {
+        const uint8_t mfid = (uint8_t)ConvertBitIntoBytes(&elements[8], 8);
+        DSD_FPRINTF(stderr, "\n MFID: %02X; Message: ", mfid);
+        for (int i = 2; i < 9; i++) {
+            const size_t bit_offset = (size_t)i * 8U;
+            DSD_FPRINTF(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&elements[bit_offset], 8));
+        }
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
 static void
 nxdn_element_handle_alias(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    UNUSED(elements_bits);
+    if (!nxdn_element_is_standard_alias(elements, elements_bits)) {
+        nxdn_element_print_prop_form(opts, elements, elements_bits);
+        return;
+    }
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, " ALIAS");
+    DSD_FPRINTF(stderr, "%s", KNRM);
     NXDN_decode_Alias(opts, state, elements);
 }
 

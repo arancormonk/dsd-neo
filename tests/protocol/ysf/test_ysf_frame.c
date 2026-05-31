@@ -5,6 +5,8 @@
 
 #include <assert.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
@@ -238,6 +240,61 @@ test_ysf_event_text_print_guard(void) {
     assert(dsd_ysf_event_text_should_print(&state));
 }
 
+static void
+test_ysf_sync_constants_and_synctypes(void) {
+    _Static_assert(sizeof(FUSION_SYNC) == 21U, "FUSION_SYNC length");
+    _Static_assert(sizeof(INV_FUSION_SYNC) == 21U, "INV_FUSION_SYNC length");
+    assert(strcmp(FUSION_SYNC, INV_FUSION_SYNC) != 0);
+    _Static_assert(DSD_SYNC_IS_YSF(DSD_SYNC_YSF_POS), "YSF positive synctype");
+    _Static_assert(DSD_SYNC_IS_YSF(DSD_SYNC_YSF_NEG), "YSF negative synctype");
+    _Static_assert(!DSD_SYNC_IS_YSF(DSD_SYNC_NXDN_POS), "NXDN is not YSF");
+    _Static_assert(!DSD_SYNC_IS_YSF(DSD_SYNC_P25P2_POS), "P25P2 is not YSF");
+}
+
+static void
+test_ysf_full_rate_imbe_unpack_consumes_144_bits(void) {
+    uint8_t imbe_raw[144];
+    uint8_t imbe_vch[144];
+    char imbe_fr[8][23];
+    uint8_t seen[144];
+    int k = 0;
+
+    for (int i = 0; i < 144; i++) {
+        imbe_raw[i] = (uint8_t)i;
+    }
+    DSD_MEMSET(imbe_vch, 0, sizeof(imbe_vch));
+    DSD_MEMSET(imbe_fr, 0x55, sizeof(imbe_fr));
+    DSD_MEMSET(seen, 0, sizeof(seen));
+
+    dsd_ysf_unpack_full_rate_imbe(imbe_raw, imbe_vch, imbe_fr);
+
+    for (int i = 0; i < 144; i++) {
+        assert(imbe_vch[i] < 144U);
+        assert(seen[imbe_vch[i]] == 0U);
+        seen[imbe_vch[i]] = 1U;
+    }
+
+    for (int n = 0; n < 4; n++) {
+        for (int m = 22; m >= 0; m--) {
+            assert((uint8_t)imbe_fr[n][m] == imbe_vch[k]);
+            k++;
+        }
+    }
+    for (int n = 4; n < 7; n++) {
+        for (int m = 14; m >= 0; m--) {
+            assert((uint8_t)imbe_fr[n][m] == imbe_vch[k]);
+            k++;
+        }
+    }
+    for (int m = 6; m >= 0; m--) {
+        assert((uint8_t)imbe_fr[7][m] == imbe_vch[k]);
+        k++;
+    }
+
+    assert(k == 144);
+    assert((uint8_t)imbe_fr[7][7] == 0x55U);
+}
+
 int
 main(void) {
     test_ysf_pn95_seed_bit_order_and_reset();
@@ -245,5 +302,7 @@ main(void) {
     test_ysf_soft_viterbi_full_rate_reference_offset();
     test_ysf_soft_viterbi_rejects_invalid_args();
     test_ysf_event_text_print_guard();
+    test_ysf_sync_constants_and_synctypes();
+    test_ysf_full_rate_imbe_unpack_consumes_144_bits();
     return 0;
 }

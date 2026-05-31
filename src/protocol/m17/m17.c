@@ -616,7 +616,8 @@ m17_maybe_write_wav_pair(const dsd_opts* opts, const dsd_state* state, const sho
 #endif
 
 static void
-M17processCodec2_1600(M17_CODEC2_OPTS_PARAM opts, M17_CODEC2_STATE_PARAM state, const uint8_t* payload) {
+M17processCodec2_1600(M17_CODEC2_OPTS_PARAM opts, M17_CODEC2_STATE_PARAM state, const uint8_t* payload,
+                      uint16_t frame_number) {
 
     unsigned char voice1[8];
     unsigned char voice2[8];
@@ -656,6 +657,15 @@ M17processCodec2_1600(M17_CODEC2_OPTS_PARAM opts, M17_CODEC2_STATE_PARAM state, 
     if (m17_any_nonzero_octets(adata + 1, 8)) {
         DSD_FPRINTF(stderr, "\n");           //linebreak
         decodeM17PKT(opts, state, adata, 9); //decode Arbitrary Data as UTF-8
+    }
+
+    uint8_t aggregate[49];
+    DSD_MEMSET(aggregate, 0, sizeof(aggregate));
+    const int assembled =
+        m17_stream_1600_arbitrary_assemble(state->dmr_pdu_sf[0], frame_number, (const uint8_t*)voice2, aggregate);
+    if (assembled > 0 && m17_any_nonzero_octets(aggregate + 1, 48)) {
+        DSD_FPRINTF(stderr, "\n");
+        decodeM17PKT(opts, state, aggregate, 49);
     }
 }
 
@@ -723,7 +733,7 @@ M17dispatchStreamPayload(M17_CODEC2_OPTS_PARAM opts, M17_CODEC2_STATE_PARAM stat
     if (state->m17_str_dt == 2) {
         M17processCodec2_3200(opts, state, payload);
     } else if (state->m17_str_dt == 3) {
-        M17processCodec2_1600(opts, state, payload);
+        M17processCodec2_1600(opts, state, payload, frame_number);
     } else if (state->m17_str_dt == 1) {
         DSD_FPRINTF(stderr, " DATA;");
     } else if (state->m17_str_dt == 0) {
@@ -3053,7 +3063,7 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     if (state->m17_str_dt == 2) {
         M17processCodec2_3200((dsd_opts*)opts, state, payload);
     } else if (state->m17_str_dt == 3) {
-        M17processCodec2_1600((dsd_opts*)opts, state, payload);
+        M17processCodec2_1600((dsd_opts*)opts, state, payload, fn);
     }
 
     if (opts->payload == 1) {
@@ -3134,7 +3144,7 @@ m17_ip_dispatch_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_
     }
 
     static const m17_ip_ctrl_desc ctrl[] = {
-        {m17_ip_ackn, "ACNK", 0, 0, 0, 0},  {m17_ip_nack, "NACK", 0, 0, 0, 0},  {m17_ip_conn, "CONN", 11, 1, 1, 0},
+        {m17_ip_ackn, "ACKN", 0, 0, 0, 0},  {m17_ip_nack, "NACK", 0, 0, 0, 0},  {m17_ip_conn, "CONN", 11, 1, 1, 0},
         {m17_ip_disc, "DISC", 10, 1, 0, 1}, {m17_ip_eotx, "EOTX", 10, 1, 0, 1}, {m17_ip_ping, "PING", 10, 1, 0, 0},
         {m17_ip_pong, "PONG", 10, 1, 0, 0},
     };
@@ -3153,18 +3163,17 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
     opts->audio_in_type = AUDIO_IN_NULL;
     opts->udp_sockfd = dsd_m17_udp_hook_udp_bind(opts->m17_hostname, opts->m17_portno);
 
-    int err = 1;
     uint8_t ip_frame[1000];
     DSD_MEMSET(ip_frame, 0, sizeof(ip_frame));
 
     while (!exitflag) {
         dsd_runtime_pump_controls(opts, state);
 
-        if (opts->udp_sockfd) {
-            err = dsd_m17_udp_hook_receiver(opts, &ip_frame);
-        } else {
+        if (!dsd_m17_udp_socket_is_valid(opts->udp_sockfd)) {
             exitflag = 1;
+            break;
         }
+        const int err = dsd_m17_udp_hook_receiver(opts, &ip_frame);
 
         m17_ip_dispatch_frame(opts, state, ip_frame, err);
 
