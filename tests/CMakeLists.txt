@@ -1640,6 +1640,22 @@ endif()
 add_test(NAME CORE_INIT_STATE COMMAND dsd-neo_test_core_init_state)
 
 add_executable(
+    dsd-neo_test_engine_protocol_dispatch
+    engine/test_engine_protocol_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/protocol_dispatch.c
+)
+target_include_directories(
+    dsd-neo_test_engine_protocol_dispatch
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+)
+add_test(
+    NAME ENGINE_PROTOCOL_DISPATCH
+    COMMAND dsd-neo_test_engine_protocol_dispatch
+)
+
+add_executable(
     dsd-neo_test_engine_no_carrier_reset
     engine/test_engine_no_carrier_reset.c
 )

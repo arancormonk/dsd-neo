@@ -87,12 +87,10 @@ legacy_hytera_bp_apply(unsigned long long k1, unsigned long long k2, unsigned lo
     }
 }
 
-int
-main(void) {
+static int
+test_silence_detection(const char silence[49]) {
     int rc = 0;
 
-    char silence[49] = {0};
-    fill_default_silence(silence);
     rc |= expect_eq_int("silence-detected", dmr_ambe49_is_default_silence(silence), 1);
 
     char not_silence[49];
@@ -111,102 +109,142 @@ main(void) {
         rc |= expect_eq_int("voice-stream-keep-active", dmr_ambe49_should_skip_voice_stream(active), 0);
     }
 
-    {
-        uint8_t ks_bits[128] = {0};
-        for (int i = 0; i < 128; i++) {
-            ks_bits[i] = (uint8_t)(i & 1);
-        }
+    return rc;
+}
 
-        char frame[49];
-        char expected[49];
-        for (int i = 0; i < 49; i++) {
-            frame[i] = (char)((i + 1) & 1);
-            expected[i] = (char)(frame[i] ^ (char)(ks_bits[i] & 1U));
-        }
-        frame[24] = 1;
-        expected[24] = (char)(frame[24] ^ (char)(ks_bits[24] & 1U));
-
-        long int bit_counter = 0;
-        int applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x24, frame);
-        rc |= expect_eq_int("voice-stream-applied", applied, 1);
-        rc |= expect_eq_int("voice-stream-aes-counter", (int)bit_counter, 56);
-        rc |= expect_eq_frame("voice-stream-aes-frame", frame, expected);
+static int
+test_voice_stream_aes_keystream(void) {
+    uint8_t ks_bits[128] = {0};
+    for (int i = 0; i < 128; i++) {
+        ks_bits[i] = (uint8_t)(i & 1);
     }
 
-    {
-        uint8_t ks_bits[128] = {1};
-        char frame[49];
-        char original[49];
-        DSD_MEMCPY(frame, silence, sizeof(frame));
-        DSD_MEMCPY(original, silence, sizeof(original));
-        long int bit_counter = 0;
-        int applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x24, frame);
-        rc |= expect_eq_int("voice-stream-silence-skipped", applied, 0);
-        rc |= expect_eq_int("voice-stream-silence-aes-counter", (int)bit_counter, 56);
-        rc |= expect_eq_frame("voice-stream-silence-frame", frame, original);
-
-        bit_counter = 0;
-        applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x02, frame);
-        rc |= expect_eq_int("voice-stream-hytera-silence-skipped", applied, 0);
-        rc |= expect_eq_int("voice-stream-hytera-counter", (int)bit_counter, 49);
-        rc |= expect_eq_frame("voice-stream-hytera-frame", frame, original);
+    char frame[49];
+    char expected[49];
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((i + 1) & 1);
+        expected[i] = (char)(frame[i] ^ (char)(ks_bits[i] & 1U));
     }
+    frame[24] = 1;
+    expected[24] = (char)(frame[24] ^ (char)(ks_bits[24] & 1U));
 
-    {
-        char frame[49] = {0};
-        char expected[49] = {0};
-        int applied = dmr_basic_privacy_apply_frame49(42ULL, frame);
-        legacy_basic_privacy_apply(42ULL, expected);
-        rc |= expect_eq_int("bp-applied", applied, 1);
-        rc |= expect_eq_frame("bp-bits", frame, expected);
-    }
+    int rc = 0;
+    long int bit_counter = 0;
+    int applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x24, frame);
+    rc |= expect_eq_int("voice-stream-applied", applied, 1);
+    rc |= expect_eq_int("voice-stream-aes-counter", (int)bit_counter, 56);
+    rc |= expect_eq_frame("voice-stream-aes-frame", frame, expected);
+    return rc;
+}
 
-    {
-        char frame[49] = {0};
-        char expected[49] = {0};
-        frame[0] = expected[0] = 1;
-        int applied = dmr_basic_privacy_apply_frame49(0ULL, frame);
-        rc |= expect_eq_int("bp-zero-rejected", applied, 0);
-        rc |= expect_eq_frame("bp-zero-unchanged", frame, expected);
+static int
+test_voice_stream_silence_skip(const char silence[49]) {
+    uint8_t ks_bits[128] = {1};
+    char frame[49];
+    char original[49];
+    DSD_MEMCPY(frame, silence, sizeof(frame));
+    DSD_MEMCPY(original, silence, sizeof(original));
 
-        applied = dmr_basic_privacy_apply_frame49(256ULL, frame);
-        rc |= expect_eq_int("bp-oob-rejected", applied, 0);
-        rc |= expect_eq_frame("bp-oob-unchanged", frame, expected);
-    }
+    int rc = 0;
+    long int bit_counter = 0;
+    int applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x24, frame);
+    rc |= expect_eq_int("voice-stream-silence-skipped", applied, 0);
+    rc |= expect_eq_int("voice-stream-silence-aes-counter", (int)bit_counter, 56);
+    rc |= expect_eq_frame("voice-stream-silence-frame", frame, original);
 
-    {
-        char frame[49];
-        char original[49];
-        DSD_MEMCPY(frame, silence, sizeof(frame));
-        DSD_MEMCPY(original, silence, sizeof(original));
-        int frame_counter = 0;
-        int applied = hytera_bp_apply_frame49(0x0123456789ULL, 0ULL, 0ULL, 0ULL, &frame_counter, frame);
-        rc |= expect_eq_int("skip-silence-applied", applied, 0);
-        rc |= expect_eq_int("skip-silence-counter", frame_counter, 1);
-        rc |= expect_eq_frame("skip-silence-frame", frame, original);
-    }
+    bit_counter = 0;
+    applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x02, frame);
+    rc |= expect_eq_int("voice-stream-hytera-silence-skipped", applied, 0);
+    rc |= expect_eq_int("voice-stream-hytera-counter", (int)bit_counter, 49);
+    rc |= expect_eq_frame("voice-stream-hytera-frame", frame, original);
+    return rc;
+}
 
-    {
-        char frame[49] = {0};
-        char expected[49] = {0};
-        int frame_counter = 1;
-        int applied = hytera_bp_apply_frame49(0x0123456789ULL, 0ULL, 0ULL, 0ULL, &frame_counter, frame);
-        legacy_hytera_bp_apply(0x0123456789ULL, 0ULL, 0ULL, 0ULL, 1, expected);
-        rc |= expect_eq_int("apply-frame-applied", applied, 1);
-        rc |= expect_eq_int("apply-frame-counter", frame_counter, 2);
-        rc |= expect_eq_frame("apply-frame-bits", frame, expected);
-    }
+static int
+test_basic_privacy(void) {
+    int rc = 0;
+    char frame[49] = {0};
+    char expected[49] = {0};
+    int applied = dmr_basic_privacy_apply_frame49(42ULL, frame);
+    legacy_basic_privacy_apply(42ULL, expected);
+    rc |= expect_eq_int("bp-applied", applied, 1);
+    rc |= expect_eq_frame("bp-bits", frame, expected);
+    return rc;
+}
 
-    {
-        char frame[49] = {0};
-        char expected[49] = {0};
-        int frame_counter = 99;
-        int applied = hytera_bp_apply_frame49(0x0123456789ULL, 0ULL, 0ULL, 0ULL, &frame_counter, frame);
-        legacy_hytera_bp_apply(0x0123456789ULL, 0ULL, 0ULL, 0ULL, 17, expected);
-        rc |= expect_eq_int("clamp-applied", applied, 1);
-        rc |= expect_eq_int("clamp-counter", frame_counter, 18);
-        rc |= expect_eq_frame("clamp-bits", frame, expected);
-    }
+static int
+test_basic_privacy_rejects_invalid_keys(void) {
+    int rc = 0;
+    char frame[49] = {0};
+    char expected[49] = {0};
+    frame[0] = expected[0] = 1;
+    int applied = dmr_basic_privacy_apply_frame49(0ULL, frame);
+    rc |= expect_eq_int("bp-zero-rejected", applied, 0);
+    rc |= expect_eq_frame("bp-zero-unchanged", frame, expected);
+
+    applied = dmr_basic_privacy_apply_frame49(256ULL, frame);
+    rc |= expect_eq_int("bp-oob-rejected", applied, 0);
+    rc |= expect_eq_frame("bp-oob-unchanged", frame, expected);
+    return rc;
+}
+
+static int
+test_hytera_bp_silence_skip(const char silence[49]) {
+    int rc = 0;
+    char frame[49];
+    char original[49];
+    DSD_MEMCPY(frame, silence, sizeof(frame));
+    DSD_MEMCPY(original, silence, sizeof(original));
+    int frame_counter = 0;
+    int applied = hytera_bp_apply_frame49(0x0123456789ULL, 0ULL, 0ULL, 0ULL, &frame_counter, frame);
+    rc |= expect_eq_int("skip-silence-applied", applied, 0);
+    rc |= expect_eq_int("skip-silence-counter", frame_counter, 1);
+    rc |= expect_eq_frame("skip-silence-frame", frame, original);
+    return rc;
+}
+
+static int
+test_hytera_bp_frame_apply(void) {
+    int rc = 0;
+    char frame[49] = {0};
+    char expected[49] = {0};
+    int frame_counter = 1;
+    int applied = hytera_bp_apply_frame49(0x0123456789ULL, 0ULL, 0ULL, 0ULL, &frame_counter, frame);
+    legacy_hytera_bp_apply(0x0123456789ULL, 0ULL, 0ULL, 0ULL, 1, expected);
+    rc |= expect_eq_int("apply-frame-applied", applied, 1);
+    rc |= expect_eq_int("apply-frame-counter", frame_counter, 2);
+    rc |= expect_eq_frame("apply-frame-bits", frame, expected);
+    return rc;
+}
+
+static int
+test_hytera_bp_frame_counter_clamp(void) {
+    int rc = 0;
+    char frame[49] = {0};
+    char expected[49] = {0};
+    int frame_counter = 99;
+    int applied = hytera_bp_apply_frame49(0x0123456789ULL, 0ULL, 0ULL, 0ULL, &frame_counter, frame);
+    legacy_hytera_bp_apply(0x0123456789ULL, 0ULL, 0ULL, 0ULL, 17, expected);
+    rc |= expect_eq_int("clamp-applied", applied, 1);
+    rc |= expect_eq_int("clamp-counter", frame_counter, 18);
+    rc |= expect_eq_frame("clamp-bits", frame, expected);
+    return rc;
+}
+
+int
+main(void) {
+    char silence[49] = {0};
+    fill_default_silence(silence);
+
+    int rc = 0;
+    rc |= test_silence_detection(silence);
+    rc |= test_voice_stream_aes_keystream();
+    rc |= test_voice_stream_silence_skip(silence);
+    rc |= test_basic_privacy();
+    rc |= test_basic_privacy_rejects_invalid_keys();
+    rc |= test_hytera_bp_silence_skip(silence);
+    rc |= test_hytera_bp_frame_apply();
+    rc |= test_hytera_bp_frame_counter_clamp();
 
     if (rc == 0) {
         printf("CORE_HYTERA_BP_SILENCE: OK\n");
