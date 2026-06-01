@@ -665,6 +665,18 @@ trunk_scan_target_is_dmr(const dsd_trunk_scan_target* target) {
 }
 
 static int
+trunk_scan_target_is_p25(const dsd_trunk_scan_target* target) {
+    return target && target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK;
+}
+
+static int
+trunk_scan_p25_cc_sps(const dsd_opts* opts, const dsd_state* state) {
+    int sym_rate = (state && state->p25_cc_is_tdma == 1) ? 6000 : 4800;
+    int demod_rate = dsd_opts_current_input_timing_rate(opts);
+    return dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
+}
+
+static int
 trunk_scan_dmr_sps(const dsd_opts* opts, const dsd_state* state) {
     (void)state;
     int demod_rate = dsd_opts_current_input_timing_rate(opts);
@@ -673,7 +685,16 @@ trunk_scan_dmr_sps(const dsd_opts* opts, const dsd_state* state) {
 
 static void
 trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_target* target) {
-    if (!opts || !state || !trunk_scan_target_is_dmr(target)) {
+    if (!opts || !state || !target) {
+        return;
+    }
+    if (trunk_scan_target_is_p25(target)) {
+        int p25_sps = trunk_scan_p25_cc_sps(opts, state);
+        state->samplesPerSymbol = p25_sps;
+        state->symbolCenter = dsd_opts_symbol_center(p25_sps);
+        return;
+    }
+    if (!trunk_scan_target_is_dmr(target)) {
         return;
     }
     int dmr_sps = trunk_scan_dmr_sps(opts, state);

@@ -549,6 +549,61 @@ test_coordinator_idle_rotation_and_state_restore(void) {
 }
 
 static int
+test_p25_targets_seed_valid_control_channel_timing(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "p25 timing scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+    if (state.samplesPerSymbol != 10 || state.symbolCenter != 4) {
+        DSD_FPRINTF(stderr, "initial P25 scan target timing invalid sps=%d center=%d\n", state.samplesPerSymbol,
+                    state.symbolCenter);
+        test_rc = 1;
+    }
+    state.p25_cc_is_tdma = 1;
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.samplesPerSymbol != 10 || state.symbolCenter != 4) {
+        DSD_FPRINTF(stderr, "second P25 scan target timing invalid active=%zu sps=%d center=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.samplesPerSymbol, state.symbolCenter);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.samplesPerSymbol != 8 || state.symbolCenter != 3) {
+        DSD_FPRINTF(stderr, "restored P25 TDMA scan target timing invalid active=%zu sps=%d center=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.samplesPerSymbol, state.symbolCenter);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
 test_mixed_target_switch_resets_dmr_demod_profile(void) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
@@ -1068,6 +1123,7 @@ main(void) {
     rc |= test_parser_rejects_invalid_inputs();
     rc |= test_parser_rejects_too_many_targets();
     rc |= test_coordinator_idle_rotation_and_state_restore();
+    rc |= test_p25_targets_seed_valid_control_channel_timing();
     rc |= test_mixed_target_switch_resets_dmr_demod_profile();
     rc |= test_conventional_activity_hold_and_allowlist_block();
     rc |= test_conventional_activity_encrypted_lockout_does_not_hold();
