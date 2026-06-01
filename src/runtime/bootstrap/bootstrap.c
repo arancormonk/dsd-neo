@@ -353,7 +353,8 @@ bootstrap_effective_runtime_argc(int argc, char** argv, int cfg_path_positional_
 static int
 bootstrap_long_arg_consumes_value(const char* arg) {
     return arg
-           && (strcmp(arg, "--config") == 0 || strcmp(arg, "--profile") == 0 || strcmp(arg, "--validate-config") == 0);
+           && (strcmp(arg, "--config") == 0 || strcmp(arg, "--profile") == 0 || strcmp(arg, "--validate-config") == 0
+               || strcmp(arg, "--trunk-scan-dwell-ms") == 0 || strcmp(arg, "--trunk-scan-activity-hold-ms") == 0);
 }
 
 static int
@@ -365,7 +366,8 @@ bootstrap_is_bootstrap_only_long_arg(const char* arg) {
            || strcmp(arg, "--interactive-setup") == 0 || strcmp(arg, "--dump-config-template") == 0
            || strcmp(arg, "--strict-config") == 0 || strcmp(arg, "--list-profiles") == 0
            || strncmp(arg, "--config=", 9) == 0 || strncmp(arg, "--profile=", 10) == 0
-           || strncmp(arg, "--validate-config=", 18) == 0;
+           || strncmp(arg, "--validate-config=", 18) == 0 || strncmp(arg, "--trunk-scan-dwell-ms=", 22) == 0
+           || strncmp(arg, "--trunk-scan-activity-hold-ms=", 30) == 0;
 }
 
 static int

@@ -1782,6 +1782,136 @@ test_bootstrap_inherited_trunk_scan_disables_for_long_only_runtime_mode(void) {
 }
 
 static int
+test_bootstrap_inherited_trunk_scan_preserves_timing_overrides(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[trunk_scan]\n"
+                             "enabled = true\n"
+                             "targets_csv = \"targets.csv\"\n"
+                             "idle_dwell_ms = 3000\n"
+                             "activity_hold_ms = 1200\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp trunk scan ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "--trunk-scan-dwell-ms";
+    char arg4[] = "500";
+    char arg5[] = "--trunk-scan-activity-hold-ms=800";
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(6, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "expected timing-only trunk scan override to continue, got rc=%d exit_rc=%d\n", rc,
+                    exit_rc);
+        test_rc = 1;
+    }
+    if (opts->trunk_scan_enabled != 1 || strcmp(opts->trunk_scan_targets_csv, "targets.csv") != 0
+        || opts->trunk_scan_idle_dwell_ms != 500 || opts->trunk_scan_activity_hold_ms != 800) {
+        DSD_FPRINTF(stderr, "expected trunk scan timing override, got enabled=%d targets=%s dwell=%d hold=%d\n",
+                    opts->trunk_scan_enabled, opts->trunk_scan_targets_csv, opts->trunk_scan_idle_dwell_ms,
+                    opts->trunk_scan_activity_hold_ms);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_config_one_shots_skip_trunk_scan_runtime_validation(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[trunk_scan]\n"
+                             "enabled = true\n"
+                             "\n"
+                             "[profile.demo]\n"
+                             "mode.decode = \"dmr\"\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp trunk scan ini\n");
+        return 1;
+    }
+
+    const char* one_shots[] = {"--print-config", "--list-profiles", "--dump-config-template"};
+    int test_rc = 0;
+    test_redirect_stdout_to_null();
+    for (size_t i = 0; i < sizeof(one_shots) / sizeof(one_shots[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            test_rc = 1;
+            break;
+        }
+
+        initOpts(opts);
+        initState(state);
+
+        (void)dsd_unsetenv("DSD_NEO_CONFIG");
+        (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--config";
+        char arg2[1024];
+        char arg3[64];
+        DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+        DSD_SNPRINTF(arg3, sizeof arg3, "%s", one_shots[i]);
+        char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
+            DSD_FPRINTF(stderr, "expected %s to bypass trunk-scan runtime validation, got rc=%d exit_rc=%d\n",
+                        one_shots[i], rc, exit_rc);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
+    (void)remove(cfg_path);
+    return test_rc;
+}
+
+static int
 test_bootstrap_profile_disables_autosave(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -4692,6 +4822,8 @@ main(void) {
     rc |= test_bootstrap_profile_preserves_trunking_with_ncurses_cli();
     rc |= test_bootstrap_inherited_trunk_scan_allows_cli_channel_map();
     rc |= test_bootstrap_inherited_trunk_scan_disables_for_long_only_runtime_mode();
+    rc |= test_bootstrap_inherited_trunk_scan_preserves_timing_overrides();
+    rc |= test_bootstrap_config_one_shots_skip_trunk_scan_runtime_validation();
     rc |= test_bootstrap_profile_disables_autosave();
     rc |= test_bootstrap_cli_call_alert_restores_all_config_filtered_events();
     rc |= test_r_playback_optind_is_first_file_regardless_of_option_order();

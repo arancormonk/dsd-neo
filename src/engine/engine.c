@@ -1880,6 +1880,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
     while (state->synctype != DSD_SYNC_NONE) {
         dsd_runtime_pump_controls(opts, state);
         processFrame(opts, state);
+        dsd_trunk_scan_hook_tick(opts, state);
 
 #ifdef TRACE_DSD
         state->debug_prefix = '\0';

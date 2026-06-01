@@ -221,7 +221,7 @@ cli_parse_decimal_u64(const char* in, uint64_t* out) {
 }
 
 static int
-cli_has_validate_config_arg(int argc, char** argv) {
+cli_has_config_one_shot_arg(int argc, char** argv) {
     if (argc <= 1 || !argv) {
         return 0;
     }
@@ -230,7 +230,9 @@ cli_has_validate_config_arg(int argc, char** argv) {
         if (!arg) {
             break;
         }
-        if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0) {
+        if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0
+            || strcmp(arg, "--print-config") == 0 || strcmp(arg, "--list-profiles") == 0
+            || strcmp(arg, "--dump-config-template") == 0) {
             return 1;
         }
     }
@@ -239,8 +241,8 @@ cli_has_validate_config_arg(int argc, char** argv) {
 
 static int
 cli_validate_trunk_scan_runtime_args(dsd_opts* opts, int trunk_scan_cli_seen, int chan_csv_cli_seen,
-                                     int validate_config_cli_seen, int* out_exit_rc) {
-    if (!opts || !opts->trunk_scan_enabled || validate_config_cli_seen) {
+                                     int config_one_shot_cli_seen, int* out_exit_rc) {
+    if (!opts || !opts->trunk_scan_enabled || config_one_shot_cli_seen) {
         return DSD_PARSE_CONTINUE;
     }
     if (opts->scanner_mode == 1) {
@@ -1404,7 +1406,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* rtl_udp_control_cli_bindaddr = NULL;
     int trunk_scan_cli_seen = 0;
     int chan_csv_cli_seen = 0;
-    int validate_config_cli_seen = cli_has_validate_config_arg(argc, argv);
+    int config_one_shot_cli_seen = cli_has_config_one_shot_arg(argc, argv);
 
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
     DSD_PARSE_ARGS_IQ_PRE_BLOCK();
@@ -1437,7 +1439,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc, &chan_csv_cli_seen);
     if (parse_rc == DSD_PARSE_CONTINUE) {
         parse_rc = cli_validate_trunk_scan_runtime_args(opts, trunk_scan_cli_seen, chan_csv_cli_seen,
-                                                        validate_config_cli_seen, out_exit_rc);
+                                                        config_one_shot_cli_seen, out_exit_rc);
     }
     if (parse_rc == DSD_PARSE_CONTINUE && opts->iq_replay_requested && opts->iq_replay_path[0] != '\0') {
         opts->audio_in_type = AUDIO_IN_RTL;
