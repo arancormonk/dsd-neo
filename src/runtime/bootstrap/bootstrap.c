@@ -373,7 +373,8 @@ bootstrap_has_runtime_long_arg(int argc, char** argv, int cfg_path_positional_in
     if (cfg_path_positional_ini || argc <= 1 || !argv) {
         return 0;
     }
-    for (int i = 1; i < argc; i++) {
+    int i = 1;
+    while (i < argc) {
         const char* arg = argv[i];
         if (!arg) {
             break;
@@ -382,14 +383,17 @@ bootstrap_has_runtime_long_arg(int argc, char** argv, int cfg_path_positional_in
             if (i + 1 < argc && argv[i + 1] && argv[i + 1][0] != '-') {
                 i++;
             }
+            i++;
             continue;
         }
         if (bootstrap_is_bootstrap_only_long_arg(arg)) {
+            i++;
             continue;
         }
         if (strncmp(arg, "--", 2) == 0) {
             return 1;
         }
+        i++;
     }
     return 0;
 }
