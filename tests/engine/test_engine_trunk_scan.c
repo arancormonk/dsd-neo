@@ -15,6 +15,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <limits.h>
@@ -26,6 +27,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "dsd-neo/platform/sockets.h"
 #include "test_support.h"
 
 static const char k_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n";
@@ -37,6 +39,12 @@ static int g_p25_tick_guard_available = 1;
 static int g_p25_tick_guard_depth = 0;
 static int g_p25_tick_guard_enter_calls = 0;
 static int g_p25_tick_guard_leave_calls = 0;
+static unsigned int g_fake_rtl_output_rate_hz = 0;
+
+static unsigned int
+fake_rtl_output_rate_hz(void) {
+    return g_fake_rtl_output_rate_hz;
+}
 
 static int
 test_tg_policy_tune_allowed(const dsd_opts* opts, int call_type_enabled, int encrypted, int data_call) {
@@ -396,13 +404,19 @@ reset_scan_opts_state(dsd_opts* opts, dsd_state* state) {
     opts->trunk_scan_enabled = 1;
     opts->trunk_scan_idle_dwell_ms = 250;
     opts->trunk_scan_activity_hold_ms = 250;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_dsp_bw_khz = 48;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
     opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_private_calls = 1;
     opts->trunk_tune_enc_calls = 1;
+    state->dmr_mfid = -1;
     g_p25_tick_guard_available = 1;
     g_p25_tick_guard_depth = 0;
     g_p25_tick_guard_enter_calls = 0;
     g_p25_tick_guard_leave_calls = 0;
+    g_fake_rtl_output_rate_hz = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
 static void
@@ -599,6 +613,76 @@ test_coordinator_idle_rotation_and_state_restore(void) {
         test_rc = 1;
     }
     test_rc |= expect_target0_p25_state(&state);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static void
+seed_dmr_identity(dsd_state* state, int mfid, const char* branding, const char* branding_sub, const char* site_parms) {
+    state->dmr_mfid = mfid;
+    DSD_SNPRINTF(state->dmr_branding, sizeof state->dmr_branding, "%s", branding);
+    DSD_SNPRINTF(state->dmr_branding_sub, sizeof state->dmr_branding_sub, "%s", branding_sub);
+    DSD_SNPRINTF(state->dmr_site_parms, sizeof state->dmr_site_parms, "%s", site_parms);
+}
+
+static int
+expect_dmr_identity(const char* label, const dsd_state* state, int mfid, const char* branding, const char* branding_sub,
+                    const char* site_parms) {
+    if (state->dmr_mfid != mfid || strcmp(state->dmr_branding, branding) != 0
+        || strcmp(state->dmr_branding_sub, branding_sub) != 0 || strcmp(state->dmr_site_parms, site_parms) != 0) {
+        DSD_FPRINTF(stderr, "%s DMR identity mismatch mfid=%d branding='%s' sub='%s' site='%s'\n", label,
+                    state->dmr_mfid, state->dmr_branding, state->dmr_branding_sub, state->dmr_site_parms);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_dmr_branding_state_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("cap,dmr-trunk,451000000,,250,,\n"
+                             "xpt,dmr-trunk,452000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "dmr identity scan init failed rc=%d active=%zu err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), err);
+        test_rc = 1;
+    }
+
+    seed_dmr_identity(&state, 0x10, "Motorola", "Cap+ ", "cap-site ");
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "dmr identity scan did not rotate to second target\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_dmr_identity("fresh target", &state, -1, "", "", "");
+
+    seed_dmr_identity(&state, 0x68, "  Hytera", "XPT ", "xpt-site ");
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "dmr identity scan did not rotate back to first target\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_dmr_identity("restored target", &state, 0x10, "Motorola", "Cap+ ", "cap-site ");
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     dsd_engine_trunk_scan_test_clear_now();
@@ -951,12 +1035,14 @@ failing_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
 static int g_counting_tune_to_cc_calls = 0;
 static int g_counting_tune_to_cc_failures_remaining = 0;
 static int g_counting_tune_to_cc_ted_sps = 0;
+static long int g_counting_tune_to_cc_freq = 0;
 
 static dsd_trunk_tune_result
 counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)opts;
     g_counting_tune_to_cc_calls++;
     g_counting_tune_to_cc_ted_sps = ted_sps;
+    g_counting_tune_to_cc_freq = freq;
     if (g_counting_tune_to_cc_failures_remaining > 0) {
         g_counting_tune_to_cc_failures_remaining--;
         return DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -1021,6 +1107,66 @@ test_p25_targets_pass_cc_sps_to_retune_paths(void) {
 
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_p25_targets_use_rtl_output_rate_for_retune_sps(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.rtl_dsp_bw_khz = 48;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_rtl_stream_metrics_hooks metrics_hooks = {0};
+    metrics_hooks.output_rate_hz = fake_rtl_output_rate_hz;
+    g_fake_rtl_output_rate_hz = 24000U;
+    dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_result = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 0;
+    g_counting_tune_to_cc_ted_sps = 0;
+    g_counting_tune_to_cc_freq = 0;
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || g_counting_tune_to_cc_calls != 1 || g_counting_tune_to_cc_ted_sps != 5) {
+        DSD_FPRINTF(stderr, "p25 initial retune did not use RTL output rate rc=%d calls=%d sps=%d err=%s\n", rc,
+                    g_counting_tune_to_cc_calls, g_counting_tune_to_cc_ted_sps, err);
+        test_rc = 1;
+    }
+
+    state.p25_cc_is_tdma = 1;
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_ted_sps != 4) {
+        DSD_FPRINTF(stderr, "p25 TDMA retune did not use RTL output rate active=%zu sps=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_ted_sps);
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     dsd_engine_trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
@@ -1096,6 +1242,101 @@ test_channel_map_sequence_advances_on_equal_count_target_switches(void) {
     dsd_engine_trunk_scan_test_clear_now();
     (void)remove(chan_b_path);
     cleanup_paths(dir, target_path, chan_a_path);
+    return test_rc;
+}
+
+static int
+test_trunk_targets_reuse_restored_control_channel(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("p25a,p25-trunk,851000000,,250,,\n"
+                             "p25b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_result = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 0;
+    g_counting_tune_to_cc_ted_sps = 0;
+    g_counting_tune_to_cc_freq = 0;
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "p25 learned CC scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+
+    state.p25_cc_freq = 851500000L;
+    state.trunk_cc_freq = 851500000L;
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    state.p25_cc_freq = 852500000L;
+    state.trunk_cc_freq = 852500000L;
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_freq != 851500000L
+        || state.p25_cc_freq != 851500000L || state.trunk_cc_freq != 851500000L) {
+        DSD_FPRINTF(stderr, "p25 target did not reuse learned CC active=%zu tune=%ld p25=%ld trunk=%ld\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_freq, state.p25_cc_freq,
+                    state.trunk_cc_freq);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+
+    if (make_runtime_targets("dmra,dmr-trunk,451000000,,250,,\n"
+                             "dmrb,dmr-trunk,452000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        DSD_MEMSET(&hooks, 0, sizeof hooks);
+        dsd_trunk_tuning_hooks_set(hooks);
+        return 1;
+    }
+
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_freq = 0;
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "dmr learned CC scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+
+    state.trunk_cc_freq = 451500000L;
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    state.trunk_cc_freq = 452500000L;
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_freq != 451500000L
+        || state.p25_cc_freq != 0 || state.trunk_cc_freq != 451500000L) {
+        DSD_FPRINTF(stderr, "dmr target did not reuse learned CC active=%zu tune=%ld p25=%ld trunk=%ld\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_freq, state.p25_cc_freq,
+                    state.trunk_cc_freq);
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
 
@@ -1399,6 +1640,41 @@ test_init_failure_restores_saved_trunk_opts(void) {
     return test_rc;
 }
 
+static int
+test_trunk_scan_rejects_fixed_input_without_tuner(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.use_rigctl = 0;
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc == 0 || strstr(err, "requires RTL input or rigctl") == NULL) {
+        DSD_FPRINTF(stderr, "fixed input scan should reject without tuner rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+    if (dsd_engine_trunk_scan_active_index(&state) != (size_t)-1) {
+        DSD_FPRINTF(stderr, "fixed input rejection attached a coordinator\n");
+        test_rc = 1;
+    }
+
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1406,6 +1682,7 @@ main(void) {
     rc |= test_parser_rejects_invalid_inputs();
     rc |= test_parser_rejects_too_many_targets();
     rc |= test_coordinator_idle_rotation_and_state_restore();
+    rc |= test_dmr_branding_state_isolated_per_target();
     rc |= test_p25_targets_seed_valid_control_channel_timing();
     rc |= test_mixed_target_switch_resets_dmr_demod_profile();
     rc |= test_conventional_activity_hold_and_allowlist_block();
@@ -1413,12 +1690,15 @@ main(void) {
     rc |= test_state_ext_cleanup_clears_scan_hooks();
     rc |= test_dmr_trunk_sm_timeout_releases_scan_hold();
     rc |= test_p25_targets_pass_cc_sps_to_retune_paths();
+    rc |= test_p25_targets_use_rtl_output_rate_for_retune_sps();
     rc |= test_channel_map_sequence_advances_on_equal_count_target_switches();
+    rc |= test_trunk_targets_reuse_restored_control_channel();
     rc |= test_locked_demod_mode_preserved_when_seeding_targets();
     rc |= test_scan_tick_skips_rotation_when_p25_guard_busy();
     rc |= test_single_target_retune_failure_retries_after_cooldown();
     rc |= test_retune_failure_cooldown();
     rc |= test_dmr_targets_pass_sps_to_retune_paths();
     rc |= test_init_failure_restores_saved_trunk_opts();
+    rc |= test_trunk_scan_rejects_fixed_input_without_tuner();
     return rc;
 }

@@ -17,6 +17,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -78,11 +79,15 @@ typedef struct {
     int p25_ga_count;
     int p25_nb_count;
     uint32_t p25_src_nid;
+    int dmr_mfid;
     int dmr_rest_channel;
     int lcn_freq_count;
     int lcn_freq_roll;
     int is_con_plus;
     int has_cc_candidates;
+    char dmr_site_parms[200];
+    char dmr_branding[20];
+    char dmr_branding_sub[80];
     uint32_t p25_patch_wuid[8][8];
     uint32_t p25_aff_rid[256];
     uint32_t p25_ga_rid[512];
@@ -463,6 +468,7 @@ dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trun
 static void
 trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
+    snapshot->dmr_mfid = -1;
     snapshot->dmr_rest_channel = -1;
     snapshot->p25_cc_is_tdma = 2;
     snapshot->p25_vc_cqpsk_pref = -1;
@@ -537,6 +543,10 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     snapshot->p25_cc_eval_freq = state->p25_cc_eval_freq;
     snapshot->p25_cc_eval_start_m = state->p25_cc_eval_start_m;
     snapshot->p25_cc_cache_loaded = state->p25_cc_cache_loaded;
+    snapshot->dmr_mfid = state->dmr_mfid;
+    DSD_MEMCPY(snapshot->dmr_branding, state->dmr_branding, sizeof(snapshot->dmr_branding));
+    DSD_MEMCPY(snapshot->dmr_branding_sub, state->dmr_branding_sub, sizeof(snapshot->dmr_branding_sub));
+    DSD_MEMCPY(snapshot->dmr_site_parms, state->dmr_site_parms, sizeof(snapshot->dmr_site_parms));
     snapshot->dmr_rest_channel = state->dmr_rest_channel;
     snapshot->lcn_freq_count = state->lcn_freq_count;
     snapshot->lcn_freq_roll = state->lcn_freq_roll;
@@ -626,6 +636,10 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     state->p25_cc_eval_freq = snapshot->p25_cc_eval_freq;
     state->p25_cc_eval_start_m = snapshot->p25_cc_eval_start_m;
     state->p25_cc_cache_loaded = snapshot->p25_cc_cache_loaded;
+    state->dmr_mfid = snapshot->dmr_mfid;
+    DSD_MEMCPY(state->dmr_branding, snapshot->dmr_branding, sizeof(state->dmr_branding));
+    DSD_MEMCPY(state->dmr_branding_sub, snapshot->dmr_branding_sub, sizeof(state->dmr_branding_sub));
+    DSD_MEMCPY(state->dmr_site_parms, snapshot->dmr_site_parms, sizeof(state->dmr_site_parms));
     state->dmr_rest_channel = snapshot->dmr_rest_channel;
     state->lcn_freq_count = snapshot->lcn_freq_count;
     state->lcn_freq_roll = snapshot->lcn_freq_roll;
@@ -711,16 +725,32 @@ trunk_scan_target_is_p25(const dsd_trunk_scan_target* target) {
 }
 
 static int
+trunk_scan_has_tuning_backend(const dsd_opts* opts) {
+    return opts && (opts->audio_in_type == AUDIO_IN_RTL || opts->use_rigctl == 1);
+}
+
+static int
+trunk_scan_demod_rate(const dsd_opts* opts) {
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
+        int rtl_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
+        if (rtl_rate > 0) {
+            return rtl_rate;
+        }
+    }
+    return dsd_opts_current_input_timing_rate(opts);
+}
+
+static int
 trunk_scan_p25_cc_sps(const dsd_opts* opts, const dsd_state* state) {
     int sym_rate = (state && state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-    int demod_rate = dsd_opts_current_input_timing_rate(opts);
+    int demod_rate = trunk_scan_demod_rate(opts);
     return dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
 }
 
 static int
 trunk_scan_dmr_sps(const dsd_opts* opts, const dsd_state* state) {
     (void)state;
-    int demod_rate = dsd_opts_current_input_timing_rate(opts);
+    int demod_rate = trunk_scan_demod_rate(opts);
     return dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
 }
 
@@ -860,9 +890,44 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
     return 0;
 }
 
+static long int
+trunk_scan_p25_retune_freq(const dsd_state* state, const dsd_trunk_scan_target* target) {
+    if (state) {
+        if (state->p25_cc_freq > 0) {
+            return state->p25_cc_freq;
+        }
+        if (state->trunk_cc_freq > 0) {
+            return state->trunk_cc_freq;
+        }
+    }
+    return (long int)target->frequency_hz;
+}
+
+static long int
+trunk_scan_dmr_retune_freq(const dsd_state* state, const dsd_trunk_scan_target* target) {
+    if (state && state->trunk_cc_freq > 0) {
+        return state->trunk_cc_freq;
+    }
+    return (long int)target->frequency_hz;
+}
+
+static long int
+trunk_scan_retune_freq(const dsd_state* state, const dsd_trunk_scan_target* target) {
+    if (!target) {
+        return 0;
+    }
+    if (target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
+        return trunk_scan_p25_retune_freq(state, target);
+    }
+    if (target->type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
+        return trunk_scan_dmr_retune_freq(state, target);
+    }
+    return (long int)target->frequency_hz;
+}
+
 static dsd_trunk_tune_result
 trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
-    const long int freq = (long int)rt->target.frequency_hz;
+    const long int freq = trunk_scan_retune_freq(state, &rt->target);
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
         state->p25_cc_freq = freq;
         state->trunk_cc_freq = freq;
@@ -902,7 +967,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     }
 
     rt->retry_until_m = 0.0;
-    LOG_NOTICE("Trunk scan target '%s' at %u Hz\n", rt->target.id, (unsigned)rt->target.frequency_hz);
+    LOG_NOTICE("Trunk scan target '%s' at %ld Hz\n", rt->target.id, trunk_scan_retune_freq(state, &rt->target));
     return 0;
 }
 
@@ -1100,6 +1165,10 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     }
     if (opts->trunk_scan_targets_csv[0] == '\0') {
         scan_set_error(err, err_sz, "--trunk-scan requires targets_csv");
+        return -1;
+    }
+    if (!trunk_scan_has_tuning_backend(opts)) {
+        scan_set_error(err, err_sz, "--trunk-scan requires RTL input or rigctl tuning");
         return -1;
     }
 
