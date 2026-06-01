@@ -452,6 +452,7 @@ reset_scan_opts_state(dsd_opts* opts, dsd_state* state) {
     opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_private_calls = 1;
     opts->trunk_tune_enc_calls = 1;
+    state->rtl_ctx = (struct RtlSdrContext*)state;
     state->dmr_mfid = -1;
     state->dmr_color_code = 16;
     state->dmr_confidence_color_code = 16;
@@ -658,6 +659,77 @@ test_coordinator_idle_rotation_and_state_restore(void) {
         test_rc = 1;
     }
     test_rc |= expect_target0_p25_state(&state);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static void
+seed_call_identity(dsd_state* state, int lasttg, int lastsrc, int lasttgR, int lastsrcR, int gi0, int gi1) {
+    state->lasttg = lasttg;
+    state->lastsrc = lastsrc;
+    state->lasttgR = lasttgR;
+    state->lastsrcR = lastsrcR;
+    state->gi[0] = (int8_t)gi0;
+    state->gi[1] = (int8_t)gi1;
+}
+
+static int
+expect_call_identity(const char* label, const dsd_state* state, int lasttg, int lastsrc, int lasttgR, int lastsrcR,
+                     int gi0, int gi1) {
+    if (state->lasttg != lasttg || state->lastsrc != lastsrc || state->lasttgR != lasttgR || state->lastsrcR != lastsrcR
+        || state->gi[0] != gi0 || state->gi[1] != gi1) {
+        DSD_FPRINTF(stderr, "%s call identity mismatch tg=%d src=%d tgR=%d srcR=%d gi=%d/%d\n", label, state->lasttg,
+                    state->lastsrc, state->lasttgR, state->lastsrcR, state->gi[0], state->gi[1]);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_call_identity_state_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "call identity scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+
+    seed_call_identity(&state, 101, 201, 102, 202, 0, 1);
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "call identity scan did not rotate to second target\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_call_identity("fresh target", &state, 0, 0, 0, 0, -1, -1);
+
+    seed_call_identity(&state, 301, 401, 302, 402, 1, 0);
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "call identity scan did not rotate back to first target\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_call_identity("restored target", &state, 101, 201, 102, 202, 0, 1);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     dsd_engine_trunk_scan_test_clear_now();
@@ -2074,12 +2146,50 @@ test_trunk_scan_rejects_fixed_input_without_tuner(void) {
     char err[256] = {0};
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
-    if (rc == 0 || strstr(err, "requires RTL input or rigctl") == NULL) {
+    if (rc == 0 || strstr(err, "requires an open RTL input or rigctl") == NULL) {
         DSD_FPRINTF(stderr, "fixed input scan should reject without tuner rc=%d err=%s\n", rc, err);
         test_rc = 1;
     }
     if (dsd_engine_trunk_scan_active_index(&state) != (size_t)-1) {
         DSD_FPRINTF(stderr, "fixed input rejection attached a coordinator\n");
+        test_rc = 1;
+    }
+
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_trunk_scan_rejects_unopened_rtl_without_rigctl(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    state.rtl_ctx = NULL;
+    opts.use_rigctl = 0;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc == 0 || strstr(err, "requires an open RTL input or rigctl") == NULL) {
+        DSD_FPRINTF(stderr, "unopened RTL scan should reject without rigctl rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+    if (dsd_engine_trunk_scan_active_index(&state) != (size_t)-1 || dsd_engine_trunk_scan_target_count(&state) != 0) {
+        DSD_FPRINTF(stderr, "unopened RTL rejection attached a coordinator\n");
+        test_rc = 1;
+    }
+    if (dsd_trunk_scan_hook_p25_ctx() != NULL || dsd_trunk_scan_hook_dmr_ctx() != NULL) {
+        DSD_FPRINTF(stderr, "unopened RTL rejection installed scan hooks\n");
         test_rc = 1;
     }
 
@@ -2143,6 +2253,7 @@ main(void) {
     rc |= test_parser_rejects_invalid_inputs();
     rc |= test_parser_rejects_too_many_targets();
     rc |= test_coordinator_idle_rotation_and_state_restore();
+    rc |= test_call_identity_state_isolated_per_target();
     rc |= test_dmr_branding_state_isolated_per_target();
     rc |= test_dmr_confidence_state_isolated_per_target();
     rc |= test_dmr_service_options_state_isolated_per_target();
@@ -2166,6 +2277,7 @@ main(void) {
     rc |= test_dmr_targets_pass_sps_to_retune_paths();
     rc |= test_init_failure_restores_saved_trunk_opts();
     rc |= test_trunk_scan_rejects_fixed_input_without_tuner();
+    rc |= test_trunk_scan_rejects_unopened_rtl_without_rigctl();
     rc |= test_trunk_scan_rejects_iq_replay_input();
     return rc;
 }

@@ -1779,26 +1779,32 @@ live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
-static void
-live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
+static int
+live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         if (state->rtl_ctx == NULL) {
             if (rtl_stream_create_mirrored(opts, &state->rtl_ctx) < 0) {
                 LOG_ERROR("Failed to create radio stream.\n");
+                opts->rtl_started = 0;
+                opts->rtl_needs_restart = 0;
+                return -1;
             }
         }
         if (state->rtl_ctx && rtl_stream_start(state->rtl_ctx) < 0) {
             LOG_ERROR("Failed to open radio stream.\n");
+            rtl_stream_destroy(state->rtl_ctx);
+            state->rtl_ctx = NULL;
+            opts->rtl_started = 0;
+            opts->rtl_needs_restart = 0;
+            return -1;
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
     }
-#else
-    UNUSED(opts);
-    UNUSED(state);
-#endif
+    return 0;
 }
+#endif
 
 static int
 live_scanner_open_audio_if_needed(dsd_opts* opts) {
@@ -1916,7 +1922,11 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     (void)live_scanner_apply_audio_gain(opts, state);
-    live_scanner_start_rtl_if_needed(opts, state);
+#ifdef USE_RADIO
+    if (live_scanner_start_rtl_if_needed(opts, state) != 0) {
+        return -1;
+    }
+#endif
     if (live_scanner_open_audio_if_needed(opts) != 0) {
         return -1;
     }

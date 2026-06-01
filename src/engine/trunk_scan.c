@@ -87,6 +87,10 @@ typedef struct {
     int p25_aff_count;
     int p25_ga_count;
     int p25_nb_count;
+    int lasttg;
+    int lasttgR;
+    int lastsrc;
+    int lastsrcR;
     uint32_t p25_src_nid;
     int dmr_mfid;
     int dmr_rest_channel;
@@ -128,6 +132,7 @@ typedef struct {
     uint8_t p25_patch_ssn[8];
     uint8_t p25_patch_key_valid[8];
     uint8_t dmr_confidence_locked;
+    int8_t gi[2];
     uint8_t dmr_confidence_color_code;
     uint8_t dmr_confidence_candidate_cc;
     uint8_t dmr_confidence_candidate_count;
@@ -152,6 +157,7 @@ typedef struct {
 
 typedef struct {
     dsd_trunk_scan_target_runtime targets[DSD_TRUNK_SCAN_MAX_TARGETS];
+    dsd_trunk_scan_snapshot scratch_snapshot;
     size_t count;
     size_t active;
     int saved_p25_trunk;
@@ -507,6 +513,8 @@ trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     snapshot->p25_cc_is_tdma = 2;
     snapshot->p25_vc_cqpsk_pref = -1;
     snapshot->p25_vc_cqpsk_override = -1;
+    snapshot->gi[0] = -1;
+    snapshot->gi[1] = -1;
 }
 
 static void
@@ -539,6 +547,30 @@ trunk_scan_restore_dmr_confidence_snapshot(dsd_state* state, const dsd_trunk_sca
     DSD_MEMCPY(state->dmr_confidence_voice_count, snapshot->dmr_confidence_voice_count,
                sizeof(state->dmr_confidence_voice_count));
     state->dmr_confidence_mismatch_count = snapshot->dmr_confidence_mismatch_count;
+}
+
+static void
+trunk_scan_save_call_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    DSD_MEMCPY(snapshot->p25_call_emergency, state->p25_call_emergency, sizeof(snapshot->p25_call_emergency));
+    DSD_MEMCPY(snapshot->p25_call_priority, state->p25_call_priority, sizeof(snapshot->p25_call_priority));
+    DSD_MEMCPY(snapshot->p25_call_is_packet, state->p25_call_is_packet, sizeof(snapshot->p25_call_is_packet));
+    snapshot->lasttg = state->lasttg;
+    snapshot->lasttgR = state->lasttgR;
+    snapshot->lastsrc = state->lastsrc;
+    snapshot->lastsrcR = state->lastsrcR;
+    DSD_MEMCPY(snapshot->gi, state->gi, sizeof(snapshot->gi));
+}
+
+static void
+trunk_scan_restore_call_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
+    DSD_MEMCPY(state->p25_call_emergency, snapshot->p25_call_emergency, sizeof(state->p25_call_emergency));
+    DSD_MEMCPY(state->p25_call_priority, snapshot->p25_call_priority, sizeof(state->p25_call_priority));
+    DSD_MEMCPY(state->p25_call_is_packet, snapshot->p25_call_is_packet, sizeof(state->p25_call_is_packet));
+    state->lasttg = snapshot->lasttg;
+    state->lasttgR = snapshot->lasttgR;
+    state->lastsrc = snapshot->lastsrc;
+    state->lastsrcR = snapshot->lastsrcR;
+    DSD_MEMCPY(state->gi, snapshot->gi, sizeof(state->gi));
 }
 
 static void
@@ -604,9 +636,7 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     snapshot->p25_nb_count = state->p25_nb_count;
     DSD_MEMCPY(snapshot->p25_nb_entries, state->p25_nb_entries, sizeof(snapshot->p25_nb_entries));
     snapshot->p25_src_nid = state->p25_src_nid;
-    DSD_MEMCPY(snapshot->p25_call_emergency, state->p25_call_emergency, sizeof(snapshot->p25_call_emergency));
-    DSD_MEMCPY(snapshot->p25_call_priority, state->p25_call_priority, sizeof(snapshot->p25_call_priority));
-    DSD_MEMCPY(snapshot->p25_call_is_packet, state->p25_call_is_packet, sizeof(snapshot->p25_call_is_packet));
+    trunk_scan_save_call_snapshot(state, snapshot);
     snapshot->p25_cc_eval_freq = state->p25_cc_eval_freq;
     snapshot->p25_cc_eval_start_m = state->p25_cc_eval_start_m;
     snapshot->p25_cc_cache_loaded = state->p25_cc_cache_loaded;
@@ -704,9 +734,7 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     state->p25_nb_count = snapshot->p25_nb_count;
     DSD_MEMCPY(state->p25_nb_entries, snapshot->p25_nb_entries, sizeof(state->p25_nb_entries));
     state->p25_src_nid = snapshot->p25_src_nid;
-    DSD_MEMCPY(state->p25_call_emergency, snapshot->p25_call_emergency, sizeof(state->p25_call_emergency));
-    DSD_MEMCPY(state->p25_call_priority, snapshot->p25_call_priority, sizeof(state->p25_call_priority));
-    DSD_MEMCPY(state->p25_call_is_packet, snapshot->p25_call_is_packet, sizeof(state->p25_call_is_packet));
+    trunk_scan_restore_call_snapshot(state, snapshot);
     state->p25_cc_eval_freq = snapshot->p25_cc_eval_freq;
     state->p25_cc_eval_start_m = snapshot->p25_cc_eval_start_m;
     state->p25_cc_cache_loaded = snapshot->p25_cc_cache_loaded;
@@ -830,8 +858,14 @@ trunk_scan_is_iq_replay(const dsd_opts* opts) {
 }
 
 static int
-trunk_scan_has_tuning_backend(const dsd_opts* opts) {
-    return opts && !trunk_scan_is_iq_replay(opts) && (opts->audio_in_type == AUDIO_IN_RTL || opts->use_rigctl == 1);
+trunk_scan_has_open_rtl_stream(const dsd_opts* opts, const dsd_state* state) {
+    return opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx;
+}
+
+static int
+trunk_scan_has_tuning_backend(const dsd_opts* opts, const dsd_state* state) {
+    return opts && !trunk_scan_is_iq_replay(opts)
+           && (opts->use_rigctl == 1 || trunk_scan_has_open_rtl_stream(opts, state));
 }
 
 static int
@@ -974,14 +1008,14 @@ trunk_scan_import_target_chan_csv(const dsd_opts* opts, dsd_state* state, const 
 static int
 trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd_state* state,
                                 const dsd_trunk_scan_target_list* list, char* err, size_t err_sz) {
-    dsd_trunk_scan_snapshot empty_snapshot;
-    trunk_scan_seed_empty_snapshot(&empty_snapshot, opts, state);
+    dsd_trunk_scan_snapshot* empty_snapshot = &coord->scratch_snapshot;
+    trunk_scan_seed_empty_snapshot(empty_snapshot, opts, state);
     double now_m = trunk_scan_now_m();
 
     for (size_t i = 0; i < list->count; i++) {
         dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
         rt->target = list->targets[i];
-        trunk_scan_restore_snapshot(state, &empty_snapshot);
+        trunk_scan_restore_snapshot(state, empty_snapshot);
         trunk_scan_apply_target_opts(opts, &rt->target);
         trunk_scan_apply_target_demod(opts, state, &rt->target);
         trunk_scan_seed_target_state(state, &rt->target, now_m);
@@ -1086,8 +1120,8 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
         return;
     }
     double now_m = trunk_scan_now_m();
-    dsd_trunk_scan_snapshot original_snapshot;
-    trunk_scan_save_snapshot(state, &original_snapshot);
+    dsd_trunk_scan_snapshot* original_snapshot = &coord->scratch_snapshot;
+    trunk_scan_save_snapshot(state, original_snapshot);
     size_t original_active = coord->active;
     int save_current = 1;
     int attempted_alternate_retune = 0;
@@ -1110,7 +1144,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     }
 
     coord->active = original_active;
-    trunk_scan_restore_snapshot(state, &original_snapshot);
+    trunk_scan_restore_snapshot(state, original_snapshot);
     trunk_scan_apply_target_opts(opts, &coord->targets[coord->active].target);
     trunk_scan_apply_target_demod(opts, state, &coord->targets[coord->active].target);
     trunk_scan_sync_active_sm_mode(state, &coord->targets[coord->active]);
@@ -1296,8 +1330,8 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         scan_set_error(err, err_sz, "--trunk-scan cannot use IQ replay input because replay cannot retune");
         return -1;
     }
-    if (!trunk_scan_has_tuning_backend(opts)) {
-        scan_set_error(err, err_sz, "--trunk-scan requires RTL input or rigctl tuning");
+    if (!trunk_scan_has_tuning_backend(opts, state)) {
+        scan_set_error(err, err_sz, "--trunk-scan requires an open RTL input or rigctl tuning");
         return -1;
     }
 
