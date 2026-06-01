@@ -79,6 +79,7 @@ typedef struct {
     int p25_sys_is_tdma;
     int p25_vc_cqpsk_pref;
     int p25_vc_cqpsk_override;
+    int p25_sm_mode;
     int samplesPerSymbol;
     int symbolCenter;
     int rf_mod;
@@ -569,6 +570,7 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     snapshot->p25_sys_is_tdma = state->p25_sys_is_tdma;
     snapshot->p25_vc_cqpsk_pref = state->p25_vc_cqpsk_pref;
     snapshot->p25_vc_cqpsk_override = state->p25_vc_cqpsk_override;
+    snapshot->p25_sm_mode = state->p25_sm_mode;
     snapshot->samplesPerSymbol = state->samplesPerSymbol;
     snapshot->symbolCenter = state->symbolCenter;
     snapshot->rf_mod = state->rf_mod;
@@ -668,6 +670,7 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     state->p25_sys_is_tdma = snapshot->p25_sys_is_tdma;
     state->p25_vc_cqpsk_pref = snapshot->p25_vc_cqpsk_pref;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
+    state->p25_sm_mode = snapshot->p25_sm_mode;
     state->samplesPerSymbol = snapshot->samplesPerSymbol;
     state->symbolCenter = snapshot->symbolCenter;
     state->rf_mod = snapshot->rf_mod;
@@ -802,6 +805,26 @@ trunk_scan_target_is_p25(const dsd_trunk_scan_target* target) {
 }
 
 static int
+trunk_scan_p25_sm_mode_from_ctx(const p25_sm_ctx_t* ctx) {
+    switch (p25_sm_get_state(ctx)) {
+        case P25_SM_ON_CC: return DSD_P25_SM_MODE_ON_CC;
+        case P25_SM_TUNED: return DSD_P25_SM_MODE_ON_VC;
+        case P25_SM_HUNTING: return DSD_P25_SM_MODE_HUNTING;
+        case P25_SM_IDLE: break;
+    }
+    return DSD_P25_SM_MODE_UNKNOWN;
+}
+
+static void
+trunk_scan_sync_active_sm_mode(dsd_state* state, const dsd_trunk_scan_target_runtime* rt) {
+    if (!state || !rt) {
+        return;
+    }
+    state->p25_sm_mode =
+        trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_sm_mode_from_ctx(&rt->p25_ctx) : DSD_P25_SM_MODE_UNKNOWN;
+}
+
+static int
 trunk_scan_is_iq_replay(const dsd_opts* opts) {
     return opts && (opts->iq_replay_requested != 0 || opts->iq_replay_active != 0);
 }
@@ -846,7 +869,7 @@ trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_
         state->samplesPerSymbol = p25_sps;
         state->symbolCenter = dsd_opts_symbol_center(p25_sps);
         if (!opts->mod_cli_lock) {
-            state->rf_mod = 0;
+            state->rf_mod = (state->p25_cc_is_tdma == 1) ? 1 : 0;
         }
         return;
     }
@@ -1040,6 +1063,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     trunk_scan_restore_target_snapshot(coord, state, rt);
     trunk_scan_apply_target_opts(opts, &rt->target);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
+    trunk_scan_sync_active_sm_mode(state, rt);
 
     double now_m = trunk_scan_now_m();
     rt->parked_since_m = now_m;
@@ -1089,6 +1113,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     trunk_scan_restore_snapshot(state, &original_snapshot);
     trunk_scan_apply_target_opts(opts, &coord->targets[coord->active].target);
     trunk_scan_apply_target_demod(opts, state, &coord->targets[coord->active].target);
+    trunk_scan_sync_active_sm_mode(state, &coord->targets[coord->active]);
 }
 
 static void

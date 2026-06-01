@@ -393,7 +393,8 @@ bootstrap_compacted_arg_disables_inherited_trunk_scan(int argc, char** argv) {
 
     int compacted_argc = bootstrap_clamp_compacted_argc(dsd_cli_compact_args(argc, argv_copy), argc);
     int disables = 0;
-    for (int i = 1; i < compacted_argc && !disables; i++) {
+    for (int i = 1, advance = 1; i < compacted_argc && !disables; i += advance) {
+        advance = 1;
         const char* arg = argv_copy[i];
         if (!arg) {
             break;
@@ -410,7 +411,7 @@ bootstrap_compacted_arg_disables_inherited_trunk_scan(int argc, char** argv) {
         if (bootstrap_compacted_short_arg_disables_inherited_trunk_scan(arg, &consumes_next)) {
             disables = 1;
         } else if (consumes_next && i + 1 < compacted_argc) {
-            i++;
+            advance = 2;
         }
     }
 
