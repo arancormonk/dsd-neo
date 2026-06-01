@@ -66,6 +66,7 @@ typedef struct {
     time_t p25_ga_last_seen[512];
     long int trunk_chan_map[DSD_TRUNK_CHAN_MAP_SIZE];
     uint32_t trunk_chan_map_used_count;
+    unsigned int dmr_color_code;
     int p25_chan_iden;
     int p25_cc_is_tdma;
     int p25_sys_is_tdma;
@@ -113,6 +114,14 @@ typedef struct {
     uint8_t p25_patch_alg[8];
     uint8_t p25_patch_ssn[8];
     uint8_t p25_patch_key_valid[8];
+    uint8_t dmr_confidence_locked;
+    uint8_t dmr_confidence_color_code;
+    uint8_t dmr_confidence_candidate_cc;
+    uint8_t dmr_confidence_candidate_count;
+    uint8_t dmr_confidence_voice_sync_seen[2];
+    uint8_t dmr_confidence_voice_open[2];
+    uint8_t dmr_confidence_voice_count[2];
+    uint8_t dmr_confidence_mismatch_count;
     uint8_t p25_chan_tdma_explicit[16];
     uint8_t dmr_lcn_trust[0x1000];
 } dsd_trunk_scan_snapshot;
@@ -469,10 +478,45 @@ static void
 trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
     snapshot->dmr_mfid = -1;
+    snapshot->dmr_color_code = 16;
+    snapshot->dmr_confidence_color_code = 16;
+    snapshot->dmr_confidence_candidate_cc = 16;
     snapshot->dmr_rest_channel = -1;
     snapshot->p25_cc_is_tdma = 2;
     snapshot->p25_vc_cqpsk_pref = -1;
     snapshot->p25_vc_cqpsk_override = -1;
+}
+
+static void
+trunk_scan_save_dmr_confidence_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    snapshot->dmr_color_code = state->dmr_color_code;
+    snapshot->dmr_confidence_locked = state->dmr_confidence_locked;
+    snapshot->dmr_confidence_color_code = state->dmr_confidence_color_code;
+    snapshot->dmr_confidence_candidate_cc = state->dmr_confidence_candidate_cc;
+    snapshot->dmr_confidence_candidate_count = state->dmr_confidence_candidate_count;
+    DSD_MEMCPY(snapshot->dmr_confidence_voice_sync_seen, state->dmr_confidence_voice_sync_seen,
+               sizeof(snapshot->dmr_confidence_voice_sync_seen));
+    DSD_MEMCPY(snapshot->dmr_confidence_voice_open, state->dmr_confidence_voice_open,
+               sizeof(snapshot->dmr_confidence_voice_open));
+    DSD_MEMCPY(snapshot->dmr_confidence_voice_count, state->dmr_confidence_voice_count,
+               sizeof(snapshot->dmr_confidence_voice_count));
+    snapshot->dmr_confidence_mismatch_count = state->dmr_confidence_mismatch_count;
+}
+
+static void
+trunk_scan_restore_dmr_confidence_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
+    state->dmr_color_code = snapshot->dmr_color_code;
+    state->dmr_confidence_locked = snapshot->dmr_confidence_locked;
+    state->dmr_confidence_color_code = snapshot->dmr_confidence_color_code;
+    state->dmr_confidence_candidate_cc = snapshot->dmr_confidence_candidate_cc;
+    state->dmr_confidence_candidate_count = snapshot->dmr_confidence_candidate_count;
+    DSD_MEMCPY(state->dmr_confidence_voice_sync_seen, snapshot->dmr_confidence_voice_sync_seen,
+               sizeof(state->dmr_confidence_voice_sync_seen));
+    DSD_MEMCPY(state->dmr_confidence_voice_open, snapshot->dmr_confidence_voice_open,
+               sizeof(state->dmr_confidence_voice_open));
+    DSD_MEMCPY(state->dmr_confidence_voice_count, snapshot->dmr_confidence_voice_count,
+               sizeof(state->dmr_confidence_voice_count));
+    state->dmr_confidence_mismatch_count = snapshot->dmr_confidence_mismatch_count;
 }
 
 static void
@@ -544,6 +588,7 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     snapshot->p25_cc_eval_start_m = state->p25_cc_eval_start_m;
     snapshot->p25_cc_cache_loaded = state->p25_cc_cache_loaded;
     snapshot->dmr_mfid = state->dmr_mfid;
+    trunk_scan_save_dmr_confidence_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->dmr_branding, state->dmr_branding, sizeof(snapshot->dmr_branding));
     DSD_MEMCPY(snapshot->dmr_branding_sub, state->dmr_branding_sub, sizeof(snapshot->dmr_branding_sub));
     DSD_MEMCPY(snapshot->dmr_site_parms, state->dmr_site_parms, sizeof(snapshot->dmr_site_parms));
@@ -637,6 +682,7 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     state->p25_cc_eval_start_m = snapshot->p25_cc_eval_start_m;
     state->p25_cc_cache_loaded = snapshot->p25_cc_cache_loaded;
     state->dmr_mfid = snapshot->dmr_mfid;
+    trunk_scan_restore_dmr_confidence_snapshot(state, snapshot);
     DSD_MEMCPY(state->dmr_branding, snapshot->dmr_branding, sizeof(state->dmr_branding));
     DSD_MEMCPY(state->dmr_branding_sub, snapshot->dmr_branding_sub, sizeof(state->dmr_branding_sub));
     DSD_MEMCPY(state->dmr_site_parms, snapshot->dmr_site_parms, sizeof(state->dmr_site_parms));
@@ -725,8 +771,13 @@ trunk_scan_target_is_p25(const dsd_trunk_scan_target* target) {
 }
 
 static int
+trunk_scan_is_iq_replay(const dsd_opts* opts) {
+    return opts && (opts->iq_replay_requested != 0 || opts->iq_replay_active != 0);
+}
+
+static int
 trunk_scan_has_tuning_backend(const dsd_opts* opts) {
-    return opts && (opts->audio_in_type == AUDIO_IN_RTL || opts->use_rigctl == 1);
+    return opts && !trunk_scan_is_iq_replay(opts) && (opts->audio_in_type == AUDIO_IN_RTL || opts->use_rigctl == 1);
 }
 
 static int
@@ -981,14 +1032,21 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     trunk_scan_save_snapshot(state, &original_snapshot);
     size_t original_active = coord->active;
     int save_current = 1;
+    int attempted_alternate_retune = 0;
 
     for (size_t attempts = 0; attempts < coord->count; attempts++) {
         size_t next = (original_active + 1U + attempts) % coord->count;
+        if (next == original_active && !attempted_alternate_retune) {
+            continue;
+        }
         if (coord->targets[next].retry_until_m > now_m) {
             continue;
         }
         if (trunk_scan_switch_to(opts, state, coord, next, save_current) == 0) {
             return;
+        }
+        if (next != original_active) {
+            attempted_alternate_retune = 1;
         }
         save_current = 0;
     }
@@ -1165,6 +1223,10 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     }
     if (opts->trunk_scan_targets_csv[0] == '\0') {
         scan_set_error(err, err_sz, "--trunk-scan requires targets_csv");
+        return -1;
+    }
+    if (trunk_scan_is_iq_replay(opts)) {
+        scan_set_error(err, err_sz, "--trunk-scan cannot use IQ replay input because replay cannot retune");
         return -1;
     }
     if (!trunk_scan_has_tuning_backend(opts)) {
