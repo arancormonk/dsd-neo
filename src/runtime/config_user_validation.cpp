@@ -46,13 +46,8 @@ validate_bool_value(const char* val) {
 }
 
 namespace {
-typedef struct {
-    int trunk_scan_enabled_true;
-    int trunk_scan_enabled_line;
-    int trunk_scan_targets_csv_seen;
-    int trunk_scan_targets_csv_nonempty;
-    int trunk_scan_targets_csv_line;
-} dsd_config_cross_fields_t;
+static const int DSD_CONFIG_VALIDATE_MAX_PROFILES = 64;
+static const size_t DSD_CONFIG_VALIDATE_PROFILE_BUF_SIZE = 4096U;
 } // namespace
 
 static int
@@ -298,42 +293,8 @@ validate_profile_key_value(char* key, const char* val, dsdcfg_diagnostics_t* dia
 }
 
 static void
-note_trunk_scan_cross_field(const char* key_lc, const char* val, int line_num, dsd_config_cross_fields_t* cross) {
-    if (!key_lc || !val || !cross) {
-        return;
-    }
-
-    if (strcmp(key_lc, "enabled") == 0) {
-        int enabled = 0;
-        if (parse_bool_value(val, &enabled) == 0) {
-            cross->trunk_scan_enabled_true = enabled ? 1 : 0;
-            cross->trunk_scan_enabled_line = line_num;
-        }
-        return;
-    }
-
-    if (strcmp(key_lc, "targets_csv") == 0) {
-        cross->trunk_scan_targets_csv_seen = 1;
-        cross->trunk_scan_targets_csv_nonempty = val[0] != '\0';
-        cross->trunk_scan_targets_csv_line = line_num;
-    }
-}
-
-static void
-validate_cross_fields(const dsd_config_cross_fields_t* cross, dsdcfg_diagnostics_t* diags) {
-    if (!cross || !diags || !cross->trunk_scan_enabled_true || cross->trunk_scan_targets_csv_nonempty) {
-        return;
-    }
-
-    const int line_num =
-        cross->trunk_scan_targets_csv_seen ? cross->trunk_scan_targets_csv_line : cross->trunk_scan_enabled_line;
-    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, "trunk_scan", "targets_csv",
-                     "targets_csv is required when trunk_scan.enabled is true");
-}
-
-static void
 validate_section_key_value(char* key, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
-                           const char* current_section, dsd_config_cross_fields_t* cross) {
+                           const char* current_section) {
     if (!key || !val || !diags || !current_section) {
         return;
     }
@@ -355,14 +316,11 @@ validate_section_key_value(char* key, const char* val, dsdcfg_diagnostics_t* dia
     }
 
     validate_entry_value(entry, current_section, key, val, diags, line_num, current_section, key);
-    if (dsd_strcasecmp(current_section, "trunk_scan") == 0) {
-        note_trunk_scan_cross_field(key_lc.c_str(), val, line_num, cross);
-    }
 }
 
 static void
 validate_config_line(char* p, int line_num, const char* current_section, int is_profile_section,
-                     dsdcfg_diagnostics_t* diags, dsd_config_cross_fields_t* cross) {
+                     dsdcfg_diagnostics_t* diags) {
     if (!p || !current_section || !diags) {
         return;
     }
@@ -387,11 +345,98 @@ validate_config_line(char* p, int line_num, const char* current_section, int is_
         validate_profile_key_value(key, val, diags, line_num, current_section);
         return;
     }
-    validate_section_key_value(key, val, diags, line_num, current_section, cross);
+    validate_section_key_value(key, val, diags, line_num, current_section);
 }
 
-int
-dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
+static void
+validate_composed_trunk_scan_requirements(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                                          dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !cfg->trunk_scan_enabled || cfg->trunk_scan_targets_csv[0] != '\0') {
+        return;
+    }
+    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "trunk_scan", key ? key : "targets_csv",
+                     "targets_csv is required when trunk_scan.enabled is true");
+}
+
+static void
+validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
+    validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
+}
+
+static void
+validate_composed_profile_config(const char* profile_name, const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
+    char section[64];
+    DSD_SNPRINTF(section, sizeof section, "profile.%s", profile_name ? profile_name : "");
+    section[sizeof section - 1] = '\0';
+    validate_composed_trunk_scan_requirements(cfg, section, "trunk_scan.targets_csv", diags);
+}
+
+static void
+validate_composed_config_path(const char* path, dsdcfg_diagnostics_t* diags) {
+    if (!path || !diags) {
+        return;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load_profile(path, NULL, &cfg) == 0) {
+        validate_composed_config_base(&cfg, diags);
+    }
+
+    const char* names[DSD_CONFIG_VALIDATE_MAX_PROFILES];
+    char names_buf[DSD_CONFIG_VALIDATE_PROFILE_BUF_SIZE];
+    int count =
+        dsd_user_config_list_profiles(path, names, names_buf, sizeof names_buf, DSD_CONFIG_VALIDATE_MAX_PROFILES);
+    if (count <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (dsd_user_config_load_profile(path, names[i], &cfg) == 0) {
+            validate_composed_profile_config(names[i], &cfg, diags);
+        }
+    }
+}
+
+static void
+validate_composed_config_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
+    if (!stream || !diags) {
+        return;
+    }
+
+    dsdneoUserConfig cfg;
+    if (fseek(stream, 0L, SEEK_SET) != 0) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, "", "", "Cannot seek config stream");
+        return;
+    }
+    if (dsd_user_config_load_profile_stream(stream, "<stream>", NULL, &cfg) == 0) {
+        validate_composed_config_base(&cfg, diags);
+    }
+
+    const char* names[DSD_CONFIG_VALIDATE_MAX_PROFILES];
+    char names_buf[DSD_CONFIG_VALIDATE_PROFILE_BUF_SIZE];
+    if (fseek(stream, 0L, SEEK_SET) != 0) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, "", "", "Cannot seek config stream");
+        return;
+    }
+    int count = dsd_user_config_list_profiles_stream(stream, names, names_buf, sizeof names_buf,
+                                                     DSD_CONFIG_VALIDATE_MAX_PROFILES);
+    if (count <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (fseek(stream, 0L, SEEK_SET) != 0) {
+            dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, "", "", "Cannot seek config stream");
+            return;
+        }
+        if (dsd_user_config_load_profile_stream(stream, "<stream>", names[i], &cfg) == 0) {
+            validate_composed_profile_config(names[i], &cfg, diags);
+        }
+    }
+}
+
+static int
+validate_config_stream_syntax(FILE* stream, dsdcfg_diagnostics_t* diags) {
     if (!diags) {
         return -1;
     }
@@ -413,8 +458,6 @@ dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
     current_section[0] = '\0';
     int line_num = 0;
     int is_profile_section = 0;
-    dsd_config_cross_fields_t cross;
-    DSD_MEMSET(&cross, 0, sizeof(cross));
 
     while (fgets(line, sizeof line, stream)) {
         line_num++;
@@ -430,11 +473,19 @@ dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
             continue;
         }
 
-        validate_config_line(p, line_num, current_section, is_profile_section, diags, &cross);
+        validate_config_line(p, line_num, current_section, is_profile_section, diags);
     }
 
-    validate_cross_fields(&cross, diags);
     return diags->error_count > 0 ? -1 : 0;
+}
+
+int
+dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
+    int rc = validate_config_stream_syntax(stream, diags);
+    if (rc == 0) {
+        validate_composed_config_stream(stream, diags);
+    }
+    return diags && diags->error_count > 0 ? -1 : rc;
 }
 
 int
@@ -459,9 +510,12 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
         return -1;
     }
 
-    int rc = dsd_user_config_validate_stream(fp, diags);
+    int rc = validate_config_stream_syntax(fp, diags);
     fclose(fp);
-    return rc;
+    if (rc == 0) {
+        validate_composed_config_path(path, diags);
+    }
+    return diags->error_count > 0 ? -1 : rc;
 }
 
 void

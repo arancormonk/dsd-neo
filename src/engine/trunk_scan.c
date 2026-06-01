@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -33,6 +34,12 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/protocol/p25/p25_cc_candidates.h"
+
+#if LONG_MAX < 4294967295LL
+#define DSD_TRUNK_SCAN_MAX_FREQUENCY_HZ ((uint32_t)LONG_MAX)
+#else
+#define DSD_TRUNK_SCAN_MAX_FREQUENCY_HZ UINT32_MAX
+#endif
 
 typedef struct {
     unsigned long long p2_wacn;
@@ -363,7 +370,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         scan_set_error(parse->err, parse->err_sz, "row %u has invalid target type '%s'", parse->row, type_s);
         return -1;
     }
-    if (scan_parse_u32_decimal(freq_s, 1U, UINT32_MAX, &target.frequency_hz) != 0) {
+    if (scan_parse_u32_decimal(freq_s, 1U, DSD_TRUNK_SCAN_MAX_FREQUENCY_HZ, &target.frequency_hz) != 0) {
         scan_set_error(parse->err, parse->err_sz, "row %u has invalid frequency_hz '%s'", parse->row, freq_s);
         return -1;
     }
@@ -1163,7 +1170,11 @@ dsd_engine_trunk_scan_active_p25_ctx(void) {
     if (!g_trunk_scan_coord || g_trunk_scan_coord->count == 0) {
         return NULL;
     }
-    return &g_trunk_scan_coord->targets[g_trunk_scan_coord->active].p25_ctx;
+    dsd_trunk_scan_target_runtime* rt = &g_trunk_scan_coord->targets[g_trunk_scan_coord->active];
+    if (rt->target.type != DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
+        return NULL;
+    }
+    return &rt->p25_ctx;
 }
 
 void*
@@ -1171,7 +1182,11 @@ dsd_engine_trunk_scan_active_dmr_ctx(void) {
     if (!g_trunk_scan_coord || g_trunk_scan_coord->count == 0) {
         return NULL;
     }
-    return &g_trunk_scan_coord->targets[g_trunk_scan_coord->active].dmr_ctx;
+    dsd_trunk_scan_target_runtime* rt = &g_trunk_scan_coord->targets[g_trunk_scan_coord->active];
+    if (rt->target.type != DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
+        return NULL;
+    }
+    return &rt->dmr_ctx;
 }
 
 void

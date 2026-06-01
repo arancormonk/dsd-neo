@@ -350,13 +350,58 @@ bootstrap_effective_runtime_argc(int argc, char** argv, int cfg_path_positional_
     return compacted_argc;
 }
 
+static int
+bootstrap_long_arg_consumes_value(const char* arg) {
+    return arg
+           && (strcmp(arg, "--config") == 0 || strcmp(arg, "--profile") == 0 || strcmp(arg, "--validate-config") == 0);
+}
+
+static int
+bootstrap_is_bootstrap_only_long_arg(const char* arg) {
+    if (!arg) {
+        return 0;
+    }
+    return strcmp(arg, "--no-config") == 0 || strcmp(arg, "--print-config") == 0
+           || strcmp(arg, "--interactive-setup") == 0 || strcmp(arg, "--dump-config-template") == 0
+           || strcmp(arg, "--strict-config") == 0 || strcmp(arg, "--list-profiles") == 0
+           || strncmp(arg, "--config=", 9) == 0 || strncmp(arg, "--profile=", 10) == 0
+           || strncmp(arg, "--validate-config=", 18) == 0;
+}
+
+static int
+bootstrap_has_runtime_long_arg(int argc, char** argv, int cfg_path_positional_ini) {
+    if (cfg_path_positional_ini || argc <= 1 || !argv) {
+        return 0;
+    }
+    for (int i = 1; i < argc; i++) {
+        const char* arg = argv[i];
+        if (!arg) {
+            break;
+        }
+        if (bootstrap_long_arg_consumes_value(arg)) {
+            if (i + 1 < argc && argv[i + 1] && argv[i + 1][0] != '-') {
+                i++;
+            }
+            continue;
+        }
+        if (bootstrap_is_bootstrap_only_long_arg(arg)) {
+            continue;
+        }
+        if (strncmp(arg, "--", 2) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void
 bootstrap_apply_trunk_scan_pre_cli_gating(dsd_opts* opts, int argc, char** argv, int cfg_path_positional_ini,
                                           int user_cfg_loaded, int explicit_profile_selected) {
     if (!opts || !user_cfg_loaded || explicit_profile_selected || !opts->trunk_scan_enabled) {
         return;
     }
-    if (bootstrap_effective_runtime_argc(argc, argv, cfg_path_positional_ini) > 1) {
+    if (bootstrap_effective_runtime_argc(argc, argv, cfg_path_positional_ini) > 1
+        || bootstrap_has_runtime_long_arg(argc, argv, cfg_path_positional_ini)) {
         opts->trunk_scan_enabled = 0;
     }
 }
@@ -405,8 +450,8 @@ bootstrap_handle_validate_config(const bootstrap_cli_args* args, const char* con
             return DSD_BOOTSTRAP_ERROR;
         }
         vpath = resolved_vpath;
-        rc = dsd_user_config_validate_stream(validate_stream, &diags);
         fclose(validate_stream);
+        rc = dsd_user_config_validate(vpath, &diags);
     } else {
         const char* default_vpath = dsd_user_config_default_path();
         if (!default_vpath || !*default_vpath) {

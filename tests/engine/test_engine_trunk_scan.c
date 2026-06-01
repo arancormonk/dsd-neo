@@ -409,6 +409,9 @@ test_parser_rejects_invalid_inputs(void) {
                                                             "b,p25-trunk,851000000,,,,\n");
     rc |= expect_parser_rejects("invalid-type", "a,nxdn,851000000,,,,\n");
     rc |= expect_parser_rejects("invalid-frequency", "a,p25-trunk,0,,,,\n");
+#if LONG_MAX < 4294967295LL
+    rc |= expect_parser_rejects("frequency-long-overflow", "a,p25-trunk,2400000000,,,,\n");
+#endif
     rc |= expect_parser_rejects("invalid-dwell", "a,p25-trunk,851000000,,249,,\n");
     rc |= expect_parser_rejects("conventional-chan-csv", "a,dmr-conventional,461000000,chan.csv,,,\n");
     return rc;
@@ -1114,8 +1117,7 @@ static int
 test_state_ext_cleanup_clears_scan_hooks(void) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
-    if (make_runtime_targets("a,dmr-conventional,461000000,,250,250,\n", target_path, sizeof target_path, dir,
-                             sizeof dir)
+    if (make_runtime_targets("a,dmr-trunk,461000000,,250,250,\n", target_path, sizeof target_path, dir, sizeof dir)
         != 0) {
         return 1;
     }
@@ -1144,6 +1146,72 @@ test_state_ext_cleanup_clears_scan_hooks(void) {
         test_rc = 1;
     }
 
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_protocol_hooks_only_expose_matching_target_contexts(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("dmr,dmr-trunk,451000000,,250,,\n", target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "dmr hook gating scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    if (test_rc == 0 && dsd_trunk_scan_hook_dmr_ctx() == NULL) {
+        DSD_FPRINTF(stderr, "dmr hook missing for active DMR trunk target\n");
+        test_rc = 1;
+    }
+    if (test_rc == 0 && dsd_trunk_scan_hook_p25_ctx() != NULL) {
+        DSD_FPRINTF(stderr, "p25 hook exposed context for active DMR trunk target\n");
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    if (test_rc != 0) {
+        return test_rc;
+    }
+
+    if (make_runtime_targets("p25,p25-trunk,851000000,,250,,\n", target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_MEMSET(err, 0, sizeof err);
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "p25 hook gating scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    if (test_rc == 0 && dsd_trunk_scan_hook_p25_ctx() == NULL) {
+        DSD_FPRINTF(stderr, "p25 hook missing for active P25 trunk target\n");
+        test_rc = 1;
+    }
+    if (test_rc == 0 && dsd_trunk_scan_hook_dmr_ctx() != NULL) {
+        DSD_FPRINTF(stderr, "dmr hook exposed context for active P25 trunk target\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
     dsd_engine_trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -1997,6 +2065,7 @@ main(void) {
     rc |= test_conventional_activity_hold_and_allowlist_block();
     rc |= test_conventional_activity_encrypted_lockout_does_not_hold();
     rc |= test_state_ext_cleanup_clears_scan_hooks();
+    rc |= test_protocol_hooks_only_expose_matching_target_contexts();
     rc |= test_dmr_trunk_sm_timeout_releases_scan_hold();
     rc |= test_p25_targets_pass_cc_sps_to_retune_paths();
     rc |= test_p25_targets_use_rtl_output_rate_for_retune_sps();
