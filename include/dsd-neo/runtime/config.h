@@ -735,6 +735,13 @@ typedef struct dsdneoUserConfig {
     int trunk_tune_data_calls;
     int trunk_tune_enc_calls;
 
+    /* [trunk_scan] */
+    int has_trunk_scan;
+    int trunk_scan_enabled;
+    char trunk_scan_targets_csv[1024];
+    int trunk_scan_idle_dwell_ms;
+    int trunk_scan_activity_hold_ms;
+
     /* [logging] */
     int has_logging;
     char event_log[1024];

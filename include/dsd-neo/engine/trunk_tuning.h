@@ -25,6 +25,7 @@ extern "C" {
 dsd_trunk_tune_result dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 dsd_trunk_tune_result dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 dsd_trunk_tune_result dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state);
+dsd_trunk_tune_result dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 
 #ifdef __cplusplus
 }

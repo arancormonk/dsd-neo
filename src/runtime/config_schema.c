@@ -74,6 +74,14 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunking", "tune_data_calls", "Tune to data channel grants", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
     {"trunking", "tune_enc_calls", "Tune to encrypted calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
 
+    /* [trunk_scan] section */
+    {"trunk_scan", "enabled", "Enable single-tuner trunk scan mode", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"trunk_scan", "targets_csv", "Trunk scan target list CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
+    {"trunk_scan", "idle_dwell_ms", "Default idle dwell per scan target", "3000", NULL, DSDCFG_TYPE_INT, 250, 600000,
+     0},
+    {"trunk_scan", "activity_hold_ms", "Default conventional DMR activity hold", "1200", NULL, DSDCFG_TYPE_INT, 250,
+     600000, 0},
+
     /* [logging] section */
     {"logging", "event_log", "Event history log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
     {"logging", "frame_log", "Frame trace log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},

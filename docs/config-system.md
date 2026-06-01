@@ -317,6 +317,14 @@ small subset is exposed as config keys for convenience (for example
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
 | `tune_enc_calls` | BOOL | Follow encrypted calls | `true` |
 
+**[trunk_scan] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `enabled` | BOOL | Enable single-tuner trunk scan | `false` |
+| `targets_csv` | PATH | Scan target list CSV | (empty) |
+| `idle_dwell_ms` | INT | Default idle dwell per target | `3000` |
+| `activity_hold_ms` | INT | Conventional DMR activity hold | `1200` |
+
 **[logging] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
@@ -540,6 +548,13 @@ When `[trunking] enabled = true`:
 - If you start DSD-neo with any CLI args and you do not explicitly set trunking
   or scan mode (`-T`/`-Y`), trunking inherited from the config is disabled for
   that run.
+
+When `[trunk_scan] enabled = true`:
+
+- `targets_csv` is required and must use the trunk scan target format in `docs/csv-formats.md`.
+- Global `[trunking] chan_csv`/`-C` is rejected; each trunk target must name its own `chan_csv` if it needs a channel map.
+- The group policy remains global, so `[trunking] group_csv`, `allow_list`, and tune controls apply uniformly.
+- One tuner is rotated across targets. Calls on systems that are not currently parked can be missed.
 
 ---
 

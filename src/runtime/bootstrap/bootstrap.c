@@ -330,6 +330,38 @@ bootstrap_parse_runtime_args(dsd_opts* opts, dsd_state* state, int argc, char** 
 }
 
 static int
+bootstrap_effective_runtime_argc(int argc, char** argv, int cfg_path_positional_ini) {
+    if (cfg_path_positional_ini) {
+        return 1;
+    }
+    if (argc <= 0 || !argv) {
+        return 0;
+    }
+
+    char** argv_copy = (char**)calloc((size_t)argc + 1U, sizeof(*argv_copy));
+    if (!argv_copy) {
+        return argc;
+    }
+    for (int i = 0; i < argc; i++) {
+        argv_copy[i] = argv[i];
+    }
+    int compacted_argc = dsd_cli_compact_args(argc, argv_copy);
+    free((void*)argv_copy);
+    return compacted_argc;
+}
+
+static void
+bootstrap_apply_trunk_scan_pre_cli_gating(dsd_opts* opts, int argc, char** argv, int cfg_path_positional_ini,
+                                          int user_cfg_loaded, int explicit_profile_selected) {
+    if (!opts || !user_cfg_loaded || explicit_profile_selected || !opts->trunk_scan_enabled) {
+        return;
+    }
+    if (bootstrap_effective_runtime_argc(argc, argv, cfg_path_positional_ini) > 1) {
+        opts->trunk_scan_enabled = 0;
+    }
+}
+
+static int
 bootstrap_handle_print_config(const bootstrap_cli_args* args, dsd_opts* opts, const dsd_state* state,
                               int* out_exit_rc) {
     if (!args->print_config_cli) {
@@ -588,6 +620,8 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
         return boot_rc;
     }
 
+    bootstrap_apply_trunk_scan_pre_cli_gating(opts, argc, argv, args.cfg_path_positional_ini, user_cfg_loaded,
+                                              explicit_profile_selected);
     boot_rc = bootstrap_parse_runtime_args(opts, state, argc, argv, args.cfg_path_positional_ini, &user_cfg,
                                            user_cfg_loaded, args.cli_file_rate_override, &argc_effective, out_exit_rc);
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {

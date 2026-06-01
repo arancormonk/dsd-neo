@@ -220,6 +220,13 @@ Notes
 
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`
 - Conventional scan mode: `-Y` (not trunking; scans for sync on enabled decoders)
+- Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
+  - Rotates one tuner across CSV-defined P25 trunk, DMR trunk, and one-frequency DMR targets.
+  - Use per-target `chan_csv` entries in the target CSV; global `-C` is rejected in this mode.
+  - Cannot be combined with legacy `-Y`.
+  - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
+  - Conventional DMR activity hold: `--trunk-scan-activity-hold-ms <250..600000>` (default `1200`).
+  - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`)
 - Group list CSV (allow/block + labels, optional `priority/preempt/audio/record/stream` policy columns): `-G <file>`
 - CSV formats and examples: `docs/csv-formats.md` and `examples/`

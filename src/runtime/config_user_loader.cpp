@@ -13,6 +13,7 @@
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -453,6 +454,43 @@ apply_trunking_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char
     }
 }
 
+static int
+parse_int_value(const char* val, int* out) {
+    if (!val || !out || val[0] == '\0') {
+        return -1;
+    }
+    errno = 0;
+    char* end = NULL;
+    long parsed = strtol(val, &end, 10);
+    if (errno != 0 || end == val || (end && *end != '\0') || parsed < INT_MIN || parsed > INT_MAX) {
+        return -1;
+    }
+    *out = (int)parsed;
+    return 0;
+}
+
+static void
+apply_trunk_scan_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (strcmp(key_lc, "enabled") == 0) {
+        int b = 0;
+        if (parse_bool(val, &b) == 0) {
+            cfg->trunk_scan_enabled = b;
+        }
+    } else if (strcmp(key_lc, "targets_csv") == 0) {
+        copy_path_expanded(cfg->trunk_scan_targets_csv, sizeof cfg->trunk_scan_targets_csv, val);
+    } else if (strcmp(key_lc, "idle_dwell_ms") == 0) {
+        int parsed = 0;
+        if (parse_int_value(val, &parsed) == 0) {
+            cfg->trunk_scan_idle_dwell_ms = parsed;
+        }
+    } else if (strcmp(key_lc, "activity_hold_ms") == 0) {
+        int parsed = 0;
+        if (parse_int_value(val, &parsed) == 0) {
+            cfg->trunk_scan_activity_hold_ms = parsed;
+        }
+    }
+}
+
 static void
 apply_logging_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "event_log") == 0 || strcmp(key_lc, "event_log_file") == 0) {
@@ -596,6 +634,9 @@ apply_section_key(dsdneoUserConfig* cfg, const char* section, const char* key_lc
     } else if (strcmp(section, "trunking") == 0) {
         cfg->has_trunking = 1;
         apply_trunking_section_key(cfg, key_lc, val);
+    } else if (strcmp(section, "trunk_scan") == 0) {
+        cfg->has_trunk_scan = 1;
+        apply_trunk_scan_section_key(cfg, key_lc, val);
     } else if (strcmp(section, "logging") == 0) {
         cfg->has_logging = 1;
         apply_logging_section_key(cfg, key_lc, val);

@@ -311,6 +311,9 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->trunk_hangtime = 2.0f;
 
     opts->scanner_mode = 0; //0 disabled, 1 is enabled
+    opts->trunk_scan_enabled = 0;
+    opts->trunk_scan_idle_dwell_ms = 3000;
+    opts->trunk_scan_activity_hold_ms = 1200;
     opts->trunk_cli_seen = 0;
 
     //reverse mute

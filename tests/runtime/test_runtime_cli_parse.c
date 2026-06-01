@@ -862,6 +862,42 @@ test_create_temp_ini(char* out_path, size_t out_path_size) {
 }
 
 static int
+test_create_temp_csv_with_contents(const char* contents, char* out_path, size_t out_path_size) {
+    if (!contents || !out_path || out_path_size == 0) {
+        return -1;
+    }
+
+    char tmpl[1024];
+    DSD_SNPRINTF(tmpl, sizeof tmpl, "%s", "dsdneo_bootstrap_csv_XXXXXX");
+
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        return -1;
+    }
+    (void)dsd_close(fd);
+
+    if (DSD_SNPRINTF(out_path, out_path_size, "%s.csv", tmpl) >= (int)out_path_size) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    if (rename(tmpl, out_path) != 0) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    FILE* fp = dsd_fopen_private(out_path, "w");
+    if (!fp) {
+        (void)remove(out_path);
+        return -1;
+    }
+
+    fputs(contents, fp);
+    fclose(fp);
+    return 0;
+}
+
+static int
 test_create_temp_raw_pcm_file(const char* prefix, const short* samples, size_t sample_count, const char* suffix,
                               char* out_path, size_t out_path_size) {
     if (!prefix || !samples || sample_count == 0 || !suffix || !out_path || out_path_size == 0) {
@@ -1467,7 +1503,10 @@ test_bootstrap_profile_preserves_trunking_with_ncurses_cli(void) {
                              "input.source = \"rtl\"\n"
                              "input.rtl_device = 0\n"
                              "input.rtl_freq = \"100000000\"\n"
-                             "trunking.enabled = true\n";
+                             "trunking.enabled = true\n"
+                             "trunk_scan.enabled = true\n"
+                             "trunk_scan.targets_csv = \"targets.csv\"\n"
+                             "trunk_scan.idle_dwell_ms = 500\n";
 
     char cfg_path[1024];
     if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
@@ -1505,6 +1544,11 @@ test_bootstrap_profile_preserves_trunking_with_ncurses_cli(void) {
                     opts->trunk_enable, opts->p25_trunk);
         test_rc = 1;
     }
+    if (opts->trunk_scan_enabled != 1 || strcmp(opts->trunk_scan_targets_csv, "targets.csv") != 0) {
+        DSD_FPRINTF(stderr, "expected profiled trunk scan to stay enabled, got enabled=%d targets=%s\n",
+                    opts->trunk_scan_enabled, opts->trunk_scan_targets_csv);
+        test_rc = 1;
+    }
     if (opts->use_ncurses_terminal != 1) {
         DSD_FPRINTF(stderr, "expected -N to remain applied, got use_ncurses_terminal=%d\n", opts->use_ncurses_terminal);
         test_rc = 1;
@@ -1514,6 +1558,88 @@ test_bootstrap_profile_preserves_trunking_with_ncurses_cli(void) {
         test_rc = 1;
     }
 
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_inherited_trunk_scan_allows_cli_channel_map(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[trunk_scan]\n"
+                             "enabled = true\n"
+                             "targets_csv = \"targets.csv\"\n"
+                             "idle_dwell_ms = 500\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp trunk scan ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    static const char* chan_csv = "ChannelNumber(dec),frequency(Hz),note\n"
+                                  "99,851012500,test\n";
+    char chan_path[1024];
+    if (test_create_temp_csv_with_contents(chan_csv, chan_path, sizeof chan_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp channel CSV\n");
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "-C";
+    char arg4[1024];
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    DSD_SNPRINTF(arg4, sizeof arg4, "%s", chan_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "expected inherited trunk scan to allow CLI -C, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->trunk_scan_enabled != 0) {
+        DSD_FPRINTF(stderr, "expected inherited trunk scan to be disabled for CLI run, got %d\n",
+                    opts->trunk_scan_enabled);
+        test_rc = 1;
+    }
+    if (strcmp(opts->chan_in_file, chan_path) != 0 || state->trunk_chan_map[99] != 851012500) {
+        DSD_FPRINTF(stderr, "expected CLI channel map import, got file=%s freq=%ld\n", opts->chan_in_file,
+                    state->trunk_chan_map[99]);
+        test_rc = 1;
+    }
+
+    (void)remove(chan_path);
     (void)remove(cfg_path);
     freeState(state);
     free(opts);
@@ -3785,6 +3911,106 @@ test_m3_override_survives_file_rate_rescale_after_f2(void) {
 }
 
 static int
+test_trunk_scan_long_options_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--trunk-scan";
+    char arg2[] = "targets.csv";
+    char arg3[] = "--trunk-scan-dwell-ms";
+    char arg4[] = "500";
+    char arg5[] = "--trunk-scan-activity-hold-ms=800";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(6, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE || opts->trunk_scan_enabled != 1
+        || strcmp(opts->trunk_scan_targets_csv, "targets.csv") != 0 || opts->trunk_scan_idle_dwell_ms != 500
+        || opts->trunk_scan_activity_hold_ms != 800) {
+        DSD_FPRINTF(stderr, "trunk scan long option parse mismatch rc=%d enabled=%d targets=%s dwell=%d hold=%d\n", rc,
+                    opts->trunk_scan_enabled, opts->trunk_scan_targets_csv, opts->trunk_scan_idle_dwell_ms,
+                    opts->trunk_scan_activity_hold_ms);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_trunk_scan_conflicts_with_legacy_scanner(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--trunk-scan";
+    char arg2[] = "targets.csv";
+    char arg3[] = "-Y";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(4, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = (rc == DSD_PARSE_ERROR && exit_rc == 1) ? 0 : 1;
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "expected trunk scan/-Y conflict, got rc=%d exit=%d\n", rc, exit_rc);
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_trunk_scan_rejects_global_channel_map(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--trunk-scan=targets.csv";
+    char arg2[] = "-C";
+    char arg3[] = "chan.csv";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(4, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = (rc == DSD_PARSE_ERROR && exit_rc == 1 && opts->chan_in_file[0] == '\0') ? 0 : 1;
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "expected trunk scan/-C conflict before import, rc=%d exit=%d chan=%s\n", rc, exit_rc,
+                    opts->chan_in_file);
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_bootstrap_config_file_rate_rescales_manual_m3_override(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -4293,6 +4519,7 @@ main(void) {
     rc |= test_bootstrap_list_profiles_accepts_external_config_path();
     rc |= test_bootstrap_print_config_normalizes_soapy_shorthand();
     rc |= test_bootstrap_profile_preserves_trunking_with_ncurses_cli();
+    rc |= test_bootstrap_inherited_trunk_scan_allows_cli_channel_map();
     rc |= test_bootstrap_profile_disables_autosave();
     rc |= test_bootstrap_cli_call_alert_restores_all_config_filtered_events();
     rc |= test_r_playback_optind_is_first_file_regardless_of_option_order();
@@ -4304,6 +4531,9 @@ main(void) {
     rc |= test_input_source_soapy_args_roundtrip();
     rc |= test_input_source_rtl_roundtrip();
     rc |= test_input_source_rtltcp_roundtrip();
+    rc |= test_trunk_scan_long_options_parse();
+    rc |= test_trunk_scan_conflicts_with_legacy_scanner();
+    rc |= test_trunk_scan_rejects_global_channel_map();
     rc |= test_iq_capture_long_options_parse();
     rc |= test_iq_capture_missing_value_returns_error();
     rc |= test_iq_capture_format_missing_value_returns_error();

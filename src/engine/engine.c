@@ -23,6 +23,7 @@
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -47,6 +48,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <errno.h>
 #include <limits.h>
@@ -277,21 +279,25 @@ autosave_user_config(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static int
-import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state) {
-        return 0;
+import_global_channel_map_if_needed(dsd_opts* opts, dsd_state* state) {
+    const int trunk_or_scan = (opts->trunk_enable == 1) || (opts->p25_trunk == 1) || (opts->scanner_mode == 1);
+    if (opts->trunk_scan_enabled == 1 && opts->chan_in_file[0] != '\0') {
+        LOG_ERROR("Trunk scan does not allow global channel maps; use per-target chan_csv values.\n");
+        return -1;
     }
 
-    const int trunk_or_scan = (opts->trunk_enable == 1) || (opts->p25_trunk == 1) || (opts->scanner_mode == 1);
-    const int trunk_enabled = (opts->trunk_enable == 1) || (opts->p25_trunk == 1);
-
-    if (trunk_or_scan && opts->chan_in_file[0] != '\0' && state->lcn_freq_count == 0) {
+    if (trunk_or_scan && opts->trunk_scan_enabled != 1 && opts->chan_in_file[0] != '\0' && state->lcn_freq_count == 0) {
         if (csvChanImport(opts, state) != 0) {
             return -1;
         }
         LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
     }
+    return 0;
+}
 
+static int
+import_group_csv_if_needed(dsd_opts* opts, dsd_state* state) {
+    const int trunk_enabled = (opts->trunk_enable == 1) || (opts->p25_trunk == 1) || (opts->trunk_scan_enabled == 1);
     if (trunk_enabled && opts->group_in_file[0] != '\0' && !dsd_tg_policy_has_entries(state)) {
         if (csvGroupImport(opts, state) != 0) {
             return -1;
@@ -299,6 +305,17 @@ import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
         LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
     }
     return 0;
+}
+
+static int
+import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    if (import_global_channel_map_if_needed(opts, state) != 0) {
+        return -1;
+    }
+    return import_group_csv_if_needed(opts, state);
 }
 
 static void
@@ -1378,7 +1395,7 @@ no_carrier_reset_decode_state(dsd_state* state) {
 
 static void
 no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* state) {
-    if (opts->p25_trunk != 0) {
+    if (opts->p25_trunk != 0 || opts->trunk_enable != 0) {
         return;
     }
     state->lasttg = 0;
@@ -1782,6 +1799,19 @@ live_scanner_open_audio_if_needed(dsd_opts* opts) {
     return 0;
 }
 
+static int
+live_scanner_start_trunk_scan_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || opts->trunk_scan_enabled != 1) {
+        return 0;
+    }
+    char scan_err[256] = {0};
+    if (dsd_engine_trunk_scan_init(opts, state, scan_err, sizeof scan_err) != 0) {
+        LOG_ERROR("Trunk scan: %s\n", scan_err[0] ? scan_err : "initialization failed");
+        return -1;
+    }
+    return 0;
+}
+
 static void
 live_scanner_emit_start_history(dsd_opts* opts, dsd_state* state) {
     state->event_history_s[0].Event_History_Items[0].color_pair = 4;
@@ -1853,6 +1883,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     while (!exitflag) {
         dsd_runtime_pump_controls(opts, state);
         p25_sm_try_tick(opts, state);
+        dsd_trunk_scan_hook_tick(opts, state);
         dsd_runtime_pump_controls(opts, state);
 
         noCarrier(opts, state);
@@ -1870,6 +1901,9 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
     (void)live_scanner_apply_audio_gain(opts, state);
     live_scanner_start_rtl_if_needed(opts, state);
     if (live_scanner_open_audio_if_needed(opts) != 0) {
+        return -1;
+    }
+    if (live_scanner_start_trunk_scan_if_needed(opts, state) != 0) {
         return -1;
     }
 
@@ -2015,6 +2049,7 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_cleanup_close_radio(opts, state);
     dsd_engine_cleanup_close_net(opts);
     dsd_engine_cleanup_close_mbe(opts, state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     autosave_user_config(opts, state);
     dsd_engine_cleanup_print_stats(state);
 
@@ -2053,6 +2088,13 @@ dsd_engine_run_install_hooks(void) {
 
 static int
 dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
+    if (!opts || !state || !early_exit) {
+        return -1;
+    }
+    if (opts->trunk_scan_enabled == 1 && opts->scanner_mode == 1) {
+        LOG_ERROR("Trunk scan cannot be combined with legacy scanner mode.\n");
+        return -1;
+    }
     if (import_trunking_csvs_if_needed(opts, state) != 0) {
         return -1;
     }

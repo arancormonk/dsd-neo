@@ -329,6 +329,21 @@ cli_parse_double_option(const char* option_name, const char* in, double* out, in
 }
 
 static int
+cli_parse_trunk_scan_ms_option(const char* option_name, const char* in, int* out, int* out_exit_rc) {
+    long parsed = 0;
+    if (!cli_parse_long_option(option_name, in, 10, &parsed, out_exit_rc)) {
+        return 0;
+    }
+    if (parsed < 250 || parsed > 600000) {
+        LOG_ERROR("Invalid %s value \"%s\" (expected 250..600000)\n", option_name, in ? in : "");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    *out = (int)parsed;
+    return 1;
+}
+
+static int
 cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     if (!opts || !path) {
         return -1;
@@ -694,6 +709,64 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         }                                                                                                              \
         if (strcmp(argv[i], "--calc-start-lcn") == 0 && i + 1 < argc) {                                                \
             calc_start_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--trunk-scan") == 0) {                                                                    \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--trunk-scan requires a target CSV path\n");                                                \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s",                      \
+                         DSD_PARSE_ARGS_NEXT_ARG());                                                                   \
+            opts->trunk_scan_targets_csv[sizeof opts->trunk_scan_targets_csv - 1] = '\0';                              \
+            opts->trunk_scan_enabled = 1;                                                                              \
+            opts->trunk_cli_seen = 1;                                                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--trunk-scan=", 13) == 0) {                                                              \
+            DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", argv[i] + 13);       \
+            opts->trunk_scan_targets_csv[sizeof opts->trunk_scan_targets_csv - 1] = '\0';                              \
+            opts->trunk_scan_enabled = 1;                                                                              \
+            opts->trunk_cli_seen = 1;                                                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--trunk-scan-dwell-ms") == 0) {                                                           \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--trunk-scan-dwell-ms requires a millisecond value\n");                                     \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_parse_trunk_scan_ms_option("--trunk-scan-dwell-ms", DSD_PARSE_ARGS_NEXT_ARG(),                    \
+                                                &opts->trunk_scan_idle_dwell_ms, out_exit_rc)) {                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--trunk-scan-dwell-ms=", 22) == 0) {                                                     \
+            if (!cli_parse_trunk_scan_ms_option("--trunk-scan-dwell-ms", argv[i] + 22,                                 \
+                                                &opts->trunk_scan_idle_dwell_ms, out_exit_rc)) {                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--trunk-scan-activity-hold-ms") == 0) {                                                   \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--trunk-scan-activity-hold-ms requires a millisecond value\n");                             \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_parse_trunk_scan_ms_option("--trunk-scan-activity-hold-ms", DSD_PARSE_ARGS_NEXT_ARG(),            \
+                                                &opts->trunk_scan_activity_hold_ms, out_exit_rc)) {                    \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--trunk-scan-activity-hold-ms=", 30) == 0) {                                             \
+            if (!cli_parse_trunk_scan_ms_option("--trunk-scan-activity-hold-ms", argv[i] + 30,                         \
+                                                &opts->trunk_scan_activity_hold_ms, out_exit_rc)) {                    \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm") == 0) {                                                                      \
@@ -1312,6 +1385,23 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
 #endif
 
     int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc);
+    if (parse_rc == DSD_PARSE_CONTINUE && opts->trunk_scan_enabled) {
+        if (opts->scanner_mode == 1) {
+            LOG_ERROR("--trunk-scan cannot be combined with -Y scanner mode\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+        if (opts->chan_in_file[0] != '\0') {
+            LOG_ERROR("--trunk-scan cannot be combined with global -C/channel-map config; use per-target chan_csv\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+        if (opts->trunk_scan_targets_csv[0] == '\0') {
+            LOG_ERROR("--trunk-scan requires a target CSV path\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+    }
     if (parse_rc == DSD_PARSE_CONTINUE && opts->iq_replay_requested && opts->iq_replay_path[0] != '\0') {
         opts->audio_in_type = AUDIO_IN_RTL;
         if (cli_set_iqreplay_audio_dev(opts, opts->iq_replay_path) != 0) {
@@ -1432,6 +1522,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             LOG_NOTICE("Enabling Experimental Floating Point Audio Output\n");                                         \
             break;                                                                                                     \
         case 'Y':                                                                                                      \
+            if (opts->trunk_scan_enabled) {                                                                            \
+                LOG_ERROR("-Y cannot be combined with --trunk-scan\n");                                                \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             opts->scanner_mode = 1;                                                                                    \
             opts->p25_trunk = 0;                                                                                       \
             opts->trunk_enable = 0;                                                                                    \
@@ -1795,6 +1890,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         case 'C': {                                                                                                    \
             /* Import channel map CSV (channum,freq) */                                                                \
+            if (opts->trunk_scan_enabled) {                                                                            \
+                LOG_ERROR("-C cannot be combined with --trunk-scan; use per-target chan_csv\n");                       \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_STRNCPY(opts->chan_in_file, optarg, 1023);                                                             \
             opts->chan_in_file[1023] = '\0';                                                                           \
             if (csvChanImport(opts, state) != 0) {                                                                     \

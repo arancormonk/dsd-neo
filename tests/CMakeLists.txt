@@ -1743,6 +1743,21 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_engine_trunk_scan
+    engine/test_engine_trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+)
+target_include_directories(
+    dsd-neo_test_engine_trunk_scan
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_engine_trunk_scan
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
+
+add_executable(
     dsd-neo_test_runtime_config_user
     runtime/test_runtime_config_user.cpp
 )

@@ -161,25 +161,35 @@ dsd_engine_rtl_profile_snapshot_restore(dsd_state* state, const dsd_engine_rtl_p
 }
 
 static void
-dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int target_freq_hz, int ted_sps) {
-    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
-        return;
+dsd_engine_prepare_p25_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int target_freq_hz, int ted_sps) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(opts);
+        cfg = dsd_neo_get_config();
     }
-    if (opts->p25_trunk == 1) {
-        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-        if (!cfg) {
-            dsd_neo_config_init(opts);
-            cfg = dsd_neo_get_config();
-        }
-        const int want_cqpsk = (state->p25_cc_is_tdma == 1 || opts->mod_qpsk == 1) ? 1 : 0;
-        state->rf_mod = want_cqpsk ? 1 : 0;
-        const int cqpsk_request = (cfg && cfg->cqpsk_is_set) ? -1 : want_cqpsk;
-        const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-        const int profile = want_cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
-        rtl_stream_prepare_retune_profile_for_target((uint32_t)target_freq_hz, cqpsk_request, sym_rate, 4, profile,
-                                                     ted_sps, 0);
-        return;
+
+    const int want_cqpsk = (state->p25_cc_is_tdma == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    state->rf_mod = want_cqpsk ? 1 : 0;
+    const int cqpsk_request = (cfg && cfg->cqpsk_is_set) ? -1 : want_cqpsk;
+    const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
+    const int profile = want_cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+    rtl_stream_prepare_retune_profile_for_target((uint32_t)target_freq_hz, cqpsk_request, sym_rate, 4, profile, ted_sps,
+                                                 0);
+}
+
+static void
+dsd_engine_prepare_dmr_cc_rtl_chain(const dsd_opts* opts, const dsd_state* state, long int target_freq_hz,
+                                    int ted_sps) {
+    int retune_ted_sps = ted_sps;
+    if (state->rtl_ctx) {
+        retune_ted_sps = dsd_opts_compute_sps_rate(opts, 4800, (int)rtl_stream_output_rate(state->rtl_ctx));
     }
+    rtl_stream_prepare_retune_profile_for_target((uint32_t)target_freq_hz, 0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_12K5,
+                                                 retune_ted_sps, 0);
+}
+
+static void
+dsd_engine_prepare_current_cc_rtl_chain(long int target_freq_hz, int ted_sps) {
     if (ted_sps > 0) {
         int symbol_rate_hz = 0;
         int levels = 0;
@@ -190,6 +200,22 @@ dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int
     } else {
         rtl_stream_clear_pending_retune_profile();
     }
+}
+
+static void
+dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int target_freq_hz, int ted_sps) {
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    if (opts->p25_trunk == 1) {
+        dsd_engine_prepare_p25_cc_rtl_chain(opts, state, target_freq_hz, ted_sps);
+        return;
+    }
+    if (state->rf_mod == 2 && ted_sps > 0) {
+        dsd_engine_prepare_dmr_cc_rtl_chain(opts, state, target_freq_hz, ted_sps);
+        return;
+    }
+    dsd_engine_prepare_current_cc_rtl_chain(target_freq_hz, ted_sps);
 }
 #endif
 
@@ -521,5 +547,42 @@ dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int
     state->trunk_cc_freq = (long int)freq;
     state->last_cc_sync_time = time(NULL);
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    return result;
+}
+
+dsd_trunk_tune_result
+dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
+#ifdef USE_RADIO
+    dsd_engine_rtl_profile_snapshot rtl_snapshot;
+#endif
+    if (!opts || !state || freq <= 0) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+#ifndef USE_RADIO
+    (void)ted_sps;
+#else
+    dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
+    if (opts->audio_in_type == AUDIO_IN_RTL && ted_sps > 0) {
+        dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
+    }
+#endif
+
+    dsd_engine_maybe_drain_audio(opts, state);
+    result = dsd_engine_tune_with_backend(opts, state, freq);
+    if (!dsd_trunk_tune_result_is_ok(result)) {
+#ifdef USE_RADIO
+        dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
+#endif
+        return result;
+    }
+
+    dsd_frame_sync_reset_mod_state();
+    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    opts->p25_is_tuned = 0;
+    opts->trunk_is_tuned = 0;
     return result;
 }

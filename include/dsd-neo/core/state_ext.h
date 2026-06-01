@@ -55,6 +55,7 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
      * core use.
      */
     DSD_STATE_EXT_CORE_TG_POLICY = 2,
+    DSD_STATE_EXT_ENGINE_TRUNK_SCAN = 3,
     DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG = 24,
 } dsd_state_ext_id;
 

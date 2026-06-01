@@ -88,6 +88,8 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_tune_private_calls = 1;
     cfg->trunk_tune_data_calls = 0;
     cfg->trunk_tune_enc_calls = 1;
+    cfg->trunk_scan_idle_dwell_ms = 3000;
+    cfg->trunk_scan_activity_hold_ms = 1200;
 
     cfg->rtl_auto_ppm = 0;
     cfg->soapy_bandwidth_hz = -1;
@@ -829,6 +831,18 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
 }
 
 static void
+render_trunk_scan_section(FILE* out, const dsdneoUserConfig* cfg) {
+    DSD_FPRINTF(out, "[trunk_scan]\n");
+    DSD_FPRINTF(out, "enabled = %s\n", ini_bool(cfg->trunk_scan_enabled));
+    if (cfg->trunk_scan_targets_csv[0]) {
+        DSD_FPRINTF(out, "targets_csv = \"%s\"\n", cfg->trunk_scan_targets_csv);
+    }
+    DSD_FPRINTF(out, "idle_dwell_ms = %d\n", cfg->trunk_scan_idle_dwell_ms);
+    DSD_FPRINTF(out, "activity_hold_ms = %d\n", cfg->trunk_scan_activity_hold_ms);
+    DSD_FPRINTF(out, "\n");
+}
+
+static void
 render_logging_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "[logging]\n");
     if (cfg->event_log[0]) {
@@ -910,6 +924,9 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream) {
     }
     if (cfg->has_trunking) {
         render_trunking_section(stream, cfg);
+    }
+    if (cfg->has_trunk_scan) {
+        render_trunk_scan_section(stream, cfg);
     }
     if (cfg->has_logging) {
         render_logging_section(stream, cfg);
@@ -1139,6 +1156,21 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 }
 
 static void
+apply_trunk_scan_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    if (!cfg || !opts || !cfg->has_trunk_scan) {
+        return;
+    }
+    opts->trunk_scan_enabled = cfg->trunk_scan_enabled ? 1 : 0;
+    if (cfg->trunk_scan_targets_csv[0]) {
+        DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s",
+                     cfg->trunk_scan_targets_csv);
+        opts->trunk_scan_targets_csv[sizeof opts->trunk_scan_targets_csv - 1] = '\0';
+    }
+    opts->trunk_scan_idle_dwell_ms = cfg->trunk_scan_idle_dwell_ms;
+    opts->trunk_scan_activity_hold_ms = cfg->trunk_scan_activity_hold_ms;
+}
+
+static void
 apply_logging_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (!cfg || !opts || !cfg->has_logging) {
         return;
@@ -1258,6 +1290,7 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
     apply_mode_config(cfg, opts, state);
     apply_demod_config(cfg, opts, state);
     apply_trunking_config(cfg, opts);
+    apply_trunk_scan_config(cfg, opts);
     apply_logging_config(cfg, opts);
     apply_alerts_config(cfg, opts);
     apply_recording_config(cfg, opts);
@@ -1406,6 +1439,16 @@ snapshot_trunking_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 }
 
 static void
+snapshot_trunk_scan_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    cfg->has_trunk_scan = 1;
+    cfg->trunk_scan_enabled = opts->trunk_scan_enabled ? 1 : 0;
+    DSD_SNPRINTF(cfg->trunk_scan_targets_csv, sizeof cfg->trunk_scan_targets_csv, "%s", opts->trunk_scan_targets_csv);
+    cfg->trunk_scan_targets_csv[sizeof cfg->trunk_scan_targets_csv - 1] = '\0';
+    cfg->trunk_scan_idle_dwell_ms = opts->trunk_scan_idle_dwell_ms;
+    cfg->trunk_scan_activity_hold_ms = opts->trunk_scan_activity_hold_ms;
+}
+
+static void
 snapshot_logging_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->has_logging = 1;
     DSD_SNPRINTF(cfg->event_log, sizeof cfg->event_log, "%s", opts->event_out_file);
@@ -1468,6 +1511,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snapshot_mode_config(opts, cfg);
     snapshot_demod_config(opts, cfg);
     snapshot_trunking_config(opts, cfg);
+    snapshot_trunk_scan_config(opts, cfg);
     snapshot_logging_config(opts, cfg);
     snapshot_alerts_config(opts, cfg);
     snapshot_recording_config(opts, cfg);
@@ -1567,6 +1611,7 @@ render_template_profile_example(FILE* stream) {
     DSD_FPRINTF(stream, "# [profile.example]\n");
     DSD_FPRINTF(stream, "# mode.decode = \"p25p1\"\n");
     DSD_FPRINTF(stream, "# trunking.enabled = true\n");
+    DSD_FPRINTF(stream, "# trunk_scan.enabled = true\n");
     DSD_FPRINTF(stream, "# input.source = \"rtl\"\n");
     DSD_FPRINTF(stream, "# input.rtl_freq = \"851.375M\"\n");
 }

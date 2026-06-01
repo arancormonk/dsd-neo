@@ -12,6 +12,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -462,6 +463,10 @@ static int g_dmr_sm_initialized = 0;
 
 dmr_sm_ctx_t*
 dmr_sm_get_ctx(void) {
+    dmr_sm_ctx_t* scan_ctx = (dmr_sm_ctx_t*)dsd_trunk_scan_hook_dmr_ctx();
+    if (scan_ctx) {
+        return scan_ctx;
+    }
     if (!g_dmr_sm_initialized) {
         dmr_sm_init_ctx(&g_dmr_sm_ctx, NULL, NULL);
         g_dmr_sm_initialized = 1;

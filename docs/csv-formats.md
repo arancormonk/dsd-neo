@@ -40,6 +40,42 @@ ChannelNumber(dec),frequency(Hz),note
 2,862093750
 ```
 
+## Trunk Scan Target CSV (`--trunk-scan <file>` / `[trunk_scan] targets_csv`)
+
+Purpose: Rotate one tuner across explicit P25 trunk, DMR trunk, and one-frequency DMR targets.
+
+The header must start with this exact prefix:
+
+```csv
+id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
+```
+
+Required columns:
+
+1. `id` unique short target name
+2. `type` one of `p25-trunk`, `dmr-trunk`, `dmr-conventional`
+3. `frequency_hz` decimal Hz (`1..4294967295`)
+4. `chan_csv` optional channel-map path, only valid for trunk targets and resolved relative to this CSV
+5. `dwell_ms` optional per-target idle dwell (`250..600000`)
+6. `activity_hold_ms` optional per-target conventional DMR activity hold (`250..600000`)
+7. `notes` ignored
+
+Notes:
+
+- Maximum 32 targets.
+- Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected.
+- Global `-C`/`[trunking] chan_csv` is rejected in trunk scan mode so channel maps do not leak across systems.
+- One tuner can only monitor the active target; traffic on other targets can be missed.
+
+Example:
+
+```csv
+id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
+county-p25,p25-trunk,851012500,p25_channels.csv,3000,,primary P25 control channel
+city-dmr,dmr-trunk,452012500,dmr_channels.csv,3000,,DMR Tier III control channel
+plant,dmr-conventional,461112500,,1500,1200,one-frequency DMR
+```
+
 ## Group List CSV (`-G <file>` / `[trunking] group_csv`)
 
 Purpose: Provide labels and allow/block behavior for talkgroups.
